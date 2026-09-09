@@ -1,0 +1,56 @@
+From 8580981488d6065cb40d2eddf516ca221b866efc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 7 Sep 2026 13:51:11 -0400
+Subject: [PATCH] dashboard: the rail clock gets its red seconds back
+ (regression, v3.0.9)
+
+Owner report 2026-09-07: the seconds in the dashboard's clock are no longer
+crimson, while every other page shows them correctly.
+
+Cause, exactly. v3.0.9 (d1ed232aa0) removed "five orphaned style blocks after a
+cross-page usage check (arrow, railsearch, rc-sec, spark, speeds)" from
+Main_ReaperDash.asp. Four of those five really were dead. `.rc-sec` was not: the
+span that carries it is written at RUNTIME by /js/reaper_clock.js (tk(), the
+innerHTML line), which this page loads, so the class appears nowhere inside the
+page and an in-file usage check calls it orphaned. It only became invisible to
+such a check in v2.9.4 (4387547afa), which moved the clock's inline script out
+to that shared file. reaper_shell.asp keeps its own copy of the rule and was not
+part of that sweep - which is why the shell-drawn pages kept red seconds and the
+dashboard, which draws its own topbar, did not. Shipped in every image from
+v3.0.9 (2026-09-04) onward.
+
+The rule is restored next to .rc-time, matching reaper_shell.asp, with a comment
+saying why it must never be swept again. Re-checked the other four against every
+.js the dashboard loads (reaper_clock.js, reaper_util.js): still genuinely dead,
+left removed.
+
+Verified: --crimson is defined on the page; the rail clock rendered from this
+page's own :root + .railclock CSS with the exact markup the script emits shows
+bone seconds before and crimson after. reaper_static_checks 11/11, page ASCII.
+CSS only - no script, no token, no dict change.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 5dd4f628c3..7b3f2885be 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -77,6 +77,12 @@ main{min-width:0}
+   display:flex;flex-direction:column;padding:14px 12px 14px;gap:2px}
+ .railclock{padding:6px 6px 14px;text-align:center;line-height:1.05}
+ .railclock .rc-time{font-family:var(--hdr);font-weight:700;font-size:23px;letter-spacing:.07em;color:var(--bone);font-variant-numeric:tabular-nums}
++/* The seconds are crimson. NOT ORPHANED, do not sweep it again: the span carrying
++   this class is emitted at RUNTIME by /js/reaper_clock.js (tk(), the innerHTML line),
++   which this page loads - so it appears nowhere in this file. v3.0.9 removed it on an
++   in-file usage check and the dashboard clock lost its red seconds while every other
++   page, drawn by reaper_shell.asp, kept them (owner report 2026-09-07). */
++.railclock .rc-sec{color:var(--crimson)}
+ .railclock .rc-date{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin-top:4px}
+ /* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
+    the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
+-- 
+2.25.1
+

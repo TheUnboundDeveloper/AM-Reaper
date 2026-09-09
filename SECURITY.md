@@ -1,6 +1,6 @@
 # Security Policy
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.0** · 2026-09-08 <!--@stamp-->
 
 This project exists to harden the RT-BE Series firmware — **RT-BEXXU** (primary, hardware-validated)
 plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** siblings (BCM4916 / WiFi 7)
@@ -21,6 +21,37 @@ Email **theunbounddeveloper@outlook.com** with:
 - whether the issue is reachable from WAN, LAN, or only with authentication.
 
 Please use email rather than a public issue for anything exploitable. You'll get a response as soon as practical; fixes land as new numbered patches and a new release image.
+
+## Known limitations — inherited components
+
+Components inherited from the ASUS/Merlin base that carry unfixed advisories. Each is **off by
+default**: none is reachable on a factory-configured router, and the entry states what turning it on
+exposes. Listed here rather than silently carried, on the same principle as the bundled Samba, which
+remains on its EOL branch with its one flagged CVE backported and build-gated.
+
+A dedicated inherited-component review on 2026-08-30 (v2.9.4 staged rootfs, every finding re-derived
+from the staged filesystem, the vendored source and the CVE record) found **no reachable HIGH, and
+nothing reachable at MEDIUM with factory defaults**. The default-on surface — dnsmasq, avahi, lldpd,
+Samba (SMB2/3, LAN-only), busybox udhcpc/ntpd, and the TLS stack — carries its fixes.
+
+| Component | Exposed when | Assessment |
+|---|---|---|
+| **netatalk 3.0.5** (Time Machine) | AFP file sharing enabled | The 2022 pre-auth RCE set (CVE-2022-23125, -45188, -43634, -23121) was checked **in code and is absent** in this version's paths. MEDIUM residual when enabled. |
+| **wpa_supplicant 0.6.10** | WAN 802.1X configured | A 2010 release, used only for wired WAN authentication. MEDIUM when configured. |
+| **lighttpd 1.4.39** | Captive portal enabled | CVE-2018-25103, pre-authentication on port 8083, reachable only with the captive portal or Chillispot switched on. |
+| **net-snmp 5.9.4.pre2** | SNMP with a read-write community | CVE-2022-44792 / -44793. A read-only community does not reach them. |
+| **Quagga 0.99.24** (zebra) | Dynamic routing enabled | CVE-2016-1245. |
+
+If any of these is upgraded it gets its own release and hardware validation rather than riding along
+with unrelated work — the versions are load-bearing for the features that use them.
+
+### Update-manifest signature
+
+The firmware update check verifies its manifest by **HTTPS with certificate validation, a pinned
+GitHub host, and a SHA-256 over the image** — not by a cryptographic signature over the manifest
+itself. Signing was implemented and is present but deliberately left inert. The residual risk this
+accepts is a compromise of the publishing GitHub account, which the other four checks do not cover.
+This is a recorded, accepted trade rather than an oversight.
 
 ## Threat model
 

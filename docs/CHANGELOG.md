@@ -26,7 +26,7 @@ node, not only on the primary router.
 
 ---
 
-## v3.1.1 — a primary/standby for the router's DNS list *(in progress)*
+## v3.1.1 — a standby for the router's DNS list, and an OpenVPN certificate that survives a save *(built RT-BE96U)*
 
 - **A health check for the LAN resolver, and a strict-order switch.** dnsmasq keeps no memory of an
   upstream that stopped answering: in strict order every new name is tried against the first server
@@ -41,8 +41,10 @@ node, not only on the primary router.
   and after a run of hits it puts it back first. Interval, timeout, both thresholds, the name queried and
   whether a refusal counts as alive are all yours to set; the page shows the live state and every switch
   is in the system log. Beside it, three dnsmasq switches that used to need a config-add file: **Upstream
-  order** (strict order), **Client addresses** (EDNS Client Subnet, so a LAN filter fed through the router
-  still sees which client asked; AdGuard Home reads it with its own switch on, Pi-hole by default) and
+  order** (strict order), **Client addresses** (EDNS Client Subnet, which attaches the asking
+  client's address to each forwarded query — Pi-hole reads that address and keeps filtering per
+  client, while AdGuard Home only records it in the query log and never uses it to choose which
+  rules apply, so its per-client rules stay inactive while the router forwards) and
   **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
   router's cache to another client and the filter sees every lookup). Together they let the DHCP DNS be
   the router alone, which makes the failover complete: no client ever retries. The server you watch can
@@ -69,7 +71,12 @@ node, not only on the primary router.
   gap stopped the page folding a client's per-band links into one device, because the only other clue
   it used is a line the Wi-Fi driver prints for some multi-link clients and not others. All of it now
   reads the field that ties a link to its device, and the wired list still wins over a stale wireless
-  entry, so a device that moved onto a cable is never dragged back to Wi-Fi.
+  entry, so a device that moved onto a cable is never dragged back to Wi-Fi. A band that was cached
+  once and then went stale is corrected too: Gatekeeper records the band the first time it sees a
+  device on a radio and never revised it, so a client that moved from 5 GHz to 6 GHz read 5 GHz for
+  good — the radio no longer lists it under the address the record is filed against. The live list is
+  now consulted for those as well, but only its entry for this router's own radios, so a mesh node's
+  second-hand view still cannot overrule what the router saw itself.
 - **Gatekeeper and Devices no longer call a device "Unknown device" because dnsmasq handed its name to
   another one.** dnsmasq lets one lease hold a given hostname at a time: when several iPhones all
   announce "iPhone", the newest keeps the name and the others' lease lines drop to `*`, and every Reaper
@@ -80,6 +87,34 @@ node, not only on the primary router.
   falls back to the vendor label the stock network map already shows for it, and the Devices page marks
   that source as *vendor* rather than *lease*. Names still come from the client and are still escaped on
   the way out; the store keeps 32 printable characters per device. Marked for the verify markers.
+- **An empty box on the VPN page no longer deletes a certificate, and a server that has already lost
+  one can be repaired.** Saving the OpenVPN server page sent every certificate field to the router,
+  and the router read an empty field as an instruction to delete the key it was holding. One save with
+  one empty box destroyed a working server certificate, without a word in the log — and nothing could
+  put it back: the firmware only generates a new set when the authority, the server key and the
+  certificate are *all* missing, so losing exactly one left a server that would not start and a page
+  with no button that would help. The only way out was to wipe the VPN server, which makes a new
+  certificate authority and invalidates every client profile already handed out. An empty field is now
+  ignored and the stored key kept, with a line in the log saying so; deleting a key is something the
+  firmware has to ask for by name, which is what happens when you reset the server yourself. A router
+  found in the broken state — authority present, certificate gone — rebuilds just the server's own
+  certificate from the authority it still has, checks it against that authority before installing it,
+  and never touches the authority itself, so existing client profiles keep working. If a required key
+  is missing the log now names which one and whether the server can start, instead of failing in
+  silence. Found from a field report; the OpenSSL 3.5 upgrade was suspected and tested clean, so this
+  is an old fault that was simply waiting to be hit.
+- **The Cancel button on the firmware page cancels.** While an image uploads or downloads, the page
+  covers itself so a half-finished flash cannot be clicked into. That cover has an escape button, and
+  it used to say *Close* and only hide the cover — the transfer carried on underneath. During an
+  upload it now says **Cancel** and stops the upload; the router receives an incomplete image, which
+  cannot pass its own check, so nothing is written. It appears immediately rather than after 25
+  seconds (that delay is there so a *write* cannot be fumbled in its first moments, and during an
+  upload there is no write yet), and it is taken away the moment the last byte has gone, because from
+  then on the router may already be checking or writing the image and stopping the browser cannot
+  recall it. During a download from the update server the button still says *Close* and still only
+  hides the cover: that download runs on the router itself, in one piece with the verify and the
+  flash, and there is nothing there to interrupt. Leaving people with no way out of a half-hour wait
+  would be worse, so the button stays — saying what it actually does.
 
 ## v3.1.0 — OpenSSL 3.5, second attempt: the library every TLS path stands on *(built RT-BE96U)*
 

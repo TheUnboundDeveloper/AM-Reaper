@@ -1,0 +1,1270 @@
+From cf543a820456cf3642d04b7c49017d473b53ea17 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 7 Sep 2026 12:33:44 -0400
+Subject: [PATCH] www: the Failover tab - the resolver health check and the
+ dnsmasq switches leave the System page
+
+Owner request 2026-09-07: everything the v3.1.1 rung added to Administration >
+System (the Reaper resolver health check with its eight fields, and the three
+dnsmasq switches: strict upstream order, EDNS Client Subnet, no router cache)
+moves to its own tab, Failover, between System and Firmware Upgrade, designed
+as a lightweight Reaper-native page in the router's theme.
+
+- www/Reaper_Failover.asp (new, native, self-themed like Reaper_Backup): the
+  sigil header with two live chips (state with a pulsing dot - jade answering,
+  crimson not answering, steel off - and the watched server), a three-step
+  Watch / Fail over / Restore strip whose middle step ARMS while the server is
+  down, the health check in a hero card with a neutral-grey enable switch and
+  its fields (the card dims while off), one card per dnsmasq switch, one Apply.
+  The state is polled every 5 s through the stock appGet nvram hook; settings
+  go through the stock apply flow (start_apply.htm in a hidden frame) with
+  restart_rdnshc and/or restart_dnsmasq as action_script, then the page
+  reloads. Validation as before: IPv4 always, IPv6 only while ipv6_service is
+  on, name charset, the four ranges. ASCII-only, tokens in backtick JS only.
+- Advanced_System_Content.asp: the block, its JS, the apply hook, the validate
+  hook and the five hidden inputs are gone; the page no longer mentions the
+  keys at all.
+- require/menuTrees/menuTree.js (rule 20 file): the tab after System.
+- httpd/reaper_inject.c: the page in reaper_native[] (bounce only).
+- Tokens RDHC_28..39 (tab name, subtitle, the three step names and captions,
+  the applying line, Off / Answering / Not answering) translated in all 25
+  packs, lockstep 6907. reaper_langcheck.py page list gains the page (engine +
+  lean copy).
+
+Gates: reaper_static_checks 11/11; the page script resolved through every
+pack passes node --check (25/25); mk-httpd clean; verify markers added
+(page literals present, System page literals ABSENT, httpd + installed menu).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |   2 +
+ .../router/www/Advanced_System_Content.asp    | 181 +------
+ release/src/router/www/BR.dict                |  12 +
+ release/src/router/www/CN.dict                |  12 +
+ release/src/router/www/CZ.dict                |  12 +
+ release/src/router/www/DA.dict                |  12 +
+ release/src/router/www/DE.dict                |  12 +
+ release/src/router/www/EN.dict                |  12 +
+ release/src/router/www/ES.dict                |  12 +
+ release/src/router/www/FI.dict                |  12 +
+ release/src/router/www/FR.dict                |  12 +
+ release/src/router/www/HU.dict                |  12 +
+ release/src/router/www/IT.dict                |  12 +
+ release/src/router/www/JP.dict                |  12 +
+ release/src/router/www/KR.dict                |  12 +
+ release/src/router/www/MS.dict                |  12 +
+ release/src/router/www/NL.dict                |  12 +
+ release/src/router/www/NO.dict                |  12 +
+ release/src/router/www/PL.dict                |  12 +
+ release/src/router/www/RO.dict                |  12 +
+ release/src/router/www/RU.dict                |  12 +
+ release/src/router/www/Reaper_Failover.asp    | 440 ++++++++++++++++++
+ release/src/router/www/SL.dict                |  12 +
+ release/src/router/www/SV.dict                |  12 +
+ release/src/router/www/TH.dict                |  12 +
+ release/src/router/www/TR.dict                |  12 +
+ release/src/router/www/TW.dict                |  12 +
+ release/src/router/www/UK.dict                |  12 +
+ .../router/www/require/menuTrees/menuTree.js  |   1 +
+ 29 files changed, 744 insertions(+), 180 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_Failover.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 7a0e7a7f89..f32ae510f6 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -297,6 +297,8 @@ static const char *reaper_native[] = {
+ 	"Reaper_Backup.asp",	/* v2.9.8: native Backup & Restore - replaces the stock
+ 				   Restore/Save/Upload page (SUP-redirected) and absorbs the
+ 				   retired Reaper_BackupCard.asp injected card */
++	"Reaper_Failover.asp",	/* v3.1.1: Failover tab (Administration) - the resolver health
++				   check + dnsmasq switches, moved off the System page */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 5134baa645..869f677fd9 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -830,14 +830,12 @@ function applyRule(){
+ 		else
+ 			document.form.dns_probe.value = "0";
+ 
+-		var rdhc_svc = rdhcApply();
+-
+ 		if(document.form.https_lanport.value != '<% nvram_get("https_lanport"); %>')
+ 			alert('<#Change_HttpsLanport_Hint#>');
+ 
+ 		showLoading();
+ 
+-		var action_script_tmp = "restart_time;restart_leds;" + rdhc_svc;
++		var action_script_tmp = "restart_time;restart_leds;";
+ 
+ 		if(hdspindown_support) {
+ 			var excluded = "";
+@@ -920,8 +918,6 @@ function applyRule(){
+ }
+ 
+ function validForm(){
+-	if(!rdhcValid())
+-		return false;
+ 	if(hdspindown_support && $("#usb_idle_enable_tr").css("display") != "none") {
+ 		if($('select[name="usb_idle_enable"]').val() == 1) {
+ 			$('input[name="usb_idle_timeout"]').prop("disabled", false);
+@@ -1844,97 +1840,6 @@ function appendMonitorOption(obj){
+ 	}
+ }
+ 
+-/* reaper v3.1.1: the resolver health check block (rc/rdnshc.c). Not the stock
+-   probe above: this one watches ONE named server and reorders the router's
+-   upstream list while it is silent. State string from the daemon:
+-   "up <s> <alive>" / "down <s> <alive>" / "off". */
+-var RDHC_ORIG = {
+-	enable: '<% nvram_get("reaper_dnshc_enable"); %>',
+-	target: '<% nvram_get("reaper_dnshc_target"); %>',
+-	name: '<% nvram_get("reaper_dnshc_name"); %>',
+-	interval: '<% nvram_get("reaper_dnshc_interval"); %>',
+-	timeout: '<% nvram_get("reaper_dnshc_timeout"); %>',
+-	fail: '<% nvram_get("reaper_dnshc_fail"); %>',
+-	recover: '<% nvram_get("reaper_dnshc_recover"); %>',
+-	strict: '<% nvram_get("reaper_dnshc_strict"); %>',
+-	dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
+-	ecs: '<% nvram_get("reaper_dns_ecs"); %>',
+-	nocache: '<% nvram_get("reaper_dns_nocache"); %>',
+-	state: '<% nvram_get("reaper_dnshc_state"); %>'
+-};
+-function rdhcToggle(){
+-	var on = document.form.reaper_dnshc_chk.checked;
+-	var rows = document.getElementsByClassName("rdhc_row");
+-	for(var i = 0; i < rows.length; i++) rows[i].style.display = on ? "" : "none";
+-}
+-function rdhcInit(){
+-	rdhcToggle();
+-	var el = document.getElementById("rdhc_state");
+-	if(!el) return;
+-	/* state and switch read from the row itself, so this renders even when the
+-	   stock script block above aborted before its variables were assigned */
+-	var st = (el.getAttribute("data-state") || "").split(" ");
+-	var txt;
+-	if(el.getAttribute("data-enable") != "1" || st[0] == "" || st[0] == "off") txt = `<#RDHC_13#>`;
+-	else if(st[0] == "down") txt = `<#RDHC_15#>` + " (" + (parseInt(st[1]) || 0) + " s)";
+-	else txt = `<#RDHC_14#>` + " (" + (parseInt(st[1]) || 0) + " s)";
+-	el.textContent = txt;
+-	if(st[0] == "down") el.style.color = "#E10600";
+-	/* dnsmasq keeps a minimum cache while it validates DNSSEC: say so */
+-	var dn = document.getElementById("rdhc_dnssec_note");
+-	if(dn && dn.getAttribute("data-dnssec") != "" && dn.getAttribute("data-dnssec") != "0") dn.style.display = "";
+-}
+-/* the address box: digits, hex letters, dots and colons (an IPv4 or an IPv6 spelling) */
+-function rdhcKey(o, event){
+-	var k = event.keyCode ? event.keyCode : event.which;
+-	if(validator.isFunctionButton(event)) return true;
+-	return (k > 47 && k < 58) || k == 46 || k == 58 || (k > 64 && k < 71) || (k > 96 && k < 103);
+-}
+-function rdhcValid(){
+-	if(!document.form.reaper_dnshc_chk.checked) return true;
+-	var t = document.form.reaper_dnshc_target;
+-	/* an IPv6 server is accepted only while IPv6 is enabled on the router (the
+-	   daemon applies the same rule and idles otherwise) */
+-	var v6el = document.getElementById("rdhc_v6_note");
+-	var v6on = !!(v6el && v6el.getAttribute("data-ipv6") != "" && v6el.getAttribute("data-ipv6") != "disabled");
+-	if(!validator.ipv4_addr(t.value) && !(v6on && validator.isLegal_ipv6(t, 1))){
+-		alert(t.value + " <#JS_validip#>" + ((!v6on && t.value.indexOf(":") >= 0) ? "\n" + `<#RDHC_27#>` : ""));
+-		t.focus();
+-		return false;
+-	}
+-	var n = document.form.reaper_dnshc_name;
+-	if(n.value == "" || !/^[A-Za-z0-9._-]+$/.test(n.value)){
+-		alert(`<#JS_fieldblank#>`);
+-		n.focus();
+-		return false;
+-	}
+-	if(!validator.range(document.form.reaper_dnshc_interval, 3, 300)) return false;
+-	if(!validator.range(document.form.reaper_dnshc_timeout, 200, 5000)) return false;
+-	if(!validator.range(document.form.reaper_dnshc_fail, 1, 10)) return false;
+-	if(!validator.range(document.form.reaper_dnshc_recover, 1, 10)) return false;
+-	return true;
+-}
+-/* returns the services to restart, "" when nothing of ours changed */
+-function rdhcApply(){
+-	var f = document.form, svc = "";
+-	f.reaper_dnshc_enable.value = f.reaper_dnshc_chk.checked ? "1" : "0";
+-	f.reaper_dnshc_strict.value = f.reaper_dnshc_strict_chk.checked ? "1" : "0";
+-	f.reaper_dns_strict.value = f.reaper_dns_strict_chk.checked ? "1" : "0";
+-	f.reaper_dns_ecs.value = f.reaper_dns_ecs_chk.checked ? "1" : "0";
+-	f.reaper_dns_nocache.value = f.reaper_dns_nocache_chk.checked ? "1" : "0";
+-	if(f.reaper_dnshc_enable.value != RDHC_ORIG.enable || f.reaper_dnshc_target.value != RDHC_ORIG.target
+-		|| f.reaper_dnshc_name.value != RDHC_ORIG.name || f.reaper_dnshc_interval.value != RDHC_ORIG.interval
+-		|| f.reaper_dnshc_timeout.value != RDHC_ORIG.timeout || f.reaper_dnshc_fail.value != RDHC_ORIG.fail
+-		|| f.reaper_dnshc_recover.value != RDHC_ORIG.recover || f.reaper_dnshc_strict.value != RDHC_ORIG.strict)
+-		svc += "restart_rdnshc;";
+-	if(f.reaper_dns_strict.value != RDHC_ORIG.dnsstrict || f.reaper_dns_ecs.value != RDHC_ORIG.ecs
+-		|| f.reaper_dns_nocache.value != RDHC_ORIG.nocache)
+-		svc += "restart_dnsmasq;";
+-	return svc;
+-}
+-/* own load hook: the stock initial() aborts on data it cannot get on a fresh
+-   or partly configured box, and this block must render regardless */
+-window.addEventListener("load", rdhcInit);
+ 
+ var isPingListOpen = 0;
+ function create_DNSlist_view(){
+@@ -2665,11 +2570,6 @@ function Get_Component_reboot_schedule_ui(config){
+ <input type="hidden" name="sw_mode" value="<% nvram_get("sw_mode"); %>">
+ <input type="hidden" name="ncb_enable" value="<% nvram_get("ncb_enable"); %>">
+ <input type="hidden" name="dns_probe" value="<% nvram_get("dns_probe"); %>">
+-<input type="hidden" name="reaper_dnshc_enable" value="<% nvram_get("reaper_dnshc_enable"); %>">
+-<input type="hidden" name="reaper_dnshc_strict" value="<% nvram_get("reaper_dnshc_strict"); %>">
+-<input type="hidden" name="reaper_dns_strict" value="<% nvram_get("reaper_dns_strict"); %>">
+-<input type="hidden" name="reaper_dns_ecs" value="<% nvram_get("reaper_dns_ecs"); %>">
+-<input type="hidden" name="reaper_dns_nocache" value="<% nvram_get("reaper_dns_nocache"); %>">
+ <input type="hidden" name="dns_probe_content" value="*">
+ <input type="hidden" name="wandog_enable" value="<% nvram_get("wandog_enable"); %>">
+ <table class="content" align="center" cellpadding="0" cellspacing="0">
+@@ -2940,85 +2840,6 @@ function Get_Component_reboot_schedule_ui(config){
+ 							<div id="TargetList_Block_PC" name="TargetList_Block_PC" class="clientlist_dropdown" style="margin-left: 2px; width: 348px;display: none;"></div>
+ 					</td>
+ 				</tr>
+-				<tr id="rdhc_head_tr">
+-					<th><#RDHC_1#></th>
+-					<td>
+-						<input type="checkbox" name="reaper_dnshc_chk" value="" <% nvram_match("reaper_dnshc_enable", "1", "checked"); %> onClick="rdhcToggle();"><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_3#></div>
+-						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_2#></div>
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_4#></th>
+-					<td>
+-						<input type="text" class="input_25_table" name="reaper_dnshc_target" maxlength="45" value="<% nvram_get("reaper_dnshc_target"); %>" placeholder="192.168.50.98" onKeyPress="return rdhcKey(this, event);" autocorrect="off" autocapitalize="off">
+-						<div style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7"><#RDHC_16#></div>
+-						<div id="rdhc_v6_note" style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7" data-ipv6="<% nvram_get("ipv6_service"); %>"><#RDHC_27#></div>
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_5#></th>
+-					<td>
+-						<input type="text" class="input_32_table" name="reaper_dnshc_name" maxlength="120" value="<% nvram_get("reaper_dnshc_name"); %>" onKeyPress="return validator.isString(this, event);" autocorrect="off" autocapitalize="off">
+-						<div style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7"><#RDHC_6#></div>
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_11#></th>
+-					<td>
+-						<input type="checkbox" name="reaper_dnshc_strict_chk" value="" <% nvram_match("reaper_dnshc_strict", "1", "checked"); %>>
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_7#></th>
+-					<td>
+-						<input type="text" class="input_6_table" name="reaper_dnshc_interval" maxlength="3" value="<% nvram_get("reaper_dnshc_interval"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (3-300)
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_8#></th>
+-					<td>
+-						<input type="text" class="input_6_table" name="reaper_dnshc_timeout" maxlength="4" value="<% nvram_get("reaper_dnshc_timeout"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (200-5000)
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_9#></th>
+-					<td>
+-						<input type="text" class="input_6_table" name="reaper_dnshc_fail" maxlength="2" value="<% nvram_get("reaper_dnshc_fail"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (1-10)
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_10#></th>
+-					<td>
+-						<input type="text" class="input_6_table" name="reaper_dnshc_recover" maxlength="2" value="<% nvram_get("reaper_dnshc_recover"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (1-10)
+-					</td>
+-				</tr>
+-				<tr class="rdhc_row" style="display:none;">
+-					<th><#RDHC_12#></th>
+-					<td><span id="rdhc_state" style="color:#ECE7DB" data-enable="<% nvram_get("reaper_dnshc_enable"); %>" data-state="<% nvram_get("reaper_dnshc_state"); %>"></span></td>
+-				</tr>
+-				<tr id="rdhc_strict_tr">
+-					<th><#RDHC_18#></th>
+-					<td>
+-						<input type="checkbox" name="reaper_dns_strict_chk" value="" <% nvram_match("reaper_dns_strict", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_19#></div>
+-						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_17#></div>
+-					</td>
+-				</tr>
+-				<tr id="rdhc_ecs_tr">
+-					<th><#RDHC_20#></th>
+-					<td>
+-						<input type="checkbox" name="reaper_dns_ecs_chk" value="" <% nvram_match("reaper_dns_ecs", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_21#></div>
+-						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_22#></div>
+-					</td>
+-				</tr>
+-				<tr id="rdhc_nocache_tr">
+-					<th><#RDHC_23#></th>
+-					<td>
+-						<input type="checkbox" name="reaper_dns_nocache_chk" value="" <% nvram_match("reaper_dns_nocache", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_24#></div>
+-						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_25#></div>
+-						<div id="rdhc_dnssec_note" style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85;display:none" data-dnssec="<% nvram_get("dnssec_enable"); %>"><#RDHC_26#></div>
+-					</td>
+-				</tr>
+-				<script>rdhcInit();</script>
+ 				<tr>
+ 					<th><#System_AutoLogout#></th>
+ 					<td>
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 5be8939525..ebc38710fb 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=O roteador normalmente guarda as respostas por um tempo. Com filtragem p
+ RDHC_26=A validação DNSSEC está ativa e o dnsmasq não inicia com um cache menor que o padrão enquanto valida. Com esta opção ativa o roteador mantém esse mínimo (150 entradas) em vez de nenhum.
+ RDEV_96=fabricante
+ RDHC_27=Um endereco IPv6 so e aceito aqui enquanto o IPv6 estiver ativado no roteador (Configuracoes avancadas, IPv6).
++RDHC_28=Failover
++RDHC_29=Mantenha a resolucao de nomes viva quando um servidor DNS silencia: vigie um servidor, afaste-o enquanto ele nao responde e coloque-o de volta quando responder.
++RDHC_30=Vigiar
++RDHC_31=Alternar
++RDHC_32=Restaurar
++RDHC_33=Uma consulta real ao servidor que voce indicar, a cada poucos segundos
++RDHC_34=Apos as falhas definidas, ele vai para o fim da lista de DNS
++RDHC_35=Apos os acertos definidos, ele volta a ser o primeiro
++RDHC_36=Aplicando: a verificacao e o resolvedor reiniciam com as novas configuracoes.
++RDHC_37=Desligado
++RDHC_38=Respondendo
++RDHC_39=Sem resposta
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 6f8262b710..1554f84c2d 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=路由器通常会将应答保留一段时间。上游按客户端过滤
+ RDHC_26=DNSSEC 验证已开启，验证期间 dnsmasq 不会以小于默认值的缓存启动。开启此开关后，路由器保留该最小缓存（150 条）而不是完全不缓存。
+ RDEV_96=厂商
+ RDHC_27=仅当路由器已启用 IPv6（高级设置 → IPv6）时，此处才接受 IPv6 地址。
++RDHC_28=故障切换
++RDHC_29=当某个 DNS 服务器无响应时保持名称解析可用：监视一台服务器，在它沉默时将其移开，恢复应答后再放回。
++RDHC_30=监视
++RDHC_31=切换
++RDHC_32=恢复
++RDHC_33=每隔几秒向你指定的服务器发送一次真实查询
++RDHC_34=达到设定的失败次数后，它被移到 DNS 列表末尾
++RDHC_35=达到设定的成功次数后，它被放回首位
++RDHC_36=正在应用：健康检查和解析器将以新设置重启。
++RDHC_37=关闭
++RDHC_38=有应答
++RDHC_39=无应答
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index bd0afb22f9..4e87499a83 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Router si odpovědi běžně chvíli pamatuje. Při filtrování podle k
+ RDHC_26=Ověřování DNSSEC je zapnuté a dnsmasq se při ověřování nespustí s mezipamětí menší než výchozí. S touto volbou router ponechá toto minimum (150 položek) místo žádné.
+ RDEV_96=vyrobce
+ RDHC_27=Adresa IPv6 je zde prijata jen tehdy, kdyz je na routeru zapnuto IPv6 (Rozsirena nastaveni, IPv6).
++RDHC_28=Failover
++RDHC_29=Udrzte preklad jmen v chodu, kdyz DNS server zmlkne: sledujte jeden server, odsunte ho, dokud neodpovida, a vratte ho, jakmile odpovi.
++RDHC_30=Sledovat
++RDHC_31=Prepnout
++RDHC_32=Obnovit
++RDHC_33=Skutecny dotaz na vami zadany server kazdych par sekund
++RDHC_34=Po nastavenem poctu selhani se presune na konec seznamu DNS
++RDHC_35=Po nastavenem poctu uspechu se vrati na prvni misto
++RDHC_36=Probiha pouziti: kontrola a resolver se restartuji s novym nastavenim.
++RDHC_37=Vypnuto
++RDHC_38=Odpovida
++RDHC_39=Neodpovida
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 72fa0b7e36..d393b00709 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Routeren gemmer normalt svar et stykke tid. Med filtrering pr. klient op
+ RDHC_26=DNSSEC-validering er slået til, og dnsmasq starter ikke med en cache mindre end standard, mens den validerer. Med denne indstilling beholder routeren det minimum (150 poster) i stedet for ingen.
+ RDEV_96=producent
+ RDHC_27=En IPv6-adresse accepteres her kun, mens IPv6 er slaet til pa routeren (Avancerede indstillinger, IPv6).
++RDHC_28=Failover
++RDHC_29=Hold navneoploesning i live, naar en DNS-server tier: overvaag en server, flyt den til side mens den er tavs, og saet den tilbage naar den svarer.
++RDHC_30=Overvaag
++RDHC_31=Skift over
++RDHC_32=Gendan
++RDHC_33=En rigtig forespoergsel til den server du angiver, med faa sekunders mellemrum
++RDHC_34=Efter det antal fejl du saetter flyttes den bagest i DNS-listen
++RDHC_35=Efter det antal svar du saetter saettes den forrest igen
++RDHC_36=Anvender: sundhedstjekket og resolveren genstarter med de nye indstillinger.
++RDHC_37=Fra
++RDHC_38=Svarer
++RDHC_39=Svarer ikke
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4196ed2912..66479766c2 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Der Router behält Antworten normalerweise eine Weile. Bei Filterung pro
+ RDHC_26=Die DNSSEC-Validierung ist aktiv, und dnsmasq startet beim Validieren nicht mit einem Cache unter seinem Standard. Mit diesem Schalter behält der Router dieses Minimum (150 Einträge) statt keinem Cache.
+ RDEV_96=Hersteller
+ RDHC_27=Eine IPv6-Adresse wird hier nur akzeptiert, solange IPv6 auf dem Router aktiviert ist (Erweiterte Einstellungen, IPv6).
++RDHC_28=Failover
++RDHC_29=Namensaufloesung am Leben halten, wenn ein DNS-Server verstummt: einen Server beobachten, ihn beiseite stellen, solange er schweigt, und zurueckholen, sobald er antwortet.
++RDHC_30=Beobachten
++RDHC_31=Umschalten
++RDHC_32=Wiederherstellen
++RDHC_33=Eine echte Anfrage an den angegebenen Server, alle paar Sekunden
++RDHC_34=Nach der eingestellten Zahl an Fehlversuchen rueckt er ans Ende der DNS-Liste
++RDHC_35=Nach der eingestellten Zahl an Treffern steht er wieder an erster Stelle
++RDHC_36=Wird angewendet: Pruefung und Resolver starten mit den neuen Einstellungen neu.
++RDHC_37=Aus
++RDHC_38=Antwortet
++RDHC_39=Antwortet nicht
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f2ece7e11a..420f987e0c 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=The router normally keeps answers for a while. With per-client filtering
+ RDHC_26=DNSSEC validation is on, and dnsmasq will not start with a cache smaller than its default while validating. With this switch on the router keeps that minimum (150 entries) instead of none.
+ RDEV_96=vendor
+ RDHC_27=An IPv6 address is accepted here only while IPv6 is enabled on the router (Advanced Settings, IPv6).
++RDHC_28=Failover
++RDHC_29=Keep name resolution alive when a DNS server goes quiet: watch one server, move it aside while it is silent, put it back when it answers.
++RDHC_30=Watch
++RDHC_31=Fail over
++RDHC_32=Restore
++RDHC_33=A real query to the server you name, every few seconds
++RDHC_34=After the misses you set, it moves to the end of the DNS list
++RDHC_35=After the hits you set, it is put back first
++RDHC_36=Applying: the health check and the resolver restart with the new settings.
++RDHC_37=Off
++RDHC_38=Answering
++RDHC_39=Not answering
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index e1abfc5296..9ed9fcb149 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=El router normalmente guarda las respuestas un tiempo. Con filtrado por
+ RDHC_26=La validación DNSSEC está activada y dnsmasq no arranca con una caché menor que la predeterminada mientras valida. Con este interruptor activado el router conserva ese mínimo (150 entradas) en lugar de ninguna.
+ RDEV_96=fabricante
+ RDHC_27=Aqui solo se acepta una direccion IPv6 mientras IPv6 este activado en el router (Configuracion avanzada, IPv6).
++RDHC_28=Failover
++RDHC_29=Mantenga la resolucion de nombres viva cuando un servidor DNS deja de responder: vigile un servidor, apartelo mientras calla y devuelvalo cuando responda.
++RDHC_30=Vigilar
++RDHC_31=Conmutar
++RDHC_32=Restaurar
++RDHC_33=Una consulta real al servidor que indique, cada pocos segundos
++RDHC_34=Tras los fallos que fije, pasa al final de la lista DNS
++RDHC_35=Tras los aciertos que fije, vuelve a ser el primero
++RDHC_36=Aplicando: la comprobacion y el resolvedor se reinician con los nuevos ajustes.
++RDHC_37=Apagado
++RDHC_38=Responde
++RDHC_39=No responde
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 62e0e580b5..e10a66a94c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Reititin säilyttää vastauksia normaalisti jonkin aikaa. Kun suodatus
+ RDHC_26=DNSSEC-vahvistus on päällä, eikä dnsmasq käynnisty oletusta pienemmällä välimuistilla vahvistaessaan. Tämä kytkin päällä reititin pitää tuon vähimmäismäärän (150 merkintää) sen sijaan, ettei välimuistia olisi.
+ RDEV_96=valmistaja
+ RDHC_27=IPv6-osoite hyvaksytaan tassa vain, kun IPv6 on kaytossa reitittimessa (Lisaasetukset, IPv6).
++RDHC_28=Failover
++RDHC_29=Pida nimenselvitys elossa, kun DNS-palvelin vaikenee: valvo yhta palvelinta, siirra se syrjaan sen ollessa hiljaa ja palauta se, kun se vastaa.
++RDHC_30=Valvo
++RDHC_31=Vaihda
++RDHC_32=Palauta
++RDHC_33=Oikea kysely nimeamallesi palvelimelle muutaman sekunnin valein
++RDHC_34=Asettamiesi epaonnistumisten jalkeen se siirtyy DNS-luettelon loppuun
++RDHC_35=Asettamiesi onnistumisten jalkeen se palautetaan ensimmaiseksi
++RDHC_36=Otetaan kayttoon: tarkistus ja selvitin kaynnistyvat uusilla asetuksilla.
++RDHC_37=Pois
++RDHC_38=Vastaa
++RDHC_39=Ei vastaa
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e2f095b794..758180b4cf 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Le routeur conserve normalement les réponses un moment. Avec un filtrag
+ RDHC_26=La validation DNSSEC est active et dnsmasq ne démarre pas avec un cache inférieur à sa valeur par défaut pendant qu’il valide. Avec cet interrupteur, le routeur garde ce minimum (150 entrées) au lieu d’aucun cache.
+ RDEV_96=fabricant
+ RDHC_27=Une adresse IPv6 est acceptee ici uniquement lorsque IPv6 est active sur le routeur (Parametres avances, IPv6).
++RDHC_28=Basculement
++RDHC_29=Gardez la resolution de noms en vie quand un serveur DNS se tait : surveillez un serveur, ecartez-le tant que le silence dure et remettez-le en place des que la reponse revient.
++RDHC_30=Surveiller
++RDHC_31=Basculer
++RDHC_32=Retablir
++RDHC_33=Une vraie requete vers le serveur indique, toutes les quelques secondes
++RDHC_34=Apres le nombre de rates fixe, il passe en fin de liste DNS
++RDHC_35=Apres le nombre de reponses fixe, il repasse en tete
++RDHC_36=Application en cours : la verification et le resolveur redemarrent avec les nouveaux reglages.
++RDHC_37=Arret
++RDHC_38=Repond
++RDHC_39=Ne repond pas
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 8977cc2906..421380fe3c 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=A router általában egy ideig megőrzi a válaszokat. Ügyfelenkénti s
+ RDHC_26=A DNSSEC-ellenőrzés be van kapcsolva, és a dnsmasq ellenőrzés közben nem indul el az alapértelmezettnél kisebb gyorsítótárral. Ezzel a kapcsolóval a router ezt a minimumot (150 bejegyzés) tartja meg a semmi helyett.
+ RDEV_96=gyarto
+ RDHC_27=IPv6-cim itt csak akkor fogadhato el, amig az IPv6 be van kapcsolva a routeren (Specialis beallitasok, IPv6).
++RDHC_28=Atallas
++RDHC_29=Tartsa eletben a nevfeloldast, ha egy DNS-kiszolgalo elhallgat: figyeljen egy kiszolgalot, tegye felre, amig hallgat, es tegye vissza, amint valaszol.
++RDHC_30=Figyeles
++RDHC_31=Atallas
++RDHC_32=Visszaallitas
++RDHC_33=Valodi lekerdezes a megadott kiszolgalohoz nehany masodpercenkent
++RDHC_34=A beallitott szamu hiba utan a DNS-lista vegere kerul
++RDHC_35=A beallitott szamu talalat utan ismet az elso lesz
++RDHC_36=Alkalmazas: az ellenorzes es a feloldo az uj beallitasokkal ujraindul.
++RDHC_37=Ki
++RDHC_38=Valaszol
++RDHC_39=Nem valaszol
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 9ffc106bf0..e2eebf642f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Il router normalmente conserva le risposte per un po'. Con il filtraggio
+ RDHC_26=La convalida DNSSEC è attiva e dnsmasq non si avvia con una cache inferiore a quella predefinita mentre convalida. Con questo interruttore attivo il router mantiene quel minimo (150 voci) invece di nessuna cache.
+ RDEV_96=produttore
+ RDHC_27=Un indirizzo IPv6 viene accettato qui solo finche IPv6 e attivo sul router (Impostazioni avanzate, IPv6).
++RDHC_28=Failover
++RDHC_29=Mantieni viva la risoluzione dei nomi quando un server DNS tace: osserva un server, mettilo da parte finche tace e rimettilo al suo posto appena risponde.
++RDHC_30=Osserva
++RDHC_31=Commuta
++RDHC_32=Ripristina
++RDHC_33=Una vera interrogazione al server indicato, ogni pochi secondi
++RDHC_34=Dopo i mancati riscontri impostati passa in fondo alla lista DNS
++RDHC_35=Dopo le risposte impostate torna al primo posto
++RDHC_36=Applicazione in corso: il controllo e il resolver ripartono con le nuove impostazioni.
++RDHC_37=Spento
++RDHC_38=Risponde
++RDHC_39=Non risponde
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index f2c3a8a265..45790da6a3 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=ルーターは通常、応答をしばらく保持します。上流で
+ RDHC_26=DNSSEC 検証が有効で、dnsmasq は検証中に既定値より小さいキャッシュでは起動しません。このスイッチをオンにすると、ルーターはキャッシュなしではなく最小値（150 件）を保持します。
+ RDEV_96=メーカー
+ RDHC_27=IPv6 アドレスは、ルーターで IPv6 が有効な間のみここで受け付けられます（詳細設定 → IPv6）。
++RDHC_28=フェイルオーバー
++RDHC_29=DNS サーバーが応答しなくなっても名前解決を止めない：1 台のサーバーを監視し、沈黙している間は後ろへ回し、応答が戻ればもとの位置に戻します。
++RDHC_30=監視
++RDHC_31=切り替え
++RDHC_32=復帰
++RDHC_33=指定したサーバーへ数秒ごとに実際の問い合わせを送ります
++RDHC_34=設定した失敗回数に達すると DNS リストの末尾へ移動します
++RDHC_35=設定した成功回数に達すると先頭に戻します
++RDHC_36=適用中：ヘルスチェックとリゾルバーが新しい設定で再起動します。
++RDHC_37=オフ
++RDHC_38=応答あり
++RDHC_39=応答なし
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index d24deff3a3..d157bdbb43 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=공유기는 보통 응답을 잠시 보관합니다. 상위에서 클
+ RDHC_26=DNSSEC 검증이 켜져 있으며, dnsmasq는 검증 중에 기본값보다 작은 캐시로는 시작하지 않습니다. 이 스위치를 켜면 공유기는 캐시 없음 대신 최소값(150개)을 유지합니다.
+ RDEV_96=제조사
+ RDHC_27=IPv6 주소는 라우터에서 IPv6가 활성화된 동안에만 여기에 입력할 수 있습니다(고급 설정 → IPv6).
++RDHC_28=장애 조치
++RDHC_29=DNS 서버가 응답하지 않아도 이름 확인을 유지합니다: 서버 하나를 감시하고, 응답이 없는 동안 뒤로 미루었다가, 다시 응답하면 제자리로 되돌립니다.
++RDHC_30=감시
++RDHC_31=전환
++RDHC_32=복구
++RDHC_33=지정한 서버로 몇 초마다 실제 질의를 보냅니다
++RDHC_34=설정한 실패 횟수에 이르면 DNS 목록의 끝으로 이동합니다
++RDHC_35=설정한 성공 횟수에 이르면 다시 첫 번째로 되돌립니다
++RDHC_36=적용 중: 상태 검사와 리졸버가 새 설정으로 다시 시작됩니다.
++RDHC_37=꺼짐
++RDHC_38=응답함
++RDHC_39=응답 없음
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index ec04a8c6e0..93a8942b76 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Penghala biasanya menyimpan jawapan seketika. Dengan penapisan mengikut
+ RDHC_26=Pengesahan DNSSEC dihidupkan dan dnsmasq tidak akan bermula dengan cache lebih kecil daripada lalai semasa mengesahkan. Dengan suis ini dihidupkan penghala mengekalkan minimum itu (150 entri) dan bukannya tiada.
+ RDEV_96=pengeluar
+ RDHC_27=Alamat IPv6 hanya diterima di sini semasa IPv6 diaktifkan pada penghala (Tetapan lanjutan, IPv6).
++RDHC_28=Failover
++RDHC_29=Kekalkan resolusi nama apabila pelayan DNS senyap: pantau satu pelayan, ketepikannya selagi ia senyap dan kembalikannya apabila ia menjawab.
++RDHC_30=Pantau
++RDHC_31=Tukar
++RDHC_32=Pulihkan
++RDHC_33=Pertanyaan sebenar ke pelayan yang anda namakan, setiap beberapa saat
++RDHC_34=Selepas bilangan kegagalan yang ditetapkan, ia dipindahkan ke hujung senarai DNS
++RDHC_35=Selepas bilangan jawapan yang ditetapkan, ia dikembalikan ke tempat pertama
++RDHC_36=Menggunakan: semakan kesihatan dan penyelesai dimulakan semula dengan tetapan baharu.
++RDHC_37=Mati
++RDHC_38=Menjawab
++RDHC_39=Tidak menjawab
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 92e200751d..9817e18419 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=De router bewaart antwoorden normaal een tijdje. Bij filtering per clien
+ RDHC_26=DNSSEC-validatie staat aan en dnsmasq start tijdens het valideren niet met een cache kleiner dan de standaard. Met deze schakelaar aan houdt de router dat minimum (150 items) in plaats van geen cache.
+ RDEV_96=fabrikant
+ RDHC_27=Een IPv6-adres wordt hier alleen geaccepteerd zolang IPv6 op de router is ingeschakeld (Geavanceerde instellingen, IPv6).
++RDHC_28=Failover
++RDHC_29=Houd naamomzetting in leven als een DNS-server zwijgt: bewaak een server, zet hem opzij zolang hij zwijgt en zet hem terug zodra hij antwoordt.
++RDHC_30=Bewaken
++RDHC_31=Overschakelen
++RDHC_32=Herstellen
++RDHC_33=Een echte query naar de opgegeven server, om de paar seconden
++RDHC_34=Na het ingestelde aantal missers gaat hij naar het einde van de DNS-lijst
++RDHC_35=Na het ingestelde aantal antwoorden staat hij weer vooraan
++RDHC_36=Toepassen: de controle en de resolver herstarten met de nieuwe instellingen.
++RDHC_37=Uit
++RDHC_38=Antwoordt
++RDHC_39=Antwoordt niet
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 6e51d02fe6..a35f562d22 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Ruteren beholder normalt svar en stund. Med filtrering per klient oppstr
+ RDHC_26=DNSSEC-validering er på, og dnsmasq starter ikke med en hurtigbuffer mindre enn standard mens den validerer. Med denne bryteren på beholder ruteren det minimumet (150 oppføringer) i stedet for ingen.
+ RDEV_96=produsent
+ RDHC_27=En IPv6-adresse godtas her bare mens IPv6 er slatt pa i ruteren (Avanserte innstillinger, IPv6).
++RDHC_28=Failover
++RDHC_29=Hold navneoppslag i live naar en DNS-server blir stille: overvaak en server, sett den til side mens den tier, og sett den tilbake naar den svarer.
++RDHC_30=Overvaak
++RDHC_31=Bytt over
++RDHC_32=Gjenopprett
++RDHC_33=En ekte sporring til serveren du oppgir, med noen sekunders mellomrom
++RDHC_34=Etter antallet bom du setter flyttes den bakerst i DNS-listen
++RDHC_35=Etter antallet treff du setter settes den forst igjen
++RDHC_36=Tar i bruk: helsesjekken og resolveren starter paa nytt med de nye innstillingene.
++RDHC_37=Av
++RDHC_38=Svarer
++RDHC_39=Svarer ikke
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 08f55f89ad..c467f5c9c9 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Router zwykle przechowuje odpowiedzi przez pewien czas. Przy filtrowaniu
+ RDHC_26=Walidacja DNSSEC jest włączona, a dnsmasq nie uruchomi się z buforem mniejszym niż domyślny podczas walidacji. Z tym przełącznikiem router zachowuje to minimum (150 wpisów) zamiast braku bufora.
+ RDEV_96=producent
+ RDHC_27=Adres IPv6 jest tu akceptowany tylko wtedy, gdy IPv6 jest wlaczone w routerze (Ustawienia zaawansowane, IPv6).
++RDHC_28=Failover
++RDHC_29=Utrzymuj rozwiazywanie nazw, gdy serwer DNS milknie: obserwuj jeden serwer, odsun go, dopoki milczy, i przywroc, gdy odpowie.
++RDHC_30=Obserwuj
++RDHC_31=Przelacz
++RDHC_32=Przywroc
++RDHC_33=Prawdziwe zapytanie do wskazanego serwera co kilka sekund
++RDHC_34=Po ustawionej liczbie niepowodzen trafia na koniec listy DNS
++RDHC_35=Po ustawionej liczbie odpowiedzi wraca na pierwsze miejsce
++RDHC_36=Stosowanie: kontrola i resolver uruchamiaja sie ponownie z nowymi ustawieniami.
++RDHC_37=Wyl.
++RDHC_38=Odpowiada
++RDHC_39=Nie odpowiada
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 541d795d7b..6f680b304b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Routerul păstrează în mod normal răspunsurile o vreme. Cu filtrare p
+ RDHC_26=Validarea DNSSEC este pornită, iar dnsmasq nu pornește cu un cache mai mic decât cel implicit în timp ce validează. Cu acest comutator pornit routerul păstrează acel minim (150 de intrări) în loc de niciunul.
+ RDEV_96=producator
+ RDHC_27=O adresa IPv6 este acceptata aici doar cat timp IPv6 este activat pe router (Setari avansate, IPv6).
++RDHC_28=Failover
++RDHC_29=Pastrati rezolvarea numelor cand un server DNS tace: urmariti un server, dati-l deoparte cat timp tace si puneti-l la loc cand raspunde.
++RDHC_30=Urmarire
++RDHC_31=Comutare
++RDHC_32=Restaurare
++RDHC_33=O interogare reala catre serverul indicat, la cateva secunde
++RDHC_34=Dupa numarul de ratari setat, trece la sfarsitul listei DNS
++RDHC_35=Dupa numarul de raspunsuri setat, revine pe primul loc
++RDHC_36=Se aplica: verificarea si resolverul repornesc cu noile setari.
++RDHC_37=Oprit
++RDHC_38=Raspunde
++RDHC_39=Nu raspunde
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index f87802e14d..9cd78aa757 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Обычно роутер хранит ответы некоторое 
+ RDHC_26=Проверка DNSSEC включена, и dnsmasq не запускается с кэшем меньше значения по умолчанию во время проверки. С этим переключателем роутер сохраняет этот минимум (150 записей) вместо отсутствия кэша.
+ RDEV_96=производитель
+ RDHC_27=Адрес IPv6 принимается здесь только пока IPv6 включён на маршрутизаторе (Дополнительные настройки, IPv6).
++RDHC_28=Отказоустойчивость
++RDHC_29=Сохраняйте разрешение имён, когда DNS-сервер замолкает: следите за одним сервером, отодвигайте его, пока он молчит, и возвращайте, как только он отвечает.
++RDHC_30=Наблюдение
++RDHC_31=Переключение
++RDHC_32=Восстановление
++RDHC_33=Настоящий запрос к указанному серверу каждые несколько секунд
++RDHC_34=После заданного числа промахов он уходит в конец списка DNS
++RDHC_35=После заданного числа ответов он снова первый
++RDHC_36=Применение: проверка и резолвер перезапускаются с новыми настройками.
++RDHC_37=Выкл.
++RDHC_38=Отвечает
++RDHC_39=Не отвечает
+diff --git a/release/src/router/www/Reaper_Failover.asp b/release/src/router/www/Reaper_Failover.asp
+new file mode 100644
+index 0000000000..3e1fdb25f7
+--- /dev/null
++++ b/release/src/router/www/Reaper_Failover.asp
+@@ -0,0 +1,440 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v3.1.1 (owner request 2026-09-07): the Failover tab of the
++     Administration group. Holds what shipped a day earlier as a block on the
++     System page - the resolver health check (rc/rdnshc.c) and the three
++     dnsmasq switches (strict upstream order, EDNS Client Subnet, no router
++     cache) - on its own native page: a live state strip that ARMS while the
++     watched server is down, the check's fields in one card, one card per
++     dnsmasq switch, one Apply. Settings go through the stock apply flow
++     (start_apply.htm in a hidden frame, action_script restart_rdnshc and/or
++     restart_dnsmasq); the live state is read every few seconds from the
++     daemon's nvram string "up <s> <alive>" / "down <s> <alive>" / "off". -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RDHC_28#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --panel-3:#1a1a1f;
++  --line-soft:rgba(255,255,255,.07); --line-crimson:rgba(225,6,0,.34);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{color:var(--bone-dim);font-family:var(--body);font-size:13.5px;line-height:1.55;padding:22px 24px 60px;position:relative}
++body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
++  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E")}
++body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
++  background:radial-gradient(120% 90% at 50% 0%,transparent 55%,rgba(0,0,0,.5) 100%)}
++.page{position:relative;z-index:1;max-width:1180px;min-width:0}
++
++/* ---------- identity ---------- */
++.idrow{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
++.sig{width:52px;height:52px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
++  border:1px solid var(--line-crimson);border-radius:12px;background:
++  radial-gradient(80% 80% at 30% 20%,rgba(225,6,0,.16),transparent 70%),var(--panel)}
++.sig svg{width:34px;height:34px}
++.sig .bl{fill:var(--crimson)} .sig .sh{stroke:var(--bone);stroke-width:6;stroke-linecap:round;fill:none}
++.idtxt{min-width:0;flex:1 1 380px}
++.idtxt h1{font-family:var(--hdr);font-weight:700;font-size:26px;letter-spacing:.05em;color:var(--bone);text-transform:uppercase}
++.idtxt .sub{font-size:12.3px;color:var(--steel);margin-top:2px;max-width:78ch}
++.idchips{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
++.chip{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
++  color:var(--bone-dim);border:1px solid var(--line-soft);border-radius:6px;padding:5px 10px;background:var(--panel);
++  font-variant-numeric:tabular-nums;white-space:nowrap;display:inline-flex;align-items:center;gap:7px;max-width:100%}
++.chip b{color:var(--bone);font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:26ch}
++.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--steel);flex:0 0 auto}
++.chip.up .dot{background:var(--jade);box-shadow:0 0 0 0 rgba(79,178,134,.5);animation:pulse 2s ease-out infinite}
++.chip.down{border-color:var(--line-crimson)}
++.chip.down .dot{background:var(--crimson);box-shadow:0 0 0 0 rgba(225,6,0,.6);animation:pulse 1.1s ease-out infinite}
++@keyframes pulse{0%{box-shadow:0 0 0 0 currentColor}70%{box-shadow:0 0 0 7px rgba(0,0,0,0)}100%{box-shadow:0 0 0 0 rgba(0,0,0,0)}}
++.chip.up .dot{color:rgba(79,178,134,.45)} .chip.down .dot{color:rgba(225,6,0,.5)}
++@media (prefers-reduced-motion:reduce){.chip .dot{animation:none!important}}
++.helpq{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
++  border:1px solid #4a4a4e;color:#8d897f;font:700 12px var(--body);text-decoration:none;vertical-align:2px;margin-left:10px}
++.helpq:hover{border-color:var(--crimson);color:var(--bone)}
++
++/* ---------- watch / fail over / restore strip ---------- */
++.life{display:flex;align-items:stretch;margin:22px 0 18px;border:1px solid var(--line-soft);
++  border-radius:12px;background:var(--panel);overflow:hidden}
++.lstep{flex:1 1 0;display:flex;gap:13px;align-items:center;padding:12px 18px;position:relative;min-width:0}
++.lstep + .lstep{border-left:1px solid var(--line-soft)}
++.lstep .n{font-family:var(--hdr);font-weight:700;font-size:21px;color:#2c2c31;line-height:1;font-variant-numeric:tabular-nums}
++.lstep .t{min-width:0}
++.lstep .k{font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone-dim);white-space:nowrap}
++.lstep .d{display:block;font-size:11px;color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.lstep.live .n{color:var(--jade)} .lstep.live .k{color:var(--bone)}
++.lstep.armed{background:linear-gradient(180deg,rgba(225,6,0,.12),rgba(225,6,0,.03))}
++.lstep.armed .n{color:var(--crimson)} .lstep.armed .k{color:var(--bone)}
++.lstep.armed::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--crimson);
++  animation:arm 1.6s ease-in-out infinite alternate}
++@keyframes arm{from{opacity:.45}to{opacity:1}}
++@media (prefers-reduced-motion:reduce){.lstep.armed::after{animation:none}}
++@media (max-width:760px){.lstep .d{display:none}}
++
++/* ---------- cards ---------- */
++.tier{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
++  color:var(--steel);display:flex;align-items:center;gap:12px;margin:24px 0 12px}
++.tier::after{content:"";flex:1;height:1px;background:var(--line-soft)}
++.card{position:relative;background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;
++  padding:18px 20px;display:flex;flex-direction:column;min-width:0}
++.card.hero{border-color:var(--line-crimson);
++  background:radial-gradient(90% 120% at 8% 0%,rgba(225,6,0,.10),transparent 55%),var(--panel)}
++.card.hero::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:3px;background:var(--crimson)}
++.chead{display:flex;align-items:center;gap:13px;margin-bottom:4px}
++.cico{width:38px;height:38px;flex:0 0 auto;border-radius:10px;border:1px solid var(--line-soft);
++  background:var(--panel-2);display:flex;align-items:center;justify-content:center}
++.cico svg{width:20px;height:20px;stroke:var(--bone-dim);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
++.card.hero .cico{border-color:var(--line-crimson)} .card.hero .cico svg{stroke:var(--crimson)}
++.card h2{font-family:var(--hdr);font-weight:700;font-size:17px;letter-spacing:.04em;color:var(--bone);min-width:0}
++.chead .sw{margin-left:auto}
++.card p{font-size:12.3px;line-height:1.6;color:var(--bone-dim);margin:10px 0 0;max-width:72ch}
++.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
++@media (max-width:980px){.grid3{grid-template-columns:1fr}}
++
++/* toggle switch: neutral grey, never crimson (rule 11) */
++.sw{position:relative;display:inline-flex;align-items:center;gap:10px;cursor:pointer;flex:0 0 auto;user-select:none}
++.sw input{position:absolute;opacity:0;width:0;height:0}
++.sw .tr{width:40px;height:22px;border-radius:22px;background:#26262b;border:1px solid #3a3a3e;position:relative;transition:background .15s,border-color .15s}
++.sw .tr::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8d897f;transition:left .15s,background .15s}
++.sw input:checked ~ .tr{background:#4a4f55;border-color:#71767b}
++.sw input:checked ~ .tr::after{left:20px;background:var(--bone)}
++.sw input:focus-visible ~ .tr{outline:2px solid var(--bone);outline-offset:2px}
++.sw .lb{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim)}
++
++/* the check's fields */
++.fields{display:grid;grid-template-columns:1fr 1fr;gap:12px 22px;margin-top:16px}
++@media (max-width:820px){.fields{grid-template-columns:1fr}}
++.fld{display:block;min-width:0}
++.fld.wide{grid-column:1 / -1}
++.fld .l{display:block;font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:5px}
++.fld input[type=text]{display:block;width:100%;padding:9px 11px;background:#0b0b0d;border:1px solid #3a3a3e;border-radius:7px;color:var(--bone);
++  font:600 13.5px var(--body);letter-spacing:.03em;font-variant-numeric:tabular-nums}
++.fld input[type=text]:focus{outline:none;border-color:var(--crimson-deep)}
++.fld.num input[type=text]{max-width:120px;display:inline-block}
++.fld .rng{font-size:11px;color:var(--steel);margin-left:10px;font-variant-numeric:tabular-nums}
++.fld .note{font-size:11px;color:var(--steel);line-height:1.5;margin-top:6px;max-width:70ch}
++.fld.chk{display:flex;align-items:center;gap:10px;padding-top:24px}
++.fld.chk .l{margin:0}
++.off .fields,.off .stline{opacity:.35;pointer-events:none}
++
++/* live status line */
++.stline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px;padding:12px 14px;border-radius:10px;
++  border:1px solid var(--line-soft);background:var(--panel-2)}
++.stline .k{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.stline .v{color:var(--bone);font-size:12.5px}
++.stline .v.down{color:var(--crimson)}
++.stline .held{margin-left:auto;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);font-variant-numeric:tabular-nums}
++
++/* apply bar */
++.bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:22px;padding:14px 16px;border:1px solid var(--line-soft);
++  border-radius:12px;background:var(--panel)}
++.bar .msg{font-size:12px;color:var(--steel);flex:1 1 300px}
++.bar .msg.err{color:var(--danger)}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:11.5px;
++  border-radius:8px;padding:9px 18px;cursor:pointer;border:1px solid rgba(255,255,255,.16);
++  background:transparent;color:var(--bone-dim);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
++.btn:hover{color:var(--bone);border-color:var(--crimson-deep)}
++.btn:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
++.btn.hot{background:var(--crimson-deep);border-color:var(--crimson-deep);color:var(--bone);margin-left:auto}
++.btn.hot:hover{background:var(--crimson);box-shadow:0 0 18px rgba(225,6,0,.25)}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
++
++/* overlay (rule 35 class) */
++.ovl{display:none;position:fixed;inset:0;z-index:1000;background:rgba(4,4,5,.88);align-items:center;justify-content:center;text-align:center}
++.ovl.on{display:flex}
++.ovl .box{max-width:520px;padding:28px 30px}
++.ovl .t{font-family:var(--hdr);font-weight:700;font-size:19px;color:var(--bone);margin-bottom:10px}
++.ovl .s{font-size:12.5px;color:var(--bone-dim);line-height:1.6}
++.ovl .beat{margin:16px auto 0;width:44px;height:4px;border-radius:3px;background:#1c1c21;overflow:hidden}
++.ovl .beat i{display:block;height:100%;width:40%;background:var(--crimson);animation:rb 1.1s infinite linear}
++@keyframes rb{0%{margin-left:-40%}100%{margin-left:100%}}
++@media (prefers-reduced-motion:reduce){.ovl .beat i{animation:none}}
++</style>
++</head>
++<body>
++<div class="page">
++
++<div class="idrow">
++  <div class="sig" aria-hidden="true">
++    <svg viewBox="0 0 64 64"><path class="bl" d="M16 26 A 26 26 0 0 1 52 20 A 19 19 0 0 0 22 32 Z"/><path class="sh" d="M20 29 L34 52"/></svg>
++  </div>
++  <div class="idtxt">
++    <h1><#RDHC_28#><a class="helpq" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#414a-resolver-health-check-administration--failover-v311" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>">?</a></h1>
++    <div class="sub"><#RDHC_29#></div>
++  </div>
++  <div class="idchips">
++    <span class="chip" id="chip_state"><i class="dot"></i><b id="chip_state_v">&mdash;</b></span>
++    <span class="chip" id="chip_target">DNS <b id="chip_target_v">&mdash;</b></span>
++  </div>
++</div>
++
++<div class="life" role="list">
++  <div class="lstep" id="ls1" role="listitem">
++    <span class="n">01</span>
++    <span class="t"><span class="k"><#RDHC_30#></span><span class="d"><#RDHC_33#></span></span>
++  </div>
++  <div class="lstep" id="ls2" role="listitem">
++    <span class="n">02</span>
++    <span class="t"><span class="k"><#RDHC_31#></span><span class="d"><#RDHC_34#></span></span>
++  </div>
++  <div class="lstep" id="ls3" role="listitem">
++    <span class="n">03</span>
++    <span class="t"><span class="k"><#RDHC_32#></span><span class="d"><#RDHC_35#></span></span>
++  </div>
++</div>
++
++<div class="tier"><#RDHC_1#></div>
++<div class="card hero" id="hc">
++  <div class="chead">
++    <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 3-8 2 2h4"/></svg></span>
++    <h2><#RDHC_3#></h2>
++    <label class="sw"><input type="checkbox" id="en" <% nvram_match("reaper_dnshc_enable", "1", "checked"); %>><span class="tr"></span></label>
++  </div>
++  <p><#RDHC_2#></p>
++  <div class="fields">
++    <label class="fld">
++      <span class="l"><#RDHC_4#></span>
++      <input type="text" id="target" maxlength="45" value="<% nvram_get("reaper_dnshc_target"); %>" placeholder="192.168.50.98" autocorrect="off" autocapitalize="off" spellcheck="false">
++      <span class="note"><#RDHC_16#></span>
++      <span class="note" id="v6note"><#RDHC_27#></span>
++    </label>
++    <label class="fld">
++      <span class="l"><#RDHC_5#></span>
++      <input type="text" id="qname" maxlength="120" value="<% nvram_get("reaper_dnshc_name"); %>" autocorrect="off" autocapitalize="off" spellcheck="false">
++      <span class="note"><#RDHC_6#></span>
++    </label>
++    <label class="fld num">
++      <span class="l"><#RDHC_7#></span>
++      <input type="text" id="interval" maxlength="3" inputmode="numeric" value="<% nvram_get("reaper_dnshc_interval"); %>"><span class="rng">3&ndash;300</span>
++    </label>
++    <label class="fld num">
++      <span class="l"><#RDHC_8#></span>
++      <input type="text" id="timeout" maxlength="4" inputmode="numeric" value="<% nvram_get("reaper_dnshc_timeout"); %>"><span class="rng">200&ndash;5000</span>
++    </label>
++    <label class="fld num">
++      <span class="l"><#RDHC_9#></span>
++      <input type="text" id="fail" maxlength="2" inputmode="numeric" value="<% nvram_get("reaper_dnshc_fail"); %>"><span class="rng">1&ndash;10</span>
++    </label>
++    <label class="fld num">
++      <span class="l"><#RDHC_10#></span>
++      <input type="text" id="recover" maxlength="2" inputmode="numeric" value="<% nvram_get("reaper_dnshc_recover"); %>"><span class="rng">1&ndash;10</span>
++    </label>
++    <label class="fld chk wide">
++      <span class="sw"><input type="checkbox" id="strict" <% nvram_match("reaper_dnshc_strict", "1", "checked"); %>><span class="tr"></span><span class="lb"><#RDHC_11#></span></span>
++    </label>
++  </div>
++  <div class="stline">
++    <span class="k"><#RDHC_12#></span>
++    <span class="v" id="st_v">&mdash;</span>
++    <span class="held" id="st_held"></span>
++  </div>
++</div>
++
++<div class="tier">dnsmasq</div>
++<div class="grid3">
++  <div class="card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/><path d="M17 15l3 3-3 3"/></svg></span>
++      <h2><#RDHC_18#></h2>
++      <label class="sw"><input type="checkbox" id="dstrict" <% nvram_match("reaper_dns_strict", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_19#></b></p>
++    <p><#RDHC_17#></p>
++  </div>
++  <div class="card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><path d="M10 10l4 4M4 20l2.5-2.5M20 4l-2.5 2.5"/></svg></span>
++      <h2><#RDHC_20#></h2>
++      <label class="sw"><input type="checkbox" id="ecs" <% nvram_match("reaper_dns_ecs", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_21#></b></p>
++    <p><#RDHC_22#></p>
++  </div>
++  <div class="card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/><path d="M4 4l16 16"/></svg></span>
++      <h2><#RDHC_23#></h2>
++      <label class="sw"><input type="checkbox" id="nocache" <% nvram_match("reaper_dns_nocache", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_24#></b></p>
++    <p><#RDHC_25#></p>
++    <p id="dnssec_note" style="display:none;color:var(--amber)"><#RDHC_26#></p>
++  </div>
++</div>
++
++<div class="bar">
++  <span class="msg" id="msg"></span>
++  <button class="btn hot" id="apply" type="button"><#CTL_apply#></button>
++</div>
++
++</div>
++<div class="ovl" id="ovl"><div class="box"><div class="t" id="ovl_t"></div><div class="s" id="ovl_s"></div><div class="beat"><i></i></div></div></div>
++<iframe name="fo_hidden" style="display:none" title="apply"></iframe>
++
++<script src="/reaper_util.js"></script>
++<script>
++var IPV6 = '<% nvram_get("ipv6_service"); %>';
++var DNSSEC = '<% nvram_get("dnssec_enable"); %>';
++var ORIG = {
++  enable: '<% nvram_get("reaper_dnshc_enable"); %>',
++  target: '<% nvram_get("reaper_dnshc_target"); %>',
++  name: '<% nvram_get("reaper_dnshc_name"); %>',
++  interval: '<% nvram_get("reaper_dnshc_interval"); %>',
++  timeout: '<% nvram_get("reaper_dnshc_timeout"); %>',
++  fail: '<% nvram_get("reaper_dnshc_fail"); %>',
++  recover: '<% nvram_get("reaper_dnshc_recover"); %>',
++  strict: '<% nvram_get("reaper_dnshc_strict"); %>',
++  dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
++  ecs: '<% nvram_get("reaper_dns_ecs"); %>',
++  nocache: '<% nvram_get("reaper_dns_nocache"); %>',
++  state: '<% nvram_get("reaper_dnshc_state"); %>'
++};
++var T = {
++  off: `<#RDHC_37#>`, up: `<#RDHC_38#>`, down: `<#RDHC_39#>`,
++  notRunning: `<#RDHC_13#>`, answering: `<#RDHC_14#>`, notAnswering: `<#RDHC_15#>`,
++  badIp: `<#JS_validip#>`, v6off: `<#RDHC_27#>`, blank: `<#JS_fieldblank#>`,
++  applying: `<#RDHC_36#>`, apply: `<#CTL_apply#>`
++};
++var V6ON = (IPV6 !== '' && IPV6 !== 'disabled');
++var busy = 0, pollT = null;
++
++function $id(i){ return document.getElementById(i); }
++function on(id){ return $id(id).checked ? '1' : '0'; }
++function held(s){
++  s = parseInt(s) || 0;
++  if(s < 60) return s + ' s';
++  if(s < 3600) return Math.floor(s / 60) + ' min';
++  if(s < 86400) return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min';
++  return Math.floor(s / 86400) + ' d ' + Math.floor((s % 86400) / 3600) + ' h';
++}
++
++/* ---- live state: "up <s> <alive>" / "down <s> <alive>" / "off" ---- */
++function render(state, enable){
++  var st = String(state || '').split(' '), mode = st[0], chip = $id('chip_state');
++  var running = (enable === '1' && mode !== '' && mode !== 'off');
++  var v = $id('st_v'), h = $id('st_held');
++  $id('ls1').className = 'lstep' + (running ? ' live' : '');
++  $id('ls2').className = 'lstep' + (running && mode === 'down' ? ' armed' : '');
++  $id('ls3').className = 'lstep' + (running && mode === 'down' ? ' live' : '');
++  if(!running){
++    chip.className = 'chip'; $id('chip_state_v').textContent = T.off;
++    v.className = 'v'; v.textContent = T.notRunning; h.textContent = '';
++  } else if(mode === 'down'){
++    chip.className = 'chip down'; $id('chip_state_v').textContent = T.down;
++    v.className = 'v down'; v.textContent = T.notAnswering; h.textContent = held(st[1]);
++  } else {
++    chip.className = 'chip up'; $id('chip_state_v').textContent = T.up;
++    v.className = 'v'; v.textContent = T.answering; h.textContent = held(st[1]);
++  }
++  var tg = ORIG.target || '\u2014';
++  $id('chip_target_v').textContent = tg; $id('chip_target_v').title = tg;
++}
++function poll(){
++  var x = new XMLHttpRequest(), done = 0;
++  function fin(){ if(done) return; done = 1; pollT = setTimeout(poll, 5000); }
++  x.open('GET', '/appGet.cgi?hook=nvram_get(reaper_dnshc_state)&_=' + Date.now(), true);
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      try{ var j = JSON.parse(x.responseText); if(j && typeof j.reaper_dnshc_state === 'string') render(j.reaper_dnshc_state, ORIG.enable); }catch(e){}
++    }
++    fin();
++  };
++  x.onerror = fin;
++  x.send(null);
++}
++
++/* ---- form ---- */
++function syncEnable(){ $id('hc').className = 'card hero' + ($id('en').checked ? '' : ' off'); }
++function isV4(s){ return /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(s); }
++function isV6(s){
++  if(!/^[0-9A-Fa-f:.]+$/.test(s) || s.indexOf(':') < 0) return false;
++  var dc = s.split('::').length - 1; if(dc > 1) return false;
++  var parts = s.split(':'), i;
++  if(parts.length > 8 || (dc === 0 && parts.length !== 8)) return false;
++  for(i = 0; i < parts.length; i++){
++    if(parts[i] === '') continue;
++    if(parts[i].indexOf('.') >= 0){ if(i !== parts.length - 1 || !isV4(parts[i])) return false; continue; }
++    if(!/^[0-9A-Fa-f]{1,4}$/.test(parts[i])) return false;
++  }
++  return true;
++}
++function inRange(id, lo, hi){ var n = $id(id), v = parseInt(n.value, 10); if(!/^\d+$/.test(n.value) || v < lo || v > hi){ n.focus(); return false; } return true; }
++function msg(t, err){ var m = $id('msg'); m.className = 'msg' + (err ? ' err' : ''); m.textContent = t; }
++function valid(){
++  if(!$id('en').checked) return true;
++  var t = $id('target'), s = t.value.replace(/\s+/g, '');
++  t.value = s;
++  if(!isV4(s) && !(V6ON && isV6(s))){
++    msg(s + ' ' + T.badIp + ((!V6ON && s.indexOf(':') >= 0) ? ' ' + T.v6off : ''), 1);
++    t.focus(); return false;
++  }
++  var n = $id('qname');
++  if(n.value === '' || !/^[A-Za-z0-9._-]+$/.test(n.value)){ msg(T.blank, 1); n.focus(); return false; }
++  if(!inRange('interval', 3, 300) || !inRange('timeout', 200, 5000) || !inRange('fail', 1, 10) || !inRange('recover', 1, 10)){ msg(T.badIp, 1); return false; }
++  return true;
++}
++/* stock apply flow (start_apply.htm in the hidden frame) */
++function post(fields){
++  var f = document.createElement('form'), k;
++  f.method = 'POST'; f.action = '/start_apply.htm'; f.target = 'fo_hidden'; f.style.display = 'none';
++  fields.action_mode = 'apply';
++  for(k in fields){
++    var i = document.createElement('input');
++    i.type = 'hidden'; i.name = k; i.value = fields[k]; f.appendChild(i);
++  }
++  document.body.appendChild(f); f.submit();
++  setTimeout(function(){ f.parentNode && f.parentNode.removeChild(f); }, 4000);
++}
++function apply(){
++  if(busy) return;
++  msg('');
++  if(!valid()) return;
++  var v = {
++    reaper_dnshc_enable: on('en'), reaper_dnshc_target: $id('target').value, reaper_dnshc_name: $id('qname').value,
++    reaper_dnshc_interval: $id('interval').value, reaper_dnshc_timeout: $id('timeout').value,
++    reaper_dnshc_fail: $id('fail').value, reaper_dnshc_recover: $id('recover').value, reaper_dnshc_strict: on('strict'),
++    reaper_dns_strict: on('dstrict'), reaper_dns_ecs: on('ecs'), reaper_dns_nocache: on('nocache')
++  };
++  var svc = '';
++  if(v.reaper_dnshc_enable !== ORIG.enable || v.reaper_dnshc_target !== ORIG.target || v.reaper_dnshc_name !== ORIG.name
++     || v.reaper_dnshc_interval !== ORIG.interval || v.reaper_dnshc_timeout !== ORIG.timeout || v.reaper_dnshc_fail !== ORIG.fail
++     || v.reaper_dnshc_recover !== ORIG.recover || v.reaper_dnshc_strict !== ORIG.strict) svc += 'restart_rdnshc;';
++  if(v.reaper_dns_strict !== ORIG.dnsstrict || v.reaper_dns_ecs !== ORIG.ecs || v.reaper_dns_nocache !== ORIG.nocache) svc += 'restart_dnsmasq;';
++  if(!svc) return;
++  busy = 1; $id('apply').disabled = true;
++  if(pollT){ clearTimeout(pollT); pollT = null; }
++  v.action_script = svc; v.action_wait = svc.indexOf('restart_dnsmasq') >= 0 ? '6' : '3';
++  $id('ovl_t').textContent = T.apply; $id('ovl_s').textContent = T.applying; $id('ovl').className = 'ovl on';
++  post(v);
++  setTimeout(function(){ location.reload(); }, svc.indexOf('restart_dnsmasq') >= 0 ? 8000 : 5000);
++}
++
++(function init(){
++  $id('en').addEventListener('change', syncEnable);
++  $id('apply').addEventListener('click', apply);
++  var ids = ['target','qname','interval','timeout','fail','recover'], i;
++  for(i = 0; i < ids.length; i++) $id(ids[i]).addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); } });
++  $id('v6note').style.display = V6ON ? '' : 'none';
++  if(DNSSEC !== '' && DNSSEC !== '0') $id('dnssec_note').style.display = '';
++  syncEnable();
++  render(ORIG.state, ORIG.enable);
++  poll();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 5491632f1b..9db1535d93 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Usmerjevalnik običajno nekaj časa hrani odgovore. Pri filtriranju po o
+ RDHC_26=Preverjanje DNSSEC je vklopljeno in dnsmasq se med preverjanjem ne zažene s predpomnilnikom, manjšim od privzetega. S tem stikalom usmerjevalnik obdrži ta minimum (150 vnosov) namesto nobenega.
+ RDEV_96=proizvajalec
+ RDHC_27=Naslov IPv6 je tu sprejet le, dokler je IPv6 na usmerjevalniku vklopljen (Napredne nastavitve, IPv6).
++RDHC_28=Preklop
++RDHC_29=Ohranite razresevanje imen, ko streznik DNS utihne: spremljajte en streznik, ga umaknite, dokler molci, in ga vrnite, ko odgovori.
++RDHC_30=Spremljanje
++RDHC_31=Preklop
++RDHC_32=Obnovitev
++RDHC_33=Prava poizvedba na navedeni streznik vsakih nekaj sekund
++RDHC_34=Po nastavljenem stevilu zgresitev se premakne na konec seznama DNS
++RDHC_35=Po nastavljenem stevilu odgovorov je spet prvi
++RDHC_36=Uveljavljanje: preverjanje in razresevalnik se znova zazeneta z novimi nastavitvami.
++RDHC_37=Izklop
++RDHC_38=Odgovarja
++RDHC_39=Ne odgovarja
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 9f5b11410b..7e331183dc 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Routern behåller normalt svar en stund. Med filtrering per klient uppst
+ RDHC_26=DNSSEC-validering är på, och dnsmasq startar inte med en cache mindre än standard medan den validerar. Med den här brytaren på behåller routern det minimumet (150 poster) i stället för ingen.
+ RDEV_96=tillverkare
+ RDHC_27=En IPv6-adress godtas har bara sa lange IPv6 ar aktiverat i routern (Avancerade installningar, IPv6).
++RDHC_28=Failover
++RDHC_29=Hall namnuppslag vid liv nar en DNS-server tystnar: bevaka en server, flytta undan den medan den tiger och satt tillbaka den nar den svarar.
++RDHC_30=Bevaka
++RDHC_31=Vaxla over
++RDHC_32=Aterstall
++RDHC_33=En riktig fraga till servern du anger, med nagra sekunders mellanrum
++RDHC_34=Efter antalet missar du anger flyttas den sist i DNS-listan
++RDHC_35=Efter antalet traffar du anger satts den forst igen
++RDHC_36=Tillampar: halsokontrollen och resolvern startar om med de nya installningarna.
++RDHC_37=Av
++RDHC_38=Svarar
++RDHC_39=Svarar inte
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 70fd549374..3bb87b6f72 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=โดยปกติเราเตอร์จะเก็บคำต
+ RDHC_26=การตรวจสอบ DNSSEC เปิดอยู่ และ dnsmasq จะไม่เริ่มทำงานด้วยแคชที่เล็กกว่าค่าเริ่มต้นระหว่างตรวจสอบ เมื่อเปิดสวิตช์นี้ เราเตอร์จะเก็บค่าต่ำสุดนั้นไว้ (150 รายการ) แทนที่จะไม่มีแคชเลย
+ RDEV_96=ผู้ผลิต
+ RDHC_27=ที่นี่จะรับที่อยู่ IPv6 เฉพาะเมื่อเปิดใช้ IPv6 บนเราเตอร์เท่านั้น (การตั้งค่าขั้นสูง, IPv6)
++RDHC_28=เฟลโอเวอร์
++RDHC_29=รักษาการแปลงชื่อให้ทำงานต่อเมื่อเซิร์ฟเวอร์ DNS เงียบไป: เฝ้าดูเซิร์ฟเวอร์หนึ่งตัว ย้ายมันออกไปขณะที่ไม่ตอบ และนำกลับมาเมื่อมันตอบอีกครั้ง
++RDHC_30=เฝ้าดู
++RDHC_31=สลับ
++RDHC_32=คืนค่า
++RDHC_33=ส่งคำถามจริงไปยังเซิร์ฟเวอร์ที่คุณระบุทุกสองสามวินาที
++RDHC_34=เมื่อครบจำนวนครั้งที่พลาดตามที่ตั้งไว้ จะย้ายไปท้ายรายการ DNS
++RDHC_35=เมื่อครบจำนวนครั้งที่ตอบตามที่ตั้งไว้ จะกลับมาเป็นอันดับแรก
++RDHC_36=กำลังนำไปใช้: การตรวจสอบและตัวแปลงชื่อจะเริ่มใหม่ด้วยการตั้งค่าใหม่
++RDHC_37=ปิด
++RDHC_38=ตอบ
++RDHC_39=ไม่ตอบ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 853c8d86ab..b9f99592f5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Yönlendirici yanıtları normalde bir süre saklar. Üst tarafta istemc
+ RDHC_26=DNSSEC doğrulaması açık ve dnsmasq doğrulama yaparken varsayılandan küçük bir önbellekle başlamaz. Bu anahtar açıkken yönlendirici hiç önbellek yerine o en düşük değeri (150 kayıt) tutar.
+ RDEV_96=uretici
+ RDHC_27=Bir IPv6 adresi burada yalnizca yonlendiricide IPv6 etkinken kabul edilir (Gelismis Ayarlar, IPv6).
++RDHC_28=Yedege gecis
++RDHC_29=Bir DNS sunucusu sustugunda ad cozumlemeyi ayakta tutun: bir sunucuyu izleyin, sustugu surece kenara alin ve yanit verince geri koyun.
++RDHC_30=Izle
++RDHC_31=Gecis
++RDHC_32=Geri al
++RDHC_33=Belirttiginiz sunucuya birkac saniyede bir gercek sorgu
++RDHC_34=Ayarladiginiz kacirma sayisindan sonra DNS listesinin sonuna gecer
++RDHC_35=Ayarladiginiz yanit sayisindan sonra yeniden ilk siraya alinir
++RDHC_36=Uygulaniyor: saglik denetimi ve cozumleyici yeni ayarlarla yeniden baslar.
++RDHC_37=Kapali
++RDHC_38=Yanit veriyor
++RDHC_39=Yanit vermiyor
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 7cfb913924..7eaee5ee47 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=路由器通常會將回應保留一段時間。上游依用戶端過濾
+ RDHC_26=DNSSEC 驗證已開啟，驗證期間 dnsmasq 不會以小於預設值的快取啟動。開啟此開關後，路由器保留該最小快取（150 筆）而非完全不快取。
+ RDEV_96=廠商
+ RDHC_27=僅當路由器已啟用 IPv6（進階設定 → IPv6）時，此處才接受 IPv6 位址。
++RDHC_28=容錯切換
++RDHC_29=當 DNS 伺服器沒有回應時維持名稱解析：監看一台伺服器，沉默時將它移開，恢復回應後再放回。
++RDHC_30=監看
++RDHC_31=切換
++RDHC_32=恢復
++RDHC_33=每隔幾秒向您指定的伺服器送出一次真實查詢
++RDHC_34=達到設定的失敗次數後，它會移到 DNS 清單末尾
++RDHC_35=達到設定的成功次數後，它會回到第一位
++RDHC_36=套用中：健康檢查與解析器將以新設定重新啟動。
++RDHC_37=關閉
++RDHC_38=有回應
++RDHC_39=無回應
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index b102c27959..c0a7e6d047 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6893,3 +6893,15 @@ RDHC_25=Зазвичай маршрутизатор деякий час збер
+ RDHC_26=Перевірка DNSSEC увімкнена, і dnsmasq не запускається з кешем, меншим за типовий, під час перевірки. З цим перемикачем маршрутизатор зберігає цей мінімум (150 записів) замість відсутності кешу.
+ RDEV_96=виробник
+ RDHC_27=Адреса IPv6 приймається тут лише поки IPv6 увімкнено на маршрутизаторі (Додаткові налаштування, IPv6).
++RDHC_28=Відмовостійкість
++RDHC_29=Зберігайте розпізнавання імен, коли DNS-сервер замовкає: стежте за одним сервером, відсувайте його, поки він мовчить, і повертайте, щойно він відповідає.
++RDHC_30=Спостереження
++RDHC_31=Перемикання
++RDHC_32=Відновлення
++RDHC_33=Справжній запит до вказаного сервера кожні кілька секунд
++RDHC_34=Після заданої кількості промахів він переходить у кінець списку DNS
++RDHC_35=Після заданої кількості відповідей він знову перший
++RDHC_36=Застосування: перевірка і резолвер перезапускаються з новими налаштуваннями.
++RDHC_37=Вимк.
++RDHC_38=Відповідає
++RDHC_39=Не відповідає
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 11b16b76f1..12b6153637 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -363,6 +363,7 @@ define(function(){
+ 				tab: [
+ 					{url: "Advanced_OperationMode_Content.asp", tabName: "<#menu5_6_1#>"},
+ 					{url: "Advanced_System_Content.asp", tabName: "<#menu5_6_2#>"},
++					{url: "Reaper_Failover.asp", tabName: "<#RDHC_28#>"},	/* reaper v3.1.1: Failover tab - the resolver health check + the dnsmasq switches, moved off the System page */
+ 					{url: "Reaper_Firmware.asp", tabName: "<#menu5_6_3#>"},	/* reaper Phase 2: native firmware page (stock Advanced_FirmwareUpgrade_Content.asp kept on disk as fallback) */
+ 					{url: "Reaper_Backup.asp", tabName: "<#menu5_6_4#>"},	/* reaper v2.9.8: native Backup & Restore page (stock Advanced_SettingBackup_Content.asp kept on disk as fallback, SUP-redirected) */
+ 					{url: "Advanced_PerformanceTuning_Content.asp", tabName: "<#fan_tuning_temperature#>"},
+-- 
+2.25.1
+

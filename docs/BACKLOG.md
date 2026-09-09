@@ -37,24 +37,48 @@ internal quality, or deferred by decision.
 
 The ordered short list.
 
-1. **[P2] Devices/Gatekeeper: wrong connection method, MLO combining broken** — root-caused and
-   fixed in tree 2026-09-07 (a multi-link client is listed under its link MAC); **metal check owed**.
+1. **[P2] Devices/Gatekeeper: wrong connection method, MLO combining broken** — root-caused, fixed,
+   and **confirmed on metal 2026-09-08** (Reaper_v3.1.1 MCP): one row, `MLO · 6 GHz`, keyed by the
+   MLD MAC. Ships in v3.1.1. The stale-band half of the same fix is a different branch and is still
+   unexercised — item below.
 2. **[P2] Apply and Confirm on Policy Routing rebooted the router** — no reboot primitive in the
    path; needs the three captures on the next occurrence.
 3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
 4. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
 5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-6. **[P3] CVE check 2026-08-30 residue** — cheap backports and known-limitation notes.
+6. **[P3] CVE check 2026-08-30 residue** — the cheap backports; the known-limitation notes are done.
 7. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
 *In beta (v3.1.0 on Dev, 2026-09-06): OpenSSL 3.5, the first-boot box, the faster factory reset,
-backhaul-parking reconcile, the phone-width shell, the update check's beta channel. Building toward
-v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is listed here.*
+backhaul-parking reconcile, the phone-width shell, the update check's beta channel.*
+
+***v3.1.1 is cut** (2026-09-08, patches 0621–0636) and carries the LAN resolver health check and the
+three dnsmasq switches, the OpenVPN certificate fixes, the firmware-page Cancel, the Gatekeeper
+connection-method and stale-band fixes, and the announced-hostname store. None of that is listed
+above. Two of its fixes ship **without hardware validation** and are the first things to check on the
+beta: the OpenVPN repair path (needs a box with a VPN server configured) and the Gatekeeper
+stale-band branch (needs a client moved between radios).*
 
 ---
 
 ## Open bugs / under investigation
 
+- **[P1] OpenVPN server: an empty GUI field deletes the certificate, and the firmware cannot repair
+  it** (field report, v3.1.0, 2026-09-08) — `set_ovpn_key()` **unlinks** the stored key on an empty
+  value (`libovpn/openvpn_config.c`), and `httpd/web.c:4088` calls it for every cert field on a save
+  without checking the return. Recovery is then impossible: `ovpn_write_server_keys()` only
+  regenerates when CA **and** key **and** cert are *all* absent, so a partial loss takes the copy
+  branch, `ovpn_write_key()` returns -1 for the missing item, and that return is discarded — an
+  incomplete runtime config, no log, and no GUI action can re-trigger generation while the CA
+  exists. **Ruled out: OpenSSL 3.5** — MD5 signing was tested on the box and succeeds, so the
+  easy-rsa `openssl-1.0.0.cnf` is not the blocker. Not TAP/TUN-specific. **Fixed in tree
+  2026-09-08:** `set_ovpn_key()` no longer deletes on an empty value (it keeps the stored key and
+  logs); deliberate clearing moved to a new `clear_ovpn_key()`, which the one legitimate caller
+  (`reset_ovpn_setting`, 16 sites) now uses; `ovpn_write_server_keys()` repairs a partial set by
+  regenerating **only the server leaf** from the existing CA — never the CA itself, which would
+  invalidate every deployed client — and every `ovpn_write_key()` return is now checked and logged.
+  libovpn compiles clean. **Metal validation owed: needs a box with an OpenVPN server configured.**
+  **[fixed in tree; metal owed]** ↳ notes: `ovpn-server-cert-unrecoverable.md`
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
   IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
   and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
@@ -89,14 +113,23 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
   driver for a line this client no longer prints, left two rows. None of the three bisect candidates
   was the cause. **Metal 2026-09-07: the device now shows as wireless — the connection-method half is
   confirmed fixed.** The band it shows is a separate, smaller item, below.
-  **[fixed; MLO one-row check still owed]** ↳ notes: `devices-conn-method-mlo-regression.md`
+  **Metal 2026-09-08 (v3.1.1 MCP): CLOSED.** The PC renders as a **single row**, `MLO · 6 GHz`,
+  keyed by the MLD MAC — so the connection method, the band and the MLO fold are all confirmed. The
+  proof is sharper than "the page looks right": gkd's cache still reads `wired=1, band=(empty)`
+  while the row shows MLO · 6 GHz, so the live-list correction is visibly executing at render time
+  rather than the record having happened to be right. **[fixed + metal-confirmed; ships with the
+  next rung]** ↳ notes: `devices-conn-method-mlo-regression.md`
 - **[P3] Gatekeeper shows a stale band for a multi-link client** (owner, on metal 2026-09-07) — with
   the wired/wireless fix in, Nates-PC lists as Wi-Fi **5 GHz** while it is associated on **6 GHz**.
   The live-list correction only fills a band that is missing or replaces a "wired" record, so it can
   fix an absent band but never a stale one; the watcher wrote 5 GHz once, never clears a band, and can
   no longer see that MAC on any radio because the client associates under its link address. The live
-  list has the right answer and is not consulted. One capture from confirmed, and the fix looks like
-  letting a live band win over a stale cached one. **[owed]** ↳ notes: `gk-stale-band-multilink.md`
+  list has the right answer and is not consulted. **Fixed in tree 2026-09-08** (`gk_live_conn`):
+  a live band may now override a stale one, but only from an entry under the CAP's **own** node key,
+  which is first-hand — a mesh node's entry still may not, which is what the v3.0.9 gate was
+  protecting. httpd compiles clean. **The confirming capture was never taken** (the lab MCP was
+  down), so the mechanism is still inferred, not proven; metal owed.
+  **[fixed in tree; capture + metal owed]** ↳ notes: `gk-stale-band-multilink.md`
 - **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
   flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
   the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`
@@ -105,9 +138,12 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
   ↳ notes: `pbr-first-open-symptom.md`
 - **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — rwatch, Warden refresh and the PBR
   deadline watcher all dead on that box. **[needs the GT-BE98 syslog]** ↳ notes: `gt-be98-empty-crontab.md`
-- **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults;
-  what it queues: cheap backports, known-limitation notes, the inert manifest signature, hygiene.
-  ↳ notes: `cve-check-2026-08-30.md`
+- **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults.
+  **Documentation half done 2026-09-08:** the five off-by-default inherited components (netatalk,
+  wpa_supplicant, lighttpd, net-snmp, Quagga) and the accepted update-manifest-signature trade are
+  now stated in [`../SECURITY.md`](../SECURITY.md) under *Known limitations*, following the Samba
+  precedent. **Remaining:** the cheap backports (strongSwan, avahi CNAME trio, the kernel one-hunk
+  set) — each needs a build, so they want their own rung. ↳ notes: `cve-check-2026-08-30.md`
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
   calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
@@ -131,12 +167,35 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
 
 ## UI / UX polish
 
+- **[P2] Failover page: the Client addresses (ECS) help text is half true** (owner, 2026-09-08) —
+  `RDHC_22` told the reader that with ECS on, "AdGuard Home … or Pi-hole … still shows **and
+  filters** per client". The Pi-hole half is correct; the AdGuard half is not. AdGuard Home resolves
+  clients ClientID → source IP → CIDR → MAC and *logs* ECS without ever matching on it, so with the
+  router proxying, every `$client=` rule stays inert however the switch is set — the wording invited
+  the operator to leave ECS on for a benefit it does not deliver, and ECS on puts a client's LAN
+  address into every forwarded query. **Corrected in tree 2026-09-08:** `RDHC_22` rewritten in all
+  **25 dicts** (value-only splice at the shared line index, so key-order lockstep holds by
+  construction — verified identical line count and key order in all 25), the matching prose comment
+  at `rc/services.c` rewritten with the upstream refusals cited (AdGuardHome #4383, #6104), and two
+  `verify_markers` tripwires added so the claim cannot return. `rc` and `httpd` compile clean.
+  Machine-assisted translation, native review owed per the standing i18n policy; EN stays selectable.
+  **[fixed in tree; ships with the next rung]** ↳ notes: `ecs-help-text-half-true.md`
 - **[P2] Firmware page: the overlay's "Close" should be "Cancel", and cancel** (owner, 2026-09-07)
-  — the escape hatch that appears on the blocking overlay during a download or upload only hides the
-  overlay; the transfer it was covering keeps running to the end. It should read Cancel, close the
-  overlay AND abort the upload or download it covers, and it must not be offered once the upload has
-  completed (the router is being written from that point and nothing can stop it, which the page
-  already knows). **[owed]** ↳ notes: `firmware-veil-cancel.md`
+  — the escape hatch only hid the overlay while the transfer ran on. **Fixed in tree 2026-09-08 for
+  the phase where cancelling is real.** *Upload:* the request is held in page scope, the hatch reads
+  **Cancel**, and pressing it aborts the in-flight POST — safe by construction, because a truncated
+  multipart cannot pass verification, so nothing is written. It is offered immediately now rather
+  than after 25 s (that delay exists so a *write* cannot be fumbled; during an upload there is no
+  write yet) and is **withdrawn the moment `x.upload` reports every byte sent**, which is earlier
+  than the old retract at `veilInstall(1)` — from that point the router may already hold the whole
+  image and be verifying or writing it, and an abort cannot recall that. *Download:* left saying
+  **Close**, and it still only leaves the overlay. There is nothing to abort — the generic `webs_*`
+  rc dispatch handles START only (`services.c` ~20175), so a `stop_webs_upgrade` is a no-op, and
+  `reaper_webs_upgrade.sh` runs download → verify → flash in one shot on the router. Removing the
+  button there would trap the user behind a 30-minute poll, so it stays, honestly labelled. Giving
+  that phase a true cancel means a kill on a flash-adjacent path — a separate item, not a UI change.
+  Verified: the page resolves and parses in **all 25 language packs**. **[fixed in tree for upload;
+  download cancel would need an rc stop service]** ↳ notes: `firmware-veil-cancel.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -180,9 +239,11 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
 
 ## Documentation
 
-- **[P3] Translations — one residual** — the pinned protocol values and the deliberately literal
-  strings; the About-page humour stays English by choice. ↳ notes: `translations-residual.md`
-- **[P3] Make `cut_rung` own the version/count restatements** across the docs. ↳ notes: `cut-rung-restatements.md`
+- **[P3] Make `cut_rung` own the version/count restatements** — **done 2026-09-08.** `cut_rung.sh`
+  gained step 9b, which runs `reaper_docs.py --fix` after the export so the rung's own new facts are
+  written into the marked claims; `patches/README.md` is now in the checker's scope (it sits outside
+  `docs/`, which is why its header drifted to "535 patches, v1.0 → v2.7.6" while the series passed
+  600) and its count and rung are marked. ↳ notes: `cut-rung-restatements.md`
 
 ---
 
@@ -214,6 +275,13 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
 - **Investigated, not a bug (do not re-raise)** — the `Reaper_Firewall.asp` field "XSS", Warden's own
   addresses, the `/etc/hosts` IP field, `custom_clientlist` truncation, the scrape-token stub, the
   store-chooser TOCTOU. ↳ notes: `wad-investigated-not-a-bug.md`
+- **Translations — closed 2026-09-08, kept as a guard.** The functional-token pass across all 24
+  languages shipped in v2.7.7 and nothing is owed: the RABT credits and jokes stay English **by
+  choice**, and the rest of the entry was always a do-not-translate list — the pinned
+  `value="TCP|UDP|BOTH|OTHER"` attributes that `rc/firewall.c` compares, and the deliberately
+  literal strings (Splunk placeholders, Broadcom counter names, the parsed schedule placeholder,
+  product names). Re-read before any translation work; do not re-file as a task.
+  ↳ notes: `translations-residual.md`
 - **SNMP `rwuser` — keep as-is** (owner, 2026-08-19): `rouser` would remove SNMP-SET.
 - **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting**, not a fault.
   ↳ notes: `wad-warden-self-drop-failure.md`
@@ -258,6 +326,6 @@ v3.1.1: the LAN resolver health check and the three dnsmasq switches. Neither is
   risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`, `GUESTPRO-2.5G-VLAN-PLAN.md`
 - **B-4. [P3] Dynamic preamble puncturing needs the 2025 Broadcom SDK** — only the static bitmap
   exists on this SDK. **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
-- **B.5. [P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
+- **B-5. [P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
   from source; instrumented in v3.0.5. Also a first-run-after-boot "Latency test failed" on the
   BE96U. **[blocked — development]** ↳ notes: `speedtest-10g-links.md`

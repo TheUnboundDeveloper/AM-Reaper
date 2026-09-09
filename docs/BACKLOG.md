@@ -144,6 +144,16 @@ stale-band branch (needs a client moved between radios).*
   now stated in [`../SECURITY.md`](../SECURITY.md) under *Known limitations*, following the Samba
   precedent. **Remaining:** the cheap backports (strongSwan, avahi CNAME trio, the kernel one-hunk
   set) — each needs a build, so they want their own rung. ↳ notes: `cve-check-2026-08-30.md`
+- **[P2] AiMesh: repeated pairing failures reported against Reaper** (tester via owner, 2026-09-09)
+  — seven failed pairings, attributed to Reaper by the reporter; the owner is not convinced.
+  Establish what "seven" counts (attempts, nodes, or reporters) before anything else. The syslog
+  line offered as evidence — `parent ... partial for node ... - missing rssi_5g rssi_5g2 (still
+  usable)` — is the **fixed** path, not the v2.9.3 defect, which read `skipped` and discarded the
+  parent; on a CAP that heard the node on 2.4 GHz alone the `partial` line is expected output and
+  is not an error. Split the problem on whether the node ever reaches the Add Node list (the
+  listing gates and the join path are independent), then rule out Gatekeeper quarantine, MLO (may
+  be the item below rather than a new one), and the versions on each end. **[needs data]**
+  ↳ notes: `aimesh-pairing-failures-tester.md`
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
   calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`

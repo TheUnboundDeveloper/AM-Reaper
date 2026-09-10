@@ -1,0 +1,270 @@
+Reaper v3.1.2 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> Routing a device through WireGuard no longer reboots the router
+
+Policy routing to an
+
+OpenVPN client, to the WAN, or to a block worked; pick a WireGuard client and the router
+
+restarted a few seconds after Apply and Confirm, every time. It was not a reboot — it was a
+
+kernel panic, which is why nothing in the policy-routing code could ever have caused it and why
+
+none was ever found there. WireGuard is the one target that needs the router to tell its traffic
+
+accelerator to leave those flows alone, and the accelerator's list lives in a file the kernel
+
+publishes. Reading that file back — which the router does, so that it only ever removes entries
+
+it added itself and never one belonging to your WireGuard server or a VPN Director rule — hit a
+
+fault in the kernel's own handler for it, and this kernel is built to reboot rather than continue
+
+after a fault like that. The handler is fixed. Nothing else in the system had ever read that file,
+
+which is why the bug had sat there untouched. The two neighbouring handlers had a related flaw
+
+that could corrupt kernel memory from a badly-formed write; those are fixed at the same time, and
+
+a build-time check now refuses to let any of it come back.
+
+> A pre-release now says so, in its filename and in the router
+
+Every build is marked _BETA
+
+unless it is explicitly built as a release, so the firmware file is named for what it is and the
+
+dashboard shows a Beta tag beside the version. That way round on purpose: an image only
+
+becomes stable when the Dev branch is merged, so a pre-release is what a build normally is, and
+
+forgetting to say so can only ever label something too cautiously — never pass a beta off as a
+
+release. The marker is uppercase so it can be picked out of a folder full of long filenames
+
+without opening anything. Two different builds could previously end up sharing one filename,
+
+which is no way to treat something you may need to identify months later. The staging step was the
+
+other half of that: it used to see a name already in use and quietly skip, leaving the older
+
+image in place under that name and the checksum list describing the wrong file. It now compares
+
+the contents — identical is left alone, genuinely different is staged under its own name and said
+
+out loud, and the checksum list is always rewritten to match what is actually there.
+
+> Every model gets the WireGuard fix, not just the one that was tested
+
+The kernel fault above
+
+is in code shared by all six routers, so all six could be restarted the same way. Each one's
+
+source now carries the fix, and a build-time check refuses to build any of them without it —
+
+which matters because that file sits outside the part of the tree a model port normally copies,
+
+and the fix leaves no trace a normal build check could look for.
+
+> Warden's outbound block logging is now held in place by a test
+
+This had been fixed before and
+
+come back more than once, which is a sign the guard was in the wrong place: the existing check
+
+confirmed the log lines were accepted, but nothing required the outbound ones to be produced.
+
+Remove them and everything still looked healthy. The check now covers the whole path — a distinct
+
+outbound label, logged before the block rather than after, on the same switch as inbound, on a
+
+rule that is actually reachable, counted correctly, and told apart from the others on the Logging
+
+page. It ships with a suite that deliberately reintroduces eleven past and plausible versions of
+
+the fault and confirms each one is caught, so the check is known to work rather than assumed to.
+
+> The router now watches its own firewall chains
+
+With add-on scripts and other software
+
+writing firewall rules on the same box, nothing had ever checked that Reaper's rules were still
+
+where they were put. Two things are now checked every few minutes: that each of Warden's block
+
+chains still ends in the block itself, with nothing slipped in front of it that would let traffic
+
+through, and that Reaper's own entry points are still first in line. A chain found disarmed is
+
+reported as critical; entry points that have been pushed down the list are re-pinned
+
+automatically and the displacement is logged, so it is visible rather than merely repaired.
+
+> Warden now says why you are not seeing outbound blocks
+
+Silence meant four different things —
+
+outbound filtering off, the chain missing, logging off, or simply nothing having matched — and
+
+they were indistinguishable from the outside. Note that the last one is the ordinary case:
+
+something on your network has to reach for a flagged address, where inbound gets a steady supply
+
+of them from the internet. The state is now logged once whenever it changes, with the count so
+
+far. Related: in Firewall → Logging, outbound and router-originated blocks had been folded back
+
+into a single WARDEN label despite having been given separate log prefixes precisely so they
+
+could be told apart; they now carry their own badges.
+
+> Firewall → Logging: the table headings match the columns
+
+The first two were the wrong way
+
+round — the action column was headed Time and the timestamp column Action — and the third was
+
+headed Chain while showing the interface the traffic arrived on. Headings corrected.
+
+> The Addons menu opens a page, like every other menu
+
+It was the one item in the navigation
+
+that did not go anywhere when clicked: instead of opening, it unfolded a list of sub-entries. It
+
+now opens the first installed add-on page and the rest appear as tabs across the top, which is
+
+what every other menu does. Both the dashboard's own rail and the shell's rail changed together.
+
+> The resolver health check prefers IPv6 and falls back to IPv4, instead of giving up
+
+The
+
+check watches one DNS server on your network. It could hold only one address, so if you gave it
+
+an IPv6 one and the router's IPv6 went away — switched off, or your ISP stopped handing one out
+
+— the check simply stopped, quietly. The server can now carry both of its addresses: a new
+
+optional IPv6 field beside the existing one. IPv6 is tried first, and IPv4 is used whenever IPv6
+
+is unavailable or does not answer, so the same server stays watched right through an IPv6
+
+outage. Two things it is careful about. It never wastes time on IPv6 it cannot use: whether the
+
+router has IPv6 at all, and whether your ISP has actually given it an address, are both checked
+
+locally before any query is sent, so a router without IPv6 spends nothing on it. And a server is
+
+only counted as down when every address it has failed — a broken IPv6 path can no longer
+
+push aside a server that is answering perfectly well on IPv4. When it does fail over, both of
+
+the server's addresses move down the list together, so lookups are not left going to the half
+
+that is still listed. The log says when it is running on the fallback, so a dead IPv6 leg does
+
+not stay invisible.
+
+> DNS-over-TLS servers can be used in order instead of at random
+
+With DNS Privacy on, the
+
+router rotates between the DoT servers you list, so they share the traffic and none of them is a
+
+standby — there is no failover order at all. A new switch on the Failover tab uses them in the
+
+order given instead: the first until it stops answering, the rest in reserve. Off by default, so
+
+nothing changes unless you ask for it, and the page says so plainly when DNS Privacy is off and
+
+the switch has nothing to act on. Worth knowing either way: with DNS Privacy on, these servers
+
+replace the router's WAN DNS list, so a filter on your own network is out of the path unless it
+
+is itself one of them.
+
+> Auto-logout
+
+is now an inactivity timeout everywhere else too, and a session left on a
+
+monitoring page no longer stays open indefinitely. On the rest of the pages the timer was
+
+never an idle timer at all: it started counting when the page loaded and nothing you did reset
+
+it, so it could log you out in the middle of filling in a long form, while somebody clicking
+
+between pages restarted it constantly and might never be logged out. That is why the same
+
+setting felt too aggressive to one person and useless to another. Worse, fourteen pages — the
+
+traffic monitors, the system log, the bandwidth monitor, the captive portal — switched the timer
+
+off while they updated live and never switched it back on, so an admin session parked on one of
+
+those never closed at all, and nothing on the router side would have closed it either. The old
+
+counter is retired and replaced with a timer that measures what it claims to: it starts again
+
+from your last click, keystroke, scroll or touch, and it applies on those monitoring pages too.
+
+Pages shown inside another page never run a timer of their own — they tell the page that owns
+
+the session you are still there — so watching a panel can no longer log out someone working in
+
+the window around it. Off is still off: set it to 0 and nothing arms.
+
+> Auto-logout on the dashboard obeys the setting you gave it
+
+Administration > System has a
+
+"Logout after ... minutes" box; the dashboard was not reading it. It had its own idle timer,
+
+fixed at 15 minutes since v1.4.7, so a router on the shipped default of 30 logged you out at
+
+half that — and a router where auto-logout had been switched off, which the same box
+
+accepts as 0, logged you out every 15 minutes anyway. The dashboard now reads the value: 0
+
+really does mean off, and any other value is honoured to the minute. If the setting is missing
+
+or unreadable it falls back to the old 15 minutes rather than leaving an unattended admin
+
+session open indefinitely. The build now refuses an image whose dashboard has gone back to a
+
+fixed number. Note that the other pages behave differently and are unchanged — their timer
+
+counts down from when the page loaded rather than from your last keystroke.
+
+> The AiMesh backhaul carrier is no longer parked out from under a node that has just joined
+
+Backhaul parking (opt-in, off by default) takes the hidden 2.4/5 GHz backhaul networks off the
+
+air while no mesh node is paired, and puts them back the moment a search starts. It decided
+
+"no node is paired" by reading the router's own paired-node registry — and that registry, like
+
+the search status beside it, is written by the closed AiMesh daemon, so there is no way to know
+
+from the outside whether it is updated the instant a node finishes joining or a moment later. If
+
+it is a moment later, the carrier was taken down within five seconds of a node arriving on it.
+
+Two guards close that off without needing the answer: a carrier that has something associated to
+
+it is never parked, whatever the registry says — the only thing that associates to a hidden
+
+backhaul network is a node — and after a search or onboarding ends, parking waits two minutes
+
+before resuming. Both are logged the first time they take effect rather than on every five-second
+
+pass. One more transition that used to be silent now says so too: turning a radio off underneath
+
+a parked carrier. The guards can only make the feature park less, never more.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

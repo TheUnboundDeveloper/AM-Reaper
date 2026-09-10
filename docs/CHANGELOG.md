@@ -48,6 +48,15 @@ node, not only on the primary router.
 
 ## v3.1.2 — a WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one *(built RT-BE96U)*
 
+- **The RT-BE92U leaves the fleet.** Development of the RT-BE92U build stops here: upstream
+  Asuswrt-Merlin has taken that model on, and a second, less-tested build of it helps nobody. It is
+  off the build roster from this version, so **v3.1.2 is the last Reaper release for it** — the
+  v3.1.2 beta was the final image, and it stays downloadable. If you run one, nothing changes today:
+  your router keeps working, and its update check keeps pointing at that last build rather than going
+  quiet or offering something that no longer exists. Move to Merlin's own RT-BE92U build when you are
+  ready. The source, its branch and its identity overlay are kept rather than deleted, so the
+  decision is reversible. The model it makes room for is the GT-BE19000.
+
 - **Routing a device through WireGuard no longer reboots the router.** Policy routing to an
   OpenVPN client, to the WAN, or to a block worked; pick a WireGuard client and the router
   restarted a few seconds after Apply and Confirm, every time. It was not a reboot — it was a

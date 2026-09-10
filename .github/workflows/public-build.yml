@@ -22,9 +22,21 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # All six models are selectable. The five BCM4916 models have completed a
-      # green clean-room build as of 2026-08-10; RT-BE92U (BCM6765) was wired into
-      # the same pipeline at v2.7.6 and builds through the same path.
+      # Five models are selectable, all BCM4916, all with a completed green
+      # clean-room build as of 2026-08-10.
+      #
+      # RT-BE92U (BCM6765) was wired into this pipeline at v2.7.6 and RETIRED
+      # from the roster after v3.1.2 (owner, 2026-09-10): upstream Merlin has
+      # taken that model on, so there is no reason for a second build of it. Its
+      # source is left DORMANT, not deleted - the rt-be92u branch, its worktree,
+      # overlays/RT-BE92U.patch and the fifteen provenance entries recording what
+      # it actually shipped all stay, and the per-model tables in build-scripts
+      # keep their entries so it can be built by hand if it is ever wanted back.
+      # What is gone is the roster: it is not offered here, not in `all`, not
+      # ported by cut_fleet, and not passed to refresh_manifest - which, because
+      # that script merges per model, leaves its existing update lines frozen at
+      # v3.1.2-beta rather than withdrawing them from fielded boxes.
+      # Its intended replacement is the GT-BE19000; that is separate work.
       #
       # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
@@ -49,19 +61,18 @@ on:
       # banner is absent or a foreign one is present, so that failure mode cannot
       # repeat silently.
       #
-      # 'all' fans out to every model. Combined with variant=both that is 12
-      # concurrent jobs of ~1.5 h each -- within the 20-job limit for public
-      # repos, and fail-fast is off below so one model dying does not cancel
-      # the other five.
+      # 'all' fans out to every model on the roster. Combined with variant=both
+      # that is 10 concurrent jobs of ~1.5 h each -- within the 20-job limit for
+      # public repos, and fail-fast is off below so one model dying does not
+      # cancel the other four.
       model:
         description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        # RT-BE92U (BCM6765 / 96765GW) is experimental: it now builds with the fleet
-        # in `all` (12 jobs) and can also be dispatched on its own, but it is ALWAYS
-        # published as a prerelease (see release.yml), so it never lands as a standard
-        # release alongside the five BCM4916 models.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U, all]
+        # `all` is the five BCM4916 models x two variants = 10 jobs.
+        # RT-BE92U is retired from the roster (see the note above) and is
+        # deliberately not selectable here.
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -231,7 +242,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -519,7 +530,7 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -572,7 +583,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -666,7 +677,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO"
           else
             export MODELS="$MODELSEL"
           fi

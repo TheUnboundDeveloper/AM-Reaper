@@ -2,10 +2,37 @@
 # Reaper build launcher -- RT-BE92U (BCM6765, tri-band 2.4/5/6 GHz, 96765GW profile)
 # Builds in the git WORKTREE /home/reaper/port/rt-be92u (canon stays on be96u-only).
 # Flow:  (worktree on rt-be92u) ; bump+commit version.conf there ; build_be92u.sh [ship]
+#
+# RETIRED from the build roster after v3.1.2 (owner, 2026-09-10): upstream Merlin
+# has taken this model on. It is off the CI matrix, off cut_fleet's port list and
+# out of refresh_manifest's model list, and its intended replacement is the
+# GT-BE19000.
+#
+# This file is KEPT rather than deleted because the model's source is dormant,
+# not gone, and because the cold-tree libtool pins below were expensive to find
+# (2026-08-23, after four failed CI runs) and exist nowhere else in a form
+# specific to this target. Set REAPER_BUILD_RETIRED=1 to build it anyway.
 
 case "${1:-}" in
   -h|--help) sed -n "2,4 p" "$0" | sed "s/^# \?//"; exit 0 ;;
 esac
+
+if [ "${REAPER_BUILD_RETIRED:-0}" != "1" ]; then
+  cat >&2 <<'EOF'
+RT-BE92U is retired from the build roster (owner, 2026-09-10 - Merlin has taken
+this model on). Its source, branch, worktree and overlay are intentionally left
+in place, so this is a roster decision, not a broken tree.
+
+To build it anyway:  REAPER_BUILD_RETIRED=1 build-scripts/build_be92u.sh [ship]
+
+To bring it back properly, re-add RT-BE92U to:
+  .github/workflows/public-build.yml   the model choice list, both matrices,
+                                       and the two MODELS= lists
+  build-scripts/cut_fleet.sh           the MODELS roster
+and drop the RT-BE92U case in release.yml if it should stop being a prerelease.
+EOF
+  exit 3
+fi
 export REAPER_TREE=/home/reaper/port/rt-be92u
 export REAPER_TDIR=$REAPER_TREE/release/src-rt-5.04behnd.4916/targets/96765GW
 # COLD-TREE LIBTOOL PINS (same as build-scripts/ci/build_one.sh). A worktree is a

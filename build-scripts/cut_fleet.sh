@@ -26,7 +26,17 @@ CANON_DIR=${REAPER_CLONE:-/home/reaper/asuswrt-be96u}
 LEAN=${REAPER_LEAN:-/mnt/c/Users/natha/AppData/Roaming/VSC/ASUS/ASUS-Merlin-Reaper}
 PORTDIR=${REAPER_PORTDIR:-/home/reaper/port}
 CANON=be96u-only
-MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro RT-BE92U:rt-be92u"
+# The sibling roster: every model a rung is ported onto and whose overlay is
+# regenerated. RT-BE92U was retired from it after v3.1.2 (owner, 2026-09-10 -
+# upstream Merlin has taken that model on). Its branch, worktree and
+# overlays/RT-BE92U.patch are left DORMANT. Leaving it here instead would port
+# every future rung onto a model nobody builds and rewrite an overlay nobody
+# applies. NOTE the consequence: from now on its branch falls behind canon and
+# its overlay is frozen against v3.1.2, so re-adding the model here is NOT
+# sufficient to bring it back - port it first, regenerate its overlay, and only
+# then put it back on this list. Applying the frozen overlay to a later tree
+# would revert every rung in between, which is the 2026-08-10 regression.
+MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro"
 
 VERSION=""; DO_CUT=1; DO_PORT=1; DO_OVERLAY=1; DO_DOCCHECK=1
 while [ $# -gt 0 ]; do

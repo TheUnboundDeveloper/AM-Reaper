@@ -80,8 +80,8 @@ One command does all five, plus the sibling fan-out:
 marked claims against the repo and aborts on a mismatch — milliseconds, and it
 runs before anything is exported, so a stale doc is a five-second fix rather than
 something noticed after the rung is pinned. It then runs `cut_rung.sh` (the five
-artifacts above), then ports the rung onto the five sibling branches (RT-BE86U,
-RT-BE88U, GT-BE98, GT-BE98 Pro and the RT-BE92U), then handles the
+artifacts above), then ports the rung onto the four sibling branches (RT-BE86U,
+RT-BE88U, GT-BE98 and GT-BE98 Pro), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order

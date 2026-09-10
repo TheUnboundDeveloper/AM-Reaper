@@ -78,13 +78,13 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 - Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
 - Current version: **v2.8.8** <!--@pubver--> (firmware line `3006.102.8_Reaper_v<version>`) — *current* means the newest
   **published release**, i.e. the newest image you can actually download from
-  [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all six models
-  (published 2026-08-28 <!--@pubdate-->). The **RT-BE92U** (BCM6765) ships as an experimental prerelease.
+  [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models
+  (published 2026-08-28 <!--@pubdate-->). RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there.
   Source rungs are cut more often than releases are published (many rungs — e.g. v2.6.1–v2.6.9, v2.7.0,
   v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.1.2** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the
   static checks and the patch-marker manifest) before it is cut; the maintainer's RT-BE96U runs each rung on metal,
-  and the OpenSSL 3.5 move was validated there before its cut. The four BCM4916 siblings and the RT-BE92U are built
+  and the OpenSSL 3.5 move was validated there before its cut. The four BCM4916 siblings are built
   clean-room in CI from the same patch series plus their identity overlays; on-metal validation is owed on them.
 
 ## Legal

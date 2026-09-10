@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -146,7 +146,7 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 10 <!--@fleetjobs--> jobs,
       ~1.5 h each — six models since the RT-BE92U joined the fan-out)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override

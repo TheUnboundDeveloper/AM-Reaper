@@ -37,17 +37,24 @@ internal quality, or deferred by decision.
 
 The ordered short list.
 
-1. **[P1] Build the five siblings** — the kernel fix is committed on every branch, but only the
+1. **[P1] Build the four siblings** — the kernel fix is committed on every branch, but only the
    BE96U has been compiled since; the others are source-only. The published CI matrix builds
    them from the series, so this is about a local image to hold, not about the release path.
+   (The RT-BE92U's own commit stays on its dormant branch; it is no longer built.)
 2. **[P3] Build one `stable` image** — the channel marker has now been through a real beta
    build end to end, but the stable path has never been exercised, and that is the path a
    release goes out on.
-3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
-4. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
-5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-6. **[P3] CVE check 2026-08-30 residue** — the cheap backports; the known-limitation notes are done.
-7. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+3. **[P3] GT-BE19000 bring-up** — the RT-BE92U's replacement on the roster. Not started:
+   the model is not in Merlin, it sits on the GT-BE98 lineage as an RT-BE96U twin, and it
+   needs 13 board objects, the RTL8372 gate and hardware to validate. Nothing is committed
+   to it yet beyond the feasibility sizing.
+4. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
+5. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
+   Still open despite the model leaving the roster: the suspected fault is in shared Warden
+   code, so it would affect every model. The BE92U is only where it was reported.
+6. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
+7. **[P3] CVE check 2026-08-30 residue** — the cheap backports; the known-limitation notes are done.
+8. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
 ***v3.1.2 is the next beta** (cut 2026-09-10; patches 0637–0643). It carries the kernel fix for the
 WireGuard Policy Routing panic on all six models, the `_BETA` channel marker in every build's
@@ -385,6 +392,21 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   **[inherited; deferred]** ↳ notes: `httpd-inherited-preauth-gaps.md`
 
 ---
+
+- **RT-BE92U retired from the build roster** (owner, 2026-09-10) — upstream Merlin has taken
+  the model on. Removed from the CI model list and both matrices, from `cut_fleet.sh`'s port
+  roster, and from the `MODELS` lists the tag and manifest-refresh steps use; `build_be92u.sh`
+  refuses unless `REAPER_BUILD_RETIRED=1`. Left DORMANT on purpose: the branch, worktree,
+  `overlays/RT-BE92U.patch`, the 15 provenance entries and the per-model tables in
+  `build-scripts` all stay. Its update lines are frozen at v3.1.2-beta rather than withdrawn —
+  `refresh_manifest` merges per model, so a model that is not passed in keeps the lines it has.
+  v3.1.2 beta was its last image. **Bringing it back is NOT just a roster edit:** its branch
+  stops receiving ports the moment it leaves `cut_fleet.sh`, so `overlays/RT-BE92U.patch` is
+  frozen against the canon of v3.1.2. Applying it to a later tree would revert every rung in
+  between on that model. The order to restore it is port first, then regenerate the overlay,
+  then re-add it to the roster — the same order, and for the same reason, as the 2026-08-10
+  overlay regression.
+  **[done]**
 
 ## Reported, investigated, closed as working-as-designed
 

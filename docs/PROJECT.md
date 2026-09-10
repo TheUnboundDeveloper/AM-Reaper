@@ -19,7 +19,7 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 
 ## Scope & hard rules
 
-- **Six-model RT-BE fleet.** RT-BEXXU is primary and hardware-validated; the four BCM4916 siblings and the newer BCM6765 **RT-BE92U** build from per-model branches of the same tree. Built from `release/src-rt-5.04behnd.4916` via `make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `rt-be92u`). Each model ships two variants (Standard / + AI Advisor).
+- **Five-model RT-BE fleet.** RT-BEXXU is primary and hardware-validated; the four BCM4916 siblings build from per-model branches of the same tree. Built from `release/src-rt-5.04behnd.4916` via `make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`). Each model ships two variants (Standard / + AI Advisor). RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. Its source, branch and identity overlay are kept dormant rather than deleted; the intended replacement is the GT-BE19000.
 - **The vendor tree is never redistributed.** The hardening is maintained as patches (this repo's `patches/`) on top of the upstream `3006.102.8-beta2` tag; the multi-GB source checkout stays local to each developer.
 - **Don't modify the closed blobs.** Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, the Broadcom `hostapd`/`wpa_supplicant` forks) are out of scope and treated as documented residual risk. Harden the userspace around them.
 

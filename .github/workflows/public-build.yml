@@ -116,7 +116,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.1.1'
+    ${{ inputs.version == '' && 'Reaper_v3.1.2'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -393,6 +393,7 @@ jobs:
             -e BASE_COMMIT="$BASE_COMMIT" \
             -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
             -e EXPECTED_VERSION="$EXPECTED_VERSION" \
+            -e REAPER_BETA="${{ github.ref == 'refs/heads/Dev' && '1' || '0' }}" \
             -e MODEL="${{ matrix.model }}" \
             -e VARIANT="${{ matrix.variant }}" \
             -e REPO_DIR=/work/reaper \
@@ -486,14 +487,33 @@ jobs:
           # EXPECTED_VERSION is e.g. "Reaper_v2.3.7"; tags are "v2.3.7-<MODEL>".
           V="${EXPECTED_VERSION#Reaper_}"
           # Dev = the beta channel. Same build, same series, same everything --
-          # only the published NAME differs: "-beta" is appended to the version
-          # segment of every tag/release (v3.0.0-beta-RT-BE96U) and release.yml
-          # marks it pre-release (both by the explicit input below and by its
-          # own *beta* match). Asset FILENAMES keep the built version string;
-          # the beta identity lives in the tag, the release name and the
-          # pre-release flag. A beta re-spin of the same version follows the
-          # normal re-release path: delete the beta tag or dispatch release.yml
-          # with allow_republish.
+          # only the NAME differs: "-beta" is appended to the version segment of
+          # every tag/release (v3.0.0-beta-RT-BE96U) and release.yml marks it
+          # pre-release (both by the explicit input below and by its own *beta*
+          # match).
+          #
+          # 2026-09-10: THE ASSET FILENAME NOW CARRIES IT TOO. This used to read
+          # "asset FILENAMES keep the built version string; the beta identity
+          # lives in the tag, the release name and the pre-release flag" -- and
+          # that was the reported problem: all three of those live on the web
+          # page, so once the .pkgtb was on disk nothing distinguished a Dev
+          # download from a main one. The build now stamps _BETA into EXTENDNO
+          # (build-scripts/ci/container_build.sh, driven by the REAPER_BETA env
+          # passed to the container), so the image is named
+          # ..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb and the router's own
+          # version string agrees with it.
+          #
+          # NOTE the two spellings are deliberate and are NOT the same field:
+          # the TAG segment stays "-beta" (lowercase, hyphen) because that is
+          # what release.yml parses and what keeps beta tags sortable next to
+          # final ones; the FILE token is "_BETA" (uppercase, underscore)
+          # because reaper_webs_update.sh truncates the running version at the
+          # first underscore and a hyphen would land inside the number it
+          # parses. release.yml translates between them.
+          #
+          # A beta re-spin of the same version follows the normal re-release
+          # path: delete the beta tag or dispatch release.yml with
+          # allow_republish.
           if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
             V="$V-beta"
           fi

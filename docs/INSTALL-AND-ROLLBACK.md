@@ -16,6 +16,7 @@ Reaper ships two build variants, each with a matching recovery loader:
 | File | What it is |
 |------|-----------|
 | `RT-BEXXU_3006_102.8_<EXTENDNO>_nand_squashfs.pkgtb` | **The firmware you flash** (normal install). |
+| — with `_BETA` in `<EXTENDNO>` | A **pre-release** from the Dev branch. Same install steps; less testing behind it. The router reports the same string on the dashboard and the About page, so you can always check which channel the firmware you are running came from. A release carries no marker. |
 | `RT-BEXXU_..._noMCP_...pkgtb` | Same firmware **without** the AI Advisor / MCP server compiled in (choose this if you don’t want the MCP feature present at all). |
 | `..._loader.pkgtb` | **Recovery loader only** — used in Rescue Mode, *not* a normal firmware. Don’t flash this from the Web UI as your firmware. |
 

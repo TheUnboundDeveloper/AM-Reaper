@@ -153,9 +153,15 @@ Choose one:
       deliberately; the pin is where the version lives.
 - [ ] `publish` = **unchecked** for this first run
 
-Publishing needs **two** gates: the branch must be `main` **and** `publish` must
-be ticked. So a dispatch on main with the box clear builds and verifies without
-shipping anything.
+Publishing needs **two** gates: the branch must be `main` **or** `Dev`, **and**
+`publish` must be ticked. So a dispatch with the box clear builds and verifies
+without shipping anything.
+
+**The branch also chooses the channel, and the channel is in the filename.**
+`Dev` builds are stamped `_BETA` (`..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb`)
+and published as a pre-release; `main` builds carry no marker. Nothing to tick —
+it follows the branch. `release.yml` refuses to publish an image whose name
+disagrees with its tag's channel, so a mislabelled asset cannot reach users.
 
 Watch for:
 

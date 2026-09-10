@@ -44,9 +44,42 @@ def scrub(text):
     # keep published logs host-neutral (matches the .mailmap /home/builder rule)
     return text.replace("/home/reaper", "/home/builder")
 
-def commit_from_log(version, target):
+# Channel file token. A build stamps the channel into EXTENDNO, so the image on
+# the ladder and the build log beside it are named "<version>_BETA", while the
+# manifest keys everything off the BARE version - the release is v3.1.2 whichever
+# channel an image of it came from. Everything below therefore has to look for a
+# token the manifest never carries. Same two spellings as everywhere else: the
+# FILE token is "_BETA" (uppercase, underscore); the tag's is "-beta".
+CHANNEL_TOKEN = {"stable": "", "beta": "_BETA", "alpha": "_ALPHA", "rc": "_RC"}
+
+def resolve_channel(version, target, prefix, asked):
+    """Decide which channel's artefacts this run is about.
+
+    Guessing wrong here records one channel's image sha under the other's name,
+    which is precisely the confusion the marker exists to prevent - so when the
+    ladder is ambiguous this REFUSES rather than picks. It only chooses on its
+    own when exactly one channel is present, and it says which.
+    """
+    if asked:
+        return asked, CHANNEL_TOKEN[asked]
+    found = []
+    for ch, tok in CHANNEL_TOKEN.items():
+        img = f"{LADDER}/{prefix}_3006_102.8_Reaper_{version}{tok}_nand_squashfs.pkgtb"
+        log = f"{LOGDIR}/build_{target}_Reaper_{version}{tok}.log"
+        if os.path.exists(img) or os.path.exists(log):
+            found.append(ch)
+    if len(found) > 1:
+        sys.exit(f"FATAL: {version} has artefacts for more than one channel "
+                 f"({', '.join(sorted(found))}) - pass --channel to say which "
+                 f"this run is about")
+    ch = found[0] if found else "stable"
+    if found:
+        print(f"  channel {ch} (auto-detected from the ladder/log names)")
+    return ch, CHANNEL_TOKEN[ch]
+
+def commit_from_log(version, target, ftok=""):
     """Read the build commit from the log's 'head: <commit> ...' line."""
-    src = f"{LOGDIR}/build_{target}_Reaper_{version}.log"
+    src = f"{LOGDIR}/build_{target}_Reaper_{version}{ftok}.log"
     if not os.path.exists(src):
         return None
     for ln in open(src, encoding="utf-8", errors="replace"):
@@ -55,8 +88,8 @@ def commit_from_log(version, target):
             return parts[1] if len(parts) > 1 else None
     return None
 
-def extract_logs(version, target):
-    src = f"{LOGDIR}/build_{target}_Reaper_{version}.log"
+def extract_logs(version, target, ftok=""):
+    src = f"{LOGDIR}/build_{target}_Reaper_{version}{ftok}.log"
     if not os.path.exists(src):
         print(f"  ! build log not found: {src} (skipping log extraction)")
         return None, None
@@ -94,11 +127,14 @@ def extract_logs(version, target):
     return (f"provenance/logs/{version}/build-{target}.summary.log",
             f"provenance/logs/{version}/reaper_verify-{target}.log")
 
-def collect_images(version, prefix):
+def collect_images(version, prefix, ftok=""):
     imgs = []
     for variant, tag in (("MCP", ""), ("noMCP", "_noMCP")):
         for suf in ("_nand_squashfs.pkgtb", "_nand_squashfs_loader.pkgtb"):
-            fn = f"{prefix}_3006_102.8_Reaper_{version}{tag}{suf}"
+            # <version><channel><variant><suffix> - the channel token sits with
+            # the version, the variant after it, exactly as the build lib names
+            # them; _noMCP is a variant, _BETA is not.
+            fn = f"{prefix}_3006_102.8_Reaper_{version}{ftok}{tag}{suf}"
             fp = os.path.join(LADDER, fn)
             if os.path.exists(fp):
                 imgs.append({"model": prefix, "variant": variant,
@@ -119,9 +155,17 @@ def main():
                     help="record logs + source-tree metadata only (skip image SHAs); "
                          "used for historical backfill where the images aren't kept")
     ap.add_argument("--note", default=None, help="set the release note field")
+    ap.add_argument("--channel", choices=sorted(CHANNEL_TOKEN),
+                    help="which channel's images and build log this run is about. "
+                         "The manifest is always keyed on the BARE version; this "
+                         "only says how the FILES are named. Omit it and the "
+                         "ladder is inspected - which refuses if both channels "
+                         "are present rather than guessing.")
     a = ap.parse_args()
 
-    commit = a.commit or commit_from_log(a.version, a.target)
+    channel, ftok = resolve_channel(a.version, a.target, a.model, a.channel)
+
+    commit = a.commit or commit_from_log(a.version, a.target, ftok)
     if not commit:
         sys.exit(f"FATAL: no --commit given and none found in the {a.version} log")
 
@@ -131,10 +175,10 @@ def main():
     print(f"  release/src/router tree = {router}")
     print(f"  release/src-rt tree     = {srcrt}")
 
-    imgs = [] if a.no_images else collect_images(a.version, a.model)
+    imgs = [] if a.no_images else collect_images(a.version, a.model, ftok)
     for i in imgs:
         print(f"  image {i['variant']:5} {i['file']}  {i['sha256'][:16]}...")
-    blog, vlog = extract_logs(a.version, a.target)
+    blog, vlog = extract_logs(a.version, a.target, ftok)
 
     mpath = f"{LEAN}/provenance/manifest.json"
     m = json.load(open(mpath))
@@ -146,6 +190,9 @@ def main():
     rel["source_tree"] = {"release/src/router": router, "release/src-rt": srcrt}
     if imgs:
         rel["images"] = imgs
+        # The images carry the channel in their filenames; say so in a field
+        # rather than leaving a reader to infer it from a substring.
+        rel["channel"] = channel
     if blog:
         rel["logs"] = {"build": blog, "verify": vlog}
     if a.note is not None:

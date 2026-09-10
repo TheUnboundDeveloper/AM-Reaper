@@ -32,8 +32,22 @@ BC="${3:-${BASE_COMMIT:-}}"
 [ -d "$SRC/release/src/router/www" ] || {
 	echo "gen_provenance: no www at $SRC/release/src/router/www" >&2; exit 1; }
 
-VER="$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' \
-	"$SRC/release/src-rt/version.conf" 2>/dev/null | head -1 || true)"
+# Take the WHOLE EXTENDNO, not just the Reaper_vX.Y.Z prefix. Since 2026-09-10
+# the build stamps a channel into it (Reaper_v3.1.2_BETA), and the old pattern
+# stopped at the version number - so a beta image carried "v3.1.2" on the About
+# page while its filename and every other surface said _BETA, and
+# reaper_verify's provenance-stamp check compared the two and failed the build.
+# The variant tag IS stripped: _noMCP is reported separately in `variant`, and
+# leaving it here would break that same comparison the other way round.
+# Falls back to the old extraction if EXTENDNO is missing or malformed, so a
+# tree without it still renders a version rather than a dash.
+VER="$(sed -n 's/^EXTENDNO=\(.*\)$/\1/p' \
+	"$SRC/release/src-rt/version.conf" 2>/dev/null | head -1 | sed 's/_noMCP$//' || true)"
+case "$VER" in
+	Reaper_v[0-9]*) ;;
+	*) VER="$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' \
+		"$SRC/release/src-rt/version.conf" 2>/dev/null | head -1 || true)" ;;
+esac
 
 # SOURCE_DATE_EPOCH when the caller sets it, so a reproducible build stays
 # reproducible; otherwise now, in UTC (never local - the build host's zone is

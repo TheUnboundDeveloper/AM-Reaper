@@ -12,8 +12,8 @@ esac
 BRANCH=gt-be98-pro
 TARGET=gt-be98_pro
 PREFIX=GT-BE98_PRO
-VARIANTS="MCP noMCP"
-STORAGE="nand"     # nand only (emmc is a build byproduct, never shipped) — confirm vs prior BE98_PRO ship set
+VARIANTS="${VARIANTS:-MCP noMCP}"
+STORAGE="${STORAGE:-nand}"     # nand only (emmc is a build byproduct, never shipped) — confirm vs prior BE98_PRO ship set
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$HERE/_reaper_env.sh"          # WINUSER + WIN_ASUS_ROOT (override: export WINUSER)
 SHIP_DIR="$WIN_ASUS_ROOT/asuswrt-merlin.ng/reaper-firmware"

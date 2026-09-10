@@ -55,6 +55,19 @@ param(
     [ValidateSet('BE96U', 'BE86U', 'BE88U', 'BE98', 'BE98Pro')]
     [string[]]$Models = @('BE96U', 'BE86U', 'BE88U', 'BE98', 'BE98Pro'),
 
+    # Which channel's images to stage. The build stamps _BETA into the image
+    # filename for every pre-release (build-scripts/_reaper_build_lib.sh), so
+    # this is not cosmetic: it decides which FILES this script looks for, and a
+    # mismatch is reported as a missing image rather than silently staging the
+    # wrong channel. BETA IS THE DEFAULT, for the same reason it is the default
+    # at build time - a release only becomes stable when Dev is merged to main,
+    # so staging a stable set has to be a deliberate act.
+    # NOTE $Version stays the bare release version (v3.1.2) everywhere: the
+    # folder names, SHA256SUMS names and latest.json are channel-agnostic on
+    # purpose. Only the image filename carries the marker.
+    [ValidateSet('Beta', 'Stable')]
+    [string]$Channel = 'Beta',
+
     # Local firmware ladder holding the built images (default: sibling asuswrt-merlin.ng mirror)
     [string]$LadderDir,
 
@@ -157,10 +170,14 @@ if (-not (Test-Path $LadderDir)) { throw "Firmware ladder not found: $LadderDir 
 
 # --- 1. Plan: confirm every expected image exists before touching anything ---
 $plan = @(); $missing = @()
+$chanTag = if ($Channel -eq 'Beta') { '_BETA' } else { '' }
+Write-Host ("CHANNEL: {0} -- staging images named Reaper_{1}{2}*" -f $Channel.ToUpper(), $Version, $chanTag) -ForegroundColor Cyan
+if ($Channel -eq 'Stable') { Write-Host "  (a STABLE publish: these images carry no pre-release marker)" -ForegroundColor Yellow }
+
 foreach ($m in $Models) {
     $prefix = $PrefixMap[$m]
     foreach ($variant in @('', '_noMCP')) {
-        $file = "${prefix}_3006_102.8_Reaper_${Version}${variant}_nand_squashfs.pkgtb"
+        $file = "${prefix}_3006_102.8_Reaper_${Version}${chanTag}${variant}_nand_squashfs.pkgtb"
         $src = Join-Path $LadderDir $file
         if (Test-Path $src) { $plan += [pscustomobject]@{ Model = $m; Prefix = $prefix; File = $file; Src = $src } }
         else { $missing += $file }
@@ -171,7 +188,27 @@ if ($missing.Count -gt 0) {
     if (-not $AllowPartial) { throw "Not all images for $Version are in the ladder. Build them first, narrow -Models, or pass -AllowPartial." }
     Write-Host "continuing without the missing images (-AllowPartial)" -ForegroundColor Yellow
 }
-if ($plan.Count -eq 0) { throw "Nothing to stage for $Version." }
+if ($plan.Count -eq 0) { throw "Nothing to stage for $Version (channel $Channel). If these are pre-release images, they are named _BETA; if they are a release, pass -Channel Stable." }
+
+# A folder holding both a marked and an unmarked image of the same version is
+# the exact confusion this marker exists to prevent - and it would reach users,
+# who cannot tell the branches apart in the first place. Refuse it.
+$otherTag  = if ($Channel -eq 'Beta') { '' } else { '_BETA' }
+$otherSeen = @()
+foreach ($m in $Models) {
+    $prefix  = $PrefixMap[$m]
+    $destDir = Join-Path $RepoRoot ((Get-CanonicalRel $m) -replace '/', '\')
+    if (-not (Test-Path $destDir)) { continue }
+    foreach ($variant in @('', '_noMCP')) {
+        $other = "${prefix}_3006_102.8_Reaper_${Version}${otherTag}${variant}_nand_squashfs.pkgtb"
+        if ($other -eq '') { continue }
+        if (Test-Path (Join-Path $destDir $other)) { $otherSeen += "$m/$other" }
+    }
+}
+if ($otherSeen.Count -gt 0) {
+    $otherSeen | ForEach-Object { Write-Host "  ALREADY STAGED (other channel): $_" -ForegroundColor Red }
+    throw "releases/ already holds $($otherSeen.Count) image(s) for $Version from the OTHER channel. One version folder must not mix a pre-release and a release image - remove the ones that should not ship before staging."
+}
 
 # --- 2. Copy, hash, verify, write per-model SHA256SUMS (canonical folder case) ---
 $staged = @()

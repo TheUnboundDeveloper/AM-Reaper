@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.1** · 2026-09-08 <!--@stamp-->
+> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.1** <!--@treever--> — `3006.102.8_Reaper_v3.1.1`, built on RT-BE96U. A **standby for the router's DNS list**: a health check watches the LAN resolver you name and, when it stops answering, moves it to the end of the router's upstream list and puts it back when it recovers — so a filter such as AdGuard Home or Pi-hole can be the only DNS the router hands out without its outage becoming the house's. It lives on a new **Failover** tab with the three dnsmasq switches that used to need a config file. With it: an **empty box on the VPN page no longer deletes a certificate**, and a server that already lost one rebuilds it from the authority it still has, so existing client profiles keep working; **Cancel on the firmware page cancels** an upload instead of just hiding the overlay; Gatekeeper stops calling a 6 GHz client **Wired** and stops showing a multi-link device twice or on a band it left; and a device whose name dnsmasq gave to another one is no longer **Unknown device**. The series stands at **636 patches** (0621–0636 for v3.1.1); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.2** <!--@treever--> — `3006.102.8_Reaper_v3.1.2`, built on RT-BE96U. **Routing a device through WireGuard no longer reboots the router**: the restart a few seconds after Apply and Confirm was a kernel panic in the accelerator's own /proc handler, which Reaper is the only thing in the system that reads — fixed in the kernel, on all six models, with a build-time check so it cannot come back. **A pre-release now says so**: every build is marked `_BETA` in its filename unless it is explicitly built as a release, and the dashboard shows a Beta tag beside the version. With them: the router **watches its own firewall chains** and re-pins them if something displaces them; **Warden's outbound logging is held in place by a test** that reintroduces eleven past faults and confirms each is caught, and says which of the four kinds of silence you are looking at; **Firewall › Logging headings match their columns** and outbound and router-originated blocks carry their own badges; **Addons opens a page** like every other menu item; **DoT servers can be used in order** instead of at random; and the **resolver health check carries both an IPv6 and an IPv4 address** for the server it watches. The series stands at **643 patches** (0637–0643 for v3.1.2); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), plus the newer **RT-BE92U** (BCM6765, experimental) |
@@ -19,6 +19,93 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.2 — a WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one
+
+*Built on RT-BE96U. Cut as patches 0637–0643, bringing the series to 643. The RT-BE86U, RT-BE88U,
+GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+
+**Routing a device through WireGuard no longer reboots the router.** Policy routing to an OpenVPN
+client, to the WAN, or to a block worked. Pick a WireGuard client and the router restarted a few
+seconds after Apply and Confirm, every time, and then kept doing it. It was never a reboot: it was a
+kernel panic, which is why nothing in the policy-routing code could have caused it and why nothing
+was ever found there. WireGuard is the one target that needs the router to tell the traffic
+accelerator to leave those flows alone, and the accelerator's list lives in a file the kernel
+publishes. Reading that file back — which the router does so that it only ever removes entries it
+added itself, and never one belonging to your own WireGuard server or a VPN Director rule — hit a
+fault in the kernel's handler for it, and this kernel is built to reboot rather than carry on after a
+fault like that. The handler is fixed. Nothing else in the system had ever read that file, which is
+why the fault sat there untouched; an empty list never reached it, so it only ever bit once you had a
+rule. The two neighbouring handlers had a related flaw that a badly formed write could have used to
+corrupt kernel memory, and those are fixed at the same time. All six models shared the code and all
+six could be restarted the same way; every one of them now carries the fix, and a build-time check
+refuses to build any of them without it — which matters, because that file sits outside the part of
+the tree a model port normally copies and the fix leaves no trace an ordinary build check could look
+for.
+
+**A pre-release says so, in its filename and on the router.** Every build is marked `_BETA` unless it
+is explicitly built as a release, so the firmware file is named for what it is and the dashboard shows
+a **Beta** tag beside the version. That way round on purpose: an image only becomes stable when the
+Dev branch is merged, so a pre-release is what a build normally *is*, and forgetting to say so can
+then only ever label something too cautiously — never pass a beta off as a release. The marker is
+uppercase so it can be picked out of a folder of long filenames without opening anything. Two
+different builds could previously end up sharing one name; staging now compares contents rather than
+names, leaves an identical image alone, stages a genuinely different one under its own name, and
+always rewrites the checksum list to match what is actually there.
+
+**The router watches its own firewall chains.** With add-on scripts and other software writing
+firewall rules on the same box, nothing had ever checked that Reaper's rules were still where they
+were put — and the dangerous direction is not deletion but insertion, because a rule slipped in
+front of a block lets traffic through while the chain still looks present and still ends in a block.
+Two things are now checked every few minutes: that each of Warden's block chains still ends in the
+block itself with nothing in front of it, and that Reaper's own entry points are still first in line.
+A chain found disarmed is reported as critical; displaced entry points are re-pinned automatically
+and the displacement is logged, so it is visible rather than merely repaired.
+
+**Warden's outbound block logging is held in place by a test, and says why it is quiet.** This had
+been fixed before and come back more than once, which is a sign the guard was in the wrong place: the
+existing check confirmed the log lines were *accepted*, but nothing required the outbound ones to be
+*produced*. Remove them and everything still looked healthy. The check now covers the whole path — a
+distinct outbound label, logged before the block rather than after, on the same switch as inbound, on
+a rule that is actually reachable, counted correctly, and told apart from the others on the Logging
+page — and it ships with a suite that deliberately reintroduces eleven past and plausible versions of
+the fault and confirms each one is caught, so the check is known to work rather than assumed to.
+Separately, an empty outbound log used to mean four indistinguishable things: outbound filtering off,
+the chain missing, logging off, or simply nothing having matched. The last is the ordinary case —
+something on your network has to reach *for* a flagged address, where inbound gets a steady supply
+from the internet — and the state is now logged once whenever it changes, with the count so far.
+
+**Firewall › Logging reads correctly.** The first two headings were the wrong way round — the action
+column headed *Time*, the timestamp column *Action* — and the third was headed *Chain* while showing
+the interface the traffic arrived on. Outbound and router-originated blocks had also been folded back
+under a single **WARDEN** label, despite having been given separate log prefixes precisely so they
+could be told apart; they carry their own badges again.
+
+**The Addons menu opens a page, like every other menu.** It was the one item in the navigation that
+did not go anywhere when clicked: it unfolded a list of sub-entries instead. It now opens the first
+installed add-on page, with the rest as tabs across the top. Both the dashboard's rail and the shell's
+rail changed together.
+
+**DNS-over-TLS servers can be used in order instead of at random.** With DNS Privacy on, the router
+rotates between the DoT servers you list, so they share the traffic and none of them is a standby —
+there is no failover order at all. A new switch on the Failover tab uses them in the order given
+instead: the first until it stops answering, the rest in reserve. Off by default, and the page says so
+plainly when DNS Privacy is off and the switch has nothing to act on. Worth knowing either way: with
+DNS Privacy on, these servers replace the router's WAN DNS list, so a filter on your own network is
+out of the path unless it is itself one of them.
+
+**The resolver health check prefers IPv6 and falls back to IPv4 instead of giving up.** It could hold
+only one address for the server it watches, so an IPv6 address plus an IPv6 outage meant the check
+quietly stopped. The server can now carry both addresses. IPv6 is tried first and IPv4 is used
+whenever IPv6 is unavailable or does not answer, so the same server stays watched right through an
+outage; whether the router has IPv6 at all is checked locally before any query goes out, so a router
+without it spends nothing; and a server counts as down only when *every* address it has has failed, so
+a broken IPv6 path can no longer push aside a server answering perfectly well on IPv4.
+
+**Also in this rung.** Auto-logout is an inactivity timeout on every page, including the fourteen
+live-updating pages that used to switch it off and never switch it back on, and the dashboard reads
+the "Logout after … minutes" setting instead of its own fixed fifteen — 0 really does mean off. The
+AiMesh backhaul carrier is no longer parked out from under a node that has just joined.
 
 ## What's new in v3.1.1 — a standby for the router's DNS list, and a VPN certificate that survives a save
 

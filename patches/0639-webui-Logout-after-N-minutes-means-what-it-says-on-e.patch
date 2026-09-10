@@ -1,0 +1,162 @@
+From 72627e36dfba966fa1a00cc828ced7d97e74a455 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 9 Sep 2026 17:55:10 -0400
+Subject: [PATCH] webui: "Logout after N minutes" means what it says, on every
+ page
+
+Two defects, one setting. The owner set 30 minutes and was logged out at 15.
+
+The dashboard carried its own idle timer, added in v1.4.7 and hardcoded to
+IDLE=900000 - fifteen minutes - reading http_autologout nowhere. The shipped
+default is 30, so every router on defaults logged its operator out at half the
+advertised time, and a router where auto-logout had been switched off, which
+the GUI's own validator accepts as 0, was logged out every fifteen minutes
+regardless. It now reads the value: 0 disables, anything else is honoured to
+the minute, and an unreadable value keeps the old fifteen rather than leaving
+an unattended session open for ever.
+
+The stock pages had the opposite problem and a worse one. state.js sets
+AUTOLOGOUT_MAX_MINUTE from the same nvram value and decrements it once per 3 s
+status poll - the arithmetic is right, but nothing resets it. Every assignment
+in the tree is the load-time one, the decrement, or a page zeroing it. So it
+was a countdown from PAGE LOAD, not an idle timeout: an operator typing into a
+long form was logged out mid-edit, while one who clicked between pages
+restarted the countdown and might never be logged out at all. That is why the
+same setting reads as too aggressive to one person and useless to another.
+
+Fourteen pages also set it to 0 on load to suspend it while they live-update -
+the traffic monitors, the system log, the bandwidth monitor, the captive portal
+- and only device-map/amesh.asp ever restores it. An admin session parked on
+one of those never closed, and nothing server-side would have closed it either:
+http_login_timeout() only evicts a session when a DIFFERENT IP logs in and the
+current one is over 60 s old.
+
+Both halves are the same root cause, so the counter is retired (set to 0) and
+replaced with a real inactivity timer rather than patched. Adding a reset would
+have fixed the first half and left the second exactly as it was, because a
+reset must not resurrect a timer a page deliberately suspended - 0 is also what
+"disabled" looks like. Retiring it means those fourteen pages now suspend an
+already-dead variable, which closes the parked-session gap without editing any
+of them; amesh.asp saves and restores 0, harmlessly.
+
+Frames were the trap. index.asp owns the session countdown and frames the
+device-map panels, which is why amesh.asp reaches into
+parent.AUTOLOGOUT_MAX_MINUTE. If every document armed its own timer, an idle
+panel would log out an operator busy in the parent. So a framed document arms
+nothing: it attaches the same listeners and forwards activity to
+top.reaperIdleReset(). Only the top document holds a timer. The login page is
+skipped, and an unreadable value leaves it off, which is what upstream already
+does - parseInt('') * 20 is NaN and never fires.
+
+Verified against the upstream base and against ASUS's own GPL source: the
+counter, updateStatus() and the 3 s poll are byte-identical in all three, so
+the stock-page behaviour is inherited, not ours. The dashboard file does not
+exist upstream at all - that half was ours. This is therefore a deliberate
+divergence inside a file upstream also edits; expect a conflict at the next
+base bump. verify_markers requires reaperIdleReset twice in the staged
+state.js and forbids IDLE=900000, so an image that lost either cannot ship.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 14 ++++-
+ release/src/router/www/state.js            | 59 ++++++++++++++++++++++
+ 2 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 7b3f2885be..4d781600f6 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1146,8 +1146,18 @@ function pollTemp(){
+ }
+ pollTemp(); setInterval(pollTemp, 5000);
+ 
+-/* v1.4.7: idle auto-logout (15 min) - closes an unattended admin session on the dashboard */
+-(function(){ var IDLE=900000,t; function go(){ try{ location='/Logout.asp'; }catch(e){} }
++/* v1.4.7: idle auto-logout - closes an unattended admin session on the dashboard.
++   v3.1.2: it now honours Administration > System > "Logout after ..."
++   (nvram http_autologout, minutes). It was hardcoded to 15 minutes and read the
++   setting nowhere, so a router set to the shipped default of 30 logged the
++   operator out at 15, and one set to 0 - the value the GUI validator accepts,
++   and which every other page treats as "off" - was logged out anyway. 0 now
++   disables this timer. A missing or unparsable value keeps the old 15 minutes
++   rather than leaving an admin session open for ever, which also covers the
++   mock server, where the nvram expression is not interpolated. */
++(function(){ var m=parseInt('<% nvram_get("http_autologout"); %>',10);
++  if(m===0) return;                       /* 0 = auto-logout disabled */
++  var IDLE=(m>0?m:15)*60000,t; function go(){ try{ location='/Logout.asp'; }catch(e){} }
+   function r(){ clearTimeout(t); t=setTimeout(go,IDLE); }
+   var es=['mousemove','mousedown','keydown','touchstart','scroll','wheel'];
+   for(var i=0;i<es.length;i++) window.addEventListener(es[i],r,{passive:true}); r(); })();
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 80838b3944..b38c345d77 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -2998,6 +2998,65 @@ function hadPlugged(deviceType){
+ 
+ //Update current system status
+ var AUTOLOGOUT_MAX_MINUTE = parseInt('<% nvram_get("http_autologout"); %>') * 20;
++
++/* --- reaper v3.1.2: make "Logout after N minutes" mean what it says ---------
++ * The counter above is upstream's (identical in Merlin and in ASUS's own GPL
++ * source - verified, not assumed). It is decremented once per 3 s status poll
++ * and NOTHING resets it, so it is a countdown from PAGE LOAD, not an idle
++ * timeout: an operator typing into a long form is logged out mid-edit, while
++ * one who clicks between pages reloads this file and may never be logged out at
++ * all. That is why the same setting reads as "too aggressive" to one person and
++ * "does nothing" to another.
++ *
++ * Fourteen pages also set it to 0 on load to suspend it while they live-update
++ * (Traffic Monitor, System Log, Bandwidth Monitor, Spectrum, Captive Portal,
++ * the ROG dashboards) and only device-map/amesh.asp ever restores it - so an
++ * admin session parked on one of those never closes at all, and there is no
++ * server-side idle expiry to catch it.
++ *
++ * Both halves are the same root cause, so retire the counter and replace it
++ * with a real inactivity timer. Leaving it running alongside would keep logging
++ * active operators out on every page that does not suspend it; setting it to 0
++ * here also means a page that "suspends" it is setting an already-retired
++ * variable, which closes the parked-session gap without touching 14 stock
++ * pages. Pages that save and restore it (amesh.asp) save and restore 0, which
++ * is harmless.
++ *
++ * 0 (or unset) still means disabled, exactly as the GUI's validator and the
++ * stock code mean it. */
++(function(){
++	var m = parseInt('<% nvram_get("http_autologout"); %>', 10);
++	AUTOLOGOUT_MAX_MINUTE = 0;              /* retire upstream's countdown */
++	if (!(m > 0)) return;                   /* 0 / unset / unparsable = disabled */
++	/* the login page is not a session to time out, and redirecting it would only
++	 * bounce the operator through Logout.asp back to itself */
++	try { if (/Main_Login\.asp/i.test(location.pathname)) return; } catch(e){}
++
++	var ES = ['mousemove','mousedown','keydown','touchstart','scroll','wheel'];
++	function listen(fn){
++		for (var i = 0; i < ES.length; i++) {
++			try { window.addEventListener(ES[i], fn, {passive:true}); }
++			catch(e) { window.addEventListener(ES[i], fn, false); }
++		}
++	}
++
++	if (window.top !== window.self) {
++		/* A framed page - the device-map panels under index.asp's statusframe.
++		 * It must NEVER run its own timer: an idle panel would log out an
++		 * operator who is busy in the parent. It only forwards activity to the
++		 * document that owns the session. Same origin, so this is a direct call;
++		 * guarded because the parent may not have armed one (auto-logout off). */
++		listen(function(){ try { if (top.reaperIdleReset) top.reaperIdleReset(); } catch(e){} });
++		return;
++	}
++
++	var t;
++	function go(){ try { location = '/Logout.asp'; } catch(e){} }
++	function reset(){ clearTimeout(t); t = setTimeout(go, m * 60000); }
++	window.reaperIdleReset = reset;         /* framed children call this */
++	listen(reset);
++	reset();
++})();
+ var error_num = 5;
+ function updateStatus(){
+ 	show_top_status();
+-- 
+2.25.1
+

@@ -428,6 +428,42 @@ if [ -n "${EXPECTED_VERSION:-}" ] && [ "$VER" != "$EXPECTED_VERSION" ]; then
 fi
 echo "   version: $VER (matches EXPECTED_VERSION)"
 
+# --- channel marker (2026-09-10) ---------------------------------------------
+# The patch series carries the BARE version (Reaper_v3.1.2) and cannot know
+# which channel a given run publishes on. The branch knows: a Dev publish is the
+# beta channel, main is stable. Stamp it HERE, after the assertion above has
+# confirmed the series produced the version the workflow declares -- so the
+# marker can never mask a version mismatch, which is the one thing that
+# assertion exists to catch.
+#
+# WHY THE FILENAME AND NOT JUST THE TAG: the tag and the release title live on
+# the web page. The .pkgtb ends up in somebody's downloads folder, and until now
+# nothing in it said which channel it came from -- which is precisely what users
+# reported. EXTENDNO is the single string the image name, the dashboard version
+# pill, the About page and the provenance record all derive from, so stamping it
+# once covers every surface at the same time.
+#
+# DO NOT stamp version.conf here. reaper_build() in _reaper_build_lib.sh already
+# does it, per variant, and it has to: version.conf is `git checkout`-ed back
+# between the MCP and noMCP passes, so a stamp applied once from out here would
+# be reverted before the second image was built. Export the channel instead and
+# let the ONE implementation do the work -- CI and a local build then produce
+# byte-identically named images by construction rather than by two pieces of
+# code agreeing.
+#
+# EXPORT IT EXPLICITLY, 0 OR 1, NEVER UNSET. The library defaults to BETA when
+# REAPER_BETA is absent (that default is deliberate and correct for a human at a
+# keyboard). Leaving it unset here would silently mark every clean-room build on
+# main as a pre-release, which is the failure this comment exists to prevent.
+export REAPER_BETA="${REAPER_BETA:-0}"
+if [ "$REAPER_BETA" = "1" ]; then
+  VER="${VER}_BETA"
+  SHORT_VER="${VER#Reaper_}"
+  echo "   channel: BETA (pre-release) -- images and the GUI will read $VER"
+else
+  echo "   channel: STABLE (release) -- images keep the unmarked name $VER"
+fi
+
 # --- source-level reproducibility gate --------------------------------------
 # provenance/manifest.json records the release/src/router tree hash produced by
 # a given patch count. When the series length matches a recorded release, the

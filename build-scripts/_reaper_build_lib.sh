@@ -279,29 +279,87 @@ _rb_crypto_postmortem() {   # $1 = label
   echo "--- end post-mortem ---"
 }
 
+# 2026-09-10 (owner: "I have 2 files with the same name ... representing
+# different versions of a valuable piece of intellectual capital. Does that
+# sound right?"). It did not. This step used to print "[skip exists]" and move
+# on, which left the OLDER image on the ladder under the plain name, the NEWER
+# one only in the build target dir, and SHA256SUMS still describing the old one
+# - two different builds answering to one filename, with nothing in the log
+# saying so unless you read it closely. Now the two cases are separated:
+#   - byte-identical  -> genuinely nothing to do, say so and keep the ladder copy
+#   - DIFFERENT       -> ship it under the next free _rN name, loudly, and
+#                        always regenerate the sums so the file list is true
+# The real fix for "which build is this?" is the _BETA stamp in reaper_build
+# below; this is the backstop for when a name is reused anyway.
 reaper_ship() {   # $1 = VER
-  local VER="$1" shipped=0 v tag st suf f
+  local VER="$1" shipped=0 v tag st suf f df n b sh x have
   [ -z "${SHIP_DIR:-}" ] && { echo "no SHIP_DIR set; skip ship"; return 0; }
-  echo "== ship $PREFIX $VER -> $SHIP_DIR (never overwrites an existing ladder entry) =="
+  echo "== ship $PREFIX $VER -> $SHIP_DIR (an existing ladder entry is never overwritten) =="
   for v in $VARIANTS; do tag=""; [ "$v" = "noMCP" ] && tag="_noMCP"
     for st in $STORAGE; do
       for suf in "_squashfs.pkgtb" "_squashfs_loader.pkgtb"; do
         f="${PREFIX}_3006_102.8_${VER}${tag}_${st}${suf}"
         [ -f "$TDIR/$f" ] || continue
-        if [ -e "$SHIP_DIR/$f" ]; then echo "  [skip exists] $f"; continue; fi
-        if cp "$TDIR/$f" "$SHIP_DIR/$f"; then
-          b=$(sha256sum "$TDIR/$f"|awk '{print $1}'); s=$(sha256sum "$SHIP_DIR/$f"|awk '{print $1}')
-          [ "$b" = "$s" ] && echo "  [ship+MATCH] $f" || echo "  [SHIP MISMATCH] $f"
+        b=$(sha256sum "$TDIR/$f"|awk '{print $1}')
+        df="$f"; have=""
+        # "already on the ladder" has to mean "these exact bytes are already on
+        # the ladder" - under the plain name OR under any _rN. Re-running a ship
+        # is a normal thing to do, and without this it would walk _r1, _r2,
+        # _r3 ... manufacturing the very confusion the rename exists to prevent.
+        # The _rN goes in the VERSION position, not on the end: it keeps the
+        # storage/suffix fields last where everything that reads these names
+        # expects them (a trailing _rN would turn "..._squashfs_loader.pkgtb"
+        # into "..._squashfs_loader_r1.pkgtb" and the loader would stop being
+        # the tail), and it matches the _r1 that was placed here by hand on
+        # 2026-09-09 - so the sequence continues instead of starting a second,
+        # differently-spelled convention alongside the first.
+        for x in "$SHIP_DIR/$f" "$SHIP_DIR/${PREFIX}_3006_102.8_${VER}"_r*"${tag}_${st}${suf}"; do
+          [ -e "$x" ] || continue
+          [ "$b" = "$(sha256sum "$x"|awk '{print $1}')" ] && { have="$x"; break; }
+        done
+        if [ -n "$have" ]; then echo "  [identical, keep] $(basename "$have")"; continue; fi
+        if [ -e "$SHIP_DIR/$f" ]; then
+          n=1
+          while [ -e "$SHIP_DIR/${PREFIX}_3006_102.8_${VER}_r${n}${tag}_${st}${suf}" ]; do n=$((n+1)); done
+          df="${PREFIX}_3006_102.8_${VER}_r${n}${tag}_${st}${suf}"
+          echo "  [COLLISION] $f is already on the ladder with DIFFERENT content"
+          echo "              ladder sha: $(sha256sum "$SHIP_DIR/$f"|cut -c1-16)  new sha: $(echo "$b"|cut -c1-16)"
+          echo "              shipping the new one as $df - decide which to keep, do not guess from the name"
+        fi
+        if cp "$TDIR/$f" "$SHIP_DIR/$df"; then
+          sh=$(sha256sum "$SHIP_DIR/$df"|awk '{print $1}')
+          [ "$b" = "$sh" ] && echo "  [ship+MATCH] $df" || echo "  [SHIP MISMATCH] $df"
           shipped=1
         fi
       done
     done
   done
+  # regenerate over EVERY file matching this version, _rN entries included, so
+  # the sums file can never describe a subset of what is actually on the ladder
   [ $shipped = 1 ] && ( cd "$SHIP_DIR" && sha256sum ${PREFIX}_*_${VER}*_squashfs*.pkgtb 2>/dev/null > "SHA256SUMS-${PREFIX}-${VER}.txt"; echo "  wrote SHA256SUMS-${PREFIX}-${VER}.txt" )
 }
 
 reaper_build() {
-  local DO_SHIP="${1:-}" VER cur ok=1 v st tag img
+  local DO_SHIP="" VER cur ok=1 v st tag img a
+  # Args are order-free tokens. `ship` stages onto the ladder; `stable` says
+  # this build is a RELEASE. Everything else is a pre-release.
+  #
+  # THE DEFAULT IS BETA, DELIBERATELY (owner, 2026-09-10). Under the release
+  # flow an image only becomes stable once Dev is PR-merged to main, so every
+  # local and every Dev build genuinely IS a pre-release - beta is the honest
+  # default, not merely the safe one. It is also the only arrangement where
+  # forgetting the word cannot hurt: forget it on a Dev build and the image is
+  # still labelled correctly; forget it on a PROD cut and you get a BETA name
+  # you will notice immediately. An opt-IN marker fails the other way round,
+  # silently, which is the same shape of defect as the old "[skip exists]".
+  # REAPER_BETA=0 in the environment is the same as passing `stable`.
+  for a in "$@"; do
+    case "$a" in
+      ship)                    DO_SHIP=ship ;;
+      stable|-stable|--stable) REAPER_BETA=0 ;;
+      beta|-beta|--beta)       REAPER_BETA=1 ;;
+    esac
+  done
   cd "$R" || return 9
 
   # --- branch safety: must be on the model's branch, working tree clean-ish ---
@@ -314,6 +372,35 @@ reaper_build() {
 
   VER=$(grep -oE 'Reaper_v[0-9]+\.[0-9]+(\.[0-9]+)?[a-z]?' release/src-rt/version.conf | head -1)
   [ -z "$VER" ] && { echo "ABORT: could not read Reaper_vX.Y from release/src-rt/version.conf"; return 7; }
+
+  # --- CHANNEL MARKER (owner, 2026-09-10: "a Beta should show in the file name,
+  # GUI etc." / "normies are finding it difficult to tell Dev and main apart")
+  # -------------------------------------------------------------------------
+  # A pre-release SAYS it is one in the only two places anyone actually reads:
+  # the .pkgtb filename and the firmware version string the GUI renders. Both
+  # derive from EXTENDNO, so stamping it once covers the image name, the
+  # dashboard, the About page, the stock Firmware Upgrade page and the
+  # provenance record together - there is no second place to keep in step.
+  #
+  # WHY UPPERCASE: the marker exists to be spotted in a directory listing by
+  # someone who is not going to open anything. "_BETA" is the only uppercase
+  # run in an otherwise mixed-case name, so the eye lands on it; "_beta" reads
+  # as just another lowercase token among Reaper_/noMCP/nand/squashfs.
+  #
+  # WHY "_BETA" AND NOT "-BETA": reaper_webs_update.sh derives the RUNNING
+  # version with `sed 's/^Reaper_v//; s/-g.*//; s/_.*//; s/[a-z]$//'`, so an
+  # underscore-separated suffix is already stripped by shipped machinery - the
+  # same way _noMCP is - while a hyphen would land inside the number it parses
+  # and every update comparison would start reading 0.0.0. The update
+  # MANIFEST's own beta channel keeps its "-beta" spelling: that is a different
+  # field (a manifest line key), not this version string.
+  if [ "${REAPER_BETA:-1}" = "0" ]; then
+    echo "== CHANNEL: STABLE (release) -- images and the GUI will read $VER =="
+  else
+    VER="${VER}_BETA"
+    echo "== CHANNEL: BETA (pre-release) -- images and the GUI will read $VER =="
+    echo "   pass 'stable' to build a release image under the unmarked name."
+  fi
 
   local LOG=/home/reaper/build_${TARGET}_${VER}.log
   exec > >(tee "$LOG") 2>&1
@@ -361,13 +448,18 @@ reaper_build() {
   fi
 
   for v in $VARIANTS; do
-    if [ "$v" = "noMCP" ]; then
-      sed -i 's/^RTCONFIG_REAPER_MCP=y$/# RTCONFIG_REAPER_MCP is not set/' release/src/router/config_base
-      sed -i "s/^EXTENDNO=${VER}\$/EXTENDNO=${VER}_noMCP/" release/src-rt/version.conf
-      echo "noMCP flip: $(grep REAPER_MCP release/src/router/config_base) | $(grep ^EXTENDNO= release/src-rt/version.conf)"
-    fi
-    _rb_variant "$v"
     tag=""; [ "$v" = "noMCP" ] && tag="_noMCP"
+    [ "$v" = "noMCP" ] && sed -i 's/^RTCONFIG_REAPER_MCP=y$/# RTCONFIG_REAPER_MCP is not set/' release/src/router/config_base
+    # Stamp EXTENDNO for THIS variant: <version>[_BETA][_noMCP].
+    # Unconditional now, where it used to fire only for noMCP: with a beta
+    # suffix the committed value no longer equals $VER, and version.conf is
+    # git-checkout'd back between variants, so a stamp applied once would be
+    # reverted before the MCP image was built and the beta marker would
+    # silently vanish from exactly one of the two images - the failure mode
+    # this whole change exists to stop.
+    sed -i "s|^EXTENDNO=.*\$|EXTENDNO=${VER}${tag}|" release/src-rt/version.conf
+    echo "stamp: $(grep ^EXTENDNO= release/src-rt/version.conf) | $(grep REAPER_MCP release/src/router/config_base)"
+    _rb_variant "$v"
     for st in $STORAGE; do
       img="$TDIR/${PREFIX}_3006_102.8_${VER}${tag}_${st}_squashfs.pkgtb"
       if [ -f "$img" ]; then echo "  [OK] $v/$st  $(basename "$img")  sha:$(sha256sum "$img"|cut -c1-16)"

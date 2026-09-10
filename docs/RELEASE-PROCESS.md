@@ -21,6 +21,39 @@ The buildable tree (Asuswrt-Merlin base + proprietary Broadcom/ASUS prebuilts)
 is not in this repository — CI reconstructs the *source* from `patches/` and
 pulls the pinned toolchain/prebuilts at build time.
 
+### Channel: every build says whether it is a beta
+
+Added 2026-09-10, because people downloading from `Dev` and from `main` could
+not tell the two apart once the file was on disk.
+
+```
+build_be96u.sh ship            ->  ..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb
+build_be96u.sh ship stable     ->  ..._Reaper_v3.1.2_nand_squashfs.pkgtb
+```
+
+**Beta is the default.** Under the flow below, an image only becomes stable once
+`Dev` is PR-merged into `main`, so every local build and every `Dev` build
+genuinely *is* a pre-release — beta is the honest default, not just the cautious
+one. It is also the only arrangement in which forgetting the word cannot hurt:
+forget it on a `Dev` build and the image is still labelled correctly; forget it
+on a PROD cut and you get a `_BETA` name you notice at once. An opt-*in* marker
+fails the other way round, silently.
+
+The marker is stamped into `EXTENDNO`, which is what the image filename, the
+dashboard version pill, the About page, the stock Firmware Upgrade page and the
+provenance record all derive from — so there is no second place to keep in step.
+It is uppercase on purpose: it exists to be spotted in a directory listing by
+someone who is not going to open anything, and `_BETA` is the only uppercase run
+in an otherwise mixed-case name.
+
+`_BETA` and not `-BETA`: `reaper_webs_update.sh` derives the running version
+with `sed 's/_.*//'`, so an underscore-separated suffix is already stripped by
+shipped machinery — the same way `_noMCP` is — while a hyphen would land inside
+the number it parses. The update *manifest's* own beta channel keeps its
+`-beta` spelling; that is a different field.
+
+`REAPER_BETA=0` in the environment is the same as passing `stable`.
+
 ## Cutting a rung
 
 A "rung" is one source release: the patches plus the four artifacts that keep

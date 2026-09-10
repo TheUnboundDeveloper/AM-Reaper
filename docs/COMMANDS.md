@@ -36,6 +36,9 @@ patch series is the release — the images are just what that series compiles to
 ```bash
 build-scripts/build_be96u.sh            # build, leave the image in the tree
 build-scripts/build_be96u.sh ship       # build, then copy to the release ladder
+build-scripts/build_be96u.sh ship stable  # ... as a RELEASE (no _BETA marker)
+
+VARIANTS=MCP build-scripts/build_be96u.sh ship   # one variant instead of both
 ```
 
 One launcher per model — `build_be96u.sh`, `build_be86u.sh`, `build_be88u.sh`,

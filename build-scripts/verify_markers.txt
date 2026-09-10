@@ -261,10 +261,14 @@ usr/lib/libshared.so|/var/lib/misc/reaper_hostnames|1
 sbin/rc|DNSMASQ_SUPPLIED_HOSTNAME|1
 bin/gkd|reaper_dhcpname_get|1
 usr/sbin/httpd|reaper_dhcpname_get|1
-# v3.1.1 -- the resolver health check takes an IPv6 server (probe over the
-# matching family, resolver-file match by value) and idles with one log line
-# when the named server is IPv6 but IPv6 is disabled on the router.
-sbin/rc|is an IPv6 address but IPv6 is disabled on the router|1
+# v3.1.1, reworded v3.1.2 -- the resolver health check takes an IPv6 server
+# (probe over the matching family, resolver-file match by value) and IDLES with
+# one log line, rather than failing the server over, when the only address it
+# has is IPv6 and IPv6 cannot carry it. v3.1.2 widened "IPv6 is disabled" to
+# "no usable IPv6" (disabled, or no address delegated by the ISP) and added the
+# IPv4 fallback, so the old wording no longer exists - this pins the behaviour,
+# not the sentence.
+sbin/rc|the check stays idle until IPv6 comes back|1
 # v3.1.1 -- the Failover tab (Administration, between System and Firmware
 # Upgrade): the resolver health check + the three dnsmasq switches moved off
 # the System page onto the native Reaper_Failover.asp. The System page must
@@ -304,3 +308,31 @@ www/EN.dict|does not use it to pick which rules apply|1
 # identifier proves the machinery shipped; without it the button silently goes
 # back to only hiding the overlay while the transfer runs on.
 www/Reaper_Firmware.asp|veilCancelable|1
+# v3.1.2 -- the dashboard's idle auto-logout must READ Administration > System >
+# "Logout after ..." and must never go back to a hardcoded constant. It shipped
+# from v1.4.7 to v3.1.1 as IDLE=900000 (15 min), so a router on the shipped
+# default of 30 logged the operator out at 15, and one set to 0 (= off) was
+# logged out anyway. The .asp ships with its <% %> intact - httpd interpolates
+# on serve - so the nvram key is a literal in the staged page.
+www/Main_ReaperDash.asp|http_autologout|1
+www/Main_ReaperDash.asp|!IDLE=900000
+# v3.1.2 -- the stock pages' auto-logout is a real inactivity timer now. The
+# upstream counter was a countdown from page load that nothing reset, and 14
+# pages zeroed it and never restored it, so a session parked on Traffic Monitor
+# or the System Log never closed. state.js retires that counter and arms an
+# idle timer instead; a framed panel forwards activity to the top document via
+# reaperIdleReset rather than running a timer that would log out a busy
+# operator. Both halves must be present: the definition and the child call.
+www/state.js|reaperIdleReset|2
+# v3.1.2 -- DoT sequential failover. stubby ships round_robin_upstreams: 1,
+# which rotates every DoT server per query so a list of them shares the traffic
+# and none is a standby. The switch writes 0 for an ordered primary/standby.
+# Both halves must ship: the page switch and the parameterised writer.
+www/Reaper_Failover.asp|reaper_dot_strict|1
+sbin/rc|round_robin_upstreams: %d|1
+# v3.1.2 -- the resolver health check is IPv6-FIRST, not IPv6-only. The server
+# may carry both addresses; v6 is tried first but only when it can work, and a
+# miss needs every configured family to fail. Both halves must ship: the second
+# address field, and the daemon's skip path that costs no probe at all.
+www/Reaper_Failover.asp|reaper_dnshc_target6|1
+sbin/rc|skipping the IPv6 address|1

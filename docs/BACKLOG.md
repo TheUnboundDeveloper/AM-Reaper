@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.1.1** · 2026-09-09 <!--@stamp-->
+> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,23 +37,32 @@ internal quality, or deferred by decision.
 
 The ordered short list.
 
-1. **[P2] Apply and Confirm on Policy Routing rebooted the router** — no reboot primitive in the
-   path; needs the three captures on the next occurrence.
-2. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
-3. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
-4. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-5. **[P3] CVE check 2026-08-30 residue** — the cheap backports; the known-limitation notes are done.
-6. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+1. **[P1] Build the five siblings** — the kernel fix is committed on every branch, but only the
+   BE96U has been compiled since; the others are source-only. The published CI matrix builds
+   them from the series, so this is about a local image to hold, not about the release path.
+2. **[P3] Build one `stable` image** — the channel marker has now been through a real beta
+   build end to end, but the stable path has never been exercised, and that is the path a
+   release goes out on.
+3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
+4. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
+5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
+6. **[P3] CVE check 2026-08-30 residue** — the cheap backports; the known-limitation notes are done.
+7. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.1.1 is the beta** (Dev, 2026-09-09; patches 0621–0636). It carries the Failover tab — the
-LAN resolver health check and the three dnsmasq switches — the OpenVPN certificate fixes, the
-firmware-page Cancel for the upload phase, the Gatekeeper connection-method, MLO-fold and
-stale-band fixes, the announced-hostname store, the dashboard clock regression, and the ECS
-help-text correction. Items closed by it have been removed from this file and are recorded in
-[`CHANGELOG.md`](CHANGELOG.md). Two of them ship **without hardware validation** and are the first
-things to check on the beta — the OpenVPN repair path (needs a box with a VPN server configured)
-and the Gatekeeper stale-band branch (needs a client moved between radios) — so both stay listed
-under Open bugs until a capture exists.*
+***v3.1.2 is the next beta** (cut 2026-09-10; patches 0637–0643). It carries the kernel fix for the
+WireGuard Policy Routing panic on all six models, the `_BETA` channel marker in every build's
+filename and on the dashboard, the firewall chain-integrity watchdog, the Warden outbound
+logging contract and its regression suite, the Firewall › Logging heading and badge fixes, the
+Addons rail item that navigates, DoT strict failover order, the dual-stack resolver health
+check, the auto-logout idle timer, and the AiMesh backhaul-parking guards. Items closed by it
+have been removed from this file and are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+
+*Earlier, in v3.1.1 (2026-09-09): the Failover tab — the LAN resolver health check and the three
+dnsmasq switches — the OpenVPN certificate fixes, the firmware-page Cancel for the upload phase,
+the Gatekeeper connection-method, MLO-fold and stale-band fixes, the announced-hostname store,
+and the ECS help-text correction. Two of those shipped without hardware validation and stay
+listed under Open bugs until a capture exists: the OpenVPN repair path (needs a box with a VPN
+server configured) and the Gatekeeper stale-band branch (needs a client moved between radios).*
 
 *Earlier, in v3.1.0 (2026-09-06): OpenSSL 3.5, the first-boot box, the faster factory reset,
 backhaul-parking reconcile, the phone-width shell, the update check's beta channel.*
@@ -113,9 +122,67 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   protecting. httpd compiles clean. **The confirming capture was never taken** (the lab MCP was
   down), so the mechanism is still inferred, not proven; metal owed.
   **[shipped in v3.1.1; capture + metal owed]** ↳ notes: `gk-stale-band-multilink.md`
-- **[P2] Apply and Confirm on Policy Routing rebooted the router** (owner, logs dated Aug 27) — the
-  flicker half shipped fixed in v3.0.5; the reboot half is unexplained, no reboot primitive exists in
-  the path, not reproduced on v3.0.5. **[needs data]** ↳ notes: `pbr-apply-confirm-reboot.md`
+- **[P1] Applying a WireGuard Policy Routing rule reboots the router** (owner, logs dated Aug 27;
+  re-reported 2026-09-10 as reproducible with the simplest by-device rule) — **ROOT-CAUSED AND FIXED
+  2026-09-10.** It was never a reboot at all, which is why no reboot primitive was ever found in the
+  path: it is a **kernel panic**. Broadcom's `skip_wg_network_proc_read()` in
+  `kernel/bcmkernel/net/core/blog.c` builds its listing with `sprintf()` straight into the
+  `char __user *` buffer — a kernel-mode store to a user address. This kernel sets
+  `CONFIG_ARM64_PAN=y` and `CONFIG_ARM64_SW_TTBR0_PAN=y`, so that faults at EL1;
+  `CONFIG_PANIC_ON_OOPS=y` turns the oops into a panic and `CONFIG_PANIC_TIMEOUT=5` reboots the box
+  about five seconds later — "shortly after pressing Apply and Confirm", exactly as reported. The
+  loop body is only reached when the table already holds an entry, so an empty table reads back
+  harmlessly, and **nothing upstream ever reads these files** (stock code only ever writes them) —
+  which is why only Reaper trips it, and only on a WireGuard target: `pbr_skip_add` in
+  `rc/reaper_pbr.c` greps the proc file to honour the no-refcount contract, and it is the only
+  reader in the system. OVPN, WAN and BLOCK targets never touch it, which is precisely why they
+  "work like a charm". Both read handlers now build in kernel memory and use
+  `simple_read_from_buffer()`; both write handlers now bound `cnt` against `sizeof(proc_data)` (the
+  unbounded `copy_from_user()` beside them was a kernel stack smash) and NUL-terminate. Applied to
+  both platform trees in the repo; the same class was found and fixed in the 675x tree's `biqos`
+  proc handler, together with a one-byte stack overflow in its write path. Pinned by the new
+  `wg-blog-proc` static check, because a kernel file outside `release/src/router` is exactly what a
+  sibling port drops and the fix leaves no string a build marker could pin.
+  **Cut into v3.1.2 as patch 0641** (2026-09-10). The fix adds no strings, so no build marker can
+  see it; presence in an image is established instead from the object and the link — `blog.o`
+  recompiled with undefined refs to `simple_read_from_buffer` and `scnprintf` and none to
+  `sprintf`, and `vmlinux` relinked before the image is packed. Keep that technique for any
+  kernel or library change that leaves no string behind.
+  **[fixed + built; metal owed — one WireGuard PBR rule, Apply + Confirm]**
+  ↳ notes: `pbr-apply-confirm-reboot.md`
+- **[P1] The same kernel panic was live on all five sibling models** (found 2026-09-10 as a
+  consequence of the above) — **FIXED 2026-09-10 in every worktree.** `RT-BE86U`, `RT-BE88U`,
+  `GT-BE98`, `GT-BE98 Pro` and `RT-BE92U` share the handler, the PAN/`PANIC_ON_OOPS` kernel config
+  and the `pbr_skip_add` reader, so a WireGuard Policy Routing rule rebooted those boxes exactly as
+  it did the BE96U. All five are worktrees of the one repo, so the same surgical patch was applied
+  to each — the four proc handlers and nothing else, so it drags no other canon change into a
+  sibling branch. Both platform trees per worktree (`src-rt-5.04behnd.4916` and the 675x tree,
+  which also carried the identical bug in its `biqos` proc read plus a one-byte stack overflow in
+  its write). `wg-blog-proc` now passes on all six trees. **What is left is a BUILD**: the fix is in
+  source on every branch, compiled on none of them but the BE96U.
+  Each branch now carries it as its own commit, and the series carries canon's, so the CI
+  clean room builds every sibling with the fix in place.
+  **[fixed in source on all six and in the series; five local builds owed]**
+  ↳ notes: `pbr-apply-confirm-reboot.md`
+- **[P2] Warden outbound blocks appear to have stopped** (owner, 2026-09-10: none seen in syslog for
+  several releases) — **no defect found in the emitter.** `RW_ODROP` is built whenever direction is
+  out/both, carries its own `REAPER-WARDEN-OUT ` LOG rule under the same `rwarden_log` gate as
+  inbound, and its counters are banked. Silence has four different causes that looked identical from
+  outside: outbound filtering off, the chain absent, logging off, or armed with nothing matched —
+  the last being the normal case, since an outbound hit needs a LAN device to reach *for* a flagged
+  address, where inbound gets a free stream of them from the internet. The box now says which:
+  rwatch section 3e logs the state once per change, and the Firewall → Logging viewer no longer
+  collapses `REAPER-WARDEN-OUT` and `-SELF` into one `WARDEN` badge (which had quietly undone the
+  point of giving them separate prefixes in v2.4.4). Both halves are in v3.1.2, patches 0642–0643.
+  **[instrumented; needs one `rwatch: Warden outbound: …` line from the box to close]**
+  ↳ notes: `warden-outbound-quiet.md`
+- **[P2] The rest of v3.1.2 wants a session on the box** (2026-09-10) — five changes beyond the
+  kernel fix, each of which needs to be looked at once: the rwatch chain-integrity watchdog
+  (should stay silent on a healthy box), the rwatch Warden-outbound state line, the Firewall →
+  Logging heading correction and the split `WARDEN-OUT` / `WARDEN-SELF` badges, and the Addons menu
+  opening its first page instead of unfolding a list. Grouped rather than split into five entries
+  because one session on the box settles all of them. **[metal owed]**
+  ↳ notes: `v312-r2-validation.md`
 - **[P3] Policy Routing page: the first-open symptom was never identified** — the screenshot did not
   reach the record; the strongest candidate shipped fixed in v3.0.5. **[needs the screenshot]**
   ↳ notes: `pbr-first-open-symptom.md`
@@ -136,14 +203,28 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   is not an error. Split the problem on whether the node ever reaches the Add Node list (the
   listing gates and the join path are independent), then rule out Gatekeeper quarantine, MLO (may
   be the item below rather than a new one), and the versions on each end. **[needs data]**
-  ↳ notes: `aimesh-pairing-failures-tester.md`
+  A full decompose of the feature (2026-09-09) found nothing in the listing path that accounts
+  for it, and established that AiMesh ships with **no source at all** — see
+  `aimesh-decompose-2026-09-09.md`, which also carries the triage of every AiMesh item below.
+  ↳ notes: `aimesh-pairing-failures-tester.md`, `aimesh-decompose-2026-09-09.md`
+- **[P2] AiMesh backhaul parking could park a carrier on top of a node that has just joined**
+  (found by the 2026-09-09 decompose) — `amaspark`'s park decision requires the paired-node
+  registry to be non-empty, and both `cfg_obstatus` and `cfg_relist` are written only by
+  `cfg_server`, which is a blob: if the registry lags the window closing, the daemon parks the
+  2.4/5 GHz carriers within one 5 s tick of a node completing its join. Whether that lag exists
+  is **not provable from source**, so this is a latent risk rather than a proven defect — but it
+  is closable without knowing. **Fixed in tree 2026-09-09:** a carrier with a station associated
+  to it is never parked (`wl assoclist`) whatever the registry says, and parking is held off for
+  120 s after a search/onboarding window closes; both log on transition only. Also logged the
+  previously silent case where a radio switched off under a parked carrier. Type-checked on the
+  host with `-Wall -Wextra`, 0 warnings. Parking is opt-in and off by default, so this cannot
+  explain any report from a tester who never enabled it. **Built into the v3.1.2 RT-BE96U MCP test
+  image** (2026-09-09, sha `ee9e0726e00f79f7…`, reaper_verify 25/25); all four new log strings
+  confirmed present in the packaged `/sbin/rc`. **[built; metal owed — needs a node to pair]**
+  ↳ notes: `aimesh-decompose-2026-09-09.md`, `aimesh-park-idle-backhaul.md`
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
   calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] Warden "crash" on the BE92U addon box** after an amtm + Diversion update — one code-plausible
-  path (addon nvram storm → wlcsm wedge → Warden chain missing). The defensive half is built: rwatch
-  re-applies a missing chain. The root cause still wants the tester's syslog.
-  **[owed: tester data]** ↳ notes: `warden-crash-be92u-addons.md`
 - **[P2] Hardware QoS on the RT-BE92U: PI2 AQM is not supported by the Archer traffic manager**
   (BCM6765; drop algorithms stop at WRED), so both hardware engines most likely fail at the first
   `setqdropalg` call and the QoS Diagnostics tab has no data source on that chip. Runtime PI2→RED
@@ -167,6 +248,16 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   is a no-op, and `reaper_webs_upgrade.sh` runs download → verify → flash in one shot on the router.
   A real cancel there means a kill on a flash-adjacent path, which is a service change and not a UI
   one. **[deferred — needs an rc stop service]** ↳ notes: `firmware-veil-cancel.md`
+- **[P3] Chain-integrity watchdog covers the Warden drop chains only** (scope note, 2026-09-10) —
+  rwatch 3d asserts "ends in DROP, nothing ahead of it that ACCEPTs or RETURNs" for `RW_DROP`,
+  `RW_ODROP` and `RW_SDROP`, and asserts hook position for the three front chains. The Gatekeeper
+  and rules-engine chains have **no equivalent invariant checked**, deliberately: they interleave
+  DROP and RETURN by design, so "ends in DROP" is not a property they have and asserting it would
+  produce noise, not safety. If those need guarding, the invariant has to be defined first —
+  probably "the chain still contains the rules the generator emitted", which is a different and
+  more expensive check. Note also that only chains are checked, not ipset **contents**; the Warden
+  poison canary (rwatch 3) is the only set-level guard. **[owed — needs the invariant defined]**
+  ↳ notes: `chain-integrity-scope.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
@@ -192,17 +283,6 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
   Firewall/VPNRouting/About. **[ongoing]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P3] DNS Privacy (DoT): sequential failover instead of round-robin** — stubby is configured
-  `round_robin_upstreams: 1`, so several DoT servers rotate rather than fail over, and DoT replaces the
-  WAN DNS list outright; a switch to sequential order is one line, the LAN-filter interaction needs
-  a note. **[project]** ↳ notes: `dot-strict-order.md`
-- **[P3] Resolver health check: IPv6 first, not IPv6 only** (owner, 2026-09-07) — today an IPv6
-  server is honoured only while the router's IPv6 service is on, and idles otherwise. Instead let
-  the watched server carry both addresses: probe over IPv6 first and fall back to the IPv4 address
-  when IPv6 is down, disabled, or not supported on the path, so the check keeps watching the same
-  server through an IPv6 outage; the failover then moves whichever address family's line is in the
-  router's list. Needs a second address field (or an IPv4/IPv6 pair in one), a family-aware probe
-  order, and a status line that says which family answered. **[project]** ↳ notes: `dnshc-ipv6-first.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
 
@@ -220,8 +300,80 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
 - **[P2] The code-review MEDIUM/LOW tail, batch B** — `do_reaper_conn_cgi` lock order and the
   iptables-restore batching are owner-deferred; `pinTarget()` is closed; the `rexport` batched sed
   and the dashboard CSS audit shipped. **[owed: the two deferred items]** ↳ notes: `code-review-tail.md`
+- **[P2] Only Gatekeeper knows AiMesh exists** (structural, found 2026-09-09) — `reaper_fw.c`
+  (the rules engine, including Service Intercept's DNAT chain `REAPER_FWN`), `rwarden.c` and
+  `reaper_pbr.c` carry **zero** `cfg_relist` references. Not a defect today (no default deny,
+  zone policy is FORWARD-only, Warden returns on LAN subnets first, PBR only marks), so harm
+  needs an operator-authored rule — but it is exactly the trap recorded after the v2.7.3
+  quarantine incident, and Service Intercept is the sharp edge because an intercept rewrites a
+  service for every LAN source and a node is a LAN source. Wants one shared
+  `reaper_aimesh_exempt()` helper rather than three open-coded copies of the registry parser.
+  **[owed — before a fourth enforcement surface is added]**
+  ↳ notes: `aimesh-decompose-2026-09-09.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** — healer path
   only, if ever; never a blanket `conntrack -F`. **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
+- **[P3] `reaper_hiddencheck.py` aborted on an unreadable path** (found 2026-09-10) — **FIXED
+  2026-09-10.** An unhandled `OSError` in `scan_file()` killed the whole run on the first dangling
+  symlink, so any scope containing one produced no result at all rather than a result with a gap.
+  Unreadable paths are now collected and reported as a `[NOTE]` line, and the scan continues.
+  Verified both ways: a scoped run over a directory holding a deliberately broken symlink now
+  reports it and passes, and the full `release/src/router` scan completes (152,478 files, 57.8 M
+  lines) where it used to die.
+  **Correction to how this was first written up:** the entry claimed the gate "can only ever be run
+  on subsets". Running it tree-wide is not actually the goal and never was — the vendor tree
+  contributes ~132 k hits of its own (glib, tor, ethtool long lines; stock `eval(` sites), so a
+  whole-tree run is noise by construction. The gate's scopes are our patches and overlays, per
+  `cut_rung` step 3b. The abort was still worth fixing, because it applied to those scopes too.
+  The symlink itself is expected debris: `sysdep/www/…` points at `../../RT-AC66U/www/…`, a model
+  directory removed by the sibling strip. **[fixed]**
+- **[P3] The channel marker: BETA exercised, STABLE not yet** (2026-09-10) — the first real beta
+  build (`v3.1.2_BETA`, 11:07) went end to end and **found one integration defect the desk checks had
+  missed**: `gen_provenance.sh` extracted the version with a `Reaper_vX.Y.Z` pattern that stopped at
+  the number, so the About page said `v3.1.2` while the filename and every other surface said
+  `_BETA` — and `reaper_verify`'s `provenance-stamp` compared the two and failed the build, exactly
+  as a fail-closed gate should. Fixed to take the whole `EXTENDNO` minus the `_noMCP` variant tag
+  (which is reported separately and would break the comparison the other way), with a fallback to
+  the old extraction; verified against all six `EXTENDNO` shapes. The rebuilt image is 25/25 and the
+  marker is confirmed present in the filename, the staged provenance (`version: "v3.1.2_BETA"`) and
+  the dashboard chip. **What is still unexercised is the STABLE path** — no image has been built
+  with `stable` since the change, and that is the path a release goes out on.
+  **[owed — build one `stable` image before the next release cut]** ↳ notes: `channel-marker.md`
+- **[P2] Nothing checked the channel at publish time** (added 2026-09-10) — **DONE 2026-09-10 in
+  `stage_release.ps1`**, which is the step that decides what lands in `releases/` and therefore what
+  users can download. It gained `-Channel Beta|Stable`, defaulting to **Beta** for the same reason
+  the build does; the channel now selects which FILES are staged, so asking for the wrong one is
+  reported as a missing image instead of quietly staging the other channel. It also refuses to stage
+  into a version folder that already holds an image of the *other* channel — one release folder
+  holding both a marked and an unmarked image of the same version is precisely the confusion the
+  marker exists to prevent, and it would reach the people least able to spot it. This was also a
+  hard requirement, not just a nicety: the script's `-Version` pattern rejects uppercase, so before
+  this change a `_BETA` image could not be staged at all.
+  **Not done, on purpose:** no equivalent assertion in `release.yml`. Staging is the gate that
+  decides the contents, so the hole is closed; a CI-side cross-check of the assets against the
+  `prerelease` flag would be belt-and-braces on a path that cannot be exercised from here.
+  **[done at staging; the CI-side echo of it remains optional]** ↳ notes: `channel-publish-guard.md`
+- **[P3] v3.1.2 `_r2` and `_BETA` were built from a dirty tree** (2026-09-10) — **CLOSED at the
+  v3.1.2 cut.** Both images' shas mapped to no commit. The tree is now committed as patches
+  0637–0643 and the shipped image is taken from the commit, so the provenance gap is closed and
+  the About page's build commit is real. **[closed]**
+- **[P2] A commit made from a warm build tree can sweep in thousands of generated files**
+  (found at the v3.1.2 cut, 2026-09-10) — `95a1ee8ac3` was meant to be a thirty-file DNS change
+  and added **10,110** build-output files across some fifty vendored packages: objects, `.deps`
+  and `.libs`, dependency stubs, autom4te caches, and the configured `Makefile`, `libtool` and
+  `config.h`. Consequences, all real: `overlays/openssl-3.5-source.tar.gz` went from 50 MB to
+  **108 MB**, past GitHub's 100 MB hard limit; the exported patch would have been **217 MB**; and
+  the hidden-character gate refused the cut over the control bytes autotools embeds by
+  construction. Shipping it would have been worse than noise — a configured `Makefile` and
+  `libtool` carry the build host's absolute paths, and dropping those into the CI clean room is
+  the stale-configure trap that has cost this project a fleet before. Corrected at source before
+  the export. **The guards worked; nothing guards the commit itself.** A pattern-based
+  `.gitignore` is not available for the vendor tree at large — it legitimately tracks 1,452 `.o`,
+  609 `Makefile` and 284 `.so` files from the pinned upstream base, so every candidate pattern
+  would shadow real content. `openssl-3.5` is the one directory where the classes provably
+  cannot occur in source, and it now has a scoped guard. What is still wanted is a pre-commit
+  or cut-time check on the *shape* of a rung commit — a file count far outside the one-to-four
+  every other commit in this rung had, or added paths absent from the pinned base.
+  **[owed — the openssl half is done; the general check is not]**
 - **[P3] `/tmp` dir-ownership hardening** — one shared validate-or-refuse helper, ~11 sites.
   **[deferred]** ↳ notes: `tmp-dir-ownership.md`
 - **[P3] `poll_fcache` O(n²) pairing · `poll_classes` 7× `tmctl` popen · `do_reaper_dev_cgi` static
@@ -277,7 +429,11 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   port because "Enable local NTP server" was off; clients then polled every public server they knew.
   The page should refuse or warn when the redirect target port has no listener, or offer to switch the
   local server on. **[enabled router NTPS]** ↳ notes: `intercept-redirect-no-listener.md`
-
+- **[P2] Warden "crash" on the BE92U addon box** after an amtm + Diversion update — one code-plausible
+  path (addon nvram storm → wlcsm wedge → Warden chain missing). The defensive half is built: rwatch
+  re-applies a missing chain. The root cause still wants the tester's syslog.
+  **[owed: shelved support]** ↳ notes: `warden-crash-be92u-addons.md`
+  
 ---
 
 ## Blocked by closed-source components — for ASUS / Broadcom

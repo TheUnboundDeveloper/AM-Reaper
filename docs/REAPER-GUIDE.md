@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.1** · 2026-09-08 <!--@stamp-->
+> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -66,6 +66,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.3.5 [Your own lists](#435-your-own-lists)
      - 4.3.6 [Direction, and filtering the router itself](#436-direction-and-filtering-the-router-itself)
      - 4.3.7 [Reading the statistics](#437-reading-the-statistics)
+     - 4.3.7a ["I never see any outbound blocks"](#437a-i-never-see-any-outbound-blocks)
      - 4.3.8 [Examples](#438-examples)
      - 4.3.9 [Limits and gotchas](#439-limits-and-gotchas)
    - 4.4 [Policy Routing](#44-policy-routing)
@@ -329,6 +330,7 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 
 - Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
+- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and Reaper's front chains must still be first in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical; front chains that have been pushed down the list are re-pinned automatically and the displacement is logged, so it is visible rather than merely repaired. Note the Gatekeeper and rules-engine chains are deliberately **not** checked this way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
 So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (4.17); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
@@ -393,7 +395,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 **Navigation**
 
-- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) — a single unfolding group on both the dashboard and the shell, instead of being scattered through the stock menus; an external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
+- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
@@ -617,6 +619,19 @@ Turn on **Drop** while you are diagnosing a rule that is not doing what you expe
 
 **Example.** A device cannot reach a service and you do not know which rule is stopping it. Set logging to Drop, reproduce the failure, and read the entries — each logged line names the addresses and ports, which tells you which of your rules matched.
 
+**Reading the table.** The columns are Action, Time, Interface, Source, Destination, Protocol and Port. *Interface* is the interface the traffic **arrived on**, which is usually what tells you whether something came from your own network or from the internet. (Before v3.1.2 the first two headings were transposed and the third was labelled "Chain", which it never was.)
+
+The Action badge distinguishes the source of each entry, and for Warden it distinguishes the **direction** too:
+
+| Badge | Meaning |
+|---|---|
+| `DROP` / `ACCEPT` | the stock firewall or the rules engine |
+| `WARDEN` | Warden blocked something **coming in** |
+| `WARDEN-OUT` | Warden blocked something on your network **reaching out** to a flagged address |
+| `WARDEN-SELF` | Warden blocked **the router itself** reaching out (see 4.3) |
+
+Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.
+
 #### 4.1.13 Limits, and things deliberately not built
 
 - **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
@@ -815,6 +830,33 @@ The status card shows **Enforcing** or **Disabled**, the last feed update, which
 Totals are saved to internal flash every 15 minutes, and on every path that would otherwise lose them, so they survive reboots, firewall rebuilds and upgrades. **Turning Warden off resets the counters.**
 
 Blocking a single address severs its live connections immediately — a newly blocked address is dropped at once, because the hardware flow cache is flushed on apply.
+
+#### 4.3.7a "I never see any outbound blocks"
+
+This comes up often enough to be worth stating plainly: **an empty outbound log
+is the normal case, not evidence that something is broken.**
+
+Inbound blocks are constant because the internet supplies a steady stream of
+unsolicited traffic to block. An *outbound* block needs something on your own
+network to reach out to a flagged address, which on a healthy network may not
+happen for weeks. Silence is the expected reading.
+
+There are four different reasons the log can be quiet, and they used to look
+identical from the outside. Since v3.1.2 the router reports which one applies —
+look in the system log for a line tagged `rwatch` beginning `Warden outbound:`.
+It is written once whenever the state changes, so it says one of:
+
+| What it says | What to do |
+|---|---|
+| *not filtering outbound* | Direction is set to Inbound only. Set it to Both if you want outbound filtering. |
+| *armed but NOT logging* | Outbound blocking is on but logging is off. Turn on logging while you investigate. |
+| *armed and logging* | It is working. The count of blocks so far is on the same line — if it is 0, nothing has matched. |
+| *the RW_ODROP chain is ABSENT* | A real fault. The chain should exist whenever direction is out/both; report it. |
+
+To confirm it end to end rather than wait, use the **Catch a device calling
+home** example below and browse to an address you know is in a feed you have
+enabled. Blocked outbound entries appear in the system log with the
+`REAPER-WARDEN-OUT` prefix and as a `WARDEN-OUT` badge in Firewall → Logging.
 
 #### 4.3.8 Examples
 

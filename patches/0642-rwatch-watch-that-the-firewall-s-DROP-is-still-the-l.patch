@@ -1,0 +1,163 @@
+From 1adea3267f450bb15b9ef6234a22075521222b7a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 10 Sep 2026 14:20:04 -0400
+Subject: [PATCH] rwatch: watch that the firewall's DROP is still the last word
+
+Nothing checked that the chains stay armed. An append after a -j DROP is
+inert, so the dangerous direction is an INSERT ahead of it: the chain still
+looks present and still ends in DROP while everything reaching it is let
+through.
+
+3d checks the two properties that can be checked without guessing at intent.
+RW_DROP, RW_ODROP and RW_SDROP must end in -j DROP and carry no ACCEPT or
+RETURN - scoped to those three, because the Gatekeeper and reaper_fw chains
+interleave DROP and RETURN by design and "ends in DROP" is not a property
+they have. REAPER_HOOK, _F and _O must still sit at position 1 of INPUT,
+FORWARD and OUTPUT; drift is re-pinned by /tmp/reaper/hook.sh under the
+firewall lock, once per ten minutes, past HEALGRACE.
+
+3e answers the other standing question: an empty Warden outbound log looks
+the same from outside whether logging is off, the direction is inbound-only,
+the chain is unreachable or nothing has actually matched. Only the box can
+tell those apart, so it now says which, once per state change, with the
+count.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c | 106 +++++++++++++++++++++++++++++++++
+ 1 file changed, 106 insertions(+)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 5eb1b4633e..b212517511 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -11,6 +11,13 @@
+  *      match a Warden block set (defense-in-depth behind the updater's
+  *      reserved-range filter; on a hit it re-runs the idempotent apply.sh so
+  *      the structural anti-lockout chain order is guaranteed current),
++ *   3d. chain integrity (v3.1.2): the three Warden drop chains still END in
++ *      DROP with nothing ahead of it that ACCEPTs or RETURNs, and the Reaper
++ *      front chains are still at position 1 of INPUT/FORWARD/OUTPUT - the two
++ *      ways a third-party script or an addon can disarm a layer without
++ *      removing anything. Repair is hook.sh, under the firewall lock,
++ *   3e. Warden outbound state (v3.1.2): says WHICH of the four reasons the
++ *      syslog carries no REAPER-WARDEN-OUT lines, once per state change,
+  *   4. the GDX skb_idx pool (OPT-IN, rwatch_gdx=1, default off): host local TCP
+  *      rides the GDX accelerator (HTOA license), whose 8192-entry pool drains
+  *      silently when the Runner loop wedges - the stock stack has NO watchdog or
+@@ -263,6 +270,104 @@ static void rwatch_gen(void)
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
++	  /* v3.1.2 (owner question 2026-09-10: "with all the iptables and ipset
++	   * additions, changes and 3rd party scripts, is there any mechanism -
++	   * i.e. watchdog - to ensure that DROP is the last line in the respective
++	   * chains?"). There was not, so here it is. Two properties, both cheap,
++	   * both invisible until after something has already gone wrong:
++	   *
++	   *  (a) TERMINATOR. RW_DROP / RW_ODROP / RW_SDROP are single-purpose drop
++	   *      targets - [LOG] then DROP, nothing else. A rule APPENDED after the
++	   *      DROP is inert (the packet is already gone), which is why the
++	   *      dangerous direction is the other one: anything INSERTED ahead of
++	   *      the DROP that ACCEPTs or RETURNs disarms the chain while leaving
++	   *      it looking perfectly present in `iptables -nL`. Only these three
++	   *      chains carry the invariant - the Gatekeeper and rules-engine
++	   *      chains interleave DROP and RETURN by design, so "ends in DROP" is
++	   *      not a property they have and must not be asserted of them.
++	   *
++	   *  (b) HOOK POSITION. hook.sh pins REAPER_HOOK / _F / _O at position 1 of
++	   *      INPUT / FORWARD / OUTPUT when a layer applies, and nothing has ever
++	   *      re-checked it afterwards. Any addon doing `iptables -I FORWARD 1`
++	   *      displaces us, and every Reaper layer quietly starts running second.
++	   *      The repair is hook.sh itself: ours, idempotent, already on disk -
++	   *      run under the firewall lock like every other heal here.
++	   *
++	   * A chain that is not present is SKIPPED, not failed: each one is
++	   * conditional on a feature being switched on. */
++	  "# 3d) chain integrity: our drop chains still END in DROP, and our front\n"
++	  "#     chains are still first in the base chains\n"
++	  "CHDRIFT=\"\"\n"
++	  "for T in iptables ip6tables; do\n"
++	  "  for C in RW_DROP RW_ODROP RW_SDROP; do\n"
++	  "    $T -nL \"$C\" >/dev/null 2>&1 || continue\n"
++	  "    _cs=$($T -S \"$C\" 2>/dev/null)\n"
++	  "    case \"$(echo \"$_cs\" | tail -1)\" in\n"
++	  "      \"-A $C -j DROP\") ;;\n"
++	  "      *) FAIL=\"$FAIL chain-tail:$T/$C\" ;;\n"
++	  "    esac\n"
++	  /* an ACCEPT or RETURN anywhere in a pure drop chain is not drift, it is
++	   * the chain being disarmed - the one outcome that looks like nothing */
++	  "    echo \"$_cs\" | grep -qE -- '-j (ACCEPT|RETURN)$' && CRIT=\"$CRIT chain-disarmed:$T/$C\"\n"
++	  "  done\n"
++	  "  for HP in INPUT:REAPER_HOOK FORWARD:REAPER_HOOK_F OUTPUT:REAPER_HOOK_O; do\n"
++	  "    H=\"${HP%%:*}\"; C=\"${HP##*:}\"\n"
++	  "    $T -nL \"$C\" >/dev/null 2>&1 || continue\n"
++	  /* -S prints the policy line first, so our jump is at LINE 2 when it holds
++	    * rule position 1. Anchored, so -j REAPER_HOOK never matches _F / _O. */
++	  "    _hn=$($T -S \"$H\" 2>/dev/null | grep -n -- \"-j $C$\" | head -1 | cut -d: -f1)\n"
++	  "    if [ -z \"$_hn\" ]; then CHDRIFT=\"$CHDRIFT $T/$H:unhooked\"\n"
++	  "    elif [ \"$_hn\" != 2 ]; then CHDRIFT=\"$CHDRIFT $T/$H:pos$((_hn-1))\"; fi\n"
++	  "  done\n"
++	  "done\n"
++	  "if [ -n \"$CHDRIFT\" ]; then\n"
++	  "  FAIL=\"$FAIL front-chain-drift\"\n"
++	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -x /tmp/reaper/hook.sh ]; then\n"
++	  "    _hl=$(cat /tmp/reaper/hook.at 2>/dev/null || echo 0); case \"$_hl\" in ''|*[!0-9]*) _hl=0;; esac\n"
++	  "    if [ $((UP - _hl)) -ge 600 ]; then\n"
++	  "      echo $UP > /tmp/reaper/hook.at 2>/dev/null\n"
++	  "      logger -t rwatch \"Reaper front chains displaced ($CHDRIFT) - something else is inserting at the head of a base chain; re-pinning with hook.sh\"\n"
++	  "      reaper_lockrun /tmp/reaper/hook.sh >/dev/null 2>&1\n"
++	  "    fi\n"
++	  "  fi\n"
++	  "fi\n"
++	  "\n"
++	  /* v3.1.2 (owner, 2026-09-10: "Warden does not log and/or drop outbound
++	   * blocks anymore - haven't seen any in the syslog for a number of
++	   * releases"). "No outbound lines" has four completely different causes and
++	   * the running box is the only thing that can tell them apart: outbound
++	   * filtering is off; the chain was never built; logging is off; or it is
++	   * armed and nothing has matched - which is the NORMAL case, because an
++	   * outbound hit needs a LAN device to reach for a flagged address, unlike
++	   * inbound where the internet supplies a steady stream of them. Silence
++	   * looked identical in all four. Say which, once per state CHANGE (the
++	   * counter is reported but deliberately not part of the change key, or a
++	   * box that is blocking would log every tick). */
++	  "# 3e) Warden outbound: which of the four reasons the syslog is quiet\n"
++	  "WOKEY=''; WOMSG=''\n"
++	  "if [ \"$(_nv rwarden_enable)\" = 1 ]; then\n"
++	  "  case \"$(_nv rwarden_dir)\" in\n"
++	  "    out|both)\n"
++	  "      if iptables -nL RW_ODROP >/dev/null 2>&1; then\n"
++	  "        _od=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
++	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "        if [ \"$(_nv rwarden_log)\" = 1 ]; then\n"
++	  "          WOKEY=armed; WOMSG=\"armed and logging (prefix REAPER-WARDEN-OUT); blocked so far: $_od\"\n"
++	  "        else\n"
++	  "          WOKEY=nolog; WOMSG=\"armed but NOT logging - turn on 'Log blocked traffic' on the Warden page; blocked so far: $_od\"\n"
++	  "        fi\n"
++	  "      else\n"
++	  "        WOKEY=nochain; WOMSG='enabled for out/both but the RW_ODROP chain is ABSENT - nothing outbound is being dropped'\n"
++	  "        FAIL=\"$FAIL warden-out-chain-missing\"\n"
++	  "      fi ;;\n"
++	  "    *) WOKEY=off; WOMSG='not filtering outbound - Direction is inbound only' ;;\n"
++	  "  esac\n"
++	  "fi\n"
++	  "if [ -n \"$WOKEY\" ] && [ \"$WOKEY\" != \"$(cat /tmp/rwatch_warden_out 2>/dev/null)\" ]; then\n"
++	  "  logger -t rwatch \"Warden outbound: $WOMSG\"\n"
++	  "  echo \"$WOKEY\" > /tmp/rwatch_warden_out 2>/dev/null\n"
++	  "fi\n"
++	  "\n"
+ 	  "# 4) GDX host-TCP pool: 0 available = the silent accelerator-wedge\n"
+ 	  "#    signature. OPT-IN (rwatch_gdx=1): reads a kernel accelerator /proc\n"
+ 	  "#    surface every tick; default-off until skb_idx is field-proven non-\n"
+@@ -495,6 +600,7 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 		"/tmp/reaper_pbr/candidate.sh",
+ 		"/tmp/reaper_pbr/rollback.sh.rules",	/* v3.0.5 (F9): the commit-confirm revert takes the lock too */
+ 		"/tmp/rwarden/apply.sh",
++		"/tmp/reaper/hook.sh",	/* v3.1.2: the front-chain re-pin (rwatch 3d) */
+ 		NULL
+ 	};
+ 	int i, lock, rv;
+-- 
+2.25.1
+

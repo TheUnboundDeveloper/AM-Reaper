@@ -88,10 +88,33 @@ jobs:
             echo "::error::tag '$TAG' is not of the form v<version>-<MODEL> (e.g. v2.1.2-RT-BE96U)"
             exit 1
           fi
+          # THE TAG AND THE FILENAME SPELL THE CHANNEL DIFFERENTLY, on purpose:
+          #   tag segment : -beta   (lowercase, hyphen)  v3.1.2-beta-RT-BE96U
+          #   file token  : _BETA   (uppercase, underscore)
+          #                 RT-BE96U_..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb
+          # The tag form keeps beta tags parseable and sortable next to the final
+          # ones; the file form exists because reaper_webs_update.sh derives the
+          # RUNNING version with `sed 's/_.*//'`, so an underscore suffix is
+          # already stripped by shipped machinery the way _noMCP is, while a
+          # hyphen would land inside the number it parses. This is the one place
+          # that translates, so both stay correct.
+          # BASE is the bare version: it names the in-tree releases/ folder, the
+          # SHA256SUMS file and the CHANGELOG section, none of which are
+          # per-channel.
+          BASE=$(printf '%s' "$VERSION" | sed 's/-\(alpha\|beta\|rc\)[0-9]*$//')
+          case "$VERSION" in
+            *-beta*)  CHANNEL=beta;   FTOK=_BETA ;;
+            *-alpha*) CHANNEL=alpha;  FTOK=_ALPHA ;;
+            *-rc*)    CHANNEL=rc;     FTOK=_RC ;;
+            *)        CHANNEL=stable; FTOK= ;;
+          esac
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE"       >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "ftok=$FTOK"       >> "$GITHUB_OUTPUT"
           echo "model=$MODEL"     >> "$GITHUB_OUTPUT"
-          echo "resolved: tag=$TAG version=$VERSION model=$MODEL"
+          echo "resolved: tag=$TAG version=$VERSION base=$BASE channel=$CHANNEL file-token='$FTOK' model=$MODEL"
 
       - uses: actions/checkout@v7
         with:
@@ -113,18 +136,26 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          B="${{ steps.ver.outputs.base }}"
+          FTOK="${{ steps.ver.outputs.ftok }}"
           M="${{ steps.ver.outputs.model }}"
           stage="$RUNNER_TEMP/assets"
           mkdir -p "$stage"
           shopt -s nullglob
 
-          imgs=(releases/*/*-REAPER-"$V"/"$M"_3006_102.8_Reaper_"$V"_*.pkgtb)
+          # The in-tree folder and the checksum list are named for the BARE
+          # version (stage_release.ps1 keeps them channel-agnostic); only the
+          # image filename carries the channel token. Before 2026-09-10 both
+          # globs used the tag's version verbatim, so a beta tag looked for a
+          # "*-REAPER-v3.1.2-beta/" folder that stage_release.ps1 never creates
+          # and the in-tree route silently fell through to the artifact route.
+          imgs=(releases/*/*-REAPER-"$B"/"$M"_3006_102.8_Reaper_"$B""$FTOK"_*.pkgtb)
           if [ ${#imgs[@]} -gt 0 ]; then
             d=$(dirname "${imgs[0]}")
             echo "== in-tree assets: $d ($M)"
-            sums=$(ls "$d"/SHA256SUMS-"$M"-Reaper_"$V".txt 2>/dev/null | head -1)
+            sums=$(ls "$d"/SHA256SUMS-"$M"-Reaper_"$B".txt 2>/dev/null | head -1)
             if [ -z "$sums" ]; then
-              echo "::error::missing SHA256SUMS-$M-Reaper_$V.txt in $d"
+              echo "::error::missing SHA256SUMS-$M-Reaper_$B.txt in $d"
               exit 1
             fi
             # verify only this model's files against its checksum list
@@ -151,17 +182,47 @@ jobs:
             fi
             # CI writes one SHA256SUMS per variant; merge them into the single
             # per-model list the release publishes.
-            cat "$dl"/evidence-"$M"-*/SHA256SUMS-*.txt > "$stage/SHA256SUMS-$M-Reaper_$V.txt"
+            cat "$dl"/evidence-"$M"-*/SHA256SUMS-*.txt > "$stage/SHA256SUMS-$M-Reaper_$B.txt"
             cp "${imgs[@]}" "$stage"/
-            ( cd "$stage" && sha256sum -c "SHA256SUMS-$M-Reaper_$V.txt" )
+            ( cd "$stage" && sha256sum -c "SHA256SUMS-$M-Reaper_$B.txt" )
           fi
           ls -la "$stage"
+
+          # --- the assets must agree with the channel this tag publishes on ---
+          # A mislabelled image reaches exactly the people who cannot tell the
+          # branches apart, which is the whole reason the marker exists. Assert
+          # rather than trust: the build stamps the name, this checks it, and a
+          # disagreement means one of the two is wrong and neither should ship.
+          bad=0
+          for f in "$stage"/*.pkgtb; do
+            case "$(basename "$f")" in
+              *_BETA_*|*_ALPHA_*|*_RC_*) got=pre ;;
+              *)                         got=stable ;;
+            esac
+            case "$CHANNEL" in
+              stable) want=stable ;;
+              *)      want=pre ;;
+            esac
+            if [ "$got" != "$want" ]; then
+              echo "::error::channel mismatch: tag '$V' publishes on the $CHANNEL channel but $(basename "$f") is a $got image"
+              bad=1
+            fi
+          done
+          if [ "$bad" = 1 ]; then
+            echo "   a $CHANNEL release must carry ${FTOK:-no channel token} in its image filenames."
+            echo "   Rebuild on the right branch (Dev = beta, main = stable), or stage with"
+            echo "   build-scripts/stage_release.ps1 -Channel $( [ "$CHANNEL" = stable ] && echo Stable || echo Beta )."
+            exit 1
+          fi
+          echo "   channel OK: $CHANNEL, $(ls "$stage"/*.pkgtb | wc -l) image(s)"
           echo "stage=$stage" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes (changelog + per-model images + source provenance)
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
+          B="${{ steps.ver.outputs.base }}"
+          CHANNEL="${{ steps.ver.outputs.channel }}"
           M="${{ steps.ver.outputs.model }}"
           TAG="${{ steps.ver.outputs.tag }}"
           REPO="${{ github.repository }}"
@@ -174,7 +235,10 @@ jobs:
           stage="${{ steps.assets.outputs.stage }}"
 
           # --- 1. CHANGELOG section for this version -------------------------------
-          awk -v v="$V" '
+          # Match on the BARE version: the CHANGELOG has one section per release
+          # (## v3.1.2), not one per channel, so a "-beta" tag would otherwise
+          # find nothing and fall through to the generic stub below.
+          awk -v v="$B" '
             $0 ~ "^## "v"([^0-9A-Za-z]|$)" { on=1 }
             on && /^## / && $0 !~ "^## "v { exit }
             on { print }
@@ -187,8 +251,11 @@ jobs:
           {
             printf '\n---\n\n## Images & checksums (%s)\n\n' "$M"
             printf 'Two flashable images: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` via Administration > Firmware Upgrade.\n\n'
+            if [ "$CHANNEL" != stable ]; then
+              printf '> **This is a %s release.** Its filename carries `_BETA` and the router reports the same string on the dashboard and the About page, so you can always tell which channel a flashed image came from. Stable releases carry no marker.\n\n' "$CHANNEL"
+            fi
             printf '| Variant | File | SHA-256 |\n|---|---|---|\n'
-            sums="$stage/SHA256SUMS-$M-Reaper_$V.txt"
+            sums="$stage/SHA256SUMS-$M-Reaper_$B.txt"
             if [ -f "$sums" ]; then
               while read -r sha file; do
                 [ -z "${file:-}" ] && continue
@@ -197,7 +264,7 @@ jobs:
                 printf '| %s | `%s` | `%s` |\n' "$variant" "$file" "$sha"
               done < "$sums"
             fi
-            printf '\nVerify a download against the attached `SHA256SUMS-%s-Reaper_%s.txt`.\n' "$M" "$V"
+            printf '\nVerify a download against the attached `SHA256SUMS-%s-Reaper_%s.txt`.\n' "$M" "$B"
           } >> "$notes"
 
           # --- 3. Corresponding source, tag-pinned, + reproducibility --------------

@@ -23,8 +23,8 @@ echo "libtool LD pin: lt_cv_path_LD=${lt_cv_path_LD:-<unset>} lt_cv_prog_gnu_ld=
 BRANCH=rt-be92u
 TARGET=rt-be92u
 PREFIX=RT-BE92U
-VARIANTS="MCP noMCP"
-STORAGE="nand"
+VARIANTS="${VARIANTS:-MCP noMCP}"
+STORAGE="${STORAGE:-nand}"
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$HERE/_reaper_env.sh"
 SHIP_DIR="$WIN_ASUS_ROOT/asuswrt-merlin.ng/reaper-firmware"

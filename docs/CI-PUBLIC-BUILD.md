@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.1.1** · 2026-09-08 <!--@stamp-->
+> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -45,6 +45,29 @@ two pairs and an `all` + `both` run uploads twelve.
 
 The recovery `_loader.pkgtb` is deliberately not produced as an artifact; it is
 not part of a normal upgrade and is not distributed.
+
+### Which channel an image came from is in its filename
+
+A run on `Dev` is the **beta** channel and a run on `main` is **stable**. Since
+2026-09-10 that is stamped into the image itself rather than living only in the
+tag and the release title:
+
+```
+Dev   ->  RT-BE96U_3006_102.8_Reaper_v3.1.2_BETA_nand_squashfs.pkgtb
+main  ->  RT-BE96U_3006_102.8_Reaper_v3.1.2_nand_squashfs.pkgtb
+```
+
+The marker goes into `EXTENDNO`, which is the one string the filename, the
+dashboard version pill, the About page and the provenance record all derive
+from — so a flashed router reports the same channel its file was named for.
+Users were downloading from both branches and could not tell the two apart once
+the file was on disk; the tag and the release title are on the web page, not in
+the download.
+
+The workflow passes `REAPER_BETA` into the container and the **build engine**
+does the stamping, the same code path a local build uses, so CI and a local
+build produce identically named images by construction. `release.yml` refuses
+to publish assets whose names contradict the channel its tag publishes on.
 
 ---
 
@@ -290,7 +313,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0636` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0643` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

@@ -1,0 +1,230 @@
+From 9585de207c2d56ef9a5f5aa6b004f079f3c07b77 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 11 Sep 2026 16:51:37 -0400
+Subject: [PATCH] rwatch: a narrowed rule in front of the Reaper chains is
+ company, not drift
+
+Section 3d required REAPER_HOOK_F to hold position 1 in its base chain and
+re-pinned it every ten minutes otherwise. That is a stronger rule than the
+thing it protects, and on a real network it is the wrong one: a LAN->filter DNS
+carve-out has to beat Gatekeeper's per-device DROPs or every restricted device
+loses DNS. rwatch moved our chain back, the operator's own watcher moved the
+carve-out back, and the two fought for 700 minutes (metal, v3.1.2, 2026-09-10).
+
+3d now asks WHAT is in front of us instead of assuming the worst. A terminal
+target cannot bypass us at all; a user chain - or a bare ACCEPT/RETURN - is
+tolerated only when it narrows to a port or a destination; `-s` deliberately
+does not count, because restricting who may pass does not restrict what they
+reach. A chain that does not exist is treated as broad: unknown is not safe.
+An operator can also declare a chain outright in /jffs/reaper/front_exempt, a
+file rather than an nvram list, which silently truncates at 1 KB here.
+
+Tolerated company is logged once per state change and never repaired. Genuine
+drift still fails, but after two re-pins that did not stick the third says what
+is happening, names the file that ends it, and stops: losing twice is data,
+losing forever is churn, and every round drops whatever sat in front of us to
+position 2 until the other side notices - two seconds of DNS for every
+restricted device, on the box that found this.
+
+Also here, because it is the same generated script: /tmp/rwatch.sh now ends in
+an explicit `exit 0`. It was returning the status of whatever ran last - the
+syslog-mirror rotation test, false on any mirror under 8 MB - so a healthy box
+exited 1 with neither a fail nor a crit state file written. Nothing reads that
+status today; any future caller that gated on it would see "always failing".
+
+Metal (2026-09-11): the same box and the same rmcpd_lab rule that raised a
+FAILURE and dumped an incident on v3.1.2 now logs "sit behind tolerated
+rule(s): iptables/INPUT[ACCEPT(narrow)] iptables/FORWARD[REAPER_DNSV(narrow)]"
+and leaves them alone.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_hook.h |  18 +++++
+ release/src/router/rc/rwatch.c      | 110 ++++++++++++++++++++++++++--
+ 2 files changed, 122 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_hook.h b/release/src/router/rc/reaper_hook.h
+index 08348eabdb..0faa7c4cfb 100644
+--- a/release/src/router/rc/reaper_hook.h
++++ b/release/src/router/rc/reaper_hook.h
+@@ -48,6 +48,24 @@
+ #define REAPER_HOOK_OUT  "REAPER_HOOK_O"
+ #define GK_IFS_FILE      "/tmp/gk/ifs"
+ 
++/* v3.1.3: chains the operator has DECLARED may legitimately sit ahead of the
++ * Reaper front chains in a base chain. One name per line.
++ *
++ * It exists because "REAPER_HOOK_F must be at position 1" turned out to be a
++ * stronger rule than the thing it was protecting. What matters is that nothing
++ * ahead of us can let traffic past unchecked - a narrow carve-out in front is
++ * legitimate, and on at least one real network it is REQUIRED: a LAN->filter
++ * DNS carve-out has to beat Gatekeeper's per-device DROP rules or every
++ * restricted device loses DNS. rwatch 3d re-pinned us to position 1 every ten
++ * minutes, the operator's watcher moved the carve-out back, and the two fought
++ * indefinitely (found on metal, v3.1.2, 2026-09-10).
++ *
++ * /jffs and not nvram: an nvram list silently truncates at 1 KB on this
++ * platform, which has bitten this project three times. A plain file is also
++ * what the operator's own scripts can write.
++ */
++#define REAPER_FRONT_EXEMPT "/jffs/reaper/front_exempt"
++
+ /* shell line for the tail of a generated apply script (never fails the script) */
+ #define REAPER_HOOK_RUN  "if [ -x " REAPER_HOOK_SH " ]; then sh " REAPER_HOOK_SH "; else logger -t reaper 'hook.sh missing - layer chain built but not hooked'; fi\n"
+ 
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index b212517511..7d3b8df13f 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -53,6 +53,9 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_nv.h"
++/* REAPER_FRONT_EXEMPT: the front-chain exemption list read by section 3d.
++ * Defined in reaper_hook.h alongside the front-chain names it belongs to. */
++#include "reaper_hook.h"
+ 
+ #define RWATCH_SH    "/tmp/rwatch.sh"
+ #define RWATCH_STATE "/tmp/rwatch.state"
+@@ -297,7 +300,34 @@ static void rwatch_gen(void)
+ 	   * conditional on a feature being switched on. */
+ 	  "# 3d) chain integrity: our drop chains still END in DROP, and our front\n"
+ 	  "#     chains are still first in the base chains\n"
+-	  "CHDRIFT=\"\"\n"
++	  "CHDRIFT=\"\"; FCTOL=\"\"\n"
++	  /* the operator's declared exemptions. Same shape as GK_IFS_FILE: a
++	   * bounded read plus a charset gate, because a file is a file even when
++	   * it is ours. Newlines fold to spaces so the gate can be a flat set. */
++	  "FEX=\"\"\n"
++	  "if [ -r " REAPER_FRONT_EXEMPT " ]; then\n"
++	  "  FEX=$(head -c 512 " REAPER_FRONT_EXEMPT " 2>/dev/null | tr '\\r\\n' '  ')\n"
++	  "  [ -n \"$(printf '%s' \"$FEX\" | tr -d -- '-A-Za-z0-9_. ')\" ] && FEX=\"\"\n"
++	  "fi\n"
++	  /* _fc_narrow <cmd> <chain>: true when the chain can only ACCEPT or
++	   * RETURN traffic it has NARROWED to a port or a destination. A chain
++	   * whose ACCEPT is unqualified can let anything past before Reaper sees
++	   * it, which is the whole hazard; a chain that only DROPs or LOGs cannot
++	   * bypass us at all. A chain that does not exist is treated as broad -
++	   * unknown is not the same as safe. */
++	  /* ONE narrowness literal with TWO consumers: a user chain is judged by
++	   * listing it, a bare rule by its own text. Keeping the pattern in a
++	   * variable is what stops the two drifting apart - the same discipline
++	   * the fwmark rule-form literal gets across its three readers.
++	   * `-s` is deliberately NOT narrowing: restricting WHO may pass does not
++	   * restrict WHAT they reach, so a source-only ACCEPT in front of us is
++	   * exactly the blanket bypass this check exists to catch. */
++	  "FCNARROW='(--dport|--sport|-d [0-9])'\n"
++	  "_fc_narrow() {\n"
++	  "  _ns=$($1 -S \"$2\" 2>/dev/null)\n"
++	  "  [ -n \"$_ns\" ] || return 1\n"
++	  "  [ \"$(echo \"$_ns\" | grep -E -- '-j (ACCEPT|RETURN)$' | grep -cvE -- \"$FCNARROW\")\" = 0 ]\n"
++	  "}\n"
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  for C in RW_DROP RW_ODROP RW_SDROP; do\n"
+ 	  "    $T -nL \"$C\" >/dev/null 2>&1 || continue\n"
+@@ -315,21 +345,80 @@ static void rwatch_gen(void)
+ 	  "    $T -nL \"$C\" >/dev/null 2>&1 || continue\n"
+ 	  /* -S prints the policy line first, so our jump is at LINE 2 when it holds
+ 	    * rule position 1. Anchored, so -j REAPER_HOOK never matches _F / _O. */
+-	  "    _hn=$($T -S \"$H\" 2>/dev/null | grep -n -- \"-j $C$\" | head -1 | cut -d: -f1)\n"
+-	  "    if [ -z \"$_hn\" ]; then CHDRIFT=\"$CHDRIFT $T/$H:unhooked\"\n"
+-	  "    elif [ \"$_hn\" != 2 ]; then CHDRIFT=\"$CHDRIFT $T/$H:pos$((_hn-1))\"; fi\n"
++	  "    _hs=$($T -S \"$H\" 2>/dev/null)\n"
++	  "    _hn=$(echo \"$_hs\" | grep -n -- \"-j $C$\" | head -1 | cut -d: -f1)\n"
++	  "    if [ -z \"$_hn\" ]; then CHDRIFT=\"$CHDRIFT $T/$H:unhooked\"; continue; fi\n"
++	  "    [ \"$_hn\" = 2 ] && continue\n"
++	  /* Something is ahead of us. Ask WHAT, rather than assuming the worst:
++	   * walk the rules between the policy line and our jump and classify each
++	   * one's target. Declared wins outright; a terminal target cannot bypass
++	   * us; a user chain is judged on whether it can ACCEPT without narrowing.
++	   * Index arithmetic, not a pipeline, so the flags survive the loop. */
++	  "    _bad=\"\"; _tol=\"\"; _i=2\n"
++	  "    while [ \"$_i\" -lt \"$_hn\" ]; do\n"
++	  "      _r=$(echo \"$_hs\" | sed -n \"${_i}p\"); _i=$((_i+1))\n"
++	  "      [ -n \"$_r\" ] || continue\n"
++	  "      _tg=$(printf '%s' \"$_r\" | sed -n 's/.* -[jg] \\([A-Za-z0-9_.-]*\\).*/\\1/p')\n"
++	  "      if [ -z \"$_tg\" ]; then _bad=\"$_bad unparsed\"; continue; fi\n"
++	  "      case \" $FEX \" in *\" $_tg \"*) _tol=\"$_tol $_tg(declared)\"; continue ;; esac\n"
++	  "      case \"$_tg\" in\n"
++	  /* v3.1.3b (metal 2026-09-11): a bare ACCEPT is not automatically broad.
++	   * rmcpd_lab inserts `-i br0 -p tcp --dport 5219 -j ACCEPT` at the head of
++	   * INPUT, which is as narrowed as the REAPER_DNSV chain one line below
++	   * that we already tolerate - but the target name is all this case used to
++	   * look at, so every lab session raised a FAILURE and dumped an incident.
++	   * Judge the rule the same way a chain is judged. An unqualified ACCEPT
++	   * still fails: that one really can wave anything past before we see it. */
++	  "        ACCEPT|RETURN)\n"
++	  "          if printf '%s' \"$_r\" | grep -qE -- \"$FCNARROW\"; then _tol=\"$_tol $_tg(narrow)\";\n"
++	  "          else _bad=\"$_bad $_tg\"; fi ;;\n"
++	  "        DROP|REJECT|LOG|MARK|CONNMARK|TCPMSS) _tol=\"$_tol $_tg(terminal)\" ;;\n"
++	  "        *) if _fc_narrow \"$T\" \"$_tg\"; then _tol=\"$_tol $_tg(narrow)\";\n"
++	  "           else _bad=\"$_bad $_tg\"; fi ;;\n"
++	  "      esac\n"
++	  "    done\n"
++	  "    if [ -n \"$_bad\" ]; then CHDRIFT=\"$CHDRIFT $T/$H:pos$((_hn-1))[$(echo $_bad)]\"\n"
++	  "    else FCTOL=\"$FCTOL $T/$H[$(echo $_tol)]\"; fi\n"
+ 	  "  done\n"
+ 	  "done\n"
++	  /* Tolerated company in front of us is NOT a failure and must not be
++	   * repaired: re-pinning would push a required carve-out behind Gatekeeper.
++	   * Say it once per state change so it is on the record without becoming
++	   * noise - a check that talks every tick is one nobody reads. */
++	  "if [ -n \"$FCTOL\" ]; then\n"
++	  "  _fk=$(echo $FCTOL)\n"
++	  "  if [ \"$_fk\" != \"$(cat /tmp/reaper/front.tol 2>/dev/null)\" ]; then\n"
++	  "    echo \"$_fk\" > /tmp/reaper/front.tol 2>/dev/null\n"
++	  "    logger -t rwatch \"Reaper front chains sit behind tolerated rule(s): $_fk - narrow or declared in " REAPER_FRONT_EXEMPT "; leaving them alone\"\n"
++	  "  fi\n"
++	  "else\n"
++	  "  rm -f /tmp/reaper/front.tol 2>/dev/null\n"
++	  "fi\n"
+ 	  "if [ -n \"$CHDRIFT\" ]; then\n"
+ 	  "  FAIL=\"$FAIL front-chain-drift\"\n"
+ 	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -x /tmp/reaper/hook.sh ]; then\n"
+ 	  "    _hl=$(cat /tmp/reaper/hook.at 2>/dev/null || echo 0); case \"$_hl\" in ''|*[!0-9]*) _hl=0;; esac\n"
+-	  "    if [ $((UP - _hl)) -ge 600 ]; then\n"
++	  "    _hc=$(cat /tmp/reaper/hook.n 2>/dev/null || echo 0); case \"$_hc\" in ''|*[!0-9]*) _hc=0;; esac\n"
++	  /* (c) Two re-pins that did not stick mean we are in a fight, not a
++	   * repair. Losing it twice is data; losing it forever is churn - and every
++	   * round of it drops whatever was in front of us to position 2 for as long
++	   * as it takes the other side to notice, which on the box that found this
++	   * was two seconds of DNS for every restricted device. So say what is
++	   * happening, name the file that ends it, and stop. */
++	  "    if [ \"$_hc\" -ge 2 ]; then\n"
++	  "      if [ \"$_hc\" = 2 ]; then\n"
++	  "        echo 3 > /tmp/reaper/hook.n 2>/dev/null\n"
++	  "        logger -t rwatch \"Reaper front chains displaced again after two re-pins ($CHDRIFT) - something re-inserts ahead of us every time, so re-pinning has STOPPED. If that rule is meant to be there, put its chain name in " REAPER_FRONT_EXEMPT "; if it is not, find what is inserting it.\"\n"
++	  "      fi\n"
++	  "    elif [ $((UP - _hl)) -ge 600 ]; then\n"
+ 	  "      echo $UP > /tmp/reaper/hook.at 2>/dev/null\n"
++	  "      echo $((_hc + 1)) > /tmp/reaper/hook.n 2>/dev/null\n"
+ 	  "      logger -t rwatch \"Reaper front chains displaced ($CHDRIFT) - something else is inserting at the head of a base chain; re-pinning with hook.sh\"\n"
+ 	  "      reaper_lockrun /tmp/reaper/hook.sh >/dev/null 2>&1\n"
+ 	  "    fi\n"
+ 	  "  fi\n"
++	  "else\n"
++	  "  rm -f /tmp/reaper/hook.n 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  /* v3.1.2 (owner, 2026-09-10: "Warden does not log and/or drop outbound
+@@ -542,7 +631,16 @@ static void rwatch_gen(void)
+ 	  "    SZ=$(wc -c < \"$BASE/syslog.mirror\" 2>/dev/null || echo 0)\n"
+ 	  "    [ \"$SZ\" -gt 8388608 ] && mv \"$BASE/syslog.mirror\" \"$BASE/syslog.mirror.1\" 2>/dev/null\n"
+ 	  "  fi ;;\n"
+-	  "esac\n", f);
++	  "esac\n"
++	  /* rwatch reports through syslog and the /tmp/reaper state files, never
++	   * through its exit status - and without this line the status is whatever
++	   * the last statement happened to leave behind. On a healthy box that was
++	   * the mirror-rotation test above, false on any mirror under 8 MB, so the
++	   * script exited 1 while /tmp/reaper/fail and /crit were both absent
++	   * (metal 2026-09-11, v3.1.3b). cron does not read it, but any future
++	   * caller that gates on the status would see "always failing" - the
++	   * inverse of the wrapper-exits-0 trap in build-sop. Be explicit. */
++	  "exit 0\n", f);
+ 	fclose(f);
+ 	chmod(RWATCH_SH, 0700);
+ }
+-- 
+2.25.1
+

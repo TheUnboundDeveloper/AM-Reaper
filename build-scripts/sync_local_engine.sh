@@ -53,7 +53,7 @@ FILES="_reaper_build_lib.sh _reaper_env.sh reaper_verify.sh reaper_stale_configu
        verify_markers.txt _port_protect.sh gen_provenance.sh
        patch_count.sh check_symbols.sh check_ossl_consumers.sh openssl11-consumers.txt
        build_be96u.sh build_be86u.sh build_be88u.sh build_gtbe98.sh build_gtbe98pro.sh
-       build_be92u.sh"
+       build_be92u.sh build_gtbe19000.sh"
 
 [ -d "$DEST" ] || { echo "ERROR: destination $DEST does not exist"; exit 1; }
 

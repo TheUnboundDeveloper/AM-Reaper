@@ -21,6 +21,48 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v3.1.3",
+      "firmware": "3006.102.8_Reaper_v3.1.3",
+      "build_commit": "4046485fc8",
+      "source_tree": {
+        "release/src/router": "90ae38f8f9e4288dfcde94ad944155b735d1e4b9",
+        "release/src-rt": "631080c2b8f107e23520bcd638cbef1ce9542953"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "7a0a129577b5e375beb9ec53e768f3829be3ef7c",
+        "release/src-rt": "631080c2b8f107e23520bcd638cbef1ce9542953"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.3_BETA_r1_nand_squashfs.pkgtb",
+          "sha256": "f7666bba322c3e33c014d684cfa6bff4de80653eafd1954a5b9b731af00143ac"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.3_BETA_r1_nand_squashfs_loader.pkgtb",
+          "sha256": "f415ede73b15dfd31460c17d8008fd328dc14ddb9e9ebbe9a7e8f94ae14bae72"
+        }
+      ],
+      "patch_count": 648,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-11",
+      "parent": "v3.1.2",
+      "summary": "Your Killswitch decides, and the firewall watchdog stops fighting a rule you meant. Policy routing realised BLOCK as an unconditional lower-priority `prohibit`, so a rule whose target tunnel went down failed closed whatever vpn_clientN_enforce / wgcN_enforce said on that client's own page - two answers to one question, and a disagreement with VPN Director on the same router. P3 in rc/reaper_pbr.c now reads the switch per target: on keeps the `prohibit`, off omits it and the traffic falls back to the WAN. BLOCK is still realised solely as `prohibit`; nothing else in rule generation moves. Saving a Killswitch restarts vpnrouting, so that restart calls the new reaper_pbr_regen(), which regenerates the COMMITTED rules in place - deliberately not start_reaper_pbr(), which unlinks the draft and would discard an apply still awaiting confirmation. Metal (RT-BE96U, 2026-09-11): wgc5_enforce=0 gives `9010 lookup wgc5` alone with `ip route get 1.1.1.1 mark 0xa0000` via the WAN; =1 adds `9110 prohibit` and the same command is denied - both from the nvram toggle plus `service start_vpnrouting0`, with no Policy Routing apply. Reaper_VPNRouting.asp stops claiming fail-closed for everything: the CGI reports each client's Killswitch (wks/oks), the chip on a rule whose client is off says blocked or using the WAN, the Target column names the interface, a LAN-wide accel bypass is badged, and Apply holds its overlay until the Keep / Revert bar takes over. rwatch section 3d required REAPER_HOOK_F at position 1 and re-pinned it every ten minutes; on a real network a LAN->filter DNS carve-out has to sit in front of it or Gatekeeper's per-device DROPs take DNS from every restricted device, and the two fought for 700 minutes (metal, v3.1.2, 2026-09-10). 3d now classifies what is ahead: a terminal target cannot bypass us; a user chain or a bare ACCEPT/RETURN is tolerated only when it narrows to a port or destination (`-s` deliberately does not count - restricting who may pass does not restrict what they reach); a chain that does not exist is broad, because unknown is not safe; and a chain named in /jffs/reaper/front_exempt is declared outright (a file, not an nvram list, which truncates silently at 1 KB here). Tolerated company logs once per state change and is never repaired; real drift still fails, and after two re-pins that did not stick the third names the file that ends it and stops. Confirmed on the same box and the same rmcpd_lab rule that raised a FAILURE on v3.1.2. reaper_diag reaches v1.3.14 with six counters corrected, each reproduced on metal 2026-09-10: conntrack re-read the live table per figure (405 entries against 510 by protocol) and now takes one snapshot; the syslog section counted the USB mirror and its source as two logs (12,360 lines against 5,634 distinct, ~2.2x on every count in the section) and counted the lab MCP's `exec:` echo of the operator's own commands (2 panics on a box with none); 'boots in span' counted syslogd starts, which a service cascade produces without a reboot, and is replaced by /proc/uptime - the only boot marker this RTC-less hardware has - with the syslogd figure labelled for what it counts; the panic pattern matched a bare case-insensitive 'Oops'; /proc/sys/kernel/tainted was printed raw although it is a bitmask (4097 = two flags); and RW_FDROP left the chain-counter list, since forward drops share RW_DROP by design and the probe reported it absent on every healthy box. Also in this rung: the Administration tab is renamed DNS Failover; the EDNS Client Subnet help text states that the complete client address is attached at receive time, before an upstream is chosen, so it reaches any public fallback used while the owner's filter is down; the two silent overrule paths in start_reaper_pbr() log when the file store and nvram genuinely differ; and the generated /tmp/rwatch.sh ends in an explicit `exit 0` instead of leaking the status of a log-rotation test that is false on any mirror under 8 MB. NO IMAGES YET in this entry - it records the source rung; image hashes are added when the build ships.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to the four sibling branches - RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro - with port_sibling_v2 guards passing and 0 unsynced shared files against canon on every branch; 16 shared files synced per model and the 25 dictionaries are in lockstep at 6920 lines on all five. The RT-BE92U is NOT in this rung: it left the roster after v3.1.2 (upstream Merlin has taken that model on), so its branch, worktree and overlays/RT-BE92U.patch stay dormant and frozen against v3.1.2 - re-adding it means porting first and regenerating its overlay, never applying the frozen one to a later tree. Overlay overlap: this rung touches 35 files and none of them appears in any overlays/<MODEL>.patch, so no overlay needed regenerating and all five re-passed the identity gate unchanged (RT-BE92U 11 files, RT-BE86U 13, GT-BE98 19, RT-BE88U 21, GT-BE98 Pro 24). The hidden-character scan is clean over both the 5 new patches (35 files, 776 lines) and the 5 overlays (34 files, 4613 lines). Only the RT-BE96U is built locally; the siblings and the noMCP variant are assembled by the public CI clean room from this series plus their overlays.",
+      "logs": {
+        "build": "provenance/logs/v3.1.3/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.3/reaper_verify-rt-be96u.log"
+      },
+      "channel": "beta",
+      "images_note": "The ladder already held an unmarked v3.1.3_BETA image built 2026-09-10 23:20, before the policy-routing and rwatch corrections that finished this rung, so the ship step staged today's build under the next free _r1 rather than overwriting it. The _r1 pair is THIS rung's image - built from 4046485fc8, reaper_verify 27/27 - and the earlier one is kept only because the ladder never overwrites. Do not read the unmarked name as the newer image."
+    },
+    {
       "version": "v3.1.2",
       "firmware": "3006.102.8_Reaper_v3.1.2",
       "build_commit": "cae375e18f",

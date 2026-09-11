@@ -169,6 +169,7 @@ case "$MODEL" in
   GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
   GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
   RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
+  GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -183,6 +184,51 @@ if [ -f "$FS/www/images/REAPER1.png" ]; then fail "banner-stale" "legacy REAPER1
 foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_file}\$")
 if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
+
+# ---- 8b. every banner a page REFERENCES is actually staged ------------------
+# The identity checks above ask "is the right banner file here, and no other?"
+# They never asked "does every page point at a file that exists?". Those are
+# different questions, and the gap shipped: Reaper_WiFiSetup.asp (the v3.1.0
+# first-boot Wi-Fi page) was never added to the port tool's or the overlay
+# gate's list of banner-referencing pages, so on every sibling it kept naming
+# canon's RT-96U animated header - a file the sibling overlay deliberately
+# removes. A dangling <img> on the first screen a new owner sees, on five
+# models, across v3.1.0 to v3.1.2, and every gate green. Found 2026-09-10
+# while onboarding the GT-BE19000. This check needs no list: it reads the
+# references out of the staged pages themselves, so a new page cannot be
+# missed the way the seventh one was.
+_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.png' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
+_bmiss=""
+for _b in $_brefs; do [ -f "$FS/www/images/$_b" ] || _bmiss="$_bmiss $_b"; done
+if [ -z "$_brefs" ]; then warn "banner-refs" "no staged page references a banner file - unexpected, check the www staging"
+elif [ -n "$_bmiss" ]; then fail "banner-refs" "page(s) reference banner file(s) that are NOT staged:$_bmiss (dangling header image - the v3.1.0 sibling first-boot regression)"
+else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner file(s), all staged"; fi
+
+# ---- 8c. dongle firmware is actually in the image, per model -----------------
+# The build copies dongle/sysdeps/$(BUILD_NAME)/<chip>/rtecdc.bin into place
+# inside `if [ -f ]` and installs it inside `ifneq ($(wildcard ...),)` - both
+# silent when the file is absent. A model with no sysdeps dir therefore builds
+# to completion and ships with NO radio firmware and no error; on a warm canon
+# tree the leftover RT-BE96U copies in dongle/bin/ mask it, so the clean room
+# is where it would first show, as dead 5/6 GHz on a box nobody can reach.
+# Found 2026-09-10 onboarding the GT-BE19000, whose GPL drop (like every ASUS
+# drop) ships none. The expected chip set is per model, read from the pinned
+# base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
+case "$MODEL" in
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000) want_dhd="6717a0 6726b0";;
+  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
+  *)                                        want_dhd="";;
+esac
+if [ -n "$want_dhd" ]; then
+  _dmiss=""
+  for _c in $want_dhd; do
+    [ -s "$FS/rom/etc/wlan/dhd/$_c/release/rtecdc.bin" ] || _dmiss="$_dmiss $_c"
+  done
+  [ -z "$_dmiss" ] && pass "dongle-fw" "rtecdc.bin staged for every expected chip ($want_dhd)" \
+    || fail "dongle-fw" "NO dongle firmware staged for chip(s):$_dmiss - the radios on those chips will not come up (missing dongle/sysdeps/$MODEL/?)"
+else
+  warn "dongle-fw" "no expected dongle chip set registered for $MODEL - add it to reaper_verify 8c"
+fi
 
 # ---- 9. shared-code parity vs canon (the /sysdep/ lesson, 2026-08-05) ------
 # Every SHARED file must match canon (be96u-only) at build time; per-model

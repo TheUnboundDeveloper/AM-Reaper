@@ -101,6 +101,30 @@ new_commits=$(git -C "$CLONE" rev-list --count "$SINCE..HEAD")
 [ "$new_commits" -gt 0 ] || die "no commits between $SINCE and HEAD - nothing to cut"
 echo "  commits $new_commits to export"
 
+# ------------------------------------------------------- 1b. commit shape
+# Every gate this repo owns inspects the EXPORTED artefacts; until now nothing
+# inspected the commits themselves. `95a1ee8ac3` was meant to be a thirty-file
+# DNS change and swept 10,110 build-output files out of a warm tree; it was
+# caught three steps later, and only because the OpenSSL overlay tarball then
+# breached GitHub's 100 MB limit. By that point the fix needed a history
+# rewrite, because untracking after the fact does not shrink the exported
+# patch. Check the shape here, where the fix is still one amend.
+step "1b. commit shape"
+shape_bad=0
+for c in $(git -C "$CLONE" rev-list --reverse "$SINCE..HEAD"); do
+  python3 "$LEAN/build-scripts/ci/check_commit_shape.py" --repo "$CLONE" --rev "$c" --quiet ${ALLOW_LARGE:+--allow-large} ${ALLOW_BINARIES:+--allow-binaries} || shape_bad=1
+done
+[ "$shape_bad" -eq 0 ] || die "a commit in this rung has the shape of a warm-tree sweep (above).
+       Correct it at source before exporting - untracking afterwards leaves the
+       ADD in the series and the patch stays huge, which is what made the
+       v3.1.2 cut need a history rewrite. For a deliberate bulk change (a
+       vendor import, a mass rename) re-run with ALLOW_LARGE=1; for a
+       deliberate GPL/vendor object drop outside a prebuilt path, with
+       ALLOW_BINARIES=1. Build-system output (.deps, .libs, autom4te,
+       config.status, libtool) has NO override - nothing legitimately
+       adds it."
+echo "  $new_commits commit(s) checked"
+
 HAVE=$(ls -1 "$LEAN"/patches/[0-9]*.patch 2>/dev/null | wc -l)
 START=$((HAVE + 1))
 echo "  patches $HAVE existing, new series starts at $(printf '%04d' $START)"

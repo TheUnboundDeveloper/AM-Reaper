@@ -1,0 +1,220 @@
+From b3abfee6f9a05552ce82a79e2264945ead721873 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 11 Sep 2026 16:51:37 -0400
+Subject: [PATCH] reaper_diag: six figures that were counting the wrong thing
+ (v1.3.14)
+
+A diagnostic that overstates is worse than one that says nothing, because the
+next person chases what it printed. Six of them, each confirmed on metal
+2026-09-10 before the change:
+
+  - conntrack re-read the live file for every figure, so the printed total and
+    the per-protocol sum came from different instants: 405 entries against a
+    per-protocol sum of 510, reproduced at 96 vs 120. One snapshot now feeds
+    every figure below it.
+  - the syslog section concatenated the USB/jffs mirror with the log it mirrors
+    and counted the overlap twice - 12,360 lines against 5,634 distinct. Every
+    count in the section was inflated about 2.2x. The collapse is
+    order-preserving, because the span and rate maths reads the first credible
+    timestamp and the last line.
+  - the lab MCP echoes the operator's own command text into syslog, so any
+    counter whose pattern appeared in a command run through it was inflated:
+    that alone reported 2 panics on a box that had neither. The `exec:` echoes
+    are dropped; the daemon's own tagged lines stay, so the noise profile still
+    shows the lab was running.
+  - "boots in span" counted 'syslogd started', which any service cascade
+    produces without a reboot - 13 boots against an uptime of minutes. This
+    hardware has no RTC, so /proc/uptime is the only reliable boot marker: it
+    is now reported as such, and the syslogd figure is labelled as what it
+    actually counts.
+  - the panic/oops pattern was case-insensitive on a bare 'Oops', which matches
+    the ordinary English word in any log line that contains it.
+  - "kernel tainted" printed /proc/sys/kernel/tainted raw. It is a BITMASK:
+    4097 is 0x1001, two flags, not four thousand of anything. The flags are
+    decoded by name.
+
+Also RW_FDROP leaves the chain-counter list. Forward-direction drops share
+RW_DROP by design - REAPER_WARDEN is jumped to from both INPUT and FORWARD and
+both land on the one drop target - so the chain is never created and the probe
+printed "[RW_FDROP] absent" on every healthy box, which reads as a fault.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag | 110 ++++++++++++++++++++++----
+ 1 file changed, 95 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 5c8b2db06e..aa71585722 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.13"
++VER="REAPER-DIAG v1.3.14"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -60,9 +60,11 @@ BODY="/tmp/.rdiag_body.$$"
+ LEDG="/tmp/.rdiag_ledger.$$"
+ FIND="/tmp/.rdiag_find.$$"
+ RAW2="/tmp/.rdiag_raw2.$$"
++SNAP="/tmp/.rdiag_syslog.$$"
++CTS="/tmp/.rdiag_ct.$$"
+ OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
+ umask 077
+-trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $BODY $LEDG $FIND' EXIT
++trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $BODY $LEDG $FIND $SNAP $CTS' EXIT
+ : > "$FIND"
+ 
+ sec() { echo ""; echo "#### $1 ####"; }
+@@ -619,11 +621,18 @@ done
+ sec "11b. CONNTRACK (counts, timeouts - no flows printed)"
+ CT=/proc/net/nf_conntrack
+ if [ -r $CT ]; then
+-  CTN="$(wc -l < $CT)"; CTMAX="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+-  echo "  entries           : $CTN / ${CTMAX:-?}"
+-  echo "  by protocol       : $(awk '{c[$3]++} END {for (k in c) printf "%s=%d ", k, c[k]}' $CT)"
+-  echo "  unreplied         : $(grep -c 'UNREPLIED' $CT)   syn_sent: $(grep -c 'SYN_SENT' $CT)   hw-accelerated: $(grep -c 'hwaccel=[1-9]' $CT)"
+-  echo "  lan sources       : $(awk '{for(i=1;i<=NF;i++) if ($i ~ /^src=/) {print substr($i,5); break}}' $CT | sort -u | wc -l) distinct"
++  # v1.3.14: ONE read. Every figure below used to re-read the LIVE file, so the
++  # printed total and the per-protocol sum came from different instants and
++  # could not be reconciled -- field diag #1 printed entries=405 against a
++  # per-protocol sum of 510, and it reproduced at 96 vs 120. Nothing was wrong
++  # with conntrack; the diag was sampling a moving file six times. Snapshot
++  # first, then derive every figure from the snapshot.
++  cat $CT > "$CTS" 2>/dev/null
++  CTN="$(wc -l < "$CTS")"; CTMAX="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
++  echo "  entries           : $CTN / ${CTMAX:-?}   (one snapshot; every figure below derives from it)"
++  echo "  by protocol       : $(awk '{c[$3]++} END {for (k in c) printf "%s=%d ", k, c[k]}' "$CTS")"
++  echo "  unreplied         : $(grep -c 'UNREPLIED' "$CTS")   syn_sent: $(grep -c 'SYN_SENT' "$CTS")   hw-accelerated: $(grep -c 'hwaccel=[1-9]' "$CTS")"
++  echo "  lan sources       : $(awk '{for(i=1;i<=NF;i++) if ($i ~ /^src=/) {print substr($i,5); break}}' "$CTS" | sort -u | wc -l) distinct"
+   [ -n "$CTMAX" ] && [ "$CTMAX" -gt 0 ] && [ $((CTN * 100 / CTMAX)) -ge 80 ] && finding WARN "conntrack table ${CTN}/${CTMAX} (>=80% full)"
+ else
+   echo "  /proc/net/nf_conntrack not readable"
+@@ -676,7 +685,12 @@ echo "  -- top 5 by accumulated CPU (utime+stime, seconds) --"
+ for PD in /proc/[0-9]*; do
+   LINE="$(cat $PD/stat 2>/dev/null)" || continue
+   CMD="${LINE#*(}"; CMD="${CMD%%)*}"; REST="${LINE##*) }"
+-  set -- $REST; echo "$(( ($12 + $13) / 100 )) $CMD ${PD#/proc/}"
++  # ${12}/${13} = utime/stime: REST begins at /proc/<pid>/stat field 3, so
++  # fields 14/15 land on positionals 12/13. BusyBox ash reads a bare $12 as
++  # positional 12 and this has always been correct on the router -- verified
++  # on metal 2026-09-10, identical output either way. The braces are for
++  # POSIX: any other sh reads $12 as ${1}2, which would silently print 0s.
++  set -- $REST; echo "$(( (${12} + ${13}) / 100 )) $CMD ${PD#/proc/}"
+ done | sort -rn | head -5 | awk '{printf "  %6ss  %-20s pid=%s\n", $1, $2, $3}'
+ echo "  -- memory --"; grep -E '^(MemFree|MemAvailable|Slab|Committed_AS|SwapTotal|SwapFree)' /proc/meminfo 2>/dev/null | sed 's/^/  /'
+ 
+@@ -725,7 +739,13 @@ echo "  -- chain packet/byte counters --"
+ # The counters are the whole point: a climbing RW_ODROP during a reported
+ # outage says Warden dropped it, and a flat one says look upstream. Before
+ # v1.2.0 this could only be read by hand, live, on the box.
+-for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_FDROP RW_ODROP RW_SDROP; do
++# v1.3.14: RW_FDROP is deliberately NOT in this list. Forward-direction drops
++# share RW_DROP by design -- REAPER_WARDEN is jumped to from both INPUT and
++# FORWARD (2 references) and both land on the one drop target -- so RW_FDROP is
++# never created and the probe printed "[RW_FDROP] absent" on every healthy box,
++# which reads as a fault. Confirmed on metal 2026-09-10: absent, with
++# REAPER_WARDEN at 2 references and every other chain present.
++for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP RW_SDROP; do
+   if iptables -nvxL "$C" >/dev/null 2>&1; then
+     echo "  [$C]"; iptables -nvxL "$C" 2>/dev/null | sed 's/^/     /'
+   else
+@@ -925,7 +945,30 @@ tail -150 /tmp/syslog.log 2>/dev/null | sed 's/^/  /'
+ sec "19b. SYSLOG HISTORY (churn, noise profile, lineage - counts and pseudonyms only)"
+ SLF="$(slog_files | tr '\n' ' ')"
+ if [ -n "$SLF" ]; then
+-  echo "  sources           : $SLF"
++  SLFSRC="$SLF"
++  # v1.3.14: collapse the sources ONCE, and count only the result.
++  #
++  # (a) The USB/jffs mirror is a rolling copy of the same syslog, so `cat $SLF`
++  #     counted the overlapping region TWICE -- and the mirror carries internal
++  #     repeats of its own. Measured on metal 2026-09-10: 12,360 lines
++  #     concatenated against 5,634 distinct. Every count in this section was
++  #     inflated about 2.2x, which is how field diag #1 came to report two
++  #     panics where the log held one line.
++  #     The dedup is order-PRESERVING on purpose: the span and rate maths below
++  #     takes the first credible timestamp and the last line, which a `sort -u`
++  #     would destroy. Identical lines inside one second collapse to the one
++  #     event they describe -- the CHURNFIX rule above, applied section-wide.
++  #
++  # (b) The lab MCP echoes the operator's own command text into syslog under
++  #     `rmcpd-lab: exec:`, so ANY counter whose pattern appears in a command
++  #     run through it is inflated. On metal 2026-09-10 that alone made the
++  #     panic/oops/oom line report 2 on a box that had neither. Drop the echo
++  #     lines; the daemon's own tagged lines stay, so the noise profile below
++  #     still shows that the lab was running.
++  cat $SLF 2>/dev/null | awk '!seen[$0]++' | grep -v 'rmcpd-lab: exec:' > "$SNAP" 2>/dev/null
++  SLF="$SNAP"
++  echo "  sources           : $SLFSRC"
++  echo "  snapshot          : $(wc -l < "$SNAP" 2>/dev/null) distinct line(s) after collapsing source overlap and lab command echoes"
+   echo "  span              : $(cat $SLF 2>/dev/null | head -1 | cut -c1-15) .. $(tail -1 /tmp/syslog.log 2>/dev/null | cut -c1-15)   lines=$(cat $SLF 2>/dev/null | wc -l)"
+   # CHURNFIX (v1.3.8): hostapd emits the SAME "IEEE 802.11: disassociated" line
+   # repeatedly for one flap -- commonly 2x, in bursts up to 10 identical lines
+@@ -966,10 +1009,46 @@ function pe(m,d,t){split(t,T,":");return mn[m]*2629800+d*86400+T[1]*3600+T[2]*60
+   echo "  -- noise profile: lines by source tag (top 15) --"
+   cat $SLF 2>/dev/null | cut -c17- | sed 's/\[[0-9]*\]//' | cut -d: -f1 | sort | uniq -c | sort -rn | head -15 | awk '{printf "  %7d %s\n", $1, $2}'
+   echo "  -- lineage --"
+-  BOOTS="$(cat $SLF 2>/dev/null | grep -c 'syslogd started')"
+-  echo "  boots in span     : $BOOTS   last boot line: $(grep 'syslogd started' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c1-15)"
+-  echo "  panic/oops/oom    : $(cat $SLF 2>/dev/null | grep -ciE 'kernel panic|Oops|oom-killer|Out of memory')   wan link down: $(cat $SLF 2>/dev/null | grep -c 'WAN(0) link down')   notify_rc reboot: $(cat $SLF 2>/dev/null | grep -c 'notify_rc reboot')"
+-  echo "  kernel tainted    : $(cat /proc/sys/kernel/tainted 2>/dev/null)"
++  # v1.3.14: "boots in span" counted 'syslogd started', but any service cascade
++  # restarts syslogd WITHOUT a reboot -- field diag #2 read 13 boots against a
++  # real uptime of minutes, and metal 2026-09-10 read a start 1h20m old on a box
++  # that had been up 10h42m. This hardware has no RTC, so the log's own head
++  # cannot date a boot either; /proc/uptime is the only reliable marker the box
++  # has. Report that, and label the syslogd figure as what it actually counts.
++  _up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"; _up="${_up:-0}"
++  printf "  uptime            : %dd %02dh %02dm   (the only reliable boot marker - this hardware has no RTC)\n" \
++    "$((_up/86400))" "$((_up%86400/3600))" "$((_up%3600/60))"
++  echo "  syslogd starts    : $(grep -c 'syslogd started' "$SNAP" 2>/dev/null)   (NOT a boot count - a service cascade restarts syslogd; compare with uptime)"
++  echo "  last syslogd start: $(grep 'syslogd started' "$SNAP" 2>/dev/null | tail -1 | cut -c1-15)"
++  # v1.3.14: the pattern was case-insensitive with a bare 'Oops', so the word in
++  # ANY prose matched. Anchor on what the kernel actually prints ("Kernel panic
++  # - not syncing", "Internal error: Oops:", "invoked oom-killer", "Out of
++  # memory: Kill process"). This is the most alarming line in the whole report
++  # and it was the least trustworthy: on metal 2026-09-10 it read 2 where the
++  # truth was 0, both hits being echoed command text.
++  echo "  panic/oops/oom    : $(grep -cE 'Kernel panic|Oops:|oom-killer|Out of memory' "$SNAP" 2>/dev/null)   wan link down: $(grep -c 'WAN(0) link down' "$SNAP" 2>/dev/null)   notify_rc reboot: $(grep -c 'notify_rc reboot' "$SNAP" 2>/dev/null)"
++  # v1.3.14: /proc/sys/kernel/tainted is a BITMASK, not a count. 4097 = 0x1001 =
++  # proprietary module + out-of-tree module, which is the EXPECTED state on this
++  # platform (the wl driver, and tfat/ntfs). Printing the integer made a normal
++  # box look alarming. DIED_OOPS (bit 7) is the bit that means the kernel
++  # actually fell over, so surface that as a finding instead of burying it.
++  _tv="$(cat /proc/sys/kernel/tainted 2>/dev/null)"; _tv="${_tv:-0}"
++  _tb=0; _tf=""
++  for _tn in PROPRIETARY_MODULE FORCED_MODULE UNSAFE_SMP FORCED_RMMOD MACHINE_CHECK \
++             BAD_PAGE USER_REQUESTED DIED_OOPS ACPI_OVERRIDE WARNING STAGING_DRIVER \
++             FIRMWARE_WORKAROUND OUT_OF_TREE_MODULE UNSIGNED_MODULE SOFT_LOCKUP \
++             LIVEPATCH AUX RANDSTRUCT; do
++    [ "$(( (_tv >> _tb) & 1 ))" -eq 1 ] && _tf="$_tf $_tn"
++    _tb=$((_tb+1))
++  done
++  case "$_tf" in
++    " PROPRIETARY_MODULE OUT_OF_TREE_MODULE") _tx="   (expected on this platform)" ;;
++    *) _tx="" ;;
++  esac
++  echo "  kernel tainted    : $_tv =${_tf:- (clean)}$_tx"
++  case " $_tf " in
++    *" DIED_OOPS "*) finding WARN "kernel taint carries DIED_OOPS - the kernel oopsed since boot; see section 18" ;;
++  esac
+ else
+   echo "  no syslog readable"
+ fi
+@@ -1030,7 +1109,8 @@ RESID="$(awk -v FWVER="$(nvram get firmver 2>/dev/null)" '
+     }
+   }
+   END { printf "%d %d %d", r4+0, rM+0, rE+0 }' "$BODY")"
+-# shellcheck disable=SC2086 - deliberate word splitting of the "n n n" triple
++# Deliberate word splitting of the "n n n" triple below.
++# shellcheck disable=SC2086
+ set -- $RESID
+ R4="${1:-0}"; RM="${2:-0}"; RE="${3:-0}"
+ if [ "$R4" = "0" ] && [ "$RM" = "0" ] && [ "$RE" = "0" ]; then
+-- 
+2.25.1
+

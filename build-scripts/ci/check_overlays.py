@@ -47,6 +47,14 @@ BANNER_REF_FILES = {
     "release/src/router/www/Main_ReaperDash.asp",
     "release/src/router/www/reaper_shell.asp",
     "release/src/router/www/state.js",
+    # Added 2026-09-10. This page arrived with v3.1.0's first-boot Wi-Fi flow
+    # and was never added here or to port_sibling_v2's list, so every sibling
+    # overlay left it naming canon's RT-96U animated header - a file the same
+    # overlay removes. This gate runs with only overlays/ checked out and
+    # cannot derive the list from canon the way the port tool now does, so it
+    # stays a list; rule (4) below now says so in words when a new banner page
+    # turns up here unlisted.
+    "release/src/router/www/Reaper_WiFiSetup.asp",
 }
 
 # Text files that legitimately carry a model CAPABILITY difference rather than a

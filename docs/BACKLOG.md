@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -44,10 +44,34 @@ The ordered short list.
 2. **[P3] Build one `stable` image** — the channel marker has now been through a real beta
    build end to end, but the stable path has never been exercised, and that is the path a
    release goes out on.
-3. **[P3] GT-BE19000 bring-up** — the RT-BE92U's replacement on the roster. Not started:
-   the model is not in Merlin, it sits on the GT-BE98 lineage as an RT-BE96U twin, and it
-   needs 13 board objects, the RTL8372 gate and hardware to validate. Nothing is committed
-   to it yet beyond the feasibility sizing.
+3. **[P2] GT-BE19000 bring-up** — the RT-BE92U's replacement on the roster. IN PROGRESS
+   (2026-09-10): branch `gt-be19000` carries the identity, the whole closed layer from the ASUS
+   102_39274 GPL drop and nothing else, the guarded port, and the shim; every port guard passes.
+   Two blockers, both decisions rather than work: **(a) dongle firmware** — no ASUS GPL drop
+   ships `rtecdc.bin`, every model in the pinned base ships its own build of it, and the build
+   skips a missing `sysdeps/<MODEL>/` *silently* (a clean-room image would have no radio
+   firmware and no error). The board-correct source is the official GT-BE19000 firmware image;
+   the build is held until that is decided. **(b) a tester** — nothing above proves it boots.
+   Then CI wiring (model tables, its own `uboot-rtl8372` archive, matrix, `release.yml`
+   prerelease case) and a networkmap 39995-pin check for the SHM-skew class. Owed regardless:
+   a `reaper_verify` marker that the expected dongle firmware is present per model.
+   ↳ memory: `gt-be19000-port.md`
+3a. **[P1] First-boot Wi-Fi page shows a dangling header on every sibling** (v3.1.0 → v3.1.2;
+   found 2026-09-10) — `Reaper_WiFiSetup.asp` references the animated header and was in none
+   of the three hand-kept banner-page lists, so each sibling kept canon's `RT-96U` reference to
+   a file its own overlay removes. Tooling fixed and proven both ways (lists derived from canon,
+   overlay gate refuses unlisted banner pages, `cut_fleet` unions the pages into overlays, new
+   `reaper_verify` `banner-refs` check). **CLOSED 2026-09-10:** all four siblings re-pointed
+   through the fixed port tool (`gt-be98` 798929b459, `gt-be98-pro` 8ac21c9ffd, `rt-be86u`
+   cec4941d1d, `rt-be88u` c6a3b24c55), every port guard green, and the four overlays
+   regenerated with the banner-page union. The overlay identity gate and the hidden-character
+   scan both pass on the result. Each active model now carries exactly four animated
+   references (login, logout, password, first-boot Wi-Fi) and four still ones (the two header
+   brands, `state.js`, and the login CSS fallback), all naming its own files. `rt-be92u` still
+   carries canon's reference at `Reaper_WiFiSetup.asp:544`: it is dormant and its branch stops
+   receiving ports, so it is fixed port-first if the model is ever restored.
+   **[fixed in source on all four; the images are owed a build]**
+   ↳ memory: `banner-ref-pages.md`
 4. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
 5. **[P2] Warden "crash" on the BE92U addon box** — hypotheses ranked, tester data requested.
    Still open despite the model leaving the roster: the suspected fault is in shared Warden
@@ -190,6 +214,15 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   opening its first page instead of unfolding a list. Grouped rather than split into five entries
   because one session on the box settles all of them. **[metal owed]**
   ↳ notes: `v312-r2-validation.md`
+- **[P2] v3.1.3's Policy Routing page wants a browser** (2026-09-11) — the behaviour half is
+  confirmed on metal: the Killswitch A/B passed both ways from the nvram toggle plus a vpnrouting
+  restart alone, and the front-chain classifier was proven on the same box and the same rule that
+  raised a FAILURE on v3.1.2. What a lab session cannot see is the page: the Target column showing
+  the interface only, the **LAN** badge on destination and device rules, the client-off chip
+  wording (blocked vs using the WAN), the Apply overlay persisting until the Keep / Revert bar, and
+  the Administration tab reading *DNS Failover*. Also owed there: arm a candidate, toggle that
+  client's Killswitch, and confirm the awaiting-confirmation line appears and the next apply
+  follows the switch. **[metal owed — needs a browser, not the lab]**
 - **[P3] Policy Routing page: the first-open symptom was never identified** — the screenshot did not
   reach the record; the strongest candidate shipped fixed in v3.0.5. **[needs the screenshot]**
   ↳ notes: `pbr-first-open-symptom.md`
@@ -257,7 +290,8 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   one. **[deferred — needs an rc stop service]** ↳ notes: `firmware-veil-cancel.md`
 - **[P3] Chain-integrity watchdog covers the Warden drop chains only** (scope note, 2026-09-10) —
   rwatch 3d asserts "ends in DROP, nothing ahead of it that ACCEPTs or RETURNs" for `RW_DROP`,
-  `RW_ODROP` and `RW_SDROP`, and asserts hook position for the three front chains. The Gatekeeper
+  `RW_ODROP` and `RW_SDROP`, and checks what sits ahead of the three front chains (since v3.1.3 by
+  classifying it, rather than requiring position 1 — see the changelog). The Gatekeeper
   and rules-engine chains have **no equivalent invariant checked**, deliberately: they interleave
   DROP and RETURN by design, so "ends in DROP" is not a property they have and asserting it would
   produce noise, not safety. If those need guarding, the invariant has to be defined first —
@@ -380,7 +414,21 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   cannot occur in source, and it now has a scoped guard. What is still wanted is a pre-commit
   or cut-time check on the *shape* of a rung commit — a file count far outside the one-to-four
   every other commit in this rung had, or added paths absent from the pinned base.
-  **[owed — the openssl half is done; the general check is not]**
+  **DONE 2026-09-10:** `build-scripts/ci/check_commit_shape.py`, run over every commit in the
+  range by `cut_rung` step 1b. Neither "added a `.o`" nor "added a `.o` absent from the base"
+  is the signal: the vendored tree tracks 5,930 `*.o`, 16,747 `Makefile` and 802 `*.so` from
+  the base, and onboarding a model legitimately commits a closed layer straight out of a GPL
+  drop (the GT-BE19000 import added 109 such objects, all of them belonging). The measured
+  discriminator is **build-system output** — `.deps/`, `.libs/`, `autom4te.cache/`,
+  `config.status`, `libtool`: the warm-tree sweep added 2,057 of them, the GPL import zero.
+  So three tiers: build-system output absent from the base is fatal with **no override**;
+  objects outside a recognised prebuilt path (`prebuild/`, `prebuilt/`, `router-sysdep*`,
+  `bootloaders/obj.*`) are fatal unless `ALLOW_BINARIES=1`; a file count outside a rung's norm
+  is fatal unless `ALLOW_LARGE=1`. Proven on the real commits: `95a1ee8ac3` is refused and
+  **stays refused with both overrides set**, its corrected twin `219e7d94d4` passes, all four
+  GT-BE19000 commits pass, the delete-only corrections pass, and a sweep of the last 60 canon
+  commits produces no false positive.
+  **[done]**
 - **[P3] `/tmp` dir-ownership hardening** — one shared validate-or-refuse helper, ~11 sites.
   **[deferred]** ↳ notes: `tmp-dir-ownership.md`
 - **[P3] `poll_fcache` O(n²) pairing · `poll_classes` 7× `tmctl` popen · `do_reaper_dev_cgi` static

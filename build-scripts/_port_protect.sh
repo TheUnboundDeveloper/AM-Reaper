@@ -52,7 +52,22 @@ PP_PROTECT_EXACT="release/src-rt/version.conf release/src-rt/target.mak"
 # Shared pages that legitimately differ from canon by EXACTLY the model-unique
 # banner filename (synced then re-pointed by the port). Verify compares these
 # banner-normalized.
-PP_BANNER_REFS="release/src/router/www/Main_Login.asp release/src/router/www/Main_ReaperDash.asp release/src/router/www/reaper_shell.asp release/src/router/www/state.js release/src/router/www/Main_Password.asp release/src/router/www/Logout.asp"
+# DERIVED from canon, not listed - the third copy of this list to be fixed on
+# 2026-09-10, after port_sibling_v2.sh and check_overlays.py. All three stopped
+# at six pages; Reaper_WiFiSetup.asp (v3.1.0, first-boot Wi-Fi) references the
+# animated header and was never added anywhere, so every sibling shipped it
+# naming canon's RT-96U banner - a file the sibling removes. Once the port tool
+# started re-pointing it, THIS list turned the corrected page into a "shared
+# residual", so the two had to move together. The fallback is the historical
+# six with a warning, never fewer: a broken derivation must fail loud at the
+# parity check, not quietly stop classifying pages as banner-normalized.
+PP_BANNER_REFS=$(git -C "${R:-/home/reaper/asuswrt-be96u}" grep -l -- '_REAPER_Header' "${PP_CANON:-be96u-only}" -- \
+    'release/src/router/www/*.asp' 'release/src/router/www/*.js' 2>/dev/null \
+  | sed "s/^${PP_CANON:-be96u-only}://" | sort | tr '\n' ' ')
+if [ "$(echo $PP_BANNER_REFS | wc -w)" -lt 6 ]; then
+  echo "_port_protect: WARNING - could not derive the banner-referencing pages from canon; using the historical six (a newer page will read as a shared residual)" >&2
+  PP_BANNER_REFS="release/src/router/www/Main_Login.asp release/src/router/www/Main_ReaperDash.asp release/src/router/www/reaper_shell.asp release/src/router/www/state.js release/src/router/www/Main_Password.asp release/src/router/www/Logout.asp"
+fi
 
 # classification: 0 = protected (per-model, skip), 1 = shared (must match canon),
 #                 2 = banner-ref (shared modulo banner name)

@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.2** <!--@treever--> — `3006.102.8_Reaper_v3.1.2`, built on RT-BE96U. **Routing a device through WireGuard no longer reboots the router**: the restart a few seconds after Apply and Confirm was a kernel panic in the accelerator's own /proc handler, which Reaper is the only thing in the system that reads — fixed in the kernel, on all six models, with a build-time check so it cannot come back. **A pre-release now says so**: every build is marked `_BETA` in its filename unless it is explicitly built as a release, and the dashboard shows a Beta tag beside the version. With them: the router **watches its own firewall chains** and re-pins them if something displaces them; **Warden's outbound logging is held in place by a test** that reintroduces eleven past faults and confirms each is caught, and says which of the four kinds of silence you are looking at; **Firewall › Logging headings match their columns** and outbound and router-originated blocks carry their own badges; **Addons opens a page** like every other menu item; **DoT servers can be used in order** instead of at random; and the **resolver health check carries both an IPv6 and an IPv4 address** for the server it watches. The series stands at **643 patches** (0637–0643 for v3.1.2); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.3** <!--@treever--> — `3006.102.8_Reaper_v3.1.3`, built on RT-BE96U. **Policy Routing follows each VPN client's Killswitch instead of overriding it**: a rule now only chooses the path, and whether a tunnel that is down blocks the traffic or lets it use the WAN is the switch you already set on that client's own VPN page — which *changes behaviour on upgrade* for a rule whose client has the Killswitch off. **The firewall watchdog stops fighting a rule you meant to be there**: a narrow carve-out in front of Reaper's chains, or a chain you name in `/jffs/reaper/front_exempt`, is tolerated and logged once instead of re-pinned every ten minutes, and a repair undone twice stops rather than churning. With them: the **diagnostic report stops overstating** — six figures that counted the wrong thing, from conntrack totals that could not be reconciled to a taint bitmask printed as a count; the **Administration tab is called DNS Failover**; the **EDNS Client Subnet help text says what actually leaves the router**; two silent overrules in Policy Routing now log; the **first-boot Wi-Fi page shows its header on every sibling model**; and the build's own **test suites run in CI**. The series stands at **648 patches** (0644–0648 for v3.1.3); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916). RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. |
@@ -17,6 +17,57 @@
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
+
+---
+
+## What's new in v3.1.3 — your Killswitch decides, and the firewall watchdog stops fighting a rule you meant
+
+*Built on RT-BE96U. Cut as patches 0644–0648, bringing the series to 648. The RT-BE86U, RT-BE88U,
+GT-BE98 and GT-BE98 Pro take it from the series.*
+
+**Policy Routing follows each VPN client's Killswitch instead of overriding it.** A rule that sent
+traffic to a VPN client also added a block beneath it, so when that tunnel dropped the traffic
+stopped — whatever the client's own Killswitch said. That was Reaper re-deciding something you had
+already decided on the VPN page, and it disagreed with VPN Director on the same router. A rule now
+only chooses the path; whether a tunnel that is down blocks the traffic or lets it use the WAN is
+that client's Killswitch, exactly as for VPN Director, and it takes effect the moment you change it
+there rather than waiting for a Policy Routing apply. **This changes behaviour on upgrade:** a rule
+targeting a client whose Killswitch is *off* now falls back to the WAN while the tunnel is down,
+where it used to block. To keep the old protection, turn that client's Killswitch on. The rules
+table says which applies to each rule while its client is off, states the rule once beneath the
+table, names the interface in the Target column instead of narrating consequences, and badges the
+one row that costs the whole LAN its hardware acceleration. Apply now dims the button and keeps its
+overlay up until the Keep / Revert bar appears, instead of leaving the page looking dead for the few
+seconds the rules take to go live.
+
+**The firewall watchdog no longer fights a rule you put ahead of it on purpose.** v3.1.2's
+chain-integrity watchdog re-pinned Reaper's front chains to the head of the base chains every ten
+minutes. That is right for an add-on that shoved them aside and wrong for a narrow carve-out that
+has to sit in front — a DNS rule that must beat Gatekeeper so restricted devices keep resolving, for
+instance. The two traded places indefinitely, taking DNS away from those devices for a couple of
+seconds each round and leaving the watchdog permanently red. It now looks at *what* is in front of
+it: a rule that can only affect a narrowed class of traffic, or a chain you have named in
+`/jffs/reaper/front_exempt`, is tolerated and logged once; a rule that could wave anything through
+is still repaired. If a repair is undone twice, it says what is happening, names the file that ends
+it, and stops.
+
+**The diagnostic report stops overstating what it found.** Six figures in `reaper_diag` counted the
+wrong thing: conntrack totals that could not be reconciled with the per-protocol breakdown because
+each line re-read a moving table; syslog counts inflated about 2.2x by treating the USB mirror and
+the log it mirrors as two logs; panic counts that included the lab assistant's echo of your own
+typed commands; "boots" that were really syslogd restarts; a panic pattern that matched the ordinary
+word "oops"; and a kernel taint bitmask printed as though it were a count. Each is fixed, and the
+chain that by design never exists stopped being reported as missing. Details in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+**Smaller, in the same rung.** The Administration tab is now called **DNS Failover** — "Failover"
+alone reads as Dual-WAN. The EDNS Client Subnet help text says what actually leaves the router: the
+complete client address, on every forwarded query, including any that reaches a public fallback
+server while your own filter is unavailable. Two silent behaviours in Policy Routing now log when
+they overrule what nvram says, and the watchdog's generated script reports success when the router
+is healthy instead of failure. The first-boot Wi-Fi page shows its header again on every sibling
+model. And for maintainers, the build's own test suites now run in CI, discovered by glob, with a
+run that executed nothing treated as a failure.
 
 ---
 

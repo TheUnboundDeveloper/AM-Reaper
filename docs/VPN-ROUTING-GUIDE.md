@@ -1,6 +1,6 @@
 # Reaper Policy Routing — user guide
 
-> **Doc status:** current as of **v3.1.1** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
 
 > **This guide has moved.** Every section below now lives in
 > **[`REAPER-GUIDE.md`](REAPER-GUIDE.md)**, the single Reaper manual, under
@@ -17,8 +17,10 @@ Policy Routing in brief, so this page is not useless on its own: it decides **wh
 which path** — an OpenVPN or WireGuard client, the plain WAN, or nowhere — by a rule you write. It
 is the piece VPN Director was missing, because it can match a named **object or domain list** or a
 **device**, not only an address. A Policy Routing rule **wins** over a VPN Director rule for the
-same traffic. A rule targeting a VPN client is **fail-closed**: if the tunnel drops the traffic is
-blocked, never leaked to the WAN. It is off by default, and turning it on changes nothing until you
+same traffic. A rule chooses the **path**; what happens when that path is gone is decided by that
+VPN client's own **Killswitch**, on its VPN page — blocked while it is on, falling back to the WAN
+while it is off — exactly as for VPN Director (since v3.1.3; before that every rule blocked,
+whatever the Killswitch said). It is off by default, and turning it on changes nothing until you
 add a rule.
 
 ---
@@ -49,7 +51,7 @@ Moved → **[4.4.6 Order and precedence](REAPER-GUIDE.md#446-order-and-precedenc
 
 ## Fail-closed
 
-Moved → **[4.4.7 Fail-closed](REAPER-GUIDE.md#447-fail-closed)**
+Moved → **[4.4.7 Fail-closed or fail-open: the Killswitch decides](REAPER-GUIDE.md#447-fail-closed-or-fail-open-the-killswitch-decides)**
 
 ## Examples
 

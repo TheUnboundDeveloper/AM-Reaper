@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -76,7 +76,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.4.4 [Domain lists](#444-domain-lists)
      - 4.4.5 [Where a rule sends traffic](#445-where-a-rule-sends-traffic)
      - 4.4.6 [Order and precedence](#446-order-and-precedence)
-     - 4.4.7 [Fail-closed](#447-fail-closed)
+     - 4.4.7 [Fail-closed or fail-open: the Killswitch decides](#447-fail-closed-or-fail-open-the-killswitch-decides)
      - 4.4.8 [Examples](#448-examples)
      - 4.4.9 [Limits and gotchas](#449-limits-and-gotchas)
    - 4.5 [QoS (Traffic Manager)](#45-qos-traffic-manager)
@@ -109,7 +109,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
-   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--failover-v311)
+   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--dns-failover-v311)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Tools → Other Settings: the Reaper switches](#417-tools--other-settings-the-reaper-switches)
@@ -330,7 +330,7 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 
 - Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
-- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and Reaper's front chains must still be first in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical; front chains that have been pushed down the list are re-pinned automatically and the displacement is logged, so it is visible rather than merely repaired. Note the Gatekeeper and rules-engine chains are deliberately **not** checked this way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
+- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic (a port, a destination) is tolerated and logged once; so is any chain you list, one name per line, in **`/jffs/reaper/front_exempt`**. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so, names that file, and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
 So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (4.17); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
@@ -919,7 +919,6 @@ Each rule matches traffic one of three ways:
 
 A fair question; VPN Director's source rule and a device rule here do steer the same packets. The device rules exist for what they add on top:
 
-- **Fail-closed.** If the tunnel drops, a device routed here is **blocked** until it comes back. VPN Director's rule would quietly fall through to the WAN unless you also enabled its kill switch.
 - **Block as a target.** "This device goes nowhere", without a firewall rule.
 - **MAC keying.** A MAC rule follows the device across DHCP changes; an IP rule does not.
 - **Precedence.** A rule here **overrides** a VPN Director rule for the same device, so you can carve one device out of a broad "route this subnet" policy.
@@ -943,9 +942,9 @@ Every rule has one target:
 - **A VPN client (OpenVPN 1–5)** — matched traffic goes through that OpenVPN client's tunnel, using the routing table the client already created. The tunnel does not have to be the default route; this steers only the traffic you named through it.
 - **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN. This is how you carve an exception out of "route everything through the tunnel".
 - **Block** — matched traffic is dropped. Useful as a hard "this device, or this destination, goes nowhere" that does not depend on the firewall rule order.
-- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off is fail-closed: it blocks the selected traffic until that client comes up. Since v2.7.7 the target list **hides tunnels you have not configured** and flags ones that are configured but currently down, so a rule cannot be pointed at a target that was never going to carry it. The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
+- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off either blocks the selected traffic or lets it use the WAN, depending on that client's Killswitch (4.4.7). Since v2.7.7 the target list **hides tunnels you have not configured** and flags ones that are configured but currently down, so a rule cannot be pointed at a target that was never going to carry it. The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
 
-**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around the tunnel.
+**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked when that client's Killswitch is on and uses the WAN when it is off - the same rule as for a tunnel that is down (4.4.7).
 
 #### 4.4.6 Order and precedence
 
@@ -953,11 +952,16 @@ Rules read **top to bottom, first match wins** — put specific rules above broa
 
 Between features, **a Policy Routing rule takes precedence over a VPN Director rule** covering the same traffic. So you do not have to unpick VPN Director to make an exception — you add the exception here and it wins.
 
-#### 4.4.7 Fail-closed
+#### 4.4.7 Fail-closed or fail-open: the Killswitch decides
 
-A rule that targets a VPN client **fails closed**: if that tunnel is **down**, the matched traffic is **blocked, not sent out the WAN.** This is deliberate, and it is the safety property that matters most in a routing feature. The whole point of sending a device or a site through a VPN is usually that it must *not* touch the internet directly — so if the tunnel drops, leaking that traffic to the WAN would be the one failure you were trying to prevent. Instead it stops until the tunnel is back.
+A rule chooses the **path**. What happens when that path is gone — the tunnel is down, or the client is switched off — is decided by that VPN client's own **Killswitch**, on its VPN page, exactly as it is for VPN Director:
 
-If you actually want "use the tunnel when it is up, otherwise go direct", that is a **WAN** rule, not a VPN-client rule — state it explicitly rather than relying on a failure.
+- **Killswitch on** — the matched traffic is **blocked** until the tunnel is back. This is the setting to use when the whole point of the rule is that the traffic must *never* touch the internet directly.
+- **Killswitch off** — the matched traffic **falls back to the WAN** while the tunnel is down, and returns to the tunnel when it is up.
+
+Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. The rules table shows, per rule, which applies while a client is off, and states the rule once beneath the table.
+
+The same decision covers IPv6: a tunnel that carries no IPv6 blocks the selected IPv6 traffic when the Killswitch is on, and lets it use the WAN when it is off.
 
 #### 4.4.8 Examples
 
@@ -968,7 +972,7 @@ Build a domain list `streaming` in the card on this page, listing the services' 
 Set VPN Director (or a broad rule) to route everything through the tunnel. Then here: selector **Object** = `work-app` (a domain list for the service that dislikes the VPN's exit address), target **WAN**. Because Policy Routing wins over VPN Director, that one service goes direct and everything else stays tunnelled.
 
 **Force one device down a VPN, and nowhere else if it drops.**
-Selector **Source MAC** = the device's address, target **OpenVPN 2**. If OVPN 2 is connected the device uses it; if OVPN 2 goes down the device has no internet (fail-closed) rather than quietly falling back to your real address.
+Selector **Source MAC** = the device's address, target **OpenVPN 2**, and OpenVPN 2's **Killswitch on** (its VPN page). If OVPN 2 is connected the device uses it; if OVPN 2 goes down the device has no internet rather than quietly falling back to your real address. With the Killswitch off it would fall back to the WAN instead.
 
 **Send a device — or a destination — nowhere at all.**
 Selector **Source IP** (or **Object**), target **Block**. A hard stop that does not depend on where it sits in the firewall's own rule order.
@@ -1290,13 +1294,13 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 
 The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
 
-### 4.14a Resolver health check (Administration → Failover, v3.1.1)
+### 4.14a Resolver health check (Administration → DNS Failover, v3.1.1)
 
 dnsmasq, the router's resolver, keeps no memory of an upstream that stopped answering. In strict order it
 tries the first server again for every new name and only a client's retransmission moves the query to the
 next one, so an outage of a LAN resolver such as AdGuard or Pi-hole costs a client timeout per uncached
 name, and a client that lists the router as its second DNS server can need three attempts before the
-router's own second server answers. The **Reaper resolver health check** lives on the **Failover** tab
+router's own second server answers. The **Reaper resolver health check** lives on the **DNS Failover** tab
 of the Administration group (between System and Firmware Upgrade) together with the three dnsmasq
 switches below, and watches **one DNS server you name** with a real query every few seconds; the tab's
 state strip shows Watch / Fail over / Restore and lights the middle step while the server is down.
@@ -1322,11 +1326,19 @@ the memory of a dead one that strict order lacks.
 Two more switches sit beneath, for the layout where **clients are handed the router alone as their DNS**
 and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
 and catches devices with a hard-coded DNS when paired with the port-53 intercept. **Client addresses**
-attaches the asking client's address to every forwarded query as EDNS Client Subnet, so AdGuard Home
-(with "Use EDNS Client Subnet" on in its DNS settings) or Pi-hole (on by default) still shows and filters
-per client instead of seeing only the router. **Router DNS cache** off turns the router into a pure
-forwarder: a per-client decision is never served from the router's cache to a different client, and the
-filter sees every lookup, as it does when clients talk to it directly. The filter keeps its own cache.
+attaches the asking client's address to every forwarded query as EDNS Client Subnet, so a LAN filter still
+sees the device that asked instead of seeing only the router. The **complete** address is sent, not a
+shortened prefix: a truncated one would collapse every device on the LAN into a single entry, which is the
+condition the switch exists to fix. It rides on *every* forwarded query, and that includes any that reach a
+public fallback server during the window the health check above has your own filter moved to the back of the
+list. A public resolver given it can tell your devices apart, which the router's address translation
+otherwise denies it, so turn this on only when the server receiving it is one you run. Pi-hole matches on
+the value (on by default); AdGuard Home currently only records it, so with "Use EDNS Client Subnet" on its
+query log names the client but its per-client rules still match the router's address (AdGuardHome issues
+#4383 and #6104) - point clients at that filter directly if you need per-device rules there.
+**Router DNS cache** off turns the router into a pure forwarder: a per-client decision is never served
+from the router's cache to a different client, and the filter sees every lookup, as it does when clients
+talk to it directly. The filter keeps its own cache.
 
 ### 4.15 About
 
@@ -1364,7 +1376,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 1. **Know the layer order.** Traffic meets **Warden → Gatekeeper → the rules engine**, in that order, on every base chain. Use Warden for "never talk to these ranges or countries", Gatekeeper for "which devices are allowed at all", the Firewall rules for the specific policy between them, and Egress defaults for the short "this device gets no internet". Do not re-express a Warden block as a firewall rule, or a Gatekeeper block as a Policy Routing Block; one layer, one job.
 2. **Keep lists small and named for what they are.** A country object points at Warden's set rather than copying it; a domain list should hold one service, split if it is long; an address object is `printer`, not `192-168-50-20`. Warden's feeds merge and de-duplicate, so FireHOL Level 1 alone covers three of the four built-ins.
 3. **Mind the WireGuard bypass cost.** A Policy Routing rule that sends a *device (by MAC)* or a *destination list* to a WireGuard client bypasses hardware acceleration for the **whole LAN** for as long as the rule exists. If you can express the rule as a **source IP/CIDR**, only that address loses acceleration. If you can use an OpenVPN client as the target, nothing loses acceleration.
-4. **VPN Director or Policy Routing?** Use VPN Director for the broad posture — "everything (or this subnet) through the tunnel". Use Policy Routing for what needs an object or a device, or one of its four properties: fail-closed, a Block target, MAC keying, and precedence over VPN Director. If you need none of those, VPN Director alone is fine and simpler.
+4. **VPN Director or Policy Routing?** Use VPN Director for the broad posture — "everything (or this subnet) through the tunnel". Use Policy Routing for what needs an object or a device, or one of its three properties: a Block target, MAC keying, and precedence over VPN Director. Whether traffic blocks or falls back to the WAN when a tunnel drops is that VPN client's Killswitch, for both features. If you need none of those, VPN Director alone is fine and simpler.
 5. **Set the QoS bandwidth honestly.** 90–95 % of the *lowest measured* upload. Too high and the ISP's buffer takes over and nothing here can help; too low just wastes headroom. Put your priority classes in order of latency-sensitivity, not importance, and never give the top class a 100 % ceiling.
 6. **USB choice.** An ext4 stick that stays in the router is the right home for traffic history, the syslog mirror and incident dumps. FAT32 is for disks you carry about. Keep the file share closed to untrusted users if the store is on it.
 7. **Apply, test, then Keep.** On the Firewall and Policy Routing pages, make the change from a device the rule does not touch, confirm what you meant to allow still works, then press Keep. If you are not sure, let the timer run; reverting is free.
@@ -1422,7 +1434,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Apply and Keep / commit-confirm** — the two-step change on the Firewall and Policy Routing pages: changes go live at once and revert on their own unless you press Keep within the auto-revert timer (2.7).
 - **Auto-revert timer** — 15–3600 seconds, default 60, never off; set on the Firewall Rules tab.
 - **Egress default** — a per-device rule for traffic leaving toward the internet only (Firewall → Egress).
-- **Fail-closed** — a Policy Routing rule whose tunnel is down *blocks* the traffic rather than letting it out the WAN.
+- **Fail-closed** — a VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off it falls back to the WAN.
 - **FINDINGS** — the verdict block at the top of the diagnostics report.
 - **Front chain (`REAPER_HOOK_*`)** — the single shared chain at the head of INPUT/FORWARD/OUTPUT into which Warden, Gatekeeper and the rules engine register, in that fixed order.
 - **Gatekeeper** — device access control; states are Pending, Full access, Internet only, Guest (timed), Blocked.

@@ -1,0 +1,971 @@
+From ee833ce17e6d14ce83959ffd0ba81d791cf68992 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 11 Sep 2026 16:51:36 -0400
+Subject: [PATCH] pbr: a rule whose tunnel is down follows that client's
+ Killswitch
+
+Policy routing realised BLOCK as an unconditional lower-priority `prohibit`:
+whenever a target tunnel went down, every rule pointed at it failed closed,
+whatever the owner had asked for on that client's own VPN page. The firmware
+already has a switch for exactly this decision - vpn_clientN_enforce /
+wgcN_enforce, the Killswitch VPN Director obeys - and two answers to one
+question is one too many.
+
+P3 now reads it per target: Killswitch on keeps the `prohibit` (fail closed),
+Killswitch off omits it and the traffic falls back to the WAN. BLOCK is still
+realised solely as `prohibit`, and nothing else about rule generation moves.
+
+Saving a Killswitch restarts vpnrouting, so that restart now calls
+reaper_pbr_regen(), which regenerates the COMMITTED rules in place. It is
+deliberately not start_reaper_pbr(): that unlinks the draft, which would
+discard an apply the owner is still confirming.
+
+The page stops claiming fail-closed for everything. The CGI reports each
+client's Killswitch (wks/oks); the chip on a rule whose client is off says
+whether that traffic is blocked or uses the WAN; the target column names the
+interface; a rule that bypasses acceleration for the whole LAN is badged LAN;
+and Apply keeps its overlay up until the Keep / Revert bar takes over.
+
+Metal (RT-BE96U, 2026-09-11): wgc5_enforce=0 gives "9010 lookup wgc5" alone and
+`ip route get 1.1.1.1 mark 0xa0000` goes via the WAN; =1 adds "9110 prohibit"
+and the same command is denied. Both from the nvram toggle plus
+`service start_vpnrouting0`, with no Policy Routing apply - which is the regen
+path end to end. Teardown verified clean.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c               | 11 ++-
+ release/src/router/rc/rc.h                   |  1 +
+ release/src/router/rc/reaper_pbr.c           | 79 +++++++++++++++++---
+ release/src/router/rc/services.c             |  4 +
+ release/src/router/www/BR.dict               |  8 +-
+ release/src/router/www/CN.dict               |  8 +-
+ release/src/router/www/CZ.dict               |  8 +-
+ release/src/router/www/DA.dict               |  8 +-
+ release/src/router/www/DE.dict               |  8 +-
+ release/src/router/www/EN.dict               |  8 +-
+ release/src/router/www/ES.dict               |  8 +-
+ release/src/router/www/FI.dict               |  8 +-
+ release/src/router/www/FR.dict               |  8 +-
+ release/src/router/www/HU.dict               |  8 +-
+ release/src/router/www/IT.dict               |  8 +-
+ release/src/router/www/JP.dict               |  8 +-
+ release/src/router/www/KR.dict               |  8 +-
+ release/src/router/www/MS.dict               |  8 +-
+ release/src/router/www/NL.dict               |  8 +-
+ release/src/router/www/NO.dict               |  8 +-
+ release/src/router/www/PL.dict               |  8 +-
+ release/src/router/www/RO.dict               |  8 +-
+ release/src/router/www/RU.dict               |  8 +-
+ release/src/router/www/Reaper_VPNRouting.asp | 58 ++++++++------
+ release/src/router/www/SL.dict               |  8 +-
+ release/src/router/www/SV.dict               |  8 +-
+ release/src/router/www/TH.dict               |  8 +-
+ release/src/router/www/TR.dict               |  8 +-
+ release/src/router/www/TW.dict               |  8 +-
+ release/src/router/www/UK.dict               |  8 +-
+ 30 files changed, 292 insertions(+), 61 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index ec3463741a..9b852d294c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24575,7 +24575,10 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			left = dl - (long)time(NULL);
+ 			if (left < 0) left = 0;
+ 		}
+-		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d],\"ov\":[%d,%d,%d,%d,%d]",
++		/* wks/oks (v3.1.3): each client's Killswitch, which since P3 decides
++		 * whether a rule to a down tunnel blocks or uses the WAN; the page
++		 * states it per rule instead of claiming fail-closed for all. */
++		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d],\"ov\":[%d,%d,%d,%d,%d],\"wks\":[%d,%d,%d,%d,%d],\"oks\":[%d,%d,%d,%d,%d]",
+ 			nvram_match("reaper_pbr_active", "1") ? 1 : 0,
+ 			nvram_match("reaper_pbr_enable", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+@@ -24584,7 +24587,11 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			nvram_get_int("wgc1_enable"), nvram_get_int("wgc2_enable"), nvram_get_int("wgc3_enable"),
+ 			nvram_get_int("wgc4_enable"), nvram_get_int("wgc5_enable"),
+ 		nvram_safe_get("vpn_client1_addr")[0]?1:0, nvram_safe_get("vpn_client2_addr")[0]?1:0, nvram_safe_get("vpn_client3_addr")[0]?1:0,
+-		nvram_safe_get("vpn_client4_addr")[0]?1:0, nvram_safe_get("vpn_client5_addr")[0]?1:0);
++		nvram_safe_get("vpn_client4_addr")[0]?1:0, nvram_safe_get("vpn_client5_addr")[0]?1:0,
++			nvram_get_int("wgc1_enforce") ? 1 : 0, nvram_get_int("wgc2_enforce") ? 1 : 0, nvram_get_int("wgc3_enforce") ? 1 : 0,
++			nvram_get_int("wgc4_enforce") ? 1 : 0, nvram_get_int("wgc5_enforce") ? 1 : 0,
++			nvram_get_int("vpn_client1_enforce") ? 1 : 0, nvram_get_int("vpn_client2_enforce") ? 1 : 0, nvram_get_int("vpn_client3_enforce") ? 1 : 0,
++			nvram_get_int("vpn_client4_enforce") ? 1 : 0, nvram_get_int("vpn_client5_enforce") ? 1 : 0);
+ 		websWrite(stream, ",\"err\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_pbr_err"));
+ 		websWrite(stream, ",\"rulelist\":");
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 713448922f..18ddc0b9db 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3014,6 +3014,7 @@ extern void start_reaper_pbr(void);
+ /* v2.6.7: commit-confirm for policy routing (same shape as reaper_fw's) */
+ extern void reaper_pbr_apply(void);
+ extern void reaper_pbr_reassert(void);
++extern void reaper_pbr_regen(void);	/* v3.1.3: a Killswitch changed - regenerate the committed rules */
+ extern void reaper_pbr_confirm(void);
+ extern void reaper_pbr_rollback(void);
+ /* The dnsmasq `ipset=` fragment reaper_fw generates for its FQDN objects, so
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 6d03eeab88..b8b7f95a3f 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -38,12 +38,20 @@
+  * P2. INPUT IS UNTRUSTED. Every field from reaper_pbr_rulelist that reaches the
+  *     generated root shell is charset-validated in C first; a bad record is
+  *     DROPPED and logged, never emitted half-formed.
+- * P3. FAIL CLOSED. A tunnel target also emits a lower-priority `prohibit` rule
+- *     for its mark, so when the tunnel drops (its table is flushed) the flow is
+- *     blocked, not silently leaked out the WAN. WAN-force and unmatched traffic
+- *     are unaffected. The SAME holds for IPv6: a tunnel table that carries no
+- *     IPv6 routes sends the selected v6 traffic into the prohibit, so a v4-only
+- *     tunnel cannot leak the selected flows' v6 half around itself.
++ * P3. THE KILLSWITCH DECIDES (v3.1.3; unconditional fail-closed before). A
++ *     rule chooses the PATH: every tunnel target gets its `lookup` rule. What
++ *     happens when that path is gone is that VPN client's own Killswitch
++ *     (vpn_clientN_enforce / wgcN_enforce) - the setting the stock VPN Director
++ *     honours on this same box (libovpn/amvpn_routing.c). Switch ON: a
++ *     lower-priority `prohibit` sits under the lookup, so a flushed tunnel
++ *     table blocks the flow instead of leaking it out the WAN, and the IPv6
++ *     half of a v4-only tunnel is blocked too. Switch OFF: no prohibit, the
++ *     flow falls through to `main` (WAN) while the tunnel is down, on both
++ *     families - that is what the operator asked for by leaving it off, and
++ *     Reaper no longer overrides it. WAN-force and unmatched traffic are
++ *     unaffected; BLOCK is still realised solely as `prohibit`. The switch is
++ *     read at generation time, so the `vpnrouting` restart that the VPN
++ *     client page fires on a Killswitch save calls reaper_pbr_regen().
+  * P4. SERIALIZE WITH THE BASE. Apply/teardown take file_lock("firewall") like
+  *     reaper_fw / GK / Warden, so we never interleave with a start_firewall()
+  *     rebuild.
+@@ -149,15 +157,20 @@ static int ppbr_target(const char *t, int *code, const char **table, int *failcl
+ 	static const char *wgt[] = { "wgc1","wgc2","wgc3","wgc4","wgc5" };
+ 	*table = NULL; *failclosed = 0; *wg = 0;
+ 	if (!strncmp(t, "OVPN", 4) && t[4] >= '1' && t[4] <= '5' && t[5] == '\0') {
++		char nv[32];
+ 		*code = t[4] - '0';                 /* 1..5 */
+ 		*table = ov[t[4] - '1'];
+-		*failclosed = 1;
++		/* P3: the client's Killswitch, the same key VPN Director reads */
++		snprintf(nv, sizeof(nv), "vpn_client%c_enforce", t[4]);
++		*failclosed = nvram_get_int(nv) ? 1 : 0;
+ 		return 1;
+ 	}
+ 	if (!strncmp(t, "WGC", 3) && t[3] >= '1' && t[3] <= '5' && t[4] == '\0') {
++		char nv[32];
+ 		*code = 5 + (t[3] - '0');           /* 6..10 */
+ 		*table = wgt[t[3] - '1'];
+-		*failclosed = 1;
++		snprintf(nv, sizeof(nv), "wgc%c_enforce", t[3]);
++		*failclosed = nvram_get_int(nv) ? 1 : 0;   /* P3 */
+ 		*wg = 1;
+ 		return 1;
+ 	}
+@@ -775,6 +788,32 @@ void reaper_pbr_reassert(void)
+ 	file_unlock(lock);
+ }
+ 
++/* Regenerate and re-run the COMMITTED ruleset from the current config. The
++ * `vpnrouting` restart that a VPN client's Killswitch save fires (services.c)
++ * lands here, because since v3.1.3 the per-target `prohibit` follows that
++ * switch (P3) and reaper_pbr_reassert() only re-executes the script that was
++ * generated last. Unlike start_reaper_pbr() this never touches the draft, the
++ * arm state or nvram. While a commit-confirm candidate is armed it steps
++ * aside and says so: the candidate is about to be kept or reverted, and the
++ * next apply reads the switch. */
++void reaper_pbr_regen(void)
++{
++	ppbr_cfg_t c;
++
++	if (!is_routing_enabled() || !nvram_match("reaper_pbr_enable", "1")) return;
++	if (nvram_match("reaper_pbr_armed", "1")) {
++		logmessage("reaper_pbr", "a VPN client's Killswitch changed while a routing change is awaiting confirmation - the rules follow it on the next apply");
++		return;
++	}
++	if (!ppbr_cfg_load(&c, ppbr_lastgood_ok())) return;
++	if (c.enable) {
++		reaper_fw_sets_only();                 /* the sets the chain matches (see start_reaper_pbr) */
++		if (ppbr_gen(PPBR_APPLY, 0, &c))
++			ppbr_run(PPBR_APPLY, 1);
++	}
++	ppbr_cfg_free(&c);
++}
++
+ void start_reaper_pbr(void)
+ {
+ 	ppbr_cfg_t c;
+@@ -811,7 +850,14 @@ void start_reaper_pbr(void)
+ 		from_good = ppbr_lastgood_ok();
+ 	} else if (nvram_safe_get("reaper_pbr_rulelist")[0]) {
+ 		/* migrated box with a leftover nvram value (settings restore): the
+-		 * file is authoritative, drop the shadow */
++		 * file is authoritative, drop the shadow.
++		 * SAY SO (v3.1.3c). This discards something an operator - or a
++		 * settings restore - deliberately put there, and it used to do it
++		 * without a word: a list staged in nvram on a box that already had a
++		 * snapshot simply vanished, no rules and no log, while the caller
++		 * still saw "Done." Only fires when there was actually something to
++		 * drop, so a normal boot stays quiet. */
++		logmessage("reaper_pbr", "a rule list was left in nvram - ignoring it, " REAPER_PBR_RL " is authoritative; edit the rules on the Policy Routing page");
+ 		nvram_unset("reaper_pbr_rulelist");
+ 		nvram_commit();
+ 	}
+@@ -820,9 +866,18 @@ void start_reaper_pbr(void)
+ 		logmessage("reaper_pbr", "boot: the %s config could not be read - policy routing NOT started", from_good ? "confirmed" : "nvram");
+ 		return;
+ 	}
+-	if (from_good)
+-		/* what is live must be what the page shows (RAM only) */
+-		nvram_set("reaper_pbr_enable", c.enable ? "1" : "0");
++	if (from_good) {
++		/* what is live must be what the page shows (RAM only).
++		 * SAY SO when it actually differs (v3.1.3c): this silently overwrote
++		 * an operator's enable=1 with the snapshot's 0, which - together with
++		 * the dropped nvram list above - is how a hand-staged configuration
++		 * disappeared with no record. Logs only on a real divergence. */
++		const char *want = c.enable ? "1" : "0";
++		if (!nvram_match("reaper_pbr_enable", want))
++			logmessage("reaper_pbr", "nvram said policy routing was %s but the confirmed snapshot says %s - following the snapshot",
++			           nvram_match("reaper_pbr_enable", "1") ? "ON" : "OFF", c.enable ? "ON" : "OFF");
++		nvram_set("reaper_pbr_enable", want);
++	}
+ 
+ 	if (!c.enable) {
+ 		ppbr_cfg_free(&c);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5b2846e5ae..984efa271c 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -21814,6 +21814,10 @@ retry_wps_enr:
+ 				// Refresh prerouting rules to ensure correct order
+ 				amvpn_update_exclusive_dns_rules();
+ 			}
++			/* reaper v3.1.3: a Policy Routing rule's `prohibit` follows the
++			 * client's Killswitch (reaper_pbr.c P3), and this is the restart
++			 * the VPN client page fires when that switch is saved. */
++			reaper_pbr_regen();
+ 			file_unlock(lock);
+ 		}
+ 	}
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index e72efd830f..0d538fab40 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Essa lista é longa demais para um único objeto. Divida-a em duas listas
+ RVR_52=Uma regra ainda usa esta lista. Excluir mesmo assim?
+ RVR_53=ainda não suportado — regra inativa
+ RABT_41=Encantador de GOATs~
+-RVR_54=Alvos WireGuard precisam de um desvio da aceleração de hardware (o mesmo que o VPN Director usa). Uma regra de origem desvia apenas aquele endereço; uma regra de destino ou de MAC desvia a LAN, então o tráfego da LAN perde a aceleração de hardware enquanto tal regra existir. A regra é fail-closed: se o cliente WireGuard estiver fora do ar, o tráfego selecionado é bloqueado, não vazado.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=bypass de aceleração: LAN
+ RVR_55=desvio de acel.: esta origem
+ RVR_56=cliente não habilitado - tráfego bloqueado
+@@ -6911,3 +6911,9 @@ RDHC_42=O roteador normalmente alterna entre seus servidores DNS-over-TLS, que a
+ RDHC_43=A Privacidade DNS esta desligada, entao esta opcao ainda nao tem efeito.
+ RDHC_44=Endereco IPv6 (opcional)
+ RDHC_45=O endereco IPv6 do mesmo servidor, tentado primeiro. O endereco IPv4 acima e usado sempre que o IPv6 estiver indisponivel ou nao responder.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index bbb2716d15..0c89e23af0 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6681,7 +6681,7 @@ RVR_51=该列表对于单个对象来说过长。请将其拆分为两个列表
+ RVR_52=仍有规则在使用此列表。仍要删除吗？
+ RVR_53=尚不支持 — 规则未生效
+ RABT_41=GOAT 耳语者~
+-RVR_54=WireGuard 目标需要绕过硬件加速（与 VPN Director 使用的相同）。源规则仅绕过该地址；目标规则或 MAC 规则会绕过 LAN，因此只要存在此类规则，LAN 流量就会失去硬件加速。该规则为故障关闭（fail-closed）：如果 WireGuard 客户端已断开，所选流量将被阻止，而不会泄漏。
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=加速旁路：LAN
+ RVR_55=加速旁路：此源
+ RVR_56=客户端未启用 - 流量已阻止
+@@ -6911,3 +6911,9 @@ RDHC_42=路由器通常在其 DNS-over-TLS 服务器之间轮换，因此它们
+ RDHC_43=DNS 隐私已关闭，此开关暂时不起作用。
+ RDHC_44=IPv6 地址（可选）
+ RDHC_45=同一服务器的 IPv6 地址，优先尝试。当 IPv6 不可用或无响应时，将使用上面的 IPv4 地址。
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index e354c20013..9903d3480c 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Tento seznam je pro jeden objekt příliš dlouhý. Rozdělte jej do dvou
+ RVR_52=Tento seznam stále používá některé pravidlo. Přesto jej odstranit?
+ RVR_53=zatím nepodporováno — pravidlo neaktivní
+ RABT_41=Zaříkávač GOATů~
+-RVR_54=Cíle WireGuard vyžadují obejití hardwarové akcelerace (totéž, které používá VPN Director). Pravidlo pro zdroj obejde pouze onu adresu; pravidlo pro cíl nebo MAC obejde LAN, takže provoz LAN ztrácí hardwarovou akceleraci po dobu, kdy takové pravidlo existuje. Pravidlo je fail-closed: pokud je klient WireGuard vypnutý, vybraný provoz je blokován, nikoli propuštěn ven.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=obejití akcelerace: LAN
+ RVR_55=obejití akcel.: tento zdroj
+ RVR_56=klient není povolen - provoz blokován
+@@ -6911,3 +6911,9 @@ RDHC_42=Router obvykle strida sve servery DNS-over-TLS, takze si provoz deli. To
+ RDHC_43=Soukromi DNS je vypnuto, tato volba zatim nema na co pusobit.
+ RDHC_44=Adresa IPv6 (volitelne)
+ RDHC_45=Adresa IPv6 tehoz serveru, zkousi se jako prvni. Kdykoli je IPv6 nedostupne nebo neodpovida, pouzije se adresa IPv4 vyse.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 6503a7bc1d..92a270efa5 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Den liste er for lang til ét objekt. Del den op i to lister.
+ RVR_52=En regel bruger stadig denne liste. Slet den alligevel?
+ RVR_53=endnu ikke understøttet — regel inaktiv
+ RABT_41=GOAT-hvisker~
+-RVR_54=WireGuard-mål kræver en omgåelse af hardwareacceleration (den samme, som VPN Director bruger). En kilderegel omgår kun den adresse; en destinations- eller MAC-regel omgår LAN'et, så LAN-trafik mister hardwareacceleration, så længe en sådan regel findes. Reglen er fail-closed: hvis WireGuard-klienten er nede, blokeres den valgte trafik, den lækkes ikke.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=acceleration-bypass: LAN
+ RVR_55=accel.-omgåelse: denne kilde
+ RVR_56=klient ikke aktiveret - trafik blokeret
+@@ -6911,3 +6911,9 @@ RDHC_42=Routeren skifter normalt mellem sine DNS-over-TLS-servere, så de deler
+ RDHC_43=DNS-privatliv er slået fra, så denne indstilling har endnu ingen effekt.
+ RDHC_44=IPv6-adresse (valgfri)
+ RDHC_45=Samme servers IPv6-adresse, som proves forst. IPv4-adressen ovenfor bruges, når IPv6 ikke er tilgaengelig eller ikke svarer.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 7616b89048..3ccbf2d1fc 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Diese Liste ist zu lang für ein Objekt. Teilen Sie sie in zwei Listen au
+ RVR_52=Eine Regel verwendet diese Liste noch. Trotzdem löschen?
+ RVR_53=noch nicht unterstützt — Regel inaktiv
+ RABT_41=GOAT-Flüsterer~
+-RVR_54=WireGuard-Ziele benötigen eine Umgehung der Hardwarebeschleunigung (dieselbe, die VPN Director verwendet). Eine Quellregel umgeht nur diese Adresse; eine Ziel- oder MAC-Regel umgeht das LAN, sodass der LAN-Verkehr die Hardwarebeschleunigung verliert, solange eine solche Regel besteht. Die Regel ist fehlersicher: Wenn der WireGuard-Client ausfällt, wird der ausgewählte Verkehr blockiert und nicht durchgelassen.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=Beschleunigungs-Bypass: LAN
+ RVR_55=Beschleunigungsumgehung: diese Quelle
+ RVR_56=Client nicht aktiviert - Verkehr blockiert
+@@ -6911,3 +6911,9 @@ RDHC_42=Der Router wechselt normalerweise zwischen seinen DNS-over-TLS-Servern,
+ RDHC_43=DNS-Privatsphäre ist aus, dieser Schalter hat daher noch keine Wirkung.
+ RDHC_44=IPv6-Adresse (optional)
+ RDHC_45=Die IPv6-Adresse desselben Servers, wird zuerst versucht. Die IPv4-Adresse oben wird verwendet, wenn IPv6 nicht verfügbar ist oder nicht antwortet.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 77e577fd49..c48e13fb34 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6681,7 +6681,7 @@ RVR_51=That list is too long for one object. Split it into two lists.
+ RVR_52=A rule still uses this list. Delete it anyway?
+ RVR_53=not supported yet — rule inactive
+ RABT_41=GOAT whisperer~
+-RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. The rule is fail-closed: if the WireGuard client is down, the selected traffic is blocked, not leaked.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel bypass: LAN
+ RVR_55=accel bypass: this source
+ RVR_56=client not enabled - traffic blocked
+@@ -6911,3 +6911,9 @@ RDHC_42=The router normally rotates between its DNS-over-TLS servers, so they sh
+ RDHC_43=DNS Privacy is off, so this switch has nothing to act on yet.
+ RDHC_44=IPv6 address (optional)
+ RDHC_45=The same server's IPv6 address, tried first. The IPv4 address above is used whenever IPv6 is unavailable or does not answer.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index d5d0e76af2..e67c44823b 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Esa lista es demasiado larga para un solo objeto. Divídala en dos listas
+ RVR_52=Una regla todavía usa esta lista. ¿Eliminarla de todos modos?
+ RVR_53=aún no compatible — regla inactiva
+ RABT_41=Susurrador de GOATs~
+-RVR_54=Los destinos de WireGuard necesitan una omisión de la aceleración por hardware (la misma que usa VPN Director). Una regla de origen omite solo esa dirección; una regla de destino o MAC omite la LAN, por lo que el tráfico de la LAN pierde la aceleración por hardware mientras exista dicha regla. La regla es a prueba de fallos: si el cliente de WireGuard está caído, el tráfico seleccionado se bloquea, no se filtra.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=omisión de aceleración: LAN
+ RVR_55=omisión de aceleración: este origen
+ RVR_56=cliente no habilitado - tráfico bloqueado
+@@ -6911,3 +6911,9 @@ RDHC_42=El router suele alternar entre sus servidores DNS-over-TLS, de modo que
+ RDHC_43=La Privacidad DNS esta desactivada, asi que esta opcion aun no tiene efecto.
+ RDHC_44=Direccion IPv6 (opcional)
+ RDHC_45=La direccion IPv6 del mismo servidor, se prueba primero. La direccion IPv4 de arriba se usa siempre que IPv6 no este disponible o no responda.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 812208b394..f0a0bd73a3 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Luettelo on liian pitkä yhteen objektiin. Jaa se kahteen luetteloon.
+ RVR_52=Jokin sääntö käyttää yhä tätä luetteloa. Poistetaanko silti?
+ RVR_53=ei vielä tuettu — sääntö ei käytössä
+ RABT_41=GOAT-kuiskaaja~
+-RVR_54=WireGuard-kohteet tarvitsevat laitteistokiihdytyksen ohituksen (saman, jota VPN Director käyttää). Lähdesääntö ohittaa vain kyseisen osoitteen; kohde- tai MAC-sääntö ohittaa LAN-verkon, joten LAN-liikenne menettää laitteistokiihdytyksen niin kauan kuin tällainen sääntö on olemassa. Sääntö on vikaturvallinen: jos WireGuard-asiakas on alhaalla, valittu liikenne estetään, ei vuodeta.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=kiihdytyksen ohitus: LAN
+ RVR_55=kiihdytyksen ohitus: tämä lähde
+ RVR_56=asiakasta ei ole otettu käyttöön - liikenne estetty
+@@ -6911,3 +6911,9 @@ RDHC_42=Reititin vaihtelee yleensa DNS-over-TLS-palvelimiensa valilla, jolloin n
+ RDHC_43=DNS-yksityisyys on pois paalta, joten talla valinnalla ei ole viela vaikutusta.
+ RDHC_44=IPv6-osoite (valinnainen)
+ RDHC_45=Saman palvelimen IPv6-osoite, jota kokeillaan ensin. Ylla olevaa IPv4-osoitetta kaytetaan aina, kun IPv6 ei ole kaytettavissa tai ei vastaa.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c1ee5fe82c..7b53b6b5ea 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Cette liste est trop longue pour un seul objet. Divisez-la en deux listes
+ RVR_52=Une règle utilise encore cette liste. La supprimer quand même ?
+ RVR_53=pas encore pris en charge — règle inactive
+ RABT_41=L'homme qui murmurait à l'oreille des GOATs~
+-RVR_54=Les cibles WireGuard nécessitent un contournement de l'accélération matérielle (le même que celui utilisé par VPN Director). Une règle de source ne contourne que cette adresse ; une règle de destination ou MAC contourne le LAN, de sorte que le trafic LAN perd l'accélération matérielle tant qu'une telle règle existe. La règle est à sécurité intégrée : si le client WireGuard est hors service, le trafic sélectionné est bloqué, pas laissé fuir.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=contournement d'accélération : LAN
+ RVR_55=contournement d'accélération : cette source
+ RVR_56=client non activé - trafic bloqué
+@@ -6911,3 +6911,9 @@ RDHC_42=Le routeur alterne normalement entre ses serveurs DNS-over-TLS, qui se p
+ RDHC_43=La confidentialite DNS est desactivee, cette option n'a donc pas encore d'effet.
+ RDHC_44=Adresse IPv6 (facultatif)
+ RDHC_45=L'adresse IPv6 du meme serveur, essayee en premier. L'adresse IPv4 ci-dessus est utilisee des que l'IPv6 est indisponible ou ne repond pas.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index c5442acbad..688a31a888 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Ez a lista túl hosszú egy objektumhoz. Ossza fel két listára.
+ RVR_52=Egy szabály még használja ezt a listát. Mégis törli?
+ RVR_53=még nem támogatott — a szabály inaktív
+ RABT_41=GOAT-suttogó~
+-RVR_54=A WireGuard célpontokhoz hardveres gyorsítás megkerülése szükséges (ugyanaz, amit a VPN Director használ). Egy forrásszabály csak az adott címet kerüli meg; egy cél- vagy MAC-szabály a LAN-t megkerüli, így a LAN-forgalom elveszíti a hardveres gyorsítást, amíg ilyen szabály létezik. A szabály hibazáró: ha a WireGuard kliens nem működik, a kiválasztott forgalom blokkolódik, nem szivárog ki.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=gyorsítás megkerülése: LAN
+ RVR_55=gyorsítás megkerülése: ez a forrás
+ RVR_56=a kliens nincs engedélyezve - a forgalom blokkolva
+@@ -6911,3 +6911,9 @@ RDHC_42=A router altalaban valtogat a DNS-over-TLS kiszolgaloi kozott, igy azok
+ RDHC_43=A DNS-adatvedelem ki van kapcsolva, ezert ennek a kapcsolonak meg nincs hatasa.
+ RDHC_44=IPv6-cim (opcionalis)
+ RDHC_45=Ugyanannak a kiszolgalonak az IPv6-cime, ezt probalja eloszor. A fenti IPv4-cimet hasznalja, ha az IPv6 nem erheto el vagy nem valaszol.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 448b574c5e..64096cbdcd 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6681,7 +6681,7 @@ RVR_51=L'elenco è troppo lungo per un solo oggetto. Suddividerlo in due elenchi
+ RVR_52=Una regola usa ancora questo elenco. Eliminarlo comunque?
+ RVR_53=non ancora supportato — regola inattiva
+ RABT_41=L'uomo che sussurrava ai GOAT~
+-RVR_54=I target WireGuard richiedono un bypass dell'accelerazione hardware (lo stesso usato da VPN Director). Una regola sorgente bypassa solo quell'indirizzo; una regola di destinazione o MAC bypassa la LAN, quindi il traffico LAN perde l'accelerazione hardware finché esiste una regola del genere. La regola è fail-closed: se il client WireGuard è inattivo, il traffico selezionato viene bloccato, non lasciato trapelare.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=bypass accelerazione: LAN
+ RVR_55=bypass accel: questa sorgente
+ RVR_56=client non abilitato - traffico bloccato
+@@ -6911,3 +6911,9 @@ RDHC_42=Il router normalmente alterna i suoi server DNS-over-TLS, che si dividon
+ RDHC_43=La Privacy DNS e disattivata, quindi questa opzione non ha ancora effetto.
+ RDHC_44=Indirizzo IPv6 (facoltativo)
+ RDHC_45=L'indirizzo IPv6 dello stesso server, provato per primo. L'indirizzo IPv4 sopra viene usato ogni volta che IPv6 non e disponibile o non risponde.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 372d723a88..e955dc2464 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6681,7 +6681,7 @@ RVR_51=このリストは1つのオブジェクトには長すぎます。2つ
+ RVR_52=このリストはまだルールで使用されています。それでも削除しますか?
+ RVR_53=まだ未対応 — ルールは無効
+ RABT_41=GOAT ウィスパラー~
+-RVR_54=WireGuard のターゲットにはハードウェアアクセラレーションのバイパスが必要です（VPN Director が使うものと同じです）。送信元ルールはそのアドレスのみをバイパスし、宛先または MAC ルールは LAN をバイパスするため、そうしたルールが存在する間は LAN トラフィックがハードウェアアクセラレーションを失います。このルールはフェイルクローズです: WireGuard クライアントが停止している場合、選択したトラフィックは漏れずにブロックされます。
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=アクセラレーションバイパス：LAN
+ RVR_55=アクセラレーション バイパス: この送信元
+ RVR_56=クライアントが有効でない - トラフィックはブロックされます
+@@ -6911,3 +6911,9 @@ RDHC_42=ルーターは通常 DNS-over-TLS サーバー間で切り替えるた
+ RDHC_43=DNS プライバシーが無効のため、この設定はまだ効果がありません。
+ RDHC_44=IPv6 アドレス（任意）
+ RDHC_45=同じサーバーの IPv6 アドレスで、先に試行します。IPv6 が利用できない場合や応答しない場合は、上の IPv4 アドレスを使用します。
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 25b74c6c92..c68d129b6e 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6681,7 +6681,7 @@ RVR_51=이 목록은 하나의 객체에 담기에 너무 깁니다. 두 개의
+ RVR_52=규칙이 아직 이 목록을 사용합니다. 그래도 삭제하시겠습니까?
+ RVR_53=아직 지원되지 않음 — 규칙 비활성
+ RABT_41=GOAT 위스퍼러~
+-RVR_54=WireGuard 대상에는 하드웨어 가속 우회가 필요합니다(VPN Director가 사용하는 것과 동일). 소스 규칙은 해당 주소만 우회하고, 대상 또는 MAC 규칙은 LAN을 우회하므로 그러한 규칙이 존재하는 동안 LAN 트래픽은 하드웨어 가속을 잃습니다. 이 규칙은 페일 클로즈드 방식입니다: WireGuard 클라이언트가 중단되면 선택한 트래픽은 누출되지 않고 차단됩니다.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=가속 우회: LAN
+ RVR_55=가속 우회: 이 소스
+ RVR_56=클라이언트가 활성화되지 않음 - 트래픽 차단됨
+@@ -6911,3 +6911,9 @@ RDHC_42=라우터는 일반적으로 DNS-over-TLS 서버를 번갈아 사용하
+ RDHC_43=DNS 프라이버시가 꺼져 있어 이 스위치는 아직 적용되지 않습니다.
+ RDHC_44=IPv6 주소(선택 사항)
+ RDHC_45=같은 서버의 IPv6 주소이며 먼저 시도합니다. IPv6를 사용할 수 없거나 응답하지 않으면 위의 IPv4 주소를 사용합니다.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 73d6dabf92..58047f313a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Senarai itu terlalu panjang untuk satu objek. Bahagikan kepada dua senara
+ RVR_52=Satu peraturan masih menggunakan senarai ini. Padam juga?
+ RVR_53=belum disokong — peraturan tidak aktif
+ RABT_41=Pembisik GOAT~
+-RVR_54=Sasaran WireGuard memerlukan pintasan pecutan perkakasan (yang sama seperti digunakan oleh VPN Director). Peraturan sumber memintas hanya alamat itu; peraturan destinasi atau MAC memintas LAN, jadi trafik LAN kehilangan pecutan perkakasan selagi peraturan sedemikian wujud. Peraturan ini gagal-tutup: jika klien WireGuard mati, trafik yang dipilih disekat, bukan bocor.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=pintasan accel: LAN
+ RVR_55=pintasan pecutan: sumber ini
+ RVR_56=klien tidak didayakan - trafik disekat
+@@ -6911,3 +6911,9 @@ RDHC_42=Penghala biasanya berselang-seli antara pelayan DNS-over-TLS-nya, jadi t
+ RDHC_43=Privasi DNS dimatikan, jadi suis ini belum memberi kesan.
+ RDHC_44=Alamat IPv6 (pilihan)
+ RDHC_45=Alamat IPv6 pelayan yang sama, dicuba dahulu. Alamat IPv4 di atas digunakan apabila IPv6 tidak tersedia atau tidak menjawab.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 0025d35fad..31146e4ab6 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Die lijst is te lang voor een object. Splits deze in twee lijsten.
+ RVR_52=Een regel gebruikt deze lijst nog. Toch verwijderen?
+ RVR_53=nog niet ondersteund — regel inactief
+ RABT_41=GOAT-fluisteraar~
+-RVR_54=WireGuard-doelen hebben een hardwareversnelling-bypass nodig (dezelfde die VPN Director gebruikt). Een bronregel omzeilt alleen dat adres; een bestemmings- of MAC-regel omzeilt de LAN, dus LAN-verkeer verliest hardwareversnelling zolang zo'n regel bestaat. De regel is fail-closed: als de WireGuard-client uit staat, wordt het geselecteerde verkeer geblokkeerd, niet gelekt.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel-bypass: LAN
+ RVR_55=accel-bypass: deze bron
+ RVR_56=client niet ingeschakeld - verkeer geblokkeerd
+@@ -6911,3 +6911,9 @@ RDHC_42=De router wisselt normaal tussen zijn DNS-over-TLS-servers, zodat die he
+ RDHC_43=DNS-privacy staat uit, dus deze schakelaar heeft nog geen effect.
+ RDHC_44=IPv6-adres (optioneel)
+ RDHC_45=Het IPv6-adres van dezelfde server, dat eerst wordt geprobeerd. Het IPv4-adres hierboven wordt gebruikt zodra IPv6 niet beschikbaar is of niet antwoordt.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 25574303d8..254b7003f8 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Listen er for lang for ett objekt. Del den i to lister.
+ RVR_52=En regel bruker fortsatt denne listen. Slette likevel?
+ RVR_53=støttes ikke ennå — regel inaktiv
+ RABT_41=GOAT-hvisker~
+-RVR_54=WireGuard-mål trenger en omgåelse av maskinvareakselerasjon (den samme som VPN Director bruker). En kilderegel omgår bare den adressen; en destinasjons- eller MAC-regel omgår LAN, så LAN-trafikk mister maskinvareakselerasjon så lenge en slik regel finnes. Regelen er feil-lukket: hvis WireGuard-klienten er nede, blokkeres den valgte trafikken, ikke lekket.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel-forbikobling: LAN
+ RVR_55=accel-omgåelse: denne kilden
+ RVR_56=klient ikke aktivert - trafikk blokkert
+@@ -6911,3 +6911,9 @@ RDHC_42=Ruteren veksler normalt mellom sine DNS-over-TLS-servere, så de deler t
+ RDHC_43=DNS-personvern er av, så denne bryteren har ingen virkning ennå.
+ RDHC_44=IPv6-adresse (valgfritt)
+ RDHC_45=Samme servers IPv6-adresse, som proves forst. IPv4-adressen over brukes når IPv6 ikke er tilgjengelig eller ikke svarer.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 8f774039e2..36c01c3d11 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Ta lista jest za długa dla jednego obiektu. Podziel ją na dwie listy.
+ RVR_52=Reguła nadal używa tej listy. Usunąć mimo to?
+ RVR_53=jeszcze nieobsługiwane — reguła nieaktywna
+ RABT_41=Zaklinacz GOAT-ów~
+-RVR_54=Cele WireGuard wymagają obejścia akceleracji sprzętowej (tego samego, którego używa VPN Director). Reguła źródłowa omija tylko ten adres; reguła docelowa lub MAC omija LAN, więc ruch LAN traci akcelerację sprzętową, dopóki taka reguła istnieje. Reguła działa w trybie fail-closed: jeśli klient WireGuard jest wyłączony, wybrany ruch jest blokowany, a nie przepuszczany.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=obejście accel: LAN
+ RVR_55=obejście akceleracji: to źródło
+ RVR_56=klient nieaktywny - ruch zablokowany
+@@ -6911,3 +6911,9 @@ RDHC_42=Router zwykle przelacza sie miedzy swoimi serwerami DNS-over-TLS, wiec d
+ RDHC_43=Prywatnosc DNS jest wylaczona, wiec ten przelacznik nie ma jeszcze zastosowania.
+ RDHC_44=Adres IPv6 (opcjonalnie)
+ RDHC_45=Adres IPv6 tego samego serwera, probowany jako pierwszy. Adres IPv4 powyzej jest uzywany, gdy IPv6 jest niedostepne lub nie odpowiada.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a1eeea746d..c554ee7fc0 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Lista este prea lungă pentru un singur obiect. Împărțiți-o în două
+ RVR_52=O regulă folosește încă această listă. Ștergeți oricum?
+ RVR_53=încă neacceptat — regulă inactivă
+ RABT_41=Îmblânzitorul de GOAT~
+-RVR_54=Țintele WireGuard necesită o ocolire a accelerării hardware (aceeași folosită de VPN Director). O regulă de sursă ocolește doar acea adresă; o regulă de destinație sau MAC ocolește LAN, astfel încât traficul LAN pierde accelerarea hardware cât timp există o astfel de regulă. Regula este fail-closed: dacă clientul WireGuard este oprit, traficul selectat este blocat, nu scurs.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=ocolire accel: LAN
+ RVR_55=ocolire accel: această sursă
+ RVR_56=client neactivat - trafic blocat
+@@ -6911,3 +6911,9 @@ RDHC_42=Routerul alterneaza in mod normal intre serverele sale DNS-over-TLS, dec
+ RDHC_43=Confidentialitatea DNS este oprita, deci acest comutator nu are inca efect.
+ RDHC_44=Adresa IPv6 (optional)
+ RDHC_45=Adresa IPv6 a aceluiasi server, incercata prima. Adresa IPv4 de mai sus este folosita ori de cate ori IPv6 nu este disponibil sau nu raspunde.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index e2f72cce02..023e32346f 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Список слишком длинный для одного объек
+ RVR_52=Этот список ещё используется правилом. Всё равно удалить?
+ RVR_53=пока не поддерживается — правило неактивно
+ RABT_41=Заклинатель GOAT~
+-RVR_54=Целям WireGuard требуется обход аппаратного ускорения (тот же, что использует VPN Director). Правило источника обходит только этот адрес; правило назначения или MAC обходит LAN, поэтому LAN-трафик теряет аппаратное ускорение, пока существует такое правило. Правило работает по принципу fail-closed: если клиент WireGuard отключён, выбранный трафик блокируется, а не утекает.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=обход ускорения: LAN
+ RVR_55=обход ускор.: этот источник
+ RVR_56=клиент не включён - трафик заблокирован
+@@ -6911,3 +6911,9 @@ RDHC_42=Маршрутизатор обычно чередует свои сер
+ RDHC_43=Приватность DNS отключена, поэтому этот переключатель пока не действует.
+ RDHC_44=Адрес IPv6 (необязательно)
+ RDHC_45=Адрес IPv6 того же сервера, проверяется первым. Адрес IPv4 выше используется, когда IPv6 недоступен или не отвечает.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 288b61d059..a6edfb3310 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -50,6 +50,7 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .card>h2 .cnt{color:var(--crimson)}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:7px 14px;cursor:pointer}
+ .btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
+ .btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:7px 14px;cursor:pointer}
+ .btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
+ .tblwrap{overflow-x:auto}
+@@ -63,6 +64,7 @@ td.sel{font-family:ui-monospace,Consolas,monospace;font-size:11.7px;color:var(--
+ .tgt.block{color:var(--danger);border-color:rgba(255,59,48,.4)}
+ .tgt.wgc{color:var(--jade);border-color:rgba(79,178,134,.35)}
+ .wgnote{display:block;font-size:10.5px;color:var(--amber);margin-top:3px;text-transform:none;letter-spacing:0;font-weight:400}
++.tgtbadge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(224,169,59,.45);border-radius:4px;padding:0 5px;margin-left:6px;line-height:15px;cursor:help}
+ .armcard{border-color:rgba(224,169,59,.45)}
+ .armcard .row{display:flex;gap:10px;margin-top:12px}
+ .btng{background:transparent;border:1px solid rgba(255,255,255,.18);border-radius:7px;color:var(--bone-dim);padding:7px 14px;cursor:pointer;font-family:var(--body);font-size:12.5px}
+@@ -115,6 +117,8 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+     <tbody id="rulerows"></tbody>
+   </table>
+   </div>
++  <div class="hint" id="ksnote"><#RVR_64#></div>
++  <div class="hint" id="wgnoteall" style="display:none"><#RVR_66#></div>
+ </div>
+ 
+ <div class="card" id="editor">
+@@ -195,7 +199,7 @@ td.doms{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(-
+ </div>
+ <div class="errnote" id="pbrerr"></div>
+ 
+-<div class="applying" id="applying"><#RVR_31#></div>
++<div class="applying" id="applying"><#RVR_67#></div>
+ 
+ <script src="/reaper_util.js"></script>
+ <script>
+@@ -225,6 +229,8 @@ var TGTLBL = { OVPN1:'OpenVPN 1',OVPN2:'OpenVPN 2',OVPN3:'OpenVPN 3',OVPN4:'Open
+   WAN:`<#RVR_23#>`, BLOCK:`<#RVR_24#>` };
+ var WGON=[0,0,0,0,0];   /* wgcN_enable, from reaper_pbr.cgi?action=cfg */
+ var OVON=[0,0,0,0,0];   /* OpenVPN clients configured (vpn_clientN_addr), from cfg */
++var WKS=[0,0,0,0,0], OKS=[0,0,0,0,0];   /* v3.1.3: each client's Killswitch (wgcN_enforce / vpn_clientN_enforce) */
++function cfgArrays(j){ if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; if(j.wks)WKS=j.wks; if(j.oks)OKS=j.oks; }
+ function renderTargets(){
+   var sel=document.getElementById('e_target'); if(!sel) return;
+   for(var i=0;i<sel.options.length;i++){ var o=sel.options[i], v=o.value, m, show=true;
+@@ -240,18 +246,20 @@ function selText(r){
+   return `<#RVR_34#>` + ': ' + esc(r.selval);   // ipset/domain -> object / domain list
+ }
+ function tgtClass(t){ return t==='WAN'?'wan':(t==='BLOCK'?'block':(/^WGC[1-5]$/.test(t)?'wgc':'vpn')); }
+-/* v2.6.7: WireGuard targets are live (rc/reaper_pbr.c P6). The chip carries the
+-   one thing the operator must know: which flow-cache bypass the rule costs -
+-   its own source, or the whole LAN (destination / MAC selectors). A rule whose
+-   WireGuard client is not enabled is shown as such: it is fail-closed, so it
+-   BLOCKS the selected traffic until that client comes up. */
++/* v3.1.3 (tester): a rule's target is an interface, not a story. The column
++   shows the interface; the only per-row facts are (a) a WireGuard rule whose
++   selector is a destination or a MAC costs the WHOLE LAN its hardware
++   acceleration (P6) - a small LAN badge, the blanket note below the table says
++   why - and (b) a client that is off, where what happens to the traffic is
++   that client's Killswitch (P3): blocked with it on, the WAN with it off. */
+ function tgtLabel(t,r){
+-  var l=esc(TGTLBL[t]||t), m=/^WGC([1-5])$/.exec(t);
+-  if(!m) return l;
+-  var n=+m[1]-1, note;
+-  if(!WGON[n]) note=`<#RVR_56#>`;
+-  else note=(r&&r.seltype==='src')?`<#RVR_55#>`:`<#RVR_54b#>`;
+-  return l+'<span class="wgnote" title="'+esc(`<#RVR_54#>`)+'">'+esc(note)+'</span>';
++  var l=esc(TGTLBL[t]||t), m, on, ks, out=l;
++  if((m=/^WGC([1-5])$/.exec(t))){ on=WGON[+m[1]-1]; ks=WKS[+m[1]-1]; }
++  else if((m=/^OVPN([1-5])$/.exec(t))){ on=OVON[+m[1]-1]; ks=OKS[+m[1]-1]; }
++  else return l;
++  if(/^WGC/.test(t) && r && r.seltype!=='src') out+='<span class="tgtbadge" title="'+esc(`<#RVR_66#>`)+'">'+esc(`<#RVR_65#>`)+'</span>';
++  if(!on) out+='<span class="wgnote">'+esc(ks?`<#RVR_68#>`:`<#RVR_69#>`)+'</span>';
++  return out;
+ }
+ 
+ var EDIT_RULE = -1;   /* index into ROWS being edited, -1 = adding */
+@@ -270,6 +278,7 @@ function render(){
+     tb.appendChild(tr);
+   })(i); }
+   document.getElementById('rulecnt').textContent = ROWS.length;
++  document.getElementById('wgnoteall').style.display = ROWS.some(function(r){ return /^WGC/.test(r.target); }) ? '' : 'none';
+   // wire row toggles + edits + deletes
+   var tgs = tb.querySelectorAll('.tg');
+   for(var a=0;a<tgs.length;a++) tgs[a].onclick=function(){ var i=+this.getAttribute('data-i'); ROWS[i].en=!ROWS[i].en; render(); };
+@@ -402,20 +411,25 @@ function armUI(){
+ }
+ function armPoll(){
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; NV.active=String(j.active); WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); showErr(j.err?errText(j.err):''); }
++    if(j&&j.ok){ ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; NV.active=String(j.active); cfgArrays(j); renderTargets(); render(); showErr(j.err?errText(j.err):''); }
+     else ARM.armed=0;
+     syncMaster(); armUI();
+   });
+ }
++/* v3.1.3 (tester): the button dims the moment it is pressed and the overlay
++   stays up until the poll below settles - it used to be hidden the instant the
++   apply CGI returned, i.e. during exactly the seconds the rules take to go
++   live, so the page looked dead until the Keep / Revert bar appeared. */
+ function applyPBR(){
+   var q='action=apply&enable='+(masterOn?'1':'0')+'&rulelist='+encodeURIComponent(serialize());
++  var btn=document.getElementById('applybtn'), ov=document.getElementById('applying');
+   showErr('');
+-  document.getElementById('applying').className='applying show';
++  btn.disabled=true; btn.textContent=`<#Main_alert_processing#>`;
++  ov.className='applying show';
++  function settle(ok){ ov.className='applying'; btn.textContent=`<#RFW_143#>`; if(!ok) btn.disabled=false; }
+   pbrcgi(q,function(j){
+-    document.getElementById('applying').className='applying';
+-    if(!j||!j.ok){ showErr((j&&j.error)?errText(j.error):`<#RFW_155#>`); return; }
++    if(!j||!j.ok){ settle(false); showErr((j&&j.error)?errText(j.error):`<#RFW_155#>`); return; }
+     NV.rulelist=serialize(); NV.enable=masterOn?'1':'0';
+-    document.getElementById('applybtn').disabled=true;
+     /* v3.0.5 (F6): poll to the REAL deadline, not a fixed 8.4 s. The apply
+        CGI returns as soon as rc is signalled; the armed state lands after the
+        sets rebuild, the teardown loop and the candidate run, which routinely
+@@ -426,12 +440,12 @@ function applyPBR(){
+     (function poll(){
+       pbrcgi('action=cfg',function(j){
+         if(j&&j.ok){
+-          if(j.wg)WGON=j.wg; if(j.ov)OVON=j.ov; renderTargets(); if(j.confirm)CONFIRM=j.confirm;
+-          if(j.err&&j.err!=='E_PARTIAL'){ showErr(errText(j.err)); document.getElementById('applybtn').disabled=false; return; }
+-          if(j.armed){ ARM.armed=1; ARM.left=j.left||0; NV.active=String(j.active); if(j.err)showErr(errText(j.err)); syncMaster(); armUI(); return; }
++          cfgArrays(j); renderTargets(); render(); if(j.confirm)CONFIRM=j.confirm;
++          if(j.err&&j.err!=='E_PARTIAL'){ settle(false); showErr(errText(j.err)); return; }
++          if(j.armed){ ARM.armed=1; ARM.left=j.left||0; NV.active=String(j.active); if(j.err)showErr(errText(j.err)); settle(true); syncMaster(); armUI(); return; }
+         }
+         if(Date.now()-t0<budget){ setTimeout(poll,1000); return; }
+-        document.getElementById('applybtn').disabled=false; showErr(`<#RFW_280#>`);
++        settle(false); showErr(`<#RFW_280#>`);
+       });
+     })();
+   });
+@@ -563,7 +577,7 @@ function objDelete(k){
+   document.getElementById('armrevert').onclick=function(){ pbrcgi('action=rollback',function(j){ if(pbrAck(j,`<#RFW_279#>`)) setTimeout(function(){ location.reload(); },1500); }); };
+   /* an apply from another tab, or a page reload inside the window */
+   pbrcgi('action=cfg',function(j){
+-    if(j&&j.ok){ WGON=j.wg||WGON; OVON=j.ov||OVON; renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; showErr(j.err?errText(j.err):'');
++    if(j&&j.ok){ cfgArrays(j); renderTargets(); ARM.armed=j.armed?1:0; ARM.left=j.left||0; if(j.confirm)CONFIRM=j.confirm; showErr(j.err?errText(j.err):'');
+       NV.rulelist=j.rulelist||''; parseRules(); render(); armUI(); }
+     else showErr(`<#RFW_281#>`);   /* v3.0.5 (F11): a LOAD failure is not "could not be saved" */
+   });
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 8aaab1a13d..fdca45f2b6 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Ta seznam je predolg za en objekt. Razdelite ga na dva seznama.
+ RVR_52=Ta seznam še uporablja neko pravilo. Vseeno izbrišem?
+ RVR_53=še ni podprto — pravilo neaktivno
+ RABT_41=Šepetalec GOAT-om~
+-RVR_54=Cilji WireGuard potrebujejo obhod strojnega pospeševanja (istega, ki ga uporablja VPN Director). Pravilo vira obide samo ta naslov; pravilo cilja ali MAC obide LAN, tako da promet LAN izgubi strojno pospeševanje, dokler tako pravilo obstaja. Pravilo je fail-closed: če je odjemalec WireGuard izklopljen, je izbrani promet blokiran in ne pušča.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=obhod pospeševanja: LAN
+ RVR_55=obhod pospeš.: ta vir
+ RVR_56=odjemalec ni omogočen - promet blokiran
+@@ -6911,3 +6911,9 @@ RDHC_42=Usmerjevalnik obicajno izmenjuje svoje streznike DNS-over-TLS, zato si d
+ RDHC_43=Zasebnost DNS je izklopljena, zato to stikalo se nima ucinka.
+ RDHC_44=Naslov IPv6 (izbirno)
+ RDHC_45=Naslov IPv6 istega streznika, poskusi se najprej. Naslov IPv4 zgoraj se uporabi, kadar IPv6 ni na voljo ali ne odgovarja.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 5d7a930592..2ab0a488e4 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Listan är för lång för ett objekt. Dela upp den i två listor.
+ RVR_52=En regel använder fortfarande den här listan. Ta bort ändå?
+ RVR_53=stöds inte ännu — regeln inaktiv
+ RABT_41=GOAT-viskare~
+-RVR_54=WireGuard-mål behöver en förbikoppling av hårdvaruacceleration (samma som VPN Director använder). En källregel förbikopplar endast den adressen; en destinations- eller MAC-regel förbikopplar LAN:et, så LAN-trafik förlorar hårdvaruacceleration medan en sådan regel finns. Regeln är fail-closed: om WireGuard-klienten är nere blockeras den valda trafiken, inte läcker.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel-förbikoppling: LAN
+ RVR_55=accel-förbikoppling: denna källa
+ RVR_56=klienten inte aktiverad - trafik blockerad
+@@ -6911,3 +6911,9 @@ RDHC_42=Routern vaxlar normalt mellan sina DNS-over-TLS-servrar, så de delar tr
+ RDHC_43=DNS-integritet ar av, så den har brytaren har ingen effekt an.
+ RDHC_44=IPv6-adress (valfritt)
+ RDHC_45=Samma servers IPv6-adress, som provas forst. IPv4-adressen ovan anvands nar IPv6 inte ar tillgangligt eller inte svarar.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 07158b6b36..46496b62c6 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6681,7 +6681,7 @@ RVR_51=รายการนี้ยาวเกินไปสำหรับ
+ RVR_52=ยังมีกฎที่ใช้รายการนี้อยู่ ต้องการลบอยู่หรือไม่?
+ RVR_53=ยังไม่รองรับ — กฎไม่ทำงาน
+ RABT_41=นักกระซิบ GOAT~
+-RVR_54=เป้าหมาย WireGuard ต้องการการบายพาสการเร่งด้วยฮาร์ดแวร์ (แบบเดียวกับที่ VPN Director ใช้) กฎแบบต้นทางจะบายพาสเฉพาะที่อยู่นั้น; กฎแบบปลายทางหรือ MAC จะบายพาส LAN ดังนั้นทราฟฟิก LAN จะสูญเสียการเร่งด้วยฮาร์ดแวร์ตราบเท่าที่กฎดังกล่าวยังมีอยู่ กฎนี้เป็นแบบ fail-closed: หากไคลเอนต์ WireGuard ล่ม ทราฟฟิกที่เลือกไว้จะถูกบล็อก ไม่ใช่รั่วไหลออกไป
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=ข้าม accel: LAN
+ RVR_55=บายพาสการเร่ง: ต้นทางนี้
+ RVR_56=ไคลเอนต์ไม่ได้เปิดใช้งาน - ทราฟฟิกถูกบล็อก
+@@ -6911,3 +6911,9 @@ RDHC_42=โดยปกติเราเตอร์จะสลับระห
+ RDHC_43=ความเป็นส่วนตัวของ DNS ปิดอยู่ ตัวเลือกนี้จึงยังไม่มีผล
+ RDHC_44=ที่อยู่ IPv6 (ไม่บังคับ)
+ RDHC_45=ที่อยู่ IPv6 ของเซิร์ฟเวอร์เดียวกัน ซึ่งจะลองก่อน หาก IPv6 ใช้งานไม่ได้หรือไม่ตอบสนอง จะใช้ที่อยู่ IPv4 ด้านบนแทน
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index c6ae46b3d2..87f53c31a5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Bu liste tek bir nesne için çok uzun. İki listeye bölün.
+ RVR_52=Bir kural hâlâ bu listeyi kullanıyor. Yine de silinsin mi?
+ RVR_53=henüz desteklenmiyor — kural devre dışı
+ RABT_41=GOAT fısıldayıcısı~
+-RVR_54=WireGuard hedefleri bir donanım hızlandırma atlaması gerektirir (VPN Director'ün kullandığının aynısı). Bir kaynak kuralı yalnızca o adresi atlar; bir hedef veya MAC kuralı LAN'ı atlar, dolayısıyla böyle bir kural var olduğu sürece LAN trafiği donanım hızlandırmasını kaybeder. Kural, hata durumunda kapalıdır (fail-closed): WireGuard istemcisi çalışmıyorsa, seçili trafik sızdırılmaz, engellenir.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel atlama: LAN
+ RVR_55=hızlandırma atlaması: bu kaynak
+ RVR_56=istemci etkin değil - trafik engellendi
+@@ -6911,3 +6911,9 @@ RDHC_42=Yonlendirici normalde DNS-over-TLS sunuculari arasinda gecis yapar, boyl
+ RDHC_43=DNS Gizliligi kapali, bu nedenle bu anahtarin henuz bir etkisi yok.
+ RDHC_44=IPv6 adresi (istege bagli)
+ RDHC_45=Ayni sunucunun IPv6 adresi, once denenir. IPv6 kullanilamadiginda veya yanit vermediginde yukaridaki IPv4 adresi kullanilir.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 8c87a1f81e..959f3f8a73 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6681,7 +6681,7 @@ RVR_51=此清單對單一物件而言過長。請拆分為兩個清單。
+ RVR_52=仍有規則使用此清單。仍要刪除嗎？
+ RVR_53=尚未支援 — 規則未生效
+ RABT_41=GOAT 耳語者~
+-RVR_54=WireGuard 目標需要硬體加速旁路（與 VPN Director 所用的相同）。來源規則僅旁路該位址；目的地或 MAC 規則則旁路 LAN，因此只要有此類規則存在，LAN 流量便會失去硬體加速。此規則為故障關閉（fail-closed）：若 WireGuard 用戶端中斷，所選流量會被封鎖，而非外洩。
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=accel 略過：LAN
+ RVR_55=加速旁路：此來源
+ RVR_56=用戶端未啟用 - 流量已封鎖
+@@ -6911,3 +6911,9 @@ RDHC_42=路由器通常會在其 DNS-over-TLS 伺服器之間輪替，因此會
+ RDHC_43=DNS 隱私已關閉，此開關目前尚無作用。
+ RDHC_44=IPv6 位址（選填）
+ RDHC_45=同一伺服器的 IPv6 位址，會優先嘗試。當 IPv6 無法使用或沒有回應時，將改用上方的 IPv4 位址。
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 2c6fea71ce..379e49cce6 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6681,7 +6681,7 @@ RVR_51=Цей список задовгий для одного об'єкта. 
+ RVR_52=Цей список ще використовується правилом. Усе одно видалити?
+ RVR_53=ще не підтримується — правило неактивне
+ RABT_41=Заклинач GOAT~
+-RVR_54=Цілі WireGuard потребують обходу апаратного прискорення (того самого, який використовує VPN Director). Правило за джерелом обходить лише цю адресу; правило за призначенням або MAC обходить LAN, тож трафік LAN втрачає апаратне прискорення, поки таке правило існує. Правило працює за принципом fail-closed: якщо клієнт WireGuard недоступний, вибраний трафік блокується, а не витікає.
++RVR_54=WireGuard targets need a hardware-acceleration bypass (the same one VPN Director uses). A source rule bypasses only that address; a destination or MAC rule bypasses the LAN, so LAN traffic loses hardware acceleration while such a rule exists. If the WireGuard client is down, whether the selected traffic is blocked or uses the WAN is set by the Killswitch of that client.
+ RVR_54b=обхід accel: LAN
+ RVR_55=обхід прискорення: це джерело
+ RVR_56=клієнт не увімкнено - трафік заблоковано
+@@ -6911,3 +6911,9 @@ RDHC_42=Маршрутизатор зазвичай чергує свої сер
+ RDHC_43=Приватність DNS вимкнено, тому цей перемикач поки не діє.
+ RDHC_44=Адреса IPv6 (необов'язково)
+ RDHC_45=Адреса IPv6 того самого сервера, перевіряється першою. Адреса IPv4 вище використовується, коли IPv6 недоступний або не відповідає.
++RVR_64=Rules choose the path. Whether a tunnel that is down blocks that traffic or lets it use the WAN is set by the Killswitch of that VPN client, on its own VPN page.
++RVR_65=LAN
++RVR_66=WireGuard targets need the same hardware-acceleration bypass VPN Director uses. A source rule bypasses only that address; a rule marked LAN bypasses the whole LAN, so LAN traffic loses hardware acceleration while it exists.
++RVR_67=Applying... the Keep / Revert bar appears once the rules are live.
++RVR_68=client off - blocked (Killswitch on)
++RVR_69=client off - using WAN (Killswitch off)
+-- 
+2.25.1
+

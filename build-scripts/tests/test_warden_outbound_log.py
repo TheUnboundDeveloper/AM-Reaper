@@ -27,6 +27,31 @@ SRC = os.environ.get("REAPER_ROUTER_SRC",
                      "/home/reaper/asuswrt-be96u/release/src/router")
 FILES = ["rc/rwarden.c", "rc/rwatch.c", "www/Reaper_Firewall.asp", "httpd/web.c"]
 
+# This suite reads canon router source, which is on a maintainer's machine but
+# NOT on a CI runner that checks out the lean repo (it carries patches, not a
+# source tree). Exit 77 - the autotools "skipped" convention - rather than
+# fail: an absent tree means "nothing to check here", which is different from
+# a regression, and different again from a pass. The CI step counts skips
+# separately and refuses a run in which NOTHING executed, so a skip can never
+# be mistaken for a green gate.
+EXIT_SKIP = 77
+
+
+def _unavailable():
+    if not os.path.isdir(SRC):
+        return "no router source tree at %s" % SRC
+    missing = [r for r in FILES if not os.path.isfile(os.path.join(SRC, r))]
+    if missing:
+        return "%s is missing %s" % (SRC, ", ".join(missing))
+    return None
+
+
+_why = _unavailable()
+if _why:
+    print("SKIP test_warden_outbound_log: %s" % _why)
+    print("     set REAPER_ROUTER_SRC=<router source tree> to run it")
+    sys.exit(EXIT_SKIP)
+
 
 def build(tmp):
     for rel in FILES:

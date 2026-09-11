@@ -45,13 +45,25 @@ CANON=be96u-only
 IMGDIR=release/src/router/www/images
 TMAK_REL=release/src-rt/target.mak
 VER_REL=release/src-rt/version.conf
-# www files that reference the banner by name (get synced, then re-pointed)
-BANNER_REFS=(release/src/router/www/Main_Login.asp
-             release/src/router/www/Main_ReaperDash.asp
-             release/src/router/www/reaper_shell.asp
-             release/src/router/www/state.js
-             release/src/router/www/Main_Password.asp
-             release/src/router/www/Logout.asp)
+# www files that reference the banner by name (get synced, then re-pointed).
+#
+# DERIVED from canon, not listed. Until 2026-09-10 this was a hand-kept list of
+# six pages, and it was wrong: Reaper_WiFiSetup.asp arrived with v3.1.0's
+# first-boot Wi-Fi flow, references the animated header, and was never added -
+# so on every sibling this tool synced canon's copy and left it naming
+# RT-96U_REAPER_Header_anim.png, a file the same port removes. A dangling
+# header image on the first page a new owner sees, five models, three releases,
+# every guard green. Asking canon which pages reference the banner means a new
+# page cannot be missed the way the seventh one was; the floor below means a
+# broken grep cannot quietly turn the guard off either.
+mapfile -t BANNER_REFS < <(git -C "$R" grep -l -- '_REAPER_Header' "$CANON" -- \
+    'release/src/router/www/*.asp' 'release/src/router/www/*.js' 2>/dev/null \
+  | sed "s/^$CANON://" | sort)
+if [ "${#BANNER_REFS[@]}" -lt 6 ]; then
+  echo "FATAL: derived only ${#BANNER_REFS[@]} banner-referencing page(s) from $CANON;" >&2
+  echo "       six have always existed, so the derivation is broken, not the tree." >&2
+  exit 1
+fi
 
 MODEL="${1:-}"; shift 2>/dev/null || true
 DO_COMMIT=0; SET_VER=""
@@ -76,19 +88,40 @@ model_meta() {
                BSHA=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; BUILD_NAME=GT-BE98_PRO; HAS6G=y; QUAD=y;;
   RT-BE92U)    BRANCH=rt-be92u;    TARGET=rt-be92u;    BANNER_FILE=RT-BE92U_REAPER_Header.png; MP4_SRC="RT-BE92U Header Animation.mp4";
                BSHA=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; BUILD_NAME=RT-BE92U;    HAS6G=y; QUAD=n;;
+  GT-BE19000)  BRANCH=gt-be19000;  TARGET=gt-be19000;  BANNER_FILE=GT-BE19000_REAPER_Header.png; MP4_SRC="GT-BE19000 Header Animation.mp4";
+               BSHA=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; BUILD_NAME=GT-BE19000;  HAS6G=y; QUAD=n;;
   *) return 1;; esac
 }
 # RT-BE92U (BCM6765, 96765GW profile) is a Tier-A sibling whose banner is a
 # PLACEHOLDER generated from the RT-BE96U art (sha 032fc64c) until the owner
-# supplies real BE92U banner art - re-checksum here when that lands.
-ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
+# supplies real BE92U banner art - re-checksum here when that lands. It is
+# RETIRED from the build roster as of v3.1.2 (Merlin took the model on) but
+# stays in this manifest so the dormant branch can still be ported by hand.
+#
+# GT-BE19000 (2026-09-10): tri-band BCM4916 twin of the RT-BE96U on the GT-BE98
+# GPL lineage. Its banner is the owner's artwork COMPOSITED onto the fleet's
+# full-resolution background - the supplied still arrived at the animation's
+# 480x54 rather than 2172x245, so the sharp background was kept and only the
+# name plate came from the small file. The banner is drawn at 400-480px wide in
+# every page that uses it, so the 2172 asset is a high-DPI oversample and the
+# difference does not reach the screen. Re-checksum here if a native full-size
+# export ever replaces it.
+ALL_MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U GT-BE19000"
 model_meta "$MODEL" || { echo "FATAL: unknown model '$MODEL' (valid: $ALL_MODELS)"; exit 2; }
 BANNER_REL="$IMGDIR/$BANNER_FILE"
 ANIM_FILE="${BANNER_FILE%.png}_anim.png"; ANIM_REL="$IMGDIR/$ANIM_FILE"
 
 cd "$R" || { echo "FATAL: no repo at $R"; exit 2; }
 FAIL=0; die(){ echo "  [GUARD-FAIL] $*"; FAIL=1; }; ok(){ echo "  [ok] $*"; }; note(){ echo "  [..] $*"; }
-refsha(){ git rev-parse "$1:$2" 2>/dev/null; }
+# --verify is not optional here. `git rev-parse <rev>:<path>` on a path that does
+# NOT exist echoes its own argument to stdout and exits 128, so a caller that
+# hides stderr and only tests for non-empty output gets a non-empty string for a
+# missing file and concludes it is present. The banner guard below did exactly
+# that and could therefore never fail - on any model - which is the opposite of
+# what it was written for after the v1.8.6 fan-out shipped every sibling with the
+# RT-BE96U banner. Found 2026-09-10 onboarding the GT-BE19000, when the guard
+# cheerfully reported a banner that was not on the branch at all.
+refsha(){ git rev-parse --verify -q "$1:$2" 2>/dev/null; }
 
 echo "############################################################"
 echo "# port_sibling_v2  MODEL=$MODEL  BRANCH=$BRANCH  banner=$BANNER_FILE  ($([ $DO_COMMIT = 1 ] && echo COMMIT || echo DRY-RUN))"
@@ -201,10 +234,15 @@ fi
 badref=0
 for rf in "${BANNER_REFS[@]}"; do
   c=$([ "$DO_COMMIT" = 1 ] && cat "$R/$rf" 2>/dev/null || git show "$BRANCH:$rf" 2>/dev/null)
-  echo "$c" | grep -qE "_REAPER_Header\.png" || continue
+  echo "$c" | grep -qE "_REAPER_Header(_anim)?\.png" || continue
   if echo "$c" | grep -oE "[A-Za-z0-9_-]*_REAPER_Header\.png" | grep -qv "^$BANNER_FILE\$"; then badref=1; fi
+  # The animated header too. This guard used to skip any page that had no
+  # still-image reference, and Reaper_WiFiSetup.asp references ONLY the _anim
+  # file - which is exactly how a page pointing at canon's banner passed here
+  # on every sibling from v3.1.0 to v3.1.2.
+  if echo "$c" | grep -oE "[A-Za-z0-9_-]*_REAPER_Header_anim\.png" | grep -qv "^$ANIM_FILE\$"; then badref=1; fi
 done
-[ "$badref" = 0 ] && ok "all banner references point at $BANNER_FILE" || die "a banner reference points at a FOREIGN banner"
+[ "$badref" = 0 ] && ok "all banner references point at $BANNER_FILE / $ANIM_FILE (${#BANNER_REFS[@]} pages)" || die "a banner reference points at a FOREIGN banner"
 # target.mak identity intact
 TM=$([ "$DO_COMMIT" = 1 ] && cat "$R/$TMAK_REL" || git show "$BRANCH:$TMAK_REL")
 echo "$TM" | grep -qE "BUILD_NAME=\"?${MODEL}\"?" && ok "target.mak still BUILD_NAME=$MODEL" || die "target.mak lost BUILD_NAME=$MODEL"

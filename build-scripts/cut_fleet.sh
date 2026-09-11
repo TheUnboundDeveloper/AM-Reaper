@@ -268,6 +268,19 @@ if [ "$DO_OVERLAY" = 1 ]; then
     want=$(grep '^diff --git' "$OV" | sed 's|^diff --git a/||; s| b/.*$||' | sort -u | wc -l)
     [ "$(wc -l < "$fs")" = "$want" ] || die "cannot parse every path out of $M.patch"
 
+    # Restricting to the EXISTING file set has a blind spot: a page that starts
+    # referencing the banner after the overlay was first generated can never
+    # enter it, because it is not in the set the diff is restricted to. That is
+    # how Reaper_WiFiSetup.asp (v3.1.0) stayed out of every overlay through
+    # v3.1.2 while CI siblings shipped canon's copy verbatim. So the set is the
+    # overlay's own files UNION every page canon says references the banner -
+    # the same derivation port_sibling_v2 uses - and a new page joins the next
+    # time the fleet is cut, with check_overlays still judging every hunk.
+    git -C "$CANON_DIR" grep -l -- '_REAPER_Header' "$CANON" -- \
+        'release/src/router/www/*.asp' 'release/src/router/www/*.js' 2>/dev/null \
+      | sed "s/^$CANON://" >> "$fs"
+    sort -u -o "$fs" "$fs"
+
     git -C "$CANON_DIR" diff --binary "$CANON" "$B" -- $(tr '\n' ' ' < "$fs") > "$new"
 
     if cmp -s "$OV" "$new"; then

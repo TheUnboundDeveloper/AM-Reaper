@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -46,6 +46,84 @@ node, not only on the primary router.
 
 ---
 
+## v3.1.3 — your Killswitch decides, and the firewall watchdog stops fighting a rule you meant *(built RT-BE96U)*
+
+- **Policy Routing follows each VPN client's Killswitch instead of overriding it.** Every rule that
+  sent traffic to a VPN client used to add a *block* beneath it, so if that tunnel dropped the traffic
+  stopped - whatever the client's own Killswitch said. That was Reaper deciding something you had
+  already decided on the VPN page, and it disagreed with VPN Director on the same router. Now a rule
+  only chooses the path; whether a tunnel that is down blocks the traffic or lets it use the WAN is
+  that client's Killswitch, exactly as for VPN Director, and it takes effect the moment you change it
+  there. **This changes behaviour on upgrade:** a rule targeting a client whose Killswitch is *off*
+  now falls back to the WAN while the tunnel is down, where it used to block. To keep the old
+  protection, turn that client's Killswitch on. The rules table says which applies to each rule
+  while its client is off, and the rule is stated once beneath the table.
+- **The Policy Routing table names the interface, not the consequences.** The Target column showed a
+  running commentary on every WireGuard row. It now shows the target; a small **LAN** badge marks the
+  one thing worth seeing per row - a destination or device rule that costs the whole LAN its hardware
+  acceleration - and a single note beneath the table explains the bypass once.
+- **Apply on Policy Routing shows that it is working.** The button dims the moment it is pressed and
+  the overlay stays up until the Keep / Revert bar appears, instead of vanishing for the few seconds
+  the rules take to go live and leaving the page looking dead.
+- **The Administration tab is now called DNS Failover.** "Failover" alone reads as Dual-WAN failover;
+  the tab holds the DNS resolver health check and the dnsmasq switches, so it now says so.
+- **The first-boot Wi-Fi page shows its header again on every sibling model.** Since v3.1.0 the
+  page that greets a new RT-BE86U, RT-BE88U, GT-BE98 or GT-BE98 Pro owner has asked for the
+  RT-BE96U's animated header — a file those models deliberately do not carry — so the top of the
+  page was a broken image. Nothing else on the page was affected. It slipped through because the
+  page arrived after the three places that keep track of which pages show the header were written,
+  and none of them was told; every build check they fed was green. They no longer keep a list:
+  they ask the source tree, and the build now refuses any image whose pages name a header file
+  that is not actually in it. *(The RT-BE96U was never affected.)*
+- **The firewall watchdog no longer fights a rule you put ahead of it on purpose.** v3.1.2's
+  chain-integrity watchdog re-pinned Reaper's front chains to the head of the base chains every
+  ten minutes, which was right for an add-on that had shoved them aside and wrong for a narrow
+  carve-out — say, a DNS rule that has to beat Gatekeeper so restricted devices keep resolving —
+  that has to sit in front. The two would trade places indefinitely, taking DNS away from
+  restricted devices for a couple of seconds each round and leaving the watchdog permanently
+  red. It now looks at what is ahead of it: a rule that can only affect a narrowed class of
+  traffic, or a chain named in `/jffs/reaper/front_exempt`, is tolerated and logged once; a rule
+  that could wave anything through is still repaired. And if a repair is undone twice, it says
+  what is happening, names the file that ends it, and stops.
+- **The diagnostic report stops overstating what it found.** `reaper_diag` is what you send when
+  something is wrong, so a figure that reads high sends the next person chasing something that was
+  never there. Six of them did. The conntrack section re-read the live table for every line, so the
+  printed total and the per-protocol breakdown came from different instants and did not add up —
+  405 entries against 510 by protocol — and now every figure comes from one snapshot. The syslog
+  section counted the USB mirror and the log it mirrors as two separate logs, inflating every
+  count in the section by about 2.2x (12,360 lines where the router had 5,634 distinct), and it
+  counted the lab assistant's echo of your own typed commands, which by itself reported two kernel
+  panics on a router that had none. "Boots in span" counted syslogd restarts, which any service
+  cascade produces without a reboot: 13 boots on a router that had been up for minutes — it now
+  reports uptime, the only boot marker this hardware has, and labels the syslogd figure as what it
+  really counts. The panic pattern matched the ordinary English word "oops" wherever it appeared.
+  "Kernel tainted" printed a bitmask as if it were a count — 4097 is two flags, not four thousand —
+  and now names the flags. And `RW_FDROP`, a chain that by design never exists because
+  forward-direction drops share `RW_DROP`, stopped being reported as missing on every healthy
+  router.
+- **The EDNS Client Subnet switch says what actually leaves the router.** It sends the complete
+  client address rather than a shortened prefix, and it is attached when a query is received —
+  before an upstream is chosen — so it travels with every forwarded query, including any that
+  reaches a public fallback server while your own filter is unavailable. The help text now says
+  so: turn it on only when the DNS server receiving it is one you run.
+- **Two things that used to happen silently now say so.** Policy Routing treats its confirmed
+  snapshot as authoritative, which is right, but it did so without a word: a rule list left in
+  nvram was discarded, and an nvram flag saying policy routing was on was overruled by a snapshot
+  saying off. An operator could stage a whole configuration and watch it vanish with nothing in
+  the log. Each is now logged, and only when the two genuinely disagree. Separately, the
+  watchdog's generated script now ends with an explicit success: it had been returning the result
+  of whatever ran last — a log-rotation test that is false on any mirror under 8 MB — so a
+  perfectly healthy router reported failure to anything that asked, with no fault recorded
+  anywhere.
+- **For maintainers: the build's own test suites now run in CI.** They existed and nothing ran
+  them, which is how an unbound shell variable killed all six v3.1.2 publish jobs *after* a green
+  build. Every suite under `build-scripts/tests/` is discovered by glob, so a new one runs without
+  anyone remembering to wire it up; a suite that needs the router source tree, which is not in
+  this repo, reports "skipped" rather than failing. A run in which nothing at all executed is
+  refused — a green check that proved nothing is worse than a red one.
+
+---
+
 ## v3.1.2 — a WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one *(built RT-BE96U)*
 
 - **The RT-BE92U leaves the fleet.** Development of the RT-BE92U build stops here: upstream
@@ -56,7 +134,6 @@ node, not only on the primary router.
   quiet or offering something that no longer exists. Move to Merlin's own RT-BE92U build when you are
   ready. The source, its branch and its identity overlay are kept rather than deleted, so the
   decision is reversible. The model it makes room for is the GT-BE19000.
-
 - **Routing a device through WireGuard no longer reboots the router.** Policy routing to an
   OpenVPN client, to the WAN, or to a block worked; pick a WireGuard client and the router
   restarted a few seconds after Apply and Confirm, every time. It was not a reboot — it was a

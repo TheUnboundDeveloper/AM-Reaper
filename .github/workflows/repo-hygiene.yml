@@ -91,6 +91,47 @@ jobs:
             patches overlays build-scripts .github
           echo "OK: hidden-character scan passed"
 
+      # The desk checks for the things CI cannot re-derive from the repo
+      # itself: the channel FILE-token vs TAG-segment split, the Warden
+      # outbound logging contract, and the rule that every workflow `run:`
+      # block binds what it dereferences under `set -u`. That last one exists
+      # because an unbound CHANNEL killed all six v3.1.2 publish jobs AFTER a
+      # green build - the suites were written, and then nothing ran them.
+      # Discovery is a glob on purpose: a suite added later runs without
+      # anyone remembering to edit this file.
+      - name: Build-script test suites
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          suites=(build-scripts/tests/test_*.py)
+          if [ "${#suites[@]}" -eq 0 ]; then
+            echo "::error::no test suites found under build-scripts/tests/"
+            exit 1
+          fi
+          rc=0; ran=0; skipped=0
+          for t in "${suites[@]}"; do
+            echo "== $t"
+            set +e; python3 "$t"; st=$?; set -e
+            case "$st" in
+              0)  ran=$((ran + 1)) ;;
+              77) skipped=$((skipped + 1)) ;;
+              *)  echo "::error::$t FAILED (exit $st)"; rc=1 ;;
+            esac
+          done
+          # Exit 77 is a suite saying "I need something this runner does not
+          # have" - the canon router source tree, which lives on a maintainer's
+          # machine and not in the lean repo. That is not a failure. But a run
+          # in which NOTHING executed is not a pass either: it would be a green
+          # check that proved nothing, which is worse than a red one.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::no test suite actually ran ($skipped skipped) - this gate proved nothing"
+            rc=1
+          fi
+          if [ "$rc" -eq 0 ]; then
+            echo "OK: $ran suite(s) passed, $skipped skipped"
+          fi
+          exit "$rc"
+
       - name: No file at GitHub's 100 MB hard limit
         run: |
           set -euo pipefail

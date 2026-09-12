@@ -46,6 +46,29 @@ node, not only on the primary router.
 
 ---
 
+## v3.1.5 — the routing target is an interface again
+
+- **Policy Routing: the Target column names the interface and nothing else.** A reviewer with
+  long VPN Director experience put it exactly: a rule's target is an interface, not a story. The
+  WAN row used to read "Out the WAN (VPN bypass)" while every VPN row read its interface; it now
+  reads `WAN`, the add-rule list says `WAN` too (with the explanation as a hint when you pick it,
+  the way WireGuard targets already work), and the per-row `LAN` badge is gone. What a target is
+  *doing* is a state, so it has its own **Status** column: `Active`, `Active · Killswitch` (that
+  client's switch is on - a dropped tunnel blocks rather than leaks) or `Inactive · WAN` (the
+  client is switched off). Everything true of every rule to an interface - the WireGuard
+  hardware-acceleration bypass, what a WAN target means - is one note under the table, shown
+  while such a rule exists.
+- **The Killswitch counts only for an enabled client, as in VPN Director.** Since v3.1.3 a rule's
+  `prohibit` followed its client's Killswitch; VPN Director additionally requires the client to be
+  enabled before it installs its own prohibit, and Reaper now applies the same test. A rule to a
+  switched-off client therefore uses the WAN instead of blocking - which is what the Status column
+  says - and enabling the client brings the prohibit back through the same `vpnrouting` restart the
+  Killswitch already used. The guide's 4.4.7 now shows the exact `ip rule` pair Reaper installs
+  beside VPN Director's, so a Merlin user can see they are the same shape.
+- An IPv6 hint on the same page still claimed a tunnel with no IPv6 always blocks the selected IPv6
+  traffic; since v3.1.3 that is the Killswitch's decision, and the hint now says so.
+- Language packs: five keys added, three reworded, four retired in place (lockstep 6921).
+
 ## v3.1.4 — an OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet
 
 - **OpenVPN server certificates can be generated again.** From the OpenSSL 3.5 move in v3.1.0

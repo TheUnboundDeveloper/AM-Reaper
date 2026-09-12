@@ -37,9 +37,10 @@ internal quality, or deferred by decision.
 
 The ordered short list.
 
-1. **[P1] Build the four siblings** — the kernel fix is committed on every branch, but only the
-   BE96U has been compiled since; the others are source-only. The published CI matrix builds
-   them from the series, so this is about a local image to hold, not about the release path.
+1. **[P1] Build the four remaining siblings locally** — the kernel fix is committed on every
+   branch; the RT-BE96U and, since 2026-09-12, the GT-BE19000 have local images from it, and the
+   RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only locally. The CI matrix builds all
+   six from the series, so this is about a local image to hold, not about the release path.
    (The RT-BE92U's own commit stays on its dormant branch; it is no longer built.)
 2. **[P3] Build one `stable` image** — the channel marker has now been through a real beta
    build end to end, but the stable path has never been exercised, and that is the path a
@@ -50,16 +51,23 @@ The ordered short list.
    `runin` — 47 directories and 3 symlinks), and every missing one is copied by a rule that fails
    silently: `lzop`, then `libptcsrv.so`, then `libbcm.so`, then three `arm_4916hnd` symlinks a
    `find -type d` audit never saw. All of it came from the model's own GPL drop, which stores them
-   flat — Merlin's tree adds the `<MODEL>/` level. **Dongle firmware:** the board is **`6726b0`-only**,
-   settled by decomposing the vendor `GT-BE19000AI` image (its rootfs has one chip directory where
-   the RT-BE96U's has two) rather than inferred from the two-chip siblings, and `reaper_verify` 8c was
-   corrected accordingly — it would otherwise have failed a correct image. The blob came from upstream
-   Merlin's `asuswrt6` ref (GT-BE19000AI, 102_41424) at Broadcom `17.10.369.39012`, the same version as
-   the host driver. Now carries its own `uboot-rtl8372` archive (its blob differs from every other
-   model's), a 47 MB platform archive (the pinned base has no `router-sysdep.gt-be19000`, as it has
+   flat — Merlin's tree adds the `<MODEL>/` level. **Dongle firmware — a RETRACTION is on record here.** The board was first
+   declared `6726b0`-only from the vendor **AI** image (102_40717), and `reaper_verify` 8c was changed
+   to match; that would have passed an image with a dead radio. The vendor **non-AI** image (102_39393)
+   — the SKU this branch targets — carries **both** `6717a0` and `6726b0`: the two SKUs differ in radio
+   hardware, not only storage. Both blobs now come from the non-AI image itself (6717a0 4,096,230 B
+   `18d2f53a…`, 6726b0 5,390,566 B `c47f02b2…`, each Broadcom `17.10.369.39012` = the host driver)
+   and 8c expects both. Rule: read the chip set off the vendor image for the **exact SKU**, never a
+   sibling and never the other SKU. And the rule now has teeth (owner's call, 2026-09-12, after ASUS's
+   warning that the wrong radio firmware locks the device out - recovery tool or manual reflash):
+   `reaper_dongle_id.sh` reads the model name Broadcom stamps into every `rtecdc.bin` and refuses any
+   blob that does not name the model being built - the AI blob answers `GT-BE19000AI`, a GT-BE98 Pro
+   blob answers `GT-BE98 PRO`. It runs BEFORE the build in the local engine and in the CI container
+   (no make on a wrong tree) and AFTER it as `reaper_verify` **8d `dongle-model`** on every staged blob. Now carries its own `uboot-rtl8372` archive (its blob differs from every other
+   model's), a 51 MB platform archive (the pinned base has no `router-sysdep.gt-be19000`, as it has
    none for GT-BE98), and a derived 12-file identity overlay that includes the first-boot Wi-Fi page.
-   Ported to v3.1.4 with 0 unsynced shared files; the ported branch's image passes **reaper_verify
-   27/27**. On the CI roster; publishes as a prerelease. **Still owed: a tester**, and the networkmap
+   Ported to v3.1.4 with 0 unsynced shared files; the rebuilt branch image (911b3b3ca5, both
+   radios) passes **reaper_verify 28/28** and its rootfs blobs each read `GT-BE19000`. On the CI roster; publishes as a prerelease. **Still owed: a tester**, and the networkmap
    39995 pin check for the GT-BE98 SHM-skew class.
    ↳ memory: `gt-be19000-port.md`
 3a. **[P1] First-boot Wi-Fi page shows a dangling header on every sibling** (v3.1.0 → v3.1.2;
@@ -96,8 +104,8 @@ have been removed from this file and are recorded in [`CHANGELOG.md`](CHANGELOG.
 
 *Earlier, in v3.1.1 (2026-09-09): the Failover tab — the LAN resolver health check and the three
 dnsmasq switches — the OpenVPN certificate fixes, the firmware-page Cancel for the upload phase,
-the Gatekeeper connection-method, MLO-fold and stale-band fixes, the announced-hostname store,
-and the ECS help-text correction. Two of those shipped without hardware validation and stay
+the Gatekeeper connection-method, MLO-fold and stale-band fixes, and the announced-hostname
+store. Two of those shipped without hardware validation and stay
 listed under Open bugs until a capture exists: the OpenVPN repair path (needs a box with a VPN
 server configured) and the Gatekeeper stale-band branch (needs a client moved between radios).*
 

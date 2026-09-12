@@ -13,7 +13,7 @@ inlined into 165 pages, do that refactor first (see "Appendix B").
 - **Branch:** `BEXXU-only` (local only, **never pushed** upstream)
 - **Build clone (authoritative):** `/home/reaper/asuswrt-BEXXU` on WSL `Ubuntu-20.04`, user `reaper`
 - **Upstream base of the current stack:** `a7ebfa133a` (the last real Asuswrt-Merlin commit; everything after it is reaper work)
-- **Models:** RT-BEXXU (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro, plus the newer RT-BE92U (BCM6765 / 96765GW, experimental) (`release/src-rt-5.04behnd.4916`; targets `make rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `rt-be92u`)
+- **Models:** RT-BEXXU (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 (BCM4916); the RT-BE92U (BCM6765 / 96765GW) is retired and dormant (`release/src-rt-5.04behnd.4916`; targets `make rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000`)
 
 ---
 

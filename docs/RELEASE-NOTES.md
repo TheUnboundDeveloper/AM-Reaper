@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.4** <!--@treever--> — `3006.102.8_Reaper_v3.1.4`. **An OpenVPN server can be created again**: since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate, because the request carried an extension that cannot exist on a request; the extensions now go only on the signing call, and the issued certificate carries them. **DDNS no longer restarts itself every 30 seconds** on a dual-WAN router whose IPv6 lives on the other WAN — it records that the WAN has no IPv6, stands down, and resumes on its own when any interface gains one. **The EDNS Client Subnet option is gone**, page and emitter both. **The GT-BE19000 joins the fleet** with its closed per-model layer, its own dongle firmware (one chip, settled from the vendor image), its own rtl8372 and platform archives, and a derived identity overlay; it publishes as a prerelease. And **the fleet cut can now delete a language-pack key**: its dictionary guard measured "last synced" against a merge base frozen in July, and now uses canon's previous rung. The series stands at **652 patches** (0649–0652 for v3.1.4); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.4** <!--@treever--> — `3006.102.8_Reaper_v3.1.4`. **An OpenVPN server can be created again**: since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate, because the request carried an extension that cannot exist on a request; the extensions now go only on the signing call, and the issued certificate carries them. **DDNS no longer restarts itself every 30 seconds** on a dual-WAN router whose IPv6 lives on the other WAN — it records that the WAN has no IPv6, stands down, and resumes on its own when any interface gains one. **The EDNS Client Subnet option is gone**, page and emitter both. **The GT-BE19000 joins the fleet** with its closed per-model layer, radio firmware for both of its chips taken from the non-AI vendor image, its own rtl8372 and platform archives, and a derived identity overlay; it publishes as a prerelease. And **the fleet cut can now delete a language-pack key**: its dictionary guard measured "last synced" against a merge base frozen in July, and now uses canon's previous rung. The series stands at **652 patches** (0649–0652 for v3.1.4); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. |
@@ -51,22 +51,21 @@ record is already correct and the IPv6 one is unobtainable. It resumes without p
 interface gains IPv6, or when you apply the DDNS page. The `current ipv6_service` line that printed on
 every run now prints only when the service changes.
 
-**The EDNS Client Subnet option is gone.** Page, emitter, nvram default and all 25 language packs. It was
-removed at the root rather than hidden, because taking the control away while leaving the emitter would
-have left any router with it enabled sending client addresses with no way to stop. It sent the *complete*
-client address, and what it bought never covered that: AdGuard Home only logs the value and never
-matches rules on it, and dnsmasq attached the option before choosing an upstream, so a failover to a
-public resolver carried the address out of the network with nothing in the path able to strip it. The
-reasoning stays in the source beside the no-cache switch, for anyone tempted to add it back.
+**The EDNS Client Subnet option is gone.** Page, emitter, nvram default and all 25 language packs — a
+niche switch, removed at the root so a router that had it enabled is not left sending client addresses
+with no way to stop. Nothing else changes.
 
 **The GT-BE19000 joins the fleet.** Same BCM4916 silicon, tri-band radios and NAND layout as the
 RT-BE96U. Its onboarding had imported four of the fifty per-model directories the tree carries; the
 other forty-six are each copied by a rule that fails silently, so the first builds died one missing
 file at a time — `lzop`, then `libptcsrv.so`, then `libbcm.so`, then three symlinks a directory-only
 audit had never seen. All of it came from the model's own GPL drop. Its radio firmware could not: no GPL
-drop ships it. The board also turned out to carry **one** dongle chip where its tri-band siblings carry
-two — settled by decomposing the vendor's own firmware image rather than inferred from the siblings — so
-`reaper_verify` now expects `6726b0` alone for this model and would otherwise have failed a correct image.
+drop ships it. Both radio chips' firmware (`6717a0` and `6726b0`) come from the vendor's own GT-BE19000
+image — the non-AI SKU this build targets. That distinction was earned the hard way: the AI SKU's image
+carries only `6726b0`, and reading the chip set off it first would have shipped a radio with no firmware.
+Each blob matches the host driver's Broadcom version exactly. Because the wrong radio firmware does not merely
+disable a radio but locks the router out, the build now proves every blob names the model it is installed into —
+before compiling, in both the local engine and the clean room, and again on the finished image.
 It carries its own u-boot rtl8372 archive, because its blob differs from every other model's; a platform
 archive for the closed layer the pinned upstream does not have, exactly as GT-BE98 does; and a first
 identity overlay of twelve files, derived rather than hand-listed, which is why it already includes the
@@ -122,9 +121,7 @@ chain that by design never exists stopped being reported as missing. Details in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 **Smaller, in the same rung.** The Administration tab is now called **DNS Failover** — "Failover"
-alone reads as Dual-WAN. The EDNS Client Subnet help text says what actually leaves the router: the
-complete client address, on every forwarded query, including any that reaches a public fallback
-server while your own filter is unavailable. Two silent behaviours in Policy Routing now log when
+alone reads as Dual-WAN. Two silent behaviours in Policy Routing now log when
 they overrule what nvram says, and the watchdog's generated script reports success when the router
 is healthy instead of failure. The first-boot Wi-Fi page shows its header again on every sibling
 model. And for maintainers, the build's own test suites now run in CI, discovered by glob, with a

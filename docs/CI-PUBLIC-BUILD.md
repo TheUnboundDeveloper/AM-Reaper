@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
+> **Doc status:** current as of **v3.1.4** · 2026-09-12 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -24,9 +24,11 @@ same file that produces the published releases, and runs the same
    - `MCP` — the standard image (includes the read-only Advisor MCP server).
    - `noMCP` — the same firmware with the MCP server compiled out.
    - `both` — builds each in its own job, in parallel.
-5. Choose a model. Any one of the five <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
-   `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO` <!--@models--> — or `all`, which fans out to
-   every model. `all` with `both` is 10 <!--@fleetjobs--> concurrent jobs.
+5. Choose a model. Any one of the six <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
+   `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO`, `GT-BE19000` <!--@models--> — or `all`, which
+   fans out to every model. `all` with `both` is 12 <!--@fleetjobs--> concurrent jobs.
+   *The GT-BE19000 joined the roster on 2026-09-12. It publishes only as a prerelease:
+   the model builds and passes `reaper_verify`, but no hardware has run an image yet.*
 6. When the run finishes, download the artifacts from the run summary page.
 
 It runs on free GitHub-hosted runners and uses your fork's Actions minutes.
@@ -326,7 +328,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0648` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0652` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and
@@ -387,7 +389,7 @@ non-obvious failures that would otherwise be rediscovered.
 | `build-scripts/ci/container_build.sh` | Runs inside `ubuntu:20.04`: packages, locale, non-root `reaper` user, toolchain restore, series replay, overlay + platform archive, provenance, staged-fs digest, reproducibility comparison. |
 | `build-scripts/ci/check_overlays.py` | The overlay identity gate — asserts each overlay changes identity only, so a stale branch tip cannot ride in as a well-formed patch. |
 | `build-scripts/reaper_stale_configure.sh` | Detects (and clears) packages whose configure flags changed after they were last configured. |
-| `overlays/` | Five sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U), the GT-BE98 platform archive, the two u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (`openssl-3.5-source.tar.gz`, 53 MB, unpacked for every model after the series) — each with its SHA-256. |
+| `overlays/` | Six sibling identity overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, RT-BE92U), the GT-BE98 and GT-BE19000 platform archives (the pinned upstream carries neither model's `router-sysdep`), the three u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (`openssl-3.5-source.tar.gz`, 53 MB, unpacked for every model after the series) — each with its SHA-256. |
 
 **Fixed — three environment defects, all the same shape**
 
@@ -442,7 +444,9 @@ was compiled.
    blob differs from everyone else's, as with its platform tree), staged only for
    models whose — possibly overlay-patched — u-boot Makefile actually enables
    rtl8372, and asserted present before the build starts rather than 40 minutes
-   in. Affects RT-BE86U, GT-BE98 and GT-BE98_PRO; RT-BE88U does not enable it.
+   in. Affects RT-BE86U, GT-BE98, GT-BE98_PRO and GT-BE19000; RT-BE88U does not
+   enable it. GT-BE98 and GT-BE19000 each carry their own archive because their
+   blobs differ from the default and from each other.
 
 **Modified**
 

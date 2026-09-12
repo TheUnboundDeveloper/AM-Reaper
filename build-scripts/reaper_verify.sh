@@ -214,9 +214,17 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # Found 2026-09-10 onboarding the GT-BE19000, whose GPL drop (like every ASUS
 # drop) ships none. The expected chip set is per model, read from the pinned
 # base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
+#
+# GT-BE19000 CORRECTED 2026-09-12. It was first registered as "6717a0 6726b0"
+# by grouping it with the other tri-band 6813 models rather than by measuring
+# the board, and that would have FAILED a perfectly good image for a radio it
+# does not have. The stock GT-BE19000AI firmware (102_40717) was decomposed and
+# its rootfs carries exactly one chip dir, rom/etc/wlan/dhd/6726b0/ - where the
+# RT-BE96U image carries both. Tri-band does not imply two dongle chips; it is
+# a board-design question, so read it off the vendor image and never infer it.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000) want_dhd="6717a0 6726b0";;
-  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
+  RT-BE96U|GT-BE98|GT-BE98_PRO)             want_dhd="6717a0 6726b0";;
+  RT-BE86U|RT-BE88U|GT-BE19000)             want_dhd="6726b0";;
   *)                                        want_dhd="";;
 esac
 if [ -n "$want_dhd" ]; then

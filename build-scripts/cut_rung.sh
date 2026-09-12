@@ -262,7 +262,8 @@ m = json.load(open(path, encoding="utf-8"))
 rel = next(r for r in m["releases"] if r["version"] == ver)
 rel["source_tree_from_series"] = {"release/src/router": ser_router, "release/src-rt": ser_srcrt}
 rel.setdefault("images", [])
-rel.setdefault("models", ["RT-BE96U", "RT-BE86U", "RT-BE88U", "GT-BE98", "GT-BE98_PRO"])
+rel.setdefault("models", ["RT-BE96U", "RT-BE86U", "RT-BE88U", "GT-BE98", "GT-BE98_PRO",
+                          "GT-BE19000"])
 rel["date"] = datetime.date.today().isoformat()
 rel["parent"] = prev
 rel.setdefault("summary", "TODO: what this rung changes, in prose. "

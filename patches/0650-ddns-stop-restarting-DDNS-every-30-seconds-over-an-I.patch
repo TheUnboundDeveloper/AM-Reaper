@@ -1,0 +1,149 @@
+From 1370ccf381833c7caa9276f298f7d6828b0844b6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 10:19:03 -0400
+Subject: [PATCH] ddns: stop restarting DDNS every 30 seconds over an IPv6
+ address that cannot arrive
+
+Field report, two WANs with divergent v4/v6: a box with IPv4 on the
+primary and native IPv6 only on the secondary logged four lines every 30
+seconds for the life of the boot.
+
+Three links had to line up. start_ddns() tests the DDNS WAN unit's OWN
+interface for an IPv6 address while ipv6_enabled() is a GLOBAL test, so a
+box whose IPv6 sits on the other WAN always fails it; failing it unsets
+ddns_ipv6_updated; and watchdog_ddns()'s "already updated, exit DDNS
+Retry" early return requires ddns_ipv6_updated=1 whenever IPv6 DDNS is
+on - which is the DEFAULT. The early return could therefore never be
+taken, control fell through to the retry countdown, and DDNS was stopped
+and restarted every 30 s over a condition no amount of retrying could
+change. The machinery is built for a transient "the address has not
+arrived YET"; this configuration makes "yet" never come.
+
+The fix keeps the retry for the transient case and stands down for the
+permanent one: start_ddns() reports the missing address on the STATE
+CHANGE rather than once per tick and records it in ddns_ipv6_absent;
+watchdog treats that flag as a reason to stop retrying, the IPv4 record
+being already correct and the IPv6 one unobtainable. Recovery needs no
+polling - wan6_up() clears the flag the moment an interface gains IPv6,
+and any non-watchdog start_ddns() clears it too.
+
+Separately, the "current ipv6_service: x | old ipv6_service: x" line
+printed unconditionally on every run and now prints only when the service
+actually changed, which is what the branch below it acts on. Together
+these remove all four repeating lines - by removing the loop, not by
+silencing it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c | 42 ++++++++++++++++++++++++++------
+ release/src/router/rc/wan.c      |  5 ++++
+ release/src/router/rc/watchdog.c | 10 ++++++--
+ 3 files changed, 48 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 984efa271c..63874104b4 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -5255,6 +5255,9 @@ start_ddns(char *caller, int isAidisk)
+ 		if (caller == NULL) { // not from watchdog
+ 			//logmessage("ddns", "Reset DDNS Retry.\n");
+ 			nvram_set("ddns_check_retry", "10");
++			/* An operator or an event asked for this run, so re-evaluate the
++			 * no-IPv6-on-this-WAN hold below rather than inheriting it. */
++			nvram_unset("ddns_ipv6_absent");
+ 		}
+ 	}
+ 	else { // AiDisk register DDNS
+@@ -5316,12 +5319,32 @@ start_ddns(char *caller, int isAidisk)
+ 	wan_ip = nvram_safe_get(strcat_r(prefix, "ipaddr", tmp));
+ 	wan_ifname = get_wan_ifname(unit);
+ #if defined(RTCONFIG_IPV6) && defined(RTCONFIG_INADYN)
+-	if (nvram_get_int("ddns_ipv6_update")
+-		&& ipv6_enabled() && (_get_ipv6_addr(wan_ifname, ip6_addr, sizeof(ip6_addr)) != 0))
+-	{
+-		logmessage(log_title, "%s has not yet obtained an WAN IPv6 address.(%d)", wan_ifname, ddns_check_retry);
+-		if (!isAidisk)
+-			nvram_unset("ddns_ipv6_updated");
++	/* Field 2026-09-12, two WANs with divergent v4/v6: this tests the DDNS WAN
++	 * unit's own interface, while ipv6_enabled() is a GLOBAL test. A box whose
++	 * IPv6 lives on the OTHER WAN lands here on every single run, and "not yet"
++	 * is then a permanent state, not the transient one the retry machinery was
++	 * built for. Two consequences, both closed here. It said so once per watchdog
++	 * tick for the life of the boot; and unsetting ddns_ipv6_updated meant
++	 * watchdog's "already updated, exit DDNS Retry" test could never pass, so
++	 * DDNS was stopped and restarted every 30 s over a condition no amount of
++	 * retrying could change. Report it on the state CHANGE, and record the state
++	 * so watchdog can stand down. Recovery needs no polling: wan6_up() clears the
++	 * flag when an interface actually gains IPv6, and any non-watchdog
++	 * start_ddns() clears it too. */
++	if (nvram_get_int("ddns_ipv6_update") && ipv6_enabled()) {
++		if (_get_ipv6_addr(wan_ifname, ip6_addr, sizeof(ip6_addr)) != 0) {
++			if (!nvram_match("ddns_ipv6_absent", "1")) {
++				logmessage(log_title, "%s has no WAN IPv6 address - IPv6 updates are on hold "
++				                      "until it gets one.(%d)", wan_ifname, ddns_check_retry);
++				nvram_set("ddns_ipv6_absent", "1");
++			}
++			if (!isAidisk)
++				nvram_unset("ddns_ipv6_updated");
++		}
++		else if (nvram_match("ddns_ipv6_absent", "1")) {
++			logmessage(log_title, "%s now has a WAN IPv6 address - resuming IPv6 updates.", wan_ifname);
++			nvram_unset("ddns_ipv6_absent");
++		}
+ 	}
+ #endif
+ 
+@@ -5392,7 +5415,12 @@ start_ddns(char *caller, int isAidisk)
+ #endif
+ 
+ 	snprintf(ipv6_service_cur, sizeof(ipv6_service_cur), "%s", nvram_safe_get(ipv6_nvname_by_unit("ipv6_service", unit)));
+-	logmessage(log_title, "current ipv6_service: %s | old ipv6_service: %s\n", ipv6_service_cur, nvram_safe_get("ddns_ipv6_service_old"));
++	/* Only interesting when it CHANGED - which is what the branch below acts on.
++	 * Printed unconditionally this read "dhcp6 | dhcp6" on every run and was one
++	 * of the four lines the 30 s retry loop was emitting (field 2026-09-12). */
++	if (strcmp(ipv6_service_cur, nvram_safe_get("ddns_ipv6_service_old")) != 0)
++		logmessage(log_title, "ipv6_service changed: %s -> %s",
++		           nvram_safe_get("ddns_ipv6_service_old"), ipv6_service_cur);
+ 
+ 	if (inet_addr_(wan_ip) == inet_addr_(nvram_safe_get("ddns_ipaddr")) &&
+ 		strcmp(nvram_safe_get("ddns_server_x"), nvram_safe_get("ddns_server_x_old")) == 0 &&
+diff --git a/release/src/router/rc/wan.c b/release/src/router/rc/wan.c
+index 5bb759fef0..c79f3a8f3e 100644
+--- a/release/src/router/rc/wan.c
++++ b/release/src/router/rc/wan.c
+@@ -3416,6 +3416,11 @@ void wan6_up(const char *pwan_ifname)
+ 	wan_unit = get_wan6_unit(wan_ifname);
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", wan_unit);
+ 
++	/* An interface just gained IPv6, so any "this WAN has no IPv6" hold the DDNS
++	 * retry path put itself on is stale. Clearing it here is what lets that hold
++	 * be self-healing instead of polled (field 2026-09-12). */
++	nvram_unset("ddns_ipv6_absent");
++
+ 	service = get_ipv6_service_by_unit(wan_unit);
+ 	switch (service) {
+ 	case IPV6_NATIVE_DHCP:
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 4916000664..9c5de72597 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -7998,8 +7998,14 @@ void ddns_check(void)
+ 
+ 	if (wan_unit == last_unit && nvram_match("ddns_updated", "1")) { //already updated success
+ #if defined(RTCONFIG_IPV6) && defined(RTCONFIG_INADYN)
+-		/* not enable IPv6 or IPv6 already updated success */
+-		if (!ipv6_enabled() || nvram_match("ddns_ipv6_update", "0") || (ipv6_enabled() && nvram_match("ddns_ipv6_update", "1") && nvram_match("ddns_ipv6_updated", "1"))) {
++		/* not enable IPv6 or IPv6 already updated success - or the DDNS WAN has
++		 * no IPv6 address at all, which start_ddns() flags after saying so once.
++		 * Without that last test a box whose IPv6 sits on the OTHER WAN never
++		 * satisfied this, fell through to the retry countdown, and restarted DDNS
++		 * every 30 s forever while its IPv4 record was already correct and its
++		 * IPv6 record was unobtainable (field 2026-09-12). */
++		if (!ipv6_enabled() || nvram_match("ddns_ipv6_update", "0") || (ipv6_enabled() && nvram_match("ddns_ipv6_update", "1") && nvram_match("ddns_ipv6_updated", "1"))
++			|| nvram_match("ddns_ipv6_absent", "1")) {
+ 			//logmessage("watchdog", "IPv4/IPv6 already updated success, exit DDNS Retry.\n");
+ 			return;
+ 		}
+-- 
+2.25.1
+

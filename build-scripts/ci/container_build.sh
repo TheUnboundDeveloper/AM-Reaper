@@ -42,6 +42,7 @@ case "$MODEL" in
   RT-BE88U)    _WANT_BRANCH=rt-be88u;;
   GT-BE98)     _WANT_BRANCH=gt-be98;;
   GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
+  GT-BE19000)  _WANT_BRANCH=gt-be19000;;
   RT-BE92U)    _WANT_BRANCH=rt-be92u;;
   *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
 esac
@@ -379,6 +380,7 @@ UB_DIR=release/src-rt-5.04behnd.4916/bootloaders/u-boot-2019.07/drivers/net/bcmb
 case "$MODEL" in
   RT-BE96U) UB_SYM=RTBE96U;;  RT-BE86U) UB_SYM=RTBE86U;;  RT-BE88U) UB_SYM=RTBE88U;;
   GT-BE98)  UB_SYM=GTBE98;;   GT-BE98_PRO) UB_SYM=GTBE98_PRO;;
+  GT-BE19000) UB_SYM=GTBE19000;;
   RT-BE92U) UB_SYM=RTBE92U;;
   *) UB_SYM="";;
 esac
@@ -391,6 +393,9 @@ if [ -n "$UB_SYM" ] && grep -B4 'obj-y += rtl8372/' "$UB_DIR/Makefile" 2>/dev/nu
   # release), exactly as with its platform tree.
   case "$MODEL" in
     GT-BE98) RTL_NAME=uboot-rtl8372-GT-BE98;;
+    # The GT-BE19000's blob differs from BOTH the default and GT-BE98's
+    # (8,393,712 B vs 8,395,256 / 8,395,264), so it carries its own archive.
+    GT-BE19000) RTL_NAME=uboot-rtl8372-GT-BE19000;;
     *)       RTL_NAME=uboot-rtl8372-default;;
   esac
   RTL_TGZ="$REPO_DIR/overlays/$RTL_NAME.tar.gz"

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
+> **Doc status:** current as of **v3.1.4** · 2026-09-12 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -1323,19 +1323,9 @@ them every 50 queries and settling on the fastest, which sends a share of every 
 Pair the two: strict order keeps the LAN resolver first while it is healthy, the health check supplies
 the memory of a dead one that strict order lacks.
 
-Two more switches sit beneath, for the layout where **clients are handed the router alone as their DNS**
+One more switch sits beneath, for the layout where **clients are handed the router alone as their DNS**
 and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
-and catches devices with a hard-coded DNS when paired with the port-53 intercept. **Client addresses**
-attaches the asking client's address to every forwarded query as EDNS Client Subnet, so a LAN filter still
-sees the device that asked instead of seeing only the router. The **complete** address is sent, not a
-shortened prefix: a truncated one would collapse every device on the LAN into a single entry, which is the
-condition the switch exists to fix. It rides on *every* forwarded query, and that includes any that reach a
-public fallback server during the window the health check above has your own filter moved to the back of the
-list. A public resolver given it can tell your devices apart, which the router's address translation
-otherwise denies it, so turn this on only when the server receiving it is one you run. Pi-hole matches on
-the value (on by default); AdGuard Home currently only records it, so with "Use EDNS Client Subnet" on its
-query log names the client but its per-client rules still match the router's address (AdGuardHome issues
-#4383 and #6104) - point clients at that filter directly if you need per-device rules there.
+and catches devices with a hard-coded DNS when paired with the port-53 intercept.
 **Router DNS cache** off turns the router into a pure forwarder: a per-client decision is never served
 from the router's cache to a different client, and the filter sees every lookup, as it does when clients
 talk to it directly. The filter keeps its own cache.

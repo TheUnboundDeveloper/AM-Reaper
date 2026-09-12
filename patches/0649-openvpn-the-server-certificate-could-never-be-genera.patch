@@ -1,0 +1,152 @@
+From a77a8eeecdd8ccdb34743544c06dc85776929212 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 10:19:01 -0400
+Subject: [PATCH] openvpn: the server certificate could never be generated on
+ OpenSSL 3.5
+
+`pkitool --server` put `-extensions server` on the certificate REQUEST as
+well as the signing call, and the `[ server ]` section carries
+`authorityKeyIdentifier=keyid,issuer:always`. An AKID cannot be computed
+for a CSR - there is no issuer at request time. OpenSSL 1.x ignored that;
+3.x fails the whole `openssl req` with "Error adding request extensions
+from section server", which stops pkitool's && chain before `openssl ca`
+ever runs and leaves a key with no certificate.
+
+That silently broke EVERY OpenVPN server certificate this firmware
+generated from the OpenSSL 3.5 move in v3.1.0 onward - both first-time
+setup (openvpn_setup.c ovpn_write_server_keys) and the v3.1.1 repair
+path, which merely inherited it. Reproduced on metal 2026-09-12 against
+a throwaway CA, so it needs no particular CA and no reporter.
+
+Dropping the extensions from REQ_EXT costs nothing: `copy_extensions` is
+unset in openssl-1.0.0.cnf, so `openssl ca` discards whatever the request
+asked for. CA_EXT still applies them at signing, where the issuer exists
+and the AKID resolves - verified on metal: the issued certificate carries
+Netscape Cert Type, extendedKeyUsage serverAuth and a real AKID keyid.
+
+The diagnostics go with it. ovpn_repair_server_cert() ran its generated
+script under eval() with stdout AND stderr discarded, unlinked it on the
+next line, and then ran `openssl verify` on server.crt WITHOUT checking
+the file existed - so pkitool-missing, pkitool-failed, openssl-ca-refused
+and genuinely-mis-signed all printed one sentence, "does not verify
+against the CA". That message is what sent this investigation after the
+signature for an hour when the certificate had never been created. The
+script now keeps its output, and the checks name the stage that failed.
+First-time generation gets the same output capture.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/easy-rsa/2.0/pkitool    | 16 +++++++--
+ release/src/router/libovpn/openvpn_setup.c | 39 ++++++++++++++++++++--
+ 2 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/easy-rsa/2.0/pkitool b/release/src/router/easy-rsa/2.0/pkitool
+index ebfcae7453..c16701a0f3 100755
+--- a/release/src/router/easy-rsa/2.0/pkitool
++++ b/release/src/router/easy-rsa/2.0/pkitool
+@@ -147,8 +147,20 @@ while [ $# -gt 0 ]; do
+     case "$1" in
+         --keysize  ) KEY_SIZE=$2
+ 		     shift;;
+-	--server   ) REQ_EXT="$REQ_EXT -extensions server"
+-	             CA_EXT="$CA_EXT -extensions server" ;;
++	# The server extensions belong on the ISSUED certificate, not on the
++	# request. [ server ] carries authorityKeyIdentifier=keyid,issuer:always,
++	# and an AKID cannot be computed for a CSR - there is no issuer at request
++	# time. OpenSSL 1.x ignored that; 3.x fails the whole `openssl req` with
++	# "Error adding request extensions from section server", which stops the
++	# && chain below before `openssl ca` ever runs and leaves a key with no
++	# certificate. That silently broke every OpenVPN server certificate this
++	# firmware generated - new setups and the repair path alike - from the
++	# OpenSSL 3.5 move in v3.1.0 until it was reproduced on metal 2026-09-12.
++	# Dropping it from REQ_EXT costs nothing: copy_extensions is unset in
++	# openssl-1.0.0.cnf, so `openssl ca` discards the request's extensions
++	# regardless. CA_EXT still applies them at signing, where the issuer
++	# exists and the AKID resolves.
++	--server   ) CA_EXT="$CA_EXT -extensions server" ;;
+ 	--batch    ) BATCH="-batch" ;;
+ 	--interact ) BATCH="" ;;
+         --inter    ) CA_EXT="$CA_EXT -extensions v3_ca" ;;
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index f4f79532fe..cde6a68c1f 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -784,7 +784,7 @@ void ovpn_write_client_keys(ovpn_cconf_t *cconf, int unit) {
+  * Returns 0 when a certificate was installed, -1 otherwise. */
+ static int ovpn_repair_server_cert(int unit)
+ {
+-	char script[64], rundir[64], buffer[8000];
++	char script[64], rundir[64], logfile[64], buffer[8000];
+ 	FILE *fp;
+ 
+ 	snprintf(rundir, sizeof(rundir), "/etc/openvpn/server%d", unit);
+@@ -798,11 +798,19 @@ static int ovpn_repair_server_cert(int unit)
+ 	}
+ 
+ 	snprintf(script, sizeof(script), "/tmp/repairvpncert%d.sh", unit);
++	snprintf(logfile, sizeof(logfile), "/tmp/repairvpncert%d.log", unit);
+ 	fp = fopen(script, "w");
+ 	if (!fp)
+ 		return -1;
+ 
+ 	fprintf(fp, "#!/bin/sh\n");
++	/* v3.1.4: keep what the tools say. Until now this script ran under
++	 * eval() with stdout and stderr discarded and was unlinked on the next
++	 * line, so when pkitool failed there was nothing left to read and the
++	 * verify below blamed the signature for every possible failure. The
++	 * 2026-09-12 root cause (an AKID in the request extensions, fatal under
++	 * OpenSSL 3.x) was invisible in syslog and had to be reproduced by hand. */
++	fprintf(fp, "exec >\"%s\" 2>&1\n", logfile);
+ 	fprintf(fp, "export OPENSSL=\"openssl\"\n");
+ 	fprintf(fp, "export GREP=\"grep\"\n");
+ 	fprintf(fp, "export KEY_CONFIG=\"/rom/easy-rsa/openssl-1.0.0.cnf\"\n");
+@@ -825,12 +833,33 @@ static int ovpn_repair_server_cert(int unit)
+ 	eval(script);
+ 	unlink(script);
+ 
++	/* Name the stage that failed rather than blaming the signature for all of
++	 * them. pkitool runs `openssl req` and then `openssl ca`, chained on success:
++	 * no .csr means the request stage failed, a .csr with no .crt means signing
++	 * did, and only a certificate that exists can be said to verify or not.
++	 * Before this, all three printed "does not verify against the CA" - including
++	 * the case where the file had never been created, which is what the verify
++	 * call itself was reporting (field 2026-09-12, and an hour spent looking at
++	 * signatures for a certificate that was never issued). */
++	snprintf(buffer, sizeof(buffer), "%s/server.csr", rundir);
++	if (!f_exists(buffer)) {
++		logmessage("openvpn", "Server %d: no certificate request was produced - regeneration "
++		                      "failed at the request stage, see %s", unit, logfile);
++		return -1;
++	}
++	snprintf(buffer, sizeof(buffer), "%s/server.crt", rundir);
++	if (!f_exists(buffer)) {
++		logmessage("openvpn", "Server %d: no certificate was issued - regeneration failed at "
++		                      "the signing stage, see %s", unit, logfile);
++		return -1;
++	}
+ 	/* only adopt the result if it actually verifies against the CA we hold */
+ 	snprintf(buffer, sizeof(buffer),
+-	         "openssl verify -CAfile %s/ca.crt %s/server.crt >/dev/null 2>&1", rundir, rundir);
++	         "openssl verify -CAfile %s/ca.crt %s/server.crt >>\"%s\" 2>&1",
++	         rundir, rundir, logfile);
+ 	if (system(buffer) != 0) {
+ 		logmessage("openvpn", "Server %d: regenerated certificate does not verify against the CA "
+-		                      "- discarded, nothing changed", unit);
++		                      "- discarded, nothing changed, see %s", unit, logfile);
+ 		return -1;
+ 	}
+ 
+@@ -861,6 +890,10 @@ void ovpn_write_server_keys(ovpn_sconf_t *sconf, int unit) {
+ 		if (fp)
+ 		{
+ 			fprintf(fp, "#!/bin/sh\n");
++			/* v3.1.4: first-time generation ran under the same eval-and-discard
++			 * and was equally silent when pkitool failed - which it did, for
++			 * every new server built on an OpenSSL 3.5 image. Keep the output. */
++			fprintf(fp, "exec >\"/tmp/genvpncert%d.log\" 2>&1\n", unit);
+ 			fprintf(fp, "export OPENSSL=\"openssl\"\n");
+ 			fprintf(fp, "export GREP=\"grep\"\n");
+ 			fprintf(fp, "export KEY_CONFIG=\"/rom/easy-rsa/openssl-1.0.0.cnf\"\n");
+-- 
+2.25.1
+

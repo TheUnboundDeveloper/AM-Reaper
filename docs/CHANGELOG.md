@@ -46,6 +46,57 @@ node, not only on the primary router.
 
 ---
 
+## v3.1.4 — an OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet
+
+- **OpenVPN server certificates can be generated again.** From the OpenSSL 3.5 move in v3.1.0
+  onward, every server certificate this firmware tried to make came out as a key with no
+  certificate - first-time setup and the v3.1.1 repair path alike. `pkitool --server` put
+  `-extensions server` on the certificate *request* as well as the signing call, and that section
+  carries an `authorityKeyIdentifier`, which cannot be computed for a request because there is no
+  issuer yet. OpenSSL 1.x ignored it; 3.x refuses the whole request, which stopped pkitool before it
+  ever reached `openssl ca`. The extensions now go only on the signing call, where the issuer exists
+  and they resolve - confirmed on the router: the issued certificate carries its server extensions
+  including a real authority key identifier. Dropping them from the request costs nothing, since
+  `openssl ca` never copied request extensions in the first place. The repair path's diagnostics
+  were rebuilt with it: it used to discard the tools' own output and then blame the signature for
+  every possible failure, including the one where the certificate had never been created. It now
+  keeps the log and says which stage failed.
+- **DDNS no longer restarts itself every 30 seconds on a dual-WAN router whose IPv6 lives on the
+  other WAN.** Three stock behaviours lined up: the DDNS start tests *its own WAN's* interface for an
+  IPv6 address while the enable check is global, so a box with IPv6 only on the secondary WAN failed
+  it on every run; failing it cleared the "IPv6 updated" flag; and the watchdog's "already updated,
+  stop retrying" exit requires that flag whenever IPv6 DDNS is on - which is the default. The retry
+  machinery is built for an address that has not arrived *yet*; this configuration made "yet" never
+  come, so DDNS was stopped and restarted for the life of the boot, four log lines at a time. It now
+  reports the missing address once, when the state changes, records that this WAN has no IPv6, and
+  the watchdog stands down - the IPv4 record being correct and the IPv6 one unobtainable. It resumes
+  on its own the moment any interface gains IPv6. The `current ipv6_service: x | old: x` line that
+  printed on every run now prints only when the service actually changed.
+- **The EDNS Client Subnet option is gone** - page, emitter, default and all 25 language packs.
+  Removed at the root rather than hidden: taking the control away while leaving the emitter would
+  have left any router with it enabled sending client addresses with no way to stop. It sent the
+  *complete* client address, and what it bought never covered that: AdGuard Home only logs the
+  value and never matches rules on it, and dnsmasq attached it before choosing an upstream, so a
+  failover to a public resolver carried the address out of the network with nothing able to strip
+  it. The reasoning stays in the source beside the no-cache switch for anyone tempted to add it back.
+- **The GT-BE19000 joins the fleet.** Same BCM4916 silicon and NAND layout as the RT-BE96U. Its
+  onboarding had imported 4 of the 50 per-model directories the tree carries; the other 46 are each
+  copied by a rule that fails silently, so the first builds died one missing file at a time - `lzop`,
+  `libptcsrv.so`, `libbcm.so`, then three symlinks a directory-only audit had skipped. All of it
+  came from the model's own GPL drop. Its radio firmware could not: no GPL drop ships it, and the
+  board turned out to carry **one** dongle chip, not the two its tri-band siblings have - settled by
+  decomposing the vendor image, not inferred - so `reaper_verify` now expects `6726b0` alone for it.
+  It carries its own u-boot rtl8372 archive (its blob differs from every other model's), a
+  platform archive for the closed layer the pinned upstream does not have - exactly as GT-BE98
+  does - and a first identity overlay of twelve files, derived rather than hand-listed, which is
+  why it includes the first-boot Wi-Fi page every earlier overlay missed. It is on the CI roster
+  and publishes as a prerelease.
+- **The fleet cut can now delete a language-pack key.** Its dictionary guard tolerates keys canon
+  removed since a sibling last synced, but it measured "last synced" with `merge-base`, which for
+  branches that are ported by file copy and never merged sat frozen at July's v1.5.0d - before any
+  of this rung's removed keys existed. The reference is now canon's previous version commit, which
+  is what every sibling actually synced from. A key canon *never* had still blocks, as it should.
+
 ## v3.1.3 — your Killswitch decides, and the firewall watchdog stops fighting a rule you meant *(built RT-BE96U)*
 
 - **Policy Routing follows each VPN client's Killswitch instead of overriding it.** Every rule that

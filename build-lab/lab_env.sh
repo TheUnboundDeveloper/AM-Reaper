@@ -161,6 +161,7 @@ lab_model_table() {   # $1 = MODEL ; sets BRANCH TARGET PREFIX
     RT-BE88U)    BRANCH=rt-be88u;    TARGET=rt-be88u;    PREFIX=RT-BE88U;;
     GT-BE98)     BRANCH=gt-be98;     TARGET=gt-be98;     PREFIX=GT-BE98;;
     GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; PREFIX=GT-BE98_PRO;;
+    GT-BE19000)  BRANCH=gt-be19000;  TARGET=gt-be19000;  PREFIX=GT-BE19000;;
     *) lab_die "unknown model '$1'";;
   esac
   export BRANCH TARGET PREFIX

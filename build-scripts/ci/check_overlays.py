@@ -34,6 +34,7 @@ MODEL_BANNER = {
     "RT-BE88U":    "RT-BE88U",
     "GT-BE98":     "GT-BE98",
     "GT-BE98_PRO": "GT-BE98P",
+    "GT-BE19000":  "GT-BE19000",
     "RT-BE92U":    "RT-BE92U",
 }
 

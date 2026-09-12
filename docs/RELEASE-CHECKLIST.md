@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.1.2** · 2026-09-10 <!--@stamp-->
+> **Doc status:** current as of **v3.1.3** · 2026-09-12 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -53,7 +53,7 @@ wsl -d Ubuntu-20.04 -u reaper -- \
 ```
 
 This runs, in the only safe order: `cut_rung.sh` → port the five siblings
-(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, RT-BE92U) → **then** the overlays. Order is not negotiable — regenerating overlays before
+(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, RT-BE92U) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -114,7 +114,7 @@ the overlay.
 
 ```bash
 git -C /home/reaper/asuswrt-be96u push hub \
-  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro
+  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000
 ```
 
 - [ ] Canon **and all four ported branches** are in the bare hub
@@ -146,7 +146,7 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 10 <!--@fleetjobs--> jobs,
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
       ~1.5 h each — six models since the RT-BE92U joined the fan-out)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override

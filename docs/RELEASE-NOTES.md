@@ -1,13 +1,13 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
+> **Doc status:** current as of **v3.1.4** · 2026-09-12 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.3** <!--@treever--> — `3006.102.8_Reaper_v3.1.3`, built on RT-BE96U. **Policy Routing follows each VPN client's Killswitch instead of overriding it**: a rule now only chooses the path, and whether a tunnel that is down blocks the traffic or lets it use the WAN is the switch you already set on that client's own VPN page — which *changes behaviour on upgrade* for a rule whose client has the Killswitch off. **The firewall watchdog stops fighting a rule you meant to be there**: a narrow carve-out in front of Reaper's chains, or a chain you name in `/jffs/reaper/front_exempt`, is tolerated and logged once instead of re-pinned every ten minutes, and a repair undone twice stops rather than churning. With them: the **diagnostic report stops overstating** — six figures that counted the wrong thing, from conntrack totals that could not be reconciled to a taint bitmask printed as a count; the **Administration tab is called DNS Failover**; the **EDNS Client Subnet help text says what actually leaves the router**; two silent overrules in Policy Routing now log; the **first-boot Wi-Fi page shows its header on every sibling model**; and the build's own **test suites run in CI**. The series stands at **648 patches** (0644–0648 for v3.1.3); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.4** <!--@treever--> — `3006.102.8_Reaper_v3.1.4`. **An OpenVPN server can be created again**: since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate, because the request carried an extension that cannot exist on a request; the extensions now go only on the signing call, and the issued certificate carries them. **DDNS no longer restarts itself every 30 seconds** on a dual-WAN router whose IPv6 lives on the other WAN — it records that the WAN has no IPv6, stands down, and resumes on its own when any interface gains one. **The EDNS Client Subnet option is gone**, page and emitter both. **The GT-BE19000 joins the fleet** with its closed per-model layer, its own dongle firmware (one chip, settled from the vendor image), its own rtl8372 and platform archives, and a derived identity overlay; it publishes as a prerelease. And **the fleet cut can now delete a language-pack key**: its dictionary guard measured "last synced" against a merge base frozen in July, and now uses canon's previous rung. The series stands at **652 patches** (0649–0652 for v3.1.4); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916). RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. |
+| **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
 | **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3 and **v2.7.6** (newest, and the first to include the RT-BE92U). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
@@ -19,6 +19,67 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.4 — an OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet
+
+*Cut as patches 0649–0652, bringing the series to 652. The RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro
+and — for the first time — the GT-BE19000 take it from the series.*
+
+**An OpenVPN server can be created again.** From the OpenSSL 3.5 move in v3.1.0 onward, every server
+certificate this firmware tried to generate came out as a key with no certificate — first-time setup and
+the v3.1.1 repair path alike, since the repair merely inherited the same call. `pkitool --server` put
+`-extensions server` on the certificate *request* as well as on the signing call, and that section carries
+an `authorityKeyIdentifier`. An authority key identifier cannot be computed for a request: there is no
+issuer yet. OpenSSL 1.x ignored that; 3.x refuses the whole request, which stopped pkitool before it ever
+reached `openssl ca`. The extensions now go only on the signing call, where the issuer exists and they
+resolve. That was confirmed on the router itself: the issued certificate carries its server extensions,
+including a real authority key identifier. Dropping them from the request costs nothing, because
+`openssl ca` never copied request extensions to begin with. The repair path's diagnostics were rebuilt at
+the same time — it used to discard the tools' output and then report "does not verify against the CA"
+for every failure, including the one where no certificate had been created at all. It now keeps the log
+and names the stage that failed.
+
+**DDNS no longer restarts itself every 30 seconds on a dual-WAN router whose IPv6 lives on the other
+WAN.** A router with IPv4 on the primary WAN and native IPv6 only on the secondary logged the same four
+lines every half-minute for the life of the boot. Three stock behaviours lined up to cause it: the DDNS
+start tests *its own WAN's* interface for an IPv6 address while the enable check is global; failing that
+cleared the "IPv6 updated" flag; and the watchdog's "already updated, stop retrying" exit requires that
+flag whenever IPv6 DDNS is on — which is the default. The retry machinery exists for an address that has
+not arrived *yet*; this configuration made "yet" never come. It now reports the missing address once,
+when the state changes, records that this WAN has no IPv6, and the watchdog stands down — the IPv4
+record is already correct and the IPv6 one is unobtainable. It resumes without polling the moment any
+interface gains IPv6, or when you apply the DDNS page. The `current ipv6_service` line that printed on
+every run now prints only when the service changes.
+
+**The EDNS Client Subnet option is gone.** Page, emitter, nvram default and all 25 language packs. It was
+removed at the root rather than hidden, because taking the control away while leaving the emitter would
+have left any router with it enabled sending client addresses with no way to stop. It sent the *complete*
+client address, and what it bought never covered that: AdGuard Home only logs the value and never
+matches rules on it, and dnsmasq attached the option before choosing an upstream, so a failover to a
+public resolver carried the address out of the network with nothing in the path able to strip it. The
+reasoning stays in the source beside the no-cache switch, for anyone tempted to add it back.
+
+**The GT-BE19000 joins the fleet.** Same BCM4916 silicon, tri-band radios and NAND layout as the
+RT-BE96U. Its onboarding had imported four of the fifty per-model directories the tree carries; the
+other forty-six are each copied by a rule that fails silently, so the first builds died one missing
+file at a time — `lzop`, then `libptcsrv.so`, then `libbcm.so`, then three symlinks a directory-only
+audit had never seen. All of it came from the model's own GPL drop. Its radio firmware could not: no GPL
+drop ships it. The board also turned out to carry **one** dongle chip where its tri-band siblings carry
+two — settled by decomposing the vendor's own firmware image rather than inferred from the siblings — so
+`reaper_verify` now expects `6726b0` alone for this model and would otherwise have failed a correct image.
+It carries its own u-boot rtl8372 archive, because its blob differs from every other model's; a platform
+archive for the closed layer the pinned upstream does not have, exactly as GT-BE98 does; and a first
+identity overlay of twelve files, derived rather than hand-listed, which is why it already includes the
+first-boot Wi-Fi page every earlier overlay had missed. It is on the CI roster and publishes as a
+prerelease.
+
+**The fleet cut can now delete a language-pack key.** Its dictionary guard is meant to tolerate keys that
+canon removed since a sibling last synced — its own comment says blocking them "would make it impossible
+to ever delete a dict key" — but it measured "last synced" with `merge-base`. Sibling branches are ported
+by file copy and never merged, so that base sat frozen at July's v1.5.0d, before any of this rung's removed
+keys existed, and the first rung to delete one blocked the whole fleet port. The reference is now canon's
+previous version commit, which is what every sibling actually synced from. A key canon *never* had still
+blocks, as it should.
 
 ## What's new in v3.1.3 — your Killswitch decides, and the firewall watchdog stops fighting a rule you meant
 

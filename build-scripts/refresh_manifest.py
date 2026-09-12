@@ -62,7 +62,8 @@ def vnum(s):
 
 # manifest productid -> latest.json short model key
 SHORT = {"RT-BE96U": "BE96U", "RT-BE86U": "BE86U", "RT-BE88U": "BE88U",
-         "GT-BE98": "BE98", "GT-BE98_PRO": "BE98Pro"}
+         "GT-BE98": "BE98", "GT-BE98_PRO": "BE98Pro",
+         "GT-BE19000": "BE19000"}
 
 
 def api(url, octet=False):

@@ -106,7 +106,13 @@ for tag, wv, wb, wc, wf in (
         ("v3.1.2-beta-RT-BE96U", "v3.1.2-beta", "v3.1.2", "beta", "_BETA"),
         ("v3.1.2-beta2-GT-BE98_PRO", "v3.1.2-beta2", "v3.1.2", "beta", "_BETA"),
         ("v3.1.2a-RT-BE88U", "v3.1.2a", "v3.1.2a", "stable", ""),
-        ("v3.1.2-rc1-RT-BE92U", "v3.1.2-rc1", "v3.1.2", "rc", "_RC")):
+        ("v3.1.2-rc1-RT-BE92U", "v3.1.2-rc1", "v3.1.2", "rc", "_RC"),
+        # GT-BE19000 is the first model whose name carries five consecutive
+        # digits. The resolver has to split tag -> version + model without
+        # any of "19000" being read as part of the version, so this shape is
+        # worth pinning even though the model is not yet on the roster.
+        ("v3.1.2-GT-BE19000", "v3.1.2", "v3.1.2", "stable", ""),
+        ("v3.1.2-beta-GT-BE19000", "v3.1.2-beta", "v3.1.2", "beta", "_BETA")):
     d = tempfile.mkdtemp()
     out = os.path.join(d, "out")
     io.open(out, "w").close()

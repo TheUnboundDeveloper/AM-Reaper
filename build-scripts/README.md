@@ -16,6 +16,7 @@ models (five on BCM4916, plus the newer BCM6765 RT-BE92U). Canonical build clone
 | RT-BE88U      | `rt-be88u`     | `rt-be88u`  | RT-BE88U      | dual (2.4/5)     |
 | GT-BE98       | `gt-be98`      | `gt-be98`   | GT-BE98       | quad (2.4/5/5/6) |
 | GT-BE98 Pro   | `gt-be98-pro`  | `gt-be98_pro` | GT-BE98_PRO | quad (2.4/5/5/6) |
+| GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |
 | RT-BE92U      | `rt-be92u`     | `rt-be92u`  | RT-BE92U      | tri  (2.4/5/6)   |   <!--@models-->
 
 BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a

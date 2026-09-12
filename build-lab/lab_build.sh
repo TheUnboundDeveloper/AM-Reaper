@@ -6,6 +6,7 @@
 #   lab_build.sh --model RT-BE96U [options]
 #
 #   --model    <MODEL>        RT-BE96U | RT-BE86U | RT-BE88U | GT-BE98 | GT-BE98_PRO
+#                             | GT-BE19000
 #   --variants "<list>"       default "MCP noMCP"; use "MCP" for a dev iteration
 #   --single-pass <mode>      off (default) | auto | force
 #   --config-keep             enable the conditional .config invalidation (L4)

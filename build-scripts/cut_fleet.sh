@@ -36,7 +36,15 @@ CANON=be96u-only
 # sufficient to bring it back - port it first, regenerate its overlay, and only
 # then put it back on this list. Applying the frozen overlay to a later tree
 # would revert every rung in between, which is the 2026-08-10 regression.
-MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro"
+# GT-BE19000 added 2026-09-12. Unlike the RT-BE92U case above this model has NO
+# overlay yet rather than a frozen one, so there is nothing stale to apply here.
+# BUT NOTE what step 3 below actually does: it SKIPS a model with no overlay
+# ("no overlay, skipping"), because it derives the diff's file set FROM the
+# existing overlay. A model's FIRST overlay is therefore a manual step - that is
+# how overlays/RT-BE92U.patch came in (commit 1431b8f) - and must exist before
+# a cut can maintain it. Listing the model here is still right: step 2 ports it,
+# which is the precondition for generating that first overlay at all.
+MODELS="RT-BE86U:rt-be86u RT-BE88U:rt-be88u GT-BE98:gt-be98 GT-BE98_PRO:gt-be98-pro GT-BE19000:gt-be19000"
 
 VERSION=""; DO_CUT=1; DO_PORT=1; DO_OVERLAY=1; DO_DOCCHECK=1
 while [ $# -gt 0 ]; do
@@ -176,7 +184,20 @@ if [ "$DO_PORT" = 1 ]; then
     # Blocking on those would make it impossible to ever delete a dict key.
     # A key the sibling has that canon NEVER had is the real hazard (model
     # identity / a translation only that branch carries) and still blocks.
-    MB=$(git -C "$CANON_DIR" merge-base "$CANON" "$B" 2>/dev/null)
+    # NOT merge-base(canon, sibling): siblings are ported by FILE COPY and
+    # never merged, so that base never advances past the original branch
+    # point - on 2026-09-12 it was still 629cc618d5 (v1.5.0d, 2026-07-13,
+    # 5409 keys vs canon's 6729). Every RDHC_* key postdates it, so the
+    # deletion set below came out EMPTY and the v3.1.4 ECS removal blocked
+    # the whole port - the exact outcome the comment above says must not
+    # happen. The sibling syncs its dicts from canon at each rung, so the
+    # right reference is canon's PREVIOUS version commit: keys present
+    # there and absent now are precisely what this rung deleted.
+    # (A sibling more than one rung behind would need this widened; every
+    # model on the MODELS list above is ported every rung by construction.)
+    MB=$(git -C "$CANON_DIR" log --format=%H --grep="^version: Reaper_v" \
+           "$CANON" | sed -n 2p)
+    [ -n "$MB" ] || MB=$(git -C "$CANON_DIR" merge-base "$CANON" "$B" 2>/dev/null)
     while IFS= read -r d; do
       [ -n "$d" ] || continue
       git -C "$CANON_DIR" show "$CANON:$d" | sed -n 's/^\([A-Za-z0-9_]*\)=.*/\1/p' | sort -u > /tmp/cf_kc

@@ -44,17 +44,23 @@ The ordered short list.
 2. **[P3] Build one `stable` image** — the channel marker has now been through a real beta
    build end to end, but the stable path has never been exercised, and that is the path a
    release goes out on.
-3. **[P2] GT-BE19000 bring-up** — the RT-BE92U's replacement on the roster. IN PROGRESS
-   (2026-09-10): branch `gt-be19000` carries the identity, the whole closed layer from the ASUS
-   102_39274 GPL drop and nothing else, the guarded port, and the shim; every port guard passes.
-   Two blockers, both decisions rather than work: **(a) dongle firmware** — no ASUS GPL drop
-   ships `rtecdc.bin`, every model in the pinned base ships its own build of it, and the build
-   skips a missing `sysdeps/<MODEL>/` *silently* (a clean-room image would have no radio
-   firmware and no error). The board-correct source is the official GT-BE19000 firmware image;
-   the build is held until that is decided. **(b) a tester** — nothing above proves it boots.
-   Then CI wiring (model tables, its own `uboot-rtl8372` archive, matrix, `release.yml`
-   prerelease case) and a networkmap 39995-pin check for the SHM-skew class. Owed regardless:
-   a `reaper_verify` marker that the expected dongle firmware is present per model.
+3. **[P2] GT-BE19000 — on the roster since v3.1.4; a tester is the gate.** Cut into v3.1.4 on
+   2026-09-12 after the first six builds each found a distinct gap. The onboarding had imported 4 of
+   the **50** per-model entries the tree carries (`prebuild` ×37, `prebuilt` ×7, `sysdeps`, `sysdep`,
+   `runin` — 47 directories and 3 symlinks), and every missing one is copied by a rule that fails
+   silently: `lzop`, then `libptcsrv.so`, then `libbcm.so`, then three `arm_4916hnd` symlinks a
+   `find -type d` audit never saw. All of it came from the model's own GPL drop, which stores them
+   flat — Merlin's tree adds the `<MODEL>/` level. **Dongle firmware:** the board is **`6726b0`-only**,
+   settled by decomposing the vendor `GT-BE19000AI` image (its rootfs has one chip directory where
+   the RT-BE96U's has two) rather than inferred from the two-chip siblings, and `reaper_verify` 8c was
+   corrected accordingly — it would otherwise have failed a correct image. The blob came from upstream
+   Merlin's `asuswrt6` ref (GT-BE19000AI, 102_41424) at Broadcom `17.10.369.39012`, the same version as
+   the host driver. Now carries its own `uboot-rtl8372` archive (its blob differs from every other
+   model's), a 47 MB platform archive (the pinned base has no `router-sysdep.gt-be19000`, as it has
+   none for GT-BE98), and a derived 12-file identity overlay that includes the first-boot Wi-Fi page.
+   Ported to v3.1.4 with 0 unsynced shared files; the ported branch's image passes **reaper_verify
+   27/27**. On the CI roster; publishes as a prerelease. **Still owed: a tester**, and the networkmap
+   39995 pin check for the GT-BE98 SHM-skew class.
    ↳ memory: `gt-be19000-port.md`
 3a. **[P1] First-boot Wi-Fi page shows a dangling header on every sibling** (v3.1.0 → v3.1.2;
    found 2026-09-10) — `Reaper_WiFiSetup.asp` references the animated header and was in none
@@ -102,6 +108,46 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
 
 ## Open bugs / under investigation
 
+- **[P2] DDNS restarts every 30 seconds forever when IPv4 and IPv6 live on different WANs**
+  (field report via Unisoft, logs 2026-09-06 and 2026-09-12) — **ROOT-CAUSED AND FIXED IN SOURCE
+  2026-09-12.** A box with two WANs, IPv4 on the primary and native IPv6 only on the secondary,
+  logged four lines every 30 s indefinitely: `watchdog: start ddns` / `ddns: vlan2 has not yet
+  obtained an WAN IPv6 address.(N)` / `ddns: current ipv6_service: dhcp6 | old ipv6_service: dhcp6`
+  / `ddns: IP address, server and hostname have not changed since the last update.`
+  The chain: `start_ddns()` tests **the DDNS WAN unit's own interface** for an IPv6 address while
+  `ipv6_enabled()` is a **global** test, so a box whose IPv6 sits on the other WAN always fails it;
+  failing it unsets `ddns_ipv6_updated`; and `watchdog_ddns()`'s "already updated, exit DDNS Retry"
+  test requires `ddns_ipv6_updated=1` whenever IPv6 DDNS is on — which is the **default**
+  (`ddns_ipv6_update` ships `1`). The early return could therefore never be taken, control fell
+  through to the retry countdown, and DDNS was stopped and restarted every 30 s for the life of the
+  boot over a condition no amount of retrying could change. The retry machinery is built for a
+  transient "the address has not arrived *yet*"; this configuration makes "yet" never come.
+  **The fix keeps the retry behaviour for the transient case and stands down for the permanent
+  one.** `start_ddns()` now reports the missing address on the **state change** rather than once per
+  tick and records it in `ddns_ipv6_absent`; `watchdog_ddns()` treats that flag as a reason to stop
+  retrying, since the IPv4 record is already correct and the IPv6 one is unobtainable. Recovery
+  needs no polling: `wan6_up()` clears the flag the moment an interface gains IPv6, and any
+  non-watchdog `start_ddns()` (an operator apply, a WAN event) clears it too. Separately, the
+  `current ipv6_service: x | old ipv6_service: x` line printed unconditionally on every run and now
+  prints only when the service actually changed — which is what the branch below it acts on.
+  Together these remove all four repeating lines, not by silencing them but by removing the loop
+  that produced them. `rc` compiles and relinks clean.
+  **"I set the log level to CRITICAL and ERROR and was still spammed" — answered, and it is a UI
+  trap rather than a logging defect.** `Main_LogStatus_Content.asp` carries **two** adjacent
+  dropdowns offering the same severity names: *Default message log level* (`message_loglevel`,
+  line 249) sets the priority `logmessage()` **stamps on** its own messages and filters nothing at
+  all, while *Log only messages more urgent than* (`log_level`, line 264) is the one wired to
+  syslogd's `-l`. Picking "critical" in the first makes every router message *more* urgent and
+  changes the volume not at all — which is exactly the reported experience. Worth knowing about the
+  second one too: busybox logs priorities strictly **below** `-l`, so the option named *critical*
+  excludes critical itself. Both labels are ASUS's. A clarifying explainer is a candidate for the
+  page, at the usual i18n cost; the labels sampled are not dict tokens, so the scope wants checking
+  before anyone commits to it. Noted in passing while reading this: `shared/defaults.c` carries
+  **two** `log_level` defaults (lines 3625 and 5271), which deserves its own look. **Answered, no change needed:** the DDNS *Interface* selector
+  (Primary/Secondary WAN) is stock ASUS, present since the RT-AC86U GPL drop and gated by
+  `RTCONFIG_MULTIWAN_IF` — not new in Reaper. It is worth setting explicitly on a dual-WAN box:
+  `Auto` resolves to `wan_primary_ifunit()`, which in a load-balance pair is not a stable answer.
+  **[P2] [fixed 2026-09-12; cut into v3.1.4 as 0650; image owed]**
 - **[P1] OpenVPN server: an empty GUI field deletes the certificate, and the firmware cannot repair
   it** (field report, v3.1.0, 2026-09-08) — `set_ovpn_key()` **unlinks** the stored key on an empty
   value (`libovpn/openvpn_config.c`), and `httpd/web.c:4088` calls it for every cert field on a save
@@ -116,8 +162,45 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   (`reset_ovpn_setting`, 16 sites) now uses; `ovpn_write_server_keys()` repairs a partial set by
   regenerating **only the server leaf** from the existing CA — never the CA itself, which would
   invalidate every deployed client — and every `ovpn_write_key()` return is now checked and logged.
-  libovpn compiles clean. **Metal validation owed: needs a box with an OpenVPN server configured.**
-  **[shipped in v3.1.1; metal owed]** ↳ notes: `ovpn-server-cert-unrecoverable.md`
+  **ROOT-CAUSED 2026-09-12, AND THE SCOPE IS WIDER THAN THE REPAIR PATH: OpenVPN server
+  certificate generation has been broken on every image since the OpenSSL 3.5 move in v3.1.0.**
+  Reproduced on the owner's own RT-BE96U running v3.1.3_BETA, against a throwaway CA in `/tmp`,
+  so it needs no reporter and no particular CA. `pkitool --server` sets `-extensions server` on
+  **both** the request and the signing call (`easy-rsa/2.0/pkitool:150-151`), and the `[ server ]`
+  section of `openssl-1.0.0.cnf` carries `authorityKeyIdentifier=keyid,issuer:always`. An
+  authority key identifier cannot be computed for a *certificate request* — there is no issuer at
+  request time — and where OpenSSL 1.x tolerated it, 3.x makes it fatal:
+  `Error adding request extensions from section server` / `v2i_AUTHORITY_KEYID` /
+  `X509V3_EXT_nconf_int: section=server, name=authorityKeyIdentifier`. `openssl req` then exits
+  non-zero, pkitool's `&&` chain stops before `openssl ca` ever runs, and the run leaves `ca.crt`,
+  `ca.key` and `server.key` behind with **no `server.csr` and no `server.crt`**.
+  **Both callers make the identical call:** the v3.1.1 repair path
+  (`libovpn/openvpn_setup.c:822`) and, critically, the ordinary first-time key generation at
+  `openvpn_setup.c:881-882`. So this is not a defect in the repair path — the repair path
+  inherited it. Setting up a *new* OpenVPN server on v3.1.0 through v3.1.3 produces a CA and a
+  server key but never a server certificate, and the server cannot start.
+  **FIX APPLIED AND PROVEN ON METAL 2026-09-12, same box, same session, before and after.**
+  Because `pkitool` is a shell script, the one-line change was testable against a copy in `/tmp`
+  without a build. Unfixed, on the owner's RT-BE96U: `Error adding request extensions from section
+  server`, no `server.csr`, no `server.crt`. With `--server` setting only `CA_EXT`: `Signature ok`,
+  `Certificate is to be certified until Sep 9 2036`, `Database updated`, both `server.csr` and
+  `server.crt` present, `openssl verify -CAfile ca.crt server.crt` → **OK**. And the extensions the
+  change moves are all on the issued certificate, which is the thing it must not cost: *Netscape
+  Cert Type: SSL Server*, *X509v3 Extended Key Usage: TLS Web Server Authentication*, and
+  *X509v3 Authority Key Identifier* carrying a real keyid — the very extension that cannot be
+  computed for a request and resolves correctly at signing, as predicted. `index.txt.attr` is
+  created by `openssl ca` on its own, so that was never a factor either.
+  **In the tree, compiling, not yet built into an image:** `easy-rsa/2.0/pkitool:150` carries the
+  fix with the reasoning in a comment; `libovpn/openvpn_setup.c` carries the diagnostic rework —
+  the generated script now begins `exec >"/tmp/repairvpncert<N>.log" 2>&1` so the tools' own words
+  survive the run, and the checks before the verify name the stage that failed (*no certificate
+  request was produced — failed at the request stage* / *no certificate was issued — failed at the
+  signing stage*) instead of one sentence for four outcomes. The same output capture went onto the
+  first-time generation path at `openvpn_setup.c:890`, which was equally silent. `make mk-libovpn`
+  compiles and links clean. What follows is a build, and the same throwaway-CA recipe run against
+  the image plus one real server creation and one real repair.
+  **[P1] [root-caused + fixed 2026-09-12; metal-proven; cut into v3.1.4 as 0649; image owed]**
+  ↳ notes: `ovpn-server-cert-unrecoverable.md`
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
   IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
   and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
@@ -205,7 +288,40 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   rwatch section 3e logs the state once per change, and the Firewall → Logging viewer no longer
   collapses `REAPER-WARDEN-OUT` and `-SELF` into one `WARDEN` badge (which had quietly undone the
   point of giving them separate prefixes in v2.4.4). Both halves are in v3.1.2, patches 0642–0643.
-  **[instrumented; needs one `rwatch: Warden outbound: …` line from the box to close]**
+  **The line was captured 2026-09-11 (first real look) and it found two defects in the
+  instrumentation itself, so this stays open.** What the box logged, after the owner re-reported
+  the same symptom that evening and then saw `REAPER-WARDEN-OUT` lines appear: `23:00 armed but
+  NOT logging ... blocked so far: 0` · `23:10 armed and logging (prefix REAPER-WARDEN-OUT);
+  blocked so far: 35` · `23:25 armed but NOT logging ... blocked so far: 0`.
+  **(a) `blocked so far` is a 15-minute window presented as a total.** It reads the LIVE
+  `RW_ODROP` counter, and `fold.sh` banks that counter to the durable store and then zeroes it on
+  its own `*/15` cron (`rc/rwarden.c`, the write-before-zero block) — so on a healthy box that is
+  dropping outbound traffic normally the figure reads `0` most of the time. It is the single
+  number an operator would quote to conclude outbound blocking is dead, and it is the one number
+  here that cannot support that reading. It should quote the durable total, not the live counter.
+  **(b) 3e cannot tell "logging is off" from "I could not read the flag".** `_nv` returns an empty
+  string when an `nvram get` is killed at its 5 s ceiling (`rc/reaper_nv.h`), and an empty value
+  takes the same branch as `0` — so a contended nvram read prints *armed but NOT logging - turn on
+  'Log blocked traffic'*, telling the operator to go and switch on something that is already on.
+  The hung read does log `reaper-nv: nvram get ... hung` separately, which is how the two are told
+  apart after the fact; the check should distinguish them at the point of reporting.
+  **(b) was ruled out at those timestamps the same night:** the only `reaper-nv` hung-read lines on
+  the box are 11:55 and 20:45 on the 11th and 21:40 on the 10th — none near 23:00 or 23:25, and
+  both of the recent ones are `nvram get rwarden_enable`, which would have skipped the whole 3e
+  block rather than misreport it. Caveat on that exoneration: `_nv` logs only the *hung* path, so
+  an `nvram get` that fails fast returns empty **silently** and (b) cannot be excluded outright —
+  only its noisy form. Taking the reading at face value, `rwarden_log` genuinely held 0, then 1,
+  then 0 inside 25 minutes. **The only writer of that key anywhere is the Warden page's own form
+  post** (`Reaper_Warden.asp:266`/`:567` + the `applyapp` whitelist at `httpd/web.c:24710`); no rc
+  or script path sets it. So either the owner applied that page twice that evening, or a key with
+  no other writer moved on its own — and the second case would explain the original report
+  exactly, logging switching itself off being indistinguishable from outbound blocking stopping.
+  Worth noting for whoever picks this up: the hidden field is filled at submit time from the
+  toggle's CSS class (`indexOf('on') >= 0`), so any submit that beats the toggle being painted
+  from nvram posts `0` — the same shape as the OpenVPN empty-field defect above.
+  **Next: confirm with the owner whether the Warden page was applied around 23:05 and again around
+  23:20.**
+  **[instrumented; the instrumentation itself now owes two fixes — see (a) and (b)]**
   ↳ notes: `warden-outbound-quiet.md`
 - **[P2] The rest of v3.1.2 wants a session on the box** (2026-09-10) — five changes beyond the
   kernel fix, each of which needs to be looked at once: the rwatch chain-integrity watchdog

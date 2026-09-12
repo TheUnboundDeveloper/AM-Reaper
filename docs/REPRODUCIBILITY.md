@@ -235,5 +235,5 @@ list that a release never shipped. The newest published release is **v2.7.6** (a
 five main models plus the RT-BE92U, 2026-08-24); later source rungs (**v2.7.7**, and the many
 unpublished v2.5.x–v2.7.x rungs) are built for the RT-BE96U only, both variants, and their
 image hashes may be recorded in the manifest — but those are locally built artifacts, not
-published downloads. The RT-BE92U's images are published as experimental prereleases. The published images come from the CI
+published downloads. The RT-BE92U's images were published as experimental prereleases through v3.1.2. The published images come from the CI
 clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

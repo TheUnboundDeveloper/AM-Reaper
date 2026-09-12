@@ -215,16 +215,20 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # drop) ships none. The expected chip set is per model, read from the pinned
 # base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
 #
-# GT-BE19000 CORRECTED 2026-09-12. It was first registered as "6717a0 6726b0"
-# by grouping it with the other tri-band 6813 models rather than by measuring
-# the board, and that would have FAILED a perfectly good image for a radio it
-# does not have. The stock GT-BE19000AI firmware (102_40717) was decomposed and
-# its rootfs carries exactly one chip dir, rom/etc/wlan/dhd/6726b0/ - where the
-# RT-BE96U image carries both. Tri-band does not imply two dongle chips; it is
-# a board-design question, so read it off the vendor image and never infer it.
+# GT-BE19000: 6717a0 + 6726b0 - and the RETRACTION behind that line matters.
+# On 2026-09-12 this was briefly changed to "6726b0" only, on the strength of
+# decomposing the vendor GT-BE19000**AI** image (102_40717), whose rootfs has a
+# single chip dir. Hours later the vendor **non-AI** image (102_39393) - the
+# SKU this build actually targets - was decomposed and carries BOTH
+# rom/etc/wlan/dhd/6717a0/ and 6726b0/. The two SKUs differ in radio hardware,
+# not only in storage. The "6726b0 only" line would have PASSED an image with
+# no 6717a0 firmware, i.e. a dead radio - the exact failure this check exists
+# to catch. Rule, stated twice because it was violated twice in one day: read
+# the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
+# never off the other SKU of the same model.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO)             want_dhd="6717a0 6726b0";;
-  RT-BE86U|RT-BE88U|GT-BE19000)             want_dhd="6726b0";;
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000)  want_dhd="6717a0 6726b0";;
+  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
   *)                                        want_dhd="";;
 esac
 if [ -n "$want_dhd" ]; then
@@ -236,6 +240,32 @@ if [ -n "$want_dhd" ]; then
     || fail "dongle-fw" "NO dongle firmware staged for chip(s):$_dmiss - the radios on those chips will not come up (missing dongle/sysdeps/$MODEL/?)"
 else
   warn "dongle-fw" "no expected dongle chip set registered for $MODEL - add it to reaper_verify 8c"
+fi
+
+# ---- 8d. every dongle blob names the model it is being installed into -------
+# 8c only proves a file is present; it said PASS on the GT-BE19000 image whose
+# 6726b0 came from the GT-BE19000AI tree - a blob that answers "GT-BE19000AI".
+# Presence is not identity, and the wrong radio firmware is not a dead radio
+# but a locked-out router (ASUS: recovery tool or manual reflash). Owner's
+# rule 2026-09-12: the wifi drivers must always express the model they are
+# being installed in. EVERY staged rtecdc.bin is judged, not only the chips 8c
+# expects, so a stray blob for a chip this model does not have is caught too.
+# The model->name table (GT-BE98 Pro says "GT-BE98 PRO") lives in
+# reaper_dongle_id.sh, shared with the two pre-build gates.
+_did="$(dirname "${BASH_SOURCE[0]}")/reaper_dongle_id.sh"
+_dblobs=$(ls "$FS"/rom/etc/wlan/dhd/*/release/rtecdc.bin 2>/dev/null)
+if [ ! -f "$_did" ]; then
+  fail "dongle-model" "reaper_dongle_id.sh not deployed next to reaper_verify - identity unchecked"
+elif [ -z "$_dblobs" ]; then
+  fail "dongle-model" "no rtecdc.bin staged anywhere under rom/etc/wlan/dhd/ - the image has no radio firmware"
+else
+  _dout=$(bash "$_did" "$MODEL" $_dblobs 2>&1); _drc=$?
+  echo "$_dout" | sed 's/^/    /'
+  if [ "$_drc" -eq 0 ]; then
+    pass "dongle-model" "every staged dongle blob names this model ($(echo "$_dblobs" | wc -l) blob(s))"
+  else
+    fail "dongle-model" "dongle firmware built for ANOTHER model is staged - see [dongle-id] lines; the wrong radio firmware locks the router out"
+  fi
 fi
 
 # ---- 9. shared-code parity vs canon (the /sysdep/ lesson, 2026-08-05) ------

@@ -83,6 +83,26 @@ _rb_variant() {   # $1 = MCP|noMCP
     bash "$_sc" --fix "$R" || true
   fi
 
+  # RADIO FIRMWARE IDENTITY (2026-09-12), before anything is compiled. Every
+  # rtecdc.bin the build will install from sysdeps/$PREFIX/ must name $PREFIX.
+  # Broadcom stamps the model into each blob; another model's - a sibling's,
+  # or the other SKU's (the GT-BE19000AI tree's blob was staged for the non-AI
+  # board and passed every gate then in place) - is not a dead radio but a
+  # locked-out router, recoverable only with the ASUS recovery tool or a manual
+  # reflash. reaper_verify 8d judges the staged image with the same script
+  # AFTER the build; this runs first so a wrong tree never gets a make. A hard
+  # stop: the caller treats a non-zero return as "no image for this variant".
+  local _did="$(dirname "${BASH_SOURCE[0]}")/reaper_dongle_id.sh"
+  local _ddir="$P/bcmdrivers/broadcom/net/wl/impl103/sys/src/dongle/sysdeps/$PREFIX"
+  echo "=== [$label] radio firmware identity (sysdeps/$PREFIX) ==="
+  if [ ! -f "$_did" ]; then
+    echo "  [ABORT] reaper_dongle_id.sh is not deployed in $(dirname "${BASH_SOURCE[0]}") - run sync_local_engine.sh"; return 77
+  fi
+  if ! bash "$_did" "$PREFIX" "$_ddir"/*/rtecdc.bin; then
+    echo "  [ABORT] radio firmware under sysdeps/$PREFIX/ is missing or belongs to another model - not building (wrong radio firmware bricks the router)"
+    return 77
+  fi
+
   # PROVENANCE STAMP. CI runs gen_provenance.sh before its build; the local
   # engine never did, so a locally built image showed dashes on the About page
   # where a CI image of the same source shows real figures - a visible
@@ -459,7 +479,16 @@ reaper_build() {
     # this whole change exists to stop.
     sed -i "s|^EXTENDNO=.*\$|EXTENDNO=${VER}${tag}|" release/src-rt/version.conf
     echo "stamp: $(grep ^EXTENDNO= release/src-rt/version.conf) | $(grep REAPER_MCP release/src/router/config_base)"
-    _rb_variant "$v"
+    # 77 = a pre-build gate refused the variant (radio-firmware identity): no
+    # make ran, so skip the image check - a stale image from an earlier build
+    # must not be verified and shipped in its place. Any other code keeps the
+    # old path (image check, postmortem, verify).
+    _rb_variant "$v"; _vrc=$?
+    if [ "$_vrc" -eq 77 ]; then
+      echo "  [ABORT] $PREFIX $v -- pre-build gate refused this variant; no image was built"; ok=0
+      git checkout -- release/src-rt/version.conf 2>/dev/null
+      continue
+    fi
     for st in $STORAGE; do
       img="$TDIR/${PREFIX}_3006_102.8_${VER}${tag}_${st}_squashfs.pkgtb"
       if [ -f "$img" ]; then echo "  [OK] $v/$st  $(basename "$img")  sha:$(sha256sum "$img"|cut -c1-16)"

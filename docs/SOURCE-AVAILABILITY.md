@@ -25,7 +25,7 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
-     model — RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / RT-BE92U — from
+     model — RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 / RT-BE92U — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -89,7 +89,8 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 Reaper firmware images are **publicly hosted in this GitHub repository.** A
 flashable build for every model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro, plus the experimental RT-BE92U) is published two ways:
+RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease, and the
+retired RT-BE92U's last build remains) is published two ways:
 
 - the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
   page — one per-model release per version (`v<version>-<MODEL>`), each carrying

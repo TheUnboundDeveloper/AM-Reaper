@@ -365,6 +365,25 @@ else
   MODEL_TREE="$ROUTER_TREE"
 fi
 
+# --- radio firmware identity, BEFORE the build --------------------------------
+# Every rtecdc.bin the build will install for this model must name this model.
+# Broadcom stamps the model into each blob; the wrong one (a sibling's, or the
+# other SKU's - the GT-BE19000AI tree's blob was staged for the non-AI board on
+# 2026-09-12 and passed every gate then in place) does not degrade a radio, it
+# locks the router out until the ASUS recovery tool or a manual reflash. The
+# same script judges the staged image after the build (reaper_verify 8d); this
+# copy runs first so the clean room fails in seconds, not after a full build.
+# The glob is deliberately unquoted: no match passes the literal pattern and
+# the script reports a MISSING blob, which is the silent-skip class 8c exists
+# for - a model whose sysdeps/<MODEL>/ never arrived.
+_ph dongle-identity
+hr; echo " Radio firmware identity for $MODEL (pre-build)"; hr
+_DONGLE_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/sys/src/dongle/sysdeps/$MODEL"
+if ! "$BUILD_SCRIPTS/reaper_dongle_id.sh" "$MODEL" "$_DONGLE_DIR"/*/rtecdc.bin; then
+  echo "::error::$MODEL: radio firmware under sysdeps/$MODEL/ is missing or belongs to another model - refusing to build (wrong radio firmware bricks the router)"
+  exit 1
+fi
+
 # --- u-boot rtl8372 prebuilt -------------------------------------------------
 # RTL_OBJS.o is the Realtek RTL8372 switch blob. It ships in the ASUS bootloader
 # drop and is UNTRACKED IN EVERY GIT REF -- it has only ever existed on the

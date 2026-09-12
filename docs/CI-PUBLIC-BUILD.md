@@ -134,8 +134,8 @@ the `96765GW` profile where the other five build `96813GW` (`ci/build_one.sh` an
 `MODEL`, so nothing about it was ever hardcoded per rung). It was **always
 published as a prerelease** (`release.yml`, a case kept for the one path that can
 still reach it), so it never landed as a standard release alongside the
-five BCM4916 models. Its platform tree ships in the pinned upstream base, so unlike
-GT-BE98 it needs no platform archive.
+BCM4916 models. Its platform tree ships in the pinned upstream base, so unlike
+GT-BE98 and GT-BE19000 it needs no platform archive.
 
 Three things had to be solved before CI could build a sibling at all; all three are
 now in place.
@@ -198,7 +198,8 @@ which can change or vanish, and an unverifiable blob inside a security-hardened
 image defeats the whole pipeline.
 
 **What a green build does and does not prove.** As of 2026-08-10 all five BCM4916
-models build green in the clean room. (The RT-BE92U was wired into the same
+models then on the roster build green in the clean room; the GT-BE19000 joined the
+matrix at v3.1.4. (The RT-BE92U was wired into the same
 pipeline at v2.7.6 and built through the same path until it was retired from the
 roster after v3.1.2.) That is not the same as being
 shippable, and the distinction is worth keeping:

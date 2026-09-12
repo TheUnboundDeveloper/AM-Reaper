@@ -2,7 +2,7 @@
 
 > **Doc status:** current as of **v3.1.4** · 2026-09-12 <!--@stamp-->
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v2.8.8** <!--@pubver--> (all six models — see §"Current version" below); the source tree sits at **v3.1.4** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** (BCM4916, metal validation owed on the four siblings), with the **RT-BE92U** (BCM6765) as the experimental sixth model.
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v2.8.8** <!--@pubver--> (the five main models plus the RT-BE92U — see §"Current version" below); the source tree sits at **v3.1.4** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings). The **RT-BE92U** (BCM6765) was retired from the roster after v3.1.2 and its last build stays available.
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE-series owners.
 
@@ -42,7 +42,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 **In the repo:**
 - **[`patches/`](patches/)** — the hardening, as patch files you apply onto an upstream Asuswrt-Merlin checkout.
 - **[`docs/`](docs/)** — all project documentation (see **Documentation** below).
-- **[`overlays/`](overlays/)** — the per-model identity overlays for the five siblings, the GT-BE98 platform archive, and the OpenSSL 3.5 source archive (hash-pinned; too large to ship as a patch).
+- **[`overlays/`](overlays/)** — the per-model identity overlays for the six siblings, the GT-BE98 and GT-BE19000 platform archives, the u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (hash-pinned; too large to ship as a patch).
 - Root: [`LICENSE`](LICENSE) (GPL v2), [`LICENSE.reaper`](LICENSE.reaper) (the Reaper-specific notice), [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), [`DEPENDENCIES.md`](DEPENDENCIES.md), [`LICENSES/`](LICENSES/) (license texts), plus `SECURITY.md` and `CONTRIBUTING.md`.
 - **Compliance:** [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) (GPL source + written offer).
 
@@ -84,8 +84,9 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
   v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.1.4** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the
   static checks and the patch-marker manifest) before it is cut; the maintainer's RT-BE96U runs each rung on metal,
-  and the OpenSSL 3.5 move was validated there before its cut. The four BCM4916 siblings are built
-  clean-room in CI from the same patch series plus their identity overlays; on-metal validation is owed on them.
+  and the OpenSSL 3.5 move was validated there before its cut. The five BCM4916 siblings are built
+  clean-room in CI from the same patch series plus their identity overlays (the GT-BE98 and GT-BE19000 also
+  carry a platform archive); on-metal validation is owed on them.
 
 ## Legal
 

@@ -7,12 +7,20 @@
 # and NAND layout as the RT-BE96U (only the GT-BE19000AI SKU is eMMC), so this
 # launcher is the RT-BE92U's worktree shape with the RT-BE96U's target dir.
 #
-# BEFORE THE FIRST BUILD, two things the tree cannot supply on its own:
-#   1. bootloaders/obj.gt-be19000/ must be copied over u-boot-2019.07/ by hand
-#      (RTL_OBJS.o is untracked on every branch; the model enables rtl8372).
-#   2. dongle firmware: the GPL drop ships none, and the build takes it from
-#      bcmdrivers/.../dongle/sysdeps/GT-BE19000/{6717a0,6726b0}/rtecdc.bin,
-#      which does not exist until the owner decides its source.
+# BEFORE THE FIRST BUILD, one thing the tree cannot supply on its own:
+#   bootloaders/obj.gt-be19000/ must be copied over u-boot-2019.07/ by hand
+#   (RTL_OBJS.o is untracked on every branch; the model enables rtl8372).
+#
+# DONGLE FIRMWARE (settled 2026-09-12, after one wrong turn). The non-AI
+# GT-BE19000 carries TWO radio chip types, BCM6717 rev A0 and BCM6726 rev B0 -
+# like its tri-band siblings. The AI SKU carries only the 6726b0, and reading
+# the chip set off the AI vendor image FIRST briefly put a 6726b0-only blob on
+# this branch with reaper_verify expecting only that: an image built then would
+# have brought one radio up with no firmware. Both blobs are now tracked here,
+#   bcmdrivers/.../dongle/sysdeps/GT-BE19000/{6717a0,6726b0}/rtecdc.bin
+# taken from the vendor's own NON-AI image (102_39393), each Broadcom
+# 17.10.369.39012 (r839077) - the host dhd driver's version. The driver picks
+# firmware by the chip ID it reads off PCIe. reaper_verify 8c expects both.
 
 case "${1:-}" in
   -h|--help) sed -n "2,4 p" "$0" | sed "s/^# \?//"; exit 0 ;;

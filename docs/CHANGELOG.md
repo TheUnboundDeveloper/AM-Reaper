@@ -72,20 +72,22 @@ node, not only on the primary router.
   the watchdog stands down - the IPv4 record being correct and the IPv6 one unobtainable. It resumes
   on its own the moment any interface gains IPv6. The `current ipv6_service: x | old: x` line that
   printed on every run now prints only when the service actually changed.
-- **The EDNS Client Subnet option is gone** - page, emitter, default and all 25 language packs.
-  Removed at the root rather than hidden: taking the control away while leaving the emitter would
-  have left any router with it enabled sending client addresses with no way to stop. It sent the
-  *complete* client address, and what it bought never covered that: AdGuard Home only logs the
-  value and never matches rules on it, and dnsmasq attached it before choosing an upstream, so a
-  failover to a public resolver carried the address out of the network with nothing able to strip
-  it. The reasoning stays in the source beside the no-cache switch for anyone tempted to add it back.
+- **The EDNS Client Subnet option is gone** - page, emitter, default and all 25 language packs. A
+  niche switch, removed at the root so a router that had it enabled is not left sending client
+  addresses with no way to stop. Nothing else changes.
 - **The GT-BE19000 joins the fleet.** Same BCM4916 silicon and NAND layout as the RT-BE96U. Its
   onboarding had imported 4 of the 50 per-model directories the tree carries; the other 46 are each
   copied by a rule that fails silently, so the first builds died one missing file at a time - `lzop`,
   `libptcsrv.so`, `libbcm.so`, then three symlinks a directory-only audit had skipped. All of it
-  came from the model's own GPL drop. Its radio firmware could not: no GPL drop ships it, and the
-  board turned out to carry **one** dongle chip, not the two its tri-band siblings have - settled by
-  decomposing the vendor image, not inferred - so `reaper_verify` now expects `6726b0` alone for it.
+  came from the model's own GPL drop. Its radio firmware could not: no GPL drop ships it. Both of
+  its radio chips' firmware (`6717a0` and `6726b0`) come from the vendor's own GT-BE19000 image - the
+  non-AI SKU this build targets, which carries both where the AI SKU carries only `6726b0` - and each
+  matches the host driver's Broadcom version exactly. Because presence is not identity - and because
+  ASUS's guidance is that the wrong radio firmware does not degrade a radio but locks the router out,
+  recoverable only with the recovery tool or a manual reflash - the build now proves identity three
+  times with one script (`reaper_dongle_id.sh`): Broadcom stamps the model name into every `rtecdc.bin`,
+  and a blob naming any other model - a sibling's, or the other SKU's - stops the local engine and the
+  clean room BEFORE a make, and fails `reaper_verify` (`dongle-model`, every staged blob) after it.
   It carries its own u-boot rtl8372 archive (its blob differs from every other model's), a
   platform archive for the closed layer the pinned upstream does not have - exactly as GT-BE98
   does - and a first identity overlay of twelve files, derived rather than hand-listed, which is
@@ -152,11 +154,6 @@ node, not only on the primary router.
   and now names the flags. And `RW_FDROP`, a chain that by design never exists because
   forward-direction drops share `RW_DROP`, stopped being reported as missing on every healthy
   router.
-- **The EDNS Client Subnet switch says what actually leaves the router.** It sends the complete
-  client address rather than a shortened prefix, and it is attached when a query is received —
-  before an upstream is chosen — so it travels with every forwarded query, including any that
-  reaches a public fallback server while your own filter is unavailable. The help text now says
-  so: turn it on only when the DNS server receiving it is one you run.
 - **Two things that used to happen silently now say so.** Policy Routing treats its confirmed
   snapshot as authoritative, which is right, but it did so without a word: a rule list left in
   nvram was discarded, and an nvram flag saying policy routing was on was overruled by a snapshot
@@ -321,24 +318,14 @@ node, not only on the primary router.
   end of the router's upstream list and reloads dnsmasq, so the first server tried is one that answers,
   and after a run of hits it puts it back first. Interval, timeout, both thresholds, the name queried and
   whether a refusal counts as alive are all yours to set; the page shows the live state and every switch
-  is in the system log. Beside it, three dnsmasq switches that used to need a config-add file: **Upstream
-  order** (strict order), **Client addresses** (EDNS Client Subnet, which attaches the asking
-  client's address to each forwarded query — Pi-hole reads that address and keeps filtering per
-  client, while AdGuard Home only records it in the query log and never uses it to choose which
-  rules apply, so its per-client rules stay inactive while the router forwards) and
-  **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
+  is in the system log. Beside it, two dnsmasq switches that used to need a config-add file: **Upstream
+  order** (strict order) and **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
   router's cache to another client and the filter sees every lookup). Together they let the DHCP DNS be
   the router alone, which makes the failover complete: no client ever retries. The server you watch can
   be an IPv4 or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the matching
   family and the server is matched in the router's list by value, whatever spelling the list uses; an
   IPv6 server is refused by the page while IPv6 is off, and a daemon that meets one that way idles with one
-  log line rather than pretending to watch. The help text for that switch had itself claimed that
-  with it on, AdGuard Home "still shows **and filters** per client". The Pi-hole half of that was
-  right and the AdGuard half was not — AdGuard Home resolves a client by ClientID, source address,
-  CIDR or MAC and only *logs* the client subnet, so with the router forwarding, its per-client rules
-  stay inactive however the switch is set. The wording is corrected in all 25 language packs, the
-  upstream refusals are cited beside the code that emits the option (AdGuardHome #4383, #6104), and
-  the old claim is now a forbidden string so it cannot come back. Marked for the verify markers.
+  log line rather than pretending to watch.
 - **The dashboard clock shows its seconds in red again.** The seconds have their own colour, and on
   the dashboard they had quietly gone back to the same bone as the rest of the time, while every other
   page still showed them correctly. A tidy-up in v3.0.9 removed the rule that colours them after a check

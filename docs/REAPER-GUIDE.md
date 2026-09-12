@@ -182,8 +182,9 @@ This section is the one to read before you flash and again after you have been r
 ### 2.1 Supported models and the right file
 
 - **RT-BE96U** — primary model; every release is built and validated on this hardware.
-- **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the four siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
-- **RT-BE92U** (BCM6765 / 96765GW) — a newer sixth model, brought up in the v2.7.x line. Its source rides the same rungs and it ships as **experimental prereleases**. It is in the clean-room CI matrix and in the `all` fleet fan-out, but because it publishes as a prerelease it never lands as a standard release alongside the five BCM4916 models.
+- **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
+- **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
+- **RT-BE92U** (BCM6765 / 96765GW) — retired from the roster after v3.1.2, since upstream Merlin has taken that model on. Its last Reaper build stays available and its update line is frozen there; its source and overlay are kept dormant.
 
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 

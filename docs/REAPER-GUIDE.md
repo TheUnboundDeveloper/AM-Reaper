@@ -941,9 +941,9 @@ A domain list is a Firewall object of type *Domain name*: a name plus the domain
 Every rule has one target:
 
 - **A VPN client (OpenVPN 1–5)** — matched traffic goes through that OpenVPN client's tunnel, using the routing table the client already created. The tunnel does not have to be the default route; this steers only the traffic you named through it.
-- **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN. This is how you carve an exception out of "route everything through the tunnel".
+- **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN and any VPN Director rule for it. This is how you carve an exception out of "route everything through the tunnel". The row simply reads `WAN`; the bypass is stated once in the notes under the table, and as a hint when you pick WAN as a target (v3.1.5).
 - **Block** — matched traffic is dropped. Useful as a hard "this device, or this destination, goes nowhere" that does not depend on the firewall rule order.
-- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off either blocks the selected traffic or lets it use the WAN, depending on that client's Killswitch (4.4.7). Since v2.7.7 the target list **hides tunnels you have not configured** and flags ones that are configured but currently down, so a rule cannot be pointed at a target that was never going to carry it. The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
+- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off either blocks the selected traffic or lets it use the WAN, depending on that client's Killswitch (4.4.7). Since v2.7.7 the target list **hides tunnels that are not enabled**, so a rule cannot be pointed at a target that was never going to carry it; a rule that already names a switched-off client keeps its target and shows *Inactive · WAN* in the Status column (v3.1.5). The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
 
 **IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked when that client's Killswitch is on and uses the WAN when it is off - the same rule as for a tunnel that is down (4.4.7).
 
@@ -955,12 +955,26 @@ Between features, **a Policy Routing rule takes precedence over a VPN Director r
 
 #### 4.4.7 Fail-closed or fail-open: the Killswitch decides
 
-A rule chooses the **path**. What happens when that path is gone — the tunnel is down, or the client is switched off — is decided by that VPN client's own **Killswitch**, on its VPN page, exactly as it is for VPN Director:
+A rule chooses the **path**. What happens when that path is gone — the tunnel is down — is decided by that VPN client's own **Killswitch**, on its VPN page, exactly as it is for VPN Director; a client that is switched off is not a path at all, and its traffic uses the WAN:
 
 - **Killswitch on** — the matched traffic is **blocked** until the tunnel is back. This is the setting to use when the whole point of the rule is that the traffic must *never* touch the internet directly.
 - **Killswitch off** — the matched traffic **falls back to the WAN** while the tunnel is down, and returns to the tunnel when it is up.
+- **Client switched off** — the Killswitch does not apply to a client that is not enabled (v3.1.5, the same condition VPN Director puts on its own rule): the matched traffic **uses the WAN** until you enable the client again.
 
-Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. The rules table shows, per rule, which applies while a client is off, and states the rule once beneath the table.
+Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. The rules table's **Status** column says which applies to each rule: *Active*, *Active · Killswitch* (a dropped tunnel blocks rather than leaks) or *Inactive · WAN* (the client is switched off); the notes under the table state the rule once.
+
+What the router actually installs is the same pair VPN Director installs, keyed by the rule's mark instead of its source address. For a rule to WireGuard 2 whose client is enabled with its Killswitch on:
+
+```
+9007:  from all fwmark 0x70000/0xf0000 lookup wgc2
+9107:  from all fwmark 0x70000/0xf0000 prohibit      <- only with the Killswitch on and the client enabled
+...
+11410: from 192.168.1.230 lookup wgc2               <- VPN Director's own pair, for comparison
+12216: from 192.168.1.230 prohibit
+32766: from all lookup main
+```
+
+The `prohibit` sits directly beneath the lookup and above `main`, on both IPv4 and IPv6, so a flushed tunnel table blocks the flow instead of leaking it. The whole 9000 band sits above VPN Director's 10000 band on purpose: a Policy Routing rule is evaluated first and overrides VPN Director for the flows it names. Codes are 1–5 OpenVPN, 6–10 WireGuard, 11 WAN (`lookup main`, never a prohibit) and 15 Block (`prohibit` at 9015). With the Killswitch off, or the client switched off, the 9107 line is simply not installed.
 
 The same decision covers IPv6: a tunnel that carries no IPv6 blocks the selected IPv6 traffic when the Killswitch is on, and lets it use the WAN when it is off.
 
@@ -980,7 +994,7 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 
 #### 4.4.9 Limits and gotchas
 
-- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address (*accel bypass: this source*). A **destination-list or MAC** rule must bypass the **whole LAN** (*accel bypass: whole LAN*) — LAN traffic loses hardware acceleration while such a rule exists. The page says so on the rule and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
+- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address. A **destination-list or MAC** rule must bypass the **whole LAN** — LAN traffic loses hardware acceleration while such a rule exists. The note under the rules table says so whenever a WireGuard rule exists, and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
 - **Protocol and port matching is not offered.**
 - **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
 - **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
@@ -1397,7 +1411,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Policy Routing dropdown is empty / a domain rule matches nothing | Log `reaper_pbr`; `ipset list rwfw_<list>` | Fixed in v2.5.9 (token and shared object layer). Check the list has resolved; lists fill from the router's own resolver, so a client on its own DNS or DoH does not feed them. |
 | Some routing mark rules missing after a reboot | Log `rwatch: policy routing: N of M mark rule(s) live — re-applying` | Self-heals within two minutes (v2.6.9); no action needed unless the line repeats forever. |
 | WireGuard rule shows "not supported yet — rule inactive" | Policy Routing page | You are on v2.6.1–v2.6.6; WireGuard targets arrived in v2.6.7. |
-| LAN throughput dropped after adding a routing rule | Policy Routing rule chips "accel bypass: whole LAN"; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
+| LAN throughput dropped after adding a routing rule | Policy Routing page: the WireGuard note under the rules table; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
 | IPv4 stopped working entirely, IPv6 fine, QoS Classful on | Log `hwqos: setqcfg qid N … REJECTED` / `class queues restored …`; QoS Diagnostics queues 1–5 | v2.6.0 makes the rebuild transactional. A `FATAL` line means even the bare recreate failed — report it with a diag. |
 | Games/consoles cannot open ports or connect with UPnP on | Log `IGD desc` lines (which description the console fetched); Firewall Status exposure card | IGD:1 is advertised by default (v2.4.6) and the upstream "all traffic through UPnP" patch is reverted (v2.5.8). If you enabled IPv6 pinholes, IGD:2 is served — that configuration broke the PS5. |
 | UPnP mappings stop working hours after boot | UPnP page vs actual forwarding | Fixed v2.3.5 (the daemon is genuinely restarted on firewall rebuilds). Do not "optimise" that restart away. |
@@ -1425,7 +1439,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Apply and Keep / commit-confirm** — the two-step change on the Firewall and Policy Routing pages: changes go live at once and revert on their own unless you press Keep within the auto-revert timer (2.7).
 - **Auto-revert timer** — 15–3600 seconds, default 60, never off; set on the Firewall Rules tab.
 - **Egress default** — a per-device rule for traffic leaving toward the internet only (Firewall → Egress).
-- **Fail-closed** — a VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off it falls back to the WAN.
+- **Fail-closed** — an enabled VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off, or the client switched off, it falls back to the WAN (v3.1.5 matches VPN Director on the switched-off case).
 - **FINDINGS** — the verdict block at the top of the diagnostics report.
 - **Front chain (`REAPER_HOOK_*`)** — the single shared chain at the head of INPUT/FORWARD/OUTPUT into which Warden, Gatekeeper and the rules engine register, in that fixed order.
 - **Gatekeeper** — device access control; states are Pending, Full access, Internet only, Guest (timed), Blocked.

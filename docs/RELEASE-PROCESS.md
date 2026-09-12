@@ -237,6 +237,27 @@ v2.4.1 while the siblings catch up on the fan-out).
   `patches/` means fixing the source commit message and re-exporting — do not
   just add the path to the allowlist.
 
+## Release retention
+
+GitHub Releases is a download store, not the archive. The archive is the git
+tag: the patch series, the pinned base and `provenance/manifest.json`'s build
+commit for that version all live there, so the source correspondence for any
+version ever published survives the deletion of its release page. Releases are
+kept by this rule and nothing else:
+
+1. **Every release the live update manifest references** —
+   `updates/manifest_3006.txt` on `main`: the stable line and the advertised
+   beta line. A fielded router downloads from exactly these tags; deleting one
+   breaks that model's update until the next publish.
+2. **The previous stable line**, as the rollback target.
+3. Betas are disposable the moment the next beta or their stable ships.
+
+`build-scripts/prune_releases.sh` derives the keep-set from the live manifest,
+prints the plan, and deletes only with `--yes`, one release at a time and
+**never with `--cleanup-tag`** — tags are never deleted. It needs `gh auth login`
+as the repository owner. First applied 2026-09-12: 166 releases (28 versions,
+~26 GB of assets, most of them the daily rungs of August) trimmed to 18.
+
 ## Notes
 
 - **Loaders** (`*_loader.pkgtb`, recovery-only) are not distributed; available

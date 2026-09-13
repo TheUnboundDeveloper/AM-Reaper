@@ -42,7 +42,7 @@ VARIANTS=MCP build-scripts/build_be96u.sh ship   # one variant instead of both
 ```
 
 One launcher per model — `build_be96u.sh`, `build_be86u.sh`, `build_be88u.sh`,
-`build_gtbe98.sh`, `build_gtbe98pro.sh`, `build_be92u.sh`. Each is a thin wrapper
+`build_gtbe98.sh`, `build_gtbe98pro.sh`, `build_gtbe19000.sh`. Each is a thin wrapper
 that sets the model's branch, make target and banner, then calls the shared
 engine `_reaper_build_lib.sh`. Both variants (**MCP** and **noMCP**) are built by
 default; NAND only.

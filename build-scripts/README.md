@@ -3,7 +3,7 @@
 > **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
 
 The reusable toolkit that builds the Reaper images correctly across all six
-models (five on BCM4916, plus the newer BCM6765 RT-BE92U). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
+models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
 (WSL Ubuntu-20.04, user `reaper`); these scripts live at
 `/home/reaper/reaper_build/` on the build box — this folder is the tracked copy.
 
@@ -16,16 +16,13 @@ models (five on BCM4916, plus the newer BCM6765 RT-BE92U). Canonical build clone
 | RT-BE88U      | `rt-be88u`     | `rt-be88u`  | RT-BE88U      | dual (2.4/5)     |
 | GT-BE98       | `gt-be98`      | `gt-be98`   | GT-BE98       | quad (2.4/5/5/6) |
 | GT-BE98 Pro   | `gt-be98-pro`  | `gt-be98_pro` | GT-BE98_PRO | quad (2.4/5/5/6) |
-| GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |
-| RT-BE92U      | `rt-be92u`     | `rt-be92u`  | RT-BE92U      | tri  (2.4/5/6)   |   <!--@models-->
+| GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |   <!--@models-->
 
 BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a
 whitelist) + a small per-model identity overlay (banner, `target.mak` block,
-`version.conf`, model-only www/blobs). The six BCM4916 models share PROFILE
-`96813GW`. **RT-BE92U** (BCM6765) built to PROFILE **`96765GW`** instead, in a
-git worktree (`REAPER_TREE`/`REAPER_TDIR`); it was retired from the roster after
-v3.1.2 and is no longer in the CI matrix. The **GT-BE19000** builds in a worktree
-the same way and publishes as a prerelease. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
+`version.conf`, model-only www/blobs). All six models share PROFILE
+`96813GW`. The **GT-BE19000** builds in a git worktree (`REAPER_TREE`/`REAPER_TDIR`)
+and publishes as a prerelease. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
 
 ## Files
 
@@ -35,7 +32,7 @@ the same way and publishes as a prerelease. Every image is built in both **MCP**
 | `_reaper_build_lib.sh`  | Build engine. `reaper_build()` runs both variants (flips `RTCONFIG_REAPER_MCP` off + `_noMCP` EXTENDNO for the 2nd, restores after), passes `FORCE=1` on both make passes, and runs `reaper_verify.sh` after each variant — **blocks ship on gate FAIL**. Also stamps the **channel** into EXTENDNO: `_BETA` unless the caller says `stable`, so a pre-release is named for what it is. Beta is the default deliberately — an image only becomes stable when Dev is merged, so forgetting the word can only ever label something too cautiously. `ship` never overwrites a ladder entry: identical content is left alone, different content is staged under the next free `_rN`. Sourced by every `build_<model>.sh`. |
 | `build_<model>.sh`      | Thin per-model launcher: sets BRANCH/TARGET/PREFIX/VARIANTS/SHIP_DIR then `source _reaper_build_lib.sh; reaper_build "$@"`. `VARIANTS` and `STORAGE` honour an environment override (`VARIANTS=MCP build_be96u.sh ship`), so a one-variant build needs no edit to a shared file. Args are order-free: `ship`, `stable`, `beta`. |
 | `port_sibling_v2.sh`    | Guarded overlay port: syncs the full shared diff from `be96u-only`, protects the per-model identity overlay, and aborts on wrong branch / base / banner-sha / BUILD_NAME / band mismatch. `port_sibling_v2.sh <MODEL> [--commit] [--version V]` (default dry-run). **Note (2026-08-05):** the port and the verify gate now share one `_port_protect.sh` classifier; the port syncs everything under `sysdep/FUNCTION/` (the shared, flag-keyed VPN/MSWAN/SDN pages that used to be skipped) and **aborts if any shared file still differs from canon after the commit**, and `reaper_verify` fails the build on a shared-parity miss. The only remaining manual step is the **dict supplement** (dicts stay per-model-protected): after a version port, `git checkout be96u-only -- www/*.dict` and re-check lockstep. |
-| `ci/build_one.sh`       | CI launcher: ONE model, ONE variant, no ship. Same shape the engine documents (set BRANCH/TARGET/PREFIX/VARIANTS/STORAGE, call `reaper_build`), because the interactive launchers carry a Windows `SHIP_DIR`. Handles **all six models** (a sibling is the canon tree plus `overlays/<MODEL>.patch`, applied by `container_build.sh` before this runs); RT-BE92U additionally builds to the 96765GW profile. It inherits `REAPER_BETA` from `container_build.sh`, which sets it **explicitly to 0 or 1** — never unset, or a clean-room build on main would inherit the engine's beta default and publish a release under a pre-release name. |
+| `ci/build_one.sh`       | CI launcher: ONE model, ONE variant, no ship. Same shape the engine documents (set BRANCH/TARGET/PREFIX/VARIANTS/STORAGE, call `reaper_build`), because the interactive launchers carry a Windows `SHIP_DIR`. Handles **all six models** (a sibling is the canon tree plus `overlays/<MODEL>.patch`, applied by `container_build.sh` before this runs). It inherits `REAPER_BETA` from `container_build.sh`, which sets it **explicitly to 0 or 1** — never unset, or a clean-room build on main would inherit the engine's beta default and publish a release under a pre-release name. |
 | `ci/container_build.sh` | Runs inside the Ubuntu 20.04 container on a GitHub runner: recreates the documented environment (`/home/reaper/asuswrt-be96u`, `/home/reaper/reaper_build`, `/opt/toolchains`, uid-1001 `reaper`, `sh`→bash, python2), fetches the pinned base, applies the series with `git am --keep-cr`, asserts the `release/src/router` tree hash against `provenance/manifest.json`, then calls `ci/build_one.sh`. Driven by `.github/workflows/public-build.yml`; user-facing docs in `docs/CI-PUBLIC-BUILD.md`. |
 | `verify_markers.txt`    | Marker manifest read by `reaper_verify.sh` — one line per field-critical fix, proving it is physically inside every staged image. Previously build-box-only, which silently downgraded the CI gate from 19 checks to 18. |
 | `reaper_verify.sh`      | Post-build QA gate (it prints its own pass/warn/fail tally; 28 checks as of 2026-09-12 — the three newest: `banner-refs` reads every banner filename the staged pages reference and fails if any is not staged; `dongle-fw` fails if a model's expected dongle chips have no `rtecdc.bin` in the image, because the build skips a missing `sysdeps/<MODEL>/` silently; `dongle-model` fails if any staged `rtecdc.bin` does not embed the name of the model being built — Broadcom stamps it into every blob, so a sibling's or the other SKU's firmware is caught as identity, not just presence) on the staged fs + packaged image (per-model banner sha + no foreign/stale banner, SAMBA4 + no libiconv, httpd NEEDED closure, FIT model-id via `dumpimage`, MCP/noMCP purity, ARM ELF, www presence/markers, i18n dict lockstep, **shared-code parity vs the RT-BE96U canon**, and **rung-critical patch markers in the staged image** — the last two added 2026-08-05 to make a missed cross-model patch un-shippable). |

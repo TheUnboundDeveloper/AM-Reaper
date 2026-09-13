@@ -53,7 +53,7 @@ wsl -d Ubuntu-20.04 -u reaper -- \
 ```
 
 This runs, in the only safe order: `cut_rung.sh` → port the five siblings
-(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, RT-BE92U) → **then** the overlays. Order is not negotiable — regenerating overlays before
+(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -147,7 +147,7 @@ Choose one:
 **Actions → Public build → Run workflow**
 
 - [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
-      ~1.5 h each — six models since the RT-BE92U joined the fan-out)
+      ~1.5 h each — six models)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.

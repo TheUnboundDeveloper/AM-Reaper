@@ -454,6 +454,53 @@ else
   warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
 fi
 
+# ---- 23. the OpenVPN PKI chain on the staged binaries (check_ovpn_pki.sh) ---
+# Two silent breaks after the OpenSSL 3.5 move, both found on routers: the
+# [server] extensions on a CSR (v3.1.4) and RANDFILE=$HOME/.rnd with HOME=/
+# (v3.1.5, review R16). Compile, link and symbol checks all passed both times -
+# what fails is the protocol between pkitool, the config and openssl. This runs
+# it: the staged pkitool + config + ARM openssl under qemu-user, with the exact
+# environment libovpn's generated script exports, and requires a CA, a server
+# and a client certificate that verify. Skips (WARN) where qemu-arm is absent.
+_ckp="$(dirname "${BASH_SOURCE[0]}")/check_ovpn_pki.sh"
+if [ -f "$_ckp" ]; then
+  _ckpout=$(bash "$_ckp" "$FS" 2>&1); _ckprc=$?
+  if [ "$_ckprc" = 0 ]; then
+    pass "ovpn-pki" "$(echo "$_ckpout" | tail -1)"
+  elif [ "$_ckprc" = 77 ]; then
+    warn "ovpn-pki" "$(echo "$_ckpout" | tail -1)"
+  else
+    echo "$_ckpout" | sed 's/^/        /'
+    fail "ovpn-pki" "the firmware's own certificate chain does not complete on the staged openssl -- see above"
+  fi
+else
+  warn "ovpn-pki" "check_ovpn_pki.sh absent -- the OpenVPN PKI chain not exercised"
+fi
+
+# ---- 24. the port-forward emitter, executed (check_vts_emitter.py) ---------
+# write_port_forwarding() in rc/firewall.c carries Reaper's charset gate and
+# space-normalisation, and a field report (review R15) blamed a release for
+# every forward going dark with no way to test the claim short of a router.
+# The function is extracted from the real source, compiled with an nvram stub
+# and run against known rule lists (the reporter's included); the DNAT lines
+# must come out exactly. Source-tree check, like 20.
+_cke="$(dirname "${BASH_SOURCE[0]}")/check_vts_emitter.py"
+if [ ! -f "$_cke" ]; then
+  warn "vts-emitter" "check_vts_emitter.py absent -- port-forward emitter not exercised"
+elif [ ! -d "$R/release/src/router" ]; then
+  warn "vts-emitter" "no source tree -- port-forward emitter not exercised"
+else
+  _ckeout=$(python3 "$_cke" "$R/release/src/router" 2>&1); _ckerc=$?
+  if [ "$_ckerc" = 0 ]; then
+    pass "vts-emitter" "$(echo "$_ckeout" | tail -1)"
+  elif [ "$_ckerc" = 77 ]; then
+    warn "vts-emitter" "$(echo "$_ckeout" | tail -1)"
+  else
+    echo "$_ckeout" | sed 's/^/        /'
+    fail "vts-emitter" "write_port_forwarding() no longer emits the expected DNAT lines -- see above"
+  fi
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

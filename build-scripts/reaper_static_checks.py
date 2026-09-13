@@ -12,8 +12,8 @@ Prints one summary line per check and a final tally.
 
 The eight checks
   8. pbr-fwmark-regex   The `fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000` rule-form regex
-                        is one literal that lives at FIVE consumer sites
-                        (reaper_pbr.c x3 teardown/expect, rwatch.c heal count,
+                        is one literal that lives at FOUR consumer sites
+                        (reaper_pbr.c x2 teardown, rwatch.c heal count,
                         reaper_diag live count) and must stay byte-identical;
                         and the PRODUCER (`fwmark 0x%X0000/$MASK`, PPBR_MASK)
                         must render a string every one of them matches, in
@@ -489,7 +489,7 @@ def check_warden_log_prefixes(router):
 # ---------------------------------------------------------------------------
 # 8. pbr-fwmark-regex: the rule-form regex is a producer/consumer contract
 #    across three files. reaper_pbr.c WRITES `fwmark 0x<code>0000/$MASK`, and
-#    the same file (teardown + expect_rules), rwatch.c (the ip-rule heal's live
+#    the same file (teardown, twice), rwatch.c (the ip-rule heal's live
 #    count) and others/reaper_diag (the FINDINGS live count) all READ it back
 #    with one grep -E literal. iproute2 prints the mask with leading zeros
 #    stripped (0xf0000, not 0x000F0000), which is why the literal carries
@@ -497,7 +497,10 @@ def check_warden_log_prefixes(router):
 #    moves, that site counts 0 on a healthy box: the heal re-runs forever or the
 #    diag WARNs about a fail-open that is not there - with a green build.
 # ---------------------------------------------------------------------------
-FWMARK_SITES = (("rc/reaper_pbr.c", 3), ("rc/rwatch.c", 1), ("others/reaper_diag", 1))
+# v3.1.5 (review R07): reaper_pbr.c dropped from 3 to 2 - expect_rules is now the
+# number of rules the apply MEANT to install (a shell counter), not a grep of the
+# live table; only the two teardown sites read the literal there now.
+FWMARK_SITES = (("rc/reaper_pbr.c", 2), ("rc/rwatch.c", 1), ("others/reaper_diag", 1))
 FWMARK_LITERAL_RE = re.compile(r"fwmark 0x\[[^\]]+\]\+/0x[0-9A-Fa-f*\[\]]+")
 PPBR_MASK_RE = re.compile(r'#define\s+PPBR_MASK\s+"(0x[0-9A-Fa-f]+)"')
 

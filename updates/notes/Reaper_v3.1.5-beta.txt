@@ -1,0 +1,184 @@
+Reaper v3.1.5 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> Policy Routing: the Target column names the interface and nothing else
+
+A reviewer with
+
+long VPN Director experience put it exactly: a rule's target is an interface, not a story. The
+
+WAN row used to read "Out the WAN (VPN bypass)" while every VPN row read its interface; it now
+
+reads WAN, the add-rule list says WAN too (with the explanation as a hint when you pick it,
+
+the way WireGuard targets already work), and the per-row LAN badge is gone. What a target is
+
+doing is a state, so it has its own Status column: Active, Active · Killswitch (that
+
+client's switch is on - a dropped tunnel blocks rather than leaks) or Inactive · WAN (the
+
+client is switched off). Everything true of every rule to an interface - the WireGuard
+
+hardware-acceleration bypass, what a WAN target means - is one note under the table, shown
+
+while such a rule exists.
+
+> The Killswitch counts only for an enabled client, as in VPN Director
+
+Since v3.1.3 a rule's
+
+prohibit followed its client's Killswitch; VPN Director additionally requires the client to be
+
+enabled before it installs its own prohibit, and Reaper now applies the same test. A rule to a
+
+switched-off client therefore uses the WAN instead of blocking - which is what the Status column
+
+says - and enabling the client brings the prohibit back through the same vpnrouting restart the
+
+Killswitch already used. The guide's 4.4.7 now shows the exact ip rule pair Reaper installs
+
+beside VPN Director's, so a Merlin user can see they are the same shape.
+
+> An IPv6 hint on the same page still claimed a tunnel with no IPv6 always blocks the selected IPv6
+
+traffic; since v3.1.3 that is the Killswitch's decision, and the hint now says so.
+
+> Language packs: five keys added, three reworded, four retired in place (lockstep 6921).
+
+> Security review remediation (2026-09-12)
+
+An independent adversarial review of the v3.1.5
+
+tree (source, CVE delta and read-only observation of a live v3.1.3 router) produced sixteen items;
+
+every one was re-verified against the source before anything changed, and four of the proposed
+
+fixes were replaced with different ones (below). Inherited components first:
+
+> Time Machine (netatalk 3.0.5): CVE-2022-43634 was present
+
+The 2026-08-30 component check
+
+had called the 2022 pre-authentication set absent from this version's paths; the DSI write
+
+path was re-read and the overflow is there - dsi_writeinit() ignored the size of the buffer
+
+it copied into. Fixed with an adaptation of the vendor fix for the 3.0.5 buffering model (the
+
+remainder of an over-long write is kept and delivered on the next read, not dropped). Off by
+
+default, unauthenticated when on; the correction is recorded in SECURITY.md.
+
+> strongSwan 6.0.4: CVE-2026-47895
+
+, the identity-clone double free reachable from an IKEv2
+
+EAP peer - the vendor patch, verbatim.
+
+> Tor 0.4.9.12
+
+, the 2026-09-08 security release; Reaper's Tor configuration sets
+
+AutomapHostsOnResolve, the exact precondition of its use-after-free (TROVE-2026-036).
+
+> avahi
+
+the CNAME lookup crash trio (CVE-2025-68468, CVE-2025-68471, CVE-2026-24401) is
+
+backported - avahi is on by default and LAN-reachable.
+
+> lighttpd 1.4.39
+
+(captive portal): CVE-2018-25103, the folded-header use-after-free, fixed
+
+at the append site. net-snmp: CVE-2022-44792 / -44793, a SET carrying a NULL varbind is now
+
+rejected before dispatch (write community only).
+
+> Policy Routing engine: four review findings on the failure paths
+
+A VPN client's Killswitch or
+
+enable toggled inside the commit-confirm window used to be lost (the pending candidate and its
+
+recovery script were both generated before the toggle, and Keep promoted the stale one); both are
+
+now regenerated and the candidate re-run, with the window and the Keep/Revert meaning untouched.
+
+A WireGuard bypass that cannot be installed (the eight-entry table full) was a log line and a clean
+
+apply; it is now a counted failure the page reports. The routing rules themselves (ip rule add)
+
+were the one thing the generated script never checked, and the count the watchdog healed against
+
+was taken from the live table - so a rule that failed to install matched its own absence; both
+
+families are now counted as intended and healed. And a rule naming a geo or MAC object matched
+
+nothing while reading Active: the page no longer offers them, the engine drops such a rule with the
+
+reason in syslog, and a group - which never had a set of its own - now expands into its usable
+
+members. The reviewer's proposed fixes for three of these were not taken: one would have torn
+
+down all policy routing whenever the bypass table was full, and two changed what a partial load
+
+means to the Keep button.
+
+> Reaper Advisor: the request clock now covers the TLS handshake
+
+A peer dripping a partial TLS
+
+record could hold the single-threaded daemon in the handshake indefinitely - and with it the
+
+session-expiry and USB-key-removal checks that run between connections.
+
+> The release pruner fails closed
+
+Given an empty or comment-only manifest it would have planned
+
+to delete every release. Every invariant the retention rule rests on is now asserted before a plan
+
+is printed, with a test suite covering six unusable inputs.
+
+> OpenVPN server certificates, the second cause (field, 2026-09-12)
+
+After this morning's fix a
+
+regeneration still failed "at the signing stage": OpenSSL 3.x exits non-zero when it cannot write
+
+its RANDFILE, and the easy-rsa config points that at $HOME/.rnd while rc runs with HOME=/, the
+
+read-only root. The generated scripts now give openssl the key directory as HOME.
+
+> Two guards for the class of bug a compile cannot see, and one diagnostic
+
+Both certificate
+
+breaks were protocol failures between pieces that each linked fine, so release check 23 now runs
+
+the firmware's own PKI chain — the staged pkitool, config and ARM openssl under qemu — and requires
+
+a CA, server and client certificate that verify. A field report of port forwards going dark after
+
+v3.1.0 could not be tested short of a router, so check 24 executes the real port-forward emitter
+
+from rc/firewall.c against known rule lists, the reporter's included (it passes; nothing in the
+
+v3.1.0 delta touched that path). The harness did catch something else: a space-stripped port such
+
+as 80-jACCEPT passed the charset gate and would have been handed to iptables-restore, which
+
+rejects the whole nat table — MASQUERADE included — for one malformed line. A real port gate now
+
+drops such a rule and names it in syslog. And reaper_diag 1.3.15 gained section 14f, the
+
+port-forwarding truth in one place: switches, the VSERVER hook, the chain, every saved rule checked
+
+against the live table, with findings — because the DNAT lines were never in PREROUTING, which is
+
+where the report had looked.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

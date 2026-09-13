@@ -2,7 +2,7 @@
 
 > **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.1.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -129,7 +129,7 @@ This guide is written for someone who will install and run the firmware: technic
 
 ## 1. What Reaper is, and is not
 
-Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin 3006.102.8 for the ASUS RT-BE series (Broadcom BCM4916 — or BCM6765 on the RT-BE92U — Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
+Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin 3006.102.8 for the ASUS RT-BE series (Broadcom BCM4916, Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
 
 Reaper is distributed as a patch series applied to the public Asuswrt-Merlin source. Releases are compiled in a public GitHub Actions clean room from pinned inputs, and the About page in the firmware states the patch count, upstream commit and build date of the image you are running so that it can be rebuilt and checked.
 
@@ -184,7 +184,6 @@ This section is the one to read before you flash and again after you have been r
 - **RT-BE96U** — primary model; every release is built and validated on this hardware.
 - **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
 - **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
-- **RT-BE92U** (BCM6765 / 96765GW) — retired from the roster after v3.1.2, since upstream Merlin has taken that model on. Its last Reaper build stays available and its update line is frozen there; its source and overlay are kept dormant.
 
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 

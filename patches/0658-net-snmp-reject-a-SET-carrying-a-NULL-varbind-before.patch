@@ -1,0 +1,80 @@
+From 5998c9b277d40c933aa90cae64fd09d96e502257 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 19:30:23 -0400
+Subject: [PATCH] net-snmp: reject a SET carrying a NULL varbind before
+ dispatch (CVE-2022-44792, CVE-2022-44793)
+
+Upstream commit be804106 verbatim: handle_pdu() answers wrongType for an
+ASN_NULL varbind in a SET instead of handing it to handlers that dereference
+the value. Needs a read-write community. Security review 2026-09-12, item R13.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../src/router/net-snmp/agent/snmp_agent.c    | 32 +++++++++++++++++++
+ release/src/router/net-snmp/apps/snmpset.c    |  1 +
+ 2 files changed, 33 insertions(+)
+
+diff --git a/release/src/router/net-snmp/agent/snmp_agent.c b/release/src/router/net-snmp/agent/snmp_agent.c
+index 26653f4e64..eba5b4eccd 100644
+--- a/release/src/router/net-snmp/agent/snmp_agent.c
++++ b/release/src/router/net-snmp/agent/snmp_agent.c
+@@ -3708,12 +3708,44 @@ netsnmp_handle_request(netsnmp_agent_session *asp, int status)
+     return 1;
+ }
+ 
++static int
++check_set_pdu_for_null_varbind(netsnmp_agent_session *asp)
++{
++    int i;
++    netsnmp_variable_list *v = NULL;
++
++    for (i = 1, v = asp->pdu->variables; v != NULL; i++, v = v->next_variable) {
++	if (v->type == ASN_NULL) {
++	    /*
++	     * Protect SET implementations that do not protect themselves
++	     * against wrong type.
++	     */
++	    DEBUGMSGTL(("snmp_agent", "disallowing SET with NULL var for varbind %d\n", i));
++	    asp->index = i;
++	    return SNMP_ERR_WRONGTYPE;
++	}
++    }
++    return SNMP_ERR_NOERROR;
++}
++
+ int
+ handle_pdu(netsnmp_agent_session *asp)
+ {
+     int             status, inclusives = 0;
+     netsnmp_variable_list *v = NULL;
+ 
++#ifndef NETSNMP_NO_WRITE_SUPPORT
++    /*
++     * Check for ASN_NULL in SET request
++     */
++    if (asp->pdu->command == SNMP_MSG_SET) {
++	status = check_set_pdu_for_null_varbind(asp);
++	if (status != SNMP_ERR_NOERROR) {
++	    return status;
++	}
++    }
++#endif /* NETSNMP_NO_WRITE_SUPPORT */
++
+     /*
+      * for illegal requests, mark all nodes as ASN_NULL 
+      */
+diff --git a/release/src/router/net-snmp/apps/snmpset.c b/release/src/router/net-snmp/apps/snmpset.c
+index a2374bc85a..cd01b9a3bf 100644
+--- a/release/src/router/net-snmp/apps/snmpset.c
++++ b/release/src/router/net-snmp/apps/snmpset.c
+@@ -182,6 +182,7 @@ main(int argc, char *argv[])
+             case 'x':
+             case 'd':
+             case 'b':
++            case 'n': /* undocumented */
+ #ifdef NETSNMP_WITH_OPAQUE_SPECIAL_TYPES
+             case 'I':
+             case 'U':
+-- 
+2.25.1
+

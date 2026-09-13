@@ -1,0 +1,611 @@
+From 36f5b870f6c44c7ea4bead492d3deb68ba513ac4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 19:30:24 -0400
+Subject: [PATCH] Security review 2026-09-12: policy routing failure paths, the
+ Advisor's TLS clock, a port gate, certificate scripts, diag 14f
+
+Policy Routing (rc/reaper_pbr.c, rc/rwatch.c):
+- a Killswitch or enable toggled INSIDE the commit-confirm window was lost:
+  reaper_pbr_regen() stepped aside while armed, Keep promoted the stale
+  candidate and the deadline ran a stale recovery. Both are now regenerated
+  and the candidate re-run, under a new file_lock("reaper_pbr") that apply
+  takes too; token and deadline untouched (R04).
+- a WireGuard bypass that cannot be installed (table full, write rejected,
+  LAN net unknown) is a counted failure -> exit 2 / E_PARTIAL, named in
+  syslog; the "bypass is in place" line is suppressed. It was a log line
+  and a clean apply (R05).
+- ipset/domain selectors are resolved against the object layer: a group
+  expands into its usable members (it never had a set of its own), geo, MAC
+  and unknown objects drop the rule with the reason. The page no longer
+  offers geo or MAC objects (R06).
+- ip rule adds are checked (pbr_route); expect_rules/expect_rules6 are the
+  INTENDED counts, per family - the old live-table grep matched a failed
+  add's own absence; the v6 half is checked while IPv6 is enabled; rwatch
+  heals per family (R07).
+Advisor (rmcpd/rmcpd.c): the 20 s request clock is armed before the TLS
+wrap - SO_RCVTIMEO bounds one read, not the handshake (R10).
+Port forwarding (rc/firewall.c): a space-stripped "80-jACCEPT" passed the
+charset gate and was emitted as a malformed --dport, and the nat table is one
+atomic restore, so one bad nvram value took MASQUERADE down with it.
+_fw_ports_ok() drops and names such a rule (found by the emitter harness
+while evaluating the R15 field report, which is not a confirmed defect).
+OpenVPN certificates (libovpn/openvpn_setup.c): the generated scripts export
+HOME as the key directory - the easy-rsa config points RANDFILE at
+$ENV::HOME/.rnd, rc runs with HOME=/, and OpenSSL 3.x exits 1 when it cannot
+write that file after the CSR is already on disk, so pkitool's && chain
+stopped before openssl ca (field 2026-09-12, R16; the second cause after
+this morning's AKID fix).
+reaper_diag v1.3.15: section 14f, the port-forwarding truth in one place
+(switches, VSERVER hook, chain, every saved rule against the live table)
+with findings.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/libovpn/openvpn_setup.c   |  11 ++
+ release/src/router/others/reaper_diag        |  41 +++-
+ release/src/router/rc/firewall.c             |  48 +++++
+ release/src/router/rc/reaper_pbr.c           | 190 +++++++++++++++++--
+ release/src/router/rc/rwatch.c               |  16 +-
+ release/src/router/rmcpd/rmcpd.c             |  19 +-
+ release/src/router/www/Reaper_VPNRouting.asp |   5 +-
+ 7 files changed, 295 insertions(+), 35 deletions(-)
+
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index cde6a68c1f..d8752c35d1 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -815,6 +815,15 @@ static int ovpn_repair_server_cert(int unit)
+ 	fprintf(fp, "export GREP=\"grep\"\n");
+ 	fprintf(fp, "export KEY_CONFIG=\"/rom/easy-rsa/openssl-1.0.0.cnf\"\n");
+ 	fprintf(fp, "export KEY_DIR=\"%s\"\n", rundir);
++	/* v3.1.5 (field 2026-09-12, R16): openssl-1.0.0.cnf sets RANDFILE to
++	 * $ENV::HOME/.rnd and rc runs with HOME=/ (init.c), so every openssl
++	 * invocation tried to write //.rnd on the read-only root. OpenSSL 1.x
++	 * shrugged; 3.x exits non-zero when it cannot write its RANDFILE
++	 * (apps/openssl.c: app_RAND_write() -> EXIT_FAILURE) even though the
++	 * request had already been written - so pkitool's && chain stopped
++	 * between `openssl req` and `openssl ca`: a .csr, no .crt, "failed at
++	 * the signing stage". The key directory is tmpfs and ours; use it. */
++	fprintf(fp, "export HOME=\"%s\"\n", rundir);
+ 	fprintf(fp, "export KEY_SIZE=2048\n");
+ 	fprintf(fp, "export KEY_EXPIRE=3650\n");
+ 	fprintf(fp, "export KEY_COUNTRY=\"TW\"\n");
+@@ -898,6 +907,8 @@ void ovpn_write_server_keys(ovpn_sconf_t *sconf, int unit) {
+ 			fprintf(fp, "export GREP=\"grep\"\n");
+ 			fprintf(fp, "export KEY_CONFIG=\"/rom/easy-rsa/openssl-1.0.0.cnf\"\n");
+ 			fprintf(fp, "export KEY_DIR=\"/etc/openvpn/server%d\"\n", unit);
++			/* v3.1.5 (R16): a writable RANDFILE, see ovpn_repair_server_cert() */
++			fprintf(fp, "export HOME=\"/etc/openvpn/server%d\"\n", unit);
+ 			fprintf(fp, "export KEY_SIZE=%d\n", sconf->tls_keysize ? 2048 : 1024);
+ 			fprintf(fp, "export CA_EXPIRE=3650\n");
+ 			fprintf(fp, "export KEY_EXPIRE=3650\n");
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index aa71585722..853edbd998 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.13 (2026-09-02) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.15 (2026-09-12) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.14"
++VER="REAPER-DIAG v1.3.15"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -869,6 +869,43 @@ echo "  ipsec             : server=$(nvram get ipsec_server_enable 2>/dev/null)
+ echo "  tunnel ifaces     : $(ls /sys/class/net 2>/dev/null | grep -E '^(tun|tap|wg)' | tr '\n' ' ')"
+ echo "  vpn director     : $(nvram get vpndirector_rulelist 2>/dev/null | tr -cd '<' | wc -c) rules"
+ 
++sec "14f. PORT FORWARDING (stock virtual server - ports and LAN targets only, WAN address never printed)"
++# v1.3.15 (review R15, 2026-09-12): a field report of "no DNAT entry exists at
++# all" rested on `iptables -t nat -L PREROUTING | grep <port>` - which cannot
++# see the DNAT lines: they live in the VSERVER chain that PREROUTING jumps to
++# BY WAN ADDRESS (`-A PREROUTING -d <wan_ip> -j VSERVER`, rc/firewall.c
++# nat_setting). Print the truth in one place: the switches, whether the hook
++# exists (it needs a WAN address at firewall-build time), the chain, and every
++# saved rule checked against the live table by port. Ports and RFC1918 targets
++# are the payload; a source restriction that is public goes through the
++# sanitizer like everything else.
++_vts="$(nvram get vts_enable_x 2>/dev/null)"; _rl="$(nvram get vts_rulelist 2>/dev/null)"
++_nrules=$(printf '%s' "$_rl" | tr -cd '<' | wc -c)
++echo "  vts_enable_x=$_vts  wan0_nat_x=$(nvram get wan0_nat_x 2>/dev/null)  sw_mode=$(nvram get sw_mode 2>/dev/null)  saved rules=$_nrules  wan0_ipaddr=$( [ -n "$(nvram get wan0_ipaddr 2>/dev/null)" ] && echo SET || echo EMPTY )  wan0_state_t=$(nvram get wan0_state_t 2>/dev/null)"
++_hook=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '-j VSERVER$')
++echo "  nat PREROUTING -> VSERVER hooks : $_hook  (-> GAME_VSERVER: $(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '-j GAME_VSERVER$'); VSERVER -> VUPNP: $(iptables -t nat -S VSERVER 2>/dev/null | grep -c -- '-j VUPNP$'))"
++_dnat=$(iptables -t nat -S VSERVER 2>/dev/null | grep -c -- '-j DNAT')
++echo "  nat VSERVER DNAT lines          : $_dnat   (VUPNP: $(iptables -t nat -S VUPNP 2>/dev/null | grep -c -- '-j DNAT'))"
++echo "  FORWARD ctstate DNAT accept     : $(iptables -S FORWARD 2>/dev/null | grep -c -- '--ctstate DNAT -j ACCEPT')"
++_pfm=0; _pfn=0
++if [ -n "$_rl" ]; then
++  printf '%s' "$_rl" | tr '<' '\n' > "$RAW.pf"
++  while IFS='>' read -r _d _port _dst _lport _proto _src; do
++    [ -n "$_port" ] || continue
++    _pfn=$((_pfn+1))
++    _live=0
++    for _p in $(printf '%s' "$_port" | tr ',' ' '); do
++      _live=$(( _live + $(iptables -t nat -S VSERVER 2>/dev/null | grep -- "--dport $_p " | grep -c -- "$_dst") ))
++    done
++    [ "$_live" = 0 ] && _pfm=$((_pfm+1))
++    echo "  rule $_pfn: $_proto $_port -> $_dst${_lport:+:$_lport}${_src:+ from $_src}  live DNAT=$_live"
++  done < "$RAW.pf"
++  rm -f "$RAW.pf"
++fi
++[ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" = 0 ] && finding WARN "port forwarding is ON but nat/PREROUTING has no jump to VSERVER - the WAN address was unknown when the firewall was built, or something rebuilt the nat table without it; forwards cannot work until the hook exists (see 14f)"
++[ "$_vts" = 1 ] && [ "$_pfm" -gt 0 ] && finding WARN "port forwarding: $_pfm of $_pfn saved rule(s) have NO DNAT line in VSERVER - the rule was dropped at emission (charset gate) or the chain was flushed (see 14f)"
++[ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" -gt 0 ] && [ "$_pfm" = 0 ] && [ "$(iptables -S FORWARD 2>/dev/null | grep -c -- '--ctstate DNAT -j ACCEPT')" = 0 ] && finding WARN "port forwarding: DNAT lines are live but FORWARD has no ctstate-DNAT accept - forwarded flows are translated and then dropped (see 14f)"
++
+ sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
+ # ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
+ # (rwatch_gdx=1) and default OFF because a PERIODIC kernel-facing /proc reader
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index d2b7299cff..f255f2892e 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -1494,6 +1494,47 @@ void repeater_filter_setting(int mode){
+ #endif
+ #endif
+ 
++/* v3.1.5 (review R15, found by build-scripts/check_vts_emitter.py on its first run):
++ * _fw_field_safe() blocks INJECTION - after _fw_strip_spaces() no byte can start a
++ * new argument - but not a MALFORMED port. "80 -j ACCEPT" space-strips to
++ * "80-jACCEPT", every byte of which the charset allows, and it is emitted as
++ * `--dport 80-jACCEPT`. iptables-restore then rejects the line - and with it
++ * the WHOLE *nat table (one file, one COMMIT, atomic): no VSERVER, no VUPNP,
++ * and no MASQUERADE either, so one bad nvram value is an internet outage, not
++ * a dead forward. A port field must therefore be what the emitter can use: for
++ * TCP/UDP/BOTH one or more comma-separated N or N:M (the GUI already rewrites
++ * "-" and "~" to ":"), 1-65535, low <= high; for OTHER the raw protocol name or
++ * number the `-p %s` line takes (the emitter drops anything after ':'). A rule
++ * that fails is dropped and named in syslog, and the rest of the table loads. */
++static int __attribute__((unused)) _fw_ports_ok(const char *ports, const char *proto)
++{
++	char buf[256], *p = buf, *tok;
++	if (!ports || !*ports || strlen(ports) >= sizeof(buf)) return 0;
++	snprintf(buf, sizeof(buf), "%s", ports);
++	while ((tok = strsep(&p, ",")) != NULL) {
++		const char *q;
++		if (!*tok) return 0;
++		if (proto && strcmp(proto, "OTHER") == 0) {
++			for (q = tok; *q && *q != ':'; q++)
++				if (!((*q >= '0' && *q <= '9') || ((*q | 0x20) >= 'a' && (*q | 0x20) <= 'z') || *q == '-'))
++					return 0;
++			if (q == tok) return 0;
++			continue;
++		}
++		{
++			char *e, *e2;
++			long a = strtol(tok, &e, 10), b;
++			if (e == tok || a < 1 || a > 65535) return 0;
++			if (*e == ':') {
++				b = strtol(e + 1, &e2, 10);
++				if (e2 == e + 1 || *e2 || b < a || b > 65535) return 0;
++			} else if (*e)
++				return 0;
++		}
++	}
++	return 1;
++}
++
+ void write_port_forwarding(FILE *fp, char *config, char *chain, char *lan_ip, char *lan_if)
+ {
+ 	char *proto, *protono, *port, *lport, *srcip, *dstip, *desc;
+@@ -1567,6 +1608,13 @@ void write_port_forwarding(FILE *fp, char *config, char *chain, char *lan_ip, ch
+ 					continue;
+ 			}
+ 
++			/* v3.1.5 (R15): a malformed port would abort the whole nat restore - see _fw_ports_ok() */
++			if (!_fw_ports_ok(port, proto) || (lport && *lport && !_fw_ports_ok(lport, "TCP"))) {
++				logmessage("firewall", "port forward '%s' dropped: port field '%s' -> '%s' is not a port or a port range",
++				           desc, port, (lport && *lport) ? lport : "-");
++				continue;
++			}
++
+ 			// Handle source type format
+ 			srcips[0] = '\0';
+ 			if (srcip && *srcip) {
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index a1cc4344b9..f2eb24f1da 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -319,10 +319,17 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "# v2.6.9: count the mark rules that were meant to load and the ones that\n"
+ 	  "# did not (a `-m set` rule fails when its set is not there yet at boot);\n"
+ 	  "# rwatch compares the live chain against EXPECT and re-runs this script.\n"
+-	  "NEXPECT=0; NFAIL=0\n"
++	  "NEXPECT=0; NFAIL=0; NROUTE4=0; NROUTE6=0; SKIPFAIL=0\n"
+ 	  /* v2.7.6: name the rule that failed - the aggregate count alone could not
+ 	   * tell a missing set from an xtables-lock collision in the field. */
+ 	  "pbr_rule() { NEXPECT=$((NEXPECT+1)); \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"rule failed: $*\"; }; }\n"
++	  /* v3.1.5 (review R07): the `ip rule` lines were the one thing this script
++	   * never checked, and expect_rules was a COUNT OF WHAT SURVIVED (`ip rule
++	   * show | grep -c`), so a routing rule that failed to install matched its
++	   * own absence: exit 0, no E_PARTIAL, nothing for rwatch to heal - mark
++	   * rules live, the lookup/prohibit they point at missing. Same shape as
++	   * pbr_rule: count what was MEANT to load, per family, name what did not. */
++	  "pbr_route() { case \"$1\" in -4) NROUTE4=$((NROUTE4+1));; -6) NROUTE6=$((NROUTE6+1));; esac; ip \"$@\" || { NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"route failed: ip $*\"; }; }\n"
+ 	  "pbr_skip_add() {\n"
+ 	  "  [ -w \"$SKIP\" ] || return 0\n"
+ 	  "  if [ -n \"$2\" ] && [ ! -d /sys/class/net/\"$2\" ]; then logger -t reaper_pbr \"WireGuard iface $2 down - $1 skip-bypass not installed\"; return 0; fi\n"
+@@ -339,15 +346,92 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "  if [ \"$_fam\" = 6 ]; then _u=$(grep -c ':' \"$SKIP\" 2>/dev/null)\n"
+ 	  "  else _u=$(grep -E '[0-9]' \"$SKIP\" 2>/dev/null | grep -vc ':'); fi\n"
+ 	  "  [ -n \"$_u\" ] || _u=0\n"
++	  /* v3.1.5 (review R05): a bypass this rule NEEDS (P6) that could not be
++	   * installed used to be a log line and `return 0`: the apply reported a
++	   * clean load, the page said Active, and accelerated flows could sail past
++	   * the tunnel. It is now a counted failure like a mark rule that did not
++	   * load - exit 2, E_PARTIAL on the page, the cause named here - and
++	   * SKIPFAIL keeps the "bypass is in place" line below honest. The mark and
++	   * routing rules still go in: for a non-accelerated flow they are right,
++	   * and withholding them would send everything out the WAN instead. */
+ 	  "  if [ \"$_u\" -ge 8 ]; then\n"
+-	  "    logger -t reaper_pbr \"blog skip table full for IPv$_fam ($_u/8) - WireGuard rule for $1 not installed (free a VPN Director/WireGuard slot)\"; return 0\n"
++	  "    logger -t reaper_pbr \"blog skip table full for IPv$_fam ($_u/8) - WireGuard bypass for $1 NOT installed: accelerated flows may miss the tunnel (free a VPN Director/WireGuard slot, then apply again)\"; NFAIL=$((NFAIL+1)); SKIPFAIL=1; return 1\n"
+ 	  "  fi\n"
+ 	  "  printf 'add %%s ' \"$1\" > \"$SKIP\" 2>/dev/null\n"
+ 	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 new\" >> \"$SKIPREC\"\n"
+-	  "  else logger -t reaper_pbr \"blog skip table full - WireGuard rule for $1 may be bypassed by accelerated flows\"; fi\n"
++	  "  else logger -t reaper_pbr \"blog skip table rejected $1 - WireGuard bypass NOT installed: accelerated flows may miss the tunnel\"; NFAIL=$((NFAIL+1)); SKIPFAIL=1; return 1; fi\n"
+ 	  "}\n");
+ }
+ 
++/* v3.1.5 (review R06): what an ipset/domain selector NAMES. The object layer
++ * creates rwfw_<name>/rwfw6_<name> for host/cidr/range/fqdn objects ONLY: a
++ * geo object references Warden's country set (reaper_fw S5) and a MAC object
++ * is a source-side thing, so a rule naming either matched nothing - the
++ * `ipset list -n` guard skipped the mark rule silently, the code's ip rule
++ * still went in and the page said Active. A group has no set of its own
++ * either. So: an object is checked for a routable type, a group is expanded
++ * into its routable members (one mark rule each), and anything else drops the
++ * rule with a syslog line that says why. Object records are
++ * <name>type>value>comment, group records <name>member,member>comment. */
++static int ppbr_obj_routable(const char *type)
++{
++	return !strcmp(type, "host") || !strcmp(type, "cidr") ||
++	       !strcmp(type, "range") || !strcmp(type, "fqdn");
++}
++
++static int ppbr_obj_type(const char *name, char *type, size_t tl)
++{
++	char *copy = strdup(reaper_fw_list_get("obj")), *p, *rec;
++	int found = 0;
++	if (!copy) return 0;
++	p = copy;
++	while ((rec = strsep(&p, "<")) != NULL) {
++		char *n = strsep(&rec, ">"), *t = strsep(&rec, ">");
++		if (n && t && !strcmp(n, name)) { snprintf(type, tl, "%s", t); found = 1; break; }
++	}
++	free(copy);
++	return found;
++}
++
++/* Returns the number of object names written to `out` (comma-separated), or
++ * -1 with `out` holding the reason the rule cannot be honoured. */
++static int ppbr_resolve_object(const char *name, char *out, size_t ol)
++{
++	char type[16], *grp, *p, *rec, *members = NULL, *tok, *save = NULL;
++	size_t len = 0;
++	int n = 0;
++
++	if (ppbr_obj_type(name, type, sizeof(type))) {
++		if (ppbr_obj_routable(type)) { snprintf(out, ol, "%s", name); return 1; }
++		if (!strcmp(type, "geo"))
++			snprintf(out, ol, "object %s is a country (geo) object - Warden owns the country sets and Policy Routing cannot select on them; use a firewall rule", name);
++		else
++			snprintf(out, ol, "object %s is a %s object, which has no destination set to select on", name, type);
++		return -1;
++	}
++	grp = strdup(reaper_fw_list_get("grp"));
++	if (!grp) { snprintf(out, ol, "object list unreadable"); return -1; }
++	p = grp;
++	while ((rec = strsep(&p, "<")) != NULL) {
++		char *gn = strsep(&rec, ">"), *gm = strsep(&rec, ">");
++		if (gn && gm && !strcmp(gn, name)) { members = gm; break; }
++	}
++	if (!members) { free(grp); snprintf(out, ol, "object %s does not exist", name); return -1; }
++	out[0] = 0;
++	for (tok = strtok_r(members, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
++		if (!ppbr_obj_type(tok, type, sizeof(type)) || !ppbr_obj_routable(type)) {
++			logmessage("reaper_pbr", "group %s: member %s skipped (not a host/cidr/range/fqdn object)", name, tok);
++			continue;
++		}
++		if (len + strlen(tok) + 2 > ol) break;
++		len += snprintf(out + len, ol - len, "%s%s", n ? "," : "", tok);
++		n++;
++	}
++	free(grp);
++	if (!n) snprintf(out, ol, "group %s has no member Policy Routing can select on", name);
++	return n ? n : -1;
++}
++
+ /* Emit the idempotent teardown+build script for cfg. teardown_only=1 stops
+  * after the teardown block (used by stop_reaper_pbr and by the disabled path). */
+ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+@@ -421,7 +505,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "\n");
+ 
+ 	if (teardown_only) {
+-		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/expect_rules " PPBR_DIR "/failcount\n" "exit 0\n");
++		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/expect_rules " PPBR_DIR "/expect_rules6 " PPBR_DIR "/failcount\n" "exit 0\n");
+ 		fclose(f);
+ 		if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 		return 1;
+@@ -458,6 +542,20 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 			(void)desc; (void)proto; (void)port;   /* proto/port deferred */
+ 			if (strcmp(en, "1") != 0) continue;     /* disabled */
+ 
++			/* v3.1.5 (review R06): the object an ipset/domain selector names must
++			 * be one the object layer builds a set for; a group expands into its
++			 * usable members and the entries loop below emits one match each. */
++			char objnames[1024];
++			const char *entsrc = selval;
++			int multi = !strcmp(seltype, "src");
++			if (!strcmp(seltype, "ipset") || !strcmp(seltype, "domain")) {
++				if (ppbr_resolve_object(selval, objnames, sizeof(objnames)) <= 0) {
++					logmessage("reaper_pbr", "rule '%s': %s - rule dropped", desc, objnames);
++					continue;
++				}
++				entsrc = objnames; multi = 1;
++			}
++
+ 			tr = ppbr_target(target, &code, &tbl, &fc, &wg);
+ 			if (tr == 0) {
+ 				logmessage("reaper_pbr", "unknown target '%s' - rule dropped", target);
+@@ -469,13 +567,13 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 			 * One mangle rule per entry, one bypass entry per entry for a WG
+ 			 * target; a bad entry drops only itself. Other selector types are
+ 			 * single values - the loop runs once. */
+-			char *ents = strdup(selval), *ep = ents, *ent;
++			char *ents = strdup(entsrc), *ep = ents, *ent;
+ 			int nent = 0, nbad = 0;
+ 			if (!ents) continue;
+ 			while ((ent = strsep(&ep, ",")) != NULL) {
+ 				while (*ent == ' ') ent++;
+ 				if (!*ent) continue;
+-				if (strcmp(seltype, "src") != 0 && nent) break;   /* single-valued types */
++				if (!multi && nent) break;   /* single-valued types */
+ 				if (!ppbr_selector(sel4, sel6, sizeof(sel4), seltype, ent, skipnet, sizeof(skipnet))) {
+ 					logmessage("reaper_pbr", "bad selector %s/%s - entry dropped", seltype, ent);
+ 					nbad++;
+@@ -526,7 +624,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 		 * re-address is followed on the next apply. */
+ 		fprintf(f,
+ 		  "LANNET=\"$(ip -4 route show dev \"$(_nv lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n"
+-		  "[ -n \"$LANNET\" ] && pbr_skip_add \"$LANNET\"\n");
++		  "if [ -n \"$LANNET\" ]; then pbr_skip_add \"$LANNET\"; else logger -t reaper_pbr \"LAN network unknown - the LAN-wide WireGuard bypass could not be installed\"; NFAIL=$((NFAIL+1)); SKIPFAIL=1; fi\n");
+ 	}
+ 
+ 	fprintf(f,
+@@ -540,38 +638,49 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 		  "ip6tables -t mangle -A PREROUTING -j " PPBR_CHAIN " 2>/dev/null\n");
+ 
+ 	/* one ip rule per used mark code, both families (P3 fail-closed for tunnel
+-	 * targets; for v6 the prohibit also catches a tunnel with no v6 routes) */
++	 * targets; for v6 the prohibit also catches a tunnel with no v6 routes).
++	 * v3.1.5 (review R07): CHECKED through pbr_route. The v6 half is checked
++	 * only while IPv6 is enabled on the box - with it disabled a v6 rule that
++	 * does not load is not a leak, so it stays the best-effort add it was. */
++	{
++	const char *r6 = ipv6_enabled() ? "pbr_route -6" : "ip -6";
++	const char *t6 = ipv6_enabled() ? "" : " 2>/dev/null";
+ 	for (i = 1; i < 16; i++) {
+ 		if (!used[i]) continue;
+ 		if (used_tbl[i]) {
+ 			fprintf(f,
+-			  "ip -4 rule add fwmark 0x%X0000/$MASK lookup %s pref %d\n"
+-			  "ip -6 rule add fwmark 0x%X0000/$MASK lookup %s pref %d 2>/dev/null\n",
+-			  i, used_tbl[i], PPBR_PRIO_BASE + i, i, used_tbl[i], PPBR_PRIO_BASE + i);
++			  "pbr_route -4 rule add fwmark 0x%X0000/$MASK lookup %s pref %d\n"
++			  "%s rule add fwmark 0x%X0000/$MASK lookup %s pref %d%s\n",
++			  i, used_tbl[i], PPBR_PRIO_BASE + i, r6, i, used_tbl[i], PPBR_PRIO_BASE + i, t6);
+ 			if (used_fc[i])
+ 				fprintf(f,
+-				  "ip -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
+-				  "ip -6 rule add fwmark 0x%X0000/$MASK prohibit pref %d 2>/dev/null\n",
+-				  i, PPBR_PRIO_KS + i, i, PPBR_PRIO_KS + i);
++				  "pbr_route -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
++				  "%s rule add fwmark 0x%X0000/$MASK prohibit pref %d%s\n",
++				  i, PPBR_PRIO_KS + i, r6, i, PPBR_PRIO_KS + i, t6);
+ 		} else {
+ 			/* BLOCK */
+ 			fprintf(f,
+-			  "ip -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
+-			  "ip -6 rule add fwmark 0x%X0000/$MASK prohibit pref %d 2>/dev/null\n",
+-			  i, PPBR_PRIO_BASE + i, i, PPBR_PRIO_BASE + i);
++			  "pbr_route -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
++			  "%s rule add fwmark 0x%X0000/$MASK prohibit pref %d%s\n",
++			  i, PPBR_PRIO_BASE + i, r6, i, PPBR_PRIO_BASE + i, t6);
+ 		}
+ 	}
++	}
+ 
+ 	if (wg_rules) {
+ 		/* flows learnt before the bypass existed keep their old path */
+ 		fprintf(f, "fc flush >/dev/null 2>&1\n");
+ 		if (wg_lanwide)
+-			fprintf(f, "logger -t reaper_pbr \"%d WireGuard rule(s) with a destination/MAC selector: LAN-wide flow-cache bypass is in place (no hardware acceleration for LAN-sourced flows while they exist - same as a VPN Director all-LAN WireGuard rule)\"\n", wg_rules);
++			fprintf(f, "[ \"$SKIPFAIL\" = 1 ] || logger -t reaper_pbr \"%d WireGuard rule(s) with a destination/MAC selector: LAN-wide flow-cache bypass is in place (no hardware acceleration for LAN-sourced flows while they exist - same as a VPN Director all-LAN WireGuard rule)\"\n", wg_rules);
+ 	}
+ 
+ 	fprintf(f,
+ 	  "echo $NEXPECT > " PPBR_DIR "/expect\n"
+-	  "ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000' > " PPBR_DIR "/expect_rules\n"
++	  /* v3.1.5 (review R07): what was MEANT to load, per family - rwatch heals
++	   * a live count short of this. It was a count of the live rules, which a
++	   * failed add satisfied by definition. */
++	  "echo $NROUTE4 > " PPBR_DIR "/expect_rules\n"
++	  "echo $NROUTE6 > " PPBR_DIR "/expect_rules6\n"
+ 	  "echo $NFAIL > " PPBR_DIR "/failcount\n"
+ 	  /* v3.0.5 (F9): a partial load exits 2, so a CHECKED caller can tell
+ 	   * "every rule live" from "some rules missing". It always exited 0
+@@ -579,7 +688,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	   * ppbr_run()'s callers keep the old arm-and-let-rwatch-retry behaviour
+ 	   * on 2 (only a hard failure rolls back) but now SAY so (E_PARTIAL);
+ 	   * the revert script treats it as a failed revert. */
+-	  "if [ \"$NFAIL\" -gt 0 ]; then logger -t reaper_pbr \"$NFAIL of $NEXPECT mark rule(s) failed to load - the watchdog will retry\"; exit 2; fi\n"
++	  "if [ \"$NFAIL\" -gt 0 ]; then logger -t reaper_pbr \"$NFAIL failure(s) loading $NEXPECT mark rule(s), $((NROUTE4+NROUTE6)) routing rule(s) and the WireGuard bypasses - see the lines above; the watchdog retries what it can\"; exit 2; fi\n"
+ 	  "exit 0\n");
+ 	fclose(f);
+ 	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+@@ -811,7 +920,38 @@ void reaper_pbr_regen(void)
+ 
+ 	if (!is_routing_enabled() || !nvram_match("reaper_pbr_enable", "1")) return;
+ 	if (nvram_match("reaper_pbr_armed", "1")) {
+-		logmessage("reaper_pbr", "a VPN client's Killswitch changed while a routing change is awaiting confirmation - the rules follow it on the next apply");
++		/* v3.1.5 (review R04): stepping aside here left BOTH scripts the
++		 * pending change owns stale - the candidate that Keep promotes to
++		 * apply.sh and the rollback the deadline runs - so a Killswitch or
++		 * enable toggled inside the confirm window was lost until the next
++		 * apply, while the page (which reads nvram live) claimed the new
++		 * state. Regenerate both from their own sources and re-run the
++		 * candidate. The arm token and the deadline are untouched: the window
++		 * keeps counting and Keep/Revert keep their meaning. Under the
++		 * engine's own lock so a concurrent apply cannot write the same
++		 * candidate file; if Keep or the revert took the token meanwhile there
++		 * is nothing pending any more and the non-armed path is the next call. */
++		int plock = file_lock("reaper_pbr"), rc;
++		if (!d_exists(PPBR_ARMED)) { file_unlock(plock); return; }
++		if (!ppbr_gen_rollback())
++			logmessage("reaper_pbr", "VPN settings changed while a routing change awaits confirmation - the recovery script could not be refreshed (a Revert restores the previous switch state)");
++		if (ppbr_cfg_load(&c, 0)) {
++			if (c.enable) reaper_fw_sets_only();
++			if (ppbr_gen(PPBR_CAND, !c.enable, &c)) {
++				rc = ppbr_run(PPBR_CAND, c.enable);
++				if (rc == 2) {
++					nvram_set("reaper_pbr_err", "E_PARTIAL");
++					logmessage("reaper_pbr", "VPN settings changed while a routing change awaits confirmation - the pending rules follow it (some rules failed to load)");
++				} else if (rc != 0) {
++					logmessage("reaper_pbr", "the pending candidate FAILED to re-run after a VPN settings change - rolling back now");
++					system("sh " PPBR_ROLLBACK " 2>/dev/null");   /* takes the arm token */
++					nvram_set("reaper_pbr_err", "E_RUN");
++				} else
++					logmessage("reaper_pbr", "VPN settings changed while a routing change awaits confirmation - the pending rules follow it");
++			}
++			ppbr_cfg_free(&c);
++		}
++		file_unlock(plock);
+ 		return;
+ 	}
+ 	if (!ppbr_cfg_load(&c, ppbr_lastgood_ok())) return;
+@@ -957,8 +1097,14 @@ void reaper_pbr_apply(void)
+ 	 * exists, which is written after the work (F8, below). */
+ 	eval("cru", "a", "reaper_pbr_cc", "* * * * * sh " PPBR_CC);
+ 
++	{
++	/* v3.1.5 (review R04): built and run under the engine's own lock, so a
++	 * reaper_pbr_regen() landing inside the window cannot interleave with
++	 * this write of the same candidate file. */
++	int plock = file_lock("reaper_pbr");
+ 	if (c.enable) reaper_fw_sets_only();
+ 	if (!ppbr_gen(PPBR_CAND, !c.enable, &c)) {
++		file_unlock(plock);
+ 		logmessage("reaper_pbr", "candidate FAILED to build - rolling back now");
+ 		system("sh " PPBR_ROLLBACK " 2>/dev/null");   /* takes the arm token, clears _err */
+ 		nvram_set("reaper_pbr_err", "E_BUILD");
+@@ -966,6 +1112,8 @@ void reaper_pbr_apply(void)
+ 		return;
+ 	}
+ 	rc = ppbr_run(PPBR_CAND, c.enable);             /* sets were just built when enabled */
++	file_unlock(plock);
++	}
+ 	if (rc != 0 && rc != 2) {
+ 		/* security review 2026-08-22: a candidate that did not run is not a
+ 		 * candidate - roll back now rather than arm a timer on nothing
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 7d3b8df13f..a5b2c82644 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -175,24 +175,30 @@ static void rwatch_gen(void)
+ 	  "    reaper_lockrun \"$_sh\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+-	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect_rules ]; then\n"
+-	  "  _exr=$(cat /tmp/reaper_pbr/expect_rules 2>/dev/null); case \"$_exr\" in ''|*[!0-9]*) _exr=0;; esac\n"
++	  /* v3.1.5 (review R07): expect_rules is now the number of v4 routing rules
++	   * the apply MEANT to install (it was a count of the live ones, so a rule
++	   * that failed to add was never short); expect_rules6 is the v6 figure,
++	   * written as 0 while IPv6 is disabled. One pass per family. */
++	  "for _af in 4 6; do _fam=; [ \"$_af\" = 6 ] && _fam=6\n"
++	  "if [ \"$(_nv reaper_pbr_active)\" = 1 ] && [ -s /tmp/reaper_pbr/expect_rules$_fam ]; then\n"
++	  "  _exr=$(cat /tmp/reaper_pbr/expect_rules$_fam 2>/dev/null); case \"$_exr\" in ''|*[!0-9]*) _exr=0;; esac\n"
+ 	  "  _shr=/tmp/reaper_pbr/apply.sh; [ -d /tmp/reaper_pbr/armed ] && [ -f /tmp/reaper_pbr/candidate.sh ] && _shr=/tmp/reaper_pbr/candidate.sh\n"
+-	  "  _lvr=$(ip -4 rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')\n"
++	  "  _lvr=$(ip -$_af rule show 2>/dev/null | grep -cE 'fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000')\n"
+ 	  "  _lstr=$(cat /tmp/reaper_pbr/heal.rat 2>/dev/null || echo 0)\n"
+ 	  /* same give-up cap as the mark-rule heal above, sharing its counter:
+ 	   * both re-run the SAME script, so five attempts is five attempts. */
+ 	  "  [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -ge \"$_exr\" ] && rm -f /tmp/reaper_pbr/heal.rn /tmp/reaper_pbr/heal.rgaveup\n"
+ 	  "  _nr=$(cat /tmp/reaper_pbr/heal.rn 2>/dev/null || echo 0); case \"$_nr\" in ''|*[!0-9]*) _nr=0;; esac\n"
+ 	  "  if [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -ge 5 ]; then\n"
+-	  "    [ -f /tmp/reaper_pbr/heal.rgaveup ] || { : > /tmp/reaper_pbr/heal.rgaveup; logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
++	  "    [ -f /tmp/reaper_pbr/heal.rgaveup ] || { : > /tmp/reaper_pbr/heal.rgaveup; logger -t rwatch \"policy routing: $_lvr of $_exr IPv$_af rule(s) live after 5 heals - giving up until it converges or you re-apply\"; }\n"
+ 	  "  fi\n"
+ 	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$_exr\" -gt 0 ] && [ \"$_lvr\" -lt \"$_exr\" ] && [ \"$_nr\" -lt 5 ] && [ $((UP-_lstr)) -ge 120 ] && [ -x \"$_shr\" ]; then\n"
+ 	  "    echo $UP > /tmp/reaper_pbr/heal.rat; echo $((_nr+1)) > /tmp/reaper_pbr/heal.rn\n"
+-	  "    logger -t rwatch \"policy routing: $_lvr of $_exr ip rule(s) live - re-applying\"\n"
++	  "    logger -t rwatch \"policy routing: $_lvr of $_exr IPv$_af rule(s) live - re-applying\"\n"
+ 	  "    reaper_lockrun \"$_shr\" >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "fi\n"
++	  "done\n"
+ 	  "\n"
+ 	  "# boot grace: the WAN is legitimately down for the first minutes\n"
+ 	  "[ \"$UP\" -lt 300 ] && exit 0\n"
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index 5d638b234e..5f784c5e77 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -1393,14 +1393,21 @@ static void serve_conn(int fd)
+ 	char *body = NULL;
+ 	size_t got;
+ 
++	/* Arm the read clock BEFORE the TLS wrap, not merely before the first read
++	 * (v3.1.5, review R10): the SO_RCVTIMEO on this socket bounds one read
++	 * inside SSL_accept(), not the handshake, so a peer dripping a partial TLS
++	 * record every few seconds kept the daemon in the handshake indefinitely -
++	 * and with it the expiry and USB-key checks that run only between
++	 * connections. SIGALRM without SA_RESTART makes the blocked read return
++	 * EINTR, which mssl reports as a failed accept. Everything from here to the
++	 * end of the body is pre-auth or auth-critical and must not be able to stall. */
++	rmcp_read_clock(1);
++
+ 	/* wrap the accepted socket: TLS via the router's cert, or plain HTTP -
+-	 * exactly as httpd does (ssl_server_fopen / fdopen "r+", read then write). */
++	 * exactly as httpd does (ssl_server_fopen / fdopen "r+", read then write).
++	 * Neither wrapper closes the socket when it fails, so this path does. */
+ 	fp = g_https ? ssl_server_fopen(fd) : fdopen(fd, "r+");
+-	if (!fp) { close(fd); return; }
+-
+-	/* Arm the read clock BEFORE the first read: everything from here to the end
+-	 * of the body is pre-auth or auth-critical and must not be able to stall. */
+-	rmcp_read_clock(1);
++	if (!fp) { rmcp_read_clock(0); close(fd); return; }
+ 
+ 	/* request line */
+ 	if (!fgets(line, sizeof(line), fp)) goto done;
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 70b5e2b3d8..f9f7992711 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -503,7 +503,10 @@ function loadObjects(){
+ function renderObjects(){
+   var sel=document.getElementById('e_obj'), keep=sel.value;
+   var h='<option value="">'+esc(`<#RVR_26#>`)+'</option>', i;
+-  for(i=0;i<OBJ.length;i++) if(OBJ[i][0]) h+='<option value="'+esc(OBJ[i][0])+'">'+esc(OBJ[i][0])+(OBJ[i][1]==='fqdn'?'':' ('+esc(OBJ[i][1]==='cidr'?`<#RFW_110#>`:OBJ[i][1]==='range'?`<#RFW_111#>`:OBJ[i][1]==='mac'?`<#RFW_112#>`:OBJ[i][1]==='geo'?`<#RFW_114#>`:OBJ[i][1]||'')+')')+'</option>';
++  /* v3.1.5 (review R06): only objects the engine can select on. A geo object is Warden's
++     (no rwfw_ set exists to match) and a MAC object selects a source device - a rule naming
++     either matched nothing while reading Active; rc now drops such a rule and says so. */
++  for(i=0;i<OBJ.length;i++) if(OBJ[i][0] && OBJ[i][1]!=='geo' && OBJ[i][1]!=='mac') h+='<option value="'+esc(OBJ[i][0])+'">'+esc(OBJ[i][0])+(OBJ[i][1]==='fqdn'?'':' ('+esc(OBJ[i][1]==='cidr'?`<#RFW_110#>`:OBJ[i][1]==='range'?`<#RFW_111#>`:OBJ[i][1]==='mac'?`<#RFW_112#>`:OBJ[i][1]==='geo'?`<#RFW_114#>`:OBJ[i][1]||'')+')')+'</option>';
+   for(i=0;i<GRP.length;i++) if(GRP[i][0]) h+='<option value="'+esc(GRP[i][0])+'">'+esc(GRP[i][0])+` (<#RVR_62#>)</option>`;
+   sel.innerHTML=h; if(keep) sel.value=keep;
+   var tb=document.getElementById('objrows'); tb.innerHTML=''; var n=0;
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually

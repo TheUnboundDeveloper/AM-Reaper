@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.4** · 2026-09-12 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.4** <!--@treever--> — `3006.102.8_Reaper_v3.1.4`. **An OpenVPN server can be created again**: since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate, because the request carried an extension that cannot exist on a request; the extensions now go only on the signing call, and the issued certificate carries them. **DDNS no longer restarts itself every 30 seconds** on a dual-WAN router whose IPv6 lives on the other WAN — it records that the WAN has no IPv6, stands down, and resumes on its own when any interface gains one. **The EDNS Client Subnet option is gone**, page and emitter both. **The GT-BE19000 joins the fleet** with its closed per-model layer, radio firmware for both of its chips taken from the non-AI vendor image, its own rtl8372 and platform archives, and a derived identity overlay; it publishes as a prerelease. And **the fleet cut can now delete a language-pack key**: its dictionary guard measured "last synced" against a merge base frozen in July, and now uses canon's previous rung. The series stands at **652 patches** (0649–0652 for v3.1.4); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.5** <!--@treever--> — `3006.102.8_Reaper_v3.1.5`. **The security review lands.** An independent adversarial review of the v3.1.5 tree produced sixteen items and every one was re-verified in source before anything changed. Six inherited components carry their fixes: **netatalk** (Time Machine) had CVE-2022-43634, a pre-authentication overflow the 08-30 check had wrongly called absent; **strongSwan** CVE-2026-47895; **Tor 0.4.9.12**, the 2026-09-08 security release; **avahi**'s CNAME crash trio; **lighttpd** CVE-2018-25103; **net-snmp** CVE-2022-44792/-44793. **Policy Routing** no longer loses a Killswitch or enable change made inside the confirm window, counts a WireGuard bypass it could not install as the failure it is, checks its own `ip rule` adds against the intended count, and resolves the object a rule names (a group now expands into its members; a geo or MAC object is refused with the reason in syslog). **The Advisor's request clock now covers the TLS handshake.** **A malformed port-forward entry can no longer take the whole nat table down with it.** **OpenVPN server certificates**: the second OpenSSL 3.5 cause, a RANDFILE on the read-only root, is fixed, and a release check now runs the firmware's own PKI chain on the staged binaries while a second executes the port-forward emitter. **The routing target is an interface again**: the Target column names the interface, a Status column carries its state, and the Killswitch counts only for an enabled client, as VPN Director does. The series stands at **661 patches** (0653–0661 for v3.1.5); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models plus the **RT-BE92U**, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)); the RT-BE92U images carry it as an experimental prerelease. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. RT-BE92U development stopped after v3.1.2 (upstream Merlin has taken that model on); its last Reaper build stays available and its update line is frozen there. |
@@ -19,6 +19,24 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.5 — the security review lands, and the routing target is an interface again
+
+The full account, item by item, is in [`CHANGELOG.md`](CHANGELOG.md#v315--the-routing-target-is-an-interface-again) and the
+review record in [`REAPER-FIXES.md`](REAPER-FIXES.md). In short:
+
+- **Six inherited components fixed:** netatalk CVE-2022-43634 (present, contrary to the 08-30 check; `SECURITY.md` corrected),
+  strongSwan CVE-2026-47895, Tor 0.4.9.12, the avahi CNAME trio, lighttpd CVE-2018-25103, net-snmp CVE-2022-44792/-44793.
+- **Policy Routing failure paths:** a Killswitch or enable toggled inside the commit-confirm window is honoured on both the
+  pending candidate and its recovery; an uninstallable WireGuard bypass is a counted failure the page reports; `ip rule` adds
+  are checked and healed against the intended count per family; a rule's object is resolved (groups expand, geo/MAC refused).
+- **Two release checks that a compile cannot replace:** the firmware's own OpenVPN PKI chain runs on the staged binaries under
+  qemu on every build, and the port-forward emitter is executed against known rule lists. The second found a malformed-port
+  case that would have aborted the whole nat table; it is now gated.
+- **OpenVPN server certificates, second cause:** the scripts give OpenSSL 3.x a writable RANDFILE. **reaper_diag 1.3.15** adds
+  section 14f, the port-forwarding truth in one command.
+- **The routing target is an interface again** (reviewer round): Target = interface, a Status column, and the Killswitch counts
+  only for an enabled client, exactly as VPN Director. Language packs lockstep 6921.
 
 ## What's new in v3.1.4 — an OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet
 

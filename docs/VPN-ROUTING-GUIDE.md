@@ -1,6 +1,6 @@
 # Reaper Policy Routing — user guide
 
-> **Doc status:** current as of **v3.1.3** · 2026-09-11 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 > **This guide has moved.** Every section below now lives in
 > **[`REAPER-GUIDE.md`](REAPER-GUIDE.md)**, the single Reaper manual, under
@@ -18,9 +18,10 @@ which path** — an OpenVPN or WireGuard client, the plain WAN, or nowhere — b
 is the piece VPN Director was missing, because it can match a named **object or domain list** or a
 **device**, not only an address. A Policy Routing rule **wins** over a VPN Director rule for the
 same traffic. A rule chooses the **path**; what happens when that path is gone is decided by that
-VPN client's own **Killswitch**, on its VPN page — blocked while it is on, falling back to the WAN
-while it is off — exactly as for VPN Director (since v3.1.3; before that every rule blocked,
-whatever the Killswitch said). It is off by default, and turning it on changes nothing until you
+VPN client's own **Killswitch**, on its VPN page — blocked while it is on and the client is enabled,
+falling back to the WAN while it is off or the client is switched off — exactly as for VPN Director
+(since v3.1.3, with the enabled-client condition since v3.1.5; before that every rule blocked,
+whatever the Killswitch said). The page's **Status** column says which applies to each rule. It is off by default, and turning it on changes nothing until you
 add a rule.
 
 ---

@@ -1,6 +1,6 @@
 # Security Policy
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-08 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 This project exists to harden the RT-BE Series firmware — **RT-BEXXU** (primary, hardware-validated)
 plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and **GT-BE19000** siblings

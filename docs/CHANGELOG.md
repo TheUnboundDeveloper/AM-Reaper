@@ -8,9 +8,9 @@ per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
 Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
-The RT-BEXXU is the primary, hardware-validated model; the **RT-BE86U**,
-**RT-BE88U**, **GT-BE98**, and **GT-BE98 Pro** are built from per-model branches
-of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
+**RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** are
+built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -558,7 +558,7 @@ Six backlog items that needed no field data, plus one carry-over:
   station table caught up. The status action now reads the live mesh client lists the Devices page
   already uses and lets a live wireless signal win over the cached flag. Display only.
 - **rwatch heals a missing Warden chain.** It healed a poisoned one; an absent one, the end state
-  of the stuck-nvram path that fits the BE92U addon-box report, had no healer. Once per ten minutes,
+  of the stuck-nvram path that fits the add-on-box field report, had no healer. Once per ten minutes,
   under the firewall lock, with a log line.
 - **Dashboard device list caps at four rows** and scrolls the rest, as asked; the old bound was
   whatever the neighbouring card's height happened to be.
@@ -618,8 +618,8 @@ all three carriers were down.
 ## v3.0.7 — The 3.0.x window on every model *(built RT-BE96U)*
 
 The fleet rung. It consolidates every rung since v3.0.0 — v3.0.1 through v3.0.6, each built and
-verified on the RT-BE96U as it landed — into one cut, so the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro
-and RT-BE92U take the whole window from the patch series (0594–0602, bringing the series to 602). The
+verified on the RT-BE96U as it landed — into one cut, so the RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro
+take the whole window from the patch series (0594–0602, bringing the series to 602). The
 per-version sections below carry the detail; in brief:
 
 - **Policy Routing keeps its word.** It no longer fails open on every boot and WAN re-dial, its
@@ -1292,7 +1292,7 @@ was written for.
   applies to the default-policy and guest-hours selectors lower down the page.
 - **The dashboard names the processor your router actually has.** The System card's heading read
   "4-core · BCM4916" on every model, because it was written when every supported model was a
-  BCM4916 — so on an RT-BE92U, which is a BCM6765, it confidently named the wrong chip. The little
+  BCM4916 — so on a model with a different SoC it confidently named the wrong chip. The little
   per-core activity bars underneath were four fixed bars for the same reason: a router with fewer
   cores left one permanently dark, and one with more simply did not show them. Both now come from
   the router itself — the chip and core count from the same place the System Information page reads
@@ -1320,8 +1320,7 @@ was written for.
   port-protection list, which holds certain files back from the per-model sync, had been holding
   back two pages that gate at runtime on the model rather than per branch — freezing four sibling
   models on a pre-2026-08-17 system-information chart while the other half of the same rewrite
-  synced. Both are released from the list, so the siblings carry the whole rewrite, and the
-  RT-BE92U gets its real animated header.
+  synced. Both are released from the list, so the siblings carry the whole rewrite.
 
 ## v2.7.7 — AdGuard removed, and the update check runs again *(built RT-BE96U)*
 
@@ -1354,10 +1353,10 @@ was written for.
 - **Gatekeeper diagnostics report the real re-list count.** The diagnostic counted by pattern-matching
   firewall output and undercounted; it now reads the count the service itself records.
 
-## v2.7.6 — Policy Routing survives a reboot, Warden never fails silently *(built RT-BE96U + RT-BE92U; fleet cut)*
+## v2.7.6 — Policy Routing survives a reboot, Warden never fails silently *(built RT-BE96U; fleet cut)*
 
 *This rung folds the v2.7.4–v2.7.6 field-fix work (patches 0529–0535) into one fleet cut across
-all five 96813GW models; RT-BE92U (BCM6765) carries the same shared changes on its own branch.*
+all five 96813GW models.*
 
 - **Policy Routing comes up complete after a reboot — no UI Apply needed.** A rule that matches an
   address set could not load until that set existed, and at boot the set was sometimes a moment
@@ -1380,7 +1379,7 @@ all five 96813GW models; RT-BE92U (BCM6765) carries the same shared changes on i
   “535 — series as of v2.7.6” on a local image and the plain count on a matching CI image. Fixes
   both local and CI builds.
 
-## v2.7.5 — one dedicated Addons section in the rail *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
+## v2.7.5 — one dedicated Addons section in the rail *(built RT-BE96U; folded into the v2.7.6 cut)*
 
 - **Merlin add-ons now live in one “Addons” section at the end of the nav rail**, instead of being
   scattered into (and rearranging) the stock menus. Whether an add-on pushes its own menu, drops a
@@ -1388,15 +1387,15 @@ all five 96813GW models; RT-BE92U (BCM6765) carries the same shared changes on i
   unfolding Addons group; the stock menus keep their own icons, order and tabs. An add-on page
   still gets its siblings as its tab bar.
 
-## v2.7.4 — first-boot “Secure Your Router” flash fixed *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
+## v2.7.4 — first-boot “Secure Your Router” flash fixed *(built RT-BE96U; folded into the v2.7.6 cut)*
 
 - **Every nav item no longer flashes the “Secure Your Router” card on a box with no guest network.**
   A first-run gate keyed on `sdn_rl` being at its default treated any router that had never created
   a guest/SDN profile as “Wi-Fi not configured”, bouncing it back to the first-boot page on every
   navigation. That gate is removed — the `w_Setting` gate already covers a genuinely unconfigured
-  box, and a factory-reset unit still gets both wizard steps. (Surfaced on RT-BE92U in the field.)
+  box, and a factory-reset unit still gets both wizard steps. (Surfaced in the field.)
 
-## v2.7.3 — polish pass + Gatekeeper learns AiMesh exists *(built RT-BE96U + RT-BE92U; folded into the v2.7.6 cut)*
+## v2.7.3 — polish pass + Gatekeeper learns AiMesh exists *(built RT-BE96U; folded into the v2.7.6 cut)*
 
 **Firmware-update manifest signing — built, and shelved inert for now (owner decision).** The
 full machinery exists: the manifest can be signed (RSA-4096/SHA-256) with a key that exists only
@@ -2274,35 +2273,35 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **Hardened the internal config database and the VPN pages against injection and overflow.** Values stored in the on-device statistics database are now escaped correctly; the VPN-profile page's fixed-size buffers are bounded to their real size; and the OpenVPN config-upload endpoint accepts only its own settings instead of any value.
 - **Stronger request protection and safer defaults.** The Diagnostics and Warden "live status" tools now require the same anti-forgery token the rest of the interface uses, so another web page can't trigger them in the background. Outbound TLS made through the internal helper now verifies the server certificate against the shipped trust store and refuses rather than connect blindly. Threat-blocking now flushes the hardware flow cache so a newly blocked address is dropped immediately instead of after existing connections age out. JSON responses are served and encoded correctly.
 - **Known limitations, stated plainly.** The bundled Samba is on an end-of-life branch (no reachable exploit found; a maintained-branch plan is tracked). The AiMesh config-sync and network-discovery services ship as closed vendor binaries and could not be source-audited. A full finding-by-finding status list is in the audit reports.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-31.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-31.
 
 ## v1.9.9b–c — Set every Wi-Fi band on one page, apply once
 - **The Professional wireless page now shows all three radios at once.** Where the stock page let you configure one band at a time — each change forcing its own Wi-Fi restart — the Professional tab is now a single page laying 2.4, 5, and 6 GHz side by side. Set anything across all three bands and press **Apply all** once: only the settings you actually changed are written, and every radio restarts together a single time instead of once per band. Settings that don't apply to a given band are shown but disabled, so the full shape of each radio stays visible. *(The classic per-band page is retained unchanged — Region and the wireless scheduler still live there. New on-page text is English for now, with translations to follow.)*
 - **SSID visibility and client isolation were kept off this page.** On this hardware the main network is served through a software-defined-network profile, so the radio-level "Hide SSID" and "AP isolation" switches only ever affected an internal interface — never the network you actually join, so toggling Hide SSID here didn't hide the SSID. Those controls stay on the General Wireless and Network pages, where they act on the real SSID.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-31.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-31.
 
 ## v1.9.9a — Wireless Diagnostics: clearer Unlock, and scanning the band you're on
 - **Unlocking a channel now warns first.** Locking or unlocking a channel restarts that radio, dropping every client on it for about 20 seconds — which can look like the router has frozen. The **Unlock** button now asks for confirmation and explains the brief drop before proceeding. (Per-frequency restart isn't possible on this platform, so the radio restart is unavoidable.)
 - **Auto Scan no longer stops after a single channel when you scan your own band.** Every channel the scan tests briefly restarts the radio; if your browser was on the band being scanned, that restart dropped your connection and the scan gave up after the first channel. The scan now tolerates those short reconnection gaps and works through the whole band. It is still cleanest to run a scan from a wired client or a different band.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-31.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-31.
 
 ## v1.9.9 — Wireless Diagnostics: Auto Scan & Capture made reliable
 - **A stalled job no longer blocks the tools for minutes.** If a previous scan or capture ended abnormally — for example, interrupted by a Wi-Fi restart — a leftover marker could make every new Auto Scan and Targeted Capture report "busy" and leave their Start buttons disabled for up to ten minutes. The page now checks whether the earlier job is genuinely still running and clears a stale marker automatically, and a capture that can't start now shows the reason instead of silently doing nothing.
 - **"Apply Best Channel" names the band you scanned.** The confirmation now shows the actual band and channel being pinned instead of always reading "6 GHz." The channel was already applied to the correct radio; the wording just made it look as though only 6 GHz was ever targeted.
 - **Quad-band clarity.** On models with two 5 GHz radios, the band selectors now tell them apart instead of listing two identical "5 GHz" entries.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-31.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-31.
 
 ## v1.9.8 — Add-on menu fix, Warden persistence disclosure, change auditing, full localization pass
 - **Third-party add-on menu links open correctly.** When an add-on such as scMerlin adds a "Help & Support" entry that points to an external site, the settings shell now opens it in a new browser tab instead of silently redirecting the frame to the Network Map. The same-origin iframe protection is unchanged — only genuine off-site menu links are affected.
 - **Warden tells you when protection won't survive a reboot.** If Reaper Warden is enabled but `/jffs` is disabled or read-only, its threat/geo feed cache can't be saved: enforcement still runs from RAM, but there's no cross-reboot or no-internet-boot protection. The Warden page now shows a clear banner when this is the case, so the gap is visible instead of silent. (Disclosure only — by design the cache stays on internal flash, which must restore before the firewall arms.)
 - **Change auditing.** Turning a Reaper feature on or off, or changing its settings, now writes a structured entry to the System Log — covering Gatekeeper (device-access changes, enable/disable, config), the Wireless channel monitor, and the Devices/Storage actions. These flow to remote syslog and the optional syslog storage dataset, giving an at-a-glance record of what changed and when.
 - **Full 24-language localization pass.** The Devices, Long-Term Storage, and Warden pages — plus a handful of dashboard and QoS strings — were English-only in every language. All 219 remaining strings are now translated into the 24 supported languages; English remains selectable. (Machine-assisted; native review is still pending before public release.)
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-30.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-30.
 
 ## v1.9.7 — Traffic Analyzer accuracy (per-network + the router's own traffic) + dashboard client-list
 - **The By-Network panel now reconciles with the live WAN chart.** With the flow accelerator on, the Traffic Analyzer only credited bytes to a network or a device when it could pair the upload and download halves of a connection — so **traffic the router itself generates** (the built-in speed test, DNS, firmware checks, the latency probe) was counted on the WAN line but dropped from every per-device and per-network view, and the By-Network total (br0) never matched the WAN chart. The collector now attributes each flow straight from its own LAN-side interface, and locally-terminated router traffic appears under a new **"Router"** row — so By-Network + Router + clients add up to the WAN line, and a client's download always lands on its network even when the return path isn't paired. Per-device client accounting is unchanged. *(This is the IPv4 path; the separate per-client IPv6 limitation is unchanged and only affects IPv6-enabled lines.)*
 - **Dashboard "Clients" card.** The **View List** button now takes you to the full **Devices** page instead of a small in-place popup, and the client list grows to fill the lower part of its card instead of leaving an empty gap.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-30.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-30.
 
 ## v1.9.6 — Dashboard readability, Warden country picker, status at a glance
 - **Security Posture now covers Gatekeeper and Warden.** The dashboard's Security Posture card gained rows for **Gatekeeper** (device access control) and **Reaper Warden** (threat/geo firewall), each showing enabled/off at a glance alongside the existing posture checks.
@@ -2310,50 +2309,50 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **USB storage shows up right after a boot.** The dashboard's USB tiles render once when the page loads, but USB drives don't mount until ~40–50 s into boot — so a freshly rebooted router showed no USB until you reloaded. The dashboard now re-polls USB status for the first ~90 s after load, so the drives and the storage ring fill in on their own.
 - **Client list is easier to read.** The per-client detail text on the dashboard was small and grey; it's now larger and brighter with more card contrast.
 - **System Info "Features" row reflects the real build.** The feature list now advertises Reaper's own packages — Gatekeeper, Warden, the Devices manager, unified storage, and the health watchdog — alongside the ones already listed.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.5 — First-boot: default credentials can no longer slip through
 - **A factory-fresh router always forces you to set an admin username and password.** After the Reaper dashboard became the post-login landing page, a factory box could reach the interface on the default `admin`/`admin` without being sent through the forced credential-change step — the dashboard carried neither of the two enforcement paths the stock and Reaper first-boot flows rely on. Both the server-side post-login redirect and an early dashboard guard now send a default-credentials box to the first-boot setup page before anything else renders. The check only fires while the credentials are still default, so a configured or upgraded router never sees it.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.4 — Devices page: Wi-Fi clients no longer mislabeled "Wired"
 - **Wired vs wireless is now decided by the bridge, not a guess.** The Devices page had been calling a client "Wired" whenever it wasn't in the Wi-Fi association list — but that list intermittently omits Wi-Fi 7 / 6 GHz / MLO stations, so real Wi-Fi clients were shown as Wired. The page now reads the LAN bridge's forwarding table to see which port (and which radio's band) a device was actually learned on, so wired and wireless — and the band — are classified correctly. It never downgrades a confirmed Wi-Fi client on a stale entry.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.3 — Devices page: Wi-Fi 7 multi-link devices shown as one
 - **An MLO client is now a single device, not several.** With Wi-Fi 7 Multi-Link Operation, the driver reports each of a device's per-band links as its own address-randomized, lease-less entry, so a single laptop or phone could appear as several "Private address / No lease" rows. The Devices page now uses the driver's link-to-device mapping to fold those links into one device row showing its combined bands (e.g. "MLO · 5+6 GHz"). No effect when MLO is off.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.2 — Devices page: MLO awareness + an offline-device display fix
 - **Multi-Link (Wi-Fi 7) links are labeled, not flagged as problems.** Before the full row-merge (v1.9.3), MLO clients' extra per-link addresses surfaced as alarming "Private address / No lease" rows. The page now detects when MLO is active and labels those links "MLO · <band>" with an explanatory tooltip, and stops counting them as unnamed / randomized / needs-attention.
 - **Offline devices show a clean connection cell.** A never-seen or offline device printed a literal dash artifact in the Connection column (an escaping slip); it now renders correctly.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.1 — Device Identity Manager (Rung B): choose where long-term history lives
 - **A Storage tab to pick where opt-in history is kept.** A new **Storage** page (under System Log) lets you select a durable location — **RAM**, **JFFS**, or a **USB** dot-directory — for the opt-in history datasets (devices, traffic, health-watch, channel-quality, syslog mirror), with per-dataset toggles and a health line. No new data store and no new background service are introduced; it simply directs the existing writers. The Traffic Analyzer's own storage selector becomes a read-only pointer to this one page, so there is a single place that controls where data is written.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.9.0 — Device Identity Manager (Rung A): one place for every device
 - **A new "Devices" page that unifies what ASUS scatters.** ASUS keeps a device's identity across several separate places — its custom name, its DHCP reservation, its Gatekeeper access state, and its live presence (DHCP leases + address table + Wi-Fi association). The new **Devices** page (its own left-nav section, between USB Application and System Info) correlates all of them **per MAC** into one rounded view: inline rename, a pool-aware reservation ("Pin") dialog that warns when your DHCP pool is tight, a Gatekeeper state per row, an attention card for orphaned / duplicate reservations and pool exhaustion, filter chips and search, and a 24-hour traffic figure per device with a deep link to the Traffic page. Every change is a careful read-modify-write that preserves the other fields of each record — no sixth store is created — and presence is always computed from leases + address table + Wi-Fi, so it works even with Gatekeeper off. *(New page text is English-seeded across all 25 languages; translations to follow.)*
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.8.9 — WireGuard peer list: usable buttons, unclipped dialog
 - **The peer-row buttons are visible again.** On **VPN Server › WireGuard**, the per-peer edit / QR / trash controls rendered as solid red rectangles — a Reaper button-recolor rule had overwritten the sprite-based icons. They are back to white glyphs on a crimson tile.
 - **The peer-edit dialog no longer runs off-screen.** Expanding "More Settings for Site to Site Usage" grew the popup past its frame with no way to scroll to the rest; the dialog now refits when a section expands or collapses. *(That section's title, previously hard-coded English, is now translated.)* *(Metal-validated on hardware; the VPN pages can't be exercised in the mock.)*
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.8.8 — Warden: LAN-lockout fixes, persistence that actually works, and a new health watchdog
 - **A Warden feed update can no longer lock your LAN off the internet.** A field incident traced to the scheduled threat-feed refresh: one feed (FireHOL level-1) includes private/bogon ranges (192.168/16, 127/8, …), which Warden ingested and then dropped, cutting all new LAN traffic until a power cycle. The updater now filters reserved/private ranges (IPv4 and IPv6) from every list it ingests, and the firewall chain order is rebuilt so the structural anti-lockout rules (loopback, DHCP, established connections, your allow-list, the LAN return path) always come **before** any feed or geo drop.
 - **Warden's blocklist now survives a reboot.** The cache-save step had been calling `ipset save` in a way that silently wrote an empty file, so restoring on boot never actually worked; saves are now per-set and only non-empty caches are kept — so protection persists across reboots as intended. Entry validation was also tightened (bad country codes / CIDRs are rejected and logged instead of silently mangled).
 - **New: `rwatch` health watchdog (on by default).** A lightweight probe runs every 5 minutes — a first-hop WAN ping (no external hosts), a loopback DNS check, a Warden "canary" that verifies your own LAN IP never matches a block set (re-applying the rules and logging a CRITICAL event if it ever does), and a check for the silent accelerator-wedge signature the stock firmware has no watchdog for. State transitions are written to the system log, and the first failure dumps bounded diagnostics to JFFS for later inspection.
 - **Hardware QoS re-apply is now idempotent** — it skips a live-queue rewrite when the configuration hasn't changed, avoiding needless disruption.
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-29.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-29.
 
 ## v1.8.7 — Reaper Warden: IPv6 dual-stack + per-country block stats
 - **Warden now protects IPv6 as well as IPv4.** The threat/geo firewall gained a parallel IPv6 stack — v6 threat-feed and country sets, v6 firewall chains, v6 CIDR validation, Spamhaus DROPv6 and per-country IPv6 ranges, and v6 anti-lockout for link-local / ULA / your delegated prefix. Manual block/allow entries are routed to the right family automatically.
 - **New: Top blocked countries.** Each blocked country now has its own firewall rule and packet counter, so the Warden page shows a live **Blocked-hits** tile and a **Top blocked countries** card (refreshed every 30 s) — you can see which countries are actually hitting your router. The page wording was tightened, with an explicit "not a sole defense" caveat you can dismiss.
 - **Full translation.** The complete Warden string set is now translated across all 24 non-English languages (was English-seeded).
-- Built + shipped on the RT-BEXXU, both variants, 2026-07-28.
+- Built + shipped on the RT-BE96U, both variants, 2026-07-28.
 
 ## v1.8.6 — Independent review of the audit remediation: clean, plus five hardening tightenings
 - **Two independent adversarial code reviews — one of the v1.8.4/v1.8.5 audit fixes, one a fresh sweep of the Reaper-authored subsystems — found no live bugs, no security holes, and no performance regressions.** That is the sign-off on the whole audit-remediation arc below: the fixes landed cleanly. Each review verified every candidate against the source before reporting it, and the five low-risk, defense-in-depth items that survived are all closed here: a portability guard on the captive-portal cleanup path (so it compiles identically on every model), a belt-and-suspenders guard against a double-free on an out-of-memory error path in the traffic-history reader, a character-set gate on the LAN interface name used in the Gatekeeper teardown script (matching the guard its apply-path twin already carried), hard MAC-address validation before a device address reaches the Gatekeeper page's action buttons, and numeric emission of two Advisor status fields so a blank value can never malform the response. None was exploitable in normal use.
@@ -2387,7 +2386,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   advisory published since 4.15.13 confirmed the *rest* do not apply to this build — they're either in
   the Active-Directory/LDAP/Kerberos code that Reaper does not compile in, were introduced in a later
   Samba than 4.15.13, or depend on file-sharing options this build never enables. This one was
-  backported as defense-in-depth. *(Applies to the **RT-BEXXU**, which is the model on Samba 4.)*
+  backported as defense-in-depth. *(Applies to the **RT-BE96U**, which is the model on Samba 4.)*
 - **New: Reaper Warden — block malicious and by-country IP ranges at the router.** A new
   **Warden** page adds an optional, **default-OFF** firewall layer built on the kernel's `ipset`
   engine. It can automatically pull well-known **threat feeds** (known malware/botnet/attacker IP
@@ -2441,7 +2440,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   A new **"SMBv3 (encrypted)"** choice on the Samba page turns on SMB3-only sharing with the
   transfer **encrypted end to end** (AES-GCM/CCM), so files copied to and from a USB drive on the
   router are no longer sent in the clear on your LAN. Current Windows, macOS, and Linux clients
-  connect faster and more reliably over SMB3. *(Ships on the **RT-BEXXU** first; the other models
+  connect faster and more reliably over SMB3. *(Ships on the **RT-BE96U** first; the other models
   stay on the older Samba for now.)*
 - **SNMP is now SNMPv3-only — no more cleartext monitoring.** If you use SNMP to monitor the
   router, the insecure legacy versions (**SNMPv1 / SNMPv2c**, which send a plaintext "community
@@ -2471,7 +2470,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   **second 5 GHz band was missing** and the **2.4 GHz radio and its connected clients were dropped**
   from the page. The GT-BE98 is now handled like its quad-band sibling (GT-AXE16000, which shares the
   same band order), so all four sections — 5 GHz, 5 GHz-2, 6 GHz, and 2.4 GHz — and their client lists
-  appear correctly. *(This is a **GT-BE98-only** hotfix; the RT-BEXXU, RT-BE86U, RT-BE88U, and
+  appear correctly. *(This is a **GT-BE98-only** hotfix; the RT-BE96U, RT-BE86U, RT-BE88U, and
   GT-BE98 Pro were not affected. The same fix is folded into the shared code for the next release of
   every model, where it is a harmless no-op on the non-quad-band units.)*
 
@@ -2483,7 +2482,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **AURA/RGB lighting: no stray scrollbar.** On models with AURA/RGB lighting, the effect-scheme
   selector on the **Network Map** router panel showed an unnecessary horizontal scrollbar. That list
   already pages with its own left/right arrows, so the scrollbar has been removed. *(Affects the
-  RGB-capable models; the RT-BEXXU has no AURA hardware.)*
+  RGB-capable models; the RT-BE96U has no AURA hardware.)*
 
 ## v1.7.6 — VPN theming: no stuck colors, no endless loading, single scrollbar
 - **VPN Client/Server pages theme correctly and settle down.** On **VPN &rsaquo; VPN Client**
@@ -2567,8 +2566,8 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   their standard form, matching the stock UI's own convention. *Known limit:* the Gatekeeper
   "awaiting approval" waiting-room page is generated by the web server itself, outside the
   translation system, and remains English.
-- All four changes are in shared code, so every model (RT-BEXXU / RT-BE86U / RT-BE88U /
-  GT-BE98 / GT-BE98 Pro) carries them; RT-BEXXU is the primary, hardware-validated build.
+- All four changes are in shared code, so every model (RT-BE96U / RT-BE86U / RT-BE88U /
+  GT-BE98 / GT-BE98 Pro) carries them; RT-BE96U is the primary, hardware-validated build.
 
 ## v1.7.1 — Security remediation batch + Network Map panel fix
 - **Post-release security review — every finding fixed.** A full security audit of the v1.7.0
@@ -2593,8 +2592,8 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **Network Map client panel fixed.** The client-status panel could overflow sideways into a
   horizontal scrollbar; the panel and its content box are now sized to fit, and the map's
   content area was widened to use the space properly.
-- RT-BEXXU flashed on hardware 2026-07-21 (core UI and Network Map verified). All 5 models built + shipped, both variants each
-  (RT-BEXXU / GT-BE98 / GT-BE98 Pro / RT-BE86U on 2026-07-21, RT-BE88U on 2026-07-22).
+- RT-BE96U flashed on hardware 2026-07-21 (core UI and Network Map verified). All 5 models built + shipped, both variants each
+  (RT-BE96U / GT-BE98 / GT-BE98 Pro / RT-BE86U on 2026-07-21, RT-BE88U on 2026-07-22).
 
 ## v1.7.0 — Gatekeeper: device access control + field-test fixes
 - **Gatekeeper — you decide who gets on your network.** A new opt-in, **default-deny device
@@ -2814,10 +2813,10 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   app shell (the top window for all framed pages) now carries the same red scrollbar rules.
 - UI only, both images, built and shipped 2026-07-17.
 - **Wireless page — quad-band radio ceiling.** The v1.5.8 Wireless diagnostics backend
-  enumerated at most three radios (a value carried over from the tri-band RT-BEXXU), so on a
+  enumerated at most three radios (a value carried over from the tri-band RT-BE96U), so on a
   four-radio model it hid the 4th radio and refused a channel capture on it. The ceiling is
   raised to four; it is self-configuring — a radio with no interface is skipped — so the
-  RT-BEXXU still shows exactly its three. No visible change on the RT-BEXXU.
+  RT-BE96U still shows exactly its three. No visible change on the RT-BE96U.
 
 ### v1.5.9 — sibling models RT-BE86U, GT-BE98, and GT-BE98 Pro
 - **Both GT-BE98 variants and the RT-BE86U brought up to v1.5.9** (all of the above, plus
@@ -2844,7 +2843,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   real-world 320 MHz interferer on the 6 GHz band on 2026-07-16.
 - **Factory-default fix:** two duplicate defaults for the 6 GHz PSC-channel setting (`psc6g`)
   disagreed, so a factory reset landed on the unintended value; aligned to the intended default.
-- Flashed to the physical RT-BEXXU 2026-07-16.
+- Flashed to the physical RT-BE96U 2026-07-16.
 
 ## v1.5.7 — Audit fix rung
 - Fixes from a 34-agent adversarial sweep of all Reaper-authored code (21 raw findings —
@@ -2863,7 +2862,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **New curated read tool `get_wireless_stations`** (AI Advisor image only): per-station
   signal/PHY/rate detail plus channel-utilization for every wireless interface, gathered by one
   fixed, no-caller-input pipeline — so the Advisor can reason about Wi-Fi health without shell
-  access. Metal-validated on the RT-BEXXU.
+  access. Metal-validated on the RT-BE96U.
 
 ## v1.5.5 — First-boot security wizard + dashboard/UX fixes
 - **Mandatory first-boot / factory-reset credentials wizard.** A fully Reaper-authored, themed
@@ -2910,18 +2909,18 @@ Built + shipped on all five models, both variants each, all passing the 17-check
   import onto the official ASUS GPL drop** (102_39274), and the GT-BE98 quad-band gap was
   closed (`HAS_6G` — the 6 GHz radio was never enabled in the v1.5.0e port, the prime suspect
   in the GT-BE98 field report tracked in `BACKLOG.md`). Sibling-model build rung;
-  no functional change to the RT-BEXXU image.
+  no functional change to the RT-BE96U image.
 
 ## v1.5.0e — Factory-reset recovery fix + first sibling-model builds
 - **Fixed the factory-reset redirect loop.** On a factory-clean box the first-run gate pages and
   Reaper's serve-time bounce redirected each other forever, so the UI never loaded and the router
   appeared bricked (recoverable only via the ASUS rescue tool). Setup/QIS pages are now excluded
   from the bounce. *Reported by tester PorscheT — credit him in the public release notes.*
-- **First builds for sibling BCM4916 models.** GT-BE98 Pro, GT-BE98, and RT-BE86U (plus RT-BEXXU)
+- **First builds for sibling BCM4916 models.** GT-BE98 Pro, GT-BE98, and RT-BE86U (plus RT-BE96U)
   each built in both variants — closing the "wider BE-series support" investigation.
   Sibling models: flash only with a recovery path ready. (A GT-BE98 field report is tracked in
   `BACKLOG.md`.)
-- **Reproducible branch builds.** The `BEXXU-only` branch now builds cleanly from a fresh
+- **Reproducible branch builds.** The `be96u-only` branch now builds cleanly from a fresh
   checkout (it previously depended on uncommitted working-tree deletions).
 
 ## v1.5.0d — De-ASUS rebrand (UI only)
@@ -2968,7 +2967,7 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **No bundled packet capture.** An earlier internal build carried a `tcpdump`-based "Packet
   Capture" page; it is **not** included — it pulled a large legacy dependency for a niche need.
   If you want packet capture, install `tcpdump` via Entware on a USB stick.
-- **Metal-validated** on the RT-BEXXU: the AI Advisor and its diagnostics tier verified on hardware.
+- **Metal-validated** on the RT-BE96U: the AI Advisor and its diagnostics tier verified on hardware.
 
 ## v1.4.9a — UI polish: navigation, in-rail language selector, AiMesh, System Info
 - **Slimmer left navigation.** The side nav is back to just wide enough for the menu items and
@@ -3212,4 +3211,4 @@ Built + shipped on all five models, both variants each, all passing the 17-check
 - **Scheduled firmware-availability check** — fixed the dead stock setting and set it
   **default off** (no outbound update traffic unless you opt in; notification only,
   never auto-upgrade).
-- Single-model tree: RT-BEXXU only; all sibling BE models stripped.
+- Single-model tree: RT-BE96U only; all sibling BE models stripped.

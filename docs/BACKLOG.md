@@ -38,19 +38,28 @@ internal quality, or deferred by decision.
 The ordered short list.
 
 1. **[P1] Port forwards dead on an RT-BE88U since v3.1.0 — the full filter table never loads on
-   that box** (review R15, reopened 2026-09-13 on the reporter's second trace). See the entry under
-   Open bugs; the next step is one command on the reporter's router, and a hotfix waits on its output.
+   that box** (review R15, reopened 2026-09-13). The general fix is built in the canon tree: a refused
+   restore now names the line and applies the table without it, and rwatch and the diag report say when
+   the box is running the boot skeleton. The refused line itself is still wanted from the reporter's
+   router (one command) — see the entry under Open bugs.
 2. **[P1] v3.1.5 — the beta is out; what only hardware can settle.** The v3.1.5 beta was built by
    the public clean-room pipeline and published as a prerelease for all six models, both variants,
    on 2026-09-13. Every fix from the 2026-09-12 security review, the two OpenVPN certificate causes,
    the DDNS fix and the WireGuard kernel fix are in those images. The metal-owed list is one entry
    under Open bugs. v3.1.5 becomes the stable release when Dev is merged to main after the beta has
    soaked.
-3. **[P2] GT-BE19000 — on the roster since v3.1.4; a tester is the gate.** Builds, passes
-   `reaper_verify` 28/28 with both radio blobs proven to name the model, and publishes as a
-   prerelease from the same pipeline as the rest of the fleet. Nobody has flashed one. Still owed
-   with the tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class.
+3. **[P2] GT-BE19000 — on the roster since v3.1.4; first field report in, 2026-09-13.** A tester
+   is running the beta on hardware: it boots, both radios are up and the core functions work. What
+   they see are visual and functional surface glitches, not failures; a detailed write-up and a
+   `reaper_diag` report are requested and the fixes are scoped when they arrive. Still owed with the
+   tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class. The model stays a
+   prerelease until the glitch list is closed. **[needs data — the write-up and the diag]**
    ↳ memory: `gt-be19000-port.md`
+3b. **[P2] Code signing, fully automated — scheduled for a release later this week** (owner,
+   2026-09-13), after v3.1.6 is stable and the GT-BE19000 glitch list is triaged: images signed in
+   CI with an Ed25519 trailer, the manifest signing re-enabled and automated, router-side verify on
+   both install paths, and the Firmware page's pre-upload signed / NOT-signed verdict. The gate test
+   (a trailered image flashing on the BE96U) runs first and alone. Details under Features.
 4. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
 5. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — the defensive half is
    built; the root cause still wants a syslog. The suspected fault is in shared Warden code, so it
@@ -103,8 +112,39 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   `err_rules` copy (exit 2 names the line on this firmware); then a hotfix; then decide whether an
   rwatch or `reaper_diag` check for "the filter table is the boot skeleton" is worth adding. The
   reporter also says the v3.0.0-beta / v3.0.7-beta RT-BE88U assets are gone from GitHub — check
-  whether that predates the retention rule. **[needs data — one command on the reporter's box]**
-  ↳ notes: `R15-NOTES.md` (v3.1.5 review, R15 — "Field update 2026-09-13")
+  whether that predates the retention rule.
+  **Second field round, 2026-09-13 evening.** The reporter's two saved copies under `/tmp/err_rules`
+  (written 95 s into the current boot, before syslogd was up — which is why this boot's log carries no
+  `apply rules error` line) both pass `iptables-restore --test` with exit 0, and every
+  `service restart_firewall` hours later still leaves the boot skeleton: a deterministic, kernel-side
+  refusal of one line — not a parse error, not a boot race. The stopgap works. Ruled out on the owner's
+  RT-BE96U before anything was written: this kernel commits a `policy --dir out` match in an
+  INPUT-reachable chain and even a chain-jump loop (both exit 0), so the refused line is of neither
+  class; the IPsec `-m policy` emitters — the one thing the reporter enables and the lab does not —
+  sit only in INPUT-reachable chains; the `upnp` ipset rule is not compiled for any model; the TCPMSS
+  clamp in `PControls` is never jumped to; every match the file can use is built in or autoloads.
+  And `_eval()` sends the restore's own `line N failed` to `/dev/null`, so the router never could say.
+  The reporter's two side observations: the Reaper hook chains are installed by the layers that use
+  them (Gatekeeper, Warden, the rules engine), all off on that box, so absent is expected; and
+  `service restart_firewall` returns before the firewall is rebuilt, so an `iptables -S` taken straight
+  after it sees the skeleton before `firewall-start` has run (their script sleeps 8 s inside).
+  **BUILT 2026-09-13 in the canon tree (mk-rc clean; host test 17/17):** `reaper_restore_rules()` wraps
+  the four filter restores — the restore's own words are kept under `/tmp/err_rules/<file>.err`, the
+  refused line is named verbatim in syslog, and the table is applied WITHOUT it (up to eight lines): a
+  firewall missing one rule the kernel would never have enforced beats a skeleton that enforces none.
+  Declaration, table and COMMIT lines are never stripped; a refusal that names no line is logged and
+  left alone. rwatch 3f reports `filter-skeleton` (INPUT_ICMP and SECURITY absent in router mode after
+  boot grace) and requests one `restart_firewall` per boot; `reaper_diag` 1.3.16 §14f prints the table's
+  state, the `err_rules` listing and each `.err` file's first line, with a FINDING.
+  `build-scripts/tests/test_firewall_restore_skip.py` compiles the wrapper on the host and drives it
+  with a fake restore. **Still wanted: the line.** `/usr/sbin/iptables-restore -v` on the saved copy
+  gives it now (a failure names the line and changes nothing; a success installs the intended firewall);
+  otherwise the next beta's syslog carries it. Then a targeted fix. The "v3.0.0-beta / v3.0.7-beta
+  RT-BE88U assets are gone" question is answered: the retention prune ran (166 releases → 30) and
+  retired every beta below v3.1.3 by rule; the RT-BE88U keeps v2.8.8 and v3.1.0 stable and the
+  v3.1.3–v3.1.5 betas. Nothing to fix; tell the reporter v3.1.0 is the last stable.
+  **[fixed in tree — general fix built, image owed; the refused line still wanted]**
+  ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md` (v3.1.5 review, R15 — "Field update 2026-09-13, evening")
 - **[P1] v3.1.5 — metal owed for every fix that landed, on the published beta images.** Sixteen
   items (R01–R16) from an independent adversarial review, re-verified and remediated in the v3.1.5
   tree; the decisions are in `REAPER-FIXES.md` ("Security review 2026-09-12"). What only hardware can
@@ -148,9 +188,13 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   (b) was ruled out at the captured timestamps (no hung-read lines near them), which leaves
   `rwarden_log` genuinely reading 0, 1, 0 inside 25 minutes; its only writer is the Warden page's own
   form post, and that hidden field is filled at submit time from the toggle's CSS class, so a submit
-  that beats the toggle being painted posts `0`. **Next: confirm with the owner whether the Warden
-  page was applied around 23:05 and again around 23:20 on 2026-09-11.**
-  **[instrumented; the instrumentation owes two fixes — (a) and (b)]** ↳ notes: `warden-outbound-quiet.md`
+  that beats the toggle being painted posts `0`. **Both instrumentation defects fixed in tree
+  2026-09-13:** fold.sh banks the outbound drops under their own durable `OUT` key (reset with the
+  window), the rwatch 3e line and the stats `out_n` figure quote banked + live, and an nvram read
+  that does not answer is its own state ("could not be read this tick") instead of the "turn on
+  logging" advice. **Next: confirm with the owner whether the Warden page was applied around 23:05
+  and again around 23:20 on 2026-09-11.**
+  **[instrumentation fixed in tree, image owed; the 0/1/0 flag question still open]** ↳ notes: `warden-outbound-quiet.md`
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
   IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
   and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
@@ -192,8 +236,9 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   and filters nothing; *Log only messages more urgent than* (`log_level`) is the one wired to syslogd's
   `-l` — and busybox logs priorities strictly below `-l`, so the option named *critical* excludes
   critical itself. Both labels are ASUS's. A clarifying explainer is a candidate, at the usual i18n
-  cost; the labels are not dict tokens, so the scope wants checking first. Noted in passing:
-  `shared/defaults.c` carries **two** `log_level` defaults (lines 3625 and 5271). **[owner call]**
+  cost; the labels are not dict tokens, so the scope wants checking first. (The two `log_level`
+  defaults in `shared/defaults.c` noted here were the same value; the dead second copy was removed
+  2026-09-13.) **[owner call]**
 - **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — rwatch, Warden refresh and the PBR
   deadline watcher all dead on that box. **[needs the GT-BE98 syslog]** ↳ notes: `gt-be98-empty-crontab.md`
 - **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults.
@@ -207,8 +252,9 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   On toggle, the master switch, or whether the tunnel is actually up; a switched-off client says
   `Inactive · WAN` although a VPN Director rule below the 9000 band can still capture that flow.
   The reviewer's replacement wording was the prose the Merlin reviewer had just asked to remove, so
-  it was not taken. Owner decision: leave as designed, or grey the cell while the rule is off.
-  **[owner decision]**
+  it was not taken. **Owner decision 2026-09-13: keep the column configuration-derived and grey the
+  cell while the rule itself, or the master switch, is off** — done in tree the same day (a CSS
+  state on the status span, no dictionary change). **[done in tree, image owed]**
 - **[P3] Policy Routing rebuild is not atomic (review R07, second half).** The generated script tears
   the live chain and pref band down before rebuilding, so every apply has a window with no rules.
   Design as shipped since v2.5; the window was never measured. A swap-in rebuild (build under a
@@ -284,8 +330,9 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   produce noise, not safety. If those need guarding, the invariant has to be defined first —
   probably "the chain still contains the rules the generator emitted", which is a different and
   more expensive check. Note also that only chains are checked, not ipset **contents**; the Warden
-  poison canary (rwatch 3) is the only set-level guard. Known gap in the classifier: a bare inline
-  ACCEPT is judged broad even when `--dport` narrows it. **[owed — needs the invariant defined]**
+  poison canary (rwatch 3) is the only set-level guard. (The "bare inline ACCEPT judged broad even
+  with `--dport`" gap was closed in v3.1.3b — the rule is judged the way a chain is; the line that
+  said otherwise here was stale, corrected 2026-09-13.) **[owed — needs the invariant defined]**
   ↳ notes: `chain-integrity-scope.md`
 - **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
   the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
@@ -306,14 +353,60 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 - **[P3] Firewall DNAT / Redirect: the residual gaps** — 1:1 NETMAP, per-zone forced NTP,
   raw-protocol DNAT; extend Service Intercept, never a new page. **[project]**
   ↳ notes: `firewall-dnat-redirect-residual.md`
-- **[P2] Firmware-update manifest signing** — implemented for v2.7.3, shelved inert by owner
-  decision; re-enable = flip two switches + rebuild. **[shelved — inert]** ↳ notes: `manifest-signing-shelved.md`
+- **[P2] Code signing: manifest + images, with a pre-upload verdict** — the manifest half was
+  implemented for v2.7.3 and shelved inert (re-enable = flip two switches + rebuild). Reviewed again
+  2026-09-13 with the clone threat in mind: the manifest signature covers only the router-initiated
+  update path; a lookalike image arrives through the Firmware Upgrade upload or a first install, so
+  the images themselves need a signature (an Ed25519 trailer, now possible on the router since the
+  OpenSSL 3.5 move) plus a router-side verify in the upload handler and a page-side check that shows
+  a signed / NOT-signed choice before the upload starts, with the existing typed gate to proceed
+  unsigned. **Owner decision 2026-09-13 (evening): SCHEDULED, fully automated, for a release later
+  this week, after v3.1.6 is stable and the GT-BE19000 glitch list is triaged.** No manual signing
+  step per publish: the manifest key and a separate image key live as GitHub Actions secrets, the
+  release job signs each image as it publishes it, the manifest-refresh job signs the manifest in
+  the commit it already makes, and the publish job runs under GitHub environment protection so the
+  secrets are readable only from the release workflow on the release branch. The trade — a CI
+  compromise could sign a clone — is the exposure the project already carries (whoever controls CI
+  controls what is published as Reaper); signing adds a rotation path, not a new risk. Order of
+  work: **(1) the gate test first and alone — a trailered image must flash cleanly on the BE96U
+  through the stock flash writer and bootloader; if trailing bytes are refused, the signature moves
+  inside the image and the effort roughly doubles;** (2) Ed25519 keys generated, both public keys
+  shipped in the firmware (rotation path for the v2.7.3 RSA manifest key); (3) CI signing of images
+  + manifest, `.sig` release assets, GitHub build attestations; (4) router-side verify in the upload
+  handler and `webs_upgrade.sh`, result recorded for the About page; (5) the Firmware page's
+  pre-upload verdict modal (signed → Install/Cancel; unsigned or bad → danger dialog, Cancel default,
+  typed gate to proceed); (6) README/SECURITY.md key fingerprints and a "verify before you flash"
+  section; RELEASE-PROCESS updated. Estimated two to three days. Ships before the firewall walker.
+  **[scheduled — this week, after v3.1.6 stable]** ↳ notes: `manifest-signing-shelved.md`
 - **[P3] North star — progressively replace stock GUI pages with Reaper-native ones.** Done for
   Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
   Firewall/VPNRouting/Failover/About. **[ongoing]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
+- **[P2] Firewall table walker + Firewall Rule Status page** (owner, 2026-09-13; scheduled AFTER
+  v3.1.6 and the R15 line) — the firewall says what it is actually doing, per feature, after every
+  change. Not by reasoning about rule combinations: each feature owns a handful of **witness packets**
+  (ingress interface, addresses, protocol/port, conntrack state) and the verdict it promises; a small
+  walker pushes each one through the LIVE tables in kernel order (raw → mangle → nat PREROUTING →
+  filter) modelling only the matches our rules use, and returns the verdict with the rule that produced
+  it — so "port forward 443 is blocked by FORWARD rule 3 (Skynet)" or "every feature red: FORWARD
+  policy DROP, the boot skeleton" comes for free. Runs at the end of every firewall apply and on
+  demand; one JSON file; the page polls it; the rules engine's confirm window shows it before Keep.
+  What it retires: the position-based watchdog fights (rwatch 3d's re-pin vs the Gatekeeper DNS
+  carve-out becomes two witnesses — restricted device resolves, restricted device cannot reach the
+  WAN — and repair fires only when one is red), the exemption file, and most of 3c/3f as heuristics.
+  What it does not do: fix ordering by itself (that is the layers declaring their own placement),
+  reverse-path or accelerated-flow behaviour, or the blob's drops — "depends" is a result. Cost:
+  walker ~500–800 lines of C as a helper binary, the catalog as a table, a page the size of Firewall
+  Status, plus a host-side release check over saved `iptables-save` fixtures and a lab-only TRACE
+  validation of the walker's path. **Done now, at no cost:** the witness catalog (58 rows across
+  core reachability, port forwards, VPN, Gatekeeper, Warden, rules engine/intercept, SDN/VLAN/AiMesh,
+  the rest) and the first fixture (the owner's BE96U, v3.1.5 beta, WAN masked, private); the
+  reporter's RT-BE88U dump is requested and a GT-BE98 with VLANs is wanted. Order: walker as a CLI +
+  reaper_diag 14g + the release check; then the page; then the confirm-window preview.
+  **[project — start after v3.1.6 stable; the R15 line is the first fixture]**
+  ↳ notes: `firewall-witness-catalog.md`; fixtures in `ASUS/audits/firewall-fixtures/`
 
 ---
 

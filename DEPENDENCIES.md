@@ -47,10 +47,10 @@ Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).
 
 ```bash
 cd release/src-rt-5.04behnd.4916
-nice make rt-BEXXU -j1     # -j1 required; fresh tree builds twice
+nice make rt-be96u -j1     # -j1 required; fresh tree builds twice
 ```
 
-The target selects the model: `rt-BEXXU` (primary, hardware-validated) /
+The target selects the model: `rt-be96u` (primary, hardware-validated) /
 `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` — each built from its per-model
 branch. The AI Advisor is compiled in or out via the `RTCONFIG_REAPER_MCP` build
 flag, producing the two variants (`+ AI Advisor` / `noMCP` Standard) per model.

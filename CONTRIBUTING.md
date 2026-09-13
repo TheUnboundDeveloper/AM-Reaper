@@ -1,8 +1,8 @@
 # Contributing
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
-Thanks for wanting to help harden the RT-BE Series. The **RT-BEXXU** is the primary,
+Thanks for wanting to help harden the RT-BE Series. The **RT-BE96U** is the primary,
 hardware-validated model; the same tree also ships **RT-BE86U**, **RT-BE88U**,
 **GT-BE98**, **GT-BE98 Pro** and **GT-BE19000** (BCM4916 / WiFi 7) from per-model
 branches.
@@ -12,4 +12,4 @@ branches.
 3. **Security findings** — see [SECURITY.md](SECURITY.md). Please don't open public issues for exploitable bugs.
 4. **Submitting changes** — open a PR that adds/modifies patch files in `patches/` (generated with `git format-patch` against upstream tag `3006.102.8-beta2`), with a note on how you build-verified it. Keep patches focused: one finding or one tightly-related class per patch.
 
-Scope guardrails: the RT-BE Series (RT-BEXXU primary, plus its BCM4916 siblings) only, open-source userspace only (never the proprietary blobs), and no behavior changes beyond what the hardening requires.
+Scope guardrails: the RT-BE Series (RT-BE96U primary, plus its BCM4916 siblings) only, open-source userspace only (never the proprietary blobs), and no behavior changes beyond what the hardening requires.

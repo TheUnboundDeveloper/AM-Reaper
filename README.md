@@ -79,7 +79,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 - Current version: **v2.8.8** <!--@pubver--> (firmware line `3006.102.8_Reaper_v<version>`) — *current* means the newest
   **published release**, i.e. the newest image you can actually download from
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models
-  (published 2026-08-28 <!--@pubdate-->).
+  (published 2026-08-28 <!--@pubdate-->). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on.
   Source rungs are cut more often than releases are published (many rungs — e.g. v2.6.1–v2.6.9, v2.7.0,
   v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.1.5** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the

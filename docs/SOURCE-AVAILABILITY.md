@@ -1,6 +1,6 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
@@ -25,7 +25,7 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
-     model — RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 — from
+     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -88,7 +88,7 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 ## 3. Getting a build
 
 Reaper firmware images are **publicly hosted in this GitHub repository.** A
-flashable build for every model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U /
+flashable build for every model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease) is published two ways:
 
 - the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)

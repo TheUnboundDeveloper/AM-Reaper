@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.1.3** · 2026-09-12 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -11,7 +11,7 @@ order. Replace `vX.Y.Z` throughout with the version you are cutting.
 **The split to keep in your head:** everything in phases 1–5 needs the firmware
 source, so it can only happen locally. Everything from phase 6 needs only the
 published inputs (`patches/` + `overlays/`), which is why CI can do it. The
-sibling port sits firmly in the first group — it needs canon *and* the four
+sibling port sits firmly in the first group — it needs canon *and* the five
 sibling branches at once, and neither is on GitHub.
 
 ---
@@ -117,7 +117,7 @@ git -C /home/reaper/asuswrt-be96u push hub \
   be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000
 ```
 
-- [ ] Canon **and all four ported branches** are in the bare hub
+- [ ] Canon **and all five ported branches** are in the bare hub
 
 > Not optional any more. `cut_fleet.sh` force-moves each local sibling ref onto
 > `hub/<branch>` after proving the local is an ancestor. If this rung's sibling

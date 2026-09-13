@@ -1,6 +1,6 @@
 # Reaper — the commands, and what each one is for
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 Everything in [`build-scripts/`](../build-scripts) exists to make one of four
 things happen: **build an image**, **cut a rung**, **fan a rung out to the

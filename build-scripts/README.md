@@ -1,6 +1,6 @@
 # Reaper firmware build scripts
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 The reusable toolkit that builds the Reaper images correctly across all six
 models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
@@ -95,7 +95,7 @@ carry the traps. Full sequence for a sibling `<MODEL>` at version `<VER>`:
 
 4. **Build**: `build_<model>.sh` (both variants; `FORCE=1` + verify gate baked
    in). Success = **`MAKE_EXIT=0` on BOTH variants** + `Done! Image 96813GW` +
-   both `reaper_verify` **PASS (19/19)**. The bg wrapper can exit 0 even on
+   both `reaper_verify` **PASS** on every check (28 checks as of v3.1.5). The bg wrapper can exit 0 even on
    failure — grep the log for `MAKE_EXIT` first, always.
 
 5. **Ship** (never overwrite a prior rung): copy the 4 `.pkgtb` (squashfs +

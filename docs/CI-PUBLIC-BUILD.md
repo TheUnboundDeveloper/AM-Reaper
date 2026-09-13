@@ -27,8 +27,8 @@ same file that produces the published releases, and runs the same
 5. Choose a model. Any one of the six <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
    `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO`, `GT-BE19000` <!--@models--> — or `all`, which
    fans out to every model. `all` with `both` is 12 <!--@fleetjobs--> concurrent jobs.
-   *The GT-BE19000 joined the roster on 2026-09-12. It publishes only as a prerelease:
-   the model builds and passes `reaper_verify`, but no hardware has run an image yet.*
+   *The GT-BE19000 joined the roster on 2026-09-12. It publishes only as a prerelease
+   until field testers have run it.*
 6. When the run finishes, download the artifacts from the run summary page.
 
 It runs on free GitHub-hosted runners and uses your fork's Actions minutes.
@@ -135,8 +135,8 @@ CI tree and compared path-by-path against the sibling branch.
 | GT-BE98_PRO | 29 | 4.50 MB | 485,470 | PASS |
 
 Zero content mismatches. Every overlay is regenerated whenever a
-rung touches a per-model file (v2.7.7 touched `state.js` in all five, so all five
-were regenerated) and all five are covered by the same identity gate.
+rung touches a per-model file (v2.7.7 touched `state.js` in every sibling, so every
+overlay was regenerated) and all of them are covered by the same identity gate.
 
 That gate is the `Overlay identity gate` job — `build-scripts/ci/check_overlays.py`,
 seconds long, run before anything expensive and gating the whole build matrix. It

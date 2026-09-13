@@ -5,15 +5,15 @@
 | | |
 |---|---|
 | **Current rung** | **v3.1.5** <!--@treever--> — `3006.102.8_Reaper_v3.1.5`. **The security review lands.** An independent adversarial review of the v3.1.5 tree produced sixteen items and every one was re-verified in source before anything changed. Six inherited components carry their fixes: **netatalk** (Time Machine) had CVE-2022-43634, a pre-authentication overflow the 08-30 check had wrongly called absent; **strongSwan** CVE-2026-47895; **Tor 0.4.9.12**, the 2026-09-08 security release; **avahi**'s CNAME crash trio; **lighttpd** CVE-2018-25103; **net-snmp** CVE-2022-44792/-44793. **Policy Routing** no longer loses a Killswitch or enable change made inside the confirm window, counts a WireGuard bypass it could not install as the failure it is, checks its own `ip rule` adds against the intended count, and resolves the object a rule names (a group now expands into its members; a geo or MAC object is refused with the reason in syslog). **The Advisor's request clock now covers the TLS handshake.** **A malformed port-forward entry can no longer take the whole nat table down with it.** **OpenVPN server certificates**: the second OpenSSL 3.5 cause, a RANDFILE on the read-only root, is fixed, and a release check now runs the firmware's own PKI chain on the staged binaries while a second executes the port-forward emitter. **The routing target is an interface again**: the Target column names the interface, a Status column carries its state, and the Killswitch counts only for an enabled client, as VPN Director does. The series stands at **661 patches** (0653–0661 for v3.1.5); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
-| **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest image you can install, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). |
+| **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BEXXU** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
+| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
 | **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6 and **v2.8.8** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
-> RT-BEXXU. This document is the release summary; the exhaustive security detail
+> RT-BE96U. This document is the release summary; the exhaustive security detail
 > is in [`REAPER-FIXES.md`](REAPER-FIXES.md), the per-version history in
 > [`CHANGELOG.md`](CHANGELOG.md), and the maintainer merge guide in
 > [`GPL-MERGE.md`](GPL-MERGE.md).
@@ -150,7 +150,7 @@ run that executed nothing treated as a failure.
 ## What's new in v3.1.2 — a WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one
 
 *Built on RT-BE96U. Cut as patches 0637–0643, bringing the series to 643. The RT-BE86U, RT-BE88U,
-GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+GT-BE98, GT-BE98 Pro take it from the series.*
 
 **Routing a device through WireGuard no longer reboots the router.** Policy routing to an OpenVPN
 client, to the WAN, or to a block worked. Pick a WireGuard client and the router restarted a few
@@ -237,7 +237,7 @@ AiMesh backhaul carrier is no longer parked out from under a node that has just 
 ## What's new in v3.1.1 — a standby for the router's DNS list, and a VPN certificate that survives a save
 
 *Built on RT-BE96U. Cut as patches 0621–0636, bringing the series to 636. The RT-BE86U, RT-BE88U,
-GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+GT-BE98, GT-BE98 Pro take it from the series.*
 
 **Pointing every client at one filter no longer means its outage is the house's.** If you run AdGuard
 Home or Pi-hole on the LAN, the clean way to set it up is to hand out the router as the only DNS server
@@ -294,7 +294,7 @@ announced, and a device that announces none falls back to its vendor label.
 *Built on RT-BE96U. Cut as patches 0609–0620, bringing the series to 620. The OpenSSL 3.5 source (5,767
 files) is too large to publish as a patch and ships beside the series as the hash-pinned
 `overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the series is applied. The
-RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro take it from the series.*
 
 **The firmware moves from OpenSSL 1.1.1w to OpenSSL 3.5.8.** 1.1.1 has been end of life since September
 2023. Every source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
@@ -361,7 +361,7 @@ only.
 ## What's new in v3.0.9 — the backup file guarded five ways, the idle backhaul parked, six small fixes
 
 *Built on RT-BE96U. Cut as patches 0603–0608, bringing the series to 608. This cut carries both v3.0.8
-and v3.0.9; the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take it from the series.*
+and v3.0.9; the RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro take it from the series.*
 
 **The backup file is no longer the softest way in** (v3.0.8). A backup is the whole router in one file:
 Wi-Fi passwords, the admin password, VPN keys, the HTTPS and SSH private keys, the traffic and
@@ -400,7 +400,7 @@ whole series on every push. A hit in Reaper code is fixed in the source, never b
 ## What's new in v3.0.7 — the 3.0.x window on every model
 
 *Built on RT-BE96U. Cut as patches 0594–0602, bringing the series to 602. This is the fleet rung: the
-RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and RT-BE92U take everything since v3.0.0 from the series.*
+RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro take everything since v3.0.0 from the series.*
 
 **Policy Routing keeps its word.** Two boot-time defects are gone: the mark chain no longer fails open
 on every boot and WAN re-dial (an upstream routine flushes the whole IPv4 rule table on `wan_up`, and
@@ -514,9 +514,8 @@ firewall output and undercounted; it now reads the count the service itself reco
 
 ## What's new in v2.7.6 — Policy Routing survives a reboot, Warden never fails silently
 
-*Built on RT-BE96U and RT-BE92U. This is the fleet cut that folds the v2.7.4–v2.7.6 field-fix work
-(patches 0529–0535) into one release across all five 96813GW models, with RT-BE92U (BCM6765)
-carrying the same shared changes from its own branch.*
+*Built on RT-BE96U. This is the fleet cut that folds the v2.7.4–v2.7.6 field-fix work
+(patches 0529–0535) into one release across all five 96813GW models.*
 
 **Policy Routing comes up complete after a reboot — no Apply from the page needed.** A rule that
 matches an address set could not load until that set existed, and at boot the set was sometimes a
@@ -542,7 +541,7 @@ takes the highest version across the whole series.
 
 ## What's new in v2.7.5 — one dedicated Addons section in the rail
 
-*Built on RT-BE96U and RT-BE92U; folded into the v2.7.6 cut.*
+*Built on RT-BE96U; folded into the v2.7.6 cut.*
 
 **Merlin add-ons now live in one "Addons" section at the end of the nav rail**, instead of being
 scattered into — and rearranging — the stock menus. Whether an add-on pushes its own menu, drops a
@@ -554,20 +553,19 @@ gets its siblings as its tab bar.
 
 ## What's new in v2.7.4 — the first-boot "Secure Your Router" flash
 
-*Built on RT-BE96U and RT-BE92U; folded into the v2.7.6 cut.*
+*Built on RT-BE96U; folded into the v2.7.6 cut.*
 
 **Every nav item no longer flashes the "Secure Your Router" card on a box with no guest network.** A
 first-run gate keyed on the SDN list being at its default treated any router that had never created
 a guest or SDN profile as "Wi-Fi not configured", bouncing it back to the first-boot page on every
 navigation. That gate is removed — the existing setting-state gate already covers a genuinely
-unconfigured box, and a factory-reset unit still gets both wizard steps. (Surfaced on the RT-BE92U
-in the field.)
+unconfigured box, and a factory-reset unit still gets both wizard steps. (Surfaced in the field.)
 
 ---
 
 ## What's new in v2.7.3 — Gatekeeper learns AiMesh exists; the owner's guide, one click away
 
-*Built on RT-BE96U and RT-BE92U; published full-fleet on the five 96813GW models, and folded into
+*Built on RT-BE96U; published full-fleet on the five 96813GW models, and folded into
 the v2.7.6 cut.*
 
 **AiMesh onboarding and mesh nodes are now exempt from Gatekeeper.** A full review of the
@@ -1772,7 +1770,7 @@ Per-version detail is in [`CHANGELOG.md`](CHANGELOG.md); earlier releases are su
 
 ## 1. What Reaper is
 
-Reaper narrows stock Asuswrt-Merlin to the ASUS RT-BE Series (primary model RT-BEXXU,
+Reaper narrows stock Asuswrt-Merlin to the ASUS RT-BE Series (primary model RT-BE96U,
 plus the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro siblings), **hardens** the
 open-source userspace against remote compromise, **removes** cloud-coupled and
 AI-branded attack surface, **rebrands** the web UI, and adds a few genuinely-local
@@ -1794,8 +1792,8 @@ source**, differing only by whether the optional AI Advisor (§3) is compiled in
 
 | Variant | Image | Contains the AI Advisor? |
 |---|---|---|
-| **Standard** | `RT-BEXXU_…_Reaper_v2.3.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
-| **+ AI Advisor** | `RT-BEXXU_…_Reaper_v2.3.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
+| **Standard** | `RT-BE96U_…_Reaper_v2.3.7_noMCP_nand_squashfs.pkgtb` | **No — never compiled in** |
+| **+ AI Advisor** | `RT-BE96U_…_Reaper_v2.3.7_nand_squashfs.pkgtb` | Yes (optional, off by default) |
 
 The Standard image contains **zero** trace of the AI Advisor — no daemon, no page,
 no menu entry, no settings, nothing hidden or merely disabled. Both are otherwise
@@ -1887,7 +1885,7 @@ v2.2.0, v2.2.1, and **v2.2.5** shipped on **all five models** (both variants); t
 
 ### Since v2.1.0 — localization, an upstream carry-forward, feature adds, and field fixes (v2.1.1 – v2.1.9)
 
-The rungs after v2.1.0 are RT-BEXXU-first; since v2.1.4 the fleet ships every rung on all five models in parallel (RT-BEXXU carried v2.1.3 alone, then the siblings were brought straight to v2.1.4). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
+The rungs after v2.1.0 are RT-BE96U-first; since v2.1.4 the fleet ships every rung on all five models in parallel (RT-BE96U carried v2.1.3 alone, then the siblings were brought straight to v2.1.4). Headlines — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **v2.1.1 — localization, defense-in-depth, and UI polish.** The last hardcoded-English error messages on the Devices and AI Advisor pages now localize into all 25 languages. The AI Advisor daemon's secret-redaction is now applied structurally at its single output point (so any future tool is covered), and oversized tool output always returns valid JSON with a truncation marker. Three pages gained extra output escaping (defense-in-depth). The Warden threat/geo block-lists load in one batched operation instead of one process per address. Three pages (Connections, QoS Diagnostics, all-bands Professional) that sat shifted right now fit the frame, and Channel Lock gained the same confirmation Unlock already had.
 - **v2.1.2 — Asuswrt-Merlin 3006.102.8 carry-forward.** The upstream fixes Merlin landed between the pinned beta base and the final production release are folded in: **OpenVPN 2.7.5** (the 2.7 line — deprecated server options removed; test any server config), **dropbear 2026.94**, a strongswan build fix, a miniupnpd update, IPv6 prefix-length corrections, and web-UI fixes (incremental client-list redraw, iOS DHCP export). Pure upstream carry-forward; carried commits keep their original authorship. The base stays pinned to 3006.102.8-beta2 — the carry-forward is by cherry-pick, not a base rebase, so the corresponding-source recipe is unchanged.
@@ -1895,11 +1893,11 @@ The rungs after v2.1.0 are RT-BEXXU-first; since v2.1.4 the fleet ships every ru
 - **v2.1.4 — factory-reset lockout, WireGuard peer-row, OpenVPN label.** A factory-fresh box could get stranded when the stock ASUS "Change router login password" page collided with Reaper's own first-boot credential page (the second attempt failed "Could not apply credentials"); Reaper now routes a default-password box straight to its single first-boot page. The WireGuard client peer list's three-dots edit toggle is centered and no longer clipped. And **OpenVPN now reports 2.7.5** — the 2.7.5 binary had displayed "2.7.4" because a stale generated build file froze the version label; regenerating it corrected the display (behavior was already 2.7.5).
 - **v2.1.5 — three field-report fixes.** The **1500-byte PPPoE MTU is settable from the GUI** (the v2.1.3 raise had landed on a WAN page variant that doesn't ship; the shipped page still capped at 1492 and silently clamped a hand-entered 1500). The **first-boot credential page is self-recovering** (a stale or back-navigated copy can no longer reject every input when the password already applied). And **Traffic Analyzer history genuinely survives reboots on both stores** — USB had lost all history every reboot (the collector looked for its database before the stick mounted, then overwrote it); it now waits for the store, restores, never overwrites an unloaded database, and saves every 15 minutes on USB (JFFS stays hourly for flash wear).
 - **v2.1.6 — update notifications, real IPv6 on the dashboard, Warden/watchdog fixes.** The router can now **notify you when a Reaper update exists** — opt-in and notify-only: the stock check compares only the shared Merlin base number so it could never see a Reaper release; the new check reads a Reaper-published GitHub manifest, knows your model *and* variant, and lights a crimson dashboard badge (off by default; talks only to the Reaper GitHub tree; never downloads or flashes by itself). The **dashboard shows your real WAN IPv6** — on native/DHCPv6-PD lines the global lands on the LAN bridge and the card had fallen back to the `fe80::` gateway/link-local; it now uses the bridge global, the same source as the stock IPv6 status page. **Warden's total-blocked counter survives firewall restarts** (banked into a running baseline instead of a rule the restart rebuilds), the **health watchdog** no longer flags a phantom `wan-gw` failure behind an ICMP-filtering first hop, the non-functional **"B/G Protection"** control is removed (stock driver force-resets it to Auto), and two menu labels (RU/TR) no longer show raw HTML entities.
-- **v2.1.9 — unified device naming, flash-proof Traffic Analyzer history, a USB disk panel, the siblings' PPPoE-1500 catch-up, a WAN-MTU rollback, and a code-audit hardening pass.** Device names now come from **one master list on every page** and renames stick: three defects are fixed (removing an offline client could wipe every custom name after a reboot; a Devices-page rename appended a duplicate record so first-match pages kept the old name; the stock rename popup could roll back names changed elsewhere from its stale snapshot) — existing duplicates self-heal on reboot. **Gatekeeper is name-first** now (self-reported hostname only as fallback) and the **DHCP-leases log gains a unified Device Name column**. **Traffic Analyzer history survives firmware flashes** (phantom-mount guard + late store re-attach), the **Long-Term Storage tab gains a USB disk panel** (info, health scan, format, eject), the **sibling models finally accept PPPoE MTU 1500 in the GUI** (the v2.1.5 fix had shipped only on the RT-BEXXU image due to a port-process gap, now closed permanently), and the **WAN-MTU field's 1508 allowance is rolled back to 1280–1500** (it only renders on automatic/static-IP WANs where 1508 is invalid; PPPoE keeps 1500 with the automatic PPPoE-only +8 on the physical interface). Finally, a **full code audit of the Reaper sources** (four parallel reviews + a deterministic cross-model parity check) found **no critical or high-severity defect** and its confirmed fixes were folded in: three self-themed pages no longer receive the stock CSS injection; the QoS-diagnostics page carries the shared anti-forgery token before its diagnostic subprocess; the QoS page pauses polling while hidden; DHCP reservations/pool edits store the canonicalised address; an uninitialised boot-normaliser read is fixed; and delete can no longer drop an over-long neighbouring record. First cut as v2.1.7, respun as v2.1.8 for the WAN-MTU rollback, then v2.1.9 for the audit fixes — neither v2.1.7 nor v2.1.8 was published.
+- **v2.1.9 — unified device naming, flash-proof Traffic Analyzer history, a USB disk panel, the siblings' PPPoE-1500 catch-up, a WAN-MTU rollback, and a code-audit hardening pass.** Device names now come from **one master list on every page** and renames stick: three defects are fixed (removing an offline client could wipe every custom name after a reboot; a Devices-page rename appended a duplicate record so first-match pages kept the old name; the stock rename popup could roll back names changed elsewhere from its stale snapshot) — existing duplicates self-heal on reboot. **Gatekeeper is name-first** now (self-reported hostname only as fallback) and the **DHCP-leases log gains a unified Device Name column**. **Traffic Analyzer history survives firmware flashes** (phantom-mount guard + late store re-attach), the **Long-Term Storage tab gains a USB disk panel** (info, health scan, format, eject), the **sibling models finally accept PPPoE MTU 1500 in the GUI** (the v2.1.5 fix had shipped only on the RT-BE96U image due to a port-process gap, now closed permanently), and the **WAN-MTU field's 1508 allowance is rolled back to 1280–1500** (it only renders on automatic/static-IP WANs where 1508 is invalid; PPPoE keeps 1500 with the automatic PPPoE-only +8 on the physical interface). Finally, a **full code audit of the Reaper sources** (four parallel reviews + a deterministic cross-model parity check) found **no critical or high-severity defect** and its confirmed fixes were folded in: three self-themed pages no longer receive the stock CSS injection; the QoS-diagnostics page carries the shared anti-forgery token before its diagnostic subprocess; the QoS page pauses polling while hidden; DHCP reservations/pool edits store the canonicalised address; an uninitialised boot-normaliser read is fixed; and delete can no longer drop an over-long neighbouring record. First cut as v2.1.7, respun as v2.1.8 for the WAN-MTU rollback, then v2.1.9 for the audit fixes — neither v2.1.7 nor v2.1.8 was published.
 
 ### Since v2.0.0 — de-cloud completion, the Samba 4 file server, secure defaults, live diagnostics, and a pre-release hardening pass (v2.0.1 – v2.1.0)
 
-The rungs from v2.0.1 to **v2.1.0** continued **RT-BEXXU only, both variants**. Headlines
+The rungs from v2.0.1 to **v2.1.0** continued **RT-BE96U only, both variants**. Headlines
 — per-version detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
 - **De-cloud completion + the Samba 4 file server working (v2.0.1 – v2.0.2).** The ASUS **AWS-IoT**
@@ -1927,7 +1925,7 @@ The rungs from v2.0.1 to **v2.1.0** continued **RT-BEXXU only, both variants**. 
 
 ### Since v1.8.0a — audit remediation, Warden hardening, a Devices manager, and a full security re-audit (v1.8.1 – v2.0.0)
 
-The rungs from v1.8.1 to **v2.0.0** shipped **RT-BEXXU only, both variants** (the sibling
+The rungs from v1.8.1 to **v2.0.0** shipped **RT-BE96U only, both variants** (the sibling
 fan-out reached v1.8.6c then; v1.8.7 → v2.1.0 were later fanned out to all five models). Headlines — per-version
 detail is in [`CHANGELOG.md`](CHANGELOG.md):
 
@@ -2003,7 +2001,7 @@ detail is in [`CHANGELOG.md`](CHANGELOG.md):
   page churned in the background — which some users read as "always loading" — is fixed (v1.7.6).
   The Internet Speed test (Adaptive QoS) now uses a single page scrollbar.
 - **AURA/RGB lighting control.** On the RGB-capable models, the effect-scheme selector on the
-  Network Map router panel no longer shows a stray horizontal scrollbar (v1.7.7). *(The RT-BEXXU has
+  Network Map router panel no longer shows a stray horizontal scrollbar (v1.7.7). *(The RT-BE96U has
   no AURA hardware; this applies to the RGB-capable siblings.)*
 
 ### Gatekeeper — default-deny device access control (v1.7.0, hardened v1.7.3)
@@ -2233,7 +2231,7 @@ You can return to stock anytime by flashing an official ASUS image.
 ## 8. Build & image verification
 
 Built per model with the BCM4916 userspace toolchain (gcc-10.3, 32-bit ARM) via
-`make <target>` (`rt-BEXXU` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
+`make <target>` (`rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro`), each
 `MAKE_EXIT=0` with "Done! Image 96813GW has been built" and the noMCP staged filesystem
 confirmed free of the AI Advisor.
 
@@ -2343,7 +2341,7 @@ GT-BE98 Pro) remain at v2.1.0, and RT-BE96U's v2.1.0 set is retained below for r
 four-file set (both variants' `…_nand_squashfs.pkgtb` **and** their `…_loader.pkgtb` recovery images)
 has its own `SHA256SUMS-<MODEL>-Reaper_v2.1.0.txt` on the `reaper-firmware/` ladder; the **RT-BE96U**
 set is tabulated below. *(The primary model builds as the **RT-BE96U**; this document refers to it
-generically as "RT-BEXXU" elsewhere.)*
+generically as "RT-BE96U" elsewhere.)*
 
 | Image (`RT-BE96U_3006_102.8_Reaper_v2.1.0…`) | SHA-256 |
 |---|---|
@@ -2360,8 +2358,8 @@ on the `reaper-firmware/` ladder.
 
 | Image (`3006_102.8_Reaper_v1.7.7…`) | SHA-256 |
 |---|---|
-| `RT-BEXXU_…_nand_squashfs.pkgtb` (+ AI Advisor) | `eb0391c9da30f82ca03a13ee6fdcc56f888f62fe68824430b65bb8314d61f76e` |
-| `RT-BEXXU_…_noMCP_nand_squashfs.pkgtb` (Standard) | `1338b4e1ed1862b895a2f130dc202f842055d7a9881879a146e49b8630e78ef0` |
+| `RT-BE96U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `eb0391c9da30f82ca03a13ee6fdcc56f888f62fe68824430b65bb8314d61f76e` |
+| `RT-BE96U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `1338b4e1ed1862b895a2f130dc202f842055d7a9881879a146e49b8630e78ef0` |
 | `RT-BE86U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `12b96e1b1535d9b1d3d9733dc418072a85dbfe3e9400842a112e04dc5b74a9ea` |
 | `RT-BE86U_…_noMCP_nand_squashfs.pkgtb` (Standard) | `c6dc3094a1a4025c7b40839c9f50d45bad9ba3de52c502eb2b6105b70806da5b` |
 | `RT-BE88U_…_nand_squashfs.pkgtb` (+ AI Advisor) | `a5bfeb1621b30da4ae26d8a0910c42dfbac7a0d67ebeb95329df93a2d7df25f0` |
@@ -2381,10 +2379,10 @@ on the `reaper-firmware/` ladder.
 
 | Line | Status |
 |---|---|
-| **through v1.3.3** | Validated on the physical RT-BEXXU: hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end, the Traffic Analyzer, the de-cloud removals, and the Reaper UI at all page depths. |
-| **v1.4.x – v1.5.0a** | The **AI Advisor** — arming, LAN-only bind, token auth, secret redaction, USB third-factor, network-diagnostics tier — metal-validated on the RT-BEXXU. |
+| **through v1.3.3** | Validated on the physical RT-BE96U: hardening rounds 1–4 + latent T1–T4, the avahi CVE backport, all Hardware QoS engines (v1 global, Classful, v3, v4) end-to-end, the Traffic Analyzer, the de-cloud removals, and the Reaper UI at all page depths. |
+| **v1.4.x – v1.5.0a** | The **AI Advisor** — arming, LAN-only bind, token auth, secret redaction, USB third-factor, network-diagnostics tier — metal-validated on the RT-BE96U. |
 | **v1.5.x** | Newest fully metal-validated build in the line: **v1.5.6**. |
-| **v2.0.0** | Upgrade-path first boot verified on the physical RT-BEXXU (clean boot + healthy diagnostics). |
+| **v2.0.0** | Upgrade-path first boot verified on the physical RT-BE96U (clean boot + healthy diagnostics). |
 | **v2.1.4 – v2.2.1** | Five-model, both-variant fan-out — all five built + shipped, each passing the staged-image verify gate (17 checks through v2.1.6, **19 from v2.1.7** once the shared-parity and patch-marker checks were added). GT-BE98 Pro was converted to Samba 4 during this line. |
 | **v2.2.2 – v2.2.4** | RT-BE96U only. |
 | **v2.2.5, v2.2.6, v2.3.0, v2.3.1** | Each built + shipped on all five models, both variants — every build as itself, per-model banner / base / BUILD_NAME verified by the 19-check staged-image gate, noMCP images confirmed Advisor-free. |
@@ -2395,7 +2393,7 @@ on the `reaper-firmware/` ladder.
 | **v2.5.0 – v2.5.3** | RT-BE96U builds; **v2.5.3 was the cut published full-fleet on all five models**, folding v2.5.1 / v2.5.2. |
 | **v2.5.4 – v2.5.7** | RT-BE96U builds; **v2.5.7 published full-fleet** (QoS priority, IPSec confirmed working, ipset Policy Routing, the audit-remainder batch). |
 | **v2.5.8 – v2.7.3** | RT-BE96U builds; **v2.6.0, v2.7.1 and v2.7.3 published full-fleet** (v2.7.3 = Gatekeeper learns AiMesh, the owner's guide everywhere, themed dialogs). Siblings ported per rung. |
-| **v2.7.4 – v2.7.6** | RT-BE96U + RT-BE92U builds (patches 0529–0535), folded into one cut; **v2.7.6 published full-fleet** — the five 96813GW models plus the RT-BE92U, which carries it as an experimental prerelease. |
+| **v2.7.4 – v2.7.6** | RT-BE96U builds (patches 0529–0535), folded into one cut; **v2.7.6 published full-fleet** on the five 96813GW models. |
 | **v2.7.7** | RT-BE96U build, both variants; patches 0536–0541, series total 541 (AdGuard removed, the update-check exec-bit fix, the Policy Routing field batch, the completed translation pass). |
 
 ---

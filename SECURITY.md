@@ -36,11 +36,17 @@ Samba (SMB2/3, LAN-only), busybox udhcpc/ntpd, and the TLS stack — carries its
 
 | Component | Exposed when | Assessment |
 |---|---|---|
-| **netatalk 3.0.5** (Time Machine) | AFP file sharing enabled | The 2022 pre-auth RCE set (CVE-2022-23125, -45188, -43634, -23121) was checked **in code and is absent** in this version's paths. MEDIUM residual when enabled. |
+| **netatalk 3.0.5** (Time Machine) | AFP file sharing enabled | **Correction (2026-09-12):** CVE-2022-43634 (pre-authentication heap overflow in the DSI write path) **was present** - the 2026-08-30 check that called the 2022 set absent was wrong on this one. Fixed in v3.1.5 with an adaptation of the vendor fix. The other three of the set (CVE-2022-23125, -45188, -23121) were not re-proved either way. MEDIUM residual when enabled. |
 | **wpa_supplicant 0.6.10** | WAN 802.1X configured | A 2010 release, used only for wired WAN authentication. MEDIUM when configured. |
-| **lighttpd 1.4.39** | Captive portal enabled | CVE-2018-25103, pre-authentication on port 8083, reachable only with the captive portal or Chillispot switched on. |
-| **net-snmp 5.9.4.pre2** | SNMP with a read-write community | CVE-2022-44792 / -44793. A read-only community does not reach them. |
+| **lighttpd 1.4.39** | Captive portal enabled | CVE-2018-25103 (folded-header use-after-free, pre-authentication on port 8083) fixed in v3.1.5. The rest of the 1.4.39-to-current delta is not backported; reachable only with the captive portal or Chillispot switched on. |
+| **net-snmp 5.9.4.pre2** | SNMP with a read-write community | CVE-2022-44792 / -44793 fixed in v3.1.5 (a SET carrying a NULL varbind is rejected before dispatch). A read-only community never reached them. |
 | **Quagga 0.99.24** (zebra) | Dynamic routing enabled | CVE-2016-1245. |
+
+A second review on 2026-09-12 (v3.1.5, adversarial, with a live-router observation) re-read each of these
+in code rather than by version, which is how the netatalk correction above was found. The same round
+backported the strongSwan 6.0.4 identity double free (CVE-2026-47895, IKEv2 EAP server), moved Tor to
+its 2026-09-08 security release (0.4.9.12) and closed avahi's CNAME lookup crashes (CVE-2025-68468,
+CVE-2025-68471, CVE-2026-24401).
 
 If any of these is upgraded it gets its own release and hardware validation rather than riding along
 with unrelated work — the versions are load-bearing for the features that use them.

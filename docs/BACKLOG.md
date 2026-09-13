@@ -356,8 +356,58 @@ backhaul-parking reconcile, the phone-width shell, the update check's beta chann
   **Documentation half done 2026-09-08:** the five off-by-default inherited components (netatalk,
   wpa_supplicant, lighttpd, net-snmp, Quagga) and the accepted update-manifest-signature trade are
   now stated in [`../SECURITY.md`](../SECURITY.md) under *Known limitations*, following the Samba
-  precedent. **Remaining:** the cheap backports (strongSwan, avahi CNAME trio, the kernel one-hunk
-  set) — each needs a build, so they want their own rung. ↳ notes: `cve-check-2026-08-30.md`
+  precedent. **2026-09-12:** strongSwan (CVE-2026-47895) and the avahi CNAME trio landed in the v3.1.5
+  tree, with Tor 0.4.9.12, netatalk CVE-2022-43634 (which the 08-30 check had wrongly called absent),
+  lighttpd CVE-2018-25103 and net-snmp CVE-2022-44792/3 - see the v3.1.5 review block below.
+  **Remaining:** the kernel one-hunk set. ↳ notes: `cve-check-2026-08-30.md`
+- **[P1] v3.1.5 security review (2026-09-12) — metal owed for every fix that landed.** Sixteen items
+  (R01-R16) from an independent adversarial review, re-verified and remediated in the v3.1.5 tree; the
+  decisions are in `REAPER-FIXES.md` ("Security review 2026-09-12"). What only hardware can prove:
+  Time Machine discovery + first and incremental backup + an interrupted transfer (netatalk R01, the DSI
+  struct grew - every module rebuilt cold); an IKEv2 EAP-MSCHAPv2 connect + reconnect (strongSwan R02);
+  Tor transparent proxying v4 + DNS after the 0.4.9.12 bump (R03); toggling a client's Killswitch and
+  its enable INSIDE the Policy Routing confirm window, then Keep and separately Revert - the live 91xx
+  prohibit must follow the switch both ways (R04); a full WireGuard bypass table producing E_PARTIAL on
+  the page with the syslog line naming it (R05); a saved rule on a geo object dropped with its reason,
+  a group expanding into its members (R06); `ip rule add` failure surfacing as E_PARTIAL and rwatch
+  healing an IPv6 shortfall (R07); a slow TLS handshake against an armed Advisor dropped at 20 s (R10);
+  an SNMP SET with a NULL varbind answered wrongType (R13); an OpenVPN server certificate repaired AND
+  a new server created on an OpenSSL 3.5 image (R16 - the RANDFILE cause on top of the AKID one).
+  **[metal owed]**
+- **[P2] Policy Routing Status column: configuration state, not an effective verdict (review R14).**
+  The column reads the target's configuration (client enabled, Killswitch on) and not the rule's own
+  On toggle, the master switch, or whether the tunnel is actually up; a switched-off client says
+  `Inactive · WAN` although a VPN Director rule below the 9000 band can still capture that flow.
+  The reviewer's replacement wording was the prose the Merlin reviewer had just asked to remove, so
+  it was not taken. Owner decision: leave as designed, or grey the cell while the rule is off.
+  **[owner decision]**
+- **[P3] Policy Routing rebuild is not atomic (review R07, second half).** The generated script tears
+  the live chain and pref band down before rebuilding, so every apply has a window with no rules.
+  Design as shipped since v2.5; the window was never measured. A swap-in rebuild (build under a
+  staging chain name, then rename) would close it. **[design]**
+- **[P3] Policy Routing on Warden's country sets.** A geo object now drops the rule (it never matched
+  anything before); the firewall engine resolves the same object to Warden's `rw_g_<cc>` set when
+  Warden manages that country, and PBR could do the same - "route everything bound for country X
+  through the tunnel" is a real ask. Needs the Warden set lifecycle (swap vs destroy) checked
+  against a live iptables reference first. **[feature, owner call]**
+- **[P2] Field report: port forwards gone on an RT-BE88U after v3.0.0 → v3.1.0 (review R15).**
+  Nothing in the rc/shared delta between the two version commits touches `write_port_forwarding()`,
+  `nat_setting()` or the VSERVER hook (the range adds amaspark, the PBR re-assert after
+  `add_multi_routes()`, and three socket-buffer sysctls); the reporter's check
+  (`iptables -t nat -L PREROUTING | grep <port>`) cannot see the DNAT lines, which live in the
+  VSERVER chain that PREROUTING jumps to by WAN address; the emitter, executed against the reporter's
+  exact rules (release check 24), emits the three DNAT lines. Ask the reporter for `reaper_diag`
+  section 14f + FINDINGS (v1.3.15), or failing that: `iptables -t nat -S PREROUTING`, `-S VSERVER`,
+  `-S VUPNP`, `nvram get wan0_ipaddr wan0_realip_ip wan0_state_t wans_dualwan` (which 10G WAN port?),
+  `iptables -S FORWARD | head -40`, syslog around `start_firewall`. The reporter also says the
+  v3.0.0-beta / v3.0.7-beta RT-BE88U assets are gone from GitHub - check whether that predates the
+  retention rule. **[needs data]**
+- **[P3] Update-manifest signature stays inert (review R09)** - re-recorded as an accepted trade, not
+  reopened. **[accepted]**
+- **[P3] Review carry-forward queue (not findings):** kernel 4.19.294 CVE set (CVE-2023-52340 IPv6
+  route GC and the 08-30 list), wpa_supplicant 0.6.10 on the wired 802.1X path (needs an EAP-MD5-
+  specific match), the BusyBox/Quagga/e2fsprogs/wget inventory against current binaries, and the
+  proprietary runtime. **[queue]**
 - **[P2] AiMesh: repeated pairing failures reported against Reaper** (tester via owner, 2026-09-09)
   — seven failed pairings, attributed to Reaper by the reporter; the owner is not convinced.
   Establish what "seven" counts (attempts, nodes, or reporters) before anything else. The syslog

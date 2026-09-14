@@ -1,0 +1,319 @@
+From 46c88dfe3c5f880f2f760ea3078b9058516deefc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 13:15:52 -0400
+Subject: [PATCH] firewall: a refused filter-table restore is loud and
+ survivable (review R15 field data)
+
+Field data from the RT-BE88U report (2026-09-13): the two copies of
+/tmp/filter_rules that rule_apply_checking() saved at boot both pass
+`iptables-restore --test`, and every `service restart_firewall` hours later
+still leaves start_default_filter()'s boot skeleton in the filter table - no
+port forwards, no VPN server chains, no SECURITY, no TCPMSS clamp. So the
+refusal is the kernel's, deterministic, and of one line; and because _eval()
+sends the restore's stdout and stderr to /dev/null, the router could not say
+which line. The box ran that way for two weeks with a working nat table, so
+forwarded flows were translated and then dropped.
+
+rc/firewall.c: reaper_restore_rules() replaces the four filter restores
+(v4 and v6, both filter_setting variants). It keeps the restore's own words
+under /tmp/err_rules/<file>.err, names the refused line verbatim in syslog,
+keeps the saved copy as before, and then applies the table WITHOUT that line,
+up to eight times: a table missing one rule the kernel was never going to
+enforce beats a skeleton that enforces none of them. A refusal that names no
+line (a crash) is logged and left alone. The declaration, table and COMMIT
+lines are never stripped.
+
+rc/rwatch.c: check 3f reports `filter-skeleton` when INPUT_ICMP and SECURITY
+- declared only by filter_setting() - are absent in router mode after boot
+grace, logs once, and requests one restart_firewall per boot.
+
+others/reaper_diag 1.3.16: 14f prints the table's state (full vs boot
+skeleton), the /tmp/err_rules listing and each .err file's first line, with a
+FINDING when the skeleton is what runs.
+
+Ruled out on the owner's RT-BE96U before this was written: the kernel accepts
+a `policy --dir out` match in an INPUT-reachable chain and a chain-jump loop
+(both committed, exit 0), so the refused line is not of either class; the
+`upnp` ipset rule is not compiled for any model; the TCPMSS clamp in
+PControls is never jumped to. The line itself is still wanted from the
+reporter's box; the next beta's syslog will carry it.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag |  13 ++-
+ release/src/router/rc/firewall.c      | 132 ++++++++++++++++++++++++--
+ release/src/router/rc/rwatch.c        |  29 ++++++
+ 3 files changed, 164 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 853edbd998..7d8a00352a 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.15 (2026-09-12) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.16 (2026-09-13) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.15"
++VER="REAPER-DIAG v1.3.16"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -887,6 +887,14 @@ echo "  nat PREROUTING -> VSERVER hooks : $_hook  (-> GAME_VSERVER: $(iptables -
+ _dnat=$(iptables -t nat -S VSERVER 2>/dev/null | grep -c -- '-j DNAT')
+ echo "  nat VSERVER DNAT lines          : $_dnat   (VUPNP: $(iptables -t nat -S VUPNP 2>/dev/null | grep -c -- '-j DNAT'))"
+ echo "  FORWARD ctstate DNAT accept     : $(iptables -S FORWARD 2>/dev/null | grep -c -- '--ctstate DNAT -j ACCEPT')"
++# v1.3.16 (2026-09-13): the reporter's second trace showed FORWARD as start_default_filter()'s
++# boot skeleton - the full table had never loaded (iptables-restore is atomic; one refused line
++# keeps the skeleton). INPUT_ICMP and SECURITY are declared only by filter_setting(), so their
++# absence in router mode is that state. The .err files are the restore's own words (v3.1.6+).
++_skel=0; { iptables -nL INPUT_ICMP >/dev/null 2>&1 || iptables -nL SECURITY >/dev/null 2>&1; } || _skel=1
++echo "  filter table                    : $( [ "$_skel" = 1 ] && echo 'BOOT SKELETON ONLY - INPUT_ICMP/SECURITY absent, the full ruleset never loaded' || echo 'full - INPUT_ICMP/SECURITY present' )"
++echo "  /tmp/err_rules                  : $( ls /tmp/err_rules 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' )"
++for _e in /tmp/err_rules/*.err; do [ -f "$_e" ] && echo "    $(basename "$_e"): $(head -1 "$_e" | cut -c1-160)"; done
+ _pfm=0; _pfn=0
+ if [ -n "$_rl" ]; then
+   printf '%s' "$_rl" | tr '<' '\n' > "$RAW.pf"
+@@ -905,6 +913,7 @@ fi
+ [ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" = 0 ] && finding WARN "port forwarding is ON but nat/PREROUTING has no jump to VSERVER - the WAN address was unknown when the firewall was built, or something rebuilt the nat table without it; forwards cannot work until the hook exists (see 14f)"
+ [ "$_vts" = 1 ] && [ "$_pfm" -gt 0 ] && finding WARN "port forwarding: $_pfm of $_pfn saved rule(s) have NO DNAT line in VSERVER - the rule was dropped at emission (charset gate) or the chain was flushed (see 14f)"
+ [ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" -gt 0 ] && [ "$_pfm" = 0 ] && [ "$(iptables -S FORWARD 2>/dev/null | grep -c -- '--ctstate DNAT -j ACCEPT')" = 0 ] && finding WARN "port forwarding: DNAT lines are live but FORWARD has no ctstate-DNAT accept - forwarded flows are translated and then dropped (see 14f)"
++[ "$_skel" = 1 ] && [ "$(nvram get sw_mode 2>/dev/null)" = 1 ] && finding WARN "firewall: the filter table is the boot-time skeleton only - the full ruleset never loaded (one line was refused; see 14f, the firewall: lines in 19 and /tmp/err_rules); port forwards, VPN server chains and the DoS guard are NOT in force"
+ 
+ sec "15. DATAPLANE ACCELERATOR (one-shot reads)"
+ # ONE-SHOT, on operator demand only. rwatch's equivalent check is opt-in
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index f255f2892e..8fd3912a90 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -43,6 +43,7 @@
+ #include <net/ethernet.h>
+ #include <limits.h>		//PATH_MAX, LONG_MIN, LONG_MAX
+ #include <time.h>
++#include <unistd.h>
+ 
+ #if defined(RTCONFIG_FBWIFI)
+ #include "../fb_wifi/fbwifi.h"
+@@ -4584,6 +4585,125 @@ static void _config_mtwan_mangle_rules(
+ #endif	//RTCONFIG_MULTIWAN_PROFILE
+ #endif	//RTCONFIG_MULTIWAN_IF
+ 
++/* Reaper (2026-09-13, review R15 field data). iptables-restore is atomic: one
++ * line the kernel refuses leaves the WHOLE filter table as the boot skeleton
++ * start_default_filter() installed - no port forwards, no VPN server chains,
++ * no SECURITY, no TCPMSS clamp - and _eval() sends the restore's own
++ * "line N failed" to /dev/null, so the router could not even say which line.
++ * An RT-BE88U ran that way for two weeks; the copies rule_apply_checking()
++ * saved pass `iptables-restore --test`, so the refusal is the kernel's, not
++ * the parser's. This wrapper keeps the restore's words, names the refused line
++ * in syslog, keeps the saved copy, and then applies the table WITHOUT that
++ * line, up to REAPER_RESTORE_MAX_SKIP times: a table missing one rule the
++ * kernel was never going to enforce beats a skeleton that enforces none of
++ * them. Every skipped rule is logged verbatim, so the report that follows
++ * carries the cause. A refusal that names no line (a crash, a signal) is
++ * logged and left alone; rwatch 3f and reaper_diag 14f then say the table is
++ * the skeleton. */
++#define REAPER_RESTORE_MAX_SKIP 8
++#define REAPER_ERR_RULES "/tmp/err_rules"
++
++static void reaper_restore_read_err(const char *errf, char *msg, size_t len)
++{
++	FILE *fp;
++
++	msg[0] = '\0';
++	if ((fp = fopen(errf, "r")) == NULL)
++		return;
++	if (fgets(msg, len, fp))
++		msg[strcspn(msg, "\r\n")] = '\0';
++	fclose(fp);
++}
++
++/* Copy src to dst without line `skip` (1-based); the dropped line's text goes
++ * to `text`. Returns 0 on success, -1 when the line does not exist or is not a
++ * rule (a table, chain or COMMIT line cannot be dropped). */
++static int reaper_restore_drop_line(const char *src, const char *dst, int skip, char *text, size_t tlen)
++{
++	FILE *in, *out;
++	char buf[4096];
++	int lineno = 0, at_bol = 1, found = 0;
++
++	if ((in = fopen(src, "r")) == NULL)
++		return -1;
++	if ((out = fopen(dst, "w")) == NULL) {
++		fclose(in);
++		return -1;
++	}
++	while (fgets(buf, sizeof(buf), in)) {
++		if (at_bol)
++			lineno++;
++		if (lineno == skip) {
++			if (at_bol) {
++				if (buf[0] == '*' || buf[0] == ':' || strncmp(buf, "COMMIT", 6) == 0)
++					found = -1;
++				else {
++					snprintf(text, tlen, "%s", buf);
++					text[strcspn(text, "\r\n")] = '\0';
++					found = 1;
++				}
++			}
++		} else
++			fputs(buf, out);
++		at_bol = (strchr(buf, '\n') != NULL);
++	}
++	fclose(in);
++	fclose(out);
++	return (found == 1) ? 0 : -1;
++}
++
++/* Returns 0 when a table is in force (complete, or minus skipped lines), else
++ * the restore's exit status - the skeleton is what runs then. */
++static int reaper_restore_rules(const char *bin, const char *path, int caller_line)
++{
++	char errf[128], redir[132], work[128], tmp[136], msg[512], text[1024], *p;
++	char *argv[3];
++	int ret, skipped = 0, lineno;
++
++	argv[0] = (char *)bin;
++	argv[1] = (char *)path;
++	argv[2] = NULL;
++	if (!check_if_dir_exist(REAPER_ERR_RULES))
++		mkdir(REAPER_ERR_RULES, 0777);
++	snprintf(errf, sizeof(errf), "%s/%s.err", REAPER_ERR_RULES, basename((char *)path));
++	snprintf(redir, sizeof(redir), ">%s", errf);
++	ret = _eval(argv, redir, 0, NULL);
++	if (ret == 0) {
++		unlink(errf);
++		return 0;
++	}
++	rule_apply_checking("firewall", caller_line, (char *)path, ret);
++	reaper_restore_read_err(errf, msg, sizeof(msg));
++	logmessage("firewall", "%s %s failed (rc %d): %s", bin, path, ret,
++		   msg[0] ? msg : "(no output - the restore did not run to completion)");
++
++	snprintf(work, sizeof(work), "%s/%s.retry", REAPER_ERR_RULES, basename((char *)path));
++	snprintf(tmp, sizeof(tmp), "%s.tmp", work);
++	argv[1] = work;
++	while (skipped < REAPER_RESTORE_MAX_SKIP) {
++		if ((p = strstr(msg, "line ")) == NULL || (lineno = atoi(p + 5)) <= 0)
++			break;
++		if (reaper_restore_drop_line(skipped ? work : path, tmp, lineno, text, sizeof(text)) != 0)
++			break;
++		if (rename(tmp, work) != 0)
++			break;
++		skipped++;
++		logmessage("firewall", "kernel refused rule %d of %s - applying the table without it: %s",
++			   lineno, basename((char *)path), text);
++		ret = _eval(argv, redir, 0, NULL);
++		if (ret == 0) {
++			logmessage("firewall", "%s applied with %d rule(s) skipped - the rest of the firewall is in force; please report the skipped line(s) above",
++				   basename((char *)path), skipped);
++			return 0;
++		}
++		reaper_restore_read_err(errf, msg, sizeof(msg));
++	}
++	logmessage("firewall", "%s NOT applied - the boot-time default filter is what is running (no port forwards, no VPN server chains, no DoS guard); the refused file and its error are under %s",
++		   basename((char *)path), REAPER_ERR_RULES);
++	unlink(tmp);
++	return ret;
++}
++
+ void
+ filter_setting(int wan_unit, char *lan_if, char *lan_ip, char *logaccept, char *logdrop)
+ {
+@@ -6360,8 +6480,7 @@ TRACE_PT("write wl filter\n");
+ 
+ 	fprintf(fp, "COMMIT\n\n");
+ 	if (fp) fclose(fp);
+-	evalRet = eval("iptables-restore", "/tmp/filter_rules");
+-	rule_apply_checking("firewall", __LINE__, "/tmp/filter_rules", evalRet);
++	evalRet = reaper_restore_rules("iptables-restore", "/tmp/filter_rules", __LINE__);
+ 
+ #ifdef RTCONFIG_PROTECTION_SERVER
+ 	kill_pidfile_s(PROTECT_SRV_PID_PATH, SIGUSR1);
+@@ -6375,8 +6494,7 @@ TRACE_PT("write wl filter\n");
+ 
+ 		fprintf(fp_ipv6, "COMMIT\n\n");
+ 		if (fp_ipv6) fclose(fp_ipv6);
+-		evalRet = eval("ip6tables-restore", "/tmp/filter_rules_ipv6");
+-		rule_apply_checking("firewall", __LINE__, "/tmp/filter_rules_ipv6", evalRet);
++		evalRet = reaper_restore_rules("ip6tables-restore", "/tmp/filter_rules_ipv6", __LINE__);
+ 	}
+ #endif
+ }
+@@ -8235,8 +8353,7 @@ TRACE_PT("write wl filter\n");
+ 
+ 	fprintf(fp, "COMMIT\n\n");
+ 	if (fp) fclose(fp);
+-	evalRet = eval("iptables-restore", "/tmp/filter_rules");
+-	rule_apply_checking("firewall", __LINE__, "/tmp/filter_rules", evalRet);
++	evalRet = reaper_restore_rules("iptables-restore", "/tmp/filter_rules", __LINE__);
+ 
+ #ifdef RTCONFIG_PROTECTION_SERVER
+ 	kill_pidfile_s(PROTECT_SRV_PID_PATH, SIGUSR1);
+@@ -8250,8 +8367,7 @@ TRACE_PT("write wl filter\n");
+ 
+ 		fprintf(fp_ipv6, "COMMIT\n\n");
+ 		if (fp_ipv6) fclose(fp_ipv6);
+-		evalRet = eval("ip6tables-restore", "/tmp/filter_rules_ipv6");
+-		rule_apply_checking("firewall", __LINE__, "/tmp/filter_rules_ipv6", evalRet);
++		evalRet = reaper_restore_rules("ip6tables-restore", "/tmp/filter_rules_ipv6", __LINE__);
+ 	}
+ #endif
+ }
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index a5b2c82644..351f6ba6ec 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -18,6 +18,10 @@
+  *      removing anything. Repair is hook.sh, under the firewall lock,
+  *   3e. Warden outbound state (v3.1.2): says WHICH of the four reasons the
+  *      syslog carries no REAPER-WARDEN-OUT lines, once per state change,
++ *   3f. filter-table completeness (2026-09-13, review R15): the chains only
++ *      filter_setting() declares are present in router mode - else the box
++ *      is running start_default_filter()'s boot skeleton (no port forwards,
++ *      no VPN server chains) and says so, with one restart_firewall per boot,
+  *   4. the GDX skb_idx pool (OPT-IN, rwatch_gdx=1, default off): host local TCP
+  *      rides the GDX accelerator (HTOA license), whose 8192-entry pool drains
+  *      silently when the Runner loop wedges - the stock stack has NO watchdog or
+@@ -463,6 +467,31 @@ static void rwatch_gen(void)
+ 	  "  echo \"$WOKEY\" > /tmp/rwatch_warden_out 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
++	  /* 2026-09-13 (review R15 field data): an RT-BE88U ran for two weeks on
++	   * start_default_filter()'s boot skeleton because one line of
++	   * /tmp/filter_rules was refused and iptables-restore is atomic - and
++	   * nothing on the box said so. INPUT_ICMP and SECURITY are declared
++	   * unconditionally by filter_setting() and by nothing else, so their
++	   * absence in router mode after boot grace means the full table never
++	   * loaded. One restart_firewall per boot is the heal: the restore path
++	   * now skips a refused line itself, so a second attempt can succeed where
++	   * the first did not, and a deterministic refusal is not retried every
++	   * tick. Reported as FAIL (not CRIT): the LAN is untouched, the WAN is
++	   * still policy-DROP - what is missing is everything the operator asked
++	   * the firewall to let through. */
++	  "# 3f) the filter table is still the boot skeleton: the full ruleset never loaded\n"
++	  "if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$(_nv sw_mode)\" = 1 ] \\\n"
++	  "   && ! iptables -nL INPUT_ICMP >/dev/null 2>&1 && ! iptables -nL SECURITY >/dev/null 2>&1; then\n"
++	  "  FAIL=\"$FAIL filter-skeleton\"\n"
++	  "  if [ ! -f /tmp/rwatch_skel ]; then\n"
++	  "    logger -t rwatch \"the firewall filter table is the boot-time default only (INPUT_ICMP and SECURITY chains absent): the full ruleset never loaded, so port forwards, VPN server chains and the DoS guard are NOT in force - see the firewall: lines in syslog and /tmp/err_rules; requesting one restart_firewall\"\n"
++	  "    touch /tmp/rwatch_skel\n"
++	  "    service restart_firewall >/dev/null 2>&1\n"
++	  "  fi\n"
++	  "else\n"
++	  "  rm -f /tmp/rwatch_skel 2>/dev/null\n"
++	  "fi\n"
++	  "\n"
+ 	  "# 4) GDX host-TCP pool: 0 available = the silent accelerator-wedge\n"
+ 	  "#    signature. OPT-IN (rwatch_gdx=1): reads a kernel accelerator /proc\n"
+ 	  "#    surface every tick; default-off until skb_idx is field-proven non-\n"
+-- 
+2.25.1
+

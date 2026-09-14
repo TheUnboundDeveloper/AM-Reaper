@@ -1,0 +1,29 @@
+From 4e52f2f0b61345883bc62cecf1fb5b42169941e0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 18:57:59 -0400
+Subject: [PATCH] quagga: the router-advertisement read must be bounded by the
+ buffer, not BUFSIZ (CVE-2016-1245)
+
+rtadv_read() declares u_char buf[RTADV_MSG_SIZE] (4096) and passed BUFSIZ (8192) as its size to rtadv_recv_packet(), so an oversized router solicitation overran the stack buffer by up to 4096 bytes. Upstream 0.99.24.1 change. Reachable only with dynamic routing switched on (quagga_enable=1); only lib, zebra and ripd are built.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ release/src/router/quagga/zebra/rtadv.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/quagga/zebra/rtadv.c b/release/src/router/quagga/zebra/rtadv.c
+index 21ca6da998..973ae08a5e 100644
+--- a/release/src/router/quagga/zebra/rtadv.c
++++ b/release/src/router/quagga/zebra/rtadv.c
+@@ -515,7 +515,7 @@ rtadv_read (struct thread *thread)
+   /* Register myself. */
+   rtadv_event (RTADV_READ, sock);
+ 
+-  len = rtadv_recv_packet (sock, buf, BUFSIZ, &from, &ifindex, &hoplimit);
++  len = rtadv_recv_packet (sock, buf, sizeof (buf), &from, &ifindex, &hoplimit);
+ 
+   if (len < 0) 
+     {
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.1.6** · 2026-09-13 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -48,12 +48,21 @@ The ordered short list.
    the DDNS fix and the WireGuard kernel fix are in those images. The metal-owed list is one entry
    under Open bugs. v3.1.5 becomes the stable release when Dev is merged to main after the beta has
    soaked.
-3. **[P2] GT-BE19000 — on the roster since v3.1.4; first field report in, 2026-09-13.** A tester
-   is running the beta on hardware: it boots, both radios are up and the core functions work. What
-   they see are visual and functional surface glitches, not failures; a detailed write-up and a
-   `reaper_diag` report are requested and the fixes are scoped when they arrive. Still owed with the
-   tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class. The model stays a
-   prerelease until the glitch list is closed. **[needs data — the write-up and the diag]**
+3. **[P2] GT-BE19000 — on the roster since v3.1.4; the write-up and the diag ARRIVED 2026-09-13.**
+   The tester's report (four items) and a `reaper_diag` v1.3.14 capture from a v3.1.4_BETA_noMCP box
+   are in. **The decisive fact the report did not state: that router is in Access Point mode
+   (`sw_mode=3`)** — and three of the four items are AP-mode behaviour in Reaper code shared by every
+   model, not GT-BE19000 port defects. **All three are fixed in tree for v3.1.6**, together with a
+   fourth from the same capture (the diag's false `rtrafd` warning): the socket ceilings now load in
+   every operation mode, the dashboard counts clients from Reaper's own device store when networkmap
+   has no leases to count from, and the Internet card names the operation mode instead of painting a
+   working router red. The fix is scoped to the operation mode rather than to the model (owner,
+   2026-09-13), so a routing box behaves exactly as before and a box of any model later switched to
+   AP mode is covered too. The fifth item (duplicate menus off UPnP) is the only one still wanting
+   data. So the port itself is so far clean — nothing in the report is specific to this model. Still
+   owed with the tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class, and a
+   confirming capture from the same box on a v3.1.6 image. The model stays a prerelease until the
+   glitch list is closed.
    ↳ memory: `gt-be19000-port.md`
 3b. **[P2] Code signing, fully automated — scheduled for a release later this week** (owner,
    2026-09-13), after v3.1.6 is stable and the GT-BE19000 glitch list is triaged: images signed in
@@ -195,6 +204,72 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   logging" advice. **Next: confirm with the owner whether the Warden page was applied around 23:05
   and again around 23:20 on 2026-09-11.**
   **[instrumentation fixed in tree, image owed; the 0/1/0 flag question still open]** ↳ notes: `warden-outbound-quiet.md`
+- **[P2] Access Point mode: the socket-buffer ceilings never load** (found 2026-09-13 from the
+  GT-BE19000 diag; affects **every model**). `start_firewall()` opens with
+  `if (!is_routing_enabled()) return -1;` (`rc/firewall.c:9228`), which returns in AP, repeater and
+  media-bridge mode — **before** the Reaper block at `rc/firewall.c:9478` that raises
+  `net.core.rmem_max`/`wmem_max` to 16 MB and `netdev_max_backlog` to 4096. The tester's capture
+  shows exactly that: `rmem_max 524288`, `netdev_max_backlog 1000`, on a box whose syslog records
+  three `restart_firewall` calls hours earlier. Any throughput tool that calls
+  `setsockopt(SO_RCVBUF)` — the Ookla engine included — is capped accordingly, so this is a real
+  contributor to the "speed test is not consistent" report. **Fixed in tree for v3.1.6:** the three
+  writes moved out of `start_firewall()`'s body into `reaper_socket_ceilings()`, and the
+  `!is_routing_enabled()` return calls it on the way out. They are not firewall state and had no
+  reason to sit behind that guard. Routing mode still takes the call in the same place in the body,
+  unchanged. Settled by a `reaper_diag` 12 capture from an AP-mode box on a v3.1.6 image showing
+  `rmem_max 16777216` and `netdev_max_backlog 4096`.
+  **[fixed in tree, metal owed — no lab box runs in AP mode]**
+- **[P2] Dashboard reports zero clients while the Devices page lists them all** (GT-BE19000 tester,
+  2026-09-13; **not model-specific**). Two different presence sources: the dashboard polls stock
+  `get_clientlist()` and skips every row failing `String(c.isOnline)!=='1'`
+  (`www/Main_ReaperDash.asp:1309`), while the Devices page reads Reaper's own
+  `reaper_dev.cgi?action=status` (`www/Reaper_Devices.asp:348`) and never consults `isOnline`. In AP
+  mode networkmap has nothing to derive presence from — the same capture shows **0 DHCP leases and 0
+  conntrack entries** — so the dashboard counts nothing while 16 stations are associated on the VIFs.
+  The AiMesh card is reported the same way and probably shares the cause, but that was not proved.
+  **Fixed in tree for v3.1.6.** The band coding was the open question and the store does carry it:
+  `rdev` holds `band` ("2.4"/"5"/"6"/"" for wired) filled from the `wl` assoclists and corrected by
+  the bridge FDB, and `online` comes from the assoclists, the FDB and `/proc/net/arp` — none of
+  which needs a lease or a conntrack entry. In a non-routing mode the tiles now read
+  `reaper_dev.cgi`, folding MLO links and AiMesh nodes the way the Devices page does, and poll at
+  30 s rather than 10 because `action=status` `popen()`s `wl` per radio, VIF and station on a
+  single-flight httpd — which is why the Devices page reads it on demand and never on a timer.
+  Routing mode keeps `get_clientlist()` untouched. Settled by the same box on a v3.1.6 image
+  counting its sixteen stations. The AiMesh card was left alone: same symptom, but the shared cause
+  is still unproved. **[fixed in tree, metal owed]**
+- **[P3] Internet card reads "Disconnected" in Access Point mode** (GT-BE19000 tester, 2026-09-13;
+  **not model-specific**) — the tester guessed the cause correctly. `www/Main_ReaperDash.asp:837`
+  derives `wanUp` from `wan0_state_t==='2'`, which is structurally `0` in AP mode, and then paints
+  the state red (`var(--danger)`). The page already resolves the operation mode a few lines later
+  (`get_operation_mode()`, line 876) — the WAN card simply does not consult it. Cosmetic, but it
+  reads as a fault on a router that is working, which is the worst kind of cosmetic. **Fixed in tree
+  for v3.1.6:** both the card and the header pill now name the operation mode in a neutral colour,
+  and the live WAN poll — whose "fast while it is down" cadence would otherwise have run a
+  four-second request for the life of the page against a state that cannot change — is not started
+  at all in those modes. **[fixed in tree, metal owed]**
+- **[P3] Duplicate menu entries after opening UPnP** (GT-BE19000 tester, 2026-09-13) — "UPnP" here is
+  `mediaserver.asp` (UPnP Media Server, `RTCONFIG_MEDIA_SERVER=y`), not the IGD console. Not
+  reproduced and not root-caused. Two candidates, both cheap to separate with one screenshot and the
+  tester's add-on list: (a) the add-on overlay class — `reaper_util.js:232` records that `menuTree.js`
+  is exactly the file third-party add-ons bind-mount over, and the capture reports `amtm-ish mounts: 4`
+  on that box; (b) a menuTree variant mismatch — six trees ship (`menuTree.js`, `_v4`, `_GS`,
+  `_BUSINESS`, `_ROG`, `_TUF`) and the GT-BE19000 is the first ROG-class model on the roster, so a
+  tree Reaper's injection does not cover would show stock and injected entries together. Reaper's own
+  injector dedupes by URL, which argues against (b) alone. **[needs data — a screenshot and the
+  add-on list]**
+- **[P3] `rtrafd` enabled but not running** (GT-BE19000 tester's capture, 2026-09-13) — the diag's own
+  check reports `rtraf_enable=1 running=0`, which leaves the Traffic page with no collector behind it.
+  **Root-caused 2026-09-13 without the syslog: it is the same AP-mode class as the three above.**
+  `start_rtraf()` opens with `if (!is_routing_enabled()) return;`, as do `start_gk()` and
+  `start_rchqd()` — and rtrafd accounts off conntrack, which a bridging box never populates. So the
+  daemon is *correctly* not running and the finding was the defect. **Fixed in tree for v3.1.6**
+  (`reaper_diag` v1.3.17): 12c's `svc()` reports the designed idle state for the operation mode
+  instead of warning, the same correction rmcpd's line already carries. Only `sw_mode` 2 and 3 flip
+  it, so an unreadable `sw_mode` keeps the louder behaviour rather than silencing a real fault.
+  Deliberately **not** changed: rtrafd is left un-started in those modes, because per-device
+  accounting off an empty conntrack table would report nothing whatever it did. The Traffic page
+  therefore stays empty on a bridging box — worth a note on the page, which is not in this rung.
+  **[fixed in tree, metal owed]**
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
   IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
   and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
@@ -314,6 +389,21 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## UI / UX polish
 
+- **[P3] Nothing stops the Diagnostics page's version drifting from the script again** (owner,
+  2026-09-13). The symptom is fixed — `www/Reaper_Diag.asp` had a hardcoded `REAPER-DIAG v1.0.1`
+  while `others/reaper_diag` was at v1.3.16, so the page and the report it generated contradicted
+  each other on the same screen; the literal now matches. But it is still a **second copy of the
+  version**, re-pinned rather than derived, and the next `VER` bump can silently desync it exactly
+  as before. Runtime derivation is not cheap here: the page runs the diag only on click and streams
+  the report straight to a download, so there is no report text on screen at load to read the
+  version out of — it would need a light `reaper_diag.cgi` action that returns `VER` alone (a web.c
+  change). The cheaper durable answer is a gate, not a derivation: a `reaper_verify` check that
+  compares the literal in the staged `www/Reaper_Diag.asp` against `VER` in the staged
+  `usr/sbin/reaper_diag` and fails the build when they disagree. That has to live in the engine
+  (`reaper_verify.sh` + both copies, lean first then `sync_local_engine.sh`), because the lean repo
+  carries no source files for a `build-scripts/tests/` host test to read. A `verify_markers.txt`
+  rule cannot do it — markers assert one literal on one page and would pass while the script moved
+  underneath. **[owed — the gate, not the number]**
 - **[P3] Firmware page: the download phase still has no true cancel** — the upload half shipped in
   v3.1.1 (the hatch reads **Cancel** and aborts the in-flight POST). During a download from the
   update server the button still says **Close** and only leaves the overlay, honestly labelled:

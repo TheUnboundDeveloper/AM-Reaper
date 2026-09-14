@@ -1,0 +1,383 @@
+From fcff60a8473374c31bf9d36b11b04565e414d93a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 22:44:00 -0400
+Subject: [PATCH] Access Point mode: tune the sockets, count the clients, name
+ the mode
+
+The GT-BE19000 tester's write-up and diag arrived 2026-09-13. The fact the
+report did not state is the one that explains it: that box is in Access Point
+mode (sw_mode=3). Three of the four items are not port defects at all - they
+are Reaper surfaces that quietly assume a routing box, in code every model
+shares. A fourth came out of the same capture.
+
+rc/firewall.c - start_firewall() returns at !is_routing_enabled() long before
+the block that raises net.core.rmem_max/wmem_max to 16 MB and
+netdev_max_backlog to 4096, so an AP, repeater or media-bridge box ran on the
+stock 212992 ceiling no matter how often the firewall was restarted. The
+capture shows exactly that: rmem_max 524288 and backlog 1000 after three
+restart_firewall calls, which caps any stream whose tool calls
+setsockopt(SO_RCVBUF) - the Ookla engine included. The three writes move into
+reaper_socket_ceilings() and the non-routing return calls it on the way out.
+These are not firewall state and had no reason to sit behind that guard.
+Routing mode still takes the call in the same place in the body; its behaviour
+is unchanged.
+
+www/Main_ReaperDash.asp - two surfaces, one cause. The client tiles polled
+get_clientlist() and dropped every row failing isOnline!=='1'; networkmap
+derives that flag from the DHCP leases and conntrack, and a bridging box has
+neither (the capture: 0 and 0), so the dashboard showed 0 clients while 16
+stations were associated and the Devices page listed them all. In a
+non-routing mode the tiles now read reaper_dev.cgi, which builds presence from
+the wl assoclists, the bridge FDB and the ARP table and carries the band the
+tiles bucket on - folding MLO links and AiMesh nodes the way the Devices page
+does. It polls at 30 s rather than 10: action=status popen()s wl per radio,
+VIF and station, which is why the Devices page reads it on demand.
+The Internet card derived its verdict from wan0_state_t, structurally 0 with
+no WAN of its own, and painted a healthy router red. It now names the
+operation mode in a neutral colour, and the live poll - whose "fast while it
+is down" cadence would otherwise run a 4-second request for the life of the
+page against a state that cannot change - is not started at all.
+
+others/reaper_diag 12c (v1.3.17) - rtrafd, gkd and rchqd are all started
+behind !is_routing_enabled(), and rtrafd accounts off conntrack, which a
+bridging box never populates. "rtrafd is enabled but not running" was
+therefore a false WARN on the tester's box. svc() now reports the designed
+idle state for the mode instead, the same correction rmcpd's line already
+carries. Only sw_mode 2 and 3 flip it: an unreadable sw_mode keeps the
+louder behaviour rather than silencing a real fault.
+
+Scoped to the operation mode rather than to the model, at the owner's call:
+a routing box - which is every other reporter and every default install -
+behaves exactly as before, and a box of any model later switched to AP mode
+is fixed too.
+
+Not addressed here: the duplicate menu entries after opening UPnP, which
+still wants a screenshot and the tester's add-on list.
+
+make mk-rc BUILD_NAME=RT-BE96U exit 0, no new warnings. hiddencheck PASS,
+csrfcheck 0 breakers over 60 request sites, static_checks 13/13 (dict
+lockstep 6921 - no new tokens), sh -n and busybox sh -n clean on the diag,
+all six inline script blocks parse. New host test
+build-scripts/tests/test_apmode_surfaces.py compiles reaper_socket_ceilings()
+out of the real source and asserts the values it writes, then asserts every
+non-routing path is present; it fails against the pre-fix tree.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag      |  18 +++-
+ release/src/router/rc/firewall.c           |  70 +++++++++-----
+ release/src/router/www/Main_ReaperDash.asp | 104 +++++++++++++++++----
+ release/src/router/www/Reaper_Diag.asp     |   2 +-
+ 4 files changed, 149 insertions(+), 45 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 7d8a00352a..f247746a2d 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.16 (2026-09-13) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.17 (2026-09-13) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.16"
++VER="REAPER-DIAG v1.3.17"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -695,8 +695,22 @@ done | sort -rn | head -5 | awk '{printf "  %6ss  %-20s pid=%s\n", $1, $2, $3}'
+ echo "  -- memory --"; grep -E '^(MemFree|MemAvailable|Slab|Committed_AS|SwapTotal|SwapFree)' /proc/meminfo 2>/dev/null | sed 's/^/  /'
+ 
+ sec "12c. REAPER SERVICES vs. THEIR SWITCHES"
++# v1.3.17: every daemon svc() covers is started behind !is_routing_enabled()
++# (start_rtraf, start_gk, start_rchqd), and rtrafd in particular accounts off
++# conntrack, which a bridging box never populates. In Access Point (sw_mode=3)
++# or repeater/media-bridge (2) mode, running=0 with the knob on is the DESIGNED
++# state, not a dead service - the GT-BE19000 tester's capture (sw_mode=3) raised
++# exactly that false WARN for rtrafd on 2026-09-13. Same correction as the rmcpd
++# line below. Only the two known non-routing modes flip this: an unreadable
++# sw_mode keeps the old, louder behaviour rather than silencing a real fault.
++_ROUTING=1
++case "$(nvram get sw_mode 2>/dev/null)" in 2|3) _ROUTING=0;; esac
+ svc() { # name knob expected-running-when
+   _on="$(nvram get $2 2>/dev/null)"; _run="$(pidof $1 2>/dev/null | wc -w)"
++  if [ "$_ROUTING" = 0 ]; then
++    printf "  %-8s %-22s running=%s  (routing-only: idle=0 is normal in this mode)\n" "$1" "$2=${_on:-unset}" "$_run"
++    return
++  fi
+   printf "  %-8s %-22s running=%s\n" "$1" "$2=${_on:-unset}" "$_run"
+   if [ "$_on" = "$3" ] && [ "$_run" = 0 ]; then finding WARN "$1 is enabled ($2=$3) but not running"; fi
+ }
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 8fd3912a90..52019e3303 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -9207,6 +9207,42 @@ void add_mtppp_rules(char *logaccept, char *logdrop)
+ }
+ #endif
+ 
++/* reaper: raise the EXPLICIT socket-buffer ceilings. net.core.*mem_max
++ * caps any socket that calls setsockopt(SO_RCVBUF/SO_SNDBUF) - which is
++ * what throughput tools (and the Ookla engine) do. The stock 212992 caps a
++ * single stream at roughly 85 Mbit/s over a 20 ms path, which is a hard
++ * ceiling no other tuning can lift. These are ceilings, not allocations.
++ *
++ * tcp_rmem/tcp_wmem are deliberately NOT set: the kernel autotunes them up
++ * to ~6 MB already, and ASUS's block in start_firewall() (commented out,
++ * kept for reference) pins their max to 262144 - BELOW the default.
++ * Uncommenting that block verbatim would slow a multi-gigabit WAN down.
++ *
++ * v3.1.6: lifted out of start_firewall()'s body so the non-routing path can
++ * reach it. These are not firewall state, and start_firewall() returns at
++ * !is_routing_enabled() long before the block was reached - so an Access
++ * Point, repeater or media-bridge box kept the stock ceiling no matter how
++ * often the firewall was restarted. Measured on a GT-BE19000 in AP mode:
++ * rmem_max 524288 and netdev_max_backlog 1000 after three restart_firewall
++ * calls. The code is shared, so every model in a non-routing mode had it. */
++static void reaper_socket_ceilings(void)
++{
++	FILE *fp;
++
++	if ((fp = fopen("/proc/sys/net/core/rmem_max", "w+"))) {
++		fputs("16777216", fp);
++		fclose(fp);
++	}
++	if ((fp = fopen("/proc/sys/net/core/wmem_max", "w+"))) {
++		fputs("16777216", fp);
++		fclose(fp);
++	}
++	if ((fp = fopen("/proc/sys/net/core/netdev_max_backlog", "w+"))) {
++		fputs("4096", fp);
++		fclose(fp);
++	}
++}
++
+ //int start_firewall(char *wan_if, char *wan_ip, char *lan_if, char *lan_ip)
+ int start_firewall(int wanunit, int lanunit)
+ {
+@@ -9224,8 +9260,14 @@ int start_firewall(int wanunit, int lanunit)
+ 	int lock;
+ 	char rp_if[32] = {0};
+ 
+-	if (!is_routing_enabled())
++	if (!is_routing_enabled()) {
++		/* Nothing below this point applies without a WAN to filter - but
++		 * the socket ceilings do: a bridging box moves the same traffic
++		 * through the same sockets. Router and hotspot mode are untouched
++		 * and still take the call in place further down. */
++		reaper_socket_ceilings();
+ 		return -1;
++	}
+ 
+ 	if (getpid() != 1 && getuid() != 0) {
+ 		snprintf(tmp, sizeof(tmp), "start_firewall %d %d", wanunit, lanunit);
+@@ -9465,28 +9507,10 @@ add_mtwan:
+ 	handle_sdn_feature(ALL_SDN, SDN_FEATURE_ALL_FIREWALL, RC_SERVICE_START);
+ #endif
+ 
+-	/* reaper: raise the EXPLICIT socket-buffer ceilings. net.core.*mem_max
+-	 * caps any socket that calls setsockopt(SO_RCVBUF/SO_SNDBUF) - which is
+-	 * what throughput tools (and the Ookla engine) do. The stock 212992 caps a
+-	 * single stream at roughly 85 Mbit/s over a 20 ms path, which is a hard
+-	 * ceiling no other tuning can lift. These are ceilings, not allocations.
+-	 *
+-	 * tcp_rmem/tcp_wmem are deliberately NOT set: the kernel autotunes them up
+-	 * to ~6 MB already, and ASUS's block below (commented out, kept for
+-	 * reference) pins their max to 262144 - BELOW the default. Uncommenting
+-	 * that block verbatim would slow a multi-gigabit WAN down. */
+-	if ((fp = fopen("/proc/sys/net/core/rmem_max", "w+"))) {
+-		fputs("16777216", fp);
+-		fclose(fp);
+-	}
+-	if ((fp = fopen("/proc/sys/net/core/wmem_max", "w+"))) {
+-		fputs("16777216", fp);
+-		fclose(fp);
+-	}
+-	if ((fp = fopen("/proc/sys/net/core/netdev_max_backlog", "w+"))) {
+-		fputs("4096", fp);
+-		fclose(fp);
+-	}
++	/* the socket-buffer ceilings, unchanged and in the same place - see
++	 * reaper_socket_ceilings() above, which the non-routing return path at
++	 * the top of this function also calls. */
++	reaper_socket_ceilings();
+ 
+ 	/* Tweak NAT performance... */
+ /*
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index a34d8e3231..222fcb3671 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -809,6 +809,27 @@ var OPMODE = [<% get_operation_mode(); %>][0];   /* "rt"/"rp"/"ap"/"mb"/"ew2"/"e
+ function $id(id){return document.getElementById(id);}
+ function setTxt(id,v){var el=$id(id); if(el&&v) el.textContent=v;}
+ function cap(s){return s? s.charAt(0).toUpperCase()+s.slice(1):s;}
++/* reaper v3.1.6: the operation mode, resolved once for every reader on this
++   page. ROUTING mirrors the C is_routing_enabled() (router + hotspot). A box
++   that is NOT routing - Access Point, repeater, media bridge - has no WAN of
++   its own, and networkmap has neither leases nor conntrack behind it. Those
++   are the two facts the Internet card and the client tiles were built on, so
++   each takes an explicit non-routing path below. A routing box is unchanged. */
++var OPNAMES={rt:`<#Reaper_c_opmode_rt#>`,rp:`<#Clientlist_Repeater#>`,ap:`<#Device_type_03_AP#>`,mb:`<#OP_MB_item#>`,ew2:`<#RDSH_30#>`,ew5:`<#RDSH_31#>`,hs:`<#Reaper_c_opmode_hs#>`,wisp:`<#Reaper_c_opmode_wisp#>`};
++var OPNAME=OPNAMES[OPMODE] || String(OPMODE||'').toUpperCase();
++var ROUTING=!(OPMODE==='ap'||OPMODE==='rp'||OPMODE==='mb'||OPMODE==='ew2'||OPMODE==='ew5');
++var HTTPID='<% nvram_get("http_id"); %>';
++/* The Internet card on a box with no WAN of its own. "Disconnected" is
++   derived from wan0_state_t, which is structurally 0 in these modes, so a
++   perfectly healthy router painted its own Internet state red (GT-BE19000
++   tester, 2026-09-13). Name the mode instead, in a neutral colour: there is
++   no WAN here to be either up or down. */
++function paintOpmodeWan(){
++  setTxt('i_state', OPNAME); setTxt('p_wan', OPNAME);
++  var st=$id('i_state'); if(st) st.style.color='var(--steel)';
++  [$id('i_dot'),$id('p_wan_dot')].forEach(function(d){ if(!d) return;
++    d.style.background='var(--steel)'; d.style.boxShadow='none'; });
++}
+ /* IPv6 up-state: shared by the initial render AND the live poll below, so it
+  * must live at top level - not inside either IIFE (a prior version defined it
+  * only inside the poll IIFE, so the render IIFE's call threw ReferenceError and
+@@ -841,13 +862,17 @@ function v6Up(){
+     var v6addr = String((WAN6 && WAN6.IPv6_Address) || V6RTR || '').split('/')[0];
+     var v6up = v6Up();
+     var anyUp = wanUp || v6up;
+-    setTxt('p_wan', anyUp?`<#Connected#>`:`<#Disconnected#>`);
+-    var istate=$id('i_state');
+-    if(istate){ istate.textContent = anyUp?`<#Connected#>`:`<#Disconnected#>`; if(!anyUp) istate.style.color='var(--danger)'; }
+-    if(!anyUp){
+-      var idot=$id('i_dot'), pdot=$id('p_wan_dot');
+-      if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
+-      if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
++    if(!ROUTING){
++      paintOpmodeWan();
++    } else {
++      setTxt('p_wan', anyUp?`<#Connected#>`:`<#Disconnected#>`);
++      var istate=$id('i_state');
++      if(istate){ istate.textContent = anyUp?`<#Connected#>`:`<#Disconnected#>`; if(!anyUp) istate.style.color='var(--danger)'; }
++      if(!anyUp){
++        var idot=$id('i_dot'), pdot=$id('p_wan_dot');
++        if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
++        if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
++      }
+     }
+     var c4=$id('chip4'), c6=$id('chip6');
+     if(c4){ c4.className='chip '+(wanUp?'up':'off'); c4.textContent = wanUp?'IPv4':`<#RDSH_28#>`; }
+@@ -874,8 +899,7 @@ function v6Up(){
+     var de = $id('i_ddns'); if(de){ de.textContent = dd; de.style.color = (dd===`<#Reaper_c_not_active#>`)?'var(--steel)':'var(--bone)'; }
+ 
+     /* operation mode via get_operation_mode() (sw_mode + wlc_psta/wlc_express/mlo_rp resolved by httpd) */
+-    var opNames={rt:`<#Reaper_c_opmode_rt#>`,rp:`<#Clientlist_Repeater#>`,ap:`<#Device_type_03_AP#>`,mb:`<#OP_MB_item#>`,ew2:`<#RDSH_30#>`,ew5:`<#RDSH_31#>`,hs:`<#Reaper_c_opmode_hs#>`,wisp:`<#Reaper_c_opmode_wisp#>`};
+-    setTxt('i_opmode', opNames[OPMODE] || String(OPMODE||'').toUpperCase());
++    setTxt('i_opmode', OPNAME);
+     if(SSI.model) document.title = SSI.model + ' \u2014 REAPER';
+ 
+     /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
+@@ -1039,7 +1063,11 @@ function v6Up(){
+   }
+   /* let the WAN switch pull the next reading forward once its apply has landed */
+   window.wanPollNow=function(){ schedule(200); };
+-  schedule(FAST);
++  /* v3.1.6: with no WAN there is nothing to watch, and the "poll fast while
++     it is down" cadence would otherwise run a 4-second request for the life
++     of the page against a state that cannot change. Paint the card for the
++     operation mode once and leave the poll un-started. */
++  if(ROUTING) schedule(FAST); else paintOpmodeWan();
+ })();
+ 
+ /* ---- live CPU / RAM via /cpu_ram_status.asp ---- */
+@@ -1299,6 +1327,16 @@ function setBand(barId,nId,count,total){
+   if(n) n.textContent=count;
+   if(b) b.style.width=(total>0?Math.round(count/total*100):0)+'%';
+ }
++function paintClients(b){
++  var total=b['6'].length+b['5'].length+b['24'].length+b['eth'].length;
++  LIVE_CLIENTS=b;
++  setTxt('c_total',String(total)); setTxt('p_clients',String(total));
++  setBand('b6i','b6n',b['6'].length,total);
++  setBand('b5i','b5n',b['5'].length,total);
++  setBand('b24i','b24n',b['24'].length,total);
++  setBand('beti','betn',b['eth'].length,total);
++  renderClients();
++}
+ function pollClients(){
+   var x=new XMLHttpRequest();
+   x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(),true);
+@@ -1316,20 +1354,48 @@ function pollClients(){
+         var v6=(c.ip6_prefix&&String(c.ip6_prefix).length)?c.ip6_prefix:(c.ip6||'');   /* global v6, else link-local */
+         b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'\u2014', ip6:String(v6).split('/')[0], m:macs[i]});
+       }
+-      var total=b['6'].length+b['5'].length+b['24'].length+b['eth'].length;
+-      LIVE_CLIENTS=b;
+-      setTxt('c_total',String(total)); setTxt('p_clients',String(total));
+-      setBand('b6i','b6n',b['6'].length,total);
+-      setBand('b5i','b5n',b['5'].length,total);
+-      setBand('b24i','b24n',b['24'].length,total);
+-      setBand('beti','betn',b['eth'].length,total);
+-      renderClients();
++      paintClients(b);
++    }catch(e){}
++  };
++  x.send();
++}
++/* v3.1.6: the same tiles on a box that is not routing. get_clientlist() is
++   networkmap's view, and its isOnline flag is derived from the DHCP lease
++   table and conntrack - both structurally empty in Access Point, repeater and
++   media-bridge mode. Every row failed the isOnline test, so the dashboard
++   showed 0 clients while the Devices page listed all 16 of them (GT-BE19000
++   tester, 2026-09-13). Reaper's own reaper_dev.cgi builds presence from the
++   wl assoclists, the bridge FDB and the ARP table, none of which need a lease
++   or a conntrack entry, and it carries the band the tiles bucket on.
++   Deliberately slower than the networkmap poll: action=status popen()s wl per
++   radio, VIF and station on a single-flight httpd, which is why the Devices
++   page reads it on demand and never on a timer. */
++function pollClientsDev(){
++  var x=new XMLHttpRequest();
++  x.open('GET','/reaper_dev.cgi?action=status&http_id='+encodeURIComponent(HTTPID)+'&_='+(new Date()).getTime(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||x.status!==200) return;
++    try{
++      var j=JSON.parse(x.responseText), dv=(j&&j.devices)||[];
++      var b={'6':[],'5':[],'24':[],'eth':[]};
++      for(var i=0;i<dv.length;i++){
++        var d=dv[i];
++        /* an affiliated MLO link is one radio link of a device already in the
++           list, and an AiMesh node is not a client - the Devices page folds
++           both, and a tile that double-counted them would be its own bug */
++        if(!d.online || d.mlo_link || d.node) continue;
++        var k=(d.band==='2.4')?'24':(d.band==='5')?'5':(d.band==='6')?'6':'eth';
++        var nm=(d.name&&String(d.name).length)?d.name:((d.host&&String(d.host).length)?d.host:d.mac);
++        b[k].push({n:nm, ip:(d.ip&&String(d.ip).length)?d.ip:'\u2014', ip6:'', m:d.mac});
++      }
++      paintClients(b);
+     }catch(e){}
+   };
+   x.send();
+ }
+ (function(){ var sel=$id('cl_filter'); if(sel){ sel.addEventListener('change',renderClients); renderClients(); } })();
+-pollClients(); setInterval(pollClients, 10000);
++var clientTick = ROUTING ? pollClients : pollClientsDev;
++clientTick(); setInterval(clientTick, ROUTING ? 10000 : 30000);
+ 
+ /* ---- wireless radio tiles ----
+    On this FW (RTCONFIG_MULTILAN_MWL) the broadcast SSID lives in the SDN MAINFH
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 62ce306cb4..ba90b9509a 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.16</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.17</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

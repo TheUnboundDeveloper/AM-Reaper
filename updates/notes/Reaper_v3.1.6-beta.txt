@@ -1,0 +1,184 @@
+Reaper v3.1.6 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> A filter table that the kernel refuses is now loud, and survivable
+
+Field data from the
+
+RT-BE88U report: both copies of /tmp/filter_rules saved at boot passed
+
+iptables-restore --test, yet every service restart_firewall hours later still left
+
+start_default_filter()'s boot skeleton in the filter table — no port forwards, no VPN server
+
+chains, no SECURITY chain, no TCPMSS clamp. iptables-restore is atomic, so one line the kernel
+
+would not take costs the whole table; and because the firmware's _eval() sends the restore's
+
+output to /dev/null, nothing on the box could say which line. That router ran that way for two
+
+weeks with a working nat table, which is the worst shape of all: forwarded flows were translated
+
+and then dropped. reaper_restore_rules() now replaces all four filter restores (v4 and v6, both
+
+filter_setting variants). It keeps the restore's own words under /tmp/err_rules/<file>.err,
+
+names the refused line verbatim in the system log, and then applies the table without that
+
+line, up to eight times — a table missing one rule the kernel was never going to enforce beats a
+
+skeleton that enforces none of them. Chain declarations, the table line and COMMIT are never
+
+stripped, and a refusal that names no line (a crash) is logged and left alone. rwatch gained
+
+check 3f, which recognises the skeleton by the absence of two chains only the full ruleset
+
+declares and asks for one restart_firewall per boot; the Diagnostics report's 14f prints which
+
+of the two tables is running, the err_rules listing and each file's first line.
+
+> Access Point, repeater and media-bridge boxes are no longer second-class
+
+The GT-BE19000
+
+tester's report and diag arrived, and the fact the report did not state is the one that explained
+
+it: that router is in Access Point mode. Three of the four items were not port defects at all but
+
+Reaper surfaces that quietly assumed a routing box, in code every model shares. They are fixed by
+
+the operation mode, not by the model, so a routing box behaves exactly as it did before:
+
+> The socket-buffer ceilings load in every mode
+
+start_firewall() returns early when the box
+
+is not routing, long before the block that raises net.core.rmem_max/wmem_max to 16 MB and
+
+netdev_max_backlog to 4096 — so an AP ran on the stock 212992 ceiling no matter how often the
+
+firewall was restarted, which caps any stream whose tool calls setsockopt(SO_RCVBUF), the
+
+Ookla engine included. Those writes are not firewall state and no longer sit behind that guard.
+
+> The dashboard counts the clients that are actually there
+
+The client tiles polled
+
+networkmap's get_clientlist() and dropped every row whose isOnline was not 1; that flag is
+
+derived from the DHCP leases and conntrack, and a bridging box has neither — so the dashboard
+
+showed zero while sixteen stations were associated and the Devices page listed all of them. In a
+
+non-routing mode the tiles now read Reaper's own device store, which builds presence from the
+
+radio association lists, the bridge forwarding table and the ARP table, and carries the band
+
+each tile needs.
+
+> The Internet card names the mode instead of crying wolf
+
+Its verdict came from
+
+wan0_state_t, which is structurally zero on a box with no WAN of its own, so a perfectly
+
+healthy router painted its own Internet state red. It now reads Access Point (or whichever
+
+mode applies) in a neutral colour, and the live WAN poll — which would otherwise have run a
+
+four-second request for the life of the page against a state that cannot change — does not start.
+
+> The Diagnostics report stops reporting a designed idle state as a fault
+
+rtrafd, gkd and
+
+rchqd are all started only when the box routes, and rtrafd accounts off conntrack, which a
+
+bridging box never populates — so "rtrafd is enabled but not running" was a false warning on
+
+that capture, not a finding. Section 12c now says which it is.
+
+The fifth item in the report, duplicate menu entries after opening the UPnP Media Server page, is
+
+not reproduced and still wants a screenshot and the tester's add-on list.
+
+> Warden's outbound total survives its own statistics window
+
+The first real capture of
+
+rwatch's outbound line found two defects in the instrumentation rather than in the blocking:
+
+"blocked so far" read the live counter that fold.sh banks and zeroes every fifteen minutes, so a
+
+healthy box reported 0 most of the time — and 0 is exactly the figure an operator quotes to
+
+conclude that outbound blocking is dead. The drops are now banked under their own durable key
+
+beside the total, and both readers quote banked plus live. Separately, an nvram read that timed
+
+out came back empty and took the same branch as a real 0, advising the operator to switch on
+
+logging that was already on; "could not be read this tick" is now its own state and offers no
+
+advice.
+
+> Policy Routing greys a Status cell that is not a live verdict
+
+The column stays
+
+configuration-derived, but the cell is dimmed while the rule or the master switch is off, so
+
+Inactive · WAN on a rule that is not installed no longer reads as something the router is doing.
+
+> Inherited components, third pass
+
+Each of the five entries in SECURITY.md was taken in code
+
+rather than by version:
+
+> netatalk 3.0.5
+
+(Time Machine): the rest of the 2022 set is closed. CVE-2022-23125
+
+(copyapplfile()) and CVE-2022-45188 (afp_getappl()) each read an attacker-controlled 16-bit
+
+length out of the Desktop DB appl file into a fixed buffer with no bounds check — stack and heap
+
+respectively — and CVE-2022-23121 (parse_entries()) both let the entry bounds test integer-
+
+overflow and let a rejected entry be skipped while the caller carried on with a header it
+
+believed had parsed.
+
+> Quagga 0.99.24
+
+(zebra): CVE-2016-1245, a stack overflow in the IPv6 router-advertisement
+
+read path — rtadv_recv_packet() was handed BUFSIZ as the size of a 4096-byte buffer.
+
+> wpa_supplicant 0.6.10
+
+and lighttpd 1.4.39 were retired from the list on what they
+
+actually compile rather than on their version strings: the era's headline wpa_supplicant
+
+advisories need the 4-way handshake, the TLS-based EAP methods or the P2P/WPS code, none of
+
+which this build contains, and three commonly cited lighttpd advisories do not apply to this
+
+configuration. A version match is not a finding, and a version is not a clean bill of health
+
+either — which is the same lesson the v3.1.5 netatalk correction taught from the other side.
+
+> Two small ones: shared/defaults.c carried log_level twice, so the second entry was dead; and
+
+the Diagnostics page had a hardcoded version literal that had drifted from the script it fronts,
+
+making the page and the report it generates contradict each other on the same screen.
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

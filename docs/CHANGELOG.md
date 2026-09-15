@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.1.6** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.1.7** · 2026-09-15 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,97 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.1.7 — the firewall says whether it is actually doing what you asked, and three things that wasted your time stop doing it
+
+- **A new Rule Status tab tells you whether the firewall keeps its promises.** v3.1.6 made a refused
+  filter table loud and survivable; this release answers the question that came after it — *is the
+  table that did load actually doing what the pages say?* Reading a few hundred rules to find out is
+  not a reasonable thing to ask of anyone, so the router does it. Every feature owns a handful of
+  **witness packets**: an ingress interface, addresses, a protocol and port, a connection state, and
+  the verdict the feature promises. After every firewall change the router walks each one through the
+  live tables in kernel order and reports the verdict along with **the rule that decided it**. Green
+  means the promise holds. Red means the tables do not deliver it, and the rule column names what
+  caught the packet. The worked example is the one that motivated the whole thing: a
+  Gatekeeper-blocked device must not reach the internet *and* must still resolve names at the router
+  — if that second row turns red, the DNS carve-out is sitting behind the block, and you can see
+  which rule did it instead of inferring it. Rows marked *depends* sit behind a match the walker does
+  not model (string, time, policy, u32) and are honestly reported as unjudged rather than guessed;
+  *n/a* means the router has no such network yet. Nothing on the tab changes a rule — the walker only
+  reads. On the RT-BE96U it walks 944 rules in under a second.
+- **The verdict now reaches you without going looking for it.** Every surface the walker fed at first
+  was one you had to already be looking at, and a clean walk is silent by design, so a red witness
+  could stand for days unseen. The dashboard's Security card now carries a **Rule Status** row, and
+  the Firewall page's Status tab a one-line summary; both link straight to the detail. Both read the
+  cached report rather than starting a walk of their own, so watching costs nothing.
+- **The firewall now checks your VPN kill switch is actually there.** A kill switch is the one
+  setting whose whole job is to fail closed, and it was the one thing the new Rule Status tab could
+  not see: it is not a firewall rule at all but a routing rule, so walking the firewall tables could
+  never find it. A kill switch that quietly failed to install looked exactly like one that was
+  working. The walker now reads the routing table as well, and says plainly whether a marked
+  connection has anywhere to go when its tunnel drops. Coverage across the whole catalog went from 33
+  checks to 45 in this release, including: a port forward restricted to certain sources is tested
+  from a source it should *refuse*, not only from one it should allow; a Gatekeeper-blocked device is
+  checked to still reach the router's own admin page, so blocking a device can never lock you out of
+  the box; and a redirected service is checked that the machine it redirects *to* can still reach the
+  real thing, which is the failure that takes the service down for everyone while the obvious check
+  still reads green.
+- **A broken promise now finds you, wherever you are.** The count of firewall checks that are failing
+  sits next to **Firewall** in the sidebar, on every page, until it is cleared. Nothing is shown when
+  everything holds — a permanent "0" is just something to learn to ignore.
+- **The Security Posture card stops telling you what was true when the page loaded.** Every row on it
+  was a snapshot taken as the page was built, which is fine on a router that has been up for a week
+  and wrong on one that is still starting: open the dashboard during a boot and the card would sit
+  there repeating stale answers until you reloaded it by hand. Worse, the Rule Status row could show
+  a "last checked" time from before the router knew what time it was. The card now refreshes itself
+  the moment the clock is set, and on a router that is already running it costs nothing at all,
+  because there is nothing to wait for.
+- **Top talkers counts conversations, not connections.** Every open admin page holds several
+  connections to the router at once, so simply having the traffic page open manufactured the traffic
+  that page then reported — a dozen near-identical rows, all of them your own browser, crowding out
+  everything real. Flows between the same two ends are now folded into one row, and the router itself
+  is left out of the list entirely, which is the rule the per-network view has always used.
+- **Links look like the rest of the firmware.** Plain links were falling through to the browser's
+  default blue, and purple once visited — on a matte-black panel, in a theme that has no blue in it.
+  They now take the theme's own colour everywhere, including on the stock pages, without disturbing
+  any page that had already styled its own.
+- **The beta badge is on every page.** It was only ever on the dashboard, which is the one page you
+  are least likely to be looking at when you forget you are running a beta.
+- **Rule Status is readable on a wide screen.** The table was squeezed into a column sized for
+  settings forms, with several hundred pixels of empty panel beside it, and it was breaking words
+  mid-syllable to fit — "ESTABLISHED" wrapped as "ESTA BLISHED". It now uses the width it has, keeps
+  its columns steady from one group to the next, and breaks text only where text can be broken.
+- **A firewall restore that loses a race no longer loses the table.** The RT-BE88U report from v3.1.6
+  had a second, deeper cause underneath the refused line. The `iptables` on this platform has no
+  lock, so when two processes touch a table at once the kernel refuses the second one's commit — and
+  the firmware forks `nat-start` *before* it loads the filter table, so a user script that touches
+  iptables there (a VPN or ad-blocker helper, very common) races the boot every time. The failure
+  looked identical to a bad rule, which is what made it so hard to see. A commit that fails this way
+  is now simply retried, the identical file, up to five times with a widening pause, before any of
+  v3.1.6's line-stripping logic is considered. The same guard covers the nat restore.
+- **Removing a device from Gatekeeper makes it stay removed.** Removing a device that had been off
+  the network for hours put it straight back under *Pending approvals*, and only a reboot made it
+  stick. The watcher deliberately remembers a device for 24 hours after it was last seen, so the
+  approved list can still show its name, band and when you first saw it — but the pending list was
+  reading that memory as if it meant the device was *present*. It now asks whether the device is
+  actually there: online in the current sweep, or seen in the last 15 minutes. A device that has gone
+  stays gone; one that is genuinely still on your network will still appear, which is the entire
+  point of a default-deny list.
+- **"Applying settings" no longer hangs on a VLAN or guest-network change.** Deleting a VLAN profile,
+  creating one, or editing a MAC filter could leave the dialogue sitting there with no progress bar,
+  sometimes for minutes, sometimes until the browser was closed — and sometimes it behaved perfectly,
+  which is what made it so hard to pin down. The randomness was the clue: those applies restart
+  networking, which cuts off the reply to the very request that asked for it, and the page only ever
+  started its progress bar when a reply arrived. A lost reply meant a dialogue with no way out. The
+  page now notices, waits for the router to come back, and reloads itself.
+- **WireGuard policy routing stops sending a redirected flow out of the WAN.** Two field-reported
+  gaps. A connection that had already been judged kept its old verdict even after the rule behind it
+  changed — retarget a rule from one client to another, disable it, or toggle the master switch, and
+  existing flows carried a decision that no longer pointed anywhere, so they fell back to the plain
+  internet route for as long as the connection lived. Only a decision that is still live is reused
+  now; anything stale is judged again. Separately, the flow-cache bypass that a WireGuard-targeted
+  rule needs could not be installed when the tunnel interface did not exist yet, which is the normal
+  state at boot; starting a client now re-runs that step once the interface appears.
 
 ## v3.1.6 — one refused firewall line no longer costs you the whole table, and an Access Point is a real box
 

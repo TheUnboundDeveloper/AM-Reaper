@@ -420,14 +420,33 @@ def check_pbr_reassert(router):
                                "reaper_pbr_reassert() within %d lines -- the ip "
                                "rule flush would leave policy routing FAIL-OPEN"
                                % (fn, i + 1, REASSERT_LOOKAHEAD))
+    # v3.1.7 (WireGuard policy-routing field report, 2026-09-14): the WireGuard
+    # client start must re-assert too. The flow-cache bypass a WGC-target rule
+    # needs is installed by the apply script, which skips it while the client
+    # interface does not exist; VPN Director re-installs its own on every client
+    # start, and start_wgc() now calls reaper_pbr_reassert() for the same reason.
+    # A C call leaves no string in the binary, so it is pinned here.
+    wg_path = os.path.join(rc_dir, "wireguard.c")
+    if os.path.isfile(wg_path):
+        wg = open(wg_path, "r", encoding="utf-8", errors="replace").read()
+        s = wg.find("void start_wgc(int unit)")
+        e = wg.find("void stop_wgc(int unit)", s if s >= 0 else 0)
+        body = wg[s:e] if s >= 0 and e > s else ""
+        body_code = "\n".join(l for l in body.split("\n") if not _is_comment_line(l))
+        if "reaper_pbr_reassert();" not in body_code:
+            details.append("rc/wireguard.c start_wgc() does not call reaper_pbr_reassert() -- "
+                           "a WireGuard client that comes up after the policy-routing apply "
+                           "never gets its flow-cache bypass")
+        else:
+            nchecked += 1
     if details:
-        return (False, "%d unguarded add_multi_routes() call site(s)" % len(details), details)
+        return (False, "%d unguarded call site(s)" % len(details), details)
     if nchecked == 0:
         # the call sites moving wholesale is itself a change worth stopping on
         return (False, "no add_multi_routes() call sites found -- check moved or "
                        "renamed; re-verify the flush is still guarded", [])
-    return (True, "%d add_multi_routes() call site(s) re-assert PBR (%d compiled-out "
-                  "site(s) excluded)" % (nchecked, nexcluded), [])
+    return (True, "%d call site(s) re-assert PBR - every add_multi_routes() plus start_wgc() "
+                  "(%d compiled-out site(s) excluded)" % (nchecked, nexcluded), [])
 
 
 # ---------------------------------------------------------------------------

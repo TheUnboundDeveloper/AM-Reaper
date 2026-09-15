@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.6** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.1.7** · 2026-09-15 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.1.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.1.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -37,6 +37,7 @@ This guide is written for someone who will install and run the firmware: technic
 4. [Each feature page](#4-each-feature-page)
    - 4.1 [Firewall](#41-firewall)
      - 4.1.1 [Status](#411-status)
+     - 4.1.1a [Rule Status](#411a-rule-status)
      - 4.1.2 [General](#412-general)
      - 4.1.3 [Rules](#413-rules)
      - 4.1.4 [Objects](#414-objects)
@@ -440,6 +441,23 @@ The eleven tabs follow, in the order they appear in the interface.
 The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH.
 
 **Example.** You add a port forward, apply it, and the Forwards table shows your rule — but Status still reports the engine inactive. That means the generated ruleset did not run (most often the LAN was not up yet at boot). The rule exists in your configuration and does nothing until it does.
+
+<a id="412-rule-status"></a>
+#### 4.1.1a Rule Status
+
+**What it is.** The firewall saying what it is actually doing, per feature, after every change. Each feature owns a few **witness packets** — an ingress interface, source and destination addresses, a protocol and port, a connection state — and the verdict it promises. A small read-only walker (`reaper_fwsim`) pushes each witness through the **live** tables in kernel order (raw, mangle, nat PREROUTING, the routing decision, filter INPUT or FORWARD, POSTROUTING) and reports the verdict together with the rule that decided it. It runs at the end of every firewall apply, on a timer from the watchdog, and when you press **Re-check now**.
+
+The rows are grouped the way the features are: core reachability (LAN to WAN, DNS at the router, WAN unsolicited dropped, management ports, DHCP), port forwards (one pair per saved rule: translated, then passes FORWARD — plus, for a forward restricted to certain sources, a row proving a *different* source is **not** translated), UPnP, VPN servers you have enabled, Gatekeeper (a blocked device cannot reach the WAN but still resolves names and can still reach the router's own admin page; an internet-only device reaches the WAN but not the LAN), Warden (the router and its LAN are never in a ban set; the allow list is consulted before the ban list; each blocked country has its rule; the drop chains end in DROP; outbound is checked separately from inbound), the rules engine, Service Intercept (the service is redirected, *and* the host it is redirected to is exempt from its own redirect), the front hooks, each guest network (isolated from the LAN, reaches the WAN, DNS at its gateway), the flood guard, and IPv6 equivalents where the router has IPv6.
+
+Two kinds of row are not packets. Some are **shape** checks — the walker looks at the tables rather than sending anything through them, because the promise is about structure: a chain exists, a chain ends in an unconditional DROP, the allow list is checked before the ban list, the flood guard is rate limited. (A rate limit always lets a flow's *first* packet through, and the first packet is the only one a walker has, so "is the guard armed?" is the only honest question to ask of it.) And **Killswitch** rows read somewhere else entirely: a VPN client's Killswitch is not in the firewall tables at all — it is a routing rule that refuses the marked traffic — so the walker reads the router's routing policy alongside the tables. That row is the difference between a Killswitch that is working and one that was never installed, which otherwise looks exactly the same from inside the firewall.
+
+Finally there is one row that is always **Not applicable** on purpose, named *Out of scope for the walker*. It lists what a walk of the tables cannot see: reverse-path filtering, hardware-accelerated flows that bypass the firewall entirely, and drops inside the closed-source wireless and AiMesh components. It is there so a board full of green rows cannot be read as a clean bill of health for things nothing here checked.
+
+**Reading a row.** *OK*: the promise holds and the rule column names what delivered it. *Unsuccessful*: the live tables do not deliver it, and the rule column names what caught the packet instead — that is the thing to fix. *Inconclusive*: a match the walker does not model (string, u32, time, policy) sits on the path, so the row is not judged rather than guessed — note this does **not** mean the row is degraded or half-working; nothing is known to be wrong with it, the walker simply declined to assert. *Not applicable*: the router has no such network yet (no IPv6, no WAN address). The pill colours still carry the same reading at a glance — jade for OK, amber for Inconclusive, red for Unsuccessful, grey for Not applicable — but the word is what the row means, so the tab stays readable to anyone who does not separate those colours. A banner above the table says when the filter table is still the boot-time skeleton, which means the full ruleset never loaded and nothing else on the tab matters until it does.
+
+**How to use it.** Look at it after every Apply and after a reboot, the same way as Status; the difference is that this tab tells you *which* promise broke and *where*. Two rows are worth knowing by name: a Gatekeeper-blocked device that reaches the WAN, and a port forward that is translated but then dropped — both have been real field incidents, and both are exactly what a red row here would have shown on day one. Nothing on the tab changes the firewall; the walker only reads the tables and writes a report. The same report appears in the diagnostics bundle (section 14g), is logged by the watchdog when a row turns red, and is shown in the Rules tab's confirm window before you press Keep.
+
+**Example.** You add a guest network. Its three rows appear at once: isolated from the LAN (drop), reaches the WAN (accept), DNS at its gateway (accept). If "reaches the WAN" is red and the rule column says `filter/FORWARD policy DROP`, no rule accepts that bridge toward the WAN — the network exists, its clients get addresses, and nothing they send leaves the router.
 
 #### 4.1.2 General
 

@@ -501,6 +501,73 @@ else
   fi
 fi
 
+# ---- 25. netfilter parity: what the firewall can ask for, the kernel provides -
+# RT-BE88U field report (2026-09-14): the whole filter table refused at COMMIT
+# over the closed blob's `-m string` / `-m u32` rules. That kernel HAD both
+# built in (read out of the CI image's IKCONFIG), so the report's diagnosis was
+# wrong - but the class it named is real: a kernel-config drift that drops one
+# match the firewall emits refuses the table on every box, iptables-restore
+# being atomic, and no build gate would have said a word. This one reads the
+# match/target NAMES out of the staged binaries and scripts (the blob is linked
+# into rc, so it is covered), resolves each to the kernel's own Kconfig symbols
+# and requires =y or a staged .ko. Needs the kernel .config the image was built
+# from, which a post-build run has; WARN, not FAIL, when it is not there.
+_cknf="$(dirname "${BASH_SOURCE[0]}")/check_nf_parity.sh"
+_kconf="$P/kernel/linux-4.19/.config"; _ksrc="$P/kernel/linux-4.19"
+if [ ! -f "$_cknf" ]; then
+  warn "nf-parity" "check_nf_parity.sh absent -- netfilter match/target parity not checked"
+elif [ ! -f "$_kconf" ]; then
+  warn "nf-parity" "no kernel .config at $_kconf -- netfilter match/target parity not checked"
+else
+  _cknfout=$(bash "$_cknf" "$FS" "$_kconf" "$_ksrc" 2>&1); _cknfrc=$?
+  if [ "$_cknfrc" = 0 ]; then
+    echo "$_cknfout" | grep '^  note:' | sed 's/^/        /'
+    pass "nf-parity" "$(echo "$_cknfout" | tail -1)"
+  else
+    echo "$_cknfout" | sed 's/^/        /'
+    fail "nf-parity" "the shipped firewall names a netfilter match/target the shipped kernel does not provide -- the filter table would be refused whole (see above)"
+  fi
+fi
+
+# ---- 26. the firewall table walker is staged with its witness file ---------
+# v3.1.7: reaper_fwsim runs at the end of every firewall apply and from rwatch
+# 3g, feeds diag 14g, the Rule Status tab and the MCP. An image without the
+# binary or without usr/share/reaper/witness.static loses all of that silently
+# (rc's kick checks for the binary and simply does nothing). Both must be
+# staged, the binary must be a target-arch ELF, and the static file must hold
+# the core rows.
+check_elf usr/bin/reaper_fwsim reaper_fwsim 1
+if [ -s "$FS/usr/share/reaper/witness.static" ]; then
+  _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
+  if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then
+    pass "fwsim" "witness.static staged with $_nw rows (A1/A4 present)"
+  else
+    fail "fwsim" "usr/share/reaper/witness.static is staged but incomplete ($_nw rows, A1/A4 expected)"
+  fi
+else
+  fail "fwsim" "usr/share/reaper/witness.static missing from the staged fs -- the walker would generate no core rows"
+fi
+
+# ---- 27. the Diagnostics page and the diag script agree on the version ----
+# v3.1.7 (backlog "nothing stops the Diagnostics page's version drifting from
+# the script again"). The page carries a SECOND copy of the version as a plain
+# literal, because it runs the diag only on click and streams the report to a
+# download - there is no report text on screen at load to derive it from. That
+# copy has desynced twice: v1.0.1 against a v1.3.16 script, then v1.3.18 against
+# v1.3.19. The symptom is a page and the report it just generated contradicting
+# each other on the same screen, which makes a user distrust both. Deriving it
+# at runtime needs a new web.c action; a gate is cheaper and catches the same
+# fault, so this compares the two STAGED copies - what actually ships.
+_dgs=$(grep -oE 'REAPER-DIAG v[0-9]+\.[0-9]+\.[0-9]+' "$FS/usr/sbin/reaper_diag" 2>/dev/null | head -1)
+_dgp=$(grep -oE 'REAPER-DIAG v[0-9]+\.[0-9]+\.[0-9]+' "$FS/www/Reaper_Diag.asp" 2>/dev/null | head -1)
+if [ -z "$_dgs" ] || [ -z "$_dgp" ]; then
+  fail "diag-version" "could not read the version from the staged reaper_diag (${_dgs:-missing}) or Reaper_Diag.asp (${_dgp:-missing})"
+elif [ "$_dgs" = "$_dgp" ]; then
+  pass "diag-version" "Diagnostics page and script agree ($_dgs)"
+else
+  fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

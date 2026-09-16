@@ -53,6 +53,14 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # text, double-quoted attributes and backtick JS - translations stay free
        # of ` ${ " and '.
        'Reaper_Failover.asp',
+       # Added 2026-09-15 with v3.1.8's native System Information page, which
+       # supersedes stock Tools_Sysinfo.asp. Caught by this file's own
+       # LANGCOVERAGE assertion on the first run after the page landed, which is
+       # the third time that assertion has paid for itself. Its RSYS_ tokens sit
+       # in HTML text, one double-quoted title attribute, and four backtick JS
+       # templates (RSYS_17/24/29/30/32/41, two of which carry a %1 placeholder)
+       # - translations must stay free of ` ${ and ".
+       'Reaper_Sysinfo.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

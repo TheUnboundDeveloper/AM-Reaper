@@ -134,7 +134,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.1.7'
+    ${{ inputs.version == '' && 'Reaper_v3.1.8'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -357,6 +357,14 @@ jobs:
             if [ -f "${OS%.tar.gz}.sha256" ]; then echo "  ok   $OS ($(stat -c%s "$OS") bytes) + sha256"
             else echo "::error::$OS has no sha256 sidecar"; rc=1; fi
           fi
+          # The vendor WLCSM blob pair (stock 42015) reaches every model's
+          # router-sysdep.* from this archive; without it a sibling would build
+          # with the leaking libraries and nothing later would say so.
+          BL=reaper/overlays/wlcsm-42015-blobs.tar.gz
+          if [ -f "$BL" ]; then
+            if [ -f "${BL%.tar.gz}.sha256" ]; then echo "  ok   $BL ($(stat -c%s "$BL") bytes) + sha256"
+            else echo "::error::$BL has no sha256 sidecar"; rc=1; fi
+          else echo "::error::$BL is missing -- the WLCSM vendor blobs would not reach the build"; rc=1; fi
           exit $rc
 
       - name: Restore pinned toolchains

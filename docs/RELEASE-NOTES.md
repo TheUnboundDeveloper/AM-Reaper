@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.7** <!--@treever--> — `3006.102.8_Reaper_v3.1.6`. **One refused firewall line no longer costs you the whole table, and an Access Point is a real box.** Field data from the RT-BE88U report: a router ran for two weeks on the boot skeleton — no port forwards, no VPN server chains — because `iptables-restore` is atomic, one line the kernel would not take discarded the whole filter table, and the restore's own error went to `/dev/null` so nothing on the box could say which line. **`reaper_restore_rules()`** keeps that output, names the refused line in syslog and applies the table without it; `rwatch` check `3f` and the report's `14f` recognise the skeleton. **The GT-BE19000 tester's write-up and diag arrived**, and the decisive fact was unstated in both: that box is in **Access Point mode**. Three of the four items were not port defects but Reaper surfaces assuming a routing box, in code every model shares — the socket-buffer ceilings `start_firewall()` returns before reaching, client tiles filtering on a networkmap flag derived from leases and conntrack a bridging box does not have, and an Internet card painting a healthy router red off `wan0_state_t`. All three are fixed **by operation mode, not by model**, so a routing box behaves exactly as before. **Warden's outbound total** now survives its own statistics window, and an nvram read that times out is its own state rather than a `0`. **Policy Routing** greys a Status cell that is not a live verdict. **Inherited components, third pass**, each taken in code: **netatalk**'s remaining 2022 set (CVE-2022-23125, -45188, -23121) and **Quagga** CVE-2016-1245 are closed, while **wpa_supplicant** and **lighttpd** were retired from the list on what this build actually compiles rather than on their version strings. The series stands at **669 patches** (0662–0669 for v3.1.6); the OpenSSL 3.5 source ships beside it as a hash-pinned overlay archive. |
+| **Current rung** | **v3.1.8** <!--@treever--> — `3006.102.8_Reaper_v3.1.8`. **The "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt.** ASUS's public 9.0.0.6.102_42015 firmware fixes the WLCSM socket leak that could wedge the settings store (pages hang, `nvram` calls sit forever, Warden silently down, until a reboot); the fix lives in two closed libraries, `libnvram.so` and `libwlcsm.so`, and **those two files, taken unmodified from the vendor's image, now ship in every model's image** — the sibling branches carry them and a hash-pinned archive carries them to the clean-room build; Reaper's own shim is retired and the watchdog's hung-nvram reaper stays as the safety net. The **Rule Status** walker had two field reports of false reds with one cause — a synthetic witness address that a live source list happened to select — so the witness addresses are now chosen from what no set claims, a model review over every connection class removed the remaining false reds and added three rows that had been wrongly green, and the tab is **advisory by design**: it informs and never acts. **System Information** is rebuilt as a native page that regroups the stock data by the question being asked and parses the status endpoints instead of executing them as script; the stock page is retired behind a redirect. The WireGuard policy-routing guide's claim that an overflowing bypass table refuses a rule is corrected: the rule always goes in, a missing bypass is a named partial failure, and a pending one installs when the client starts. The series stands at **673 patches** (0672–0673 for v3.1.8); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,84 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.8 — the "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt
+
+**The WLCSM socket leak, fixed the way the vendor fixed it.** The settings store on this platform
+could wedge — a page hangs, `nvram` calls never return, Warden quietly stops, and only a reboot
+clears it. The cause sits inside two closed Broadcom libraries no one outside ASUS can rebuild, so
+Reaper shipped a shim that steered the vendor's socket allocator around the collision. ASUS's public
+9.0.0.6.102_42015 firmware, on the same platform release as this build, carries a real fix in exactly
+those two files, `libnvram.so` and `libwlcsm.so`: the initialisation closes its channels on re-init,
+the port candidate no longer aliases the saved process ID, the error path cleans up, and the
+settings-dump retry is bounded with backoff. Those two files, unmodified, now ship in every model's
+image. Sibling branches carry them on their own platform trees and the clean-room build copies them
+from a hash-pinned archive (`overlays/wlcsm-42015-blobs.tar.gz`), so no model builds with the leaking
+libraries. The shim is retired — its toggle under Tools → Other Settings is gone, and a leftover
+preload file from an older build is cleaned up once — and the watchdog's hung-nvram reaper stays.
+The provenance record (source image, hash, disassembly deltas) travels with the archive.
+
+**Rule Status: false reds gone, and advisory by design.** Two testers reported red rows on healthy
+firewalls; both had one cause. The walker's synthetic witness addresses could fall inside a live
+source list — a threat feed's bogon range, an access-restriction allowlist, the wrong bridge's
+address — and a row then tested the address rather than the feature. Witness addresses are now
+probed against every source-side set and the first unclaimed candidate is used; when every candidate
+is claimed the row says so. A review over every connection class fixed the remaining false reds
+(multicast, negated ICMP type names, dual-WAN units, DHCP's source port, the admin allowlist on
+WAN-side admin rows, DMZ and linked guest networks, unknown protocol names, inert targets) and added
+three rows that had been wrongly green: a router-address high port that must not be translated, and
+INVALID-state traffic toward the LAN and toward the router. A routing row keyed on an address list
+now reports that its members resolve at run time rather than turning red, and three rows that could
+never have fired in the field now read Warden's real ban list. The tab is advisory: the watchdog
+logs one line when the red set changes and never raises a failure over it, the diagnostics bundle
+files it as information, the sidebar badge is gone, and the tab says so in a banner.
+
+**System Information, native.** The same facts as the stock page, regrouped by the question being
+asked: what is this box, is it struggling, am I running out of something, how loaded is it, what can
+it do. The page reads the same three status endpoints but parses them instead of executing the
+response as script, and takes band labels from the radios rather than a hardcoded model list. The
+stock page is retired behind a redirect and left untouched.
+
+**Docs.** The WireGuard policy-routing guide said a rule that would overflow the accelerator-bypass
+table, or that named a tunnel whose interface was absent, was refused. It never was, since v3.1.2:
+the rule goes in, a missing bypass is a named partial failure, and since v3.1.7 a bypass for a tunnel
+not yet up is recorded as pending and installed when the client starts. The guide now says that,
+explains why an already-accelerated flow cannot be pulled back by a later rule, and gives the
+troubleshooting path for a source rule that still leaves by the WAN.
+
+## What's new in v3.1.7 — the firewall says whether it is actually doing what you asked
+
+**Rule Status.** Every feature owns a handful of witness packets; after every firewall change the
+router walks each one through the live tables in kernel order and reports the verdict with the rule
+that decided it. Green means the promise holds; red names the rule that broke it; *depends* marks a
+match the walker does not model; *n/a* means the router has no such network. The walker also reads
+the routing policy database, so a VPN kill switch — a routing rule, invisible to any walk of the
+firewall tables — is witnessed too. The verdict reaches the dashboard's Security card, the Firewall
+page's Status tab and the sidebar without a visit to the tab.
+
+**Fixes.** A firewall restore that lost a race against a user `nat-start` script (this platform's
+`iptables` has no lock) is retried before any line is stripped; a device removed from Gatekeeper no
+longer reappears as pending; "Applying settings" no longer hangs on a VLAN or guest-network change;
+WireGuard policy routing no longer sends a redirected flow out of the WAN after its rule changed,
+and re-installs its flow-cache bypass when the client starts; Top Talkers counts conversations, not
+your own browser's connections; links, the beta badge and the Rule Status table follow the theme.
+
+## What's new in v3.1.6 — one refused firewall line no longer costs you the whole table, and an Access Point is a real box
+
+**A refused filter table is loud and survivable.** `iptables-restore` is atomic: one line the kernel
+would not take discarded the whole filter table and the restore's own error went to `/dev/null`, so
+a router could run for two weeks on the boot skeleton with no port forwards and no VPN server
+chains. The restore now keeps that output, names the refused line in the system log and applies the
+table without it; the watchdog and the diagnostics report recognise the skeleton.
+
+**Access Point, repeater and media-bridge boxes.** The GT-BE19000 tester's box was in Access Point
+mode, and three of the four items were Reaper surfaces assuming a routing box in code every model
+shares: the socket-buffer ceilings that `start_firewall()` returned before reaching, client tiles
+filtering on a lease-derived flag a bridging box never sets, and an Internet card painting a healthy
+router red. All three are fixed by operation mode, so a routing box behaves as before. Warden's
+outbound total survives its own statistics window, Policy Routing greys a Status cell that is not a
+live verdict, and a third pass over the inherited components closed the remaining netatalk and Quagga
+entries in code.
 
 ## What's new in v3.1.5 — the security review lands, and the routing target is an interface again
 
@@ -494,8 +572,10 @@ by hand it had always worked. The build now forces the executable bit on all thr
 so the check runs — and a genuine failure leaves a genuine log behind.
 
 **Policy Routing: the six problems reported from the field.** A WireGuard target could reboot the
-router; a rule is now refused, and logged, when the hardware-acceleration bypass table is full or
-the tunnel interface is down, and it is written exactly the way the vendor's own code writes it.
+router; the apply now logs, by name, a hardware-acceleration bypass entry it could not install
+because the bypass table is full or the tunnel interface is down (the rule itself still goes in;
+v3.1.5 counts the missing bypass as a partial failure and v3.1.7 installs a pending one when the
+client starts), and the entry is written exactly the way the vendor's own code writes it.
 Apply reliably reaches the Confirm step, a confirmed change survives a reboot without leaving a
 phantom "awaiting confirmation", and the armed card now says plainly that Keep is what makes a
 change outlive the timer and a reboot. The target list hides tunnels you have not configured and

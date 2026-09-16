@@ -108,6 +108,47 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## Open bugs / under investigation
 
+- **[P2] Source-IP Policy Routing rule to a WireGuard client does not use the tunnel; the same rule
+  to OpenVPN does** (field report 2026-09-14 on v3.1.6, follow-up 2026-09-16: "the router is fully
+  functional", and the reporter's own reading of the guide — the accelerator is carrying the flow, "the
+  slot is not applied to the live flow, or the flow is offloaded first"). That reading is the right
+  mechanism: the flow-cache bypass is checked only on packets the CPU sees, so a flow accelerated before
+  the bypass existed is never diverted; the apply script has always cleared learned flows after
+  installing the bypass, so it only holds when the bypass was never installed. Two v3.1.6 gaps made
+  exactly that possible and both are closed in v3.1.7: the bypass was skipped silently when the client
+  interface was down at apply time (boot order) and nothing installed it later; and a rule whose target
+  changed from one WireGuard client to another kept routing existing connections by the old verdict.
+  A full bypass table (eight IPv4 slots, shared with VPN Director rules and WireGuard-server peers) is
+  the third path and is named in the log. Neither is proven to be the reporter's cause: no capture yet.
+  Wanted from the reporter on a v3.1.7 image: `reaper_diag` (section 14d), `ip rule`, `ip route show
+  table wgcN`, `iptables -t mangle -nvL REAPER_PBR`, `cat /proc/blog/skip_wireguard_network`,
+  `cat /tmp/reaper_pbr/skipnets`, syslog `reaper_pbr:` lines, and from the routed device a `traceroute`
+  to a public address — plus which of Killswitch on/off gave WAN egress and which gave no connectivity.
+  **[fix candidates in v3.1.7; reporter capture owed]** ↳ notes: `pbr-wg-livetunnel-gaps.md`
+- **[IN THE v3.1.8 CUT 2026-09-16 - vendor blob swap] The WLCSM protocol-31 netlink socket leak ("stuck
+  nvram").** ASUS stock `9.0.0.6.102_42015` (GT-BE98 Pro image, 2026-08-21, same Broadcom BSP as our
+  base) passes the forced-collision regression test 10/10 where Merlin `3006.102.8_4` wedges. The fix
+  is in TWO closed Broadcom blobs, nothing in source (`/bin/nvram` is byte-identical): `libnvram.so`
+  (`_wlcsm_init` closes its fds on re-init, the port candidate gets its own `wlcsm_agent+28` field
+  instead of aliasing the saved PID, error-path cleanup) and `libwlcsm.so` (`wlcsm_nvram_getall`'s
+  retry is bounded with `usleep` backoff). Both swapped in `router-sysdep.rt-be96u/{wlan/nvram,wlcsm}/
+  prebuilt/` from the vendor's own copies - a blob SWAP with provenance, not a binary patch (the
+  never-modify-a-blob rule holds). All six BE models ship the identical pair, so the same two files
+  apply fleet-wide: **in the v3.1.8 cut** the canon series carries the RT-BE96U swap (patch `0673`,
+  binary hunks), each sibling branch carries the pair on its own `router-sysdep.<model>` tree, and the
+  clean-room build takes it from the hash-pinned `overlays/wlcsm-42015-blobs.tar.gz` (copied over
+  every `router-sysdep.*` copy after the platform archive and overlay; the model's own tree is
+  asserted to carry both). **Our `wlcsm_bindfix` LD_PRELOAD shim is retired:**
+  `start_wlcsm_bindfix()` is inert (removes a leftover `/etc/ld.so.preload`, ignores the nvram key
+  with one log line), the `.so` is no longer built, and the toggle is gone from Tools > Other
+  Settings - the vendor fix must be exercised unshimmed. **Acceptance:** the reproducer bundle
+  (`wlscm-debug-reproducer-9.0.0.6_102_42015`, 10 runs, `rc=0`, no `X+1..X+9` accumulation) on the
+  `v3.1.8_BETA_r3` rung. Extracted blobs, hashes and both disassemblies: `ASUS/audits/socket-leak-
+  42015/` (private). The rwatch hung-nvram reaper + `_nv` helper stay as the safety net until the fix
+  has field history. **Owed:** the reproducer run on the cut image (the acceptance above), and the
+  first CI fleet run to prove the blob step on every sibling (it errors, rather than skips, when a
+  model's tree does not end up with both files). **[in the v3.1.8 cut; acceptance owed]**
+
 - **[P1] Port forwards dead on an RT-BE88U since v3.1.0 — the FULL FILTER TABLE never loads on the
   reporter's box** (review R15; reopened 2026-09-13). The first verdict — the nat emitter is fine —
   still stands, and it was never the bug. The reporter's second trace (v3.1.4 noMCP, PPPoE, Tailscale
@@ -471,7 +512,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   `setInterval` on every refresh. It is now `paintPosture()`, called from the same place as before.
   **Known edge:** the watcher arms at page load only, so an NTP restart later in a session is not
   followed; and a router with `ntp_ready` unset entirely (rather than "0") arms the watcher, which is
-  the safe direction. **[built in the v3.1.7_BETA_r3 image; metal owed]**
+  the safe direction. **[built in v3.1.7; _r3 and _r4 flashed and running 2026-09-15 with no fault reported — but the refresh only fires on an NTP transition, so observing it needs the dashboard open across a REBOOT; that specific behaviour is still owed]**
 
 - **[P3] The BETA tag was on the dashboard header only** (owner, 2026-09-15). `Main_ReaperDash.asp`
   is a top-level page and draws its own header; every other page is framed in `reaper_shell.asp`,
@@ -480,7 +521,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   exactly backwards for a tag whose job is to stop someone forgetting what they are running.
   **Fixed 2026-09-15:** the same `p_fwbeta` span, the same `.btag` rule and the same reveal test
   (`/_beta(_|$)/i` against the raw `extendno`) added to the shell header. Same dictionary key
-  (`RFWU_56`), so no new strings. **[built in the v3.1.7_BETA_r3 image; metal owed]**
+  (`RFWU_56`), so no new strings. The shell had never declared `--amber`, so on _r3 the tag rendered bone instead of amber; the token was added and _r4 carries it. **[built in v3.1.7; _r3 and _r4 both flashed and running 2026-09-15, owner reports normal operation]**
 
 - **[P3] Rule Status table: cramped at 1120px with 400px of empty panel beside it** (owner,
   screenshot on a 1080p monitor, 2026-09-15). Three separate faults, all fixed 2026-09-15:
@@ -496,14 +537,14 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   good space to wrap at** — that is why the table read "ESTA BLISHED", "ACC EPT" and "u dp". Replaced
   with `overflow-wrap:anywhere`, which wraps at spaces first and only splits a token that genuinely
   cannot fit, which is what a 60-character iptables rule needs. Plus a row hover and a little more
-  vertical padding. **[built in the v3.1.7_BETA_r3 image; metal owed]**
+  vertical padding. **[built in v3.1.7; _r3 and _r4 both flashed and running 2026-09-15, owner reports normal operation]**
 
 - **[P3] The Rule Status link read "open Rule Status"** (owner, 2026-09-15) — the leading verb is
   dropped; both link sites (the Rules-tab confirm preview and the Status-tab summary) now use
   `RFW_290`, the tab's own name, which is already translated in all 25 packs. **No dictionary edit
   and no lockstep change.** Note `RFW_318` ("open Rule Status") is now unused in the tree but still
   defined in all 25 packs — harmless, and pruning it is a separate lockstep-touching change.
-  **[built in the v3.1.7_BETA_r3 image]**
+  **[built in v3.1.7; _r3 and _r4 flashed 2026-09-15]**
 
 - **[P2] Nothing tells a user the firewall has a broken promise unless they open the Firewall page**
   (owner question, 2026-09-15, immediately after the walker landed). The Rule Status tab answers
@@ -579,8 +620,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   the right way to fail. Literal colours rather than theme tokens because framed stock pages define
   none of Reaper's custom properties — the same reason the existing `#rsec` banner block spells its
   colours out. No dictionary change (no new strings).
-  **[built in the v3.1.7_BETA_r2 image; metal owed — the visual check is the Firewall Status tab's
-  "open Rule Status" link, and that the rail, tabs and dashboard cards are visibly unchanged]**
+  **[built in v3.1.7; _r3 and _r4 flashed and running 2026-09-15, owner reports normal operation — this rule has the widest reach of anything in the rung, so a deliberate look at the rail, tabs and dashboard cards across a few stock pages is still worth doing]**
 - **[P3] Nothing stops the Diagnostics page's version drifting from the script again** (owner,
   2026-09-13). The symptom is fixed — `www/Reaper_Diag.asp` had a hardcoded `REAPER-DIAG v1.0.1`
   while `others/reaper_diag` was at v1.3.16, so the page and the report it generated contradicted
@@ -673,7 +713,20 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   **[scheduled — this week, after v3.1.6 stable]** ↳ notes: `manifest-signing-shelved.md`
 - **[P3] North star — progressively replace stock GUI pages with Reaper-native ones.** Done for
   Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
-  Firewall/VPNRouting/Failover/About. **[ongoing]**
+  Firewall/VPNRouting/Failover/About/**Sysinfo**. **[ongoing]**
+  **System Information landed 2026-09-15 (v3.1.8, owner ask).** Same data as stock `Tools_Sysinfo.asp`,
+  regrouped by the question being asked — what this box is, whether it is struggling, whether it is
+  running out, how loaded it is — rather than by where each number comes from. **No new backend:** it
+  reads the same `/ajax_sysinfo.asp` and `/ajax_coretmp.asp` the stock page does. Three things got
+  better in passing rather than by design: the `rc_support` blob is rendered as scannable chips
+  instead of a space-separated wall; RAM carries an explainer for *Available* vs *Free*, which is the
+  most misread number on any router page; and the band labels come from `wlX_nband` rather than
+  stock's hardcoded `based_modelid` switch, which mislabels the bands of any model not in its list.
+  The page also **parses** those endpoints instead of executing them — stock pulls `/ajax_sysinfo.asp`
+  with jQuery `dataType:'script'`, and a `!eval(` marker now guards against that coming back.
+  Costs: 42 new `RSYS_*` tokens across all 25 packs (reuse took the rest — Model, Firmware, Uptime,
+  Total/Used/Free, CPU, RAM, Operation Mode, Connections all already existed). Stock file untouched
+  and still byte-pristine, so the rollback is the one SUP line. **[built; metal owed]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
@@ -772,8 +825,31 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     states on the page what a table walk cannot answer — reverse-path filtering, accelerated flows
     that never reach iptables, and drops inside the closed-source wireless and AiMesh components.
     It is `n/a` by construction: never green, never red. **[built; metal owed]**
-  - **[P3] 14 catalog rows still have no emitter:** B4 - C8 - D4 D7 - F2 F3 F6 F7 - G3 G5 G6 G7 -
-    H3 H4. Four now carry a stated reason rather than just being unwritten:
+  - **[P3] 8 catalog rows still have no emitter** (was 14; **F2 F3 F6 F7 G7 and a re-scoped H3
+    landed 2026-09-15**, taking coverage to **51 of 59**): B4 - C8 - D4 D7 - G3 G5 G6 - H4. Every
+    one now carries a stated reason; none is merely unwritten.
+    **F7 brought the walker a FIFTH input** - the router's own listening sockets, from
+    `/proc/net/{tcp,udp}`, parsed by the same code in both builds. A REDIRECT lands on the router,
+    so the rule can be perfect and every connection still refused because nothing is bound, and no
+    walk of the tables can see that. **An unreadable socket table is `n/a`, never red:** "we could
+    not look" is not "nothing is listening".
+    **F6 needed almost no new machinery** - `walk_chain()` already set `CT_SNAT`, it just was not
+    something a witness could ask for. The SNAT rule is kept in its own ctx slot rather than
+    `decide`, because source translation happens AFTER the filter verdict and writing it into
+    `decide` would have overwritten the deciding rule of every ordinary row on its way out. There
+    is a test asserting exactly that.
+    **H3 was re-scoped, not implemented as catalogued:** "forwarded to stubby (OUTPUT_DNS)" is not
+    a table fact - the dnsmasq->stubby hop is loopback config, and `OUTPUT_DNS` is the ASUS
+    anti-botnet chain, unrelated. The router's own outbound to its DoT upstream IS a table fact,
+    and it is the failure rwatch 3b exists for: swallow :853 and resolution dies for the whole LAN
+    while every LAN-side row still reads green.
+    **G3 is now DEFERRED WITH A REASON rather than owed:** `sdn_access_rl` links SDNs by *index*,
+    and an index becomes a bridge only through `get_mtlan_by_idx()`, which exists in the router
+    build alone. Reproducing its `sdn_rl`/`subnet_rl` parse host-side would be a second, divergent
+    copy of the SDN table, and a wrong bridge is a false red on a working box - the standard that
+    refused H4. Implementing it router-only would put it where no gate can reach it, which is the
+    mistake the E1/E2/E3 fix above had to undo. It needs a host-reachable index->interface mapping
+    first. The older reasons still stand:
     **B4** is an emission-time check, not a table fact — the table cannot show a rule that was never
     emitted, and `reaper_verify` check 24 already owns it.
     **C8** would need a `/proc/blog` reader, and `/proc/blog` has a kernel-panic history on this
@@ -787,23 +863,83 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     **H4** (the IPv6 second pass over the generated rows) was deliberately **not** taken today: guest
     and SDN IPv6 behaviour is not proven here, and a row that goes red on a working box is worse than
     no row at all. The static file's IPv6 rows (A1v6/A3v6/A4v6/A6v6/A10a-d) are unaffected.
-    The rest — F2 F3 F6 F7 G3 G7 — are simply unwritten. **[owed]**
-  - **[P2] Lab TRACE validation, and it gates repair-on-red.** Tiers 1 and 2 check the walker's
+    **[the six buildable rows are done; the eight left are all deferred with reasons]**
+  - **[P1] E1/E2/E3 could never fire in the field - FOUND + FIXED 2026-09-15.** The three Warden
+    ban rows need one address that is genuinely in `rw_ban` to aim at, and the walker took it from
+    nvram `reaper_fwsim_banned`. **Nothing in the tree ever wrote that key** - the only writer was
+    `test_fwsim.py` - so from the day they shipped those rows existed solely under test, and the
+    inbound/outbound ban enforcement the feature exists to witness was never witnessed on a real
+    box. The key stays as an override; the producer is now `banlist()`/`ban_pick()`, reading the
+    SAME /jffs store `rw_emit_cidrs()` fills `rw_ban` from (`rw_list_get("ban")`, libshared).
+    Written as COMMON code with a per-build accessor, in the `fwlist()`/`pbrlist()` idiom, so the
+    host suite exercises the real selection rather than a branch it cannot reach - the first cut
+    put it behind `#ifndef FWSIM_HOST`, which would have shipped untested logic. A CIDR entry is
+    reduced to its network address (a `hash:net` member answers `ipset test` on it), v6 entries are
+    left to `rw_ban6`, and an EMPTY ban list emits no rows at all rather than rows that could only
+    be red. +7 checks (121 -> 128), incl. the empty-list and v6-only negatives.
+    **[fixed in tree; rides the next image]**
+  - **[P2] TRACE validation, and it gates repair-on-red.** Tiers 1 and 2 check the walker's
     VERDICTS against synthetic and fixture tables. Nothing has yet checked its **path / deciding
     rule** against real kernel TRACE output, and the deciding rule is the walker's most useful
-    output and its least verified. This should land **before** repair-on-red: repair acts on the
-    walker's verdict, so a wrong deciding rule would drive an automated fix. **[owed - needs a lab
-    box; the rmcpd lab session expires, so re-arm before starting]**
+    output and its least verified. This lands **before** repair-on-red: repair acts on the
+    walker's verdict, so a wrong deciding rule would drive an automated fix.
+    >>> **THIS CANNOT BE DONE ON A LAB ROUTER, and the earlier wording that it needed one was wrong**
+    (found 2026-09-15): `release/src-rt-5.04behnd.4916/kernel/linux-4.19/.config` carries
+    `# CONFIG_NETFILTER_XT_TARGET_TRACE is not set`, so **`-j TRACE` does not exist in the shipped
+    firmware** at all. (`CONFIG_NF_LOG_IPV4=y` and `xt_LOG` ARE in, which is what the fallback below
+    uses.) Arming TRACE on metal would need a kernel config change and a rebuild. <<<
+    **The validation moves to the host instead:** WSL2 runs kernel 6.18 with `xt_TRACE.ko` +
+    `nf_log_syslog.ko` present, `iptables v1.8.4 (legacy)`, as root - so a netns harness can replay
+    the owner's fixture tables, arm real TRACE, and diff the kernel's traversal against the walker's
+    path. That makes it a REPEATABLE tier rather than a one-off lab session, and it touches no
+    router. It validates the walker's LOGIC, not the platform: 6.18 is not 4.19, and a
+    1.4.x-emitted ruleset does not always restore under 1.8.4 - witnesses whose rules will not take
+    are reported `unvalidatable` rather than failed. Fallback if netns proves unworkable in WSL2:
+    bounded `-j LOG` probes at Reaper chain entry points on the live box, which give chain order but
+    not rule index, and write temporary rules to live tables (so: owner session, not unattended).
+    **BUILT 2026-09-15 as `build-scripts/tests/test_fwsim_trace.py`** - and the netns route needed
+    one more correction on the way. **Netfilter LOG/TRACE output from a NON-INITIAL network
+    namespace never reaches the kernel ring buffer on this WSL2 kernel:** proven with rule counters
+    showing the packet genuinely traversed (`raw/PREROUTING` TRACE and `FORWARD` both incremented)
+    while `/dev/kmsg` stayed empty, and the same LOG rule working in the root namespace. So the tier
+    does NOT use `-j TRACE` -> dmesg at all. It restores the fixture through the **nft backend**
+    (`iptables-nft-restore`) and reads **`nft monitor trace`**, whose events are delivered over
+    netlink and so cross the namespace boundary. Needs the `nftables` package (installed 2026-09-15,
+    owner-approved).
+    Result: the walker's deciding rule matches the kernel **exactly, including the rule INDEX within
+    the chain**, across a FORWARD accept, a multiport REJECT three rules above it, an INPUT accept
+    and the Advisor-port DROP. **The tier was falsified before being believed** - injecting one
+    extra FORWARD rule the walker never sees makes it report `walker #6 vs kernel #7` on the FORWARD
+    rows while the INPUT rows stay green, so it is comparing something real. Exit codes: 0 pass,
+    1 mismatch, **77 skip when not root** - which is the normal result in the ordinary `reaper`-user
+    run, since this tier is meant to be run deliberately, as root.
+    **[BUILT + self-verified. It validates the walker's LOGIC, not the platform: the host kernel is
+    not 4.19, and a witness whose rules will not restore is reported `unvalidatable`, never a pass]**
   - **[P3] Fixtures from a second and third topology.** Only the owner's BE96U fixture exists, so
     tier 2 proves the walker against ONE topology. Still wanted: the R15 reporter's RT-BE88U (the
     box that motivated the whole feature) and a GT-BE98 with VLANs, which would exercise the four
-    uncovered G rows. **[needs data]**
+    uncovered G rows.
+    **COLLECTION IS NOW ONE COMMAND (built 2026-09-15): `reaper_fwsim --dump-inputs DIR`.** It was
+    a guided session before - four captures by hand, plus an `addr` block and an nvram subset
+    hand-written into the test - which is a large part of why only one fixture exists. It writes
+    `iptables-save`, `ip6tables-save`, `addr`, `iprule4`, `iprule6`, `ipsets.txt`, the four
+    `listeners-*` files, `nv` and `topology.txt`, with the WAN v4 AND v6 addresses masked as
+    `[WAN-IP]` throughout, matching the existing fixture so tier 2 can replay it unchanged.
+    **The nvram side is an explicit ALLOWLIST, not a prefix sweep** - a fixture is made to be sent
+    to someone, and a sweep over `reaper_*`/`vpn_*` would eventually carry a key or a client list
+    off the box. A key missing from the allowlist simply reads as unset on replay, which the
+    generator already handles.
+    **Known limit, stated rather than papered over:** the collector and its masking live behind
+    `#ifndef FWSIM_HOST`, so **no host gate covers them** - they are router-only by nature. Putting
+    them in common code just to be reachable would have been a test-only surface, the same smell
+    the E1/E2/E3 fix above had to undo. The tool prints "review it before sharing" for that reason;
+    read the `nv` and `topology.txt` files before sending a fixture on. **[needs data]**
   - **[P3] repair-on-red.** rwatch 3g is REPORT-ONLY and the position-based heals it was meant to
     retire are still in `rwatch.c`, with `front_exempt` still referenced from `rc/reaper_hook.h`.
     So the walker currently sits ALONGSIDE the heuristics it was designed to replace rather than
-    instead of them - the stated payoff has not landed. Deferred to 3.1.8 by design (the heals stay
-    "until the walker has metal history", and it now has one day of it). Gated on TRACE above.
-    **[deferred - 3.1.8]**
+    instead of them - the stated payoff has not landed. **Refused by design (owner, 2026-09-16):
+    the walker is advisory - passive and informative, never actionable or authoritative - so nothing
+    will ever act on a red row.** The position heals keep their jobs. **[refused by design]**
   - **Metal still owed:** the Rules-tab confirm-window preview (`rfwWitPreview`) is the one walker
     surface never exercised on hardware - one arm/confirm cycle closes it - and the v3.1.7 dashboard
     row plus Status-tab line need the image flashed. Every metal datapoint so far is the owner's
@@ -811,6 +947,99 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     Status tab's **?** button pointed at `REAPER-GUIDE.md#412-rule-status`, which does not exist -
     the heading is 4.1.1a, anchor `#411a-rule-status` (what the manual's own TOC uses), so the help
     link was dead on the one tab nobody had followed it from yet.
+  - **2026-09-16 - two field reports on v3.1.7_BETA, and the convergence pass.** A GT-BE98 (20
+    green / 8 red / 41 inconclusive) and a VLAN + Gatekeeper + admin-allowlist box each reported
+    Rule Status rows that the firewall did not deserve. **One root cause behind twelve of the
+    thirteen reds: a witness address that a live source list selects tests the address, not the
+    feature.** `198.51.100.7` is a TEST-NET bogon and the `firehol1` feed carries the bogon ranges,
+    so on any box with that feed the WAN witness was itself in `rw_threat` and every WAN row was
+    decided by `RW_DROP` (the reporter proved it: the address in `rw_allow` cleared exactly those
+    rows); the synthetic LAN host `.123` is never in the ASUS admin allowlist
+    (`enable_acc_restriction`), so every LAN-to-router row died at `ACCESS_RESTRICTION`.
+    **Owner decision the same day: the walker is advisory by design - passive and informative,
+    never actionable or authoritative - and this is one thorough pass, then it is left alone.**
+    Built and gated (canon, uncommitted, in no image yet):
+    walker `v1.3` - the WAN witness source is **picked** against every source-side set the live
+    tables match on (documentation ranges first, then the public resolvers; all claimed = the honest
+    red plus a note); the LAN witness host is an **allowed client** when the admin restriction is
+    on; `E8b` follows `rwarden_dir` exactly as the emitter does (inbound-only witnesses that the
+    outbound chain is absent); the protocol names iptables-save writes (`ipv6-crypt` = ESP...) are
+    known, which un-inconcluded every INPUT row behind the IPSec passthrough; an unmodelled match on
+    an **inert** target (TCPMSS, LOG...) no longer stops the walk, and one on a mark-class target
+    defers its doubt until a rule actually consults that field (the dual-WAN `-m statistic ...
+    -j CONNMARK` had made the DHCP row inconclusive on every such box); **D2 now witnesses the
+    emitter's truth** - a blocked device is refused even DNS (the carve-out exists only for unknown
+    devices; the walker had been right and the promise wrong); **D5 is a note when the admin
+    allowlist decides** (see the new item below). The JSON carries `mode=advisory`, `wansrc`,
+    `lanhost` and their notes (additive). Surfaces: the rail badge is never lit and the shell no
+    longer polls; the dashboard pill is a steel *Advisory*, never red (the boot skeleton stays amber -
+    that IS a fault class); the Status-tab note and the confirm preview never colour the count;
+    the tab carries an advisory banner (`RFW_320`); rwatch 3g never adds `witness-red` to `FAIL` (no
+    FAILURE latch, no incident bundle - the GT-BE98 had collected three in a day for this); diag 14g
+    reports the count as INFO; the MCP tool describes itself as advisory. Gates: `test_fwsim.py`
+    150 -> **181** (every change a positive and a negative; the tier-2 nv gained `rwarden_dir=both`,
+    a gap the new E8b row exposed), new `test_fwsim_advisory.py` pins the posture on every surface,
+    static 13/13 (dict lockstep 6994), csrfcheck 0/64, hidden-char clean on every changed line,
+    `-Wformat-truncation=2` parity 4 = 4 (it caught two one-byte-short buffers on the way - the
+    class this file refuses). **Owed at the next build stage:** `reaper_langcheck.py` runs on the
+    STAGED www (positional tokens), so the two new tokens are checked there; by inspection they
+    carry no backtick or `${`. **Still wanted:** the second reporter's `reaper_fwsim --dump-inputs`
+    (their `E5` shows a different destination from `A5` out of the same variable, which this pass
+    could not explain) - it is also the second-topology fixture above.
+  - **2026-09-16, pass 2 (owner: "ensure we're not mislabelling functional firewalls; consider all
+    connection classes, not just green ones").** A model review of the walker against every class
+    of connection a router sees. **Found and fixed (walker v1.4, every item a positive and a
+    negative, 210 checks):** multicast was local only for `224.x`, so SSDP `239.255.255.250` was
+    walked through FORWARD; the `--icmp-type echo-request` name branch **dropped the `!`** (stock's
+    `default_block` uses `! --icmp-type echo-request -j DROP`, which would have matched a ping
+    witness) and mapped ICMPv6 `echo-request` to 8 - a name table for both families now, negation
+    honoured; the WAN interface always came from `wan0_*`, so with `wan1` primary every WAN row aimed
+    at the wrong interface - and that derivation was router-only code the host suite could never
+    reach (moved to common code, `--wan`/`--lan` still win); DHCP witnesses now speak from port 68 /
+    546 so a `--sport 68 --dport 67` accept matches; the admin access restriction also gates WAN
+    management and SSH (witnessed from the listed WAN address, or a note when only LAN addresses are
+    listed); the IPv6 WAN source is picked against the v6 sets too (`wan6src`); a DMZ turns A4/A4b
+    into notes and adds **B6** (handed to the host, passes); linked SDN networks turn **G1** into a
+    note. **New rows for what nothing asked:** **A4b** - an unforwarded high port on the router's
+    address is not translated (A4 aims at the LAN host's own address, which the VSERVER jump never
+    matches, so a leftover catch-all DNAT with no `dmz_ip` was invisible to every row); **H7** -
+    invalid-state WAN packets toward the LAN are dropped (stock's FORWARD INVALID drop is commented
+    out in firewall.c, so this rests on the policy and reds when an accept precedes it); **H7b** -
+    invalid-state packets to the router are dropped (an explicit stock INPUT rule an early accept can
+    shadow). **Honesty:** D3b is labelled as the L3 (cross-network) leg and H6 now names
+    bridge-local traffic (switched, ebtables-enforced) as out of a table walk's sight.
+    **Coverage by connection class** (rows): WAN->router NEW: A6a-c, A7, C1/C3/C5, E1, H7b, A4b;
+    WAN->LAN NEW: A4, B1/B2/B3, B5, B6, E2, H7; replies: A2 (ESTABLISHED; RELATED shares the same
+    stock rule); LAN->router: A3, A5/A5b, A11, H2, E5, D2/D5, G4, F4/F7; LAN->WAN: A1, D1/D3a, G2,
+    F1/F3, C7, C6 (ip rule), E3, H5; cross-network L3: G1, D3b, F2, F5/F6; router->WAN: A9, H3;
+    IPv6: A1v6/A3v6/A4v6/A6v6/A10a-d, C6v6; multicast/broadcast: A11 (others now route to INPUT).
+    **Stated gaps, not rows:** fragments; `-g` goto return semantics (treated as a jump); port
+    triggers (`autofw_*`); traffic entering FROM a VPN server tunnel toward the LAN (needs the
+    per-server LAN-access setting - C2/C4 witness the chain shape only); same-segment traffic
+    (ebtables). `-Wformat-truncation=2` caught the D3b label at exactly 80 bytes on the way.
+  - **2026-09-16, field fix from a second screenshot (walker v1.5, 214 checks).** Seven
+    `C7` rows ("the LAN is marked for its tunnel") red with `mark 0x0` on a working box. `C7` is
+    derived from the live `REAPER_PBR` MARK rules, and `rc/reaper_pbr.c` emits three selector
+    forms: `-s <ip|cidr>`, `-m mac --mac-source`, and - for the `ipset`/`domain` selectors -
+    `-m set --match-set rwfw_<name> dst`, a DESTINATION set whose members resolve at run time. The
+    generator reproduced only the first two, so a set-keyed rule got a witness aimed at `1.1.1.1`,
+    never a member, mark 0, red. Now a set-keyed rule is a note ("members resolve at run time - the
+    mark is not witnessed"), the same call F1 makes for fqdn/geo objects; `-s` and MAC rows are
+    unchanged (positive + negative each). Same report also asked about "IP ghosts" for
+    `192.168.1.123`: that is the walker's synthetic LAN witness (the first IPv4 `ip -o addr` lists
+    on `br0`, host `.123`) - it exists only in the report, never in a table, nvram or lease; the
+    other hit was a usage example in a third-party script's comment. **Open question from it:**
+    that box's `br0` reportedly should not carry `192.168.1.x` at all - awaiting the user's
+    `ip -o -4 addr show br0` / `nvram get lan_ipaddr`.
+  - **[P3] The ASUS admin allowlist defeats Gatekeeper's escape hatch.** Found by the second
+    reporter's D5 row (a true positive, reported with a misleading address). With *Only allow
+    specified IP address* on, `REAPER_GKI#1` RETURNs the blocked device toward the admin port and
+    INPUT then lands in `ACCESS_RESTRICTION`, whose tail DROPs any source not in the admin's list -
+    the blocked device's, normally. The hatch exists so that blocking the device you administer from
+    is recoverable; on such a box it is not. The walker now says so as a note rather than a red,
+    because it is the admin's own list deciding. Candidate fix: emit the GK admin RETURN *after* the
+    allowlist, or exempt the hatch port from `ACCESS_RESTRICTION` for LAN sources - each changes a
+    stock chain and wants the owner's call. **[needs decision]**
   ↳ notes: `firewall-witness-catalog.md`; fixtures in `ASUS/audits/firewall-fixtures/`
 
 ---

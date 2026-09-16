@@ -365,6 +365,49 @@ else
   MODEL_TREE="$ROUTER_TREE"
 fi
 
+# --- vendor WLCSM blobs (ASUS stock 9.0.0.6.102_42015) -----------------------
+# The WLCSM netlink socket leak ("stuck nvram") is fixed by the vendor in two
+# closed blobs and nowhere in source: libnvram.so and libwlcsm.so. The series
+# carries the swap for router-sysdep.rt-be96u only, because canon holds no
+# other model's platform tree; a sibling's copy arrives with the pinned base or
+# with its platform archive above, both older than the fix. All six models ship
+# the identical pair, so one hash-pinned archive supplies every router-sysdep.*
+# in the tree that carries the files. Same rule as the archives above: verified
+# before it is unpacked, and the model's OWN tree must end up with both - a
+# model whose platform tree never arrived is an error here, not a silent skip.
+_ph vendor-blobs
+BLOB_TGZ="$REPO_DIR/overlays/wlcsm-42015-blobs.tar.gz"
+if [ -f "$BLOB_TGZ" ]; then
+  hr; echo " Vendor WLCSM blobs (stock 42015) for every router-sysdep.* in the tree"; hr
+  BLOB_SUM="$REPO_DIR/overlays/wlcsm-42015-blobs.sha256"
+  [ -f "$BLOB_SUM" ] || { echo "::error::$BLOB_TGZ has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1; }
+  want=$(awk '{print $1}' "$BLOB_SUM" | head -1); got=$(sha256sum "$BLOB_TGZ" | cut -d' ' -f1)
+  echo "   blob archive sha256 $got"
+  [ "$want" = "$got" ] || { echo "::error::wlcsm-42015 blob archive hash mismatch"; echo "   expected $want"; echo "   got      $got"; exit 1; }
+  _BLOB_DIR=$(mktemp -d)
+  tar -xzf "$BLOB_TGZ" -C "$_BLOB_DIR" || { echo "::error::wlcsm-42015 blob archive failed to unpack"; exit 1; }
+  _nblob=0
+  for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
+    _src="$_BLOB_DIR/wlcsm-42015/${_pair##*/}"
+    [ -f "$_src" ] || { echo "::error::wlcsm-42015 archive carries no ${_pair##*/}"; exit 1; }
+    for _dst in release/src-rt-5.04behnd.4916/router-sysdep*/"$_pair"; do
+      [ -f "$_dst" ] || continue
+      cp -f "$_src" "$_dst"; _nblob=$((_nblob+1))
+      echo "   $_dst <- $(sha256sum "$_src" | cut -c1-16)"
+    done
+  done
+  _SYSDEP="release/src-rt-5.04behnd.4916/router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')"
+  for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
+    if ! cmp -s "$_BLOB_DIR/wlcsm-42015/${_pair##*/}" "$_SYSDEP/$_pair"; then
+      echo "::error::$MODEL: $_SYSDEP/$_pair is not the vendor blob after the swap (does this model's platform tree carry it?)"; exit 1
+    fi
+  done
+  rm -rf "$_BLOB_DIR"
+  echo "   [MATCH] $_nblob file(s) replaced; $_SYSDEP carries both vendor blobs"
+else
+  echo "::error::overlays/wlcsm-42015-blobs.tar.gz is missing -- the WLCSM fix would not reach $MODEL"; exit 1
+fi
+
 # --- radio firmware identity, BEFORE the build --------------------------------
 # Every rtecdc.bin the build will install for this model must name this model.
 # Broadcom stamps the model into each blob; the wrong one (a sibling's, or the

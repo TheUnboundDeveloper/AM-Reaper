@@ -192,15 +192,24 @@ def w(name, text):
     with open(p, "w") as f: f.write(text)
     return p
 
-def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT, tag="x", rule4=None, rule6=None):
+def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT, tag="x", rule4=None, rule6=None,
+        lsntcp=None, lsnudp=None, wan="eth0"):
+    # wan=None omits --wan so the walker derives the WAN interface from the nv
+    # file exactly as the router does (dual WAN: the primary unit)
     args = [exe, "--save4", w(tag + ".v4", save4), "--addr", w(tag + ".addr", addr), "--members", w(tag + ".members", members),
-            "--nv", w(tag + ".nv", nv), "--static", static, "--wan", "eth0", "--lan", "br0", "--json", os.path.join(td, tag + ".json"), "--print", "--print"]
+            "--nv", w(tag + ".nv", nv), "--static", static, "--lan", "br0", "--json", os.path.join(td, tag + ".json"), "--print", "--print"]
+    if wan is not None: args += ["--wan", wan]
     if save6 is not None: args += ["--save6", w(tag + ".v6", save6)]
     if witness is not None: args += ["--witness", w(tag + ".wit", witness)]
     # the routing policy database: the Killswitch (C6) lives here and nowhere
     # in the tables, so it is an input of its own
     if rule4 is not None: args += ["--rule4", w(tag + ".r4", rule4)]
     if rule6 is not None: args += ["--rule6", w(tag + ".r6", rule6)]
+    # the router's own listening sockets: a REDIRECT lands on the router, so
+    # whether anything is bound there (F7) is not a table fact at all. Same
+    # /proc/net format the router parses, so this exercises the real parser.
+    if lsntcp is not None: args += ["--lsn-tcp", w(tag + ".ltcp", lsntcp)]
+    if lsnudp is not None: args += ["--lsn-udp", w(tag + ".ludp", lsnudp)]
     p = subprocess.run(args, capture_output=True, text=True)
     try:
         with open(os.path.join(td, tag + ".json")) as f: j = json.load(f)
@@ -308,7 +317,7 @@ try:
     ids = [x["id"] for x in j["witnesses"]]
     x = wit(j, "A1"); check("gk: A1 carries the first allowed MAC and stays green", x and x["state"] == "green" and "mac AA:BB:CC:DD:EE:01" in x["witness"], x)
     x = wit(j, "D1.2"); check("gk: blocked device cannot reach the WAN (green DROP via REAPER_GKF)", x and x["state"] == "green" and "REAPER_GKF#2" in x["rule"], x)
-    x = wit(j, "D2.2"); check("gk: blocked device still resolves at the router", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)
+    x = wit(j, "D2.2"); check("gk neg: a blocked device that still resolves is RED - the block is incomplete (no REAPER_GKI drop in this table)", x and x["state"] == "red" and x["expect"] == "DROP" and "INPUT#3" in x["rule"], x)
     x = wit(j, "D3a.3"); check("gk: internet-only device reaches the WAN", x and x["state"] == "green", x)
     x = wit(j, "D3b.3"); check("gk: internet-only device cannot reach the LAN", x and x["state"] == "green" and "REAPER_GKF#3" in x["rule"], x)
     x = wit(j, "D6"); check("gk: D6 enforcement chain present", x and x["state"] == "green", x)
@@ -486,6 +495,269 @@ try:
     j, out, rc = run(save4=wout, nv=NV + "reaper_fwsim_banned=198.51.100.66\n", witness=None, tag="e3c")
     check("E3: no row while the outbound direction is off", wit(j, "E3") is None, None)
 
+    # E8b - RW_ODROP exists only for dir=out|both (rc/rwarden.c do_out); with
+    # dir=in the promise is the inverse: RW_OUT, the chain that would filter
+    # outbound, is gone. 2026-09-16 field report: "missing" on a healthy
+    # inbound-only GT-BE98.
+    win = wout.replace(":RW_OUT - [0:0]\n:RW_ODROP - [0:0]\n", "") \
+              .replace("-A REAPER_WARDEN -j RW_OUT\n", "") \
+              .replace("-A RW_OUT -m set --match-set rw_ban dst -j RW_ODROP\n-A RW_ODROP -j DROP\n", "")
+    j, out, rc = run(save4=wout, nv=NV + "rwarden_dir=both\n", witness=None, tag="e8a")
+    x = wit(j, "E8b"); check("E8b: dir=both still asserts LASTDROP RW_ODROP", x and x["state"] == "green" and x["witness"] == "LASTDROP filter/RW_ODROP", x)
+    j, out, rc = run(save4=win, nv=NV + "rwarden_dir=in\n", witness=None, tag="e8b")
+    x = wit(j, "E8b"); check("E8b: dir=in with no outbound chain is GREEN (was red 'missing')", x and x["state"] == "green" and x["witness"] == "ABSENT filter/RW_OUT", x)
+    j, out, rc = run(save4=wout, nv=NV + "rwarden_dir=in\n", witness=None, tag="e8c")
+    x = wit(j, "E8b"); check("E8b neg: dir=in but a leftover RW_OUT still filters outbound, RED", x and x["state"] == "red" and x["verdict"] == "present", x)
+    j, out, rc = run(save4=win, nv=NV, witness=None, tag="e8d")
+    x = wit(j, "E8b"); check("E8b: an unset direction is inbound-only, exactly as do_out reads it", x and x["state"] == "green" and x["witness"] == "ABSENT filter/RW_OUT", x)
+
+    # THE WAN WITNESS SOURCE. 2026-09-16 field report: 198.51.100.7 is a
+    # TEST-NET bogon and the firehol1 feed carries the bogon ranges, so on a
+    # box with that feed the witness source was itself in rw_threat and every
+    # WAN row - web management, each port forward, each VPN server - was
+    # decided by filter/RW_DROP#1. The picker tests candidates against every
+    # SOURCE-side set the live tables match on and takes the first free one.
+    wsrc = wout.replace("--match-set rw_ban src", "--match-set rw_threat src")
+    j, out, rc = run(save4=wsrc, nv=NV, members=MEMBERS + "rw_threat 198.51.100.7\n", witness=None, tag="ws1")
+    check("wansrc: the default is in a source set, so the next candidate is used and the JSON says so",
+          j.get("wansrc") == "203.0.113.99" and "198.51.100.7" in j.get("wansrc_note", ""), (j.get("wansrc"), j.get("wansrc_note")))
+    x = wit(j, "B2.1"); check("wansrc: the port forward is judged on its own merits again, green", x and x["state"] == "green" and x["witness"].startswith("eth0 203.0.113.99"), x)
+    x = wit(j, "A6a"); check("wansrc: the static rows follow via $WANSRC", x and x["witness"].startswith("eth0 203.0.113.99"), x)
+    x = wit(j, "B1.2"); check("wansrc: a forward's own source restriction still wins over the picker", x and x["witness"].startswith("eth0 198.51.100.0/24"), x)
+    allc = "".join("rw_threat %s\n" % c for c in ("198.51.100.7", "203.0.113.99", "192.0.2.1", "1.1.1.1", "8.8.8.8", "9.9.9.9"))
+    j, out, rc = run(save4=wsrc, nv=NV, members=MEMBERS + allc, witness=None, tag="ws2")
+    check("wansrc neg: every candidate claimed = first is used and the note says every",
+          j.get("wansrc") == "198.51.100.7" and "every candidate" in j.get("wansrc_note", ""), (j.get("wansrc"), j.get("wansrc_note")))
+    x = wit(j, "B2.1"); check("wansrc neg: ...and the honest red at RW_DROP stands - that box blocks its forwards", x and x["state"] == "red" and x["rule"] == "filter/RW_DROP#1 -j DROP", x)
+    j, out, rc = run(save4=wout, nv=NV, witness=None, tag="ws3")
+    check("wansrc: nothing claims it = the documented default, no note", j.get("wansrc") == "198.51.100.7" and j.get("wansrc_note") == "", (j.get("wansrc"), j.get("wansrc_note")))
+    j, out, rc = run(save4=wsrc, nv=NV, members=MEMBERS + "rw_ban 198.51.100.7\n", witness=None, tag="ws4")
+    check("wansrc: a set matched only on the DESTINATION side does not claim the source", j.get("wansrc") == "198.51.100.7", (j.get("wansrc"), j.get("wansrc_note")))
+
+    # ---- the convergence pass (owner, 2026-09-16) ----
+    # mode is a constant: the report is advisory by design
+    j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="mode")
+    check("mode: the report says advisory", j.get("mode") == "advisory", j.get("mode"))
+
+    # protocol names iptables-save writes from /etc/protocols: `-p ipv6-crypt`
+    # (ESP) used to be depends:proto and made every INPUT row behind it
+    # inconclusive on a box with the IPSec passthrough rule
+    pr = SAVE4.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                       "-A INPUT -p ipv6-crypt -j ACCEPT\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n")
+    j, out, rc = run(save4=pr, tag="pr1")
+    x = wit(j, "T12"); check("proto: `-p ipv6-crypt` is ESP, a definite non-match for tcp - the row is judged", x and x["state"] == "green" and "INPUT#3" in x["rule"], x)
+    j, out, rc = run(save4=SAVE4.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n", "-A INPUT -p sctp-nope -j ACCEPT\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"), tag="pr2")
+    x = wit(j, "T12"); check("proto neg: a name the table does not know is still depends:proto, never guessed", x and x["state"] == "depends" and x["verdict"] == "depends:proto", x)
+
+    # an unmodelled match on an INERT target continues the walk
+    tm = SAVE4.replace("-A FORWARD -j WARDEN\n",
+                       "-A FORWARD -p tcp -m policy --dir in --pol ipsec -m tcp --tcp-flags SYN,RST SYN -m tcpmss --mss 1361:1536 -j TCPMSS --set-mss 1360\n-A FORWARD -j WARDEN\n")
+    j, out, rc = run(save4=tm, tag="tm1")
+    x = wit(j, "T1"); check("inert: `-m policy ... -j TCPMSS` cannot decide anything, so the walk goes on and the row is green", x and x["state"] == "green" and x["rule"] == "filter/FORWARD#8 -i br0 -o eth0 -j ACCEPT", x)
+    j, out, rc = run(save4=tm.replace("-j TCPMSS --set-mss 1360", "-j DROP"), tag="tm2")
+    x = wit(j, "T1"); check("inert neg: the same match on a VERDICT target is still depends:policy", x and x["state"] == "depends" and x["verdict"] == "depends:policy", x)
+
+    # deferred doubt: a mark-class target behind an unmodelled match is only a
+    # problem if something later CONSULTS that field (dual-WAN `-m statistic
+    # ... -j CONNMARK` is on every such box and nothing on the filter path reads it)
+    st = SAVE4.replace("-A PREROUTING -i br0 -j PBR\n",
+                       "-A PREROUTING -m statistic --mode random --probability 0.75000000000 -j CONNMARK --set-xmark 0x80000000/0xf0000000\n-A PREROUTING -i br0 -j PBR\n")
+    j, out, rc = run(save4=st, tag="st1")
+    x = wit(j, "T1"); check("defer: a doubtful CONNMARK nothing consults leaves the row judged", x and x["state"] == "green", x)
+    x = wit(j, "T11"); check("defer: a doubtful CONNMARK does not make a MARK expectation inconclusive (per-field doubt)", x and x["state"] == "green", x)
+    j, out, rc = run(save4=st.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -m connmark --mark 0x80000000/0xf0000000 -j DROP\n-A FORWARD -j WARDEN\n"), tag="st2")
+    x = wit(j, "T1"); check("defer neg: a later rule that CONSULTS the doubtful connmark is where depends is reported", x and x["state"] == "depends" and x["verdict"].startswith("depends:statistic@PREROUTING#1") and "FORWARD#1" in x["rule"], x)
+    j, out, rc = run(save4=SAVE4.replace("-A PBR -m mac --mac-source AA:BB:CC:DD:EE:01 -j MARK --set-xmark 0x10000/0xff0000\n",
+                                         "-A PBR -m statistic --mode nth --every 2 --packet 0 -j MARK --set-xmark 0x20000/0xff0000\n-A PBR -m mac --mac-source AA:BB:CC:DD:EE:01 -j MARK --set-xmark 0x10000/0xff0000\n"), tag="st3")
+    x = wit(j, "T11"); check("defer neg: a doubtful MARK makes the MARK expectation depends", x and x["state"] == "depends" and x["verdict"].startswith("depends:statistic@PBR#1"), x)
+    j, out, rc = run(save4=st.replace("-A PBR -j CONNMARK --save-mark --nfmask 0xff0000 --ctmask 0xff0000\n",
+                                      "-A PBR -j CONNMARK --restore-mark --nfmask 0xf0000000 --ctmask 0xf0000000\n"), tag="st4")
+    x = wit(j, "T11"); check("defer: a modelled --restore-mark carries a doubtful connmark INTO the mark", x and x["state"] == "depends", x)
+
+    # the LAN witness host under the ASUS admin access restriction
+    ar = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:ACCESS_RESTRICTION - [0:0]\n") \
+              .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                       "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n-A INPUT -p tcp -m multiport --dports 80,8443 -j ACCESS_RESTRICTION\n") \
+              .replace("-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n",
+                       "-A ACCESS_RESTRICTION -s 192.168.50.77/32 -j RETURN\n-A ACCESS_RESTRICTION -j DROP\n-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n")
+    arnv = NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n"
+    j, out, rc = run(save4=ar, nv=arnv, witness=None, tag="ar1")
+    check("acc-restriction: the LAN host is the allowed client and the JSON says why", j.get("lanhost") == "192.168.50.77" and "allowed client" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+    x = wit(j, "A5"); check("acc-restriction: the web-UI row is judged for the client the admin allowed - green", x and x["state"] == "green" and x["witness"].startswith("br0 192.168.50.77 "), x)
+    j, out, rc = run(save4=ar, nv=NV, witness=None, tag="ar2")
+    x = wit(j, "A5"); check("acc-restriction neg: table restricted but nvram says not = the honest red at the tail DROP", x and x["state"] == "red" and x["rule"] == "filter/ACCESS_RESTRICTION#2 -j DROP" and j.get("lanhost") == "192.168.50.123", x)
+    j, out, rc = run(save4=ar, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.64/26>3<\n", witness=None, tag="ar3")
+    check("acc-restriction: a CIDR entry is reduced to an address", j.get("lanhost") == "192.168.50.64", j.get("lanhost"))
+    j, out, rc = run(save4=ar, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>10.9.9.9>3<\n", witness=None, tag="ar4")
+    check("acc-restriction: an entry outside the LAN keeps the synthetic host and says so", j.get("lanhost") == "192.168.50.123" and "lists no LAN address" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+
+    # D2 / D5 against a Gatekeeper the way rc/gatekeeper.c emits it: a blocked
+    # MAC is a bare DROP in both chains; the admin hatch RETURNs first in INPUT
+    gk = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GKI - [0:0]\n:REAPER_GKF - [0:0]\n") \
+              .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n", "-A INPUT -j REAPER_GKI\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n") \
+              .replace("-A FORWARD -j WARDEN\n", "-A FORWARD -j REAPER_GKF\n-A FORWARD -j WARDEN\n") \
+              .replace("-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n",
+                       "-A REAPER_GKI -p tcp -m tcp --dport 8443 -j RETURN\n-A REAPER_GKI -m mac --mac-source AA:BB:CC:DD:EE:99 -j DROP\n"
+                       "-A REAPER_GKF -m mac --mac-source AA:BB:CC:DD:EE:99 -j DROP\n-A REAPER_GKF -m mac --mac-source AA:BB:CC:DD:EE:01 -j RETURN\n"
+                       "-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n")
+    gknv = NV.replace("gk_enable=0", "gk_enable=1")
+    j, out, rc = run(save4=gk, nv=gknv, witness=None, tag="gk1")
+    x = wit(j, "D2.1"); check("D2: a blocked device is refused even DNS - the emitter's promise, green at the GKI drop", x and x["state"] == "green" and x["expect"] == "DROP" and "REAPER_GKI#2" in x["rule"], x)
+    x = wit(j, "D5.1"); check("D5: the escape hatch still reaches the admin UI, green", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)
+    gkar = gk.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:ACCESS_RESTRICTION - [0:0]\n") \
+             .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                      "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n-A INPUT -p tcp -m multiport --dports 80,8443 -j ACCESS_RESTRICTION\n") \
+             .replace("-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n",
+                      "-A ACCESS_RESTRICTION -s 192.168.50.77/32 -j RETURN\n-A ACCESS_RESTRICTION -j DROP\n-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n")
+    j, out, rc = run(save4=gkar, nv=gknv + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", witness=None, tag="gk2")
+    x = wit(j, "D5.1"); check("D5: with the admin allowlist deciding, the hatch row is a NOTE (n/a), not a red", x and x["state"] == "na" and "access restriction" in x["note"], x)
+    x = wit(j, "D2.1"); check("D2: unchanged under the allowlist", x and x["state"] == "green", x)
+
+    # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
+    j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
+    check("pass2: walker is v1.5", j.get("ver") == "1.5", j.get("ver"))
+
+    # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
+    j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")
+    x = wit(j, "T19"); check("mcast: 239.x is local - INPUT, not FORWARD (was routed to FORWARD)", x and "filter/INPUT" in x["path"] and "FORWARD" not in x["path"] and x["state"] == "green", x)
+
+    # ICMP type NAMES, with `!` honoured (the old branch dropped the negation)
+    nm = SAVE4.replace("-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n",
+                       "-A INPUT_ICMP -p icmp ! --icmp-type echo-request -j ACCEPT\n-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n")
+    j, out, rc = run(save4=nm, tag="ic1")
+    x = wit(j, "T10"); check("icmp: `! --icmp-type echo-request` does NOT match an echo request - WAN ping still dropped", x and x["state"] == "green" and x["verdict"] == "DROP", x)
+    j, out, rc = run(save4=nm.replace("! --icmp-type echo-request", "--icmp-type echo-request"), tag="ic2")
+    x = wit(j, "T10"); check("icmp neg: without the `!` the name matches and the ping is accepted (red vs its DROP promise)", x and x["state"] == "red" and x["verdict"] == "ACCEPT" and "INPUT_ICMP#1" in x["rule"], x)
+    j, out, rc = run(save4=nm.replace("! --icmp-type echo-request", "--icmp-type timestamp-nope"), tag="ic3")
+    x = wit(j, "T10"); check("icmp: an unknown name is still depends:icmp-type, never guessed", x and x["state"] == "depends" and x["verdict"] == "depends:icmp-type", x)
+
+    # dual WAN: wan1 primary aims every WAN row at wan1's interface
+    j, out, rc = run(addr=ADDR + "5: eth4    inet 203.0.113.9/24 brd 203.0.113.255 scope global eth4\\       valid_lft forever preferred_lft forever\n",
+                     nv=NV + "wan1_primary=1\nwan1_ifname=eth4\nwan1_proto=dhcp\n", witness=None, tag="dw1", wan=None)
+    x = wit(j, "A4"); check("dual WAN: with wan1 primary the WAN witnesses enter on wan1's interface", x and x["witness"].startswith("eth4 "), x and x["witness"])
+    j, out, rc = run(nv=NV + "wan1_primary=0\nwan1_ifname=eth4\n", witness=None, tag="dw2", wan=None)
+    x = wit(j, "A4"); check("dual WAN: wan0 primary derives eth0 from nvram too", x and x["witness"].startswith("eth0 "), x and x["witness"])
+    j, out, rc = run(nv=NV.replace("wan0_proto=dhcp", "wan0_proto=pppoe") + "wan0_pppoe_ifname=ppp0\n", witness=None, tag="dw3", wan=None)
+    x = wit(j, "A4"); check("dual WAN: a PPPoE primary aims at its ppp interface", x and x["witness"].startswith("ppp0 "), x and x["witness"])
+    j, out, rc = run(nv=NV + "wan1_primary=1\nwan1_ifname=eth4\n", witness=None, tag="dw4")
+    x = wit(j, "A4"); check("dual WAN: an explicit --wan wins over nvram (the harness and a lab run rely on it)", x and x["witness"].startswith("eth0 "), x and x["witness"])
+
+    # a DHCP client speaks from port 68: a `--sport 68 --dport 67` accept must match
+    dh = SAVE4.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                       "-A INPUT -i br0 -p udp --sport 68 --dport 67 -j ACCEPT\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n")
+    j, out, rc = run(save4=dh, witness=None, tag="dh1")
+    x = wit(j, "A11"); check("dhcp: the client source port is 68, so the sport-specific accept decides", x and x["state"] == "green" and x["rule"].startswith("filter/INPUT#1 "), x)
+    j, out, rc = run(save4=dh.replace("--sport 68", "--sport 69"), witness=None, tag="dh2")
+    x = wit(j, "A11"); check("dhcp neg: a wrong sport rule is passed over and the generic br0 accept decides", x and x["state"] == "green" and "INPUT#1" not in x["rule"], x)
+
+    # the admin access restriction also gates WAN management
+    arw = SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:ACCESS_RESTRICTION - [0:0]\n") \
+               .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                        "-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n-A INPUT -p tcp -m multiport --dports 80,8443 -j ACCESS_RESTRICTION\n-A INPUT -i eth0 -p tcp -m tcp --dport 8443 -j ACCEPT\n") \
+               .replace("-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n",
+                        "-A ACCESS_RESTRICTION -s 198.51.100.50/32 -j RETURN\n-A ACCESS_RESTRICTION -s 192.168.50.77/32 -j RETURN\n-A ACCESS_RESTRICTION -j DROP\n-A INPUT_ICMP -p icmp -m icmp --icmp-type 8 -j RETURN\n")
+    wnv = NV.replace("misc_http_x=0", "misc_http_x=1") + "enable_acc_restriction=1\nrestrict_rulelist=<1>198.51.100.50>3<1>192.168.50.77>3<\n"
+    j, out, rc = run(save4=arw, nv=wnv, witness=None, tag="aw1")
+    x = wit(j, "A6a"); check("acc WAN: WAN management is witnessed from the allowed WAN address, green", x and x["state"] == "green" and x["witness"].startswith("eth0 198.51.100.50 "), x)
+    j, out, rc = run(save4=arw, nv=NV.replace("misc_http_x=0", "misc_http_x=1") + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", witness=None, tag="aw2")
+    x = wit(j, "A6a"); check("acc WAN: only LAN addresses listed = a NOTE, not a red", x and x["state"] == "na" and "outside the LAN" in x["note"], x)
+    j, out, rc = run(save4=arw, nv=NV.replace("misc_http_x=0", "misc_http_x=1"), witness=None, tag="aw3")
+    x = wit(j, "A6a"); check("acc WAN neg: restriction in the table but not in nvram = the honest red at the tail DROP", x and x["state"] == "red" and "ACCESS_RESTRICTION#3" in x["rule"], x)
+
+    # the IPv6 WAN witness source is picked against the v6 sets too
+    check("v6 picker: default source when nothing claims it", j.get("wan6src") == "2001:db8:ffff::7" and j.get("wan6src_note") == "", (j.get("wan6src"), j.get("wan6src_note")))
+    s6 = SAVE6[:SAVE6.rfind("COMMIT")] + "-A FORWARD -m set --match-set rw_threat6 src -j DROP\nCOMMIT\n"
+    j, out, rc = run(save6=s6, members=MEMBERS + "rw_threat6 2001:db8:ffff::7\n", witness=None, tag="v6p")
+    check("v6 picker: the documentation address is claimed, the next candidate is used", j.get("wan6src") == "2606:4700:4700::1111" and "2001:db8:ffff::7" in j.get("wan6src_note", ""), (j.get("wan6src"), j.get("wan6src_note")))
+
+    # guest isolation is not promised where networks are deliberately linked
+    gaddr = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
+    j, out, rc = run(addr=gaddr, nv=NV + "sdn_access_rl=<1>2<\n", witness=None, tag="gl1")
+    x = wit(j, "G1.1"); check("linked SDN: guest isolation is a NOTE while any link exists", x and x["state"] == "na" and "linked" in x["note"], x)
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gl2")
+    x = wit(j, "G1.1"); check("linked SDN neg: no links = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+
+    # DMZ: an intended exposure - A4 is a note, B6 witnesses the DMZ promise
+    dmz = SAVE4.replace("-A VSERVER -s 198.51.100.0/24 -p udp -m udp --dport 5000 -j DNAT --to-destination 192.168.50.11:5000\n",
+                        "-A VSERVER -s 198.51.100.0/24 -p udp -m udp --dport 5000 -j DNAT --to-destination 192.168.50.11:5000\n-A VSERVER -j DNAT --to-destination 192.168.50.20\n")
+    j, out, rc = run(save4=dmz, nv=NV + "dmz_ip=192.168.50.20\n", witness=None, tag="dz1")
+    x = wit(j, "A4"); check("dmz: A4's promise is withdrawn by the admin - a NOTE", x and x["state"] == "na" and "DMZ" in x["note"], x)
+    x = wit(j, "B6"); check("dmz: B6 witnesses the DMZ promise - handed to the host and passes FORWARD", x and x["state"] == "green" and x["verdict"] == "DNAT 192.168.50.20:445 ACCEPT", x)
+    x = wit(j, "A4b"); check("dmz: A4b's promise is withdrawn too - a NOTE", x and x["state"] == "na" and "DMZ" in x["note"], x)
+    j, out, rc = run(save4=SAVE4, nv=NV + "dmz_ip=192.168.50.20\n", witness=None, tag="dz2")
+    x = wit(j, "B6"); check("dmz neg: DMZ configured but no catch-all DNAT = red (the promise is not delivered)", x and x["state"] == "red", x)
+    j, out, rc = run(save4=dmz, nv=NV, witness=None, tag="dz3")
+    x = wit(j, "A4b"); check("dmz neg: a catch-all DNAT with NO dmz_ip is exposure nobody asked for - A4b red (A4 cannot see it: it aims at the LAN address)", x and x["state"] == "red" and x["verdict"].startswith("DNAT 192.168.50.20:65432"), x)
+    x = wit(j, "A4"); check("dmz neg: ...while A4 itself stays green, which is exactly why A4b exists", x and x["state"] == "green", x)
+    j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="dz4")
+    x = wit(j, "A4b"); check("A4b: an unforwarded high port on the router's address is not translated - green", x and x["state"] == "green" and x["verdict"] == "DROP", x)
+
+    # H7: invalid-state packets from the WAN are dropped
+    j, out, rc = run(save4=SAVE4, witness=None, tag="h7a")
+    x = wit(j, "H7"); check("H7: an INVALID-state packet from the WAN is dropped (policy)", x and x["state"] == "green" and x["verdict"] == "DROP" and "INVALID" in x["witness"], x)
+    j, out, rc = run(save4=SAVE4.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -i eth0 -j ACCEPT\n-A FORWARD -j WARDEN\n"), witness=None, tag="h7b")
+    x = wit(j, "H7"); check("H7 neg: a blanket WAN accept lets invalid state through - red", x and x["state"] == "red" and "FORWARD#1" in x["rule"], x)
+    j, out, rc = run(save4=SAVE4.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n", "-A INPUT -m state --state INVALID -j DROP\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"), witness=None, tag="h7c")
+    x = wit(j, "H7b"); check("H7b: an INVALID-state packet to the router is dropped by the explicit INPUT rule", x and x["state"] == "green" and x["rule"] == "filter/INPUT#1 -m state --state INVALID -j DROP", x)
+    j, out, rc = run(save4=SAVE4.replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n", "-A INPUT -i eth0 -j ACCEPT\n-A INPUT -m state --state INVALID -j DROP\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"), witness=None, tag="h7d")
+    x = wit(j, "H7b"); check("H7b neg: an early WAN accept shadows the INVALID drop - red naming INPUT#1", x and x["state"] == "red" and "INPUT#1" in x["rule"], x)
+
+    # C7 x the three selector forms rc/reaper_pbr.c emits: -s (src), -m mac, and
+    # `-m set --match-set rwfw_<x> dst` (ipset/domain: a DESTINATION set whose
+    # members resolve at run time). Field 2026-09-16: seven set-keyed rules read
+    # red with mark 0x0 on a working box because 1.1.1.1 is never a member.
+    pbr = SAVE4.replace(":PBR - [0:0]\n", ":PBR - [0:0]\n:REAPER_PBR - [0:0]\n") \
+               .replace("-A PREROUTING -i br0 -j PBR\n",
+                        "-A PREROUTING -i br0 -j REAPER_PBR\n-A PREROUTING -i br0 -j PBR\n"
+                        "-A REAPER_PBR -s 192.168.50.20/32 -j MARK --set-xmark 0x10000/0xf0000\n"
+                        "-A REAPER_PBR -m mac --mac-source AA:BB:CC:DD:EE:02 -j MARK --set-xmark 0x20000/0xf0000\n"
+                        "-A REAPER_PBR -m set --match-set rwfw_streaming dst -j MARK --set-xmark 0x30000/0xf0000\n")
+    j, out, rc = run(save4=pbr, witness=None, tag="c7s")
+    x = wit(j, "C7.1"); check("C7: an -s selector is witnessed from that address, green", x and x["state"] == "green" and x["witness"].startswith("br0 192.168.50.20 "), x)
+    x = wit(j, "C7.2"); check("C7: a MAC selector is witnessed with that MAC, green", x and x["state"] == "green" and "AA:BB:CC:DD:EE:02" in x["witness"], x)
+    x = wit(j, "C7.3"); check("C7: a destination-SET selector is a NOTE, not a red (members resolve at run time)", x and x["state"] == "na" and "rwfw_streaming" in x["note"] and "destination" in x["note"], x)
+    j, out, rc = run(save4=pbr.replace("-A REAPER_PBR -s 192.168.50.20/32 -j MARK --set-xmark 0x10000/0xf0000\n", "-A REAPER_PBR -s 192.168.50.20/32 -j RETURN\n-A REAPER_PBR -s 192.168.50.20/32 -j MARK --set-xmark 0x10000/0xf0000\n"), witness=None, tag="c7n")
+    x = wit(j, "C7.1"); check("C7 neg: a RETURN ahead of the mark leaves the flow unmarked - red, mark 0x0", x and x["state"] == "red" and x["verdict"].startswith("mark 0x0"), x)
+
+    # THE BAN-ADDRESS PRODUCER. Nothing on the router ever wrote the nvram key
+    # reaper_fwsim_banned (found 2026-09-15) - only this suite did - so for their
+    # whole life E1/E2/E3 could fire under test and never in the field. The key
+    # is now an OVERRIDE over Warden's own ban list. rwarden_ban is the legacy
+    # nvram name rw_list_get() falls back to, which is what the host build reads,
+    # so these cases exercise the same selection the router runs.
+    blnv = NV + "rwarden_dir=both\nrwarden_ban=198.51.100.66\n"
+    j, out, rc = run(save4=wout, nv=blnv, witness=None, tag="e1p")
+    x = wit(j, "E1")
+    check("E1 producer: the address comes from Warden's own ban list, no override needed",
+          x and x["state"] == "green" and "198.51.100.66" in x["witness"], x)
+    x2 = wit(j, "E2")
+    check("E2 producer: the LAN half is produced from the same list", x2 and x2["state"] == "green", x2)
+    x3 = wit(j, "E3")
+    check("E3 producer: the outbound half is produced from the same list", x3 and x3["state"] == "green", x3)
+
+    # an empty ban list is an ordinary state, not a fault - staying silent beats
+    # emitting a row that could only ever be red
+    j, out, rc = run(save4=wout, nv=NV + "rwarden_dir=both\n", witness=None, tag="e1q")
+    check("E1/E2/E3 neg: no list and no override emits NO rows, rather than red ones",
+          wit(j, "E1") is None and wit(j, "E2") is None and wit(j, "E3") is None, None)
+
+    # a hash:net member answers `ipset test` on its own network address
+    j, out, rc = run(save4=wout, nv=NV + "rwarden_dir=both\nrwarden_ban=198.51.100.64/26\n",
+                     members=MEMBERS + "rw_ban 198.51.100.64\n", witness=None, tag="e1r")
+    x = wit(j, "E1")
+    check("E1 producer: a CIDR entry is reduced to an address ipset can be asked about",
+          x and x["state"] == "green" and "198.51.100.64 " in x["witness"] and "/26" not in x["witness"], x)
+
+    # v6 entries are rw_ban6's, and aiming a v4 witness at one would be nonsense
+    j, out, rc = run(save4=wout, nv=NV + "rwarden_dir=both\nrwarden_ban=2001:db8::1\n", witness=None, tag="e1s")
+    check("E1 producer neg: a v6-only ban list produces no v4 row", wit(j, "E1") is None, None)
+
+    # the override still wins, so every fixture above keeps meaning what it meant
+    j, out, rc = run(save4=wout, nv=blnv + "reaper_fwsim_banned=198.51.100.99\n",
+                     members=MEMBERS + "rw_ban 198.51.100.99\n", witness=None, tag="e1t")
+    x = wit(j, "E1")
+    check("E1 producer: the nvram override beats the list", x and "198.51.100.99" in x["witness"], x)
+
     # E6 - ORDER, not presence. An allow list consulted after the ban list is
     # not an allow list, and both rules existing says nothing about that.
     j, out, rc = run(save4=wout, nv=ewnv, witness=None, tag="e6a")
@@ -523,6 +795,131 @@ try:
     check("F5: green once the target is exempt from its own redirect", x and x["state"] == "green", x)
     x = wit(j, "F4.1"); check("F5: the intercept itself is still witnessed", x and x["state"] == "green", x)
 
+    # F6 - the hairpin. This fixture's intercept target 192.168.50.30 sits on
+    # the CLIENT's own subnet, so without a source translation the reply goes
+    # straight back from target to client, bypassing the router that translated
+    # the request, and is dropped as unsolicited. F4 reads green throughout.
+    x = wit(j, "F6.1")
+    check("F6 neg: a hairpinned forward with no source translation is RED",
+          x and x["state"] == "red" and "NOT source translated" in x["verdict"], x)
+    hair = exempt.replace("-A POSTROUTING ! -s",
+                          "-A POSTROUTING -s 192.168.50.0/24 -d 192.168.50.30/32 -j SNAT --to-source 192.168.50.1\n"
+                          "-A POSTROUTING ! -s")
+    j, out, rc = run(save4=hair, nv=fwnv_i, witness=None, tag="f6a")
+    x = wit(j, "F6.1")
+    check("F6: green once POSTROUTING translates the source, and it names the SNAT rule",
+          x and x["state"] == "green" and "SNAT" in x["rule"], x)
+    # the SNAT rule is recorded in its own ctx slot precisely so it cannot
+    # overwrite the rule that decided an ordinary row on its way out
+    x = wit(j, "F4.1")
+    check("F6: recording the SNAT rule does not corrupt another row's deciding rule",
+          x and "POSTROUTING" not in x["rule"], x)
+
+    # F2 - zone policy. A zone PAIR says what may cross between two segments,
+    # which makes it a FORWARD question by construction. Saved lists, like F1.
+    ZONES = "reaper_fw_zone=<lan>br0>c<wan>eth0>c\n"
+    def zpolnv(action):
+        return (NV.replace("reaper_fw_enable=0", "reaper_fw_enable=1") + ZONES +
+                "reaper_fw_zpol=<lan>wan>" + action + "\n")
+    j, out, rc = run(nv=zpolnv("accept"), witness=None, tag="f2a")
+    x = wit(j, "F2.1")
+    check("F2: a zone pair becomes a forward witness between the two segments",
+          x and x["expect"] == "ACCEPT" and x["state"] == "green" and "br0 192.168.50." in x["witness"], x)
+    j, out, rc = run(nv=zpolnv("drop"), witness=None, tag="f2b")
+    x = wit(j, "F2.1")
+    check("F2 neg: a drop policy the table does not enforce goes RED",
+          x and x["expect"] == "DROP" and x["state"] == "red", x)
+    j, out, rc = run(nv=(NV.replace("reaper_fw_enable=0", "reaper_fw_enable=1") +
+                         "reaper_fw_zone=<lan>br0>c<dmz>br99>c\nreaper_fw_zpol=<lan>dmz>drop\n"),
+                     witness=None, tag="f2c")
+    check("F2: a zone with no live interface emits NO row - an absent segment is not a broken policy",
+          wit(j, "F2.1") is None, [i["id"] for i in j["witnesses"] if i["id"].startswith("F2")])
+
+    # F3 - the per-device egress default. Matched on egress to the WAN only,
+    # never LAN-to-LAN, so the witness goes out the WAN.
+    def edefnv(action, sched=""):
+        return (NV.replace("reaper_fw_enable=0", "reaper_fw_enable=1") + FWOBJ +
+                "reaper_fw_edef=<1>lanbox>" + action + ">" + sched + "\n")
+    j, out, rc = run(nv=edefnv("drop"), witness=None, tag="f3a")
+    x = wit(j, "F3.1")
+    check("F3: an egress default becomes a witness for that device to the internet",
+          x and x["expect"] == "DROP" and "192.168.50.77" in x["witness"], x)
+    check("F3 neg: the table still lets that device out, so the default is RED",
+          x and x["state"] == "red", x)
+    j, out, rc = run(nv=edefnv("accept"), witness=None, tag="f3b")
+    x = wit(j, "F3.1")
+    check("F3: an accept default the table keeps is green", x and x["state"] == "green", x)
+    j, out, rc = run(nv=edefnv("drop", "0,1,2"), witness=None, tag="f3c")
+    check("F3: a SCHEDULED default is skipped - it is true only part of the day",
+          wit(j, "F3.1") is None, None)
+    j, out, rc = run(nv=NV + FWOBJ + "reaper_fw_edef=<1>lanbox>drop>\n", witness=None, tag="f3d")
+    check("F3: no rows while the rules engine is disabled", wit(j, "F3.1") is None, None)
+
+    # G7 - the off-segment resolver. Reaching a DNS server that is not on your
+    # own segment is a FORWARD decision, and no other row covers that path.
+    OFFDNS = NV + "dhcp_dns1_x=10.20.0.98\n"
+    j, out, rc = run(nv=OFFDNS, witness=None, tag="g7a")
+    x = wit(j, "G7")
+    check("G7: an off-segment DNS server becomes a forward witness",
+          x and x["state"] == "green" and "10.20.0.98" in x["witness"] and "udp:53" in x["witness"], x)
+    blocked = SAVE4.replace("-A FORWARD -i br0 -o eth0 -j ACCEPT",
+                            "-A FORWARD -i br0 -d 10.20.0.98/32 -j DROP\n-A FORWARD -i br0 -o eth0 -j ACCEPT")
+    j, out, rc = run(save4=blocked, nv=OFFDNS, witness=None, tag="g7b")
+    x = wit(j, "G7")
+    check("G7 neg: a filter that swallows the off-segment resolver goes RED", x and x["state"] == "red", x)
+    j, out, rc = run(nv=NV + "dhcp_dns1_x=192.168.50.9\n", witness=None, tag="g7c")
+    check("G7: an ON-segment DNS server is not this row's business", wit(j, "G7") is None, None)
+
+    # H3 - the DoT upstream. The dnsmasq -> stubby hop is loopback config that
+    # no table shows; the router's OWN outbound to the DoT server is a table
+    # fact, and it is what a Warden self-filter or an outbound rule breaks -
+    # taking resolution down for the whole LAN while every LAN row reads green.
+    DOT = NV + "dnspriv_enable=1\ndnspriv_rulelist=<9.9.9.9>853>dns.quad9.net>\n"
+    j, out, rc = run(nv=DOT, witness=None, tag="h3a")
+    x = wit(j, "H3")
+    check("H3: the router's own path to its DoT upstream is witnessed",
+          x and x["state"] == "green" and "9.9.9.9" in x["witness"] and "tcp:853" in x["witness"], x)
+    dotblock = SAVE4.replace("-A FORWARD -j WARDEN",
+                             "-A OUTPUT -p tcp -m tcp --dport 853 -j DROP\n-A FORWARD -j WARDEN")
+    j, out, rc = run(save4=dotblock, nv=DOT, witness=None, tag="h3b")
+    x = wit(j, "H3")
+    check("H3 neg: an outbound rule swallowing :853 is RED - the failure rwatch 3b exists for",
+          x and x["state"] == "red", x)
+    j, out, rc = run(nv=NV + "dnspriv_enable=1\ndnspriv_rulelist=<1.1.1.1>>cloudflare-dns.com>\n",
+                     witness=None, tag="h3c")
+    x = wit(j, "H3")
+    check("H3: an empty port field means 853", x and "tcp:853" in x["witness"], x)
+    j, out, rc = run(nv=NV + "dnspriv_rulelist=<9.9.9.9>853>dns.quad9.net>\n", witness=None, tag="h3d")
+    check("H3: no row while DoT is off", wit(j, "H3") is None, None)
+
+    # F7 - a REDIRECT lands on the ROUTER, so the rule can be perfect and every
+    # connection still refused because nothing is bound. Half table, half socket,
+    # and the socket half is invisible to any walk of the tables.
+    LSN_HDR = ("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when "
+               "retrnsmt   uid  timeout inode ref pointer drops\n")
+    LSN_NTP = LSN_HDR + ("  100: 00000000:007B 00000000:0000 07 00000000:00000000 00:00000000 "
+                         "00000000     0        0 4242 2 0000000000000000 0\n")
+    LSN_NONE = LSN_HDR + ("  100: 00000000:0035 00000000:0000 07 00000000:00000000 00:00000000 "
+                          "00000000     0        0 4242 2 0000000000000000 0\n")
+    redir = icept.replace("-A REAPER_FWN -p udp -m udp --dport 123 -j DNAT --to-destination 192.168.50.30:123",
+                          "-A REAPER_FWN -p udp -m udp --dport 123 -j REDIRECT --to-ports 123")
+    j, out, rc = run(save4=redir, nv=fwnv_i, witness=None, lsnudp=LSN_NTP, tag="f7a")
+    x = wit(j, "F7.1")
+    check("F7: a redirect to the router is green when something is bound there",
+          x and x["state"] == "green" and x["verdict"] == "listening", x)
+    j, out, rc = run(save4=redir, nv=fwnv_i, witness=None, lsnudp=LSN_NONE, tag="f7b")
+    x = wit(j, "F7.1")
+    check("F7 neg: a perfect rule with nothing listening is RED - no table walk could see it",
+          x and x["state"] == "red" and x["verdict"] == "nothing listening", x)
+    # "we could not look" is not "nothing is listening": reporting the second
+    # when the first is true is precisely the lie this whole feature avoids
+    j, out, rc = run(save4=redir, nv=fwnv_i, witness=None, tag="f7c")
+    x = wit(j, "F7.1")
+    check("F7: an unreadable socket table is n/a, never red", x and x["state"] == "na", x)
+    j, out, rc = run(save4=icept, nv=fwnv_i, witness=None, lsnudp=LSN_NTP, tag="f7d")
+    check("F7: a DNAT to another host is not a redirect-to-router and gets no row",
+          wit(j, "F7.1") is None, None)
+
     # H1 - every packet we walk is a flow's first packet and a limit always
     # passes that one, so the only witnessable thing is that the guard is armed
     j, out, rc = run(witness=None, tag="h1a")
@@ -550,7 +947,10 @@ try:
         addr = ('1: lo    inet 127.0.0.1/8 scope host lo\\\n2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0\\\n'
                 '3: br0    inet 192.168.50.1/24 brd 192.168.50.255 scope global br0\\\n4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\\n'
                 '3: br0    inet6 fe80::1234:56ff:fe78:9abc/64 scope link \\\n')
-        nv = NV.replace("gk_enable=0", "gk_enable=1").replace("reaper_fw_enable=0", "reaper_fw_enable=1").replace("vts_enable_x=1", "vts_enable_x=0")
+        # the table carries RW_OUT + RW_ODROP, i.e. that box runs dir=both; the
+        # nv must say so or the inbound-only E8b row (correctly) reports the
+        # nvram/table disagreement as red
+        nv = NV.replace("gk_enable=0", "gk_enable=1").replace("reaper_fw_enable=0", "reaper_fw_enable=1").replace("vts_enable_x=1", "vts_enable_x=0") + "rwarden_dir=both\n"
         j, out, rc = run(save4=s4, save6=s6, addr=addr, members="rw_ban 198.51.100.66\n", nv=nv, witness=None, tag="f1")
         check("fixture: zero red on the owner's 2026-09-13 table", j["summary"]["red"] == 0 and j["summary"]["depends"] == 0, j["summary"])
         # na is 8 rows that need IPv6 the box does not have, plus H6, which is

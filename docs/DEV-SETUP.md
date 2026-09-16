@@ -41,6 +41,9 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    git am --keep-cr /path/to/AM-Reaper/patches/*.patch   # preserves authorship + messages
    # then the OpenSSL 3.5 source, which is too large for a patch (verify the sha256 first):
    tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz
+   # building a sibling model? the vendor WLCSM blob pair (v3.1.8) is in
+   # overlays/wlcsm-42015-blobs.tar.gz - copy libnvram.so and libwlcsm.so over that
+   # model's router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies (CI does the same)
    #   (plain `patch -p1` will NOT work: 4 patches carry git binary payloads —
    #    fonts, logo, USB ring sprite — that `patch` cannot apply. Use git am.)
    ```

@@ -38,7 +38,10 @@ GPL-covered portions of any Reaper build is, deterministically:
 Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
-OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). That
+OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
+unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
+`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the image.
 

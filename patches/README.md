@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**671 <!--@patchcount--> patches, v1.0 → v3.1.7 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**673 <!--@patchcount--> patches, v1.0 → v3.1.8 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -20,6 +20,10 @@ git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
+# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 9.0.0.6.102_42015)
+# ships hash-pinned as overlays/wlcsm-42015-blobs.tar.gz. The series carries the swap for the
+# RT-BE96U platform tree; a sibling build copies the two files over its own
+# router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as build-scripts/ci/container_build.sh does.
 ```
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout plus the `overlays/openssl-3.5-source.tar.gz` archive (from the rung that moved to OpenSSL 3.5) reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).

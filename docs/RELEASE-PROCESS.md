@@ -121,7 +121,10 @@ Two source-tree hashes are recorded per release, and they are not the same:
 - `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` (then unpacking
   `overlays/openssl-3.5-source.tar.gz`, as `cut_rung.sh` step 5 and CI both do) onto
   the pinned base yields. **This is what CI computes and compares**, so this is
-  the one that must be right.
+  the one that must be right. (The vendor WLCSM blob pair in
+  `overlays/wlcsm-42015-blobs.tar.gz` lives under `release/src-rt-5.04behnd.4916`,
+  outside both hashed trees; CI copies it over every model's platform copy after
+  the overlay and asserts the model's own tree carries both files.)
 
 They differ only by three vendored `openssh-sftp` `*.md` files that the series'
 doc-hunk exclusion strips. `cut_rung.sh` asserts that nothing else differs — if

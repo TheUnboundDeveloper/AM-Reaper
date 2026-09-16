@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.1.7** · 2026-09-15 <!--@stamp-->
+> **Doc status:** current as of **v3.1.8** · 2026-09-16 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -77,8 +77,11 @@ git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
+# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 42015) ships as
+# overlays/wlcsm-42015-blobs.tar.gz; the series carries the swap for the RT-BE96U tree, a sibling
+# takes the two files over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 671 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 673 <!--@patchcount--> patches (through v2.8.8).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

@@ -1,0 +1,118 @@
+Reaper v3.1.8 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> The "stuck nvram" router is fixed with ASUS's own cure
+
+The single most damaging fault
+
+this firmware inherited was a settings store that could wedge: a page would hang, nvram calls
+
+would sit forever, Warden could silently go down, and only a reboot cleared it. Reaper carried a
+
+workaround (a small library shim that steered the vendor's socket allocator around the collision)
+
+while the cause sat inside two closed Broadcom libraries no one outside ASUS can rebuild. ASUS has
+
+now fixed it: their public 9.0.0.6.102_42015 firmware, on the same Broadcom platform release as
+
+this build, passes the forced-collision test ten times out of ten where the upstream base wedges.
+
+The fix lives in exactly two files, libnvram.so and libwlcsm.so — the initialisation closes
+
+its channels on re-init, the port candidate no longer aliases the saved process ID, the error path
+
+cleans up, and the settings-dump retry is bounded and backs off — and those two files, taken
+
+unmodified from the vendor's own image, now ship in every model's image. They are a swap with
+
+recorded provenance, not a binary patch: the archive records the source image, its hash and the
+
+disassembly deltas. The shim is retired (its setting under Tools → Other Settings is gone; a
+
+leftover preload file from an earlier build is cleaned up once), and the watchdog's hung-nvram
+
+reaper stays in place as the safety net. Sibling models take the same pair on their own branches
+
+and the clean-room build copies it from a hash-pinned archive, so no model builds with the leaking
+
+libraries.
+
+> Rule Status stops crying wolf, and is now plainly advisory
+
+Two field reports on v3.1.7's
+
+Rule Status tab shared one cause: the walker's synthetic test addresses could land inside a live
+
+source list — a threat feed's bogon range, an access-restriction allowlist, the wrong bridge's
+
+address — and then the row tested the address, not the feature. Both firewalls were fine; the
+
+walker was wrong on every red but one. The WAN-side and LAN-side witness addresses are now probed
+
+against every source set first and the first unclaimed candidate is used; when every candidate is
+
+claimed the row says so instead of guessing. A model review over every connection class fixed the
+
+rest of the false reds: multicast, negated ICMP type names (stock's own ping rows would have gone
+
+red), dual-WAN boxes, DHCP's source port, the admin allowlist on WAN-side web and SSH rows, DMZ and
+
+linked guest networks, protocol names the parser did not know, and inert targets such as TCPMSS.
+
+Three rows that had been green when they should not have been were added: a router-address high
+
+port that must not be translated, and INVALID-state traffic toward the LAN and toward the router.
+
+The row for a routing rule keyed on an address list now says its members resolve at run time and
+
+cannot be witnessed, rather than turning red. And the whole tab is advisory by design: it
+
+informs, it never acts. The watchdog logs one line when the set of red rows changes and never
+
+raises a failure over it, the diagnostics bundle files it as information, the sidebar badge is
+
+gone, and the tab carries a banner saying exactly that. Three of the rows that could never fire in
+
+the field — they read a setting nothing ever wrote — now read Warden's real ban list.
+
+> System Information, rebuilt
+
+The same facts as the stock page, regrouped by the question you
+
+are asking — what is this box, is it struggling, am I running out of something, how loaded is it,
+
+what can it do — instead of by which daemon produced them. Capability flags are chips rather than
+
+a wall of text, memory shows available against free with a line saying why they differ, load
+
+is shown against the core count, and connections as headroom. No new backend: the page reads the
+
+same three status endpoints the stock page did, but it parses them instead of executing the
+
+response as script, and it takes its band labels from the radios rather than a hardcoded model
+
+list that mislabels any router not on it. The stock page is retired behind a redirect and left
+
+untouched.
+
+> The WireGuard policy-routing guide told a small lie, now corrected
+
+It said a rule that would
+
+overflow the accelerator-bypass table, or that named a tunnel whose interface was absent, was
+
+refused. Neither has been true since v3.1.2: the rule always goes in, a missing bypass is reported
+
+as a partial failure and named in the log, and since v3.1.7 a bypass for a tunnel that is not up
+
+yet is recorded as pending and installed when the client starts. The guide now says that, explains
+
+why an already-accelerated flow cannot be pulled back by a later rule, and gives the
+
+troubleshooting path for a source rule that still leaves by the WAN. The same sentence in the older
+
+changelog and release notes is reworded.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

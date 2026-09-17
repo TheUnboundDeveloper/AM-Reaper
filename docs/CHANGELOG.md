@@ -46,6 +46,45 @@ node, not only on the primary router.
 
 ---
 
+## Unreleased — a firewall rebuild stops fighting itself *(in the tree since 2026-09-17, not yet cut)*
+
+- **A firewall rebuild no longer takes DNS away from restricted devices — three times over.**
+  One QoS apply on the primary router rebuilt the firewall, and for the next fifty seconds three
+  Reaper layers, the shared front hook, the watchdog and a hand-written DNS carve-out watcher took
+  turns re-inserting rules at the head of the FORWARD chain, each undoing the last. Every round
+  cost the access-restricted devices their DNS. Four things changed so that cannot recur:
+  Gatekeeper now lets an internet-only device's DNS through when the *router itself* redirected it
+  (a Service Intercept to a resolver on another network), so no carve-out has to sit ahead of the
+  Reaper hook at all; the front hook keeps its place behind a narrow carve-out or a declared
+  exemption instead of re-pinning to position 1 on every layer apply (the watchdog already
+  tolerated those; the hook did not); Warden's apply builds and refills its sets *before* it touches
+  the chain and replays the cached feeds in one pass, so the chain is absent for milliseconds
+  instead of the 17 seconds a large cache took; and the watchdog now confirms a missing Warden
+  chain on two ticks, re-checks under the firewall lock and only then re-applies — a rebuild in
+  progress is no longer reported as an outage or "healed" with a third apply.
+- **A firewall rule can no longer vanish silently.** This platform's iptables has no lock, so when
+  two things edit the tables in the same instant one of the changes can fail, and the Gatekeeper and
+  Warden apply scripts made a few hundred rule additions each without checking any of them. On the
+  primary router two rules out of 126 went missing at boot; one was an internet-only device's pass
+  rule, so that device had no internet until the chains were rebuilt. Every addition is now retried
+  once, anything that still fails is counted and named in the log, and the Gatekeeper daemon
+  re-applies when the count is not zero. The Rule Status walker also stops using a fixed test
+  address for "reaches the internet" rows: if the operator has blocked that address, it moves to the
+  next public candidate and says so, instead of painting every WAN-bound row red.
+- **A DNS intercept fails open.** A Service Intercept aimed at the resolver the DNS Health Check
+  watches is closed while that resolver is down and reopened when it answers, with the port's
+  connection entries flushed at each switch, so clients fall through to the router's own DNS
+  instead of being redirected into a dead host. This replaces the hand-written watcher some installs
+  ran for the same purpose.
+- **Two QoS options are gone: L4S marking and Wi-Fi downstream priority (WMM).** L4S was never
+  accepted by the traffic manager on the validated port ("dualq isn't supported"), and until now its
+  rejection silently abandoned the whole priority correction, leaving the class queues at the stock
+  inverted layout for as long as the toggle stayed on. The WMM lift was measured to halve wireless
+  throughput in both directions, because lifting the top class to the voice access category defeats
+  frame aggregation. Neither had a setup where it helped, so both are removed from the page, the
+  engine and the defaults. The download policer stays, opt-in, and its help now says plainly that a
+  policer drops rather than delays and should stay off on a network that carries calls.
+
 ## v3.1.8 — the "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt
 
 - **The "stuck nvram" router is fixed with ASUS's own cure.** The single most damaging fault

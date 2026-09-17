@@ -402,3 +402,32 @@ usr/bin/reaper_fwsim|every candidate source is in a source set|1
 # every consumer keys off mode=advisory in the JSON. If this string is gone, a
 # later edit turned the walker back into an alarm.
 usr/bin/reaper_fwsim|[advisory: information only, nothing re-applied]|1
+# 2026-09-17 -- the apply-window fixes (private notes: apply-window-watchdog-fight.md).
+# One restart_qos;restart_firewall on the owner's RT-BE96U had three Reaper layer
+# applies, hook.sh, the out-of-tree DNS carve-out watcher and rwatch fighting for
+# FORWARD position 1 for fifty seconds. hook.sh now computes WHERE to pin instead
+# of assuming 1; the Warden heal re-checks under the lock via heal.sh; Gatekeeper
+# lets router-redirected DNS through; the rules engine gates an intercept on the
+# resolver health check (REAPER_FWHC); rwatch 3c confirms on a second tick.
+# Missing = that fix is not in the image. The L4S toggle and the WMM downstream
+# stamp were REMOVED the same day (L4S never accepted by the traffic manager on
+# the validated port; the stamp halved Wi-Fi throughput on metal) - the three
+# negative lines block either from creeping back.
+sbin/rc|_front_pos|1
+sbin/rc|/tmp/rwarden/heal.sh|1
+sbin/rc|--ctorigdstport 53|1
+sbin/rc|REAPER_FWHC|1
+www/Reaper_QoS.asp|!tg_l4s
+www/Reaper_QoS.asp|!tg_wmm
+sbin/rc|!qos_dscp_wmm
+sbin/rc|checking again next tick before acting|1
+# 2026-09-17 (later) -- the r4 boot lost 2 of 126 Gatekeeper rules to a
+# concurrent iptables writer (no xtables lock, ~200 unchecked adds); one was an
+# internet-only device's RETURN, so it had no internet. Every add in the
+# Gatekeeper and Warden apply scripts is now retried once and counted, gkd
+# re-applies on a non-zero count, the rules engine writes its resolver gate for
+# the armed candidate too, and the walker picks its WAN-bound witness address
+# from a candidate list so a DoH block on 1.1.1.1 no longer paints 24 reds.
+sbin/rc|rule add failed twice|1
+bin/gkd|failed to load in the last apply|1
+usr/bin/reaper_fwsim|every candidate destination is in a destination set|1

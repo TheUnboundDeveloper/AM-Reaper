@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.7** · 2026-09-15 <!--@stamp-->
+> **Doc status:** current as of **v3.1.9** · 2026-09-17 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.8** <!--@treever--> — `3006.102.8_Reaper_v3.1.8`. **The "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt.** ASUS's public 9.0.0.6.102_42015 firmware fixes the WLCSM socket leak that could wedge the settings store (pages hang, `nvram` calls sit forever, Warden silently down, until a reboot); the fix lives in two closed libraries, `libnvram.so` and `libwlcsm.so`, and **those two files, taken unmodified from the vendor's image, now ship in every model's image** — the sibling branches carry them and a hash-pinned archive carries them to the clean-room build; Reaper's own shim is retired and the watchdog's hung-nvram reaper stays as the safety net. The **Rule Status** walker had two field reports of false reds with one cause — a synthetic witness address that a live source list happened to select — so the witness addresses are now chosen from what no set claims, a model review over every connection class removed the remaining false reds and added three rows that had been wrongly green, and the tab is **advisory by design**: it informs and never acts. **System Information** is rebuilt as a native page that regroups the stock data by the question being asked and parses the status endpoints instead of executing them as script; the stock page is retired behind a redirect. The WireGuard policy-routing guide's claim that an overflowing bypass table refuses a rule is corrected: the rule always goes in, a missing bypass is a named partial failure, and a pending one installs when the client starts. The series stands at **673 patches** (0672–0673 for v3.1.8); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.1.9** <!--@treever--> — `3006.102.8_Reaper_v3.1.9`. **Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself.** A Policy Routing rule naming a destination, an address list or a domain could be silently overruled by a broader source rule further down the list, because every rule wrote its decision over the one before it. It only failed one way round, which is what disguised it: the same device sent to the same tunnel by **VPN Director** kept following its destination rules. **The first rule that matches now decides**, so put specific rules above broad ones and check any list built around the old behaviour. **Rule Status** also names the stand-in addresses it walks with, rather than printing them bare as though they were devices on your network. Separately, one QoS apply used to set three Reaper layers, the shared front hook, the watchdog and a DNS carve-out watcher fighting over the head of the FORWARD chain for fifty seconds, taking DNS from access-restricted devices on every round; Gatekeeper, the front hook, Warden and the watchdog were each changed so that cannot recur. Because this platform's iptables has no lock, **every Gatekeeper and Warden rule addition is now retried once**, anything still missing is counted and named, and the daemon re-applies. A DNS intercept **fails open** while its resolver is down. Two QoS options that never helped, L4S marking and the Wi-Fi downstream stamp, are removed. **DoS protection** reports its armed state rather than its setting. Verified on the RT-BE96U: Rule Status 95 green / 0 red after the rebuild, both retry counters at zero. The series stands at **680 patches** (0674–0680 for v3.1.9); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,76 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.1.9 — Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself
+
+**Policy Routing follows the order you wrote it in.** A rule naming a destination, an address list
+or a domain could be silently overruled by a broader source rule further down the list, because every
+rule wrote its decision over the one before it and the last to match won. The giveaway was that it
+only failed one way round: a device sent to a tunnel by a Policy Routing source rule stopped following
+its own destination rules, while the same device sent to the same tunnel by VPN Director kept
+following them. That looked like a VPN fault and was not one. The two paths simply resolved
+differently, one by position in a single chain and the other by routing-rule precedence. The first
+rule that matches now decides and nothing later can overturn it, which is how an ordered list is meant
+to read. Put specific rules above broad ones. A list built around the old behaviour will route
+differently, so it is worth a look after updating.
+
+**Rule Status stops showing its test addresses as if they were devices.** The tab has no traffic of
+its own. It walks each feature's promise through the live tables using stand-in addresses it makes up,
+one of which looks like an ordinary LAN client, and nothing is ever sent to them. Those addresses are
+now named as stand-ins at the top of the tab rather than appearing bare in every row that uses one.
+
+**A firewall rebuild no longer takes DNS away from restricted devices.** One QoS apply on the
+RT-BE96U rebuilt the firewall, and for the next fifty seconds three Reaper layers, the shared front
+hook, the watchdog and a hand-written DNS carve-out watcher took turns re-inserting rules at the head
+of the FORWARD chain, each undoing the last. Every round cost the access-restricted devices their
+DNS. Four things changed so that cannot recur. Gatekeeper lets an internet-only device's DNS through
+when the *router itself* redirected it (a Service Intercept to a resolver on another network), so no
+carve-out has to sit ahead of the Reaper hook at all. The front hook keeps its place behind a narrow
+carve-out or a declared exemption instead of re-pinning to position 1 on every layer apply. Warden's
+apply builds and refills its sets *before* it touches the chain and replays the cached feeds in one
+pass, so the chain is absent for milliseconds instead of the seventeen seconds a large cache took.
+And the watchdog confirms a missing Warden chain on two ticks, re-checks under the firewall lock and
+only then re-applies, so a rebuild in progress is no longer reported as an outage or "healed" with a
+third apply.
+
+**A firewall rule can no longer vanish silently.** This platform's iptables has no lock, so when two
+things edit the tables in the same instant one of the changes can fail, and the Gatekeeper and Warden
+apply scripts made a few hundred rule additions each without checking any of them. On the RT-BE96U
+two rules out of 126 went missing at boot; one was an internet-only device's pass rule, so that device
+had no internet until the chains were rebuilt. Every addition is now retried once, anything that still
+fails is counted and named in the log, and the Gatekeeper daemon re-applies when the count is not
+zero. The Rule Status walker also stops using a fixed test address for "reaches the internet" rows:
+if the operator has blocked that address it moves to the next public candidate and says so, instead
+of painting every WAN-bound row red.
+
+**DoS protection says whether it is armed.** "DoS protection not enabled when toggled on" was the
+page showing the setting rather than the state: the engine hooks the guard only while the firewall
+master switch is on and the router is routing, so a DoS toggle under a switched-off firewall saved
+fine and armed nothing. The toggle is now dimmed with the reason when the master switch is off, the
+status strip reports the armed state, and the Rule Status tab has a row that asks the live table
+whether the WAN actually jumps to the guard, naming the master switch when it does not. The
+Dashboard's own left rail, which never marked the Dashboard entry as the current page, does now.
+
+**A DNS intercept fails open.** A Service Intercept aimed at the resolver the DNS Health Check
+watches is closed while that resolver is down and reopened when it answers, with the port's
+connection entries flushed at each switch, so clients fall through to the router's own DNS instead
+of being redirected into a dead host. This replaces the hand-written watcher some installs ran for
+the same purpose.
+
+**Two QoS options are gone: L4S marking and Wi-Fi downstream priority (WMM).** L4S was never
+accepted by the traffic manager on the validated port, and until now its rejection silently
+abandoned the whole priority correction, leaving the class queues at the stock inverted layout for
+as long as the toggle stayed on. The WMM lift was measured to halve wireless throughput in both
+directions, because lifting the top class to the voice access category defeats frame aggregation.
+Neither had a setup where it helped, so both are removed from the page, the engine and the defaults.
+The download policer stays, opt-in, and its help now says plainly that a policer drops rather than
+delays and should stay off on a network that carries calls.
+
+**Validation.** Every fix above ran on the RT-BE96U before the cut: after a QoS apply and a firewall
+restart, Rule Status reads 95 green / 0 red, both retry counters are zero, the Gatekeeper audit is
+clean and the DNS intercept leaks nothing. The sibling models take the same code through the
+clean-room build.
 
 ## What's new in v3.1.8 — the "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt
 

@@ -21,6 +21,47 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v3.1.9",
+      "firmware": "3006.102.8_Reaper_v3.1.9",
+      "build_commit": "c0ba9d3277",
+      "source_tree": {
+        "release/src/router": "f7a3b322115d4deb0bf9256896a18f8aeea272db",
+        "release/src-rt": "b5d27a48fcfe634ffa2b81823a21b7b57ec57724"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "cd17ba0f85c63bcf35d75a4bf306b50b73399e86",
+        "release/src-rt": "b5d27a48fcfe634ffa2b81823a21b7b57ec57724"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.9_BETA_r1_nand_squashfs.pkgtb",
+          "sha256": "9b7b24a83e1ae9b183f7cd4682b2c6550928681d2ee854ced6543be6c3ef5ed5"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.9_BETA_r1_nand_squashfs_loader.pkgtb",
+          "sha256": "9a8ba97eb09412b75e7e425628161b008d6875b0151c70b98bf1597116b778d2"
+        }
+      ],
+      "patch_count": 680,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-17",
+      "parent": "v3.1.8",
+      "summary": "Policy Routing follows the order the rules are in. Every selector rule in the REAPER_PBR mangle chain now carries `-m mark --mark 0x0/$MASK`, so the FIRST rule to match a packet is the only one that writes a verdict. Before this, MARK did not terminate the chain and --set-xmark overwrote the masked nibble, so every matching rule ran and the LAST in the list decided: a broad source rule placed below a specific ipset or domain rule silently beat it. A field report on 2026-09-17 (RT-BE86U, v3.1.8_BETA) showed the asymmetry that gives it away - a client sent to a tunnel by a Policy Routing source rule stopped following its own ipset destination rules, while the same client sent to the same tunnel by VPN Director kept following them, because that path resolves by ip-rule pref (10210 against 9002) rather than by position in one chain. Rule count is unchanged, so rwatch's reassert check and the diag figure are unaffected, and the walker already models an `-m mark` match. Rule Status also names the stand-in addresses it walks with (new token RFW_322): the tab generates a LAN client at .123 plus an unclaimed WAN source and destination, sends none of them anywhere, and used to print them bare, which one tester twice reported as a device they could not find. Also in this rung: a firewall rebuild stops fighting itself - one QoS apply rebuilt the firewall and for fifty seconds the three Reaper layer applies, the shared front hook, the rwatch watchdog and an out-of-tree DNS carve-out watcher took turns re-inserting rules at FORWARD position 1, and the access-restricted devices lost DNS on every round. Gatekeeper RETURNs router-redirected DNS (--ctstate DNAT --ctorigdstport 53); hook.sh computes its front position with the rwatch 3d classifier instead of -I 1; Warden's apply creates and refills its sets before the teardown and replays the cached feeds in one awk pass (chain absent for milliseconds instead of 17 s); rwatch 3c confirms on two ticks and heals under the firewall lock; a Service Intercept aimed at the DNS Health Check target is parked in REAPER_FWHC and fails open. A rule can no longer vanish silently: this iptables 1.4.x has no xtables lock, so every Gatekeeper and Warden add goes through a retry-once wrapper, failures are counted in /tmp/gk/failcount and /tmp/rwarden/failcount and named in the log, and gkd heal_lost_rules() re-applies when the count is not zero. The QoS L4S toggle and the Wi-Fi downstream (WMM) stamp are removed. reaper_fwsim picks its WAN-bound witness destination from a candidate list and gains H1b (is FORWARD actually jumping to SECURITY when fw_dos_x=1); httpd's status JSON carries dos_armed; the Firewall page dims the DoS toggle with the reason while the master switch is off (RFW_321). The Dashboard's own left rail marks its page current. Patches 0674-0680.",
+      "models_note": "Overlay overlap, in two passes because this rung was cut twice. Patches 0674-0678 touched 42 files, of which one - www/Main_ReaperDash.asp (the Dashboard rail's current-page marker) - is carried by every per-model overlay, because that page names the model's banner; all five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) were regenerated after the port, each by two banner lines, and pass the identity gate and the hidden-character scan. The two re-cut patches (0679-0680, rc/reaper_pbr.c and www/Reaper_Firewall.asp plus the 25 dictionaries) touch 27 files and overlap NO overlay: neither file is one of the seven banner-referencing pages, and a .dict may never appear in one - the siblings take both from the series. The dormant RT-BE92U overlay was not regenerated, the model having left the roster at v3.1.2. Nothing here touches a platform tree, the vendor WLCSM blob pair or the OpenSSL 3.5 archive, so both hash-pinned archives are unchanged. Sibling images come from the clean-room build; the RT-BE96U MCP image recorded under images is the locally built and metal-tested one.",
+      "channel": "beta",
+      "logs": {
+        "build": "provenance/logs/v3.1.9/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.9/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v3.1.8",
       "firmware": "3006.102.8_Reaper_v3.1.8",
       "build_commit": "c9772af6e5",

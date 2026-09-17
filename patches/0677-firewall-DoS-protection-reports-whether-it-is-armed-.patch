@@ -1,0 +1,409 @@
+From 02640f99cb6694d28c8b5f65df75144c9683040a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 17 Sep 2026 17:16:40 -0400
+Subject: [PATCH] firewall: DoS protection reports whether it is armed, and the
+ Dashboard rail marks its own page
+
+Two field reports from the v3.1.8 beta, one evening.
+
+"DoS protection not enabled when toggled on": the Firewall page showed the
+SETTING (fw_dos_x) as the state. rc/firewall.c always emits the SECURITY
+chain's rules but hooks `-A FORWARD -i <wan> -j SECURITY` only while the
+master switch (fw_enable_x) is on and the box is routing - identical to
+stock - so a DoS toggle under a switched-off firewall saved fine and armed
+nothing, and the walker's H1 row (the chain's own limit rules, which always
+exist) stayed green.
+  - httpd status JSON gains dos_armed = fw_dos_x && fw_enable_x && sw_mode==1.
+  - Reaper_Firewall.asp dims the DoS toggle with the reason while the master
+    switch is off (dosGate()); the status strip reads "off - not armed: ..."
+    through the new token RFW_321 (25 dictionaries in lockstep, 6991 lines).
+  - reaper_fwsim gains H1b: HASTARGET filter/FORWARD/SECURITY when fw_dos_x=1;
+    the feature text names the master switch when fw_enable_x=0; dump_keys
+    carries fw_enable_x and fw_dos_x.
+
+The Dashboard's own static left rail (Main_ReaperDash.asp does not use the
+shell rail) never marked the Dashboard item current: class="on" on its anchor
+plus the .nav a.on / ::before rule mirroring reaper_shell.asp.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                 |  5 ++++-
+ release/src/router/reaper_fwsim/reaper_fwsim.c | 11 ++++++++++-
+ release/src/router/www/BR.dict                 |  1 +
+ release/src/router/www/CN.dict                 |  1 +
+ release/src/router/www/CZ.dict                 |  1 +
+ release/src/router/www/DA.dict                 |  1 +
+ release/src/router/www/DE.dict                 |  1 +
+ release/src/router/www/EN.dict                 |  1 +
+ release/src/router/www/ES.dict                 |  1 +
+ release/src/router/www/FI.dict                 |  1 +
+ release/src/router/www/FR.dict                 |  1 +
+ release/src/router/www/HU.dict                 |  1 +
+ release/src/router/www/IT.dict                 |  1 +
+ release/src/router/www/JP.dict                 |  1 +
+ release/src/router/www/KR.dict                 |  1 +
+ release/src/router/www/MS.dict                 |  1 +
+ release/src/router/www/Main_ReaperDash.asp     |  7 ++++++-
+ release/src/router/www/NL.dict                 |  1 +
+ release/src/router/www/NO.dict                 |  1 +
+ release/src/router/www/PL.dict                 |  1 +
+ release/src/router/www/RO.dict                 |  1 +
+ release/src/router/www/RU.dict                 |  1 +
+ release/src/router/www/Reaper_Firewall.asp     | 18 ++++++++++++++++--
+ release/src/router/www/SL.dict                 |  1 +
+ release/src/router/www/SV.dict                 |  1 +
+ release/src/router/www/TH.dict                 |  1 +
+ release/src/router/www/TR.dict                 |  1 +
+ release/src/router/www/TW.dict                 |  1 +
+ release/src/router/www/UK.dict                 |  1 +
+ 29 files changed, 61 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 95152d54f4..383f5e1d17 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24166,11 +24166,14 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		v6up = ipv6_enabled() ? 1 : 0;
+ #endif
+ 		websWrite(stream,
+-			"{\"ok\":1,\"fw\":{\"enable\":%d,\"dos\":%d,\"ping\":%d,"
++			"{\"ok\":1,\"fw\":{\"enable\":%d,\"dos\":%d,\"dos_armed\":%d,\"ping\":%d,"
+ 			"\"wl\":%d,\"lw\":%d,\"url\":%d,\"kw\":%d,"
+ 			"\"v6up\":%d,\"v6fw\":%d,\"gk\":%d,\"warden\":%d,\"wlog\":%d,\"log\":",
+ 			nvram_match("fw_enable_x", "1") ? 1 : 0,
+ 			nvram_match("fw_dos_x", "1") ? 1 : 0,
++			/* 2026-09-17 field: the setting is not the state - rc/firewall.c hooks
++			 * SECURITY only when fw_enable_x is also on, and never in AP mode */
++			(nvram_match("fw_dos_x", "1") && nvram_match("fw_enable_x", "1") && nvram_get_int("sw_mode") == 1) ? 1 : 0,
+ 			nvram_match("misc_ping_x", "1") ? 1 : 0,
+ 			nvram_match("fw_wl_enable_x", "1") ? 1 : 0,
+ 			nvram_match("fw_lw_enable_x", "1") ? 1 : 0,
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 27fc2810dd..cf381740ec 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -2356,6 +2356,15 @@ static void gen_witnesses(void)
+ 	 * any single packet's point of view. */
+ 	if (nv_is("sw_mode", "1"))
+ 		wit_shape("H1", "Flood guard: the SECURITY chain is rate limited", 4, "LIMITED filter/SECURITY", "OK");
++	/* H1b - 2026-09-17 field ("DoS protection not enabled when toggled on"). H1
++	 * looks at the chain's own rules, which are always emitted; the HOOK is what
++	 * rc/firewall.c withholds while the firewall master switch is off. So when
++	 * the setting says on, the row asks the table whether the WAN actually
++	 * jumps to the guard - and names the master switch when it cannot. */
++	if (nv_is("sw_mode", "1") && nv_is("fw_dos_x", "1"))
++		wit_shape("H1b", nv_is("fw_enable_x", "1") ? "DoS protection: the SECURITY guard is hooked on the WAN"
++		          : "DoS protection is switched on but the firewall master switch is off, so nothing hooks the guard",
++		          4, "HASTARGET filter/FORWARD/SECURITY", "OK");
+ 
+ 	/* H6 - the honesty row. The page should say what it does NOT know, in the
+ 	 * same list as everything it does, rather than leaving a reader to assume
+@@ -2406,7 +2415,7 @@ static const char *dump_keys[] = {
+ 	"sw_mode", "lan_ifname", "lan_ipaddr", "wan0_ifname", "wan0_proto",
+ 	"wan0_pppoe_ifname", "wan0_ipaddr", "wan1_primary", "wan1_ifname", "wan1_proto", "wan1_pppoe_ifname",
+ 	"dmz_ip", "sdn_access_rl",
+-	"https_lanport", "misc_http_x", "misc_httpsport_x", "misc_ping_x",
++	"https_lanport", "misc_http_x", "misc_httpsport_x", "misc_ping_x", "fw_enable_x", "fw_dos_x",
+ 	"sshd_enable", "sshd_wan", "sshd_port",
+ 	"vts_enable_x", "vts_rulelist",
+ 	"gk_enable", "gk_default", "rwarden_enable", "rwarden_dir", "rwarden_geo",
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 9ea5b750fb..c4eaccbf00 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 798b79424d..9f832378f6 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 60b56f2cfa..12a07668e7 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 4bb16361aa..514bad88d4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 6790fa325c..0cdf0a63f9 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index ebe65e24ac..6674433ab4 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 44b4624718..64e759834f 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 263d4fe000..5a40e58aa0 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 021d9b1226..5fc1d81835 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index c8aec7c6ca..4c86cf752f 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 417d4b48b7..5c4dd380b3 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 026c9912ad..3b8f6f1e93 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 79cafbde2d..08d0a785c4 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index b60b01cbfc..459ecd666a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index d0540850bc..e4bd8a1829 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -136,6 +136,11 @@ main{min-width:0}
+   background:var(--crimson);color:#fff;font-family:var(--hdr);font-weight:700;font-size:10.5px;letter-spacing:.02em;
+   line-height:18px;text-align:center}
+ .nav a .nbadge.on{display:inline-block}
++/* 2026-09-17 field: this rail is static and this page IS the Dashboard, so its own
++   item carries the current marker here (the shell marks the framed page for the
++   others). Same look as a.item.on in reaper_shell.asp - standing rule 6. */
++.nav a.on{position:relative;color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
++.nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+ .nav a:hover{color:var(--bone);background:var(--panel)}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+@@ -446,7 +451,7 @@ main{min-width:0}
+ 
+     <div class="grp"><#menu5_1_1#></div>
+     <nav class="nav">
+-      <a href="/Main_ReaperDash.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#Reaper_c_dashboard#></span></a>
++      <a href="/Main_ReaperDash.asp" class="on"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#Reaper_c_dashboard#></span></a>
+       <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+       <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl"><#Network#></span></a>
+       <a href="/reaper_shell.asp#Reaper_GK.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg></span><span class="nl"><#RGK_00#></span></a>
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index c7f5e96156..0f6c96aee9 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 71cc09ace8..ef426f4b9b 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 6e889c0cde..45feb87263 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f7dfe1195b..b18381a424 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 5e34a036a2..81548d4595 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 5aa2dea5f7..b19a392fa3 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -72,6 +72,7 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
+ .tg.on{background:#33333a}
+ .tg.on::after{left:21px;background:var(--bone)}
++.tg.dis{opacity:.45}
+ input.fld,select.fld{width:100%;max-width:520px;background:var(--panel-3);border:1px solid var(--line-mid);border-radius:7px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 11px}
+ input.fld.s{max-width:180px}
+ input.fld:focus,select.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-color:var(--crimson-deep)}
+@@ -1351,7 +1352,8 @@ function loadStatus(){
+ 
+     /* --- core firewall --- */
+     g =kvOn(`<#RFW_4#>`,f.enable);
+-    g+=kvOn(`<#RFW_5#>`,f.dos);
++    /* set but not armed (firewall off / AP mode) is the state the field reads as broken */
++    g+=(f.dos&&!f.dos_armed)?kvRow(`<#RFW_5#>`,'off',`<#RFW_321#>`):kvOn(`<#RFW_5#>`,f.dos);
+     g+=kvOn(`<#RFW_6#>`,f.ping);
+     g+=kvOn(`<#RFW_7#>`,f.wl);
+     /* with IPv6 down the v6 firewall setting is not meaningful either way */
+@@ -1478,11 +1480,23 @@ function loadDrops(){
+ }
+ 
+ /* =================== init + wiring =================== */
++/* 2026-09-17 field ("DoS protection not enabled when toggled on"): the engine hooks
++   the SECURITY chain only while the firewall master switch is on (and the box
++   routes), so a DoS toggle under a switched-off firewall saves fine and arms
++   nothing. Dim it and say why; the status strip below reads the armed state. */
++function dosGate(){
++  var fe=document.querySelector('.tg[data-nv="fw_enable_x"]'),fd=document.querySelector('.tg[data-nv="fw_dos_x"]');
++  if(!fe||!fd)return;
++  var off=!fe.classList.contains('on');
++  fd.classList.toggle('dis',off);
++  if(off)fd.title=`<#RFW_321#>`;else fd.removeAttribute('title');
++}
+ function initToggles(){
+   Array.prototype.slice.call(document.querySelectorAll('.tg[data-nv]')).forEach(function(el){
+     tgSet(el,NV[el.getAttribute('data-nv')]==='1');
+-    el.onclick=function(){el.classList.toggle('on');};
++    el.onclick=function(){el.classList.toggle('on');if(el.getAttribute('data-nv')==='fw_enable_x')dosGate();};
+   });
++  dosGate();
+ }
+ function initGeneral(){
+   $('g_log').value=NV.fw_log_x||'none';
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index d23ec548f0..c53cad50b6 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index a8aa6d9b8e..31577b47be 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 4f81da3c0b..a0c5c1b387 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index a181675a6f..b99c5e8fe3 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 760533f05e..1d76359260 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 325426dccd..97949d4427 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6987,3 +6987,4 @@ RSYS_38=Not available
+ RSYS_39=Hardware
+ RSYS_40=IP address
+ RSYS_41=headroom
++RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+-- 
+2.25.1
+

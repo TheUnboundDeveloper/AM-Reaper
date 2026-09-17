@@ -1,0 +1,79 @@
+From ce8e118cdcb67ba4d0795aab904bab4e79717cb4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 17 Sep 2026 18:32:32 -0400
+Subject: [PATCH] reaper_pbr: policy routing follows the order the rules are in
+
+FIRST MATCH WINS. Every selector rule now carries `-m mark --mark 0x0/$MASK`,
+so the first rule to match a packet is the only one that writes a verdict.
+
+Before this, every matching rule ran and the LAST one in the list decided:
+MARK does not terminate a chain and --set-xmark overwrites the masked nibble,
+and the only RETURN in REAPER_PBR sits above the selectors to honour a
+restored CONNMARK verdict. So a broad source rule placed below a specific
+ipset or domain rule silently overwrote it.
+
+Field report 2026-09-17 (RT-BE86U, v3.1.8_BETA): a locally attached client
+sent to a tunnel by a Policy Routing SOURCE rule stopped following its own
+ipset destination rules, while the same client sent to the same tunnel by
+VPN Director kept following them - which made it look like a VPN fault. It
+was not: VPN Director's source rule is an `ip rule` at pref 10210 while the
+destination marks resolve at 9002, so the lower pref wins there. Inside
+REAPER_PBR both rules were mark writes in one chain, and position decided.
+
+The reporter's chain had eight destination rules followed by one source rule,
+so the source rule beat all eight. With this change their list works as
+written, unchanged. Put specific rules above broad ones.
+
+Behaviour change: a list that depended on the old last-match-wins order will
+route differently. The mark rule COUNT is unchanged, so rwatch's
+`grep -c 'MARK --set'` reassert check and the diag figure are unaffected, and
+the walker already models an `-m mark` match so no witness row goes unmodelled.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_pbr.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 603c30f745..bd49fc000d 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -26,6 +26,18 @@
+  *                   purpose - an explicit PBR rule is evaluated FIRST and thus
+  *                   OVERRIDES VPN Director's broad from/to rules (the intended
+  *                   precedence: PBR is the specific override).
++ *   rule order    : FIRST MATCH WINS (v3.1.9). Every selector rule carries
++ *                   `-m mark --mark 0x0/$MASK`, so once a rule has marked a
++ *                   packet no later rule can overwrite it. Before v3.1.9
++ *                   every matching rule ran and the LAST in the list won -
++ *                   MARK does not terminate and --set-xmark overwrites - so
++ *                   a broad source rule sitting BELOW a specific ipset rule
++ *                   silently beat it. Field report 2026-09-17: a client sent
++ *                   to a tunnel by a PBR source rule stopped following its
++ *                   ipset destination rules, while the same client sent by
++ *                   VPN Director still did - that path resolves by ip-rule
++ *                   pref, which is unaffected. Put specific rules ABOVE
++ *                   broad ones; the list is emitted in its stored order.
+  *   tables        : the EXISTING per-tunnel tables ovpnc1..5 / wgc1..5 (VPN
+  *                   Director and the WG client own them); WAN = table main;
+  *                   BLOCK = prohibit. No new tables.
+@@ -593,14 +605,14 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 						 * minutes for the life of the box - each pass taking the
+ 						 * firewall lock and issuing an fc flush. */
+ 						fprintf(rb, "ipset list -n rwfw_%s >/dev/null 2>&1 && ", ent);
+-					fprintf(rb, "pbr_rule iptables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					fprintf(rb, "pbr_rule iptables -t mangle -A " PPBR_CHAIN " -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+ 					        sel4, code);
+ 				}
+ 				if (sel6[0]) {
+ 					if (!strncmp(sel6, "-m set", 6))
+ 						/* only when the v6 set exists (see ppbr_selector) */
+ 						fprintf(rb, "ipset list -n rwfw6_%s >/dev/null 2>&1 && ", ent);
+-					fprintf(rb, "pbr_rule ip6tables -t mangle -A " PPBR_CHAIN " %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					fprintf(rb, "pbr_rule ip6tables -t mangle -A " PPBR_CHAIN " -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+ 					        sel6, code);
+ 				}
+ 				if (wg) {
+-- 
+2.25.1
+

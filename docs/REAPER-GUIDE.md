@@ -1068,7 +1068,7 @@ Why not 100%? Because the shaper only controls a queue it owns. If your figure m
 2. Select **HW QoS Classful** and let the router reboot.
 3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic.
 4. Leave the **Aggregate cap (port shaper)** on.
-5. Optionally enable **Guaranteed minimums**, **Trust DSCP marking**, **L4S marking** (experimental), and **Wi-Fi downstream priority (WMM)**.
+5. Optionally enable **Guaranteed minimums** and **Trust DSCP marking**.
 6. **Apply.**
 
 **Trust DSCP marking is off by default, deliberately.** DSCP is a claim the sending device makes about its own traffic, and any device on your LAN can mark its packets however it likes. Turn it on only if you control what is on your network and something on it marks correctly.
@@ -1102,7 +1102,7 @@ The traffic manager's queues are an *egress* object: they exist on the way out o
 So:
 
 - **Download bufferbloat** is handled by the aggregate policer (classful mode), or properly by **Cake**, which shapes in software at the cost of the accelerator.
-- **Download prioritisation** is delivered as far as it can be by the **Wi-Fi WMM lift**, which raises the marking on the top classes so your access point serves them first. It only ever lifts; demoting the bulk class was tried and reverted after it measurably hurt throughput.
+- **Download prioritisation** is not offered. The Wi-Fi WMM lift that once tried to deliver it measurably halved wireless throughput in both directions and was removed; the policer is a cap, not a priority scheme.
 - The Traffic Analyzer's "By QoS class" chart therefore shows **upload only**. That is correct, not a missing feature.
 
 #### 4.5.7 Verifying it works
@@ -1473,7 +1473,6 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **IGD:1 / IGD:2** — the two revisions of the UPnP gateway description. Reaper advertises IGD:1 by default; enabling IPv6 pinholes switches to IGD:2.
 - **ipset** — kernel address sets; one lookup regardless of list size. Warden, the firewall objects and Policy Routing all use them.
 - **/jffs** — the router's internal flash partition, always mounted; where Reaper's lists and Warden's cache live (2.4).
-- **L4S** — an experimental ECN-marking congestion signal for capable flows; harmless if unsupported.
 - **Long-term store** — the durable location (RAM / JFFS / USB) chosen on the Storage page for history datasets.
 - **MCP / AI Advisor** — the optional read-only LAN-only Model Context Protocol server in the `_MCP` build; absent from `noMCP`.
 - **MLO** — Wi-Fi 7 Multi-Link Operation; needs a cold power cycle to change (2.8).

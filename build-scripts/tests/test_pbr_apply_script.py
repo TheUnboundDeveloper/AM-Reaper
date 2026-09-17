@@ -236,11 +236,21 @@ int main(int argc, char **argv) {
           and "ip6tables -t mangle -A REAPER_PBR -m connmark --mark 0x20000/0x000F0000 -j CONNMARK --restore-mark" in T
           and "--mark 0x10000/" not in T, T)
     check("wg up: one mark rule per selector entry with its code",
-          "iptables -t mangle -A REAPER_PBR -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -s 192.0.2.20 -j MARK --set-xmark 0x20000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -m set --match-set rwfw_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
-          and "ip6tables -t mangle -A REAPER_PBR -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -m mac --mac-source aa:bb:cc:dd:ee:ff -j MARK --set-xmark 0x60000/0x000F0000" in T, T)
+          "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -s 192.0.2.20 -j MARK --set-xmark 0x20000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "ip6tables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m mac --mac-source aa:bb:cc:dd:ee:ff -j MARK --set-xmark 0x60000/0x000F0000" in T, T)
+    # v3.1.9 (field report 2026-09-17): MARK does not terminate a chain and
+    # --set-xmark overwrites, so before the guard every matching rule ran and the
+    # LAST in the list decided - a broad source rule silently beat a specific
+    # ipset rule above it. The guard is what makes the list read top-down.
+    _mk = [l for l in T.splitlines() if "-A REAPER_PBR" in l and "-j MARK --set-xmark" in l]
+    check("first match wins: every selector rule is guarded on an unset mark",
+          bool(_mk) and all("-m mark --mark 0x0/" in l for l in _mk), "\n".join(_mk))
+    check("first match wins: the guard precedes the selector and the target",
+          bool(_mk) and all(l.index("-m mark --mark 0x0/") < l.index("-j MARK --set-xmark") for l in _mk),
+          "\n".join(_mk))
     check("wg up: ip rules at 9002 / 9006 / 9011, prohibit at 9106 only",
           "ip -4 rule add fwmark 0x20000/0x000F0000 lookup ovpnc2 pref 9002" in T
           and "ip -4 rule add fwmark 0x60000/0x000F0000 lookup wgc1 pref 9006" in T

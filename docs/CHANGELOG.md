@@ -46,8 +46,21 @@ node, not only on the primary router.
 
 ---
 
-## Unreleased — a firewall rebuild stops fighting itself *(in the tree since 2026-09-17, not yet cut)*
+## v3.1.9 — Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself
 
+- **Policy Routing rules now follow the order you put them in.** A rule naming a destination, an
+  address list or a domain could be silently overruled by a broader source rule further down the list.
+  Every rule wrote its decision over the one before it, so the last rule to match won rather than the
+  first. What made this hard to spot is that it only showed up one way round: a device sent to a tunnel
+  by a Policy Routing source rule stopped following its own destination rules, while the same device
+  sent to the same tunnel by VPN Director kept following them, which made it look like a VPN fault. It
+  was not. The first rule that matches now decides, and nothing later can overturn it. Put specific
+  rules above broad ones. If you built a list that worked around the old behaviour, check it after
+  updating, because it will now be read top-down.
+- **Rule Status stops showing its test addresses as if they were devices.** The tab has no traffic of
+  its own: it walks each feature's promise through the live tables using stand-in addresses it makes
+  up, including one that looks like an ordinary LAN client. Nothing is ever sent to them. They are now
+  named as stand-ins at the top of the tab, instead of appearing bare in every row that uses one.
 - **A firewall rebuild no longer takes DNS away from restricted devices — three times over.**
   One QoS apply on the primary router rebuilt the firewall, and for the next fifty seconds three
   Reaper layers, the shared front hook, the watchdog and a hand-written DNS carve-out watcher took
@@ -71,6 +84,14 @@ node, not only on the primary router.
   re-applies when the count is not zero. The Rule Status walker also stops using a fixed test
   address for "reaches the internet" rows: if the operator has blocked that address, it moves to the
   next public candidate and says so, instead of painting every WAN-bound row red.
+- **Two field reports closed.** The Dashboard's own left rail never marked the Dashboard entry as
+  the current page while every other page did; it does now. And "DoS protection not enabled when
+  toggled on" was the page showing the setting rather than the state: the engine only hooks the
+  guard while the firewall master switch is on and the router is routing, so a DoS toggle under a
+  switched-off firewall saved fine and armed nothing. The toggle is now dimmed with the reason when
+  the master switch is off, the status strip reports the armed state, and the Rule Status tab has a
+  row that asks the live table whether the WAN actually jumps to the guard, naming the master switch
+  when it does not.
 - **A DNS intercept fails open.** A Service Intercept aimed at the resolver the DNS Health Check
   watches is closed while that resolver is down and reopened when it answers, with the port's
   connection entries flushed at each switch, so clients fall through to the router's own DNS

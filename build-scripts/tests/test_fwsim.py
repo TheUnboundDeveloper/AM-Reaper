@@ -928,6 +928,18 @@ try:
     j, out, rc = run(save4=nolimit, witness=None, tag="h1b")
     x = wit(j, "H1"); check("H1 neg: an unarmed flood guard is RED and no packet could have shown it", x and x["state"] == "red", x)
 
+    # H1b - the guard's HOOK is what fw_enable_x withholds; the setting alone is not the state
+    dosnv = NV + "fw_dos_x=1\nfw_enable_x=1\n"
+    j, out, rc = run(nv=dosnv, witness=None, tag="h1b_on")
+    x = wit(j, "H1b"); check("H1b: DoS on + firewall on -> the WAN jumps to SECURITY (green)", x and x["state"] == "green" and x["verdict"] == "present", x)
+    nohook = SAVE4.replace("-A FORWARD -i eth0 -j SECURITY\n", "")
+    j, out, rc = run(save4=nohook, nv=dosnv, witness=None, tag="h1b_nohook")
+    x = wit(j, "H1b"); check("H1b neg: DoS on but no WAN jump -> RED", x and x["state"] == "red", x)
+    j, out, rc = run(save4=nohook, nv=NV + "fw_dos_x=1\nfw_enable_x=0\n", witness=None, tag="h1b_fwoff")
+    x = wit(j, "H1b"); check("H1b: DoS on with the master switch off -> RED and the row names the switch", x and x["state"] == "red" and "master switch" in x["feature"], x)
+    j, out, rc = run(nv=NV + "fw_dos_x=0\n", witness=None, tag="h1b_off")
+    check("H1b: DoS off -> no row", wit(j, "H1b") is None, None)
+
     # H6 - the page says what it does not know, in the same list as what it does
     x = wit(j, "H6")
     check("H6: the out-of-scope row is n/a - never green, never red",

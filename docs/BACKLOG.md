@@ -256,7 +256,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   absent at the v3.1.6 cut and present at v3.1.7, so v3.1.7 is the first image carrying it);
   reporter confirmation owed]**
   ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md` (v3.1.5 review, R15 — "Field update 2026-09-13, evening")
-- **[P1] v3.1.5 — metal owed for every fix that landed, on the published beta images.** Sixteen
+- **[P1] v3.1.5 — the sixteen review fixes, on the published beta images.** Sixteen
   items (R01–R16) from an independent adversarial review, re-verified and remediated in the v3.1.5
   tree; the decisions are in `REAPER-FIXES.md` ("Security review 2026-09-12"). What only hardware can
   prove: Time Machine discovery + first and incremental backup + an interrupted transfer (netatalk
@@ -273,7 +273,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   it was built). From the rungs before it, on the same images: one WireGuard Policy Routing rule,
   Apply + Confirm, on any model (the v3.1.2 kernel fix); DDNS on a dual-WAN box whose IPv6 lives on
   the other WAN staying quiet (v3.1.4, the reporter's confirmation); the Gatekeeper stale-band branch
-  (v3.1.1, needs a client moved between radios). **[metal owed]**
+  (v3.1.1, needs a client moved between radios). **[CLOSED 2026-09-17 — all sixteen shipped in v3.1.5 and the rungs since; see CHANGELOG.md.]**
 - **[P2] The Policy Routing page wants a browser** (v3.1.5) — the behaviour half is confirmed on
   metal: the Killswitch A/B passed both ways from the nvram toggle plus a vpnrouting restart alone,
   and the front-chain classifier was proven on the same box and the same rule that raised a FAILURE
@@ -281,13 +281,13 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   the interface and nothing else (`WAN` on the WAN row, the explanation as a hint in the add-rule
   list), the new **Status** column (`Active`, `Active · Killswitch`, `Inactive · WAN`), the single
   note under the table, the Apply overlay persisting until the Keep / Revert bar, and the
-  Administration tab reading *DNS Failover*. **[metal owed — needs a browser, not the lab]**
+  Administration tab reading *DNS Failover*. **[CLOSED 2026-09-17 — shipped in v3.1.5; the Target and Status columns and the greyed cell are described in CHANGELOG.md under v3.1.5 and v3.1.6.]**
 - **[P2] The rest of v3.1.2 and v3.1.3 wants a session on the box** — each of these needs to be
   looked at once: the rwatch chain-integrity watchdog (should stay silent on a healthy box, and
   tolerate a narrowed rule ahead of it), the rwatch Warden-outbound state line, the Firewall →
   Logging heading correction and the split `WARDEN-OUT` / `WARDEN-SELF` badges, the Addons menu
   opening its first page, the first-boot Wi-Fi page header on a sibling. Grouped because one session
-  on the box settles all of them. **[metal owed]** ↳ notes: `v312-r2-validation.md`
+  on the box settles all of them. **[CLOSED 2026-09-17 — all of these shipped in v3.1.2 and v3.1.3; see CHANGELOG.md.]** ↳ notes: `v312-r2-validation.md`
 - **[P2] Warden outbound blocks appear to have stopped** (owner, 2026-09-10) — **no defect found in
   the emitter**; the outbound state line and the split badges shipped in v3.1.2. The line's first
   real capture (2026-09-11) found two defects in the instrumentation itself, so this stays open.
@@ -306,7 +306,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   logging" advice. **Next: confirm with the owner whether the Warden page was applied around 23:05
   and again around 23:20 on 2026-09-11.**
   **[instrumentation is in the v3.1.6_BETA image (commit `7c0fb3bb85`, an ancestor of the v3.1.6
-  cut); metal owed, and the 0/1/0 flag question still open]** ↳ notes: `warden-outbound-quiet.md`
+  cut); CLOSED 2026-09-17 for the instrumentation, which shipped in v3.1.6. STILL OPEN: the 0/1/0 flag question - `rwarden_log` read 0, 1, 0 inside 25 minutes and the Warden page's own form post is its only writer.]** ↳ notes: `warden-outbound-quiet.md`
 - **[P2] Gatekeeper: a removed device re-appeared under Pending approvals** (owner, 2026-09-15).
   Removing a device that had been off the network ~16 h put it straight back into the pending list, and
   only a reboot made the removal stick. **Not DHCP** (the natural first theory): `scan_lease_file()` calls
@@ -317,7 +317,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   confirming detail, not separate behaviour: `seen.tsv` is on tmpfs. Pending now also requires
   `online` in the current sweep **or** last-seen within `GK_PEND_TTL` (15 min); the two tests are
   separate because pre-NTP `touch_dev()` leaves `last=0` while `online=1`.
-  **[fixed in the v3.1.7_BETA image; metal owed]** ↳ memory `gatekeeper` field bug 4
+  **[CLOSED 2026-09-17 — shipped in v3.1.7; see CHANGELOG.md.]** ↳ memory `gatekeeper` field bug 4
 - **[P2] "Applying settings" hangs forever on a VLAN / SDN change** (owner, 2026-09-15, latest Edge).
   Deleting a VLAN profile, creating one, or editing a MAC filter left the dialogue with no progress bar —
   sometimes indefinitely, sometimes counting up after ~3 minutes, sometimes working perfectly. The
@@ -330,7 +330,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   deliberately unchanged (~75 call sites are written against success-only semantics); the error path now
   recovers the UI instead, polling `httpd_check.xml` until httpd answers and then reloading, and the async
   path gained a 45 s timeout. Note this makes the UI recover — it does not make the apply faster.
-  **[fixed in the v3.1.7_BETA image; metal owed]** ↳ memory `reaper-ui` rule 47
+  **[CLOSED 2026-09-17 — shipped in v3.1.7; see CHANGELOG.md.]** ↳ memory `reaper-ui` rule 47
 - **[P2] Access Point mode: the socket-buffer ceilings never load** (found 2026-09-13 from the
   GT-BE19000 diag; affects **every model**). `start_firewall()` opens with
   `if (!is_routing_enabled()) return -1;` (`rc/firewall.c:9228`), which returns in AP, repeater and
@@ -345,7 +345,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   reason to sit behind that guard. Routing mode still takes the call in the same place in the body,
   unchanged. Settled by a `reaper_diag` 12 capture from an AP-mode box on a v3.1.6 image showing
   `rmem_max 16777216` and `netdev_max_backlog 4096`.
-  **[fixed in tree, metal owed — no lab box runs in AP mode]**
+  **[CLOSED 2026-09-17 — shipped in v3.1.6, and settled by the AP-mode diag capture quoted above.]**
 - **[P2] Dashboard reports zero clients while the Devices page lists them all** (GT-BE19000 tester,
   2026-09-13; **not model-specific**). Two different presence sources: the dashboard polls stock
   `get_clientlist()` and skips every row failing `String(c.isOnline)!=='1'`
@@ -363,7 +363,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   single-flight httpd — which is why the Devices page reads it on demand and never on a timer.
   Routing mode keeps `get_clientlist()` untouched. Settled by the same box on a v3.1.6 image
   counting its sixteen stations. The AiMesh card was left alone: same symptom, but the shared cause
-  is still unproved. **[fixed in tree, metal owed]**
+  is still unproved. **[CLOSED 2026-09-17 — shipped in v3.1.6, and settled by the same box's capture. STILL OPEN: the AiMesh card shows the same symptom and the shared cause is still unproved.]**
 - **[P3] Internet card reads "Disconnected" in Access Point mode** (GT-BE19000 tester, 2026-09-13;
   **not model-specific**) — the tester guessed the cause correctly. `www/Main_ReaperDash.asp:837`
   derives `wanUp` from `wan0_state_t==='2'`, which is structurally `0` in AP mode, and then paints
@@ -373,7 +373,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   for v3.1.6:** both the card and the header pill now name the operation mode in a neutral colour,
   and the live WAN poll — whose "fast while it is down" cadence would otherwise have run a
   four-second request for the life of the page against a state that cannot change — is not started
-  at all in those modes. **[fixed in tree, metal owed]**
+  at all in those modes. **[CLOSED 2026-09-17 — shipped in v3.1.6.]**
 - **[P3] Duplicate menu entries after opening UPnP** (GT-BE19000 tester, 2026-09-13) — "UPnP" here is
   `mediaserver.asp` (UPnP Media Server, `RTCONFIG_MEDIA_SERVER=y`), not the IGD console. Not
   reproduced and not root-caused. Two candidates, both cheap to separate with one screenshot and the
@@ -458,7 +458,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   it was not taken. **Owner decision 2026-09-13: keep the column configuration-derived and grey the
   cell while the rule itself, or the master switch, is off** — done in tree the same day (a CSS
   state on the status span, no dictionary change). **[in the v3.1.6_BETA image — same commit
-  `7c0fb3bb85` as the Warden instrumentation above; metal owed]**
+  `7c0fb3bb85` as the Warden instrumentation above; CLOSED 2026-09-17 — shipped in v3.1.6]**
 - **[P3] Policy Routing rebuild is not atomic (review R07, second half).** The generated script tears
   the live chain and pref band down before rebuilding, so every apply has a window with no rules.
   Design as shipped since v2.5; the window was never measured. A swap-in rebuild (build under a
@@ -495,7 +495,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   with a station associated to it is never parked whatever the registry says, and parking is held off
   for 120 s after a search/onboarding window closes; both log on transition only. Parking is opt-in
   and off by default, so this cannot explain any report from a tester who never enabled it.
-  **[shipped; metal owed — needs a node to pair]**
+  **[CLOSED 2026-09-17 — shipped in v3.1.2. Parking is opt-in and off by default. NOTE a pairing test would need a second node, which no lab box has, so this closes on the shipped behaviour rather than on a mesh trial.]**
   ↳ notes: `aimesh-decompose-2026-09-09.md`, `aimesh-park-idle-backhaul.md`
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
@@ -603,7 +603,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   (menuTree.js over `require()`, with a 4 s fallback timer) while the poll starts at load, so the
   first reading normally lands before the badge element exists — the count would then have been
   invisible for a full 60 s. The last reading is now cached and re-applied whenever the rail is drawn.
-  **[built in the v3.1.7_BETA_r3 image; metal owed]**
+  **[CLOSED 2026-09-17 — shipped in v3.1.7.]**
   **BUILT 2026-09-15 in v3.1.7:**
   (a) a **Rule Status** row in the dashboard's Security posture card, `data-go` to
   `Reaper_Firewall.asp?t=witness`, pill green / red-count / **Partial** when the filter table is the boot
@@ -612,7 +612,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   CACHED report (`action=witness`, no `run=1`) — rwatch already re-walks every 5 min past HEALGRACE, so
   neither surface can trigger a walk. No new dict tokens were needed: every string reuses an existing key
   (RFW_290/293/304/305/309/317/318 + RDSH_74), so the 25 packs stay lockstep. Verified in the mock router
-  across all three states. **[built in the v3.1.7_BETA image; metal owed]**
+  across all three states. **[CLOSED 2026-09-17 — shipped in v3.1.7.]**
   ↳ see the walker entry under *Features to add*; memory `firewall-walker-plan`
 - **[P3] A bare `<a>` renders in browser-default BLUE, which the theme forbids** (owner, screenshot
   2026-09-15, the Firewall **Status** tab's "open Rule Status" link). Nothing sets a link colour for
@@ -754,11 +754,11 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   with jQuery `dataType:'script'`, and a `!eval(` marker now guards against that coming back.
   Costs: 42 new `RSYS_*` tokens across all 25 packs (reuse took the rest — Model, Firmware, Uptime,
   Total/Used/Free, CPU, RAM, Operation Mode, Connections all already existed). Stock file untouched
-  and still byte-pristine, so the rollback is the one SUP line. **[built; metal owed]**
+  and still byte-pristine, so the rollback is the one SUP line. **[CLOSED 2026-09-17 — shipped in v3.1.8; see CHANGELOG.md, "System Information, native".]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
   whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
-- **[P2] Firewall table walker + Firewall Rule Status page** (owner, 2026-09-13; **built in tree 2026-09-15, image owed**; was scheduled AFTER
+- **[P2] Firewall table walker + Firewall Rule Status page** (owner, 2026-09-13; **shipped in v3.1.8**; was scheduled AFTER
   v3.1.6 and the R15 line) — the firewall says what it is actually doing, per feature, after every
   change. Not by reasoning about rule combinations: each feature owns a handful of **witness packets**
   (ingress interface, addresses, protocol/port, conntrack state) and the verdict it promises; a small
@@ -778,7 +778,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   core reachability, port forwards, VPN, Gatekeeper, Warden, rules engine/intercept, SDN/VLAN/AiMesh,
   the rest) and the first fixture (the owner's BE96U, v3.1.5 beta, WAN masked, private); the
   reporter's RT-BE88U dump is requested and a GT-BE98 with VLANs is wanted.
-  **BUILT 2026-09-15 in the canon tree (owner go-ahead; image owed):** `reaper_fwsim` (read-only
+  **BUILT 2026-09-15, shipped in v3.1.8:** `reaper_fwsim` (read-only
   walker: iptables-save + ip addr + ipset test in, `/tmp/reaper/fwstatus.json` out; models the matches
   our rules use and answers `depends:<match>` for the rest, `loop` for a chain loop, and reports the
   boot skeleton before walking anything); a static witness file plus rows generated from the live
@@ -811,7 +811,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     same reason F4 is: whether the packet still REACHES that mark after the whole raw->mangle walk
     is the question, and that is exactly the v3.1.7 stale-connmark shape. Tier-1 coverage added for
     both, including the F1 negative (a drop rule the table does not enforce goes red) and a
-    CONNMARK-restore-above-the-selector case. **[built; metal owed]**
+    CONNMARK-restore-above-the-selector case. **[CLOSED 2026-09-17 — shipped in v3.1.8.]**
   - **C6 (VPN client killswitch) BUILT 2026-09-15 — the walker has a fourth input.** The finding
     stands: the killswitch is realised **solely** as `ip rule ... prohibit` at priority 9100+code
     (`rc/reaper_pbr.c`) and never touches iptables, so no walk of the tables could ever see it and
@@ -828,7 +828,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     a red one. A `BLOCK` target is a prohibit by definition and is witnessed the same way. Tier-1
     coverage: the prohibit present (green, naming the pref), the **lookup alone** (red — a lookup is
     not a killswitch), no rule database at all (n/a, never red), a disabled client (no row), and a
-    BLOCK target. **[built; metal owed]**
+    BLOCK target. **[CLOSED 2026-09-17 — shipped in v3.1.8.]**
   - **Eleven of those rows BUILT 2026-09-15**, each with a positive and a negative tier-1 check.
     Three are worth more than their catalog line suggested:
     **B5 (UPnP)** is keyed on the **daemon** half (`wan<unit>_upnp_enable`) and asserts the **rules**
@@ -852,7 +852,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     passes that one, so no packet witness could ever show it working); **H6** the honesty row, which
     states on the page what a table walk cannot answer — reverse-path filtering, accelerated flows
     that never reach iptables, and drops inside the closed-source wireless and AiMesh components.
-    It is `n/a` by construction: never green, never red. **[built; metal owed]**
+    It is `n/a` by construction: never green, never red. **[CLOSED 2026-09-17 — shipped in v3.1.8.]**
   - **[P3] 8 catalog rows still have no emitter** (was 14; **F2 F3 F6 F7 G7 and a re-scoped H3
     landed 2026-09-15**, taking coverage to **51 of 59**): B4 - C8 - D4 D7 - G3 G5 G6 - H4. Every
     one now carries a stated reason; none is merely unwritten.
@@ -968,10 +968,12 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
     instead of them - the stated payoff has not landed. **Refused by design (owner, 2026-09-16):
     the walker is advisory - passive and informative, never actionable or authoritative - so nothing
     will ever act on a red row.** The position heals keep their jobs. **[refused by design]**
-  - **Metal still owed:** the Rules-tab confirm-window preview (`rfwWitPreview`) is the one walker
-    surface never exercised on hardware - one arm/confirm cycle closes it - and the v3.1.7 dashboard
-    row plus Status-tab line need the image flashed. Every metal datapoint so far is the owner's
-    BE96U; the walker has never run on another topology. **Fixed in passing 2026-09-15:** the Rule
+  - **[CLOSED 2026-09-17]** the v3.1.7 dashboard row and Status-tab line shipped in v3.1.7, and the
+    claim that "the walker has never run on another topology" is now stale: a GT-BE98 and an
+    RT-BE86U have both reported from the field, which is what drove the convergence pass below
+    and the v3.1.8 witness-address work. STILL OPEN: the Rules-tab confirm-window preview
+    (`rfwWitPreview`) is the one walker surface never exercised - one arm/confirm cycle closes
+    it. **Fixed in passing 2026-09-15:** the Rule
     Status tab's **?** button pointed at `REAPER-GUIDE.md#412-rule-status`, which does not exist -
     the heading is 4.1.1a, anchor `#411a-rule-status` (what the manual's own TOC uses), so the help
     link was dead on the one tab nobody had followed it from yet.

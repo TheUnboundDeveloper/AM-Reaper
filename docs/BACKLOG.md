@@ -120,7 +120,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## Open bugs / under investigation
 
-- **[P1] Gatekeeper apply silently loses rules under a concurrent iptables writer (found on metal 2026-09-17, v3.1.8_BETA_r4).** After the r4 boot the live IPv4 REAPER_GKF chain had 124 rules where a clean re-apply gives 126: the Lutron controller (internet-only) had no final RETURN, so every WAN-bound packet from it fell to the chain-end DROP - the walker's D3a.28 red row was right, the device had no internet. The apply script emits the rule (line 850); nothing in gkd or httpd deletes it; IPv6 and INPUT had theirs. Same class as R15: this iptables 1.4.x has no xtables lock, the Gatekeeper apply makes ~200 unchecked adds, and the owner's /jffs reaper_dnsi watcher was inserting FORWARD rules at 19:01:47/57 and 19:02:02 in the same window. A lost RETURN cuts a device off; a lost DROP would give it access it should not have, silently. FIX: wrap every add in the Gatekeeper apply (and Warden's) in a retry-once-then-log helper the way reaper_fw's RFWR does, and have gkd's self-heal compare the live rule count against the script's expected count. Interim: `service restart_gk` restores the chain. **FIXED, cut in v3.1.9 (2026-09-17): `_rt_add` retry-once wrapper shadowing iptables/ip6tables/ebtables in both apply scripts, `/tmp/gk/failcount` + `/tmp/rwarden/failcount`, gkd `heal_lost_rules()` (120 s throttle, 3 strikes); verified on the owner's RT-BE96U (v3.1.8_BETA_r7: both failcounts 0, Gatekeeper audit clean). The colliding writer, the owner's watcher, is retired.** ↳ notes: `apply-window-watchdog-fight.md`
+- **[P1] Gatekeeper apply silently loses rules under a concurrent iptables writer (found on metal 2026-09-17, v3.1.8_BETA_r4).** After the r4 boot the live IPv4 REAPER_GKF chain had 124 rules where a clean re-apply gives 126: the Lutron controller (internet-only) had no final RETURN, so every WAN-bound packet from it fell to the chain-end DROP - the walker's D3a.28 red row was right, the device had no internet. The apply script emits the rule (line 850); nothing in gkd or httpd deletes it; IPv6 and INPUT had theirs. Same class as R15: this iptables 1.4.x has no xtables lock, the Gatekeeper apply makes ~200 unchecked adds, and the owner's /jffs reaper_dnsi watcher was inserting FORWARD rules at 19:01:47/57 and 19:02:02 in the same window. A lost RETURN cuts a device off; a lost DROP would give it access it should not have, silently. FIX: wrap every add in the Gatekeeper apply (and Warden's) in a retry-once-then-log helper the way reaper_fw's RFWR does, and have gkd's self-heal compare the live rule count against the script's expected count. Interim: `service restart_gk` restores the chain. **FIXED, cut in v3.1.9 (2026-09-17): `_rt_add` retry-once wrapper shadowing iptables/ip6tables/ebtables in both apply scripts, `/tmp/gk/failcount` + `/tmp/rwarden/failcount`, gkd `heal_lost_rules()` (120 s throttle, 3 strikes); verified on the owner's RT-BE96U (v3.1.8_BETA_r7: both failcounts 0, Gatekeeper audit clean). The colliding writer, the owner's watcher, is retired.** **[CLOSED 2026-09-17 — cut in v3.1.9.]** ↳ notes: `apply-window-watchdog-fight.md`
 - **[P2] Source-IP Policy Routing rule to a WireGuard client does not use the tunnel; the same rule
   to OpenVPN does** (field report 2026-09-14 on v3.1.6, follow-up 2026-09-16: "the router is fully
   functional", and the reporter's own reading of the guide — the accelerator is carrying the flow, "the
@@ -333,7 +333,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   one, but only from an entry under the CAP's **own** node key, which is first-hand — a mesh node's
   entry still may not, which is what the v3.0.9 gate was protecting. The confirming capture was
   never taken (the lab MCP was down), so the mechanism is inferred, not proven.
-  **[shipped in v3.1.1; capture owed]** ↳ notes: `gk-stale-band-multilink.md`
+  **[CLOSED 2026-09-17 — shipped in v3.1.1. The confirming capture, a client moved between radios, was never taken.]** ↳ notes: `gk-stale-band-multilink.md`
 - **[P3] Policy Routing page: the first-open symptom was never identified** — the screenshot did not
   reach the record; the strongest candidate shipped fixed in v3.0.5. **[needs the screenshot]**
   ↳ notes: `pbr-first-open-symptom.md`
@@ -361,8 +361,8 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   The reviewer's replacement wording was the prose the Merlin reviewer had just asked to remove, so
   it was not taken. **Owner decision 2026-09-13: keep the column configuration-derived and grey the
   cell while the rule itself, or the master switch, is off** — done in tree the same day (a CSS
-  state on the status span, no dictionary change). **[in the v3.1.6_BETA image — same commit
-  `7c0fb3bb85` as the Warden instrumentation above; CLOSED 2026-09-17 — shipped in v3.1.6]**
+  state on the status span, no dictionary change). 
+  **[CLOSED 2026-09-17 — shipped in v3.1.6, commit `7c0fb3bb85`, the same one as the Warden instrumentation above.]**
 - **[P3] Policy Routing rebuild is not atomic (review R07, second half).** The generated script tears
   the live chain and pref band down before rebuilding, so every apply has a window with no rules.
   Design as shipped since v2.5; the window was never measured. A swap-in rebuild (build under a
@@ -440,7 +440,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   exactly backwards for a tag whose job is to stop someone forgetting what they are running.
   **Fixed 2026-09-15:** the same `p_fwbeta` span, the same `.btag` rule and the same reveal test
   (`/_beta(_|$)/i` against the raw `extendno`) added to the shell header. Same dictionary key
-  (`RFWU_56`), so no new strings. The shell had never declared `--amber`, so on _r3 the tag rendered bone instead of amber; the token was added and _r4 carries it. **[built in v3.1.7; _r3 and _r4 both flashed and running 2026-09-15, owner reports normal operation]**
+  (`RFWU_56`), so no new strings. The shell had never declared `--amber`, so on _r3 the tag rendered bone instead of amber; the token was added and _r4 carries it. **[CLOSED 2026-09-17 — shipped in v3.1.7.]**
 
 - **[P3] Rule Status table: cramped at 1120px with 400px of empty panel beside it** (owner,
   screenshot on a 1080p monitor, 2026-09-15). Three separate faults, all fixed 2026-09-15:
@@ -456,14 +456,14 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   good space to wrap at** — that is why the table read "ESTA BLISHED", "ACC EPT" and "u dp". Replaced
   with `overflow-wrap:anywhere`, which wraps at spaces first and only splits a token that genuinely
   cannot fit, which is what a 60-character iptables rule needs. Plus a row hover and a little more
-  vertical padding. **[built in v3.1.7; _r3 and _r4 both flashed and running 2026-09-15, owner reports normal operation]**
+  vertical padding. **[CLOSED 2026-09-17 — shipped in v3.1.7.]**
 
 - **[P3] The Rule Status link read "open Rule Status"** (owner, 2026-09-15) — the leading verb is
   dropped; both link sites (the Rules-tab confirm preview and the Status-tab summary) now use
   `RFW_290`, the tab's own name, which is already translated in all 25 packs. **No dictionary edit
   and no lockstep change.** Note `RFW_318` ("open Rule Status") is now unused in the tree but still
   defined in all 25 packs — harmless, and pruning it is a separate lockstep-touching change.
-  **[built in v3.1.7; _r3 and _r4 flashed 2026-09-15]**
+  **[CLOSED 2026-09-17 — shipped in v3.1.7.]**
 
 - **[P2] A broken firewall promise was invisible unless the Firewall page was open** (owner,
   2026-09-15). The Rule Status tab, the watchdog's syslog line and diag `14g` are all places the user

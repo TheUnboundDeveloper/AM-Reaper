@@ -46,792 +46,602 @@ node, not only on the primary router.
 
 ---
 
-## v3.1.9 — Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself
+## v3.1.9 — policy routing rule order, firewall rebuild contention, unchecked rule adds
 
-- **Policy Routing rules now follow the order you put them in.** A rule naming a destination, an
-  address list or a domain could be silently overruled by a broader source rule further down the list.
-  Every rule wrote its decision over the one before it, so the last rule to match won rather than the
-  first. What made this hard to spot is that it only showed up one way round: a device sent to a tunnel
-  by a Policy Routing source rule stopped following its own destination rules, while the same device
-  sent to the same tunnel by VPN Director kept following them, which made it look like a VPN fault. It
-  was not. The first rule that matches now decides, and nothing later can overturn it. Put specific
-  rules above broad ones. If you built a list that worked around the old behaviour, check it after
-  updating, because it will now be read top-down.
-- **Rule Status stops showing its test addresses as if they were devices.** The tab has no traffic of
-  its own: it walks each feature's promise through the live tables using stand-in addresses it makes
-  up, including one that looks like an ordinary LAN client. Nothing is ever sent to them. They are now
-  named as stand-ins at the top of the tab, instead of appearing bare in every row that uses one.
-- **A firewall rebuild no longer takes DNS away from restricted devices — three times over.**
-  One QoS apply on the primary router rebuilt the firewall, and for the next fifty seconds three
-  Reaper layers, the shared front hook, the watchdog and a hand-written DNS carve-out watcher took
-  turns re-inserting rules at the head of the FORWARD chain, each undoing the last. Every round
-  cost the access-restricted devices their DNS. Four things changed so that cannot recur:
-  Gatekeeper now lets an internet-only device's DNS through when the *router itself* redirected it
-  (a Service Intercept to a resolver on another network), so no carve-out has to sit ahead of the
-  Reaper hook at all; the front hook keeps its place behind a narrow carve-out or a declared
-  exemption instead of re-pinning to position 1 on every layer apply (the watchdog already
-  tolerated those; the hook did not); Warden's apply builds and refills its sets *before* it touches
-  the chain and replays the cached feeds in one pass, so the chain is absent for milliseconds
-  instead of the 17 seconds a large cache took; and the watchdog now confirms a missing Warden
-  chain on two ticks, re-checks under the firewall lock and only then re-applies — a rebuild in
-  progress is no longer reported as an outage or "healed" with a third apply.
-- **A firewall rule can no longer vanish silently.** This platform's iptables has no lock, so when
-  two things edit the tables in the same instant one of the changes can fail, and the Gatekeeper and
-  Warden apply scripts made a few hundred rule additions each without checking any of them. On the
-  primary router two rules out of 126 went missing at boot; one was an internet-only device's pass
-  rule, so that device had no internet until the chains were rebuilt. Every addition is now retried
-  once, anything that still fails is counted and named in the log, and the Gatekeeper daemon
-  re-applies when the count is not zero. The Rule Status walker also stops using a fixed test
-  address for "reaches the internet" rows: if the operator has blocked that address, it moves to the
-  next public candidate and says so, instead of painting every WAN-bound row red.
-- **Two field reports closed.** The Dashboard's own left rail never marked the Dashboard entry as
-  the current page while every other page did; it does now. And "DoS protection not enabled when
-  toggled on" was the page showing the setting rather than the state: the engine only hooks the
-  guard while the firewall master switch is on and the router is routing, so a DoS toggle under a
-  switched-off firewall saved fine and armed nothing. The toggle is now dimmed with the reason when
-  the master switch is off, the status strip reports the armed state, and the Rule Status tab has a
-  row that asks the live table whether the WAN actually jumps to the guard, naming the master switch
-  when it does not.
+- **Policy Routing is first-match-wins.** Selector rules in the `REAPER_PBR` mangle chain now carry
+  `-m mark --mark 0x0/$MASK`, so the first rule to match a packet is the only one that writes a
+  verdict. Previously `MARK` did not terminate the chain and `--set-xmark` overwrote the masked
+  nibble, so every matching rule ran and the last in the list won: a broad source rule sitting below
+  a specific ipset or domain rule silently overrode it. VPN Director was unaffected, its source rule
+  being an `ip rule` at pref 10210 against the marks at 9002 — which is why the same device followed
+  its destination rules when routed one way and not the other. **Behaviour change:** a list built
+  around the old order will route differently. Put specific rules above broad ones.
+- **Firewall rebuild no longer contends with itself.** One QoS apply rebuilt the firewall, after
+  which three Reaper layer applies, `hook.sh`, the rwatch watchdog and an out-of-tree DNS carve-out
+  watcher competed for FORWARD position 1 for 50 s, costing access-restricted devices DNS each round.
+  Four changes: Gatekeeper RETURNs router-redirected DNS (`--ctstate DNAT --ctorigdstport 53`);
+  `hook.sh` computes its position with the rwatch classifier instead of `-I 1`; Warden builds and
+  refills its sets before teardown and replays the cache in one pass, cutting chain absence from 17 s
+  to milliseconds; rwatch confirms a missing chain over two ticks and re-checks under the firewall
+  lock before acting.
+- **Rule additions are retried and counted.** This platform's `iptables` has no lock, so a concurrent
+  writer can make an add fail, and Gatekeeper and Warden each issued a few hundred adds without
+  checking any. On one box 2 rules of 126 were missing at boot, one of them an internet-only device's
+  pass rule. Every add now retries once, failures are counted in `/tmp/gk/failcount` and
+  `/tmp/rwarden/failcount` and named in the log, and `gkd` re-applies while the count is non-zero.
 - **A DNS intercept fails open.** A Service Intercept aimed at the resolver the DNS Health Check
   watches is closed while that resolver is down and reopened when it answers, with the port's
-  connection entries flushed at each switch, so clients fall through to the router's own DNS
-  instead of being redirected into a dead host. This replaces the hand-written watcher some installs
-  ran for the same purpose.
-- **Two QoS options are gone: L4S marking and Wi-Fi downstream priority (WMM).** L4S was never
-  accepted by the traffic manager on the validated port ("dualq isn't supported"), and until now its
-  rejection silently abandoned the whole priority correction, leaving the class queues at the stock
-  inverted layout for as long as the toggle stayed on. The WMM lift was measured to halve wireless
-  throughput in both directions, because lifting the top class to the voice access category defeats
-  frame aggregation. Neither had a setup where it helped, so both are removed from the page, the
-  engine and the defaults. The download policer stays, opt-in, and its help now says plainly that a
-  policer drops rather than delays and should stay off on a network that carries calls.
+  conntrack entries flushed at each switch.
+- **QoS: L4S marking and the WMM downstream stamp removed.** L4S was never accepted by the traffic
+  manager on this port, and its rejection abandoned the whole priority correction, leaving the stock
+  inverted queue layout in place while the toggle stayed on. The WMM lift was measured to halve
+  wireless throughput in both directions by defeating frame aggregation. Both are gone from the page,
+  the engine and the defaults. The download policer stays, opt-in.
+- **DoS protection reports its armed state, not its setting.** The guard is hooked only while
+  `fw_enable_x` is on and the box is routing, so a DoS toggle under a switched-off firewall saved
+  and armed nothing. The toggle is now dimmed with the reason, the status strip reports armed state,
+  and Rule Status gains row H1b, which asks the live table whether the WAN actually jumps to
+  `SECURITY`.
+- **Rule Status names its stand-in addresses.** The tab walks using generated addresses that are
+  never sent anywhere, one of which resembles an ordinary LAN client. They are now listed as
+  stand-ins rather than printed bare in every row that uses one.
+- **The Dashboard rail marks its own page.** `Main_ReaperDash.asp` draws its own rail and never
+  marked the Dashboard entry as current.
 
-## v3.1.8 — the "stuck router" gets the vendor's own fix, Rule Status stops crying wolf, and System Information is rebuilt
+## v3.1.8 — vendor WLCSM libraries, Rule Status false reds, System Information
 
-- **The "stuck nvram" router is fixed with ASUS's own cure.** The single most damaging fault
-  this firmware inherited was a settings store that could wedge: a page would hang, `nvram` calls
-  would sit forever, Warden could silently go down, and only a reboot cleared it. Reaper carried a
-  workaround (a small library shim that steered the vendor's socket allocator around the collision)
-  while the cause sat inside two closed Broadcom libraries no one outside ASUS can rebuild. ASUS has
-  now fixed it: their public 9.0.0.6.102_42015 firmware, on the same Broadcom platform release as
-  this build, passes the forced-collision test ten times out of ten where the upstream base wedges.
-  The fix lives in exactly two files, `libnvram.so` and `libwlcsm.so` — the initialisation closes
-  its channels on re-init, the port candidate no longer aliases the saved process ID, the error path
-  cleans up, and the settings-dump retry is bounded and backs off — and **those two files, taken
-  unmodified from the vendor's own image, now ship in every model's image.** They are a swap with
-  recorded provenance, not a binary patch: the archive records the source image, its hash and the
-  disassembly deltas. The shim is retired (its setting under Tools → Other Settings is gone; a
-  leftover preload file from an earlier build is cleaned up once), and the watchdog's hung-nvram
-  reaper stays in place as the safety net. Sibling models take the same pair on their own branches
-  and the clean-room build copies it from a hash-pinned archive, so no model builds with the leaking
-  libraries.
-- **Rule Status stops crying wolf, and is now plainly advisory.** Two field reports on v3.1.7's
-  Rule Status tab shared one cause: the walker's synthetic test addresses could land inside a live
-  source list — a threat feed's bogon range, an access-restriction allowlist, the wrong bridge's
-  address — and then the row tested the address, not the feature. Both firewalls were fine; the
-  walker was wrong on every red but one. The WAN-side and LAN-side witness addresses are now probed
-  against every source set first and the first unclaimed candidate is used; when every candidate is
-  claimed the row says so instead of guessing. A model review over every connection class fixed the
-  rest of the false reds: multicast, negated ICMP type names (stock's own ping rows would have gone
-  red), dual-WAN boxes, DHCP's source port, the admin allowlist on WAN-side web and SSH rows, DMZ and
-  linked guest networks, protocol names the parser did not know, and inert targets such as TCPMSS.
-  Three rows that had been *green when they should not have been* were added: a router-address high
-  port that must not be translated, and INVALID-state traffic toward the LAN and toward the router.
-  The row for a routing rule keyed on an address list now says its members resolve at run time and
-  cannot be witnessed, rather than turning red. And the whole tab is **advisory by design**: it
-  informs, it never acts. The watchdog logs one line when the set of red rows changes and never
-  raises a failure over it, the diagnostics bundle files it as information, the sidebar badge is
-  gone, and the tab carries a banner saying exactly that. Three of the rows that could never fire in
-  the field — they read a setting nothing ever wrote — now read Warden's real ban list.
-- **System Information, rebuilt.** The same facts as the stock page, regrouped by the question you
-  are asking — what is this box, is it struggling, am I running out of something, how loaded is it,
-  what can it do — instead of by which daemon produced them. Capability flags are chips rather than
-  a wall of text, memory shows *available* against *free* with a line saying why they differ, load
-  is shown against the core count, and connections as headroom. No new backend: the page reads the
-  same three status endpoints the stock page did, but it parses them instead of executing the
-  response as script, and it takes its band labels from the radios rather than a hardcoded model
-  list that mislabels any router not on it. The stock page is retired behind a redirect and left
-  untouched.
-- **The WireGuard policy-routing guide told a small lie, now corrected.** It said a rule that would
-  overflow the accelerator-bypass table, or that named a tunnel whose interface was absent, was
-  refused. Neither has been true since v3.1.2: the rule always goes in, a missing bypass is reported
-  as a partial failure and named in the log, and since v3.1.7 a bypass for a tunnel that is not up
-  yet is recorded as pending and installed when the client starts. The guide now says that, explains
-  why an already-accelerated flow cannot be pulled back by a later rule, and gives the
-  troubleshooting path for a source rule that still leaves by the WAN. The same sentence in the older
-  changelog and release notes is reworded.
+- **The nvram wedge is fixed with the vendor's own libraries.** The settings store could hang: pages
+  stall, `nvram` calls never return, Warden goes down, and only a reboot clears it. The cause sits
+  inside two closed Broadcom libraries. ASUS stock 9.0.0.6.102_42015, on the same platform release as
+  this build, passes the forced-collision test 10 times out of 10 where the base wedges:
+  `libnvram.so` and `libwlcsm.so` close their channels on re-init, stop aliasing the saved process ID
+  in the port candidate, clean up the error path, and bound the settings-dump retry with backoff.
+  Both files now ship unmodified in every model's image, with the source image, its hash and the
+  disassembly deltas recorded. Reaper's preload shim is retired and its Tools → Other Settings toggle
+  removed, a leftover preload file is cleaned up once, and the watchdog's hung-nvram reaper stays as
+  the safety net. Sibling branches carry the pair on their own platform trees; the clean-room build
+  takes it from a hash-pinned archive.
+- **Rule Status: false reds removed, and the tab is advisory by design.** Two field reports shared one
+  cause — the walker's synthetic witness addresses could fall inside a live source set, so the row
+  tested the address rather than the feature. Witness addresses are now probed against every
+  source-side set and the first unclaimed candidate is used; a fully claimed set is reported as such
+  rather than guessed. A model review over every connection class fixed the remaining false reds:
+  multicast, negated ICMP type names, dual-WAN units, DHCP's source port, the admin allowlist on
+  WAN-side admin rows, DMZ and linked SDNs, unmodelled protocol names, and inert targets such as
+  TCPMSS. Three rows that had been wrongly green were added: a router-address high port that must not
+  be translated, and INVALID-state traffic toward the LAN and toward the router. A set-keyed routing
+  row now reports that its members resolve at run time instead of turning red, and three rows that
+  read a key nothing ever wrote now read Warden's real ban list. Advisory means rwatch never raises a
+  failure on a red row, the diagnostics bundle files it as information, the sidebar badge is gone, and
+  the tab states it.
+- **System Information rebuilt as a native page.** It reads the same three status endpoints as the
+  stock page but parses them instead of executing the response as script — stock pulls
+  `/ajax_sysinfo.asp` with jQuery `dataType:'script'`. Data is grouped by the question being asked
+  rather than by the daemon that produced it, and band labels come from the radios rather than a
+  hardcoded `based_modelid` switch that mislabels any model not in its list. Costs 42 new `RSYS_*`
+  tokens across all 25 packs. The stock page is retired behind a redirect and left byte-pristine.
+- **The WireGuard policy-routing guide is corrected.** It said a rule that would overflow the
+  accelerator-bypass table, or that named an absent interface, was refused. That has not been true
+  since v3.1.2: the rule always goes in, a missing bypass is a named partial failure, and since
+  v3.1.7 a bypass for a tunnel that is not up is recorded as pending and installed when the client
+  starts.
 
-## v3.1.7 — the firewall says whether it is actually doing what you asked, and three things that wasted your time stop doing it
+## v3.1.7 — the Rule Status walker, a firewall restore race, Gatekeeper and VLAN apply fixes
 
-- **A new Rule Status tab tells you whether the firewall keeps its promises.** v3.1.6 made a refused
-  filter table loud and survivable; this release answers the question that came after it — *is the
-  table that did load actually doing what the pages say?* Reading a few hundred rules to find out is
-  not a reasonable thing to ask of anyone, so the router does it. Every feature owns a handful of
-  **witness packets**: an ingress interface, addresses, a protocol and port, a connection state, and
-  the verdict the feature promises. After every firewall change the router walks each one through the
-  live tables in kernel order and reports the verdict along with **the rule that decided it**. Green
-  means the promise holds. Red means the tables do not deliver it, and the rule column names what
-  caught the packet. The worked example is the one that motivated the whole thing: a
-  Gatekeeper-blocked device must not reach the internet *and* must still resolve names at the router
-  — if that second row turns red, the DNS carve-out is sitting behind the block, and you can see
-  which rule did it instead of inferring it. Rows marked *depends* sit behind a match the walker does
-  not model (string, time, policy, u32) and are honestly reported as unjudged rather than guessed;
-  *n/a* means the router has no such network yet. Nothing on the tab changes a rule — the walker only
-  reads. On the RT-BE96U it walks 944 rules in under a second.
-- **The verdict now reaches you without going looking for it.** Every surface the walker fed at first
-  was one you had to already be looking at, and a clean walk is silent by design, so a red witness
-  could stand for days unseen. The dashboard's Security card now carries a **Rule Status** row, and
-  the Firewall page's Status tab a one-line summary; both link straight to the detail. Both read the
-  cached report rather than starting a walk of their own, so watching costs nothing.
-- **The firewall now checks your VPN kill switch is actually there.** A kill switch is the one
-  setting whose whole job is to fail closed, and it was the one thing the new Rule Status tab could
-  not see: it is not a firewall rule at all but a routing rule, so walking the firewall tables could
-  never find it. A kill switch that quietly failed to install looked exactly like one that was
-  working. The walker now reads the routing table as well, and says plainly whether a marked
-  connection has anywhere to go when its tunnel drops. Coverage across the whole catalog went from 33
-  checks to 45 in this release, including: a port forward restricted to certain sources is tested
-  from a source it should *refuse*, not only from one it should allow; a Gatekeeper-blocked device is
-  checked to still reach the router's own admin page, so blocking a device can never lock you out of
-  the box; and a redirected service is checked that the machine it redirects *to* can still reach the
-  real thing, which is the failure that takes the service down for everyone while the obvious check
-  still reads green.
-- **A broken promise now finds you, wherever you are.** The count of firewall checks that are failing
-  sits next to **Firewall** in the sidebar, on every page, until it is cleared. Nothing is shown when
-  everything holds — a permanent "0" is just something to learn to ignore.
-- **The Security Posture card stops telling you what was true when the page loaded.** Every row on it
-  was a snapshot taken as the page was built, which is fine on a router that has been up for a week
-  and wrong on one that is still starting: open the dashboard during a boot and the card would sit
-  there repeating stale answers until you reloaded it by hand. Worse, the Rule Status row could show
-  a "last checked" time from before the router knew what time it was. The card now refreshes itself
-  the moment the clock is set, and on a router that is already running it costs nothing at all,
-  because there is nothing to wait for.
-- **Top talkers counts conversations, not connections.** Every open admin page holds several
-  connections to the router at once, so simply having the traffic page open manufactured the traffic
-  that page then reported — a dozen near-identical rows, all of them your own browser, crowding out
-  everything real. Flows between the same two ends are now folded into one row, and the router itself
-  is left out of the list entirely, which is the rule the per-network view has always used.
-- **Links look like the rest of the firmware.** Plain links were falling through to the browser's
-  default blue, and purple once visited — on a matte-black panel, in a theme that has no blue in it.
-  They now take the theme's own colour everywhere, including on the stock pages, without disturbing
-  any page that had already styled its own.
-- **The beta badge is on every page.** It was only ever on the dashboard, which is the one page you
-  are least likely to be looking at when you forget you are running a beta.
-- **Rule Status is readable on a wide screen.** The table was squeezed into a column sized for
-  settings forms, with several hundred pixels of empty panel beside it, and it was breaking words
-  mid-syllable to fit — "ESTABLISHED" wrapped as "ESTA BLISHED". It now uses the width it has, keeps
-  its columns steady from one group to the next, and breaks text only where text can be broken.
-- **A firewall restore that loses a race no longer loses the table.** The RT-BE88U report from v3.1.6
-  had a second, deeper cause underneath the refused line. The `iptables` on this platform has no
-  lock, so when two processes touch a table at once the kernel refuses the second one's commit — and
-  the firmware forks `nat-start` *before* it loads the filter table, so a user script that touches
-  iptables there (a VPN or ad-blocker helper, very common) races the boot every time. The failure
-  looked identical to a bad rule, which is what made it so hard to see. A commit that fails this way
-  is now simply retried, the identical file, up to five times with a widening pause, before any of
+- **New Rule Status tab: does the loaded table do what the pages claim?** Each feature owns a handful
+  of witness packets — ingress interface, addresses, protocol and port, connection state, and the
+  verdict the feature promises. After every firewall change the router walks each one through the
+  live tables in kernel order and reports the verdict together with the rule that decided it. Red
+  names the rule that caught the packet; *depends* marks a row sitting behind a match the walker does
+  not model (string, time, policy, u32); *n/a* means the router has no such network. The walker only
+  reads. It covers 944 rules in under a second on the RT-BE96U.
+- **The verdict reaches you without opening the tab.** The dashboard's Security card gains a Rule
+  Status row and the Firewall page's Status tab a one-line summary, both reading the cached report so
+  neither can trigger a walk. The count of failing checks sits beside **Firewall** in the sidebar
+  until cleared, and shows nothing while everything holds.
+- **The walker reads the routing policy database too.** A VPN kill switch is an `ip rule`, not a
+  firewall rule, so a walk of the tables could never see it, and one that failed to install looked
+  identical to one that worked. Catalog coverage went from 33 checks to 45, including a
+  source-restricted port forward tested from a source it should refuse, a Gatekeeper-blocked device
+  checked to still reach the router's admin page, and a redirected service checked that its target
+  can still reach the real thing.
+- **A firewall restore that loses a race no longer loses the table.** This platform's `iptables` has
+  no lock, so when two processes touch a table at once the kernel refuses the second commit — and the
+  firmware forks `nat-start` before it loads the filter table, so a user script that touches iptables
+  there races every boot. The failure was indistinguishable from a bad rule. A commit that fails this
+  way is now retried with the identical file up to five times with a widening pause, before any of
   v3.1.6's line-stripping logic is considered. The same guard covers the nat restore.
-- **Removing a device from Gatekeeper makes it stay removed.** Removing a device that had been off
-  the network for hours put it straight back under *Pending approvals*, and only a reboot made it
-  stick. The watcher deliberately remembers a device for 24 hours after it was last seen, so the
-  approved list can still show its name, band and when you first saw it — but the pending list was
-  reading that memory as if it meant the device was *present*. It now asks whether the device is
-  actually there: online in the current sweep, or seen in the last 15 minutes. A device that has gone
-  stays gone; one that is genuinely still on your network will still appear, which is the entire
-  point of a default-deny list.
-- **"Applying settings" no longer hangs on a VLAN or guest-network change.** Deleting a VLAN profile,
-  creating one, or editing a MAC filter could leave the dialogue sitting there with no progress bar,
-  sometimes for minutes, sometimes until the browser was closed — and sometimes it behaved perfectly,
-  which is what made it so hard to pin down. The randomness was the clue: those applies restart
-  networking, which cuts off the reply to the very request that asked for it, and the page only ever
-  started its progress bar when a reply arrived. A lost reply meant a dialogue with no way out. The
-  page now notices, waits for the router to come back, and reloads itself.
+- **Removing a device from Gatekeeper makes it stay removed.** `gkd` deliberately retains a device in
+  `seen.tsv` for 24 h after its last sighting so the approved list can still show name, band and
+  first-seen, but the pending list read that retention as presence. Pending now also requires the
+  device to be online in the current sweep or seen within 15 minutes. Retention is not presence.
+- **"Applying settings" no longer hangs on a VLAN or guest-network change.** These applies restart
+  networking, which destroys the reply to the request that asked for it, and the stock idiom starts
+  its progress bar only from the ajax success path — so a lost reply left an indefinite dialogue. The
+  error path now polls `httpd_check.xml` until httpd answers and reloads; the async path gained a 45 s
+  timeout. The caller contract is unchanged, since about 75 call sites are written against
+  success-only semantics.
 - **WireGuard policy routing stops sending a redirected flow out of the WAN.** Two field-reported
-  gaps. A connection that had already been judged kept its old verdict even after the rule behind it
-  changed — retarget a rule from one client to another, disable it, or toggle the master switch, and
-  existing flows carried a decision that no longer pointed anywhere, so they fell back to the plain
-  internet route for as long as the connection lived. Only a decision that is still live is reused
-  now; anything stale is judged again. Separately, the flow-cache bypass that a WireGuard-targeted
-  rule needs could not be installed when the tunnel interface did not exist yet, which is the normal
-  state at boot; starting a client now re-runs that step once the interface appears.
+  gaps. A connection kept its old verdict after the rule behind it changed — retarget, disable or
+  toggle the master switch and existing flows carried a decision pointing nowhere, falling back to the
+  WAN for the life of the connection; only a live verdict is reused now. Separately the flow-cache
+  bypass a WireGuard-targeted rule needs could not be installed while the tunnel interface did not
+  exist, which is the normal state at boot; starting a client re-runs that step once the interface
+  appears.
+- **The Security Posture card refreshes when the clock is set.** Every row was a snapshot taken as the
+  page was built, so a dashboard opened during boot repeated stale answers until reloaded by hand, and
+  the Rule Status row could show a "last checked" time from before the router knew the time. On a
+  router already running this costs nothing.
+- **Top talkers counts conversations, not connections.** Every open admin page holds several
+  connections to the router, so having the traffic page open manufactured the traffic it reported.
+  Flows between the same two ends fold into one row and the router itself is excluded, which is the
+  rule the per-network view already used.
+- **A build gate for the Diagnostics page version.** The page carries a second copy of the diag
+  version, re-pinned rather than derived, so a `VER` bump could silently desync it again — which is
+  what v3.1.6 had just corrected. `reaper_verify` check 27 (`diag-version`) compares the literal in
+  the staged `www/Reaper_Diag.asp` against `VER` in the staged `usr/sbin/reaper_diag` and fails the
+  build when they disagree, and `build-scripts/tests/test_diag_version.py` catches it at commit time,
+  including a page carrying more than one version literal.
+- **Theme and layout.** Plain links took the browser's default blue, and purple once visited, on a
+  panel whose theme has no blue in it; they now take the theme colour everywhere, including stock
+  pages, without disturbing pages that style their own. The beta badge is on every page rather than
+  the dashboard alone. The Rule Status table uses the width it has, keeps its columns steady between
+  groups, and stops breaking words mid-syllable.
 
-## v3.1.6 — one refused firewall line no longer costs you the whole table, and an Access Point is a real box
+## v3.1.6 — a refused filter line is survivable, and Access Point mode is a first-class mode
 
-- **A filter table that the kernel refuses is now loud, and survivable.** Field data from the
-  RT-BE88U report: both copies of `/tmp/filter_rules` saved at boot passed
-  `iptables-restore --test`, yet every `service restart_firewall` hours later still left
-  `start_default_filter()`'s boot skeleton in the filter table — no port forwards, no VPN server
-  chains, no SECURITY chain, no TCPMSS clamp. `iptables-restore` is atomic, so one line the kernel
-  would not take costs the whole table; and because the firmware's `_eval()` sends the restore's
-  output to `/dev/null`, nothing on the box could say *which* line. That router ran that way for two
-  weeks with a working nat table, which is the worst shape of all: forwarded flows were translated
-  and then dropped. `reaper_restore_rules()` now replaces all four filter restores (v4 and v6, both
-  `filter_setting` variants). It keeps the restore's own words under `/tmp/err_rules/<file>.err`,
-  names the refused line verbatim in the system log, and then applies the table **without** that
-  line, up to eight times — a table missing one rule the kernel was never going to enforce beats a
-  skeleton that enforces none of them. Chain declarations, the table line and `COMMIT` are never
-  stripped, and a refusal that names no line (a crash) is logged and left alone. `rwatch` gained
-  check `3f`, which recognises the skeleton by the absence of two chains only the full ruleset
-  declares and asks for one `restart_firewall` per boot; the Diagnostics report's `14f` prints which
-  of the two tables is running, the `err_rules` listing and each file's first line.
-- **Access Point, repeater and media-bridge boxes are no longer second-class.** The GT-BE19000
-  tester's report and diag arrived, and the fact the report did not state is the one that explained
-  it: that router is in Access Point mode. Three of the four items were not port defects at all but
-  Reaper surfaces that quietly assumed a routing box, in code every model shares. They are fixed by
-  the operation mode, not by the model, so a routing box behaves exactly as it did before:
-  - **The socket-buffer ceilings load in every mode.** `start_firewall()` returns early when the box
-    is not routing, long before the block that raises `net.core.rmem_max`/`wmem_max` to 16 MB and
-    `netdev_max_backlog` to 4096 — so an AP ran on the stock 212992 ceiling no matter how often the
-    firewall was restarted, which caps any stream whose tool calls `setsockopt(SO_RCVBUF)`, the
-    Ookla engine included. Those writes are not firewall state and no longer sit behind that guard.
-  - **The dashboard counts the clients that are actually there.** The client tiles polled
-    networkmap's `get_clientlist()` and dropped every row whose `isOnline` was not `1`; that flag is
-    derived from the DHCP leases and conntrack, and a bridging box has neither — so the dashboard
-    showed zero while sixteen stations were associated and the Devices page listed all of them. In a
-    non-routing mode the tiles now read Reaper's own device store, which builds presence from the
-    radio association lists, the bridge forwarding table and the ARP table, and carries the band
-    each tile needs.
-  - **The Internet card names the mode instead of crying wolf.** Its verdict came from
-    `wan0_state_t`, which is structurally zero on a box with no WAN of its own, so a perfectly
-    healthy router painted its own Internet state red. It now reads *Access Point* (or whichever
-    mode applies) in a neutral colour, and the live WAN poll — which would otherwise have run a
-    four-second request for the life of the page against a state that cannot change — does not start.
-  - **The Diagnostics report stops reporting a designed idle state as a fault.** `rtrafd`, `gkd` and
-    `rchqd` are all started only when the box routes, and `rtrafd` accounts off conntrack, which a
-    bridging box never populates — so "rtrafd is enabled but not running" was a false warning on
-    that capture, not a finding. Section `12c` now says which it is.
-  The fifth item in the report, duplicate menu entries after opening the UPnP Media Server page, is
-  not reproduced and still wants a screenshot and the tester's add-on list.
-- **Warden's outbound total survives its own statistics window.** The first real capture of
-  `rwatch`'s outbound line found two defects in the instrumentation rather than in the blocking:
-  "blocked so far" read the live counter that `fold.sh` banks and zeroes every fifteen minutes, so a
-  healthy box reported `0` most of the time — and `0` is exactly the figure an operator quotes to
-  conclude that outbound blocking is dead. The drops are now banked under their own durable key
-  beside the total, and both readers quote banked plus live. Separately, an nvram read that timed
-  out came back empty and took the same branch as a real `0`, advising the operator to switch on
-  logging that was already on; "could not be read this tick" is now its own state and offers no
-  advice.
+- **A filter table the kernel refuses is now loud and survivable.** `iptables-restore` is atomic, so
+  one line the kernel will not take costs the whole table, and the firmware sent the restore's output
+  to `/dev/null`, so nothing on the box could say which line. Field data from the RT-BE88U report:
+  both copies of `/tmp/filter_rules` passed `iptables-restore --test`, yet every `restart_firewall`
+  still left `start_default_filter()`'s boot skeleton loaded — no port forwards, no VPN server chains,
+  no SECURITY chain, no TCPMSS clamp — for two weeks, with a working nat table, so forwarded flows
+  were translated and then dropped. `reaper_restore_rules()` replaces all four filter restores, keeps
+  the restore's own words under `/tmp/err_rules/<file>.err`, names the refused line in the system log,
+  and reapplies without that line up to eight times. Chain declarations, the table line and `COMMIT`
+  are never stripped; a refusal naming no line is logged and left alone. rwatch check `3f` recognises
+  the skeleton by two chains only the full ruleset declares; diag `14f` reports which table is running.
+- **Access Point, repeater and media-bridge modes are first-class.** The GT-BE19000 report turned out
+  to be four Reaper surfaces assuming a routing box, in code every model shares, so the fixes are
+  scoped to the operation mode and a routing box is unchanged.
+  - **Socket-buffer ceilings load in every mode.** `start_firewall()` returns early when the box is
+    not routing, before the block raising `net.core.rmem_max`/`wmem_max` to 16 MB and
+    `netdev_max_backlog` to 4096 — so an AP ran on the stock ceiling however often the firewall was
+    restarted, capping any tool that calls `setsockopt(SO_RCVBUF)`, the Ookla engine included. Those
+    writes are not firewall state and no longer sit behind that guard.
+  - **The dashboard counts the clients that are present.** The tiles polled `get_clientlist()` and
+    dropped every row whose `isOnline` was not `1`; that flag derives from DHCP leases and conntrack,
+    which a bridging box has neither of, so the dashboard showed zero while 16 stations were
+    associated. In a non-routing mode the tiles read Reaper's own device store, which builds presence
+    from the radio association lists, the bridge FDB and the ARP table.
+  - **The Internet card names the mode.** Its verdict came from `wan0_state_t`, structurally zero
+    without a WAN, so a healthy router painted its own Internet state red. It now names the operation
+    mode in a neutral colour, and the live WAN poll does not start in those modes.
+  - **The diagnostics report stops calling a designed idle state a fault.** `rtrafd`, `gkd` and
+    `rchqd` start only when the box routes, and `rtrafd` accounts off conntrack, so "rtrafd is enabled
+    but not running" was a false warning. Section `12c` now says which it is.
+  The fifth item, duplicate menu entries after opening the UPnP Media Server page, is unreproduced and
+  still wants a screenshot and the tester's add-on list.
+- **Warden's outbound total survives its own statistics window.** The first capture of rwatch's
+  outbound line found two instrumentation defects rather than a blocking defect. "Blocked so far" read
+  the live counter that `fold.sh` banks and zeroes every 15 minutes, so a healthy box reported `0`
+  most of the time — the figure an operator would quote to conclude outbound blocking was dead. Drops
+  are now banked under their own durable key and both readers quote banked plus live. Separately an
+  nvram read that timed out returned empty and took the same branch as a real `0`, advising the
+  operator to enable logging that was already on; "could not be read this tick" is now its own state.
 - **Policy Routing greys a Status cell that is not a live verdict.** The column stays
   configuration-derived, but the cell is dimmed while the rule or the master switch is off, so
   `Inactive · WAN` on a rule that is not installed no longer reads as something the router is doing.
-- **Inherited components, third pass.** Each of the five entries in `SECURITY.md` was taken in code
-  rather than by version:
+- **Inherited components, third pass.** Each of the five `SECURITY.md` entries was judged in code
+  rather than by version string.
   - **netatalk 3.0.5** (Time Machine): the rest of the 2022 set is closed. CVE-2022-23125
     (`copyapplfile()`) and CVE-2022-45188 (`afp_getappl()`) each read an attacker-controlled 16-bit
-    length out of the Desktop DB appl file into a fixed buffer with no bounds check — stack and heap
-    respectively — and CVE-2022-23121 (`parse_entries()`) both let the entry bounds test integer-
-    overflow and let a rejected entry be skipped while the caller carried on with a header it
-    believed had parsed.
-  - **Quagga 0.99.24** (zebra): CVE-2016-1245, a stack overflow in the IPv6 router-advertisement
-    read path — `rtadv_recv_packet()` was handed `BUFSIZ` as the size of a 4096-byte buffer.
+    length from the Desktop DB appl file into a fixed buffer with no bounds check, stack and heap
+    respectively; CVE-2022-23121 (`parse_entries()`) let the entry bounds test integer-overflow and
+    let a rejected entry be skipped while the caller carried on with a header it believed had parsed.
+  - **Quagga 0.99.24** (zebra): CVE-2016-1245, a stack overflow in the IPv6 router-advertisement read
+    path — `rtadv_recv_packet()` was handed `BUFSIZ` as the size of a 4096-byte buffer.
   - **wpa_supplicant 0.6.10** and **lighttpd 1.4.39** were retired from the list on what they
-    actually compile rather than on their version strings: the era's headline wpa_supplicant
-    advisories need the 4-way handshake, the TLS-based EAP methods or the P2P/WPS code, none of
-    which this build contains, and three commonly cited lighttpd advisories do not apply to this
-    configuration. A version match is not a finding, and a version is not a clean bill of health
-    either — which is the same lesson the v3.1.5 netatalk correction taught from the other side.
-- Two small ones: `shared/defaults.c` carried `log_level` twice, so the second entry was dead; and
-  the Diagnostics page had a hardcoded version literal that had drifted from the script it fronts,
-  making the page and the report it generates contradict each other on the same screen.
+    compile. The era's headline wpa_supplicant advisories need the 4-way handshake, the TLS-based EAP
+    methods or the P2P/WPS code, none of which this build contains; three commonly cited lighttpd
+    advisories do not apply to this configuration. A version match is not a finding, and a version is
+    not a clean bill of health.
+- **Two small ones.** `shared/defaults.c` carried `log_level` twice, so the second entry was dead; and
+  the Diagnostics page's hardcoded version literal had drifted from the script it fronts, so the page
+  and its own report contradicted each other on screen.
 
 ---
 
-## v3.1.5 — the routing target is an interface again
+## v3.1.5 — the Policy Routing target column, and a sixteen-item security review
 
-- **Policy Routing: the Target column names the interface and nothing else.** A reviewer with
-  long VPN Director experience put it exactly: a rule's target is an interface, not a story. The
-  WAN row used to read "Out the WAN (VPN bypass)" while every VPN row read its interface; it now
-  reads `WAN`, the add-rule list says `WAN` too (with the explanation as a hint when you pick it,
-  the way WireGuard targets already work), and the per-row `LAN` badge is gone. What a target is
-  *doing* is a state, so it has its own **Status** column: `Active`, `Active · Killswitch` (that
-  client's switch is on - a dropped tunnel blocks rather than leaks) or `Inactive · WAN` (the
-  client is switched off). Everything true of every rule to an interface - the WireGuard
-  hardware-acceleration bypass, what a WAN target means - is one note under the table, shown
-  while such a rule exists.
+- **Policy Routing: the Target column names the interface and nothing else.** The WAN row read "Out
+  the WAN (VPN bypass)" while every VPN row read its interface; it now reads `WAN`, the add-rule list
+  matches, the explanation is a hint on selection, and the per-row `LAN` badge is gone. What a target
+  is *doing* is a state, so it moved to a **Status** column: `Active`, `Active · Killswitch` or
+  `Inactive · WAN`. Anything true of every rule to an interface — the WireGuard acceleration bypass,
+  what a WAN target means — is one note under the table, shown while such a rule exists.
 - **The Killswitch counts only for an enabled client, as in VPN Director.** Since v3.1.3 a rule's
   `prohibit` followed its client's Killswitch; VPN Director additionally requires the client to be
-  enabled before it installs its own prohibit, and Reaper now applies the same test. A rule to a
-  switched-off client therefore uses the WAN instead of blocking - which is what the Status column
-  says - and enabling the client brings the prohibit back through the same `vpnrouting` restart the
-  Killswitch already used. The guide's 4.4.7 now shows the exact `ip rule` pair Reaper installs
-  beside VPN Director's, so a Merlin user can see they are the same shape.
-- An IPv6 hint on the same page still claimed a tunnel with no IPv6 always blocks the selected IPv6
-  traffic; since v3.1.3 that is the Killswitch's decision, and the hint now says so.
-- Language packs: five keys added, three reworded, four retired in place (lockstep 6921).
-- **Security review remediation (2026-09-12).** An independent adversarial review of the v3.1.5
-  tree (source, CVE delta and read-only observation of a live v3.1.3 router) produced sixteen items;
-  every one was re-verified against the source before anything changed, and four of the proposed
-  fixes were replaced with different ones (below). Inherited components first:
-  - **Time Machine (netatalk 3.0.5): CVE-2022-43634 was present.** The 2026-08-30 component check
-    had called the 2022 pre-authentication set absent from this version's paths; the DSI write
-    path was re-read and the overflow is there - `dsi_writeinit()` ignored the size of the buffer
-    it copied into. Fixed with an adaptation of the vendor fix for the 3.0.5 buffering model (the
-    remainder of an over-long write is kept and delivered on the next read, not dropped). Off by
-    default, unauthenticated when on; the correction is recorded in `SECURITY.md`.
-  - **strongSwan 6.0.4: CVE-2026-47895**, the identity-clone double free reachable from an IKEv2
-    EAP peer - the vendor patch, verbatim.
-  - **Tor 0.4.9.12**, the 2026-09-08 security release; Reaper's Tor configuration sets
-    `AutomapHostsOnResolve`, the exact precondition of its use-after-free (TROVE-2026-036).
-  - **avahi**: the CNAME lookup crash trio (CVE-2025-68468, CVE-2025-68471, CVE-2026-24401) is
-    backported - avahi is on by default and LAN-reachable.
-  - **lighttpd 1.4.39** (captive portal): CVE-2018-25103, the folded-header use-after-free, fixed
-    at the append site. **net-snmp**: CVE-2022-44792 / -44793, a SET carrying a NULL varbind is now
+  enabled before installing its own, and Reaper now applies the same test. A rule to a switched-off
+  client uses the WAN rather than blocking, and enabling the client restores the prohibit through the
+  same `vpnrouting` restart. Guide 4.4.7 shows the `ip rule` pair beside VPN Director's. A stale IPv6
+  hint claiming a tunnel with no IPv6 always blocks is corrected — since v3.1.3 that is the
+  Killswitch's decision. Language packs: 5 keys added, 3 reworded, 4 retired in place, lockstep 6921.
+- **Security review remediation (2026-09-12): inherited components.** An independent adversarial
+  review of the v3.1.5 tree — source, CVE delta and read-only observation of a live v3.1.3 router —
+  produced sixteen items. Each was re-verified against source before anything changed, and four of the
+  proposed fixes were replaced with different ones.
+  - **netatalk 3.0.5** (Time Machine): CVE-2022-43634 IS present, correcting the 2026-08-30 component
+    check. `dsi_writeinit()` ignored the size of the buffer it copied into. Fixed with the vendor fix
+    adapted to the 3.0.5 buffering model, so an over-long write's remainder is kept and delivered on
+    the next read rather than dropped. Off by default, unauthenticated when on; recorded in
+    `SECURITY.md`.
+  - **strongSwan 6.0.4**: CVE-2026-47895, the identity-clone double free reachable from an IKEv2 EAP
+    peer. Vendor patch, verbatim.
+  - **Tor 0.4.9.12**: the 2026-09-08 security release. Reaper's Tor configuration sets
+    `AutomapHostsOnResolve`, the exact precondition of the use-after-free (TROVE-2026-036).
+  - **avahi**: the CNAME lookup crash trio (CVE-2025-68468, CVE-2025-68471, CVE-2026-24401)
+    backported; avahi is on by default and LAN-reachable.
+  - **lighttpd 1.4.39** (captive portal): CVE-2018-25103, the folded-header use-after-free, fixed at
+    the append site. **net-snmp**: CVE-2022-44792 and -44793, a SET carrying a NULL varbind is
     rejected before dispatch (write community only).
-- **Policy Routing engine: four review findings on the failure paths.** A VPN client's Killswitch or
-  enable toggled *inside* the commit-confirm window used to be lost (the pending candidate and its
-  recovery script were both generated before the toggle, and Keep promoted the stale one); both are
-  now regenerated and the candidate re-run, with the window and the Keep/Revert meaning untouched.
-  A WireGuard bypass that cannot be installed (the eight-entry table full) was a log line and a clean
-  apply; it is now a counted failure the page reports. The routing rules themselves (`ip rule add`)
-  were the one thing the generated script never checked, and the count the watchdog healed against
-  was taken from the live table - so a rule that failed to install matched its own absence; both
-  families are now counted as intended and healed. And a rule naming a geo or MAC object matched
-  nothing while reading Active: the page no longer offers them, the engine drops such a rule with the
-  reason in syslog, and a **group** - which never had a set of its own - now expands into its usable
-  members. The reviewer's proposed fixes for three of these were not taken: one would have torn
-  down all policy routing whenever the bypass table was full, and two changed what a partial load
-  means to the Keep button.
-- **Reaper Advisor: the request clock now covers the TLS handshake.** A peer dripping a partial TLS
-  record could hold the single-threaded daemon in the handshake indefinitely - and with it the
-  session-expiry and USB-key-removal checks that run between connections.
-- **The release pruner fails closed.** Given an empty or comment-only manifest it would have planned
-  to delete every release. Every invariant the retention rule rests on is now asserted before a plan
-  is printed, with a test suite covering six unusable inputs.
-- **OpenVPN server certificates, the second cause (field, 2026-09-12).** After this morning's fix a
-  regeneration still failed "at the signing stage": OpenSSL 3.x exits non-zero when it cannot write
-  its RANDFILE, and the easy-rsa config points that at `$HOME/.rnd` while rc runs with HOME=/, the
-  read-only root. The generated scripts now give openssl the key directory as HOME.
-- **Two guards for the class of bug a compile cannot see, and one diagnostic.** Both certificate
-  breaks were protocol failures between pieces that each linked fine, so release check 23 now runs
-  the firmware's own PKI chain — the staged pkitool, config and ARM openssl under qemu — and requires
-  a CA, server and client certificate that verify. A field report of port forwards going dark after
-  v3.1.0 could not be tested short of a router, so check 24 executes the real port-forward emitter
-  from `rc/firewall.c` against known rule lists, the reporter's included (it passes; nothing in the
-  v3.1.0 delta touched that path). The harness did catch something else: a space-stripped port such
-  as `80-jACCEPT` passed the charset gate and would have been handed to `iptables-restore`, which
-  rejects the whole nat table — MASQUERADE included — for one malformed line. A real port gate now
-  drops such a rule and names it in syslog. And `reaper_diag` 1.3.15 gained section 14f, the
-  port-forwarding truth in one place: switches, the VSERVER hook, the chain, every saved rule checked
-  against the live table, with findings — because the DNAT lines were never in PREROUTING, which is
-  where the report had looked.
+- **Policy Routing engine: four findings on the failure paths.** A client's Killswitch or enable
+  toggled *inside* the commit-confirm window was lost, because the pending candidate and its recovery
+  script were both generated before the toggle and Keep promoted the stale one; both are regenerated
+  and the candidate re-run, with the window and the Keep/Revert meaning unchanged. A WireGuard bypass
+  that cannot be installed because the eight-entry table is full was a log line and a clean apply; it
+  is now a counted failure the page reports. `ip rule add` was the one thing the generated script never
+  checked, and the count the watchdog healed against came from the live table, so a rule that failed to
+  install matched its own absence; both families are now counted and healed. A rule naming a geo or MAC
+  object matched nothing while reading Active: the page no longer offers them, the engine drops such a
+  rule with the reason in syslog, and a group expands into its usable members. Three of the reviewer's
+  proposed fixes were not taken — one would have torn down all policy routing whenever the bypass
+  table was full, and two changed what a partial load means to Keep.
+- **Reaper Advisor: the request clock covers the TLS handshake.** A peer dripping a partial TLS record
+  could hold the single-threaded daemon in the handshake indefinitely, and with it the session-expiry
+  and USB-key-removal checks that run between connections.
+- **The release pruner fails closed.** Given an empty or comment-only manifest it would have planned to
+  delete every release. Every invariant the retention rule rests on is asserted before a plan is
+  printed, with a suite covering six unusable inputs.
+- **OpenVPN server certificates, the second cause.** After the v3.1.4 fix a regeneration still failed
+  at the signing stage: OpenSSL 3.x exits non-zero when it cannot write its RANDFILE, and the easy-rsa
+  config points that at `$HOME/.rnd` while rc runs with `HOME=/`, which is read-only. The generated
+  scripts now give openssl the key directory as HOME.
+- **Two build gates for the class of bug a compile cannot see, and one diagnostic.** Both certificate
+  breaks were protocol failures between pieces that each linked cleanly. Release check 23 runs the
+  firmware's own PKI chain — staged pkitool, config and ARM openssl under qemu — and requires a CA,
+  server and client certificate that verify. Check 24 executes the real port-forward emitter from
+  `rc/firewall.c` against known rule lists including the reporter's, which passes. The harness caught a
+  separate defect: a space-stripped port such as `80-jACCEPT` passed the charset gate and would have
+  been handed to `iptables-restore`, which rejects the whole nat table, MASQUERADE included, for one
+  malformed line; a real port gate now drops such a rule and names it in syslog. `reaper_diag` 1.3.15
+  gained section 14f, the port-forwarding truth in one place: switches, the VSERVER hook, the chain and
+  every saved rule checked against the live table.
 
-## v3.1.4 — an OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet
+## v3.1.4 — OpenVPN server certificates, a DDNS restart loop, and the GT-BE19000 joins the fleet
 
-- **OpenVPN server certificates can be generated again.** From the OpenSSL 3.5 move in v3.1.0
-  onward, every server certificate this firmware tried to make came out as a key with no
-  certificate - first-time setup and the v3.1.1 repair path alike. `pkitool --server` put
-  `-extensions server` on the certificate *request* as well as the signing call, and that section
-  carries an `authorityKeyIdentifier`, which cannot be computed for a request because there is no
-  issuer yet. OpenSSL 1.x ignored it; 3.x refuses the whole request, which stopped pkitool before it
-  ever reached `openssl ca`. The extensions now go only on the signing call, where the issuer exists
-  and they resolve - confirmed on the router: the issued certificate carries its server extensions
-  including a real authority key identifier. Dropping them from the request costs nothing, since
-  `openssl ca` never copied request extensions in the first place. The repair path's diagnostics
-  were rebuilt with it: it used to discard the tools' own output and then blame the signature for
-  every possible failure, including the one where the certificate had never been created. It now
-  keeps the log and says which stage failed.
-- **DDNS no longer restarts itself every 30 seconds on a dual-WAN router whose IPv6 lives on the
-  other WAN.** Three stock behaviours lined up: the DDNS start tests *its own WAN's* interface for an
-  IPv6 address while the enable check is global, so a box with IPv6 only on the secondary WAN failed
-  it on every run; failing it cleared the "IPv6 updated" flag; and the watchdog's "already updated,
-  stop retrying" exit requires that flag whenever IPv6 DDNS is on - which is the default. The retry
-  machinery is built for an address that has not arrived *yet*; this configuration made "yet" never
-  come, so DDNS was stopped and restarted for the life of the boot, four log lines at a time. It now
-  reports the missing address once, when the state changes, records that this WAN has no IPv6, and
-  the watchdog stands down - the IPv4 record being correct and the IPv6 one unobtainable. It resumes
-  on its own the moment any interface gains IPv6. The `current ipv6_service: x | old: x` line that
-  printed on every run now prints only when the service actually changed.
-- **The EDNS Client Subnet option is gone** - page, emitter, default and all 25 language packs. A
-  niche switch, removed at the root so a router that had it enabled is not left sending client
-  addresses with no way to stop. Nothing else changes.
-- **The GT-BE19000 joins the fleet.** Same BCM4916 silicon and NAND layout as the RT-BE96U. Its
-  onboarding had imported 4 of the 50 per-model directories the tree carries; the other 46 are each
-  copied by a rule that fails silently, so the first builds died one missing file at a time - `lzop`,
-  `libptcsrv.so`, `libbcm.so`, then three symlinks a directory-only audit had skipped. All of it
-  came from the model's own GPL drop. Its radio firmware could not: no GPL drop ships it. Both of
-  its radio chips' firmware (`6717a0` and `6726b0`) come from the vendor's own GT-BE19000 image - the
-  non-AI SKU this build targets, which carries both where the AI SKU carries only `6726b0` - and each
-  matches the host driver's Broadcom version exactly. Because presence is not identity - and because
-  ASUS's guidance is that the wrong radio firmware does not degrade a radio but locks the router out,
-  recoverable only with the recovery tool or a manual reflash - the build now proves identity three
-  times with one script (`reaper_dongle_id.sh`): Broadcom stamps the model name into every `rtecdc.bin`,
-  and a blob naming any other model - a sibling's, or the other SKU's - stops the local engine and the
-  clean room BEFORE a make, and fails `reaper_verify` (`dongle-model`, every staged blob) after it.
-  It carries its own u-boot rtl8372 archive (its blob differs from every other model's), a
-  platform archive for the closed layer the pinned upstream does not have - exactly as GT-BE98
-  does - and a first identity overlay of twelve files, derived rather than hand-listed, which is
-  why it includes the first-boot Wi-Fi page every earlier overlay missed. It is on the CI roster
-  and publishes as a prerelease.
-- **The fleet cut can now delete a language-pack key.** Its dictionary guard tolerates keys canon
-  removed since a sibling last synced, but it measured "last synced" with `merge-base`, which for
-  branches that are ported by file copy and never merged sat frozen at July's v1.5.0d - before any
-  of this rung's removed keys existed. The reference is now canon's previous version commit, which
-  is what every sibling actually synced from. A key canon *never* had still blocks, as it should.
+- **OpenVPN server certificates can be generated again.** From the OpenSSL 3.5 move in v3.1.0 onward,
+  every server certificate came out as a key with no certificate, in first-time setup and in the
+  v3.1.1 repair path alike. `pkitool --server` put `-extensions server` on the certificate *request*
+  as well as the signing call, and that section carries an `authorityKeyIdentifier`, which cannot be
+  computed for a request because there is no issuer yet. OpenSSL 1.x ignored it; 3.x refuses the whole
+  request, stopping pkitool before it reached `openssl ca`. The extensions now go only on the signing
+  call. Dropping them from the request costs nothing, since `openssl ca` never copied request
+  extensions. The repair path's diagnostics were rebuilt with it: it used to discard the tools' output
+  and blame the signature for every failure, including one where the certificate had never been
+  created, and now keeps the log and names the stage that failed.
+- **DDNS stops restarting itself every 30 seconds on a dual-WAN box whose IPv6 is on the other WAN.**
+  Three stock behaviours lined up: the DDNS start tests its own WAN's interface for an IPv6 address
+  while the enable check is global; failing that test cleared the "IPv6 updated" flag; and the
+  watchdog's "already updated, stop retrying" exit requires that flag whenever IPv6 DDNS is on, which
+  is the default. The retry machinery is built for an address that has not arrived yet, and this
+  configuration made "yet" never come, so DDNS was stopped and restarted for the life of the boot. It
+  now reports the missing address once on state change, records that this WAN has no IPv6, and stands
+  the watchdog down, resuming when any interface gains IPv6. The per-run `current ipv6_service` line
+  prints only on an actual change.
+- **The EDNS Client Subnet option is removed** — page, emitter, default and all 25 language packs.
+  Removed at the root so a router that had it enabled is not left sending client addresses with no way
+  to stop.
+- **The GT-BE19000 joins the fleet.** Same BCM4916 silicon and NAND layout as the RT-BE96U. Onboarding
+  had imported 4 of the 50 per-model directories the tree carries; the other 46 are each copied by a
+  rule that fails silently, so the first builds died one missing file at a time — `lzop`,
+  `libptcsrv.so`, `libbcm.so`, then three symlinks a directory-only audit had skipped — all of it
+  available from the model's own GPL drop. Its radio firmware was not: both chips' firmware (`6717a0`
+  and `6726b0`) comes from the vendor's GT-BE19000 image, the non-AI SKU this build targets, and each
+  matches the host driver's Broadcom version exactly. Because the wrong radio firmware locks a router
+  out rather than degrading it, recoverable only by recovery tool or manual reflash, identity is proven
+  three times by one script (`reaper_dongle_id.sh`): Broadcom stamps the model name into every
+  `rtecdc.bin`, and a blob naming any other model stops the local engine and the clean room before a
+  make, and fails `reaper_verify` (`dongle-model`) after it. The model carries its own u-boot rtl8372
+  archive, a platform archive for the closed layer the pinned upstream lacks, and a first identity
+  overlay of twelve files derived rather than hand-listed — which is why it includes the first-boot
+  Wi-Fi page every earlier overlay missed. On the CI roster, publishing as a prerelease.
+- **The fleet cut can delete a language-pack key.** The dictionary guard tolerates keys canon removed
+  since a sibling last synced, but measured "last synced" with `merge-base`, which for branches ported
+  by file copy and never merged sat frozen at July's v1.5.0d, before any of this rung's removed keys
+  existed. The reference is now canon's previous version commit. A key canon never had still blocks.
 
-## v3.1.3 — your Killswitch decides, and the firewall watchdog stops fighting a rule you meant *(built RT-BE96U)*
+## v3.1.3 — the Killswitch decides, and the chain watchdog tolerates a deliberate carve-out *(built RT-BE96U)*
 
-- **Policy Routing follows each VPN client's Killswitch instead of overriding it.** Every rule that
-  sent traffic to a VPN client used to add a *block* beneath it, so if that tunnel dropped the traffic
-  stopped - whatever the client's own Killswitch said. That was Reaper deciding something you had
-  already decided on the VPN page, and it disagreed with VPN Director on the same router. Now a rule
-  only chooses the path; whether a tunnel that is down blocks the traffic or lets it use the WAN is
-  that client's Killswitch, exactly as for VPN Director, and it takes effect the moment you change it
-  there. **This changes behaviour on upgrade:** a rule targeting a client whose Killswitch is *off*
-  now falls back to the WAN while the tunnel is down, where it used to block. To keep the old
-  protection, turn that client's Killswitch on. The rules table says which applies to each rule
-  while its client is off, and the rule is stated once beneath the table.
-- **The Policy Routing table names the interface, not the consequences.** The Target column showed a
-  running commentary on every WireGuard row. It now shows the target; a small **LAN** badge marks the
-  one thing worth seeing per row - a destination or device rule that costs the whole LAN its hardware
-  acceleration - and a single note beneath the table explains the bypass once.
-- **Apply on Policy Routing shows that it is working.** The button dims the moment it is pressed and
-  the overlay stays up until the Keep / Revert bar appears, instead of vanishing for the few seconds
-  the rules take to go live and leaving the page looking dead.
-- **The Administration tab is now called DNS Failover.** "Failover" alone reads as Dual-WAN failover;
-  the tab holds the DNS resolver health check and the dnsmasq switches, so it now says so.
-- **The first-boot Wi-Fi page shows its header again on every sibling model.** Since v3.1.0 the
-  page that greets a new RT-BE86U, RT-BE88U, GT-BE98 or GT-BE98 Pro owner has asked for the
-  RT-BE96U's animated header — a file those models deliberately do not carry — so the top of the
-  page was a broken image. Nothing else on the page was affected. It slipped through because the
-  page arrived after the three places that keep track of which pages show the header were written,
-  and none of them was told; every build check they fed was green. They no longer keep a list:
-  they ask the source tree, and the build now refuses any image whose pages name a header file
-  that is not actually in it. *(The RT-BE96U was never affected.)*
-- **The firewall watchdog no longer fights a rule you put ahead of it on purpose.** v3.1.2's
-  chain-integrity watchdog re-pinned Reaper's front chains to the head of the base chains every
-  ten minutes, which was right for an add-on that had shoved them aside and wrong for a narrow
-  carve-out — say, a DNS rule that has to beat Gatekeeper so restricted devices keep resolving —
-  that has to sit in front. The two would trade places indefinitely, taking DNS away from
-  restricted devices for a couple of seconds each round and leaving the watchdog permanently
-  red. It now looks at what is ahead of it: a rule that can only affect a narrowed class of
-  traffic, or a chain named in `/jffs/reaper/front_exempt`, is tolerated and logged once; a rule
-  that could wave anything through is still repaired. And if a repair is undone twice, it says
-  what is happening, names the file that ends it, and stops.
-- **The diagnostic report stops overstating what it found.** `reaper_diag` is what you send when
-  something is wrong, so a figure that reads high sends the next person chasing something that was
-  never there. Six of them did. The conntrack section re-read the live table for every line, so the
-  printed total and the per-protocol breakdown came from different instants and did not add up —
-  405 entries against 510 by protocol — and now every figure comes from one snapshot. The syslog
-  section counted the USB mirror and the log it mirrors as two separate logs, inflating every
-  count in the section by about 2.2x (12,360 lines where the router had 5,634 distinct), and it
-  counted the lab assistant's echo of your own typed commands, which by itself reported two kernel
-  panics on a router that had none. "Boots in span" counted syslogd restarts, which any service
-  cascade produces without a reboot: 13 boots on a router that had been up for minutes — it now
-  reports uptime, the only boot marker this hardware has, and labels the syslogd figure as what it
-  really counts. The panic pattern matched the ordinary English word "oops" wherever it appeared.
-  "Kernel tainted" printed a bitmask as if it were a count — 4097 is two flags, not four thousand —
-  and now names the flags. And `RW_FDROP`, a chain that by design never exists because
-  forward-direction drops share `RW_DROP`, stopped being reported as missing on every healthy
-  router.
-- **Two things that used to happen silently now say so.** Policy Routing treats its confirmed
-  snapshot as authoritative, which is right, but it did so without a word: a rule list left in
-  nvram was discarded, and an nvram flag saying policy routing was on was overruled by a snapshot
-  saying off. An operator could stage a whole configuration and watch it vanish with nothing in
-  the log. Each is now logged, and only when the two genuinely disagree. Separately, the
-  watchdog's generated script now ends with an explicit success: it had been returning the result
-  of whatever ran last — a log-rotation test that is false on any mirror under 8 MB — so a
-  perfectly healthy router reported failure to anything that asked, with no fault recorded
-  anywhere.
-- **For maintainers: the build's own test suites now run in CI.** They existed and nothing ran
-  them, which is how an unbound shell variable killed all six v3.1.2 publish jobs *after* a green
-  build. Every suite under `build-scripts/tests/` is discovered by glob, so a new one runs without
-  anyone remembering to wire it up; a suite that needs the router source tree, which is not in
-  this repo, reports "skipped" rather than failing. A run in which nothing at all executed is
-  refused — a green check that proved nothing is worse than a red one.
+- **Policy Routing follows each VPN client's Killswitch instead of overriding it.** Every rule
+  targeting a VPN client added a `prohibit` beneath it, so a dropped tunnel stopped the traffic
+  whatever the client's own Killswitch said — Reaper overriding a decision already made on the VPN
+  page, and disagreeing with VPN Director on the same router. A rule now chooses the path only;
+  whether a down tunnel blocks or falls back to the WAN is that client's Killswitch, effective as
+  soon as it is changed there. **Behaviour change on upgrade:** a rule targeting a client whose
+  Killswitch is off now falls back to the WAN while the tunnel is down, where it used to block. Turn
+  that client's Killswitch on to keep the old protection. The rules table states which applies while
+  a client is off.
+- **The Policy Routing table names the interface, not the consequences.** The Target column carried a
+  running commentary on every WireGuard row. It now shows the target; a small **LAN** badge marks a
+  destination or device rule that costs the whole LAN its hardware acceleration, and one note beneath
+  the table explains the bypass once. Apply now dims the button on press and keeps the overlay up
+  until the Keep/Revert bar appears, instead of vanishing while the rules go live.
+- **The Administration tab is renamed DNS Failover.** "Failover" alone reads as Dual-WAN failover; the
+  tab holds the DNS resolver health check and the dnsmasq switches.
+- **The first-boot Wi-Fi page shows its header on every sibling model.** Since v3.1.0 the page
+  greeting a new RT-BE86U, RT-BE88U, GT-BE98 or GT-BE98 Pro owner requested the RT-BE96U's animated
+  header, which those models deliberately do not carry, so the top of the page was a broken image.
+  It slipped through because the page arrived after the three places tracking which pages show the
+  header were written, and none was told; every build check they fed was green. They no longer keep a
+  list — they ask the source tree — and the build refuses any image whose pages name a header file it
+  does not contain. The RT-BE96U was never affected.
+- **The chain watchdog no longer fights a deliberate carve-out.** v3.1.2's watchdog re-pinned Reaper's
+  front chains to the head of the base chains every ten minutes, correct for an add-on that had shoved
+  them aside and wrong for a narrow carve-out that has to sit in front, such as a DNS rule that must
+  beat Gatekeeper so restricted devices keep resolving. The two traded places indefinitely, costing
+  restricted devices DNS for a couple of seconds each round and leaving the watchdog permanently red.
+  It now inspects what is ahead of it: a rule affecting only a narrowed class of traffic, or a chain
+  named in `/jffs/reaper/front_exempt`, is tolerated and logged once; a rule that could pass anything
+  is still repaired. A repair undone twice logs what is happening, names the file that ends it, and
+  stops.
+- **The diagnostic report stops overstating what it found.** Six figures read high. The conntrack
+  section re-read the live table per line, so the total and the per-protocol breakdown came from
+  different instants and did not add up (405 against 510); every figure now comes from one snapshot.
+  The syslog section counted the USB mirror and the log it mirrors as two logs, inflating the section
+  about 2.2x (12,360 lines where the router had 5,634 distinct), and counted the lab assistant's echo
+  of typed commands, which alone reported two kernel panics on a router that had none. "Boots in span"
+  counted syslogd restarts, which any service cascade produces without a reboot — 13 boots on a router
+  up for minutes — and now reports uptime, the only boot marker this hardware has. The panic pattern
+  matched the ordinary word "oops". "Kernel tainted" printed a bitmask as a count (4097 is two flags)
+  and now names them. `RW_FDROP`, a chain that by design never exists because forward-direction drops
+  share `RW_DROP`, stopped being reported missing on every healthy router.
+- **Two silent behaviours now log.** Policy Routing treats its confirmed snapshot as authoritative,
+  correctly, but did so without a word: a rule list left in nvram was discarded, and an nvram flag
+  saying policy routing was on was overruled by a snapshot saying off, so a staged configuration could
+  vanish with nothing in the log. Each is now logged, and only when the two genuinely disagree.
+  Separately the watchdog's generated script now ends with an explicit success; it had been returning
+  the result of whatever ran last, a log-rotation test false on any mirror under 8 MB, so a healthy
+  router reported failure to anything that asked.
+- **For maintainers: the build's test suites run in CI.** They existed and nothing ran them, which is
+  how an unbound shell variable killed all six v3.1.2 publish jobs after a green build. Every suite
+  under `build-scripts/tests/` is discovered by glob; one needing the router source tree, absent from
+  this repo, reports skipped rather than failing. A run in which nothing executed is refused.
 
 ---
 
-## v3.1.2 — a WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one *(built RT-BE96U)*
+## v3.1.2 — a WireGuard policy rule that panicked the kernel, and builds that name their channel *(built RT-BE96U)*
 
-- **The RT-BE92U leaves the fleet.** Development of the RT-BE92U build stops here: upstream
-  Asuswrt-Merlin has taken that model on, and a second, less-tested build of it helps nobody. It is
-  off the build roster from this version, so **v3.1.2 is the last Reaper release for it** — the
-  v3.1.2 beta was the final image, and it stays downloadable. If you run one, nothing changes today:
-  your router keeps working, and its update check keeps pointing at that last build rather than going
-  quiet or offering something that no longer exists. Move to Merlin's own RT-BE92U build when you are
-  ready. The source, its branch and its identity overlay are kept rather than deleted, so the
-  decision is reversible. The model it makes room for is the GT-BE19000.
-- **Routing a device through WireGuard no longer reboots the router.** Policy routing to an
-  OpenVPN client, to the WAN, or to a block worked; pick a WireGuard client and the router
-  restarted a few seconds after Apply and Confirm, every time. It was not a reboot — it was a
-  kernel panic, which is why nothing in the policy-routing code could ever have caused it and why
-  none was ever found there. WireGuard is the one target that needs the router to tell its traffic
-  accelerator to leave those flows alone, and the accelerator's list lives in a file the kernel
-  publishes. Reading that file back — which the router does, so that it only ever removes entries
-  it added itself and never one belonging to your WireGuard server or a VPN Director rule — hit a
-  fault in the kernel's own handler for it, and this kernel is built to reboot rather than continue
-  after a fault like that. The handler is fixed. Nothing else in the system had ever read that file,
-  which is why the bug had sat there untouched. The two neighbouring handlers had a related flaw
-  that could corrupt kernel memory from a badly-formed write; those are fixed at the same time, and
-  a build-time check now refuses to let any of it come back.
-- **A pre-release now says so, in its filename and in the router.** Every build is marked `_BETA`
-  unless it is explicitly built as a release, so the firmware file is named for what it is and the
-  dashboard shows a **Beta** tag beside the version. That way round on purpose: an image only
-  becomes stable when the Dev branch is merged, so a pre-release is what a build normally *is*, and
-  forgetting to say so can only ever label something too cautiously — never pass a beta off as a
-  release. The marker is uppercase so it can be picked out of a folder full of long filenames
-  without opening anything. Two different builds could previously end up sharing one filename,
-  which is no way to treat something you may need to identify months later. The staging step was the
-  other half of that: it used to see a name already in use and quietly skip, leaving the older
-  image in place under that name and the checksum list describing the wrong file. It now compares
-  the contents — identical is left alone, genuinely different is staged under its own name and said
-  out loud, and the checksum list is always rewritten to match what is actually there.
-- **Every model gets the WireGuard fix, not just the one that was tested.** The kernel fault above
-  is in code shared by all six routers, so all six could be restarted the same way. Each one's
-  source now carries the fix, and a build-time check refuses to build any of them without it —
-  which matters because that file sits outside the part of the tree a model port normally copies,
-  and the fix leaves no trace a normal build check could look for.
-- **Warden's outbound block logging is now held in place by a test.** This had been fixed before and
-  come back more than once, which is a sign the guard was in the wrong place: the existing check
-  confirmed the log lines were *accepted*, but nothing required the outbound ones to be *produced*.
-  Remove them and everything still looked healthy. The check now covers the whole path — a distinct
-  outbound label, logged before the block rather than after, on the same switch as inbound, on a
-  rule that is actually reachable, counted correctly, and told apart from the others on the Logging
-  page. It ships with a suite that deliberately reintroduces eleven past and plausible versions of
-  the fault and confirms each one is caught, so the check is known to work rather than assumed to.
-- **The router now watches its own firewall chains.** With add-on scripts and other software
-  writing firewall rules on the same box, nothing had ever checked that Reaper's rules were still
-  where they were put. Two things are now checked every few minutes: that each of Warden's block
-  chains still ends in the block itself, with nothing slipped in front of it that would let traffic
-  through, and that Reaper's own entry points are still first in line. A chain found disarmed is
-  reported as critical; entry points that have been pushed down the list are re-pinned
-  automatically and the displacement is logged, so it is visible rather than merely repaired.
-- **Warden now says why you are not seeing outbound blocks.** Silence meant four different things —
-  outbound filtering off, the chain missing, logging off, or simply nothing having matched — and
-  they were indistinguishable from the outside. Note that the last one is the ordinary case:
-  something on your network has to reach *for* a flagged address, where inbound gets a steady supply
-  of them from the internet. The state is now logged once whenever it changes, with the count so
-  far. Related: in Firewall → Logging, outbound and router-originated blocks had been folded back
-  into a single **WARDEN** label despite having been given separate log prefixes precisely so they
-  could be told apart; they now carry their own badges.
-- **Firewall → Logging: the table headings match the columns.** The first two were the wrong way
-  round — the action column was headed *Time* and the timestamp column *Action* — and the third was
-  headed *Chain* while showing the interface the traffic arrived on. Headings corrected.
-- **The Addons menu opens a page, like every other menu.** It was the one item in the navigation
-  that did not go anywhere when clicked: instead of opening, it unfolded a list of sub-entries. It
-  now opens the first installed add-on page and the rest appear as tabs across the top, which is
-  what every other menu does. Both the dashboard's own rail and the shell's rail changed together.
-- **The resolver health check prefers IPv6 and falls back to IPv4, instead of giving up.** The
-  check watches one DNS server on your network. It could hold only one address, so if you gave it
-  an IPv6 one and the router's IPv6 went away — switched off, or your ISP stopped handing one out
-  — the check simply stopped, quietly. The server can now carry **both** of its addresses: a new
-  optional IPv6 field beside the existing one. IPv6 is tried first, and IPv4 is used whenever IPv6
-  is unavailable or does not answer, so the same server stays watched right through an IPv6
-  outage. Two things it is careful about. It never wastes time on IPv6 it cannot use: whether the
-  router has IPv6 at all, and whether your ISP has actually given it an address, are both checked
-  locally before any query is sent, so a router without IPv6 spends nothing on it. And a server is
-  only counted as down when **every** address it has failed — a broken IPv6 path can no longer
-  push aside a server that is answering perfectly well on IPv4. When it does fail over, both of
-  the server's addresses move down the list together, so lookups are not left going to the half
-  that is still listed. The log says when it is running on the fallback, so a dead IPv6 leg does
-  not stay invisible.
-- **DNS-over-TLS servers can be used in order instead of at random.** With DNS Privacy on, the
-  router rotates between the DoT servers you list, so they share the traffic and none of them is a
-  standby — there is no failover order at all. A new switch on the Failover tab uses them in the
-  order given instead: the first until it stops answering, the rest in reserve. Off by default, so
-  nothing changes unless you ask for it, and the page says so plainly when DNS Privacy is off and
-  the switch has nothing to act on. Worth knowing either way: with DNS Privacy on, these servers
-  replace the router's WAN DNS list, so a filter on your own network is out of the path unless it
-  is itself one of them.
-- **Auto-logout** is now an inactivity timeout everywhere else too, and a session left on a
-  monitoring page no longer stays open indefinitely.** On the rest of the pages the timer was
-  never an idle timer at all: it started counting when the page loaded and nothing you did reset
-  it, so it could log you out in the middle of filling in a long form, while somebody clicking
-  between pages restarted it constantly and might never be logged out. That is why the same
-  setting felt too aggressive to one person and useless to another. Worse, fourteen pages — the
-  traffic monitors, the system log, the bandwidth monitor, the captive portal — switched the timer
-  off while they updated live and never switched it back on, so an admin session parked on one of
-  those never closed at all, and nothing on the router side would have closed it either. The old
-  counter is retired and replaced with a timer that measures what it claims to: it starts again
-  from your last click, keystroke, scroll or touch, and it applies on those monitoring pages too.
-  Pages shown inside another page never run a timer of their own — they tell the page that owns
-  the session you are still there — so watching a panel can no longer log out someone working in
-  the window around it. Off is still off: set it to 0 and nothing arms.
-- **Auto-logout on the dashboard obeys the setting you gave it.** Administration > System has a
-  "Logout after ... minutes" box; the dashboard was not reading it. It had its own idle timer,
-  fixed at 15 minutes since v1.4.7, so a router on the shipped default of 30 logged you out at
-  half that — and a router where auto-logout had been switched **off**, which the same box
-  accepts as 0, logged you out every 15 minutes anyway. The dashboard now reads the value: 0
-  really does mean off, and any other value is honoured to the minute. If the setting is missing
-  or unreadable it falls back to the old 15 minutes rather than leaving an unattended admin
-  session open indefinitely. The build now refuses an image whose dashboard has gone back to a
-  fixed number. Note that the other pages behave differently and are unchanged — their timer
-  counts down from when the page loaded rather than from your last keystroke.
-- **The AiMesh backhaul carrier is no longer parked out from under a node that has just joined.**
-  Backhaul parking (opt-in, off by default) takes the hidden 2.4/5 GHz backhaul networks off the
-  air while no mesh node is paired, and puts them back the moment a search starts. It decided
-  "no node is paired" by reading the router's own paired-node registry — and that registry, like
-  the search status beside it, is written by the closed AiMesh daemon, so there is no way to know
-  from the outside whether it is updated the instant a node finishes joining or a moment later. If
-  it is a moment later, the carrier was taken down within five seconds of a node arriving on it.
-  Two guards close that off without needing the answer: a carrier that has something associated to
-  it is never parked, whatever the registry says — the only thing that associates to a hidden
-  backhaul network is a node — and after a search or onboarding ends, parking waits two minutes
-  before resuming. Both are logged the first time they take effect rather than on every five-second
-  pass. One more transition that used to be silent now says so too: turning a radio off underneath
-  a parked carrier. The guards can only make the feature park less, never more.
+- **The RT-BE92U leaves the fleet.** Development stops here: upstream Asuswrt-Merlin has taken that
+  model on, and a second, less-tested build helps nobody. It is off the build roster from this
+  version, so **v3.1.2 is the last Reaper release for it** — that beta was the final image and stays
+  downloadable. Nothing changes on a running one: its update check keeps pointing at that last build
+  rather than going quiet or offering something that no longer exists. The source, branch and identity
+  overlay are kept rather than deleted, so the decision is reversible. The GT-BE19000 takes its slot.
+- **Routing a device through WireGuard no longer panics the kernel.** Policy routing to an OpenVPN
+  client, the WAN or a block worked; a WireGuard client restarted the router seconds after Apply and
+  Confirm, every time. It was not a reboot but a kernel panic, which is why nothing in the
+  policy-routing code could have caused it and none was found there. WireGuard is the one target
+  needing the accelerator told to leave those flows alone, and the accelerator's list lives in a file
+  the kernel publishes. Reading that file back — which the router does so it only ever removes entries
+  it added, never one belonging to the WireGuard server or a VPN Director rule — hit a fault in the
+  kernel's own handler, and this kernel is built to reboot rather than continue after such a fault.
+  The handler is fixed. Nothing else in the system had ever read that file, which is why it sat
+  untouched. The two neighbouring handlers had a related flaw that could corrupt kernel memory from a
+  malformed write; those are fixed too, and a build-time check refuses to let any of it return. The
+  fault is in code shared by all six models, so each one's source carries the fix and the build
+  refuses any model without it — it sits outside the part of the tree a model port normally copies.
+- **A pre-release says so, in its filename and in the GUI.** Every build is marked `_BETA` unless
+  explicitly built as a release, and the dashboard shows a **Beta** tag beside the version. That
+  direction on purpose: an image only becomes stable when Dev is merged, so a pre-release is what a
+  build normally is, and forgetting the marker can only ever label something too cautiously. Uppercase
+  so it is spottable in a directory listing. Two builds could previously share one filename; the
+  staging step compounded it by seeing a name in use and silently skipping, leaving the older image
+  under that name and the checksum list describing the wrong file. It now compares contents — identical
+  is left alone, different is staged under its own name and said out loud — and always rewrites the
+  checksum list to match what is there.
+- **Warden's outbound block logging is held in place by a test.** This had been fixed and regressed
+  more than once, a sign the guard was in the wrong place: the existing check confirmed the log lines
+  were accepted, but nothing required the outbound ones to be produced, so removing them still looked
+  healthy. The check now covers the whole path — a distinct outbound label, logged before the block,
+  on the same switch as inbound, on a reachable rule, counted correctly, and distinguished on the
+  Logging page — and ships with a suite that reintroduces eleven past and plausible versions of the
+  fault to confirm each is caught.
+- **The router watches its own firewall chains.** With add-on scripts writing rules on the same box,
+  nothing had checked that Reaper's rules were still where they were put. Two checks run every few
+  minutes: that each of Warden's block chains still ends in the block itself with nothing slipped in
+  front, and that Reaper's entry points are still first. A disarmed chain is reported critical; entry
+  points pushed down the list are re-pinned and the displacement logged, so it is visible rather than
+  merely repaired.
+- **Warden says why you are not seeing outbound blocks.** Silence meant four things — outbound
+  filtering off, chain missing, logging off, or nothing having matched — and they were
+  indistinguishable. The last is the ordinary case, since something on your network has to reach *for*
+  a flagged address. The state is logged once whenever it changes, with the count so far. In Firewall
+  → Logging, outbound and router-originated blocks had been folded back into one **WARDEN** label
+  despite having separate log prefixes, and the table headings had the first two columns the wrong way
+  round; both corrected. The **Addons** menu now opens a page like every other menu item.
+- **The resolver health check prefers IPv6 and falls back to IPv4.** Whether the router has IPv6 at
+  all, and whether the ISP has given it an address, are checked locally before any query, so a router
+  without IPv6 spends nothing on it. A server counts as down only when every address it has has
+  failed, so a broken IPv6 path can no longer push aside a server answering on IPv4. On failover both
+  of a server's addresses move down together, and the log says when it is running on the fallback.
+- **DNS-over-TLS servers can be used in order instead of at random.** With DNS Privacy on the router
+  rotates between the DoT servers listed, so none is a standby and there is no failover order. A
+  switch on the Failover tab uses them in the order given: the first until it stops answering, the
+  rest in reserve. Off by default. Note that with DNS Privacy on these servers replace the router's
+  WAN DNS list, so a filter on your own network is out of the path unless it is one of them.
+- **Auto-logout is an inactivity timeout everywhere, including monitoring pages.** Outside the
+  dashboard the timer was never an idle timer: it counted from page load and nothing reset it, so it
+  could log you out mid-form while someone clicking between pages restarted it constantly. Fourteen
+  pages — traffic monitors, system log, bandwidth monitor, captive portal — switched it off while
+  updating live and never back on, so a session parked on one never closed. The counter is replaced
+  with a timer that restarts from the last click, keystroke, scroll or touch and applies on those
+  pages too. Framed pages run no timer of their own; they tell the owning page you are still there.
+  Set it to 0 and nothing arms.
+- **Auto-logout on the dashboard obeys the configured value.** The dashboard was not reading the
+  Administration > System "Logout after" box. It had its own timer fixed at 15 minutes since v1.4.7,
+  so the shipped default of 30 logged you out at half that, and a router with auto-logout switched off
+  (0) logged you out every 15 minutes anyway. It now reads the value: 0 means off, any other value is
+  honoured to the minute, and a missing or unreadable setting falls back to 15 rather than leaving an
+  unattended session open. The build refuses an image whose dashboard has gone back to a fixed number.
+- **AiMesh backhaul parking cannot park a carrier out from under a joining node.** Parking (opt-in,
+  off by default) takes the hidden 2.4/5 GHz backhaul networks off air while no node is paired. It
+  read the router's own paired-node registry, which the closed AiMesh daemon writes, so there is no
+  way to know from outside whether it updates the instant a node finishes joining or a moment later —
+  and if later, the carrier came down within five seconds of a node arriving on it. Two guards close
+  that without needing the answer: a carrier with anything associated to it is never parked, whatever
+  the registry says, since only a node associates to a hidden backhaul network; and parking waits two
+  minutes after a search or onboarding ends. Both log on transition only. Turning a radio off beneath
+  a parked carrier now logs too. The guards can only make the feature park less, never more.
 
 ---
 
-## v3.1.1 — a standby for the router's DNS list, and an OpenVPN certificate that survives a save *(built RT-BE96U)*
+## v3.1.1 — a DNS resolver health check, and an OpenVPN certificate that survives a save *(built RT-BE96U)*
 
 - **A health check for the LAN resolver, and a strict-order switch.** dnsmasq keeps no memory of an
   upstream that stopped answering: in strict order every new name is tried against the first server
-  again and only a client's retransmission moves it along, so an outage of a LAN resolver such as AdGuard
-  costs a client timeout per new name, and a client that lists the router second can need three attempts
-  before the router's second server answers. The new **Reaper resolver health check** on its own **Failover** tab of
-  Administration (between System and Firmware Upgrade; it began the day before as a block on the System
-  page), a native Reaper page with a live Watch / Fail over / Restore strip that lights while the server is
-  down, watches one DNS
-  server you name with a real query every few seconds; after a run of misses it moves that server to the
-  end of the router's upstream list and reloads dnsmasq, so the first server tried is one that answers,
-  and after a run of hits it puts it back first. Interval, timeout, both thresholds, the name queried and
-  whether a refusal counts as alive are all yours to set; the page shows the live state and every switch
-  is in the system log. Beside it, two dnsmasq switches that used to need a config-add file: **Upstream
-  order** (strict order) and **Router DNS cache** off (the router only forwards, so a per-client decision is never served from the
-  router's cache to another client and the filter sees every lookup). Together they let the DHCP DNS be
-  the router alone, which makes the failover complete: no client ever retries. The server you watch can
-  be an IPv4 or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the matching
-  family and the server is matched in the router's list by value, whatever spelling the list uses; an
-  IPv6 server is refused by the page while IPv6 is off, and a daemon that meets one that way idles with one
-  log line rather than pretending to watch.
-- **The dashboard clock shows its seconds in red again.** The seconds have their own colour, and on
-  the dashboard they had quietly gone back to the same bone as the rest of the time, while every other
-  page still showed them correctly. A tidy-up in v3.0.9 removed the rule that colours them after a check
-  that looked for the class inside the page and did not find it: the element that carries it is created
-  while the page runs, by the shared script that drives the clock, so it appears nowhere in the page
-  itself. The dashboard and the shell each draw their own copy of that top bar, and only the dashboard's
-  copy was swept, which is why the fault appeared in exactly one place. The rule is back, and the build
-  now refuses an image whose clock is missing it.
-- **Gatekeeper no longer calls a Wi-Fi 6 device "Wired", and a multi-link client is one row again.**
-  The router's live client list records a multi-link client under the address of the individual radio
-  link it is using, and names the device's real address in a separate field. Everything else — the
-  DHCP lease, the address table, the device's name, its access rule — is filed under that real
-  address, and nothing was reading the field that connects the two. So the device was simply absent
-  from the list as far as those pages were concerned: Gatekeeper kept the guess it had cached at first
-  sight, which for such a client is "wired with no band", and showed a 6 GHz PC as Wired. The Devices
-  page mostly escaped it because it also classifies from the bridge's own forwarding table. The same
-  gap stopped the page folding a client's per-band links into one device, because the only other clue
-  it used is a line the Wi-Fi driver prints for some multi-link clients and not others. All of it now
-  reads the field that ties a link to its device, and the wired list still wins over a stale wireless
-  entry, so a device that moved onto a cable is never dragged back to Wi-Fi. A band that was cached
-  once and then went stale is corrected too: Gatekeeper records the band the first time it sees a
-  device on a radio and never revised it, so a client that moved from 5 GHz to 6 GHz read 5 GHz for
-  good — the radio no longer lists it under the address the record is filed against. The live list is
-  now consulted for those as well, but only its entry for this router's own radios, so a mesh node's
-  second-hand view still cannot overrule what the router saw itself.
-- **Gatekeeper and Devices no longer call a device "Unknown device" because dnsmasq handed its name to
-  another one.** dnsmasq lets one lease hold a given hostname at a time: when several iPhones all
-  announce "iPhone", the newest keeps the name and the others' lease lines drop to `*`, and every Reaper
-  name reader took a device's self-reported name from that file, so those devices sat in Gatekeeper as
-  "Unknown device" and stayed so after approval. The lease-change script now records the name each
-  client announced, per MAC, in a small tmpfs store that Gatekeeper's watcher and both pages read when the
-  lease file has nothing. A device that announces no name at all (a printer, a Fire TV, a Lutron hub)
-  falls back to the vendor label the stock network map already shows for it, and the Devices page marks
-  that source as *vendor* rather than *lease*. Names still come from the client and are still escaped on
-  the way out; the store keeps 32 printable characters per device. Marked for the verify markers.
-- **An empty box on the VPN page no longer deletes a certificate, and a server that has already lost
-  one can be repaired.** Saving the OpenVPN server page sent every certificate field to the router,
-  and the router read an empty field as an instruction to delete the key it was holding. One save with
-  one empty box destroyed a working server certificate, without a word in the log — and nothing could
-  put it back: the firmware only generates a new set when the authority, the server key and the
-  certificate are *all* missing, so losing exactly one left a server that would not start and a page
-  with no button that would help. The only way out was to wipe the VPN server, which makes a new
-  certificate authority and invalidates every client profile already handed out. An empty field is now
-  ignored and the stored key kept, with a line in the log saying so; deleting a key is something the
-  firmware has to ask for by name, which is what happens when you reset the server yourself. A router
-  found in the broken state — authority present, certificate gone — rebuilds just the server's own
-  certificate from the authority it still has, checks it against that authority before installing it,
-  and never touches the authority itself, so existing client profiles keep working. If a required key
-  is missing the log now names which one and whether the server can start, instead of failing in
-  silence. Found from a field report; the OpenSSL 3.5 upgrade was suspected and tested clean, so this
-  is an old fault that was simply waiting to be hit.
-- **The Cancel button on the firmware page cancels.** While an image uploads or downloads, the page
-  covers itself so a half-finished flash cannot be clicked into. That cover has an escape button, and
-  it used to say *Close* and only hide the cover — the transfer carried on underneath. During an
-  upload it now says **Cancel** and stops the upload; the router receives an incomplete image, which
-  cannot pass its own check, so nothing is written. It appears immediately rather than after 25
-  seconds (that delay is there so a *write* cannot be fumbled in its first moments, and during an
-  upload there is no write yet), and it is taken away the moment the last byte has gone, because from
-  then on the router may already be checking or writing the image and stopping the browser cannot
-  recall it. During a download from the update server the button still says *Close* and still only
-  hides the cover: that download runs on the router itself, in one piece with the verify and the
-  flash, and there is nothing there to interrupt. Leaving people with no way out of a half-hour wait
-  would be worse, so the button stays — saying what it actually does.
+  again and only a client retransmission moves it along, so an outage of a LAN resolver such as
+  AdGuard costs a client timeout per new name, and a client that lists the router second can need
+  three attempts before the router's second server answers. The **Reaper resolver health check**, on
+  its own **Failover** tab under Administration, queries one named DNS server every few seconds; after
+  a run of misses it moves that server to the end of the router's upstream list and reloads dnsmasq,
+  and after a run of hits it restores it. Interval, timeout, both thresholds, the name queried and
+  whether a refusal counts as alive are configurable; the page carries a live Watch / Fail over /
+  Restore strip and every switch is logged. Beside it, two dnsmasq switches that previously needed a
+  config-add file: **Upstream order** (strict order) and **Router DNS cache** off, so the router only
+  forwards and a per-client decision is never served from its cache to another client. Together they
+  let the DHCP DNS be the router alone, which makes failover complete. The watched server may be IPv4
+  or, while IPv6 is enabled, IPv6: the probe uses the matching family and the server is matched in the
+  router's list by value whatever spelling the list uses. An IPv6 server is refused by the page while
+  IPv6 is off, and a daemon that meets one that way idles with one log line rather than pretending to
+  watch.
+- **Gatekeeper no longer calls a Wi-Fi 6 device "Wired", and a multi-link client is one row.** The
+  live client list records a multi-link client under the address of the individual radio link in use
+  and names the device's real address in a separate field. Everything else — DHCP lease, address
+  table, device name, access rule — is filed under the real address, and nothing read the field
+  connecting the two, so the device was effectively absent: Gatekeeper kept its first-sight guess,
+  which for such a client is "wired with no band", and showed a 6 GHz PC as Wired. The Devices page
+  mostly escaped because it also classifies from the bridge FDB. The same gap stopped per-band links
+  folding into one device. All of it now reads the linking field, and the wired list still wins over a
+  stale wireless entry so a device moved onto a cable is not dragged back. A stale cached band is
+  corrected too: Gatekeeper recorded the band at first sight and never revised it, so a client moving
+  from 5 GHz to 6 GHz read 5 GHz for good. The live list is consulted for those as well, but only its
+  entry for this router's own radios, so a mesh node's second-hand view cannot overrule what the
+  router saw itself.
+- **A device is no longer "Unknown" because dnsmasq gave its name to another lease.** dnsmasq lets one
+  lease hold a hostname at a time: when several iPhones announce "iPhone", the newest keeps the name
+  and the others drop to `*`. Every Reaper name reader took the self-reported name from that file, so
+  those devices sat as "Unknown device" and stayed so after approval. The lease-change script now
+  records the announced name per MAC in a small tmpfs store that Gatekeeper's watcher and both pages
+  read when the lease file has nothing. A device announcing no name falls back to the vendor label the
+  stock network map already shows, and the Devices page marks that source as *vendor* rather than
+  *lease*. Names still come from the client and are still escaped on output; the store keeps 32
+  printable characters per device.
+- **An empty box on the VPN page no longer deletes a certificate, and a stripped server is
+  repairable.** Saving the OpenVPN server page sent every certificate field to the router, and the
+  router read an empty field as an instruction to delete the key it held. One save with one empty box
+  destroyed a working server certificate with nothing in the log, and nothing could restore it: the
+  firmware only generates a new set when the authority, server key and certificate are *all* missing,
+  so losing exactly one left a server that would not start and no button that helped. The only way out
+  was wiping the VPN server, which makes a new CA and invalidates every client profile issued. An
+  empty field is now ignored and the stored key kept, with a log line; deleting a key must be asked
+  for by name, which is what a server reset does. A router in the broken state — authority present,
+  certificate gone — rebuilds only the server certificate from the authority it still has, verifies it
+  against that authority before installing, and never touches the authority, so existing client
+  profiles keep working. A missing required key is now named in the log along with whether the server
+  can start. The OpenSSL 3.5 upgrade was suspected and tested clean; this is an old fault.
+- **The Cancel button on the firmware page cancels.** While an image uploads or downloads the page
+  covers itself so a half-finished flash cannot be clicked into. That cover's escape button said
+  *Close* and only hid the cover while the transfer continued underneath. During an upload it now says
+  **Cancel** and stops the upload, so the router receives an incomplete image that cannot pass its own
+  check and nothing is written. It appears immediately rather than after 25 seconds — that delay
+  protects a *write*, and during an upload there is no write yet — and is withdrawn once the last byte
+  has gone, since from then the router may be verifying or writing. During a download from the update
+  server it still says *Close* and still only hides the cover: that download runs on the router, in one
+  piece with the verify and flash, with nothing to interrupt.
+- **The dashboard clock shows its seconds in red again.** A v3.0.9 tidy-up removed the rule colouring
+  them, after a check that looked for the class inside the page and did not find it — the element
+  carrying it is created at run time by the shared clock script, so it appears nowhere in the page
+  source. The dashboard and the shell each draw their own copy of that bar and only the dashboard's was
+  swept, which is why the fault appeared in exactly one place. The rule is back and the build refuses an
+  image whose clock is missing it.
 
-## v3.1.0 — OpenSSL 3.5, second attempt: the library every TLS path stands on *(built RT-BE96U)*
+## v3.1.0 — OpenSSL 3.5, second attempt *(built RT-BE96U)*
 
-- **The firmware moves from OpenSSL 1.1.1w (end of life since September 2023) to OpenSSL 3.5.8.**
-  Every source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
-  inadyn, Tor, vsftpd, lighttpd, net-snmp, the Reaper Advisor daemon and 110 more — now links the
-  real 3.5 library directly. The closed ASUS binaries that cannot be rebuilt (AiMesh's cfg_server and
-  friends, the Let's Encrypt helper, the lighttpd modules) keep their OpenSSL 1.1 ABI through a small
-  forwarding shim that hands every call to 3.5. The port is Asuswrt-Merlin upstream work by **RSDNTWK**
-  (the shim and the 3.5 integration) and **Eric "Merlin" Sauvageau** (the parallel-compile fix),
-  carried as cherry-picks with their authorship intact; the Reaper Advisor daemon links 3.5 alone.
-- **Why the first attempt (v3.0.3) broke Wi-Fi and this one does not.** hostapd had been compiled in
-  the wireless SDK tree all along; its link rule never sees a library change, so the September 1 image
-  shipped a hostapd still bound to the 1.1 name — which now resolved to the shim, which does not carry
-  the elliptic-curve functions WPA3-SAE needs. This rung purges every object compiled against the old
-  headers before the swap — including the ones git ignores, which the first purge could not see — and
-  adds a release gate (check 22) that names the only binaries allowed to depend on the 1.1 name in a
-  3.5 image and fails on any other. hostapd is required by that gate to link `libcrypto.so.3`
-  outright, verified with `readelf`, not inferred from a green build.
-- **Proven on the RT-BE96U before it was written up:** 31 minutes on the test image with hostapd
-  never restarting, five stations through WPA3-SAE on 6 GHz at 320 MHz, HTTPS UI and outbound TLS
-  working, the router's certificate unchanged across the flash. A pre-flash kit now exists that
-  loader-traces every consumer of the new image on the running router from `/tmp` before anything
-  is flashed.
-- **Licensing.** OpenSSL 3.x is Apache-2.0; its text is added under `LICENSES/`, and the notices no
-  longer misdescribe OpenSSL as BSD/MIT. The move resolves a conflict rather than creating one:
-  1.1.1's OpenSSL/SSLeay advertising clause was never GPL-compatible.
-- **First boot is one box.** The security banner's Wi-Fi step used to open the stock Wireless page,
-  which shows the primary radios' settings; on this build those become the hidden AiMesh backhaul and
-  the network people join lives on the fronthaul VIFs the mesh daemon rebuilds afterwards. A factory box
-  now gets one Reaper page: network name, Wi-Fi password, router login password. It writes what the
-  stock apply writes on every band (one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect
-  on) and fires the same restart, so the mesh daemon's split is unchanged; the login change follows the
-  same committed path as the password page. Keys under 8 characters are refused in the page and in the
-  router, the rule that saved v2.9.1. The stock Wireless page is untouched for engineers, and a new
-  release check locks the whole chain - page, gate, banner target, 25 language packs - so it cannot
-  quietly regress. The security banner that points at it is down to one row and one button: while
-  both the login and the Wi-Fi are factory it says so once and offers "Set up this router"; only the
-  half that remains gets its own button after that.
+- **OpenSSL 1.1.1w (end of life since September 2023) is replaced by OpenSSL 3.5.8.** Every
+  source-built consumer — hostapd and wpa_supplicant, httpd, curl and wget, OpenVPN, strongSwan,
+  inadyn, Tor, vsftpd, lighttpd, net-snmp, the Reaper Advisor daemon and 110 more — links the real 3.5
+  library directly. The closed ASUS binaries that cannot be rebuilt (AiMesh's cfg_server and friends,
+  the Let's Encrypt helper, the lighttpd modules) keep their OpenSSL 1.1 ABI through a forwarding shim
+  that hands every call to 3.5. The port is Asuswrt-Merlin upstream work by **RSDNTWK** (the shim and
+  the 3.5 integration) and **Eric "Merlin" Sauvageau** (the parallel-compile fix), carried as
+  cherry-picks with authorship intact.
+- **Why the first attempt (v3.0.3) broke Wi-Fi and this one does not.** hostapd is compiled in the
+  wireless SDK tree, whose link rule never sees a library change, so the September 1 image shipped a
+  hostapd still bound to the 1.1 name — which resolved to the shim, which does not carry the
+  elliptic-curve functions WPA3-SAE needs. This rung purges every object compiled against the old
+  headers before the swap, including the git-ignored ones the first purge could not see, and adds
+  release check 22, which names the only binaries allowed to depend on the 1.1 name in a 3.5 image and
+  fails on any other. hostapd is required by that gate to link `libcrypto.so.3` outright, verified with
+  `readelf` rather than inferred from a green build.
+- **Validated on the RT-BE96U before write-up:** 31 minutes on the test image with hostapd never
+  restarting, five stations through WPA3-SAE on 6 GHz at 320 MHz, HTTPS UI and outbound TLS working,
+  the router's certificate unchanged across the flash. A pre-flash kit loader-traces every consumer of
+  a new image from `/tmp` on the running router before anything is flashed.
+- **Licensing.** OpenSSL 3.x is Apache-2.0; its text is added under `LICENSES/` and the notices no
+  longer misdescribe OpenSSL as BSD/MIT. This resolves a conflict rather than creating one: 1.1.1's
+  OpenSSL/SSLeay advertising clause was never GPL-compatible.
 - **Packaging.** The 3.5 source (5,767 files) is too large to publish as a patch; it ships as the
   hash-pinned `overlays/openssl-3.5-source.tar.gz`, unpacked by the public build after the patch
-  series, with only the integration diff and the shim in `patches/`. The reproduce recipe in the
-  docs gains that one step.
-- **Factory reset takes the short road, and the page says how to get back.** Three waits came out of
-  the reset chain, none of them doing work: the web server no longer waits up to two minutes for a
-  USB application to stop when none is mounted; the reset request is handed to the service manager
-  in the form that waits for it rather than the one that gives up after 15 seconds; and the reset
-  routine takes the reboot lock first, the way a plain reboot does, so the shutdown can never spin
-  half a minute on a lock left by a daemon that died mid-write. The router logs a timestamp at each
-  step so the next report carries numbers. The Backup page changed too: the veil now says that the
-  router comes back on its open factory network with its default address, and links to it, instead
-  of polling in silence; it no longer mistakes the few seconds the web server is busy for the reboot
-  and bounces to a login page that is about to vanish; and if the router has not gone down within
-  three minutes it says so and hands the page back. A new release check pins all three files.
-- **AiMesh backhaul parking stays in sync with wireless restarts.** Any apply that restarts the
-  radios, from the Network or Wireless page or from the mesh daemon itself, re-creates the parked
-  carriers, and the parking service kept believing they were down. It now checks the live state on
-  every pass, logs that the carrier came back, and parks it again within five seconds.
-- **Phones get the full width.** Below 680px the shell collapses its rail into a sticky icon strip
-  under the header, the way the dashboard already did, and the page takes the whole screen; stock
-  pages framed in the shell pan sideways until each is replaced by a native one. Two small labels
-  with it: the Connections page no longer calls a weighted class "WRR" (every port has run strict
-  priority since v2.5.4), and the Advisor's client-pin hint no longer clips inside its box.
-- **The update check learns a beta channel.** A **Beta Channel** switch on the Firmware page (off by
-  default) lets the check also read the Dev branch's beta line in the update manifest. The rule is
-  the owner's: a beta is offered only to a router that already runs the newest stable release, and
-  only when the beta's number is higher than that stable's; when the stable release carries the same
-  number, only the stable one is offered. A beta offer is labelled as one on the page and on the
-  dashboard badge, its release note opens with the beta warning, and the previous firmware stays in
-  the standby partition as always. On the publishing side a Dev-branch publish now writes a separate
-  `MODEL#VARIANT-beta#` line into the manifest and leaves the stable line untouched; firmware older
-  than v3.1.0 cannot match that line and keeps seeing stable releases only. A release check pins the
-  chain (check script, note script, the nvram key, the page, 25 language packs).
-- **The QoS page stops explaining Weighted classes.** The hint under the class list, and the "Priority
-  vs Weighted" explainer below it, described a scheduler mode that was removed in v2.5.4 and cannot be
-  selected; the hint now says only that classes are served strictly top to bottom, in all 25 language
-  packs, and the explainer is gone.
+  series, with only the integration diff and the shim in `patches/`.
+- **First boot is one page.** The security banner's Wi-Fi step opened the stock Wireless page, which
+  shows the primary radios — on this build those become the hidden AiMesh backhaul, while the network
+  people join lives on the fronthaul VIFs the mesh daemon rebuilds afterwards. A factory box now gets
+  one Reaper page: network name, Wi-Fi password, router login password. It writes what the stock apply
+  writes on every band (one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on) and
+  fires the same restart, so the mesh daemon's split is unchanged; the login change follows the same
+  committed path as the password page. Keys under 8 characters are refused in the page and in the
+  router, the rule that saved v2.9.1. The stock Wireless page is untouched for engineers, and a release
+  check locks the chain — page, gate, banner target, 25 language packs. The banner is down to one row
+  and one button.
+- **Factory reset takes the short road.** Three waits came out of the reset chain, none doing work:
+  httpd no longer waits up to two minutes for a USB application to stop when none is mounted; the reset
+  request is handed to the service manager in the form that waits for it rather than the one that gives
+  up after 15 seconds; and the reset routine takes the reboot lock first, as a plain reboot does, so
+  shutdown cannot spin on a lock left by a daemon that died mid-write. Each step is timestamped in the
+  log. The Backup page now states that the router returns on its open factory network at its default
+  address and links to it, instead of polling in silence; it no longer mistakes the few seconds httpd is
+  busy for the reboot; and if the router has not gone down within three minutes it says so and hands the
+  page back.
+- **The update check learns a beta channel.** A **Beta Channel** switch on the Firmware page, off by
+  default, lets the check also read the Dev branch's beta line in the update manifest. A beta is offered
+  only to a router already running the newest stable release, and only when the beta's number is higher;
+  when the stable release carries the same number, only the stable one is offered. A beta offer is
+  labelled on the page and on the dashboard badge, its release note opens with the beta warning, and the
+  previous firmware stays in the standby partition. A Dev publish writes a separate `MODEL#VARIANT-beta#`
+  line and leaves the stable line untouched; firmware older than v3.1.0 cannot match that line and keeps
+  seeing stable releases only.
+- **AiMesh backhaul parking stays in sync with wireless restarts.** Any apply that restarts the radios
+  re-creates the parked carriers, and the parking service kept believing they were down. It now checks
+  live state on every pass, logs that the carrier returned, and parks it again within five seconds.
+- **Phones get the full width.** Below 680px the shell collapses its rail into a sticky icon strip under
+  the header, as the dashboard already did, and the page takes the whole screen; stock pages framed in
+  the shell pan sideways until each is replaced by a native one.
+- **Two label corrections.** The Connections page no longer calls a weighted class "WRR" — every port
+  has run strict priority since v2.5.4 — and the QoS page's "Priority vs Weighted" explainer, which
+  described a scheduler mode removed in v2.5.4 and unselectable since, is gone; the hint now says only
+  that classes are served strictly top to bottom, in all 25 language packs. The Advisor's client-pin
+  hint no longer clips inside its box.
 
 ## v3.0.9 — Low-hanging fruit *(built RT-BE96U)*
 

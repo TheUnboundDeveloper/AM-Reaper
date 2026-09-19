@@ -312,7 +312,7 @@ router.
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 `a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
-deliberately excludes. **Cutting a rung is now one command — [`../build-scripts/cut_rung.sh`](../build-scripts/cut_rung.sh)** — which does the export, identity normalization, gapless check, full-series replay, provenance update, overlay-overlap check, CI pin and PII scan in order; the manual recipe below is what it automates, kept for when something needs doing by hand.
+deliberately excludes. **Cutting a rung is now one command — `cut_rung.sh` (maintainer tooling, kept outside this repo)** — which does the export, identity normalization, gapless check, full-series replay, provenance update, overlay-overlap check, CI pin and PII scan in order; the manual recipe below is what it automates, kept for when something needs doing by hand.
 It was 535 at v2.7.6; 528 at v2.7.3; 424 at v2.4.1; 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);
 it was 215 at v1.7.7, and the 190-patch v1.6.6 run on 2026-07-19 was validated
 `git am --keep-cr` clean onto a fresh `a7ebfa133a` worktree with a matching

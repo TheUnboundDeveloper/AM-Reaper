@@ -48,7 +48,7 @@ sibling branches at once, and neither is on GitHub.
 
 ```bash
 wsl -d Ubuntu-20.04 -u reaper -- \
-  bash /mnt/c/Users/natha/AppData/Roaming/VSC/ASUS/ASUS-Merlin-Reaper/build-scripts/cut_fleet.sh \
+  bash /mnt/c/Users/<user>/AppData/Roaming/VSC/ASUS/asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh \
   --version vX.Y.Z
 ```
 

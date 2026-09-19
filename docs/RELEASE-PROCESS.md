@@ -73,7 +73,7 @@ or a release with no reproducible provenance.
 One command does all five, plus the sibling fan-out:
 
 ```bash
-./build-scripts/cut_fleet.sh --version v2.3.4
+../asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh --version v2.3.4   # maintainer tooling, outside this repo
 ```
 
 `cut_fleet.sh` is the entry point. Its preflight checks the documentation's
@@ -255,7 +255,7 @@ kept by this rule and nothing else:
 2. **The previous stable line**, as the rollback target.
 3. Betas are disposable the moment the next beta or their stable ships.
 
-`build-scripts/prune_releases.sh` derives the keep-set from the live manifest,
+`prune_releases.sh` (maintainer tooling, outside this repo) derives the keep-set from the live manifest,
 prints the plan, and deletes only with `--yes`, one release at a time and
 **never with `--cleanup-tag`** — tags are never deleted. It needs `gh auth login`
 as the repository owner. First applied 2026-09-12: 166 releases (28 versions,

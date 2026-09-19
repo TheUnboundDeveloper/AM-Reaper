@@ -12,7 +12,7 @@ pre-release published under a stable name:
   2. build-scripts/ci/container_build.sh  computes the name it will look for
   3. .github/workflows/release.yml        resolves tag -> channel -> file token,
                                           and refuses assets that disagree
-  4. build-scripts/stage_release.ps1      stages by channel (checked by eye; its
+  4. stage_release.ps1 (maintainer tooling, outside this repo) stages by channel (its
                                           -Channel parameter is asserted present)
 
 Note the two deliberate spellings: the TAG segment is "-beta" (lowercase,
@@ -153,11 +153,24 @@ for chan, files, accept in (
 # =========================================================================
 print("\n== 4. staging takes a channel ==")
 # =========================================================================
-ps = read("build-scripts/stage_release.ps1")
-check("[ValidateSet('Beta', 'Stable')]" in ps and "$Channel = 'Beta'" in ps,
-      "stage_release.ps1 has -Channel, defaulting to Beta")
-check("$chanTag = if ($Channel -eq 'Beta') { '_BETA' } else { '' }" in ps,
-      "stage_release.ps1 maps the channel to the same _BETA file token")
+# stage_release.ps1 is maintainer tooling kept OUTSIDE this repo (2026-09-19): the build
+# box's asuswrt-merlin.ng/Build_Scripts folder, a sibling of this checkout, or the folder
+# named by REAPER_PRIVATE_TOOLING. On a CI runner it is absent and this section is skipped
+# (the three in-repo writers above were still checked); on the build box it still runs.
+_priv = [os.environ.get("REAPER_PRIVATE_TOOLING", ""),
+         os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir,
+                      "asuswrt-merlin.ng", "Build_Scripts")]
+_ps = next((os.path.join(c, "stage_release.ps1") for c in _priv
+            if c and os.path.isfile(os.path.join(c, "stage_release.ps1"))), None)
+if _ps is None:
+    print("skip: stage_release.ps1 is maintainer tooling outside this repo and is not present here")
+else:
+    with open(_ps, encoding="utf-8", errors="replace") as _f:
+        ps = _f.read()
+    check("[ValidateSet('Beta', 'Stable')]" in ps and "$Channel = 'Beta'" in ps,
+          "stage_release.ps1 has -Channel, defaulting to Beta")
+    check("$chanTag = if ($Channel -eq 'Beta') { '_BETA' } else { '' }" in ps,
+          "stage_release.ps1 maps the channel to the same _BETA file token")
 
 print("\n%d failure(s)" % len(fails))
 sys.exit(1 if fails else 0)

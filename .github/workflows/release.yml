@@ -1,7 +1,7 @@
 name: Publish release
 
 # Releases are PER-MODEL. Publishing is: stage the firmware into releases/
-# (build-scripts/stage_release.ps1), push main, then push a per-model tag of the
+# (the maintainer's stage_release.ps1, kept outside this repo), push main, then push a per-model tag of the
 # form  v<version>-<MODEL>  e.g.  v2.1.2-RT-BE96U  /  v2.1.2-GT-BE98_PRO.
 # This workflow parses the version and model out of the tag, picks up that
 # model's staged images, verifies their checksums, extracts the CHANGELOG
@@ -122,7 +122,7 @@ jobs:
 
       # Two sources, in order. Either way the checksums are verified here before
       # anything is attached to a release.
-      #   1. in-tree  — images staged by build-scripts/stage_release.ps1 (the
+      #   1. in-tree  — images staged by the maintainer's stage_release.ps1 (the
       #                 maintainer's local flow, unchanged)
       #   2. artifacts — the clean-room build that CALLED this workflow. Those
       #                 images are never committed in-tree: release assets do not
@@ -177,7 +177,7 @@ jobs:
             imgs=("$dl"/firmware-"$M"-*/*.pkgtb)
             if [ ${#imgs[@]} -eq 0 ]; then
               echo "::error::no images for model '$M' version '$V' — not in releases/*/*-REAPER-$V/ and not in run $SRC_RUN's artifacts"
-              echo "   in-tree route: stage with build-scripts/stage_release.ps1 and push before tagging"
+              echo "   in-tree route: stage with the maintainer's stage_release.ps1 (private tooling, outside this repo) and push before tagging"
               echo "   CI route:      call this workflow from a green public-build run, or dispatch it with run_id set to that build run"
               exit 1
             fi
@@ -212,7 +212,7 @@ jobs:
           if [ "$bad" = 1 ]; then
             echo "   a $CHANNEL release must carry ${FTOK:-no channel token} in its image filenames."
             echo "   Rebuild on the right branch (Dev = beta, main = stable), or stage with"
-            echo "   build-scripts/stage_release.ps1 -Channel $( [ "$CHANNEL" = stable ] && echo Stable || echo Beta )."
+            echo "   stage_release.ps1 (maintainer tooling) -Channel $( [ "$CHANNEL" = stable ] && echo Stable || echo Beta )."
             exit 1
           fi
           echo "   channel OK: $CHANNEL, $(ls "$stage"/*.pkgtb | wc -l) image(s)"

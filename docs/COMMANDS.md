@@ -63,10 +63,15 @@ printed.
 
 ## Cutting
 
+The cut scripts are maintainer tooling and are not in this repo. They live beside this
+checkout on the build box, in `asuswrt-merlin.ng/Build_Scripts/`, and read this repo through
+`REAPER_LEAN` (default: the sibling `ASUS-Merlin-Reaper` checkout). The gates they call
+(`reaper_hiddencheck.py`, `reaper_docs.py`, `patch_count.sh`, `ci/check_overlays.py`) stay here.
+
 ### `cut_rung.sh` — one branch
 
 ```bash
-build-scripts/cut_rung.sh --version v2.7.8
+../asuswrt-merlin.ng/Build_Scripts/cut_rung.sh --version v2.7.8
 ```
 
 Exports the commits since the previous rung as patches (doc hunks excluded),
@@ -81,7 +86,7 @@ out to the other models.
 ### `cut_fleet.sh` — the golden path
 
 ```bash
-build-scripts/cut_fleet.sh --version v2.7.8
+../asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh --version v2.7.8
 ```
 
 The entry point for a release. It runs, in this order and no other:
@@ -130,7 +135,7 @@ version, the provenance and the CI, and unpicking one is real work. To test:
 | `gen_provenance.sh <tree>` | Record this build's source-tree hashes and logs into `provenance/`. |
 | `ci/check_overlays.py overlays` | Does every sibling overlay contain identity changes *only*? Run in CI before the build matrix, so a bad overlay costs seconds rather than twelve builds. |
 | `refresh_manifest.py` | Point the on-router update check at the newest published release. **A manual publish does not do this** — skip it and routers keep reporting "up to date". |
-| `sync_local_engine.sh [--check]` | Is the build box running the same engine as CI? Drift here shipped a broken IPSec stack for three weeks. |
+| `sync_local_engine.sh [--check]` (maintainer tooling, outside this repo) | Is the build box running the same engine as CI? Drift here shipped a broken IPSec stack for three weeks. |
 
 ---
 

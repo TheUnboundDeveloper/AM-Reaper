@@ -1,6 +1,6 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.9** · 2026-09-17 <!--@stamp-->
+> **Doc status:** current as of **v3.1.9** · 2026-09-19 <!--@stamp-->
 
 **Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.1.9 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
@@ -659,7 +659,7 @@ Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, 
 #### 4.1.13 Limits, and things deliberately not built
 
 - **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
-- **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2; pending metal confirmation).
+- **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2).
 - The Status tab shows both of those layers' state, and the Rules tab links to them.
 
 ### 4.2 Gatekeeper
@@ -1304,6 +1304,7 @@ virtual networks on each band keep serving while the carriers are down, which wa
 RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
 rather than speed.
 
+<a id="411-long-term-storage-data-export-and-the-reaper-settings-backup"></a>
 ### 4.11 Long-Term Storage and Data Export
 
 These share the **Storage** page under System Log.
@@ -1333,6 +1334,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 
 The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
 
+<a id="414a-resolver-health-check-administration--failover-v311"></a>
 ### 4.14a Resolver health check (Administration → DNS Failover, v3.1.1)
 
 dnsmasq, the router's resolver, keeps no memory of an upstream that stopped answering. In strict order it

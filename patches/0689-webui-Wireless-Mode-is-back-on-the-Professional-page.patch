@@ -1,0 +1,547 @@
+From 0490109d6026caae5cbc396a5702754390ddfbf4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 19 Sep 2026 18:53:04 -0400
+Subject: [PATCH] webui: Wireless Mode is back on the Professional page, with
+ the coupling it never had
+
+Per radio, stock's own option sets: 2.4 GHz Auto / N only / Legacy; 5 GHz Auto /
+AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only. A stored value outside
+the set is shown as itself.
+
+Every mode except Auto, N/AC/AX mixed and AX only makes bring-up write
+wlN_11ax=0 (no HE, so no EHT either), and nothing writes it back: rc/init.c
+seeds 11ax only when unset and stock hides both selects on Wi-Fi 7 platforms.
+Apply now writes wlN_11ax=1 whenever the mode being applied allows HE and the
+stored value is not 1, so a radio once set to N only recovers.
+
+Locks per radio from all masters: OFDMA parked unless the mode allows HE,
+AMPDU RTS and RTS Threshold parked in Legacy, Disable 802.11b parked unless
+Auto. Apply confirms a mode that drops HE (new RWFP_39, 25 packs) and AX only
+with stock's note. nmode_x and 11ax return to the httpd snapshot list.
+---
+ release/src/router/httpd/web.c            |  14 +--
+ release/src/router/www/BR.dict            |   1 +
+ release/src/router/www/CN.dict            |   1 +
+ release/src/router/www/CZ.dict            |   1 +
+ release/src/router/www/DA.dict            |   1 +
+ release/src/router/www/DE.dict            |   1 +
+ release/src/router/www/EN.dict            |   1 +
+ release/src/router/www/ES.dict            |   1 +
+ release/src/router/www/FI.dict            |   1 +
+ release/src/router/www/FR.dict            |   1 +
+ release/src/router/www/HU.dict            |   1 +
+ release/src/router/www/IT.dict            |   1 +
+ release/src/router/www/JP.dict            |   1 +
+ release/src/router/www/KR.dict            |   1 +
+ release/src/router/www/MS.dict            |   1 +
+ release/src/router/www/NL.dict            |   1 +
+ release/src/router/www/NO.dict            |   1 +
+ release/src/router/www/PL.dict            |   1 +
+ release/src/router/www/RO.dict            |   1 +
+ release/src/router/www/RU.dict            |   1 +
+ release/src/router/www/Reaper_WiFiPro.asp | 112 ++++++++++++++++------
+ release/src/router/www/SL.dict            |   1 +
+ release/src/router/www/SV.dict            |   1 +
+ release/src/router/www/TH.dict            |   1 +
+ release/src/router/www/TR.dict            |   1 +
+ release/src/router/www/TW.dict            |   1 +
+ release/src/router/www/UK.dict            |   1 +
+ 27 files changed, 114 insertions(+), 37 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 23512c838a..4427be56ae 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -41051,15 +41051,17 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+  * reaper 2026-09-19: "timesched" added. The page never writes it; it marks a
+  * radio the wireless scheduler owns so the radio toggle can say so. Same day,
+  * trimmed to what the page still renders (rows removed 2026-09-18/19: 11be,
+- * nmode_x, gmode_protection, turbo_qam, ampdu_mpdu, btc_mode, txbf, itxbf,
+- * wme) - every wlN_* read here is a wlcsm round trip, so unread keys cost.
++ * gmode_protection, turbo_qam, ampdu_mpdu, btc_mode, txbf, itxbf, wme) -
++ * every wlN_* read here is a wlcsm round trip, so unread keys cost.
+  * "mumimo" stays: the page derives it from ofdma and compares before writing.
++ * "nmode_x" is back (owner, 2026-09-19) and "11ax" rides with it read-only:
++ * the page writes 11ax=1 when a mode that allows HE is applied over a stored 0.
+  */
+ static const char *wlpro_nv_fields[] = {
+-	"ampdu_rts", "atf", "bcn", "bss_maxassoc", "dtim", "frag", "frameburst",
+-	"igs", "mbo_enable", "mumimo", "ofdma", "plcphdr", "radio", "rateset",
+-	"rts", "timesched", "twt", "txpower", "user_rssi", "wme_apsd",
+-	"wme_no_ack", NULL
++	"11ax", "ampdu_rts", "atf", "bcn", "bss_maxassoc", "dtim", "frag",
++	"frameburst", "igs", "mbo_enable", "mumimo", "nmode_x", "ofdma",
++	"plcphdr", "radio", "rateset", "rts", "timesched", "twt", "txpower",
++	"user_rssi", "wme_apsd", "wme_no_ack", NULL
+ };
+ 
+ static int
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index eb232ee09c..b8846ed122 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Modo legado
+ RWFP_36=Não aplicável a esta banda
+ RWFP_37=Um valor está fora do intervalo:
+ RWFP_38=a
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=amostras
+ RWIF_63=rádio desligado
+ RWIF_64=varrendo
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index f2cd7fd708..e54f7b3e5f 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=传统模式
+ RWFP_36=不适用于此频段
+ RWFP_37=某个值超出范围：
+ RWFP_38=至
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=采样
+ RWIF_63=射频关闭
+ RWIF_64=扫描中
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 192d9ba055..02ca6b7916 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Starší režim
+ RWFP_36=Nevztahuje se na toto pásmo
+ RWFP_37=Hodnota je mimo rozsah:
+ RWFP_38=až
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=vzorky
+ RWIF_63=rádio vypnuto
+ RWIF_64=skenování
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index cf0b161f3c..6326f2d92e 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Legacy-tilstand
+ RWFP_36=Ikke relevant for dette bånd
+ RWFP_37=En værdi er uden for området:
+ RWFP_38=til
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=stikprøver
+ RWIF_63=radio slukket
+ RWIF_64=scanner
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 727262a2db..acbd3af483 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Legacy-Modus
+ RWFP_36=Für dieses Band nicht zutreffend
+ RWFP_37=Ein Wert liegt außerhalb des Bereichs:
+ RWFP_38=bis
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=Stichproben
+ RWIF_63=Funk aus
+ RWIF_64=scannt
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index cd18bf9d16..cd50e49c84 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Legacy mode
+ RWFP_36=Not applicable to this band
+ RWFP_37=A value is out of range:
+ RWFP_38=to
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=samples
+ RWIF_63=radio off
+ RWIF_64=scanning
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 0556126265..0897a3cbb3 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Modo Legacy
+ RWFP_36=No aplicable a esta banda
+ RWFP_37=Un valor está fuera de rango:
+ RWFP_38=a
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=muestras
+ RWIF_63=radio apagada
+ RWIF_64=escaneando
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 714793be8f..1e0675776c 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Vanha tila
+ RWFP_36=Ei koske tätä kaistaa
+ RWFP_37=Arvo on alueen ulkopuolella:
+ RWFP_38=–
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=näytettä
+ RWIF_63=radio pois
+ RWIF_64=skannaa
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e40f1370d6..5145109d10 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Mode Legacy
+ RWFP_36=Non applicable à cette bande
+ RWFP_37=Une valeur est hors plage :
+ RWFP_38=à
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=échantillons
+ RWIF_63=radio éteinte
+ RWIF_64=analyse en cours
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 20fbff5138..e6c06df125 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Örökölt mód
+ RWFP_36=Erre a sávra nem alkalmazható
+ RWFP_37=Egy érték tartományon kívül esik:
+ RWFP_38=eddig
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=minta
+ RWIF_63=rádió ki
+ RWIF_64=keresés
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 9078c6d5fa..5fb6e13a3f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Modalità Legacy
+ RWFP_36=Non applicabile a questa banda
+ RWFP_37=Un valore è fuori intervallo:
+ RWFP_38=a
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=campioni
+ RWIF_63=radio spenta
+ RWIF_64=scansione in corso
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index da56e7b9de..61c190c337 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=レガシーモード
+ RWFP_36=このバンドには該当しません
+ RWFP_37=値が範囲外です：
+ RWFP_38=～
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=サンプル
+ RWIF_63=ラジオオフ
+ RWIF_64=スキャン中
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index c7da923bb4..24f89046f8 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=레거시 모드
+ RWFP_36=이 밴드에는 적용되지 않음
+ RWFP_37=값이 범위를 벗어났습니다:
+ RWFP_38=~
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=샘플
+ RWIF_63=라디오 꺼짐
+ RWIF_64=스캔 중
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 2aa20a467b..a05389147a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Mod legasi
+ RWFP_36=Tidak berkaitan dengan jalur ini
+ RWFP_37=Suatu nilai di luar julat:
+ RWFP_38=hingga
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=sampel
+ RWIF_63=radio mati
+ RWIF_64=mengimbas
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 3bbaed7320..f5c920660b 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Legacy-modus
+ RWFP_36=Niet van toepassing op deze band
+ RWFP_37=Een waarde is buiten bereik:
+ RWFP_38=tot
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=samples
+ RWIF_63=radio uit
+ RWIF_64=scannen
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 0cd78745dd..0e37fbc221 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Legacy-modus
+ RWFP_36=Ikke aktuelt for dette båndet
+ RWFP_37=En verdi er utenfor området:
+ RWFP_38=til
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=prøver
+ RWIF_63=radio av
+ RWIF_64=skanner
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index acce9aacbc..6be5014e28 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Tryb starszy
+ RWFP_36=Nie dotyczy tego pasma
+ RWFP_37=Wartość jest poza zakresem:
+ RWFP_38=do
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=próbki
+ RWIF_63=radio wył.
+ RWIF_64=skanowanie
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index c413ab191c..7850f65c7d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Mod vechi
+ RWFP_36=Nu se aplică acestei benzi
+ RWFP_37=O valoare este în afara intervalului:
+ RWFP_38=până la
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=eșantioane
+ RWIF_63=radio oprit
+ RWIF_64=scanare
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 282a89c470..d01f5a284a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Устаревший режим
+ RWFP_36=Неприменимо к этому диапазону
+ RWFP_37=Значение вне диапазона:
+ RWFP_38=до
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=выборки
+ RWIF_63=радио выкл
+ RWIF_64=сканирование
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index e781c72258..bd9c8532eb 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -211,20 +211,31 @@ code{font-family:ui-monospace,Consolas,monospace}
+         - AiMesh: the radio setting reaches the nodes (stock AiMesh_confirm_msg), so
+           Apply asks before a radio goes 1 -> 0 in router/AP mode. */
+      {name:`<#WLANConfig11b_x_RadioEnable_itemname#>`,key:"radio",type:"tog"},
+-     /* reaper 2026-09-18 (owner request): WiFi7 Mode (11be) and Wireless Mode (nmode_x)
+-        rows REMOVED - this page is per RADIO, and neither setting is owned per radio here.
+-        11be is chosen per NETWORK: the Network menu's SDN UI (sysdep/FUNCTION/SDN/SDN/sdn.js)
+-        couples it to the security mode in BOTH directions - turning Wi-Fi 7 on force-selects
+-        an SAE-capable auth (psk2sae/sae/wpa2wpa3/wpa3/suite-b), and choosing a non-SAE auth
+-        while it is on warns that Wi-Fi 7 will be disabled. Stock's own Professional page does
+-        the same conversion plus a Smart Connect cross-band sync of 11be/auth_mode_x/crypto/mfp.
+-        This page writes wl<unit>_<key> bare through one generic apply, so it could only ever
+-        have set 11be per radio with NONE of that enforcement - which silently produces a band
+-        that claims Wi-Fi 7 while its crypto cannot advertise EHT (field report 2026-09-18:
+-        a Samsung client lost the Wi-Fi 7 badge on 2.4 GHz only).
+-        nmode_x IS per radio, but it is owned by the General tab (Advanced_Wireless_Content.asp)
+-        and nothing links the two, so the same key would be editable from two unlinked pages.
+-        Both settings stay available on the surfaces that own them. */
++     /* reaper 2026-09-18 (owner request): the WiFi7 Mode (11be) row is REMOVED. 11be is chosen
++        per NETWORK on the Network menu (sysdep/FUNCTION/SDN/SDN/sdn.js), which couples it to an
++        SAE-capable security mode in both directions; this page writes bare wl<unit>_<key> and
++        could only ever have set it per radio with none of that (field report 2026-09-18: a
++        client lost the Wi-Fi 7 badge on 2.4 GHz only). Stock's page does the same conversion
++        plus a Smart Connect cross-band sync of 11be/auth_mode_x/crypto/mfp.
++        reaper 2026-09-19 (owner request): the Wireless Mode (nmode_x) row is BACK, per radio,
++        with the couplings it lacked. Facts from rc/sysdeps/init-broadcom.c ~11290-11455: the
++        value picks nmode/vreqd/gmode/bss_opmode_cap_reqd, and every mode except Auto (0),
++        N/AC/AX mixed (8) and AX only (9) also WRITES wl<unit>_11ax=0 - no HE, and EHT rides on
++        HE, so N only or Legacy turns a Wi-Fi 7 radio into Wi-Fi 4/5 (the 2026-09-18 badge
++        report was exactly this: nmode_x=1 on 2.4 GHz). Nothing ever writes 11ax back to 1:
++        rc/init.c:2624 seeds it only when UNSET, and stock hides both the mode and the 11ax
++        selects on Wi-Fi 7 platforms, so a box that once chose N only stays crippled after
++        returning to Auto. The apply handler therefore writes wl<unit>_11ax=1 whenever the mode
++        being applied allows HE and the stored value is not 1. Option sets are stock's
++        regen_mode(): 2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed /
++        Legacy; 6 GHz Auto / AX only (stock hardcodes these English names too). Locks
++        (syncLocks): OFDMA is parked unless the mode allows HE; AMPDU RTS + RTS Threshold are
++        parked in Legacy (stock check_ampdu_rts); Disable 802.11b is parked unless Auto (stock
++        wl_mode_change). Apply confirms a mode that drops HE, and AX only with stock's note. */
++     {name:`<#WLANConfig11b_x_Mode_itemname#>`,key:"nmode_x",type:"sel",help:`<#RWFP_39#>`,options:{
++        "2.4":[["0",`<#Auto#>`],["1","N only"],["2","Legacy"]],
++        "5":[["0",`<#Auto#>`],["9","AX only"],["8","N/AC/AX mixed"],["2","Legacy"]],
++        "6":[["0",`<#Auto#>`],["9","AX only"]]}},
+      {name:`<#WLANConfig11b_AgileMultiband_itemdesc#>`,key:"mbo_enable",type:"sel",options:ED},
+      {name:`<#WLANConfig11b_WakeTime_itemname#>`,key:"twt",type:"sel",options:ED}
+    ]},
+@@ -326,7 +337,11 @@ code{font-family:ui-monospace,Consolas,monospace}
+       var u=row.unit?'<span class="unit">'+esc(row.unit)+'</span>':'';
+       return '<div class="cell"><div class="numwrap"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+u+'</div></div>';
+     }
+-    var opts=optsFor(row,radio.band).map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' data-lockonly="1"':'')+'>'+esc(o[1])+'</option>'; }).join("");
++    var list=optsFor(row,radio.band);
++    /* a stored value outside the offered set (an older firmware's mode code, say) is shown
++       as itself rather than blanking the select, so it can be seen and changed */
++    if(dv!=="" && !list.some(function(o){ return o[0]===dv; })) list=list.concat([[dv,dv]]);
++    var opts=list.map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' data-lockonly="1"':'')+'>'+esc(o[1])+'</option>'; }).join("");
+     return '<div class="cell"><div class="selwrap"><select class="sel" data-name="'+nm+'" data-nv="'+esc(dv)+'">'+opts+'</select></div></div>';
+   }
+ 
+@@ -352,8 +367,8 @@ code{font-family:ui-monospace,Consolas,monospace}
+     wireControls();
+     /* engage the Preamble lock per 2.4 GHz radio from the rendered rateset state */
+     document.querySelectorAll('select[data-name$="_rateset"]').forEach(function(r){ syncPreambleLock(r); });
+-    /* and the RTS / Fragmentation lock per radio from the rendered AMPDU RTS state */
+-    document.querySelectorAll('select[data-name$="_ampdu_rts"]').forEach(function(a){ syncRtsLock(a); });
++    /* and every master/slave lock per radio from the rendered state */
++    RADIOS.forEach(function(r){ syncLocks(r.ifn); });
+     recount();
+   }
+ 
+@@ -379,20 +394,36 @@ code{font-family:ui-monospace,Consolas,monospace}
+     if(el._hardLock) return true;   /* greyed out by its master (syncRtsLock): parked, never sent */
+     if(!el._locked) return false;
+     var rsel=pairedSel(el,"_plcphdr","_rateset");
+-    return !(rsel && getVal(rsel)!==rsel._base);
++    /* a rateset change that is itself parked (mode lock) is not a staged change */
++    return !(rsel && !rsel._hardLock && getVal(rsel)!==rsel._base);
+   }
+-  /* ---- AMPDU RTS lock (owner request 2026-09-19) ----
+-     While a radio's AMPDU RTS select is Disabled ("0"), that radio's RTS Threshold
+-     and Fragmentation Threshold inputs are disabled and greyed. Their values stay
+-     in place (parked), are excluded from the pending count and from the apply,
+-     and are editable again the moment AMPDU RTS is re-enabled. */
+-  function syncRtsLock(asel){
+-    var locked=(String(asel.value)==="0");
+-    ["_rts","_frag"].forEach(function(k){
+-      var inp=pairedSel(asel,"_ampdu_rts",k); if(!inp) return;
+-      inp._hardLock=locked; inp.disabled=locked;
+-      var w=inp.closest(".numwrap"); if(w) w.classList.toggle("locked",locked);
+-    });
++  /* ---- master/slave locks (owner requests 2026-09-19) ----
++     Computed per radio from ALL masters at once, so two masters can share a slave:
++       AMPDU RTS "0"            -> RTS Threshold + Fragmentation Threshold parked
++       Wireless Mode "2" Legacy -> AMPDU RTS + RTS Threshold parked (stock check_ampdu_rts)
++       Wireless Mode not 0/8/9  -> OFDMA parked (the mode drops HE; nothing to schedule)
++       Wireless Mode not "0"    -> Disable 802.11b parked on 2.4 GHz (stock wl_mode_change)
++     A parked control is disabled + greyed; its value stays in place, is excluded from
++     the pending count, the range check and the apply, and returns the moment its
++     master releases it. */
++  function HE_OK(m){ return m==="0"||m==="8"||m==="9"; }
++  function setHardLock(el,locked){
++    if(!el) return;
++    el._hardLock=locked; el.disabled=locked;
++    var w=el.closest(".numwrap")||el.closest(".selwrap");
++    if(w){ w.classList.toggle("locked",locked); if(w._sync) w._sync(); }
++    var b=w?w.querySelector(".csel"):null;
++    if(b){ if(locked) b.setAttribute("aria-disabled","true"); else b.removeAttribute("aria-disabled"); }
++  }
++  function syncLocks(ifn){
++    var q=function(k){ return document.querySelector('[data-name="'+ifn+k+'"]'); };
++    var asel=q("_ampdu_rts"), msel=q("_nmode_x");
++    var rtsOff=asel?String(asel.value)==="0":false, mode=msel?String(msel.value):"0";
++    setHardLock(q("_frag"), rtsOff);
++    setHardLock(q("_rts"), rtsOff||mode==="2");
++    setHardLock(asel, mode==="2");
++    setHardLock(q("_ofdma"), !HE_OK(mode));
++    setHardLock(q("_rateset"), mode!=="0");
+   }
+   function syncPreambleLock(rsel){
+     var psel=pairedSel(rsel,"_rateset","_plcphdr"); if(!psel) return;
+@@ -485,7 +516,7 @@ code{font-family:ui-monospace,Consolas,monospace}
+   document.addEventListener("change",function(e){ var t=e.target.closest("[data-name]"); if(!t) return;
+     var tn=t.getAttribute("data-name");
+     if(tn.slice(-8)==="_rateset") syncPreambleLock(t);
+-    if(tn.slice(-10)==="_ampdu_rts") syncRtsLock(t);
++    if(tn.slice(-10)==="_ampdu_rts"||tn.slice(-8)==="_nmode_x") syncLocks(tn.replace(/_(ampdu_rts|nmode_x)$/,""));
+     recount(); });
+   document.addEventListener("input",function(e){ if(e.target.classList.contains("num")) recount(); });
+   document.addEventListener("click",closeMenu);
+@@ -510,6 +541,15 @@ code{font-family:ui-monospace,Consolas,monospace}
+       document.querySelectorAll('.tog[data-name$="_radio"]').forEach(function(t){ if(t._base==="1"&&getVal(t)==="0") radioOff=true; });
+       if(radioOff && !confirm(`<#AiMesh_confirm_msg5#>\n<#AiMesh_confirm_msg0#>`)) return;
+     }
++    /* Wireless Mode confirms: a mode that drops HE (N only, Legacy) switches Wi-Fi 6/7 off on
++       that band; AX only refuses clients without Wi-Fi 6 (stock's own note). One per kind. */
++    var dropHE=false, axOnly=false;
++    document.querySelectorAll('select[data-name$="_nmode_x"]').forEach(function(s){
++      var v=String(s.value); if(v===s._base) return;
++      if(!HE_OK(v)) dropHE=true; else if(v==="9") axOnly=true;
++    });
++    if(dropHE && !confirm(`<#RWFP_39#>`)) return;
++    if(axOnly && !confirm(`<#WLANConfig11ax_AXOnly_note#>`)) return;
+     var f=document.getElementById("applyform");
+     Array.prototype.slice.call(f.querySelectorAll(".dyn")).forEach(function(n){ n.remove(); });
+     var n=0;
+@@ -530,6 +570,16 @@ code{font-family:ui-monospace,Consolas,monospace}
+       var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
+       i.name=r.ifn+"_mumimo"; i.value=want; f.appendChild(i);
+     });
++    /* 11ax heal: every mode but 0/8/9 makes bring-up write wl<unit>_11ax=0, and nothing writes
++       it back (rc/init.c:2624 seeds it only when unset; stock hides the 11ax select on Wi-Fi 7).
++       Whenever the mode being applied allows HE and the stored 11ax is not 1, write it. */
++    RADIOS.forEach(function(r){
++      var m=document.querySelector('[data-name="'+r.ifn+'_nmode_x"]'); if(!m) return;
++      var cur=NV[r.ifn+"_11ax"]; if(cur==null) cur="";
++      if(!HE_OK(String(m.value))||cur==="1") return;
++      var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
++      i.name=r.ifn+"_11ax"; i.value="1"; f.appendChild(i);
++    });
+     document.getElementById("overlay").classList.add("show");
+     f.submit();
+     setTimeout(function(){ try{ location.reload(); }catch(e){} },13000);
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 7ce79dc5a3..386f21433e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Zastareli način
+ RWFP_36=Ni uporabno za ta pas
+ RWFP_37=Vrednost je zunaj obsega:
+ RWFP_38=do
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=vzorci
+ RWIF_63=radio izklopljen
+ RWIF_64=iskanje
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 777d96094a..f847846c0f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Äldre läge
+ RWFP_36=Ej tillämpligt på detta band
+ RWFP_37=Ett värde är utanför intervallet:
+ RWFP_38=till
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=sampel
+ RWIF_63=radio av
+ RWIF_64=skannar
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c8300da932..dcb05d9ec8 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=โหมดรุ่นเก่า
+ RWFP_36=ไม่ใช้กับแบนด์นี้
+ RWFP_37=มีค่าอยู่นอกช่วง:
+ RWFP_38=ถึง
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=ตัวอย่าง
+ RWIF_63=ปิดวิทยุ
+ RWIF_64=กำลังสแกน
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 281fc74d8c..e12d4a41a6 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Eski mod
+ RWFP_36=Bu bant için geçerli değil
+ RWFP_37=Bir değer aralık dışında:
+ RWFP_38=ila
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=örnek
+ RWIF_63=radyo kapalı
+ RWIF_64=taranıyor
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4cc316a267..31773ac045 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=傳統模式
+ RWFP_36=不適用於此頻段
+ RWFP_37=某個值超出範圍：
+ RWFP_38=至
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=取樣
+ RWIF_63=無線電關閉
+ RWIF_64=掃描中
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index a78390b3b3..bfabcf96b3 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6097,6 +6097,7 @@ RWFP_35=Режим Legacy
+ RWFP_36=Не застосовно до цього діапазону
+ RWFP_37=Значення поза діапазоном:
+ RWFP_38=до
++RWFP_39=N only and Legacy switch Wi-Fi 6 and Wi-Fi 7 off on this band; Auto, N/AC/AX mixed or AX only turn them back on
+ RWIF_62=зразки
+ RWIF_63=радіо вимкнено
+ RWIF_64=сканування
+-- 
+2.25.1
+

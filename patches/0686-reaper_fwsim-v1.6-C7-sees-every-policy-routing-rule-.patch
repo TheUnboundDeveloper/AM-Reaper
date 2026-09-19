@@ -1,0 +1,64 @@
+From 471ed7e0342f10054636b2754c72e6b3002e4e00 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 19 Sep 2026 17:52:48 -0400
+Subject: [PATCH] reaper_fwsim v1.6: C7 sees every policy-routing rule, H6 note
+ no longer truncated
+
+The C7 loop capped at eight rows with set-keyed notes counted against the cap,
+so a source-address rule behind eight ipset rules never appeared (field,
+v3.1.9). Cap 32; MAXWIT is the real bound. pred 120 -> 320 and note 100 -> 320
+so the out-of-scope note reaches the page whole in both columns.
+---
+ release/src/router/reaper_fwsim/reaper_fwsim.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index cf381740ec..248dc59b5c 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -46,7 +46,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.5"
++#define FWSIM_VER	"1.6"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -1186,12 +1186,16 @@ static int walk_packet(struct ctx *c)
+ struct witness {
+ 	char id[16], feature[80], expect[48];
+ 	int fam, shape;			/* shape rows carry a predicate in `pred` */
+-	char pred[120];
++	/* v1.6 (field, 2026-09-19): pred was 120 and note 100, and H6's honesty
++	 * text is 267 - the page showed both cut mid-word ("same-se", "reach ip").
++	 * A NOTE predicate is copied whole into note, so the two must fit the
++	 * longest literal in this file; 320 leaves room. */
++	char pred[320];
+ 	struct pkt p;
+ 	char in[20], src[48], dst[48], proto[12], port[12], ct[40], out[20], mac[20];
+ 	/* results */
+ 	int done, ok, na, dep;
+-	char verdict[96], decide[200], path[MAXPATH], note[100];
++	char verdict[96], decide[200], path[MAXPATH], note[320];
+ };
+ static struct witness wit[MAXWIT]; static int nwit = 0;
+ 
+@@ -2253,7 +2257,13 @@ static void gen_witnesses(void)
+ 		struct table *t = table_get(&fw4, "mangle", 0);
+ 		struct chain *ch = t ? chain_get(t, "REAPER_PBR", 0) : NULL;
+ 		int k = 0;
+-		if (ch) for (i = 0; i < ch->n && k < 8; i++) {
++		/* v1.6 (field, 2026-09-19): the cap was 8 rows and every emitted row
++		 * counted against it, set-keyed NOTEs included - a list of eight
++		 * ipset/domain rules followed by a source-address rule (the reporter's
++		 * shape, and each address of a multi-address source selector is its
++		 * own rule) never showed the source rule at all. 32 covers any list
++		 * the page can save; MAXWIT is the real bound. */
++		if (ch) for (i = 0; i < ch->n && k < 32; i++) {
+ 			struct rule *r = &ch->r[i];
+ 			char val[40] = "", sbuf[52];
+ 			const char *mk, *src;
+-- 
+2.25.1
+

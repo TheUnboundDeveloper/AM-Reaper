@@ -46,6 +46,40 @@ node, not only on the primary router.
 
 ---
 
+## v3.2.1 — Wireless Mode returns with its Wi-Fi 6 coupling, the Professional page keeps only settings a user can change, Rule Status walker fixes
+
+- **Wireless Mode is back on the WiFi Professional page, with the coupling it never had.** Per
+  radio, stock's own option sets: 2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only /
+  N-AC-AX mixed / Legacy; 6 GHz Auto / AX only. Every mode except Auto, N/AC/AX mixed and AX only
+  makes bringup write `wl<unit>_11ax=0`, which removes Wi-Fi 6 and, because Wi-Fi 7 rides on it,
+  Wi-Fi 7 too, and nothing in the firmware ever wrote it back: `rc/init.c` seeds the key only when
+  unset and stock hides both selects on Wi-Fi 7 platforms. Apply now writes `wl<unit>_11ax=1`
+  whenever the mode being applied allows Wi-Fi 6 and the stored value is not 1, so a radio once set
+  to N only recovers. OFDMA is greyed under a mode without Wi-Fi 6, AMPDU RTS and RTS Threshold
+  under Legacy, Disable 802.11b unless Auto; a mode that drops Wi-Fi 6 asks first, AX only asks with
+  stock's note. **Behaviour change:** this supersedes the v3.2.0 note that Wireless Mode is no
+  longer exposed; the `nvram set` recovery is no longer needed, and on its own it was incomplete.
+- **Seven Professional rows removed.** WMM, MU-MIMO, explicit and universal beamforming, modulation
+  scheme, AMPDU aggregation and Bluetooth coexistence are gone; stock hides all of them on Wi-Fi 7
+  platforms. Bringup consumes several (`txbf` into the beamforming caps, `turbo_qam` into
+  `vht_features`, `mumimo` into `mu_features`) and forces WMM on in Auto, the only mode most
+  radios run, so a free control could only mislead or degrade. MU-MIMO now follows the OFDMA choice
+  at apply, as stock derives it. Roaming assistant validates to stock's range, -90 to -40 dBm with
+  0 meaning off.
+- **The radio toggle is linked to the tabs that also drive it.** A radio that is on cannot be
+  switched off while MLO is enabled; the MLO tab forces every radio on, and stock refuses the same
+  way. A radio the wireless scheduler owns wears a chip, since the schedule decides when it is
+  actually up. Applying a radio-off in router or AP mode confirms first, because the setting
+  reaches AiMesh nodes. AMPDU RTS set to Disable greys and parks that radio's RTS and Fragmentation
+  thresholds.
+- **Rule Status: a policy-routing rule behind ipset rules is witnessed again.** The walker capped
+  the policy-routing rows at eight and counted the set-keyed notes against the cap, so a
+  source-address rule behind eight ipset rules never produced a row (field, v3.1.9). Cap raised to
+  32. The out-of-scope note reaches the page whole in both columns; its buffers were 120 and 100
+  bytes against a 267-byte text. The VPN group reads "VPN", since it holds the policy-routing and
+  Killswitch rows too. Walker v1.6.
+- **Dictionaries.** One token added and two retired in all 25 packs.
+
 ## v3.2.0 — the Professional page keeps to its own settings, and a bridging box says why Traffic is empty
 
 - **WiFi Professional drops the WiFi 7 Mode and Wireless Mode rows.** Both wrote a per-radio key

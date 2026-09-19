@@ -1,0 +1,301 @@
+From 5f9bc5bf75fad45c84b73033203d840bc17aa1f1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 19 Sep 2026 17:52:48 -0400
+Subject: [PATCH] webui: the Professional page keeps only rows a user can
+ safely change, and links the ones other tabs also drive
+
+Rows removed (owner ruling): WMM (bring-up forces it on in Auto, the only
+mode now), MU-MIMO (derived from the OFDMA choice at apply, as stock does),
+explicit/universal beamforming, modulation scheme, AMPDU aggregation and
+Bluetooth coexistence (stock hides all of them on Wi-Fi 7; rc consumes several).
+Roaming assistant takes stock's range, -90..-40 with 0 = off.
+
+Links to the surfaces that also drive a radio: the MLO tab (a radio that is on
+cannot be switched off while mld_enable=1, stock check_mlo_status parity), the
+wireless scheduler (a scheduled radio wears a chip; wlN_timesched added to the
+httpd snapshot, read-only), AiMesh (Apply confirms before a radio goes 1->0).
+AMPDU RTS disabled greys and parks that radio's RTS and Fragmentation inputs.
+wlpro_nv_fields[] trimmed to the rows that remain.
+---
+ release/src/router/httpd/web.c            |  16 ++-
+ release/src/router/www/Reaper_WiFiPro.asp | 140 ++++++++++++++++++----
+ 2 files changed, 129 insertions(+), 27 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 383f5e1d17..23512c838a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -41047,13 +41047,19 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+  * runs on - exactly as ej_wl_nband_info() above already does. Radios that do not
+  * exist are simply absent from the object; the page's only reader already treats
+  * a missing key as "" (dv = NV[nm]; if (dv == null) dv = "").
++ *
++ * reaper 2026-09-19: "timesched" added. The page never writes it; it marks a
++ * radio the wireless scheduler owns so the radio toggle can say so. Same day,
++ * trimmed to what the page still renders (rows removed 2026-09-18/19: 11be,
++ * nmode_x, gmode_protection, turbo_qam, ampdu_mpdu, btc_mode, txbf, itxbf,
++ * wme) - every wlN_* read here is a wlcsm round trip, so unread keys cost.
++ * "mumimo" stays: the page derives it from ofdma and compares before writing.
+  */
+ static const char *wlpro_nv_fields[] = {
+-	"11be", "ampdu_mpdu", "ampdu_rts", "atf", "bcn", "bss_maxassoc",
+-	"btc_mode", "dtim", "frag", "frameburst", "gmode_protection", "igs",
+-	"itxbf", "mbo_enable", "mumimo", "nmode_x", "ofdma", "plcphdr",
+-	"radio", "rateset", "rts", "turbo_qam", "twt", "txbf", "txpower",
+-	"user_rssi", "wme", "wme_apsd", "wme_no_ack", NULL
++	"ampdu_rts", "atf", "bcn", "bss_maxassoc", "dtim", "frag", "frameburst",
++	"igs", "mbo_enable", "mumimo", "ofdma", "plcphdr", "radio", "rateset",
++	"rts", "timesched", "twt", "txpower", "user_rssi", "wme_apsd",
++	"wme_no_ack", NULL
+ };
+ 
+ static int
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index 3f5a736115..e781c72258 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -78,6 +78,8 @@ code{font-family:ui-monospace,Consolas,monospace}
+ .csel:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+ .selwrap.locked .csel{opacity:.45;cursor:not-allowed}
+ .selwrap.locked .csel:hover{border-color:var(--line2)}
++.numwrap.locked .num{opacity:.45;cursor:not-allowed}
++.chip.sched{color:var(--amber);border-color:rgba(224,169,59,.45);margin-left:8px;cursor:help}
+ .csel::after{content:"";position:absolute;right:11px;top:50%;width:7px;height:7px;
+  border-right:2px solid var(--steel);border-bottom:2px solid var(--steel);
+  transform:translateY(-70%) rotate(45deg);pointer-events:none}
+@@ -162,11 +164,20 @@ code{font-family:ui-monospace,Consolas,monospace}
+          ('2'=2.4GHz, '1'=5GHz, '4'=6GHz), in wl_ifnames order. Length = radio count.
+          3 on RT-BE96U, 4 on GT-BE98 (dual 5GHz). ---- */
+   var NBAND = JSON.parse("<% wl_nband_info(); %>".replace(/'/g,'"'));
+-  /* current nvram value for every wlN_field this page can touch. The router
+-     emits it in ONE pass over wl_ifnames, so ONLY the radios this model
+-     actually has are present - never assume wl3, or even wl2. cellHTML()
+-     below already treats a missing key as "". */
++  /* current nvram value for every wlN_field this page can touch, plus the
++     read-only wlN_timesched flag (see the radio row). The router emits it in
++     ONE pass over wl_ifnames, so ONLY the radios this model actually has are
++     present - never assume wl3, or even wl2. cellHTML() below already treats
++     a missing key as "". */
+   var NV = <% wlpro_nvram(); %>;
++  /* MLO is a NETWORK-level switch (Wireless > MLO tab, sysdep/FUNCTION/SDN/SDN/mlo.html):
++     enabling it writes every radio's <band>_radio=1 and <band>_timesched=0, and stock's
++     Professional page (check_mlo_status) refuses to switch a radio OFF while it is on.
++     The same guard applies to the radio toggles below (linked 2026-09-19). */
++  var MLO_ON=("<% nvram_get("mld_enable"); %>"==="1");
++  /* AiMesh router/AP mode (sw_mode 1/3): the stock page confirms a radio going off
++     because the setting reaches the nodes (AiMesh_confirm_msg "Wireless_Radio"). */
++  var AMESH_CAP=(["1","3"].indexOf("<% nvram_get("sw_mode"); %>")!==-1);
+ 
+   var BAND_LABEL={"2":"2.4 GHz","1":"5 GHz","4":"6 GHz"};
+   var BAND_TYPE ={"2":"2.4","1":"5","4":"6"};
+@@ -188,6 +199,17 @@ code{font-family:ui-monospace,Consolas,monospace}
+   var ED=[["1",`<#CTL_Enabled#>`],["0",`<#CTL_Disabled#>`]];
+   var SCHEMA=[
+    {sec:`<#RWFP_2#>`,rows:[
++     /* radio is ALSO driven from three other surfaces, and each is reflected here
++        (linked 2026-09-19, owner request "no mismatches across tabs"):
++        - MLO tab: while mld_enable=1 a radio that is on cannot be switched off here
++          (alert + revert = stock check_mlo_status). MLO is turned off on its tab first.
++        - wireless scheduler (classic Professional page, wlN_timesched + wlN_sched_v2;
++          no Reaper UI): rc/watchdog.c timecheck drives a scheduled radio up and down
++          while wlN_radio=1, so that radio wears a "Time Scheduling" chip - its toggle
++          shows the nvram value, the schedule decides when it is actually up. Switching
++          it off parks the schedule (timecheck skips radio=0); nothing clears it.
++        - AiMesh: the radio setting reaches the nodes (stock AiMesh_confirm_msg), so
++          Apply asks before a radio goes 1 -> 0 in router/AP mode. */
+      {name:`<#WLANConfig11b_x_RadioEnable_itemname#>`,key:"radio",type:"tog"},
+      /* reaper 2026-09-18 (owner request): WiFi7 Mode (11be) and Wireless Mode (nmode_x)
+         rows REMOVED - this page is per RADIO, and neither setting is owned per radio here.
+@@ -208,13 +230,33 @@ code{font-family:ui-monospace,Consolas,monospace}
+    ]},
+    {sec:`<#RWFP_3#>`,rows:[
+      {name:`<#WLANConfig11b_x_client_limit_max#>`,key:"bss_maxassoc",type:"num",min:1,max:128},
+-     {name:`<#Roaming_assistant#>`,key:"user_rssi",type:"num",min:-90,max:0,unit:"dBm",help:`<#RWFP_14#>`}
++     /* reaper 2026-09-19: the range is stock's (validForm: 0 = off, otherwise -90..-40).
++        -39..-1 used to pass here; a threshold that high disconnects every client, so the
++        apply handler accepts 0 as the off value and rejects anything else above -40. */
++     {name:`<#Roaming_assistant#>`,key:"user_rssi",type:"num",min:-90,max:-40,unit:"dBm",help:`<#RWFP_14#>`}
+    ]},
+    {sec:`<#RWFP_4#>`,rows:[
+-     {name:`<#WLANConfig11b_x_TurboQAM#>`,key:"turbo_qam",type:"sel",bands:["2.4","5"],chip:{c:"band",t:"2.4 / 5 GHz"},options:{
+-        "2.4":[["0",`MCS 0-7 (<#RWFP_24#>)`],["1","256-QAM"],["2","1024-QAM"]],
+-        "5":[["1",`MCS 0-9 (<#RWFP_24#>)`],["2","1024-QAM"]]}},
+-     {name:`<#WLANConfig11b_x_AMPDU#>`,key:"ampdu_mpdu",type:"sel",options:ED},
++     /* reaper 2026-09-19 (owner ruling: "if the user cannot change it, or changing it can
++        break Wi-Fi, take it off this page"): SEVEN rows REMOVED. Stock's own Professional
++        page (Advanced_WAdvanced_Content.asp, `if(wifi7_support)` in initial()) HIDES
++        Modulation Scheme (turbo_qam), AMPDU aggregation (ampdu_mpdu), Bluetooth coexistence
++        (btc_mode), Explicit and Universal beamforming (txbf, itxbf) and MU-MIMO on every
++        Wi-Fi 7 platform, and offers WMM (wme) only as "on" outside Legacy mode. The bring-up
++        code still CONSUMES several of them, which is exactly why a free control is a hazard:
++        rc/sysdeps/init-broadcom.c ~11597 turns turbo_qam into vht_features (0 = no 256/1024-QAM
++        on that band), ~11697 turns txbf=0 into txbf_bfr_cap/txbf_bfe_cap = 0 (beamforming off,
++        and MU-MIMO with it), ~11744 turns mumimo into mu_features, and ~11849 forces wme=on
++        whenever the mode is Auto - the only mode now that Wireless Mode has no page - so the
++        WMM "Auto"/"Disable" choices silently reverted. MU-MIMO is not gone: stock derives
++        wl_mumimo FROM the OFDMA choice at every apply ("DL/UL OFDMA + MU-MIMO" = 1, else 0)
++        and this page now does the same (see the apply handler). ampdu_mpdu and btc_mode are
++        consumed by the prebuilt wlconf, unverifiable in source - hidden by stock, so gone here. */
++     /* reaper 2026-09-19 (owner request): AMPDU RTS is the MASTER of the two threshold
++        rows below it. While it is Disabled, that radio's RTS Threshold and Fragmentation
++        Threshold inputs are greyed out and locked (syncRtsLock; stock's check_ampdu_rts
++        disables wl_rts the same way). A value typed before the lock is parked, not
++        submitted, and is editable again once AMPDU RTS is re-enabled. 2.4 GHz has no
++        AMPDU RTS cell, so its Fragmentation Threshold is never locked. */
+      {name:"AMPDU RTS",key:"ampdu_rts",type:"sel",bands:["5","6"],options:ED},
+      {name:`<#WLANConfig11b_x_RTS_itemname#>`,key:"rts",type:"num",bands:["5","6"],min:0,max:2347},
+      {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,chip:{c:"legacy",t:`<#RWFP_35#>`}},
+@@ -236,20 +278,23 @@ code{font-family:ui-monospace,Consolas,monospace}
+      {name:`<#WLANConfig11n_PremblesType_itemname#>`,key:"plcphdr",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["long",`<#WLANConfig11n_PremblesType_long#>`],["short",`<#WLANConfig11n_PremblesType_short#>`],["0",`<#RWFP_13#>`,1]]}
+    ]},
+    {sec:`<#RWFP_5#>`,rows:[
+-     {name:`<#OFDMA_title#>`,key:"ofdma",type:"sel",options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1","DL OFDMA"],["2","DL / UL OFDMA"],["3","DL/UL OFDMA + MU-MIMO"]]},
+-     {name:`<#WLANConfig11b_MUMIMO_itemdesc#>`,key:"mumimo",type:"sel",options:ED},
+-     {name:`<#WLANConfig11b_x_ExpBeam#>`,key:"txbf",type:"sel",options:ED},
+-     {name:`<#WLANConfig11b_x_uniBeam#>`,key:"itxbf",type:"sel",options:ED},
+-     {name:`<#WLANConfig11b_x_Airtime_Fairness#>`,key:"atf",type:"sel",options:ED}
++     /* MU-MIMO, Explicit and Universal beamforming rows REMOVED 2026-09-19 - see the note at the
++        top of the previous section. MU-MIMO is chosen through the OFDMA option below and written
++        as wl<unit>_mumimo by the apply handler, exactly as stock derives it. */
++     {name:`<#OFDMA_title#>`,key:"ofdma",type:"sel",options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1","DL OFDMA"],["2","DL / UL OFDMA"],["3","DL/UL OFDMA + MU-MIMO"]]}
+    ]},
+    {sec:`<#RWFP_6#>`,rows:[
+-     {name:`<#WLANConfig11b_x_BTCoexistence_itemname#>`,key:"btc_mode",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["2",`<#RWFP_26#>`]]},
++     /* Bluetooth coexistence row REMOVED 2026-09-19 (stock hides it on Wi-Fi 7; see above) */
+      {name:`<#WLANConfig11b_x_IgmpSnEnable_itemname#>`,key:"igs",type:"sel",options:ED}
+    ]},
+    {sec:`<#RWFP_7#>`,rows:[
+-     {name:`<#WLANConfig11b_x_WMM_itemname#>`,key:"wme",type:"sel",options:[["auto",`<#Auto#>`],["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]},
++     /* WMM (wme) row REMOVED 2026-09-19: bring-up forces it on in Auto mode, so "Auto" and
++        "Disable" never held (see above). No-ACK and APSD below stay - stock keeps them
++        editable while WMM is on, which it always is now. Airtime Fairness moved here from
++        the OFDMA section: it is airtime scheduling, and that section lost its other rows. */
+      {name:`<#WLANConfig11b_x_NOACK_itemname#>`,key:"wme_no_ack",type:"sel",options:[["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`]]},
+-     {name:`<#WLANConfig11b_x_APSD_itemname#>`,key:"wme_apsd",type:"sel",options:[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]}
++     {name:`<#WLANConfig11b_x_APSD_itemname#>`,key:"wme_apsd",type:"sel",options:[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]},
++     {name:`<#WLANConfig11b_x_Airtime_Fairness#>`,key:"atf",type:"sel",options:ED}
+    ]},
+    {sec:`<#RWFP_8#>`,rows:[
+      {name:`<#WLANConfig11b_x_DTIM_itemname#>`,key:"dtim",type:"num",min:1,max:255},
+@@ -270,8 +315,13 @@ code{font-family:ui-monospace,Consolas,monospace}
+     if(!applies(row,radio.band))
+       return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
+     var nm=radio.ifn+"_"+row.key, dv=NV[nm]; if(dv==null) dv="";
+-    if(row.type==="tog")
+-      return '<div class="cell"><button type="button" class="tog" role="switch" data-name="'+nm+'" data-nv="'+esc(dv)+'"><span class="knob"></span></button></div>';
++    if(row.type==="tog"){
++      /* a radio the wireless scheduler owns (wlN_timesched=1) wears a chip: the toggle
++         shows the nvram value, the schedule decides when the radio is actually up */
++      var sched=(row.key==="radio"&&NV[radio.ifn+"_timesched"]==="1")
++        ? '<span class="chip sched" title="'+esc(`<#feedback_check_disconnect1#>`)+'">'+esc(`<#Time_Scheduling#>`)+'</span>' : '';
++      return '<div class="cell"><button type="button" class="tog" role="switch" data-name="'+nm+'" data-nv="'+esc(dv)+'"><span class="knob"></span></button>'+sched+'</div>';
++    }
+     if(row.type==="num"){
+       var u=row.unit?'<span class="unit">'+esc(row.unit)+'</span>':'';
+       return '<div class="cell"><div class="numwrap"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+u+'</div></div>';
+@@ -302,6 +352,8 @@ code{font-family:ui-monospace,Consolas,monospace}
+     wireControls();
+     /* engage the Preamble lock per 2.4 GHz radio from the rendered rateset state */
+     document.querySelectorAll('select[data-name$="_rateset"]').forEach(function(r){ syncPreambleLock(r); });
++    /* and the RTS / Fragmentation lock per radio from the rendered AMPDU RTS state */
++    document.querySelectorAll('select[data-name$="_ampdu_rts"]').forEach(function(a){ syncRtsLock(a); });
+     recount();
+   }
+ 
+@@ -324,10 +376,24 @@ code{font-family:ui-monospace,Consolas,monospace}
+      (lock engaged at render), the forced "0" is display-only - never submitted -
+      so an inconsistent stored pair does not surface as a phantom pending change. */
+   function lockSuppressed(el){
++    if(el._hardLock) return true;   /* greyed out by its master (syncRtsLock): parked, never sent */
+     if(!el._locked) return false;
+     var rsel=pairedSel(el,"_plcphdr","_rateset");
+     return !(rsel && getVal(rsel)!==rsel._base);
+   }
++  /* ---- AMPDU RTS lock (owner request 2026-09-19) ----
++     While a radio's AMPDU RTS select is Disabled ("0"), that radio's RTS Threshold
++     and Fragmentation Threshold inputs are disabled and greyed. Their values stay
++     in place (parked), are excluded from the pending count and from the apply,
++     and are editable again the moment AMPDU RTS is re-enabled. */
++  function syncRtsLock(asel){
++    var locked=(String(asel.value)==="0");
++    ["_rts","_frag"].forEach(function(k){
++      var inp=pairedSel(asel,"_ampdu_rts",k); if(!inp) return;
++      inp._hardLock=locked; inp.disabled=locked;
++      var w=inp.closest(".numwrap"); if(w) w.classList.toggle("locked",locked);
++    });
++  }
+   function syncPreambleLock(rsel){
+     var psel=pairedSel(rsel,"_rateset","_plcphdr"); if(!psel) return;
+     var w=psel.closest(".selwrap"), b=w?w.querySelector(".csel"):null;
+@@ -371,7 +437,15 @@ code{font-family:ui-monospace,Consolas,monospace}
+       else { if(v!=="") el.value=v; el._base=String(el.value); }
+     });
+     document.querySelectorAll(".tog").forEach(function(t){
+-      t.onclick=function(){ var on=t.classList.toggle("on"); t.setAttribute("aria-checked",on?"true":"false"); recount(); };
++      t.onclick=function(){
++        var on=t.classList.toggle("on");
++        /* MLO guard (stock check_mlo_status parity): a radio that is ON in nvram cannot be
++           switched off while MLO is enabled - MLO is turned off on its own tab first */
++        if(!on && MLO_ON && t._base==="1" && t.getAttribute("data-name").slice(-6)==="_radio"){
++          alert(`<#WiFi7_mlo_adjust_hint#>`);
++          on=t.classList.toggle("on");
++        }
++        t.setAttribute("aria-checked",on?"true":"false"); recount(); };
+     });
+     document.querySelectorAll(".selwrap").forEach(function(w){
+       var sel=w.querySelector(".sel"); if(!sel||sel.classList.contains("enhanced")) return;
+@@ -409,7 +483,9 @@ code{font-family:ui-monospace,Consolas,monospace}
+   }
+ 
+   document.addEventListener("change",function(e){ var t=e.target.closest("[data-name]"); if(!t) return;
+-    if(t.getAttribute("data-name").slice(-8)==="_rateset") syncPreambleLock(t);
++    var tn=t.getAttribute("data-name");
++    if(tn.slice(-8)==="_rateset") syncPreambleLock(t);
++    if(tn.slice(-10)==="_ampdu_rts") syncRtsLock(t);
+     recount(); });
+   document.addEventListener("input",function(e){ if(e.target.classList.contains("num")) recount(); });
+   document.addEventListener("click",closeMenu);
+@@ -419,12 +495,21 @@ code{font-family:ui-monospace,Consolas,monospace}
+   btn.addEventListener("click",function(){
+     var bad=null;
+     document.querySelectorAll(".num").forEach(function(el){
+-      if(getVal(el)===el._base) return;
++      if(getVal(el)===el._base||el._hardLock) return;   /* a parked (locked) value is not sent, so it is not checked */
+       var v=parseInt(el.value,10), lo=+el.getAttribute("data-min"), hi=+el.getAttribute("data-max");
++      /* Roaming assistant: 0 is "off" and sits outside the -90..-40 band on purpose (stock validForm) */
++      if(v===0 && el.getAttribute("data-name").slice(-10)==="_user_rssi") return;
+       if(isNaN(v)||v<lo||v>hi) bad=bad||el;
+     });
+     if(bad){ bad.focus(); bad.closest(".cell").classList.add("dirty");
+       alert(`<#RWFP_37#> `+bad.getAttribute("data-name")+` (`+bad.getAttribute("data-min")+` <#RWFP_38#> `+bad.getAttribute("data-max")+`).`); return; }
++    /* AiMesh parity (stock applyRule -> AiMesh_confirm_msg("Wireless_Radio")): in router/AP
++       mode the radio setting reaches the nodes too, so a radio going 1 -> 0 is confirmed */
++    if(AMESH_CAP){
++      var radioOff=false;
++      document.querySelectorAll('.tog[data-name$="_radio"]').forEach(function(t){ if(t._base==="1"&&getVal(t)==="0") radioOff=true; });
++      if(radioOff && !confirm(`<#AiMesh_confirm_msg5#>\n<#AiMesh_confirm_msg0#>`)) return;
++    }
+     var f=document.getElementById("applyform");
+     Array.prototype.slice.call(f.querySelectorAll(".dyn")).forEach(function(n){ n.remove(); });
+     var n=0;
+@@ -434,6 +519,17 @@ code{font-family:ui-monospace,Consolas,monospace}
+       i.name=el.getAttribute("data-name"); i.value=v; f.appendChild(i); n++;
+     });
+     if(n===0) return;
++    /* MU-MIMO is DERIVED from the OFDMA choice, as stock's applyRule does on every apply:
++       "DL/UL OFDMA + MU-MIMO" (3) -> wl<unit>_mumimo=1, anything else -> 0. Written whenever
++       the stored value disagrees with the OFDMA value being applied, so a pair this page let
++       a user contradict before 2026-09-19 heals on the next apply. Never counted as pending. */
++    RADIOS.forEach(function(r){
++      var o=document.querySelector('[data-name="'+r.ifn+'_ofdma"]'); if(!o) return;
++      var want=(String(o.value)==="3")?"1":"0", cur=NV[r.ifn+"_mumimo"]; if(cur==null) cur="";
++      if(cur===want) return;
++      var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
++      i.name=r.ifn+"_mumimo"; i.value=want; f.appendChild(i);
++    });
+     document.getElementById("overlay").classList.add("show");
+     f.submit();
+     setTimeout(function(){ try{ location.reload(); }catch(e){} },13000);
+-- 
+2.25.1
+

@@ -63,9 +63,11 @@ The ordered short list.
    any hoist/probe/drop is considered; the same loop guards the nat restore. The refused line is still
    wanted from the reporter's router to confirm the diagnosis on that box (one command) — see the entry
    under Open bugs. **[fix in the v3.1.7_BETA image; reporter confirmation owed]**
-3. **[P1] v3.2.0 — the stable candidate.** v3.2.0 (patches 0681–0684, cut 2026-09-19) is v3.1.9
-   plus the WiFi Professional row removal, the Traffic bridging-mode note and the two help-link
-   fixes. Reviewed against this file 2026-09-19: no open P1 is unfixed in tree, and the current
+3. **[P1] v3.2.1 — the stable candidate.** v3.2.1 (patches 0685–0689, cut 2026-09-19) is v3.2.0
+   plus the Wireless Mode row's return with its 11ax coupling, the Professional row removals and
+   radio links, and the Rule Status walker fixes (C7 cap, H6 note, VPN label); v3.2.0 (0681–0684)
+   added the Professional row removal, the Traffic bridging-mode note and the two help-link fixes
+   over v3.1.9. Reviewed against this file 2026-09-19: no open P1 is unfixed in tree, and the current
    stable line, v3.1.0 (2026-09-08), lacks the v3.1.2 WireGuard kernel fix, the v3.1.5 review fixes,
    the v3.1.7 restore-race fix and the v3.1.8 WLCSM swap. Before the stable cut: the stable channel
    path has never run with the channel marker (v3.1.0 predates it) — a miss there is a mis-named
@@ -77,8 +79,8 @@ The ordered short list.
    after the stable (owner, 2026-09-18); code signing (3b) is not a stability item and is the same
    posture as every stable so far. Known issues to carry in the notes: the WireGuard source-rule
    report (fix candidates in v3.1.7 and the v3.1.9 order; reporter unconfirmed), the R15 reporter
-   confirmation, and Wireless Mode having no Reaper page. v3.2.0 becomes the stable release when Dev
-   is merged to main after the beta has soaked.
+   confirmation. v3.2.1 becomes the stable release when Dev is merged to main after the beta has
+   soaked.
 4. **[P2] GT-BE19000 — on the roster since v3.1.4; the write-up and the diag ARRIVED 2026-09-13.**
    The tester's report (four items) and a `reaper_diag` v1.3.14 capture from a v3.1.4_BETA_noMCP box
    are in. **The decisive fact the report did not state: that router is in Access Point mode
@@ -114,9 +116,12 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.2.0 is the current beta** (cut 2026-09-19; patches 0681–0684). It carries the WiFi
-Professional row removal, the Traffic bridging-mode note and the two help-link fixes; items closed
-by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.1 is the current beta** (cut 2026-09-19; patches 0685–0689). It carries the Wireless Mode
+row's return with its Wi-Fi 6 coupling, the Professional row removals and radio links, and the Rule
+Status walker fixes; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+
+*Earlier, in v3.2.0 (2026-09-19): the WiFi Professional row removal, the Traffic bridging-mode note
+and the two help-link fixes.*
 
 *Earlier, in v3.1.9 (2026-09-17): Policy Routing first-match order, the firewall rebuild contention
 fixes, retried rule adds, the DNS intercept failing open, L4S and WMM removed, DoS armed state. In
@@ -447,10 +452,20 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 - **[P3] Wireless Mode (`nmode_x`) has no Reaper page** (v3.2.0, owner call 2026-09-18). The row
   went with the WiFi 7 row on the Professional page, and no linked page writes the key now; the stock
-  page that does ships unlinked. Options: leave it (owner leaning), relink the stock page as a tab,
-  or restore a guarded row. Recovery for a band left on "N only" is in the changelog. **[owner call]**
-- **[P3] Five tokens are English in the 24 non-English packs** — `RQOS_117`, `RQOS_121`, `RFW_321`,
-  `RFW_322` (v3.1.9) and `RTRF_77` (v3.2.0), seeded in English to keep lockstep.
+  page that does ships unlinked. **[closed in v3.2.1 — the row is back on the Professional page, per
+  radio, with stock's option sets and the coupling every non-Auto mode needed: bringup zeroes
+  `wl<unit>_11ax` and nothing restored it, so the page writes it back when an HE-capable mode is
+  applied]**
+- **[P3] Rule Status does not witness masquerade** (tester question, 2026-09-19). The walker already
+  models POSTROUTING source NAT (the hairpin row F6) but asserts nothing about LAN→WAN masquerade; a
+  one-row `A1b` (expect SNAT, gated on `wan_nat_x=1`) would, and a tunnel-side row needs the walker
+  to read routing tables (mark → `ip rule` → table). Advisory posture: not built. **[owner call]**
+- **[P3] Two Professional rows kept on a judgment call** (2026-09-19). Fragmentation Threshold stays
+  although stock shows it only in Legacy mode; Tx power's lowest step writes `10` where stock's
+  slider writes `0`, and the consumer is the prebuilt wlconf, so which is right is metal-only.
+  **[owner call]**
+- **[P3] Six tokens are English in the 24 non-English packs** — `RQOS_117`, `RQOS_121`, `RFW_321`,
+  `RFW_322` (v3.1.9), `RTRF_77` (v3.2.0) and `RWFP_39` (v3.2.1), seeded in English to keep lockstep.
   **[owed — the next translation pass]**
 - **[P2] The Security Posture card was a snapshot and said so to nobody** (owner, 2026-09-15). Every
   row came from `SSI`, a server-rendered snapshot of about 20 nvram keys taken when the page was

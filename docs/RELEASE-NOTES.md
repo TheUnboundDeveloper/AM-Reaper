@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.0** · 2026-09-19 <!--@stamp-->
+> **Doc status:** current as of **v3.2.1** · 2026-09-19 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.0** <!--@treever--> — `3006.102.8_Reaper_v3.2.0`. **The Professional page keeps to its own settings, and a bridging box says why Traffic is empty.** WiFi Professional drops its WiFi 7 Mode and Wireless Mode rows, which wrote per-radio keys without the SAE and Smart Connect coupling the stock surfaces enforce; Wi-Fi 7 is chosen per network on the Network menu, and Wireless Mode is no longer exposed (a band left on "N only" recovers with the command in the changelog). The Traffic Analyzer names the operation mode instead of staying blank on a bridging box. The Storage, Analytics and Failover help buttons reach the guide again. From v3.1.9, Policy Routing stays first-match-wins. Observed on the RT-BE96U beta image after fifteen hours: Rule Status 102 green / 0 red, retry counters at zero, DoS guard armed. The series stands at **684 patches** (0681–0684 for v3.2.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.1** <!--@treever--> — `3006.102.8_Reaper_v3.2.1`. **Wireless Mode returns with its Wi-Fi 6 coupling, the Professional page keeps only settings a user can change, Rule Status walker fixes.** Wireless Mode is per radio again with stock's option sets, and applying an Auto or AX-capable mode restores Wi-Fi 6 and 7 on a band an earlier "N only" had stripped, which the firmware never did on its own. Seven rows a user could not safely change are gone, MU-MIMO follows the OFDMA choice, and the radio switch is linked to the MLO tab, the wireless scheduler and AiMesh. Rule Status witnesses a policy-routing rule behind ipset rules again, shows its out-of-scope note whole, and labels the VPN group "VPN". Built and verified locally as an RT-BE96U MCP test image before the cut. The series stands at **689 patches** (0685–0689 for v3.2.1); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,39 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.1 — Wireless Mode returns with its Wi-Fi 6 coupling, the Professional page keeps only settings a user can change, Rule Status walker fixes
+
+**Wireless Mode is back on the WiFi Professional page, and this time it looks after Wi-Fi 6.** The
+row offers, per radio, the same choices stock does: Auto, N only or Legacy on 2.4 GHz; Auto, AX
+only, N/AC/AX mixed or Legacy on 5 GHz; Auto or AX only on 6 GHz. Every choice other than Auto,
+N/AC/AX mixed and AX only turns Wi-Fi 6 off on that band, and with it Wi-Fi 7, which is what v3.2.0
+warned about. The part nobody could see: the firmware never turned Wi-Fi 6 back on afterwards, so a
+band once set to N only stayed at Wi-Fi 4 or 5 even after Auto was chosen again. The page now
+restores it when an Auto or AX-capable mode is applied, greys the controls a mode makes meaningless
+(OFDMA under N only or Legacy, AMPDU RTS and RTS Threshold under Legacy, Disable 802.11b unless
+Auto), and asks before a mode that drops Wi-Fi 6 or admits only Wi-Fi 6 clients. The manual
+`nvram set` recovery from v3.2.0 is no longer needed.
+
+**Seven Professional settings are gone because they could only mislead or degrade.** WMM, MU-MIMO,
+explicit and universal beamforming, modulation scheme, AMPDU aggregation and Bluetooth coexistence
+are hidden on Wi-Fi 7 hardware by stock as well: the firmware forces WMM on, derives beamforming and
+MU-MIMO from other choices, and would silently degrade a band if these were changed by hand. MU-MIMO
+now follows the OFDMA choice, as stock derives it. The roaming assistant accepts -90 to -40 dBm, or
+0 for off, as stock does.
+
+**The radio switch knows about the other tabs that drive it.** It refuses to turn a radio off while
+MLO is enabled, since the MLO tab needs every radio on; a radio the wireless scheduler owns is
+marked, because the schedule decides when it is actually up; and turning a radio off on an AiMesh
+router asks first, because the setting reaches the nodes. Setting AMPDU RTS to Disable greys that
+radio's RTS and Fragmentation thresholds.
+
+**Rule Status sees every policy-routing rule again, and its last row is no longer cut off.** The
+walker stopped after eight policy-routing rows and counted the "not witnessed" notes for
+address-list rules against that limit, so a rule routing a single device behind eight list rules
+never appeared. The limit is 32 now. The out-of-scope note at the bottom was truncated mid-word in
+both columns; it is shown whole. The group that holds VPN servers, policy routing and the Killswitch
+is labelled "VPN".
 
 ## What's new in v3.2.0 — the Professional page keeps to its own settings, and a bridging box says why Traffic is empty
 

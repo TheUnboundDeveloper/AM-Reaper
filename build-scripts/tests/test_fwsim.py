@@ -615,7 +615,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.5", j.get("ver") == "1.5", j.get("ver"))
+    check("pass2: walker is v1.6", j.get("ver") == "1.6", j.get("ver"))
 
     # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
     j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")
@@ -718,6 +718,23 @@ try:
     x = wit(j, "C7.3"); check("C7: a destination-SET selector is a NOTE, not a red (members resolve at run time)", x and x["state"] == "na" and "rwfw_streaming" in x["note"] and "destination" in x["note"], x)
     j, out, rc = run(save4=pbr.replace("-A REAPER_PBR -s 192.168.50.20/32 -j MARK --set-xmark 0x10000/0xf0000\n", "-A REAPER_PBR -s 192.168.50.20/32 -j RETURN\n-A REAPER_PBR -s 192.168.50.20/32 -j MARK --set-xmark 0x10000/0xf0000\n"), witness=None, tag="c7n")
     x = wit(j, "C7.1"); check("C7 neg: a RETURN ahead of the mark leaves the flow unmarked - red, mark 0x0", x and x["state"] == "red" and x["verdict"].startswith("mark 0x0"), x)
+
+    # Field 2026-09-19 (v1.6): the C7 loop capped at EIGHT rows and every row
+    # counted, set-keyed NOTEs included, so eight ipset/domain rules followed by
+    # a source-address rule (the reporter's list; a multi-address source
+    # selector is one rule per address) never showed the source rule at all.
+    sets = "".join("-A REAPER_PBR -m set --match-set rwfw_s%d dst -j MARK --set-xmark 0x10000/0xf0000\n" % i for i in range(8))
+    srcs = "".join("-A REAPER_PBR -s 192.168.50.%d/32 -j MARK --set-xmark 0x20000/0xf0000\n" % i for i in (38, 39, 40))
+    pbr9 = SAVE4.replace(":PBR - [0:0]\n", ":PBR - [0:0]\n:REAPER_PBR - [0:0]\n") \
+                .replace("-A PREROUTING -i br0 -j PBR\n", "-A PREROUTING -i br0 -j REAPER_PBR\n-A PREROUTING -i br0 -j PBR\n" + sets + srcs)
+    j, out, rc = run(save4=pbr9, witness=None, tag="c7cap")
+    c7 = [i for i in j["witnesses"] if i["id"].startswith("C7.")]
+    check("C7 cap: eleven policy-routing rules give eleven rows (was capped at 8)", len(c7) == 11, [i["id"] for i in c7])
+    x = wit(j, "C7.9"); check("C7 cap: the source rule behind eight set rules is witnessed from its address, green", x and x["state"] == "green" and x["witness"].startswith("br0 192.168.50.38 "), x)
+    x = wit(j, "C7.11"); check("C7 cap: the third address of a multi-address source selector is its own green row", x and x["state"] == "green" and x["witness"].startswith("br0 192.168.50.40 "), x)
+    # Same field report: H6's honesty text was cut mid-word in both columns
+    # (pred 120 / note 100 bytes against a 267-byte literal).
+    x = wit(j, "H6"); check("H6: the out-of-scope note reaches the page whole in both fields", x and x["note"].endswith("AiMesh components") and x["witness"].endswith("AiMesh components"), x and (len(x["note"]), len(x["witness"])))
 
     # THE BAN-ADDRESS PRODUCER. Nothing on the router ever wrote the nvram key
     # reaper_fwsim_banned (found 2026-09-15) - only this suite did - so for their

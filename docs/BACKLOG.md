@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.1.9** · 2026-09-19 <!--@stamp-->
+> **Doc status:** current as of **v3.2.0** · 2026-09-19 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -47,7 +47,9 @@ The ordered short list.
    heals through `heal.sh` under the firewall lock; the rules engine parks a
    DNS-Health-Check-targeted intercept in `REAPER_FWHC` with `rdnshc` gating it; L4S and the WMM
    downstream stamp removed. Verified on the owner's box on `v3.1.8_BETA_r7`: Rule Status 95 green /
-   0 red, both retry counters 0, Gatekeeper audit clean, intercept 0 leaks.
+   0 red, both retry counters 0, Gatekeeper audit clean, intercept 0 leaks. Re-checked on the v3.2.0
+   beta 2026-09-19 (RT-BE96U, 15 h up): walker 102 green / 0 red, all three retry counters 0, DoS
+   guard reported armed, the DNS-gated intercept closed at boot and reopened when the resolver answered.
    ↳ notes: `apply-window-watchdog-fight.md`
 2. **[P1] Port forwards dead on an RT-BE88U since v3.1.0 — the full filter table never loads on
    that box** (review R15, reopened 2026-09-13). The general fix is built in the canon tree: a refused
@@ -61,12 +63,22 @@ The ordered short list.
    any hoist/probe/drop is considered; the same loop guards the nat restore. The refused line is still
    wanted from the reporter's router to confirm the diagnosis on that box (one command) — see the entry
    under Open bugs. **[fix in the v3.1.7_BETA image; reporter confirmation owed]**
-3. **[P1] v3.1.5 — the beta is out; what only hardware can settle.** The v3.1.5 beta was built by
-   the public clean-room pipeline and published as a prerelease for all six models, both variants,
-   on 2026-09-13. Every fix from the 2026-09-12 security review, the two OpenVPN certificate causes,
-   the DDNS fix and the WireGuard kernel fix are in those images. The metal-owed list is one entry
-   under Open bugs. v3.1.5 becomes the stable release when Dev is merged to main after the beta has
-   soaked.
+3. **[P1] v3.2.0 — the stable candidate.** v3.2.0 (patches 0681–0684, cut 2026-09-19) is v3.1.9
+   plus the WiFi Professional row removal, the Traffic bridging-mode note and the two help-link
+   fixes. Reviewed against this file 2026-09-19: no open P1 is unfixed in tree, and the current
+   stable line, v3.1.0 (2026-09-08), lacks the v3.1.2 WireGuard kernel fix, the v3.1.5 review fixes,
+   the v3.1.7 restore-race fix and the v3.1.8 WLCSM swap. Before the stable cut: the stable channel
+   path has never run with the channel marker (v3.1.0 predates it) — a miss there is a mis-named
+   release, recoverable by re-dispatch; the manifest half is now proven — on 2026-09-19 the current
+   `refresh_manifest.py` replayed the v3.1.0 stable publish into a scratch directory and reproduced
+   main's `manifest_3006.txt` and `latest.json` byte for byte — and the image-naming half runs at
+   the first main publish;
+   GT-BE19000 stays a prerelease by design and gains no stable line; the release retention prune runs
+   after the stable (owner, 2026-09-18); code signing (3b) is not a stability item and is the same
+   posture as every stable so far. Known issues to carry in the notes: the WireGuard source-rule
+   report (fix candidates in v3.1.7 and the v3.1.9 order; reporter unconfirmed), the R15 reporter
+   confirmation, and Wireless Mode having no Reaper page. v3.2.0 becomes the stable release when Dev
+   is merged to main after the beta has soaked.
 4. **[P2] GT-BE19000 — on the roster since v3.1.4; the write-up and the diag ARRIVED 2026-09-13.**
    The tester's report (four items) and a `reaper_diag` v1.3.14 capture from a v3.1.4_BETA_noMCP box
    are in. **The decisive fact the report did not state: that router is in Access Point mode
@@ -80,7 +92,8 @@ The ordered short list.
    AP mode is covered too. The fifth item (duplicate menus off UPnP) is the only one still wanting
    data. So the port itself is so far clean — nothing in the report is specific to this model. Still
    owed with the tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class, and a
-   confirming capture from the same box on a v3.1.6 image. The model stays a prerelease until the
+   confirming capture from the same box on a v3.1.9 or later image (v3.1.6 is superseded and on the
+   retention prune list). The model stays a prerelease until the
    glitch list is closed.
    ↳ memory: `gt-be19000-port.md`
 3b. **[P2] Code signing, fully automated — scheduled for a release later this week** (owner,
@@ -101,14 +114,18 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.1.5 is the current beta** (cut 2026-09-12; patches 0653–0661; published as a prerelease for all
-six models on 2026-09-13). It carries the security-review remediation (netatalk, strongSwan, Tor,
-avahi, lighttpd and net-snmp fixes; the Policy Routing failure paths; the Advisor's handshake clock;
-the fail-closed release pruner), the second OpenVPN certificate cause, the two new release checks and
-`reaper_diag` 14f, and the Policy Routing page's Target and Status columns. Items closed by it have
-been removed from this file and are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.0 is the current beta** (cut 2026-09-19; patches 0681–0684). It carries the WiFi
+Professional row removal, the Traffic bridging-mode note and the two help-link fixes; items closed
+by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
 
-*Earlier, in v3.1.4 (2026-09-12): the first OpenVPN certificate cause, the dual-WAN DDNS restart loop,
+*Earlier, in v3.1.9 (2026-09-17): Policy Routing first-match order, the firewall rebuild contention
+fixes, retried rule adds, the DNS intercept failing open, L4S and WMM removed, DoS armed state. In
+v3.1.8 (2026-09-16): the vendor WLCSM libraries, Rule Status false reds, System Information. In
+v3.1.7: the Rule Status walker, the firewall restore race, the Gatekeeper and VLAN apply fixes. In
+v3.1.6 (2026-09-14): a refused filter line is survivable, Access Point mode as a first-class mode.
+In v3.1.5 (2026-09-12): the security-review remediation (netatalk, strongSwan, Tor, avahi, lighttpd
+and net-snmp), the Policy Routing failure paths, the second OpenVPN certificate cause, the Policy
+Routing Target and Status columns. In v3.1.4 (2026-09-12): the first OpenVPN certificate cause, the dual-WAN DDNS restart loop,
 the removal of EDNS Client Subnet, and the GT-BE19000 joining the fleet. In v3.1.3 (2026-09-11): the
 Killswitch decides, the first-boot Wi-Fi page header on every sibling, the front-chain classifier,
 the diagnostic report's six overstated figures, and the build test suites running in CI. In v3.1.2
@@ -137,7 +154,10 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   table wgcN`, `iptables -t mangle -nvL REAPER_PBR`, `cat /proc/blog/skip_wireguard_network`,
   `cat /tmp/reaper_pbr/skipnets`, syslog `reaper_pbr:` lines, and from the routed device a `traceroute`
   to a public address — plus which of Killswitch on/off gave WAN egress and which gave no connectivity.
-  **[fix candidates in v3.1.7; reporter capture owed]** ↳ notes: `pbr-wg-livetunnel-gaps.md`
+  The v3.1.9 first-match order is the strongest untested candidate: the same tester's list was being
+  decided by position rather than by the rule they expected. Ask for a retest on v3.1.9 or later before
+  any more WireGuard work. **[fix candidates in v3.1.7 and v3.1.9; reporter retest owed]**
+  ↳ notes: `pbr-wg-livetunnel-gaps.md`
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
   regression 10/10 where Merlin `3006.102.8_4` wedges. The fix is in two closed blobs, nothing in
@@ -150,10 +170,13 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   from the hash-pinned `overlays/wlcsm-42015-blobs.tar.gz`. The `wlcsm_bindfix` LD_PRELOAD shim is
   retired and its Tools > Other Settings toggle removed; the rwatch hung-nvram reaper stays as the
   safety net until the fix has field history. Blobs, hashes and both disassemblies in
-  `ASUS/audits/socket-leak-42015/` (private). **Owed:** the reproducer bundle on the cut image (10
-  runs, `rc=0`, no `X+1..X+9` accumulation), and the first CI fleet run to prove the blob step on
-  every sibling - it errors rather than skips when a model's tree lacks either file.
-  **[shipped in v3.1.8; acceptance owed]**
+  `ASUS/audits/socket-leak-42015/` (private). The CI fleet step is proven: the v3.1.8 and v3.1.9
+  Dev builds tagged all six models, and the step errors rather than skips when a tree lacks either
+  file. Lab check 2026-09-19 on the v3.2.0 beta (RT-BE96U, 15 h up): both libraries hash-identical
+  to the overlay, proto-31 sockets 42 against a baseline of 44, and zero orphaned sockets once every
+  socket is joined to its owning process - the stage-one signature that fired on every unmitigated
+  boot. **Owed:** the reproducer bundle on the cut image (10 runs, `rc=0`, no `X+1..X+9`
+  accumulation). **[shipped in v3.1.8; reproducer run owed]**
 - **[P1] Port forwards dead on an RT-BE88U since v3.1.0 - the full filter table never loads**
   (review R15, reopened 2026-09-13). The nat emitter was never the bug. The reporter's trace shows
   VSERVER's DNAT counters climbing and a FORWARD chain of exactly six rules ending in policy DROP -
@@ -301,7 +324,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   accounting off an empty conntrack table would report nothing whatever it did. The Traffic page
   therefore stays empty on a bridging box — worth a note on the page, which is not in this rung.
   **[CLOSED — in the v3.1.6_BETA image; the daemon is correctly idle in a bridging mode and the
-  diag's warning was the only defect. The page-note remains unwritten and is the sole remainder.]**
+  diag's warning was the only defect. The page note shipped in v3.2.0.]**
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
   IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
   and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
@@ -422,6 +445,13 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## UI / UX polish
 
+- **[P3] Wireless Mode (`nmode_x`) has no Reaper page** (v3.2.0, owner call 2026-09-18). The row
+  went with the WiFi 7 row on the Professional page, and no linked page writes the key now; the stock
+  page that does ships unlinked. Options: leave it (owner leaning), relink the stock page as a tab,
+  or restore a guarded row. Recovery for a band left on "N only" is in the changelog. **[owner call]**
+- **[P3] Five tokens are English in the 24 non-English packs** — `RQOS_117`, `RQOS_121`, `RFW_321`,
+  `RFW_322` (v3.1.9) and `RTRF_77` (v3.2.0), seeded in English to keep lockstep.
+  **[owed — the next translation pass]**
 - **[P2] The Security Posture card was a snapshot and said so to nobody** (owner, 2026-09-15). Every
   row came from `SSI`, a server-rendered snapshot of about 20 nvram keys taken when the page was
   built, so a dashboard opened while the box was still coming up froze at whatever was true then. The

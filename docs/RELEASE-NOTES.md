@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.1.9** · 2026-09-17 <!--@stamp-->
+> **Doc status:** current as of **v3.2.0** · 2026-09-19 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.1.9** <!--@treever--> — `3006.102.8_Reaper_v3.1.9`. **Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself.** A Policy Routing rule naming a destination, an address list or a domain could be silently overruled by a broader source rule further down the list, because every rule wrote its decision over the one before it. It only failed one way round, which is what disguised it: the same device sent to the same tunnel by **VPN Director** kept following its destination rules. **The first rule that matches now decides**, so put specific rules above broad ones and check any list built around the old behaviour. **Rule Status** also names the stand-in addresses it walks with, rather than printing them bare as though they were devices on your network. Separately, one QoS apply used to set three Reaper layers, the shared front hook, the watchdog and a DNS carve-out watcher fighting over the head of the FORWARD chain for fifty seconds, taking DNS from access-restricted devices on every round; Gatekeeper, the front hook, Warden and the watchdog were each changed so that cannot recur. Because this platform's iptables has no lock, **every Gatekeeper and Warden rule addition is now retried once**, anything still missing is counted and named, and the daemon re-applies. A DNS intercept **fails open** while its resolver is down. Two QoS options that never helped, L4S marking and the Wi-Fi downstream stamp, are removed. **DoS protection** reports its armed state rather than its setting. Verified on the RT-BE96U: Rule Status 95 green / 0 red after the rebuild, both retry counters at zero. The series stands at **680 patches** (0674–0680 for v3.1.9); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.0** <!--@treever--> — `3006.102.8_Reaper_v3.2.0`. **The Professional page keeps to its own settings, and a bridging box says why Traffic is empty.** WiFi Professional drops its WiFi 7 Mode and Wireless Mode rows, which wrote per-radio keys without the SAE and Smart Connect coupling the stock surfaces enforce; Wi-Fi 7 is chosen per network on the Network menu, and Wireless Mode is no longer exposed (a band left on "N only" recovers with the command in the changelog). The Traffic Analyzer names the operation mode instead of staying blank on a bridging box. The Storage, Analytics and Failover help buttons reach the guide again. From v3.1.9, Policy Routing stays first-match-wins. Observed on the RT-BE96U beta image after fifteen hours: Rule Status 102 green / 0 red, retry counters at zero, DoS guard armed. The series stands at **684 patches** (0681–0684 for v3.2.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,35 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.0 — the Professional page keeps to its own settings, and a bridging box says why Traffic is empty
+
+**The WiFi Professional page no longer offers WiFi 7 Mode or Wireless Mode.** Both rows set a
+per-radio value through the page's generic apply without the checks the rest of the firmware puts
+around them. Wi-Fi 7 needs an SAE-capable security mode to advertise itself, and the Network menu
+enforces that coupling while this page did not, so a band could be told to run Wi-Fi 7 and never
+show it. Wireless Mode was worse: "N only" quietly removed Wi-Fi 6 and therefore Wi-Fi 7 from the
+band, which is what a GT-BE98 owner saw on 2026-09-18 when their phone dropped the Wi-Fi 7 badge on
+2.4 GHz alone. Choose Wi-Fi 7 per network on the Network menu. Wireless Mode is not exposed anywhere
+in Reaper now; a band left on "N only" recovers with the one-line command in the changelog.
+
+**The Traffic Analyzer explains itself in Access Point, repeater or media-bridge mode.** Per-device
+accounting reads the router's connection table, which a bridging box never fills, so the collector
+is deliberately idle there and the page used to be blank. It now says so and names the mode.
+
+**Two help buttons reach the guide again.** The Storage and Analytics page buttons pointed at a
+heading that was renamed in August, and the Failover page's button on v3.1.1 images points at one
+renamed in v3.1.2. GitHub shows the top of the guide for an unknown heading, so those clicks went
+nowhere useful. The links and the guide now agree, and the guide keeps the old targets alive for
+routers already in the field.
+
+**Still true from v3.1.9:** Policy Routing is first-match-wins. Put specific rules above broad ones,
+and re-read a list you built around the old order.
+
+**Observed on the RT-BE96U, v3.2.0 beta image, after fifteen hours:** Rule Status 102 green and 0
+red across 111 witnesses, all three retry counters at zero, the DoS guard reported armed on the WAN,
+the DNS-gated intercept closed at boot and reopened when the watched resolver answered, and the
+vendor WLCSM libraries hash-identical to the pinned archive with no orphaned protocol-31 sockets.
 
 ## What's new in v3.1.9 — Policy Routing follows the order you wrote it in, and a firewall rebuild stops fighting itself
 

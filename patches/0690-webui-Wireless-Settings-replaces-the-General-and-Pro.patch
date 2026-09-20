@@ -1,0 +1,1642 @@
+From d559513bf1eda56830143d86eedef7544258b61e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 20 Sep 2026 14:08:47 -0400
+Subject: [PATCH] webui: Wireless > Settings replaces the General and
+ Professional tabs
+
+One page, 38 rows x 3 radios, replaces Advanced_Wireless_Content.asp,
+Advanced_WAdvanced_Content.asp and Reaper_WiFiPro.asp (deleted). Network
+name, security, Wi-Fi 6/7 mode and Smart Connect stay on the Network menu;
+every other radio setting from the ASUS Professional page is here per band,
+locked only where stock locks it, greyed with no reason text.
+
+httpd: new SSI wlpro_chanspecs() emits the per-radio chanspec list from
+wlN_chansps (filled by the prebuilt ej_wl_chanspecs) so the channel and
+bandwidth rows offer what the driver reports; wlpro_nv_fields grows to 37
+keys. reaper_inject SUP-redirects the three old pages to the new one;
+Advanced_Wireless_Content.asp leaves reaper_css_only so the bounce reaches
+it.
+
+Channel rows fold into wlN_chanspec at apply as the General tab did (2.4 GHz
+<ch>l|u plus wlN_nctrlsb, 5 GHz <ch>/<bw>, 6 GHz 6g<ch>/320-1|2). The
+scheduler writes the V2 wlN_sched_v2 off-time rules that rc/watchdog reads
+on this build. A forced value is written at apply as a derived heal when
+nvram disagrees (WMM on, MU-MIMO from OFDMA, TX bursting off under
+pre-emptive BT, beamforming under MU-MIMO, scheduler off under MLO), as the
+11ax heal already was.
+
+The enhanced select menus ignore clicks and scrolls inside the open list (a
+long channel list vanished when its scrollbar was touched; WiFiPro had the
+same bug). menuTree gets one Settings tab; the dashboard rail and the WPS
+page's two links point at the new page (SDN.asp for authentication).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |  14 +-
+ release/src/router/httpd/web.c                |  59 +-
+ .../src/router/www/Advanced_WWPS_Content.asp  |  10 +-
+ release/src/router/www/Main_ReaperDash.asp    |   2 +-
+ release/src/router/www/Reaper_WiFiPro.asp     | 592 -------------
+ .../src/router/www/Reaper_WiFiSettings.asp    | 798 ++++++++++++++++++
+ .../router/www/require/menuTrees/menuTree.js  |   8 +-
+ 7 files changed, 876 insertions(+), 607 deletions(-)
+ delete mode 100644 release/src/router/www/Reaper_WiFiPro.asp
+ create mode 100644 release/src/router/www/Reaper_WiFiSettings.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 6fc37f9dea..43a9e00070 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -98,7 +98,10 @@
+ 	"\"advanced_urlfilter_content.asp\":\"Reaper_Firewall.asp\"," \
+ 	"\"advanced_keywordfilter_content.asp\":\"Reaper_Firewall.asp\"," \
+ 	"\"advanced_settingbackup_content.asp\":\"Reaper_Backup.asp\"," \
+-	"\"tools_sysinfo.asp\":\"Reaper_Sysinfo.asp\"};" \
++	"\"tools_sysinfo.asp\":\"Reaper_Sysinfo.asp\"," \
++	"\"advanced_wireless_content.asp\":\"Reaper_WiFiSettings.asp\"," \
++	"\"advanced_wadvanced_content.asp\":\"Reaper_WiFiSettings.asp\"," \
++	"\"reaper_wifipro.asp\":\"Reaper_WiFiSettings.asp\"};" \
+ 	"if(rp.toLowerCase()===\"index.asp\"){top.location.replace(\"/Main_ReaperDash.asp\");return;}" \
+ 	"var s=SUP[rp.toLowerCase()];" \
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+@@ -323,7 +326,9 @@ static const char *reaper_native[] = {
+ 	   the default full-inject block, which wrongly injected the stock CSS). */
+ 	"Reaper_Conn.asp",
+ 	"Reaper_QoSDiag.asp",
+-	"Reaper_WiFiPro.asp",
++	"Reaper_WiFiSettings.asp",	/* 2026-09-20: Wireless > Settings, the one tab that replaced the
++				   stock General tab, the stock Professional page and Reaper_WiFiPro.asp
++				   (all three SUP-redirected above) */
+ 	"Reaper_USB.asp",	/* 2026-08-05: USB disk utilities (USB Application tab) */
+ 	"Reaper_Analytics.asp",	/* v2.2.2: Data Export (Administration group) */
+ 	"Reaper_Firmware.asp",	/* Phase 2: native firmware check/download/flash page */
+@@ -358,7 +363,10 @@ static const char *reaper_native[] = {
+  * still fixed. Matched on basename, case-insensitive.
+  */
+ static const char *reaper_css_only[] = {
+-	"Advanced_Wireless_Content.asp",
++	/* reaper 2026-09-20: Advanced_Wireless_Content.asp LEFT this list. Gate 3 (its reason
++	   for staying top-level) was deleted 2026-08-23, and the page is now superseded by
++	   Wireless > Settings: it takes the normal bounce so the SUP{} map above can send a
++	   direct or framed hit to Reaper_WiFiSettings.asp instead of a second editor. */
+ 	/* v2.9.2: the sole credential surface since Reaper_FirstBoot.asp was retired,
+ 	   and the target of the security banner's CTA. Top-level (never bounced - it
+ 	   is skip-listed, and this list is tested first) but themed, so first boot is
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 4427be56ae..7bb64872a6 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -41057,11 +41057,21 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+  * "nmode_x" is back (owner, 2026-09-19) and "11ax" rides with it read-only:
+  * the page writes 11ax=1 when a mode that allows HE is applied over a stored 0.
+  */
++/*
++ * reaper 2026-09-20 (owner): the page became Wireless > Settings, the ONE tab that
++ * replaces the stock General tab and both Professional pages. The General tab's
++ * radio rows (bw, bw_160, chanspec, nctrlsb, wpa_gtk_rekey) and every manual row
++ * the 2026-09-19 trim had removed are back; "sched_v2" is read for the scheduler
++ * grid (this build is WL_SCHED_V2/V3, rc/watchdog.c reads wlN_sched_v2).
++ * 37 keys per radio, one pass, still the only reader of this emitter.
++ */
+ static const char *wlpro_nv_fields[] = {
+-	"11ax", "ampdu_rts", "atf", "bcn", "bss_maxassoc", "dtim", "frag",
+-	"frameburst", "igs", "mbo_enable", "mumimo", "nmode_x", "ofdma",
+-	"plcphdr", "radio", "rateset", "rts", "timesched", "twt", "txpower",
+-	"user_rssi", "wme_apsd", "wme_no_ack", NULL
++	"11ax", "ampdu_mpdu", "ampdu_rts", "ap_isolate", "atf", "bcn", "bss_maxassoc",
++	"btc_mode", "bw", "bw_160", "chanspec", "dtim", "frag", "frameburst", "igs",
++	"itxbf", "mbo_enable", "mrate_x", "mumimo", "nctrlsb", "nmode_x", "ofdma",
++	"plcphdr", "radio", "rateset", "rts", "sched_v2", "timesched", "turbo_qam",
++	"twt", "txbf", "txpower", "user_rssi", "wme", "wme_apsd", "wme_no_ack",
++	"wpa_gtk_rekey", NULL
+ };
+ 
+ static int
+@@ -41108,6 +41118,46 @@ ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
+ 	return ret;
+ }
+ 
++/*
++ * reaper 2026-09-20: the driver's valid chanspec list per radio for Wireless > Settings
++ * (Reaper_WiFiSettings.asp), ONE JSON object keyed by wlN:
++ *   {"wl0":["1","1l","1u",...],"wl1":["36","36l","36/80","36/160",...],"wl2":["6g1",...]}
++ * Stock's General tab fetches the same data per band through hookGet("chanspecs_2g") and
++ * friends (one round trip per band) and builds its channel tables from it in js/asus.js;
++ * the page does the same from this one object. The list is nvram wlN_chansps, filled by
++ * the prebuilt ej_wl_chanspecs() when called without a writer - the exact pattern
++ * ej_get_wl_bandwidth() uses. Emitted in wl_ifnames order like ej_wlpro_nvram() above.
++ * A chanspec is [0-9a-z/-] only; anything else in the list is dropped, never echoed.
++ */
++static int
++ej_wlpro_chanspecs(int eid, webs_t wp, int argc, char_t **argv)
++{
++	char word[256], *next, prefix[16], chansps[4096], cs[64], *csnext;
++	int unit = 0, first, ret = 0;
++
++	ret += websWrite(wp, "{");
++	foreach (word, nvram_safe_get("wl_ifnames"), next) {
++		snprintf(prefix, sizeof(prefix), "wl%d_", unit);
++		strlcpy(chansps, nvram_pf_safe_get(prefix, "chansps"), sizeof(chansps));
++		if (chansps[0] == '\0') {
++			ej_wl_chanspecs(0, NULL, 1, NULL, unit);
++			strlcpy(chansps, nvram_pf_safe_get(prefix, "chansps"), sizeof(chansps));
++		}
++		ret += websWrite(wp, "%s\"wl%d\":[", unit ? "," : "", unit);
++		first = 1;
++		foreach (cs, chansps, csnext) {
++			if (strspn(cs, "0123456789abcdefghijklmnopqrstuvwxyz/-") != strlen(cs))
++				continue;
++			ret += websWrite(wp, "%s\"%s\"", first ? "" : ",", cs);
++			first = 0;
++		}
++		ret += websWrite(wp, "]");
++		unit++;
++	}
++	ret += websWrite(wp, "}");
++	return ret;
++}
++
+ int gen_wl_nband_array()
+ {
+ 	int i = 0;
+@@ -50070,6 +50120,7 @@ struct ej_handler ej_handlers[] = {
+ #endif
+ 	{ "wl_nband_info", ej_wl_nband_info},
+ 	{ "wlpro_nvram", ej_wlpro_nvram},
++	{ "wlpro_chanspecs", ej_wlpro_chanspecs},
+ 	{ "rwarden_list", ej_rwarden_list},
+ 	{ "wl_nband_list", ej_wl_nband_list},
+ #ifdef RTCONFIG_GEOIP
+diff --git a/release/src/router/www/Advanced_WWPS_Content.asp b/release/src/router/www/Advanced_WWPS_Content.asp
+index e8a27c97ef..a48b519be3 100644
+--- a/release/src/router/www/Advanced_WWPS_Content.asp
++++ b/release/src/router/www/Advanced_WWPS_Content.asp
+@@ -753,14 +753,16 @@ function changemethod(wpsmethod){
+ }
+ 
+ function _change_wl_unit_status(__unit){
+-	document.titleForm.current_page.value = "Advanced_Wireless_Content.asp?af=wl_auth_mode_x";
+-	document.titleForm.next_page.value = "Advanced_Wireless_Content.asp?af=wl_auth_mode_x";
++	/* reaper 2026-09-20: the authentication method lives on the Network menu (SDN profile) now */
++	document.titleForm.current_page.value = "SDN.asp";
++	document.titleForm.next_page.value = "SDN.asp";
+ 	change_wl_unit_status(__unit);
+ }
+ 
+ function _change_wl_advanced_unit_status(__unit){
+-	document.titleForm.current_page.value = "Advanced_WAdvanced_Content.asp?af=wl_radio";
+-	document.titleForm.next_page.value = "Advanced_WAdvanced_Content.asp?af=wl_radio";
++	/* reaper 2026-09-20: Enable Radio is on Wireless > Settings (the stock page is SUP-redirected there) */
++	document.titleForm.current_page.value = "Reaper_WiFiSettings.asp";
++	document.titleForm.next_page.value = "Reaper_WiFiSettings.asp";
+ 	change_wl_unit_status(__unit);
+ }
+ 
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index e4bd8a1829..266c2dbcf4 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -467,7 +467,7 @@ main{min-width:0}
+ 
+     <div class="grp"><#menu5#></div>
+     <nav class="nav">
+-      <a href="/reaper_shell.asp#Advanced_Wireless_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg></span><span class="nl"><#menu5_1#></span></a>
++      <a href="/reaper_shell.asp#Reaper_WiFiSettings.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg></span><span class="nl"><#menu5_1#></span></a>
+       <a href="/reaper_shell.asp#Advanced_LAN_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 10V6h10v4"/></svg></span><span class="nl"><#menu5_2#></span></a>
+       <a href="/reaper_shell.asp#Advanced_WAN_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg></span><span class="nl"><#menu5_3#></span></a>
+       <a href="/reaper_shell.asp#Advanced_IPv6_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg></span><span class="nl">IPv6</span></a>
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+deleted file mode 100644
+index bd9c8532eb..0000000000
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ /dev/null
+@@ -1,592 +0,0 @@
+-<!DOCTYPE html>
+-<html lang="en">
+-<head>
+-<meta charset="utf-8">
+-<meta name="viewport" content="width=device-width, initial-scale=1">
+-<meta name="reaper-native" content="1">
+-<title>REAPER &mdash; <#menu5_1_6#></title>
+-<style>
+-@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+-
+-:root{--bg:#08080a;--panel:#0f0f12;--panel2:#141418;--raised:#17171c;
+- --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
+- --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
+- --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
+- --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+- --labelcol:minmax(210px,330px);--fieldcol:minmax(140px,192px);--bands:3;}
+-*{box-sizing:border-box}html,body{margin:0}
+-body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+- background-image:radial-gradient(1100px 460px at 16% -8%,rgba(225,6,0,.10),transparent 60%),
+- radial-gradient(100% 100% at 50% 30%,transparent 52%,rgba(0,0,0,.6) 100%);
+- -webkit-font-smoothing:antialiased;font-size:14px;line-height:1.5}
+-h1,h2{font-family:var(--hdr);color:var(--bone);margin:0;letter-spacing:.04em}
+-code{font-family:ui-monospace,Consolas,monospace}
+-.wrap{width:fit-content;max-width:100%;margin:0;padding:0 26px 90px}
+-.stickytop{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,#0a0a0c 70%,rgba(10,10,12,.92));
+- backdrop-filter:blur(6px);border-bottom:1px solid var(--line2)}
+-.stickytop .inner{width:fit-content;max-width:100%;margin:0;padding:0 26px}
+-.appbar{display:flex;align-items:center;gap:18px;padding:16px 0 12px}
+-.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.24em;font-size:10.5px;color:var(--steel)}
+-.appbar h1{font-size:22px;font-weight:700;line-height:1.05}
+-.appbar .sub{font-size:12px;color:var(--steel);margin-top:3px;max-width:60ch}
+-.spacer{flex:1}
+-.applybox{display:flex;align-items:center;gap:12px}
+-.changed{font-family:var(--hdr);font-size:12px;letter-spacing:.06em;color:var(--bone-dim);text-align:right;line-height:1.15}
+-.changed b{color:var(--amber);font-size:15px}
+-.applybtn{font-family:var(--hdr);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:13.5px;
+- color:#fff;border:1px solid transparent;border-radius:10px;padding:11px 20px;cursor:pointer;
+- background:linear-gradient(180deg,var(--red),var(--red-deep));box-shadow:0 6px 20px -8px rgba(225,6,0,.6);
+- transition:filter .15s,transform .05s}
+-.applybtn:hover{filter:brightness(1.08)}.applybtn:active{transform:translateY(1px)}
+-.applybtn:disabled{opacity:.4;cursor:default;box-shadow:none;filter:none}
+-.applybtn:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
+-.gridrow{display:grid;grid-template-columns:var(--labelcol) repeat(var(--bands),var(--fieldcol));gap:0 14px;align-items:center}
+-.bandhead{padding:2px 0 12px}
+-.bh{display:flex;align-items:center;justify-content:center;gap:9px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+-.bh-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+-.bh-name{font-family:var(--hdr);font-weight:700;font-size:16px;color:var(--bone);line-height:1}
+-.bh-sub{font-size:10.5px;color:var(--steel);margin-top:3px;font-family:ui-monospace,monospace}
+-.sec{margin-top:26px}
+-.sec-h{font-family:var(--hdr);text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.16em;
+- color:var(--bone);padding-bottom:9px;margin-bottom:6px;border-bottom:1px solid var(--line2);position:relative}
+-.sec-h::after{content:"";position:absolute;left:0;bottom:-1px;width:46px;height:2px;background:var(--red)}
+-.matrix{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+-.row{display:grid;grid-template-columns:var(--labelcol) repeat(var(--bands),var(--fieldcol));gap:0 14px;
+- align-items:center;padding:11px 16px;border-bottom:1px solid var(--line)}
+-.row:last-child{border-bottom:none}.row:hover{background:var(--panel2)}
+-.rowlabel{min-width:0;text-align:center}
+-.rl-top{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+-.rl-name{font-family:var(--body);font-weight:600;font-size:13.5px;color:var(--bone)}
+-.rl-help{font-size:11.5px;color:var(--steel);margin-top:2px;line-height:1.4}
+-.rl-key{display:inline-block;margin-top:5px;font-size:10.5px;color:#5f6a56;
+- background:rgba(79,178,134,.06);border:1px solid rgba(79,178,134,.14);padding:1px 6px;border-radius:5px}
+-.chip{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.07em;font-size:9.5px;font-weight:600;
+- padding:2px 7px;border-radius:999px;border:1px solid;white-space:nowrap}
+-.chip.band{color:var(--bone-dim);border-color:var(--line2);background:transparent}
+-.chip.legacy{color:var(--steel);border-color:var(--line2)}
+-.cell{min-width:0;display:flex;align-items:center;justify-content:center}
+-.na{color:#43474b;text-align:center;font-size:16px;user-select:none}
+-.selwrap{position:relative;width:100%}
+-.sel{width:100%;appearance:none;font-family:var(--body);font-size:12.5px;color:var(--bone);
+- background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 26px;cursor:pointer;
+- text-align:center;text-align-last:center}
+-.sel.enhanced{display:none}
+-.csel{width:100%;position:relative;font-family:var(--body);font-size:12.5px;color:var(--bone);
+- background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 26px;cursor:pointer;
+- text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:none}
+-.csel:hover{border-color:var(--steel)}
+-.csel:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+-.selwrap.locked .csel{opacity:.45;cursor:not-allowed}
+-.selwrap.locked .csel:hover{border-color:var(--line2)}
+-.numwrap.locked .num{opacity:.45;cursor:not-allowed}
+-.chip.sched{color:var(--amber);border-color:rgba(224,169,59,.45);margin-left:8px;cursor:help}
+-.csel::after{content:"";position:absolute;right:11px;top:50%;width:7px;height:7px;
+- border-right:2px solid var(--steel);border-bottom:2px solid var(--steel);
+- transform:translateY(-70%) rotate(45deg);pointer-events:none}
+-.cmenu{position:fixed;z-index:55;background:#101014;border:1px solid var(--line2);border-radius:8px;
+- padding:4px;box-shadow:0 18px 44px -12px #000;display:none;max-height:280px;overflow:auto}
+-.cmenu.open{display:block}
+-.copt{text-align:center;font-size:12.5px;color:var(--bone-dim);padding:7px 10px;border-radius:6px;
+- cursor:pointer;white-space:nowrap}
+-.copt:hover{background:var(--red-dim);color:var(--bone)}
+-.copt.active{background:rgba(236,231,219,.07);color:var(--bone)}
+-.numwrap{display:flex;align-items:center;gap:6px;width:100%;justify-content:center}
+-.num{flex:1 1 auto;min-width:0;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;font-size:13px;color:var(--bone);
+- background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;text-align:center}
+-.num:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+-.unit{font-size:11px;color:var(--steel);flex:0 0 auto}
+-.tog{width:44px;height:24px;border-radius:999px;border:1px solid var(--line2);background:#26262b;position:relative;
+- cursor:pointer;padding:0;transition:background .15s}
+-.tog .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8a8f95;transition:transform .16s,background .16s}
+-.tog.on{background:#3a3f45}.tog.on .knob{transform:translateX(20px);background:var(--bone)}
+-.tog:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+-.cell.dirty .csel,.cell.dirty .num{border-color:var(--amber);box-shadow:0 0 0 1px rgba(224,169,59,.3)}
+-.cell.dirty .tog{box-shadow:0 0 0 1px rgba(224,169,59,.4)}
+-.cell.dirty{position:relative}
+-.cell.dirty::before{content:"";position:absolute;left:-8px;top:50%;transform:translateY(-50%);width:4px;height:22px;border-radius:2px;background:var(--amber)}
+-.note{margin-top:20px;font-size:12px;color:var(--steel);line-height:1.6;max-width:80ch}
+-.note b{color:var(--bone-dim);font-weight:600}
+-.overlay{position:fixed;inset:0;background:rgba(6,6,8,.86);display:none;align-items:center;justify-content:center;z-index:50}
+-.overlay.show{display:flex}
+-.ovcard{text-align:center;color:var(--bone);font-family:var(--hdr)}
+-.ovcard .spin{width:42px;height:42px;border:3px solid rgba(236,231,219,.15);border-top-color:var(--red);
+- border-radius:50%;margin:0 auto 16px;animation:spin 1s linear infinite}
+-.ovcard .ovmsg{font-size:16px;letter-spacing:.05em}
+-@keyframes spin{to{transform:rotate(360deg)}}
+-@media (prefers-reduced-motion:reduce){*{transition:none!important}.ovcard .spin{animation:none}}
+-@media (max-width:860px){.row,.gridrow{grid-template-columns:1fr;gap:8px}.rowlabel{padding:0;text-align:left}.bandhead{display:none}
+- .cell{display:block}
+- .cell::before{content:attr(data-band);display:block;font-family:var(--hdr);font-size:10px;letter-spacing:.1em;
+- text-transform:uppercase;color:var(--steel);margin-bottom:3px}.appbar{flex-wrap:wrap}}
+-</style>
+-</head>
+-<body>
+-<div class="stickytop"><div class="inner">
+-  <div class="appbar">
+-    <div>
+-      <div class="eyebrow">REAPER &middot; <#menu5_1#></div>
+-      <h1><#menu5_1_6#> &mdash; <#RWFP_32#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#410-wireless-quality-and-wifi-professional-all-bands" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-      <div class="sub"><#RWFP_1#></div>
+-    </div>
+-    <div class="spacer"></div>
+-    <div class="applybox">
+-      <div class="changed"><b id="chgN">0</b><br><#RWFP_10#></div>
+-      <button type="button" class="applybtn" id="applyAll" disabled><#CTL_apply#></button>
+-    </div>
+-  </div>
+-  <div class="bandhead gridrow" id="bandRoot"></div>
+-</div></div>
+-
+-<div class="wrap">
+-  <div id="matrixRoot"></div>
+-  <div class="note"><b><#CTL_apply#></b> <#RWFP_33#> <code>restart_wireless</code> &mdash;
+-  <#RWFP_34#>
+-  <#RWFP_12#></div>
+-</div>
+-
+-<form id="applyform" method="post" action="/start_apply.htm" target="hidden_frame" style="display:none">
+-  <input type="hidden" name="current_page" value="Reaper_WiFiPro.asp">
+-  <input type="hidden" name="next_page" value="Reaper_WiFiPro.asp">
+-  <input type="hidden" name="action_mode" value="apply">
+-  <input type="hidden" name="action_script" value="restart_wireless">
+-  <input type="hidden" name="action_wait" value="10">
+-</form>
+-<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
+-
+-<div class="overlay" id="overlay"><div class="ovcard"><div class="spin"></div><div class="ovmsg"><#RWFP_11#></div></div></div>
+-
+-<script src="/reaper_util.js"></script>
+-<script>
+-(function(){
+-  "use strict";
+-
+-  /* ---- radios come from the ROUTER: wl_nband_info() prints this radio's band per unit
+-         ('2'=2.4GHz, '1'=5GHz, '4'=6GHz), in wl_ifnames order. Length = radio count.
+-         3 on RT-BE96U, 4 on GT-BE98 (dual 5GHz). ---- */
+-  var NBAND = JSON.parse("<% wl_nband_info(); %>".replace(/'/g,'"'));
+-  /* current nvram value for every wlN_field this page can touch, plus the
+-     read-only wlN_timesched flag (see the radio row). The router emits it in
+-     ONE pass over wl_ifnames, so ONLY the radios this model actually has are
+-     present - never assume wl3, or even wl2. cellHTML() below already treats
+-     a missing key as "". */
+-  var NV = <% wlpro_nvram(); %>;
+-  /* MLO is a NETWORK-level switch (Wireless > MLO tab, sysdep/FUNCTION/SDN/SDN/mlo.html):
+-     enabling it writes every radio's <band>_radio=1 and <band>_timesched=0, and stock's
+-     Professional page (check_mlo_status) refuses to switch a radio OFF while it is on.
+-     The same guard applies to the radio toggles below (linked 2026-09-19). */
+-  var MLO_ON=("<% nvram_get("mld_enable"); %>"==="1");
+-  /* AiMesh router/AP mode (sw_mode 1/3): the stock page confirms a radio going off
+-     because the setting reaches the nodes (AiMesh_confirm_msg "Wireless_Radio"). */
+-  var AMESH_CAP=(["1","3"].indexOf("<% nvram_get("sw_mode"); %>")!==-1);
+-
+-  var BAND_LABEL={"2":"2.4 GHz","1":"5 GHz","4":"6 GHz"};
+-  var BAND_TYPE ={"2":"2.4","1":"5","4":"6"};
+-  var DOT=["var(--jade)","var(--amber)","var(--red)","var(--ice)"];
+-
+-  /* build the ordered radio list; disambiguate a dual-same-band router (5 GHz-1 / 5 GHz-2) */
+-  function buildRadios(nb){
+-    var total={}; nb.forEach(function(v){ total[v]=(total[v]||0)+1; });
+-    var seen={};
+-    return nb.map(function(v,i){
+-      var base=BAND_LABEL[v]||("wl"+i), label=base;
+-      if(total[v]>1){ seen[v]=(seen[v]||0)+1; label=base+"-"+seen[v]; }
+-      return {unit:i, ifn:"wl"+i, band:BAND_TYPE[v]||String(v), label:label};
+-    });
+-  }
+-
+-  /* setting schema. bands = band TYPES a row applies to (others render a dash).
+-     options may be a flat list or a map keyed by band type; def may be scalar or a type-map. */
+-  var ED=[["1",`<#CTL_Enabled#>`],["0",`<#CTL_Disabled#>`]];
+-  var SCHEMA=[
+-   {sec:`<#RWFP_2#>`,rows:[
+-     /* radio is ALSO driven from three other surfaces, and each is reflected here
+-        (linked 2026-09-19, owner request "no mismatches across tabs"):
+-        - MLO tab: while mld_enable=1 a radio that is on cannot be switched off here
+-          (alert + revert = stock check_mlo_status). MLO is turned off on its tab first.
+-        - wireless scheduler (classic Professional page, wlN_timesched + wlN_sched_v2;
+-          no Reaper UI): rc/watchdog.c timecheck drives a scheduled radio up and down
+-          while wlN_radio=1, so that radio wears a "Time Scheduling" chip - its toggle
+-          shows the nvram value, the schedule decides when it is actually up. Switching
+-          it off parks the schedule (timecheck skips radio=0); nothing clears it.
+-        - AiMesh: the radio setting reaches the nodes (stock AiMesh_confirm_msg), so
+-          Apply asks before a radio goes 1 -> 0 in router/AP mode. */
+-     {name:`<#WLANConfig11b_x_RadioEnable_itemname#>`,key:"radio",type:"tog"},
+-     /* reaper 2026-09-18 (owner request): the WiFi7 Mode (11be) row is REMOVED. 11be is chosen
+-        per NETWORK on the Network menu (sysdep/FUNCTION/SDN/SDN/sdn.js), which couples it to an
+-        SAE-capable security mode in both directions; this page writes bare wl<unit>_<key> and
+-        could only ever have set it per radio with none of that (field report 2026-09-18: a
+-        client lost the Wi-Fi 7 badge on 2.4 GHz only). Stock's page does the same conversion
+-        plus a Smart Connect cross-band sync of 11be/auth_mode_x/crypto/mfp.
+-        reaper 2026-09-19 (owner request): the Wireless Mode (nmode_x) row is BACK, per radio,
+-        with the couplings it lacked. Facts from rc/sysdeps/init-broadcom.c ~11290-11455: the
+-        value picks nmode/vreqd/gmode/bss_opmode_cap_reqd, and every mode except Auto (0),
+-        N/AC/AX mixed (8) and AX only (9) also WRITES wl<unit>_11ax=0 - no HE, and EHT rides on
+-        HE, so N only or Legacy turns a Wi-Fi 7 radio into Wi-Fi 4/5 (the 2026-09-18 badge
+-        report was exactly this: nmode_x=1 on 2.4 GHz). Nothing ever writes 11ax back to 1:
+-        rc/init.c:2624 seeds it only when UNSET, and stock hides both the mode and the 11ax
+-        selects on Wi-Fi 7 platforms, so a box that once chose N only stays crippled after
+-        returning to Auto. The apply handler therefore writes wl<unit>_11ax=1 whenever the mode
+-        being applied allows HE and the stored value is not 1. Option sets are stock's
+-        regen_mode(): 2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed /
+-        Legacy; 6 GHz Auto / AX only (stock hardcodes these English names too). Locks
+-        (syncLocks): OFDMA is parked unless the mode allows HE; AMPDU RTS + RTS Threshold are
+-        parked in Legacy (stock check_ampdu_rts); Disable 802.11b is parked unless Auto (stock
+-        wl_mode_change). Apply confirms a mode that drops HE, and AX only with stock's note. */
+-     {name:`<#WLANConfig11b_x_Mode_itemname#>`,key:"nmode_x",type:"sel",help:`<#RWFP_39#>`,options:{
+-        "2.4":[["0",`<#Auto#>`],["1","N only"],["2","Legacy"]],
+-        "5":[["0",`<#Auto#>`],["9","AX only"],["8","N/AC/AX mixed"],["2","Legacy"]],
+-        "6":[["0",`<#Auto#>`],["9","AX only"]]}},
+-     {name:`<#WLANConfig11b_AgileMultiband_itemdesc#>`,key:"mbo_enable",type:"sel",options:ED},
+-     {name:`<#WLANConfig11b_WakeTime_itemname#>`,key:"twt",type:"sel",options:ED}
+-   ]},
+-   {sec:`<#RWFP_3#>`,rows:[
+-     {name:`<#WLANConfig11b_x_client_limit_max#>`,key:"bss_maxassoc",type:"num",min:1,max:128},
+-     /* reaper 2026-09-19: the range is stock's (validForm: 0 = off, otherwise -90..-40).
+-        -39..-1 used to pass here; a threshold that high disconnects every client, so the
+-        apply handler accepts 0 as the off value and rejects anything else above -40. */
+-     {name:`<#Roaming_assistant#>`,key:"user_rssi",type:"num",min:-90,max:-40,unit:"dBm",help:`<#RWFP_14#>`}
+-   ]},
+-   {sec:`<#RWFP_4#>`,rows:[
+-     /* reaper 2026-09-19 (owner ruling: "if the user cannot change it, or changing it can
+-        break Wi-Fi, take it off this page"): SEVEN rows REMOVED. Stock's own Professional
+-        page (Advanced_WAdvanced_Content.asp, `if(wifi7_support)` in initial()) HIDES
+-        Modulation Scheme (turbo_qam), AMPDU aggregation (ampdu_mpdu), Bluetooth coexistence
+-        (btc_mode), Explicit and Universal beamforming (txbf, itxbf) and MU-MIMO on every
+-        Wi-Fi 7 platform, and offers WMM (wme) only as "on" outside Legacy mode. The bring-up
+-        code still CONSUMES several of them, which is exactly why a free control is a hazard:
+-        rc/sysdeps/init-broadcom.c ~11597 turns turbo_qam into vht_features (0 = no 256/1024-QAM
+-        on that band), ~11697 turns txbf=0 into txbf_bfr_cap/txbf_bfe_cap = 0 (beamforming off,
+-        and MU-MIMO with it), ~11744 turns mumimo into mu_features, and ~11849 forces wme=on
+-        whenever the mode is Auto - the only mode now that Wireless Mode has no page - so the
+-        WMM "Auto"/"Disable" choices silently reverted. MU-MIMO is not gone: stock derives
+-        wl_mumimo FROM the OFDMA choice at every apply ("DL/UL OFDMA + MU-MIMO" = 1, else 0)
+-        and this page now does the same (see the apply handler). ampdu_mpdu and btc_mode are
+-        consumed by the prebuilt wlconf, unverifiable in source - hidden by stock, so gone here. */
+-     /* reaper 2026-09-19 (owner request): AMPDU RTS is the MASTER of the two threshold
+-        rows below it. While it is Disabled, that radio's RTS Threshold and Fragmentation
+-        Threshold inputs are greyed out and locked (syncRtsLock; stock's check_ampdu_rts
+-        disables wl_rts the same way). A value typed before the lock is parked, not
+-        submitted, and is editable again once AMPDU RTS is re-enabled. 2.4 GHz has no
+-        AMPDU RTS cell, so its Fragmentation Threshold is never locked. */
+-     {name:"AMPDU RTS",key:"ampdu_rts",type:"sel",bands:["5","6"],options:ED},
+-     {name:`<#WLANConfig11b_x_RTS_itemname#>`,key:"rts",type:"num",bands:["5","6"],min:0,max:2347},
+-     {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,chip:{c:"legacy",t:`<#RWFP_35#>`}},
+-     {name:`<#RWFP_13#>`,key:"rateset",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["default",`<#RWFP_25#>`],["ofdm",`<#RWFP_13#>`]]},
+-     /* reaper: B/G Protection (gmode_protection) row REMOVED - it cannot persist in the
+-        common config. rc/sysdeps/init-broadcom.c (~L11480) force-resets it to "auto" on
+-        every restart_wireless whenever the 2.4 GHz radio's Wireless Mode is Auto
+-        (nband==2 && nmode==-1), which is the default. The apply wrote "off" correctly; the
+-        driver bringup then clobbered it back to auto -> the control silently reverted. It
+-        would stick only with 2.4 GHz forced to a fixed legacy mode, an edge nobody runs on
+-        WiFi 7. Dropped rather than ship a control that ignores the user. (field report 2026-08-04) */
+-     /* reaper 2026-08-05 (owner request): Preamble is an 802.11b-era concept, so the
+-        Disable-802.11b row (rateset) above is the MASTER of this row. While rateset is
+-        "ofdm" the Preamble select is forced to display its Disable-802.11b state and
+-        LOCKED (see syncPreambleLock). The "0" option is lockOnly: it is the stock
+-        plcphdr value that MEANS disable-11b (the stock page derives rateset FROM
+-        plcphdr=="0" at apply), kept as the locked display state but no longer a
+-        user-pickable preamble choice. */
+-     {name:`<#WLANConfig11n_PremblesType_itemname#>`,key:"plcphdr",type:"sel",bands:["2.4"],chip:{c:"band",t:"2.4 GHz"},options:[["long",`<#WLANConfig11n_PremblesType_long#>`],["short",`<#WLANConfig11n_PremblesType_short#>`],["0",`<#RWFP_13#>`,1]]}
+-   ]},
+-   {sec:`<#RWFP_5#>`,rows:[
+-     /* MU-MIMO, Explicit and Universal beamforming rows REMOVED 2026-09-19 - see the note at the
+-        top of the previous section. MU-MIMO is chosen through the OFDMA option below and written
+-        as wl<unit>_mumimo by the apply handler, exactly as stock derives it. */
+-     {name:`<#OFDMA_title#>`,key:"ofdma",type:"sel",options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1","DL OFDMA"],["2","DL / UL OFDMA"],["3","DL/UL OFDMA + MU-MIMO"]]}
+-   ]},
+-   {sec:`<#RWFP_6#>`,rows:[
+-     /* Bluetooth coexistence row REMOVED 2026-09-19 (stock hides it on Wi-Fi 7; see above) */
+-     {name:`<#WLANConfig11b_x_IgmpSnEnable_itemname#>`,key:"igs",type:"sel",options:ED}
+-   ]},
+-   {sec:`<#RWFP_7#>`,rows:[
+-     /* WMM (wme) row REMOVED 2026-09-19: bring-up forces it on in Auto mode, so "Auto" and
+-        "Disable" never held (see above). No-ACK and APSD below stay - stock keeps them
+-        editable while WMM is on, which it always is now. Airtime Fairness moved here from
+-        the OFDMA section: it is airtime scheduling, and that section lost its other rows. */
+-     {name:`<#WLANConfig11b_x_NOACK_itemname#>`,key:"wme_no_ack",type:"sel",options:[["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`]]},
+-     {name:`<#WLANConfig11b_x_APSD_itemname#>`,key:"wme_apsd",type:"sel",options:[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]},
+-     {name:`<#WLANConfig11b_x_Airtime_Fairness#>`,key:"atf",type:"sel",options:ED}
+-   ]},
+-   {sec:`<#RWFP_8#>`,rows:[
+-     {name:`<#WLANConfig11b_x_DTIM_itemname#>`,key:"dtim",type:"num",min:1,max:255},
+-     {name:`<#WLANConfig11b_x_Beacon_itemname#>`,key:"bcn",type:"num",min:20,max:1000,unit:"ms"},
+-     {name:`<#WLANConfig11b_x_TxBurst_itemname#>`,key:"frameburst",type:"sel",options:[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]}
+-   ]},
+-   {sec:`<#RWFP_9#>`,rows:[
+-     {name:`<#WLANConfig11b_TxPower_itemname#>`,key:"txpower",type:"sel",options:[["100",`<#RWFP_27#>`],["88",`<#RWFP_28#>`],["50",`<#RWFP_29#>`],["25",`<#RWFP_30#>`],["10",`<#RWFP_31#>`]]}
+-   ]}
+-  ];
+-
+-  var RADIOS=[];
+-  
+-  function optsFor(row,type){ return Array.isArray(row.options)?row.options:(row.options?row.options[type]:null); }
+-  function applies(row,type){ return !row.bands || row.bands.indexOf(type)!==-1; }
+-
+-  function cellHTML(row,radio){
+-    if(!applies(row,radio.band))
+-      return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
+-    var nm=radio.ifn+"_"+row.key, dv=NV[nm]; if(dv==null) dv="";
+-    if(row.type==="tog"){
+-      /* a radio the wireless scheduler owns (wlN_timesched=1) wears a chip: the toggle
+-         shows the nvram value, the schedule decides when the radio is actually up */
+-      var sched=(row.key==="radio"&&NV[radio.ifn+"_timesched"]==="1")
+-        ? '<span class="chip sched" title="'+esc(`<#feedback_check_disconnect1#>`)+'">'+esc(`<#Time_Scheduling#>`)+'</span>' : '';
+-      return '<div class="cell"><button type="button" class="tog" role="switch" data-name="'+nm+'" data-nv="'+esc(dv)+'"><span class="knob"></span></button>'+sched+'</div>';
+-    }
+-    if(row.type==="num"){
+-      var u=row.unit?'<span class="unit">'+esc(row.unit)+'</span>':'';
+-      return '<div class="cell"><div class="numwrap"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+u+'</div></div>';
+-    }
+-    var list=optsFor(row,radio.band);
+-    /* a stored value outside the offered set (an older firmware's mode code, say) is shown
+-       as itself rather than blanking the select, so it can be seen and changed */
+-    if(dv!=="" && !list.some(function(o){ return o[0]===dv; })) list=list.concat([[dv,dv]]);
+-    var opts=list.map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' data-lockonly="1"':'')+'>'+esc(o[1])+'</option>'; }).join("");
+-    return '<div class="cell"><div class="selwrap"><select class="sel" data-name="'+nm+'" data-nv="'+esc(dv)+'">'+opts+'</select></div></div>';
+-  }
+-
+-  function render(){
+-    RADIOS=buildRadios(NBAND);
+-    document.documentElement.style.setProperty("--bands",RADIOS.length);
+-    var bh='<div class="hint"></div>'+RADIOS.map(function(r){
+-      return '<div class="bh"><span class="bh-dot" style="background:'+(DOT[r.unit]||"var(--steel)")+'"></span>'+
+-             '<div><div class="bh-name">'+esc(r.label)+'</div><div class="bh-sub">'+esc(r.ifn)+'</div></div></div>';
+-    }).join("");
+-    document.getElementById("bandRoot").innerHTML=bh;
+-    var html=SCHEMA.map(function(s){
+-      var rows=s.rows.map(function(row){
+-        var chip=row.chip?' <span class="chip '+row.chip.c+'">'+esc(row.chip.t)+'</span>':'';
+-        var help=row.help?'<div class="rl-help">'+esc(row.help)+'</div>':'';
+-        var label='<div class="rowlabel"><div class="rl-top"><span class="rl-name">'+esc(row.name)+'</span>'+chip+'</div>'+help+
+-                  '</div>';
+-        return '<div class="row">'+label+RADIOS.map(function(r){return cellHTML(row,r);}).join("")+'</div>';
+-      }).join("");
+-      return '<section class="sec"><h2 class="sec-h">'+esc(s.sec)+'</h2><div class="matrix">'+rows+'</div></section>';
+-    }).join("");
+-    document.getElementById("matrixRoot").innerHTML=html;
+-    wireControls();
+-    /* engage the Preamble lock per 2.4 GHz radio from the rendered rateset state */
+-    document.querySelectorAll('select[data-name$="_rateset"]').forEach(function(r){ syncPreambleLock(r); });
+-    /* and every master/slave lock per radio from the rendered state */
+-    RADIOS.forEach(function(r){ syncLocks(r.ifn); });
+-    recount();
+-  }
+-
+-  var chgN=document.getElementById("chgN"), btn=document.getElementById("applyAll");
+-  function isTog(el){ return el.classList.contains("tog"); }
+-  function getVal(el){ return isTog(el)?(el.classList.contains("on")?"1":"0"):String(el.value); }
+-
+-  /* ---- Preamble lock (owner request 2026-08-05) ----
+-     While a 2.4 GHz radio's Disable-802.11b select (rateset) shows "ofdm", that
+-     radio's Preamble select (plcphdr) is forced to its Disable-802.11b option
+-     ("0" - the value the STOCK page derives rateset from) and locked. Switching
+-     back to "Allow 802.11b" unlocks it and restores the pre-lock selection (a
+-     queued preamble change is parked while locked, not lost). */
+-  function pairedSel(el,from,to){
+-    var nm=el.getAttribute("data-name"); if(nm.slice(-from.length)!==from) return null;
+-    return document.querySelector('[data-name="'+nm.slice(0,-from.length)+to+'"]');
+-  }
+-  /* a LOCKED plcphdr is staged only when its rateset is itself a staged change:
+-     the (ofdm,0) pair is written together. If nvram already held rateset=ofdm
+-     (lock engaged at render), the forced "0" is display-only - never submitted -
+-     so an inconsistent stored pair does not surface as a phantom pending change. */
+-  function lockSuppressed(el){
+-    if(el._hardLock) return true;   /* greyed out by its master (syncRtsLock): parked, never sent */
+-    if(!el._locked) return false;
+-    var rsel=pairedSel(el,"_plcphdr","_rateset");
+-    /* a rateset change that is itself parked (mode lock) is not a staged change */
+-    return !(rsel && !rsel._hardLock && getVal(rsel)!==rsel._base);
+-  }
+-  /* ---- master/slave locks (owner requests 2026-09-19) ----
+-     Computed per radio from ALL masters at once, so two masters can share a slave:
+-       AMPDU RTS "0"            -> RTS Threshold + Fragmentation Threshold parked
+-       Wireless Mode "2" Legacy -> AMPDU RTS + RTS Threshold parked (stock check_ampdu_rts)
+-       Wireless Mode not 0/8/9  -> OFDMA parked (the mode drops HE; nothing to schedule)
+-       Wireless Mode not "0"    -> Disable 802.11b parked on 2.4 GHz (stock wl_mode_change)
+-     A parked control is disabled + greyed; its value stays in place, is excluded from
+-     the pending count, the range check and the apply, and returns the moment its
+-     master releases it. */
+-  function HE_OK(m){ return m==="0"||m==="8"||m==="9"; }
+-  function setHardLock(el,locked){
+-    if(!el) return;
+-    el._hardLock=locked; el.disabled=locked;
+-    var w=el.closest(".numwrap")||el.closest(".selwrap");
+-    if(w){ w.classList.toggle("locked",locked); if(w._sync) w._sync(); }
+-    var b=w?w.querySelector(".csel"):null;
+-    if(b){ if(locked) b.setAttribute("aria-disabled","true"); else b.removeAttribute("aria-disabled"); }
+-  }
+-  function syncLocks(ifn){
+-    var q=function(k){ return document.querySelector('[data-name="'+ifn+k+'"]'); };
+-    var asel=q("_ampdu_rts"), msel=q("_nmode_x");
+-    var rtsOff=asel?String(asel.value)==="0":false, mode=msel?String(msel.value):"0";
+-    setHardLock(q("_frag"), rtsOff);
+-    setHardLock(q("_rts"), rtsOff||mode==="2");
+-    setHardLock(asel, mode==="2");
+-    setHardLock(q("_ofdma"), !HE_OK(mode));
+-    setHardLock(q("_rateset"), mode!=="0");
+-  }
+-  function syncPreambleLock(rsel){
+-    var psel=pairedSel(rsel,"_rateset","_plcphdr"); if(!psel) return;
+-    var w=psel.closest(".selwrap"), b=w?w.querySelector(".csel"):null;
+-    if(String(rsel.value)==="ofdm"){
+-      if(psel._locked) return;
+-      psel._prev=String(psel.value); psel._locked=true; psel.disabled=true; psel.value="0";
+-      if(w){ w.classList.add("locked"); if(w._sync) w._sync(); }
+-      if(b) b.setAttribute("aria-disabled","true");
+-    } else if(psel._locked){
+-      psel._locked=false; psel.disabled=false;
+-      var back=psel._prev;
+-      if(back==null||back==="0"||back==="") back=(psel._base&&psel._base!=="0")?psel._base:"long";
+-      psel.value=back;
+-      if(w){ w.classList.remove("locked"); if(w._sync) w._sync(); }
+-      if(b) b.removeAttribute("aria-disabled");
+-    }
+-  }
+-
+-  function recount(){
+-    var n=0;
+-    document.querySelectorAll("[data-name]").forEach(function(el){
+-      var c=el.closest(".cell"), d=getVal(el)!==el._base&&!lockSuppressed(el);
+-      if(c) c.classList.toggle("dirty",d); if(d) n++;
+-    });
+-    chgN.textContent=n; btn.disabled=n===0; return n;
+-  }
+-
+-  var openMenu=null;
+-  function closeMenu(){ if(openMenu){ openMenu.classList.remove("open"); openMenu=null; } }
+-  function placeMenu(menu,b){ var r=b.getBoundingClientRect();
+-    menu.style.left=r.left+"px"; menu.style.width=r.width+"px"; menu.style.top=(r.bottom+4)+"px";
+-    menu.classList.add("open"); openMenu=menu;
+-    var mh=menu.offsetHeight, below=window.innerHeight-r.bottom;
+-    if(below<mh+10 && r.top>below) menu.style.top=(r.top-mh-4)+"px"; }
+-
+-  function wireControls(){
+-    document.querySelectorAll(".cmenu").forEach(function(m){ m.remove(); });
+-    document.querySelectorAll("[data-name]").forEach(function(el){
+-      var v=el.getAttribute("data-nv"); if(v==null) v="";
+-      if(isTog(el)){ el.classList.toggle("on",v==="1"); el.setAttribute("aria-checked",v==="1"?"true":"false"); el._base=(v==="1")?"1":"0"; }
+-      else { if(v!=="") el.value=v; el._base=String(el.value); }
+-    });
+-    document.querySelectorAll(".tog").forEach(function(t){
+-      t.onclick=function(){
+-        var on=t.classList.toggle("on");
+-        /* MLO guard (stock check_mlo_status parity): a radio that is ON in nvram cannot be
+-           switched off while MLO is enabled - MLO is turned off on its own tab first */
+-        if(!on && MLO_ON && t._base==="1" && t.getAttribute("data-name").slice(-6)==="_radio"){
+-          alert(`<#WiFi7_mlo_adjust_hint#>`);
+-          on=t.classList.toggle("on");
+-        }
+-        t.setAttribute("aria-checked",on?"true":"false"); recount(); };
+-    });
+-    document.querySelectorAll(".selwrap").forEach(function(w){
+-      var sel=w.querySelector(".sel"); if(!sel||sel.classList.contains("enhanced")) return;
+-      sel.classList.add("enhanced");
+-      var b=document.createElement("div"); b.className="csel"; b.tabIndex=0; b.setAttribute("role","button"); b.setAttribute("aria-haspopup","listbox");
+-      var menu=document.createElement("div"); menu.className="cmenu"; menu.setAttribute("role","listbox");
+-      Array.prototype.forEach.call(sel.options,function(o){
+-        if(o.getAttribute("data-lockonly")) return; /* locked-state display value, not user-pickable */
+-        var it=document.createElement("div"); it.className="copt"; it.textContent=o.textContent;
+-        it.setAttribute("data-value",o.value); it.setAttribute("role","option");
+-        it.addEventListener("click",function(e){ e.stopPropagation();
+-          sel.value=o.value; sel.dispatchEvent(new Event("change",{bubbles:true})); sync(); closeMenu(); b.focus(); });
+-        menu.appendChild(it);
+-      });
+-      function sync(){ var o=sel.options[sel.selectedIndex]; b.textContent=o?o.textContent:"";
+-        menu.querySelectorAll(".copt").forEach(function(it){ var on=it.getAttribute("data-value")===sel.value;
+-          it.classList.toggle("active",on); it.setAttribute("aria-selected",on?"true":"false"); }); }
+-      function toggle(e){ e.stopPropagation(); if(sel.disabled){ closeMenu(); return; } if(openMenu===menu){ closeMenu(); return; } closeMenu(); placeMenu(menu,b); }
+-      b.addEventListener("click",toggle);
+-      b.addEventListener("keydown",function(e){
+-        if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(e); }
+-        else if(e.key==="Escape"){ closeMenu(); }
+-        else if(e.key==="ArrowDown"||e.key==="ArrowUp"){ e.preventDefault();
+-          if(sel.disabled) return;
+-          var step=(e.key==="ArrowDown"?1:-1), i=sel.selectedIndex+step;
+-          while(i>=0&&i<sel.options.length&&sel.options[i].getAttribute("data-lockonly")) i+=step;
+-          if(i<0||i>=sel.options.length) return;
+-          sel.selectedIndex=i; sel.dispatchEvent(new Event("change",{bubbles:true})); sync(); }
+-      });
+-      w.appendChild(b); w._sync=sync; document.body.appendChild(menu); sync();
+-    });
+-    document.querySelectorAll(".row").forEach(function(row){
+-      row.querySelectorAll(".cell").forEach(function(c,i){ if(RADIOS[i]) c.setAttribute("data-band",RADIOS[i].label); });
+-    });
+-  }
+-
+-  document.addEventListener("change",function(e){ var t=e.target.closest("[data-name]"); if(!t) return;
+-    var tn=t.getAttribute("data-name");
+-    if(tn.slice(-8)==="_rateset") syncPreambleLock(t);
+-    if(tn.slice(-10)==="_ampdu_rts"||tn.slice(-8)==="_nmode_x") syncLocks(tn.replace(/_(ampdu_rts|nmode_x)$/,""));
+-    recount(); });
+-  document.addEventListener("input",function(e){ if(e.target.classList.contains("num")) recount(); });
+-  document.addEventListener("click",closeMenu);
+-  window.addEventListener("scroll",closeMenu,true);
+-  window.addEventListener("resize",closeMenu);
+-
+-  btn.addEventListener("click",function(){
+-    var bad=null;
+-    document.querySelectorAll(".num").forEach(function(el){
+-      if(getVal(el)===el._base||el._hardLock) return;   /* a parked (locked) value is not sent, so it is not checked */
+-      var v=parseInt(el.value,10), lo=+el.getAttribute("data-min"), hi=+el.getAttribute("data-max");
+-      /* Roaming assistant: 0 is "off" and sits outside the -90..-40 band on purpose (stock validForm) */
+-      if(v===0 && el.getAttribute("data-name").slice(-10)==="_user_rssi") return;
+-      if(isNaN(v)||v<lo||v>hi) bad=bad||el;
+-    });
+-    if(bad){ bad.focus(); bad.closest(".cell").classList.add("dirty");
+-      alert(`<#RWFP_37#> `+bad.getAttribute("data-name")+` (`+bad.getAttribute("data-min")+` <#RWFP_38#> `+bad.getAttribute("data-max")+`).`); return; }
+-    /* AiMesh parity (stock applyRule -> AiMesh_confirm_msg("Wireless_Radio")): in router/AP
+-       mode the radio setting reaches the nodes too, so a radio going 1 -> 0 is confirmed */
+-    if(AMESH_CAP){
+-      var radioOff=false;
+-      document.querySelectorAll('.tog[data-name$="_radio"]').forEach(function(t){ if(t._base==="1"&&getVal(t)==="0") radioOff=true; });
+-      if(radioOff && !confirm(`<#AiMesh_confirm_msg5#>\n<#AiMesh_confirm_msg0#>`)) return;
+-    }
+-    /* Wireless Mode confirms: a mode that drops HE (N only, Legacy) switches Wi-Fi 6/7 off on
+-       that band; AX only refuses clients without Wi-Fi 6 (stock's own note). One per kind. */
+-    var dropHE=false, axOnly=false;
+-    document.querySelectorAll('select[data-name$="_nmode_x"]').forEach(function(s){
+-      var v=String(s.value); if(v===s._base) return;
+-      if(!HE_OK(v)) dropHE=true; else if(v==="9") axOnly=true;
+-    });
+-    if(dropHE && !confirm(`<#RWFP_39#>`)) return;
+-    if(axOnly && !confirm(`<#WLANConfig11ax_AXOnly_note#>`)) return;
+-    var f=document.getElementById("applyform");
+-    Array.prototype.slice.call(f.querySelectorAll(".dyn")).forEach(function(n){ n.remove(); });
+-    var n=0;
+-    document.querySelectorAll("[data-name]").forEach(function(el){
+-      var v=getVal(el); if(v===el._base||lockSuppressed(el)) return;
+-      var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
+-      i.name=el.getAttribute("data-name"); i.value=v; f.appendChild(i); n++;
+-    });
+-    if(n===0) return;
+-    /* MU-MIMO is DERIVED from the OFDMA choice, as stock's applyRule does on every apply:
+-       "DL/UL OFDMA + MU-MIMO" (3) -> wl<unit>_mumimo=1, anything else -> 0. Written whenever
+-       the stored value disagrees with the OFDMA value being applied, so a pair this page let
+-       a user contradict before 2026-09-19 heals on the next apply. Never counted as pending. */
+-    RADIOS.forEach(function(r){
+-      var o=document.querySelector('[data-name="'+r.ifn+'_ofdma"]'); if(!o) return;
+-      var want=(String(o.value)==="3")?"1":"0", cur=NV[r.ifn+"_mumimo"]; if(cur==null) cur="";
+-      if(cur===want) return;
+-      var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
+-      i.name=r.ifn+"_mumimo"; i.value=want; f.appendChild(i);
+-    });
+-    /* 11ax heal: every mode but 0/8/9 makes bring-up write wl<unit>_11ax=0, and nothing writes
+-       it back (rc/init.c:2624 seeds it only when unset; stock hides the 11ax select on Wi-Fi 7).
+-       Whenever the mode being applied allows HE and the stored 11ax is not 1, write it. */
+-    RADIOS.forEach(function(r){
+-      var m=document.querySelector('[data-name="'+r.ifn+'_nmode_x"]'); if(!m) return;
+-      var cur=NV[r.ifn+"_11ax"]; if(cur==null) cur="";
+-      if(!HE_OK(String(m.value))||cur==="1") return;
+-      var i=document.createElement("input"); i.type="hidden"; i.className="dyn";
+-      i.name=r.ifn+"_11ax"; i.value="1"; f.appendChild(i);
+-    });
+-    document.getElementById("overlay").classList.add("show");
+-    f.submit();
+-    setTimeout(function(){ try{ location.reload(); }catch(e){} },13000);
+-  });
+-
+-  render();
+-})();
+-</script>
+-</body>
+-</html>
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+new file mode 100644
+index 0000000000..c523509f31
+--- /dev/null
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -0,0 +1,798 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#Settings#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++
++:root{--bg:#08080a;--panel:#0f0f12;--panel2:#141418;--raised:#17171c;
++ --line:rgba(236,231,219,.09);--line2:rgba(236,231,219,.16);
++ --red:#E10600;--red-deep:#B3000C;--red-dim:rgba(225,6,0,.14);
++ --bone:#ECE7DB;--bone-dim:#B7B1A4;--steel:#71767b;--jade:#4FB286;--amber:#E0A93B;--ice:#7EA6C9;
++ --hdr:'Rajdhani','Oswald',system-ui,sans-serif;--body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++ --mono:ui-monospace,Consolas,monospace;
++ --labelcol:minmax(230px,330px);--fieldcol:minmax(150px,200px);--bands:3;}
++*{box-sizing:border-box}html,body{margin:0}[hidden]{display:none!important}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++ background-image:radial-gradient(1100px 460px at 16% -8%,rgba(225,6,0,.10),transparent 60%),
++ radial-gradient(100% 100% at 50% 30%,transparent 52%,rgba(0,0,0,.6) 100%);
++ -webkit-font-smoothing:antialiased;font-size:14px;line-height:1.5}
++h1,h2,h3{font-family:var(--hdr);color:var(--bone);margin:0;letter-spacing:.04em}
++code{font-family:var(--mono)}
++a{color:var(--ice)}
++.wrap{width:fit-content;max-width:100%;margin:0;padding:0 26px 90px}
++.stickytop{position:sticky;top:0;z-index:30;background:linear-gradient(180deg,#0a0a0c 70%,rgba(10,10,12,.92));
++ backdrop-filter:blur(6px);border-bottom:1px solid var(--line2)}
++.stickytop .inner{width:fit-content;max-width:100%;margin:0;padding:0 26px}
++.appbar{display:flex;align-items:center;gap:18px;padding:16px 0 12px;flex-wrap:wrap}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.24em;font-size:10.5px;color:var(--steel)}
++.appbar h1{font-size:22px;font-weight:700;line-height:1.05}
++.appbar .sub{font-size:12px;color:var(--steel);margin-top:3px;max-width:70ch}
++.spacer{flex:1}
++.applybox{display:flex;align-items:center;gap:12px}
++.changed{font-family:var(--hdr);font-size:12px;letter-spacing:.06em;color:var(--bone-dim);text-align:right;line-height:1.15}
++.changed b{color:var(--amber);font-size:15px}
++.applybtn{font-family:var(--hdr);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:13.5px;
++ color:#fff;border:1px solid transparent;border-radius:10px;padding:11px 20px;cursor:pointer;
++ background:linear-gradient(180deg,var(--red),var(--red-deep));box-shadow:0 6px 20px -8px rgba(225,6,0,.6);
++ transition:filter .15s,transform .05s}
++.applybtn:hover{filter:brightness(1.08)}.applybtn:active{transform:translateY(1px)}
++.applybtn:disabled{opacity:.4;cursor:default;box-shadow:none;filter:none}
++.applybtn:focus-visible,.btn:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
++.btn{font-family:var(--hdr);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:13px;
++ color:var(--bone);border:1px solid var(--line2);border-radius:10px;padding:10px 16px;cursor:pointer;background:var(--raised)}
++.btn:hover{border-color:var(--steel)}
++.gridrow{display:grid;grid-template-columns:var(--labelcol) repeat(var(--bands),var(--fieldcol));gap:0 14px;align-items:stretch}
++.bandhead{padding:2px 0 12px}
++.bh{display:flex;align-items:center;justify-content:center;gap:9px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
++.bh-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
++.bh-name{font-family:var(--hdr);font-weight:700;font-size:16px;color:var(--bone);line-height:1}
++.bh-sub{font-size:10.5px;color:var(--steel);margin-top:3px;font-family:var(--mono)}
++.hint{font-size:11px;color:var(--steel);align-self:end;padding-bottom:6px;line-height:1.45}
++.sec{margin-top:26px}
++.sec-h{font-family:var(--hdr);text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:.16em;
++ color:var(--bone);padding-bottom:9px;margin-bottom:6px;border-bottom:1px solid var(--line2);position:relative}
++.sec-h::after{content:"";position:absolute;left:0;bottom:-1px;width:46px;height:2px;background:var(--red)}
++.matrix{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
++.row{display:grid;grid-template-columns:var(--labelcol) repeat(var(--bands),var(--fieldcol));gap:0 14px;
++ align-items:center;padding:11px 16px;border-bottom:1px solid var(--line)}
++.row:last-child{border-bottom:none}.row:hover{background:var(--panel2)}
++.rowlabel{min-width:0}
++.rl-name{font-weight:600;font-size:13.5px;color:var(--bone)}
++.rl-help{font-size:11.5px;color:var(--steel);margin-top:2px;line-height:1.4;max-width:46ch}
++.rl-help a{color:var(--ice);text-decoration:none;border-bottom:1px dotted rgba(126,166,201,.5)}
++.rl-help a:hover{border-bottom-style:solid}
++.cell{min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:4px;position:relative}
++.cell.locked .ctl{opacity:.42;pointer-events:none}
++.cell.dim .ctl{opacity:.55}
++.na{color:#43474b;text-align:center;font-size:16px;user-select:none}
++.selwrap{position:relative;width:100%}
++.sel{width:100%;appearance:none;font-family:var(--body);font-size:12.5px;color:var(--bone);
++ background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 26px;cursor:pointer;
++ text-align:center;text-align-last:center}
++.sel.enhanced{display:none}
++.csel{width:100%;position:relative;font-family:var(--body);font-size:12.5px;color:var(--bone);
++ background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 26px;cursor:pointer;
++ text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:none}
++.csel:hover{border-color:var(--steel)}
++.csel:focus-visible{outline:2px solid var(--red);outline-offset:1px}
++.csel::after{content:"";position:absolute;right:11px;top:50%;width:7px;height:7px;
++ border-right:2px solid var(--steel);border-bottom:2px solid var(--steel);
++ transform:translateY(-70%) rotate(45deg);pointer-events:none}
++.cmenu{position:fixed;z-index:55;background:#101014;border:1px solid var(--line2);border-radius:8px;
++ padding:4px;box-shadow:0 18px 44px -12px #000;display:none;max-height:280px;overflow:auto}
++.cmenu.open{display:block}
++.copt{text-align:center;font-size:12.5px;color:var(--bone-dim);padding:7px 10px;border-radius:6px;
++ cursor:pointer;white-space:nowrap}
++.copt:hover{background:var(--red-dim);color:var(--bone)}
++.copt.active{background:rgba(236,231,219,.07);color:var(--bone)}
++.numwrap{display:flex;align-items:center;gap:6px;width:100%;justify-content:center}
++.num{flex:1 1 auto;min-width:0;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13px;color:var(--bone);
++ background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;text-align:center}
++.num:focus-visible{outline:2px solid var(--red);outline-offset:1px}
++.unit{font-size:11px;color:var(--steel);flex:0 0 auto}
++.tog{width:44px;height:24px;border-radius:999px;border:1px solid var(--line2);background:#26262b;position:relative;
++ cursor:pointer;padding:0;margin:0 auto;display:block;transition:background .15s}
++.tog .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8a8f95;transition:transform .16s,background .16s}
++.tog.on{background:#3a3f45}.tog.on .knob{transform:translateX(20px);background:var(--bone)}
++.tog:focus-visible{outline:2px solid var(--red);outline-offset:2px}
++.togrow{display:flex;align-items:center;justify-content:center;gap:8px}
++.togrow.col{flex-direction:column;align-items:stretch;gap:4px}
++.chk{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--bone-dim);justify-content:center;cursor:pointer;text-align:left}
++.chk input{accent-color:#8a8f95;width:14px;height:14px;margin:0;flex:0 0 auto}
++.chks{display:flex;flex-direction:column;gap:5px}
++.mini{font-family:var(--hdr);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--bone);background:var(--raised);
++ border:1px solid var(--line2);border-radius:8px;padding:6px 10px;cursor:pointer}
++.mini:hover{border-color:var(--steel)}
++.cell.dirty .csel,.cell.dirty .num{border-color:var(--amber);box-shadow:0 0 0 1px rgba(224,169,59,.3)}
++.cell.dirty .tog{box-shadow:0 0 0 1px rgba(224,169,59,.4)}
++.cell.dirty::before{content:"";position:absolute;left:-8px;top:50%;transform:translateY(-50%);width:4px;height:22px;border-radius:2px;background:var(--amber)}
++.note{margin-top:20px;font-size:12px;color:var(--steel);line-height:1.6;max-width:80ch}
++.note b{color:var(--bone-dim);font-weight:600}
++.modal{position:fixed;inset:0;background:rgba(6,6,8,.82);display:none;align-items:center;justify-content:center;z-index:60;padding:16px}
++.modal.show{display:flex}
++.mcard{background:#101014;border:1px solid var(--line2);border-radius:14px;padding:18px 20px;max-width:min(96vw,900px);max-height:92vh;overflow:auto;box-shadow:0 30px 70px -20px #000;width:100%}
++.mhead{margin-bottom:12px}
++.mhead h3{font-size:19px}
++.mhead .sub{font-size:12px;color:var(--steel)}
++.mfoot{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
++.grid7{display:grid;grid-template-columns:52px repeat(24,minmax(14px,1fr));gap:2px;font-size:10px;color:var(--steel);user-select:none}
++.grid7 .h{text-align:center;font-family:var(--mono);cursor:pointer}
++.grid7 .d{font-family:var(--hdr);letter-spacing:.06em;font-size:11px;color:var(--bone-dim);align-self:center;cursor:pointer}
++.grid7 .c{height:20px;border-radius:3px;background:#1d1d22;border:1px solid var(--line);cursor:pointer}
++.grid7 .c.on{background:rgba(79,178,134,.45);border-color:rgba(79,178,134,.6)}
++.grid7 .c:hover{outline:1px solid var(--bone-dim)}
++.overlay{position:fixed;inset:0;background:rgba(6,6,8,.86);display:none;align-items:center;justify-content:center;z-index:70}
++.overlay.show{display:flex}
++.ovcard{text-align:center;color:var(--bone);font-family:var(--hdr)}
++.ovcard .spin{width:42px;height:42px;border:3px solid rgba(236,231,219,.15);border-top-color:var(--red);
++ border-radius:50%;margin:0 auto 16px;animation:spin 1s linear infinite}
++.ovcard .ovmsg{font-size:16px;letter-spacing:.05em}
++@keyframes spin{to{transform:rotate(360deg)}}
++@media (prefers-reduced-motion:reduce){*{transition:none!important}.ovcard .spin{animation:none}}
++@media (max-width:900px){:root{--labelcol:1fr}.row,.gridrow{grid-template-columns:1fr;gap:8px}.bandhead{display:none}
++ .cell::before{content:attr(data-band);display:block;font-family:var(--hdr);font-size:10px;letter-spacing:.1em;
++ text-transform:uppercase;color:var(--steel);margin-bottom:3px;text-align:center}
++ .cell.dirty::before{content:attr(data-band)}.appbar{flex-wrap:wrap}.grid7{font-size:8px}}
++</style>
++</head>
++<body>
++<div class="stickytop"><div class="inner">
++  <div class="appbar">
++    <div>
++      <div class="eyebrow">REAPER &middot; <#menu5_1#></div>
++      <h1><#menu5_1#> &mdash; <#Settings#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#410-wireless-quality-and-wifi-professional-all-bands" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++      <div class="sub"><#RWFP_1#> <#RWFP_40#></div>
++    </div>
++    <div class="spacer"></div>
++    <div class="applybox">
++      <div class="changed"><b id="chgN">0</b><br><#RWFP_10#></div>
++      <button type="button" class="applybtn" id="applyAll" disabled><#CTL_apply#></button>
++    </div>
++  </div>
++  <div class="bandhead gridrow" id="bandRoot"></div>
++</div></div>
++
++<div class="wrap">
++  <div id="matrixRoot"></div>
++  <div class="note"><b><#CTL_apply#></b> <#RWFP_33#> <code>restart_wireless</code> &mdash; <#RWFP_34#> <#RWFP_41#></div>
++</div>
++
++<form id="applyform" method="post" action="/start_apply.htm" target="hidden_frame" style="display:none">
++  <input type="hidden" name="current_page" value="Reaper_WiFiSettings.asp">
++  <input type="hidden" name="next_page" value="Reaper_WiFiSettings.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_wireless">
++  <input type="hidden" name="action_wait" value="10">
++</form>
++<iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0" style="display:none"></iframe>
++
++<div class="modal" id="schedModal"><div class="mcard">
++  <div class="mhead"><h3 id="schedTitle"><#Time_Scheduling#></h3><div class="sub"><#RWFP_42#></div></div>
++  <div class="grid7" id="schedGrid"></div>
++  <div class="mfoot"><button type="button" class="btn" id="schedAllOn"><#RWFP_43#></button><span class="spacer"></span><button type="button" class="btn" id="schedCancel"><#CTL_Cancel#></button><button type="button" class="applybtn" id="schedSave"><#CTL_ok#></button></div>
++</div></div>
++
++<div class="overlay" id="overlay"><div class="ovcard"><div class="spin"></div><div class="ovmsg"><#RWFP_11#></div></div></div>
++
++<script src="/reaper_util.js"></script>
++<script>
++(function(){
++  "use strict";
++
++  /* ---- radios come from the ROUTER: wl_nband_info() prints this radio's band per unit
++         ('2'=2.4GHz, '1'=5GHz, '4'=6GHz), in wl_ifnames order. Length = radio count. ---- */
++  var NBAND = JSON.parse("<% wl_nband_info(); %>".replace(/'/g,'"'));
++  /* current nvram value for every wlN_field this page can touch (httpd wlpro_nv_fields[]),
++     emitted in ONE pass over wl_ifnames - only the radios this model has are present. */
++  var NV = <% wlpro_nvram(); %>;
++  /* the driver's valid chanspec list per radio ("0" is never in it): {"wl0":["1","1l","1u",...],...}
++     the same list stock's General tab builds its channel tables from (js/asus.js chanspecs_*) */
++  var CSP = <% wlpro_chanspecs(); %>;
++  /* global (not per-radio) keys this page owns together with the radios */
++  var GNV = {acs_dfs:"<% nvram_get("acs_dfs"); %>", acs_band3:"<% nvram_get("acs_band3"); %>",
++             acs_unii4:"<% nvram_get("acs_unii4"); %>", acs_ch13:"<% nvram_get("acs_ch13"); %>",
++             psc6g:"<% nvram_get("psc6g"); %>", usb_usb3:"<% nvram_get("usb_usb3"); %>"};
++  var USB3_SUPPORT = ("<% nvram_get("usb_usb3"); %>" !== "");
++  /* MLO is a NETWORK-level switch (Wireless > MLO): enabling it writes every radio's
++     _radio=1 and _timesched=0, and stock's Professional page (check_mlo_status) refuses
++     radio->off and scheduler->on while it is on. Same guards here. */
++  var MLO_ON=("<% nvram_get("mld_enable"); %>"==="1");
++  /* AiMesh router/AP mode (sw_mode 1/3): a radio going off reaches the nodes, so Apply asks. */
++  var AMESH_CAP=(["1","3"].indexOf("<% nvram_get("sw_mode"); %>")!==-1);
++  var REBOOT_WAIT="<% get_default_reboot_time(); %>";
++
++  var BAND_LABEL={"2":"2.4 GHz","1":"5 GHz","4":"6 GHz"};
++  var BAND_TYPE ={"2":"2.4","1":"5","4":"6"};
++  var DOT=["var(--jade)","var(--amber)","var(--red)","var(--ice)"];
++
++  /* build the ordered radio list; disambiguate a dual-same-band router (5 GHz-1 / 5 GHz-2) */
++  function buildRadios(nb){
++    var total={}; nb.forEach(function(v){ total[v]=(total[v]||0)+1; });
++    var seen={};
++    return nb.map(function(v,i){
++      var base=BAND_LABEL[v]||("wl"+i), label=base;
++      if(total[v]>1){ seen[v]=(seen[v]||0)+1; label=base+"-"+seen[v]; }
++      return {unit:i, ifn:"wl"+i, band:BAND_TYPE[v]||String(v), label:label};
++    });
++  }
++
++  /* ---- option sets ---- */
++  var ED=[["1",`<#CTL_Enabled#>`],["0",`<#CTL_Disabled#>`]];
++  var YN=[["1",`<#checkbox_Yes#>`],["0",`<#checkbox_No#>`]];
++  var ONOFF=[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]];
++  /* stock regen_mode() option sets, English names hardcoded exactly as stock does */
++  var MODES={"2.4":[["0",`<#Auto#>`],["1","N only"],["2","Legacy"]],
++             "5":[["0",`<#Auto#>`],["9","AX only"],["8","N/AC/AX mixed"],["2","Legacy"]],
++             "6":[["0",`<#Auto#>`],["9","AX only"]]};
++  /* stock mcast_rates (Broadcom rows only; CCK rows are 2.4 GHz only) */
++  var MRATE={"2.4":[["0",`<#Auto#>`],["1","CCK 1"],["2","CCK 2"],["3","CCK 5.5"],["6","CCK 11"],["4","OFDM 6"],["5","OFDM 9"],["7","OFDM 12"],["8","OFDM 18"],["9","OFDM 24"],["10","OFDM 36"],["11","OFDM 48"],["12","OFDM 54"]],
++             "5":[["0",`<#Auto#>`],["4","OFDM 6"],["5","OFDM 9"],["7","OFDM 12"],["8","OFDM 18"],["9","OFDM 24"],["10","OFDM 36"],["11","OFDM 48"],["12","OFDM 54"]]};
++  MRATE["6"]=MRATE["5"];
++  /* stock turbo_qam sets (QAM1024_support): 2.4 GHz MCS 7/9/11, 5 GHz up MCS 9/11 */
++  var QAM={"2.4":[["0","Up to MCS 7 (802.11n)"],["1","Up to MCS 9 (TurboQAM/256-QAM)"],["2","Up to MCS 11 (NitroQAM/1024-QAM)"]],
++           "5":[["1","Up to MCS 9 (802.11ac)"],["2","Up to MCS 11 (NitroQAM/1024-QAM)"]]};
++  QAM["6"]=QAM["5"];
++
++
++  /* ---- setting schema ----
++     key    nvram suffix (wlN_<key>); "@chan" "@ext" "@range" are VIRTUAL rows folded into wlN_chanspec at apply
++     global true = one nvram key (GNV) shown in the band column it belongs to
++     bands  band TYPES a row applies to (others render a dash); options may be a flat list or a band map
++     links  other pages that change the same setting (rendered "Also on: X") */
++  var SCHEMA=[
++   {sec:`<#RWFP_2#>`,rows:[
++     /* radio is ALSO driven from the MLO tab (writes _radio=1 for every band) and reaches the AiMesh
++        nodes (stock AiMesh_confirm_msg), so it links both and Apply asks before a radio goes off */
++     {name:`<#WLANConfig11b_x_RadioEnable_itemname#>`,key:"radio",type:"tog",help:`<#WLANConfig11b_x_RadioEnable_itemdesc#>`},
++     /* wlN_timesched + wlN_sched_v2 (this build is WL_SCHED_V2/V3: rc/watchdog.c reads _sched_v2 and
++        rules are OFF-time windows, "W1<dayhex>HHMMHHMM" joined by "<"). MLO writes timesched=0. */
++     {name:`<#WLANConfig11b_x_SchedEnable_itemname#>`,key:"timesched",type:"sched",help:`<#WLANConfig11b_x_SchedEnable_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_Mode_itemname#>`,key:"nmode_x",type:"sel",help:`<#RWFP_47#>`,options:MODES}
++   ]},
++   {sec:`<#RWFP_46#>`,rows:[
++     /* options come from the driver's chanspec list per radio (which widths exist) */
++     {name:`<#WLANConfig11b_ChannelBW_itemname#>`,key:"bw",type:"sel",help:`<#WLANConfig11b_ChannelBW_itemdesc#>`,options:"bw"},
++     {name:`<#WLANConfig11b_ChannelBW_Enable160M#>`,key:"bw_160",type:"sel",bands:["5"],help:`<#RWFP_48#>`,options:ED},
++     {name:`<#WLANConfig11b_Channel_itemname#>`,key:"@chan",type:"sel",help:`<#WLANConfig11b_Channel_itemdesc#>`,options:"chan"},
++     {name:`<#WLANConfig_BW320_Channel_Range#>`,key:"@range",type:"sel",bands:["6"],options:"range"},
++     {name:`<#WLANConfig11b_EChannel_itemname#>`,key:"@ext",type:"sel",bands:["2.4"],help:`<#WLANConfig11b_EChannel_itemdesc#>`,options:[["l",`<#WLANConfig11b_EChannelAbove#>`],["u",`<#WLANConfig11b_EChannelBelow#>`]]},
++     {name:`<#RWFP_66#>`,key:"acs",type:"chks",global:true,help:`<#RWFP_49#>`,
++      chk:{"2.4":[["acs_ch13",`<#WLANConfig11b_EChannel_acs_ch13#>`]],"5":[["acs_dfs",`<#WLANConfig11b_EChannel_dfs#>`],["acs_unii4",`<#WLANConfig11b_EChannel_U-NII-4#>`]],"6":[["psc6g",`<#RWFP_50#>`]]}}
++   ]},
++   {sec:`<#RWFP_3#>`,rows:[
++     {name:`<#WLANConfig11b_x_client_limit_max#>`,key:"bss_maxassoc",type:"num",min:1,max:128,help:`<#WLANConfig11b_x_client_limit_itemdesc#>`},
++     /* stock validForm: 0 = off, otherwise -90..-40 */
++     {name:`<#Roaming_assistant#>`,key:"user_rssi",type:"rssi",min:-90,max:-40,help:`<#RWFP_65#>`},
++     {name:`<#WLANConfig11b_AgileMultiband_itemdesc#>`,key:"mbo_enable",type:"sel",options:ED,help:`<#RWFP_51#>`},
++     {name:`<#WLANConfig11b_WakeTime_itemname#>`,key:"twt",type:"sel",options:ED,help:`<#RWFP_52#>`},
++     {name:`<#WLANConfig11b_x_IsolateAP_itemname#>`,key:"ap_isolate",type:"sel",options:YN,help:`<#WLANConfig11b_x_IsolateAP_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_Rekey_itemname#>`,key:"wpa_gtk_rekey",type:"num",min:0,max:2592000,unit:"s",help:`<#WLANConfig11b_x_Rekey_itemdesc#>`}
++   ]},
++   {sec:`<#RWFP_4#>`,rows:[
++     /* Disable-802.11b (rateset) is the MASTER of the preamble row: while "ofdm" the preamble shows its
++        lock-only "0" (the value stock derives rateset from) and is locked (owner request 2026-08-05) */
++     {name:`<#WLANConfig11n_PremblesType_itemname#>`,key:"plcphdr",type:"sel",bands:["2.4"],help:`<#WLANConfig11n_PremblesType_itemdesc#>`,options:[["long",`<#WLANConfig11n_PremblesType_long#>`],["short",`<#WLANConfig11n_PremblesType_short#>`],["0",`<#RWFP_13#>`,1]]},
++     {name:`<#RWFP_13#>`,key:"rateset",type:"sel",bands:["2.4"],help:`<#RWFP_60#>`,options:[["default",`<#RWFP_25#>`],["ofdm",`<#RWFP_13#>`]]},
++     {name:`<#WLANConfig11b_MultiRateAll_itemname#>`,key:"mrate_x",type:"sel",options:MRATE,help:`<#WLANConfig11b_MultiRateAll_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_ModulationScheme#>`,key:"turbo_qam",type:"sel",options:QAM,help:`<#RWFP_57#>`},
++     {name:`<#WLANConfig11b_x_AMPDU#>`,key:"ampdu_mpdu",type:"sel",options:ED,help:`<#RWFP_58#>`},
++     {name:"AMPDU RTS",key:"ampdu_rts",type:"sel",options:ED,help:`<#RWFP_59#>`},
++     {name:`<#WLANConfig11b_x_RTS_itemname#>`,key:"rts",type:"num",min:0,max:2347,help:`<#WLANConfig11b_x_RTS_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,help:`<#WLANConfig11b_x_Frag_itemdesc#>`}
++   ]},
++   {sec:`<#RWFP_5#>`,rows:[
++     {name:`<#OFDMA_title#>`,key:"ofdma",type:"sel",help:`<#RWFP_53#>`,options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1","DL OFDMA"],["2","DL / UL OFDMA"],["3","DL/UL OFDMA + MU-MIMO"]]},
++     {name:`<#WLANConfig11b_MUMIMO_itemdesc#>`,key:"mumimo",type:"sel",options:ED,help:`<#RWFP_54#>`},
++     {name:`<#WLANConfig11b_x_ExpBeam#>`,key:"txbf",type:"sel",options:ED,help:`<#RWFP_55#>`},
++     {name:`<#WLANConfig11b_x_uniBeam#>`,key:"itxbf",type:"sel",options:ED,help:`<#RWFP_56#>`}
++   ]},
++   {sec:`<#RWFP_6#>`,rows:[
++     {name:`<#WLANConfig11b_x_BTCoexistence_itemname#>`,key:"btc_mode",type:"sel",bands:["2.4"],help:`<#WLANConfig11b_x_BTCoexistence_itemdesc#>`,options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["2",`<#WLANConfig11b_x_BTCoexistence_pre-emptive#>`]]},
++     {name:`<#WLANConfig11b_x_IgmpSnEnable_itemname#>`,key:"igs",type:"sel",options:ED,help:`<#WLANConfig11b_x_IgmpSnEnable_itemdesc#>`},
++     /* one global key (usb_usb3, the System page's USB Mode), shown in the 2.4 GHz column it affects;
++        a change reboots (stock System page needReboot) */
++     {name:`<#RWFP_61#>`,key:"usb_usb3",type:"sel",global:true,bands:["2.4"],help:`<#RWFP_62#>`,options:[["0",`<#RWFP_63#>`],["1",`<#RWFP_64#>`]],show:function(){ return USB3_SUPPORT; }}
++   ]},
++   {sec:`<#RWFP_7#>`,rows:[
++     {name:`<#WLANConfig11b_x_WMM_itemname#>`,key:"wme",type:"sel",help:`<#WLANConfig11b_x_WMM_itemdesc#>`,options:[["auto",`<#Auto#>`],["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]]},
++     {name:`<#WLANConfig11b_x_NOACK_itemname#>`,key:"wme_no_ack",type:"sel",options:[["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`]],help:`<#WLANConfig11b_x_NOACK_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_APSD_itemname#>`,key:"wme_apsd",type:"sel",options:[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]],help:`<#WLANConfig11b_x_APSD_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_Airtime_Fairness#>`,key:"atf",type:"sel",options:ED,help:`<#WLANConfig11b_x_Airtime_Fairness_itemdesc#>`}
++   ]},
++   {sec:`<#RWFP_8#>`,rows:[
++     {name:`<#WLANConfig11b_x_DTIM_itemname#>`,key:"dtim",type:"num",min:1,max:255,help:`<#WLANConfig11b_x_DTIM_brcm_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_Beacon_itemname#>`,key:"bcn",type:"num",min:20,max:1000,unit:"ms",help:`<#WLANConfig11b_x_Beacon_itemdesc#>`},
++     {name:`<#WLANConfig11b_x_TxBurst_itemname#>`,key:"frameburst",type:"sel",options:ONOFF,help:`<#WLANConfig11b_x_TxBurst_itemdesc#>`}
++   ]},
++   {sec:`<#RWFP_9#>`,rows:[
++     /* stock slider stops; the lowest writes 0 (stock "Power Saving"), no longer 10 */
++     {name:`<#WLANConfig11b_TxPower_itemname#>`,key:"txpower",type:"sel",help:`<#WLANConfig11b_TxPower_help1#>`,options:[["100",`<#RWFP_27#>`],["88",`<#RWFP_28#>`],["50",`<#RWFP_29#>`],["25",`<#RWFP_30#>`],["0",`<#RWFP_31#>`]]}
++   ]}
++  ];
++
++  /* ---- chanspec model (stock js/asus.js tables, per radio) ----
++     A chanspec is "36", "36l"/"40u" (40 MHz, control sideband), "36/80", "36/160", "6g5/80",
++     "6g5/320-1". Tables keyed by control channel per width; chans = every channel seen. */
++  function buildTables(list){
++    var T={c20:{},c40:{},c80:{},c160:{},c320:{},chans:[],widths:[]}, all={};
++    (list||[]).forEach(function(e){
++      if(e==="0") return;
++      var ch=e.split("u")[0].split("l")[0].split("/")[0]; if(ch.indexOf("6g")===0) ch=ch.slice(2);
++      var k=(e.indexOf("/320")!==-1)?"c320":(e.indexOf("/160")!==-1)?"c160":(e.indexOf("/80")!==-1)?"c80":
++            (e.indexOf("u")!==-1||e.indexOf("l")!==-1||e.indexOf("/40")!==-1)?"c40":"c20";
++      (T[k][ch]=T[k][ch]||[]).push(e); all[ch]=1;
++    });
++    T.chans=Object.keys(all).map(Number).sort(function(a,b){ return a-b; }).map(String);
++    [["c20","20"],["c40","40"],["c80","80"],["c160","160"],["c320","320"]].forEach(function(p){ if(Object.keys(T[p[0]]).length) T.widths.push(p[1]); });
++    return T;
++  }
++  function parseChanspec(cs){
++    var r={ch:"0",w:"",ext:"",range:""}; if(!cs||cs==="0") return r;
++    var s=String(cs); if(s.indexOf("6g")===0) s=s.slice(2);
++    var m=s.match(/^(\d+)(l|u)?(?:\/(\d+)(-\d)?)?$/); if(!m) return r;
++    r.ch=m[1]; r.w="20"; if(m[2]){ r.ext=m[2]; r.w="40"; } if(m[3]){ r.w=m[3]; if(m[3]==="320") r.range="320"+(m[4]||"-1"); }
++    return r;
++  }
++  function isPSC(c){ return ((+c)-5)%16===0; }
++  var BWCODE={"20":"1","40":"2","80":"3","160":"5","320":"6"};
++  function bwOptions(T){
++    var o=[["0",T.widths.join("/")+" MHz"]];
++    T.widths.forEach(function(w){ o.push([BWCODE[w],w+" MHz"]); });
++    return o;
++  }
++
++  var RADIOS=[], TB={};
++  function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
++  function nv(u,k){ var v=NV["wl"+u+"_"+k]; return v==null?"":String(v); }
++  function optsFor(row,u){
++    var b=RADIOS[u].band, T=TB[u];
++    if(row.options==="bw") return bwOptions(T);
++    if(row.options==="chan") return chanOptions(u);
++    if(row.options==="range") return rangeOptions(u);
++    return Array.isArray(row.options)?row.options:(row.options?row.options[b]:null);
++  }
++  function applies(row,u){ var b=RADIOS[u].band; if(row.show&&!row.show(u)) return false; return !row.bands||row.bands.indexOf(b)!==-1; }
++  function q(u,k){ return document.querySelector('[data-name="wl'+u+'_'+k+'"]'); }
++  function curVal(u,k){ var el=q(u,k); return el?getVal(el):nv(u,k); }
++  function isTog(el){ return el.classList.contains("tog"); }
++  function getVal(el){ return isTog(el)?(el.classList.contains("on")?"1":"0"):String(el.value); }
++
++  /* ---- channel options depend on the band, the chosen bandwidth and (6 GHz) PSC-only ---- */
++  function chanOptions(u){
++    var b=RADIOS[u].band, T=TB[u], bw=curVal(u,"bw"), psc=gval("psc6g");
++    var list=T.chans.filter(function(c){
++      switch(bw){ case "2": return !!T.c40[c]; case "3": return !!T.c80[c]; case "5": return !!T.c160[c]; case "6": return !!T.c320[c]; default: return true; } });
++    if(b==="6"&&psc==="1") list=list.filter(isPSC);
++    return [["0",`<#Auto#>`]].concat(list.map(function(c){
++      var lab=c; if(b==="5"&&+c>=52&&+c<=144) lab+=" (DFS)"; if(b==="6"&&isPSC(c)) lab+=" (PSC)"; return [c,lab]; }));
++  }
++  function rangeOptions(u){
++    var T=TB[u], ch=curVal(u,"@chan"), seen={}, o=[];
++    var pool=(ch!=="0"&&T.c320[ch])?T.c320[ch]:[].concat.apply([],Object.keys(T.c320).map(function(c){ return T.c320[c]; }));
++    pool.forEach(function(e){ var m=e.match(/\/(320-\d)$/); if(m&&!seen[m[1]]){ seen[m[1]]=1; o.push([m[1],m[1]]); } });
++    if(!o.length) o.push(["320-1","320-1"]);
++    return o;
++  }
++  /* the chanspec Apply writes, from the four controls - stock's General tab logic (its
++     postObject[key_chanspec]) with the tables standing in for its ch20/40/80/160/320 maps */
++  function composeChanspec(u){
++    var b=RADIOS[u].band, T=TB[u], ch=curVal(u,"@chan"), bw=curVal(u,"bw");
++    if(ch==="0") return "0";
++    var pick=function(k){ return (T[k][ch]||[])[0]; };
++    if(b==="2.4"){
++      if(bw==="1"||!T.c40[ch]) return ch;
++      var e=curVal(u,"@ext"); if(!e) e=(T.c40[ch][0].slice(-1)==="u")?"u":"l";
++      return (T.c40[ch].indexOf(ch+e)!==-1)?ch+e:T.c40[ch][0];
++    }
++    if(b==="6"&&(bw==="6"||(bw==="0"&&T.c320[ch]))){
++      var rng=curVal(u,"@range")||"320-1", cand="6g"+ch+"/"+rng;
++      return (T.c320[ch]&&T.c320[ch].indexOf(cand)!==-1)?cand:((T.c320[ch]||[cand])[0]);
++    }
++    if(bw==="0"){ if(curVal(u,"bw_160")==="1"&&pick("c160")) return pick("c160"); return pick("c80")||pick("c40")||pick("c20")||ch; }
++    if(bw==="5") return pick("c160")||ch;
++    if(bw==="3") return pick("c80")||ch;
++    if(bw==="2") return pick("c40")||ch;
++    return pick("c20")||ch;
++  }
++  function gval(k){ var el=document.querySelector('[data-g="'+k+'"]'); if(!el) return GNV[k]==null?"":String(GNV[k]); return el.type==="checkbox"?(el.checked?"1":"0"):String(el.value); }
++
++  /* ---- cells ---- */
++  function cellHTML(row,radio){
++    var u=radio.unit;
++    if(!applies(row,u)) return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
++    var nm=radio.ifn+"_"+row.key, dv;
++    if(row.global){ dv=GNV[row.key]; if(dv==null) dv=""; }
++    else if(row.key==="@chan") dv=parseChanspec(nv(u,"chanspec")).ch;
++    else if(row.key==="@ext"){ var p=parseChanspec(nv(u,"chanspec")); dv=p.ext||(nv(u,"nctrlsb")==="upper"?"u":"l"); }
++    else if(row.key==="@range"){ dv=parseChanspec(nv(u,"chanspec")).range||"320-1"; }
++    else dv=nv(u,row.key);
++    if(row.type==="tog")
++      return '<div class="cell"><div class="ctl"><button type="button" class="tog" role="switch" data-name="'+nm+'" data-nv="'+esc(dv)+'"><span class="knob"></span></button></div></div>';
++    if(row.type==="sched")
++      return '<div class="cell"><div class="ctl togrow"><button type="button" class="tog" role="switch" data-name="'+nm+'" data-nv="'+esc(dv)+'"><span class="knob"></span></button>'+
++             '<button type="button" class="mini schedEdit" data-u="'+u+'" hidden>'+esc(`<#CTL_modify#>`)+'</button></div></div>';
++    if(row.type==="num"){
++      var un=row.unit?'<span class="unit">'+esc(row.unit)+'</span>':'';
++      return '<div class="cell"><div class="ctl numwrap"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+un+'</div></div>';
++    }
++    if(row.type==="rssi"){
++      var on=(dv!==""&&dv!=="0");
++      return '<div class="cell"><div class="ctl togrow col"><div class="selwrap"><select class="sel rssiOn" data-u="'+u+'"><option value="1"'+(on?' selected':'')+'>'+esc(`<#CTL_Enabled#>`)+'</option><option value="0"'+(on?'':' selected')+'>'+esc(`<#CTL_Disabled#>`)+'</option></select></div>'+
++             '<div class="numwrap rssiNum"'+(on?'':' hidden')+'><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'" value="'+esc(on?dv:"-70")+'"><span class="unit">dBm</span></div></div></div>';
++    }
++    if(row.type==="chks"){
++      var list=row.chk[radio.band]||[]; if(!list.length) return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
++      return '<div class="cell" data-acs="'+u+'"><div class="ctl chks">'+list.map(function(c){ var g=GNV[c[0]]; if(g==null) g="";
++        return '<label class="chk"><input type="checkbox" data-g="'+c[0]+'" data-nv="'+esc(g)+'"'+(g==="1"?' checked':'')+'>'+esc(c[1])+'</label>'; }).join("")+'</div></div>';
++    }
++    var list=optsFor(row,u)||[];
++    if(dv!=="" && !list.some(function(o){ return o[0]===dv; })) list=list.concat([[dv,dv]]);
++    var opts=list.map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' data-lockonly="1"':'')+'>'+esc(o[1])+'</option>'; }).join("");
++    var gattr=row.global?' data-g="'+row.key+'"':'';
++    return '<div class="cell"><div class="ctl selwrap"><select class="sel" data-name="'+nm+'" data-nv="'+esc(dv)+'"'+gattr+'>'+opts+'</select></div></div>';
++  }
++  /* owner 2026-09-20: no "Also on: page" sentences - the pages that share a key write the same
++     nvram and re-read it at load, and the guards (MLO, AiMesh) do the coupling; the user does not
++     need the cross-reference. The sweep that found the other writers is recorded in memory. */
++  function rowHTML(row){
++    var label='<div class="rowlabel"><div class="rl-name">'+esc(row.name)+'</div>'+(row.help?'<div class="rl-help">'+esc(row.help)+'</div>':'')+'</div>';
++    return '<div class="row" data-key="'+esc(row.key)+'">'+label+RADIOS.map(function(r){ return cellHTML(row,r); }).join("")+'</div>';
++  }
++  function render(){
++    RADIOS=buildRadios(NBAND);
++    RADIOS.forEach(function(r){ TB[r.unit]=buildTables(CSP[r.ifn]||[]); });
++    document.documentElement.style.setProperty("--bands",RADIOS.length);
++    document.getElementById("bandRoot").innerHTML='<div class="hint"></div>'+RADIOS.map(function(r){
++      return '<div class="bh"><span class="bh-dot" style="background:'+(DOT[r.unit]||"var(--steel)")+'"></span>'+
++             '<div><div class="bh-name">'+esc(r.label)+'</div><div class="bh-sub">'+esc(r.ifn)+'</div></div></div>'; }).join("");
++    document.getElementById("matrixRoot").innerHTML=SCHEMA.map(function(s){
++      var rows=s.rows.filter(function(row){ return RADIOS.some(function(r){ return applies(row,r.unit); }); });
++      if(!rows.length) return "";
++      return '<section class="sec"><h2 class="sec-h">'+esc(s.sec)+'</h2><div class="matrix">'+rows.map(rowHTML).join("")+'</div></section>'; }).join("");
++    wireControls();
++    document.querySelectorAll('select[data-name$="_rateset"]').forEach(function(r){ syncPreambleLock(r); });
++    RADIOS.forEach(function(r){ syncLocks(r.unit); });
++    recount();
++  }
++
++  /* ---- enhanced selects (same widget as the rest of the Reaper pages) ---- */
++  var openMenu=null;
++  function closeMenu(){ if(openMenu){ openMenu.classList.remove("open"); openMenu=null; } }
++  function placeMenu(menu,b){ var r=b.getBoundingClientRect();
++    menu.style.left=r.left+"px"; menu.style.width=r.width+"px"; menu.style.top=(r.bottom+4)+"px";
++    menu.classList.add("open"); openMenu=menu;
++    var mh=menu.offsetHeight, below=window.innerHeight-r.bottom;
++    if(below<mh+10 && r.top>below) menu.style.top=(r.top-mh-4)+"px"; }
++  function enhance(w){
++    var sel=w.querySelector(".sel"); if(!sel||sel.classList.contains("enhanced")) return;
++    sel.classList.add("enhanced");
++    var b=document.createElement("div"); b.className="csel"; b.tabIndex=0; b.setAttribute("role","button"); b.setAttribute("aria-haspopup","listbox");
++    var menu=document.createElement("div"); menu.className="cmenu"; menu.setAttribute("role","listbox");
++    Array.prototype.forEach.call(sel.options,function(o){
++      if(o.getAttribute("data-lockonly")) return;
++      var it=document.createElement("div"); it.className="copt"; it.textContent=o.textContent;
++      it.setAttribute("data-value",o.value); it.setAttribute("role","option");
++      it.addEventListener("click",function(e){ e.stopPropagation();
++        sel.value=o.value; sel.dispatchEvent(new Event("change",{bubbles:true})); sync(); closeMenu(); b.focus(); });
++      menu.appendChild(it);
++    });
++    function sync(){ var o=sel.options[sel.selectedIndex]; b.textContent=o?o.textContent:"";
++      menu.querySelectorAll(".copt").forEach(function(it){ var on=it.getAttribute("data-value")===sel.value;
++        it.classList.toggle("active",on); it.setAttribute("aria-selected",on?"true":"false"); }); }
++    function toggle(e){ e.stopPropagation(); if(sel.disabled){ closeMenu(); return; } if(openMenu===menu){ closeMenu(); return; } closeMenu(); placeMenu(menu,b); }
++    b.addEventListener("click",toggle);
++    b.addEventListener("keydown",function(e){
++      if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(e); }
++      else if(e.key==="Escape"){ closeMenu(); }
++      else if(e.key==="ArrowDown"||e.key==="ArrowUp"){ e.preventDefault();
++        if(sel.disabled) return;
++        var step=(e.key==="ArrowDown"?1:-1), i=sel.selectedIndex+step;
++        while(i>=0&&i<sel.options.length&&sel.options[i].getAttribute("data-lockonly")) i+=step;
++        if(i<0||i>=sel.options.length) return;
++        sel.selectedIndex=i; sel.dispatchEvent(new Event("change",{bubbles:true})); sync(); }
++    });
++    w.appendChild(b); w._sync=sync; w._menu=menu; document.body.appendChild(menu); sync();
++    if(sel.disabled) b.setAttribute("aria-disabled","true");
++  }
++  /* replace a select's option list (channel list after a bandwidth change, multicast rates after
++     a rateset/coexistence change); keeps the value when it is still offered, else the first one */
++  function rebuildOptions(sel,list){
++    var keep=String(sel.value), w=sel.closest(".selwrap");
++    if(!list.some(function(o){ return o[0]===keep; })) keep=list.length?list[0][0]:"";
++    sel.innerHTML=list.map(function(o){ return '<option value="'+esc(o[0])+'"'+(o[2]?' data-lockonly="1"':'')+'>'+esc(o[1])+'</option>'; }).join("");
++    sel.value=keep;
++    if(w){ var old=w.querySelector(".csel"); if(old) old.remove(); if(w._menu) w._menu.remove(); sel.classList.remove("enhanced"); enhance(w);
++      if(sel.disabled){ var b=w.querySelector(".csel"); if(b) b.setAttribute("aria-disabled","true"); } }
++  }
++  function wireControls(){
++    document.querySelectorAll(".cmenu").forEach(function(m){ m.remove(); });
++    document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
++      var v=el.getAttribute("data-nv"); if(v==null) v="";
++      if(isTog(el)){ el.classList.toggle("on",v==="1"); el.setAttribute("aria-checked",v==="1"?"true":"false"); el._base=(v==="1")?"1":"0"; }
++      else if(el.type==="checkbox"){ el.checked=(v==="1"); el._base=(v==="1")?"1":"0"; }
++      else { if(v!=="") el.value=v; el._base=String(el.value); }
++    });
++    document.querySelectorAll(".selwrap").forEach(enhance);
++    document.querySelectorAll(".row").forEach(function(row){
++      row.querySelectorAll(".cell").forEach(function(c,i){ if(RADIOS[i]) c.setAttribute("data-band",RADIOS[i].label); });
++    });
++  }
++
++  /* ---- master/slave locks, one pass per radio ----
++     A parked control is greyed and disabled; its value stays put, is excluded from the pending
++     count, the range check and the apply, and returns when its master releases it. A FORCED lock
++     also shows the value the rule imposes; that value IS written when it differs from nvram
++     (stock derives the same values at apply or bring-up). No visible reason text: greyed is the
++     signal (owner 2026-09-20). */
++  function HE_OK(m){ return m==="0"||m==="8"||m==="9"; }
++  function setHardLock(el,locked,force){
++    if(!el) return;
++    var w=el.closest(".numwrap")||el.closest(".selwrap")||el.closest(".ctl"), cell=el.closest(".cell");
++    if(locked&&force!==undefined){
++      if(!el._forced){ el._parked=getVal(el); el._forced=true; }
++      if(isTog(el)){ el.classList.toggle("on",force==="1"); el.setAttribute("aria-checked",force==="1"?"true":"false"); }
++      else el.value=force;
++    } else if(el._forced){
++      el._forced=false; var back=el._parked; el._parked=undefined;
++      if(back!==undefined){ if(isTog(el)){ el.classList.toggle("on",back==="1"); el.setAttribute("aria-checked",back==="1"?"true":"false"); } else el.value=back; }
++    }
++    el._hardLock=locked; el.disabled=locked;
++    if(cell) cell.classList.toggle("locked",locked);
++    if(w&&w._sync) w._sync();
++    var b=w?w.querySelector(".csel"):null;
++    if(b){ if(locked) b.setAttribute("aria-disabled","true"); else b.removeAttribute("aria-disabled"); }
++  }
++  /* a locked control is never a pending change - parked OR forced. A forced value that differs
++     from nvram is written at apply as a derived heal (see the apply handler), exactly as the
++     Professional page wrote mumimo/11ax, so a fresh page never opens with phantom changes */
++  function lockSuppressed(el){
++    if(el._hardLock) return true;
++    if(!el._locked) return false;
++    var rsel=pairedSel(el,"_plcphdr","_rateset");
++    return !(rsel && !rsel._hardLock && getVal(rsel)!==rsel._base);
++  }
++  function pairedSel(el,from,to){
++    var nm=el.getAttribute("data-name"); if(!nm||nm.slice(-from.length)!==from) return null;
++    return document.querySelector('[data-name="'+nm.slice(0,-from.length)+to+'"]');
++  }
++  function syncPreambleLock(rsel){
++    var psel=pairedSel(rsel,"_rateset","_plcphdr"); if(!psel) return;
++    var w=psel.closest(".selwrap"), b=w?w.querySelector(".csel"):null, cell=psel.closest(".cell");
++    if(String(rsel.value)==="ofdm"){
++      if(psel._locked) return;
++      psel._prev=String(psel.value); psel._locked=true; psel.disabled=true; psel.value="0";
++      if(cell) cell.classList.add("locked"); if(w&&w._sync) w._sync(); if(b) b.setAttribute("aria-disabled","true");
++    } else if(psel._locked){
++      psel._locked=false; psel.disabled=false;
++      var back=psel._prev; if(back==null||back==="0"||back==="") back=(psel._base&&psel._base!=="0")?psel._base:"long";
++      psel.value=back;
++      if(cell) cell.classList.remove("locked"); if(w&&w._sync) w._sync(); if(b) b.removeAttribute("aria-disabled");
++    }
++  }
++  function syncLocks(u){
++    var b=RADIOS[u].band, T=TB[u];
++    var mode=curVal(u,"nmode_x"), he=HE_OK(mode), legacy=(mode==="2");
++    var radioOn=curVal(u,"radio")==="1";
++    /* radio off dims every other control of the band (still editable, like stock) */
++    document.querySelectorAll('[data-name^="wl'+u+'_"]').forEach(function(el){ var c=el.closest(".cell"); if(c&&el.getAttribute("data-name")!=="wl"+u+"_radio") c.classList.toggle("dim",!radioOn); });
++    var ts=q(u,"timesched");
++    if(MLO_ON) setHardLock(ts,true,"0"); else setHardLock(ts,!radioOn);
++    var ed=document.querySelector('.schedEdit[data-u="'+u+'"]'); if(ed) ed.hidden=!(ts&&!ts._hardLock&&getVal(ts)==="1");
++    setHardLock(q(u,"twt"),!he);
++    setHardLock(q(u,"ofdma"),!he);
++    var mu=(curVal(u,"ofdma")==="3")?"1":"0";
++    setHardLock(q(u,"mumimo"),true,mu);
++    if(legacy){ setHardLock(q(u,"txbf"),true,"0"); setHardLock(q(u,"itxbf"),true); setHardLock(q(u,"turbo_qam"),true);
++      setHardLock(q(u,"ampdu_rts"),true); setHardLock(q(u,"rts"),true); setHardLock(q(u,"frag"),false); setHardLock(q(u,"wme"),false); }
++    else { setHardLock(q(u,"txbf"),mu==="1",mu==="1"?"1":undefined); setHardLock(q(u,"itxbf"),false); setHardLock(q(u,"turbo_qam"),false);
++      setHardLock(q(u,"ampdu_rts"),false); setHardLock(q(u,"rts"),curVal(u,"ampdu_rts")==="0"); setHardLock(q(u,"frag"),true); setHardLock(q(u,"wme"),true,"on"); }
++    var wmeOff=(curVal(u,"wme")==="off");
++    ["wme_no_ack","wme_apsd","igs"].forEach(function(k){ setHardLock(q(u,k),wmeOff); });
++    if(b==="2.4"){
++      setHardLock(q(u,"rateset"),mode!=="0");
++      var btc=curVal(u,"btc_mode"); setHardLock(q(u,"frameburst"),btc==="2",btc==="2"?"off":undefined);
++      var ms=q(u,"mrate_x"); if(ms){ var rs=curVal(u,"rateset"), list=MRATE["2.4"].filter(function(o){
++          if(rs==="ofdm"&&["1","2","3","6"].indexOf(o[0])!==-1) return false; if(btc==="2"&&(o[0]==="1"||o[0]==="2")) return false; return true; });
++        var sig=list.map(function(o){ return o[0]; }).join("|"); if(ms.getAttribute("data-sig")!==sig){ ms.setAttribute("data-sig",sig); rebuildOptions(ms,list); } }
++    }
++    /* channel rows */
++    var bw=curVal(u,"bw"), chs=q(u,"@chan"), ch=chs?String(chs.value):"0";
++    if(chs){ var cl=chanOptions(u), csig=cl.map(function(o){ return o[0]; }).join("|"); if(chs.getAttribute("data-sig")!==csig){ chs.setAttribute("data-sig",csig); rebuildOptions(chs,cl); ch=String(chs.value); } }
++    var rg=q(u,"@range");
++    if(rg){ var rl=rangeOptions(u), rsig=rl.map(function(o){ return o[0]; }).join("|"); if(rg.getAttribute("data-sig")!==rsig){ rg.setAttribute("data-sig",rsig); rebuildOptions(rg,rl); }
++      setHardLock(rg,!(ch!=="0"&&(bw==="6"||(bw==="0"&&T.c320[ch])))); }
++    setHardLock(q(u,"@ext"),bw==="1"||ch==="0"||!T.c40[ch]);
++    setHardLock(q(u,"bw_160"),bw!=="0");
++    var acs=document.querySelector('.cell[data-acs="'+u+'"]'); if(acs){ acs.classList.toggle("locked",ch!=="0"); acs.querySelectorAll("input").forEach(function(i){ i._hardLock=(ch!=="0"); i.disabled=(ch!=="0"); }); }
++  }
++  var chgN=document.getElementById("chgN"), btn=document.getElementById("applyAll");
++  function chanDirty(u){ return composeChanspec(u)!==nv(u,"chanspec"); }
++  function recount(){
++    var n=0;
++    document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
++      var c=el.closest(".cell"), nm=el.getAttribute("data-name")||"", d;
++      if(/_@(chan|ext|range)$/.test(nm)){ var u=+nm.slice(2).split("_")[0]; d=(nm.slice(-5)==="@chan")?chanDirty(u):(!lockSuppressed(el)&&getVal(el)!==el._base&&chanDirty(u)); }
++      else if(el.type==="checkbox") d=!el._hardLock&&((el.checked?"1":"0")!==el._base);
++      else d=!lockSuppressed(el)&&getVal(el)!==el._base;
++      if(c&&!c.hasAttribute("data-acs")) c.classList.toggle("dirty",d); if(d) n++;
++    });
++    document.querySelectorAll('.cell[data-acs]').forEach(function(c){ c.classList.toggle("dirty",Array.prototype.some.call(c.querySelectorAll("input"),function(i){ return !i._hardLock&&((i.checked?"1":"0")!==i._base); })); });
++    chgN.textContent=n; btn.disabled=n===0; return n;
++  }
++
++  /* ---- events ---- */
++  document.querySelectorAll(".matrix").length; /* (render() runs at the end) */
++  document.addEventListener("click",function(e){
++    var t=e.target.closest(".tog");
++    if(t){
++      var nm=t.getAttribute("data-name"), u=+nm.slice(2).split("_")[0];
++      if(t._hardLock) return;
++      var on=t.classList.toggle("on");
++      /* MLO guard (stock check_mlo_status parity): a radio that is ON in nvram cannot be
++         switched off while MLO is enabled - MLO is turned off on its own tab first */
++      if(!on && MLO_ON && t._base==="1" && nm.slice(-6)==="_radio"){
++        alert(`<#WiFi7_mlo_adjust_hint#>`); on=t.classList.toggle("on"); }
++      t.setAttribute("aria-checked",on?"true":"false");
++      if(nm.slice(-6)==="_radio"||nm.slice(-10)==="_timesched") syncLocks(u);
++      recount(); return;
++    }
++    var ed=e.target.closest(".schedEdit"); if(ed){ openSched(+ed.getAttribute("data-u")); return; }
++    /* a click on the open menu itself (its scrollbar, its padding) must not close it - only
++       an option click (which stops propagation) or a click elsewhere does (owner bug 2026-09-20:
++       a long channel list vanished the moment its scrollbar was touched) */
++    if(e.target.closest(".cmenu")) return;
++    closeMenu();
++  });
++  document.addEventListener("change",function(e){
++    var el=e.target;
++    if(el.classList.contains("rssiOn")){
++      var wrap=el.closest(".togrow").querySelector(".rssiNum"), inp=wrap.querySelector("input");
++      if(el.value==="0"){ inp.value="0"; wrap.hidden=true; } else { if(inp.value==="0"||inp.value==="") inp.value="-70"; wrap.hidden=false; }
++      recount(); return;
++    }
++    var nm=el.getAttribute("data-name");
++    if(el.getAttribute("data-g")){ RADIOS.forEach(function(r){ syncLocks(r.unit); }); recount(); return; }
++    if(!nm) return;
++    var u=+nm.slice(2).split("_")[0], k=nm.slice(nm.indexOf("_")+1);
++    if(k==="nmode_x"){
++      var v=String(el.value);
++      /* a mode that drops HE switches Wi-Fi 6/7 off on that band; AX only refuses non-ax clients */
++      if(v!==el._base && !HE_OK(v) && !confirm(`<#RWFP_39#>`)){ el.value=el._prevMode||el._base; if(el.closest(".selwrap")._sync) el.closest(".selwrap")._sync(); return; }
++      if(v==="9" && v!==el._base && !confirm(`<#WLANConfig11ax_AXOnly_note#>`)){ el.value=el._prevMode||el._base; if(el.closest(".selwrap")._sync) el.closest(".selwrap")._sync(); return; }
++      el._prevMode=v;
++    }
++    if(k==="rateset") syncPreambleLock(el);
++    syncLocks(u); recount();
++  });
++  document.addEventListener("input",function(e){ if(e.target.classList.contains("num")) recount(); });
++  /* the menu is position:fixed, so a PAGE scroll must close it (it would float away from its
++     button) - but a scroll INSIDE the menu (a long channel list) is the user reading it */
++  window.addEventListener("scroll",function(e){ if(openMenu&&(e.target instanceof Node)&&e.target!==document&&openMenu.contains(e.target)) return; closeMenu(); },true);
++  window.addEventListener("resize",closeMenu);
++  document.addEventListener("keydown",function(e){ if(e.key==="Escape"){ closeMenu(); document.getElementById("schedModal").classList.remove("show"); } });
++
++  /* ---- wireless scheduler: wlN_sched_v2 (WL_SCHED_V2/V3 build) ----
++     rc/watchdog.c feeds check_sched_v2_on_off() with rules that are OFF-time windows:
++       "W" + enable(1) + dayOfWeek(2 hex, bit0 = Sunday) + HH MM (start) + HH MM (end), joined by "<"
++     ("D" rules = every day; other rule types are left untouched). Empty = never off. The grid
++     shows ON hours; dark hours become one W rule per day per contiguous run. */
++  var SCHED={}, schedU=-1, schedArr=null, DAYS=[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`];
++  function schedToArr(str){
++    var a=[],i,j; for(i=0;i<7;i++){ a.push([]); for(j=0;j<24;j++) a[i].push(1); }
++    String(str||"").split("<").forEach(function(w){
++      if(!w) return;
++      var type=w.charAt(0), en, dow, sh, sm, eh, em;
++      if(type==="W"&&w.length>=12){ en=w.charAt(1); dow=parseInt(w.substr(2,2),16); sh=+w.substr(4,2); sm=+w.substr(6,2); eh=+w.substr(8,2); em=+w.substr(10,2); }
++      else if(type==="D"&&w.length>=10){ en=w.charAt(1); dow=0x7F; sh=+w.substr(2,2); sm=+w.substr(4,2); eh=+w.substr(6,2); em=+w.substr(8,2); }
++      else return;
++      if(en!=="1"||isNaN(dow)) return;
++      var from=sh, to=eh+(em>0?1:0); if(to>24) to=24;
++      for(i=0;i<7;i++){ if(!(dow&(1<<i))) continue; for(j=from;j<to;j++) a[i][j]=0; }
++    });
++    return a;
++  }
++  function arrToSched(a){
++    var out=[], i, j, p=function(n){ return n<10?"0"+n:String(n); }, hx=function(n){ var s=n.toString(16).toUpperCase(); return s.length<2?"0"+s:s; };
++    for(i=0;i<7;i++){ var start=-1;
++      for(j=0;j<=24;j++){ var off=(j<24&&a[i][j]===0);
++        if(off&&start<0) start=j;
++        else if(!off&&start>=0){ out.push("W1"+hx(1<<i)+p(start)+"00"+p(j)+"00"); start=-1; } } }
++    return out.join("<");
++  }
++  function openSched(u){
++    schedU=u; schedArr=schedToArr(SCHED[u]!==undefined?SCHED[u]:nv(u,"sched_v2"));
++    document.getElementById("schedTitle").textContent=`<#Time_Scheduling#>`+" - "+RADIOS[u].label;
++    drawSched(); document.getElementById("schedModal").classList.add("show");
++  }
++  function drawSched(){
++    var h='<div></div>', i, j;
++    for(j=0;j<24;j++) h+='<div class="h" data-h="'+j+'">'+j+'</div>';
++    for(i=0;i<7;i++){ h+='<div class="d" data-d="'+i+'">'+esc(DAYS[i])+'</div>'; for(j=0;j<24;j++) h+='<div class="c'+(schedArr[i][j]?' on':'')+'" data-d="'+i+'" data-h="'+j+'"></div>'; }
++    document.getElementById("schedGrid").innerHTML=h;
++  }
++  document.getElementById("schedGrid").addEventListener("click",function(e){
++    var el=e.target, d=el.getAttribute("data-d"), h=el.getAttribute("data-h"), i, j;
++    if(el.classList.contains("c")) schedArr[+d][+h]=schedArr[+d][+h]?0:1;
++    else if(el.classList.contains("d")){ var all=schedArr[+d].every(function(x){ return x===1; }); for(j=0;j<24;j++) schedArr[+d][j]=all?0:1; }
++    else if(el.classList.contains("h")){ var allh=schedArr.every(function(r){ return r[+h]===1; }); for(i=0;i<7;i++) schedArr[i][+h]=allh?0:1; }
++    else return;
++    drawSched();
++  });
++  document.getElementById("schedAllOn").onclick=function(){ schedArr=schedArr.map(function(d){ return d.map(function(){ return 1; }); }); drawSched(); };
++  document.getElementById("schedCancel").onclick=function(){ document.getElementById("schedModal").classList.remove("show"); };
++  document.getElementById("schedSave").onclick=function(){
++    if(schedArr.every(function(d){ return d.every(function(x){ return x===0; }); })){ alert(`<#RWFP_45#>`); return; }
++    SCHED[schedU]=arrToSched(schedArr);
++    var c=q(schedU,"timesched").closest(".cell"); if(c) c.classList.toggle("dirty",SCHED[schedU]!==nv(schedU,"sched_v2")||getVal(q(schedU,"timesched"))!==q(schedU,"timesched")._base);
++    document.getElementById("schedModal").classList.remove("show"); recountSched();
++  };
++  function schedDirty(u){ return SCHED[u]!==undefined&&SCHED[u]!==nv(u,"sched_v2"); }
++  function recountSched(){ var n=recount(); RADIOS.forEach(function(r){ if(schedDirty(r.unit)&&getVal(q(r.unit,"timesched"))===q(r.unit,"timesched")._base) n++; }); chgN.textContent=n; btn.disabled=n===0; }
++
++  /* ---- apply: every pending change for every radio in ONE restart_wireless ---- */
++  btn.addEventListener("click",function(){
++    var bad=null;
++    document.querySelectorAll(".num").forEach(function(el){
++      if(el.closest("[hidden]")) return;
++      if(getVal(el)===el._base||el._hardLock) return;
++      var v=parseInt(el.value,10), lo=+el.getAttribute("data-min"), hi=+el.getAttribute("data-max");
++      if(v===0 && el.getAttribute("data-name").slice(-10)==="_user_rssi") return;
++      if(isNaN(v)||v<lo||v>hi||String(v)!==String(el.value).trim()) bad=bad||el;
++    });
++    if(bad){ bad.focus(); bad.closest(".cell").classList.add("dirty");
++      alert(`<#RWFP_37#> `+bad.getAttribute("data-name")+` (`+bad.getAttribute("data-min")+` <#RWFP_38#> `+bad.getAttribute("data-max")+`).`); return; }
++    /* AiMesh parity (stock applyRule -> AiMesh_confirm_msg("Wireless_Radio")) */
++    if(AMESH_CAP){
++      var radioOff=false;
++      document.querySelectorAll('.tog[data-name$="_radio"]').forEach(function(t){ if(t._base==="1"&&getVal(t)==="0") radioOff=true; });
++      if(radioOff && !confirm(`<#AiMesh_confirm_msg5#>\n<#AiMesh_confirm_msg0#>`)) return;
++    }
++    var f=document.getElementById("applyform");
++    Array.prototype.slice.call(f.querySelectorAll(".dyn")).forEach(function(n){ n.remove(); });
++    var n=0, add=function(name,value){ var i=document.createElement("input"); i.type="hidden"; i.className="dyn"; i.name=name; i.value=value; f.appendChild(i); n++; };
++    var reboot=false;
++    document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
++      if(el.closest("[hidden]")) return;
++      var nm=el.getAttribute("data-name")||"", g=el.getAttribute("data-g");
++      if(g){ var gv=(el.type==="checkbox")?(el.checked?"1":"0"):String(el.value); if(el._hardLock||gv===el._base) return; add(g,gv); if(g==="usb_usb3") reboot=true; return; }
++      if(/_@(chan|ext|range)$/.test(nm)) return;   /* folded into chanspec below */
++      var v=getVal(el); if(v===el._base||lockSuppressed(el)) return;
++      add(nm,v);
++    });
++    RADIOS.forEach(function(r){ var u=r.unit, b=r.band;
++      /* chanspec + (2.4 GHz) nctrlsb from the channel rows, exactly as stock's General tab posts them */
++      var cs=composeChanspec(u);
++      if(cs!==nv(u,"chanspec")){ add(r.ifn+"_chanspec",cs);
++        if(b==="2.4"){ var side=cs.slice(-1); if(side==="l"||side==="u"){ var nc=(side==="u")?"upper":"lower"; if(nc!==nv(u,"nctrlsb")) add(r.ifn+"_nctrlsb",nc); } } }
++      if(schedDirty(u)) add(r.ifn+"_sched_v2",SCHED[u]);
++      /* 11ax heal: every mode but 0/8/9 makes bring-up write wl<unit>_11ax=0, and nothing writes
++         it back (rc/init.c:2624 seeds it only when unset). Whenever the mode being applied allows
++         HE and the stored 11ax is not 1, write it. */
++      var m=q(u,"nmode_x"); if(m && HE_OK(String(m.value)) && nv(u,"11ax")!=="1") add(r.ifn+"_11ax","1");
++    });
++    if(n===0) return;
++    /* derived heals ride along with a real apply, never on their own: a value a rule FORCES
++       (WMM on outside Legacy, MU-MIMO from OFDMA, TX bursting off under pre-emptive BT, explicit
++       beamforming under MU-MIMO, scheduler off under MLO) is written when nvram disagrees */
++    document.querySelectorAll("[data-name]").forEach(function(el){
++      if(el.closest("[hidden]")||!el._hardLock||!el._forced) return;
++      var nm=el.getAttribute("data-name"); if(/_@(chan|ext|range)$/.test(nm)) return;
++      var v=getVal(el); if(v!==el._base) add(nm,v);
++    });
++    /* a USB 3.0 interference change needs a reboot (stock System page needReboot) */
++    if(reboot){ if(!confirm(`<#AiMesh_Node_Reboot#>`)) return; f.action_script.value="reboot"; f.action_wait.value=REBOOT_WAIT||"90"; }
++    else { f.action_script.value="restart_wireless"; f.action_wait.value="10"; }
++    document.getElementById("overlay").classList.add("show");
++    f.submit();
++    setTimeout(function(){ try{ location.reload(); }catch(e){} },reboot?((parseInt(REBOOT_WAIT,10)||90)*1000+5000):13000);
++  });
++
++  render();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 5b7b378854..0a9900962c 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -258,12 +258,14 @@ define(function(){
+ 				menuName: "<#menu5_1#>",
+ 				index: "menu_Wireless",
+ 				tab: [
+-					{url: "Advanced_Wireless_Content.asp", tabName: "<#menu5_1_1#>"},
++					/* reaper 2026-09-20 (owner): ONE "Settings" tab replaces the stock General tab and the
++					   Reaper Professional page (Reaper_WiFiPro.asp, retired). The stock General and
++					   Professional pages are SUP-redirected here by httpd/reaper_inject.c. */
++					{url: "Reaper_WiFiSettings.asp", tabName: "<#Settings#>"},
+ 					{url: "Advanced_WWPS_Content.asp", tabName: "<#menu5_1_2#>"},
+ 					{url: "Advanced_WMode_Content.asp", tabName: "WDS"},
+ 					{url: "Advanced_ACL_Content.asp", tabName: "<#menu5_1_4#>"},
+ 					{url: "Advanced_WSecurity_Content.asp", tabName: "<#menu5_1_5#>"},
+-					{url: "Reaper_WiFiPro.asp", tabName: "<#menu5_1_6#>"},
+ 					{url: "Advanced_WProxy_Content.asp", tabName: "<#WiFi_Proxy_item#>"},
+ 					{url: "Advanced_Roaming_Block_Content.asp", tabName: "<#WiFi_Roaming_Block_List#>"},
+ 					{url: "MLO.asp", tabName: `MLO`},
+@@ -939,7 +941,7 @@ define(function(){
+ 					if(userRSSI_support){
+ 						retArray.push("Advanced_ACL_Content.asp");
+ 						if(!concurrep_support){
+-							retArray.push("Advanced_Wireless_Content.asp");
++							retArray.push("Reaper_WiFiSettings.asp");
+ 						}
+ 						retArray.push("Advanced_WWPS_Content.asp");
+ 						retArray.push("Advanced_WMode_Content.asp");
+-- 
+2.25.1
+

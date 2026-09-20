@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.2** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -63,9 +63,12 @@ The ordered short list.
    any hoist/probe/drop is considered; the same loop guards the nat restore. The refused line is still
    wanted from the reporter's router to confirm the diagnosis on that box (one command) — see the entry
    under Open bugs. **[fix in the v3.1.7_BETA image; reporter confirmation owed]**
-3. **[P1] v3.2.2 — the stable candidate.** v3.2.2 (patches 0690–0694, cut 2026-09-20) is v3.2.1 plus the
-   Wireless Settings tab that replaces General and Professional (the seven rows back, locked as stock
-   locks them), the Warden counter fix and the Download/Upload labels; v3.2.1 (0685–0689, 2026-09-19)
+3. **[P1] v3.2.3 — the stable candidate.** v3.2.3 (patches 0695–0698, cut 2026-09-20) is v3.2.2 plus the hover
+   reasons on locked Settings cells, the four-radio tester fixes (AP Isolated leaves the tab) and the
+   Warden boot deferral, autowan rate limit, rtrafd orphan fix and boot polls; v3.2.2 (0690–0694,
+   2026-09-20) added the Wireless Settings tab that replaces General and Professional (the seven rows
+   back, locked as stock locks them), the Warden counter fix and the Download/Upload labels; v3.2.1
+   (0685–0689, 2026-09-19)
    added the Wireless Mode row's return with its 11ax coupling and the Rule Status walker fixes (C7
    cap, H6 note, VPN label); v3.2.0 (0681–0684) added the Professional row removal, the Traffic
    bridging-mode note and the two help-link fixes over v3.1.9. Reviewed against this file 2026-09-19: no open P1 is unfixed in tree, and the current
@@ -80,7 +83,7 @@ The ordered short list.
    after the stable (owner, 2026-09-18); code signing (3b) is not a stability item and is the same
    posture as every stable so far. Known issues to carry in the notes: the WireGuard source-rule
    report (fix candidates in v3.1.7 and the v3.1.9 order; reporter unconfirmed), the R15 reporter
-   confirmation. v3.2.2 becomes the stable release when Dev is merged to main after the beta has
+   confirmation. v3.2.3 becomes the stable release when Dev is merged to main after the beta has
    soaked.
 4. **[P2] GT-BE19000 — on the roster since v3.1.4; the write-up and the diag ARRIVED 2026-09-13.**
    The tester's report (four items) and a `reaper_diag` v1.3.14 capture from a v3.1.4_BETA_noMCP box
@@ -117,12 +120,13 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.2.2 is the current beta** (cut 2026-09-20; patches 0690–0694 over v3.2.1's 0685–0689). It carries
-the Wireless Settings tab, the Warden counter fix and the Download/Upload labels; items closed by it
-are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.3 is the current beta** (cut 2026-09-20; patches 0695–0698 over v3.2.2's 0690–0694). It carries the
+hover reasons on locked Settings cells, the four-radio tester fixes and the Warden, idle-CPU and
+boot-wait efficiency items; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
 
-*Earlier, in v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6 coupling, the
-Professional row removals and radio links, and the Rule Status walker fixes.*
+*Earlier, in v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
+Download/Upload labels. In v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6
+coupling, the Professional row removals and radio links, and the Rule Status walker fixes.*
 
 *Earlier, in v3.2.0 (2026-09-19): the WiFi Professional row removal, the Traffic bridging-mode note
 and the two help-link fixes.*
@@ -468,11 +472,12 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   Threshold follows stock from v3.2.2 (editable in Legacy mode only). **[owner call]**
 - **[P3] 39 tokens are English in the 24 non-English packs** — `RQOS_117`, `RQOS_121`, `RFW_321`,
   `RFW_322` (v3.1.9), `RTRF_77` (v3.2.0), `RWFP_39` (v3.2.1) and, from v3.2.2, the Settings row texts
-  `RWFP_40–43`, `RWFP_45–66` and the Warden card `RWDN_102–108`, seeded in English to keep lockstep.
-  **[owed — the next translation pass]**
-- **[P3] Hover reason on locked Settings cells** (owner, 2026-09-20). Built after the v3.2.2 cut on a
-  branch: every lock names its cause in the cell's title (`RWFP_67–82`, translated in all 25 packs);
-  greyed stays the only visible signal. **[queued for the next rung]**
+  `RWFP_40–43`, `RWFP_45–66` and the Warden card `RWDN_102–108`, seeded in English to keep lockstep
+  (v3.2.3's 17 new tokens arrived translated, so the count is unchanged). **[owed — the next translation
+  pass; owner: they stay English for v3.2.3]**
+- **[P3] Hover reason on locked Settings cells** (owner, 2026-09-20) — closed in v3.2.3: every lock names
+  its cause in the cell's title (`RWFP_67–82`, translated in all 25 packs); greyed stays the only
+  visible signal.
 - **[P2] The Security Posture card was a snapshot and said so to nobody** (owner, 2026-09-15). Every
   row came from `SSI`, a server-rendered snapshot of about 20 nvram keys taken when the page was
   built, so a dashboard opened while the box was still coming up froze at whatever was true then. The
@@ -713,7 +718,10 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   IPTV units pass `wan_up`, bridged IPTV never traverses the chains; captive portal arms inside
   `start_services`. Gatekeeper (LAN-facing, small) and the native firewall (operator rules) stay
   synchronous. Not async: an apply overlapping the WAN-up apply is the v3.1.9 watcher fight.
-  **[owed — next rung]** ↳ notes: `boot-efficiency.md`
+  **Built in v3.2.3**, with one change to the design: the marker is written by the firewall build itself
+  (`/tmp/.reaper_firewall_built`, also by a completed apply), not by Warden alone, so enabling Warden
+  from the page after boot arms at once; rwatch words the no-WAN case. **[metal measure owed: the boot
+  gap, the chains after WAN-up, rwatch's first tick]** ↳ notes: `boot-efficiency.md`
 - **[P2] pid 1 burns 4.5 % of a core at idle: two wake sources, one of them ours** (measured 2026-09-20,
   owner-confirmed by pausing wanduck: 72 → 38 cs per 15 s). Every wake of init's signal loop runs
   `check_services()`, four full `/proc` scans, 34 ms each. (a) Stock: `wanduck.c` `chk_proto()` requests
@@ -726,22 +734,29 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   parented to init at once). Fix: the watcher traps TERM and kills and reaps its own sleep (one
   format-string change; the long-term shape is fork+exec with a poll deadline). Gate: the v2.8.6 popen
   harness plus `pgrep -P 1 sleep` empty on the box. Expected idle busy ~2 % instead of 3.7 %.
-  **[owed — next rung]** ↳ notes: `idle-cpu-burners.md`
+  **Built in v3.2.3** (the watcher forks its sleep before arming the trap, on purpose; the main shell
+  reaps the watcher too). **[metal measure owed: init cs per 15 s, autowan once a minute, no sleep
+  parented to pid 1, the moved-cable re-detection]** ↳ notes: `idle-cpu-burners.md`
 - **[P3] Boot: fixed sleeps that guard an observable condition** (measured boot 133 s to settled;
   `/proc` start-time timeline in the notes). Reached on this build: two `sleep 3` around the `/data`
-  mount and `bcm_knvram` load (readiness = the mount in `/proc/mounts` and `open("/dev/nvram")`
-  succeeding — the node the nvram library maps), `sleep(1)` after `hotplug2`, and a 300 ms wait in
+  mount and `bcm_knvram` load (readiness = `/data` being a mount point, then the wlcsm netlink family
+  the module registers — there is no `/dev/nvram` on this platform, and `/proc` is not mounted yet at
+  that point, so neither poll reads it), `sleep(1)` after `hotplug2`, and a 300 ms wait in
   `start_dhd_monitor` that only serves a previous instance. Polls with a 10 s ceiling are never earlier
   than the fixed sleep on a slow model and shorter on a fast one; both flash layouts share them. ~7 s.
   Hold the two `sleep 3` conversions at beta until a sibling-model boot report arrives; the USB power
-  cycle stays where it is (USB-modem WAN and boot-time mount ordering). **[owed — next rung; beta soak]**
+  cycle stays where it is (USB-modem WAN and boot-time mount ordering). **Built in v3.2.3** — the hotplug2
+  poll watches for its uevent netlink socket, the debug_monitor wait runs only when an instance exists.
+  **[beta soak]**
   ↳ notes: `boot-efficiency.md`
-- **[P3] Boot: three daemons with no consumer on this build** — `sysstate` (Makefile gate commented
-  out), `dns_dpi_check` (supervises a daemon that can never start), `netool` (only non-installed pages
-  reference it): drop from `start_services()`, re-grep consumers at the moment of change. `rstats`
-  stays — its history files may be read by user scripts. Deferring VPN- or firewall-adjacent starts
+- **[P3] Boot: three daemons that looked consumer-less — kept** (re-checked 2026-09-20 at the moment of
+  change, as the entry asked): `netool` answers `/netool.cgi` for the installed Network Analysis and
+  Netstat pages; `sysstate` writes the CPU, RAM and temperature logs the feedback report packs;
+  `dns_dpi_check` supervises `dnsqd`, which the Bandwidth Monitor page starts (reachable because
+  `dns_dpi` is in `rc_support`). None is dropped; the earlier claim came from a grep against the wrong
+  path. `rstats` stays too — its history files may be read by user scripts. Deferring VPN- or firewall-adjacent starts
   (`wgsall`, `pptpd`, OpenVPN, PBR, Gatekeeper, native firewall) past `start_wan` is **not** proposed:
-  their order relative to the firewall build matters. **[owed — next rung]** ↳ notes: `boot-efficiency.md`
+  their order relative to the firewall build matters. **[closed — no change]** ↳ notes: `boot-efficiency.md`
 - **[P2] Warden chain build as one `iptables-restore --noflush` payload per stack** — the 317 iptables
   calls in `apply.sh` (each a full table read-modify-write on a ~500-rule filter) are ~3 s of every
   firewall rebuild: boot, WAN-up, every `restart_firewall`, every Apply. Verified in the tree: iptables

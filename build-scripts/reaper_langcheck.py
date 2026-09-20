@@ -14,7 +14,7 @@ W = pathlib.Path(sys.argv[1])
 OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_QoS.asp',
        'Reaper_GK.asp', 'Reaper_Warden.asp', 'Reaper_Advisor.asp', 'Reaper_Diag.asp',
        'Reaper_Wireless.asp', 'Reaper_Devices.asp',
-       'Reaper_Storage.asp', 'Reaper_WiFiPro.asp', 'Reaper_QoSDiag.asp',
+       'Reaper_Storage.asp', 'Reaper_WiFiSettings.asp', 'Reaper_QoSDiag.asp',
        'Reaper_Conn.asp',
        'Reaper_USB.asp', 'Reaper_Analytics.asp', 'Reaper_Firmware.asp',
        # Added 2026-08-15. Reaper_Firewall.asp shipped in v2.4.1 with 11 tabs and

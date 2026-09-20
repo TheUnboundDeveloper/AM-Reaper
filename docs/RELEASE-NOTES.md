@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.2** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.2** <!--@treever--> — `3006.102.8_Reaper_v3.2.2`. **One Wireless Settings tab replaces General and Professional, Warden's counters add up.** Every radio setting a user can change is on one Wireless › Settings tab, a column per band, applied once; the seven rows v3.2.0 removed are back and locked only where stock locks them, the v3.2.1 Wireless Mode row with its Wi-Fi 6 coupling carries over, and the channel, bandwidth and scheduler rows write what the firmware actually reads. Warden's blocked-packet buckets add up to the total exactly, and the page says what the number means. Traffic, QoS and QoS Diag say Download and Upload in every language. Built and verified locally as an RT-BE96U MCP test image and flashed on the RT-BE96U before the cut. The series stands at **694 patches** (0690–0694 for v3.2.2); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.3** <!--@treever--> — `3006.102.8_Reaper_v3.2.3`. **Locked Settings cells say why, four-radio fixes, Warden and boot efficiency.** Every greyed control on the Wireless › Settings tab names its reason on hover; the four-radio tester's fixes land (numeric box width, the shared auto-channel options counted once, Extension Channel offering only real sidebands, the Fragmentation help) and *Set AP Isolated* moves to where isolation actually lives, the Network menu. Warden arms with the first firewall build instead of inside the boot sequence, init's idle wake sources are fixed, and four boot waits become polls. Built and verified locally as an RT-BE96U MCP test image before the cut. The series stands at **698 patches** (0695–0698 for v3.2.3); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,33 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.3 — locked Settings cells say why, four-radio fixes, Warden and boot efficiency
+
+**A greyed control tells you why.** Hover any locked cell on the Wireless › Settings tab and the
+tooltip names the setting that holds it: MLO keeping the radio on, Legacy mode, the OFDMA choice, a
+fixed channel, AMPDU RTS turned off. Nothing else about the lock changes; greyed is still the
+signal.
+
+**Fixes from a four-radio tester.** Numeric boxes line up with the selects around them. The
+auto-channel options that one nvram key shares between two 5 GHz columns now move together and are
+saved once, so a tick under the first 5 GHz radio is no longer silently dropped by the untouched box
+under the second. Extension Channel only offers the sideband that exists for your channel. The
+Fragmentation Threshold row says it is editable in Legacy mode only. And *Set AP Isolated* is no
+longer on this tab: on this build isolation belongs to each network on the Network menu, and the
+per-radio setting here only reached the primary network.
+
+**Warden arms with the WAN, not before it.** At boot the router used to run Warden's full apply
+inside the start-up sequence, several seconds of work that the firewall build at WAN-up threw away
+and redid. Warden now arms at that first firewall build. Turning it on from the page later still
+applies immediately, and a router that never gets a WAN is armed by the watchdog, which says so in
+the log.
+
+**A quieter idle router.** Two things woke the init process more than once a second, each wake a
+full scan of every process: the stock WAN watcher restarting the port prober every five seconds
+while the WAN was already connected, and the traffic collector leaving a stray sleep behind on every
+QoS query. The prober now runs once a minute while connected and the collector cleans up after
+itself. Four fixed waits in the boot sequence now end as soon as the thing they waited for is ready.
 
 ## What's new in v3.2.2 — one Wireless Settings tab replaces General and Professional, Warden's counters add up
 

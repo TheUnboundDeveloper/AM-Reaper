@@ -1021,7 +1021,10 @@ def check_warden_outbound_log(router):
 
     # -- 4. counters: banked and zeroed together ---------------------------
     if "RW_ODROP" in src:
-        if not re.search(r'-nvxL RW_ODROP', src):
+        # 2026-09-20: the readers take ONE whole-table listing per stack and
+        # select RW_ODROP by chain section in awk (ch=="RW_ODROP"), so either
+        # the per-chain listing or the section test proves the chain is read.
+        if not re.search(r'-nvxL RW_ODROP', src) and 'ch==\\"RW_ODROP\\"' not in src:
             bad.append("the statistics reader does not list RW_ODROP -- outbound "
                        "blocks would be missing from the total")
         for m in re.finditer(r'for C in ([A-Z_ ]+); do', src):

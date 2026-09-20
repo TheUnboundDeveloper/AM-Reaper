@@ -700,6 +700,74 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   `reaper_aimesh_exempt()` helper rather than three open-coded copies of the registry parser.
   **[owed — before a fourth enforcement surface is added]**
   ↳ notes: `aimesh-decompose-2026-09-09.md`
+- **[P2] Warden apply runs twice at boot, once for nothing** (measured 2026-09-20 on the RT-BE96U).
+  `start_services()` runs `sh /tmp/rwarden/apply.sh` synchronously in pid 1 (~6 s: awk split of the 1.7 MB
+  cache 0.6 s, per-set `ipset restore` 1.6 s, counter snapshot 0.6 s, 317 iptables calls ~3 s), then the
+  WAN-up `start_firewall()` deletes the chains and re-runs the same script under the firewall lock. The
+  boot-time run protects nothing (no WAN exists yet) and delays `start_wan` by its whole length. Fix: on
+  the first `start_rwarden()` after boot, generate the scripts and skip the apply, exactly as the existing
+  LAN-not-ready deferral does, keyed on a tmpfs marker `apply.sh` writes at its tail; the WAN-up hook
+  arms it, rwatch's missing-chain heal is the fallback for a router with no WAN (log that case, so the
+  Warden card explains itself). Checked per configuration: AP/repeater/media-bridge unchanged; static
+  WAN arms inside `start_wan`; DHCP/PPPoE/USB-modem at `wan_up`; dual WAN per unit's `wan_up`; routed
+  IPTV units pass `wan_up`, bridged IPTV never traverses the chains; captive portal arms inside
+  `start_services`. Gatekeeper (LAN-facing, small) and the native firewall (operator rules) stay
+  synchronous. Not async: an apply overlapping the WAN-up apply is the v3.1.9 watcher fight.
+  **[owed — next rung]** ↳ notes: `boot-efficiency.md`
+- **[P2] pid 1 burns 4.5 % of a core at idle: two wake sources, one of them ours** (measured 2026-09-20,
+  owner-confirmed by pausing wanduck: 72 → 38 cs per 15 s). Every wake of init's signal loop runs
+  `check_services()`, four full `/proc` scans, 34 ms each. (a) Stock: `wanduck.c` `chk_proto()` requests
+  `restart_autowan` on every 5 s scan for single-WAN configs with no state gate, so rc kills and respawns
+  the port prober forever while the WAN is connected. Fix: rate-limit to once a minute while
+  `WAN_STATE_CONNECTED`, keep 5 s otherwise — the blob's contract is unknown, so probing is slowed, not
+  removed; dual WAN is already excluded by the `wans_dualwan` condition; IPTV/VPN uninvolved. Metal:
+  move the cable between ports. (b) Ours: `rtrafd` `rt_bound()` kills its watcher subshell but not the
+  `sleep` the watcher forked, so seven `sleep 3` per 4 s class poll are orphaned to pid 1 (eight seen
+  parented to init at once). Fix: the watcher traps TERM and kills and reaps its own sleep (one
+  format-string change; the long-term shape is fork+exec with a poll deadline). Gate: the v2.8.6 popen
+  harness plus `pgrep -P 1 sleep` empty on the box. Expected idle busy ~2 % instead of 3.7 %.
+  **[owed — next rung]** ↳ notes: `idle-cpu-burners.md`
+- **[P3] Boot: fixed sleeps that guard an observable condition** (measured boot 133 s to settled;
+  `/proc` start-time timeline in the notes). Reached on this build: two `sleep 3` around the `/data`
+  mount and `bcm_knvram` load (readiness = the mount in `/proc/mounts` and `open("/dev/nvram")`
+  succeeding — the node the nvram library maps), `sleep(1)` after `hotplug2`, and a 300 ms wait in
+  `start_dhd_monitor` that only serves a previous instance. Polls with a 10 s ceiling are never earlier
+  than the fixed sleep on a slow model and shorter on a fast one; both flash layouts share them. ~7 s.
+  Hold the two `sleep 3` conversions at beta until a sibling-model boot report arrives; the USB power
+  cycle stays where it is (USB-modem WAN and boot-time mount ordering). **[owed — next rung; beta soak]**
+  ↳ notes: `boot-efficiency.md`
+- **[P3] Boot: three daemons with no consumer on this build** — `sysstate` (Makefile gate commented
+  out), `dns_dpi_check` (supervises a daemon that can never start), `netool` (only non-installed pages
+  reference it): drop from `start_services()`, re-grep consumers at the moment of change. `rstats`
+  stays — its history files may be read by user scripts. Deferring VPN- or firewall-adjacent starts
+  (`wgsall`, `pptpd`, OpenVPN, PBR, Gatekeeper, native firewall) past `start_wan` is **not** proposed:
+  their order relative to the firewall build matters. **[owed — next rung]** ↳ notes: `boot-efficiency.md`
+- **[P2] Warden chain build as one `iptables-restore --noflush` payload per stack** — the 317 iptables
+  calls in `apply.sh` (each a full table read-modify-write on a ~500-rule filter) are ~3 s of every
+  firewall rebuild: boot, WAN-up, every `restart_firewall`, every Apply. Verified in the tree: iptables
+  1.4.18's restore with `--noflush` flushes and rebuilds only the user chains the payload declares and
+  touches nothing else, so a payload naming only `REAPER_WARDEN`/`RW_*` cannot reach OpenVPN, WireGuard,
+  IPTV, Gatekeeper, native-firewall or stock chains. Conditions: the jump into the shared front chain
+  stays a separate insert; runs under the firewall lock (1.4.18 has no xtables lock or `-w`, and a
+  restore COMMIT overwrites the table image, so an unlocked concurrent writer loses its rule — the same
+  race the P1 above records, per call, so total exposure drops); a failed COMMIT falls back to the
+  per-rule script. This is the batching item deferred in the code-review tail, now with a number.
+  **[owed — own rung: metal soak plus a VPN reconnect during an apply]** ↳ notes: `boot-efficiency.md`
+- **[P3] Boot: what is not to be reordered, and why** (so the question is not re-opened): the three radio
+  dongle probes run sequentially in the kernel from one `insmod dhd` and interfaces are named by probe
+  order (a prebuilt `wl_ifname_align_war()` already exists) — no async probe; radio configuration is
+  MLO-ordered — no parallel `wlconf`; `start_wan` follows `start_services` because the WAN-up rebuild
+  is an iptables-restore without `--noflush` that would flush every NAT-touching service started after
+  it, and wanduck (started inside `start_lan`) is what kicks NTP; `start_service_ready` and
+  `success_start_service` are the watchdog's boot barrier. The remaining budget is kernel 20 s, radio
+  firmware 17 s, closed-source wireless bring-up 34 s, DHCP 12 s, NTP 10 s. **[recorded; closed]**
+  ↳ notes: `boot-efficiency.md`
+- **[P3] Throughput: every dataplane interrupt lands on CPU0 by GIC default** — affinity masks say all
+  four cores, delivery goes to the lowest; NET_RX softirq is ~70 % on CPU0. No CPU-path pressure on a
+  hardware-forwarded box (softnet squeezed 3, dropped 10 in 80 min; Runner healthy; GDX pool full), so
+  nothing to change by default — this is the packet-steering item in Open bugs, which stays gated on
+  `fc_disable=1` or an active VPN, runtime-reversible, measured. Optional for many-flow boxes: a larger
+  conntrack hash (buckets 16384 for max 300000). **[recorded; no change]** ↳ notes: `idle-cpu-burners.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** — healer path
   only, if ever; never a blanket `conntrack -F`. **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
 - **[P3] The channel marker: BETA exercised, STABLE not yet** — the beta path has been through the
@@ -716,8 +784,9 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   The stale `rt-be88u-v300` worktree can go. **[hygiene]**
 - **[P3] `/tmp` dir-ownership hardening** — one shared validate-or-refuse helper, ~11 sites.
   **[deferred]** ↳ notes: `tmp-dir-ownership.md`
-- **[P3] `poll_fcache` O(n²) pairing · `poll_classes` 7× `tmctl` popen · `do_reaper_dev_cgi` static
-  snapshot arrays** — bounded, measured small, or latent-only. **[shelved]**
+- **[P3] `poll_fcache` O(n²) pairing · `do_reaper_dev_cgi` static
+  snapshot arrays** — bounded, measured small, or latent-only. **[shelved]** (the `poll_classes`
+  `tmctl` popen moved to the idle-CPU entry above, 2026-09-20)
 - **[P3] Theme-token vocabulary consolidation (remainder of D4)** — `--panel2`/`--red*` and the
   `--line` divergence. **[owed — to the page migration]** ↳ notes: `theme-token-consolidation.md`
 - **[P3] Inherited httpd core: two pre-auth robustness gaps** (an unclamped `Content-Length` drain;

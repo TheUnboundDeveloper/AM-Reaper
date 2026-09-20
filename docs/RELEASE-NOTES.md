@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.1** · 2026-09-19 <!--@stamp-->
+> **Doc status:** current as of **v3.2.2** · 2026-09-20 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.1** <!--@treever--> — `3006.102.8_Reaper_v3.2.1`. **Wireless Mode returns with its Wi-Fi 6 coupling, the Professional page keeps only settings a user can change, Rule Status walker fixes.** Wireless Mode is per radio again with stock's option sets, and applying an Auto or AX-capable mode restores Wi-Fi 6 and 7 on a band an earlier "N only" had stripped, which the firmware never did on its own. Seven rows a user could not safely change are gone, MU-MIMO follows the OFDMA choice, and the radio switch is linked to the MLO tab, the wireless scheduler and AiMesh. Rule Status witnesses a policy-routing rule behind ipset rules again, shows its out-of-scope note whole, and labels the VPN group "VPN". Built and verified locally as an RT-BE96U MCP test image before the cut. The series stands at **689 patches** (0685–0689 for v3.2.1); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.2** <!--@treever--> — `3006.102.8_Reaper_v3.2.2`. **One Wireless Settings tab replaces General and Professional, Warden's counters add up.** Every radio setting a user can change is on one Wireless › Settings tab, a column per band, applied once; the seven rows v3.2.0 removed are back and locked only where stock locks them, the v3.2.1 Wireless Mode row with its Wi-Fi 6 coupling carries over, and the channel, bandwidth and scheduler rows write what the firmware actually reads. Warden's blocked-packet buckets add up to the total exactly, and the page says what the number means. Traffic, QoS and QoS Diag say Download and Upload in every language. Built and verified locally as an RT-BE96U MCP test image and flashed on the RT-BE96U before the cut. The series stands at **694 patches** (0690–0694 for v3.2.2); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,36 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.2 — one Wireless Settings tab replaces General and Professional, Warden's counters add up
+
+**One Wireless › Settings tab now holds every radio setting you can change.** It replaces the
+General and Professional tabs, which redirect to it, and lays the bands side by side so one Apply
+restarts the radios once. Network name, security, Wi-Fi 6 and 7 mode and Smart Connect live on the
+Network menu, because on this hardware the main network is a profile there. Channel and bandwidth
+offer what the driver actually supports on each band, and the wireless scheduler is a grid of hours
+you paint. A greyed control is held by another setting rather than hidden: Legacy mode parks what
+stock parks, WMM becomes a choice only in Legacy, MU-MIMO follows the OFDMA choice, and the
+scheduler is held off while MLO keeps every radio on. The seven rows v3.2.0 removed are back under
+those rules, and the v3.2.1 Wireless Mode row keeps looking after Wi-Fi 6. Long option lists stay
+open while you scroll them.
+
+**The radio switch knows about the other tabs that drive it.** It refuses to turn a radio off while
+MLO is enabled, since the MLO tab needs every radio on, and turning a radio off on an AiMesh router
+asks first, because the setting reaches the nodes. Setting AMPDU RTS to Disable greys that radio's
+RTS threshold.
+
+**Warden's numbers add up, and the page says what they mean.** The blocked total and its country,
+threat-feed and manual buckets were read from separate firewall listings, so packets arriving
+between the reads drifted the buckets above the total a little at every 15-minute checkpoint,
+forever. Every figure now comes from one snapshot. The stat is labelled Blocked packets, because
+that is what it counts, and a card under How Warden works explains why it never matches the log
+view, which shows the last 400 lines and only when logging is on.
+
+**Traffic, QoS and QoS Diag say Download and Upload in every language.** The pages borrowed the
+stock file-upload button's word for the Upload label, and in Russian that is the same word stock
+uses for Download, so the legend read one word twice. The labels are proper nouns now in all 25
+languages.
 
 ## What's new in v3.2.1 — Wireless Mode returns with its Wi-Fi 6 coupling, the Professional page keeps only settings a user can change, Rule Status walker fixes
 

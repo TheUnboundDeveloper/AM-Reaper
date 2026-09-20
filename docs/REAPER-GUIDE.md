@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.2.1** · 2026-09-19 <!--@stamp-->
+> **Doc status:** current as of **v3.2.2** · 2026-09-20 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -105,7 +105,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.8.5 [Filtering and export](#485-filtering-and-export)
      - 4.8.6 [Limits and gotchas](#486-limits-and-gotchas)
    - 4.9 [Connections](#49-connections)
-   - 4.10 [Wireless Quality and WiFi Professional (all bands)](#410-wireless-quality-and-wifi-professional-all-bands)
+   - 4.10 [Wireless Quality and Wi-Fi Settings (all bands)](#410-wireless-quality-and-wi-fi-settings-all-bands)
    - 4.11 [Long-Term Storage and Data Export](#411-long-term-storage-and-data-export)
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
@@ -849,7 +849,7 @@ Drops here always go to the system log with the `REAPER-WARDEN-SELF` prefix, wha
 
 The status card shows **Enforcing** or **Disabled**, the last feed update, which feeds are on, and the counts — **Countries / Threat feeds / Manual blocks / Unclassified**, plus prefixes loaded.
 
-**Blocked hits** and **Top blocked countries** refresh every 30 seconds. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`. *Unclassified* is non-zero only on a statistics store written before those buckets existed; it is shown rather than quietly folded into a named bucket.
+**Blocked packets** and **Top blocked countries** refresh every 30 seconds. The figure counts packets, not connection attempts: a retried SYN or a retransmitted outbound packet counts again. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`; from v3.2.2 every bucket is read from one snapshot of the firewall tables, so they add up exactly. *Unclassified* is non-zero only on a statistics store written before those buckets existed. The counter never matches the log viewer: the log is a rotating 400-line view, gated on *Log blocked traffic*, and a burst can drop lines; the card under *How Warden works* says so on the page.
 
 Totals are saved to internal flash every 15 minutes, and on every path that would otherwise lose them, so they survive reboots, firewall rebuilds and upgrades. **Turning Warden off resets the counters.**
 
@@ -1269,7 +1269,8 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** "No active flows in the accelerator cache" means there is no traffic or the accelerator/QoS is off. Queue numbers are mostly zero under Hardware QoS (a single shaped queue) and richer under HW Classful.
 
-### 4.10 Wireless Quality and WiFi Professional (all bands)
+<a id="410-wireless-quality-and-wifi-professional-all-bands"></a>
+### 4.10 Wireless Quality and Wi-Fi Settings (all bands)
 
 **Wireless Quality** (the Wireless tab) is a diagnostics page:
 
@@ -1279,9 +1280,9 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 - **Auto Scan** — sweeps a radio's channels *at the width it will actually run* (6 GHz in 320 MHz blocks, 5 GHz in 80 MHz blocks, 2.4 GHz as 20 MHz channels), ranks them by cleanliness, and **restores the original channel when it finishes**; only **Pin best** commits the winner (an owner decision from v2.5.4 — the page text still describes the earlier auto-pin behaviour in one place). Each candidate restarts the radio, so run it from a wired client or another band; DFS channels are deliberately not swept (each needs a 60-second listening period). Pinning takes that radio off automatic selection until you set it back to Auto. The report can be printed to PDF or downloaded as HTML with a spectrum plot.
 - **Passive Channel Monitor** (`rchqd`, opt-in) watches only the current channel and flags *degrading — consider Auto Scan*; it never changes a channel. Degraded/recovered transitions are logged, edge-triggered and rate-limited; the threshold is tunable (`rchq_degraded`).
 
-**WiFi Professional — All Bands** lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios cycle together (~10 s) instead of once per band. It asks the router once rather than 116 times, so it opens quickly. Region and the wireless scheduler stay on the classic per-band page; main-network SSID visibility and client isolation are set on the General Wireless and Network pages because on this hardware the main network is an SDN profile. *Disable 802.11b* is the master for the 2.4 GHz preamble control; "B/G Protection" was removed because the driver resets it on every restart. Roaming assistant: -90 to -40 dBm, 0 = off. Wi-Fi 7 (802.11be) is not on this page: it is chosen per network on the Network menu, where it is coupled to an SAE-capable security mode. **Wireless Mode** (v3.2.1) is per radio with stock's option sets (2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only; the firmware has no Wi-Fi 7-only mode). Every mode except Auto, N/AC/AX mixed and AX only switches Wi-Fi 6 and Wi-Fi 7 off on that band, and Apply asks first; applying an Auto or AX-capable mode restores them, which the firmware alone never did. OFDMA is greyed under a mode without Wi-Fi 6, AMPDU RTS and RTS Threshold under Legacy, and *Disable 802.11b* unless Auto; AMPDU RTS set to Disable greys that radio's RTS and Fragmentation thresholds. Seven rows are gone since v3.2.1 because a user cannot safely change them on Wi-Fi 7 hardware, exactly as stock hides them: WMM, MU-MIMO (it follows the OFDMA choice), explicit and universal beamforming, modulation scheme, AMPDU aggregation and Bluetooth coexistence. The radio toggle is linked to the tabs that also drive it: it refuses to switch a radio off while MLO is enabled, a radio the wireless scheduler owns wears a *Time Scheduling* chip, and switching a radio off asks for confirmation on an AiMesh router because the setting reaches the nodes.
+**Wireless › Settings** (v3.2.2) is the one tab that configures every radio setting a user can change; it replaces the stock General and Professional tabs, which redirect to it. It lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios restart together (~10 s). Network name, security, Wi-Fi 6 and Wi-Fi 7 mode and Smart Connect are set on the Network menu, because on this hardware the main network is an SDN profile. Channel and bandwidth offer what the driver reports for each band; the wireless scheduler opens a 7×24 grid. A greyed control is locked by another setting: Legacy mode parks what stock parks (beamforming, modulation scheme, AMPDU RTS and RTS Threshold), WMM is a choice in Legacy only, Fragmentation Threshold is editable in Legacy only, MU-MIMO follows the OFDMA choice, the scheduler is held off while MLO is enabled, *Disable 802.11b* is the master for the 2.4 GHz preamble control, and a fixed channel parks the auto-channel options. Roaming assistant: -90 to -40 dBm, 0 = off. **Wireless Mode** (v3.2.1) is per radio with stock's option sets (2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only; the firmware has no Wi-Fi 7-only mode). Every mode except Auto, N/AC/AX mixed and AX only switches Wi-Fi 6 and Wi-Fi 7 off on that band, and Apply asks first; applying an Auto or AX-capable mode restores them, which the firmware alone never did. The radio toggle refuses to switch a radio off while MLO is enabled, and switching a radio off asks for confirmation on an AiMesh router because the setting reaches the nodes. A value a rule forces is written at apply as a derived heal when the stored value disagrees.
 
-**Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal). The Professional page's first load after an upgrade can take ~15 s; the cause is under investigation.
+**Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal).
 
 **AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
 hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed

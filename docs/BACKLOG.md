@@ -169,7 +169,9 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   to a public address — plus which of Killswitch on/off gave WAN egress and which gave no connectivity.
   The v3.1.9 first-match order is the strongest untested candidate: the same tester's list was being
   decided by position rather than by the rule they expected. Ask for a retest on v3.1.9 or later before
-  any more WireGuard work. **[fix candidates in v3.1.7 and v3.1.9; reporter retest owed]**
+  any more WireGuard work. Tester 2026-09-20: it "still does not work" on the v3.2 beta line, and they
+  offer to re-create it together when there is time — that session is the capture this entry waits on.
+  **[fix candidates in v3.1.7 and v3.1.9; joint reproduction with the reporter owed]**
   ↳ notes: `pbr-wg-livetunnel-gaps.md`
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
@@ -466,7 +468,11 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 - **[P3] Rule Status does not witness masquerade** (tester question, 2026-09-19). The walker already
   models POSTROUTING source NAT (the hairpin row F6) but asserts nothing about LAN→WAN masquerade; a
   one-row `A1b` (expect SNAT, gated on `wan_nat_x=1`) would, and a tunnel-side row needs the walker
-  to read routing tables (mark → `ip rule` → table). Advisory posture: not built. **[owner call]**
+  to read routing tables (mark → `ip rule` → table). Restated by the tester 2026-09-20 as a catalog
+  check, the same shape as "is this port-forward really in the table": for every egress interface
+  (wan0, wan1, each OpenVPN and WireGuard client, a guest uplink) — is there a MASQUERADE/SNAT rule
+  with `-o` naming it; is it unrestricted or scoped (`-s`, a mark, `! -d` private ranges); does a rule
+  exist for an interface that is down. Advisory posture: not built. **[owner call]**
 - **[P3] Tx power's lowest step** (2026-09-19). The lowest step writes `10` where stock's slider
   writes `0`, and the consumer is the prebuilt wlconf, so which is right is metal-only. Fragmentation
   Threshold follows stock from v3.2.2 (editable in Legacy mode only). **[owner call]**
@@ -592,7 +598,12 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   ACL page; everything else already ships via SDN. **[project]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Firewall DNAT / Redirect: the residual gaps** — 1:1 NETMAP, per-zone forced NTP,
   raw-protocol DNAT; extend Service Intercept, never a new page. **[project]**
-  ↳ notes: `firewall-dnat-redirect-residual.md`
+\1- **[P3] Unbound beside the existing resolver path** (tester, 2026-09-20) — a recursive, DNSSEC-validating
+  resolver with its own cache, shipped in the image and selectable on the DNS page, with dnsmasq
+  forwarding to it. Today the path is dnsmasq → the configured upstreams (the resolver health check in
+  front, DoT through stubby); Merlin users bootstrap Unbound by hand through Entware. Needs the package
+  and its libraries, the page switch, the forwarder wiring, root-hints and trust-anchor upkeep, and a
+  memory-footprint check on the RT-BE96U. **[project]**
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** — the manifest half was
   implemented for v2.7.3 and shelved inert (re-enable = flip two switches + rebuild). Reviewed again
   2026-09-13 with the clone threat in mind: the manifest signature covers only the router-initiated

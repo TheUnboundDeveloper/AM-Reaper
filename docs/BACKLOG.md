@@ -598,7 +598,18 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   ACL page; everything else already ships via SDN. **[project]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Firewall DNAT / Redirect: the residual gaps** — 1:1 NETMAP, per-zone forced NTP,
   raw-protocol DNAT; extend Service Intercept, never a new page. **[project]**
-\1- **[P3] Unbound beside the existing resolver path** (tester, 2026-09-20) — a recursive, DNSSEC-validating
+  ↳ notes: `firewall-dnat-redirect-residual.md`
+- **[P3] Attainder — control by names** — a generic domain blocker at the resolver step
+  (Diversion-shaped, Warden-like): subscribed lists, custom entries, exceptions, per-name statistics,
+  and a page that says what was refused and why. Names are answered or refused; no traffic is copied.
+  Not tied to one resolver: it has to sit in front of dnsmasq's upstreams, DoT through stubby, or
+  Unbound alike. **[project]**
+- **[P3] Mime — copy of the flows** — switch port mirroring to an external IDS: copy the traffic of a
+  port or a network to a host that inspects it (Suricata, Zeek); the router never judges it. The
+  software `tc mirred` path is present; whether it sees hardware-accelerated flows is the decisive
+  unknown. This is the "witness as a mirror of the flows" a tester asked for on 2026-09-20; the Rule
+  Status witness is a synthetic packet and is not this. **[project]** ↳ notes: `port-mirroring-ids.md`
+- **[P3] Unbound beside the existing resolver path** (tester, 2026-09-20) — a recursive, DNSSEC-validating
   resolver with its own cache, shipped in the image and selectable on the DNS page, with dnsmasq
   forwarding to it. Today the path is dnsmasq → the configured upstreams (the resolver health check in
   front, DoT through stubby); Merlin users bootstrap Unbound by hand through Entware. Needs the package
@@ -646,8 +657,6 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   Total/Used/Free, CPU, RAM, Operation Mode, Connections all already existed). Stock file untouched
   and still byte-pristine, so the rollback is the one SUP line. **[CLOSED 2026-09-17 — shipped in v3.1.8; see CHANGELOG.md, "System Information, native".]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P3] Switch port mirroring to an external IDS** — the software `tc mirred` path is present;
-  whether it sees accelerated flows is the decisive unknown. **[project]** ↳ notes: `port-mirroring-ids.md`
 - **[P2] Firewall table walker + Rule Status page** (owner, 2026-09-13; **shipped in v3.1.8**).
   `reaper_fwsim` walks each feature's witness packets through the live tables in kernel order and
   reports the verdict plus the deciding rule. **Advisory by design** (owner, 2026-09-16): passive and

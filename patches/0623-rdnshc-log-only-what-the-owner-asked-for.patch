@@ -1,0 +1,119 @@
+From 3516f505c6193bec3b279b352cef5d44b4eb5ef3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 20:14:13 -0400
+Subject: [PATCH] rdnshc: log only what the owner asked for
+
+One line when the check is enabled (boot or apply), one per failed probe while
+the misses count toward the threshold, one on failover, one on restore. No
+start/stop chatter, no heartbeat, nothing per hit, nothing while down.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c | 37 +++++++++++++++++-----------------
+ 1 file changed, 19 insertions(+), 18 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index e9132e770a..e008b626c0 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -25,7 +25,12 @@
+  * both files through the firmware's own writer, update_resolvconf(), which
+  * restores the stock order, and reloads again. While demoted it re-asserts
+  * the order every tick, because wan_up() and the VPN clients rewrite the file
+- * whenever they feel like it. Every transition is one syslog line.
++ * whenever they feel like it.
++ *
++ * Syslog contract (owner, 2026-09-06): one line when the check is enabled
++ * (boot or apply), one per failed probe while the misses count toward the
++ * threshold, one when a failover is triggered and one when the server is
++ * restored. Nothing else - no heartbeat, no line per hit, no line while down.
+  *
+  * NOT the ASUS "Network Monitoring" DNS probe (wanduck): that one resolves a
+  * name THROUGH the router to decide whether the WAN counts as connected, and
+@@ -302,8 +307,6 @@ int rdnshc_main(int argc, char *argv[])
+ 		}
+ 	}
+ 	cfg_read(&c);
+-	logmessage(HC_TAG, "started - LAN resolver health check %s%s%s", c.enable && *c.target ? "ENABLED, watching " : "disabled",
+-		c.enable && *c.target ? c.target : "", down ? " (adopting a demotion left by the previous instance)" : "");
+ 
+ 	while (!g_stop) {
+ 		int enabled, poll;
+@@ -311,11 +314,10 @@ int rdnshc_main(int argc, char *argv[])
+ 		enabled = c.enable && *c.target;
+ 
+ 		if (enabled != last_enabled) {
+-			if (last_enabled >= 0 || enabled)
+-				logmessage(HC_TAG, enabled
+-					? "ENABLED: %s is probed every %d s (%s, %d ms, %s reply counts); after %d misses it is moved to the end of the router's DNS list, after %d hits it is put back first; every switch is logged here"
+-					: "DISABLED: the router's DNS list is left in its stock order",
+-					c.target, c.interval, c.name, c.timeout_ms, c.strict ? "only a real" : "any", c.fail, c.recover);
++			if (enabled)
++				logmessage(HC_TAG, "DNS Health Check Enabled - watching %s every %d s (query %s, timeout %d ms, %s reply counts; fail over after %d misses, restore after %d hits)%s",
++					c.target, c.interval, c.name, c.timeout_ms, c.strict ? "only a real" : "any", c.fail, c.recover,
++					down ? " - the previous instance had already failed it over; keeping that" : "");
+ 			last_enabled = enabled;
+ 		}
+ 
+@@ -323,7 +325,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		 * demotion is in place: give the old one its place back first */
+ 		if (down && (!enabled || strcmp(watched, c.target) != 0)) {
+ 			restore();
+-			logmessage(HC_TAG, "%s put back in its stock place: %s", watched, enabled ? "a different server is being watched now" : "the health check was switched off");
++			logmessage(HC_TAG, "DNS Health Check RESTORED %s to its stock place in the router's DNS list: %s", watched, enabled ? "a different server is being watched now" : "the check was switched off");
+ 			down = 0; misses = hits = 0; since = 0;
+ 			unlink(HC_STATE);
+ 		}
+@@ -337,6 +339,8 @@ int rdnshc_main(int argc, char *argv[])
+ 
+ 		alive = probe(&c);
+ 		if (alive) { hits++; misses = 0; } else { misses++; hits = 0; }
++		if (!alive && !down)
++			logmessage(HC_TAG, "DNS Health Check: %s did not answer within %d ms (miss %d of %d)", c.target, c.timeout_ms, misses, c.fail);
+ 
+ 		if (!down && misses >= c.fail) {
+ 			int changed = 0, nup;
+@@ -344,14 +348,14 @@ int rdnshc_main(int argc, char *argv[])
+ 			nup = demote(c.target, &changed);
+ 			f_write_string(HC_STATE, c.target, 0, 0);
+ 			if (nup <= 1)
+-				logmessage(HC_TAG, "%s is NOT answering (%d misses of %d ms) - it is the only upstream in the router's DNS list, so there is nothing to fall back to; queries keep going to it", c.target, misses, c.timeout_ms);
++				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) but it is the only upstream in the router's DNS list - nothing to fall back to, queries keep going to it", c.target, misses);
+ 			else
+-				logmessage(HC_TAG, "%s is NOT answering (%d misses of %d ms) - moved to the END of the router's DNS list (%d upstreams); dnsmasq reloaded, lookups now go to the next server at once", c.target, misses, c.timeout_ms, nup);
++				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) - moved to the end of the router's DNS list (%d upstreams), dnsmasq reloaded; lookups go to the next server at once", c.target, misses, nup);
+ 		} else if (down && hits >= c.recover) {
+ 			down = 0; misses = 0;
+ 			restore();
+ 			unlink(HC_STATE);
+-			logmessage(HC_TAG, "%s is answering again (%d hits) after %ld s - put back FIRST in the router's DNS list; dnsmasq reloaded", c.target, hits, now_s() - since);
++			logmessage(HC_TAG, "DNS Health Check RESTORED: %s is answering again (%d hits) after %ld s down - back in its stock place in the router's DNS list, dnsmasq reloaded", c.target, hits, now_s() - since);
+ 			since = now_s();
+ 		} else if (down) {
+ 			/* wan_up(), a VPN client or a DNS apply may have rewritten the
+@@ -360,7 +364,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			int changed = 0;
+ 			demote(c.target, &changed);
+ 			if (changed)
+-				logmessage(HC_TAG, "%s is still not answering and the router's DNS list was rewritten in stock order - moved to the end again", c.target);
++				logmessage(HC_TAG, "DNS Health Check FAILOVER re-applied: the router's DNS list was rewritten in stock order while %s is still down - moved to the end again", c.target);
+ 		}
+ 		state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
+ 
+@@ -371,11 +375,8 @@ int rdnshc_main(int argc, char *argv[])
+ 	/* stopping (service stop, reboot, restart_rdnshc): if we adopted or made
+ 	 * a demotion, leave it recorded for the next instance rather than
+ 	 * flipping the order back and forth across a restart; a real stop of the
+-	 * feature is handled by the loop above before we get here */
+-	if (down)
+-		logmessage(HC_TAG, "stopped while %s is demoted - the order is kept and the next instance adopts it", watched);
+-	else
+-		logmessage(HC_TAG, "stopped");
++	 * feature is handled by the loop above before we get here. Silent: the
++	 * next instance logs "Enabled" and says it kept the failover. */
+ 	state_set("", 0, -1);
+ 	return 0;
+ }
+-- 
+2.25.1
+

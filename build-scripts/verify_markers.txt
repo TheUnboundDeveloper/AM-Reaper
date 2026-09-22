@@ -106,7 +106,21 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.13|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.19|1
+# v3.1.7 -- the firewall table walker: binary + static witness rows + the
+# rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
+# Missing = the Rule Status tab shows nothing and no red witness is ever logged.
+usr/bin/reaper_fwsim|walk witness packets through the live firewall tables|1
+usr/share/reaper/witness.static|LAN host reaches the WAN|1
+sbin/rc|/usr/bin/reaper_fwsim|1
+sbin/rc|firewall witnesses (advisory)|1
+usr/sbin/reaper_diag|14g. FIREWALL WITNESSES|1
+usr/sbin/httpd|no report yet|1
+www/Reaper_Firewall.asp|tab_witness|1
+# v3.1.8 -- the walker's FIFTH input: the router's own listening sockets. F7 is
+# half table, half socket, so this is the one row whose failure no walk of the
+# tables can see. Missing = a redirect with nothing bound behind it reads green.
+usr/bin/reaper_fwsim|nothing listening|1
 # v2.7.3 -- Gatekeeper learned AiMesh exists: cfg_relist infrastructure
 # exemptions (rc) + gkd's onboarding window. Missing = quarantine breaks
 # node onboarding and mesh heartbeats again.
@@ -121,6 +135,17 @@ usr/sbin/webs_update.sh|BEGIN PUBLIC KEY|1
 usr/sbin/webs_update.sh|-beta#|1
 usr/sbin/webs_note.sh|-beta.txt|1
 www/Reaper_Firmware.asp|betaChk|1
+# v3.1.1 -- LAN resolver health check (rc/rdnshc.c): the applet in rc, the System
+# page block, and the dnsmasq strict-order switch. Missing = the feature is silent.
+sbin/rc|rdnshc|1
+sbin/rc|strict-order|1
+# v3.1.4 -- the EDNS Client Subnet option was REMOVED (page, emitter, nvram
+# default, dict tokens). This line used to prove the emitter was IN rc; it now
+# proves it is OUT, so the removal cannot quietly come back with a bad merge.
+sbin/rc|!add-subnet=32,128
+# (moved 2026-09-07: the block now lives on the Failover tab; the System page
+#  must NOT carry it - see the ABSENT rules under the Failover block below)
+www/Reaper_Failover.asp|reaper_dnshc_name|1
 sbin/rc|reaper_lockrun|1
 # v2.8.9 -- Service Intercept: nat POSTROUTING return-path chain + its card
 sbin/rc|REAPER_FWM|1
@@ -224,6 +249,12 @@ sbin/rc|!nameserver/{print $2}' /tmp/resolv.dnsmasq
 usr/sbin/reaper_diag|!nameserver/{print $2}' /tmp/resolv.dnsmasq
 # v1.3.13 -- rmcpd reported as arm-gated, not as a dead switch-driven service.
 usr/sbin/reaper_diag|arm-gated|1
+# v1.3.17 -- the same correction for the switch-driven three. rtrafd, gkd and
+# rchqd are started behind !is_routing_enabled(), so on an Access Point,
+# repeater or media bridge, idle with the knob on is designed, not a fault.
+# Missing = the GT-BE19000 tester's false "rtrafd is enabled but not running"
+# WARN comes back on every non-routing box.
+usr/sbin/reaper_diag|routing-only|1
 # v3.0.5 -- the 10 Gbit/s speed-test reports. The engine is launched through
 # /usr/sbin/ookla_run (stderr KEPT per run, nice -10, argv passed through); a
 # build that drops the wrapper silently goes back to discarding the engine's
@@ -243,3 +274,176 @@ www/Reaper_Backup.asp|askAuth|1
 sbin/rc|backhaul carrier|1
 sbin/amaspark|backhaul carrier|1
 www/Reaper_Wireless.asp|parkform|1
+# v3.1.1 -- Gatekeeper/Devices "Unknown device" (owner, 2026-09-07): dnsmasq
+# lets one lease hold a hostname, so the losers of a name clash ("iPhone" x4)
+# read "*" in the lease file every Reaper name reader used. The lease-change
+# script (rc) now records the ANNOUNCED name per MAC in a tmpfs store; gkd and
+# httpd read it as the fallback, then networkmap's vendor label. The store
+# helper is in libshared; rc records, gkd/httpd read (dynstr import names).
+usr/lib/libshared.so|/var/lib/misc/reaper_hostnames|1
+sbin/rc|DNSMASQ_SUPPLIED_HOSTNAME|1
+bin/gkd|reaper_dhcpname_get|1
+usr/sbin/httpd|reaper_dhcpname_get|1
+# v3.1.1, reworded v3.1.2 -- the resolver health check takes an IPv6 server
+# (probe over the matching family, resolver-file match by value) and IDLES with
+# one log line, rather than failing the server over, when the only address it
+# has is IPv6 and IPv6 cannot carry it. v3.1.2 widened "IPv6 is disabled" to
+# "no usable IPv6" (disabled, or no address delegated by the ISP) and added the
+# IPv4 fallback, so the old wording no longer exists - this pins the behaviour,
+# not the sentence.
+sbin/rc|the check stays idle until IPv6 comes back|1
+# v3.1.1 -- the Failover tab (Administration, between System and Firmware
+# Upgrade): the resolver health check + the three dnsmasq switches moved off
+# the System page onto the native Reaper_Failover.asp. The System page must
+# no longer carry the block; httpd must know the page is native (bounce only);
+# the installed menu tree (modules/, rule 20) must list the tab.
+www/Reaper_Failover.asp|reaper_dnshc_target|1
+www/Reaper_Failover.asp|start_apply.htm|1
+www/Advanced_System_Content.asp|!reaper_dnshc_target
+www/Advanced_System_Content.asp|!rdhcApply
+usr/sbin/httpd|Reaper_Failover.asp|1
+www/require/modules/menuTree.js|Reaper_Failover.asp|1
+# v3.1.1 -- the dashboard's rail clock keeps its crimson seconds. The span that
+# carries this class is emitted at RUNTIME by /js/reaper_clock.js, so it appears
+# nowhere in the page and a v3.0.9 "orphaned style" sweep deleted the rule (owner
+# report 2026-09-07). Both copies of the topbar chrome must carry it.
+www/Main_ReaperDash.asp|rc-sec|1
+www/reaper_shell.asp|rc-sec|1
+# v3.1.1 -- Gatekeeper/Devices resolve a multi-link client through the live list's
+# mld_mac field; without it a 6 GHz client keyed by its MLD MAC reads "Wired".
+usr/sbin/httpd|mld_mac|1
+
+# v3.1.1 corrected the EDNS Client Subnet help text; v3.1.4 removed the option
+# altogether. Both the old wrong claim and the switch's own wording must now be
+# ABSENT from every staged dict - the feature is gone, not reworded.
+www/EN.dict|!still shows and filters per client
+www/EN.dict|!does not use it to pick which rules apply
+www/EN.dict|!Pass client addresses to the DNS server
+
+# v3.1.1 -- the firmware overlay hatch is a real Cancel during an upload (it
+# aborts the in-flight request while bytes are still going out, and withdraws
+# itself at 100% because from there the router may already be writing). The
+# identifier proves the machinery shipped; without it the button silently goes
+# back to only hiding the overlay while the transfer runs on.
+www/Reaper_Firmware.asp|veilCancelable|1
+# v3.1.2 -- the dashboard's idle auto-logout must READ Administration > System >
+# "Logout after ..." and must never go back to a hardcoded constant. It shipped
+# from v1.4.7 to v3.1.1 as IDLE=900000 (15 min), so a router on the shipped
+# default of 30 logged the operator out at 15, and one set to 0 (= off) was
+# logged out anyway. The .asp ships with its <% %> intact - httpd interpolates
+# on serve - so the nvram key is a literal in the staged page.
+www/Main_ReaperDash.asp|http_autologout|1
+www/Main_ReaperDash.asp|!IDLE=900000
+# v3.1.2 -- the stock pages' auto-logout is a real inactivity timer now. The
+# upstream counter was a countdown from page load that nothing reset, and 14
+# pages zeroed it and never restored it, so a session parked on Traffic Monitor
+# or the System Log never closed. state.js retires that counter and arms an
+# idle timer instead; a framed panel forwards activity to the top document via
+# reaperIdleReset rather than running a timer that would log out a busy
+# operator. Both halves must be present: the definition and the child call.
+www/state.js|reaperIdleReset|2
+# v3.1.2 -- DoT sequential failover. stubby ships round_robin_upstreams: 1,
+# which rotates every DoT server per query so a list of them shares the traffic
+# and none is a standby. The switch writes 0 for an ordered primary/standby.
+# Both halves must ship: the page switch and the parameterised writer.
+www/Reaper_Failover.asp|reaper_dot_strict|1
+sbin/rc|round_robin_upstreams: %d|1
+# v3.1.2 -- the resolver health check is IPv6-FIRST, not IPv6-only. The server
+# may carry both addresses; v6 is tried first but only when it can work, and a
+# miss needs every configured family to fail. Both halves must ship: the second
+# address field, and the daemon's skip path that costs no probe at all.
+www/Reaper_Failover.asp|reaper_dnshc_target6|1
+sbin/rc|skipping the IPv6 address|1
+# v3.1.6 -- the dashboard on a box that does not route. The Internet card used
+# to derive its verdict from wan0_state_t and the client tiles from
+# networkmap's isOnline; with no WAN of its own and no leases or conntrack
+# behind it, an Access Point painted itself red and counted zero clients while
+# sixteen stations were associated (GT-BE19000 tester, 2026-09-13). Three
+# halves must ship: the operation-mode flag both surfaces branch on, the card's
+# painter, and the collector that reads Reaper's own device store instead.
+www/Main_ReaperDash.asp|var ROUTING=|1
+www/Main_ReaperDash.asp|function paintOpmodeWan|1
+www/Main_ReaperDash.asp|function pollClientsDev|1
+# v3.1.7 -- a refused filter table (RT-BE88U, 2026-09-14): the restore asks the
+# kernel which rules it will not take (registry, then a probe alone in a scratch
+# chain) and applies the table without them; the closed blob's blocklist goes
+# through the same gate before COMMIT. Missing = one refused rule leaves the
+# boot skeleton again (no port forwards, no VPN server chains, no DoS guard).
+sbin/rc|kernel has no '|1
+sbin/rc|probed alone in a scratch chain|1
+sbin/rc|ASUS anti-botnet blocklist|1
+sbin/rc|/tmp/reaper_nf_probe.rules|1
+usr/sbin/reaper_diag|kernel registry vs|1
+# v3.1.7 -- policy routing restores only a LIVE connmark code (a flow marked for
+# a code whose rule is gone is judged again instead of falling to the WAN), and
+# the apply records a bypass it could not install yet as `pending`.
+sbin/rc|-m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark|1
+sbin/rc|skip-bypass not installed yet|1
+usr/sbin/reaper_diag|bypass record|1
+sbin/rc|declared after the first rule that jumps to them|1
+
+# v3.1.8: the native System Information page supersedes stock Tools_Sysinfo.asp.
+# The page reads the same two endpoints stock does, but PARSES them rather than
+# executing them - so the absence check is the point, not an afterthought: if a
+# future edit reintroduces dataType:'script'/eval on this page, that is a
+# regression in posture and this line fails the build.
+www/Reaper_Sysinfo.asp|ajax_sysinfo.asp|1
+www/Reaper_Sysinfo.asp|ajax_coretmp.asp|1
+www/Reaper_Sysinfo.asp|!eval(
+# the SUP redirect is what retires the stock page; without it the old URL and
+# every existing bookmark still land on the dead stock table.
+usr/sbin/httpd|tools_sysinfo.asp|1
+# v3.1.8 -- the WAN witness source is picked, not constant. 2026-09-16 field
+# report (GT-BE98): 198.51.100.7 is a TEST-NET bogon, the firehol1 feed carries
+# the bogon ranges, so every WAN row was decided by RW_DROP instead of by the
+# feature it asked about. This string is the all-candidates-claimed note.
+usr/bin/reaper_fwsim|every candidate source is in a source set|1
+# v3.1.8 -- advisory by design (owner, 2026-09-16): the text report says so, and
+# every consumer keys off mode=advisory in the JSON. If this string is gone, a
+# later edit turned the walker back into an alarm.
+usr/bin/reaper_fwsim|[advisory: information only, nothing re-applied]|1
+# 2026-09-17 -- the apply-window fixes (private notes: apply-window-watchdog-fight.md).
+# One restart_qos;restart_firewall on the owner's RT-BE96U had three Reaper layer
+# applies, hook.sh, the out-of-tree DNS carve-out watcher and rwatch fighting for
+# FORWARD position 1 for fifty seconds. hook.sh now computes WHERE to pin instead
+# of assuming 1; the Warden heal re-checks under the lock via heal.sh; Gatekeeper
+# lets router-redirected DNS through; the rules engine gates an intercept on the
+# resolver health check (REAPER_FWHC); rwatch 3c confirms on a second tick.
+# Missing = that fix is not in the image. The L4S toggle and the WMM downstream
+# stamp were REMOVED the same day (L4S never accepted by the traffic manager on
+# the validated port; the stamp halved Wi-Fi throughput on metal) - the three
+# negative lines block either from creeping back.
+sbin/rc|_front_pos|1
+sbin/rc|/tmp/rwarden/heal.sh|1
+sbin/rc|--ctorigdstport 53|1
+sbin/rc|REAPER_FWHC|1
+www/Reaper_QoS.asp|!tg_l4s
+www/Reaper_QoS.asp|!tg_wmm
+sbin/rc|!qos_dscp_wmm
+sbin/rc|checking again next tick before acting|1
+# 2026-09-17 (later) -- the r4 boot lost 2 of 126 Gatekeeper rules to a
+# concurrent iptables writer (no xtables lock, ~200 unchecked adds); one was an
+# internet-only device's RETURN, so it had no internet. Every add in the
+# Gatekeeper and Warden apply scripts is now retried once and counted, gkd
+# re-applies on a non-zero count, the rules engine writes its resolver gate for
+# the armed candidate too, and the walker picks its WAN-bound witness address
+# from a candidate list so a DoH block on 1.1.1.1 no longer paints 24 reds.
+sbin/rc|rule add failed twice|1
+bin/gkd|failed to load in the last apply|1
+usr/bin/reaper_fwsim|every candidate destination is in a destination set|1
+# 2026-09-17 (field, evening) -- DoS protection reported "not enabled when
+# toggled on": the setting was shown as the state. The status feed now carries
+# dos_armed, the walker has H1b (is the WAN actually jumping to SECURITY), and
+# the Dashboard's own rail marks the Dashboard item current.
+usr/sbin/httpd|dos_armed|1
+usr/bin/reaper_fwsim|DoS protection: the SECURITY guard is hooked on the WAN|1
+www/Main_ReaperDash.asp|href="/Main_ReaperDash.asp" class="on"|1
+# 2026-09-17 (field, re-cut) -- Policy Routing became FIRST-MATCH-WINS: a broad
+# source rule used to silently overwrite the verdict a specific ipset rule had
+# already set, because MARK does not terminate a chain and --set-xmark
+# overwrites. Every selector rule is now guarded on an unset mark. Rule Status
+# also names the stand-in addresses it walks with - a tester read one of them as
+# a real device on their network twice.
+sbin/rc|pbr_rule iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/|1
+sbin/rc|pbr_rule ip6tables -t mangle -A REAPER_PBR -m mark --mark 0x0/|1
+www/Reaper_Firewall.asp|wt_synth|1

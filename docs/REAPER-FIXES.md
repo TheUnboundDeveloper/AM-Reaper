@@ -1,6 +1,6 @@
-# RT-BEXXU "reaper" — Hardened Build Fix List
+# RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -20,21 +20,21 @@
 > it was **built and shipped in v1.7.5 (2026-07-24)**, class-fixing every `openssl passwd` sink. See
 > the C6b row below.
 
-Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BEXXU**.
+Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
 - **Base version:** 3006.102.8_beta2
 - **Custom version string:** the base-firmware security hardening catalogued here landed in **v1.0** and is carried through the current **v2.7.6** source rung (newest published **v2.7.3**). Most later versions added features and de-cloud removals rather than new *stock-firmware* findings, with two exceptions: **C6b**, a `libpasswd/passwd.c` twin of C6 that surfaced during ASUS PSIRT coordination on 2026-07-23, was class-fixed and **built + shipped in v1.7.5** (2026-07-24); and **v2.0.0**'s inherited-code audit (AUDIT-2) surfaced and fixed fresh *stock-firmware* findings in the ASUS/Merlin-authored userspace — a stored-XSS chain from a device-supplied DHCP hostname into several admin views, a USB volume-label root command-injection at auto-mount, and an IPsec-profile CGI stack overflow — the first new base-firmware findings since C6b; the security work since v1.0 — post-feature injection re-audits, the v1.4.3 / v1.4.4 security-review remediation of Reaper-introduced changes, v1.4.5 exploit-mitigation build hardening (FORTIFY + stack-protector-strong + PIE + full-RELRO on the Reaper daemons), the injection-safe design of the v1.5.0 network-diagnostics tools (fixed-argument exec, never a shell), the **v1.6.0** defense-in-depth pass on the Reaper daemons (CR/LF + dotted-quad validation of the Advisor session-file client value, `lan_ifname` validation before the boot-sweep `iptables` call, plus a `popen` fd/child-leak fix and full allocation-NULL hardening in `rmcpd`/`rtrafd`), the **v1.7.1** remediation of the post-Gatekeeper audit round (2026-07-21 — Wireless-diagnostics CSRF guard, Gatekeeper device-list race + MAC validation, and related hardening), the **v1.7.5** class-closure of C6 across every `openssl passwd` sink (**C6b**, ASUS PSIRT case 1006563), the **v1.8.0a** Reaper Warden threat/geo firewall + Samba **4.15.13a** CVE-2025-9640 backport, the large multi-agent **audit-remediation arc** (73 verified findings closed across v1.8.2–v1.8.6), the v1.8.7/v1.8.8 Warden IPv6 + anti-lockout hardening plus the default-on `rwatch` health watchdog, and the **v2.0.0** two-audit security milestone (a full re-review of all Reaper-authored code and of the inherited ASUS/Merlin open source, every finding fixed with no critical or high left open) — is summarized in [`CHANGELOG.md`](CHANGELOG.md). The v1.0 image details below are the record of when these base-firmware fixes shipped.
-- **Branch:** `BEXXU-only` (local only — never pushed upstream)
-- **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BEXXU 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
-- **Build target / applicable model:** at v1.0, **RT-BEXXU only** — the tree was stripped to the RT-BEXXU (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware. *(Currency note: the sibling BCM4916 models — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro — are built from per-model branches; the full five-model fleet is published at **v2.7.3**, both variants each (through the public clean-room CI pipeline). The newer BCM6765 **RT-BE92U** ships as experimental prereleases through v2.7.6. Because these fixes are in shared source, every model carries them; RT-BEXXU remains the primary, hardware-validated build.)* The "Model" column reflects what this build delivers.
+- **Branch:** `be96u-only` (local only — never pushed upstream)
+- **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BE96U 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
+- **Build target / applicable model:** at v1.0, **RT-BE96U only** — the tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware. *(Currency note: the sibling BCM4916 models — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro, and from v3.1.4 the GT-BE19000 — are built from per-model branches; the five-model fleet has been published since **v2.7.3**, both variants each (through the public clean-room CI pipeline). Because these fixes are in shared source, every model carries them; RT-BE96U remains the primary, hardware-validated build.)* The "Model" column reflects what this build delivers.
 
-> Scope note: a few items are present in the source but **not compiled/active** in the RT-BEXXU build (gated off by config). They were fixed defensively where cheap, and are flagged below.
+> Scope note: a few items are present in the source but **not compiled/active** in the RT-BE96U build (gated off by config). They were fixed defensively where cheap, and are flagged below.
 
 ---
 
 ## Summary
 
-| Severity | Fixed | Deferred (design decision) | Not in BEXXU build |
+| Severity | Fixed | Deferred (design decision) | Not in BE96U build |
 |---|---|---|---|
 | Critical | C1 C2 C3 C4 C5 C6 C6b C7 C8 (9) | — | — |
 | High | H1 H2 H5 H6 H7 H8 H9 H10 H11 H12 H13 H14 (12) | H15 | H3, H4 (and H5 — fixed defensively but its TR069/TR181 opt-125 path is likewise not compiled; counted under Fixed, also listed in "Not present in build" below) |
@@ -42,7 +42,7 @@ Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BEXXU**.
 | Low | L1 L2 L3 L4 L5 (5) | — | — |
 | Internal | N1 N2 N3 N4 (IPsec shell sinks) | — | — |
 
-Every Critical/High/Medium/Low present in the RT-BEXXU-built source is fixed except the three deferred design items (H15, M20, M21). **C6b** (`libpasswd/passwd.c` twin of C6) was drafted during ASUS PSIRT coordination on 2026-07-23 and **built + shipped in v1.7.5** (2026-07-24), class-fixing every `openssl passwd` sink (see the header note and the C6b row below); the Critical row above lists it as the ninth Critical finding.
+Every Critical/High/Medium/Low present in the RT-BE96U-built source is fixed except the three deferred design items (H15, M20, M21). **C6b** (`libpasswd/passwd.c` twin of C6) was drafted during ASUS PSIRT coordination on 2026-07-23 and **built + shipped in v1.7.5** (2026-07-24), class-fixing every `openssl passwd` sink (see the header note and the C6b row below); the Critical row above lists it as the ninth Critical finding.
 
 Bundled third-party **package CVE backports** (avahi 0.8 mDNS DoS — CVE-2023-38469/-38470/-38473) are tracked in the [Package CVE backports](#package-cve-backports--bundled-system-libraries-2026-07-05) section. Items that are **still open and must be worked** (known-vulnerable EOL libraries, the closed-source blob auth boundary) plus the **abandoned AiCloud set** (disabled by decision, pending removal) and lower-priority latent hardening are catalogued with severities in [Open security items still requiring work](#open-security-items-still-requiring-work-2026-07-05) at the end of this file.
 
@@ -52,7 +52,7 @@ Rounds 1–2 (C/H/M/L/N above) audited the stock ASUS/Merlin userspace for the b
 
 ## Fixes
 
-All rows apply to **RT-BEXXU**. "Commit" is the short hash on `BEXXU-only`.
+All rows apply to **RT-BE96U**. "Commit" is the short hash on `be96u-only`.
 
 ### Critical
 | ID | Component | Fix | Commit |
@@ -78,7 +78,7 @@ All rows apply to **RT-BEXXU**. "Commit" is the short hash on `BEXXU-only`.
 | H8 | rc/usb.c | DLNA `dms_friendly_name` NULL deref — `nvram_safe_get` | e0b01476c8 |
 | H9 | rc/snmpd.c | SNMPv3 `createUser` field injection — sanitize user/passwords | cbbbb83db3 |
 | H10 | shared/nvparse.c | port/filter `desc` format strings — `"%s"` | 50d6fe9a59 |
-| H11 | shared/misc.c | `set_crt_parsed` cert-accumulation overflow — bounded (**note: the vulnerable `buffer[8000]` `#else` branch is `#ifdef`-excluded on the NAND/UBIFS RT-BEXXU — LATENT on this image, DIRECT on stock models built without a JFFS2/UBIFS/JFFS macro; see PoC dossier §4.2**) | 7f831fa82a |
+| H11 | shared/misc.c | `set_crt_parsed` cert-accumulation overflow — bounded (**note: the vulnerable `buffer[8000]` `#else` branch is `#ifdef`-excluded on the NAND/UBIFS RT-BE96U — LATENT on this image, DIRECT on stock models built without a JFFS2/UBIFS/JFFS macro; see PoC dossier §4.2**) | 7f831fa82a |
 | H12 | shared/mtlan_utils.c | `get_vpns_iprange` NULL deref — guard each `strpbrk` | e9f2c88ef6 |
 | H13 | shared/wlif_utils.c | `wl_wlif_save_wpa_settings` negative-index write — clamp index | 28e7ebc511 |
 | H14 | shared/mtlan_utils.c | `cpN_local_auth_profile` missing NUL-term — `strlcpy` | e9f2c88ef6 |
@@ -146,12 +146,12 @@ two rounds did not reach.
 | M20 | shared/shutils.c | `enc_str`/`dec_str` are a keyless bit-shift "encryption". In this tree their **only** caller is a debug `_dprintf` in `rc/rc.c` — they don't protect any production secret (real credential storage uses the `pw_enc`/`spwenc.o` blob). **Decision: keep** — replacing it breaks stored values for no practical gain. |
 | M21 | shared/shutils.c | `generate_wireless_key` derives a default WiFi key from the (public) MAC. It has **zero callers in the buildable source** (dead code), and the live default-key path is already mitigated by forced first-boot setup. **Decision: keep.** |
 
-## Not present in the RT-BEXXU build (no action needed)
+## Not present in the RT-BE96U build (no action needed)
 | ID | Reason |
 |---|---|
-| H3, H4 | `multi_wan.c`/`multi_wan_ipv6.c` gated on `RTCONFIG_MULTIWAN_IF` (off for BEXXU). Fixed defensively in commit 433d008797. |
+| H3, H4 | `multi_wan.c`/`multi_wan_ipv6.c` gated on `RTCONFIG_MULTIWAN_IF` (off for BE96U). Fixed defensively in commit 433d008797. |
 | H5 | TR069/TR181 opt-125 path not compiled (`RTCONFIG_TR069/TR181` off). Fixed defensively. |
-| M22 | DSL-AX82U "optus" branch (`case MODEL_DSLAX82U` / `#if defined(DSL_AX82U)`) — not the BEXXU model. |
+| M22 | DSL-AX82U "optus" branch (`case MODEL_DSLAX82U` / `#if defined(DSL_AX82U)`) — not the BE96U model. |
 
 ## Coverage gap (not source-auditable)
 Prebuilt binary blobs (`networkmap`, `wlceventd`, `asd`, `libbcm`, `pw_enc`/`spwenc.o`, `cfg_mnt`, login token-cookie generator) ship without source and were not assessed — would require binary reverse engineering.
@@ -160,7 +160,7 @@ Prebuilt binary blobs (`networkmap`, `wlceventd`, `asd`, `libbcm`, `pw_enc`/`spw
 
 ## Audit round 4 — self-review of reaper-introduced changes (2026-07-04)
 
-After the UI "flip", the Hardware-QoS feature, and hardening rounds 1–3, the **reaper-authored diff** was re-reviewed for security issues introduced by *our own* changes (not stock code). Two real defects and two defense-in-depth gaps were found and fixed. Fixes are in commit `994724f10f`; image `RT-BEXXU_3006_102.8_reaper_nand_squashfs.pkgtb` sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
+After the UI "flip", the Hardware-QoS feature, and hardening rounds 1–3, the **reaper-authored diff** was re-reviewed for security issues introduced by *our own* changes (not stock code). Two real defects and two defense-in-depth gaps were found and fixed. Fixes are in commit `994724f10f`; image `RT-BE96U_3006_102.8_reaper_nand_squashfs.pkgtb` sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
 
 | ID | Severity | Component | Issue | Fix | Commit |
 |---|---|---|---|---|---|
@@ -216,7 +216,7 @@ merge surface. See `GPL-MERGE.md` for the full design and merge procedure.
   SPA-bundle files (`RWD_UI/rwd_component.css`, `SDN/sdn.css`, `SDN/mlo.css`)
   followed on 2026-07-05 (commit `19e6d7e44f`, recolors relocated to sections
   17-19). The SPA's runtime theme-variant CSS injection turned out to be gated
-  on the WHITE/ROG/TUF themes — the RT-BEXXU runs the default (empty) theme, so
+  on the WHITE/ROG/TUF themes — the RT-BE96U runs the default (empty) theme, so
   those variant files never load and the httpd-injected `reaper_content.css` is
   the last/winning stylesheet on the SPA. The SDN/MLO SPA theme spot-check is
   part of the ongoing on-device validation of the flashed image.
@@ -298,14 +298,14 @@ pre-auth defect in the default configuration.
 ---
 
 ## Verification
-Each changed file was compiled with the real RT-BEXXU userspace toolchain (gcc-10.3, 32-bit ARM) and confirmed to build clean with no new warnings at the edit sites; `rc_ipsec.c` additionally passed a warning-diff vs the pre-hardening baseline. The **round-4** fixes were validated by a full end-to-end `make rt-BEXXU` (MAKE_EXIT=0, "Done! Image 96813GW has been built"), with all four changes confirmed present in the staged rootfs (`web.c`/`qos.c` recompiled into httpd/rc; both www edits in the minified `fs/www`), plus the mock-router XSS round-trip above. Image sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
+Each changed file was compiled with the real RT-BE96U userspace toolchain (gcc-10.3, 32-bit ARM) and confirmed to build clean with no new warnings at the edit sites; `rc_ipsec.c` additionally passed a warning-diff vs the pre-hardening baseline. The **round-4** fixes were validated by a full end-to-end `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"), with all four changes confirmed present in the staged rootfs (`web.c`/`qos.c` recompiled into httpd/rc; both www edits in the minified `fs/www`), plus the mock-router XSS round-trip above. Image sha256 `c76aac232b2eca251403640c02ccc7bb0426d4fe763fabc97547727d16a3d8fa`.
 
-The **avahi CVE backport** was validated by a full `make rt-BEXXU` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libavahi-core`, `libavahi-common` and `avahi-daemon` recompiled and relinked with no errors, and all three source hunks are staged. Interim avahi-validation build sha256 `07c86c4cc7ac6931a3abdf03f17a25d96324ed85294193755fb24d354cae73e5` (the combined image actually flashed to metal on 2026-07-05 is `b81e482c…`, per the avahi status note above).
+The **avahi CVE backport** was validated by a full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libavahi-core`, `libavahi-common` and `avahi-daemon` recompiled and relinked with no errors, and all three source hunks are staged. Interim avahi-validation build sha256 `07c86c4cc7ac6931a3abdf03f17a25d96324ed85294193755fb24d354cae73e5` (the combined image actually flashed to metal on 2026-07-05 is `b81e482c…`, per the avahi status note above).
 
-The **latent buffer hardening (T1-T4, commit `f9c6d316e7`)** was validated by a full `make rt-BEXXU` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libcodb`, `rc` (udhcpc/qos) and `libshared` recompiled with **zero errors and no new warnings at any edited line** (the surviving `strncat` "bound equals source length" warnings are pre-existing on the untouched string-literal calls). Current release image sha256 `b81e482cb3e027b1e7980b8376dda9d181a75532d75dc9cd200607b02de96e51` (loader `34eb84ff1f9a73740cdbbf687c4921f46f00cf3a2a983d06e94b5de6860ea240`).
+The **latent buffer hardening (T1-T4, commit `f9c6d316e7`)** was validated by a full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `libcodb`, `rc` (udhcpc/qos) and `libshared` recompiled with **zero errors and no new warnings at any edited line** (the surviving `strncat` "bound equals source length" warnings are pre-existing on the untouched string-literal calls). Current release image sha256 `b81e482cb3e027b1e7980b8376dda9d181a75532d75dc9cd200607b02de96e51` (loader `34eb84ff1f9a73740cdbbf687c4921f46f00cf3a2a983d06e94b5de6860ea240`).
 
 **On-metal (2026-07-05):** image `b81e482c` was flashed to the physical
-RT-BEXXU and is running in working order — no debug-category log issues. This
+RT-BE96U and is running in working order — no debug-category log issues. This
 is the first on-metal confirmation of the T1-T4 + avahi build; none of the
 defensive C edits broke runtime behavior. Per-feature spot-checks continue over
 time: Traffic Analyzer / app-stats pages (libcodb SQL builder, T1), a QoS rule
@@ -313,14 +313,14 @@ with an IP range (T2), DHCP domain/search rendering (T4), mDNS `.local`
 discovery (avahi), and theme at all page depths (SDN/MLO SPA).
 
 The **v1.0 audit fixes (R5-1/R5-2, commit `52afc5436f`)** were validated by a
-full `make rt-BEXXU` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `rc`
+full `make rt-be96u` (MAKE_EXIT=0, "Done! Image 96813GW has been built"): `rc`
 (`qos.o`) recompiled and both www edits staged into the minified `fs/www`. The
 final **v1.0 release image** is sha256
 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader
 `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`) — the image
 distributed as the v1.0 GitHub release. Both Hardware QoS engines (v1 `qos_type=10`
 global and v2 `qos_type=11` Classful) were validated end-to-end on the physical
-RT-BEXXU through 2026-07-07 (queue programming, class-mark → hardware-queue
+RT-BE96U through 2026-07-07 (queue programming, class-mark → hardware-queue
 steering, priority order, accelerator stays on).
 
 ---
@@ -637,3 +637,38 @@ outbound TLS working, the router certificate unchanged across the flash.
 
 Residual: the closed binaries still present the 1.1 API surface to the shim, so any 1.1-specific behaviour
 they rely on is emulated rather than removed. Nothing else in the tree links 1.1.
+
+
+## Security review 2026-09-12 — sixteen items, re-verified and remediated (v3.1.5)
+
+An independent adversarial review (source, CVE delta since 2026-08-30, read-only observation of a live
+v3.1.3 RT-BE96U) delivered fourteen ranked items with proposed patches, and the owner added two field
+reports. Every item was re-verified against the canonical source before anything changed; the proposals
+were applied where they were right and replaced where they were not. Severity is the review's own
+(consequence when the feature is on), not a CVSS.
+
+| # | Sev | Item | Decision | What landed |
+|---|---|---|---|---|
+| R01 | Critical when on | netatalk 3.0.5 `dsi_writeinit()` ignores the destination size — CVE-2022-43634, pre-auth RCE with Time Machine on | **Fixed.** Confirmed in code (`libatalk/dsi/dsi_write.c`, callers in `fork.c`, `uam.c`, `desktop.c`, `afp_dsi.c`); the 08-30 check that called it absent was wrong | The reviewer's 3.0.5 adaptation of the vendor fix: lengths validated before any arithmetic, copies bounded by `buflen`, the remainder of an over-long write kept in the command buffer and delivered by the next `dsi_write()` (dropping it would misalign the stream), `dsi_writeflush()` discards it locally. Two `size_t` fields appended to `DSI`; the package rebuilt cold |
+| R02 | High when on | strongSwan 6.0.4 `identification_t.clone()` shares an empty non-NULL encoding — CVE-2026-47895, IKEv2 EAP peer | **Fixed.** Vendor patch (6.0.2–6.0.6 series) applied verbatim | `identification.c` clones unconditionally (`chunk_clone` of an empty chunk is `chunk_empty`); the vendor's test added |
+| R03 | High when on | Tor 0.4.9.11 misses the 2026-09-08 security release; Reaper sets `AutomapHostsOnResolve` (TROVE-2026-036) | **Fixed.** 0.4.9.12 — both tarballs' SHA-256 matched dist.torproject.org; the diff applied clean to the tree, no local modifications in the 59 files | Cold reconfigure forced (`configure`/`orconfig.h.in` changed) |
+| R04 | High | A Killswitch/enable toggled inside the Policy Routing confirm window was lost: `reaper_pbr_regen()` stepped aside, Keep promoted the stale candidate, the deadline ran a stale recovery | **Fixed, differently.** The proposal also refused Keep on `E_PARTIAL`, which changes what a partial load has meant since v3.0.5 | While armed, regen now rebuilds the recovery script from lastgood AND the candidate from the draft, re-runs the candidate under a new `reaper_pbr` lock (apply takes it too), leaves token and deadline alone; a hard failure rolls back as apply would |
+| R05 | High (hardware-dependent) | A full WireGuard bypass table returned success | **Fixed, differently.** The proposal `exit 1`-ed the generated script at the first bypass failure — before the ip rules and the PREROUTING jump — so a full table would have removed ALL policy routing on every reassert, silently, and killed PBR outright on a model without the proc file | A bypass that cannot be installed counts as a failed rule (`NFAIL`, exit 2 → `E_PARTIAL`, the cause named), the "bypass is in place" line is suppressed, an unknown LAN network counts too |
+| R06 | High for the intended policy | A rule on a geo or MAC object matched nothing while reading Active; a group never had a set either | **Fixed, extended.** The proposal refused the whole apply on the first unsupported object | The engine resolves the name: host/cidr/range/fqdn as before; a **group expands into its usable members** (one mark rule each); geo, MAC, unknown → the rule is dropped with the reason in syslog. The page no longer offers geo/MAC objects |
+| R07 | High potential | `ip rule add` unchecked; `expect_rules` counted the LIVE rules, so a failed add matched its own absence; IPv6 never healed | **Fixed, differently.** The proposal also rolled apply back on rc 2 (same E_PARTIAL semantics change as R04) | `pbr_route` wrapper counts intended v4/v6 rules and names failures; `expect_rules` / `expect_rules6` are the intended counts; the v6 half is checked only while IPv6 is enabled; rwatch heals per family. The static-check contract (`pbr-fwmark-regex`) updated for the removed live-count site |
+| R08 | High operational | `prune_releases.sh` planned to delete every release on an empty/comment-only manifest | **Fixed, differently.** The proposal was a Python rewrite that re-fetched the whole inventory before each deletion; the owner runs this from Git Bash | The bash script asserts every invariant (records present, stable line parses, referenced releases exist, a previous stable exists, keep ≥ 2, never delete all, gh list not truncated) and refuses with a message; `set -e -u` without pipefail, deliberately. `tests/test_prune_releases.py`: six unusable inputs refused, no `gh` mutation reachable |
+| R09 | High (accepted) | Update signatures unenforced | **Recorded, not reopened** | — |
+| R10 | Medium | Advisor: `SSL_accept()` ran before the 20 s read clock; SO_RCVTIMEO bounds one read, not the handshake | **Fixed.** The proposal's `shutdown()` in the signal handler is unnecessary — EINTR already fails the accept in mssl; and its close-path claim was wrong (mssl never closes the socket) | Clock armed before the wrap; both wrap failures close the fd |
+| R11 | Medium | avahi CNAME assertion/recursion crashes (CVE-2025-68468, -68471, CVE-2026-24401), default-on | **Fixed.** The three upstream commits verbatim | `browse.c`: assertion removed, `lookup_start` returns instead of asserting, CNAME loop detection |
+| R12 | Medium when on | lighttpd 1.4.39 folded-header append reallocates a value that `http_content_type` / `http_if_modified_since` / `http_if_none_match` / `http_range` alias — CVE-2018-25103 | **Fixed.** Upstream's fix restructures the parser (df8e4f95) and does not apply to 1.4.39; the reviewer's minimal equivalent was taken with one simplification | Aliases noted before the append, rebound after |
+| R13 | Medium when writable | net-snmp SET with an ASN_NULL varbind reaches handlers without type checks — CVE-2022-44792/-44793 | **Fixed.** Upstream commit be804106 verbatim | `handle_pdu()` rejects with wrongType before dispatch |
+| R14 | Low | Status column is configuration-derived | **Not taken** — the replacement text was the prose the Merlin reviewer had just asked to remove; recorded in the backlog as an owner decision | — |
+| R15 | Field | RT-BE88U port forwards gone since v3.1.0 | **Not a confirmed defect.** Nothing in the v3.0.0→v3.1.0 rc/shared delta touches the path; the reporter's `-L PREROUTING \| grep` cannot see the VSERVER chain; the emitter, executed on the host against the reporter's exact rules, emits the three DNAT lines. Data requested (BACKLOG) | The harness found a separate defect: a space-stripped `80-jACCEPT` passed the charset gate and would abort the whole atomic nat restore (MASQUERADE included). `_fw_ports_ok()` drops and names such a rule. Plus reaper_diag 14f and release check 24 (`vts-emitter`) |
+| R16 | Field | OpenVPN server certificate regeneration fails at the signing stage after the morning's AKID fix | **Fixed.** `openssl` 3.x exits non-zero when it cannot write its RANDFILE (`apps/openssl.c`, `app_RAND_write()`); easy-rsa's config points it at `$ENV::HOME/.rnd` and rc runs with `HOME=/` — the read-only root. The CSR was written, `openssl ca` never ran | Both generated scripts export `HOME` as the key directory. Release check 23 (`ovpn-pki`) now runs the staged PKI chain under qemu on every build |
+
+The reviewer's own verification note stands: "source-confirmed" means the trigger was traced in code and,
+for R04–R08 and R10, reproduced in an isolated harness — not exercised on hardware. The generator harness
+was re-run against the remediated engine: a failed `ip rule add` now exits 2 with `expect_rules` at the
+intended count, a full bypass table exits 2 with the cause logged, a geo object and a missing object drop
+their rule with the reason, and a group of four objects expands into its two usable members. The per-fix
+hardware items are in `BACKLOG.md`.

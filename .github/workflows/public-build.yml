@@ -22,9 +22,21 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # All six models are selectable. The five BCM4916 models have completed a
-      # green clean-room build as of 2026-08-10; RT-BE92U (BCM6765) was wired into
-      # the same pipeline at v2.7.6 and builds through the same path.
+      # Five models are selectable, all BCM4916, all with a completed green
+      # clean-room build as of 2026-08-10.
+      #
+      # RT-BE92U (BCM6765) was wired into this pipeline at v2.7.6 and RETIRED
+      # from the roster after v3.1.2 (owner, 2026-09-10): upstream Merlin has
+      # taken that model on, so there is no reason for a second build of it. Its
+      # source is left DORMANT, not deleted - the rt-be92u branch, its worktree,
+      # overlays/RT-BE92U.patch and the fifteen provenance entries recording what
+      # it actually shipped all stay, and the per-model tables in build-scripts
+      # keep their entries so it can be built by hand if it is ever wanted back.
+      # What is gone is the roster: it is not offered here, not in `all`, not
+      # ported by cut_fleet, and not passed to refresh_manifest - which, because
+      # that script merges per model, leaves its existing update lines frozen at
+      # v3.1.2-beta rather than withdrawing them from fielded boxes.
+      # Its replacement is the GT-BE19000, which joined the roster 2026-09-12.
       #
       # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
@@ -49,19 +61,25 @@ on:
       # banner is absent or a foreign one is present, so that failure mode cannot
       # repeat silently.
       #
-      # 'all' fans out to every model. Combined with variant=both that is 12
-      # concurrent jobs of ~1.5 h each -- within the 20-job limit for public
-      # repos, and fail-fast is off below so one model dying does not cancel
-      # the other five.
+      # 'all' fans out to every model on the roster. Combined with variant=both
+      # that is 10 concurrent jobs of ~1.5 h each -- within the 20-job limit for
+      # public repos, and fail-fast is off below so one model dying does not
+      # cancel the other four.
       model:
         description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        # RT-BE92U (BCM6765 / 96765GW) is experimental: it now builds with the fleet
-        # in `all` (12 jobs) and can also be dispatched on its own, but it is ALWAYS
-        # published as a prerelease (see release.yml), so it never lands as a standard
-        # release alongside the five BCM4916 models.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, RT-BE92U, all]
+        # `all` is the six BCM4916 models x two variants = 12 jobs.
+        # RT-BE92U is retired from the roster (see the note above) and is
+        # deliberately not selectable here.
+        # GT-BE19000 joined the roster 2026-09-12, once the three things a CI job
+        # needs existed: the branch ported to the current rung (shared-parity),
+        # overlays/GT-BE19000.patch (its first identity overlay, 12 files), and
+        # overlays/GT-BE19000-platform.tar.gz -- the pinned upstream does not carry
+        # router-sysdep.gt-be19000, exactly as it does not for GT-BE98.
+        # It still publishes only as a prerelease (release.yml): the model builds and
+        # verifies, but no hardware has run an image.
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -116,7 +134,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.1.0'
+    ${{ inputs.version == '' && 'Reaper_v3.2.3'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -231,7 +249,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -339,6 +357,14 @@ jobs:
             if [ -f "${OS%.tar.gz}.sha256" ]; then echo "  ok   $OS ($(stat -c%s "$OS") bytes) + sha256"
             else echo "::error::$OS has no sha256 sidecar"; rc=1; fi
           fi
+          # The vendor WLCSM blob pair (stock 42015) reaches every model's
+          # router-sysdep.* from this archive; without it a sibling would build
+          # with the leaking libraries and nothing later would say so.
+          BL=reaper/overlays/wlcsm-42015-blobs.tar.gz
+          if [ -f "$BL" ]; then
+            if [ -f "${BL%.tar.gz}.sha256" ]; then echo "  ok   $BL ($(stat -c%s "$BL") bytes) + sha256"
+            else echo "::error::$BL has no sha256 sidecar"; rc=1; fi
+          else echo "::error::$BL is missing -- the WLCSM vendor blobs would not reach the build"; rc=1; fi
           exit $rc
 
       - name: Restore pinned toolchains
@@ -393,6 +419,7 @@ jobs:
             -e BASE_COMMIT="$BASE_COMMIT" \
             -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
             -e EXPECTED_VERSION="$EXPECTED_VERSION" \
+            -e REAPER_BETA="${{ github.ref == 'refs/heads/Dev' && '1' || '0' }}" \
             -e MODEL="${{ matrix.model }}" \
             -e VARIANT="${{ matrix.variant }}" \
             -e REPO_DIR=/work/reaper \
@@ -486,20 +513,39 @@ jobs:
           # EXPECTED_VERSION is e.g. "Reaper_v2.3.7"; tags are "v2.3.7-<MODEL>".
           V="${EXPECTED_VERSION#Reaper_}"
           # Dev = the beta channel. Same build, same series, same everything --
-          # only the published NAME differs: "-beta" is appended to the version
-          # segment of every tag/release (v3.0.0-beta-RT-BE96U) and release.yml
-          # marks it pre-release (both by the explicit input below and by its
-          # own *beta* match). Asset FILENAMES keep the built version string;
-          # the beta identity lives in the tag, the release name and the
-          # pre-release flag. A beta re-spin of the same version follows the
-          # normal re-release path: delete the beta tag or dispatch release.yml
-          # with allow_republish.
+          # only the NAME differs: "-beta" is appended to the version segment of
+          # every tag/release (v3.1.4-beta-RT-BE96U) and release.yml marks it
+          # pre-release (both by the explicit input below and by its own *beta*
+          # match).
+          #
+          # 2026-09-10: THE ASSET FILENAME NOW CARRIES IT TOO. This used to read
+          # "asset FILENAMES keep the built version string; the beta identity
+          # lives in the tag, the release name and the pre-release flag" -- and
+          # that was the reported problem: all three of those live on the web
+          # page, so once the .pkgtb was on disk nothing distinguished a Dev
+          # download from a main one. The build now stamps _BETA into EXTENDNO
+          # (build-scripts/ci/container_build.sh, driven by the REAPER_BETA env
+          # passed to the container), so the image is named
+          # ..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb and the router's own
+          # version string agrees with it.
+          #
+          # NOTE the two spellings are deliberate and are NOT the same field:
+          # the TAG segment stays "-beta" (lowercase, hyphen) because that is
+          # what release.yml parses and what keeps beta tags sortable next to
+          # final ones; the FILE token is "_BETA" (uppercase, underscore)
+          # because reaper_webs_update.sh truncates the running version at the
+          # first underscore and a hyphen would land inside the number it
+          # parses. release.yml translates between them.
+          #
+          # A beta re-spin of the same version follows the normal re-release
+          # path: delete the beta tag or dispatch release.yml with
+          # allow_republish.
           if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
             V="$V-beta"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -552,7 +598,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","RT-BE92U"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -564,7 +610,7 @@ jobs:
   # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
   # matrix. The on-router update check reads updates/manifest_3006.txt (and the
   # notes viewer updates/notes/Reaper_v<ver>.txt); those were only ever written
-  # by build-scripts/stage_release.ps1 (the local ship flow), so a version
+  # by the maintainer's stage_release.ps1 (private tooling, outside this repo), so a version
   # published through this CI hand-off shipped as releases while the manifest
   # still advertised the previous one and the router reported "up to date".
   # This job closes that gap by regenerating the discovery files from the
@@ -646,7 +692,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO RT-BE92U"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
           else
             export MODELS="$MODELSEL"
           fi

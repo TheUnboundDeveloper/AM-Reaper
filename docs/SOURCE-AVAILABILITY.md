@@ -1,6 +1,6 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
@@ -25,7 +25,7 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Tag: `3006.102.8-beta2`
    - Commit: **`a7ebfa133a`**
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
-     model — RT-BEXXU / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / RT-BE92U — from
+     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -38,7 +38,10 @@ GPL-covered portions of any Reaper build is, deterministically:
 Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
-OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). That
+OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
+unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
+`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the image.
 
@@ -88,8 +91,8 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 ## 3. Getting a build
 
 Reaper firmware images are **publicly hosted in this GitHub repository.** A
-flashable build for every model in the ASUS RT-BE Series (RT-BEXXU / RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro, plus the experimental RT-BE92U) is published two ways:
+flashable build for every model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U /
+RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease) is published two ways:
 
 - the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
   page — one per-model release per version (`v<version>-<MODEL>`), each carrying

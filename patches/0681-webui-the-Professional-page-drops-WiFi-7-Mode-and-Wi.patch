@@ -1,0 +1,476 @@
+From 4a4a8039ca731da576d8f2d2e1637459d1e207c0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 18 Sep 2026 11:29:58 -0400
+Subject: [PATCH] webui: the Professional page drops WiFi 7 Mode and Wireless
+ Mode
+
+Both rows were per RADIO on a page that writes wl<unit>_<key> bare through one
+generic apply, and neither setting is owned per radio.
+
+WiFi 7 (11be) is chosen per NETWORK on the Network menu: sdn.js builds the
+wifi7_11be switch on SDN.asp and couples it to the security mode in both
+directions - turning it on force-selects an SAE-capable auth, and choosing a
+non-SAE auth while it is on warns first. The linked General tab carries the same
+coupling. This page had none of it, so it could raise 11be on one radio while the
+crypto stayed unable to advertise EHT, and it synced nothing to the other bands.
+
+Wireless Mode (nmode_x) sets 11ax=0 at bringup for "N only"
+(rc/sysdeps/init-broadcom.c:11312), which drops HE and therefore EHT. Field
+report 2026-09-18: a GT-BE98 whose 2.4 GHz radio reported HT only - no HE or EHT
+MCS, OFDM-only rates - so the client was correctly showing no Wi-Fi 6 or 7 badge
+on that band. The row is per radio but nothing links it to the surface that owns
+it, so the same key was editable from two unlinked places.
+
+RWFP_20..RWFP_23 ("N only" / "Legacy" / "AX only" / "N / AC / AX mixed") were
+referenced only by the removed Wireless Mode row and are dropped from all 25
+packs. The packs are name-keyed KEY=value, not positional, so removal shifts
+nothing; dict-lockstep holds at 6987 lines.
+
+KNOWN CONSEQUENCE: nmode_x now has no linked UI. The General tab does not carry
+it and neither does the Network menu; the only shipped page that does is the
+stock Advanced_WAdvanced_Content.asp, which ships unlinked. A box already forced
+to N only needs:
+  nvram set wl<2.4 unit>_nmode_x=0 && nvram commit && service restart_wireless
+On quad-band models the 2.4 GHz radio is wl3, not wl0.
+
+Gates: reaper_static_checks 13/13 (dict-lockstep 25 @ 6987), reaper_langcheck
+0 breakers / 25 pages, test_js_parse 25/25, reaper_hiddencheck clean.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict            |  4 ----
+ release/src/router/www/CN.dict            |  4 ----
+ release/src/router/www/CZ.dict            |  4 ----
+ release/src/router/www/DA.dict            |  4 ----
+ release/src/router/www/DE.dict            |  4 ----
+ release/src/router/www/EN.dict            |  4 ----
+ release/src/router/www/ES.dict            |  4 ----
+ release/src/router/www/FI.dict            |  4 ----
+ release/src/router/www/FR.dict            |  4 ----
+ release/src/router/www/HU.dict            |  4 ----
+ release/src/router/www/IT.dict            |  4 ----
+ release/src/router/www/JP.dict            |  4 ----
+ release/src/router/www/KR.dict            |  4 ----
+ release/src/router/www/MS.dict            |  4 ----
+ release/src/router/www/NL.dict            |  4 ----
+ release/src/router/www/NO.dict            |  4 ----
+ release/src/router/www/PL.dict            |  4 ----
+ release/src/router/www/RO.dict            |  4 ----
+ release/src/router/www/RU.dict            |  4 ----
+ release/src/router/www/Reaper_WiFiPro.asp | 19 ++++++++++++++-----
+ release/src/router/www/SL.dict            |  4 ----
+ release/src/router/www/SV.dict            |  4 ----
+ release/src/router/www/TH.dict            |  4 ----
+ release/src/router/www/TR.dict            |  4 ----
+ release/src/router/www/TW.dict            |  4 ----
+ release/src/router/www/UK.dict            |  4 ----
+ 26 files changed, 14 insertions(+), 105 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index aef8706006..b3e7c282e3 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6084,10 +6084,6 @@ RCON_31=PAUSADO
+ RCON_32=Não (CPU)
+ RCON_33=Escalonador
+ RCON_34=Taxa atual
+-RWFP_20=Somente N
+-RWFP_21=Legado
+-RWFP_22=Somente AX
+-RWFP_23=N / AC / AX misto
+ RWFP_24=base
+ RWFP_25=Permitir 802.11b
+ RWFP_26=Preventivo
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index deb998d360..53344387b6 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6084,10 +6084,6 @@ RCON_31=已暂停
+ RCON_32=否（CPU）
+ RCON_33=调度器
+ RCON_34=当前速率
+-RWFP_20=仅 N
+-RWFP_21=传统
+-RWFP_22=仅 AX
+-RWFP_23=N / AC / AX 混合
+ RWFP_24=基线
+ RWFP_25=允许 802.11b
+ RWFP_26=抢占式
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 7600289f85..dc066bb693 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6084,10 +6084,6 @@ RCON_31=POZASTAVENO
+ RCON_32=Ne (CPU)
+ RCON_33=Plánovač
+ RCON_34=Aktuální rychlost
+-RWFP_20=Pouze N
+-RWFP_21=Starší
+-RWFP_22=Pouze AX
+-RWFP_23=N / AC / AX smíšeně
+ RWFP_24=základní
+ RWFP_25=Povolit 802.11b
+ RWFP_26=Preemptivní
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 60b3dc56f8..47cbc97608 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6084,10 +6084,6 @@ RCON_31=SAT PÅ PAUSE
+ RCON_32=Nej (CPU)
+ RCON_33=Planlægger
+ RCON_34=Aktuel hastighed
+-RWFP_20=Kun N
+-RWFP_21=Legacy
+-RWFP_22=Kun AX
+-RWFP_23=N / AC / AX blandet
+ RWFP_24=basislinje
+ RWFP_25=Tillad 802.11b
+ RWFP_26=Præemptiv
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 4da8808804..3723bfc8fa 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6084,10 +6084,6 @@ RCON_31=PAUSIERT
+ RCON_32=Nein (CPU)
+ RCON_33=Scheduler
+ RCON_34=Aktuelle Rate
+-RWFP_20=Nur N
+-RWFP_21=Legacy
+-RWFP_22=Nur AX
+-RWFP_23=N / AC / AX gemischt
+ RWFP_24=Basislinie
+ RWFP_25=802.11b zulassen
+ RWFP_26=Präemptiv
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 7715f52409..04e1d1d54b 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6084,10 +6084,6 @@ RCON_31=PAUSED
+ RCON_32=No (CPU)
+ RCON_33=Scheduler
+ RCON_34=Current Rate
+-RWFP_20=N only
+-RWFP_21=Legacy
+-RWFP_22=AX only
+-RWFP_23=N / AC / AX mixed
+ RWFP_24=baseline
+ RWFP_25=Allow 802.11b
+ RWFP_26=Pre-emptive
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 94532b6460..a0b1e9fa63 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6084,10 +6084,6 @@ RCON_31=EN PAUSA
+ RCON_32=No (CPU)
+ RCON_33=Planificador
+ RCON_34=Tasa actual
+-RWFP_20=Solo N
+-RWFP_21=Legacy
+-RWFP_22=Solo AX
+-RWFP_23=N / AC / AX mixto
+ RWFP_24=línea base
+ RWFP_25=Permitir 802.11b
+ RWFP_26=Preventivo
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 0ac3bd7187..1cb0202b80 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6084,10 +6084,6 @@ RCON_31=KESKEYTETTY
+ RCON_32=Ei (CPU)
+ RCON_33=Ajoitin
+ RCON_34=Nykyinen nopeus
+-RWFP_20=Vain N
+-RWFP_21=Vanha
+-RWFP_22=Vain AX
+-RWFP_23=N / AC / AX sekoitettu
+ RWFP_24=perustaso
+ RWFP_25=Salli 802.11b
+ RWFP_26=Ennakoiva
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index f6d3e5f926..6bd6ac859c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6084,10 +6084,6 @@ RCON_31=EN PAUSE
+ RCON_32=Non (CPU)
+ RCON_33=Ordonnanceur
+ RCON_34=Débit actuel
+-RWFP_20=N uniquement
+-RWFP_21=Legacy
+-RWFP_22=AX uniquement
+-RWFP_23=N / AC / AX mixte
+ RWFP_24=référence
+ RWFP_25=Autoriser 802.11b
+ RWFP_26=Préemptif
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 44558fd32b..619efa88e4 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6084,10 +6084,6 @@ RCON_31=SZÜNETELTETVE
+ RCON_32=Nem (CPU)
+ RCON_33=Ütemező
+ RCON_34=Jelenlegi sebesség
+-RWFP_20=Csak N
+-RWFP_21=Örökölt
+-RWFP_22=Csak AX
+-RWFP_23=N / AC / AX vegyes
+ RWFP_24=alapérték
+ RWFP_25=802.11b engedélyezése
+ RWFP_26=Megelőző
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4a5b3f8920..834c60680c 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6084,10 +6084,6 @@ RCON_31=IN PAUSA
+ RCON_32=No (CPU)
+ RCON_33=Scheduler
+ RCON_34=Velocità attuale
+-RWFP_20=Solo N
+-RWFP_21=Legacy
+-RWFP_22=Solo AX
+-RWFP_23=N / AC / AX misto
+ RWFP_24=riferimento
+ RWFP_25=Consenti 802.11b
+ RWFP_26=Preventivo
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index ff05e8c32c..1f2d2cf742 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6084,10 +6084,6 @@ RCON_31=一時停止中
+ RCON_32=いいえ（CPU）
+ RCON_33=スケジューラー
+ RCON_34=現在のレート
+-RWFP_20=N のみ
+-RWFP_21=レガシー
+-RWFP_22=AX のみ
+-RWFP_23=N / AC / AX 混在
+ RWFP_24=ベースライン
+ RWFP_25=802.11b を許可
+ RWFP_26=プリエンプティブ
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 3f6f774591..f7cae90e21 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6084,10 +6084,6 @@ RCON_31=일시중지됨
+ RCON_32=아니요 (CPU)
+ RCON_33=스케줄러
+ RCON_34=현재 속도
+-RWFP_20=N 전용
+-RWFP_21=레거시
+-RWFP_22=AX 전용
+-RWFP_23=N / AC / AX 혼합
+ RWFP_24=기준선
+ RWFP_25=802.11b 허용
+ RWFP_26=선제적
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index adbeae0ebf..bea312e2cf 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6084,10 +6084,6 @@ RCON_31=DIJEDA
+ RCON_32=Tidak (CPU)
+ RCON_33=Penjadual
+ RCON_34=Kadar Semasa
+-RWFP_20=N sahaja
+-RWFP_21=Legasi
+-RWFP_22=AX sahaja
+-RWFP_23=N / AC / AX bercampur
+ RWFP_24=garis dasar
+ RWFP_25=Benarkan 802.11b
+ RWFP_26=Pra-emptif
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index cf71ce2a2e..5181810407 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6084,10 +6084,6 @@ RCON_31=GEPAUZEERD
+ RCON_32=Nee (CPU)
+ RCON_33=Scheduler
+ RCON_34=Huidige snelheid
+-RWFP_20=Alleen N
+-RWFP_21=Legacy
+-RWFP_22=Alleen AX
+-RWFP_23=N / AC / AX gemengd
+ RWFP_24=basislijn
+ RWFP_25=802.11b toestaan
+ RWFP_26=Pre-emptief
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 3e6d3f7b3d..12c03b680d 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6084,10 +6084,6 @@ RCON_31=SATT PÅ PAUSE
+ RCON_32=Nei (CPU)
+ RCON_33=Planlegger
+ RCON_34=Gjeldende hastighet
+-RWFP_20=Bare N
+-RWFP_21=Legacy
+-RWFP_22=Bare AX
+-RWFP_23=N / AC / AX blandet
+ RWFP_24=grunnlinje
+ RWFP_25=Tillat 802.11b
+ RWFP_26=Preemptiv
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index aadb8f9028..89b4504e2f 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6084,10 +6084,6 @@ RCON_31=WSTRZYMANO
+ RCON_32=Nie (CPU)
+ RCON_33=Harmonogram
+ RCON_34=Bieżąca szybkość
+-RWFP_20=Tylko N
+-RWFP_21=Starszy
+-RWFP_22=Tylko AX
+-RWFP_23=N / AC / AX mieszany
+ RWFP_24=bazowy
+ RWFP_25=Zezwól na 802.11b
+ RWFP_26=Wyprzedzający
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 7d107aa697..9fe7149faf 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6084,10 +6084,6 @@ RCON_31=ÎN PAUZĂ
+ RCON_32=Nu (CPU)
+ RCON_33=Planificator
+ RCON_34=Rata curentă
+-RWFP_20=Doar N
+-RWFP_21=Vechi
+-RWFP_22=Doar AX
+-RWFP_23=N / AC / AX mixt
+ RWFP_24=de bază
+ RWFP_25=Permite 802.11b
+ RWFP_26=Preventiv
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index cfaa5e9907..906fd15b28 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6084,10 +6084,6 @@ RCON_31=ПАУЗА
+ RCON_32=Нет (CPU)
+ RCON_33=Планировщик
+ RCON_34=Текущая скорость
+-RWFP_20=Только N
+-RWFP_21=Устаревший
+-RWFP_22=Только AX
+-RWFP_23=N / AC / AX смешанный
+ RWFP_24=базовый
+ RWFP_25=Разрешить 802.11b
+ RWFP_26=Упреждающий
+diff --git a/release/src/router/www/Reaper_WiFiPro.asp b/release/src/router/www/Reaper_WiFiPro.asp
+index a6810d2ef2..3f5a736115 100644
+--- a/release/src/router/www/Reaper_WiFiPro.asp
++++ b/release/src/router/www/Reaper_WiFiPro.asp
+@@ -189,11 +189,20 @@ code{font-family:ui-monospace,Consolas,monospace}
+   var SCHEMA=[
+    {sec:`<#RWFP_2#>`,rows:[
+      {name:`<#WLANConfig11b_x_RadioEnable_itemname#>`,key:"radio",type:"tog"},
+-     {name:`<#WiFi7_Mode#>`,key:"11be",type:"sel",options:ED},
+-     {name:`<#WLANConfig11b_x_Mode_itemname#>`,key:"nmode_x",type:"sel",options:{
+-        "2.4":[["0",`<#Auto#>`],["1",`<#RWFP_20#>`],["2",`<#RWFP_21#>`]],
+-        "5":[["0",`<#Auto#>`],["9",`<#RWFP_22#>`],["8",`<#RWFP_23#>`],["2",`<#RWFP_21#>`]],
+-        "6":[["0",`<#Auto#>`],["9",`<#RWFP_22#>`]]}},
++     /* reaper 2026-09-18 (owner request): WiFi7 Mode (11be) and Wireless Mode (nmode_x)
++        rows REMOVED - this page is per RADIO, and neither setting is owned per radio here.
++        11be is chosen per NETWORK: the Network menu's SDN UI (sysdep/FUNCTION/SDN/SDN/sdn.js)
++        couples it to the security mode in BOTH directions - turning Wi-Fi 7 on force-selects
++        an SAE-capable auth (psk2sae/sae/wpa2wpa3/wpa3/suite-b), and choosing a non-SAE auth
++        while it is on warns that Wi-Fi 7 will be disabled. Stock's own Professional page does
++        the same conversion plus a Smart Connect cross-band sync of 11be/auth_mode_x/crypto/mfp.
++        This page writes wl<unit>_<key> bare through one generic apply, so it could only ever
++        have set 11be per radio with NONE of that enforcement - which silently produces a band
++        that claims Wi-Fi 7 while its crypto cannot advertise EHT (field report 2026-09-18:
++        a Samsung client lost the Wi-Fi 7 badge on 2.4 GHz only).
++        nmode_x IS per radio, but it is owned by the General tab (Advanced_Wireless_Content.asp)
++        and nothing links the two, so the same key would be editable from two unlinked pages.
++        Both settings stay available on the surfaces that own them. */
+      {name:`<#WLANConfig11b_AgileMultiband_itemdesc#>`,key:"mbo_enable",type:"sel",options:ED},
+      {name:`<#WLANConfig11b_WakeTime_itemname#>`,key:"twt",type:"sel",options:ED}
+    ]},
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index b1a8c508fa..94d3a9ea9f 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6084,10 +6084,6 @@ RCON_31=ZAUSTAVLJENO
+ RCON_32=Ne (CPU)
+ RCON_33=Razporejevalnik
+ RCON_34=Trenutna hitrost
+-RWFP_20=Samo N
+-RWFP_21=Zastarelo
+-RWFP_22=Samo AX
+-RWFP_23=N / AC / AX mešano
+ RWFP_24=izhodišče
+ RWFP_25=Dovoli 802.11b
+ RWFP_26=Predhodno
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 9c3dc433ab..5dc5271a55 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6084,10 +6084,6 @@ RCON_31=PAUSAD
+ RCON_32=Nej (CPU)
+ RCON_33=Schemaläggare
+ RCON_34=Aktuell hastighet
+-RWFP_20=Endast N
+-RWFP_21=Äldre
+-RWFP_22=Endast AX
+-RWFP_23=N / AC / AX blandat
+ RWFP_24=baslinje
+ RWFP_25=Tillåt 802.11b
+ RWFP_26=Föregripande
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 49d8c5014c..79c566bf67 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6084,10 +6084,6 @@ RCON_31=หยุดชั่วคราว
+ RCON_32=ไม่ (CPU)
+ RCON_33=ตัวจัดตารางเวลา
+ RCON_34=อัตราปัจจุบัน
+-RWFP_20=N เท่านั้น
+-RWFP_21=รุ่นเก่า
+-RWFP_22=AX เท่านั้น
+-RWFP_23=N / AC / AX ผสม
+ RWFP_24=ค่าพื้นฐาน
+ RWFP_25=อนุญาต 802.11b
+ RWFP_26=เชิงรุก
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 394af05548..9368eff4e0 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6084,10 +6084,6 @@ RCON_31=DURAKLATILDI
+ RCON_32=Hayır (CPU)
+ RCON_33=Zamanlayıcı
+ RCON_34=Geçerli Hız
+-RWFP_20=Yalnızca N
+-RWFP_21=Eski
+-RWFP_22=Yalnızca AX
+-RWFP_23=N / AC / AX karışık
+ RWFP_24=temel
+ RWFP_25=802.11b'ye izin ver
+ RWFP_26=Önleyici
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 8697130669..6625a86c72 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6084,10 +6084,6 @@ RCON_31=已暫停
+ RCON_32=否（CPU）
+ RCON_33=排程器
+ RCON_34=目前速率
+-RWFP_20=僅 N
+-RWFP_21=傳統
+-RWFP_22=僅 AX
+-RWFP_23=N / AC / AX 混合
+ RWFP_24=基準
+ RWFP_25=允許 802.11b
+ RWFP_26=搶佔式
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 7b525ea6e7..087741afdd 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6084,10 +6084,6 @@ RCON_31=ПАУЗА
+ RCON_32=Ні (CPU)
+ RCON_33=Планувальник
+ RCON_34=Поточна швидкість
+-RWFP_20=Лише N
+-RWFP_21=Застарілий
+-RWFP_22=Лише AX
+-RWFP_23=N / AC / AX змішаний
+ RWFP_24=базовий
+ RWFP_25=Дозволити 802.11b
+ RWFP_26=Превентивний
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -77,8 +77,11 @@ git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
+# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 42015) ships as
+# overlays/wlcsm-42015-blobs.tar.gz; the series carries the swap for the RT-BE96U tree, a sibling
+# takes the two files over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 620 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 698 <!--@patchcount--> patches (through v2.8.8).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
@@ -232,8 +235,8 @@ supposed to be in the manifest, but in practice are populated only for
 v2.1.0–v2.1.5, v2.3.1 and v2.4.3 — so treat the `SHA256SUMS` file attached to a
 release as the authoritative image record, and do not infer from an empty `images`
 list that a release never shipped. The newest published release is **v2.7.6** (all
-five main models plus the RT-BE92U, 2026-08-24); later source rungs (**v2.7.7**, and the many
+five main models, 2026-08-24); later source rungs (**v2.7.7**, and the many
 unpublished v2.5.x–v2.7.x rungs) are built for the RT-BE96U only, both variants, and their
 image hashes may be recorded in the manifest — but those are locally built artifacts, not
-published downloads. The RT-BE92U's images are published as experimental prereleases. The published images come from the CI
+published downloads. The published images come from the CI
 clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

@@ -1,0 +1,2626 @@
+From c58cff89be19c181f20053fc2b9fc0d19f3a619f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 15 Sep 2026 17:40:14 -0400
+Subject: [PATCH] v3.1.7: walker coverage, the Killswitch witness, and the UI
+ that reports it
+
+Firewall table walker, second pass: 33 -> 45 of the 59 catalog rows.
+
+  C6, the VPN-client Killswitch, needed a FOURTH INPUT. It is realised solely
+  as `ip rule ... prohibit` at pref 9100+code and never touches iptables, so no
+  walk of the tables could see it and a Killswitch that failed to install was
+  invisible - the exact failure the feature exists to prevent. The walker now
+  reads the routing policy database alongside iptables-save, ip addr and ipset
+  test, and a PROHIBIT predicate asserts that a rule refusing that fwmark
+  exists. Still read-only. Rows are driven from the SAVED policy-routing list,
+  for F1's reason: a witness derived from the installed state can only agree
+  with itself. Only an ENABLED client's Killswitch counts, as v3.1.5 settled,
+  so a disabled client emits no row rather than a red one.
+
+  Eleven more rows: B3 B5 C2 C4 D5 E3 E6 E7 F5 H1 H6. Three are worth more than
+  their catalog line. B5 is keyed on UPnP's DAEMON nvram key and asserts its
+  RULES key, so the desync class that has been seen in both directions on metal
+  is now a red witness naming the missing jump. D5 witnesses that a
+  Gatekeeper-BLOCKED device can still reach the HTTPS admin port - the escape
+  hatch - and its negative is the rule that would lock an admin out of their own
+  router. F5 is the intercept loop-breaker: the host a service is redirected TO
+  must reach the real service itself, or its own upstream query comes back at it
+  and the service fails for everyone while F4 still reads green.
+
+  Not built, with reasons: C8 would need a /proc/blog reader and that interface
+  has a kernel-panic history here; H4 (IPv6 over the generated rows) is deferred
+  because guest/SDN IPv6 is not proven and a row that goes red on a working box
+  is worse than no row.
+
+Bare links no longer render browser-blue. One rule in the injected theme reaches
+framed stock pages and native pages alike. It is wrapped in :where() so it has
+zero specificity: the block is injected at </head>, after a page's own <style>,
+so on equal specificity it would have silently restyled the five pages that were
+already correct. It is a floor, not an override.
+
+The Security Posture card refreshes itself on NTP sync. It was painted once from
+a server-rendered nvram snapshot, so on a booting router it froze at load - and
+the Rule Status row was worse, because the walker stamps time(NULL) and a
+pre-sync report is dated from the boot epoch. The watcher arms only when the
+clock is already unset at render, so an ordinary page load schedules nothing at
+all, and it stops on the transition.
+
+The firewall's red count now rides the nav rail on every page, and shows nothing
+at zero. One poll per session, not per page. The BETA tag is on every header
+rather than only the dashboard's, and --amber came with it - the shell had never
+declared that token, so the tag rendered in the wrong colour once it moved.
+
+Rule Status reads properly at 1080p: the page's reading column was 1120px, set
+when every tab was a form, and the five-column table had nowhere to go. Columns
+are fixed proportions now, and overflow-wrap:anywhere replaces
+word-break:break-all, which had been splitting words that had a space to wrap at.
+
+Top talkers counts conversations, not connections. Every open admin page holds
+several parallel connections to the router, so looking at the traffic page
+manufactured the traffic it then reported - and since each connection took a slot
+of its own, a browser on the dashboard could fill the table and evict everything
+real. Flows now fold by the tuple the panel claims to group by, and the router
+itself is excluded, which is the rule the per-network view has always used.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |  43 +-
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 578 +++++++++++++++++-
+ release/src/router/rtrafd/rtrafd.c            |  42 ++
+ release/src/router/www/BR.dict                |  16 +-
+ release/src/router/www/CN.dict                |  16 +-
+ release/src/router/www/CZ.dict                |  16 +-
+ release/src/router/www/DA.dict                |  16 +-
+ release/src/router/www/DE.dict                |  16 +-
+ release/src/router/www/EN.dict                |  16 +-
+ release/src/router/www/ES.dict                |  16 +-
+ release/src/router/www/FI.dict                |  16 +-
+ release/src/router/www/FR.dict                |  16 +-
+ release/src/router/www/HU.dict                |  16 +-
+ release/src/router/www/IT.dict                |  16 +-
+ release/src/router/www/JP.dict                |  16 +-
+ release/src/router/www/KR.dict                |  16 +-
+ release/src/router/www/MS.dict                |  16 +-
+ release/src/router/www/Main_ReaperDash.asp    | 297 ++++++---
+ release/src/router/www/NL.dict                |  16 +-
+ release/src/router/www/NO.dict                |  16 +-
+ release/src/router/www/PL.dict                |  16 +-
+ release/src/router/www/RO.dict                |  16 +-
+ release/src/router/www/RU.dict                |  16 +-
+ release/src/router/www/Reaper_Diag.asp        |   2 +-
+ release/src/router/www/Reaper_Firewall.asp    |  59 +-
+ release/src/router/www/SL.dict                |  16 +-
+ release/src/router/www/SV.dict                |  16 +-
+ release/src/router/www/TH.dict                |  16 +-
+ release/src/router/www/TR.dict                |  16 +-
+ release/src/router/www/TW.dict                |  16 +-
+ release/src/router/www/UK.dict                |  16 +-
+ release/src/router/www/reaper_shell.asp       |  95 ++-
+ 32 files changed, 1209 insertions(+), 307 deletions(-)
+ mode change 100755 => 100644 release/src/router/reaper_fwsim/reaper_fwsim.c
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index f32ae510f6..96f32aaf48 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -175,16 +175,51 @@
+ 	"document.head.appendChild(st);document.body.insertBefore(b,document.body.firstChild);};" \
+ 	"x.send();})();</script>"
+ 
+-static const char REAPER_BLOCK[] = REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
++/* A bare <a> - one with no class of its own - has no colour anywhere in the
++ * theme, so it falls through to the user agent's #0000EE and, once followed,
++ * to purple. Blue is out of the palette by rule (anti-ROG: never scarlet, cyan
++ * or blue-red), and only five Reaper pages ever set a link colour, so the
++ * remainder rendered browser-blue on matte black.
++ *
++ * TWO DELIBERATE CHOICES HERE.
++ *
++ * 1. BONE with a crimson underline, not a crimson link. Crimson already means
++ *    "red witness" and jade "green" on the very line this was spotted (the
++ *    Firewall Status tab's Rule Status summary), so an accent-coloured link
++ *    beside them would collide with the status semantics. The underline
++ *    carries the affordance; the text stays BONE. :visited is set explicitly
++ *    or followed links go purple - the same defect in another hue.
++ *
++ * 2. Zero specificity, via :where(). This block is injected at </head>, i.e.
++ *    AFTER a page's own <style>, so on equal specificity it would WIN and
++ *    silently restyle the five pages that already got this right. Everything
++ *    inside :where() counts as 0-0-0, so any page rule at all - even a bare
++ *    a{} - still beats it. It is a floor, not an override. `:not([class])`
++ *    keeps it off the links that are really controls: menu items, tabs, cards
++ *    and buttons all carry a class. A browser too old for :where() drops the
++ *    whole rule and gets today's behaviour, which is the right way to fail.
++ *
++ * Literal colours rather than theme tokens because framed stock pages define
++ * none of Reaper's custom properties - the same reason the #rsec block above
++ * spells its colours out. */
++#define REAPER_LINK_CSS \
++	"<style>" \
++	":where(a:not([class])){color:#ECE7DB;text-decoration:underline;" \
++	"text-decoration-color:#E10600;text-underline-offset:2px}" \
++	":where(a:not([class]):visited){color:#ECE7DB}" \
++	":where(a:not([class]):hover,a:not([class]):focus){color:#FFFFFF;text-decoration-color:#FF3B2A}" \
++	"</style>"
++
++static const char REAPER_BLOCK[] = REAPER_LINK_CSS REAPER_CSS_LINK REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+ /* reaper-native pages: bounce only, no reaper_content.css <link> (see reaper_native[]) */
+-static const char REAPER_NATIVE_BLOCK[] = REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
++static const char REAPER_NATIVE_BLOCK[] = REAPER_LINK_CSS REAPER_BOUNCE_JS REAPER_SECBANNER_JS;
+ /* first-run gate pages: reaper_content.css <link> only, NO bounce (see reaper_css_only[]) */
+-static const char REAPER_CSSONLY_BLOCK[] = REAPER_CSS_LINK REAPER_SECBANNER_JS;
++static const char REAPER_CSSONLY_BLOCK[] = REAPER_LINK_CSS REAPER_CSS_LINK REAPER_SECBANNER_JS;
+ /* mode 5: the banner and nothing else. For top-level Reaper surfaces that sit in
+    reaper_skip[] because BOTH the css <link> and the bounce would be wrong for them
+    (the dashboard and the shell render their own chrome; the shell IS the bounce
+    target) but which are exactly where the banner has to appear. */
+-static const char REAPER_BANNERONLY_BLOCK[] = REAPER_SECBANNER_JS;
++static const char REAPER_BANNERONLY_BLOCK[] = REAPER_LINK_CSS REAPER_SECBANNER_JS;
+ 
+ #define REAPER_TAG	"</head>"
+ #define REAPER_TAGLEN	7		/* strlen("</head>") */
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+old mode 100755
+new mode 100644
+index 427ec19470..a248c87427
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -46,13 +46,18 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.0"
++#define FWSIM_VER	"1.1"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+ #define FWSIM_TMP4	FWSIM_DIR "/fwsim.v4"
+ #define FWSIM_TMP6	FWSIM_DIR "/fwsim.v6"
+ #define FWSIM_TMPA	FWSIM_DIR "/fwsim.addr"
++#define FWSIM_TMPR	FWSIM_DIR "/fwsim.rule"
++/* the policy-routing mark field: bits 16-19, PPBR_MASK in rc/reaper_pbr.c. The
++ * walker only ever READS this; it is repeated rather than shared because
++ * reaper_pbr.c is not a header and the host build has no rc/ at all. */
++#define FWSIM_PBR_MASK	0x000F0000u
+ #define MAXDEPTH	24
+ #define MAXPATH		1400
+ #define MAXWIT		512
+@@ -66,6 +71,7 @@ static const char *opt_json = FWSIM_JSON;
+ static const char *opt_witness = NULL;
+ static const char *opt_save4 = NULL, *opt_save6 = NULL, *opt_addr = NULL;
+ static const char *opt_members = NULL, *opt_nv = NULL, *opt_static = FWSIM_STATIC;
++static const char *opt_rule4 = NULL, *opt_rule6 = NULL;
+ static const char *opt_dump = NULL;
+ static int opt_delay = 0;
+ 
+@@ -257,6 +263,62 @@ static void load_members(const char *path)
+ 	fclose(f);
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* the routing policy database (`ip rule`) - the walker's fourth input  */
++/* ------------------------------------------------------------------ */
++/* The VPN-client Killswitch is the one promise the firewall makes that never
++ * touches iptables: reaper_pbr realises it SOLELY as `ip rule ... prohibit` at
++ * priority 9100+code (9000+code for a BLOCK target). Walking the tables can
++ * therefore never see it, and a Killswitch that silently failed to install is
++ * exactly the failure the feature exists to prevent - so the rule database is
++ * read as an input of its own and witnessed with a predicate of its own.
++ * READ-ONLY, like everything else here: `ip rule show`, nothing more. */
++static void parse_mark(const char *s, unsigned *v, unsigned *m);	/* the ruleset section below */
++
++struct iprule { int fam, pref, has_mark; unsigned mark, mask; char action[16]; char table[36]; };
++static struct iprule *iprules = NULL; static int niprules = 0;
++static int iprule_loaded4 = 0, iprule_loaded6 = 0;
++
++/* "9101:\tfrom all fwmark 0x10000/0xf0000 prohibit"
++ * "9001:\tfrom all fwmark 0x10000/0xf0000 lookup ovpnc1"                 */
++static void load_iprules(const char *path, int fam)
++{
++	FILE *f = fopen(path, "r"); char line[400], *tok[32]; int n, i;
++	if (!f) return;
++	if (fam == 6) iprule_loaded6 = 1; else iprule_loaded4 = 1;
++	while (fgets(line, sizeof(line), f)) {
++		struct iprule r;
++		trim(line);
++		n = tokenize(line, tok, 32);
++		if (n < 2 || !isdigit((unsigned char)tok[0][0])) continue;
++		memset(&r, 0, sizeof(r));
++		r.fam = fam; r.pref = atoi(tok[0]); r.mask = 0xffffffffu;
++		snprintf(r.action, sizeof(r.action), "%s", tok[n-1]);
++		for (i = 1; i < n; i++) {
++			if (!strcmp(tok[i], "fwmark") && i + 1 < n) { parse_mark(tok[++i], &r.mark, &r.mask); r.has_mark = 1; }
++			else if (!strcmp(tok[i], "lookup") && i + 1 < n) { snprintf(r.action, sizeof(r.action), "lookup"); snprintf(r.table, sizeof(r.table), "%s", tok[++i]); }
++		}
++		iprules = xrealloc(iprules, sizeof(*iprules) * (niprules + 1));
++		iprules[niprules++] = r;
++	}
++	fclose(f);
++}
++
++/* the first rule of this family whose fwmark selector covers `mark` and whose
++ * action refuses the packet. prohibit, blackhole and unreachable all fail
++ * closed - which is the promise - so any of the three satisfies it. */
++static const struct iprule *iprule_refuses(int fam, unsigned mark, unsigned mask)
++{
++	int i;
++	for (i = 0; i < niprules; i++) {
++		const struct iprule *r = &iprules[i];
++		if (r->fam != fam || !r->has_mark) continue;
++		if ((r->mark & mask) != (mark & mask) || (r->mask & mask) != mask) continue;
++		if (!strcmp(r->action, "prohibit") || !strcmp(r->action, "blackhole") || !strcmp(r->action, "unreachable")) return r;
++	}
++	return NULL;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* nvram (real on the router, a key=value file on the host)            */
+ /* ------------------------------------------------------------------ */
+@@ -287,6 +349,130 @@ static const char *nv_get(const char *k) { return nvram_safe_get((char *)k); }
+ #endif
+ static int nv_is(const char *k, const char *v) { return strcmp(nv_get(k), v) == 0; }
+ 
++/* ------------------------------------------------------------------ */
++/* the rules engine's own lists (F1) - '<' between records, '>' between */
++/* fields, exactly as rc/reaper_fw.c documents them.                    */
++/* ------------------------------------------------------------------ */
++static const char *fwlist(const char *key)
++{
++#ifdef FWSIM_HOST
++	/* host mode: the nvram fixture file carries the list under its nvram
++	 * name, so a test can hand us rules without a /jffs store */
++	static char k[64];
++	snprintf(k, sizeof(k), "reaper_fw_%s", key);
++	return nv_get(k);
++#else
++	/* on the router the lists live in the /jffs store - they exceed nvram's
++	 * 1 KB cap - and libshared's reader already does draft > confirmed >
++	 * legacy nvram, which is the same precedence the engine itself applies */
++	char *v = reaper_fw_list_get((char *)key);
++	return v ? v : "";
++#endif
++}
++
++/* the policy-routing rule list, same precedence the engine itself applies
++ * (draft > confirmed > legacy nvram). Read for C6 from the SAVED list rather
++ * than from the live `ip rule` output for the same reason F1 reads the saved
++ * firewall rules: the question is whether what was ASKED for is installed, and
++ * a witness derived from the installed state can only ever agree with itself. */
++static const char *pbrlist(void)
++{
++#ifdef FWSIM_HOST
++	return nv_get("reaper_pbr_rulelist");
++#else
++	char *v = reaper_pbr_rl_get();
++	return v ? v : "";
++#endif
++}
++
++/* copy '>'-separated field `idx` of `rec`. Returns 0 for absent AND for "does
++ * not fit" - the same contract rfw_field() settled on in 2026-08-21, because a
++ * truncated value would otherwise read as "no constraint" and silently widen
++ * the witness. */
++static int rec_field(const char *rec, int idx, char *out, size_t ol)
++{
++	const char *p = rec, *end; int i; size_t n;
++	if (!rec || !out || !ol) return 0;
++	out[0] = 0;
++	for (i = 0; i < idx; i++) { p = strchr(p, '>'); if (!p) return 0; p++; }
++	end = strchr(p, '>');
++	n = end ? (size_t)(end - p) : strlen(p);
++	if (n >= ol) return 0;
++	memcpy(out, p, n); out[n] = 0;
++	return 1;
++}
++
++/* the record in `list` whose field 0 equals `name` */
++static int rec_byname(const char *list, const char *name, char *out, size_t ol)
++{
++	const char *p = list; char nm[72];
++	if (!list || !name || !*name) { if (ol) out[0] = 0; return 0; }
++	while (*p) {
++		const char *e; size_t n;
++		while (*p == '<') p++;
++		if (!*p) break;
++		e = strchr(p, '<');
++		n = e ? (size_t)(e - p) : strlen(p);
++		if (n < ol) {
++			memcpy(out, p, n); out[n] = 0;
++			if (rec_field(out, 0, nm, sizeof(nm)) && !strcmp(nm, name)) return 1;
++		}
++		if (!e) break;
++		p = e;
++	}
++	if (ol) out[0] = 0;
++	return 0;
++}
++
++/* One concrete address for an object, or a MAC when the object IS a MAC.
++ * fqdn and geo objects resolve at RUN time into an ipset, so there is no
++ * literal here to aim a packet at: they return 0 and the rule is skipped
++ * rather than witnessed against a guess. Returns 1 = ip, 2 = mac, 0 = no. */
++static int obj_pick(const char *objs, const char *name, char *ip, size_t il, char *mac, size_t ml)
++{
++	char rec[600], type[16], val[288], *q;
++	ip[0] = 0; mac[0] = 0;
++	if (!rec_byname(objs, name, rec, sizeof(rec))) return 0;
++	if (!rec_field(rec, 1, type, sizeof(type))) return 0;
++	if (!rec_field(rec, 2, val, sizeof(val))) return 0;
++	/* refuse rather than truncate: a cut address is not a narrower witness,
++	 * it is a witness aimed at a DIFFERENT host. Same reason rec_field()
++	 * treats "does not fit" as "absent". */
++	if (!strcmp(type, "mac")) {
++		if (strlen(val) >= ml) return 0;
++		memcpy(mac, val, strlen(val) + 1); return 2;
++	}
++	if (strlen(val) >= il) return 0;
++	if (!strcmp(type, "host")) { memcpy(ip, val, strlen(val) + 1); return 1; }
++	if (!strcmp(type, "range")) { memcpy(ip, val, strlen(val) + 1); if ((q = strchr(ip, '-')) != NULL) *q = 0; return 1; }
++	if (!strcmp(type, "cidr")) {
++		memcpy(ip, val, strlen(val) + 1);
++		if ((q = strchr(ip, '/')) != NULL) *q = 0;
++		/* a network address is a poor probe - an ipset holding the net will
++		 * match it, but a rule written host-wise will not - so aim at .1 */
++		q = strrchr(ip, '.');
++		if (q && !strcmp(q, ".0")) { q[1] = '1'; q[2] = 0; }
++		return 1;
++	}
++	return 0;
++}
++
++/* proto + one port for a service object. "both" probes tcp; icmp has no port
++ * to aim at, so it is skipped rather than witnessed on a made-up one. */
++static int svc_pick(const char *svcs, const char *name, char *proto, size_t pl, char *port, size_t ql)
++{
++	char rec[600], pr[16], po[160], *q;
++	if (!rec_byname(svcs, name, rec, sizeof(rec))) return 0;
++	if (!rec_field(rec, 1, pr, sizeof(pr))) return 0;
++	if (!rec_field(rec, 2, po, sizeof(po))) return 0;
++	if (!strcmp(pr, "icmp")) return 0;
++	snprintf(proto, pl, "%s", !strcmp(pr, "udp") ? "udp" : "tcp");
++	if ((q = strpbrk(po, ",:-")) != NULL) *q = 0;
++	if (strlen(po) >= ql) return 0;			/* same refuse-don't-truncate rule */
++	memcpy(port, po, strlen(po) + 1);
++	return port[0] ? 1 : 0;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* the ruleset                                                         */
+ /* ------------------------------------------------------------------ */
+@@ -311,6 +497,10 @@ struct rule {
+ 	int has_icmp, icmp_neg, icmp_type;
+ 	int has_dscp, dscp_neg, dscp;
+ 	int has_addrtype_local;
++	/* recorded, deliberately NOT part of rule_match() or r_isplain(): a rate
++	 * limit always passes the first packet, which is the packet we walk. It is
++	 * here so a shape predicate can assert that a guard chain HAS one (H1). */
++	int has_limit;
+ 	char depends[28];
+ 	char target[36];
+ 	char targs[160];
+@@ -466,7 +656,7 @@ static int parse_rule(struct fw *fw, struct table *t, char *line)
+ 		else if (!strcmp(o, "--dst-type")) { const char *v = NEXT(); if (!strcmp(v, "LOCAL") && !neg) r->has_addrtype_local = 1; else set_depends(r, "addrtype"); }
+ 		else if (!strcmp(o, "--src-type")) { (void)NEXT(); set_depends(r, "addrtype"); }
+ 		else if (!strcmp(o, "--comment")) { (void)NEXT(); }
+-		else if (!strcmp(o, "--limit") || !strcmp(o, "--limit-burst")) { (void)NEXT(); }	/* first packet always passes a limit */
++		else if (!strcmp(o, "--limit") || !strcmp(o, "--limit-burst")) { (void)NEXT(); r->has_limit = 1; }	/* first packet always passes a limit */
+ 		else if (!strcmp(o, "-j") || !strcmp(o, "-g")) {
+ 			int k;
+ 			snprintf(r->target, sizeof(r->target), "%s", NEXT());
+@@ -844,13 +1034,39 @@ static struct fw *fw_for(int fam) { return fam == 6 ? &fw6 : &fw4; }
+ 
+ static int r_isplain(const struct rule *r);
+ 
+-/* shape predicates: EXISTS t/c  ABSENT t/c  LASTDROP t/c  HASTARGET t/c/T  SKELETON  SETNOT set/addr  SETHAS set/addr */
++/* shape predicates: EXISTS t/c  ABSENT t/c  LASTDROP t/c  HASTARGET t/c/T
++ * MATCHSET t/c/set  LIMITED t/c  BEFORE t/c/setA setB  SKELETON
++ * SETNOT set/addr  SETHAS set/addr  PROHIBIT mark/mask  NOTE <free text> */
+ static void eval_shape(struct witness *w)
+ {
+ 	char kind[16], a[80], b[48], t2[12], c2[40], tg[40]; struct fw *fw = fw_for(w->fam); struct table *t; struct chain *ch;
+ 	kind[0] = a[0] = b[0] = 0;
+ 	sscanf(w->pred, "%15s %79s %47s", kind, a, b);
+ 	w->ok = 0;
++	/* NOTE carries prose, not a predicate: it is how a row states that the
++	 * question is outside what a table walk can answer. Always n/a - never
++	 * green (nothing was checked) and never red (nothing is wrong). */
++	if (!strcmp(kind, "NOTE")) {
++		const char *txt = w->pred + 4;
++		while (*txt == ' ') txt++;
++		w->na = 1;
++		snprintf(w->verdict, sizeof(w->verdict), "not checked");
++		snprintf(w->note, sizeof(w->note), "%s", txt);
++		return;
++	}
++	if (!strcmp(kind, "PROHIBIT")) {
++		char *sl = strchr(a, '/'); unsigned mk, mask; const struct iprule *r;
++		int have = (w->fam == 6) ? iprule_loaded6 : iprule_loaded4;
++		if (!sl) { w->na = 1; snprintf(w->note, sizeof(w->note), "bad predicate"); return; }
++		if (!have) { w->na = 1; snprintf(w->note, sizeof(w->note), "no %s rule database", w->fam == 6 ? "ip -6" : "ip -4"); return; }
++		parse_mark(a, &mk, &mask);
++		r = iprule_refuses(w->fam, mk, mask);
++		w->ok = r != NULL;
++		snprintf(w->verdict, sizeof(w->verdict), r ? "refused" : "no such rule");
++		if (r) snprintf(w->decide, sizeof(w->decide), "ip rule pref %d fwmark 0x%x/0x%x %s", r->pref, r->mark, r->mask, r->action);
++		else snprintf(w->decide, sizeof(w->decide), "no ip rule refuses fwmark %s - a marked flow falls through to main", a);
++		return;
++	}
+ 	if (!strcmp(kind, "SKELETON")) {
+ 		t = table_get(fw, "filter", 0);
+ 		w->ok = t && chain_get(t, "INPUT_ICMP", 0) && chain_get(t, "SECURITY", 0);
+@@ -888,6 +1104,57 @@ static void eval_shape(struct witness *w)
+ 		if (hit) snprintf(w->decide, sizeof(w->decide), "%s/%s#%d %s", t2, c2, hit, ch->r[hit-1].text); else snprintf(w->decide, sizeof(w->decide), "%s/%s has no %s rule", t2, c2, tg);
+ 		return;
+ 	}
++	/* a rule in this chain matches this ipset. Used where the SET's contents
++	 * are not knowable from here (a country set holds tens of thousands of
++	 * networks and `ipset test` needs an address to aim at): the promise that
++	 * can still be checked is that enabling the country emitted its rule. */
++	if (!strcmp(kind, "MATCHSET")) {
++		int i, hit = 0;
++		if (ch) for (i = 0; i < ch->n; i++) if (ch->r[i].has_set && !strcmp(ch->r[i].set, tg)) { hit = i + 1; break; }
++		w->ok = hit > 0;
++		snprintf(w->verdict, sizeof(w->verdict), hit ? "present" : "missing");
++		if (hit) snprintf(w->decide, sizeof(w->decide), "%s/%s#%d %s", t2, c2, hit, ch->r[hit-1].text);
++		else snprintf(w->decide, sizeof(w->decide), "%s/%s matches no set named %s", t2, c2, tg);
++		return;
++	}
++	/* the chain carries a rate limit. A limit always passes the packet we
++	 * walk, so this is the only way to witness that the guard is armed. */
++	if (!strcmp(kind, "LIMITED")) {
++		int i, hit = 0;
++		if (ch) for (i = 0; i < ch->n; i++) if (ch->r[i].has_limit) { hit = i + 1; break; }
++		w->ok = hit > 0;
++		snprintf(w->verdict, sizeof(w->verdict), !ch ? "missing" : hit ? "rate limited" : "no limit");
++		if (hit) snprintf(w->decide, sizeof(w->decide), "%s/%s#%d %s", t2, c2, hit, ch->r[hit-1].text);
++		else snprintf(w->decide, sizeof(w->decide), "%s/%s carries no rate limit", t2, c2);
++		return;
++	}
++	/* ORDER, not presence: the first rule matching set `tg` must come before
++	 * the first matching set `b`. An allow list that is consulted after the
++	 * ban list is not an allow list, and both rules being present says
++	 * nothing about that - only their positions do. */
++	if (!strcmp(kind, "BEFORE")) {
++		int i, ia = 0, ib = 0;
++		if (ch) for (i = 0; i < ch->n; i++) {
++			if (!ch->r[i].has_set) continue;
++			if (!ia && !strcmp(ch->r[i].set, tg)) ia = i + 1;
++			if (!ib && !strcmp(ch->r[i].set, b)) ib = i + 1;
++		}
++		if (!ch) { w->ok = 0; snprintf(w->verdict, sizeof(w->verdict), "missing"); snprintf(w->decide, sizeof(w->decide), "%s/%s", t2, c2); return; }
++		if (!ia || !ib) {
++			/* neither ordering nor a broken promise: the pair is not both
++			 * installed, which the presence rows are the ones to report */
++			w->na = 1;
++			snprintf(w->verdict, sizeof(w->verdict), "n/a");
++			/* bounded so the note provably fits note[100]: the chain and set
++			 * names are the only unbounded parts */
++			snprintf(w->note, sizeof(w->note), "%.11s/%.24s carries only one of %.16s / %.16s", t2, c2, tg, b);
++			return;
++		}
++		w->ok = ia < ib;
++		snprintf(w->verdict, sizeof(w->verdict), w->ok ? "checked first" : "checked after");
++		snprintf(w->decide, sizeof(w->decide), "%s/%s#%d %s vs #%d %s", t2, c2, ia, tg, ib, b);
++		return;
++	}
+ 	w->na = 1; snprintf(w->note, sizeof(w->note), "unknown predicate %s", kind);
+ }
+ 
+@@ -1083,20 +1350,57 @@ static void gen_witnesses(void)
+ 				char port[12]; snprintf(port, sizeof(port), "%.*s", (int)strcspn(f[1], ":,"), f[1]);
+ 				if (!strcasecmp(proto, "TCP")) { plist[0] = "tcp"; np = 1; } else if (!strcasecmp(proto, "UDP")) { plist[0] = "udp"; np = 1; }
+ 				else if (!strcasecmp(proto, "BOTH")) np = 2; else { plist[0] = proto; np = 1; }
++				int restricted = (f[5][0] && strcmp(f[5], "0.0.0.0")) ? 1 : 0;
+ 				for (j = 0; j < np; j++) {
+-					const char *src = (f[5][0] && strcmp(f[5], "0.0.0.0")) ? f[5] : "198.51.100.7";
++					const char *src = restricted ? f[5] : "198.51.100.7";
+ 					snprintf(id, sizeof(id), "B1.%d%s", n, np == 2 ? (j ? "u" : "t") : "");
+ 					snprintf(feat, sizeof(feat), "Port forward %s %s/%s -> %s", f[0][0] ? f[0] : "(unnamed)", port, plist[j], f[2]);
+ 					wit_pkt(id, feat, 4, wan_ifname, src, wanip, plist[j], port, "NEW", "DNAT", "", "");
+ 					snprintf(id, sizeof(id), "B2.%d%s", n, np == 2 ? (j ? "u" : "t") : "");
+ 					snprintf(feat, sizeof(feat), "Port forward %s: forwarded flow passes FORWARD", f[0][0] ? f[0] : "(unnamed)");
+ 					wit_pkt(id, feat, 4, wan_ifname, src, wanip, plist[j], port, "NEW", "DNAT+ACCEPT", "", "");
++					/* B3 - the restriction is the promise, so it needs its own
++					 * NEGATIVE: a source the rule does not list must not be
++					 * translated. Without this row a forward whose `-s` was
++					 * dropped on the way into the table still reads green,
++					 * because B1/B2 aim from INSIDE the allowed range. The probe
++					 * address must be provably outside it - if every candidate
++					 * is covered the restriction is the whole internet and
++					 * there is nothing to witness. */
++					if (restricted) {
++						static const char *cand[] = { "198.51.100.7", "203.0.113.99", "192.0.2.1" };
++						struct addr net, pa; int ci, pick = -1;
++						if (addr_parse(f[5], 4, &net) == 0) {
++							for (ci = 0; ci < 3 && pick < 0; ci++)
++								if (addr_parse(cand[ci], 4, &pa) == 0 && !addr_in(&net, &pa)) pick = ci;
++						}
++						if (pick >= 0) {
++							snprintf(id, sizeof(id), "B3.%d%s", n, np == 2 ? (j ? "u" : "t") : "");
++							snprintf(feat, sizeof(feat), "Port forward %s: a source outside %.24s is not translated",
++								 f[0][0] ? f[0] : "(unnamed)", f[5]);
++							wit_pkt(id, feat, 4, wan_ifname, cand[pick], wanip, plist[j], port, "NEW", "NODNAT", "", "");
++						}
++					}
+ 				}
+ 			}
+ 		}
+ 		free(rl);
+ 	}
+ 
++	/* B5 - UPnP. The daemon half and the rules half are gated on DIFFERENT
++	 * nvram keys - `wan<unit>_upnp_enable` starts miniupnpd, the generic
++	 * `upnp_enable` emits the VSERVER -> VUPNP jump - and they have been found
++	 * desynced in BOTH directions on live metal, each time breaking UPnP
++	 * silently. So the row is keyed on the DAEMON half (what the user believes
++	 * they switched on) and asserts the RULES half: a desync now shows up as a
++	 * red witness naming the missing jump instead of as nothing at all. */
++	{
++		char k[32]; int unit = nv_is("wan1_primary", "1") ? 1 : 0;
++		snprintf(k, sizeof(k), "wan%d_upnp_enable", unit);
++		if (nv_is(k, "1"))
++			wit_shape("B5", "UPnP: port mappings reach VUPNP from VSERVER", 4, "HASTARGET nat/VSERVER/VUPNP", "OK");
++	}
++
+ 	/* D - Gatekeeper: derive the device states from the live REAPER_GKF chain */
+ 	if (nv_is("gk_enable", "1")) {
+ 		struct table *t = table_get(&fw4, "filter", 0); struct chain *ch = chain_get(t, "REAPER_GKF", 0);
+@@ -1111,10 +1415,19 @@ static void gen_witnesses(void)
+ 			for (j = i; j < ch->n; j++) { struct rule *s = &ch->r[j]; if (!s->has_mac || strcasecmp(s->mac, r->mac)) continue;
+ 				if (!strcmp(s->target, "DROP")) { if (s->has_dst) lanonly = 1; else blocked = 1; } }
+ 			if (blocked) {
++				const char *hp = nv_get("https_lanport");
+ 				snprintf(id, sizeof(id), "D1.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: blocked device %s cannot reach the WAN", r->mac);
+ 				wit_pkt(id, feat, 4, lan_ifname, lanhost, "1.1.1.1", "tcp", "443", "NEW", "DROP", "", r->mac);
+ 				snprintf(id, sizeof(id), "D2.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: blocked device %s still resolves at the router", r->mac);
+ 				wit_pkt(id, feat, 4, lan_ifname, lanhost, rtr, "udp", "53", "NEW", "RESOLVED", "", r->mac);
++				/* D5 - the escape hatch, confirmed on metal 2026-08-29: the
++				 * HTTPS admin port is what a quarantined admin gets back in
++				 * with. Enforcement is FORWARD-side (REAPER_GKF), so a
++				 * Gatekeeper rule that reached INPUT would lock the admin out
++				 * of their own router with no shell when SSH is off. Blocking
++				 * a device must never block the way back. */
++				snprintf(id, sizeof(id), "D5.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: blocked device %s can still reach the admin UI", r->mac);
++				wit_pkt(id, feat, 4, lan_ifname, lanhost, rtr, "tcp", hp[0] ? hp : "8443", "NEW", "ACCEPT", "", r->mac);
+ 			} else if (lanonly) {
+ 				char lh2[48]; host_in_subnet(lan4, 77, lh2, sizeof(lh2));
+ 				snprintf(id, sizeof(id), "D3a.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: internet-only device %s reaches the WAN", r->mac);
+@@ -1139,7 +1452,40 @@ static void gen_witnesses(void)
+ 			if (m[0]) {
+ 				wit_pkt("E1", "Warden: a banned address cannot reach the router", 4, wan_ifname, m, wanip[0] ? wanip : rtr, "tcp", "443", "NEW", "DROP", "", "");
+ 				wit_pkt("E2", "Warden: a banned address cannot reach the LAN", 4, wan_ifname, m, lanhost, "tcp", "445", "NEW", "DROP", "", "");
++				/* E3 - the OUTBOUND half, and only while it is switched on.
++				 * Inbound and outbound are separate chains (RW_DROP vs
++				 * RW_ODROP) built from the same sets, so one working proves
++				 * nothing about the other - which is the shape of the
++				 * "outbound blocks appear to have stopped" report. */
++				if (nv_is("rwarden_dir", "out") || nv_is("rwarden_dir", "both"))
++					wit_pkt("E3", "Warden: a LAN host cannot reach a banned address", 4, lan_ifname, lanhost, m, "tcp", "443", "NEW", "DROP", "", lanmac);
++			}
++		}
++		/* E6 - ORDER, not presence. The allow list is only an allow list if it
++		 * is consulted BEFORE the ban list; both rules existing says nothing
++		 * about which one decides. n/a rather than red when the chain does not
++		 * carry both - that is what the presence rows are for. */
++		wit_shape("E6", "Warden: the allow list is checked before the ban list", 4, "BEFORE filter/REAPER_WARDEN/rw_allow rw_ban", "OK");
++		/* E7 - one row per enabled country. A country set holds tens of
++		 * thousands of networks and `ipset test` needs an address to aim at,
++		 * so what is witnessed is that enabling the country actually emitted
++		 * its drop rule: the per-country rule is also what the blocked-country
++		 * statistics count, so a missing one loses the enforcement AND the
++		 * number that would have shown it missing. */
++		{
++			char *geo = xstrdup(nv_get("rwarden_geo")), *tok, *save = NULL; int k = 0;
++			for (tok = strtok_r(geo, " ,<>", &save); tok && k < 16; tok = strtok_r(NULL, " ,<>", &save)) {
++				char cc[3];
++				if (!isalpha((unsigned char)tok[0]) || !isalpha((unsigned char)tok[1]) || tok[2]) continue;
++				cc[0] = (char)tolower((unsigned char)tok[0]); cc[1] = (char)tolower((unsigned char)tok[1]); cc[2] = 0;
++				k++;
++				snprintf(id, sizeof(id), "E7.%s", cc);
++				snprintf(feat, sizeof(feat), "Warden: country %c%c is blocked at the chain",
++					 (char)toupper((unsigned char)cc[0]), (char)toupper((unsigned char)cc[1]));
++				snprintf(buf, sizeof(buf), "MATCHSET filter/REAPER_WARDEN/rw_g_%s", cc);
++				wit_shape(id, feat, 4, buf, "OK");
+ 			}
++			free(geo);
+ 		}
+ 	}
+ 
+@@ -1163,7 +1509,95 @@ static void gen_witnesses(void)
+ 					snprintf(pt, sizeof(pt), "%d", r->dpt_lo);
+ 					snprintf(id, sizeof(id), "F4.%d", k); snprintf(feat, sizeof(feat), "Service Intercept: %s/%s from the LAN is redirected", pt, r->proto == 17 ? "udp" : r->proto == 6 ? "tcp" : "ip");
+ 					wit_pkt(id, feat, 4, lan_ifname, lanhost, d, r->proto == 17 ? "udp" : r->proto == 6 ? "tcp" : "tcp", pt, "NEW", "DNAT+ACCEPT", "", "");
++					/* F5 - THE LOOP-BREAKER, and the reason an intercept needs
++					 * two witnesses rather than one. The host the service is
++					 * redirected TO has to reach the real service itself; if
++					 * the auto-exemption for it is missing, its own upstream
++					 * query is redirected straight back at it and the service
++					 * fails for everyone while F4 still reads green. Only for
++					 * DNAT: a REDIRECT lands on the router, whose own traffic
++					 * leaves via OUTPUT and is never re-matched here. */
++					if (!strcmp(r->target, "DNAT")) {
++						char tgt[52] = "", *q = strstr(r->targs, "--to-destination");
++						if (q && (q = strchr(q, ' ')) != NULL) {
++							while (*q == ' ') q++;
++							snprintf(tgt, sizeof(tgt), "%.*s", (int)strcspn(q, " "), q);
++							{ char *c = strrchr(tgt, ':'); if (c && !strchr(tgt, '[')) *c = 0; }
++						}
++						if (tgt[0] && strcmp(tgt, d)) {
++							snprintf(id, sizeof(id), "F5.%d", k);
++							snprintf(feat, sizeof(feat), "Service Intercept: %.24s is exempt from its own redirect", tgt);
++							wit_pkt(id, feat, 4, lan_ifname, tgt, d, r->proto == 17 ? "udp" : "tcp", pt, "NEW", "NODNAT", "", "");
++						}
++					}
++				}
++			}
++
++			/* F1 - one witness per SAVED rule. Driven from the rule LIST,
++			 * never from the chain the engine just built: a witness derived
++			 * from the live chain would assert what the chain already says
++			 * and could not catch the failure that matters - a rule that was
++			 * saved and then did not survive into the tables, or that a rule
++			 * ABOVE it now preempts. The rule's own stated source, target and
++			 * service are the promise; the walk is the check.
++			 * Skipped rather than guessed at: a disabled rule, a log-only rule
++			 * (it promises no verdict), and any rule whose object is fqdn or
++			 * geo (those resolve at run time into a set, so there is no
++			 * literal address here to aim a packet at). A rule carrying a
++			 * schedule or a rate limit is still emitted - the walker answers
++			 * `depends` on the match it cannot model, which is the honest
++			 * result and exactly what `depends` is for. */
++			{
++				char *rl = xstrdup(fwlist("rules"));
++				const char *objs = fwlist("obj"), *svcs = fwlist("svc");
++				char *rec, *save = NULL;
++				int nr = 0;
++				for (rec = strtok_r(rl, "<", &save); rec && nr < 24; rec = strtok_r(NULL, "<", &save)) {
++					char en[4], dir[8], act[12], sobj[72], dobj[72], svcn[72];
++					char sip[52] = "", dip[52] = "", smac[24] = "", dmac[24] = "";
++					char proto[8] = "tcp", port[16] = "443";
++					const char *expect, *inif, *src, *dst;
++					int sk, dk;
++					if (!rec_field(rec, 0, en, sizeof(en)) || strcmp(en, "1")) continue;
++					if (!rec_field(rec, 1, dir, sizeof(dir))) continue;
++					if (!rec_field(rec, 2, act, sizeof(act))) continue;
++					rec_field(rec, 4, sobj, sizeof(sobj));
++					rec_field(rec, 6, dobj, sizeof(dobj));
++					rec_field(rec, 7, svcn, sizeof(svcn));
++					if (!strcmp(act, "accept"))      expect = "ACCEPT";
++					else if (!strcmp(act, "drop"))   expect = "DROP";
++					else if (!strcmp(act, "reject")) expect = "DROP";	/* REJECT counts as DROP */
++					else continue;						/* log: no verdict promised */
++					sk = sobj[0] ? obj_pick(objs, sobj, sip, sizeof(sip), smac, sizeof(smac)) : 1;
++					dk = dobj[0] ? obj_pick(objs, dobj, dip, sizeof(dip), dmac, sizeof(dmac)) : 1;
++					if (!sk || !dk) continue;				/* fqdn / geo / unknown */
++					if (svcn[0] && !svc_pick(svcs, svcn, proto, sizeof(proto), port, sizeof(port))) continue;
++					if (!strcmp(dir, "in")) {
++						inif = lan_ifname;
++						src  = sip[0] ? sip : lanhost;
++						dst  = rtr;					/* INPUT: the router itself */
++					} else if (!strcmp(dir, "out")) {
++						inif = "gen";					/* the router's own traffic */
++						src  = rtr;
++						dst  = dip[0] ? dip : "1.1.1.1";
++					} else {
++						inif = lan_ifname;
++						src  = sip[0] ? sip : lanhost;
++						dst  = dip[0] ? dip : "1.1.1.1";
++					}
++					nr++;
++					snprintf(id, sizeof(id), "F1.%d", nr);
++					/* bounded so the label provably fits feat[80]; object and
++					 * service names are the only unbounded parts */
++					snprintf(feat, sizeof(feat), "Rules engine: %.3s %.16s%s%.16s%s%.12s is %.6s",
++						 dir, sobj[0] ? sobj : "any",
++						 dobj[0] ? " -> " : "", dobj[0] ? dobj : "",
++						 svcn[0] ? " " : "", svcn[0] ? svcn : "",
++						 act);
++					wit_pkt(id, feat, 4, inif, src, dst, proto, port, "NEW", expect, "",
++						smac[0] ? smac : (!strcmp(dir, "out") ? "" : lanmac));
+ 				}
++				free(rl);
+ 			}
+ 		}
+ 	}
+@@ -1196,8 +1630,129 @@ static void gen_witnesses(void)
+ 			wit_pkt("C5a", "IPsec server: IKE reachable from the WAN", 4, wan_ifname, "198.51.100.7", wanip[0] ? wanip : rtr, "udp", "500", "NEW", "ACCEPT", "", "");
+ 			wit_pkt("C5b", "IPsec server: NAT-T reachable from the WAN", 4, wan_ifname, "198.51.100.7", wanip[0] ? wanip : rtr, "udp", "4500", "NEW", "ACCEPT", "", "");
+ 		}
++		/* C2 / C4 - where a connected VPN-server client is allowed to go is
++		 * decided entirely inside OVPNSF / WGSF: the chain is built by
++		 * INSERTING one ACCEPT per permitted egress ahead of a closing DROP,
++		 * so if the chain itself never got built the server runs and every
++		 * client is silently confined. That much is witnessable from here.
++		 * What is NOT yet witnessed is WHICH egress each client may use -
++		 * that needs the per-server LAN-access setting, and guessing it would
++		 * turn an admin's deliberate internet-only server into a false red. */
++		if (s[0]) wit_shape("C2", "OpenVPN server: the client forward chain is built", 4, "EXISTS filter/OVPNSF", "OK");
++		if (nv_is("wgs_enable", "1")) wit_shape("C4", "WireGuard server: the peer forward chain is built", 4, "EXISTS filter/WGSF", "OK");
++	}
++
++
++	/* C7 - policy routing actually marks the flow. Derived from the live
++	 * mangle chain like F4, and non-circular for the same reason: the rule
++	 * existing is not the question, whether a packet still REACHES it after
++	 * the whole raw -> mangle walk is. That is precisely the v3.1.7 failure
++	 * shape - a CONNMARK restore earlier in the chain returned a stale code
++	 * and the selector below never ran, so the flow left by the WAN for the
++	 * life of the conntrack entry. A mark witness catches that; a rule count
++	 * cannot. */
++	{
++		struct table *t = table_get(&fw4, "mangle", 0);
++		struct chain *ch = t ? chain_get(t, "REAPER_PBR", 0) : NULL;
++		int k = 0;
++		if (ch) for (i = 0; i < ch->n && k < 8; i++) {
++			struct rule *r = &ch->r[i];
++			char val[40] = "", sbuf[52];
++			const char *mk, *src;
++			if (strcmp(r->target, "MARK")) continue;
++			mk = strstr(r->targs, "--set-xmark");
++			if (!mk) mk = strstr(r->targs, "--set-mark");
++			if (!mk) continue;
++			mk = strchr(mk, ' ');
++			if (!mk) continue;
++			while (*mk == ' ') mk++;
++			snprintf(val, sizeof(val), "%s", mk);
++			{ char *sp = strchr(val, ' '); if (sp) *sp = 0; }
++			if (!val[0]) continue;
++			if (r->has_src) { addr_str(&r->src, sbuf, sizeof(sbuf)); src = sbuf; }
++			else src = lanhost;
++			k++;
++			snprintf(id, sizeof(id), "C7.%d", k);
++			snprintf(feat, sizeof(feat), "Policy routing: %s%.24s is marked for its tunnel",
++				 r->has_mac ? "device " : "", r->has_mac ? r->mac : (r->has_src ? sbuf : "the LAN"));
++			snprintf(buf, sizeof(buf), "MARK:%s", val);
++			wit_pkt(id, feat, 4, lan_ifname, src, "1.1.1.1", "tcp", "443", "NEW", buf, "",
++				r->has_mac ? r->mac : lanmac);
++		}
++	}
++
++	/* C6 - the VPN-client Killswitch. It is the one promise in this whole
++	 * catalog that never touches iptables: reaper_pbr realises it SOLELY as
++	 * `ip rule ... prohibit` at pref 9100+code, so no walk of the tables can
++	 * see it and, until now, a Killswitch that failed to install was invisible
++	 * - which is the exact failure the feature exists to prevent.
++	 *
++	 * Read from the SAVED rule list, for F1's reason: the question is whether
++	 * what was asked for is installed. Killswitch-on is reproduced the way
++	 * ppbr_target() decides it - the client's own enforce key AND the client
++	 * being enabled, because v3.1.5 settled that only an enabled client's
++	 * Killswitch counts. A BLOCK target is a prohibit by definition and is
++	 * witnessed the same way. */
++	if (nv_is("reaper_pbr_enable", "1")) {
++		char *pl = xstrdup(pbrlist()), *rec, *save = NULL;
++		int seen[16]; int k = 0;
++		memset(seen, 0, sizeof(seen));
++		for (rec = strtok_r(pl, "<", &save); rec && k < 12; rec = strtok_r(NULL, "<", &save)) {
++			char en[4], tgt[16], nvk[32];
++			int code = 0, fc = 0, unit;
++			const char *what = NULL;
++			if (!rec_field(rec, 0, en, sizeof(en)) || strcmp(en, "1")) continue;	/* disabled */
++			if (!rec_field(rec, 6, tgt, sizeof(tgt)) || !tgt[0]) continue;
++			if (!strncmp(tgt, "OVPN", 4) && tgt[4] >= '1' && tgt[4] <= '5' && !tgt[5]) {
++				unit = tgt[4] - '0'; code = unit; what = "OpenVPN client";
++				snprintf(nvk, sizeof(nvk), "vpn_client%d_enforce", unit);
++				if (nv_is(nvk, "1")) {
++					const char *eas = nv_get("vpn_clientx_eas"); char u = (char)('0' + unit);
++					fc = strchr(eas, u) != NULL;		/* ovpn_is_client_enabled() */
++				}
++			} else if (!strncmp(tgt, "WGC", 3) && tgt[3] >= '1' && tgt[3] <= '5' && !tgt[4]) {
++				unit = tgt[3] - '0'; code = 5 + unit; what = "WireGuard client";
++				snprintf(nvk, sizeof(nvk), "wgc%d_enforce", unit);
++				if (nv_is(nvk, "1")) { snprintf(nvk, sizeof(nvk), "wgc%d_enable", unit); fc = nv_is(nvk, "1"); }
++			} else if (!strcmp(tgt, "BLOCK")) {
++				unit = 0; code = 15; fc = 1; what = "Block";
++			} else continue;
++			if (!fc || code < 1 || code > 15 || seen[code]) continue;
++			seen[code] = 1; k++;
++			snprintf(id, sizeof(id), "C6.%d", code);
++			if (!strcmp(tgt, "BLOCK"))
++				snprintf(feat, sizeof(feat), "Policy routing: a Block rule's flow is refused, not sent out the WAN");
++			else
++				snprintf(feat, sizeof(feat), "Killswitch: %s %d leaks nothing when its tunnel is down", what, unit);
++			snprintf(buf, sizeof(buf), "PROHIBIT 0x%X0000/0x%X", code, FWSIM_PBR_MASK);
++			wit_shape(id, feat, 4, buf, "OK");
++			/* the v6 half is a best-effort add while IPv6 is off, so it is
++			 * only a promise when the LAN actually has IPv6 */
++			if (lan6) {
++				snprintf(id, sizeof(id), "C6.%dv6", code);
++				snprintf(feat, sizeof(feat), "Killswitch: the same rule holds for IPv6");
++				wit_shape(id, feat, 6, buf, "OK");
++			}
++		}
++		free(pl);
+ 	}
+ 
++	/* H1 - the DoS guard. Every packet we walk is the FIRST packet of a flow
++	 * and a rate limit always passes the first packet, so no witness packet
++	 * can ever show the guard working; what can be checked is that it is
++	 * armed. An unarmed SECURITY chain looks identical to an armed one from
++	 * any single packet's point of view. */
++	if (nv_is("sw_mode", "1"))
++		wit_shape("H1", "Flood guard: the SECURITY chain is rate limited", 4, "LIMITED filter/SECURITY", "OK");
++
++	/* H6 - the honesty row. The page should say what it does NOT know, in the
++	 * same list as everything it does, rather than leaving a reader to assume
++	 * a green board covers these. Never green (nothing was checked) and never
++	 * red (nothing is wrong). */
++	wit_shape("H6", "Out of scope for the walker", 4,
++		  "NOTE reverse-path filtering, hardware-accelerated flows that never reach iptables, and drops inside the closed-source wireless and AiMesh components are not visible to a table walk",
++		  "OK");
++
+ 	/* H5 the MSS clamp when the WAN needs it */
+ 	if (nv_is("wan0_proto", "pppoe") || (atoi(nv_get("wan0_mtu")) > 0 && atoi(nv_get("wan0_mtu")) < 1500))
+ 		wit_shape("H5", "TCP MSS clamp present in FORWARD", 4, "HASTARGET filter/FORWARD/TCPMSS", "OK");
+@@ -1298,6 +1853,15 @@ static void router_inputs(void)
+ 	run_to(FWSIM_TMPA, ad4); load_addrs(FWSIM_TMPA);
+ 	run_to(FWSIM_TMPA, ad6); load_addrs(FWSIM_TMPA);
+ 	unlink(FWSIM_TMPA);
++	/* the routing policy database - the Killswitch lives here and nowhere
++	 * else (C6). Read for both families regardless of --family: a v4-only run
++	 * still wants to know the v4 prohibit is installed. */
++	{
++		char *r4[] = { "ip", "-4", "rule", "show", NULL }, *r6[] = { "ip", "-6", "rule", "show", NULL };
++		if (opt_family & 1) { run_to(FWSIM_TMPR, r4); load_iprules(FWSIM_TMPR, 4); }
++		if (opt_family & 2) { run_to(FWSIM_TMPR, r6); load_iprules(FWSIM_TMPR, 6); }
++		unlink(FWSIM_TMPR);
++	}
+ 	/* the WAN interface: what the firewall was built for */
+ 	{
+ 		static char wbuf[20]; const char *proto = nv_get("wan0_proto"), *ifn;
+@@ -1322,7 +1886,7 @@ static void usage(void)
+ 		"  --static FILE         the static witness file (default %s)\n"
+ 		"  --dump FILE           write the generated witnesses to FILE\n"
+ 		"  host mode: --save4 FILE --save6 FILE --addr FILE --members FILE --nv FILE\n"
+-		"             --wan IF --lan IF\n", FWSIM_VER, FWSIM_JSON, FWSIM_JSON, FWSIM_STATIC);
++		"             --rule4 FILE --rule6 FILE --wan IF --lan IF\n", FWSIM_VER, FWSIM_JSON, FWSIM_JSON, FWSIM_STATIC);
+ }
+ 
+ int main(int argc, char **argv)
+@@ -1343,6 +1907,8 @@ int main(int argc, char **argv)
+ 		else if (!strcmp(a, "--addr") && v) { opt_addr = v; i++; }
+ 		else if (!strcmp(a, "--members") && v) { opt_members = v; i++; }
+ 		else if (!strcmp(a, "--nv") && v) { opt_nv = v; i++; }
++		else if (!strcmp(a, "--rule4") && v) { opt_rule4 = v; i++; }
++		else if (!strcmp(a, "--rule6") && v) { opt_rule6 = v; i++; }
+ 		else if (!strcmp(a, "--wan") && v) { wan_ifname = v; i++; }
+ 		else if (!strcmp(a, "--lan") && v) { lan_ifname = v; i++; }
+ 		else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
+@@ -1356,6 +1922,8 @@ int main(int argc, char **argv)
+ 	if (opt_save6) load_save(&fw6, opt_save6, 6);
+ 	if (opt_addr) load_addrs(opt_addr);
+ 	if (opt_members) load_members(opt_members);
++	if (opt_rule4) load_iprules(opt_rule4, 4);
++	if (opt_rule6) load_iprules(opt_rule6, 6);
+ 	if (!opt_save4 && !opt_save6) { usage(); return 2; }
+ 	(void)do_run;
+ #else
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 8047de0757..e6dc2109a7 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -1017,6 +1017,19 @@ static void poll_classes(const char *wanif)
+ 	have_cls_last = 1;
+ }
+ 
++/* Is this address the router itself? The v4 half is the lan_ip test used all
++ * through poll_fcache; the v6 half is is_self6(). Takes the printed form because
++ * that is what top_note is handed, and it runs at most once per flow per sample. */
++static int top_is_self(const char *ip)
++{
++	struct in_addr a;
++	unsigned char b[16];
++	if (!ip || !*ip) return 0;
++	if (strchr(ip, ':'))
++		return inet_pton(AF_INET6, ip, b) == 1 ? is_self6(b) : 0;
++	return (lan_ip && inet_aton(ip, &a)) ? (ntohl(a.s_addr) == lan_ip) : 0;
++}
++
+ static void top_note(const char *src, const char *dst, int dport, int proto,
+ 		     uint64_t up, uint64_t dn, const char *smac)
+ {
+@@ -1025,6 +1038,35 @@ static void top_note(const char *src, const char *dst, int dport, int proto,
+ 	uint64_t rate = (up + dn) / FCACHE_SECS;
+ 	int i, worst = 0;
+ 	if (rate == 0) return;
++
++	/* v3.1.7 (owner, screenshot): THE ROUTER IS NOT A TALKER. Every open admin
++	 * page holds several parallel connections to lan_ip:8443, so merely looking
++	 * at the traffic page manufactured the traffic the page then reported - and
++	 * because each connection took a slot of its own (below), a browser sitting
++	 * on the dashboard could fill the entire table and evict everything real.
++	 * The per-network view has excluded the Router bucket since it was written
++	 * (`if (nm==="Router") continue`); this is that same rule applied to the one
++	 * place it was missed. DNS and NTP to the router go with it, deliberately:
++	 * "top talkers" means traffic going somewhere, and the network view already
++	 * draws that line in the same spot. */
++	if (top_is_self(dst)) return;
++
++	/* ...and NTOP is 20 SLOTS, which is not the same thing as 20 talkers. One
++	 * conversation opened over eleven parallel connections used to occupy eleven
++	 * of them: a wrong reading (the panel promises a per-destination-port
++	 * bucket, and showed eleven identical rows instead), and a real loss, since
++	 * the genuine talkers those slots would have held never appeared at all.
++	 * Fold by the tuple the panel claims to group by. Safe to accumulate: ntop
++	 * is reset to 0 at the top of every poll, so these sums span one sample. */
++	for (i = 0; i < ntop; i++)
++		if (top[i].dport == dport && top[i].proto == proto &&
++		    !strcmp(top[i].src, src) && !strcmp(top[i].dst, dst)) {
++			top[i].up += up;
++			top[i].dn += dn;
++			top[i].rate += rate;
++			return;
++		}
++
+ 	if (ntop < NTOP) { i = ntop++; goto put; }
+ 	for (i = 1; i < NTOP; i++)
+ 		if (top[i].rate < top[worst].rate) worst = i;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index efd9fcc724..20a3e1949b 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index bb16fa4b44..2009a04447 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 7b85d436aa..f7f0a7abf7 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index c3f7b4911f..b5d1a276e4 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index f1fdc5d519..c29cc132e6 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 25d1e8cc27..c09f5a8e16 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 61c088bd07..e9ff65b222 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 974084bc89..2dea75b9ae 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index b929f53342..e8ae85900c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index ec43cf6a33..f2af114188 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index f9bd226ede..db289613ba 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 164f6e7ccc..03cdaf317b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 995d829434..3fc9699d8d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 96c9974600..735a35174c 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 54e790160d..0b80e3bc6d 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -128,6 +128,14 @@ main{min-width:0}
+ .nav a svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7}
+ .nav a{overflow:hidden}
+ .nav a .nl{font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
++/* Firewall rail badge - the count of promises that are NOT holding. Kept
++   identical to reaper_shell.asp's copy (standing rule 6: the rail lives in two
++   files and is synced by hand). Hidden at zero: a standing "0" teaches people to
++   stop looking at the place the number appears. Numerals only, so no dict key. */
++.nav a .nbadge{display:none;margin-left:auto;flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
++  background:var(--crimson);color:#fff;font-family:var(--hdr);font-weight:700;font-size:10.5px;letter-spacing:.02em;
++  line-height:18px;text-align:center}
++.nav a .nbadge.on{display:inline-block}
+ .nav a:hover{color:var(--bone);background:var(--panel)}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+@@ -457,7 +465,9 @@ main{min-width:0}
+       <a href="/reaper_shell.asp#Advanced_WAN_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg></span><span class="nl"><#menu5_3#></span></a>
+       <a href="/reaper_shell.asp#Advanced_IPv6_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg></span><span class="nl">IPv6</span></a>
+       <a href="/reaper_shell.asp#Advanced_VPNStatus.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v6M9 12h6"/></svg></span><span class="nl">VPN</span></a>
+-      <a href="/reaper_shell.asp#Reaper_Firewall.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg></span><span class="nl"><#menu5_5#></span></a>
++      <!-- the rail is duplicated between here and reaper_shell.asp and is kept in
++           sync by hand (standing rule 6), so the firewall badge exists twice too -->
++      <a href="/reaper_shell.asp#Reaper_Firewall.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg></span><span class="nl"><#menu5_5#></span><span class="nbadge" data-fwred></span></a>
+       <a href="/reaper_shell.asp#Advanced_System_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span><span class="nl"><#menu5_6#></span></a>
+       <a href="/reaper_shell.asp#Main_LogStatus_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nl"><#System_Log#></span></a>
+       <a href="/reaper_shell.asp#Main_Analysis_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M14 7a3 3 0 0 0-4 4l-6 6 2 2 6-6a3 3 0 0 0 4-4l-2 2-2-2z"/></svg></span><span class="nl"><#Network_Tools#></span></a>
+@@ -767,6 +777,9 @@ var SSI = {
+   dnssec:   '<% nvram_get("dnssec_enable"); %>',
+   gk:       '<% nvram_get("gk_enable"); %>',
+   warden:   '<% nvram_get("rwarden_enable"); %>',
++  /* 0 until the clock has been stepped (rc/ntp.c, rc/ntpd.c). Read once here so
++     the posture watcher below can decline to arm itself on a settled router. */
++  ntp_ready:'<% nvram_get("ntp_ready"); %>',
+   usb1:     decodeURIComponent('<% nvram_char_to_ascii("", "usb_path1"); %>'),
+   usb1_spd: '<% nvram_get("usb_path1_speed"); %>',
+   usb2:     decodeURIComponent('<% nvram_char_to_ascii("", "usb_path2"); %>'),
+@@ -844,6 +857,98 @@ function v6Up(){
+   var gw=String((WAN6.IPv6_Gateway)||'');
+   return !!(a || gw);
+ }
++/* ---- Security posture: painted from SSI, and RE-paintable -------------
++   Every row in this card is a snapshot of nvram taken when the page was
++   rendered. That is fine on a settled router and wrong on a booting one:
++   the card is painted once and then keeps saying whatever was true at load
++   until someone reloads the whole page. Lifting the paint out of the
++   one-shot render block is what makes a targeted refresh possible - the
++   block it came from also starts the uptime ticker, so re-running the block
++   itself would stack a second setInterval every time. */
++function paintPosture(){
++  try{
++      /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
++      var f4=(SSI.fw4==='1'), f6=(SSI.fw6==='1'), fp=[];
++      if(f4) fp.push('IPv4'); if(f6) fp.push('IPv6');
++      var fsub=$id('s_fw_sub'); if(fsub) fsub.textContent = fp.length ? (`<#RDSH_32#> \u00b7 `+fp.join(' + ')+` <#RDSH_33#>`) : `<#RDSH_34#>`;
++      var ftag=$id('s_fw_tag'); if(ftag){ ftag.textContent = f4?`<#Status_Active#>`:`<#Outdoor_mode_off#>`; ftag.className='tag '+(f4?'ok':'warn'); }
++  
++      /* posture toggles from nvram (UPnP/WPS/Telnet enabled = weaker; DoS on = stronger) */
++      function setTag(id,txt,cls){ var t=$id(id); if(t){ t.textContent=txt; t.className='tag '+cls; } }
++      var upnpOn=(SSI.upnp==='1'), wpsOn=(SSI.wps==='1'), dosOn=(SSI.dos==='1');
++      setTag('s_upnp_tag', upnpOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, upnpOn?'warn':'ok'); setTxt('s_upnp_sub', upnpOn?`<#RDSH_35#>`:`<#RDSH_36#>`);
++      setTag('s_wps_tag', wpsOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, wpsOn?'warn':'ok'); setTxt('s_wps_sub', wpsOn?`<#RDSH_37#>`:`<#RDSH_38#>`);
++  
++      /* QoS: qos_enable + qos_type (0 Traditional / 1 Adaptive / 2 Bandwidth Limiter / 9 Cake / 10 Hardware / 11 HW Classful) */
++      var qosOn=(SSI.qos_en==='1');
++      var qosModes={'0':`<#EzQoS_type_traditional#>`,'1':`<#Adaptive_QoS#>`,'2':`<#Bandwidth_Limiter#>`,'9':'Cake','10':`<#RDSH_39#>`,'11':`<#RDSH_40#>`};
++      setTag('s_qos_tag', qosOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, 'ok');
++      setTxt('s_qos_sub', qosOn ? (qosModes[SSI.qos_type]||(`<#Type#> `+SSI.qos_type)) : `<#RDSH_41#>`);
++      setTag('s_dos_tag', dosOn?`<#Reaper_c_on#>`:`<#Outdoor_mode_off#>`, dosOn?'ok':'warn'); setTxt('s_dos_sub', dosOn?`<#RDSH_42#>`:`<#RDSH_43#>`);
++      /* reaper security features (Gatekeeper device access control + Warden firewall) */
++      var gkOn=(SSI.gk==='1'), wdnOn=(SSI.warden==='1');
++      setTag('s_gk_tag', gkOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, gkOn?'ok':'warn'); setTxt('s_gk_sub', `<#RDSH_85#>`);
++      setTag('s_wdn_tag', wdnOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, wdnOn?'ok':'warn'); setTxt('s_wdn_sub', `<#RDSH_86#>`);
++      var sshv=String(SSI.ssh||'0');
++      if(sshv==='0'){ setTag('s_ssh_tag',`<#btn_Disabled#>`,'ok'); setTxt('s_ssh_sub',`<#RDSH_44#>`); }
++      else if(sshv==='2'){ setTag('s_ssh_tag',`<#RDSH_45#>`,'ok'); setTxt('s_ssh_sub',`<#RDSH_46#>`); }
++      else { setTag('s_ssh_tag',`<#RDSH_47#>`,'warn'); setTxt('s_ssh_sub',`<#RDSH_48#>`); }
++  
++      /* Wi-Fi encryption &mdash; per enabled radio from wlX_auth_mode_x; worst state wins the tag */
++      function encInfo(a){
++        switch(a){
++          case 'psk2':     return {t:'WPA2',c:'ok'};
++          case 'sae':      return {t:'WPA3',c:'ok'};
++          case 'psk2sae':  return {t:'WPA2/WPA3',c:'ok'};
++          case 'pskpsk2':  return {t:'WPA/WPA2',c:'warn'};
++          case 'psk':      return {t:'WPA',c:'warn'};
++          case 'owe':      return {t:`<#Wireless_Encryption_OWE#>`,c:'warn'};
++          case 'open':     return {t:`<#CTL_open#>`,c:'danger'};
++          case 'wpa2': case 'wpa3': case 'wpawpa2': case 'wpa2wpa3': case 'suite-b': return {t:`<#Reaper_c_enterprise#>`,c:'ok'};
++          default:         return {t:a||'?',c:'warn'};
++        }
++      }
++      var encParts=[], encWorst='ok', encRank={ok:0,warn:1,danger:2};
++      for(var wi=0; wi<WL.length; wi++){
++        var wcfg=WL[wi];
++        if(wcfg.radio!=='1'){ encParts.push(wcfg.label+` <#RDSH_49#>`); continue; }
++        var einf=encInfo(wcfg.auth); encParts.push(wcfg.label+' '+einf.t);
++        if(encRank[einf.c]>encRank[encWorst]) encWorst=einf.c;
++      }
++      if(encParts.length){
++        setTxt('s_wifi_sub', encParts.join(' \u00b7 '));
++        setTag('s_wifi_tag', encWorst==='ok'?`<#RDSH_50#>`:(encWorst==='warn'?`<#RDSH_51#>`:`<#CTL_open#>`), encWorst);
++      }
++  
++      /* remote / cloud access: misc_http_x (WAN admin) + enable_cloudsync */
++      var wanAdmin=(SSI.wan_admin==='1'), cloudOn=(SSI.cloud==='1');
++      setTxt('s_rc_sub', (wanAdmin?`<#RDSH_52#>`:`<#RDSH_53#>`)+' \u00b7 '+(cloudOn?`<#RDSH_54#>`:`<#RDSH_55#>`));
++      setTag('s_rc_tag', (wanAdmin||cloudOn)?`<#RDSH_56#>`:`<#btn_Disabled#>`, (wanAdmin||cloudOn)?'warn':'ok');
++  
++      /* admin login: http_enable (0 http / 1 https / 2 both) + WAN reachability */
++      var hev=String(SSI.http_en), proto = hev==='1'?`<#RDSH_57#>`:(hev==='2'?`<#RDSH_58#>`:`<#RDSH_59#>`);
++      setTxt('s_adm_sub', proto+' \u00b7 '+(wanAdmin?`<#RDSH_60#>`:`<#RDSH_61#>`));
++      if(wanAdmin) setTag('s_adm_tag',`<#RDSH_47#>`,'warn');
++      else if(hev!=='1') setTag('s_adm_tag',`<#RDSH_62#>`,'warn');
++      else setTag('s_adm_tag',`<#RDSH_63#>`,'ok');
++  
++      /* JFFS: jffs2_on + jffs2_scripts */
++      var jOn=(SSI.jffs==='1'), jSc=(SSI.jffs_sc==='1');
++      setTxt('s_jffs_sub', jOn?(`<#RDSH_64#> \u00b7 <#RDSH_65#> `+(jSc?`<#RDSH_66#>`:`<#RDSH_49#>`)):`<#RDSH_67#>`);
++      setTag('s_jffs_tag', jOn?`<#RDSH_64#>`:`<#Outdoor_mode_off#>`, jOn?'ok':'warn');
++  
++      /* MLO: mld_enable */
++      var mloOn=(SSI.mlo==='1');
++      setTxt('s_mlo_sub', mloOn?`<#RDSH_68#>`:`<#RDSH_69#>`);
++      setTag('s_mlo_tag', mloOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`,'ok');
++  
++      /* DNS rebind protection + DNSSEC */
++      var nrOn=(SSI.norebind==='1'), dsOn=(SSI.dnssec==='1');
++      setTxt('s_dnsr_sub', (nrOn?`<#RDSH_70#>`:`<#RDSH_71#>`)+' \u00b7 '+(dsOn?`<#RDSH_72#>`:`<#RDSH_73#>`));
++      setTag('s_dnsr_tag', (nrOn&&dsOn)?`<#Reaper_c_on#>`:((nrOn||dsOn)?`<#RDSH_74#>`:`<#Outdoor_mode_off#>`), (nrOn&&dsOn)?'ok':'warn');
++  }catch(e){}
++}
++
+ (function(){
+   try{
+     var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
+@@ -904,86 +1009,7 @@ function v6Up(){
+     setTxt('i_opmode', OPNAME);
+     if(SSI.model) document.title = SSI.model + ' \u2014 REAPER';
+ 
+-    /* firewall: IPv4 fw_enable_x + IPv6 ipv6_fw_enable */
+-    var f4=(SSI.fw4==='1'), f6=(SSI.fw6==='1'), fp=[];
+-    if(f4) fp.push('IPv4'); if(f6) fp.push('IPv6');
+-    var fsub=$id('s_fw_sub'); if(fsub) fsub.textContent = fp.length ? (`<#RDSH_32#> \u00b7 `+fp.join(' + ')+` <#RDSH_33#>`) : `<#RDSH_34#>`;
+-    var ftag=$id('s_fw_tag'); if(ftag){ ftag.textContent = f4?`<#Status_Active#>`:`<#Outdoor_mode_off#>`; ftag.className='tag '+(f4?'ok':'warn'); }
+-
+-    /* posture toggles from nvram (UPnP/WPS/Telnet enabled = weaker; DoS on = stronger) */
+-    function setTag(id,txt,cls){ var t=$id(id); if(t){ t.textContent=txt; t.className='tag '+cls; } }
+-    var upnpOn=(SSI.upnp==='1'), wpsOn=(SSI.wps==='1'), dosOn=(SSI.dos==='1');
+-    setTag('s_upnp_tag', upnpOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, upnpOn?'warn':'ok'); setTxt('s_upnp_sub', upnpOn?`<#RDSH_35#>`:`<#RDSH_36#>`);
+-    setTag('s_wps_tag', wpsOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, wpsOn?'warn':'ok'); setTxt('s_wps_sub', wpsOn?`<#RDSH_37#>`:`<#RDSH_38#>`);
+-
+-    /* QoS: qos_enable + qos_type (0 Traditional / 1 Adaptive / 2 Bandwidth Limiter / 9 Cake / 10 Hardware / 11 HW Classful) */
+-    var qosOn=(SSI.qos_en==='1');
+-    var qosModes={'0':`<#EzQoS_type_traditional#>`,'1':`<#Adaptive_QoS#>`,'2':`<#Bandwidth_Limiter#>`,'9':'Cake','10':`<#RDSH_39#>`,'11':`<#RDSH_40#>`};
+-    setTag('s_qos_tag', qosOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, 'ok');
+-    setTxt('s_qos_sub', qosOn ? (qosModes[SSI.qos_type]||(`<#Type#> `+SSI.qos_type)) : `<#RDSH_41#>`);
+-    setTag('s_dos_tag', dosOn?`<#Reaper_c_on#>`:`<#Outdoor_mode_off#>`, dosOn?'ok':'warn'); setTxt('s_dos_sub', dosOn?`<#RDSH_42#>`:`<#RDSH_43#>`);
+-    /* reaper security features (Gatekeeper device access control + Warden firewall) */
+-    var gkOn=(SSI.gk==='1'), wdnOn=(SSI.warden==='1');
+-    setTag('s_gk_tag', gkOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, gkOn?'ok':'warn'); setTxt('s_gk_sub', `<#RDSH_85#>`);
+-    setTag('s_wdn_tag', wdnOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`, wdnOn?'ok':'warn'); setTxt('s_wdn_sub', `<#RDSH_86#>`);
+-    var sshv=String(SSI.ssh||'0');
+-    if(sshv==='0'){ setTag('s_ssh_tag',`<#btn_Disabled#>`,'ok'); setTxt('s_ssh_sub',`<#RDSH_44#>`); }
+-    else if(sshv==='2'){ setTag('s_ssh_tag',`<#RDSH_45#>`,'ok'); setTxt('s_ssh_sub',`<#RDSH_46#>`); }
+-    else { setTag('s_ssh_tag',`<#RDSH_47#>`,'warn'); setTxt('s_ssh_sub',`<#RDSH_48#>`); }
+-
+-    /* Wi-Fi encryption &mdash; per enabled radio from wlX_auth_mode_x; worst state wins the tag */
+-    function encInfo(a){
+-      switch(a){
+-        case 'psk2':     return {t:'WPA2',c:'ok'};
+-        case 'sae':      return {t:'WPA3',c:'ok'};
+-        case 'psk2sae':  return {t:'WPA2/WPA3',c:'ok'};
+-        case 'pskpsk2':  return {t:'WPA/WPA2',c:'warn'};
+-        case 'psk':      return {t:'WPA',c:'warn'};
+-        case 'owe':      return {t:`<#Wireless_Encryption_OWE#>`,c:'warn'};
+-        case 'open':     return {t:`<#CTL_open#>`,c:'danger'};
+-        case 'wpa2': case 'wpa3': case 'wpawpa2': case 'wpa2wpa3': case 'suite-b': return {t:`<#Reaper_c_enterprise#>`,c:'ok'};
+-        default:         return {t:a||'?',c:'warn'};
+-      }
+-    }
+-    var encParts=[], encWorst='ok', encRank={ok:0,warn:1,danger:2};
+-    for(var wi=0; wi<WL.length; wi++){
+-      var wcfg=WL[wi];
+-      if(wcfg.radio!=='1'){ encParts.push(wcfg.label+` <#RDSH_49#>`); continue; }
+-      var einf=encInfo(wcfg.auth); encParts.push(wcfg.label+' '+einf.t);
+-      if(encRank[einf.c]>encRank[encWorst]) encWorst=einf.c;
+-    }
+-    if(encParts.length){
+-      setTxt('s_wifi_sub', encParts.join(' \u00b7 '));
+-      setTag('s_wifi_tag', encWorst==='ok'?`<#RDSH_50#>`:(encWorst==='warn'?`<#RDSH_51#>`:`<#CTL_open#>`), encWorst);
+-    }
+-
+-    /* remote / cloud access: misc_http_x (WAN admin) + enable_cloudsync */
+-    var wanAdmin=(SSI.wan_admin==='1'), cloudOn=(SSI.cloud==='1');
+-    setTxt('s_rc_sub', (wanAdmin?`<#RDSH_52#>`:`<#RDSH_53#>`)+' \u00b7 '+(cloudOn?`<#RDSH_54#>`:`<#RDSH_55#>`));
+-    setTag('s_rc_tag', (wanAdmin||cloudOn)?`<#RDSH_56#>`:`<#btn_Disabled#>`, (wanAdmin||cloudOn)?'warn':'ok');
+-
+-    /* admin login: http_enable (0 http / 1 https / 2 both) + WAN reachability */
+-    var hev=String(SSI.http_en), proto = hev==='1'?`<#RDSH_57#>`:(hev==='2'?`<#RDSH_58#>`:`<#RDSH_59#>`);
+-    setTxt('s_adm_sub', proto+' \u00b7 '+(wanAdmin?`<#RDSH_60#>`:`<#RDSH_61#>`));
+-    if(wanAdmin) setTag('s_adm_tag',`<#RDSH_47#>`,'warn');
+-    else if(hev!=='1') setTag('s_adm_tag',`<#RDSH_62#>`,'warn');
+-    else setTag('s_adm_tag',`<#RDSH_63#>`,'ok');
+-
+-    /* JFFS: jffs2_on + jffs2_scripts */
+-    var jOn=(SSI.jffs==='1'), jSc=(SSI.jffs_sc==='1');
+-    setTxt('s_jffs_sub', jOn?(`<#RDSH_64#> \u00b7 <#RDSH_65#> `+(jSc?`<#RDSH_66#>`:`<#RDSH_49#>`)):`<#RDSH_67#>`);
+-    setTag('s_jffs_tag', jOn?`<#RDSH_64#>`:`<#Outdoor_mode_off#>`, jOn?'ok':'warn');
+-
+-    /* MLO: mld_enable */
+-    var mloOn=(SSI.mlo==='1');
+-    setTxt('s_mlo_sub', mloOn?`<#RDSH_68#>`:`<#RDSH_69#>`);
+-    setTag('s_mlo_tag', mloOn?`<#btn_Enabled#>`:`<#btn_Disabled#>`,'ok');
+-
+-    /* DNS rebind protection + DNSSEC */
+-    var nrOn=(SSI.norebind==='1'), dsOn=(SSI.dnssec==='1');
+-    setTxt('s_dnsr_sub', (nrOn?`<#RDSH_70#>`:`<#RDSH_71#>`)+' \u00b7 '+(dsOn?`<#RDSH_72#>`:`<#RDSH_73#>`));
+-    setTag('s_dnsr_tag', (nrOn&&dsOn)?`<#Reaper_c_on#>`:((nrOn||dsOn)?`<#RDSH_74#>`:`<#Outdoor_mode_off#>`), (nrOn&&dsOn)?'ok':'warn');
+-
++    paintPosture();
+     /* router identity card (per-band MACs from wlX_hwaddr; MWL fronthaul VIF
+        MACs override them async via get_cfg_clientlist below) */
+     setTxt('rid_model', SSI.model);
+@@ -1543,6 +1569,9 @@ function pollWit(){
+     /* no report yet is not a fault: the walker runs after the first apply */
+     if(!j||!j.ok||!j.summary){ tag.textContent='\u2014'; tag.className='tag ok'; sub.textContent='\u2014'; sub.removeAttribute('title'); return; }
+     var s=j.summary, red=s.red||0, skel=!!j.skeleton;
++    /* the rail badge rides THIS request rather than adding one of its own - the
++       dashboard is top-level chrome and already asks for exactly this report */
++    setFwBadge(skel ? (red||s.total||0) : red);
+     /* RDSH_74 'Partial' - a boot-skeleton filter table IS a partly-loaded ruleset,
+        and the pill is nowrap/uppercase, so it has to be one word */
+     tag.textContent = skel ? `<#RDSH_74#>` : (red>0 ? (red+' '+`<#RFW_317#>`) : `<#RFW_304#>`);
+@@ -1557,6 +1586,112 @@ function pollWit(){
+ }
+ pollWit(); setInterval(pollWit, 60000);
+ 
++/* the rail badge's setter, matching reaper_shell.asp's. Defined here too because
++   the dashboard is top-level and draws its own chrome rather than the shell's. */
++function setFwBadge(red){
++  var b=document.querySelectorAll('[data-fwred]');
++  for(var i=0;i<b.length;i++){
++    if(red>0){ b[i].textContent=String(red); b[i].className='nbadge on'; }
++    else { b[i].textContent=''; b[i].className='nbadge'; }
++  }
++}
++
++/* ---- Security posture: refresh on the clock, not on a page reload ----------
++   THE PROBLEM. Every row in the posture card comes from SSI, which is a
++   server-rendered snapshot of ~20 nvram keys taken when the page was built. Open
++   the dashboard while the router is still coming up and the card freezes at
++   whatever was true then - and the Rule Status row is worse than frozen, because
++   the walker stamps its report with time(NULL): before the clock is set that is
++   a boot-epoch time, so the row reads "Checked" with a timestamp from 1970 (or
++   1969 local). Nothing corrects either of them short of a manual F5.
++
++   THE TRIGGER. NTP sync is the right moment to re-read (owner, 2026-09-15): it
++   is the point where the clock becomes true, and on a cold boot it lands after
++   the services whose state this card reports have settled. `ntp_ready` is set to
++   0 by init/ntp restart and to 1 when the clock steps (rc/ntp.c, rc/ntpd.c).
++
++   THE COST, WHICH IS THE POINT. The watcher is armed ONLY if the clock is
++   already unset when the page renders. On a router that has been up for more
++   than a minute - every ordinary page load - `ntp_ready` is already 1, nothing
++   is scheduled, and this costs exactly zero requests for the life of the page.
++   When it IS armed it is self-terminating: it stops on the transition, having
++   fired once. The cap is there for the box that never syncs (no DNS, blocked
++   123/udp) so a clockless router cannot leave a poll running for the session -
++   the same trap the WAN poll documents above. */
++(function(){
++  if(String(SSI.ntp_ready)==='1') return;      /* clock already true: nothing to watch */
++  var EVERY=10000, GIVEUP=30*60*1000, t0=Date.now(), timer=null;
++  function stop(){ if(timer){ clearTimeout(timer); timer=null; } }
++  function done(){
++    stop();
++    /* re-read the posture keys and repaint just this card. pollWit() is called
++       too, not because its data went stale but because its TIMESTAMP did: the
++       cached report it renders was written against the pre-sync clock. */
++    refreshPosture();
++    pollWit();
++  }
++  function tick(){
++    var x=new XMLHttpRequest(), fired=false;
++    function fin(ok){
++      if(fired) return; fired=true;
++      var ready=false;
++      if(ok){ try{ ready=(JSON.parse(x.responseText).ntp_ready==='1'); }catch(e){} }
++      if(ready){ done(); return; }
++      if(Date.now()-t0 > GIVEUP){ stop(); return; }
++      timer=setTimeout(tick, EVERY);
++    }
++    x.open('GET','/appGet.cgi?hook=nvram_get(ntp_ready)&_='+(new Date()).getTime(),true);
++    x.timeout=8000;
++    /* ONE completion path per request (standing rule 34): a failed request fires
++       readystatechange(4, status 0) AND error, and rescheduling from both would
++       double the chain every round. */
++    x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
++    x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
++    x.send();
++  }
++  timer=setTimeout(tick, EVERY);
++})();
++
++/* Re-read the nvram behind the posture card and repaint it. One request for the
++   whole card: appGet.cgi takes a ';'-separated hook list, so this is the same
++   round trip the WAN poll already uses, not twenty of them. The per-radio keys
++   are included because Wi-Fi encryption is a posture row too and a radio that
++   came up after the page did would otherwise stay "off" until a reload. */
++function refreshPosture(){
++  var keys=['fw_enable_x','ipv6_fw_enable','wan0_upnp_enable','wps_enable','qos_enable','qos_type',
++            'sshd_enable','fw_dos_x','http_enable','misc_http_x','enable_cloudsync','jffs2_on',
++            'jffs2_scripts','mld_enable','dns_norebind','dnssec_enable','gk_enable','rwarden_enable'];
++  var i, hook=[];
++  for(i=0;i<keys.length;i++) hook.push('nvram_get('+keys[i]+')');
++  for(i=0;i<WL.length;i++){ hook.push('nvram_get(wl'+WL[i].idx+'_radio)'); hook.push('nvram_get(wl'+WL[i].idx+'_auth_mode_x)'); }
++  var x=new XMLHttpRequest(), fired=false;
++  function fin(ok){
++    if(fired) return; fired=true;
++    if(!ok) return;                                   /* keep the last good paint */
++    var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; }
++    /* SSI keeps its own short names, so the mapping is explicit rather than a
++       loop over j - a renamed nvram key should fail visibly here, not silently
++       blank a row. A key the hook did not return is left at its rendered value. */
++    var map={fw4:'fw_enable_x',fw6:'ipv6_fw_enable',upnp:'wan0_upnp_enable',wps:'wps_enable',
++             qos_en:'qos_enable',qos_type:'qos_type',ssh:'sshd_enable',dos:'fw_dos_x',
++             http_en:'http_enable',wan_admin:'misc_http_x',cloud:'enable_cloudsync',
++             jffs:'jffs2_on',jffs_sc:'jffs2_scripts',mlo:'mld_enable',norebind:'dns_norebind',
++             dnssec:'dnssec_enable',gk:'gk_enable',warden:'rwarden_enable'};
++    for(var k in map){ if(j[map[k]]!=null) SSI[k]=String(j[map[k]]); }
++    for(var w=0; w<WL.length; w++){
++      var r=j['wl'+WL[w].idx+'_radio'], a=j['wl'+WL[w].idx+'_auth_mode_x'];
++      if(r!=null) WL[w].radio=String(r);
++      if(a!=null) WL[w].auth=String(a);
++    }
++    paintPosture();
++  }
++  x.open('GET','/appGet.cgi?hook='+encodeURIComponent(hook.join(';'))+'&_='+(new Date()).getTime(),true);
++  x.timeout=8000;
++  x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
++  x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
++  x.send();
++}
++
+ /* ---- USB port tiles: group detected devices by PHYSICAL port from get_usb_info
+    (USBINFO). usb_pathX nvram is EMPTY when a HUB occupies the port, so a hub's
+    devices live on sub-nodes (1.1, 1.2, ...) and show up only in USBINFO. Group
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index b095a96b80..6939083537 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 8b8c0d08fe..f356244b54 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 847f8b2c04..ab5e1e9f77 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a44a11431b..d3bcf92188 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index a0a63d2b7b..da6377067a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 24bb8c8135..75e32a58df 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.18</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.19</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 27d60aebd1..bcee709c78 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -34,23 +34,23 @@
+ html,body{background:var(--bg)}
+ body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 60px}
+ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1560px}
+ .pagehead h1{font-size:24px;font-weight:700}
+ .statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+ .statuspill.off{color:var(--steel);border-color:var(--line-soft)}
+ .lede{max-width:82ch;margin:6px 0 16px}
+ .lede b{color:var(--bone);font-weight:600}
+-.wins{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:1120px}
++.wins{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;max-width:1560px}
+ .win{font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);border-radius:8px;padding:8px 15px;cursor:pointer}
+ .win:hover{border-color:var(--line)}
+ .win.on{color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent}
+ .tab{display:none}
+ .tab.on{display:block}
+-.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1560px}
+ /* Per-tab explainer. Deliberately quieter than a .card - no border, no panel
+    fill - so it reads as page copy above the controls rather than as another
+    thing to operate. Right padding keeps the help button off the last word. */
+-.tabintro{position:relative;max-width:1120px;margin:0 0 16px;padding:2px 52px 0 0}
++.tabintro{position:relative;max-width:1560px;margin:0 0 16px;padding:2px 52px 0 0}
+ .tabintro p{margin:0 0 8px;font-size:13px;color:var(--bone-dim);max-width:96ch}
+ .tabintro p.ex{margin-bottom:0;color:var(--steel);font-size:12.5px}
+ /* The "?" button. Anchored to this block, not the viewport - a position:fixed
+@@ -121,10 +121,34 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ .days label{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--bone-dim);border:1px solid var(--line-mid);border-radius:6px;padding:5px 9px;cursor:pointer}
+ .statgrid{display:flex;gap:22px;flex-wrap:wrap}
+ /* v3.1.7 Rule Status: the witness table + verdict pills */
+-.wt{width:100%;border-collapse:collapse;font-size:12.5px}
++/* v3.1.8: the page's reading column was 1120px, set when every tab was a form.
++   It is not any more - Rule Status carries a five-column table with two
++   monospace netfilter columns, and at 1120 both of them wrapped, mid-token, on
++   a 1080p screen with 400px of empty panel to their right. The column is now
++   1560px PAGE-WIDE rather than only under Rule Status, because widening one tab
++   leaves the shared tab strip and page head at the old width and the result
++   reads as a mistake rather than as a choice.
++   PROSE IS NOT WIDENED: .lede and .tabintro p keep their ch-based measures, so
++   explanation stays readable and only data stretches. Form controls are capped
++   at 520px on their own and are unaffected. */
++/* table-layout:fixed so the columns are the proportions below and not whatever
++   the longest iptables rule in the group happens to negotiate: with `auto` a
++   single long DECIDING RULE squeezed FEATURE and RESULT into ragged stacks that
++   differed from group to group. */
++.wt{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+ .wt th{text-align:left;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);padding:4px 8px;border-bottom:1px solid var(--line-mid)}
+-.wt td{padding:6px 8px;border-top:1px solid var(--line-mid);vertical-align:top;color:var(--bone-dim)}
+-.wt .rl{font-family:monospace;font-size:11px;color:var(--steel);word-break:break-all}
++.wt td{padding:7px 8px;border-top:1px solid var(--line-mid);vertical-align:top;color:var(--bone-dim)}
++.wt tbody tr:hover{background:rgba(255,255,255,.022)}
++/* overflow-wrap:anywhere, NOT word-break:break-all. break-all splits at whatever
++   character lands on the edge, which is why the table read "ESTA BLISHED",
++   "ACC EPT" and "u dp": it breaks words that had a perfectly good space to wrap
++   at. `anywhere` wraps at spaces first and only splits a token when the token
++   itself cannot fit - which is what a 60-character iptables rule needs. */
++.wt .rl{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--steel);overflow-wrap:anywhere;line-height:1.45}
++/* the id under the feature name, and the verdict under its pill, are captions
++   for the line above them - not second values competing with it */
++.wt td .rl{margin-top:3px}
++.wt .exp{font-size:11.5px;letter-spacing:.03em;color:var(--bone-dim);white-space:nowrap}
+ .wpill{display:inline-block;padding:1px 9px;border-radius:9px;font-size:11px;font-weight:600;letter-spacing:.04em}
+ .wpill.g{background:rgba(79,178,134,.16);color:var(--jade)}
+ .wpill.r{background:rgba(255,59,48,.16);color:var(--danger)}
+@@ -135,7 +159,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ .statgrid .v{font-family:var(--hdr);font-weight:600;font-size:17px;color:var(--bone)}
+ .statgrid .v.on{color:var(--jade)}
+ .statgrid .v.off{color:var(--steel)}
+-.cols2{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:1120px}
++.cols2{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:1560px}
+ @media(max-width:900px){.cols2{grid-template-columns:1fr}}
+ .logtbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+ .logtbl th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10px;color:var(--steel);text-align:left;padding:6px 9px;border-bottom:1px solid var(--line-soft)}
+@@ -210,7 +234,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ <!-- ============================= RULE STATUS (v3.1.7: the firewall table walker) ============================= -->
+ <div class="tab" id="tab_witness">
+   <div class="tabintro">
+-    <a class="helpdot" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#412-rule-status" target="_blank" rel="noopener noreferrer" title="<#RFW_229#>">?</a>
++    <a class="helpdot" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#411a-rule-status" target="_blank" rel="noopener noreferrer" title="<#RFW_229#>">?</a>
+     <p><#RFW_291#></p>
+     <p class="ex"><#RFW_292#></p>
+   </div>
+@@ -1173,7 +1197,10 @@ function rfwWitPreview(){
+     var el=$('rf_wit'); if(!el)return;
+     if(!j||!j.ok||!j.summary){el.textContent='';return;}
+     var red=j.summary.red||0;
+-    el.innerHTML=esc(`<#RFW_316#>`)+' <b style="color:'+(red>0?'var(--danger)':'var(--jade)')+'">'+red+' '+esc(`<#RFW_317#>`)+'</b> &middot; <a href="#" id="rf_wit_go">'+esc(`<#RFW_318#>`)+'</a>';
++    /* the link is the tab's own name (RFW_290), not "open Rule Status" (owner,
++       2026-09-15). RFW_290 is already translated in all 25 packs, so this costs
++       no dictionary edit and no lockstep change. */
++    el.innerHTML=esc(`<#RFW_316#>`)+' <b style="color:'+(red>0?'var(--danger)':'var(--jade)')+'">'+red+' '+esc(`<#RFW_317#>`)+'</b> &middot; <a href="#" id="rf_wit_go">'+esc(`<#RFW_290#>`)+'</a>';
+     var a=$('rf_wit_go'); if(a)a.onclick=function(e){e.preventDefault();showTab('witness');};
+   });
+ }
+@@ -1190,7 +1217,7 @@ function stWit(){
+     el.innerHTML='<b>'+esc(`<#RFW_290#>`)+'</b>: <b style="color:'+(red>0?'var(--danger)':'var(--jade)')+'">'
+       +red+' '+esc(`<#RFW_317#>`)+'</b> &middot; '+(s.green||0)+' '+esc(`<#RFW_304#>`)
+       +(j.ts?(' &middot; '+esc(`<#RFW_309#>`)+' '+esc(new Date(j.ts*1000).toLocaleTimeString())):'')
+-      +' &middot; <a href="#" id="st_wit_go">'+esc(`<#RFW_318#>`)+'</a>';
++      +' &middot; <a href="#" id="st_wit_go">'+esc(`<#RFW_290#>`)+'</a>';
+     var a=$('st_wit_go'); if(a)a.onclick=function(e){e.preventDefault();showTab('witness');};
+   });
+ }
+@@ -1268,12 +1295,18 @@ function loadWit(fresh){
+     order.sort();
+     var h='';
+     order.forEach(function(k){
+-      h+='<div class="card"><h2>'+esc(WT_GROUPS[k])+'</h2><div style="overflow-x:auto"><table class="wt"><thead><tr><th>'+esc(`<#RFW_310#>`)+'</th><th>'+esc(`<#RFW_311#>`)+'</th><th>'+esc(`<#RFW_312#>`)+'</th><th>'+esc(`<#RFW_313#>`)+'</th><th>'+esc(`<#RFW_314#>`)+'</th></tr></thead><tbody>';
++      /* Proportions, not pixels, so the same table works at 1120 and at 1560.
++         The two monospace columns (witness, deciding rule) get the most room
++         because they are the only ones that ever have to wrap; EXPECTED is one
++         short word and was taking a full auto-sized column. */
++      h+='<div class="card"><h2>'+esc(WT_GROUPS[k])+'</h2><div style="overflow-x:auto"><table class="wt">'
++        +'<colgroup><col style="width:23%"><col style="width:27%"><col style="width:10%"><col style="width:14%"><col style="width:26%"></colgroup>'
++        +'<thead><tr><th>'+esc(`<#RFW_310#>`)+'</th><th>'+esc(`<#RFW_311#>`)+'</th><th>'+esc(`<#RFW_312#>`)+'</th><th>'+esc(`<#RFW_313#>`)+'</th><th>'+esc(`<#RFW_314#>`)+'</th></tr></thead><tbody>';
+       groups[k].forEach(function(w){
+         var st=WT_STATE[w.state]||WT_STATE.na;
+         h+='<tr><td>'+esc(w.feature||'')+'<div class="rl">'+esc(w.id||'')+(w.family===6?' v6':'')+'</div></td>'
+           +'<td class="rl">'+esc(w.witness||'')+'</td>'
+-          +'<td>'+esc(w.expect||'')+'</td>'
++          +'<td class="exp">'+esc(w.expect||'')+'</td>'
+           +'<td><span class="wpill '+st[0]+'">'+esc(st[1])+'</span><div class="rl">'+esc(w.verdict||'')+'</div></td>'
+           +'<td class="rl" title="'+esc(w.path||'')+'">'+esc(w.rule||w.note||'')+'</td></tr>';
+       });
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 7682466a36..223da0832d 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 8a5d605934..d50a232bf7 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index abc4e80b4a..4ac27c77c4 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 42ec52e14a..9f15f40ea2 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 2fa2ee2a95..43c41d710f 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 6194de081f..578e923912 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6920,11 +6920,11 @@ RVR_72=Active
+ RVR_73=Inactive
+ RVR_74=Killswitch
+ RFW_290=Rule Status
+-RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. Green means the promise holds; red means the tables do not deliver it.
+-RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row turns red, the DNS carve-out sits behind the block - the rule column names what caught it.
++RFW_291=Each feature owns a few witness packets: an ingress interface, addresses, a protocol and port, a connection state, and the verdict it promises. After every firewall change the router walks them through the live tables in kernel order and names the rule that decided each one. OK means the promise holds; Unsuccessful means the tables do not deliver it.
++RFW_292=Example: a Gatekeeper-blocked device must not reach the WAN (drop) but must still resolve names at the router (accept). If that second row comes back Unsuccessful, the DNS carve-out sits behind the block - the rule column names what caught it.
+ RFW_293=The filter table is the boot-time skeleton: the full ruleset never loaded. Port forwards, VPN server chains and the DoS guard are not in force.
+ RFW_294=Re-check now
+-RFW_295=Rows marked depends sit behind a match the walker does not model (string, u32, time, policy) and are not judged. n/a means the router has no such network yet. Nothing on this tab changes the firewall.
++RFW_295=Rows marked Inconclusive sit behind a match the walker does not model (string, u32, time, policy): nothing is known to be wrong with them, they are simply not judged. Not applicable means the router has no such network yet. Nothing on this tab changes the firewall.
+ RFW_296=Core reachability
+ RFW_297=Port forwarding
+ RFW_298=VPN servers
+@@ -6933,10 +6933,10 @@ RFW_300=Warden
+ RFW_301=Rules engine and hooks
+ RFW_302=Guest networks
+ RFW_303=Everything else
+-RFW_304=Green
+-RFW_305=Red
+-RFW_306=Depends
+-RFW_307=n/a
++RFW_304=OK
++RFW_305=Unsuccessful
++RFW_306=Inconclusive
++RFW_307=Not applicable
+ RFW_308=The witness report is not available yet - the walker runs after each firewall apply. Use Re-check now.
+ RFW_309=Checked
+ RFW_310=Feature
+@@ -6946,5 +6946,5 @@ RFW_313=Result
+ RFW_314=Deciding rule
+ RFW_315=No witnesses were generated for this configuration.
+ RFW_316=Firewall witnesses against the ruleset that is live now:
+-RFW_317=red
++RFW_317=unsuccessful
+ RFW_318=open Rule Status
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index c6cf505cf4..7f28239e65 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -27,7 +27,15 @@
+   --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+   --crimson:#E10600; --crimson-deep:#B3000C;
+   --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --danger:#FF3B30;
++  /* --amber is the BETA tag's colour and is carried here for it. It was the one
++     token Main_ReaperDash.asp declared and this file did not, so when the tag
++     moved into the shell header its `color:var(--amber)` resolved to nothing,
++     the declaration was dropped, and both the text AND the border (which is
++     `currentColor`) fell back to the pill's inherited bone - the same tag in two
++     different colours depending on which page you were on. Same value as the
++     dashboard's, deliberately: a literal in the .btag rule would have fixed the
++     symptom and left the next token to fail the same way. */
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+   --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+   --body:'Inter',system-ui,-apple-system,Segoe UI,sans-serif;
+ }
+@@ -58,6 +66,17 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:9px}
+ .pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
+ .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
++/* verbatim from Main_ReaperDash.asp so the tag is the same object on every page */
++.pill .btag{color:var(--amber);border:1px solid currentColor;border-radius:4px;padding:0 5px;font-family:var(--hdr);font-weight:700;letter-spacing:.06em;font-size:10px;text-transform:uppercase}
++/* Rail badge: the count of firewall promises that are NOT holding, carried on
++   the Firewall item so it is visible from every page rather than only from the
++   one page a user would have to already be on to learn it. Hidden entirely at
++   zero - an empty badge is noise, and "no badge" is the state that should read
++   as nothing to do. Numerals only, so it needs no dictionary key. */
++.nbadge{display:none;margin-left:auto;flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
++  background:var(--crimson);color:#fff;font-family:var(--hdr);font-weight:700;font-size:10.5px;letter-spacing:.02em;
++  line-height:18px;text-align:center}
++.nbadge.on{display:inline-block}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11px;
+   padding:8px 16px 8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+   color:var(--bone-dim);cursor:pointer;transition:.15s;text-decoration:none;display:inline-block;line-height:normal;white-space:nowrap;flex:0 0 auto}
+@@ -262,7 +281,11 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+       <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+       <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+       <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+-      <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span></div>
++      <!-- the BETA tag is the dashboard's (Main_ReaperDash.asp), and until now it
++           was ONLY the dashboard's: every other page is framed in this shell, so
++           a beta build announced itself on the landing page and nowhere else.
++           Same markup, same reveal rule, same dictionary key. -->
++      <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
+       <div class="pill"><span class="k"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
+       <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+     </div>
+@@ -584,7 +607,9 @@ function buildRail(menuTree){
+     else if(isTopLevelPage(furl))  /* own chrome: navigate, never frame */
+       h+='<a class="item" href="/'+esc(furl)+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+     else
+-      h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
++      h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span>'
++        + (m.index==='menu_Firewall' ? '<span class="nbadge" data-fwred></span>' : '')
++        + '</a>';
+   }
+   if(sp.addons.length){
+     /* 2026-09-10 (owner): the Addons root was the ONE rail item that did not
+@@ -629,6 +654,10 @@ function buildRail(menuTree){
+     });
+   }
+ 
++  /* the rail exists only now, so a firewall reading that already arrived has
++     had nowhere to go until this point - see FW_RED */
++  if(typeof FW_RED!=='undefined' && FW_RED!=null) setFwBadge(FW_RED);
++
+   var initial=(location.hash||'').replace('#','');
+   /* no target (e.g. post-login redirect to bare reaper_shell.asp - the #hash
+    * never reaches the server): land on the dashboard, not the network map */
+@@ -883,6 +912,61 @@ try{
+   setTimeout(railFallback, 4000);
+ }catch(e){ railFallback(); }
+ 
++/* ---- Firewall rail badge: the red count, on every page ---------------------
++   A broken promise used to be discoverable only by opening the Firewall page -
++   the one place a user has to already suspect something before they look. The
++   count now rides the rail, which the shell draws around every framed page, so
++   it is in front of the user wherever they are until it clears.
++
++   NOTHING is shown at zero. An always-present "0" trains people to ignore the
++   spot the number will appear in; an empty rail is the honest resting state.
++
++   Cheap by construction: the shell outlives every page navigation (pages load
++   into the iframe, the chrome does not reload), so this is ONE 60 s poll for a
++   whole session however many pages are visited - not one per page. It reads the
++   CACHED report (action=witness with no run=1); rwatch re-walks every 5 minutes
++   on its own, so the badge can never trigger a table walk. */
++/* The rail is built ASYNCHRONOUSLY - menuTree.js arrives over require(), and
++   railFallback() can be as late as its 4 s timer - while this poll starts at
++   load. The first reading therefore usually lands BEFORE the badge element it
++   wants to write to exists, and without the cache below the count would then be
++   invisible until the next poll 60 s later. So remember the last reading and
++   re-apply it whenever the rail is (re)drawn. */
++var FW_RED=null;
++function setFwBadge(red){
++  FW_RED=red;
++  var b=document.querySelectorAll('[data-fwred]');
++  for(var i=0;i<b.length;i++){
++    if(red>0){ b[i].textContent=String(red); b[i].className='nbadge on'; }
++    else { b[i].textContent=''; b[i].className='nbadge'; }
++  }
++}
++(function(){
++  var HID='<% nvram_get("http_id"); %>';
++  function poll(){
++    var x=new XMLHttpRequest(), fired=false;
++    function fin(ok){
++      if(fired) return; fired=true;
++      /* a failed fetch leaves the badge as it was: a request that did not land
++         is not evidence that the firewall is healthy */
++      if(ok){
++        try{
++          var j=JSON.parse(x.responseText);
++          if(j&&j.ok&&j.summary) setFwBadge(j.skeleton ? (j.summary.red||j.summary.total||0) : (j.summary.red||0));
++        }catch(e){}
++      }
++      setTimeout(poll, 60000);
++    }
++    x.open('GET','/reaper_fw.cgi?action=witness&http_id='+encodeURIComponent(HID)+'&_='+Date.now(),true);
++    x.timeout=8000;
++    /* ONE completion path per request (standing rule 34) */
++    x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
++    x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
++    x.send();
++  }
++  poll();
++})();
++
+ window.addEventListener("hashchange",function(){var p=(location.hash||"").replace("#","");if(p)loadPage(p);});
+ 
+ /* language selector: shown_language_css() emits the localized <dd><a id=CODE>Name</a>
+@@ -954,6 +1038,11 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   var ext='<% nvram_get("extendno"); %>';
+   if(ext && ext!=='0'){ ext=ext.charAt(0).toUpperCase()+ext.slice(1); fw+='_'+ext; }
+   if(fw.length>2) $t('p_fw', fw);
++  /* tested against the RAW extendno, not the capitalised copy above: the build
++     stamps `<version>_beta` and the display string has already been through
++     charAt(0).toUpperCase(), which leaves the _beta suffix alone but there is no
++     reason to depend on that. Same regex the dashboard uses. */
++  if(/_beta(_|$)/i.test('<% nvram_get("extendno"); %>')){ var _bt=$id('p_fwbeta'); if(_bt) _bt.style.display=''; }
+   /* WAN state: connected = wan0_state_t==2 with a real IP */
+   var wSt='<% nvram_get("wan0_state_t"); %>', wIP='<% nvram_get("wan0_ipaddr"); %>';
+   var up=(wSt==='2' && wIP && wIP!=='0.0.0.0');
+-- 
+2.25.1
+

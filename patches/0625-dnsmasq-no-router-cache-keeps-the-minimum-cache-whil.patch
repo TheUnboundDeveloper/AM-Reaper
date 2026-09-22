@@ -1,0 +1,336 @@
+From f3aeb886bf57316d18381c464930d2fbf7c55927 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 21:13:31 -0400
+Subject: [PATCH] dnsmasq: "no router cache" keeps the minimum cache while
+ DNSSEC validates
+
+dnsmasq refuses to start with a cache below its default (150) while it
+validates DNSSEC ("cannot reduce cache size from default when DNSSEC
+enabled"), so cache-size=0 with dnssec on took the resolver down on the
+owner's router (2026-09-06). reaper_dns_cachesize(): 1500 normally, 0 with
+the switch on, 150 with the switch on while validating (proxy-dnssec under
+DoT is not validation). The page shows RDHC_26 under the switch when DNSSEC
+is on (25 packs).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c              | 23 ++++++++++++++++++-
+ .../router/www/Advanced_System_Content.asp    |  4 ++++
+ release/src/router/www/BR.dict                |  1 +
+ release/src/router/www/CN.dict                |  1 +
+ release/src/router/www/CZ.dict                |  1 +
+ release/src/router/www/DA.dict                |  1 +
+ release/src/router/www/DE.dict                |  1 +
+ release/src/router/www/EN.dict                |  1 +
+ release/src/router/www/ES.dict                |  1 +
+ release/src/router/www/FI.dict                |  1 +
+ release/src/router/www/FR.dict                |  1 +
+ release/src/router/www/HU.dict                |  1 +
+ release/src/router/www/IT.dict                |  1 +
+ release/src/router/www/JP.dict                |  1 +
+ release/src/router/www/KR.dict                |  1 +
+ release/src/router/www/MS.dict                |  1 +
+ release/src/router/www/NL.dict                |  1 +
+ release/src/router/www/NO.dict                |  1 +
+ release/src/router/www/PL.dict                |  1 +
+ release/src/router/www/RO.dict                |  1 +
+ release/src/router/www/RU.dict                |  1 +
+ release/src/router/www/SL.dict                |  1 +
+ release/src/router/www/SV.dict                |  1 +
+ release/src/router/www/TH.dict                |  1 +
+ release/src/router/www/TR.dict                |  1 +
+ release/src/router/www/TW.dict                |  1 +
+ release/src/router/www/UK.dict                |  1 +
+ 27 files changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 1536c38d8d..1a362932cc 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1606,6 +1606,27 @@ void gen_apmode_dnsmasq(void)
+ #endif
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
++/* reaper v3.1.1: the router-side cache size. "Do not cache DNS answers on the
++ * router" means cache-size=0 - except that dnsmasq refuses to start with a
++ * cache below its default (CACHESIZ, 150) while it VALIDATES DNSSEC ("cannot
++ * reduce cache size from default when DNSSEC enabled", dnsmasq.c), which took
++ * the owner's resolver down on 2026-09-06. proxy-dnssec (DoT + dnssec_enable
++ * 2) is not validation and has no such rule. */
++static int reaper_dns_cachesize(void)
++{
++	int validating = 0;
++	if (!nvram_get_int("reaper_dns_nocache"))
++		return 1500;
++#ifdef RTCONFIG_DNSSEC
++	validating = nvram_get_int("dnssec_enable") != 0;
++#ifdef RTCONFIG_DNSPRIVACY
++	if (nvram_get_int("dnspriv_enable") && nvram_get_int("dnssec_enable") == 2)
++		validating = 0;
++#endif
++#endif
++	return validating ? 150 : 0;
++}
++
+ void start_dnsmasq(const int sdn_idx)
+ #else
+ void start_dnsmasq(void)
+@@ -1822,7 +1843,7 @@ void start_dnsmasq(void)
+ 		    "no-negcache\n"		// don't cace nxdomain
+ 		    "cache-size=%u\n"		// dns cache size
+ 		    "min-port=%u\n",		// min port used for random src port
+-		dmservers, nvram_get_int("reaper_dns_nocache") ? 0 : 1500, nvram_get_int("dns_minport") ? : 4096);
++		dmservers, reaper_dns_cachesize(), nvram_get_int("dns_minport") ? : 4096);
+ 	/* reaper v3.1.1: "Do not cache DNS answers on the router" (cache-size=0
+ 	 * above): with every client sent through dnsmasq to a LAN filter such as
+ 	 * AdGuard or Pi-hole, a router-side cache would answer client B from a
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index ef591c970d..903a31d98b 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -1880,6 +1880,9 @@ function rdhcInit(){
+ 	else txt = `<#RDHC_14#>` + " (" + (parseInt(st[1]) || 0) + " s)";
+ 	el.textContent = txt;
+ 	if(st[0] == "down") el.style.color = "#E10600";
++	/* dnsmasq keeps a minimum cache while it validates DNSSEC: say so */
++	var dn = document.getElementById("rdhc_dnssec_note");
++	if(dn && dn.getAttribute("data-dnssec") != "" && dn.getAttribute("data-dnssec") != "0") dn.style.display = "";
+ }
+ function rdhcValid(){
+ 	if(!document.form.reaper_dnshc_chk.checked) return true;
+@@ -3001,6 +3004,7 @@ function Get_Component_reboot_schedule_ui(config){
+ 					<td>
+ 						<input type="checkbox" name="reaper_dns_nocache_chk" value="" <% nvram_match("reaper_dns_nocache", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_24#></div>
+ 						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_25#></div>
++						<div id="rdhc_dnssec_note" style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85;display:none" data-dnssec="<% nvram_get("dnssec_enable"); %>"><#RDHC_26#></div>
+ 					</td>
+ 				</tr>
+ 				<script>rdhcInit();</script>
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index f065c8954f..d319ddb902 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Com todos os clientes passando pelo roteador, o servidor DNS veria apena
+ RDHC_23=Cache DNS do roteador
+ RDHC_24=Não armazenar respostas DNS em cache no roteador
+ RDHC_25=O roteador normalmente guarda as respostas por um tempo. Com filtragem por cliente no servidor, uma resposta em cache decidida para um cliente seria entregue a outro, e o filtro não veria as consultas em cache. Desativado, o roteador apenas encaminha e o servidor DNS mantém o cache.
++RDHC_26=A validação DNSSEC está ativa e o dnsmasq não inicia com um cache menor que o padrão enquanto valida. Com esta opção ativa o roteador mantém esse mínimo (150 entradas) em vez de nenhum.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 8f0d2db9ee..081a864770 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=当所有客户端都经过路由器时，DNS 服务器只能看到路
+ RDHC_23=路由器 DNS 缓存
+ RDHC_24=不在路由器上缓存 DNS 应答
+ RDHC_25=路由器通常会将应答保留一段时间。上游按客户端过滤时，为某个客户端决定的缓存应答会被交给另一个客户端，且过滤器完全看不到这些缓存查询。关闭后，路由器只做转发，由 DNS 服务器保留缓存。
++RDHC_26=DNSSEC 验证已开启，验证期间 dnsmasq 不会以小于默认值的缓存启动。开启此开关后，路由器保留该最小缓存（150 条）而不是完全不缓存。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a8240cb200..63679c18df 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Když všichni klienti procházejí routerem, DNS server by viděl jen r
+ RDHC_23=Mezipaměť DNS routeru
+ RDHC_24=Neukládat odpovědi DNS do mezipaměti routeru
+ RDHC_25=Router si odpovědi běžně chvíli pamatuje. Při filtrování podle klienta na serveru by se odpověď rozhodnutá pro jednoho klienta vydala jinému a filtr by dotazy z mezipaměti vůbec neviděl. Vypnuto: router jen přeposílá a mezipaměť drží DNS server.
++RDHC_26=Ověřování DNSSEC je zapnuté a dnsmasq se při ověřování nespustí s mezipamětí menší než výchozí. S touto volbou router ponechá toto minimum (150 položek) místo žádné.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 69d1eefffc..bc7f3a493f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Når alle klienter går gennem routeren, ser DNS-serveren kun routeren.
+ RDHC_23=Routerens DNS-cache
+ RDHC_24=Cache ikke DNS-svar på routeren
+ RDHC_25=Routeren gemmer normalt svar et stykke tid. Med filtrering pr. klient opstrøms ville et cachet svar afgjort for én klient blive givet til en anden, og filteret ville slet ikke se de cachede opslag. Slået fra videresender routeren kun, og DNS-serveren beholder cachen.
++RDHC_26=DNSSEC-validering er slået til, og dnsmasq starter ikke med en cache mindre end standard, mens den validerer. Med denne indstilling beholder routeren det minimum (150 poster) i stedet for ingen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 554722d01f..b7fa663c8a 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Wenn alle Clients über den Router gehen, sieht der DNS-Server nur den R
+ RDHC_23=DNS-Cache des Routers
+ RDHC_24=DNS-Antworten nicht auf dem Router zwischenspeichern
+ RDHC_25=Der Router behält Antworten normalerweise eine Weile. Bei Filterung pro Client auf dem Server würde eine für einen Client getroffene Antwort aus dem Cache an einen anderen ausgeliefert, und der Filter sähe die zwischengespeicherten Anfragen gar nicht. Ausgeschaltet leitet der Router nur weiter, und der DNS-Server hält den Cache.
++RDHC_26=Die DNSSEC-Validierung ist aktiv, und dnsmasq startet beim Validieren nicht mit einem Cache unter seinem Standard. Mit diesem Schalter behält der Router dieses Minimum (150 Einträge) statt keinem Cache.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 33278eb6f5..14c92ef5af 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=With every client sent through the router, the DNS server would see only
+ RDHC_23=Router DNS cache
+ RDHC_24=Do not cache DNS answers on the router
+ RDHC_25=The router normally keeps answers for a while. With per-client filtering upstream, a cached answer decided for one client would be handed to another, and the filter would not see the cached lookups at all. Off, the router only forwards and the DNS server keeps the cache.
++RDHC_26=DNSSEC validation is on, and dnsmasq will not start with a cache smaller than its default while validating. With this switch on the router keeps that minimum (150 entries) instead of none.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 8bd22e0d10..1a94611c2e 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Con todos los clientes pasando por el router, el servidor DNS solo verí
+ RDHC_23=Caché DNS del router
+ RDHC_24=No almacenar en caché las respuestas DNS en el router
+ RDHC_25=El router normalmente guarda las respuestas un tiempo. Con filtrado por cliente en el servidor, una respuesta en caché decidida para un cliente se entregaría a otro, y el filtro no vería las consultas en caché. Desactivado, el router solo reenvía y el servidor DNS conserva la caché.
++RDHC_26=La validación DNSSEC está activada y dnsmasq no arranca con una caché menor que la predeterminada mientras valida. Con este interruptor activado el router conserva ese mínimo (150 entradas) en lugar de ninguna.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 866a60d043..81b3a9da05 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Kun kaikki asiakkaat kulkevat reitittimen kautta, DNS-palvelin näkisi v
+ RDHC_23=Reitittimen DNS-välimuisti
+ RDHC_24=Älä tallenna DNS-vastauksia reitittimen välimuistiin
+ RDHC_25=Reititin säilyttää vastauksia normaalisti jonkin aikaa. Kun suodatus tehdään asiakaskohtaisesti palvelimella, yhdelle asiakkaalle päätetty välimuistivastaus annettaisiin toiselle, eikä suodatin näkisi välimuistista vastattuja kyselyitä lainkaan. Pois päältä reititin vain välittää ja DNS-palvelin pitää välimuistin.
++RDHC_26=DNSSEC-vahvistus on päällä, eikä dnsmasq käynnisty oletusta pienemmällä välimuistilla vahvistaessaan. Tämä kytkin päällä reititin pitää tuon vähimmäismäärän (150 merkintää) sen sijaan, ettei välimuistia olisi.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index e893fd8f86..ea51301358 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Quand tous les clients passent par le routeur, le serveur DNS ne voit qu
+ RDHC_23=Cache DNS du routeur
+ RDHC_24=Ne pas mettre en cache les réponses DNS sur le routeur
+ RDHC_25=Le routeur conserve normalement les réponses un moment. Avec un filtrage par client en amont, une réponse en cache décidée pour un client serait servie à un autre, et le filtre ne verrait pas du tout les requêtes servies depuis le cache. Désactivé, le routeur ne fait que transmettre et le serveur DNS garde le cache.
++RDHC_26=La validation DNSSEC est active et dnsmasq ne démarre pas avec un cache inférieur à sa valeur par défaut pendant qu’il valide. Avec cet interrupteur, le routeur garde ce minimum (150 entrées) au lieu d’aucun cache.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 2f251c4e18..fd62f0f7b0 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Ha minden ügyfél a routeren keresztül megy, a DNS-kiszolgáló csak a
+ RDHC_23=A router DNS-gyorsítótára
+ RDHC_24=Ne gyorsítótárazza a DNS-válaszokat a routeren
+ RDHC_25=A router általában egy ideig megőrzi a válaszokat. Ügyfelenkénti szűrésnél a kiszolgálón az egyik ügyfélnek eldöntött, gyorsítótárazott válasz egy másikhoz kerülne, és a szűrő egyáltalán nem látná a gyorsítótárból kiszolgált lekérdezéseket. Kikapcsolva a router csak továbbít, a gyorsítótárat a DNS-kiszolgáló tartja.
++RDHC_26=A DNSSEC-ellenőrzés be van kapcsolva, és a dnsmasq ellenőrzés közben nem indul el az alapértelmezettnél kisebb gyorsítótárral. Ezzel a kapcsolóval a router ezt a minimumot (150 bejegyzés) tartja meg a semmi helyett.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index a3c091d52d..d09ed3144d 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Con tutti i client che passano dal router, il server DNS vedrebbe solo i
+ RDHC_23=Cache DNS del router
+ RDHC_24=Non memorizzare nella cache le risposte DNS sul router
+ RDHC_25=Il router normalmente conserva le risposte per un po'. Con il filtraggio per client a monte, una risposta in cache decisa per un client verrebbe consegnata a un altro, e il filtro non vedrebbe affatto le richieste servite dalla cache. Disattivato, il router si limita a inoltrare e il server DNS mantiene la cache.
++RDHC_26=La convalida DNSSEC è attiva e dnsmasq non si avvia con una cache inferiore a quella predefinita mentre convalida. Con questo interruttore attivo il router mantiene quel minimo (150 voci) invece di nessuna cache.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 390ece286b..3584e22ced 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=すべてのクライアントがルーターを経由すると、DNS 
+ RDHC_23=ルーターの DNS キャッシュ
+ RDHC_24=ルーターで DNS 応答をキャッシュしない
+ RDHC_25=ルーターは通常、応答をしばらく保持します。上流でクライアントごとにフィルタリングする場合、あるクライアント向けに決定されたキャッシュ応答が別のクライアントに渡され、フィルタはキャッシュから応答した問い合わせをまったく見られません。オフにするとルーターは転送のみを行い、DNS サーバーがキャッシュを保持します。
++RDHC_26=DNSSEC 検証が有効で、dnsmasq は検証中に既定値より小さいキャッシュでは起動しません。このスイッチをオンにすると、ルーターはキャッシュなしではなく最小値（150 件）を保持します。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index df839ef215..1e7102bb92 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=모든 클라이언트가 공유기를 거치면 DNS 서버에는 공유
+ RDHC_23=공유기 DNS 캐시
+ RDHC_24=공유기에서 DNS 응답을 캐시하지 않음
+ RDHC_25=공유기는 보통 응답을 잠시 보관합니다. 상위에서 클라이언트별로 필터링하면 한 클라이언트를 위해 결정된 캐시 응답이 다른 클라이언트에게 전달되고, 필터는 캐시된 조회를 전혀 보지 못합니다. 끄면 공유기는 전달만 하고 DNS 서버가 캐시를 유지합니다.
++RDHC_26=DNSSEC 검증이 켜져 있으며, dnsmasq는 검증 중에 기본값보다 작은 캐시로는 시작하지 않습니다. 이 스위치를 켜면 공유기는 캐시 없음 대신 최소값(150개)을 유지합니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 4495ee249a..ee921aa643 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Apabila semua klien melalui penghala, pelayan DNS hanya nampak penghala.
+ RDHC_23=Cache DNS penghala
+ RDHC_24=Jangan cache jawapan DNS pada penghala
+ RDHC_25=Penghala biasanya menyimpan jawapan seketika. Dengan penapisan mengikut klien di huluan, jawapan cache yang diputuskan untuk satu klien akan diberikan kepada klien lain, dan penapis langsung tidak nampak carian yang dijawab dari cache. Dimatikan, penghala hanya memajukan dan pelayan DNS menyimpan cache.
++RDHC_26=Pengesahan DNSSEC dihidupkan dan dnsmasq tidak akan bermula dengan cache lebih kecil daripada lalai semasa mengesahkan. Dengan suis ini dihidupkan penghala mengekalkan minimum itu (150 entri) dan bukannya tiada.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 13912a0ce2..8dd6216381 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Als alle clients via de router gaan, ziet de DNS-server alleen de router
+ RDHC_23=DNS-cache van de router
+ RDHC_24=DNS-antwoorden niet op de router cachen
+ RDHC_25=De router bewaart antwoorden normaal een tijdje. Bij filtering per client op de server zou een gecachet antwoord dat voor de ene client is bepaald aan een andere worden gegeven, en het filter zou de gecachete vragen helemaal niet zien. Uit: de router stuurt alleen door en de DNS-server houdt de cache.
++RDHC_26=DNSSEC-validatie staat aan en dnsmasq start tijdens het valideren niet met een cache kleiner dan de standaard. Met deze schakelaar aan houdt de router dat minimum (150 items) in plaats van geen cache.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 4fa9265822..a0edbc752d 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Når alle klienter går gjennom ruteren, ser DNS-serveren bare ruteren.
+ RDHC_23=Ruterens DNS-hurtigbuffer
+ RDHC_24=Ikke hurtigbufre DNS-svar på ruteren
+ RDHC_25=Ruteren beholder normalt svar en stund. Med filtrering per klient oppstrøms ville et bufret svar avgjort for én klient bli gitt til en annen, og filteret ville ikke se de bufrede oppslagene i det hele tatt. Av: ruteren bare videresender, og DNS-serveren beholder hurtigbufferen.
++RDHC_26=DNSSEC-validering er på, og dnsmasq starter ikke med en hurtigbuffer mindre enn standard mens den validerer. Med denne bryteren på beholder ruteren det minimumet (150 oppføringer) i stedet for ingen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index e8c2d0b3ca..1180ed5a0d 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Gdy wszyscy klienci przechodzą przez router, serwer DNS widziałby tylk
+ RDHC_23=Pamięć podręczna DNS routera
+ RDHC_24=Nie buforuj odpowiedzi DNS na routerze
+ RDHC_25=Router zwykle przechowuje odpowiedzi przez pewien czas. Przy filtrowaniu według klienta na serwerze odpowiedź z bufora podjęta dla jednego klienta trafiłaby do innego, a filtr w ogóle nie widziałby zapytań obsłużonych z bufora. Wyłączone: router tylko przekazuje, a bufor prowadzi serwer DNS.
++RDHC_26=Walidacja DNSSEC jest włączona, a dnsmasq nie uruchomi się z buforem mniejszym niż domyślny podczas walidacji. Z tym przełącznikiem router zachowuje to minimum (150 wpisów) zamiast braku bufora.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f2534a7994..d906ff6bc6 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Când toți clienții trec prin router, serverul DNS ar vedea doar route
+ RDHC_23=Cache-ul DNS al routerului
+ RDHC_24=Nu păstra răspunsurile DNS în cache pe router
+ RDHC_25=Routerul păstrează în mod normal răspunsurile o vreme. Cu filtrare per client în amonte, un răspuns din cache decis pentru un client ar fi livrat altuia, iar filtrul nu ar vedea deloc interogările servite din cache. Dezactivat, routerul doar redirecționează, iar serverul DNS păstrează cache-ul.
++RDHC_26=Validarea DNSSEC este pornită, iar dnsmasq nu pornește cu un cache mai mic decât cel implicit în timp ce validează. Cu acest comutator pornit routerul păstrează acel minim (150 de intrări) în loc de niciunul.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 1b9ba69d01..73fc21b94a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Когда все клиенты идут через роутер, DNS-
+ RDHC_23=DNS-кэш роутера
+ RDHC_24=Не кэшировать ответы DNS на роутере
+ RDHC_25=Обычно роутер хранит ответы некоторое время. При фильтрации по клиентам на сервере ответ из кэша, принятый для одного клиента, будет выдан другому, а фильтр вовсе не увидит запросы, отвеченные из кэша. Выключено: роутер только пересылает, кэш держит DNS-сервер.
++RDHC_26=Проверка DNSSEC включена, и dnsmasq не запускается с кэшем меньше значения по умолчанию во время проверки. С этим переключателем роутер сохраняет этот минимум (150 записей) вместо отсутствия кэша.
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6e17967277..6c750ffe08 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Če gredo vsi odjemalci skozi usmerjevalnik, strežnik DNS vidi le usmer
+ RDHC_23=Predpomnilnik DNS usmerjevalnika
+ RDHC_24=Ne shranjuj odgovorov DNS v predpomnilnik usmerjevalnika
+ RDHC_25=Usmerjevalnik običajno nekaj časa hrani odgovore. Pri filtriranju po odjemalcu na strežniku bi bil odgovor iz predpomnilnika, odločen za enega odjemalca, izročen drugemu, filter pa poizvedb iz predpomnilnika sploh ne bi videl. Izklopljeno: usmerjevalnik le posreduje, predpomnilnik hrani strežnik DNS.
++RDHC_26=Preverjanje DNSSEC je vklopljeno in dnsmasq se med preverjanjem ne zažene s predpomnilnikom, manjšim od privzetega. S tem stikalom usmerjevalnik obdrži ta minimum (150 vnosov) namesto nobenega.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index d5e1e9843c..2875d439d2 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=När alla klienter går genom routern ser DNS-servern bara routern. Dett
+ RDHC_23=Routerns DNS-cache
+ RDHC_24=Cacha inte DNS-svar på routern
+ RDHC_25=Routern behåller normalt svar en stund. Med filtrering per klient uppströms skulle ett cachat svar som avgjorts för en klient lämnas till en annan, och filtret skulle inte alls se de cachade uppslagen. Av: routern vidarebefordrar bara och DNS-servern behåller cachen.
++RDHC_26=DNSSEC-validering är på, och dnsmasq startar inte med en cache mindre än standard medan den validerar. Med den här brytaren på behåller routern det minimumet (150 poster) i stället för ingen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index f01fcb3371..3f46dedcb2 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=เมื่อไคลเอนต์ทุกเครื่องผ
+ RDHC_23=แคช DNS ของเราเตอร์
+ RDHC_24=ไม่แคชคำตอบ DNS บนเราเตอร์
+ RDHC_25=โดยปกติเราเตอร์จะเก็บคำตอบไว้ระยะหนึ่ง เมื่อกรองตามไคลเอนต์ที่ต้นทาง คำตอบในแคชที่ตัดสินให้ไคลเอนต์หนึ่งจะถูกส่งให้อีกเครื่อง และตัวกรองจะไม่เห็นคำถามที่ตอบจากแคชเลย เมื่อปิด เราเตอร์จะส่งต่อเท่านั้นและเซิร์ฟเวอร์ DNS เป็นผู้เก็บแคช
++RDHC_26=การตรวจสอบ DNSSEC เปิดอยู่ และ dnsmasq จะไม่เริ่มทำงานด้วยแคชที่เล็กกว่าค่าเริ่มต้นระหว่างตรวจสอบ เมื่อเปิดสวิตช์นี้ เราเตอร์จะเก็บค่าต่ำสุดนั้นไว้ (150 รายการ) แทนที่จะไม่มีแคชเลย
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 25facdc828..4d806a5607 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Tüm istemciler yönlendirici üzerinden geçtiğinde DNS sunucusu yaln
+ RDHC_23=Yönlendirici DNS önbelleği
+ RDHC_24=DNS yanıtlarını yönlendiricide önbelleğe alma
+ RDHC_25=Yönlendirici yanıtları normalde bir süre saklar. Üst tarafta istemci bazında filtreleme varken bir istemci için verilen önbellekteki yanıt başka bir istemciye verilir ve filtre önbellekten yanıtlanan sorguları hiç görmez. Kapalıyken yönlendirici yalnızca iletir, önbelleği DNS sunucusu tutar.
++RDHC_26=DNSSEC doğrulaması açık ve dnsmasq doğrulama yaparken varsayılandan küçük bir önbellekle başlamaz. Bu anahtar açıkken yönlendirici hiç önbellek yerine o en düşük değeri (150 kayıt) tutar.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4313488c02..cb69844121 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=當所有用戶端都經過路由器時，DNS 伺服器只能看到路
+ RDHC_23=路由器 DNS 快取
+ RDHC_24=不在路由器上快取 DNS 回應
+ RDHC_25=路由器通常會將回應保留一段時間。上游依用戶端過濾時，為某個用戶端決定的快取回應會交給另一個用戶端，而過濾器完全看不到由快取回應的查詢。關閉後，路由器只做轉送，由 DNS 伺服器保留快取。
++RDHC_26=DNSSEC 驗證已開啟，驗證期間 dnsmasq 不會以小於預設值的快取啟動。開啟此開關後，路由器保留該最小快取（150 筆）而非完全不快取。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 2f91e2cd0a..6a74793947 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6890,3 +6890,4 @@ RDHC_22=Коли всі клієнти йдуть через маршрутиз
+ RDHC_23=DNS-кеш маршрутизатора
+ RDHC_24=Не кешувати відповіді DNS на маршрутизаторі
+ RDHC_25=Зазвичай маршрутизатор деякий час зберігає відповіді. За фільтрації за клієнтом на сервері відповідь із кешу, ухвалена для одного клієнта, дісталася б іншому, а фільтр узагалі не бачив би запитів, на які відповіли з кешу. Вимкнено: маршрутизатор лише пересилає, кеш тримає DNS-сервер.
++RDHC_26=Перевірка DNSSEC увімкнена, і dnsmasq не запускається з кешем, меншим за типовий, під час перевірки. З цим перемикачем маршрутизатор зберігає цей мінімум (150 записів) замість відсутності кешу.
+-- 
+2.25.1
+

@@ -1,0 +1,188 @@
+From 9c6c1b72a0c8bf651ee1bb52c504925f4c1dcb82 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 9 Sep 2026 12:11:56 -0400
+Subject: [PATCH] amaspark: never park a backhaul carrier a node is already
+ sitting on
+
+Found by the 2026-09-09 AiMesh decompose, which established that AiMesh ships
+with no source at all: cfg_server, cfg_client, the nine amas_* objects, obd*,
+roamast and libamas-utils are every one prebuilt, and rc/Makefile's
+`vpath %.c amas` and `sysdeps/amas` directories are empty. Pairing and backhaul
+selection therefore cannot be changed. What can be changed is the one piece of
+Reaper code that touches the backhaul radios directly - this daemon.
+
+The park decision required the paired-node registry to be empty. Both
+cfg_obstatus and cfg_relist are written ONLY by cfg_server, and a grep of the
+whole tree finds readers everywhere and not one writer, so the order in which a
+finished onboarding clears the window and lands the node in the registry cannot
+be read off the source. If the registry lags the window, the rules park the
+2.4/5 GHz carriers within one 5 s tick of a node completing its join - taking
+the carrier out from under the node that just joined it.
+
+Whether that lag exists is a property of a binary we do not have, so this is a
+latent risk rather than a demonstrated defect, and it is not worth a metal
+campaign to find out. Both guards close it without needing the answer, and
+neither depends on the ordering:
+
+- a carrier with a station associated to it is never parked, whatever the
+  registry says. The only thing that associates to the hidden backhaul BSS is a
+  node, so an association outranks the bookkeeping.
+- after a search/onboarding window closes, parking is held off for 120 s, so a
+  node still finishing its join is not cut off by the re-park.
+
+Both log on transition only - the loop ticks every 5 s and must not spam. Also
+logged the one transition that was silent: a radio switched off under a carrier
+we had parked dropped the claim with no line at all, which is exactly what once
+read as "the daemon forgot what it parked".
+
+The guards can only cause the daemon to park less, never more. Parking is
+opt-in and off by default, so none of this can account for a field report from
+someone who never enabled it.
+
+Type-checked on the host with -Wall -Wextra against a stub rc.h: 0 warnings.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/amaspark.c | 75 +++++++++++++++++++++++++++++---
+ 1 file changed, 70 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index f5b9cc8c07..64791fc6a6 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -35,6 +35,17 @@
+  *   alongside (6 GHz included - that is the driver's doing, not ours, and the
+  *   6 GHz client network stayed up with its clients throughout), logs each as
+  *   a linked drop, and raises the whole set on release.
++ *   TWO GUARDS AGAINST PARKING ON TOP OF A JOINING NODE (v3.1.2). Both
++ *   cfg_obstatus and cfg_relist are written only by cfg_server, which is a
++ *   blob, so the order in which a finished onboarding clears the window and
++ *   lands the node in the registry cannot be read off the source. If the
++ *   registry lags the window, the rules above would park the carrier within
++ *   one tick of a node completing its join. Neither guard depends on that
++ *   ordering:
++ *     - a carrier with a station associated to it is never parked, whatever
++ *       the registry says (a node that is on the air outranks the bookkeeping);
++ *     - after a search/onboarding window closes, parking is held off for
++ *       AP_SETTLE seconds so a node still finishing its join is not cut off.
+  *   Every park and release is one syslog line naming the interface, the band
+  *   and the reason. A wireless restart brings the primaries back up by itself;
+  *   the next tick (5 s) parks them again, which is why this is a daemon and
+@@ -54,6 +65,7 @@
+ #define AP_POLL_ON	5		/* s, feature enabled: a search must be answered fast */
+ #define AP_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
+ #define AP_OB_MAX	1200		/* s, a stuck non-idle cfg_obstatus is treated as closed */
++#define AP_SETTLE	120		/* s, quiet period after a window closes before parking again */
+ #define AP_STATE	"/tmp/amaspark.state"
+ #define AP_MAXU		4		/* radios: the GT-BE98 family has four (2.4, 5-1, 5-2, 6); the band comes from wlN_nband, never the unit number */
+ 
+@@ -80,6 +92,28 @@ static int bss_state(const char *ifn)
+ 	return -1;
+ }
+ 
++/* stations associated to a BSS: >0 = someone is on it, 0 = nobody, -1 =
++ * unknown. `wl assoclist` prints one "assoclist <mac>" line per station and
++ * nothing when the list is empty. Unknown is treated as empty by the caller:
++ * this is the same `wl` that bss_state() already depends on, so a failure here
++ * means the interface is gone, not that a node is hiding on it. */
++static int bss_assoc_count(const char *ifn)
++{
++	char cmd[80], buf[128];
++	FILE *p;
++	int n = 0, any = 0;
++
++	snprintf(cmd, sizeof(cmd), "wl -i %s assoclist 2>/dev/null", ifn);
++	if ((p = popen(cmd, "r")) == NULL) return -1;
++	while (fgets(buf, sizeof(buf), p)) {
++		any = 1;
++		if (strstr(buf, "assoclist")) n++;
++	}
++	pclose(p);
++	(void)any;
++	return n;
++}
++
+ static void bss_set(const char *ifn, int up)
+ {
+ 	eval("wl", "-i", (char *)ifn, "bss", up ? "up" : "down");
+@@ -128,11 +162,11 @@ static void state_write(const char parked[AP_MAXU], char ifn[AP_MAXU][IFNAMSIZ],
+ 
+ int amaspark_main(int argc, char *argv[])
+ {
+-	char parked[AP_MAXU] = { 0 };
++	char parked[AP_MAXU] = { 0 }, held[AP_MAXU] = { 0 };
+ 	char ifn[AP_MAXU][IFNAMSIZ];
+ 	int nband[AP_MAXU], before[AP_MAXU], radio[AP_MAXU];
+-	int last_enabled = -1, last_window = 0, ob_capped = 0;
+-	long ob_start = 0;
++	int last_enabled = -1, last_window = 0, ob_capped = 0, settling = 0;
++	long ob_start = 0, settle_until = 0;
+ 	(void)argc; (void)argv;
+ 
+ 	signal(SIGTERM, on_sig);
+@@ -194,7 +228,15 @@ int amaspark_main(int argc, char *argv[])
+ 			}
+ 			if (ob_capped) window = 0;
+ 		}
+-		want = enabled && cap && !paired && !window;
++		/* falling edge of the window: hold off before parking again (see the
++		 * guards in the header comment). A node that finished its join is on
++		 * the air now; the registry may not say so for another moment. */
++		if (last_window && !window) {
++			settle_until = now + AP_SETTLE;
++			logmessage(AP_TAG, "the AiMesh search/onboarding window closed - holding the carriers up for %d s in case a node is still completing its join", AP_SETTLE);
++		}
++		settling = enabled && cap && !paired && !window && now < settle_until;
++		want = enabled && cap && !paired && !window && !settling;
+ 
+ 		if (want) {
+ 			if (last_window) why_park = "the search/onboarding window closed with no node paired";
+@@ -225,7 +267,15 @@ int amaspark_main(int argc, char *argv[])
+ 			v = nvram_safe_get(key);
+ 			radio[u] = *v ? atoi(v) : 1;
+ 			before[u] = radio[u] ? bss_state(ifn[u]) : -1;
+-			if (!radio[u] && parked[u]) { parked[u] = 0; changed = 1; }
++			if (!radio[u] && parked[u]) {
++				/* the operator or a schedule turned the radio off: the claim is
++				 * void, and the carrier comes back with the radio. Logged
++				 * because every other transition is, and a silent drop here
++				 * once read as "the daemon forgot what it parked". */
++				logmessage(AP_TAG, "%s (%s backhaul carrier) - the radio was switched off; dropping our parking claim on it", ifn[u], band_name(nband[u]));
++				parked[u] = 0;
++				changed = 1;
++			}
+ 		}
+ 
+ 		if (want) {
+@@ -246,6 +296,20 @@ int amaspark_main(int argc, char *argv[])
+ 				if (!ifn[u][0] || !radio[u] || parked[u]) continue;
+ 				if (nband[u] == 4) continue;		/* 6 GHz: never by our hand */
+ 				if (before[u] != 1) continue;		/* down already (not ours) or unknown */
++				if (bss_assoc_count(ifn[u]) > 0) {
++					/* Something is associated to the backhaul carrier. The only
++					 * thing that associates to it is a node, so the registry is
++					 * behind reality - never take the carrier out from under it. */
++					if (!held[u]) {
++						held[u] = 1;
++						logmessage(AP_TAG, "not parking %s (%s backhaul carrier): a station is associated to it, so a node is on the air whatever the paired-node registry says", ifn[u], band_name(nband[u]));
++					}
++					continue;
++				}
++				if (held[u]) {
++					held[u] = 0;
++					logmessage(AP_TAG, "%s (%s backhaul carrier) has no station associated again - parking resumes", ifn[u], band_name(nband[u]));
++				}
+ 				bss_set(ifn[u], 0);
+ 				parked[u] = 1;
+ 				changed = acted = 1;
+@@ -264,6 +328,7 @@ int amaspark_main(int argc, char *argv[])
+ 				}
+ 			}
+ 		} else {
++			memset(held, 0, sizeof(held));
+ 			for (u = 0; u < AP_MAXU; u++) {
+ 				if (!parked[u]) continue;
+ 				if (ifn[u][0] && radio[u] && bss_state(ifn[u]) == 0) bss_set(ifn[u], 1);
+-- 
+2.25.1
+

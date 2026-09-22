@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -11,7 +11,7 @@ order. Replace `vX.Y.Z` throughout with the version you are cutting.
 **The split to keep in your head:** everything in phases 1–5 needs the firmware
 source, so it can only happen locally. Everything from phase 6 needs only the
 published inputs (`patches/` + `overlays/`), which is why CI can do it. The
-sibling port sits firmly in the first group — it needs canon *and* the four
+sibling port sits firmly in the first group — it needs canon *and* the five
 sibling branches at once, and neither is on GitHub.
 
 ---
@@ -48,12 +48,12 @@ sibling branches at once, and neither is on GitHub.
 
 ```bash
 wsl -d Ubuntu-20.04 -u reaper -- \
-  bash /mnt/c/Users/natha/AppData/Roaming/VSC/ASUS/ASUS-Merlin-Reaper/build-scripts/cut_fleet.sh \
+  bash /mnt/c/Users/<user>/AppData/Roaming/VSC/ASUS/asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh \
   --version vX.Y.Z
 ```
 
 This runs, in the only safe order: `cut_rung.sh` → port the five siblings
-(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, RT-BE92U) → **then** the overlays. Order is not negotiable — regenerating overlays before
+(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -114,10 +114,10 @@ the overlay.
 
 ```bash
 git -C /home/reaper/asuswrt-be96u push hub \
-  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro
+  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000
 ```
 
-- [ ] Canon **and all four ported branches** are in the bare hub
+- [ ] Canon **and all five ported branches** are in the bare hub
 
 > Not optional any more. `cut_fleet.sh` force-moves each local sibling ref onto
 > `hub/<branch>` after proving the local is an ancestor. If this rung's sibling
@@ -147,15 +147,21 @@ Choose one:
 **Actions → Public build → Run workflow**
 
 - [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
-      ~1.5 h each — six models since the RT-BE92U joined the fan-out)
+      ~1.5 h each — six models)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.
 - [ ] `publish` = **unchecked** for this first run
 
-Publishing needs **two** gates: the branch must be `main` **and** `publish` must
-be ticked. So a dispatch on main with the box clear builds and verifies without
-shipping anything.
+Publishing needs **two** gates: the branch must be `main` **or** `Dev`, **and**
+`publish` must be ticked. So a dispatch with the box clear builds and verifies
+without shipping anything.
+
+**The branch also chooses the channel, and the channel is in the filename.**
+`Dev` builds are stamped `_BETA` (`..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb`)
+and published as a pre-release; `main` builds carry no marker. Nothing to tick —
+it follows the branch. `release.yml` refuses to publish an image whose name
+disagrees with its tag's channel, so a mislabelled asset cannot reach users.
 
 Watch for:
 
@@ -166,7 +172,10 @@ Watch for:
 - [ ] Packaging/verify gate passes for every model × variant — including the
       provenance-stamp check, which fails a build whose About-page patch count is
       empty, non-numeric, stale, or disagrees with what the tree would export
-      (`build-scripts/patch_count.sh` is the single source of truth for that number)
+      (`build-scripts/patch_count.sh` is the single source of truth for that number).
+      From v3.1.0 the line reads one higher than `patches/` holds and says so
+      inline — the OpenSSL 3.5 source drop is a commit that ships as an
+      `overlays/` archive and emits no `.patch`
 
 ---
 

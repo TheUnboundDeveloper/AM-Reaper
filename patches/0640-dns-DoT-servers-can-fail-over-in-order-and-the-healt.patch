@@ -1,0 +1,760 @@
+From 219e7d94d4789899c5b584326e9d3b352c17cef0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 9 Sep 2026 17:55:19 -0400
+Subject: [PATCH] dns: DoT servers can fail over in order, and the health check
+ prefers IPv6
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c             | 101 +++++++++++++++++----
+ release/src/router/rc/sdn.c                |  15 ++-
+ release/src/router/rc/services.c           |  15 ++-
+ release/src/router/shared/defaults.c       |   4 +-
+ release/src/router/www/BR.dict             |   6 ++
+ release/src/router/www/CN.dict             |   6 ++
+ release/src/router/www/CZ.dict             |   6 ++
+ release/src/router/www/DA.dict             |   6 ++
+ release/src/router/www/DE.dict             |   6 ++
+ release/src/router/www/EN.dict             |   6 ++
+ release/src/router/www/ES.dict             |   6 ++
+ release/src/router/www/FI.dict             |   6 ++
+ release/src/router/www/FR.dict             |   6 ++
+ release/src/router/www/HU.dict             |   6 ++
+ release/src/router/www/IT.dict             |   6 ++
+ release/src/router/www/JP.dict             |   6 ++
+ release/src/router/www/KR.dict             |   6 ++
+ release/src/router/www/MS.dict             |   6 ++
+ release/src/router/www/NL.dict             |   6 ++
+ release/src/router/www/NO.dict             |   6 ++
+ release/src/router/www/PL.dict             |   6 ++
+ release/src/router/www/RO.dict             |   6 ++
+ release/src/router/www/RU.dict             |   6 ++
+ release/src/router/www/Reaper_Failover.asp |  32 ++++++-
+ release/src/router/www/SL.dict             |   6 ++
+ release/src/router/www/SV.dict             |   6 ++
+ release/src/router/www/TH.dict             |   6 ++
+ release/src/router/www/TR.dict             |   6 ++
+ release/src/router/www/TW.dict             |   6 ++
+ release/src/router/www/UK.dict             |   6 ++
+ 30 files changed, 291 insertions(+), 26 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index b6b9fa7c00..dd0d988047 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -66,7 +66,9 @@ struct hc_cfg {
+ 	int enable;
+ 	char target[INET6_ADDRSTRLEN];	/* canonical spelling (inet_ntop) of what the admin typed */
+ 	int af;			/* AF_INET / AF_INET6; 0 = no valid target */
+-	int v6_off;		/* an IPv6 target while IPv6 is disabled on the router: idle */
++	char alt[INET6_ADDRSTRLEN];	/* v3.1.2: the same server's other address */
++	int alt_af;		/* AF_INET6 for reaper_dnshc_target6; 0 = none */
++	int v6_off;		/* IPv6 is the ONLY address we have and it cannot be used: idle */
+ 	char name[128];
+ 	int interval;		/* s */
+ 	int timeout_ms;
+@@ -90,6 +92,23 @@ static int clamp(int v, int lo, int hi, int dflt)
+ 	return v < lo ? lo : (v > hi ? hi : v);
+ }
+ 
++/* Can an IPv6 probe possibly work right now? Two local nvram reads, no socket
++ * and no wait, so a router with IPv6 switched off or with nothing delegated by
++ * the ISP never spends a millisecond probing over v6. ipv6_rtr_addr is the
++ * right second test: multi_wan_ipv6.c CLEARS it when the WAN loses IPv6, so
++ * empty means "we have no address", not merely "the service is on".
++ * connect() is the backstop for the gap between these reads and reality - on a
++ * UDP socket it is a routing-table lookup, so a route that vanished a moment
++ * ago fails instantly instead of costing the timeout. */
++static int hc_v6_usable(void)
++{
++#ifdef RTCONFIG_IPV6
++	return ipv6_enabled() && *nvram_safe_get("ipv6_rtr_addr");
++#else
++	return 0;
++#endif
++}
++
+ static void cfg_read(struct hc_cfg *c)
+ {
+ 	const char *p;
+@@ -111,12 +130,20 @@ static void cfg_read(struct hc_cfg *c)
+ 	} else if (*p && inet_pton(AF_INET6, p, &a6) == 1) {
+ 		c->af = AF_INET6;
+ 		inet_ntop(AF_INET6, &a6, c->target, sizeof(c->target));
+-#ifdef RTCONFIG_IPV6
+-		c->v6_off = ipv6_enabled() ? 0 : 1;
+-#else
+-		c->v6_off = 1;
+-#endif
+ 	}
++	/* v3.1.2: the same server's IPv6 address, so the check can prefer v6 and
++	 * fall back to v4 instead of idling. Ignored unless it parses as IPv6 and
++	 * the main field is not already an IPv6 address. */
++	p = nvram_safe_get("reaper_dnshc_target6");
++	if (*p && c->af != AF_INET6 && inet_pton(AF_INET6, p, &a6) == 1) {
++		c->alt_af = AF_INET6;
++		inet_ntop(AF_INET6, &a6, c->alt, sizeof(c->alt));
++	}
++	/* Idle only when there is nothing we could probe at all: the one address we
++	 * have is IPv6 and IPv6 cannot carry it. With an IPv4 address as well there
++	 * is always something to watch, so the check runs. */
++	if (c->af == AF_INET6 && !c->alt_af && !hc_v6_usable())
++		c->v6_off = 1;
+ 	p = nvram_safe_get("reaper_dnshc_name");
+ 	strlcpy(c->name, (*p ? p : "localhost"), sizeof(c->name));
+ 	for (i = 0; c->name[i]; i++) {
+@@ -136,7 +163,7 @@ static void cfg_read(struct hc_cfg *c)
+ /* One UDP query for <name> A IN, sent straight to target:53 (never through
+  * dnsmasq). 1 = a reply with our id came back (strict: NOERROR + >=1 record),
+  * 0 = silence, an error, or a reply that does not qualify. */
+-static int probe(const struct hc_cfg *c)
++static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
+ {
+ 	unsigned char pkt[512];
+ 	unsigned char *q;
+@@ -170,21 +197,21 @@ static int probe(const struct hc_cfg *c)
+ 	len = (int)(q - pkt);
+ 
+ 	memset(&ss, 0, sizeof(ss));
+-	if (c->af == AF_INET6) {
++	if (af == AF_INET6) {
+ 		struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+ 		s6->sin6_family = AF_INET6;
+ 		s6->sin6_port = htons(53);
+-		if (inet_pton(AF_INET6, c->target, &s6->sin6_addr) != 1) return 0;
++		if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) return 0;
+ 		slen = sizeof(*s6);
+ 	} else {
+ 		struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+ 		s4->sin_family = AF_INET;
+ 		s4->sin_port = htons(53);
+-		if (inet_pton(AF_INET, c->target, &s4->sin_addr) != 1) return 0;
++		if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) return 0;
+ 		slen = sizeof(*s4);
+ 	}
+ 
+-	if ((fd = socket(c->af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
++	if ((fd = socket(af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
+ 	if (connect(fd, (struct sockaddr *)&ss, slen) < 0 || send(fd, pkt, len, 0) != len) {
+ 		close(fd);
+ 		return 0;
+@@ -216,11 +243,18 @@ static int probe(const struct hc_cfg *c)
+  * that is "server=<ip>" or "server=<ip>#port" (a "server=/domain/<ip>" line
+  * is a domain route and is left where it is); for resolv.conf it is
+  * "nameserver <ip>". */
++static int addr_matches(const char *addr, const char *want, int af)
++{
++	unsigned char bin[16], tbin[16];
++	if (!want || !*want) return 0;
++	if (inet_pton(af, addr, bin) != 1 || inet_pton(af, want, tbin) != 1) return 0;
++	return memcmp(bin, tbin, af == AF_INET6 ? 16 : 4) == 0;
++}
++
+ static int line_is_target(const char *line, const char *prefix, const struct hc_cfg *c)
+ {
+ 	size_t pl = strlen(prefix), al;
+ 	char addr[INET6_ADDRSTRLEN + 8];
+-	unsigned char bin[16], tbin[16];
+ 	const char *p;
+ 	if (strncmp(line, prefix, pl) != 0) return 0;
+ 	p = line + pl;
+@@ -232,8 +266,13 @@ static int line_is_target(const char *line, const char *prefix, const struct hc_
+ 	if (al == 0 || al >= sizeof(addr)) return 0;
+ 	memcpy(addr, p, al);
+ 	addr[al] = 0;
+-	if (inet_pton(c->af, addr, bin) != 1 || inet_pton(c->af, c->target, tbin) != 1) return 0;
+-	return memcmp(bin, tbin, c->af == AF_INET6 ? 16 : 4) == 0;
++	/* v3.1.2: one server, up to two addresses. A line naming EITHER of them is
++	 * this server's line, so a failover moves both and dnsmasq is not left
++	 * hammering the surviving one while the server is down. inet_pton against
++	 * the wrong family simply fails, which is the family filter. */
++	if (c->af && addr_matches(addr, c->target, c->af)) return 1;
++	if (c->alt_af && addr_matches(addr, c->alt, c->alt_af)) return 1;
++	return 0;
+ }
+ 
+ /* A plain upstream of the same kind (used to decide whether the target is
+@@ -324,6 +363,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	struct hc_cfg c;
+ 	char watched[INET6_ADDRSTRLEN] = "";
+ 	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1, v6_warned = 0;
++	int last_fam = 0, v6skip_warned = 0;
+ 	long since = 0;
+ 	(void)argc; (void)argv;
+ 
+@@ -355,7 +395,7 @@ int rdnshc_main(int argc, char *argv[])
+ 		enabled = c.enable && *c.target && !c.v6_off;
+ 		if (c.enable && *c.target && c.v6_off) {
+ 			if (!v6_warned)
+-				logmessage(HC_TAG, "DNS Health Check: %s is an IPv6 address but IPv6 is disabled on the router - the check stays idle until IPv6 is enabled or an IPv4 server is named", c.target);
++				logmessage(HC_TAG, "DNS Health Check: %s is an IPv6 address, and the router has no usable IPv6 (disabled, or no address from the ISP) - the check stays idle until IPv6 comes back, or until the server's IPv4 address is filled in as well", c.target);
+ 			v6_warned = 1;
+ 		} else
+ 			v6_warned = 0;
+@@ -384,10 +424,37 @@ int rdnshc_main(int argc, char *argv[])
+ 		}
+ 		strlcpy(watched, c.target, sizeof(watched));
+ 
+-		alive = probe(&c);
++		/* IPv6 first, then IPv4 - but only over a family that can actually
++		 * carry a query. hc_v6_usable() is two local nvram reads, so a router
++		 * with IPv6 off or nothing delegated skips v6 without a socket and
++		 * without a wait; it never costs the timeout. A miss is counted only
++		 * when EVERY family we could try failed: a broken v6 path must not
++		 * fail over a server that is answering perfectly well on v4. */
++		{
++			const char *a6 = (c.af == AF_INET6) ? c.target : (c.alt_af == AF_INET6 ? c.alt : NULL);
++			const char *a4 = (c.af == AF_INET) ? c.target : NULL;
++			int fam = 0, v6_ready = a6 && hc_v6_usable();
++
++			if (a6 && !v6_ready && a4 && !v6skip_warned) {
++				logmessage(HC_TAG, "DNS Health Check: skipping the IPv6 address %s - the router has no usable IPv6 right now (disabled, or no address from the ISP); watching %s over IPv4 instead", a6, a4);
++				v6skip_warned = 1;
++			} else if (v6_ready)
++				v6skip_warned = 0;
++
++			alive = 0;
++			if (v6_ready && probe_addr(&c, a6, AF_INET6)) { alive = 1; fam = 6; }
++			if (!alive && a4 && probe_addr(&c, a4, AF_INET)) { alive = 1; fam = 4; }
++
++			if (alive && fam != last_fam) {
++				if (last_fam && a6 && a4)
++					logmessage(HC_TAG, "DNS Health Check: %s is answering over IPv%d now", c.target, fam);
++				last_fam = fam;
++			} else if (!alive)
++				last_fam = 0;
++		}
+ 		if (alive) { hits++; misses = 0; } else { misses++; hits = 0; }
+ 		if (!alive && !down)
+-			logmessage(HC_TAG, "DNS Health Check: %s did not answer within %d ms (miss %d of %d)", c.target, c.timeout_ms, misses, c.fail);
++			logmessage(HC_TAG, "DNS Health Check: %s did not answer within %d ms on any configured address (miss %d of %d)", c.target, c.timeout_ms, misses, c.fail);
+ 
+ 		if (!down && misses >= c.fail) {
+ 			int changed = 0, nup;
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 1ae1bea439..d52598bc64 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -425,13 +425,22 @@ void _start_sdn_stubby(const MTLAN_T *pmtl, char *config_file, const size_t path
+ 	}
+ #endif
+ 
+-	/* Connection settings */
++	/* Connection settings.
++	 * reaper v3.1.2: stubby ships round_robin_upstreams: 1, which rotates
++	 * every configured DoT server per query - so a list of them SHARES the
++	 * traffic rather than holding one in reserve, and there is no failover
++	 * order at all. reaper_dot_strict writes 0 instead, which makes the list
++	 * an ordered primary and standby: the first server is used until it stops
++	 * answering. Default 0 keeps stock behaviour. Note DoT REPLACES the WAN
++	 * DNS list (wan.c: dnspriv_enable breaks out), so a LAN filter is out of
++	 * the path either way unless it is itself one of these servers. */
+ 	fprintf(fp,
+-		"round_robin_upstreams: 1\n"
++		"round_robin_upstreams: %d\n"
+ 		"idle_timeout: 9000\n"
+ 		"tls_connection_retries: 2\n"
+ 		"tls_backoff_time: 900\n"
+-		"timeout: 3000\n");
++		"timeout: 3000\n",
++		nvram_get_int("reaper_dot_strict") ? 0 : 1);
+ 
+ 	/* Limit number of outstanding requests */
+ 	max_queries = nvram_get_int("max_dns_queries");
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 119d02d724..5b2846e5ae 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2648,13 +2648,22 @@ void start_stubby(void)
+ 	}
+ #endif
+ 
+-	/* Connection settings */
++	/* Connection settings.
++	 * reaper v3.1.2: stubby ships round_robin_upstreams: 1, which rotates
++	 * every configured DoT server per query - so a list of them SHARES the
++	 * traffic rather than holding one in reserve, and there is no failover
++	 * order at all. reaper_dot_strict writes 0 instead, which makes the list
++	 * an ordered primary and standby: the first server is used until it stops
++	 * answering. Default 0 keeps stock behaviour. Note DoT REPLACES the WAN
++	 * DNS list (wan.c: dnspriv_enable breaks out), so a LAN filter is out of
++	 * the path either way unless it is itself one of these servers. */
+ 	fprintf(fp,
+-		"round_robin_upstreams: 1\n"
++		"round_robin_upstreams: %d\n"
+ 		"idle_timeout: 9000\n"
+ 		"tls_connection_retries: 2\n"
+ 		"tls_backoff_time: 900\n"
+-		"timeout: 3000\n");
++		"timeout: 3000\n",
++		nvram_get_int("reaper_dot_strict") ? 0 : 1);
+ 
+ 	/* Limit number of outstanding requests */
+ 	max_queries = nvram_get_int("max_dns_queries");
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 7dcb4c5fae..50527b4f4e 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3170,7 +3170,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "amas_bh_park", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	/* reaper v3.1.1: LAN resolver health check (rc/rdnshc.c) + dnsmasq strict upstream order; the System page's "Reaper resolver health check" block */
+ 	{ "reaper_dnshc_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "reaper_dnshc_target", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* IPv4 or (v3.1.1) IPv6 of the LAN resolver to watch - an IPv6 address counts only while IPv6 is enabled; empty = nothing watched */
++	{ "reaper_dnshc_target", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* IPv4 or (v3.1.1) IPv6 of the LAN resolver to watch; empty = nothing watched */
++	{ "reaper_dnshc_target6", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3.1.2: the SAME server's IPv6 address, so the check prefers v6 and falls back to the v4 above instead of idling */
+ 	{ "reaper_dnshc_name", "localhost", CKN_STR255, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* name queried; any reply counts unless _strict */
+ 	{ "reaper_dnshc_interval", "10", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* s, 3-300 */
+ 	{ "reaper_dnshc_timeout", "1000", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* ms, 200-5000 */
+@@ -3180,6 +3181,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
+ 	{ "reaper_dns_ecs", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq add-subnet=32,128 (EDNS Client Subnet to the upstream) */
+ 	{ "reaper_dns_nocache", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq cache-size=0 */
++	{ "reaper_dot_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* stubby round_robin_upstreams: 0 (sequential DoT failover) */
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+ 	{ "gk_guest_hours", "24", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest pass length in hours (internet-only + expiry) */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 0c534389b0..e72efd830f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Aplicando: a verificacao e o resolvedor reiniciam com as novas configura
+ RDHC_37=Desligado
+ RDHC_38=Respondendo
+ RDHC_39=Sem resposta
++RDHC_40=Ordem DNS-over-TLS
++RDHC_41=Usar os servidores em ordem, nao aleatoriamente
++RDHC_42=O roteador normalmente alterna entre seus servidores DNS-over-TLS, que assim dividem o trafego. Isto os usa na ordem listada, mantendo os demais em reserva.
++RDHC_43=A Privacidade DNS esta desligada, entao esta opcao ainda nao tem efeito.
++RDHC_44=Endereco IPv6 (opcional)
++RDHC_45=O endereco IPv6 do mesmo servidor, tentado primeiro. O endereco IPv4 acima e usado sempre que o IPv6 estiver indisponivel ou nao responder.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b31a3638ec..bbb2716d15 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=正在应用：健康检查和解析器将以新设置重启。
+ RDHC_37=关闭
+ RDHC_38=有应答
+ RDHC_39=无应答
++RDHC_40=DNS-over-TLS 顺序
++RDHC_41=按顺序使用服务器，而不是随机
++RDHC_42=路由器通常在其 DNS-over-TLS 服务器之间轮换，因此它们分担流量。此选项改为按列出的顺序使用，其余作为备用。
++RDHC_43=DNS 隐私已关闭，此开关暂时不起作用。
++RDHC_44=IPv6 地址（可选）
++RDHC_45=同一服务器的 IPv6 地址，优先尝试。当 IPv6 不可用或无响应时，将使用上面的 IPv4 地址。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index e3bec2957d..e354c20013 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Probiha pouziti: kontrola a resolver se restartuji s novym nastavenim.
+ RDHC_37=Vypnuto
+ RDHC_38=Odpovida
+ RDHC_39=Neodpovida
++RDHC_40=Poradi DNS-over-TLS
++RDHC_41=Pouzivat servery v poradi, ne nahodne
++RDHC_42=Router obvykle strida sve servery DNS-over-TLS, takze si provoz deli. Toto je misto toho pouzije v uvedenem poradi a ostatni ponecha v zaloze.
++RDHC_43=Soukromi DNS je vypnuto, tato volba zatim nema na co pusobit.
++RDHC_44=Adresa IPv6 (volitelne)
++RDHC_45=Adresa IPv6 tehoz serveru, zkousi se jako prvni. Kdykoli je IPv6 nedostupne nebo neodpovida, pouzije se adresa IPv4 vyse.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 80d25cf0ec..6503a7bc1d 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Anvender: sundhedstjekket og resolveren genstarter med de nye indstillin
+ RDHC_37=Fra
+ RDHC_38=Svarer
+ RDHC_39=Svarer ikke
++RDHC_40=DNS-over-TLS-raekkefolge
++RDHC_41=Brug serverne i raekkefolge, ikke tilfaeldigt
++RDHC_42=Routeren skifter normalt mellem sine DNS-over-TLS-servere, så de deler trafikken. Dette bruger dem i den viste raekkefolge og holder resten i reserve.
++RDHC_43=DNS-privatliv er slået fra, så denne indstilling har endnu ingen effekt.
++RDHC_44=IPv6-adresse (valgfri)
++RDHC_45=Samme servers IPv6-adresse, som proves forst. IPv4-adressen ovenfor bruges, når IPv6 ikke er tilgaengelig eller ikke svarer.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index b4cd21ffef..7616b89048 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Wird angewendet: Pruefung und Resolver starten mit den neuen Einstellung
+ RDHC_37=Aus
+ RDHC_38=Antwortet
+ RDHC_39=Antwortet nicht
++RDHC_40=DNS-over-TLS-Reihenfolge
++RDHC_41=Server der Reihe nach nutzen, nicht zufällig
++RDHC_42=Der Router wechselt normalerweise zwischen seinen DNS-over-TLS-Servern, sodass diese den Verkehr teilen. Dies nutzt sie stattdessen in der angegebenen Reihenfolge und hält die übrigen in Reserve.
++RDHC_43=DNS-Privatsphäre ist aus, dieser Schalter hat daher noch keine Wirkung.
++RDHC_44=IPv6-Adresse (optional)
++RDHC_45=Die IPv6-Adresse desselben Servers, wird zuerst versucht. Die IPv4-Adresse oben wird verwendet, wenn IPv6 nicht verfügbar ist oder nicht antwortet.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index a240f220ef..77e577fd49 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Applying: the health check and the resolver restart with the new setting
+ RDHC_37=Off
+ RDHC_38=Answering
+ RDHC_39=Not answering
++RDHC_40=DNS-over-TLS order
++RDHC_41=Use the servers in order, not at random
++RDHC_42=The router normally rotates between its DNS-over-TLS servers, so they share the traffic. This uses them in the listed order instead, keeping the rest in reserve.
++RDHC_43=DNS Privacy is off, so this switch has nothing to act on yet.
++RDHC_44=IPv6 address (optional)
++RDHC_45=The same server's IPv6 address, tried first. The IPv4 address above is used whenever IPv6 is unavailable or does not answer.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 3612d72957..d5d0e76af2 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Aplicando: la comprobacion y el resolvedor se reinician con los nuevos a
+ RDHC_37=Apagado
+ RDHC_38=Responde
+ RDHC_39=No responde
++RDHC_40=Orden de DNS-over-TLS
++RDHC_41=Usar los servidores en orden, no al azar
++RDHC_42=El router suele alternar entre sus servidores DNS-over-TLS, de modo que reparten el trafico. Esto los usa en el orden indicado y mantiene el resto en reserva.
++RDHC_43=La Privacidad DNS esta desactivada, asi que esta opcion aun no tiene efecto.
++RDHC_44=Direccion IPv6 (opcional)
++RDHC_45=La direccion IPv6 del mismo servidor, se prueba primero. La direccion IPv4 de arriba se usa siempre que IPv6 no este disponible o no responda.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 25e5057d1a..812208b394 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Otetaan kayttoon: tarkistus ja selvitin kaynnistyvat uusilla asetuksilla
+ RDHC_37=Pois
+ RDHC_38=Vastaa
+ RDHC_39=Ei vastaa
++RDHC_40=DNS-over-TLS-jarjestys
++RDHC_41=Kayta palvelimia jarjestyksessa, ei satunnaisesti
++RDHC_42=Reititin vaihtelee yleensa DNS-over-TLS-palvelimiensa valilla, jolloin ne jakavat liikenteen. Tama kayttaa niita sen sijaan luetellussa jarjestyksessa ja pitaa loput varalla.
++RDHC_43=DNS-yksityisyys on pois paalta, joten talla valinnalla ei ole viela vaikutusta.
++RDHC_44=IPv6-osoite (valinnainen)
++RDHC_45=Saman palvelimen IPv6-osoite, jota kokeillaan ensin. Ylla olevaa IPv4-osoitetta kaytetaan aina, kun IPv6 ei ole kaytettavissa tai ei vastaa.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index a76c5e1e77..c1ee5fe82c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Application en cours : la verification et le resolveur redemarrent avec
+ RDHC_37=Arret
+ RDHC_38=Repond
+ RDHC_39=Ne repond pas
++RDHC_40=Ordre DNS-over-TLS
++RDHC_41=Utiliser les serveurs dans l'ordre, pas au hasard
++RDHC_42=Le routeur alterne normalement entre ses serveurs DNS-over-TLS, qui se partagent donc le trafic. Ceci les utilise dans l'ordre indique et garde les autres en reserve.
++RDHC_43=La confidentialite DNS est desactivee, cette option n'a donc pas encore d'effet.
++RDHC_44=Adresse IPv6 (facultatif)
++RDHC_45=L'adresse IPv6 du meme serveur, essayee en premier. L'adresse IPv4 ci-dessus est utilisee des que l'IPv6 est indisponible ou ne repond pas.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 0dfc33415e..c5442acbad 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Alkalmazas: az ellenorzes es a feloldo az uj beallitasokkal ujraindul.
+ RDHC_37=Ki
+ RDHC_38=Valaszol
+ RDHC_39=Nem valaszol
++RDHC_40=DNS-over-TLS sorrend
++RDHC_41=A kiszolgalok hasznalata sorrendben, nem veletlenszeruen
++RDHC_42=A router altalaban valtogat a DNS-over-TLS kiszolgaloi kozott, igy azok megosztjak a forgalmat. Ez helyette a felsorolt sorrendben hasznalja oket, a tobbit tartalekban tartva.
++RDHC_43=A DNS-adatvedelem ki van kapcsolva, ezert ennek a kapcsolonak meg nincs hatasa.
++RDHC_44=IPv6-cim (opcionalis)
++RDHC_45=Ugyanannak a kiszolgalonak az IPv6-cime, ezt probalja eloszor. A fenti IPv4-cimet hasznalja, ha az IPv6 nem erheto el vagy nem valaszol.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 1be1612e63..448b574c5e 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Applicazione in corso: il controllo e il resolver ripartono con le nuove
+ RDHC_37=Spento
+ RDHC_38=Risponde
+ RDHC_39=Non risponde
++RDHC_40=Ordine DNS-over-TLS
++RDHC_41=Usare i server in ordine, non a caso
++RDHC_42=Il router normalmente alterna i suoi server DNS-over-TLS, che si dividono il traffico. Questo li usa invece nell'ordine indicato, tenendo gli altri di riserva.
++RDHC_43=La Privacy DNS e disattivata, quindi questa opzione non ha ancora effetto.
++RDHC_44=Indirizzo IPv6 (facoltativo)
++RDHC_45=L'indirizzo IPv6 dello stesso server, provato per primo. L'indirizzo IPv4 sopra viene usato ogni volta che IPv6 non e disponibile o non risponde.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 9adfce55d7..372d723a88 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=適用中：ヘルスチェックとリゾルバーが新しい設定で
+ RDHC_37=オフ
+ RDHC_38=応答あり
+ RDHC_39=応答なし
++RDHC_40=DNS-over-TLS の順序
++RDHC_41=サーバーをランダムではなく順番に使用
++RDHC_42=ルーターは通常 DNS-over-TLS サーバー間で切り替えるため、トラフィックが分散されます。この設定では代わりに一覧の順に使用し、残りは予備として保持します。
++RDHC_43=DNS プライバシーが無効のため、この設定はまだ効果がありません。
++RDHC_44=IPv6 アドレス（任意）
++RDHC_45=同じサーバーの IPv6 アドレスで、先に試行します。IPv6 が利用できない場合や応答しない場合は、上の IPv4 アドレスを使用します。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index fb94d7fbf6..25b74c6c92 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=적용 중: 상태 검사와 리졸버가 새 설정으로 다시 시작
+ RDHC_37=꺼짐
+ RDHC_38=응답함
+ RDHC_39=응답 없음
++RDHC_40=DNS-over-TLS 순서
++RDHC_41=서버를 무작위가 아닌 순서대로 사용
++RDHC_42=라우터는 일반적으로 DNS-over-TLS 서버를 번갈아 사용하므로 트래픽이 분산됩니다. 이 설정은 대신 나열된 순서대로 사용하고 나머지는 예비로 둡니다.
++RDHC_43=DNS 프라이버시가 꺼져 있어 이 스위치는 아직 적용되지 않습니다.
++RDHC_44=IPv6 주소(선택 사항)
++RDHC_45=같은 서버의 IPv6 주소이며 먼저 시도합니다. IPv6를 사용할 수 없거나 응답하지 않으면 위의 IPv4 주소를 사용합니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 8112482787..73d6dabf92 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Menggunakan: semakan kesihatan dan penyelesai dimulakan semula dengan te
+ RDHC_37=Mati
+ RDHC_38=Menjawab
+ RDHC_39=Tidak menjawab
++RDHC_40=Susunan DNS-over-TLS
++RDHC_41=Guna pelayan mengikut susunan, bukan secara rawak
++RDHC_42=Penghala biasanya berselang-seli antara pelayan DNS-over-TLS-nya, jadi trafik dikongsi. Ini menggunakannya mengikut susunan tersenarai dan menyimpan yang lain sebagai simpanan.
++RDHC_43=Privasi DNS dimatikan, jadi suis ini belum memberi kesan.
++RDHC_44=Alamat IPv6 (pilihan)
++RDHC_45=Alamat IPv6 pelayan yang sama, dicuba dahulu. Alamat IPv4 di atas digunakan apabila IPv6 tidak tersedia atau tidak menjawab.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 6bd76ba94f..0025d35fad 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Toepassen: de controle en de resolver herstarten met de nieuwe instellin
+ RDHC_37=Uit
+ RDHC_38=Antwoordt
+ RDHC_39=Antwoordt niet
++RDHC_40=DNS-over-TLS-volgorde
++RDHC_41=Servers op volgorde gebruiken, niet willekeurig
++RDHC_42=De router wisselt normaal tussen zijn DNS-over-TLS-servers, zodat die het verkeer delen. Dit gebruikt ze in de vermelde volgorde en houdt de rest in reserve.
++RDHC_43=DNS-privacy staat uit, dus deze schakelaar heeft nog geen effect.
++RDHC_44=IPv6-adres (optioneel)
++RDHC_45=Het IPv6-adres van dezelfde server, dat eerst wordt geprobeerd. Het IPv4-adres hierboven wordt gebruikt zodra IPv6 niet beschikbaar is of niet antwoordt.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 33594394e7..25574303d8 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Tar i bruk: helsesjekken og resolveren starter paa nytt med de nye innst
+ RDHC_37=Av
+ RDHC_38=Svarer
+ RDHC_39=Svarer ikke
++RDHC_40=DNS-over-TLS-rekkefolge
++RDHC_41=Bruk serverne i rekkefolge, ikke tilfeldig
++RDHC_42=Ruteren veksler normalt mellom sine DNS-over-TLS-servere, så de deler trafikken. Dette bruker dem i den oppgitte rekkefolgen og holder resten i reserve.
++RDHC_43=DNS-personvern er av, så denne bryteren har ingen virkning ennå.
++RDHC_44=IPv6-adresse (valgfritt)
++RDHC_45=Samme servers IPv6-adresse, som proves forst. IPv4-adressen over brukes når IPv6 ikke er tilgjengelig eller ikke svarer.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 3b1a02200f..8f774039e2 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Stosowanie: kontrola i resolver uruchamiaja sie ponownie z nowymi ustawi
+ RDHC_37=Wyl.
+ RDHC_38=Odpowiada
+ RDHC_39=Nie odpowiada
++RDHC_40=Kolejnosc DNS-over-TLS
++RDHC_41=Uzywaj serwerow po kolei, nie losowo
++RDHC_42=Router zwykle przelacza sie miedzy swoimi serwerami DNS-over-TLS, wiec dziela one ruch. To ustawienie uzywa ich w podanej kolejnosci, a pozostale trzyma w rezerwie.
++RDHC_43=Prywatnosc DNS jest wylaczona, wiec ten przelacznik nie ma jeszcze zastosowania.
++RDHC_44=Adres IPv6 (opcjonalnie)
++RDHC_45=Adres IPv6 tego samego serwera, probowany jako pierwszy. Adres IPv4 powyzej jest uzywany, gdy IPv6 jest niedostepne lub nie odpowiada.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 6d017df22c..a1eeea746d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Se aplica: verificarea si resolverul repornesc cu noile setari.
+ RDHC_37=Oprit
+ RDHC_38=Raspunde
+ RDHC_39=Nu raspunde
++RDHC_40=Ordinea DNS-over-TLS
++RDHC_41=Foloseste serverele in ordine, nu aleatoriu
++RDHC_42=Routerul alterneaza in mod normal intre serverele sale DNS-over-TLS, deci acestea impart traficul. Aceasta optiune le foloseste in ordinea listata si le pastreaza pe celelalte de rezerva.
++RDHC_43=Confidentialitatea DNS este oprita, deci acest comutator nu are inca efect.
++RDHC_44=Adresa IPv6 (optional)
++RDHC_45=Adresa IPv6 a aceluiasi server, incercata prima. Adresa IPv4 de mai sus este folosita ori de cate ori IPv6 nu este disponibil sau nu raspunde.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 1261c4e861..e2f72cce02 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Применение: проверка и резолвер переза
+ RDHC_37=Выкл.
+ RDHC_38=Отвечает
+ RDHC_39=Не отвечает
++RDHC_40=Порядок DNS-over-TLS
++RDHC_41=Использовать серверы по порядку, а не случайно
++RDHC_42=Маршрутизатор обычно чередует свои серверы DNS-over-TLS, поэтому они делят трафик. Этот параметр использует их в указанном порядке, оставляя остальные в резерве.
++RDHC_43=Приватность DNS отключена, поэтому этот переключатель пока не действует.
++RDHC_44=Адрес IPv6 (необязательно)
++RDHC_45=Адрес IPv6 того же сервера, проверяется первым. Адрес IPv4 выше используется, когда IPv6 недоступен или не отвечает.
+diff --git a/release/src/router/www/Reaper_Failover.asp b/release/src/router/www/Reaper_Failover.asp
+index 3e1fdb25f7..9177e8d15b 100644
+--- a/release/src/router/www/Reaper_Failover.asp
++++ b/release/src/router/www/Reaper_Failover.asp
+@@ -212,6 +212,11 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+       <span class="note"><#RDHC_16#></span>
+       <span class="note" id="v6note"><#RDHC_27#></span>
+     </label>
++    <label class="fld">
++      <span class="l"><#RDHC_44#></span>
++      <input type="text" id="target6" maxlength="45" value="<% nvram_get("reaper_dnshc_target6"); %>" placeholder="2001:db8::53" autocorrect="off" autocapitalize="off" spellcheck="false">
++      <span class="note"><#RDHC_45#></span>
++    </label>
+     <label class="fld">
+       <span class="l"><#RDHC_5#></span>
+       <input type="text" id="qname" maxlength="120" value="<% nvram_get("reaper_dnshc_name"); %>" autocorrect="off" autocapitalize="off" spellcheck="false">
+@@ -274,6 +279,16 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <p><#RDHC_25#></p>
+     <p id="dnssec_note" style="display:none;color:var(--amber)"><#RDHC_26#></p>
+   </div>
++  <div class="card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M4 12h7M4 17h13"/><path d="M17 4v9"/><path d="M14 10l3 3 3-3"/></svg></span>
++      <h2><#RDHC_40#></h2>
++      <label class="sw"><input type="checkbox" id="dotstrict" <% nvram_match("reaper_dot_strict", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_41#></b></p>
++    <p><#RDHC_42#></p>
++    <p id="dot_off_note" style="display:none;color:var(--amber)"><#RDHC_43#></p>
++  </div>
+ </div>
+ 
+ <div class="bar">
+@@ -289,6 +304,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+ <script>
+ var IPV6 = '<% nvram_get("ipv6_service"); %>';
+ var DNSSEC = '<% nvram_get("dnssec_enable"); %>';
++var DOTON  = '<% nvram_get("dnspriv_enable"); %>';
+ var ORIG = {
+   enable: '<% nvram_get("reaper_dnshc_enable"); %>',
+   target: '<% nvram_get("reaper_dnshc_target"); %>',
+@@ -301,6 +317,8 @@ var ORIG = {
+   dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
+   ecs: '<% nvram_get("reaper_dns_ecs"); %>',
+   nocache: '<% nvram_get("reaper_dns_nocache"); %>',
++  dotstrict: '<% nvram_get("reaper_dot_strict"); %>',
++  target6: '<% nvram_get("reaper_dnshc_target6"); %>',
+   state: '<% nvram_get("reaper_dnshc_state"); %>'
+ };
+ var T = {
+@@ -383,6 +401,9 @@ function valid(){
+     msg(s + ' ' + T.badIp + ((!V6ON && s.indexOf(':') >= 0) ? ' ' + T.v6off : ''), 1);
+     t.focus(); return false;
+   }
++  var t6 = $id('target6'), s6 = t6.value.replace(/\s+/g, '');
++  t6.value = s6;
++  if(s6 !== '' && !isV6(s6)){ msg(s6 + ' ' + T.badIp, 1); t6.focus(); return false; }
+   var n = $id('qname');
+   if(n.value === '' || !/^[A-Za-z0-9._-]+$/.test(n.value)){ msg(T.blank, 1); n.focus(); return false; }
+   if(!inRange('interval', 3, 300) || !inRange('timeout', 200, 5000) || !inRange('fail', 1, 10) || !inRange('recover', 1, 10)){ msg(T.badIp, 1); return false; }
+@@ -406,15 +427,21 @@ function apply(){
+   if(!valid()) return;
+   var v = {
+     reaper_dnshc_enable: on('en'), reaper_dnshc_target: $id('target').value, reaper_dnshc_name: $id('qname').value,
++    reaper_dnshc_target6: $id('target6').value,
+     reaper_dnshc_interval: $id('interval').value, reaper_dnshc_timeout: $id('timeout').value,
+     reaper_dnshc_fail: $id('fail').value, reaper_dnshc_recover: $id('recover').value, reaper_dnshc_strict: on('strict'),
+-    reaper_dns_strict: on('dstrict'), reaper_dns_ecs: on('ecs'), reaper_dns_nocache: on('nocache')
++    reaper_dns_strict: on('dstrict'), reaper_dns_ecs: on('ecs'), reaper_dns_nocache: on('nocache'),
++    reaper_dot_strict: on('dotstrict')
+   };
+   var svc = '';
+   if(v.reaper_dnshc_enable !== ORIG.enable || v.reaper_dnshc_target !== ORIG.target || v.reaper_dnshc_name !== ORIG.name
+      || v.reaper_dnshc_interval !== ORIG.interval || v.reaper_dnshc_timeout !== ORIG.timeout || v.reaper_dnshc_fail !== ORIG.fail
+-     || v.reaper_dnshc_recover !== ORIG.recover || v.reaper_dnshc_strict !== ORIG.strict) svc += 'restart_rdnshc;';
++     || v.reaper_dnshc_recover !== ORIG.recover || v.reaper_dnshc_strict !== ORIG.strict
++     || v.reaper_dnshc_target6 !== ORIG.target6) svc += 'restart_rdnshc;';
+   if(v.reaper_dns_strict !== ORIG.dnsstrict || v.reaper_dns_ecs !== ORIG.ecs || v.reaper_dns_nocache !== ORIG.nocache) svc += 'restart_dnsmasq;';
++  /* start_stubby rewrites stubby.yml and returns immediately while DNS Privacy
++     is off, so firing it costs nothing when the switch cannot take effect. */
++  if(v.reaper_dot_strict !== ORIG.dotstrict) svc += 'start_stubby;';
+   if(!svc) return;
+   busy = 1; $id('apply').disabled = true;
+   if(pollT){ clearTimeout(pollT); pollT = null; }
+@@ -431,6 +458,7 @@ function apply(){
+   for(i = 0; i < ids.length; i++) $id(ids[i]).addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); } });
+   $id('v6note').style.display = V6ON ? '' : 'none';
+   if(DNSSEC !== '' && DNSSEC !== '0') $id('dnssec_note').style.display = '';
++  if(DOTON !== '1') $id('dot_off_note').style.display = '';
+   syncEnable();
+   render(ORIG.state, ORIG.enable);
+   poll();
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6230a9dcf8..8aaab1a13d 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Uveljavljanje: preverjanje in razresevalnik se znova zazeneta z novimi n
+ RDHC_37=Izklop
+ RDHC_38=Odgovarja
+ RDHC_39=Ne odgovarja
++RDHC_40=Vrstni red DNS-over-TLS
++RDHC_41=Strezniki naj se uporabljajo po vrsti, ne nakljucno
++RDHC_42=Usmerjevalnik obicajno izmenjuje svoje streznike DNS-over-TLS, zato si delijo promet. To jih namesto tega uporablja po navedenem vrstnem redu, ostale pa ohrani v rezervi.
++RDHC_43=Zasebnost DNS je izklopljena, zato to stikalo se nima ucinka.
++RDHC_44=Naslov IPv6 (izbirno)
++RDHC_45=Naslov IPv6 istega streznika, poskusi se najprej. Naslov IPv4 zgoraj se uporabi, kadar IPv6 ni na voljo ali ne odgovarja.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index f547cbfbec..5d7a930592 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Tillampar: halsokontrollen och resolvern startar om med de nya installni
+ RDHC_37=Av
+ RDHC_38=Svarar
+ RDHC_39=Svarar inte
++RDHC_40=DNS-over-TLS-ordning
++RDHC_41=Anvand servrarna i ordning, inte slumpmassigt
++RDHC_42=Routern vaxlar normalt mellan sina DNS-over-TLS-servrar, så de delar trafiken. Detta anvander dem i den listade ordningen och håller ovriga i reserv.
++RDHC_43=DNS-integritet ar av, så den har brytaren har ingen effekt an.
++RDHC_44=IPv6-adress (valfritt)
++RDHC_45=Samma servers IPv6-adress, som provas forst. IPv4-adressen ovan anvands nar IPv6 inte ar tillgangligt eller inte svarar.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index bc78251a97..07158b6b36 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=กำลังนำไปใช้: การตรวจสอบแ
+ RDHC_37=ปิด
+ RDHC_38=ตอบ
+ RDHC_39=ไม่ตอบ
++RDHC_40=ลำดับ DNS-over-TLS
++RDHC_41=ใช้เซิร์ฟเวอร์ตามลำดับ ไม่ใช่แบบสุ่ม
++RDHC_42=โดยปกติเราเตอร์จะสลับระหว่างเซิร์ฟเวอร์ DNS-over-TLS จึงแบ่งปริมาณการใช้งานกัน ตัวเลือกนี้จะใช้ตามลำดับที่แสดงแทน และเก็บที่เหลือไว้เป็นตัวสำรอง
++RDHC_43=ความเป็นส่วนตัวของ DNS ปิดอยู่ ตัวเลือกนี้จึงยังไม่มีผล
++RDHC_44=ที่อยู่ IPv6 (ไม่บังคับ)
++RDHC_45=ที่อยู่ IPv6 ของเซิร์ฟเวอร์เดียวกัน ซึ่งจะลองก่อน หาก IPv6 ใช้งานไม่ได้หรือไม่ตอบสนอง จะใช้ที่อยู่ IPv4 ด้านบนแทน
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index cfdb5ab1b8..c6ae46b3d2 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Uygulaniyor: saglik denetimi ve cozumleyici yeni ayarlarla yeniden basla
+ RDHC_37=Kapali
+ RDHC_38=Yanit veriyor
+ RDHC_39=Yanit vermiyor
++RDHC_40=DNS-over-TLS sirasi
++RDHC_41=Sunuculari rastgele degil sirayla kullan
++RDHC_42=Yonlendirici normalde DNS-over-TLS sunuculari arasinda gecis yapar, boylece trafigi paylasirlar. Bu secenek onlari listelenen sirayla kullanir ve digerlerini yedekte tutar.
++RDHC_43=DNS Gizliligi kapali, bu nedenle bu anahtarin henuz bir etkisi yok.
++RDHC_44=IPv6 adresi (istege bagli)
++RDHC_45=Ayni sunucunun IPv6 adresi, once denenir. IPv6 kullanilamadiginda veya yanit vermediginde yukaridaki IPv4 adresi kullanilir.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index ba2ebc0b64..8c87a1f81e 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=套用中：健康檢查與解析器將以新設定重新啟動。
+ RDHC_37=關閉
+ RDHC_38=有回應
+ RDHC_39=無回應
++RDHC_40=DNS-over-TLS 順序
++RDHC_41=依序使用伺服器，而非隨機
++RDHC_42=路由器通常會在其 DNS-over-TLS 伺服器之間輪替，因此會分擔流量。此選項改為依列出的順序使用，其餘保留作為備援。
++RDHC_43=DNS 隱私已關閉，此開關目前尚無作用。
++RDHC_44=IPv6 位址（選填）
++RDHC_45=同一伺服器的 IPv6 位址，會優先嘗試。當 IPv6 無法使用或沒有回應時，將改用上方的 IPv4 位址。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 50e56c2b44..2c6fea71ce 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6905,3 +6905,9 @@ RDHC_36=Застосування: перевірка і резолвер пер
+ RDHC_37=Вимк.
+ RDHC_38=Відповідає
+ RDHC_39=Не відповідає
++RDHC_40=Порядок DNS-over-TLS
++RDHC_41=Використовувати сервери за порядком, а не випадково
++RDHC_42=Маршрутизатор зазвичай чергує свої сервери DNS-over-TLS, тому вони розподіляють трафік. Цей параметр використовує їх у вказаному порядку, лишаючи решту в резерві.
++RDHC_43=Приватність DNS вимкнено, тому цей перемикач поки не діє.
++RDHC_44=Адреса IPv6 (необов'язково)
++RDHC_45=Адреса IPv6 того самого сервера, перевіряється першою. Адреса IPv4 вище використовується, коли IPv6 недоступний або не відповідає.
+-- 
+2.25.1
+

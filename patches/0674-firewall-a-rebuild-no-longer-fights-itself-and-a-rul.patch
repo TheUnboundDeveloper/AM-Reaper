@@ -1,0 +1,708 @@
+From e2aea1a24ad2385a510cad933182845305aae542 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 17 Sep 2026 13:28:25 -0400
+Subject: [PATCH] firewall: a rebuild no longer fights itself, and a rule can
+ no longer vanish silently
+
+One restart_qos;restart_firewall on the owner's RT-BE96U (2026-09-17 07:34) had
+the three Reaper layer applies, hook.sh, rwatch 3c and an out-of-tree DNS
+carve-out watcher contending for FORWARD position 1 for fifty seconds; the
+Gatekeeper-restricted devices lost DNS four times. The same day's r4 boot lost
+two of 126 Gatekeeper rules to a concurrent iptables writer (no xtables lock,
+unchecked adds) and an internet-only device had no internet.
+
+- gatekeeper: RETURN DNS the router itself redirected (--ctstate DNAT
+  --ctorigdstport 53) ahead of the per-network DROP, so an off-segment
+  resolver behind a Service Intercept needs no carve-out in front of the hook
+- reaper_hook: hook.sh computes WHERE to pin with rwatch 3d's classifier
+  (_front_pos) instead of -I 1; declared/narrow/terminal rules keep their place
+- rwarden: sets created and the cache replayed BEFORE the chain teardown
+  (the chain was absent for the whole replay); replay is one awk pass into
+  per-set files instead of one pass per set (17 s measured on 80 sets);
+  heal.sh re-checks under the firewall lock before re-applying
+- rwatch 3c: a missing Warden chain must hold on two ticks, the heal runs
+  under the lock, and FAIL (with the dump) only if it is still missing after
+- reaper_fw + rdnshc: an intercept aimed at the DNS Health Check target goes
+  into REAPER_FWHC, closed/opened by hcgate.sh on FAILOVER/RESTORED so it
+  fails open; the gate script is written for apply, candidate and rollback
+- gatekeeper + rwarden: every iptables/ip6tables/ebtables add is retried once
+  and counted (failcount); gkd re-applies on a non-zero count (heal_lost_rules)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c        |  33 +++++++++
+ release/src/router/rc/gatekeeper.c  |  32 +++++++++
+ release/src/router/rc/rdnshc.c      |  17 +++++
+ release/src/router/rc/reaper_fw.c   | 102 ++++++++++++++++++++++++++--
+ release/src/router/rc/reaper_hook.c |  49 ++++++++++++-
+ release/src/router/rc/reaper_hook.h |   9 +++
+ release/src/router/rc/rwarden.c     | 101 ++++++++++++++++++++-------
+ release/src/router/rc/rwatch.c      |  46 ++++++++++---
+ 8 files changed, 349 insertions(+), 40 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index ee98c56eb7..fb7492c9db 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -550,6 +550,38 @@ static void heal_networks(void)
+ 	pclose(p);
+ }
+ 
++/* 2026-09-17: rules that did not load. apply.sh now retries every add once and
++ * leaves the number that still failed in /tmp/gk/failcount (rc/gatekeeper.c).
++ * A non-zero count with the chains "armed" is the state the r4 boot was in:
++ * present, hooked, and missing an internet-only device's RETURN. Re-apply,
++ * at most once per two minutes and three times per streak, and say so - a
++ * count that never clears is a real error to read in the log, not a loop. */
++static void heal_lost_rules(void)
++{
++	static time_t last = 0;
++	static int strikes = 0, gaveup = 0;
++	FILE *f = fopen(GK_DIR "/failcount", "r");
++	long n = 0;
++	time_t now = time(NULL);
++
++	if (!f) return;
++	if (fscanf(f, "%ld", &n) != 1) n = 0;
++	fclose(f);
++	if (n <= 0) { strikes = 0; gaveup = 0; return; }
++	if (strikes >= 3) {
++		if (!gaveup) {
++			logmessage("gatekeeper", "%ld rule(s) still fail to load after 3 re-applies - giving up until the next Gatekeeper restart; read the 'rule add failed twice' lines", n);
++			gaveup = 1;
++		}
++		return;
++	}
++	if (now - last < 120) return;
++	last = now;
++	strikes++;
++	logmessage("gatekeeper", "%ld rule(s) failed to load in the last apply (a concurrent iptables writer) - re-applying (%d of 3)", n, strikes);
++	system("sh " APPLY_SH);
++}
++
+ static void self_heal(void)
+ {
+ 	/* start_firewall rebuilds iptables wholesale (user chains deleted) and
+@@ -600,6 +632,7 @@ static void self_heal(void)
+ 			last_armed = 1;
+ 		}
+ 		heal_networks();	/* v2.6.5: only meaningful once the base set is armed */
++		heal_lost_rules();	/* 2026-09-17: armed is not the same as complete */
+ 		return;
+ 	}
+ 	unlink(CHAIN_STAMP);
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 447c1a67b2..104b01a928 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -114,6 +114,22 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 		 * the main LAN's AdGuard/Pi-hole, which is exactly a routed br1 -> br0
+ 		 * flow and must keep working (same intent as the 2026-08-06 bridge
+ 		 * carve-out below, one layer up). Everything else on-LAN is sealed. */
++		/* 2026-09-17 (owner BE96U, apply-window incident): DNS the ROUTER itself
++		 * redirected. A Service Intercept - or any nat DNAT - that sends port 53 to
++		 * a resolver on ANOTHER network (the owner's AdGuard on its own VLAN) turns
++		 * a query the client addressed to the router into br0 -> br55 FORWARDED
++		 * traffic, and the per-network DROP below took DNS away from every
++		 * internet-only device. The advertised-resolver RETURNs that follow cannot
++		 * see it: the client asked .1, which is INPUT; only the translated packet
++		 * reaches FORWARD. Match the conntrack DNAT state on the ORIGINAL port, so
++		 * this is exactly "a DNS query we chose to redirect" and nothing else,
++		 * whatever port the target listens on. It replaces the out-of-tree
++		 * REAPER_DNSV carve-out that had to sit ahead of the Reaper hook to work,
++		 * and with it the fight over FORWARD position 1 (rc/reaper_hook.h). */
++		fprintf(f, "for T in iptables ip6tables; do\n"
++			   "  $T -A REAPER_GKF -m mac --mac-source %s -p udp -m conntrack --ctstate DNAT --ctorigdstport 53 -j RETURN\n"
++			   "  $T -A REAPER_GKF -m mac --mac-source %s -p tcp -m conntrack --ctstate DNAT --ctorigdstport 53 -j RETURN\n"
++			   "done\n", mac, mac);
+ 		fprintf(f, "for N in $GKNETS; do\n"
+ 			   "  gk_net_fields \"$N\"\n"
+ 			   "  for D in $ND1 $ND2; do\n"
+@@ -386,6 +402,21 @@ static void gk_gen_apply(void)
+ 	fprintf(f, "#!/bin/sh\n"
+ 		   "# generated by start_gk - do not edit; idempotent (teardown+rebuild)\n"
+ 		   REAPER_NV_HELPER
++	  /* 2026-09-17 (owner BE96U, v3.1.8_BETA_r4 boot): this iptables 1.4.x has
++	   * no xtables lock, so an add can fail with EAGAIN whenever anything else
++	   * edits the table in the same instant, and this script never checked its
++	   * ~200 adds. Two rules of 126 were lost at boot; one was an internet-only
++	   * device's final RETURN, so it fell to the chain-end DROP and had no
++	   * internet until a re-apply. A lost DROP would be the opposite and worse.
++	   * The three tools are shadowed by functions: an -A/-I is retried once
++	   * after 50 ms, counted and logged if it still fails; every other verb
++	   * (-C/-D/-nL/-F/-X, which fail by design in the idempotent flow) passes
++	   * straight through. The count is left in a file for the watchdog. */
++	  "GK_FAIL=0\n"
++	  "_rt_add() { \"$@\" 2>/dev/null && return 0; usleep 50000 2>/dev/null; \"$@\" 2>/dev/null && return 0; GK_FAIL=$((GK_FAIL+1)); logger -t gatekeeper \"rule add failed twice: $*\"; return 1; }\n"
++	  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n"
++	  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++	  "ebtables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ebtables \"$@\";;  *) /usr/sbin/ebtables \"$@\";; esac; }\n"
+ 		   "LANIF=\"$(_nv lan_ifname)\"\n"
+ 		   "LANIP=\"$(_nv lan_ipaddr)\"\n"
+ 		   /* Admin escape-hatch port. With HTTPS admin present (http_enable != 0) a
+@@ -569,6 +600,7 @@ static void gk_gen_apply(void)
+ 		    * re-apply when a bridge's delegated prefix changes */
+ 		   "{ for N in $GKNETS; do gk_net_fields \"$N\"; gk_v6pfx \"$NIF\"; done; } 2>/dev/null | sort -u | tr '\\n' ' ' > " GK_DIR "/v6pfx\n"
+ 		   "# offloaded flows must re-traverse the fresh rules\n"
++		   "echo $GK_FAIL > " GK_DIR "/failcount\n"
+ 		   "fc flush 2>/dev/null\n"
+ 		   /* v2.8.5: a script's exit status is its LAST command's, and
+ 		    * start_gk()/gk_refresh() read any non-zero as the cold-boot LAN
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index dd0d988047..f0abb3433f 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -344,6 +344,20 @@ static int demote(const struct hc_cfg *c, int *changed)
+ 	return nup;
+ }
+ 
++/* 2026-09-17: the rules engine's resolver-health gate (rc/reaper_fw.c,
++ * RFW_HCGATE): an intercept aimed at the watched resolver is closed while it
++ * is demoted and reopened when it answers again, so redirected DNS fails OPEN
++ * to dnsmasq instead of into a dead host. The script reads HC_STATE itself
++ * and runs under the firewall lock like every other Reaper rule change. */
++static void hc_gate(void)
++{
++	int lock;
++	if (!f_exists("/tmp/reaper_fw/hcgate.sh")) return;
++	lock = file_lock("firewall");
++	system("sh /tmp/reaper_fw/hcgate.sh");
++	file_unlock(lock);
++}
++
+ static void restore(void)
+ {
+ 	update_resolvconf();	/* takes the resolv lock itself; rebuilds both files in stock order */
+@@ -415,6 +429,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			logmessage(HC_TAG, "DNS Health Check RESTORED %s to its stock place in the router's DNS list: %s", watched, enabled ? "a different server is being watched now" : "the check was switched off");
+ 			down = 0; misses = hits = 0; since = 0;
+ 			unlink(HC_STATE);
++			hc_gate();
+ 		}
+ 
+ 		if (!enabled) {
+@@ -461,6 +476,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			down = 1; since = now_s(); hits = 0;
+ 			nup = demote(&c, &changed);
+ 			f_write_string(HC_STATE, c.target, 0, 0);
++			hc_gate();
+ 			if (nup <= 1)
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) but it is the only upstream in the router's DNS list - nothing to fall back to, queries keep going to it", c.target, misses);
+ 			else
+@@ -469,6 +485,7 @@ int rdnshc_main(int argc, char *argv[])
+ 			down = 0; misses = 0;
+ 			restore();
+ 			unlink(HC_STATE);
++			hc_gate();
+ 			logmessage(HC_TAG, "DNS Health Check RESTORED: %s is answering again (%d hits) after %ld s down - back in its stock place in the router's DNS list, dnsmasq reloaded", c.target, hits, now_s() - since);
+ 			since = now_s();
+ 		} else if (down) {
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 60dc4a9e9a..f601ad484d 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -101,12 +101,16 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_hook.h"
++#include <arpa/inet.h>
+ #include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
+ 
+ #define RFW_DIR      "/tmp/reaper_fw"
+ #define RFW_APPLY    RFW_DIR "/apply.sh"          /* idempotent teardown+build (committed set) */
+ #define RFW_FAILCOUNT RFW_DIR "/failcount"    /* P2-H3: rules that did not load */
+ #define RFW_CAND     RFW_DIR "/candidate.sh"      /* the armed candidate (staged set) */
++#define RFW_HCGATE   RFW_DIR "/hcgate.sh"         /* 2026-09-17: resolver-health gate on DNS intercepts (rc/rdnshc.c runs it) */
++#define RFW_CHAIN_HC "REAPER_FWHC"                /* nat: intercepts aimed at the watched resolver, closed while /tmp/rdnshc.state exists */
++#define RFW_HC_STATE "/tmp/rdnshc.state"          /* rc/rdnshc.c HC_STATE: present while the watched resolver is demoted */
+ /* RFW_SETS (object sets ONLY - policy routing with the firewall engine off) is
+  * defined in rc.h: reaper_pbr's apply.sh runs it too. */
+ #define RFW_CC       RFW_DIR "/cc_check.sh"       /* cru-run deadline checker */
+@@ -1593,12 +1597,35 @@ static void rfw_emit_edef(FILE *f, const rfw_cfg_t *c, int v6)
+  * path translates the packet and then drops it - the classic "port forward does
+  * nothing" bug. They are emitted together so they cannot drift apart.
+  * ------------------------------------------------------------------------- */
++/* 2026-09-17: which intercept target, if any, is the resolver rdnshc watches.
++ * An intercept aimed at it is emitted into REAPER_FWHC, a chain rdnshc can
++ * close with one RETURN when that resolver is down, so redirected DNS fails
++ * OPEN to the router's own dnsmasq instead of into a dead host. This is the
++ * in-tree form of the owner's /jffs reaper_dnsi watcher (Variant A, 2026-09-08),
++ * which the firewall rebuild wiped and a 5-second poll restored. */
++static char rfw_hc_ports[256];	/* " proto:port" per gated record, for the conntrack flush in hcgate.sh */
++
++static int rfw_hc_target(char *out, size_t n)
++{
++	struct in_addr a;
++	const char *p;
++	if (nvram_get_int("reaper_dnshc_enable") != 1) return 0;
++	p = nvram_safe_get("reaper_dnshc_target");
++	if (!*p || inet_pton(AF_INET, p, &a) != 1) return 0;
++	if (!inet_ntop(AF_INET, &a, out, n)) return 0;
++	return 1;
++}
++
+ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ {
+ 	char *dup, *tok, *save = NULL;
+ 	int n = 0;
++	char hct[INET_ADDRSTRLEN] = "";
++	int hc, hcjump = 0;
+ 
++	rfw_hc_ports[0] = 0;
+ 	if (!c->nat || !*c->nat) return;
++	hc = rfw_hc_target(hct, sizeof(hct));
+ 	if (!(dup = strdup(c->nat))) return;
+ 
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+@@ -1614,6 +1641,8 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		char exfrag[512] = "", selffrag[160] = "";
+ 		rfw_setname_t exsets[RFW_MAX_SETS];
+ 		int nif = 0, nex = 0, ifi, fwdmode, redir;
++		int gated = 0;
++		const char *natch = RFW_CHAIN_NAT;
+ 
+ 		if (++n > RFW_MAX_NAT) {
+ 			logmessage("reaper_fw", "more than %d forwards - the rest are IGNORED", RFW_MAX_NAT);
+@@ -1760,6 +1789,24 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		}
+ 		rfw_sched_frag(sched, schedfrag, sizeof(schedfrag));
+ 
++		/* 2026-09-17: an intercept aimed at the resolver rdnshc watches goes into
++		 * the gated chain (rfw_hc_target); the jump from REAPER_FWN sits where the
++		 * first such record sits, so the operator's order is kept. */
++		gated = (!fwdmode && !redir && hc && strcmp(iip, hct) == 0);
++		natch = gated ? RFW_CHAIN_HC : RFW_CHAIN_NAT;
++		if (gated) {
++			char pp[48];
++			if (!hcjump) {
++				fprintf(f, "RFWR iptables -t nat -A " RFW_CHAIN_NAT " -j " RFW_CHAIN_HC "\n");
++				hcjump = 1;
++			}
++			if (!strchr(eport, ':')) {	/* a single port: conntrack -D --dport takes no range */
++				snprintf(pp, sizeof(pp), " %s:%s", proto, eport);
++				if (strlen(rfw_hc_ports) + strlen(pp) < sizeof(rfw_hc_ports))
++					strcat(rfw_hc_ports, pp);
++			}
++		}
++
+ 		if (!strcmp(proto, "both")) { protos[0] = "tcp"; protos[1] = "udp"; nproto = 2; }
+ 		else                        { protos[0] = proto; }
+ 
+@@ -1778,10 +1825,10 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 						snprintf(srcfrag, sizeof(srcfrag), " -m set --match-set %s src", sets[si].name);
+ 
+ 					if (logf[0] == '1')
+-						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
++						fprintf(f, "%sRFWR iptables -t nat -A %s"
+ 						           " -i %s -p %s --dport %s%s%s%s%s"
+ 						           " -j LOG --log-prefix \"REAPER-%s \" --log-level 6\n",
+-						        guard, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
++						        guard, natch, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
+ 						        fwdmode ? "FWD" : "ICPT");
+ 
+ 					if (redir)
+@@ -1790,10 +1837,10 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 						           " -j REDIRECT --to-ports %s\n",
+ 						        guard, ifx, protos[pv], eport, exfrag, srcfrag, schedfrag, toport);
+ 					else
+-						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
++						fprintf(f, "%sRFWR iptables -t nat -A %s"
+ 						           " -i %s -p %s --dport %s%s%s%s%s"
+ 						           " -j DNAT --to-destination %s:%s\n",
+-						        guard, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
++						        guard, natch, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
+ 						        iip, toport);
+ 
+ 					/* The companion filter ACCEPT, keyed on the TRANSLATED
+@@ -1971,6 +2018,8 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "while iptables -t nat -D PREROUTING -j " RFW_CHAIN_NAT " 2>/dev/null; do :; done\n"
+ 	  "iptables -t nat -F " RFW_CHAIN_NAT " 2>/dev/null\n"
+ 	  "iptables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n"
++	  "iptables -t nat -F " RFW_CHAIN_HC " 2>/dev/null\n"
++	  "iptables -t nat -X " RFW_CHAIN_HC " 2>/dev/null\n"
+ 	  /* and the intercept return path, in POSTROUTING. This runs on the
+ 	   * teardown AND rollback paths: a MASQUERADE left behind after an
+ 	   * auto-revert would keep rewriting the source address of traffic to a
+@@ -2049,6 +2098,7 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	if (c->nat && *c->nat)
+ 		fprintf(f, "iptables -t nat -N " RFW_CHAIN_NAT " 2>/dev/null; "
+ 		           "RFWH iptables -t nat -F " RFW_CHAIN_NAT "\n"
++		           "iptables -t nat -N " RFW_CHAIN_HC " 2>/dev/null; RFWH iptables -t nat -F " RFW_CHAIN_HC "\n"
+ 		           "iptables -t nat -N " RFW_CHAIN_MASQ " 2>/dev/null; "
+ 		           "RFWH iptables -t nat -F " RFW_CHAIN_MASQ "\n\n");
+ 
+@@ -2086,7 +2136,11 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		            * MASQUERADE must run after the stock WAN masquerade has had
+ 		            * its say, and it only matches traffic already aimed at an
+ 		            * intercept target, so it cannot shadow anything. */
+-		           "RFWH iptables -t nat -A POSTROUTING -j " RFW_CHAIN_MASQ "\n\n");
++		           "RFWH iptables -t nat -A POSTROUTING -j " RFW_CHAIN_MASQ "\n"
++		           /* 2026-09-17: the gate. Closed (one RETURN at its head) while
++		            * rdnshc has the watched resolver demoted; hcgate.sh toggles it
++		            * on FAILOVER / RESTORED so the intercept fails OPEN. */
++		           "[ -e " RFW_HC_STATE " ] && iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n\n");
+ 
+ 	/* ---- sweep sets belonging to objects that no longer exist ----
+ 	 * after the chains are rebuilt, so nothing still in use is destroyed. */
+@@ -2119,6 +2173,44 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "fi\n");
+ 	fclose(f);
+ 	if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
++	/* 2026-09-17: the gate script rdnshc runs (under the firewall lock) when the
++	 * watched resolver goes down or comes back. Direction comes from the state
++	 * file, so no caller can get it wrong; a flush of the intercepted ports'
++	 * conntrack entries makes the switch take effect for queries in flight.
++	 * Every LIVE ruleset owns it - the committed apply, the armed candidate
++	 * (confirm renames candidate.sh into apply.sh without regenerating, so the
++	 * candidate must already have written it) and the rollback script (which
++	 * rebuilds the last-good chains); only the dry-run preview does not. No
++	 * gated record = no script. */
++	if (!teardown_only && strcmp(path, RFW_PREVIEW) != 0) {
++		if (!rfw_hc_ports[0])
++			unlink(RFW_HCGATE);
++		else if ((f = fopen(RFW_HCGATE ".tmp", "w")) != NULL) {
++			fprintf(f,
++			  "#!/bin/sh\n"
++			  "# generated by reaper_fw - do not edit. Closes/opens the resolver-health gate on DNS intercepts (see rc/rdnshc.c).\n"
++			  "iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 || exit 0\n"
++			  "if [ -e " RFW_HC_STATE " ]; then\n"
++			  "  iptables -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null && exit 0\n"
++			  "  iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n"
++			  "  logger -t reaper_fw \"intercept gate CLOSED: the watched resolver is down (rdnshc) - intercepted ports%s fall through to the router's own DNS until it answers again\"\n"
++			  "else\n"
++			  "  iptables -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null || exit 0\n"
++			  "  while iptables -t nat -D " RFW_CHAIN_HC " -j RETURN 2>/dev/null; do :; done\n"
++			  "  logger -t reaper_fw \"intercept gate OPEN: the watched resolver answers again (rdnshc) - intercepted ports%s are redirected once more\"\n"
++			  "fi\n"
++			  "CT=$(which conntrack 2>/dev/null)\n"
++			  "[ -n \"$CT\" ] || exit 0\n"
++			  "for pp in%s; do\n"
++			  "  _pr=${pp%%%%:*}; _po=${pp#*:}\n"
++			  "  case \"$_pr\" in both) $CT -D -p udp --dport \"$_po\" >/dev/null 2>&1; $CT -D -p tcp --dport \"$_po\" >/dev/null 2>&1;; *) $CT -D -p \"$_pr\" --dport \"$_po\" >/dev/null 2>&1;; esac\n"
++			  "done\n"
++			  "exit 0\n", rfw_hc_ports, rfw_hc_ports, rfw_hc_ports);
++			fclose(f);
++			chmod(RFW_HCGATE ".tmp", 0700);
++			if (rename(RFW_HCGATE ".tmp", RFW_HCGATE) != 0) unlink(RFW_HCGATE ".tmp");
++		}
++	}
+ 	return 1;
+ }
+ 
+diff --git a/release/src/router/rc/reaper_hook.c b/release/src/router/rc/reaper_hook.c
+index e99f58458b..1ccbae0238 100644
+--- a/release/src/router/rc/reaper_hook.c
++++ b/release/src/router/rc/reaper_hook.c
+@@ -26,13 +26,57 @@ void reaper_hook_gen(void)
+ 	  "# generated by reaper_hook_gen - do not edit. See rc/reaper_hook.h.\n"
+ 	  "# Rebuilds the Reaper front chains in the FIXED order\n"
+ 	  "#   Warden -> Gatekeeper -> rules engine\n"
+-	  "# and pins one jump per base chain at position 1. Idempotent; called by\n"
++	  "# and pins one jump per base chain at the front - behind any rule that is\n"
++	  "# declared in " REAPER_FRONT_EXEMPT ", narrow, or terminal (rwatch 3d's rule). Idempotent; called by\n"
+ 	  "# every layer's apply.sh at its tail, so the order converges no matter\n"
+ 	  "# which layer restarted.\n"
+ 	  "GKIFS=\"\"; [ -r " GK_IFS_FILE " ] && GKIFS=\"$(head -c 512 " GK_IFS_FILE " 2>/dev/null)\"\n"
+ 	  /* charset gate: interface names only (the file is ours, but it is on tmpfs) */
+ 	  "[ -n \"$(printf '%s' \"$GKIFS\" | tr -d -- '-A-Za-z0-9_. ')\" ] && GKIFS=\"\"\n"
+ 	  "if [ -z \"$GKIFS\" ] && iptables -nL REAPER_GKF >/dev/null 2>&1; then logger -t reaper 'hook: Gatekeeper chains present but no interface list - gkd self-heal will re-apply'; fi\n"
++	  /* 2026-09-17: WHERE to pin. Position 1 was the rule since v2.6.2, and
++	   * rwatch 3d learned in v3.1.3 that it is stronger than what it protects:
++	   * a narrow carve-out, or a chain the operator declared in front_exempt,
++	   * may legitimately sit ahead of us, and rwatch leaves it there. This
++	   * script did not - it runs at the tail of EVERY layer apply and re-pinned
++	   * to 1 regardless, so one firewall rebuild displaced the operator's
++	   * LAN->resolver DNS carve-out three times (once per layer) and restricted
++	   * devices lost DNS each time until his watcher moved it back (owner BE96U,
++	   * v3.1.8, 2026-09-17). Same classifier as rwatch 3d, applied to the rules
++	   * currently AHEAD of our jump: tolerated ones keep their place, the first
++	   * rule that could wave traffic past us unchecked is where we go back in
++	   * front. A fresh table has no jump of ours, so the answer there is 1. */
++	  "FEX=\"\"\n"
++	  "if [ -r " REAPER_FRONT_EXEMPT " ]; then\n"
++	  "  FEX=$(head -c 512 " REAPER_FRONT_EXEMPT " 2>/dev/null | tr '\\r\\n' '  ')\n"
++	  "  [ -n \"$(printf '%s' \"$FEX\" | tr -d -- '-A-Za-z0-9_. ')\" ] && FEX=\"\"\n"
++	  "fi\n"
++	  "FCNARROW='(--dport|--sport|-d [0-9])'\n"
++	  "_fc_narrow() {\n"
++	  "  _ns=$($1 -S \"$2\" 2>/dev/null)\n"
++	  "  [ -n \"$_ns\" ] || return 1\n"
++	  "  [ \"$(echo \"$_ns\" | grep -E -- '-j (ACCEPT|RETURN)$' | grep -cvE -- \"$FCNARROW\")\" = 0 ]\n"
++	  "}\n"
++	  "_front_pos() {\n"
++	  "  _hs=$($1 -S \"$2\" 2>/dev/null)\n"
++	  "  _hn=$(echo \"$_hs\" | grep -n -- \"-j $3$\" | head -1 | cut -d: -f1)\n"
++	  "  if [ -z \"$_hn\" ]; then echo 1; return; fi\n"
++	  "  _p=1; _i=2\n"
++	  "  while [ \"$_i\" -lt \"$_hn\" ]; do\n"
++	  "    _r=$(echo \"$_hs\" | sed -n \"${_i}p\"); _i=$((_i+1))\n"
++	  "    [ -n \"$_r\" ] || continue\n"
++	  "    _tg=$(printf '%s' \"$_r\" | sed -n 's/.* -[jg] \\([A-Za-z0-9_.-]*\\).*/\\1/p')\n"
++	  "    [ -n \"$_tg\" ] || break\n"
++	  "    case \" $FEX \" in *\" $_tg \"*) _p=$((_p+1)); continue;; esac\n"
++	  "    case \"$_tg\" in\n"
++	  "      ACCEPT|RETURN) printf '%s' \"$_r\" | grep -qE -- \"$FCNARROW\" || break ;;\n"
++	  "      DROP|REJECT|LOG|MARK|CONNMARK|TCPMSS) ;;\n"
++	  "      *) _fc_narrow \"$1\" \"$_tg\" || break ;;\n"
++	  "    esac\n"
++	  "    _p=$((_p+1))\n"
++	  "  done\n"
++	  "  echo $_p\n"
++	  "}\n"
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  for P in INPUT:" REAPER_HOOK_IN " FORWARD:" REAPER_HOOK_FWD " OUTPUT:" REAPER_HOOK_OUT "; do\n"
+ 	  "    H=\"${P%%:*}\"; C=\"${P##*:}\"\n"
+@@ -53,10 +97,11 @@ void reaper_hook_gen(void)
+ 	  "        $T -nL REAPER_FWO >/dev/null 2>&1 && $T -A \"$C\" -j REAPER_FWO\n"
+ 	  "        ;;\n"
+ 	  "    esac\n"
++	  "    _pos=$(_front_pos \"$T\" \"$H\" \"$C\")\n"
+ 	  "    # delete-all-then-insert: -C is position-blind, and a raced apply\n"
+ 	  "    # could have left two jumps\n"
+ 	  "    while $T -D \"$H\" -j \"$C\" 2>/dev/null; do :; done\n"
+-	  "    $T -I \"$H\" 1 -j \"$C\" 2>/dev/null || logger -t reaper \"hook: $T -I $H -j $C FAILED\"\n"
++	  "    $T -I \"$H\" \"$_pos\" -j \"$C\" 2>/dev/null || $T -I \"$H\" 1 -j \"$C\" 2>/dev/null || logger -t reaper \"hook: $T -I $H -j $C FAILED\"\n"
+ 	  "  done\n"
+ 	  "done\n"
+ 	  "exit 0\n", f);
+diff --git a/release/src/router/rc/reaper_hook.h b/release/src/router/rc/reaper_hook.h
+index c09ded242c..5adcfa3ed7 100644
+--- a/release/src/router/rc/reaper_hook.h
++++ b/release/src/router/rc/reaper_hook.h
+@@ -60,6 +60,15 @@
+  * minutes, the operator's watcher moved the carve-out back, and the two fought
+  * indefinitely (found on metal, v3.1.2, 2026-09-10).
+  *
++ *
++ * 2026-09-17: hook.sh honours it as well. Until then only rwatch 3d did, and
++ * hook.sh - which runs at the tail of EVERY layer apply - still pinned to
++ * position 1, so a firewall rebuild displaced the declared carve-out once per
++ * layer and the operator's watcher moved it back each time (owner BE96U,
++ * v3.1.8). A rule ahead of us that is declared here, narrow, or terminal
++ * keeps its place; the first one that could pass traffic unchecked is where
++ * we go back in front. See _front_pos in reaper_hook.c.
++ *
+  * /jffs and not nvram: an nvram list silently truncates at 1 KB on this
+  * platform, which has bitten this project three times. A plain file is also
+  * what the operator's own scripts can write.
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index adfc656146..dbd2834116 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -80,6 +80,7 @@
+ 
+ #define RW_DIR    "/tmp/rwarden"
+ #define RW_APPLY  "/tmp/rwarden/apply.sh"
++#define RW_HEAL   "/tmp/rwarden/heal.sh"	/* 2026-09-17: rwatch 3c's re-check-then-apply, run under the firewall lock */
+ #define RW_UPDATE "/tmp/rwarden/update.sh"
+ #define RW_STATS  "/tmp/rwarden/stats.sh"
+ #define RW_FOLD   "/tmp/rwarden/fold.sh"	/* v2.3.5: banks the live packet counters into RW_CTRS, then zeroes them */
+@@ -587,6 +588,21 @@ static void rw_gen_apply(void)
+ 	  "#!/bin/sh\n"
+ 	  REAPER_NV_HELPER
+ 	  "# generated by start_rwarden - do not edit; idempotent (teardown+rebuild)\n"
++	  /* 2026-09-17 (owner BE96U, v3.1.8_BETA_r4 boot): this iptables 1.4.x has
++	   * no xtables lock, so an add can fail with EAGAIN whenever anything else
++	   * edits the table in the same instant, and this script never checked its
++	   * ~200 adds. Two rules of 126 were lost at boot; one was an internet-only
++	   * device's final RETURN, so it fell to the chain-end DROP and had no
++	   * internet until a re-apply. A lost DROP would be the opposite and worse.
++	   * The three tools are shadowed by functions: an -A/-I is retried once
++	   * after 50 ms, counted and logged if it still fails; every other verb
++	   * (-C/-D/-nL/-F/-X, which fail by design in the idempotent flow) passes
++	   * straight through. The count is left in a file for the watchdog. */
++	  "RW_FAIL=0\n"
++	  "_rt_add() { \"$@\" 2>/dev/null && return 0; usleep 50000 2>/dev/null; \"$@\" 2>/dev/null && return 0; RW_FAIL=$((RW_FAIL+1)); logger -t rwarden \"rule add failed twice: $*\"; return 1; }\n"
++	  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n"
++	  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++	  "ebtables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ebtables \"$@\";;  *) /usr/sbin/ebtables \"$@\";; esac; }\n"
+ 	  "LANIF=\"$(_nv lan_ifname)\"\n"
+ 	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
+ 	  "LANMASK=\"$(_nv lan_netmask)\"\n"
+@@ -646,26 +662,6 @@ static void rw_gen_apply(void)
+ 	 * without incrementing iptables - a separate, metal-only question. */
+ 	fprintf(f,
+ 	  "[ -x " RW_FOLD " ] && sh " RW_FOLD " 2>/dev/null\n");
+-	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
+-	fprintf(f,
+-	  "for T in iptables ip6tables; do\n"
+-	  /* v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
+-	   * direct base-chain deletes stay for the upgrade path. Loops, not single
+-	   * -D: a raced apply could have left two jumps, and one survivor kept the
+-	   * chain referenced (-X failed) and re-hooked with stale rules. */
+-	  "  while $T -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done\n"
+-	  "  while $T -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done\n"
+-	  "  while $T -D OUTPUT -j RW_SELF 2>/dev/null; do :; done\n"
+-	  "  $T -F REAPER_WARDEN 2>/dev/null; $T -X REAPER_WARDEN 2>/dev/null\n"
+-	  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n"
+-	  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n"
+-	  "  $T -F RW_SDROP 2>/dev/null; $T -X RW_SDROP 2>/dev/null\n"
+-	  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n"
+-	  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n"
+-	  "done\n");
+ 	/* base sets (idempotent create) - v4 hash:net, v6 hash:net family inet6.
+ 	 * rw_threat/rw_threat6 carry the merged feed + custom lists and can grow large,
+ 	 * so they get an explicit maxelem 524288 (default is 65536): a user-chosen feed
+@@ -695,16 +691,60 @@ static void rw_gen_apply(void)
+ 	 * logged instead of discarded. */
+ 	fprintf(f,
+ 	  "if [ -f " RW_SAVE " ]; then\n"
+-	  "  for s in $(awk '$1==\"create\"{print $2}' " RW_SAVE " 2>/dev/null | grep -E '^rw_' | sort -u); do\n"
+-	  "    ipset list -n 2>/dev/null | grep -qx \"$s\" || continue\n"
+-	  "    RN=$(awk -v s=\"$s\" '$1==\"add\" && $2==s' " RW_SAVE " | ipset restore -exist 2>&1 | head -1)\n"
++	  /* 2026-09-17: ONE pass over the cache. The loop this replaces read the
++	   * whole file once PER SET - 80 sets x 1.7 MB on the owner's router = 17 s
++	   * of awk before a single `ipset restore`, and with the chain torn down
++	   * first that was 17 s of no Warden on every firewall rebuild, long enough
++	   * for rwatch to "heal" it with a third apply. The cache is now split into
++	   * per-set add-line files in one pass (one file open at a time, so BusyBox
++	   * awk's descriptor limit is never near) and each set is restored from its
++	   * own file: still per set, still add-lines only - the two properties the
++	   * 2026-08-21 fix established - just not quadratic. */
++	  "  RWRP=" RW_DIR "/replay; rm -rf \"$RWRP\"; mkdir -p \"$RWRP\"\n"
++	  "  awk -v d=\"$RWRP\" '$1==\"add\" && $2 ~ /^rw_[A-Za-z0-9_]*$/ { o=d \"/\" $2; if (o!=cur) { if (cur!=\"\") close(cur); cur=o } print >> o }' " RW_SAVE " 2>/dev/null\n"
++	  "  RWLIVE=$(ipset list -n 2>/dev/null)\n"
++	  "  for p in \"$RWRP\"/rw_*; do\n"
++	  "    [ -f \"$p\" ] || continue\n"
++	  "    s=${p##*/}\n"
++	  "    echo \"$RWLIVE\" | grep -qx \"$s\" || continue\n"
++	  "    RN=$(ipset restore -exist < \"$p\" 2>&1 | head -1)\n"
+ 	  "    [ -z \"$RN\" ] || logger -t rwarden \"cache restore for set $s: $RN\"\n"
+ 	  "  done\n"
++	  "  rm -rf \"$RWRP\"\n"
+ 	  "fi\n");
+ 	/* manual allow/ban from nvram (validated; v4/v6 auto-routed) */
+ 	fprintf(f, "ipset flush rw_allow; ipset flush rw_allow6; ipset flush rw_ban; ipset flush rw_ban6\n");
+ 	rw_emit_cidrs(f, "rw_allow", "rw_allow6", "allow");
+ 	rw_emit_cidrs(f, "rw_ban",   "rw_ban6",   "ban");
++	/* 2026-09-17: the teardown used to OPEN this script, so the chain was gone
++	 * for the whole set create + cache replay above - 17 s of awk alone on the
++	 * owner's router (80 sets, 1.7 MB cache), on every firewall rebuild - and
++	 * rwatch's 5-minute tick landed in that window and "healed" it with a
++	 * THIRD apply. Sets are independent objects: creating them and replaying
++	 * add-lines into them is safe while the old chain still references them.
++	 * So the slow part now runs first, and the chain is torn down and rebuilt in
++	 * the few milliseconds it actually needs. fold.sh (top of the script) still
++	 * banks the counters before any of it. */
++	/* ---- teardown ---- both stacks (dispatch chain before its RW_DROP dep) */
++	fprintf(f,
++	  "for T in iptables ip6tables; do\n"
++	  /* v2.6.2: jumps live in the shared front chains (reaper_hook.h); the
++	   * direct base-chain deletes stay for the upgrade path. Loops, not single
++	   * -D: a raced apply could have left two jumps, and one survivor kept the
++	   * chain referenced (-X failed) and re-hooked with stale rules. */
++	  "  while $T -D " REAPER_HOOK_IN " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D " REAPER_HOOK_FWD " -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D " REAPER_HOOK_OUT " -j RW_SELF 2>/dev/null; do :; done\n"
++	  "  while $T -D INPUT -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D FORWARD -j REAPER_WARDEN 2>/dev/null; do :; done\n"
++	  "  while $T -D OUTPUT -j RW_SELF 2>/dev/null; do :; done\n"
++	  "  $T -F REAPER_WARDEN 2>/dev/null; $T -X REAPER_WARDEN 2>/dev/null\n"
++	  "  $T -F RW_SELF 2>/dev/null; $T -X RW_SELF 2>/dev/null\n"
++	  "  $T -F RW_OUT 2>/dev/null; $T -X RW_OUT 2>/dev/null\n"
++	  "  $T -F RW_SDROP 2>/dev/null; $T -X RW_SDROP 2>/dev/null\n"
++	  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n"
++	  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n"
++	  "done\n");
+ 	/* ---- build ---- the allow/ban/threat set names and country set prefixes
+ 	 * differ per stack, so emit the IPv4 and IPv6 dispatch chains directly.
+ 	 * ORDER (2026-07-29 lockout fix; keeps the audit-L2 property):
+@@ -862,6 +902,7 @@ static void rw_gen_apply(void)
+ 	 * gatekeeper.c apply/teardown). Harmless no-op when the accelerator is off. */
+ 	fprintf(f, "fc flush 2>/dev/null\n");
+ 	rw_emit_ban_conntrack(f);	/* sever live flows to freshly-banned hosts */
++	fprintf(f, "echo $RW_FAIL > " RW_DIR "/failcount\n");	/* 2026-09-17: adds that failed twice (see the _rt_add wrapper) */
+ 	/* Terminate with an explicit status. The last statement emitted above is
+ 	 * `conntrack -D`, which returns 1 when no live flow matches - the NORMAL
+ 	 * case for a freshly-banned address - and a script's exit code is its last
+@@ -881,6 +922,20 @@ static void rw_gen_apply(void)
+ 	chmod(RW_APPLY ".tmp", 0700);
+ 	if (rename(RW_APPLY ".tmp", RW_APPLY) != 0)
+ 		unlink(RW_APPLY ".tmp");
++	/* 2026-09-17: the watchdog's heal entry. rwatch 3c observes the chain WITHOUT
++	 * the firewall lock, so what it saw may be an apply in progress; this
++	 * re-checks under the lock (reaper_lockrun takes it) and only then
++	 * re-applies. Listed in reaper_lockrun_main's allowlist (rc/rwatch.c). */
++	if ((f = fopen(RW_HEAL ".tmp", "w")) != NULL) {
++		fputs("#!/bin/sh\n"
++		      "# generated by start_rwarden - rwatch 3c's heal: re-apply Warden only if its chain is really absent\n"
++		      "iptables -nL REAPER_WARDEN >/dev/null 2>&1 && exit 0\n"
++		      "exec sh " RW_APPLY "\n", f);
++		fclose(f);
++		chmod(RW_HEAL ".tmp", 0700);
++		if (rename(RW_HEAL ".tmp", RW_HEAL) != 0)
++			unlink(RW_HEAL ".tmp");
++	}
+ }
+ 
+ /* The updater: fetches enabled feeds + country CIDRs (v4+v6) over HTTPS into
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index a9650c6629..1dd04b7839 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -270,16 +270,40 @@ static void rwatch_gen(void)
+ 	   * fix): the canary above heals a POISONED chain, nothing healed an ABSENT
+ 	   * one - the end state of the only code-plausible path (apply.sh bailed
+ 	   * "lan not ready" after the flush while nvram was wedged). Same lock, same
+-	   * boot grace, at most once per 10 min, and it says so in the log. */
+-	  "# 3c) Warden chain missing while Warden is enabled: re-apply (once per 10 min)\n"
+-	  "if [ \"$(_nv rwarden_enable)\" = 1 ] && [ -f /tmp/rwarden/apply.sh ] && [ \"$UP\" -ge \"$HEALGRACE\" ] \\\n"
+-	  "   && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
+-	  "  _wl=$(cat /tmp/rwarden/heal.at 2>/dev/null || echo 0); case \"$_wl\" in ''|*[!0-9]*) _wl=0;; esac\n"
+-	  "  if [ $((UP - _wl)) -ge 600 ]; then\n"
+-	  "    echo $UP > /tmp/rwarden/heal.at 2>/dev/null\n"
+-	  "    logger -t rwatch \"Warden chain REAPER_WARDEN is MISSING while Warden is enabled - re-applying (the apply may have bailed before the LAN was ready)\"\n"
+-	  "    reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
+-	  "    FAIL=\"$FAIL warden-chain-missing\"\n"
++	   * boot grace, at most once per 10 min, and it says so in the log.
++	   *
++	   * 2026-09-17 (owner BE96U): the chain is also absent, legitimately, for the
++	   * length of an apply - and this check does not hold the firewall lock, so
++	   * it read a rebuild in progress as "missing" and queued a THIRD apply on
++	   * top of the two the rebuild was already doing (teardown, fc flush,
++	   * conntrack flush and a hook re-pin each). Three rules now: (1) the
++	   * condition must hold on two consecutive ticks; (2) the heal is heal.sh,
++	   * which re-checks UNDER the lock and applies only if the chain is still
++	   * gone; (3) a heal that finds the chain back is not a failure - FAIL, and
++	   * the incident dump, only when the chain is still missing AFTER it. */
++	  "# 3c) Warden chain missing while Warden is enabled: confirm on a second tick, re-check under the lock, then re-apply (once per 10 min)\n"
++	  "if [ \"$(_nv rwarden_enable)\" = 1 ] && [ -f /tmp/rwarden/apply.sh ] && [ \"$UP\" -ge \"$HEALGRACE\" ]; then\n"
++	  "  if iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
++	  "    rm -f /tmp/rwarden/miss.at 2>/dev/null\n"
++	  "  else\n"
++	  "    _wm=$(cat /tmp/rwarden/miss.at 2>/dev/null || echo 0); case \"$_wm\" in ''|*[!0-9]*) _wm=0;; esac\n"
++	  "    if [ \"$_wm\" = 0 ]; then\n"
++	  "      echo $UP > /tmp/rwarden/miss.at 2>/dev/null\n"
++	  "      logger -t rwatch \"Warden chain REAPER_WARDEN is not present right now - an apply may be in progress; checking again next tick before acting\"\n"
++	  "    else\n"
++	  "      _wl=$(cat /tmp/rwarden/heal.at 2>/dev/null || echo 0); case \"$_wl\" in ''|*[!0-9]*) _wl=0;; esac\n"
++	  "      if [ $((UP - _wl)) -ge 600 ]; then\n"
++	  "        echo $UP > /tmp/rwarden/heal.at 2>/dev/null\n"
++	  "        if [ -x /tmp/rwarden/heal.sh ]; then reaper_lockrun /tmp/rwarden/heal.sh >/dev/null 2>&1; else reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1; fi\n"
++	  "        if iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
++	  "          logger -t rwatch \"Warden chain REAPER_WARDEN was missing on two ticks - re-applied under the firewall lock, protection is back\"\n"
++	  "          rm -f /tmp/rwarden/miss.at 2>/dev/null\n"
++	  "        else\n"
++	  "          logger -t rwatch \"Warden chain REAPER_WARDEN is STILL missing after a re-apply - the Warden apply script is failing (run /tmp/rwarden/apply.sh by hand and read its output)\"\n"
++	  "          FAIL=\"$FAIL warden-chain-missing\"\n"
++	  "        fi\n"
++	  "      fi\n"
++	  "    fi\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
+@@ -773,6 +797,8 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 		"/tmp/reaper_pbr/candidate.sh",
+ 		"/tmp/reaper_pbr/rollback.sh.rules",	/* v3.0.5 (F9): the commit-confirm revert takes the lock too */
+ 		"/tmp/rwarden/apply.sh",
++		"/tmp/rwarden/heal.sh",	/* 2026-09-17: rwatch 3c's re-check-under-the-lock heal */
++		"/tmp/reaper_fw/hcgate.sh",	/* 2026-09-17: the resolver-health gate on DNS intercepts (rc/rdnshc.c runs it) */
+ 		"/tmp/reaper/hook.sh",	/* v3.1.2: the front-chain re-pin (rwatch 3d) */
+ 		NULL
+ 	};
+-- 
+2.25.1
+

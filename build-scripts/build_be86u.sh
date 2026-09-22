@@ -8,8 +8,8 @@ esac
 BRANCH=rt-be86u
 TARGET=rt-be86u
 PREFIX=RT-BE86U
-VARIANTS="MCP noMCP"
-STORAGE="nand"      # RT-BE86U ships nand only (emmc is a build byproduct, never shipped)
+VARIANTS="${VARIANTS:-MCP noMCP}"
+STORAGE="${STORAGE:-nand}"      # RT-BE86U ships nand only (emmc is a build byproduct, never shipped)
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 . "$HERE/_reaper_env.sh"          # WINUSER + WIN_ASUS_ROOT (override: export WINUSER)
 SHIP_DIR="$WIN_ASUS_ROOT/asuswrt-merlin.ng/reaper-firmware"

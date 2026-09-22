@@ -1,0 +1,497 @@
+From 4e5bcae83ddbbe8fcb522032fb713ce8b77b71bd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 20:36:41 -0400
+Subject: [PATCH] System page: two more dnsmasq switches - EDNS Client Subnet
+ and no router cache
+
+With every client sent through the router to a LAN filter (AdGuard Home,
+Pi-hole), the filter sees only the router and a router-side cache answers
+client B from a decision made for client A. reaper_dns_ecs emits
+add-subnet=32,128 (the asking client's full address as EDNS Client Subnet;
+AdGuard Home reads it with "Use EDNS Client Subnet" on, Pi-hole FTL by
+default); reaper_dns_nocache sets cache-size=0 so the router only forwards
+and the filter keeps the cache. Both beside the strict-order row on
+Administration > System; a change appends restart_dnsmasq to the apply.
+RDHC_20-25 in all 25 packs, translated (lockstep 6892).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/services.c              | 12 +++++++++-
+ release/src/router/shared/defaults.c          |  2 ++
+ .../router/www/Advanced_System_Content.asp    | 23 ++++++++++++++++++-
+ release/src/router/www/BR.dict                |  6 +++++
+ release/src/router/www/CN.dict                |  6 +++++
+ release/src/router/www/CZ.dict                |  6 +++++
+ release/src/router/www/DA.dict                |  6 +++++
+ release/src/router/www/DE.dict                |  6 +++++
+ release/src/router/www/EN.dict                |  6 +++++
+ release/src/router/www/ES.dict                |  6 +++++
+ release/src/router/www/FI.dict                |  6 +++++
+ release/src/router/www/FR.dict                |  6 +++++
+ release/src/router/www/HU.dict                |  6 +++++
+ release/src/router/www/IT.dict                |  6 +++++
+ release/src/router/www/JP.dict                |  6 +++++
+ release/src/router/www/KR.dict                |  6 +++++
+ release/src/router/www/MS.dict                |  6 +++++
+ release/src/router/www/NL.dict                |  6 +++++
+ release/src/router/www/NO.dict                |  6 +++++
+ release/src/router/www/PL.dict                |  6 +++++
+ release/src/router/www/RO.dict                |  6 +++++
+ release/src/router/www/RU.dict                |  6 +++++
+ release/src/router/www/SL.dict                |  6 +++++
+ release/src/router/www/SV.dict                |  6 +++++
+ release/src/router/www/TH.dict                |  6 +++++
+ release/src/router/www/TR.dict                |  6 +++++
+ release/src/router/www/TW.dict                |  6 +++++
+ release/src/router/www/UK.dict                |  6 +++++
+ 28 files changed, 185 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 87bc78d22b..1536c38d8d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1822,7 +1822,17 @@ void start_dnsmasq(void)
+ 		    "no-negcache\n"		// don't cace nxdomain
+ 		    "cache-size=%u\n"		// dns cache size
+ 		    "min-port=%u\n",		// min port used for random src port
+-		dmservers, 1500, nvram_get_int("dns_minport") ? : 4096);
++		dmservers, nvram_get_int("reaper_dns_nocache") ? 0 : 1500, nvram_get_int("dns_minport") ? : 4096);
++	/* reaper v3.1.1: "Do not cache DNS answers on the router" (cache-size=0
++	 * above): with every client sent through dnsmasq to a LAN filter such as
++	 * AdGuard or Pi-hole, a router-side cache would answer client B from a
++	 * decision made for client A and hide every cached hit from the filter's
++	 * statistics. The filter keeps its own cache. And "Pass client addresses
++	 * to the DNS server": EDNS Client Subnet with the full client address, so
++	 * the filter still knows which client asked (AdGuard Home: "Use EDNS
++	 * Client Subnet"; Pi-hole FTL: EDNS0_ECS, on by default). */
++	if (nvram_get_int("reaper_dns_ecs"))
++		fprintf(fp, "add-subnet=32,128\n");
+ 	/* reaper v3.1.1: ask the upstreams in the listed order and move on only
+ 	 * when one does not answer, instead of dnsmasq's default of probing all
+ 	 * of them every 50 queries / 20 s and sticking with the fastest - which
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 050de93862..368a306a1b 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3178,6 +3178,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_dnshc_recover", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive hits -> restored */
+ 	{ "reaper_dnshc_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = only NOERROR with a record counts as alive */
+ 	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
++	{ "reaper_dns_ecs", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq add-subnet=32,128 (EDNS Client Subnet to the upstream) */
++	{ "reaper_dns_nocache", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq cache-size=0 */
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+ 	{ "gk_guest_hours", "24", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest pass length in hours (internet-only + expiry) */
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 82a82ba4d3..ef591c970d 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -1858,6 +1858,8 @@ var RDHC_ORIG = {
+ 	recover: '<% nvram_get("reaper_dnshc_recover"); %>',
+ 	strict: '<% nvram_get("reaper_dnshc_strict"); %>',
+ 	dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
++	ecs: '<% nvram_get("reaper_dns_ecs"); %>',
++	nocache: '<% nvram_get("reaper_dns_nocache"); %>',
+ 	state: '<% nvram_get("reaper_dnshc_state"); %>'
+ };
+ function rdhcToggle(){
+@@ -1905,12 +1907,15 @@ function rdhcApply(){
+ 	f.reaper_dnshc_enable.value = f.reaper_dnshc_chk.checked ? "1" : "0";
+ 	f.reaper_dnshc_strict.value = f.reaper_dnshc_strict_chk.checked ? "1" : "0";
+ 	f.reaper_dns_strict.value = f.reaper_dns_strict_chk.checked ? "1" : "0";
++	f.reaper_dns_ecs.value = f.reaper_dns_ecs_chk.checked ? "1" : "0";
++	f.reaper_dns_nocache.value = f.reaper_dns_nocache_chk.checked ? "1" : "0";
+ 	if(f.reaper_dnshc_enable.value != RDHC_ORIG.enable || f.reaper_dnshc_target.value != RDHC_ORIG.target
+ 		|| f.reaper_dnshc_name.value != RDHC_ORIG.name || f.reaper_dnshc_interval.value != RDHC_ORIG.interval
+ 		|| f.reaper_dnshc_timeout.value != RDHC_ORIG.timeout || f.reaper_dnshc_fail.value != RDHC_ORIG.fail
+ 		|| f.reaper_dnshc_recover.value != RDHC_ORIG.recover || f.reaper_dnshc_strict.value != RDHC_ORIG.strict)
+ 		svc += "restart_rdnshc;";
+-	if(f.reaper_dns_strict.value != RDHC_ORIG.dnsstrict)
++	if(f.reaper_dns_strict.value != RDHC_ORIG.dnsstrict || f.reaper_dns_ecs.value != RDHC_ORIG.ecs
++		|| f.reaper_dns_nocache.value != RDHC_ORIG.nocache)
+ 		svc += "restart_dnsmasq;";
+ 	return svc;
+ }
+@@ -2650,6 +2655,8 @@ function Get_Component_reboot_schedule_ui(config){
+ <input type="hidden" name="reaper_dnshc_enable" value="<% nvram_get("reaper_dnshc_enable"); %>">
+ <input type="hidden" name="reaper_dnshc_strict" value="<% nvram_get("reaper_dnshc_strict"); %>">
+ <input type="hidden" name="reaper_dns_strict" value="<% nvram_get("reaper_dns_strict"); %>">
++<input type="hidden" name="reaper_dns_ecs" value="<% nvram_get("reaper_dns_ecs"); %>">
++<input type="hidden" name="reaper_dns_nocache" value="<% nvram_get("reaper_dns_nocache"); %>">
+ <input type="hidden" name="dns_probe_content" value="*">
+ <input type="hidden" name="wandog_enable" value="<% nvram_get("wandog_enable"); %>">
+ <table class="content" align="center" cellpadding="0" cellspacing="0">
+@@ -2982,6 +2989,20 @@ function Get_Component_reboot_schedule_ui(config){
+ 						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_17#></div>
+ 					</td>
+ 				</tr>
++				<tr id="rdhc_ecs_tr">
++					<th><#RDHC_20#></th>
++					<td>
++						<input type="checkbox" name="reaper_dns_ecs_chk" value="" <% nvram_match("reaper_dns_ecs", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_21#></div>
++						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_22#></div>
++					</td>
++				</tr>
++				<tr id="rdhc_nocache_tr">
++					<th><#RDHC_23#></th>
++					<td>
++						<input type="checkbox" name="reaper_dns_nocache_chk" value="" <% nvram_match("reaper_dns_nocache", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_24#></div>
++						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_25#></div>
++					</td>
++				</tr>
+ 				<script>rdhcInit();</script>
+ 				<tr>
+ 					<th><#System_AutoLogout#></th>
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 5a3efdc466..f065c8954f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=O servidor precisa estar na lista de DNS do roteador (DNS da WAN ou de u
+ RDHC_17=O roteador consulta seus servidores DNS na ordem listada e só avança quando um não responde, em vez de distribuir as consultas por todos. Combine com a verificação de saúde acima.
+ RDHC_18=Ordem dos upstreams
+ RDHC_19=Ordem estrita (strict-order do dnsmasq)
++RDHC_20=Endereços dos clientes
++RDHC_21=Passar os endereços dos clientes ao servidor DNS (EDNS Client Subnet)
++RDHC_22=Com todos os clientes passando pelo roteador, o servidor DNS veria apenas o roteador. Isto anexa o endereço do cliente a cada consulta encaminhada, para que o AdGuard Home (com a opção "Use EDNS Client Subnet" ativa) ou o Pi-hole (ativo por padrão) continuem a mostrar e filtrar por cliente.
++RDHC_23=Cache DNS do roteador
++RDHC_24=Não armazenar respostas DNS em cache no roteador
++RDHC_25=O roteador normalmente guarda as respostas por um tempo. Com filtragem por cliente no servidor, uma resposta em cache decidida para um cliente seria entregue a outro, e o filtro não veria as consultas em cache. Desativado, o roteador apenas encaminha e o servidor DNS mantém o cache.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 8ba6233502..8f0d2db9ee 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=该服务器必须在路由器的 DNS 列表中（WAN DNS 或 VPN 客户
+ RDHC_17=路由器按列出的顺序询问其 DNS 服务器，仅在某个服务器无应答时才转向下一个，而不是把查询分散到所有服务器。请与上面的健康检查配合使用。
+ RDHC_18=上游顺序
+ RDHC_19=严格顺序（dnsmasq strict-order）
++RDHC_20=客户端地址
++RDHC_21=将客户端地址传递给 DNS 服务器（EDNS Client Subnet）
++RDHC_22=当所有客户端都经过路由器时，DNS 服务器只能看到路由器。此选项在每个转发查询中附加发起客户端的地址，使 AdGuard Home（开启“使用 EDNS 客户端子网”设置）或 Pi-hole（默认开启）仍能按客户端显示和过滤。
++RDHC_23=路由器 DNS 缓存
++RDHC_24=不在路由器上缓存 DNS 应答
++RDHC_25=路由器通常会将应答保留一段时间。上游按客户端过滤时，为某个客户端决定的缓存应答会被交给另一个客户端，且过滤器完全看不到这些缓存查询。关闭后，路由器只做转发，由 DNS 服务器保留缓存。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 02b908d97e..a8240cb200 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Server musí být v seznamu DNS routeru (DNS WAN nebo VPN klienta), jina
+ RDHC_17=Router se dotazuje svých DNS serverů v uvedeném pořadí a k dalšímu přejde, jen když jeden neodpoví, místo rozdělování dotazů mezi všechny. Kombinujte s kontrolou stavu výše.
+ RDHC_18=Pořadí upstreamů
+ RDHC_19=Přísné pořadí (dnsmasq strict-order)
++RDHC_20=Adresy klientů
++RDHC_21=Předávat adresy klientů DNS serveru (EDNS Client Subnet)
++RDHC_22=Když všichni klienti procházejí routerem, DNS server by viděl jen router. Toto ke každému přeposlanému dotazu připojí adresu tazatele, takže AdGuard Home (se zapnutou volbou „Use EDNS Client Subnet“) nebo Pi-hole (ve výchozím stavu zapnuto) dál zobrazuje a filtruje podle klienta.
++RDHC_23=Mezipaměť DNS routeru
++RDHC_24=Neukládat odpovědi DNS do mezipaměti routeru
++RDHC_25=Router si odpovědi běžně chvíli pamatuje. Při filtrování podle klienta na serveru by se odpověď rozhodnutá pro jednoho klienta vydala jinému a filtr by dotazy z mezipaměti vůbec neviděl. Vypnuto: router jen přeposílá a mezipaměť drží DNS server.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 7aaecdde65..69d1eefffc 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Serveren skal stå i routerens DNS-liste (WAN-DNS eller en VPN-klients),
+ RDHC_17=Routeren spørger sine DNS-servere i den angivne rækkefølge og går kun videre, når én ikke svarer, i stedet for at sprede forespørgsler over dem alle. Brug den sammen med sundhedstjekket ovenfor.
+ RDHC_18=Upstream-rækkefølge
+ RDHC_19=Streng rækkefølge (dnsmasq strict-order)
++RDHC_20=Klientadresser
++RDHC_21=Send klientadresser til DNS-serveren (EDNS Client Subnet)
++RDHC_22=Når alle klienter går gennem routeren, ser DNS-serveren kun routeren. Dette vedhæfter den spørgende klients adresse til hver videresendt forespørgsel, så AdGuard Home (med indstillingen "Use EDNS Client Subnet" slået til) eller Pi-hole (slået til som standard) stadig viser og filtrerer pr. klient.
++RDHC_23=Routerens DNS-cache
++RDHC_24=Cache ikke DNS-svar på routeren
++RDHC_25=Routeren gemmer normalt svar et stykke tid. Med filtrering pr. klient opstrøms ville et cachet svar afgjort for én klient blive givet til en anden, og filteret ville slet ikke se de cachede opslag. Slået fra videresender routeren kun, og DNS-serveren beholder cachen.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 9c33597199..554722d01f 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Der Server muss in der DNS-Liste des Routers stehen (WAN-DNS oder die ei
+ RDHC_17=Der Router fragt seine DNS-Server in der angegebenen Reihenfolge und geht nur weiter, wenn einer nicht antwortet, statt Anfragen auf alle zu verteilen. Zusammen mit der Gesundheitsprüfung oben verwenden.
+ RDHC_18=Upstream-Reihenfolge
+ RDHC_19=Strikte Reihenfolge (dnsmasq strict-order)
++RDHC_20=Client-Adressen
++RDHC_21=Client-Adressen an den DNS-Server weitergeben (EDNS Client Subnet)
++RDHC_22=Wenn alle Clients über den Router gehen, sieht der DNS-Server nur den Router. Damit wird jeder weitergeleiteten Anfrage die Adresse des anfragenden Clients angehängt, sodass AdGuard Home (mit aktivierter Einstellung „Use EDNS Client Subnet“) oder Pi-hole (standardmäßig aktiv) weiterhin pro Client anzeigt und filtert.
++RDHC_23=DNS-Cache des Routers
++RDHC_24=DNS-Antworten nicht auf dem Router zwischenspeichern
++RDHC_25=Der Router behält Antworten normalerweise eine Weile. Bei Filterung pro Client auf dem Server würde eine für einen Client getroffene Antwort aus dem Cache an einen anderen ausgeliefert, und der Filter sähe die zwischengespeicherten Anfragen gar nicht. Ausgeschaltet leitet der Router nur weiter, und der DNS-Server hält den Cache.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 8b14df2bd1..33278eb6f5 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=The server must be in the router's DNS list (WAN DNS, or a VPN client's)
+ RDHC_17=The router asks its DNS servers in the listed order and moves on only when one does not answer, instead of spreading queries across all of them. Pair it with the health check above.
+ RDHC_18=Upstream order
+ RDHC_19=Strict order (dnsmasq strict-order)
++RDHC_20=Client addresses
++RDHC_21=Pass client addresses to the DNS server (EDNS Client Subnet)
++RDHC_22=With every client sent through the router, the DNS server would see only the router. This attaches the asking client's address to each forwarded query, so AdGuard Home (with its "Use EDNS Client Subnet" setting on) or Pi-hole (on by default) still shows and filters per client.
++RDHC_23=Router DNS cache
++RDHC_24=Do not cache DNS answers on the router
++RDHC_25=The router normally keeps answers for a while. With per-client filtering upstream, a cached answer decided for one client would be handed to another, and the filter would not see the cached lookups at all. Off, the router only forwards and the DNS server keeps the cache.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index d2463ff453..8bd22e0d10 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=El servidor debe estar en la lista DNS del router (DNS de la WAN o de un
+ RDHC_17=El router consulta sus servidores DNS en el orden indicado y solo pasa al siguiente cuando uno no responde, en lugar de repartir las consultas entre todos. Úselo junto con la comprobación de salud de arriba.
+ RDHC_18=Orden de los servidores
+ RDHC_19=Orden estricto (strict-order de dnsmasq)
++RDHC_20=Direcciones de los clientes
++RDHC_21=Pasar las direcciones de los clientes al servidor DNS (EDNS Client Subnet)
++RDHC_22=Con todos los clientes pasando por el router, el servidor DNS solo vería al router. Esto adjunta la dirección del cliente que pregunta a cada consulta reenviada, para que AdGuard Home (con la opción "Use EDNS Client Subnet" activada) o Pi-hole (activado por defecto) sigan mostrando y filtrando por cliente.
++RDHC_23=Caché DNS del router
++RDHC_24=No almacenar en caché las respuestas DNS en el router
++RDHC_25=El router normalmente guarda las respuestas un tiempo. Con filtrado por cliente en el servidor, una respuesta en caché decidida para un cliente se entregaría a otro, y el filtro no vería las consultas en caché. Desactivado, el router solo reenvía y el servidor DNS conserva la caché.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 9a87c9c6b2..866a60d043 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Palvelimen on oltava reitittimen DNS-listassa (WAN-DNS tai VPN-asiakkaan
+ RDHC_17=Reititin kysyy DNS-palvelimiltaan listatussa järjestyksessä ja siirtyy seuraavaan vain, kun yksi ei vastaa, sen sijaan että jakaisi kyselyt kaikille. Käytä yhdessä yllä olevan kuntotarkistuksen kanssa.
+ RDHC_18=Upstream-järjestys
+ RDHC_19=Tiukka järjestys (dnsmasq strict-order)
++RDHC_20=Asiakkaiden osoitteet
++RDHC_21=Välitä asiakkaiden osoitteet DNS-palvelimelle (EDNS Client Subnet)
++RDHC_22=Kun kaikki asiakkaat kulkevat reitittimen kautta, DNS-palvelin näkisi vain reitittimen. Tämä liittää kysyjän osoitteen jokaiseen edelleen lähetettyyn kyselyyn, jotta AdGuard Home (asetus ”Use EDNS Client Subnet” päällä) tai Pi-hole (oletuksena päällä) näyttää ja suodattaa edelleen asiakaskohtaisesti.
++RDHC_23=Reitittimen DNS-välimuisti
++RDHC_24=Älä tallenna DNS-vastauksia reitittimen välimuistiin
++RDHC_25=Reititin säilyttää vastauksia normaalisti jonkin aikaa. Kun suodatus tehdään asiakaskohtaisesti palvelimella, yhdelle asiakkaalle päätetty välimuistivastaus annettaisiin toiselle, eikä suodatin näkisi välimuistista vastattuja kyselyitä lainkaan. Pois päältä reititin vain välittää ja DNS-palvelin pitää välimuistin.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index c38d4c0fe6..e893fd8f86 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Le serveur doit figurer dans la liste DNS du routeur (DNS du WAN ou d’
+ RDHC_17=Le routeur interroge ses serveurs DNS dans l’ordre indiqué et ne passe au suivant que lorsqu’un serveur ne répond pas, au lieu de répartir les requêtes sur tous. À combiner avec le contrôle de santé ci-dessus.
+ RDHC_18=Ordre des serveurs amont
+ RDHC_19=Ordre strict (strict-order de dnsmasq)
++RDHC_20=Adresses des clients
++RDHC_21=Transmettre les adresses des clients au serveur DNS (EDNS Client Subnet)
++RDHC_22=Quand tous les clients passent par le routeur, le serveur DNS ne voit que le routeur. Ceci joint l’adresse du client demandeur à chaque requête transmise, pour qu’AdGuard Home (option « Use EDNS Client Subnet » activée) ou Pi-hole (activé par défaut) continue d’afficher et de filtrer par client.
++RDHC_23=Cache DNS du routeur
++RDHC_24=Ne pas mettre en cache les réponses DNS sur le routeur
++RDHC_25=Le routeur conserve normalement les réponses un moment. Avec un filtrage par client en amont, une réponse en cache décidée pour un client serait servie à un autre, et le filtre ne verrait pas du tout les requêtes servies depuis le cache. Désactivé, le routeur ne fait que transmettre et le serveur DNS garde le cache.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 7a94587b6a..2f251c4e18 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=A kiszolgálónak szerepelnie kell a router DNS-listájában (WAN DNS va
+ RDHC_17=A router a megadott sorrendben kérdezi a DNS-kiszolgálóit, és csak akkor lép tovább, ha egy nem válaszol, ahelyett hogy a lekérdezéseket mind között szétosztaná. Használja a fenti állapotellenőrzéssel együtt.
+ RDHC_18=Upstream-sorrend
+ RDHC_19=Szigorú sorrend (dnsmasq strict-order)
++RDHC_20=Ügyfélcímek
++RDHC_21=Az ügyfelek címének továbbítása a DNS-kiszolgálónak (EDNS Client Subnet)
++RDHC_22=Ha minden ügyfél a routeren keresztül megy, a DNS-kiszolgáló csak a routert látná. Ez minden továbbított lekérdezéshez csatolja a kérdező ügyfél címét, így az AdGuard Home (bekapcsolt „Use EDNS Client Subnet” beállítással) vagy a Pi-hole (alapból bekapcsolva) továbbra is ügyfelenként mutat és szűr.
++RDHC_23=A router DNS-gyorsítótára
++RDHC_24=Ne gyorsítótárazza a DNS-válaszokat a routeren
++RDHC_25=A router általában egy ideig megőrzi a válaszokat. Ügyfelenkénti szűrésnél a kiszolgálón az egyik ügyfélnek eldöntött, gyorsítótárazott válasz egy másikhoz kerülne, és a szűrő egyáltalán nem látná a gyorsítótárból kiszolgált lekérdezéseket. Kikapcsolva a router csak továbbít, a gyorsítótárat a DNS-kiszolgáló tartja.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 2f54309179..a3c091d52d 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Il server deve essere nell'elenco DNS del router (DNS della WAN o di un
+ RDHC_17=Il router interroga i suoi server DNS nell'ordine indicato e passa oltre solo quando uno non risponde, invece di distribuire le richieste su tutti. Da abbinare al controllo di salute qui sopra.
+ RDHC_18=Ordine degli upstream
+ RDHC_19=Ordine rigoroso (strict-order di dnsmasq)
++RDHC_20=Indirizzi dei client
++RDHC_21=Passa gli indirizzi dei client al server DNS (EDNS Client Subnet)
++RDHC_22=Con tutti i client che passano dal router, il server DNS vedrebbe solo il router. Questo allega l'indirizzo del client richiedente a ogni richiesta inoltrata, così AdGuard Home (con l'opzione "Use EDNS Client Subnet" attiva) o Pi-hole (attivo per impostazione predefinita) continua a mostrare e filtrare per client.
++RDHC_23=Cache DNS del router
++RDHC_24=Non memorizzare nella cache le risposte DNS sul router
++RDHC_25=Il router normalmente conserva le risposte per un po'. Con il filtraggio per client a monte, una risposta in cache decisa per un client verrebbe consegnata a un altro, e il filtro non vedrebbe affatto le richieste servite dalla cache. Disattivato, il router si limita a inoltrare e il server DNS mantiene la cache.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 587dda6375..390ece286b 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=切り替えを有効にするには、そのサーバーがルーター
+ RDHC_17=ルーターは DNS サーバーを記載順に問い合わせ、応答がない場合にだけ次へ進みます。全サーバーに問い合わせを分散させません。上の正常性チェックと併用してください。
+ RDHC_18=上流の順序
+ RDHC_19=厳密な順序（dnsmasq strict-order）
++RDHC_20=クライアントアドレス
++RDHC_21=クライアントのアドレスを DNS サーバーに渡す（EDNS Client Subnet）
++RDHC_22=すべてのクライアントがルーターを経由すると、DNS サーバーにはルーターしか見えません。これは転送する各問い合わせに問い合わせ元クライアントのアドレスを付加し、AdGuard Home（「Use EDNS Client Subnet」設定をオン）や Pi-hole（既定でオン）が引き続きクライアントごとに表示・フィルタリングできるようにします。
++RDHC_23=ルーターの DNS キャッシュ
++RDHC_24=ルーターで DNS 応答をキャッシュしない
++RDHC_25=ルーターは通常、応答をしばらく保持します。上流でクライアントごとにフィルタリングする場合、あるクライアント向けに決定されたキャッシュ応答が別のクライアントに渡され、フィルタはキャッシュから応答した問い合わせをまったく見られません。オフにするとルーターは転送のみを行い、DNS サーバーがキャッシュを保持します。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 60028dcc8e..df839ef215 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=전환이 효과를 내려면 해당 서버가 공유기의 DNS 목록(W
+ RDHC_17=공유기가 DNS 서버를 나열된 순서대로 조회하고, 하나가 응답하지 않을 때만 다음으로 넘어갑니다. 모든 서버에 조회를 분산하지 않습니다. 위의 상태 검사와 함께 사용하세요.
+ RDHC_18=상위 순서
+ RDHC_19=엄격한 순서(dnsmasq strict-order)
++RDHC_20=클라이언트 주소
++RDHC_21=클라이언트 주소를 DNS 서버에 전달(EDNS Client Subnet)
++RDHC_22=모든 클라이언트가 공유기를 거치면 DNS 서버에는 공유기만 보입니다. 이 옵션은 전달하는 각 조회에 요청 클라이언트의 주소를 첨부해 AdGuard Home(“Use EDNS Client Subnet” 설정 켬)이나 Pi-hole(기본 켬)이 계속 클라이언트별로 표시하고 필터링하게 합니다.
++RDHC_23=공유기 DNS 캐시
++RDHC_24=공유기에서 DNS 응답을 캐시하지 않음
++RDHC_25=공유기는 보통 응답을 잠시 보관합니다. 상위에서 클라이언트별로 필터링하면 한 클라이언트를 위해 결정된 캐시 응답이 다른 클라이언트에게 전달되고, 필터는 캐시된 조회를 전혀 보지 못합니다. 끄면 공유기는 전달만 하고 DNS 서버가 캐시를 유지합니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 27f422af7a..4495ee249a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Pelayan mesti berada dalam senarai DNS penghala (DNS WAN atau klien VPN)
+ RDHC_17=Penghala bertanya kepada pelayan DNSnya mengikut susunan yang disenaraikan dan beralih hanya apabila satu tidak menjawab, bukannya menyebarkan pertanyaan ke semuanya. Gandingkan dengan semakan kesihatan di atas.
+ RDHC_18=Susunan huluan
+ RDHC_19=Susunan ketat (strict-order dnsmasq)
++RDHC_20=Alamat klien
++RDHC_21=Hantar alamat klien kepada pelayan DNS (EDNS Client Subnet)
++RDHC_22=Apabila semua klien melalui penghala, pelayan DNS hanya nampak penghala. Ini melampirkan alamat klien yang bertanya pada setiap pertanyaan yang dimajukan, supaya AdGuard Home (dengan tetapan "Use EDNS Client Subnet" dihidupkan) atau Pi-hole (dihidupkan secara lalai) masih memaparkan dan menapis mengikut klien.
++RDHC_23=Cache DNS penghala
++RDHC_24=Jangan cache jawapan DNS pada penghala
++RDHC_25=Penghala biasanya menyimpan jawapan seketika. Dengan penapisan mengikut klien di huluan, jawapan cache yang diputuskan untuk satu klien akan diberikan kepada klien lain, dan penapis langsung tidak nampak carian yang dijawab dari cache. Dimatikan, penghala hanya memajukan dan pelayan DNS menyimpan cache.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index cd9a51353d..13912a0ce2 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=De server moet in de DNS-lijst van de router staan (WAN-DNS of die van e
+ RDHC_17=De router vraagt zijn DNS-servers in de opgegeven volgorde en gaat alleen verder wanneer er een niet antwoordt, in plaats van de vragen over alle servers te verdelen. Combineer dit met de gezondheidscontrole hierboven.
+ RDHC_18=Upstream-volgorde
+ RDHC_19=Strikte volgorde (dnsmasq strict-order)
++RDHC_20=Clientadressen
++RDHC_21=Clientadressen doorgeven aan de DNS-server (EDNS Client Subnet)
++RDHC_22=Als alle clients via de router gaan, ziet de DNS-server alleen de router. Dit voegt het adres van de vragende client toe aan elke doorgestuurde vraag, zodat AdGuard Home (met de instelling "Use EDNS Client Subnet" aan) of Pi-hole (standaard aan) nog steeds per client toont en filtert.
++RDHC_23=DNS-cache van de router
++RDHC_24=DNS-antwoorden niet op de router cachen
++RDHC_25=De router bewaart antwoorden normaal een tijdje. Bij filtering per client op de server zou een gecachet antwoord dat voor de ene client is bepaald aan een andere worden gegeven, en het filter zou de gecachete vragen helemaal niet zien. Uit: de router stuurt alleen door en de DNS-server houdt de cache.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 52694e233b..4fa9265822 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Serveren må stå i ruterens DNS-liste (WAN-DNS eller en VPN-klients) fo
+ RDHC_17=Ruteren spør DNS-serverne sine i oppgitt rekkefølge og går bare videre når én ikke svarer, i stedet for å spre spørringer over alle. Bruk den sammen med helsesjekken ovenfor.
+ RDHC_18=Upstream-rekkefølge
+ RDHC_19=Streng rekkefølge (dnsmasq strict-order)
++RDHC_20=Klientadresser
++RDHC_21=Send klientadresser til DNS-serveren (EDNS Client Subnet)
++RDHC_22=Når alle klienter går gjennom ruteren, ser DNS-serveren bare ruteren. Dette legger adressen til klienten som spør ved hver videresendt forespørsel, slik at AdGuard Home (med innstillingen «Use EDNS Client Subnet» på) eller Pi-hole (på som standard) fortsatt viser og filtrerer per klient.
++RDHC_23=Ruterens DNS-hurtigbuffer
++RDHC_24=Ikke hurtigbufre DNS-svar på ruteren
++RDHC_25=Ruteren beholder normalt svar en stund. Med filtrering per klient oppstrøms ville et bufret svar avgjort for én klient bli gitt til en annen, og filteret ville ikke se de bufrede oppslagene i det hele tatt. Av: ruteren bare videresender, og DNS-serveren beholder hurtigbufferen.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index f759a20aad..e8c2d0b3ca 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Serwer musi znajdować się na liście DNS routera (DNS WAN lub klienta
+ RDHC_17=Router odpytuje swoje serwery DNS w podanej kolejności i przechodzi dalej tylko wtedy, gdy któryś nie odpowiada, zamiast rozdzielać zapytania między wszystkie. Połącz z kontrolą stanu powyżej.
+ RDHC_18=Kolejność serwerów nadrzędnych
+ RDHC_19=Ścisła kolejność (strict-order dnsmasq)
++RDHC_20=Adresy klientów
++RDHC_21=Przekazuj adresy klientów do serwera DNS (EDNS Client Subnet)
++RDHC_22=Gdy wszyscy klienci przechodzą przez router, serwer DNS widziałby tylko router. Ta opcja dołącza adres pytającego klienta do każdego przekazywanego zapytania, dzięki czemu AdGuard Home (z włączonym ustawieniem „Use EDNS Client Subnet”) lub Pi-hole (domyślnie włączone) nadal pokazuje i filtruje według klienta.
++RDHC_23=Pamięć podręczna DNS routera
++RDHC_24=Nie buforuj odpowiedzi DNS na routerze
++RDHC_25=Router zwykle przechowuje odpowiedzi przez pewien czas. Przy filtrowaniu według klienta na serwerze odpowiedź z bufora podjęta dla jednego klienta trafiłaby do innego, a filtr w ogóle nie widziałby zapytań obsłużonych z bufora. Wyłączone: router tylko przekazuje, a bufor prowadzi serwer DNS.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 5dd390b40f..f2534a7994 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Serverul trebuie să fie în lista DNS a routerului (DNS WAN sau al unui
+ RDHC_17=Routerul își întreabă serverele DNS în ordinea listată și trece mai departe doar când unul nu răspunde, în loc să împartă interogările între toate. Combinați cu verificarea stării de mai sus.
+ RDHC_18=Ordinea upstream
+ RDHC_19=Ordine strictă (strict-order dnsmasq)
++RDHC_20=Adresele clienților
++RDHC_21=Transmite adresele clienților către serverul DNS (EDNS Client Subnet)
++RDHC_22=Când toți clienții trec prin router, serverul DNS ar vedea doar routerul. Aceasta atașează adresa clientului care întreabă la fiecare interogare redirecționată, astfel încât AdGuard Home (cu setarea „Use EDNS Client Subnet” pornită) sau Pi-hole (pornit implicit) continuă să afișeze și să filtreze per client.
++RDHC_23=Cache-ul DNS al routerului
++RDHC_24=Nu păstra răspunsurile DNS în cache pe router
++RDHC_25=Routerul păstrează în mod normal răspunsurile o vreme. Cu filtrare per client în amonte, un răspuns din cache decis pentru un client ar fi livrat altuia, iar filtrul nu ar vedea deloc interogările servite din cache. Dezactivat, routerul doar redirecționează, iar serverul DNS păstrează cache-ul.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 729093fc64..1b9ba69d01 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Сервер должен быть в списке DNS роутера (D
+ RDHC_17=Роутер опрашивает свои DNS-серверы в указанном порядке и переходит к следующему только когда один не отвечает, а не распределяет запросы между всеми. Используйте вместе с проверкой выше.
+ RDHC_18=Порядок вышестоящих серверов
+ RDHC_19=Строгий порядок (dnsmasq strict-order)
++RDHC_20=Адреса клиентов
++RDHC_21=Передавать адреса клиентов DNS-серверу (EDNS Client Subnet)
++RDHC_22=Когда все клиенты идут через роутер, DNS-сервер видит только роутер. Эта опция добавляет адрес запрашивающего клиента к каждому пересылаемому запросу, чтобы AdGuard Home (с включённой настройкой «Use EDNS Client Subnet») или Pi-hole (включено по умолчанию) по-прежнему показывали и фильтровали по клиентам.
++RDHC_23=DNS-кэш роутера
++RDHC_24=Не кэшировать ответы DNS на роутере
++RDHC_25=Обычно роутер хранит ответы некоторое время. При фильтрации по клиентам на сервере ответ из кэша, принятый для одного клиента, будет выдан другому, а фильтр вовсе не увидит запросы, отвеченные из кэша. Выключено: роутер только пересылает, кэш держит DNS-сервер.
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index bf654cc0c0..6e17967277 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Strežnik mora biti na seznamu DNS usmerjevalnika (DNS WAN ali odjemalca
+ RDHC_17=Usmerjevalnik sprašuje svoje DNS-strežnike v navedenem vrstnem redu in gre naprej le, ko eden ne odgovori, namesto da bi poizvedbe razpršil med vse. Uporabite skupaj s preverjanjem stanja zgoraj.
+ RDHC_18=Vrstni red nadrejenih
+ RDHC_19=Strog vrstni red (dnsmasq strict-order)
++RDHC_20=Naslovi odjemalcev
++RDHC_21=Posreduj naslove odjemalcev strežniku DNS (EDNS Client Subnet)
++RDHC_22=Če gredo vsi odjemalci skozi usmerjevalnik, strežnik DNS vidi le usmerjevalnik. To vsaki posredovani poizvedbi pripne naslov odjemalca, ki sprašuje, tako da AdGuard Home (z vklopljeno nastavitvijo »Use EDNS Client Subnet«) ali Pi-hole (privzeto vklopljeno) še naprej prikazuje in filtrira po odjemalcu.
++RDHC_23=Predpomnilnik DNS usmerjevalnika
++RDHC_24=Ne shranjuj odgovorov DNS v predpomnilnik usmerjevalnika
++RDHC_25=Usmerjevalnik običajno nekaj časa hrani odgovore. Pri filtriranju po odjemalcu na strežniku bi bil odgovor iz predpomnilnika, odločen za enega odjemalca, izročen drugemu, filter pa poizvedb iz predpomnilnika sploh ne bi videl. Izklopljeno: usmerjevalnik le posreduje, predpomnilnik hrani strežnik DNS.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 46be5a5aad..d5e1e9843c 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Servern måste finnas i routerns DNS-lista (WAN-DNS eller en VPN-klients
+ RDHC_17=Routern frågar sina DNS-servrar i angiven ordning och går vidare bara när en inte svarar, i stället för att sprida frågor över alla. Använd tillsammans med hälsokontrollen ovan.
+ RDHC_18=Upstream-ordning
+ RDHC_19=Strikt ordning (dnsmasq strict-order)
++RDHC_20=Klientadresser
++RDHC_21=Skicka klientadresser till DNS-servern (EDNS Client Subnet)
++RDHC_22=När alla klienter går genom routern ser DNS-servern bara routern. Detta bifogar den frågande klientens adress till varje vidarebefordrad fråga, så att AdGuard Home (med inställningen "Use EDNS Client Subnet" på) eller Pi-hole (på som standard) fortfarande visar och filtrerar per klient.
++RDHC_23=Routerns DNS-cache
++RDHC_24=Cacha inte DNS-svar på routern
++RDHC_25=Routern behåller normalt svar en stund. Med filtrering per klient uppströms skulle ett cachat svar som avgjorts för en klient lämnas till en annan, och filtret skulle inte alls se de cachade uppslagen. Av: routern vidarebefordrar bara och DNS-servern behåller cachen.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 563143ea41..f01fcb3371 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=เซิร์ฟเวอร์ต้องอยู่ในราย
+ RDHC_17=เราเตอร์จะถามเซิร์ฟเวอร์ DNS ตามลำดับที่ระบุ และไปยังตัวถัดไปเฉพาะเมื่อตัวหนึ่งไม่ตอบ แทนที่จะกระจายคำถามไปทุกตัว ใช้ร่วมกับการตรวจสอบสถานะด้านบน
+ RDHC_18=ลำดับอัปสตรีม
+ RDHC_19=ลำดับเข้มงวด (dnsmasq strict-order)
++RDHC_20=ที่อยู่ไคลเอนต์
++RDHC_21=ส่งที่อยู่ไคลเอนต์ไปยังเซิร์ฟเวอร์ DNS (EDNS Client Subnet)
++RDHC_22=เมื่อไคลเอนต์ทุกเครื่องผ่านเราเตอร์ เซิร์ฟเวอร์ DNS จะเห็นเพียงเราเตอร์ ตัวเลือกนี้แนบที่อยู่ของไคลเอนต์ที่ถามไปกับทุกคำถามที่ส่งต่อ เพื่อให้ AdGuard Home (เปิดการตั้งค่า "Use EDNS Client Subnet") หรือ Pi-hole (เปิดเป็นค่าเริ่มต้น) ยังแสดงและกรองตามไคลเอนต์ได้
++RDHC_23=แคช DNS ของเราเตอร์
++RDHC_24=ไม่แคชคำตอบ DNS บนเราเตอร์
++RDHC_25=โดยปกติเราเตอร์จะเก็บคำตอบไว้ระยะหนึ่ง เมื่อกรองตามไคลเอนต์ที่ต้นทาง คำตอบในแคชที่ตัดสินให้ไคลเอนต์หนึ่งจะถูกส่งให้อีกเครื่อง และตัวกรองจะไม่เห็นคำถามที่ตอบจากแคชเลย เมื่อปิด เราเตอร์จะส่งต่อเท่านั้นและเซิร์ฟเวอร์ DNS เป็นผู้เก็บแคช
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 1c582c3d07..25facdc828 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Geçişin etkili olması için sunucu, yönlendiricinin DNS listesinde (
+ RDHC_17=Yönlendirici DNS sunucularına listelenen sırayla sorar ve sorguları hepsine dağıtmak yerine yalnızca biri yanıt vermediğinde sonrakine geçer. Yukarıdaki sağlık denetimiyle birlikte kullanın.
+ RDHC_18=Üst sunucu sırası
+ RDHC_19=Katı sıra (dnsmasq strict-order)
++RDHC_20=İstemci adresleri
++RDHC_21=İstemci adreslerini DNS sunucusuna ilet (EDNS Client Subnet)
++RDHC_22=Tüm istemciler yönlendirici üzerinden geçtiğinde DNS sunucusu yalnızca yönlendiriciyi görür. Bu seçenek, iletilen her sorguya soran istemcinin adresini ekler; böylece AdGuard Home ("Use EDNS Client Subnet" ayarı açıkken) veya Pi-hole (varsayılan olarak açık) istemci bazında göstermeye ve filtrelemeye devam eder.
++RDHC_23=Yönlendirici DNS önbelleği
++RDHC_24=DNS yanıtlarını yönlendiricide önbelleğe alma
++RDHC_25=Yönlendirici yanıtları normalde bir süre saklar. Üst tarafta istemci bazında filtreleme varken bir istemci için verilen önbellekteki yanıt başka bir istemciye verilir ve filtre önbellekten yanıtlanan sorguları hiç görmez. Kapalıyken yönlendirici yalnızca iletir, önbelleği DNS sunucusu tutar.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 3e21a6a2ea..4313488c02 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=該伺服器必須在路由器的 DNS 清單中（WAN DNS 或 VPN 用戶
+ RDHC_17=路由器依列出的順序詢問其 DNS 伺服器，僅在某個伺服器無回應時才轉向下一個，而不是把查詢分散到所有伺服器。請與上方的健康檢查搭配使用。
+ RDHC_18=上游順序
+ RDHC_19=嚴格順序（dnsmasq strict-order）
++RDHC_20=用戶端位址
++RDHC_21=將用戶端位址傳遞給 DNS 伺服器（EDNS Client Subnet）
++RDHC_22=當所有用戶端都經過路由器時，DNS 伺服器只能看到路由器。此選項在每個轉送的查詢中附加發問用戶端的位址，讓 AdGuard Home（開啟「Use EDNS Client Subnet」設定）或 Pi-hole（預設開啟）仍能依用戶端顯示與過濾。
++RDHC_23=路由器 DNS 快取
++RDHC_24=不在路由器上快取 DNS 回應
++RDHC_25=路由器通常會將回應保留一段時間。上游依用戶端過濾時，為某個用戶端決定的快取回應會交給另一個用戶端，而過濾器完全看不到由快取回應的查詢。關閉後，路由器只做轉送，由 DNS 伺服器保留快取。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index c4a8795d17..2f91e2cd0a 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6884,3 +6884,9 @@ RDHC_16=Сервер має бути у списку DNS маршрутизат
+ RDHC_17=Маршрутизатор опитує свої DNS-сервери у вказаному порядку і переходить далі лише коли один не відповідає, а не розподіляє запити між усіма. Використовуйте разом із перевіркою вище.
+ RDHC_18=Порядок вищих серверів
+ RDHC_19=Суворий порядок (dnsmasq strict-order)
++RDHC_20=Адреси клієнтів
++RDHC_21=Передавати адреси клієнтів DNS-серверу (EDNS Client Subnet)
++RDHC_22=Коли всі клієнти йдуть через маршрутизатор, DNS-сервер бачить лише маршрутизатор. Ця опція додає адресу клієнта, що запитує, до кожного пересланого запиту, щоб AdGuard Home (з увімкненим параметром «Use EDNS Client Subnet») або Pi-hole (увімкнено типово) і далі показували й фільтрували за клієнтом.
++RDHC_23=DNS-кеш маршрутизатора
++RDHC_24=Не кешувати відповіді DNS на маршрутизаторі
++RDHC_25=Зазвичай маршрутизатор деякий час зберігає відповіді. За фільтрації за клієнтом на сервері відповідь із кешу, ухвалена для одного клієнта, дісталася б іншому, а фільтр узагалі не бачив би запитів, на які відповіли з кешу. Вимкнено: маршрутизатор лише пересилає, кеш тримає DNS-сервер.
+-- 
+2.25.1
+

@@ -214,6 +214,7 @@ class Scanner:
         self.patches_seen = 0
         self.lines_seen = 0
         self.binary_skipped = 0
+        self.unreadable = []
         self.nfatal = 0
 
     # -- recording -----------------------------------------------------------
@@ -367,7 +368,17 @@ class Scanner:
         if path.lower().endswith(BINARY_EXT):
             self.binary_skipped += 1
             return
-        with open(path, "rb") as fh:
+        # A dangling symlink is listed by os.walk() but cannot be opened, and an
+        # unhandled OSError here aborted the WHOLE scan - so a tree-wide run
+        # died on the first broken link and the gate could only ever be run on
+        # hand-picked subsets. That is how a scan quietly stops covering things.
+        # Count them and carry on; they are reported, not silently dropped.
+        try:
+            fh = open(path, "rb")
+        except OSError as e:
+            self.unreadable.append((display, e.__class__.__name__))
+            return
+        with fh:
             head = fh.read(8192)
             if b"\x00" in head:
                 self.binary_skipped += 1
@@ -389,6 +400,14 @@ class Scanner:
 
     # -- report --------------------------------------------------------------
     def report(self, show_warn=True):
+        if self.unreadable:
+            print("[NOTE] %-14s %d path(s) could not be opened and were skipped "
+                  "(dangling symlinks or permissions):"
+                  % ("unreadable", len(self.unreadable)))
+            for disp, why in self.unreadable[:10]:
+                print("           %s (%s)" % (disp, why))
+            if len(self.unreadable) > 10:
+                print("           ... and %d more" % (len(self.unreadable) - 10))
         for cls in FATAL_CLASSES + WARN_CLASSES:
             total = sum(n for (c, _, _), n in self.counts.items() if c == cls)
             if total == 0:

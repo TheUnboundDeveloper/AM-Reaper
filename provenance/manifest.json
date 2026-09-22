@@ -21,6 +21,423 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v3.2.3",
+      "firmware": "3006.102.8_Reaper_v3.2.3",
+      "build_commit": "2e73773ca9",
+      "source_tree": {
+        "release/src/router": "e716f3abd2fd022262e4be4ce229ce0822cf5ad3",
+        "release/src-rt": "d9b557bc3dc8a1457eb8cca297378d23fa8ba55a"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "45a7153b767b66c4a748486f7425ba21b957436a",
+        "release/src-rt": "d9b557bc3dc8a1457eb8cca297378d23fa8ba55a"
+      },
+      "images": [],
+      "patch_count": 698,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-20",
+      "parent": "v3.2.2",
+      "summary": "A locked cell on Wireless > Settings (www/Reaper_WiFiSettings.asp) says why on hover: setHardLock(el, locked, force, why) sets the cell's title to the reason while the lock holds and removes it when it lifts, and a WHY map (RWFP_67-82, plus RWFP_49 for the auto-channel cell) covers every lock the page applies - MLO holding the radio on, Legacy mode, WMM as a choice in Legacy only, MU-MIMO derived from OFDMA, the fixed-channel park, AMPDU RTS off, pre-emptive Bluetooth, the scheduler under MLO, Disable 802.11b as the preamble master. Greyed stays the only visible signal. Four-radio tester fixes on the same page: numeric boxes span the cell like the selects, the unit inside the box (.numwrap.hasunit); an nvram key rendered in two columns on a box with two 5 GHz radios (the DFS and U-NII-4 auto-channel options, data-g) is mirrored on change, counted once (seenG) and posted once from an unlocked copy (postedG) - before, each copy counted and the last copy in the page won at apply, silently dropping a tick under 5 GHz-1; RWFP_49 is rewritten to say what the boxes are and that a fixed DFS channel still moves when radar is detected; Extension Channel rebuilds its options per channel from the driver's sideband list (13 is Below only, 1 Above only; the composer already corrected an impossible pick, the page showed the other one); Fragmentation Threshold's help gains RWFP_83 (editable in Legacy mode only, as stock); Set AP Isolated leaves the page and wlpro_nv_fields loses ap_isolate - on this build isolation is a per-network setting on the Network menu and the per-radio key reached only the primary BSS. Efficiency items measured on the RT-BE96U on 2026-09-20: rc/rwarden.c start_rwarden() skips its synchronous apply.sh while /tmp/.reaper_firewall_built (rc.h REAPER_FW_BUILT_MARK) is absent - a tmpfs marker written by start_firewall()'s Reaper block (rc/firewall.c, under the re-taken lock, before the Warden re-apply) and by a completed apply.sh, so it is absent on every fresh boot and present for every later restart_rwarden; the boot-time run was about 6 s of pid 1 on the path to start_wan (the awk split of the 1.7 MB cache, the per-set ipset restore, the counter snapshot, 317 iptables calls) that the WAN-up start_firewall() tore down and redid about 15 s later; rc/rwatch.c check 3c words the no-WAN case (armed by the heal after HEALGRACE) instead of reporting a fault. rc/wanduck.c chk_proto(): restart_autowan once a minute while current_state is WAN_STATE_CONNECTED and on every 5 s scan otherwise, in the single-WAN branch only (dual WAN never reaches it) - the unconditional respawn was about half of init's idle burn (owner's test: 72 -> 38 cs per 15 s with wanduck stopped). rtrafd/rtrafd.c rt_bound(): the watcher forks its sleep, traps TERM, kills and reaps that sleep, and the main shell reaps the watcher, so a fast query no longer strands a sleep on pid 1 (seven per 4 s class poll, the other half of the burn; every init wake ran check_services' four /proc scans). rc/init.c init_main(): the two sleep 3 around the /data mount and bcm_knvram become reaper_mount_data() (a st_dev poll, the mount re-issued once a second, 10 s ceiling) and reaper_wait_knvram() (a socket(PF_NETLINK, SOCK_RAW, NETLINK_WLCSM=31) probe: the module's init is the wlcsm netlink family registration with no deferred work; /proc is not mounted yet at that point and this platform has no /dev/nvram); rc/services.c start_hotplug2() polls /proc/net/netlink for the process's NETLINK_KOBJECT_UEVENT socket instead of sleep(1), and start_dhd_monitor() pays its 300 ms only when a previous debug_monitor exists. netool, sysstate and dns_dpi_check stay: each has a consumer on this build (Main_Analysis_Content and Main_Netstat_Content call /netool.cgi, the feedback report packs the /tmp/asusfbsvcs logs, the Bandwidth Monitor page starts dnsqd). Dictionaries: RWFP_67-83 added translated and RWFP_49 rewritten in all 25 packs, lockstep at 7036; the 33 English-seeded v3.2.2 tokens stay English this release (owner). Built and verified locally as RT-BE96U MCP test images (v3.2.2_BETA_r1 on the page commits, _r2 on the efficiency commit; reaper_verify 34 pass, 0 warn, 0 fail; the rt_bound harness under busybox ash: the old form leaves one orphaned sleep per call, the new form none, and a hung single command is still killed at the cap) before the cut. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "Patches 0695-0698 touch 36 files: www/Reaper_WiFiSettings.asp, httpd/web.c, rc/rc.h, rc/firewall.c, rc/rwarden.c, rc/rwatch.c, rc/wanduck.c, rc/services.c, rc/init.c, rtrafd/rtrafd.c, the 25 dictionaries and release/src-rt/version.conf. None of them overlaps a model overlay, so the six overlay files are unchanged and pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, and the dormant RT-BE92U 11); the hidden-character scan is clean over all six (36 files, 4678 lines) and over the four new patches (36 files, 840 added lines). A .dict never appears in an overlay, so the dictionary changes reach the siblings through the series alone. All five roster siblings report post-commit parity 0 with canon and dict lockstep at EXTENDNO Reaper_v3.2.3 (rt-be86u d6a5add314, rt-be88u 918d7dfc19, gt-be98 850708b30e, gt-be98-pro bc61bc170a, gt-be19000 b2dbe0cec4). The rc changes are platform-generic: the /data mount and bcm_knvram polls sit under RTCONFIG_HND_ROUTER_BE_4916 with both flash layouts (ext4 and ubifs) sharing them, the debug_monitor wait under RTCONFIG_HND_ROUTER_AX, the autowan rate limit inside the RTCONFIG_AUTO_WANPORT single-WAN branch every roster model builds. GT-BE19000 remains a prerelease model by design (release.yml always-prerelease); RT-BE92U stays dormant off the roster.",
+      "logs": {
+        "build": "provenance/logs/v3.2.3/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.2.3/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.2.2",
+      "firmware": "3006.102.8_Reaper_v3.2.2",
+      "build_commit": "76ce2a3e92",
+      "source_tree": {
+        "release/src/router": "e032b5c0b0b028fdb85333925a42169bfed6f32b",
+        "release/src-rt": "ed12823c1b940ec27c3ab61185474f3d5c7576a0"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "fb923de3377348911872b2444f8e8b05bdf23029",
+        "release/src-rt": "ed12823c1b940ec27c3ab61185474f3d5c7576a0"
+      },
+      "images": [],
+      "patch_count": 694,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-20",
+      "parent": "v3.2.1",
+      "summary": "One Wireless > Settings tab (www/Reaper_WiFiSettings.asp) replaces the stock General and Professional tabs and the Reaper WiFiPro page (deleted); httpd/reaper_inject.c SUP-redirects all three to it and Advanced_Wireless_Content.asp leaves reaper_css_only so the bounce reaches it. Every radio setting a user can change is on the one page, a column per band, one restart_wireless per apply; network name, security, 11ax/11be and Smart Connect stay on the Network menu, where the SDN profile owns them. New httpd SSI wlpro_chanspecs() emits the per-radio chanspec list from wl<unit>_chansps (the prebuilt ej_wl_chanspecs fills it) so the channel and bandwidth rows offer what the driver reports, and they fold into wl<unit>_chanspec at apply exactly as the General tab did (2.4 GHz <ch>l|u plus wl<unit>_nctrlsb, 5 GHz <ch>/<bw>, 6 GHz 6g<ch>/320-1|2); wlpro_nv_fields grows to 37 keys. The scheduler edits a 7x24 grid and writes the V2 wl<unit>_sched_v2 off-time rules rc/watchdog reads on this build. The seven rows v3.2.0 removed are back, locked only where stock locks them: Legacy parks beamforming, modulation scheme, AMPDU RTS and RTS Threshold, WMM is a choice in Legacy only, Fragmentation Threshold is editable in Legacy only, MU-MIMO follows the OFDMA choice. A forced value is written at apply as a derived heal when nvram disagrees (WMM on, mumimo from ofdma, frameburst off under pre-emptive Bluetooth, txbf under MU-MIMO, timesched 0 under MLO), as the 11ax heal already was. The v3.2.1 Wireless Mode row carries over with its coupling (apply writes wl<unit>_11ax=1 whenever the applied mode allows HE and the stored value is not 1; a mode that drops HE confirms first). The radio toggle is refused off while MLO is on (stock check_mlo_status), the scheduler is parked while MLO holds the radios, and an AiMesh confirm precedes a radio-off in router/AP mode. No visible lock text: greyed is the signal. The enhanced select menus ignore clicks and scrolls inside the open list (a long channel list closed when its scrollbar was touched; WiFiPro had the same bug). menuTree carries one Settings tab; the dashboard rail and the WPS page's two links point at the new page. rc/rwarden.c: fold.sh and stats.sh take one iptables -nvxL / ip6tables -nvxL snapshot per run and parse TOTAL and every bucket from it by Chain section - the separate listings let a packet arriving between reads bank in a bucket but not the total, drifting the store a few packets per 15-minute checkpoint with Unclassified clamped at zero; the Warden page reads Blocked packets (RWDN_108) and a card under How Warden works (RWDN_102-107) says what the number is. Reaper_Traffic, Reaper_QoS and Reaper_QoSDiag use the RTRF_78/79 Download/Upload nouns instead of the CTL_upload button verb, which in Russian is the same word as the stock Download label (field report). Dictionaries: RWFP_40-43, RWFP_45-66, RWDN_102-108 and RTRF_78/79 added, RWFP_12 and RWDN_44 retired, all 25 packs in lockstep at 7019; RWFP_40-66 and RWDN_102-108 are English-seeded in the 24 non-EN packs and owed to the next translation pass. Version chosen over a v3.2.1 re-cut because the on-router update check compares X.Y.Z numerically and strips a trailing letter, so only a higher number reaches routers already on the v3.2.1 beta. Built and verified locally as RT-BE96U MCP test images (v3.2.1_BETA _r2 to _r6 on the same source, reaper_verify 34 pass, 0 warn, 0 fail) and flashed on the RT-BE96U; read back through the lab: the Settings page and redirects in the image, per-band chanspec lists populated (25/89/324 entries), Warden's banked total equal to its buckets, the Russian nouns in the dictionaries. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "Patches 0690-0694 touch 38 files: www/Reaper_WiFiSettings.asp (new), www/Reaper_WiFiPro.asp (deleted), httpd/web.c, httpd/reaper_inject.c, rc/rwarden.c, www/Reaper_Warden.asp, www/Reaper_Traffic.asp, www/Reaper_QoS.asp, www/Reaper_QoSDiag.asp, www/Main_ReaperDash.asp, www/Advanced_WWPS_Content.asp, www/require/menuTrees/menuTree.js, the 25 dictionaries and release/src-rt/version.conf. Main_ReaperDash.asp overlaps all six model overlays, but the rung's edit is the Wireless rail link and every overlay difference there is an identity line, so the regeneration step found only blob-hash (index) drift and left the overlay files as they are - git apply never reads those lines. All six overlays pass the identity gate afterwards (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, and the dormant RT-BE92U 11), and the hidden-character scan is clean over all six. A .dict may never appear in an overlay, so the dictionary changes reach the siblings through the series alone. All five roster siblings report post-commit parity 0 with canon and dict lockstep at EXTENDNO Reaper_v3.2.2. GT-BE19000 remains a prerelease model by design (release.yml always-prerelease); RT-BE92U stays dormant off the roster.",
+      "logs": {
+        "build": "provenance/logs/v3.2.2/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.2.2/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.2.1",
+      "firmware": "3006.102.8_Reaper_v3.2.1",
+      "build_commit": "0490109d60",
+      "source_tree": {
+        "release/src/router": "b9c680a54fd278126fdbf7af67bb40fe0e42ff09",
+        "release/src-rt": "9705d570e7f6f6dc5d6f876c12b3642f4296611f"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "af888a93b41a50cc3ec9ac70256cef1587bf8162",
+        "release/src-rt": "9705d570e7f6f6dc5d6f876c12b3642f4296611f"
+      },
+      "images": [],
+      "patch_count": 689,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-19",
+      "parent": "v3.2.0",
+      "summary": "Wireless Mode returns to the WiFi Professional page, per radio, with the coupling it never had. Every mode except Auto, N/AC/AX mixed and AX only makes bringup write wl<unit>_11ax=0 (no HE, so no EHT), and nothing in the firmware ever wrote it back - rc/init.c seeds the key only when unset and stock hides both the mode and the 11ax selects on Wi-Fi 7 platforms - so a radio once set to N only stayed at Wi-Fi 4/5 after returning to Auto (the 2026-09-18 badge report, and the reason v3.2.0 dropped the row). The page now writes wl<unit>_11ax=1 whenever the mode being applied allows HE and the stored value is not 1, parks OFDMA under a mode without HE, AMPDU RTS and RTS Threshold under Legacy and Disable 802.11b unless Auto, and confirms a mode that drops HE. Option sets are stock's regen_mode(): 2.4 GHz Auto/N only/Legacy, 5 GHz Auto/AX only/N-AC-AX mixed/Legacy, 6 GHz Auto/AX only; the firmware has no Wi-Fi 7-only mode. Seven rows a user could not safely change leave the page: WMM (bringup forces it on in Auto), MU-MIMO (now derived from the OFDMA choice at apply, as stock does), explicit and universal beamforming, modulation scheme, AMPDU aggregation and Bluetooth coexistence (stock hides all of them on Wi-Fi 7; bringup consumes txbf, turbo_qam and mumimo). Roaming assistant takes stock's -90..-40 dBm range with 0 = off. The radio toggle is linked to the surfaces that also drive it: refused while MLO is on (stock check_mlo_status), a chip on a scheduler-owned radio (wl<unit>_timesched joins the httpd snapshot, read-only), an AiMesh confirm before a radio goes off in router/AP mode; AMPDU RTS Disable parks that radio's RTS and Fragmentation thresholds. Rule Status walker v1.6: the policy-routing row cap of eight counted set-keyed notes, so a source-address rule behind eight ipset rules never produced a row (field, v3.1.9) - now 32; the out-of-scope note's 120/100-byte buffers truncated a 267-byte text - now 320; the VPN group is labelled VPN because it holds the policy-routing and Killswitch rows too. Dictionaries: RWFP_39 added and RWFP_24/RWFP_26 retired in all 25 packs. Built and verified locally as an RT-BE96U MCP test image (reaper_verify 34 pass, 0 warn, 0 fail) before the cut. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "Patches 0685-0689 touch 29 files: www/Reaper_WiFiPro.asp, httpd/web.c, reaper_fwsim/reaper_fwsim.c, the 25 dictionaries and release/src-rt/version.conf. None is one of the seven banner-referencing pages and a .dict may never appear in an overlay, so the five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) are unchanged after the port and pass the identity gate; the dormant RT-BE92U overlay passes it too. All five siblings report post-commit parity 0 with canon and dict lockstep at 6986 lines at EXTENDNO Reaper_v3.2.1. GT-BE19000 remains a prerelease model by design (release.yml always-prerelease); RT-BE92U stays dormant off the roster.",
+      "logs": {
+        "build": "provenance/logs/v3.2.1/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.2.1/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.2.0",
+      "firmware": "3006.102.8_Reaper_v3.2.0",
+      "build_commit": "cbea8928f6",
+      "source_tree": {
+        "release/src/router": "ce4bfbc26e7ae4894e237c0936619f8501bb0c9b",
+        "release/src-rt": "09db4a50eb5c6c04fcc8746573aebbf96025f668"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "5af0bfcf297e726ad84d4bab6130839368fd24c9",
+        "release/src-rt": "09db4a50eb5c6c04fcc8746573aebbf96025f668"
+      },
+      "images": [],
+      "patch_count": 684,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-19",
+      "parent": "v3.1.9",
+      "summary": "The WiFi Professional page drops its WiFi 7 Mode and Wireless Mode rows. Both wrote a per-radio key (wl<unit>_11be, wl<unit>_nmode_x) through the page's generic apply with none of the SAE and Smart Connect coupling the stock surfaces enforce, so 11be could be raised on a band whose crypto cannot advertise EHT, and \"N only\" set 11ax=0 at bringup, dropping HE and with it EHT - the 2026-09-18 GT-BE98 report of a 2.4 GHz band beaconing HT only. Wi-Fi 7 is chosen per network on the Network menu; Wireless Mode is no longer exposed in the Reaper interface, and the changelog carries the one-line recovery for a band left on \"N only\". Four dictionary tokens retired from all 25 packs. The Traffic Analyzer names the operation mode instead of staying blank on an Access Point, repeater or media bridge: rtrafd accounts from conntrack, which a bridging box never populates, so the collector is deliberately idle there (RTRF_77, English-seeded in all 25 packs; RFW_318, unreferenced since v3.1.7, removed). The Storage and Analytics help buttons point at the live guide heading - they had linked a heading renamed on 2026-08-29 - and the guide carries compat anchors for that slug and for the v3.1.1 Failover slug so images in the field resolve too. Policy Routing stays first-match-wins from v3.1.9. Observed on the RT-BE96U on the v3.2.0 beta image after fifteen hours: Rule Status 102 green / 0 red over 111 witnesses, all three retry counters 0, DoS guard reported armed, the DNS-gated intercept closed at boot and reopened when the resolver answered, vendor WLCSM libraries hash-identical to the pinned archive with zero orphaned proto-31 sockets.",
+      "models_note": "Patches 0681-0684 touch 30 files: www/Reaper_WiFiPro.asp, www/Reaper_Traffic.asp, www/Reaper_Storage.asp, www/Reaper_Analytics.asp, the 25 dictionaries and release/src-rt/version.conf. None is one of the seven banner-referencing pages and a .dict may never appear in an overlay, so the five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) are unchanged after the port and pass the identity gate. All five siblings report post-commit parity with canon and dict lockstep at 6987 lines. GT-BE19000 remains a prerelease model by design (release.yml always-prerelease); RT-BE92U stays dormant off the roster.",
+      "logs": {
+        "build": "provenance/logs/v3.2.0/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.2.0/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.1.9",
+      "firmware": "3006.102.8_Reaper_v3.1.9",
+      "build_commit": "c0ba9d3277",
+      "source_tree": {
+        "release/src/router": "f7a3b322115d4deb0bf9256896a18f8aeea272db",
+        "release/src-rt": "b5d27a48fcfe634ffa2b81823a21b7b57ec57724"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "cd17ba0f85c63bcf35d75a4bf306b50b73399e86",
+        "release/src-rt": "b5d27a48fcfe634ffa2b81823a21b7b57ec57724"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.9_BETA_r1_nand_squashfs.pkgtb",
+          "sha256": "9b7b24a83e1ae9b183f7cd4682b2c6550928681d2ee854ced6543be6c3ef5ed5"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.9_BETA_r1_nand_squashfs_loader.pkgtb",
+          "sha256": "9a8ba97eb09412b75e7e425628161b008d6875b0151c70b98bf1597116b778d2"
+        }
+      ],
+      "patch_count": 680,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-17",
+      "parent": "v3.1.8",
+      "summary": "Policy Routing follows the order the rules are in. Every selector rule in the REAPER_PBR mangle chain now carries `-m mark --mark 0x0/$MASK`, so the FIRST rule to match a packet is the only one that writes a verdict. Before this, MARK did not terminate the chain and --set-xmark overwrote the masked nibble, so every matching rule ran and the LAST in the list decided: a broad source rule placed below a specific ipset or domain rule silently beat it. A field report on 2026-09-17 (RT-BE86U, v3.1.8_BETA) showed the asymmetry that gives it away - a client sent to a tunnel by a Policy Routing source rule stopped following its own ipset destination rules, while the same client sent to the same tunnel by VPN Director kept following them, because that path resolves by ip-rule pref (10210 against 9002) rather than by position in one chain. Rule count is unchanged, so rwatch's reassert check and the diag figure are unaffected, and the walker already models an `-m mark` match. Rule Status also names the stand-in addresses it walks with (new token RFW_322): the tab generates a LAN client at .123 plus an unclaimed WAN source and destination, sends none of them anywhere, and used to print them bare, which one tester twice reported as a device they could not find. Also in this rung: a firewall rebuild stops fighting itself - one QoS apply rebuilt the firewall and for fifty seconds the three Reaper layer applies, the shared front hook, the rwatch watchdog and an out-of-tree DNS carve-out watcher took turns re-inserting rules at FORWARD position 1, and the access-restricted devices lost DNS on every round. Gatekeeper RETURNs router-redirected DNS (--ctstate DNAT --ctorigdstport 53); hook.sh computes its front position with the rwatch 3d classifier instead of -I 1; Warden's apply creates and refills its sets before the teardown and replays the cached feeds in one awk pass (chain absent for milliseconds instead of 17 s); rwatch 3c confirms on two ticks and heals under the firewall lock; a Service Intercept aimed at the DNS Health Check target is parked in REAPER_FWHC and fails open. A rule can no longer vanish silently: this iptables 1.4.x has no xtables lock, so every Gatekeeper and Warden add goes through a retry-once wrapper, failures are counted in /tmp/gk/failcount and /tmp/rwarden/failcount and named in the log, and gkd heal_lost_rules() re-applies when the count is not zero. The QoS L4S toggle and the Wi-Fi downstream (WMM) stamp are removed. reaper_fwsim picks its WAN-bound witness destination from a candidate list and gains H1b (is FORWARD actually jumping to SECURITY when fw_dos_x=1); httpd's status JSON carries dos_armed; the Firewall page dims the DoS toggle with the reason while the master switch is off (RFW_321). The Dashboard's own left rail marks its page current. Patches 0674-0680.",
+      "models_note": "Overlay overlap, in two passes because this rung was cut twice. Patches 0674-0678 touched 42 files, of which one - www/Main_ReaperDash.asp (the Dashboard rail's current-page marker) - is carried by every per-model overlay, because that page names the model's banner; all five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) were regenerated after the port, each by two banner lines, and pass the identity gate and the hidden-character scan. The two re-cut patches (0679-0680, rc/reaper_pbr.c and www/Reaper_Firewall.asp plus the 25 dictionaries) touch 27 files and overlap NO overlay: neither file is one of the seven banner-referencing pages, and a .dict may never appear in one - the siblings take both from the series. The dormant RT-BE92U overlay was not regenerated, the model having left the roster at v3.1.2. Nothing here touches a platform tree, the vendor WLCSM blob pair or the OpenSSL 3.5 archive, so both hash-pinned archives are unchanged. Sibling images come from the clean-room build; the RT-BE96U MCP image recorded under images is the locally built and metal-tested one.",
+      "channel": "beta",
+      "logs": {
+        "build": "provenance/logs/v3.1.9/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.9/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.1.8",
+      "firmware": "3006.102.8_Reaper_v3.1.8",
+      "build_commit": "c9772af6e5",
+      "source_tree": {
+        "release/src/router": "df21f7e1e57e68060d67c54e7727cec7ee51ad78",
+        "release/src-rt": "b442d8c72461eb59c29154ed64d0c39fe401e4a7"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "15cfd1fb256a1e2cf073aa203976517967b7b238",
+        "release/src-rt": "b442d8c72461eb59c29154ed64d0c39fe401e4a7"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.8_BETA_nand_squashfs.pkgtb",
+          "sha256": "1f01fb71f236ad8571728c730de670c3552e4b88aef5b3c9b07c8643fdb7f49d"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.8_BETA_nand_squashfs_loader.pkgtb",
+          "sha256": "ce366a072787d13f3daade6db0f61c340abcfb8982d654acc722e45200682522"
+        }
+      ],
+      "patch_count": 673,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-16",
+      "parent": "v3.1.7",
+      "summary": "The 'stuck nvram' fault gets the vendor's own fix: the libnvram.so and libwlcsm.so pair from ASUS stock 9.0.0.6.102_42015, taken unmodified, replaces the leaking copies in every model's platform tree (the series carries the RT-BE96U swap, the sibling branches carry their own, and CI takes the pair from the hash-pinned overlays/wlcsm-42015-blobs.tar.gz); the LD_PRELOAD shim is retired. The firewall table walker goes from v1.1 to v1.5 on three passes of field data: witness addresses are picked from what no source set claims, a model review over every connection class removes the remaining false reds and adds three false-green rows, and the whole surface is advisory by design (no watchdog failure, no rail badge, INFO in the diag). System Information is rebuilt as a native page that parses the status endpoints instead of executing them; the stock page is retired behind a redirect. The WireGuard policy-routing guide's 'refused' claim is corrected.",
+      "models_note": "Overlay overlap: this rung touches 41 files, of which two - www/Main_ReaperDash.asp and www/reaper_shell.asp - are carried by every per-model overlay. All five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) were regenerated after the port (two banner lines each) and pass the identity gate. The vendor WLCSM blob pair is NOT in any overlay: canon carries only router-sysdep.rt-be96u, so each sibling branch commits the pair on its own router-sysdep.<model> tree and the clean-room build copies it from overlays/wlcsm-42015-blobs.tar.gz over every router-sysdep.* copy after the platform archive and overlay. overlays/RT-BE92U.patch also overlaps but is deliberately frozen (that model left the roster after v3.1.2) and must not be applied to this tree.",
+      "logs": {
+        "build": "provenance/logs/v3.1.8/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.8/reaper_verify-rt-be96u.log"
+      },
+      "channel": "beta"
+    },
+    {
+      "version": "v3.1.7",
+      "firmware": "3006.102.8_Reaper_v3.1.7",
+      "build_commit": "c58cff89be",
+      "source_tree": {
+        "release/src/router": "0bf83e929ff9f326689de8212c7fa65ab253d79d",
+        "release/src-rt": "1d99c31700e6934a0edecc769fdaed8fa96ad6cf"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "37b6860b19d69424ae4c24a8996a8eb4c9596220",
+        "release/src-rt": "1d99c31700e6934a0edecc769fdaed8fa96ad6cf"
+      },
+      "images": [],
+      "patch_count": 671,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-15",
+      "parent": "v3.1.6",
+      "summary": "The firewall reports whether it is keeping its promises, and the report reaches the user without being sought. Adds the firewall table walker and its Rule Status tab (45 of 59 catalog checks, including the VPN kill switch, which is a routing rule and so needed a fourth input the walker did not previously read), a failing-check count on the nav rail, and a Security Posture card that refreshes itself when the clock is set instead of freezing at page load. Fixes a firewall restore that lost a race against a user nat-start script, a removed Gatekeeper device reappearing as pending, an 'Applying settings' dialogue that hung forever on VLAN changes, top talkers counting connections instead of conversations, and bare links rendering in browser-default blue.",
+      "models_note": "Overlay overlap: this rung touches 49 files, of which two - www/Main_ReaperDash.asp and www/reaper_shell.asp - are carried by every per-model overlay. All five roster overlays (RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000) were regenerated after the port and pass the identity gate. overlays/RT-BE92U.patch also overlaps but is NOT regenerated: that model left the roster after v3.1.2 and its overlay is deliberately frozen, so it must not be applied to this tree.",
+      "logs": {
+        "build": "provenance/logs/v3.1.7/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.7/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.1.6",
+      "firmware": "3006.102.8_Reaper_v3.1.6",
+      "build_commit": "fcff60a847",
+      "source_tree": {
+        "release/src/router": "a60a4b5a94d8f7ef362791dd0ada45d5d0e3aee3",
+        "release/src-rt": "c80102ad46f071b1c9af5d796d09035aa8b603d7"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "23960b46faeb166d507eaa0a9f30098ffc5a43c9",
+        "release/src-rt": "c80102ad46f071b1c9af5d796d09035aa8b603d7"
+      },
+      "images": [],
+      "patch_count": 669,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-13",
+      "parent": "v3.1.5",
+      "summary": "One refused firewall line no longer costs you the whole table, and a box in Access Point mode is a first-class box. Field data from the RT-BE88U report (review R15) showed a router running on start_default_filter()'s boot skeleton for two weeks - no port forwards, no VPN server chains - because iptables-restore is atomic and one line the kernel would not take discarded the whole filter table, with the restore's own error sent to /dev/null so nothing on the box could say which line; reaper_restore_rules() now keeps that output, names the refused line in syslog and applies the table without it, and rwatch + the diag report recognise the skeleton. The GT-BE19000 tester's write-up and diag arrived and the decisive fact was unstated in both: that box is in Access Point mode, and three of the four items were Reaper surfaces assuming a routing box, in code every model shares - the socket-buffer ceilings that start_firewall() returns before reaching, the dashboard client tiles filtering on a networkmap flag derived from leases and conntrack a bridging box does not have, and an Internet card deriving its verdict from wan0_state_t and painting a healthy router red. All three are fixed by operation mode rather than by model, so a routing box is unchanged. Also: Warden's outbound total survives its own statistics window, Policy Routing greys a Status cell that is not a live verdict, a duplicate log_level default is gone, and the inherited-component list had its third in-code pass - netatalk's remaining 2022 set (CVE-2022-23125, -45188, -23121) and Quagga CVE-2016-1245 closed, wpa_supplicant and lighttpd retired on what this build actually compiles. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to the five sibling branches - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000 - with port_sibling_v2 guards passing and dictionaries lockstep on each. Overlay overlap: this rung touches 12 files, one of which (release/src/router/www/Main_ReaperDash.asp) appears in every overlays/<MODEL>.patch. Regeneration found only blob-hash (index) line differences, which git apply never reads, so no overlay was rewritten; the identity gate passes on all six (GT-BE19000 12 files, GT-BE98 19, GT-BE98 Pro 24, RT-BE86U 13, RT-BE88U 21, RT-BE92U 11 - identity only). RT-BE92U stays dormant and off the port roster.",
+      "logs": {
+        "build": "provenance/logs/v3.1.6/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.6/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.1.5",
+      "firmware": "3006.102.8_Reaper_v3.1.5",
+      "build_commit": "1d9ab820f7",
+      "source_tree": {
+        "release/src/router": "b077d987f13bac167675b4d3cd1008bbc4774d2f",
+        "release/src-rt": "8c2e58c7f59c6806ed01ad1872b07460e87e7012"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "895dfaf4fba581749c653b460134c0d75aa12c9d",
+        "release/src-rt": "8c2e58c7f59c6806ed01ad1872b07460e87e7012"
+      },
+      "images": [],
+      "patch_count": 661,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-12",
+      "parent": "v3.1.4",
+      "summary": "Security review remediation (2026-09-12): sixteen items from an independent adversarial review, each re-verified in source. Inherited components: netatalk CVE-2022-43634 (Time Machine pre-auth overflow, 3.0.5 adaptation of the vendor fix), strongSwan CVE-2026-47895 (vendor patch), Tor 0.4.9.12, avahi CNAME trio (CVE-2025-68468/-68471, CVE-2026-24401), lighttpd CVE-2018-25103, net-snmp CVE-2022-44792/-44793. Reaper: Policy Routing failure paths (a Killswitch/enable change inside the confirm window is honoured; an uninstallable WireGuard bypass counts as a failure; ip rule adds are checked with intended counts per family; rules resolve their object - groups expand, geo/MAC refused with a reason); the Advisor arms its request clock before the TLS handshake; a malformed port-forward entry is dropped instead of aborting the atomic nat restore; OpenVPN certificate scripts export HOME so OpenSSL 3.x can write its RANDFILE; reaper_diag 1.3.15 section 14f. Also the reviewer round on Policy Routing: Target column = interface, a Status column, Killswitch counts only for an enabled client (VPN Director parity). Two release checks added (ovpn-pki, vts-emitter). NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
+      "models_note": "No overlay overlap: this rung touches 107 files, none in any overlays/<MODEL>.patch - the siblings pick it up from the series.",
+      "logs": {
+        "build": "provenance/logs/v3.1.5/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.5/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
+      "version": "v3.1.4",
+      "firmware": "3006.102.8_Reaper_v3.1.4",
+      "build_commit": "ed8759b58f",
+      "source_tree": {
+        "release/src/router": "2f51da57cfd562d349367f9b937fd3618344f843",
+        "release/src-rt": "deb8d063f0d5320454bfd6d100b162022663ac2c"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "769b26ecc9553d78facac9e13c8b9fe44623bca1",
+        "release/src-rt": "deb8d063f0d5320454bfd6d100b162022663ac2c"
+      },
+      "images": [],
+      "patch_count": 652,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-12",
+      "parent": "v3.1.3",
+      "summary": "An OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet. Since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate: pkitool put -extensions server on the certificate REQUEST, whose [server] section carries an authorityKeyIdentifier that cannot be computed without an issuer; OpenSSL 3.x refuses the request and the signing step is never reached. The extensions now go only on the signing call (openssl ca never copied request extensions), and the repair path keeps its output and names the failing stage. DDNS: a dual-WAN router with IPv6 only on the secondary WAN failed the per-WAN address test on every run, which cleared ddns_ipv6_updated, which kept the watchdog's early return from ever being taken - a 30 s restart loop for the life of the boot; it now records the state (ddns_ipv6_absent), stands down, and wan6_up() clears it. The EDNS Client Subnet option is removed end to end. GT-BE19000: the 46 missing per-model directories, radio firmware for both chips (6717a0 + 6726b0) from the non-AI vendor image after an AI-image misread was retracted, its own rtl8372 and platform archives, a derived 12-file identity overlay, reaper_verify 27/27, on the CI roster as a prerelease. cut_fleet's dict guard now references canon's previous version commit instead of a merge base frozen at v1.5.0d, so a deliberately deleted key no longer blocks every port.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to FIVE sibling branches - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and, for the first time, GT-BE19000 - with port_sibling_v2 guards passing and 0 unsynced shared files on every one; all 25 dicts byte-identical to canon on every branch (6729 keys, lockstep). No patch in 0649-0652 overlaps any overlays/<MODEL>.patch, so every sibling takes the rung from the series; all five overlays regenerated unchanged, including GT-BE19000's first one. New in overlays/ for this rung: GT-BE19000.patch (12 files), GT-BE19000-platform.tar.gz (1288 files, both radio blobs - the pinned upstream carries no router-sysdep.gt-be19000, as it carries none for GT-BE98) and uboot-rtl8372-GT-BE19000.tar.gz, each with its sha256."
+    },
+    {
+      "version": "v3.1.3",
+      "firmware": "3006.102.8_Reaper_v3.1.3",
+      "build_commit": "4046485fc8",
+      "source_tree": {
+        "release/src/router": "90ae38f8f9e4288dfcde94ad944155b735d1e4b9",
+        "release/src-rt": "631080c2b8f107e23520bcd638cbef1ce9542953"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "7a0a129577b5e375beb9ec53e768f3829be3ef7c",
+        "release/src-rt": "631080c2b8f107e23520bcd638cbef1ce9542953"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.3_BETA_r1_nand_squashfs.pkgtb",
+          "sha256": "f7666bba322c3e33c014d684cfa6bff4de80653eafd1954a5b9b731af00143ac"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.3_BETA_r1_nand_squashfs_loader.pkgtb",
+          "sha256": "f415ede73b15dfd31460c17d8008fd328dc14ddb9e9ebbe9a7e8f94ae14bae72"
+        }
+      ],
+      "patch_count": 648,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-11",
+      "parent": "v3.1.2",
+      "summary": "Your Killswitch decides, and the firewall watchdog stops fighting a rule you meant. Policy routing realised BLOCK as an unconditional lower-priority `prohibit`, so a rule whose target tunnel went down failed closed whatever vpn_clientN_enforce / wgcN_enforce said on that client's own page - two answers to one question, and a disagreement with VPN Director on the same router. P3 in rc/reaper_pbr.c now reads the switch per target: on keeps the `prohibit`, off omits it and the traffic falls back to the WAN. BLOCK is still realised solely as `prohibit`; nothing else in rule generation moves. Saving a Killswitch restarts vpnrouting, so that restart calls the new reaper_pbr_regen(), which regenerates the COMMITTED rules in place - deliberately not start_reaper_pbr(), which unlinks the draft and would discard an apply still awaiting confirmation. Metal (RT-BE96U, 2026-09-11): wgc5_enforce=0 gives `9010 lookup wgc5` alone with `ip route get 1.1.1.1 mark 0xa0000` via the WAN; =1 adds `9110 prohibit` and the same command is denied - both from the nvram toggle plus `service start_vpnrouting0`, with no Policy Routing apply. Reaper_VPNRouting.asp stops claiming fail-closed for everything: the CGI reports each client's Killswitch (wks/oks), the chip on a rule whose client is off says blocked or using the WAN, the Target column names the interface, a LAN-wide accel bypass is badged, and Apply holds its overlay until the Keep / Revert bar takes over. rwatch section 3d required REAPER_HOOK_F at position 1 and re-pinned it every ten minutes; on a real network a LAN->filter DNS carve-out has to sit in front of it or Gatekeeper's per-device DROPs take DNS from every restricted device, and the two fought for 700 minutes (metal, v3.1.2, 2026-09-10). 3d now classifies what is ahead: a terminal target cannot bypass us; a user chain or a bare ACCEPT/RETURN is tolerated only when it narrows to a port or destination (`-s` deliberately does not count - restricting who may pass does not restrict what they reach); a chain that does not exist is broad, because unknown is not safe; and a chain named in /jffs/reaper/front_exempt is declared outright (a file, not an nvram list, which truncates silently at 1 KB here). Tolerated company logs once per state change and is never repaired; real drift still fails, and after two re-pins that did not stick the third names the file that ends it and stops. Confirmed on the same box and the same rmcpd_lab rule that raised a FAILURE on v3.1.2. reaper_diag reaches v1.3.14 with six counters corrected, each reproduced on metal 2026-09-10: conntrack re-read the live table per figure (405 entries against 510 by protocol) and now takes one snapshot; the syslog section counted the USB mirror and its source as two logs (12,360 lines against 5,634 distinct, ~2.2x on every count in the section) and counted the lab MCP's `exec:` echo of the operator's own commands (2 panics on a box with none); 'boots in span' counted syslogd starts, which a service cascade produces without a reboot, and is replaced by /proc/uptime - the only boot marker this RTC-less hardware has - with the syslogd figure labelled for what it counts; the panic pattern matched a bare case-insensitive 'Oops'; /proc/sys/kernel/tainted was printed raw although it is a bitmask (4097 = two flags); and RW_FDROP left the chain-counter list, since forward drops share RW_DROP by design and the probe reported it absent on every healthy box. Also in this rung: the Administration tab is renamed DNS Failover; the EDNS Client Subnet help text states that the complete client address is attached at receive time, before an upstream is chosen, so it reaches any public fallback used while the owner's filter is down; the two silent overrule paths in start_reaper_pbr() log when the file store and nvram genuinely differ; and the generated /tmp/rwatch.sh ends in an explicit `exit 0` instead of leaking the status of a log-rotation test that is false on any mirror under 8 MB. NO IMAGES YET in this entry - it records the source rung; image hashes are added when the build ships.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to the four sibling branches - RT-BE86U, RT-BE88U, GT-BE98 and GT-BE98 Pro - with port_sibling_v2 guards passing and 0 unsynced shared files against canon on every branch; 16 shared files synced per model and the 25 dictionaries are in lockstep at 6920 lines on all five. The RT-BE92U is NOT in this rung: it left the roster after v3.1.2 (upstream Merlin has taken that model on), so its branch, worktree and overlays/RT-BE92U.patch stay dormant and frozen against v3.1.2 - re-adding it means porting first and regenerating its overlay, never applying the frozen one to a later tree. Overlay overlap: this rung touches 35 files and none of them appears in any overlays/<MODEL>.patch, so no overlay needed regenerating and all five re-passed the identity gate unchanged (RT-BE92U 11 files, RT-BE86U 13, GT-BE98 19, RT-BE88U 21, GT-BE98 Pro 24). The hidden-character scan is clean over both the 5 new patches (35 files, 776 lines) and the 5 overlays (34 files, 4613 lines). Only the RT-BE96U is built locally; the siblings and the noMCP variant are assembled by the public CI clean room from this series plus their overlays.",
+      "logs": {
+        "build": "provenance/logs/v3.1.3/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.3/reaper_verify-rt-be96u.log"
+      },
+      "channel": "beta",
+      "images_note": "The ladder already held an unmarked v3.1.3_BETA image built 2026-09-10 23:20, before the policy-routing and rwatch corrections that finished this rung, so the ship step staged today's build under the next free _r1 rather than overwriting it. The _r1 pair is THIS rung's image - built from 4046485fc8, reaper_verify 27/27 - and the earlier one is kept only because the ladder never overwrites. Do not read the unmarked name as the newer image."
+    },
+    {
+      "version": "v3.1.2",
+      "firmware": "3006.102.8_Reaper_v3.1.2",
+      "build_commit": "cae375e18f",
+      "source_tree": {
+        "release/src/router": "587d7409d803778115c159026af0480a79952c61",
+        "release/src-rt": "58963c93411075aa52f2accd4b80b1cb5572aa66"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "7adfbffc056f84c490b49893c36460120cf420c3",
+        "release/src-rt": "58963c93411075aa52f2accd4b80b1cb5572aa66"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.2_BETA_nand_squashfs.pkgtb",
+          "sha256": "eaff0d630449849f0cb53cdeea24853c932b8a93e65ea43f731d4f13e5d11add"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.2_BETA_nand_squashfs_loader.pkgtb",
+          "sha256": "48c4aee6a6c2ea2f1ed9b890bed47539412984854fdf57a45c433b2e4a46edb0"
+        }
+      ],
+      "patch_count": 643,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-10",
+      "parent": "v3.1.1",
+      "summary": "A WireGuard policy rule that no longer reboots the router, and a pre-release that says it is one. Broadcom's skip_wg_network and biqos /proc read handlers sprintf() into the char __user * buffer they are handed; with CONFIG_ARM64_PAN and CONFIG_PANIC_ON_OOPS that store faults and panics, so the router restarted about five seconds after Apply and Confirm. An empty table never reaches the sprintf and stock only ever writes these files, so the fault needed a reader with an entry present - pbr_skip_add in rc/reaper_pbr.c, only for a WGC target, which is exactly why OpenVPN, WAN and Block rules were unaffected and why rwatch's five-minute re-run turned one rule into a loop. Both read handlers now use simple_read_from_buffer(); both write handlers bound copy_from_user against the destination (128 bytes of kernel stack, previously unbounded) and NUL-terminate, and the 675x write no longer indexes tbuf[minsize+1] on a char[4]. Fixed in both platform trees and on all six models, with a new wg-blog-proc static check because the file sits outside release/src/router and the fix leaves no string a verify marker could pin. Also in this rung: every build is stamped _BETA in EXTENDNO unless built as `stable`, per variant, and the ship step stages a differing image under the next free _rN instead of skipping; rwatch 3d/3e add a chain-integrity watchdog (RW_DROP/RW_ODROP/RW_SDROP must end in DROP with no ACCEPT or RETURN; REAPER_HOOK/_F/_O re-pinned to position 1 under the firewall lock) and log which of the four causes of Warden outbound silence is in effect; the Firewall Logging viewer's classOf() tells WARDEN, WARDEN-OUT and WARDEN-SELF apart again and its table heads match its cells; the Addons rail item navigates instead of unfolding; DoT servers gain an optional strict failover order; and the resolver health check carries both an IPv6 and an IPv4 address for the server it watches. Two tree-hygiene commits are in the series' range but carry no code: 95a1ee8ac3 had been made from a warm build tree and added 10,110 build-output files across some fifty vendored packages, which took overlays/openssl-3.5-source.tar.gz from 50 MB to 108 MB (past GitHub's 100 MB limit) and would have exported a 217 MB patch. The accidental adds were removed before the export, so the archive is back to its 5,767 source files and 50 MB and the openssl-3.5 tree id is once again the one v3.1.1 shipped; a scoped .gitignore keeps that directory's build output untracked. Built RT-BE96U MCP/nand locally; the sibling models and the noMCP variant are assembled by the public CI clean room from this series and the per-model overlays.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to all five siblings - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and the experimental RT-BE92U - with port_sibling_v2 guards passing and 0 unsynced shared files against canon on every branch; the 25 dictionaries are in lockstep at 6913 lines on all six. The kernel fix is the exception to the usual port: blog.c sits outside release/src/router, which is what a port copies, so it was applied to each branch's own two platform trees directly and verified per worktree as exactly +2 files. CI siblings take it from the series, which does carry it. Overlay overlap: this rung touches 40 files, of which three - www/Main_ReaperDash.asp, www/reaper_shell.asp and www/state.js - are carried by every model overlay, so all five were regenerated, each 2 substantive lines, and re-passed the identity gate as identity-only (RT-BE92U 11 files, RT-BE86U 12, GT-BE98 18, RT-BE88U 20, GT-BE98 Pro 23). The hidden-character scan is clean over both the 7 new patches (40 files, 983 lines) and the 5 regenerated overlays (33 files, 4609 lines) - it is what refused the first two attempts at this cut, over the control bytes autotools embeds in the generated files that commit had swept in. Only the RT-BE96U is built locally; the siblings are assembled by the public CI clean room from this series plus their overlays.",
+      "logs": {
+        "build": "provenance/logs/v3.1.2/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.2/reaper_verify-rt-be96u.log"
+      },
+      "channel": "beta"
+    },
+    {
+      "version": "v3.1.1",
+      "firmware": "3006.102.8_Reaper_v3.1.1",
+      "build_commit": "8cbe2ca164",
+      "source_tree": {
+        "release/src/router": "f5cc1e08cb0151ec59fd9347c4a65191154fb161",
+        "release/src-rt": "f62932a6b57859e9c6ffe6f5e092ad4755217357"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "74d47fc59b9b92868f0ce13632919487158d34b1",
+        "release/src-rt": "f62932a6b57859e9c6ffe6f5e092ad4755217357"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.1_nand_squashfs.pkgtb",
+          "sha256": "976b98a55e61bcee468cfd8600885841131f4ce62458cb5dc887c0a521c982f3"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.1.1_nand_squashfs_loader.pkgtb",
+          "sha256": "bb07bd4f316802a4de8ecf0ec24102e293f181fbfe344a4b973c2181151dbe1c"
+        }
+      ],
+      "patch_count": 636,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-08",
+      "parent": "v3.1.0",
+      "summary": "A standby for the router's DNS list, and an OpenVPN certificate that survives a save. The Reaper resolver health check watches one LAN DNS server with a real query and, after a run of misses, moves it to the end of dnsmasq's upstream list and reloads; after a run of hits it puts it back first - so a filter such as AdGuard Home or Pi-hole can be the only DNS the router hands out without its outage becoming the whole network's. It gets its own Failover tab under Administration, beside three dnsmasq switches that previously needed a config-add file (strict upstream order, EDNS Client Subnet, router cache off). The health check takes an IPv6 server while IPv6 is enabled. Also in this rung: set_ovpn_key() no longer treats an empty GUI field as a delete instruction - the defect that silently destroyed a working OpenVPN server certificate on an unrelated save, unrecoverably, because the firmware only regenerates when the CA, key and cert are ALL absent - and a server found with its CA intact and its certificate missing now rebuilds only the server leaf from that CA, verified against it before install, so deployed client profiles stay valid. The firmware page's overlay escape button is a real Cancel during an upload and is withdrawn once every byte is sent. Gatekeeper resolves a multi-link client through the live list's mld_mac field, so a 6 GHz client is no longer shown as Wired or as two rows, and a band cached once and gone stale is corrected from this router's own view only. A device whose hostname dnsmasq gave to another one is no longer Unknown device: the lease script records each announced name per MAC, with a vendor-label fallback. The dashboard rail clock keeps its crimson seconds. Built RT-BE96U MCP/nand locally (reaper_verify 25 pass / 0 warn / 0 fail); the sibling models and the noMCP variant are assembled by the public CI clean room from this series and the per-model overlays.",
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to all five siblings - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and the experimental RT-BE92U - with port_sibling_v2 guards passing and 0 unsynced shared files against canon on every branch; the 25 dictionaries are in lockstep at 6907 lines on all six. Overlay overlap: this rung touches 49 files, of which one, www/Main_ReaperDash.asp, is carried by every model overlay (the dashboard rail-clock fix), so all five overlays were regenerated - each 2 substantive lines - and re-passed the identity gate as identity-only (RT-BE86U 12 files, RT-BE92U 11, GT-BE98 18, RT-BE88U 20, GT-BE98 Pro 23). The hidden-character scan is clean over both the 16 new patches (49 files, 3744 lines) and the 5 regenerated overlays (33 files, 4609 lines). Only the RT-BE96U is built locally; the siblings are assembled by the public CI clean room from this series plus their overlays.",
+      "logs": {
+        "build": "provenance/logs/v3.1.1/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.1.1/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v3.1.0",
       "firmware": "3006.102.8_Reaper_v3.1.0",
       "build_commit": "f915d6ed81",

@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
@@ -21,6 +21,39 @@ The buildable tree (Asuswrt-Merlin base + proprietary Broadcom/ASUS prebuilts)
 is not in this repository — CI reconstructs the *source* from `patches/` and
 pulls the pinned toolchain/prebuilts at build time.
 
+### Channel: every build says whether it is a beta
+
+Added 2026-09-10, because people downloading from `Dev` and from `main` could
+not tell the two apart once the file was on disk.
+
+```
+build_be96u.sh ship            ->  ..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb
+build_be96u.sh ship stable     ->  ..._Reaper_v3.1.2_nand_squashfs.pkgtb
+```
+
+**Beta is the default.** Under the flow below, an image only becomes stable once
+`Dev` is PR-merged into `main`, so every local build and every `Dev` build
+genuinely *is* a pre-release — beta is the honest default, not just the cautious
+one. It is also the only arrangement in which forgetting the word cannot hurt:
+forget it on a `Dev` build and the image is still labelled correctly; forget it
+on a PROD cut and you get a `_BETA` name you notice at once. An opt-*in* marker
+fails the other way round, silently.
+
+The marker is stamped into `EXTENDNO`, which is what the image filename, the
+dashboard version pill, the About page, the stock Firmware Upgrade page and the
+provenance record all derive from — so there is no second place to keep in step.
+It is uppercase on purpose: it exists to be spotted in a directory listing by
+someone who is not going to open anything, and `_BETA` is the only uppercase run
+in an otherwise mixed-case name.
+
+`_BETA` and not `-BETA`: `reaper_webs_update.sh` derives the running version
+with `sed 's/_.*//'`, so an underscore-separated suffix is already stripped by
+shipped machinery — the same way `_noMCP` is — while a hyphen would land inside
+the number it parses. The update *manifest's* own beta channel keeps its
+`-beta` spelling; that is a different field.
+
+`REAPER_BETA=0` in the environment is the same as passing `stable`.
+
 ## Cutting a rung
 
 A "rung" is one source release: the patches plus the four artifacts that keep
@@ -40,7 +73,7 @@ or a release with no reproducible provenance.
 One command does all five, plus the sibling fan-out:
 
 ```bash
-./build-scripts/cut_fleet.sh --version v2.3.4
+../asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh --version v2.3.4   # maintainer tooling, outside this repo
 ```
 
 `cut_fleet.sh` is the entry point. Its preflight checks the documentation's
@@ -48,7 +81,7 @@ marked claims against the repo and aborts on a mismatch — milliseconds, and it
 runs before anything is exported, so a stale doc is a five-second fix rather than
 something noticed after the rung is pinned. It then runs `cut_rung.sh` (the five
 artifacts above), then ports the rung onto the five sibling branches (RT-BE86U,
-RT-BE88U, GT-BE98, GT-BE98 Pro and the RT-BE92U), then handles the
+RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order
@@ -88,7 +121,10 @@ Two source-tree hashes are recorded per release, and they are not the same:
 - `source_tree_from_series` — what `git am --keep-cr patches/[0-9]*.patch` (then unpacking
   `overlays/openssl-3.5-source.tar.gz`, as `cut_rung.sh` step 5 and CI both do) onto
   the pinned base yields. **This is what CI computes and compares**, so this is
-  the one that must be right.
+  the one that must be right. (The vendor WLCSM blob pair in
+  `overlays/wlcsm-42015-blobs.tar.gz` lives under `release/src-rt-5.04behnd.4916`,
+  outside both hashed trees; CI copies it over every model's platform copy after
+  the overlay and asserts the model's own tree carries both files.)
 
 They differ only by three vendored `openssh-sftp` `*.md` files that the series'
 doc-hunk exclusion strips. `cut_rung.sh` asserts that nothing else differs — if
@@ -203,6 +239,27 @@ v2.4.1 while the siblings catch up on the fan-out).
 - **Hygiene failure on push:** the annotation names the file. A PII hit inside
   `patches/` means fixing the source commit message and re-exporting — do not
   just add the path to the allowlist.
+
+## Release retention
+
+GitHub Releases is a download store, not the archive. The archive is the git
+tag: the patch series, the pinned base and `provenance/manifest.json`'s build
+commit for that version all live there, so the source correspondence for any
+version ever published survives the deletion of its release page. Releases are
+kept by this rule and nothing else:
+
+1. **Every release the live update manifest references** —
+   `updates/manifest_3006.txt` on `main`: the stable line and the advertised
+   beta line. A fielded router downloads from exactly these tags; deleting one
+   breaks that model's update until the next publish.
+2. **The previous stable line**, as the rollback target.
+3. Betas are disposable the moment the next beta or their stable ships.
+
+`prune_releases.sh` (maintainer tooling, outside this repo) derives the keep-set from the live manifest,
+prints the plan, and deletes only with `--yes`, one release at a time and
+**never with `--cleanup-tag`** — tags are never deleted. It needs `gh auth login`
+as the repository owner. First applied 2026-09-12: 166 releases (28 versions,
+~26 GB of assets, most of them the daily rungs of August) trimmed to 18.
 
 ## Notes
 

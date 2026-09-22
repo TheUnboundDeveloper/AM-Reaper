@@ -1,0 +1,128 @@
+From 235001a438d5fca19ac6050a9143684d064a1d6d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 18:57:44 -0400
+Subject: [PATCH] netatalk: bound the Desktop DB appl reads, and refuse a bogus
+ AppleDouble header (CVE-2022-23125, CVE-2022-45188, CVE-2022-23121)
+
+copyapplfile() and afp_getappl() each took a 16-bit length straight off the appl file and handed it to read() at an offset into a fixed buffer - MAXPATHLEN on the stack and obj->oldtmp on the heap respectively - with nothing checking it fit. parse_entries() allowed its own bounds test to wrap (off + len are both uint32_t), and logged-and-skipped a rejected entry while the caller carried on with a header it believed had parsed; it now reports the refusal and all three call sites fail the read. The ADEID_RFORK exemption is untouched - resource forks legitimately run past ad_data.
+
+Closes the 2022 pre-authentication set opened by CVE-2022-43634 in v3.1.5. Reachable only with AFP (Time Machine) switched on.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ .../src/router/netatalk-3.0.5/etc/afpd/appl.c |  8 ++++
+ .../netatalk-3.0.5/libatalk/adouble/ad_open.c | 37 +++++++++++++++----
+ 2 files changed, 37 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/netatalk-3.0.5/etc/afpd/appl.c b/release/src/router/netatalk-3.0.5/etc/afpd/appl.c
+index f53803e0df..8de0314672 100644
+--- a/release/src/router/netatalk-3.0.5/etc/afpd/appl.c
++++ b/release/src/router/netatalk-3.0.5/etc/afpd/appl.c
+@@ -96,6 +96,10 @@ static int copyapplfile(int sfd, int dfd, char *mpath, u_short mplen)
+         memcpy( &len, p, sizeof(len));
+         len = ntohs( len );
+         p += sizeof( len );
++        if ( len > sizeof( buf ) - (size_t)( p - buf )) {
++            cc = -1;
++            break;
++        }
+         if (( cc = read( sa.sdt_fd, p, len )) < len ) {
+             break;
+         }
+@@ -414,6 +418,10 @@ int afp_getappl(AFPObj *obj, char *ibuf, size_t ibuflen _U_, char *rbuf, size_t
+         memcpy( &len, p, sizeof( len ));
+         len = ntohs( len );
+         p += sizeof( u_short );
++        if ( len > sizeof( obj->oldtmp ) - (size_t)( p - buf )) {
++            cc = -1;
++            break;
++        }
+         if (( cc = read( sa.sdt_fd, p, len )) < len ) {
+             break;
+         }
+diff --git a/release/src/router/netatalk-3.0.5/libatalk/adouble/ad_open.c b/release/src/router/netatalk-3.0.5/libatalk/adouble/ad_open.c
+index 06c3c71e49..f597580eb8 100644
+--- a/release/src/router/netatalk-3.0.5/libatalk/adouble/ad_open.c
++++ b/release/src/router/netatalk-3.0.5/libatalk/adouble/ad_open.c
+@@ -390,10 +390,11 @@ static int new_ad_header(struct adouble *ad, const char *path, struct stat *stp,
+ /* -------------------------------------
+    read in the entries
+ */
+-static void parse_entries(struct adouble *ad, char *buf, uint16_t nentries)
++static int parse_entries(struct adouble *ad, char *buf, uint16_t nentries)
+ {
+     uint32_t   eid, len, off;
+     int        warning = 0;
++    int        ret = 0;
+ 
+     /* now, read in the entry bits */
+     for (; nentries > 0; nentries-- ) {
+@@ -410,14 +411,21 @@ static void parse_entries(struct adouble *ad, char *buf, uint16_t nentries)
+         if (eid
+             && eid < ADEID_MAX
+             && off < sizeof(ad->ad_data)
+-            && (off + len <= sizeof(ad->ad_data) || eid == ADEID_RFORK)) {
++            && (len <= sizeof(ad->ad_data) - off || eid == ADEID_RFORK)) {
+             ad->ad_eid[ eid ].ade_off = off;
+             ad->ad_eid[ eid ].ade_len = len;
+-        } else if (!warning) {
+-            warning = 1;
+-            LOG(log_warning, logtype_ad, "parse_entries: bogus eid: %d", eid);
++        } else {
++            /* CVE-2022-23121: a rejected entry was logged and skipped, leaving
++             * the caller to carry on with a header it believed had parsed. */
++            ret = -1;
++            if (!warning) {
++                warning = 1;
++                LOG(log_warning, logtype_ad, "parse_entries: bogus eid: %u off: %u len: %u",
++                    eid, off, len);
++            }
+         }
+     }
++    return ret;
+ }
+ 
+ /* this reads enough of the header so that we can figure out all of
+@@ -475,7 +483,11 @@ static int ad_header_read(const char *path _U_, struct adouble *ad, const struct
+     /* figure out all of the entry offsets and lengths. if we aren't
+      * able to read a resource fork entry, bail. */
+     nentries = len / AD_ENTRY_LEN;
+-    parse_entries(ad, buf, nentries);
++    if (parse_entries(ad, buf, nentries) != 0) {
++        LOG(log_error, logtype_ad, "ad_header_read: bogus entry in AppleDouble header.");
++        errno = EIO;
++        return -1;
++    }
+     if (!ad_getentryoff(ad, ADEID_RFORK)
+         || (ad_getentryoff(ad, ADEID_RFORK) > sizeof(ad->ad_data))
+         ) {
+@@ -595,7 +607,11 @@ static int ad_header_read_osx(const char *path _U_, struct adouble *ad, const st
+     }
+ 
+     nentries = len / AD_ENTRY_LEN;
+-    parse_entries(&adosx, buf, nentries);
++    if (parse_entries(&adosx, buf, nentries) != 0) {
++        LOG(log_error, logtype_ad, "ad_header_read_osx: bogus entry in AppleDouble header.");
++        errno = EIO;
++        return -1;
++    }
+ 
+     if (ad_getentryoff(&adosx, ADEID_RFORK) == 0
+         || ad_getentryoff(&adosx, ADEID_RFORK) > sizeof(ad->ad_data)
+@@ -662,7 +678,12 @@ static int ad_header_read_ea(const char *path, struct adouble *ad, const struct
+     }
+ 
+     /* Now parse entries */
+-    parse_entries(ad, buf + AD_HEADER_LEN, nentries);
++    if (parse_entries(ad, buf + AD_HEADER_LEN, nentries) != 0) {
++        LOG(log_error, logtype_ad, "ad_header_read_ea(\"%s\"): bogus entry in metadata EA",
++            fullpathname(path));
++        errno = EINVAL;
++        EC_FAIL;
++    }
+ 
+     if (nentries != ADEID_NUM_EA
+         || !ad_entry(ad, ADEID_FINDERI)
+-- 
+2.25.1
+

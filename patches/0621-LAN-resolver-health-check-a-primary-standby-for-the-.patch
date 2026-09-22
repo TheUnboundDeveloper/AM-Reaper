@@ -1,0 +1,1461 @@
+From c64501ba8e85bafb21deb3ec782d31fc76ce1d3b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 6 Sep 2026 20:12:37 -0400
+Subject: [PATCH] LAN resolver health check: a primary/standby for the router's
+ DNS list, and a strict-order switch
+
+dnsmasq keeps no memory of an upstream that stopped answering: in strict
+order every fresh query starts at the first server again, only a client
+retransmission moves it along, and its own fast retries (on with DNSSEC)
+re-send to the same server. A LAN resolver such as AdGuard going silent
+therefore costs a client timeout per uncached name, and a client that lists
+the router second needs three attempts before dnsmasq's second server
+answers - past dnsmasq's 10-s query lifetime on Linux/Android.
+
+rc/rdnshc.c (applet rdnshc, started from start_services in router mode,
+restart_rdnshc from the page): probes one named IPv4 server with a real A
+query every reaper_dnshc_interval s (timeout reaper_dnshc_timeout ms; any
+reply counts unless reaper_dnshc_strict). After reaper_dnshc_fail misses it
+moves that server's lines to the end of /tmp/resolv.dnsmasq and
+/tmp/resolv.conf under the resolv lock and reloads dnsmasq; after
+reaper_dnshc_recover hits it rebuilds both through update_resolvconf() and
+reloads. Re-asserts every tick while demoted (wan_up and the VPN clients
+rewrite the file), adopts a demotion across a restart (/tmp/rdnshc.state),
+restores when switched off or retargeted, logs every transition, publishes
+"up|down <s> <alive>" in reaper_dnshc_state. Not wanduck's dns_probe, which
+resolves through the router and only feeds WAN state.
+
+services.c: strict-order emitted in the main dnsmasq config behind
+reaper_dns_strict. defaults.c: the nine keys. Advanced_System_Content.asp:
+a "Reaper resolver health check" block right under the stock Network
+Monitoring row, with its own explanation of the difference, the eight
+fields, a live Status line, and an "Upstream order" row for strict-order;
+its own init (inline + load listener) so a stock init failure cannot hide
+it; restart_rdnshc / restart_dnsmasq appended to the apply only when our
+fields changed. RDHC_1-19 in all 25 packs, translated.
+
+Gates: static checks 11/11, langcheck 0, csrfcheck 0, page JS parses,
+cppcheck quiet, dicts lockstep 6886; mock-previewed.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile                |   3 +
+ release/src/router/rc/rc.c                    |   2 +
+ release/src/router/rc/rc.h                    |   3 +
+ release/src/router/rc/rdnshc.c                | 395 ++++++++++++++++++
+ release/src/router/rc/services.c              |  15 +
+ release/src/router/shared/defaults.c          |  10 +
+ .../router/www/Advanced_System_Content.asp    | 146 ++++++-
+ release/src/router/www/BR.dict                |  19 +
+ release/src/router/www/CN.dict                |  19 +
+ release/src/router/www/CZ.dict                |  19 +
+ release/src/router/www/DA.dict                |  19 +
+ release/src/router/www/DE.dict                |  19 +
+ release/src/router/www/EN.dict                |  19 +
+ release/src/router/www/ES.dict                |  19 +
+ release/src/router/www/FI.dict                |  19 +
+ release/src/router/www/FR.dict                |  19 +
+ release/src/router/www/HU.dict                |  19 +
+ release/src/router/www/IT.dict                |  19 +
+ release/src/router/www/JP.dict                |  19 +
+ release/src/router/www/KR.dict                |  19 +
+ release/src/router/www/MS.dict                |  19 +
+ release/src/router/www/NL.dict                |  19 +
+ release/src/router/www/NO.dict                |  19 +
+ release/src/router/www/PL.dict                |  19 +
+ release/src/router/www/RO.dict                |  19 +
+ release/src/router/www/RU.dict                |  19 +
+ release/src/router/www/SL.dict                |  19 +
+ release/src/router/www/SV.dict                |  19 +
+ release/src/router/www/TH.dict                |  19 +
+ release/src/router/www/TR.dict                |  19 +
+ release/src/router/www/TW.dict                |  19 +
+ release/src/router/www/UK.dict                |  19 +
+ 32 files changed, 1048 insertions(+), 1 deletion(-)
+ create mode 100644 release/src/router/rc/rdnshc.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 02b7c2e4cf..72b3411809 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -451,6 +451,8 @@ OBJS += reaper_pbr.o
+ # reaper v1.8.8: watchdog - WAN/DNS/Warden/accelerator health probe -> syslog
+ OBJS += rwatch.o
+ OBJS += amaspark.o
++# reaper v3.1.1: LAN resolver health check (primary/standby for dnsmasq's upstream list)
++OBJS += rdnshc.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+ OBJS += rexport.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+@@ -1792,6 +1794,7 @@ endif
+ # nothing - which is exactly what happened from v2.7.3 to v3.0.0.
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_lockrun
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc amaspark
++	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
+ 
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc free_caches
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc get_phy_status
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 78660b025f..d4e31386b0 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3099,6 +3099,8 @@ static const applets_t applets[] = {
+ 	{ "reaper_lockrun",		reaper_lockrun_main			},
+ 	/* v3.0.8: park the AiMesh backhaul carriers while no node is paired (rc/amaspark.c) */
+ 	{ "amaspark",			amaspark_main				},
++	/* v3.1.1: LAN resolver health check - demote a silent upstream, restore it when it answers (rc/rdnshc.c) */
++	{ "rdnshc",			rdnshc_main				},
+ 	{ "console",			console_main				},
+ #ifdef DEBUG_RCTEST
+ 	{ "rc",				rctest_main				},
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 69fb658730..713448922f 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3032,6 +3032,9 @@ extern void start_rwatch(void);
+ extern int amaspark_main(int argc, char *argv[]);	/* v3.0.8: AiMesh backhaul parking daemon (rc/amaspark.c) */
+ extern void start_amaspark(void);
+ extern void stop_amaspark(void);
++extern int rdnshc_main(int argc, char *argv[]);	/* v3.1.1: LAN resolver health check daemon (rc/rdnshc.c) */
++extern void start_rdnshc(void);
++extern void stop_rdnshc(void);
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+new file mode 100644
+index 0000000000..e9132e770a
+--- /dev/null
++++ b/release/src/router/rc/rdnshc.c
+@@ -0,0 +1,395 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ *
++ * reaper v3.1.1: LAN resolver health check - a primary/standby the resolver
++ * itself does not have.
++ *
++ * dnsmasq (2.93 here) keeps no memory of an upstream that stopped answering.
++ * In strict-order mode every fresh query starts at the first server again and
++ * only a CLIENT retransmission moves a query to the next one; dnsmasq's own
++ * fast retries (on with DNSSEC) re-send to the same server; silence is never
++ * treated as failure, only SERVFAIL/REFUSED is. So with a LAN resolver such as
++ * AdGuard or Pi-hole listed first and a WAN resolver second, an outage of the
++ * LAN box costs every uncached name a client timeout (1 s on Windows, 5 s on
++ * Linux/Android), and a client that also lists the router second needs THREE
++ * attempts before dnsmasq's second server answers - which on Linux/Android
++ * can outlive dnsmasq's 10-s query lifetime and fail outright.
++ *
++ * This daemon probes ONE server the admin names (nvram reaper_dnshc_target)
++ * with a real DNS query every reaper_dnshc_interval seconds. After
++ * reaper_dnshc_fail consecutive misses it moves that server's lines to the END
++ * of /tmp/resolv.dnsmasq (dnsmasq's servers-file) and /tmp/resolv.conf (the
++ * router's own libc resolver) and reloads dnsmasq, so the first server tried
++ * is one that answers. After reaper_dnshc_recover consecutive hits it rebuilds
++ * both files through the firmware's own writer, update_resolvconf(), which
++ * restores the stock order, and reloads again. While demoted it re-asserts
++ * the order every tick, because wan_up() and the VPN clients rewrite the file
++ * whenever they feel like it. Every transition is one syslog line.
++ *
++ * NOT the ASUS "Network Monitoring" DNS probe (wanduck): that one resolves a
++ * name THROUGH the router to decide whether the WAN counts as connected, and
++ * feeds nothing but WAN state and dual-WAN failover.
++ *
++ * Runs as an rc applet (/sbin/rdnshc -> rc), started from start_services()
++ * in router mode; restart_rdnshc is the service the System page fires. The
++ * daemon keeps running while the feature is off (one nvram read every 30 s)
++ * so a disable restores the stock order through the same path as a recovery.
++ */
++#include "rc.h"
++#include <signal.h>
++#include <errno.h>
++#include <sys/socket.h>
++#include <sys/select.h>
++#include <sys/time.h>
++#include <sys/sysinfo.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#ifdef RTCONFIG_MULTILAN_CFG
++#include "sdn.h"
++#endif
++
++#define HC_TAG		"rdnshc"
++#define HC_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
++#define HC_STATE	"/tmp/rdnshc.state"	/* "<target>" while demoted, so a restart adopts it */
++#define HC_DNSMASQ	"/tmp/resolv.dnsmasq"
++#define HC_RESOLV	"/tmp/resolv.conf"
++#define HC_MAXLINES	256
++#define HC_LINE		256
++
++struct hc_cfg {
++	int enable;
++	char target[INET_ADDRSTRLEN];
++	char name[128];
++	int interval;		/* s */
++	int timeout_ms;
++	int fail;
++	int recover;
++	int strict;		/* 1 = a reply must be NOERROR with at least one record */
++};
++
++static volatile sig_atomic_t g_stop;
++static void on_sig(int s) { (void)s; g_stop = 1; }
++
++static long now_s(void)
++{
++	struct sysinfo si;
++	return sysinfo(&si) == 0 ? (long)si.uptime : (long)time(NULL);
++}
++
++static int clamp(int v, int lo, int hi, int dflt)
++{
++	if (v == 0) return dflt;
++	return v < lo ? lo : (v > hi ? hi : v);
++}
++
++static void cfg_read(struct hc_cfg *c)
++{
++	const char *p;
++	struct in_addr a;
++	size_t i;
++
++	memset(c, 0, sizeof(*c));
++	c->enable = nvram_get_int("reaper_dnshc_enable");
++	p = nvram_safe_get("reaper_dnshc_target");
++	if (*p && inet_pton(AF_INET, p, &a) == 1)
++		strlcpy(c->target, p, sizeof(c->target));
++	p = nvram_safe_get("reaper_dnshc_name");
++	strlcpy(c->name, (*p ? p : "localhost"), sizeof(c->name));
++	for (i = 0; c->name[i]; i++) {
++		char ch = c->name[i];
++		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_')) {
++			strlcpy(c->name, "localhost", sizeof(c->name));
++			break;
++		}
++	}
++	c->interval = clamp(nvram_get_int("reaper_dnshc_interval"), 3, 300, 10);
++	c->timeout_ms = clamp(nvram_get_int("reaper_dnshc_timeout"), 200, 5000, 1000);
++	c->fail = clamp(nvram_get_int("reaper_dnshc_fail"), 1, 10, 3);
++	c->recover = clamp(nvram_get_int("reaper_dnshc_recover"), 1, 10, 3);
++	c->strict = nvram_get_int("reaper_dnshc_strict");
++}
++
++/* One UDP query for <name> A IN, sent straight to target:53 (never through
++ * dnsmasq). 1 = a reply with our id came back (strict: NOERROR + >=1 record),
++ * 0 = silence, an error, or a reply that does not qualify. */
++static int probe(const struct hc_cfg *c)
++{
++	unsigned char pkt[512];
++	unsigned char *q;
++	const char *lab, *dot;
++	struct sockaddr_in sa;
++	struct timeval tv;
++	fd_set rf;
++	unsigned short id;
++	int fd, len, r, n, ok = 0;
++
++	id = (unsigned short)((getpid() << 4) ^ (unsigned)now_s() ^ (unsigned)rand());
++	memset(pkt, 0, sizeof(pkt));
++	pkt[0] = id >> 8; pkt[1] = id & 0xff;
++	pkt[2] = 0x01;				/* RD */
++	pkt[5] = 1;				/* QDCOUNT */
++	q = pkt + 12;
++	lab = c->name;
++	while (*lab) {
++		dot = strchr(lab, '.');
++		n = dot ? (int)(dot - lab) : (int)strlen(lab);
++		if (n <= 0 || n > 63 || (q - pkt) + n + 1 > (int)sizeof(pkt) - 8) return 0;
++		*q++ = (unsigned char)n;
++		memcpy(q, lab, n);
++		q += n;
++		lab = dot ? dot + 1 : lab + n;
++	}
++	*q++ = 0;
++	*q++ = 0; *q++ = 1;			/* QTYPE A */
++	*q++ = 0; *q++ = 1;			/* QCLASS IN */
++	len = (int)(q - pkt);
++
++	memset(&sa, 0, sizeof(sa));
++	sa.sin_family = AF_INET;
++	sa.sin_port = htons(53);
++	if (inet_pton(AF_INET, c->target, &sa.sin_addr) != 1) return 0;
++
++	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
++	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 || send(fd, pkt, len, 0) != len) {
++		close(fd);
++		return 0;
++	}
++	FD_ZERO(&rf);
++	FD_SET(fd, &rf);
++	tv.tv_sec = c->timeout_ms / 1000;
++	tv.tv_usec = (c->timeout_ms % 1000) * 1000;
++	do {
++		r = select(fd + 1, &rf, NULL, NULL, &tv);
++	} while (r < 0 && errno == EINTR && !g_stop);
++	if (r > 0) {
++		r = recv(fd, pkt, sizeof(pkt), 0);
++		if (r >= 12 && pkt[0] == (id >> 8) && pkt[1] == (id & 0xff) && (pkt[2] & 0x80)) {
++			if (!c->strict)
++				ok = 1;
++			else {
++				int rcode = pkt[3] & 0x0f;
++				int ancount = (pkt[6] << 8) | pkt[7];
++				ok = (rcode == 0 && ancount > 0);
++			}
++		}
++	}
++	close(fd);
++	return ok;
++}
++
++/* Does this line name the target as a plain upstream? For the servers-file
++ * that is "server=<ip>" or "server=<ip>#port" (a "server=/domain/<ip>" line
++ * is a domain route and is left where it is); for resolv.conf it is
++ * "nameserver <ip>". */
++static int line_is_target(const char *line, const char *prefix, const char *target)
++{
++	size_t pl = strlen(prefix), tl = strlen(target);
++	if (strncmp(line, prefix, pl) != 0) return 0;
++	if (strncmp(line + pl, target, tl) != 0) return 0;
++	return line[pl + tl] == 0 || line[pl + tl] == '\n' || line[pl + tl] == '#' || line[pl + tl] == ' ' || line[pl + tl] == '\t';
++}
++
++/* A plain upstream of the same kind (used to decide whether the target is
++ * already last among them). */
++static int line_is_upstream(const char *line, const char *prefix)
++{
++	size_t pl = strlen(prefix);
++	if (strncmp(line, prefix, pl) != 0) return 0;
++	return line[pl] != '/';
++}
++
++/* Move the target's plain-upstream line(s) to the end of the file. Returns
++ * 1 if the file was rewritten, 0 if there was nothing to do (no such line,
++ * or it is already the last upstream), -1 on error. Caller holds the lock. */
++static int demote_file(const char *path, const char *prefix, const char *target, int *n_upstreams)
++{
++	static char lines[HC_MAXLINES][HC_LINE];
++	int n = 0, i, last_other = -1, last_target = -1, first_target = -1, nup = 0;
++	FILE *fp;
++
++	if (!(fp = fopen(path, "r"))) return -1;
++	while (n < HC_MAXLINES && fgets(lines[n], HC_LINE, fp)) {
++		if (line_is_target(lines[n], prefix, target)) {
++			if (first_target < 0) first_target = n;
++			last_target = n;
++			nup++;
++		} else if (line_is_upstream(lines[n], prefix)) {
++			last_other = n;
++			nup++;
++		}
++		n++;
++	}
++	fclose(fp);
++	if (n_upstreams) *n_upstreams = nup;
++	if (first_target < 0) return 0;
++	if (last_other < first_target) return 0;	/* already last among the upstreams */
++	if (!(fp = fopen(path, "w"))) return -1;
++	for (i = 0; i < n; i++)
++		if (!line_is_target(lines[i], prefix, target))
++			fputs(lines[i], fp);
++	for (i = 0; i < n; i++)
++		if (line_is_target(lines[i], prefix, target))
++			fputs(lines[i], fp);
++	fclose(fp);
++	(void)last_target;
++	return 1;
++}
++
++static void hc_reload(void)
++{
++#ifdef RTCONFIG_MULTILAN_CFG
++	reload_dnsmasq(ALL_SDN);
++#else
++	reload_dnsmasq();
++#endif
++}
++
++/* returns the number of plain upstreams dnsmasq has, so the log can say when
++ * there is nothing to fall back to */
++static int demote(const char *target, int *changed)
++{
++	int lock, a, b, nup = 0;
++	lock = file_lock("resolv");
++	a = demote_file(HC_DNSMASQ, "server=", target, &nup);
++	b = demote_file(HC_RESOLV, "nameserver ", target, NULL);
++	file_unlock(lock);
++	if (changed) *changed = (a == 1 || b == 1);
++	if (a == 1) hc_reload();
++	return nup;
++}
++
++static void restore(void)
++{
++	update_resolvconf();	/* takes the resolv lock itself; rebuilds both files in stock order */
++	hc_reload();
++}
++
++static void state_set(const char *what, long since, int alive)
++{
++	char st[64];
++	if (!*what) { nvram_set("reaper_dnshc_state", ""); return; }
++	snprintf(st, sizeof(st), "%s %ld %d", what, since > 0 ? now_s() - since : 0, alive);
++	nvram_set("reaper_dnshc_state", st);
++}
++
++int rdnshc_main(int argc, char *argv[])
++{
++	struct hc_cfg c;
++	char watched[INET_ADDRSTRLEN] = "";
++	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1;
++	long since = 0;
++	(void)argc; (void)argv;
++
++	signal(SIGTERM, on_sig);
++	signal(SIGINT, on_sig);
++	signal(SIGHUP, SIG_IGN);
++	if (daemon(1, 0) < 0) return 1;
++	srand((unsigned)(getpid() ^ time(NULL)));
++
++	/* adopt a demotion a previous instance left in place (restart_rdnshc, or
++	 * it died): that order is ours to restore when the rules say so */
++	{
++		char prev[INET_ADDRSTRLEN + 2] = "";
++		if (f_read_string(HC_STATE, prev, sizeof(prev)) > 0) {
++			char *nl = strchr(prev, '\n');
++			if (nl) *nl = 0;
++			if (*prev) {
++				strlcpy(watched, prev, sizeof(watched));
++				down = 1;
++				since = now_s();
++			}
++		}
++	}
++	cfg_read(&c);
++	logmessage(HC_TAG, "started - LAN resolver health check %s%s%s", c.enable && *c.target ? "ENABLED, watching " : "disabled",
++		c.enable && *c.target ? c.target : "", down ? " (adopting a demotion left by the previous instance)" : "");
++
++	while (!g_stop) {
++		int enabled, poll;
++		cfg_read(&c);
++		enabled = c.enable && *c.target;
++
++		if (enabled != last_enabled) {
++			if (last_enabled >= 0 || enabled)
++				logmessage(HC_TAG, enabled
++					? "ENABLED: %s is probed every %d s (%s, %d ms, %s reply counts); after %d misses it is moved to the end of the router's DNS list, after %d hits it is put back first; every switch is logged here"
++					: "DISABLED: the router's DNS list is left in its stock order",
++					c.target, c.interval, c.name, c.timeout_ms, c.strict ? "only a real" : "any", c.fail, c.recover);
++			last_enabled = enabled;
++		}
++
++		/* the watched server changed (or the feature went off) while a
++		 * demotion is in place: give the old one its place back first */
++		if (down && (!enabled || strcmp(watched, c.target) != 0)) {
++			restore();
++			logmessage(HC_TAG, "%s put back in its stock place: %s", watched, enabled ? "a different server is being watched now" : "the health check was switched off");
++			down = 0; misses = hits = 0; since = 0;
++			unlink(HC_STATE);
++		}
++
++		if (!enabled) {
++			state_set("off", 0, -1);
++			for (i = 0; i < HC_POLL_OFF && !g_stop; i++) sleep(1);
++			continue;
++		}
++		strlcpy(watched, c.target, sizeof(watched));
++
++		alive = probe(&c);
++		if (alive) { hits++; misses = 0; } else { misses++; hits = 0; }
++
++		if (!down && misses >= c.fail) {
++			int changed = 0, nup;
++			down = 1; since = now_s(); hits = 0;
++			nup = demote(c.target, &changed);
++			f_write_string(HC_STATE, c.target, 0, 0);
++			if (nup <= 1)
++				logmessage(HC_TAG, "%s is NOT answering (%d misses of %d ms) - it is the only upstream in the router's DNS list, so there is nothing to fall back to; queries keep going to it", c.target, misses, c.timeout_ms);
++			else
++				logmessage(HC_TAG, "%s is NOT answering (%d misses of %d ms) - moved to the END of the router's DNS list (%d upstreams); dnsmasq reloaded, lookups now go to the next server at once", c.target, misses, c.timeout_ms, nup);
++		} else if (down && hits >= c.recover) {
++			down = 0; misses = 0;
++			restore();
++			unlink(HC_STATE);
++			logmessage(HC_TAG, "%s is answering again (%d hits) after %ld s - put back FIRST in the router's DNS list; dnsmasq reloaded", c.target, hits, now_s() - since);
++			since = now_s();
++		} else if (down) {
++			/* wan_up(), a VPN client or a DNS apply may have rewritten the
++			 * files in stock order meanwhile: re-assert, quietly when there
++			 * was nothing to do */
++			int changed = 0;
++			demote(c.target, &changed);
++			if (changed)
++				logmessage(HC_TAG, "%s is still not answering and the router's DNS list was rewritten in stock order - moved to the end again", c.target);
++		}
++		state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
++
++		poll = c.interval;
++		for (i = 0; i < poll && !g_stop; i++) sleep(1);
++	}
++
++	/* stopping (service stop, reboot, restart_rdnshc): if we adopted or made
++	 * a demotion, leave it recorded for the next instance rather than
++	 * flipping the order back and forth across a restart; a real stop of the
++	 * feature is handled by the loop above before we get here */
++	if (down)
++		logmessage(HC_TAG, "stopped while %s is demoted - the order is kept and the next instance adopts it", watched);
++	else
++		logmessage(HC_TAG, "stopped");
++	state_set("", 0, -1);
++	return 0;
++}
++
++void stop_rdnshc(void)
++{
++	if (pids("rdnshc"))
++		killall_tk("rdnshc");
++}
++
++void start_rdnshc(void)
++{
++	stop_rdnshc();
++	if (!is_routing_enabled())
++		return;
++	xstart("rdnshc");
++}
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 75aa02858d..87bc78d22b 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1823,6 +1823,14 @@ void start_dnsmasq(void)
+ 		    "cache-size=%u\n"		// dns cache size
+ 		    "min-port=%u\n",		// min port used for random src port
+ 		dmservers, 1500, nvram_get_int("dns_minport") ? : 4096);
++	/* reaper v3.1.1: ask the upstreams in the listed order and move on only
++	 * when one does not answer, instead of dnsmasq's default of probing all
++	 * of them every 50 queries / 20 s and sticking with the fastest - which
++	 * is a permanent share of queries past a LAN filter, not a fallback.
++	 * The System page switch; the resolver health check (rdnshc) supplies
++	 * the memory of a dead server that strict-order lacks. */
++	if (nvram_get_int("reaper_dns_strict"))
++		fprintf(fp, "strict-order\n");
+ 
+ 	fprintf(fp, "addn-hosts=/etc/hosts\n");
+ 
+@@ -7175,6 +7183,7 @@ stop_misc(void)
+ 	stop_rchqd();	/* reaper v1.6.1 */
+ 	stop_gk();	/* reaper v1.6.8 Gatekeeper */
+ 	stop_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (releases what it parked) */
++	stop_rdnshc();	/* reaper v3.1.1 LAN resolver health check */
+ 	stop_rwarden();	/* reaper v1.8.0 Warden */
+ 	stop_reaper_fw();	/* reaper v2.3.8 native firewall rules engine */
+ 	stop_reaper_pbr();	/* reaper v2.5.x ipset policy routing */
+@@ -13860,6 +13869,7 @@ start_services(void)
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
+ 	start_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (router mode; idle unless amas_bh_park) */
++	start_rdnshc();	/* reaper v3.1.1 LAN resolver health check (router mode; idle unless reaper_dnshc_enable) */
+ 	start_rwarden();	/* reaper v1.8.0 Warden (no-op unless rwarden_enable) */
+ 	start_reaper_fw();	/* reaper v2.3.8 native firewall (no-op unless reaper_fw_enable) */
+ 	start_reaper_pbr();	/* reaper v2.5.x ipset policy routing (no-op unless reaper_pbr_enable) */
+@@ -22095,6 +22105,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_amaspark();
+ 		if(action & RC_SERVICE_START) start_amaspark();
+ 	}
++	else if (strcmp(script, "rdnshc") == 0)	/* reaper v3.1.1: the System page's resolver health check */
++	{
++		if(action & RC_SERVICE_STOP) stop_rdnshc();
++		if(action & RC_SERVICE_START) start_rdnshc();
++	}
+ 	else if (strcmp(script, "gk_refresh") == 0)
+ 	{
+ 		/* v2.8.0: the per-device Gatekeeper actions used to fire a full
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 1c298d8acb..050de93862 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3168,6 +3168,16 @@ struct nvram_tuple router_defaults[] = {
+ 	 * /jffs) so approvals survive reboot on every box. */
+ 	/* reaper v3.0.8: park the AiMesh backhaul carriers on 2.4/5 GHz while no node is paired (rc/amaspark.c) */
+ 	{ "amas_bh_park", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* reaper v3.1.1: LAN resolver health check (rc/rdnshc.c) + dnsmasq strict upstream order; the System page's "Reaper resolver health check" block */
++	{ "reaper_dnshc_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_dnshc_target", "", CKN_STR15, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* IPv4 of the LAN resolver to watch; empty = nothing watched */
++	{ "reaper_dnshc_name", "localhost", CKN_STR255, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* name queried; any reply counts unless _strict */
++	{ "reaper_dnshc_interval", "10", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* s, 3-300 */
++	{ "reaper_dnshc_timeout", "1000", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* ms, 200-5000 */
++	{ "reaper_dnshc_fail", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive misses -> demoted */
++	{ "reaper_dnshc_recover", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive hits -> restored */
++	{ "reaper_dnshc_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = only NOERROR with a record counts as alive */
++	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+ 	{ "gk_guest_hours", "24", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* guest pass length in hours (internet-only + expiry) */
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 3485fc6be8..82a82ba4d3 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -830,12 +830,14 @@ function applyRule(){
+ 		else
+ 			document.form.dns_probe.value = "0";
+ 
++		var rdhc_svc = rdhcApply();
++
+ 		if(document.form.https_lanport.value != '<% nvram_get("https_lanport"); %>')
+ 			alert('<#Change_HttpsLanport_Hint#>');
+ 
+ 		showLoading();
+ 
+-		var action_script_tmp = "restart_time;restart_leds;";
++		var action_script_tmp = "restart_time;restart_leds;" + rdhc_svc;
+ 
+ 		if(hdspindown_support) {
+ 			var excluded = "";
+@@ -918,6 +920,8 @@ function applyRule(){
+ }
+ 
+ function validForm(){
++	if(!rdhcValid())
++		return false;
+ 	if(hdspindown_support && $("#usb_idle_enable_tr").css("display") != "none") {
+ 		if($('select[name="usb_idle_enable"]').val() == 1) {
+ 			$('input[name="usb_idle_timeout"]').prop("disabled", false);
+@@ -1840,6 +1844,80 @@ function appendMonitorOption(obj){
+ 	}
+ }
+ 
++/* reaper v3.1.1: the resolver health check block (rc/rdnshc.c). Not the stock
++   probe above: this one watches ONE named server and reorders the router's
++   upstream list while it is silent. State string from the daemon:
++   "up <s> <alive>" / "down <s> <alive>" / "off". */
++var RDHC_ORIG = {
++	enable: '<% nvram_get("reaper_dnshc_enable"); %>',
++	target: '<% nvram_get("reaper_dnshc_target"); %>',
++	name: '<% nvram_get("reaper_dnshc_name"); %>',
++	interval: '<% nvram_get("reaper_dnshc_interval"); %>',
++	timeout: '<% nvram_get("reaper_dnshc_timeout"); %>',
++	fail: '<% nvram_get("reaper_dnshc_fail"); %>',
++	recover: '<% nvram_get("reaper_dnshc_recover"); %>',
++	strict: '<% nvram_get("reaper_dnshc_strict"); %>',
++	dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
++	state: '<% nvram_get("reaper_dnshc_state"); %>'
++};
++function rdhcToggle(){
++	var on = document.form.reaper_dnshc_chk.checked;
++	var rows = document.getElementsByClassName("rdhc_row");
++	for(var i = 0; i < rows.length; i++) rows[i].style.display = on ? "" : "none";
++}
++function rdhcInit(){
++	rdhcToggle();
++	var el = document.getElementById("rdhc_state");
++	if(!el) return;
++	/* state and switch read from the row itself, so this renders even when the
++	   stock script block above aborted before its variables were assigned */
++	var st = (el.getAttribute("data-state") || "").split(" ");
++	var txt;
++	if(el.getAttribute("data-enable") != "1" || st[0] == "" || st[0] == "off") txt = `<#RDHC_13#>`;
++	else if(st[0] == "down") txt = `<#RDHC_15#>` + " (" + (parseInt(st[1]) || 0) + " s)";
++	else txt = `<#RDHC_14#>` + " (" + (parseInt(st[1]) || 0) + " s)";
++	el.textContent = txt;
++	if(st[0] == "down") el.style.color = "#E10600";
++}
++function rdhcValid(){
++	if(!document.form.reaper_dnshc_chk.checked) return true;
++	var t = document.form.reaper_dnshc_target;
++	if(!validator.ipv4_addr(t.value)){
++		alert(t.value + " <#JS_validip#>");
++		t.focus();
++		return false;
++	}
++	var n = document.form.reaper_dnshc_name;
++	if(n.value == "" || !/^[A-Za-z0-9._-]+$/.test(n.value)){
++		alert(`<#JS_fieldblank#>`);
++		n.focus();
++		return false;
++	}
++	if(!validator.range(document.form.reaper_dnshc_interval, 3, 300)) return false;
++	if(!validator.range(document.form.reaper_dnshc_timeout, 200, 5000)) return false;
++	if(!validator.range(document.form.reaper_dnshc_fail, 1, 10)) return false;
++	if(!validator.range(document.form.reaper_dnshc_recover, 1, 10)) return false;
++	return true;
++}
++/* returns the services to restart, "" when nothing of ours changed */
++function rdhcApply(){
++	var f = document.form, svc = "";
++	f.reaper_dnshc_enable.value = f.reaper_dnshc_chk.checked ? "1" : "0";
++	f.reaper_dnshc_strict.value = f.reaper_dnshc_strict_chk.checked ? "1" : "0";
++	f.reaper_dns_strict.value = f.reaper_dns_strict_chk.checked ? "1" : "0";
++	if(f.reaper_dnshc_enable.value != RDHC_ORIG.enable || f.reaper_dnshc_target.value != RDHC_ORIG.target
++		|| f.reaper_dnshc_name.value != RDHC_ORIG.name || f.reaper_dnshc_interval.value != RDHC_ORIG.interval
++		|| f.reaper_dnshc_timeout.value != RDHC_ORIG.timeout || f.reaper_dnshc_fail.value != RDHC_ORIG.fail
++		|| f.reaper_dnshc_recover.value != RDHC_ORIG.recover || f.reaper_dnshc_strict.value != RDHC_ORIG.strict)
++		svc += "restart_rdnshc;";
++	if(f.reaper_dns_strict.value != RDHC_ORIG.dnsstrict)
++		svc += "restart_dnsmasq;";
++	return svc;
++}
++/* own load hook: the stock initial() aborts on data it cannot get on a fresh
++   or partly configured box, and this block must render regardless */
++window.addEventListener("load", rdhcInit);
++
+ var isPingListOpen = 0;
+ function create_DNSlist_view(){
+ 	//count ping_target
+@@ -2569,6 +2647,9 @@ function Get_Component_reboot_schedule_ui(config){
+ <input type="hidden" name="sw_mode" value="<% nvram_get("sw_mode"); %>">
+ <input type="hidden" name="ncb_enable" value="<% nvram_get("ncb_enable"); %>">
+ <input type="hidden" name="dns_probe" value="<% nvram_get("dns_probe"); %>">
++<input type="hidden" name="reaper_dnshc_enable" value="<% nvram_get("reaper_dnshc_enable"); %>">
++<input type="hidden" name="reaper_dnshc_strict" value="<% nvram_get("reaper_dnshc_strict"); %>">
++<input type="hidden" name="reaper_dns_strict" value="<% nvram_get("reaper_dns_strict"); %>">
+ <input type="hidden" name="dns_probe_content" value="*">
+ <input type="hidden" name="wandog_enable" value="<% nvram_get("wandog_enable"); %>">
+ <table class="content" align="center" cellpadding="0" cellspacing="0">
+@@ -2839,6 +2920,69 @@ function Get_Component_reboot_schedule_ui(config){
+ 							<div id="TargetList_Block_PC" name="TargetList_Block_PC" class="clientlist_dropdown" style="margin-left: 2px; width: 348px;display: none;"></div>
+ 					</td>
+ 				</tr>
++				<tr id="rdhc_head_tr">
++					<th><#RDHC_1#></th>
++					<td>
++						<input type="checkbox" name="reaper_dnshc_chk" value="" <% nvram_match("reaper_dnshc_enable", "1", "checked"); %> onClick="rdhcToggle();"><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_3#></div>
++						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_2#></div>
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_4#></th>
++					<td>
++						<input type="text" class="input_25_table" name="reaper_dnshc_target" maxlength="15" value="<% nvram_get("reaper_dnshc_target"); %>" placeholder="192.168.50.98" onKeyPress="return validator.isIPAddr(this, event);" autocorrect="off" autocapitalize="off">
++						<div style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7"><#RDHC_16#></div>
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_5#></th>
++					<td>
++						<input type="text" class="input_32_table" name="reaper_dnshc_name" maxlength="120" value="<% nvram_get("reaper_dnshc_name"); %>" onKeyPress="return validator.isString(this, event);" autocorrect="off" autocapitalize="off">
++						<div style="margin-top:4px;line-height:1.4;color:#ECE7DB;opacity:.7"><#RDHC_6#></div>
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_11#></th>
++					<td>
++						<input type="checkbox" name="reaper_dnshc_strict_chk" value="" <% nvram_match("reaper_dnshc_strict", "1", "checked"); %>>
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_7#></th>
++					<td>
++						<input type="text" class="input_6_table" name="reaper_dnshc_interval" maxlength="3" value="<% nvram_get("reaper_dnshc_interval"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (3-300)
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_8#></th>
++					<td>
++						<input type="text" class="input_6_table" name="reaper_dnshc_timeout" maxlength="4" value="<% nvram_get("reaper_dnshc_timeout"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (200-5000)
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_9#></th>
++					<td>
++						<input type="text" class="input_6_table" name="reaper_dnshc_fail" maxlength="2" value="<% nvram_get("reaper_dnshc_fail"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (1-10)
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_10#></th>
++					<td>
++						<input type="text" class="input_6_table" name="reaper_dnshc_recover" maxlength="2" value="<% nvram_get("reaper_dnshc_recover"); %>" onKeyPress="return validator.isNumber(this,event);" autocorrect="off" autocapitalize="off"> (1-10)
++					</td>
++				</tr>
++				<tr class="rdhc_row" style="display:none;">
++					<th><#RDHC_12#></th>
++					<td><span id="rdhc_state" style="color:#ECE7DB" data-enable="<% nvram_get("reaper_dnshc_enable"); %>" data-state="<% nvram_get("reaper_dnshc_state"); %>"></span></td>
++				</tr>
++				<tr id="rdhc_strict_tr">
++					<th><#RDHC_18#></th>
++					<td>
++						<input type="checkbox" name="reaper_dns_strict_chk" value="" <% nvram_match("reaper_dns_strict", "1", "checked"); %>><div style="display: inline-block; vertical-align: middle; margin-bottom: 2px;"><#RDHC_19#></div>
++						<div style="margin-top:6px;line-height:1.45;color:#ECE7DB;opacity:.85"><#RDHC_17#></div>
++					</td>
++				</tr>
++				<script>rdhcInit();</script>
+ 				<tr>
+ 					<th><#System_AutoLogout#></th>
+ 					<td>
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 260093723f..5a3efdc466 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Canal beta
+ RFWU_55=Oferecer também versões beta do ramo Dev. Uma beta só é oferecida quando este roteador já executa a versão estável mais recente e a beta tem um número de versão maior; quando a versão estável tem o mesmo número, só a estável é oferecida. As betas foram menos testadas que as versões estáveis.
+ RFWU_56=Beta
+ RFWU_57=Esta é uma versão beta do ramo Dev. Foi menos testada que uma versão estável; o firmware anterior permanece na partição de reserva.
++RDHC_1=Verificação de saúde do resolvedor Reaper
++RDHC_2=Não é a verificação da ASUS acima, que resolve um nome através do roteador para decidir se a internet está no ar. Esta vigia um único servidor DNS que você indica, normalmente um resolvedor da LAN como AdGuard ou Pi-hole, e enquanto ele deixa de responder move esse servidor para o fim da lista de upstreams do roteador, de modo que as consultas vão de imediato para o servidor seguinte em vez de esperar um tempo limite a cada nome novo. Assim que volta a responder, é recolocado em primeiro. Cada troca é registrada no log do sistema.
++RDHC_3=Vigiar um servidor DNS da LAN
++RDHC_4=Servidor DNS a vigiar
++RDHC_5=Nome a consultar
++RDHC_6=Qualquer resposta conta como vivo, até uma recusa, a menos que uma resposta real seja exigida abaixo.
++RDHC_7=Intervalo de verificação (segundos)
++RDHC_8=Tempo limite da resposta (ms)
++RDHC_9=Falhas até marcar como fora
++RDHC_10=Acertos até marcar como de volta
++RDHC_11=Exigir uma resposta real (pelo menos um registro)
++RDHC_12=Status
++RDHC_13=Não está em execução
++RDHC_14=Respondendo; primeiro na lista de upstreams
++RDHC_15=NÃO responde; movido para o fim da lista de upstreams
++RDHC_16=O servidor precisa estar na lista de DNS do roteador (DNS da WAN ou de um cliente VPN) para que a troca tenha efeito.
++RDHC_17=O roteador consulta seus servidores DNS na ordem listada e só avança quando um não responde, em vez de distribuir as consultas por todos. Combine com a verificação de saúde acima.
++RDHC_18=Ordem dos upstreams
++RDHC_19=Ordem estrita (strict-order do dnsmasq)
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index de1ec63843..8ba6233502 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=测试版通道
+ RFWU_55=同时提供来自 Dev 分支的测试版。仅当本路由器已运行最新稳定版且测试版的版本号更高时才会提供测试版；当稳定版的版本号相同时，只提供稳定版。测试版的测试程度低于稳定版。
+ RFWU_56=测试版
+ RFWU_57=这是来自 Dev 分支的测试版。它的测试程度低于稳定版；先前的固件仍保留在备用分区中。
++RDHC_1=Reaper 解析器健康检查
++RDHC_2=不同于上面的华硕检查（它通过路由器解析一个名称来判断互联网是否可用）。此检查监视你指定的单个 DNS 服务器（通常是 AdGuard 或 Pi-hole 等局域网解析器），当它停止应答时，将该服务器移到路由器上游列表的末尾，使查询立即转到下一个服务器，而不是每个新名称都等待超时。一旦它恢复应答，就会被放回首位。每次切换都会写入系统日志。
++RDHC_3=监视局域网 DNS 服务器
++RDHC_4=要监视的 DNS 服务器
++RDHC_5=查询的名称
++RDHC_6=任何回复都算作存活（即使是拒绝），除非下面要求真实应答。
++RDHC_7=检查间隔（秒）
++RDHC_8=回复超时（毫秒）
++RDHC_9=标记为故障前的失败次数
++RDHC_10=标记为恢复前的成功次数
++RDHC_11=要求真实应答（至少一条记录）
++RDHC_12=状态
++RDHC_13=未运行
++RDHC_14=正在应答；位于上游列表首位
++RDHC_15=无应答；已移至上游列表末尾
++RDHC_16=该服务器必须在路由器的 DNS 列表中（WAN DNS 或 VPN 客户端的 DNS），切换才会生效。
++RDHC_17=路由器按列出的顺序询问其 DNS 服务器，仅在某个服务器无应答时才转向下一个，而不是把查询分散到所有服务器。请与上面的健康检查配合使用。
++RDHC_18=上游顺序
++RDHC_19=严格顺序（dnsmasq strict-order）
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 9891e2d646..02b908d97e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Beta kanál
+ RFWU_55=Nabízet také beta verze z větve Dev. Beta se nabídne jen tehdy, když už router běží na nejnovější stabilní verzi a beta má vyšší číslo verze; má-li stabilní verze stejné číslo, nabídne se pouze stabilní. Beta verze jsou méně otestované než stabilní.
+ RFWU_56=Beta
+ RFWU_57=Toto je beta verze z větve Dev. Je méně otestovaná než stabilní verze; předchozí firmware zůstává v záložním oddílu.
++RDHC_1=Kontrola stavu resolveru Reaper
++RDHC_2=Není to kontrola ASUS výše, která přeloží jméno přes router, aby rozhodla, zda je internet dostupný. Tato sleduje jeden DNS server, který určíte, obvykle resolver v LAN jako AdGuard nebo Pi-hole, a dokud neodpovídá, přesune ho na konec seznamu upstreamů routeru, takže dotazy jdou hned na další server místo čekání na časový limit u každého nového jména. Jakmile znovu odpovídá, vrátí se na první místo. Každé přepnutí se zapíše do systémového logu.
++RDHC_3=Sledovat DNS server v LAN
++RDHC_4=Sledovaný DNS server
++RDHC_5=Dotazované jméno
++RDHC_6=Jakákoli odpověď se počítá jako živý server, i odmítnutí, pokud níže nevyžadujete skutečnou odpověď.
++RDHC_7=Interval kontroly (sekundy)
++RDHC_8=Časový limit odpovědi (ms)
++RDHC_9=Počet neúspěchů do označení jako nedostupný
++RDHC_10=Počet úspěchů do označení jako dostupný
++RDHC_11=Vyžadovat skutečnou odpověď (alespoň jeden záznam)
++RDHC_12=Stav
++RDHC_13=Neběží
++RDHC_14=Odpovídá; první v seznamu upstreamů
++RDHC_15=NEODPOVÍDÁ; přesunut na konec seznamu upstreamů
++RDHC_16=Server musí být v seznamu DNS routeru (DNS WAN nebo VPN klienta), jinak přepnutí nemá účinek.
++RDHC_17=Router se dotazuje svých DNS serverů v uvedeném pořadí a k dalšímu přejde, jen když jeden neodpoví, místo rozdělování dotazů mezi všechny. Kombinujte s kontrolou stavu výše.
++RDHC_18=Pořadí upstreamů
++RDHC_19=Přísné pořadí (dnsmasq strict-order)
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 7f92274ebc..7aaecdde65 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Betakanal
+ RFWU_55=Tilbyd også betaudgivelser fra Dev-grenen. En beta tilbydes kun, når denne router allerede kører den nyeste stabile udgivelse, og betaen har et højere versionsnummer; har den stabile udgivelse samme nummer, tilbydes kun den stabile. Betaer er mindre testet end stabile udgivelser.
+ RFWU_56=Beta
+ RFWU_57=Dette er en betaudgivelse fra Dev-grenen. Den er mindre testet end en stabil udgivelse; den forrige firmware bliver i standby-partitionen.
++RDHC_1=Reaper resolver-sundhedstjek
++RDHC_2=Ikke ASUS-tjekket ovenfor, som slår et navn op gennem routeren for at afgøre, om internettet er oppe. Dette overvåger én DNS-server, du angiver, typisk en LAN-resolver som AdGuard eller Pi-hole, og mens den ikke svarer, flyttes den til slutningen af routerens upstream-liste, så opslag straks går til næste server i stedet for at vente på en timeout ved hvert nyt navn. Så snart den svarer igen, sættes den forrest. Hvert skift skrives i systemloggen.
++RDHC_3=Overvåg en LAN DNS-server
++RDHC_4=DNS-server at overvåge
++RDHC_5=Navn at slå op
++RDHC_6=Ethvert svar tæller som i live, selv et afslag, medmindre et rigtigt svar kræves nedenfor.
++RDHC_7=Tjekinterval (sekunder)
++RDHC_8=Svartimeout (ms)
++RDHC_9=Fejl før den markeres nede
++RDHC_10=Svar før den markeres oppe igen
++RDHC_11=Kræv et rigtigt svar (mindst én post)
++RDHC_12=Status
++RDHC_13=Kører ikke
++RDHC_14=Svarer; først i upstream-listen
++RDHC_15=Svarer IKKE; flyttet til slutningen af upstream-listen
++RDHC_16=Serveren skal stå i routerens DNS-liste (WAN-DNS eller en VPN-klients), for at skiftet har nogen virkning.
++RDHC_17=Routeren spørger sine DNS-servere i den angivne rækkefølge og går kun videre, når én ikke svarer, i stedet for at sprede forespørgsler over dem alle. Brug den sammen med sundhedstjekket ovenfor.
++RDHC_18=Upstream-rækkefølge
++RDHC_19=Streng rækkefølge (dnsmasq strict-order)
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 1163a0b0e5..9c33597199 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Beta-Kanal
+ RFWU_55=Auch Beta-Versionen aus dem Dev-Zweig anbieten. Eine Beta wird nur angeboten, wenn dieser Router bereits die neueste stabile Version ausführt und die Beta eine höhere Versionsnummer trägt; hat die stabile Version dieselbe Nummer, wird nur die stabile angeboten. Betas sind weniger getestet als stabile Versionen.
+ RFWU_56=Beta
+ RFWU_57=Dies ist eine Beta-Version aus dem Dev-Zweig. Sie ist weniger getestet als eine stabile Version; die vorherige Firmware bleibt in der Standby-Partition.
++RDHC_1=Reaper-Resolver-Gesundheitsprüfung
++RDHC_2=Nicht die ASUS-Prüfung oben, die einen Namen über den Router auflöst, um zu entscheiden, ob das Internet erreichbar ist. Diese überwacht einen einzelnen DNS-Server, den Sie angeben, typischerweise einen LAN-Resolver wie AdGuard oder Pi-hole, und solange er nicht antwortet, wird er ans Ende der Upstream-Liste des Routers verschoben, sodass Anfragen sofort an den nächsten Server gehen, statt bei jedem neuen Namen eine Zeitüberschreitung abzuwarten. Sobald er wieder antwortet, steht er wieder an erster Stelle. Jeder Wechsel wird ins Systemprotokoll geschrieben.
++RDHC_3=Einen LAN-DNS-Server überwachen
++RDHC_4=Zu überwachender DNS-Server
++RDHC_5=Abzufragender Name
++RDHC_6=Jede Antwort zählt als erreichbar, auch eine Ablehnung, sofern unten keine echte Antwort verlangt wird.
++RDHC_7=Prüfintervall (Sekunden)
++RDHC_8=Antwortzeitüberschreitung (ms)
++RDHC_9=Fehlversuche bis zur Markierung als ausgefallen
++RDHC_10=Erfolge bis zur Markierung als wieder erreichbar
++RDHC_11=Echte Antwort verlangen (mindestens ein Eintrag)
++RDHC_12=Status
++RDHC_13=Läuft nicht
++RDHC_14=Antwortet; an erster Stelle der Upstream-Liste
++RDHC_15=Antwortet NICHT; ans Ende der Upstream-Liste verschoben
++RDHC_16=Der Server muss in der DNS-Liste des Routers stehen (WAN-DNS oder die eines VPN-Clients), sonst hat der Wechsel keine Wirkung.
++RDHC_17=Der Router fragt seine DNS-Server in der angegebenen Reihenfolge und geht nur weiter, wenn einer nicht antwortet, statt Anfragen auf alle zu verteilen. Zusammen mit der Gesundheitsprüfung oben verwenden.
++RDHC_18=Upstream-Reihenfolge
++RDHC_19=Strikte Reihenfolge (dnsmasq strict-order)
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 1f1a559f6b..8b14df2bd1 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Beta Channel
+ RFWU_55=Also offer beta releases from the Dev branch. A beta is offered only when this router already runs the newest stable release and the beta carries a higher version number; when the stable release has the same number, only the stable one is offered. Betas have had less testing than stable releases.
+ RFWU_56=Beta
+ RFWU_57=This is a beta release from the Dev branch. It has had less testing than a stable release; the previous firmware stays in the standby partition.
++RDHC_1=Reaper resolver health check
++RDHC_2=Not the ASUS check above, which resolves a name through the router to decide whether the internet is up. This one watches a single DNS server you name, typically a LAN resolver such as AdGuard or Pi-hole, and while it stops answering it moves that server to the end of the router's upstream list, so lookups go to the next server at once instead of waiting out a timeout on every new name. As soon as it answers again it is put back first. Every switch is written to the system log.
++RDHC_3=Watch a LAN DNS server
++RDHC_4=DNS server to watch
++RDHC_5=Name to query
++RDHC_6=Any reply counts as alive, even a refusal, unless a real answer is required below.
++RDHC_7=Check interval (seconds)
++RDHC_8=Reply timeout (ms)
++RDHC_9=Misses before it is marked down
++RDHC_10=Hits before it is marked up again
++RDHC_11=Require a real answer (at least one record)
++RDHC_12=Status
++RDHC_13=Not running
++RDHC_14=Answering; first in the upstream list
++RDHC_15=NOT answering; moved to the end of the upstream list
++RDHC_16=The server must be in the router's DNS list (WAN DNS, or a VPN client's) for the switch to have any effect.
++RDHC_17=The router asks its DNS servers in the listed order and moves on only when one does not answer, instead of spreading queries across all of them. Pair it with the health check above.
++RDHC_18=Upstream order
++RDHC_19=Strict order (dnsmasq strict-order)
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b11f9bf8ef..d2463ff453 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Canal beta
+ RFWU_55=Ofrecer también versiones beta de la rama Dev. Una beta solo se ofrece cuando este router ya ejecuta la versión estable más reciente y la beta tiene un número de versión mayor; cuando la versión estable tiene el mismo número, solo se ofrece la estable. Las betas se han probado menos que las versiones estables.
+ RFWU_56=Beta
+ RFWU_57=Esta es una versión beta de la rama Dev. Se ha probado menos que una versión estable; el firmware anterior permanece en la partición de reserva.
++RDHC_1=Comprobación de salud del resolvedor Reaper
++RDHC_2=No es la comprobación de ASUS de arriba, que resuelve un nombre a través del router para decidir si hay internet. Esta vigila un único servidor DNS que usted indica, normalmente un resolvedor de la LAN como AdGuard o Pi-hole, y mientras deje de responder lo mueve al final de la lista de servidores del router, de modo que las consultas pasan de inmediato al siguiente en lugar de esperar un tiempo de espera con cada nombre nuevo. En cuanto vuelve a responder, se coloca de nuevo el primero. Cada cambio se escribe en el registro del sistema.
++RDHC_3=Vigilar un servidor DNS de la LAN
++RDHC_4=Servidor DNS a vigilar
++RDHC_5=Nombre a consultar
++RDHC_6=Cualquier respuesta cuenta como vivo, incluso un rechazo, salvo que abajo se exija una respuesta real.
++RDHC_7=Intervalo de comprobación (segundos)
++RDHC_8=Tiempo de espera de respuesta (ms)
++RDHC_9=Fallos antes de marcarlo caído
++RDHC_10=Aciertos antes de marcarlo activo de nuevo
++RDHC_11=Exigir una respuesta real (al menos un registro)
++RDHC_12=Estado
++RDHC_13=No está en ejecución
++RDHC_14=Responde; primero en la lista de servidores
++RDHC_15=NO responde; movido al final de la lista de servidores
++RDHC_16=El servidor debe estar en la lista DNS del router (DNS de la WAN o de un cliente VPN) para que el cambio tenga efecto.
++RDHC_17=El router consulta sus servidores DNS en el orden indicado y solo pasa al siguiente cuando uno no responde, en lugar de repartir las consultas entre todos. Úselo junto con la comprobación de salud de arriba.
++RDHC_18=Orden de los servidores
++RDHC_19=Orden estricto (strict-order de dnsmasq)
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 714527df0d..9a87c9c6b2 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Beetakanava
+ RFWU_55=Tarjoa myös Dev-haaran beetajulkaisuja. Beeta tarjotaan vain, kun tämä reititin on jo uusimmassa vakaassa julkaisussa ja beetan versionumero on suurempi; jos vakaalla julkaisulla on sama numero, tarjotaan vain vakaa. Beetoja on testattu vähemmän kuin vakaita julkaisuja.
+ RFWU_56=Beeta
+ RFWU_57=Tämä on Dev-haaran beetajulkaisu. Sitä on testattu vähemmän kuin vakaata julkaisua; edellinen laiteohjelmisto säilyy varaosiossa.
++RDHC_1=Reaper-resolverin kuntotarkistus
++RDHC_2=Ei yllä oleva ASUS-tarkistus, joka selvittää nimen reitittimen kautta päättääkseen, onko internet käytettävissä. Tämä valvoo yhtä nimeämääsi DNS-palvelinta, tyypillisesti lähiverkon resolveria kuten AdGuardia tai Pi-holea, ja kun se lakkaa vastaamasta, se siirretään reitittimen upstream-listan loppuun, jolloin kyselyt menevät heti seuraavalle palvelimelle sen sijaan, että jokainen uusi nimi odottaisi aikakatkaisua. Heti kun se vastaa taas, se palautetaan ensimmäiseksi. Jokainen vaihto kirjataan järjestelmälokiin.
++RDHC_3=Valvo lähiverkon DNS-palvelinta
++RDHC_4=Valvottava DNS-palvelin
++RDHC_5=Kyseltävä nimi
++RDHC_6=Mikä tahansa vastaus lasketaan eläväksi, myös kieltäytyminen, ellei alla vaadita todellista vastausta.
++RDHC_7=Tarkistusväli (sekuntia)
++RDHC_8=Vastauksen aikakatkaisu (ms)
++RDHC_9=Epäonnistumiset ennen merkintää alhaalla olevaksi
++RDHC_10=Onnistumiset ennen merkintää taas ylhäällä olevaksi
++RDHC_11=Vaadi todellinen vastaus (vähintään yksi tietue)
++RDHC_12=Tila
++RDHC_13=Ei käynnissä
++RDHC_14=Vastaa; ensimmäisenä upstream-listassa
++RDHC_15=EI vastaa; siirretty upstream-listan loppuun
++RDHC_16=Palvelimen on oltava reitittimen DNS-listassa (WAN-DNS tai VPN-asiakkaan), jotta vaihdolla on vaikutusta.
++RDHC_17=Reititin kysyy DNS-palvelimiltaan listatussa järjestyksessä ja siirtyy seuraavaan vain, kun yksi ei vastaa, sen sijaan että jakaisi kyselyt kaikille. Käytä yhdessä yllä olevan kuntotarkistuksen kanssa.
++RDHC_18=Upstream-järjestys
++RDHC_19=Tiukka järjestys (dnsmasq strict-order)
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index ed8b80eb84..c38d4c0fe6 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Canal bêta
+ RFWU_55=Proposer aussi les versions bêta de la branche Dev. Une bêta n’est proposée que lorsque ce routeur exécute déjà la version stable la plus récente et que la bêta porte un numéro de version supérieur ; quand la version stable porte le même numéro, seule la stable est proposée. Les bêtas sont moins testées que les versions stables.
+ RFWU_56=Bêta
+ RFWU_57=Ceci est une version bêta de la branche Dev. Elle est moins testée qu’une version stable ; le micrologiciel précédent reste dans la partition de secours.
++RDHC_1=Contrôle de santé du résolveur Reaper
++RDHC_2=Ce n’est pas le contrôle ASUS ci-dessus, qui résout un nom via le routeur pour décider si Internet est disponible. Celui-ci surveille un seul serveur DNS que vous indiquez, typiquement un résolveur du LAN comme AdGuard ou Pi-hole, et tant qu’il ne répond plus il le déplace en fin de la liste des serveurs amont du routeur, de sorte que les requêtes passent aussitôt au serveur suivant au lieu d’attendre un délai à chaque nouveau nom. Dès qu’il répond de nouveau, il est remis en premier. Chaque bascule est écrite dans le journal système.
++RDHC_3=Surveiller un serveur DNS du LAN
++RDHC_4=Serveur DNS à surveiller
++RDHC_5=Nom à interroger
++RDHC_6=Toute réponse compte comme vivant, même un refus, sauf si une vraie réponse est exigée ci-dessous.
++RDHC_7=Intervalle de contrôle (secondes)
++RDHC_8=Délai de réponse (ms)
++RDHC_9=Échecs avant de le marquer hors service
++RDHC_10=Succès avant de le marquer de nouveau en service
++RDHC_11=Exiger une vraie réponse (au moins un enregistrement)
++RDHC_12=État
++RDHC_13=Non actif
++RDHC_14=Répond ; premier de la liste des serveurs amont
++RDHC_15=NE répond PAS ; déplacé en fin de la liste des serveurs amont
++RDHC_16=Le serveur doit figurer dans la liste DNS du routeur (DNS du WAN ou d’un client VPN) pour que la bascule ait un effet.
++RDHC_17=Le routeur interroge ses serveurs DNS dans l’ordre indiqué et ne passe au suivant que lorsqu’un serveur ne répond pas, au lieu de répartir les requêtes sur tous. À combiner avec le contrôle de santé ci-dessus.
++RDHC_18=Ordre des serveurs amont
++RDHC_19=Ordre strict (strict-order de dnsmasq)
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index beccee612e..7a94587b6a 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Béta csatorna
+ RFWU_55=A Dev ág béta kiadásainak felajánlása is. Béta csak akkor kerül felajánlásra, ha a router már a legújabb stabil kiadást futtatja és a béta verziószáma magasabb; ha a stabil kiadás száma ugyanaz, csak a stabil kerül felajánlásra. A béták kevésbé teszteltek, mint a stabil kiadások.
+ RFWU_56=Béta
+ RFWU_57=Ez egy béta kiadás a Dev ágból. Kevésbé tesztelt, mint egy stabil kiadás; az előző firmware a tartalék partíción marad.
++RDHC_1=Reaper feloldó állapotellenőrzés
++RDHC_2=Nem a fenti ASUS-ellenőrzés, amely egy nevet old fel a routeren keresztül annak eldöntésére, hogy van-e internet. Ez egyetlen megadott DNS-kiszolgálót figyel, jellemzően egy LAN-feloldót, például AdGuardot vagy Pi-hole-t, és amíg az nem válaszol, a router upstream-listájának végére helyezi, így a lekérdezések azonnal a következő kiszolgálóhoz mennek ahelyett, hogy minden új névnél időtúllépést várnának ki. Amint újra válaszol, visszakerül az első helyre. Minden váltás bekerül a rendszernaplóba.
++RDHC_3=LAN DNS-kiszolgáló figyelése
++RDHC_4=Figyelt DNS-kiszolgáló
++RDHC_5=Lekérdezett név
++RDHC_6=Bármilyen válasz élőnek számít, még az elutasítás is, hacsak lent nem követel meg valódi választ.
++RDHC_7=Ellenőrzési időköz (másodperc)
++RDHC_8=Válasz időtúllépése (ms)
++RDHC_9=Hibák száma a leállt jelölésig
++RDHC_10=Sikerek száma az ismét elérhető jelölésig
++RDHC_11=Valódi válasz megkövetelése (legalább egy rekord)
++RDHC_12=Állapot
++RDHC_13=Nem fut
++RDHC_14=Válaszol; első az upstream-listában
++RDHC_15=NEM válaszol; az upstream-lista végére került
++RDHC_16=A kiszolgálónak szerepelnie kell a router DNS-listájában (WAN DNS vagy egy VPN-ügyfélé), különben a váltásnak nincs hatása.
++RDHC_17=A router a megadott sorrendben kérdezi a DNS-kiszolgálóit, és csak akkor lép tovább, ha egy nem válaszol, ahelyett hogy a lekérdezéseket mind között szétosztaná. Használja a fenti állapotellenőrzéssel együtt.
++RDHC_18=Upstream-sorrend
++RDHC_19=Szigorú sorrend (dnsmasq strict-order)
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 6ddc49107f..2f54309179 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Canale beta
+ RFWU_55=Offri anche le versioni beta del ramo Dev. Una beta viene offerta solo quando questo router esegue già la versione stabile più recente e la beta ha un numero di versione maggiore; quando la versione stabile ha lo stesso numero, viene offerta solo la stabile. Le beta sono meno testate delle versioni stabili.
+ RFWU_56=Beta
+ RFWU_57=Questa è una versione beta del ramo Dev. È meno testata di una versione stabile; il firmware precedente resta nella partizione di riserva.
++RDHC_1=Controllo di salute del resolver Reaper
++RDHC_2=Non è il controllo ASUS qui sopra, che risolve un nome tramite il router per decidere se Internet è raggiungibile. Questo sorveglia un singolo server DNS che indichi, di solito un resolver della LAN come AdGuard o Pi-hole, e finché smette di rispondere lo sposta in fondo all'elenco degli upstream del router, così le richieste passano subito al server successivo invece di attendere un timeout a ogni nuovo nome. Appena risponde di nuovo, torna al primo posto. Ogni cambio viene scritto nel registro di sistema.
++RDHC_3=Sorveglia un server DNS della LAN
++RDHC_4=Server DNS da sorvegliare
++RDHC_5=Nome da interrogare
++RDHC_6=Qualsiasi risposta conta come attivo, anche un rifiuto, a meno che qui sotto non sia richiesta una risposta reale.
++RDHC_7=Intervallo di controllo (secondi)
++RDHC_8=Timeout della risposta (ms)
++RDHC_9=Mancate risposte prima di segnarlo giù
++RDHC_10=Risposte prima di segnarlo di nuovo su
++RDHC_11=Richiedi una risposta reale (almeno un record)
++RDHC_12=Stato
++RDHC_13=Non in esecuzione
++RDHC_14=Risponde; primo nell'elenco degli upstream
++RDHC_15=NON risponde; spostato in fondo all'elenco degli upstream
++RDHC_16=Il server deve essere nell'elenco DNS del router (DNS della WAN o di un client VPN) perché il cambio abbia effetto.
++RDHC_17=Il router interroga i suoi server DNS nell'ordine indicato e passa oltre solo quando uno non risponde, invece di distribuire le richieste su tutti. Da abbinare al controllo di salute qui sopra.
++RDHC_18=Ordine degli upstream
++RDHC_19=Ordine rigoroso (strict-order di dnsmasq)
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 7de0ed45a8..587dda6375 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=ベータチャネル
+ RFWU_55=Dev ブランチのベータ版も提供します。ベータ版が提供されるのは、このルーターが既に最新の安定版を実行しており、かつベータ版のバージョン番号がより大きい場合だけです。安定版が同じ番号の場合は安定版のみが提供されます。ベータ版は安定版よりテストが少ない状態です。
+ RFWU_56=ベータ
+ RFWU_57=これは Dev ブランチのベータ版です。安定版よりテストが少なく、以前のファームウェアは待機パーティションに残ります。
++RDHC_1=Reaper リゾルバ正常性チェック
++RDHC_2=上の ASUS のチェック（ルーター経由で名前を解決してインターネットが使えるか判断するもの）とは異なります。こちらは指定した 1 台の DNS サーバー（通常は AdGuard や Pi-hole などの LAN 内リゾルバ）を監視し、応答しなくなっている間はそのサーバーをルーターの上流リストの末尾に移すので、新しい名前ごとにタイムアウトを待たずに次のサーバーへすぐ問い合わせが行きます。応答が戻り次第、先頭に戻します。切り替えはすべてシステムログに記録されます。
++RDHC_3=LAN の DNS サーバーを監視する
++RDHC_4=監視する DNS サーバー
++RDHC_5=問い合わせる名前
++RDHC_6=下で実際の応答を必須にしない限り、拒否を含むどんな返答も生存とみなします。
++RDHC_7=チェック間隔（秒）
++RDHC_8=応答タイムアウト（ms）
++RDHC_9=停止と判定するまでの失敗回数
++RDHC_10=復帰と判定するまでの成功回数
++RDHC_11=実際の応答を必須にする（レコード 1 件以上）
++RDHC_12=状態
++RDHC_13=動作していません
++RDHC_14=応答あり。上流リストの先頭
++RDHC_15=応答なし。上流リストの末尾に移動済み
++RDHC_16=切り替えを有効にするには、そのサーバーがルーターの DNS リスト（WAN の DNS または VPN クライアントの DNS）に含まれている必要があります。
++RDHC_17=ルーターは DNS サーバーを記載順に問い合わせ、応答がない場合にだけ次へ進みます。全サーバーに問い合わせを分散させません。上の正常性チェックと併用してください。
++RDHC_18=上流の順序
++RDHC_19=厳密な順序（dnsmasq strict-order）
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index aaff42522b..60028dcc8e 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=베타 채널
+ RFWU_55=Dev 브랜치의 베타 릴리스도 제공합니다. 베타는 이 공유기가 이미 최신 안정 릴리스를 실행 중이고 베타의 버전 번호가 더 높을 때만 제공됩니다. 안정 릴리스의 번호가 같으면 안정 릴리스만 제공됩니다. 베타는 안정 릴리스보다 테스트가 적습니다.
+ RFWU_56=베타
+ RFWU_57=이것은 Dev 브랜치의 베타 릴리스입니다. 안정 릴리스보다 테스트가 적으며, 이전 펌웨어는 대기 파티션에 남아 있습니다.
++RDHC_1=Reaper 리졸버 상태 검사
++RDHC_2=위의 ASUS 검사(공유기를 통해 이름을 조회해 인터넷 연결 여부를 판단)와는 다릅니다. 이 검사는 지정한 DNS 서버 하나(보통 AdGuard나 Pi-hole 같은 LAN 리졸버)를 감시하고, 응답이 멈춘 동안 그 서버를 공유기 상위 목록의 맨 뒤로 옮겨 새 이름마다 시간 초과를 기다리지 않고 즉시 다음 서버로 조회가 가게 합니다. 다시 응답하면 곧바로 맨 앞으로 되돌립니다. 모든 전환은 시스템 로그에 기록됩니다.
++RDHC_3=LAN DNS 서버 감시
++RDHC_4=감시할 DNS 서버
++RDHC_5=조회할 이름
++RDHC_6=아래에서 실제 응답을 요구하지 않는 한, 거부를 포함한 모든 회신을 정상으로 간주합니다.
++RDHC_7=검사 간격(초)
++RDHC_8=응답 시간 초과(ms)
++RDHC_9=다운으로 표시하기까지의 실패 횟수
++RDHC_10=복구로 표시하기까지의 성공 횟수
++RDHC_11=실제 응답 요구(레코드 1개 이상)
++RDHC_12=상태
++RDHC_13=실행 중이 아님
++RDHC_14=응답 중; 상위 목록의 첫 번째
++RDHC_15=응답 없음; 상위 목록의 맨 뒤로 이동됨
++RDHC_16=전환이 효과를 내려면 해당 서버가 공유기의 DNS 목록(WAN DNS 또는 VPN 클라이언트의 DNS)에 있어야 합니다.
++RDHC_17=공유기가 DNS 서버를 나열된 순서대로 조회하고, 하나가 응답하지 않을 때만 다음으로 넘어갑니다. 모든 서버에 조회를 분산하지 않습니다. 위의 상태 검사와 함께 사용하세요.
++RDHC_18=상위 순서
++RDHC_19=엄격한 순서(dnsmasq strict-order)
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index f1ee5b1293..27f422af7a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Saluran beta
+ RFWU_55=Tawarkan juga keluaran beta daripada cabang Dev. Beta hanya ditawarkan apabila penghala ini sudah menjalankan keluaran stabil terbaru dan beta itu membawa nombor versi yang lebih tinggi; apabila keluaran stabil mempunyai nombor yang sama, hanya yang stabil ditawarkan. Beta kurang diuji berbanding keluaran stabil.
+ RFWU_56=Beta
+ RFWU_57=Ini ialah keluaran beta daripada cabang Dev. Ia kurang diuji berbanding keluaran stabil; perisian tegar sebelumnya kekal dalam partition sandaran.
++RDHC_1=Semakan kesihatan penyelesai Reaper
++RDHC_2=Bukan semakan ASUS di atas, yang menyelesaikan nama melalui penghala untuk menentukan sama ada internet berfungsi. Yang ini memantau satu pelayan DNS yang anda namakan, biasanya penyelesai LAN seperti AdGuard atau Pi-hole, dan selagi ia berhenti menjawab, pelayan itu dipindahkan ke hujung senarai huluan penghala supaya carian terus ke pelayan seterusnya dan bukannya menunggu tamat masa pada setiap nama baharu. Sebaik sahaja ia menjawab semula, ia diletakkan semula di tempat pertama. Setiap pertukaran ditulis ke log sistem.
++RDHC_3=Pantau pelayan DNS LAN
++RDHC_4=Pelayan DNS yang dipantau
++RDHC_5=Nama untuk ditanya
++RDHC_6=Sebarang balasan dikira hidup, walaupun penolakan, melainkan jawapan sebenar diperlukan di bawah.
++RDHC_7=Selang semakan (saat)
++RDHC_8=Tamat masa balasan (ms)
++RDHC_9=Kegagalan sebelum ditanda gagal
++RDHC_10=Kejayaan sebelum ditanda pulih
++RDHC_11=Perlukan jawapan sebenar (sekurang-kurangnya satu rekod)
++RDHC_12=Status
++RDHC_13=Tidak berjalan
++RDHC_14=Menjawab; pertama dalam senarai huluan
++RDHC_15=TIDAK menjawab; dipindahkan ke hujung senarai huluan
++RDHC_16=Pelayan mesti berada dalam senarai DNS penghala (DNS WAN atau klien VPN) supaya pertukaran itu berkesan.
++RDHC_17=Penghala bertanya kepada pelayan DNSnya mengikut susunan yang disenaraikan dan beralih hanya apabila satu tidak menjawab, bukannya menyebarkan pertanyaan ke semuanya. Gandingkan dengan semakan kesihatan di atas.
++RDHC_18=Susunan huluan
++RDHC_19=Susunan ketat (strict-order dnsmasq)
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 033d9111f7..cd9a51353d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Bètakanaal
+ RFWU_55=Bied ook bètaversies uit de Dev-tak aan. Een bèta wordt alleen aangeboden wanneer deze router al de nieuwste stabiele versie draait en de bèta een hoger versienummer heeft; heeft de stabiele versie hetzelfde nummer, dan wordt alleen de stabiele aangeboden. Bèta’s zijn minder getest dan stabiele versies.
+ RFWU_56=Bèta
+ RFWU_57=Dit is een bètaversie uit de Dev-tak. Ze is minder getest dan een stabiele versie; de vorige firmware blijft in de stand-bypartitie.
++RDHC_1=Reaper resolver-gezondheidscontrole
++RDHC_2=Niet de ASUS-controle hierboven, die een naam via de router opzoekt om te bepalen of internet werkt. Deze bewaakt één door u opgegeven DNS-server, meestal een LAN-resolver zoals AdGuard of Pi-hole, en zolang die niet antwoordt wordt hij naar het einde van de upstream-lijst van de router verplaatst, zodat opzoekingen meteen naar de volgende server gaan in plaats van bij elke nieuwe naam op een time-out te wachten. Zodra hij weer antwoordt, staat hij weer vooraan. Elke wissel wordt in het systeemlogboek geschreven.
++RDHC_3=Een LAN-DNS-server bewaken
++RDHC_4=Te bewaken DNS-server
++RDHC_5=Op te zoeken naam
++RDHC_6=Elk antwoord telt als actief, ook een weigering, tenzij hieronder een echt antwoord wordt vereist.
++RDHC_7=Controle-interval (seconden)
++RDHC_8=Antwoordtime-out (ms)
++RDHC_9=Missers voordat hij als uitgevallen geldt
++RDHC_10=Treffers voordat hij weer als actief geldt
++RDHC_11=Een echt antwoord vereisen (ten minste één record)
++RDHC_12=Status
++RDHC_13=Niet actief
++RDHC_14=Antwoordt; eerste in de upstream-lijst
++RDHC_15=Antwoordt NIET; naar het einde van de upstream-lijst verplaatst
++RDHC_16=De server moet in de DNS-lijst van de router staan (WAN-DNS of die van een VPN-client), anders heeft de wissel geen effect.
++RDHC_17=De router vraagt zijn DNS-servers in de opgegeven volgorde en gaat alleen verder wanneer er een niet antwoordt, in plaats van de vragen over alle servers te verdelen. Combineer dit met de gezondheidscontrole hierboven.
++RDHC_18=Upstream-volgorde
++RDHC_19=Strikte volgorde (dnsmasq strict-order)
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 96ed9cefe8..52694e233b 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Betakanal
+ RFWU_55=Tilby også betautgivelser fra Dev-grenen. En beta tilbys bare når denne ruteren allerede kjører den nyeste stabile utgivelsen og betaen har et høyere versjonsnummer; har den stabile utgivelsen samme nummer, tilbys bare den stabile. Betaer er mindre testet enn stabile utgivelser.
+ RFWU_56=Beta
+ RFWU_57=Dette er en betautgivelse fra Dev-grenen. Den er mindre testet enn en stabil utgivelse; den forrige fastvaren blir værende i reservepartisjonen.
++RDHC_1=Reaper resolver-helsesjekk
++RDHC_2=Ikke ASUS-sjekken ovenfor, som slår opp et navn gjennom ruteren for å avgjøre om internett er oppe. Denne overvåker én DNS-server du oppgir, typisk en LAN-resolver som AdGuard eller Pi-hole, og så lenge den ikke svarer flyttes den til slutten av ruterens upstream-liste, slik at oppslag straks går til neste server i stedet for å vente ut et tidsavbrudd for hvert nytt navn. Så snart den svarer igjen, settes den først. Hvert bytte skrives til systemloggen.
++RDHC_3=Overvåk en LAN-DNS-server
++RDHC_4=DNS-server som skal overvåkes
++RDHC_5=Navn å slå opp
++RDHC_6=Ethvert svar teller som i live, selv et avslag, med mindre et ekte svar kreves nedenfor.
++RDHC_7=Sjekkintervall (sekunder)
++RDHC_8=Svartidsavbrudd (ms)
++RDHC_9=Feil før den merkes som nede
++RDHC_10=Treff før den merkes som oppe igjen
++RDHC_11=Krev et ekte svar (minst én post)
++RDHC_12=Status
++RDHC_13=Kjører ikke
++RDHC_14=Svarer; først i upstream-listen
++RDHC_15=Svarer IKKE; flyttet til slutten av upstream-listen
++RDHC_16=Serveren må stå i ruterens DNS-liste (WAN-DNS eller en VPN-klients) for at byttet skal ha noen virkning.
++RDHC_17=Ruteren spør DNS-serverne sine i oppgitt rekkefølge og går bare videre når én ikke svarer, i stedet for å spre spørringer over alle. Bruk den sammen med helsesjekken ovenfor.
++RDHC_18=Upstream-rekkefølge
++RDHC_19=Streng rekkefølge (dnsmasq strict-order)
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 98daf2d89d..f759a20aad 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Kanał beta
+ RFWU_55=Oferuj także wydania beta z gałęzi Dev. Beta jest oferowana tylko wtedy, gdy ten router ma już najnowsze wydanie stabilne, a beta ma wyższy numer wersji; gdy wydanie stabilne ma ten sam numer, oferowane jest tylko stabilne. Wersje beta są mniej przetestowane niż stabilne.
+ RFWU_56=Beta
+ RFWU_57=To jest wydanie beta z gałęzi Dev. Jest mniej przetestowane niż wydanie stabilne; poprzednie oprogramowanie pozostaje na partycji zapasowej.
++RDHC_1=Kontrola stanu resolvera Reaper
++RDHC_2=To nie jest kontrola ASUS powyżej, która rozwiązuje nazwę przez router, aby ocenić, czy internet działa. Ta obserwuje jeden wskazany serwer DNS, zwykle resolver w sieci LAN, taki jak AdGuard lub Pi-hole, i dopóki nie odpowiada, przenosi go na koniec listy serwerów nadrzędnych routera, dzięki czemu zapytania od razu trafiają do następnego serwera zamiast czekać na przekroczenie limitu czasu przy każdej nowej nazwie. Gdy tylko znów odpowie, wraca na pierwsze miejsce. Każde przełączenie jest zapisywane w dzienniku systemowym.
++RDHC_3=Obserwuj serwer DNS w sieci LAN
++RDHC_4=Obserwowany serwer DNS
++RDHC_5=Nazwa do zapytania
++RDHC_6=Każda odpowiedź liczy się jako działający serwer, nawet odmowa, chyba że poniżej wymagana jest prawdziwa odpowiedź.
++RDHC_7=Odstęp kontroli (sekundy)
++RDHC_8=Limit czasu odpowiedzi (ms)
++RDHC_9=Niepowodzenia przed oznaczeniem jako niedostępny
++RDHC_10=Sukcesy przed ponownym oznaczeniem jako dostępny
++RDHC_11=Wymagaj prawdziwej odpowiedzi (co najmniej jeden rekord)
++RDHC_12=Stan
++RDHC_13=Nie działa
++RDHC_14=Odpowiada; pierwszy na liście serwerów nadrzędnych
++RDHC_15=NIE odpowiada; przeniesiony na koniec listy serwerów nadrzędnych
++RDHC_16=Serwer musi znajdować się na liście DNS routera (DNS WAN lub klienta VPN), aby przełączenie miało skutek.
++RDHC_17=Router odpytuje swoje serwery DNS w podanej kolejności i przechodzi dalej tylko wtedy, gdy któryś nie odpowiada, zamiast rozdzielać zapytania między wszystkie. Połącz z kontrolą stanu powyżej.
++RDHC_18=Kolejność serwerów nadrzędnych
++RDHC_19=Ścisła kolejność (strict-order dnsmasq)
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 3e3be99827..5dd390b40f 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Canal beta
+ RFWU_55=Oferă și versiuni beta din ramura Dev. O beta este oferită doar când acest router rulează deja cea mai nouă versiune stabilă și beta are un număr de versiune mai mare; când versiunea stabilă are același număr, se oferă doar cea stabilă. Versiunile beta sunt mai puțin testate decât cele stabile.
+ RFWU_56=Beta
+ RFWU_57=Aceasta este o versiune beta din ramura Dev. Este mai puțin testată decât o versiune stabilă; firmware-ul anterior rămâne în partiția de rezervă.
++RDHC_1=Verificarea stării resolverului Reaper
++RDHC_2=Nu este verificarea ASUS de mai sus, care rezolvă un nume prin router pentru a decide dacă internetul funcționează. Aceasta urmărește un singur server DNS pe care îl indicați, de obicei un resolver din LAN precum AdGuard sau Pi-hole, iar cât timp nu mai răspunde îl mută la sfârșitul listei de servere upstream a routerului, astfel încât interogările merg imediat la serverul următor în loc să aștepte un timeout la fiecare nume nou. De îndată ce răspunde din nou, este pus înapoi primul. Fiecare comutare este scrisă în jurnalul de sistem.
++RDHC_3=Urmărește un server DNS din LAN
++RDHC_4=Serverul DNS de urmărit
++RDHC_5=Numele de interogat
++RDHC_6=Orice răspuns contează ca activ, chiar și un refuz, dacă mai jos nu se cere un răspuns real.
++RDHC_7=Interval de verificare (secunde)
++RDHC_8=Timeout răspuns (ms)
++RDHC_9=Eșecuri până la marcarea ca picat
++RDHC_10=Reușite până la marcarea ca revenit
++RDHC_11=Cere un răspuns real (cel puțin o înregistrare)
++RDHC_12=Stare
++RDHC_13=Nu rulează
++RDHC_14=Răspunde; primul în lista upstream
++RDHC_15=NU răspunde; mutat la sfârșitul listei upstream
++RDHC_16=Serverul trebuie să fie în lista DNS a routerului (DNS WAN sau al unui client VPN) pentru ca schimbarea să aibă efect.
++RDHC_17=Routerul își întreabă serverele DNS în ordinea listată și trece mai departe doar când unul nu răspunde, în loc să împartă interogările între toate. Combinați cu verificarea stării de mai sus.
++RDHC_18=Ordinea upstream
++RDHC_19=Ordine strictă (strict-order dnsmasq)
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 6b7ac532ba..729093fc64 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Бета-канал
+ RFWU_55=Также предлагать бета-версии из ветки Dev. Бета предлагается только когда роутер уже работает на новейшей стабильной версии и номер бета-версии выше; если у стабильной версии тот же номер, предлагается только стабильная. Бета-версии протестированы меньше стабильных.
+ RFWU_56=Бета
+ RFWU_57=Это бета-версия из ветки Dev. Она протестирована меньше стабильной; предыдущая прошивка остаётся в резервном разделе.
++RDHC_1=Проверка работоспособности резолвера Reaper
++RDHC_2=Это не проверка ASUS выше, которая разрешает имя через роутер, чтобы решить, есть ли интернет. Эта следит за одним указанным DNS-сервером, обычно резолвером в LAN, таким как AdGuard или Pi-hole, и пока он не отвечает, переносит его в конец списка вышестоящих серверов роутера, так что запросы сразу идут к следующему серверу вместо ожидания таймаута на каждом новом имени. Как только он снова отвечает, его возвращают на первое место. Каждое переключение записывается в системный журнал.
++RDHC_3=Следить за DNS-сервером в LAN
++RDHC_4=Отслеживаемый DNS-сервер
++RDHC_5=Запрашиваемое имя
++RDHC_6=Любой ответ считается признаком работы, даже отказ, если ниже не требуется настоящий ответ.
++RDHC_7=Интервал проверки (секунды)
++RDHC_8=Таймаут ответа (мс)
++RDHC_9=Промахов до отметки «недоступен»
++RDHC_10=Попаданий до отметки «снова доступен»
++RDHC_11=Требовать настоящий ответ (не менее одной записи)
++RDHC_12=Состояние
++RDHC_13=Не запущено
++RDHC_14=Отвечает; первый в списке вышестоящих
++RDHC_15=НЕ отвечает; перенесён в конец списка вышестоящих
++RDHC_16=Сервер должен быть в списке DNS роутера (DNS WAN или VPN-клиента), иначе переключение ничего не даст.
++RDHC_17=Роутер опрашивает свои DNS-серверы в указанном порядке и переходит к следующему только когда один не отвечает, а не распределяет запросы между всеми. Используйте вместе с проверкой выше.
++RDHC_18=Порядок вышестоящих серверов
++RDHC_19=Строгий порядок (dnsmasq strict-order)
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 7cc5c8683f..bf654cc0c0 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Kanal beta
+ RFWU_55=Ponudi tudi izdaje beta iz veje Dev. Beta se ponudi le, kadar ta usmerjevalnik že teče na najnovejši stabilni izdaji in ima beta višjo številko različice; kadar ima stabilna izdaja isto številko, se ponudi samo stabilna. Izdaje beta so manj preizkušene kot stabilne.
+ RFWU_56=Beta
+ RFWU_57=To je izdaja beta iz veje Dev. Manj je preizkušena kot stabilna izdaja; prejšnja strojna programska oprema ostane na rezervni particiji.
++RDHC_1=Preverjanje stanja razreševalnika Reaper
++RDHC_2=To ni preverjanje ASUS zgoraj, ki razreši ime prek usmerjevalnika, da ugotovi, ali internet deluje. To spremlja en DNS-strežnik, ki ga navedete, običajno razreševalnik v LAN, kot je AdGuard ali Pi-hole, in dokler ne odgovarja, ga premakne na konec seznama nadrejenih strežnikov usmerjevalnika, tako da poizvedbe takoj gredo k naslednjemu strežniku, namesto da bi pri vsakem novem imenu čakale na potek časa. Takoj ko spet odgovori, je vrnjen na prvo mesto. Vsak preklop se zapiše v sistemski dnevnik.
++RDHC_3=Spremljaj DNS-strežnik v LAN
++RDHC_4=DNS-strežnik za spremljanje
++RDHC_5=Ime za poizvedbo
++RDHC_6=Vsak odgovor šteje kot živ, tudi zavrnitev, razen če spodaj zahtevate pravi odgovor.
++RDHC_7=Interval preverjanja (sekunde)
++RDHC_8=Časovna omejitev odgovora (ms)
++RDHC_9=Neuspehi pred oznako nedosegljiv
++RDHC_10=Uspehi pred ponovno oznako dosegljiv
++RDHC_11=Zahtevaj pravi odgovor (vsaj en zapis)
++RDHC_12=Stanje
++RDHC_13=Ne teče
++RDHC_14=Odgovarja; prvi na seznamu nadrejenih
++RDHC_15=NE odgovarja; premaknjen na konec seznama nadrejenih
++RDHC_16=Strežnik mora biti na seznamu DNS usmerjevalnika (DNS WAN ali odjemalca VPN), sicer preklop nima učinka.
++RDHC_17=Usmerjevalnik sprašuje svoje DNS-strežnike v navedenem vrstnem redu in gre naprej le, ko eden ne odgovori, namesto da bi poizvedbe razpršil med vse. Uporabite skupaj s preverjanjem stanja zgoraj.
++RDHC_18=Vrstni red nadrejenih
++RDHC_19=Strog vrstni red (dnsmasq strict-order)
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 353a555bc7..46be5a5aad 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Betakanal
+ RFWU_55=Erbjud även betautgåvor från Dev-grenen. En beta erbjuds bara när den här routern redan kör den senaste stabila utgåvan och betan har ett högre versionsnummer; har den stabila utgåvan samma nummer erbjuds bara den stabila. Betor är mindre testade än stabila utgåvor.
+ RFWU_56=Beta
+ RFWU_57=Det här är en betautgåva från Dev-grenen. Den är mindre testad än en stabil utgåva; den tidigare inbyggda programvaran finns kvar i reservpartitionen.
++RDHC_1=Reaper resolver-hälsokontroll
++RDHC_2=Inte ASUS-kontrollen ovan, som slår upp ett namn via routern för att avgöra om internet är uppe. Den här övervakar en enda DNS-server du anger, vanligen en LAN-resolver som AdGuard eller Pi-hole, och så länge den slutar svara flyttas den sist i routerns upstream-lista, så att uppslagningar genast går till nästa server i stället för att vänta ut en timeout för varje nytt namn. Så snart den svarar igen sätts den först. Varje växling skrivs till systemloggen.
++RDHC_3=Övervaka en LAN-DNS-server
++RDHC_4=DNS-server att övervaka
++RDHC_5=Namn att slå upp
++RDHC_6=Alla svar räknas som levande, även ett avslag, om inte ett riktigt svar krävs nedan.
++RDHC_7=Kontrollintervall (sekunder)
++RDHC_8=Svarstimeout (ms)
++RDHC_9=Missar innan den markeras nere
++RDHC_10=Träffar innan den markeras uppe igen
++RDHC_11=Kräv ett riktigt svar (minst en post)
++RDHC_12=Status
++RDHC_13=Körs inte
++RDHC_14=Svarar; först i upstream-listan
++RDHC_15=Svarar INTE; flyttad sist i upstream-listan
++RDHC_16=Servern måste finnas i routerns DNS-lista (WAN-DNS eller en VPN-klients) för att växlingen ska ha någon verkan.
++RDHC_17=Routern frågar sina DNS-servrar i angiven ordning och går vidare bara när en inte svarar, i stället för att sprida frågor över alla. Använd tillsammans med hälsokontrollen ovan.
++RDHC_18=Upstream-ordning
++RDHC_19=Strikt ordning (dnsmasq strict-order)
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 4246cba83c..563143ea41 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=ช่องทางเบต้า
+ RFWU_55=เสนอรุ่นเบต้าจากสาขา Dev ด้วย รุ่นเบต้าจะถูกเสนอเฉพาะเมื่อเราเตอร์นี้ใช้รุ่นเสถียรล่าสุดอยู่แล้วและรุ่นเบต้ามีหมายเลขเวอร์ชันสูงกว่า หากรุ่นเสถียรมีหมายเลขเดียวกันจะเสนอเฉพาะรุ่นเสถียร รุ่นเบต้าผ่านการทดสอบน้อยกว่ารุ่นเสถียร
+ RFWU_56=เบต้า
+ RFWU_57=นี่คือรุ่นเบต้าจากสาขา Dev ซึ่งผ่านการทดสอบน้อยกว่ารุ่นเสถียร เฟิร์มแวร์รุ่นก่อนหน้ายังคงอยู่ในพาร์ติชันสำรอง
++RDHC_1=การตรวจสอบสถานะรีโซลเวอร์ของ Reaper
++RDHC_2=ไม่ใช่การตรวจสอบของ ASUS ด้านบนซึ่งแปลงชื่อผ่านเราเตอร์เพื่อตัดสินว่าอินเทอร์เน็ตใช้งานได้หรือไม่ การตรวจสอบนี้เฝ้าดูเซิร์ฟเวอร์ DNS เพียงตัวเดียวที่คุณระบุ โดยทั่วไปคือรีโซลเวอร์ใน LAN เช่น AdGuard หรือ Pi-hole และเมื่อมันหยุดตอบ จะย้ายเซิร์ฟเวอร์นั้นไปท้ายรายการอัปสตรีมของเราเตอร์ เพื่อให้การค้นหาไปยังเซิร์ฟเวอร์ถัดไปทันทีแทนที่จะรอหมดเวลาทุกชื่อใหม่ ทันทีที่มันตอบอีกครั้งจะถูกนำกลับมาไว้ลำดับแรก ทุกการสลับจะถูกบันทึกลงในบันทึกระบบ
++RDHC_3=เฝ้าดูเซิร์ฟเวอร์ DNS ใน LAN
++RDHC_4=เซิร์ฟเวอร์ DNS ที่เฝ้าดู
++RDHC_5=ชื่อที่ใช้สอบถาม
++RDHC_6=การตอบกลับใด ๆ ถือว่ายังทำงาน แม้เป็นการปฏิเสธ เว้นแต่จะกำหนดให้ต้องมีคำตอบจริงด้านล่าง
++RDHC_7=ช่วงเวลาตรวจสอบ (วินาที)
++RDHC_8=หมดเวลารอตอบ (มิลลิวินาที)
++RDHC_9=จำนวนครั้งที่ล้มเหลวก่อนถือว่าล่ม
++RDHC_10=จำนวนครั้งที่สำเร็จก่อนถือว่ากลับมา
++RDHC_11=ต้องมีคำตอบจริง (อย่างน้อยหนึ่งเรกคอร์ด)
++RDHC_12=สถานะ
++RDHC_13=ไม่ได้ทำงาน
++RDHC_14=ตอบอยู่; ลำดับแรกในรายการอัปสตรีม
++RDHC_15=ไม่ตอบ; ถูกย้ายไปท้ายรายการอัปสตรีม
++RDHC_16=เซิร์ฟเวอร์ต้องอยู่ในรายการ DNS ของเราเตอร์ (DNS ของ WAN หรือของไคลเอนต์ VPN) การสลับจึงจะมีผล
++RDHC_17=เราเตอร์จะถามเซิร์ฟเวอร์ DNS ตามลำดับที่ระบุ และไปยังตัวถัดไปเฉพาะเมื่อตัวหนึ่งไม่ตอบ แทนที่จะกระจายคำถามไปทุกตัว ใช้ร่วมกับการตรวจสอบสถานะด้านบน
++RDHC_18=ลำดับอัปสตรีม
++RDHC_19=ลำดับเข้มงวด (dnsmasq strict-order)
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index bb3bba0705..1c582c3d07 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Beta kanalı
+ RFWU_55=Dev dalındaki beta sürümleri de sun. Beta yalnızca bu yönlendirici zaten en yeni kararlı sürümü çalıştırıyorsa ve betanın sürüm numarası daha yüksekse sunulur; kararlı sürüm aynı numaraya sahipse yalnızca kararlı sürüm sunulur. Betalar kararlı sürümlerden daha az test edilmiştir.
+ RFWU_56=Beta
+ RFWU_57=Bu, Dev dalından bir beta sürümüdür. Kararlı bir sürümden daha az test edilmiştir; önceki bellenim yedek bölümde kalır.
++RDHC_1=Reaper çözümleyici sağlık denetimi
++RDHC_2=Yukarıdaki ASUS denetimi değildir; o, internetin çalışıp çalışmadığına karar vermek için yönlendirici üzerinden bir ad çözer. Bu denetim, belirttiğiniz tek bir DNS sunucusunu, genellikle AdGuard veya Pi-hole gibi bir LAN çözümleyicisini izler ve yanıt vermediği sürece onu yönlendiricinin üst sunucu listesinin sonuna taşır; böylece sorgular her yeni adda zaman aşımı beklemek yerine hemen sonraki sunucuya gider. Yeniden yanıt verir vermez başa alınır. Her geçiş sistem günlüğüne yazılır.
++RDHC_3=Bir LAN DNS sunucusunu izle
++RDHC_4=İzlenecek DNS sunucusu
++RDHC_5=Sorgulanacak ad
++RDHC_6=Aşağıda gerçek bir yanıt istenmedikçe, ret dahil her yanıt çalışıyor sayılır.
++RDHC_7=Denetim aralığı (saniye)
++RDHC_8=Yanıt zaman aşımı (ms)
++RDHC_9=Kapalı sayılmadan önceki başarısızlık sayısı
++RDHC_10=Yeniden açık sayılmadan önceki başarı sayısı
++RDHC_11=Gerçek yanıt iste (en az bir kayıt)
++RDHC_12=Durum
++RDHC_13=Çalışmıyor
++RDHC_14=Yanıt veriyor; üst sunucu listesinde ilk sırada
++RDHC_15=Yanıt VERMİYOR; üst sunucu listesinin sonuna taşındı
++RDHC_16=Geçişin etkili olması için sunucu, yönlendiricinin DNS listesinde (WAN DNS veya bir VPN istemcisininki) olmalıdır.
++RDHC_17=Yönlendirici DNS sunucularına listelenen sırayla sorar ve sorguları hepsine dağıtmak yerine yalnızca biri yanıt vermediğinde sonrakine geçer. Yukarıdaki sağlık denetimiyle birlikte kullanın.
++RDHC_18=Üst sunucu sırası
++RDHC_19=Katı sıra (dnsmasq strict-order)
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 9ecde2db6d..3e21a6a2ea 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=測試版頻道
+ RFWU_55=同時提供來自 Dev 分支的測試版。僅當本路由器已執行最新穩定版且測試版的版本號較高時才會提供測試版；當穩定版的版本號相同時，只提供穩定版。測試版的測試程度低於穩定版。
+ RFWU_56=測試版
+ RFWU_57=這是來自 Dev 分支的測試版。它的測試程度低於穩定版；先前的韌體仍保留在備用分割區中。
++RDHC_1=Reaper 解析器健康檢查
++RDHC_2=不同於上方的華碩檢查（它透過路由器解析一個名稱來判斷網際網路是否可用）。此檢查監視您指定的單一 DNS 伺服器（通常是 AdGuard 或 Pi-hole 等區域網路解析器），當它停止回應時，將該伺服器移到路由器上游清單的末尾，使查詢立即轉向下一個伺服器，而不是每個新名稱都等待逾時。一旦它恢復回應，就會被放回首位。每次切換都會寫入系統記錄。
++RDHC_3=監視區域網路 DNS 伺服器
++RDHC_4=要監視的 DNS 伺服器
++RDHC_5=查詢的名稱
++RDHC_6=任何回覆都算作存活（即使是拒絕），除非下方要求真實回應。
++RDHC_7=檢查間隔（秒）
++RDHC_8=回覆逾時（毫秒）
++RDHC_9=標記為故障前的失敗次數
++RDHC_10=標記為恢復前的成功次數
++RDHC_11=要求真實回應（至少一筆記錄）
++RDHC_12=狀態
++RDHC_13=未執行
++RDHC_14=回應中；位於上游清單首位
++RDHC_15=無回應；已移至上游清單末尾
++RDHC_16=該伺服器必須在路由器的 DNS 清單中（WAN DNS 或 VPN 用戶端的 DNS），切換才會生效。
++RDHC_17=路由器依列出的順序詢問其 DNS 伺服器，僅在某個伺服器無回應時才轉向下一個，而不是把查詢分散到所有伺服器。請與上方的健康檢查搭配使用。
++RDHC_18=上游順序
++RDHC_19=嚴格順序（dnsmasq strict-order）
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index b62a8a1e4b..c4a8795d17 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6865,3 +6865,22 @@ RFWU_54=Бета-канал
+ RFWU_55=Також пропонувати бета-версії з гілки Dev. Бета пропонується лише тоді, коли маршрутизатор уже працює на найновішій стабільній версії й номер бета-версії вищий; якщо стабільна версія має той самий номер, пропонується лише стабільна. Бета-версії протестовано менше, ніж стабільні.
+ RFWU_56=Бета
+ RFWU_57=Це бета-версія з гілки Dev. Її протестовано менше, ніж стабільну; попередня прошивка залишається в резервному розділі.
++RDHC_1=Перевірка працездатності резолвера Reaper
++RDHC_2=Це не перевірка ASUS вище, яка розв’язує ім’я через маршрутизатор, щоб визначити, чи є інтернет. Ця стежить за одним вказаним DNS-сервером, зазвичай резолвером у LAN, як-от AdGuard чи Pi-hole, і поки він не відповідає, переносить його в кінець списку вищих серверів маршрутизатора, тож запити одразу йдуть до наступного сервера замість очікування тайм-ауту на кожному новому імені. Щойно він знову відповідає, його повертають на перше місце. Кожне перемикання записується в системний журнал.
++RDHC_3=Стежити за DNS-сервером у LAN
++RDHC_4=DNS-сервер для стеження
++RDHC_5=Ім’я для запиту
++RDHC_6=Будь-яка відповідь вважається ознакою роботи, навіть відмова, якщо нижче не вимагається справжня відповідь.
++RDHC_7=Інтервал перевірки (секунди)
++RDHC_8=Тайм-аут відповіді (мс)
++RDHC_9=Промахів до позначки «недоступний»
++RDHC_10=Влучань до позначки «знову доступний»
++RDHC_11=Вимагати справжню відповідь (щонайменше один запис)
++RDHC_12=Стан
++RDHC_13=Не запущено
++RDHC_14=Відповідає; перший у списку вищих серверів
++RDHC_15=НЕ відповідає; перенесено в кінець списку вищих серверів
++RDHC_16=Сервер має бути у списку DNS маршрутизатора (DNS WAN або VPN-клієнта), інакше перемикання не матиме ефекту.
++RDHC_17=Маршрутизатор опитує свої DNS-сервери у вказаному порядку і переходить далі лише коли один не відповідає, а не розподіляє запити між усіма. Використовуйте разом із перевіркою вище.
++RDHC_18=Порядок вищих серверів
++RDHC_19=Суворий порядок (dnsmasq strict-order)
+-- 
+2.25.1
+

@@ -1,0 +1,199 @@
+From 5b18b0c2e0ea3a33b29668750b5c890ad4d130e6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 20 Sep 2026 14:08:48 -0400
+Subject: [PATCH] rwarden: one counter snapshot per stack; the Warden page says
+ what the number is
+
+fold.sh and stats.sh read TOTAL and the country, threat and ban buckets from
+separate iptables listings, so a packet arriving between the reads was
+banked in a bucket but not in the total and then zeroed: the durable store
+drifted a few packets per 15-minute checkpoint, forever, with Unclassified
+clamped at zero. Both scripts now take one iptables -nvxL / ip6tables -nvxL
+listing per run into the scratch file and parse every figure from it by
+Chain section; the -Z loops are unchanged.
+
+Warden page: the stat reads "Blocked packets" (RWDN_108) and a card under
+"How Warden works" (RWDN_102-107) explains packets vs attempts, the 400-line
+log view and why the log never equals the counter.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c          | 74 +++++++++++++-----------
+ release/src/router/www/Reaper_Warden.asp | 15 ++++-
+ 2 files changed, 54 insertions(+), 35 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index dbd2834116..676845d747 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1334,35 +1334,40 @@ static void rw_gen_fold(void)
+ 	  "# blocks and belong in the same total. MISSING EITHER HERE SILENTLY LOSES\n"
+ 	  "# THOSE BLOCKS FROM THE COUNT - and, because the -Z loop below would then\n"
+ 	  "# not zero them either, re-banks the same packets on every checkpoint.\n"
+-	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; }"
+-	  " | awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  /* 2026-09-20 field report ("the count does not match what the table shows"):
++	   * TOTAL used to come from one listing and the buckets from a SECOND one
++	   * taken a moment later, so packets landing between the two reads were
++	   * banked in the buckets but not in TOTAL, then zeroed - a permanent,
++	   * monotonic skew in the durable store (Unclassified clamps at 0 and the
++	   * three buckets add up to MORE than the total). One whole-table listing
++	   * per stack is a single kernel copy of the entries WITH their counters,
++	   * i.e. a consistent snapshot; every number below is parsed from that one
++	   * file by chain section, so they cannot disagree with each other. */
++	  "{ iptables -nvxL 2>/dev/null; ip6tables -nvxL 2>/dev/null; } > \"$TMPCH\" 2>/dev/null\n"
++	  "LIVE=$(awk '/^Chain /{ch=$2; next} (ch==\"RW_DROP\"||ch==\"RW_SDROP\"||ch==\"RW_ODROP\") && / DROP /{s+=$1} END{print s+0}' \"$TMPCH\" 2>/dev/null)\n"
+ 	  /* 2026-09-13 (backlog "Warden outbound blocks appear to have stopped", defect (a)):
+ 	   * the outbound drops were only ever readable LIVE, and this script zeroes
+ 	   * them every 15 minutes - so every reader that quoted RW_ODROP as a total
+ 	   * (rwatch 3e, the page's out_n) read 0 most of the time on a healthy box.
+ 	   * Bank them under their own key, exactly as TOTAL is banked. Same packets
+ 	   * as the RW_ODROP share of LIVE, counted a second time under their own name. */
+-	  "OUTL=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; }"
+-	  " | awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "OUTL=$(awk '/^Chain /{ch=$2; next} ch==\"RW_ODROP\" && / DROP /{s+=$1} END{print s+0}' \"$TMPCH\" 2>/dev/null)\n"
+ 	  "# RW_OUT and RW_SELF carry the per-country DESTINATION rules (direction\n"
+-	  "# out/both, and router-originated respectively) - list them too or those\n"
+-	  "# country hits are never banked.\n"
+-	  "{ for C in REAPER_WARDEN RW_OUT RW_SELF; do\n"
+-	  "    iptables -nvxL \"$C\" 2>/dev/null; ip6tables -nvxL \"$C\" 2>/dev/null\n"
+-	  "  done; } > \"$TMPCH\" 2>/dev/null\n"
+-	  "awk '\n"
+-	  "  { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
++	  "# out/both, and router-originated respectively) - read them too or those\n"
++	  "# country hits are never banked. Same snapshot as TOTAL above.\n"
++	  "awk '/^Chain /{ch=$2; next} ch==\"REAPER_WARDEN\"||ch==\"RW_OUT\"||ch==\"RW_SELF\" {\n"
++	  "    for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
+ 	  "  END{ for(k in c) if(c[k]>0) print k, c[k] }' \"$TMPCH\" > \"$TMPCC\" 2>/dev/null\n"
+ 	  "CCN=$(awk '{s+=$2} END{print s+0}' \"$TMPCC\" 2>/dev/null)\n"
+ 	  "# per-family deltas from the SAME listing, so the three buckets and the\n"
+ 	  "# per-country table can never be read a moment apart from each other.\n"
+ 	  "# One rule may name two sets (a dst rule in RW_OUT names only one), so\n"
+ 	  "# count a line once per family, not once per matching field.\n"
+-	  "THL=$(awk '{f=0; for(i=1;i<=NF;i++) if($i==\"rw_threat\"||$i==\"rw_threat6\") f=1; if(f) s+=$1}"
++	  "THL=$(awk '/^Chain /{ch=$2; next} ch!=\"REAPER_WARDEN\"&&ch!=\"RW_OUT\"&&ch!=\"RW_SELF\"{next}"
++	  " {f=0; for(i=1;i<=NF;i++) if($i==\"rw_threat\"||$i==\"rw_threat6\") f=1; if(f) s+=$1}"
+ 	  " END{print s+0}' \"$TMPCH\" 2>/dev/null)\n"
+-	  "BNL=$(awk '{f=0; for(i=1;i<=NF;i++) if($i==\"rw_ban\"||$i==\"rw_ban6\") f=1; if(f) s+=$1}"
++	  "BNL=$(awk '/^Chain /{ch=$2; next} ch!=\"REAPER_WARDEN\"&&ch!=\"RW_OUT\"&&ch!=\"RW_SELF\"{next}"
++	  " {f=0; for(i=1;i<=NF;i++) if($i==\"rw_ban\"||$i==\"rw_ban6\") f=1; if(f) s+=$1}"
+ 	  " END{print s+0}' \"$TMPCH\" 2>/dev/null)\n"
+ 	  "# nothing new and the store already exists -> leave /jffs completely alone\n"
+ 	  "if [ \"$LIVE\" = 0 ] && [ \"$CCN\" = 0 ] && [ -f \"$CTR\" ]; then rm -f \"$TMPCC\" \"$TMPCH\"; exit 0; fi\n"
+@@ -1445,24 +1450,26 @@ static void rw_gen_stats(void)
+ 	  "  BASE=$(awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BASE\" ] || BASE=0\n"
+ 	  "  SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$SINCE\" ] || SINCE=0\n"
+ 	  "fi\n"
+-	  "LIVE=$( { iptables -nvxL RW_DROP 2>/dev/null; ip6tables -nvxL RW_DROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null;\n"
+-	  "          iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+-	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  /* 2026-09-20: ONE whole-table snapshot per stack (see rw_gen_fold): total,
++	   * self, out and every bucket below are parsed from this one file, taken
++	   * under the shared lock, so a poll can never show buckets that disagree
++	   * with the total they are meant to explain. Per-PROCESS path: httpd
++	   * popen()s stats.sh on every 30 s poll with no lock between two tabs. */
++	  "CH=/tmp/rwarden/ch.stats.$$\n"
++	  "{ iptables -nvxL 2>/dev/null; ip6tables -nvxL 2>/dev/null; } > \"$CH\" 2>/dev/null\n"
++	  "LIVE=$(awk '/^Chain /{ch=$2; next} (ch==\"RW_DROP\"||ch==\"RW_SDROP\"||ch==\"RW_ODROP\") && / DROP /{s+=$1} END{print s+0}' \"$CH\" 2>/dev/null)\n"
+ 	  "TOTAL=$((BASE+LIVE))\n"
+ 	  "# router's-own-traffic filter: armed, and how many of its drops are live\n"
+-	  "SELF=0; iptables -nL RW_SELF >/dev/null 2>&1 && SELF=1\n"
+-	  "SELFN=$( { iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null; } "
+-	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "SELF=0; grep -q '^Chain RW_SELF ' \"$CH\" 2>/dev/null && SELF=1\n"
++	  "SELFN=$(awk '/^Chain /{ch=$2; next} ch==\"RW_SDROP\" && / DROP /{s+=$1} END{print s+0}' \"$CH\" 2>/dev/null)\n"
+ 	  /* Outbound drops, reported separately for the same reason SELFN is: the
+ 	   * field question "is direction=out actually doing anything?" cannot be
+ 	   * answered from a single blended total. */
+-	  "OUTA=0; iptables -nL RW_OUT >/dev/null 2>&1 && OUTA=1\n"
++	  "OUTA=0; grep -q '^Chain RW_OUT ' \"$CH\" 2>/dev/null && OUTA=1\n"
+ 	  /* 2026-09-13: banked OUT + live, the way total is TOTAL + live; a bare
+ 	   * live count read 0 for most of every 15-minute fold window (defect (a)). */
+ 	  "OUTB=0; [ \"$SV\" = 1 ] && [ -f \"$CTR\" ] && OUTB=$(awk '$1==\"OUT\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$OUTB\" ] || OUTB=0\n"
+-	  "OUTN=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+-	  "| awk '/ DROP /{s+=$1} END{print s+0}'); OUTN=$((OUTB+OUTN))\n"
++	  "OUTN=$(awk '/^Chain /{ch=$2; next} ch==\"RW_ODROP\" && / DROP /{s+=$1} END{print s+0}' \"$CH\" 2>/dev/null); OUTN=$((OUTB+OUTN))\n"
+ 	  /* One listing, read by every bucket below - a second `iptables -nvxL` a
+ 	   * moment later would let the buckets disagree with each other and with
+ 	   * TOTAL, which is precisely the confusion being fixed here. */
+@@ -1471,10 +1478,7 @@ static void rw_gen_stats(void)
+ 	   * truncated each other's chain listing - which read back as zero geo /
+ 	   * threat / ban. That is precisely the reconciliation confusion the
+ 	   * breakdown was added to fix, so a shared path here defeats the feature. */
+-	  "CH=/tmp/rwarden/ch.stats.$$\n"
+-	  "{ for C in REAPER_WARDEN RW_OUT RW_SELF; do\n"
+-	  "    iptables -nvxL \"$C\" 2>/dev/null; ip6tables -nvxL \"$C\" 2>/dev/null\n"
+-	  "  done; } > \"$CH\" 2>/dev/null\n"
++	  /* (the snapshot in $CH was taken above, before TOTAL) */
+ 	  /* Where the total actually came from. GEO/THREAT/BAN are banked + live,
+ 	   * mirroring TOTAL, so the four reconcile across a reboot too. */
+ 	  "BTH=0; BBN=0\n"
+@@ -1482,14 +1486,16 @@ static void rw_gen_stats(void)
+ 	  "  BTH=$(awk '$1==\"THREAT\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BTH\" ] || BTH=0\n"
+ 	  "  BBN=$(awk '$1==\"BAN\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BBN\" ] || BBN=0\n"
+ 	  "fi\n"
+-	  "THREAT=$((BTH+$(awk '{f=0; for(i=1;i<=NF;i++) if($i==\"rw_threat\"||$i==\"rw_threat6\") f=1;"
++	  "THREAT=$((BTH+$(awk '/^Chain /{ch=$2; next} ch!=\"REAPER_WARDEN\"&&ch!=\"RW_OUT\"&&ch!=\"RW_SELF\"{next}"
++	  " {f=0; for(i=1;i<=NF;i++) if($i==\"rw_threat\"||$i==\"rw_threat6\") f=1;"
+ 	  " if(f) s+=$1} END{print s+0}' \"$CH\" 2>/dev/null)))\n"
+-	  "BAN=$((BBN+$(awk '{f=0; for(i=1;i<=NF;i++) if($i==\"rw_ban\"||$i==\"rw_ban6\") f=1;"
++	  "BAN=$((BBN+$(awk '/^Chain /{ch=$2; next} ch!=\"REAPER_WARDEN\"&&ch!=\"RW_OUT\"&&ch!=\"RW_SELF\"{next}"
++	  " {f=0; for(i=1;i<=NF;i++) if($i==\"rw_ban\"||$i==\"rw_ban6\") f=1;"
+ 	  " if(f) s+=$1} END{print s+0}' \"$CH\" 2>/dev/null)))\n"
+ 	  "TOP=$( {\n"
+ 	  "  [ \"$SV\" = 1 ] && awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $2, $3+0}' \"$CTR\" 2>/dev/null\n"
+-	  "  awk '\n"
+-	  "    { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
++	  "  awk '/^Chain /{ch=$2; next} ch==\"REAPER_WARDEN\"||ch==\"RW_OUT\"||ch==\"RW_SELF\" {\n"
++	  "    for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ n=$i; sub(/^rw_g6?_/,\"\",n); c[toupper(n)]+=$1 } }\n"
+ 	  "    END{ for(k in c) print k, c[k] }' \"$CH\"\n"
+ 	  "  } | awk '{c[$1]+=$2} END{for(k in c) if(c[k]>0) print c[k], k}' | sort -rn | head -5 | awk '\n"
+ 	  "  { if(NR>1) printf \",\"; printf \"{\\\"cc\\\":\\\"%s\\\",\\\"n\\\":%d}\", $2, $1 }')\n"
+@@ -1499,7 +1505,7 @@ static void rw_gen_stats(void)
+ 	   * store written before THREAT/BAN existed. Showing it beats folding an
+ 	   * unexplained remainder into one of the named buckets. */
+ 	  "GEO=$( { [ \"$SV\" = 1 ] && awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $3+0}' \"$CTR\" 2>/dev/null\n"
+-	  "  awk '{ for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ s+=$1; break } } END{print s+0}' \"$CH\"\n"
++	  "  awk '/^Chain /{ch=$2; next} ch!=\"REAPER_WARDEN\"&&ch!=\"RW_OUT\"&&ch!=\"RW_SELF\"{next} { for(i=1;i<=NF;i++) if($i ~ /^rw_g6?_[a-z][a-z]$/){ s+=$1; break } } END{print s+0}' \"$CH\"\n"
+ 	  "  } | awk '{s+=$1} END{print s+0}')\n"
+ 	  "UNCL=$((TOTAL-GEO-THREAT-BAN)); [ \"$UNCL\" -lt 0 ] && UNCL=0\n"
+ 	  "rm -f \"$CH\"\n"
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index f8654493d5..8d38627c1a 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -139,7 +139,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ </div>
+ 
+ <div class="stats">
+-  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_44#></div></div>
++  <div class="stat"><div class="n" id="s_blocked">&mdash;</div><div class="l"><#RWDN_108#></div></div>
+   <div class="stat"><div class="n" id="s_lastupd"><#RWDN_29#></div><div class="l"><#RWDN_24#></div></div>
+   <div class="stat"><div class="n" id="s_feeds">0</div><div class="l"><#RWDN_25#></div></div>
+   <div class="stat"><div class="n" id="s_geo">0</div><div class="l"><#RWDN_26#></div></div>
+@@ -249,6 +249,19 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   </ul>
+ </div>
+ 
++<!-- 2026-09-20 (owner, after a field report that the block count "does not match the log"):
++     what the number is, and why the log and a person's own count of attempts read lower. -->
++<div class="card">
++  <h2><#RWDN_102#></h2>
++  <div class="desc"><#RWDN_103#></div>
++  <ul>
++    <li><#RWDN_104#></li>
++    <li><#RWDN_105#></li>
++    <li><#RWDN_106#></li>
++    <li><#RWDN_107#></li>
++  </ul>
++</div>
++
+ <div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RWDN_30#></p></div></div>
+ 
+ <iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
+-- 
+2.25.1
+

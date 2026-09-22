@@ -1,0 +1,97 @@
+Reaper v3.2.3
+
+> A locked Settings cell says why on hover
+
+Every greyed control on the Wireless › Settings tab
+
+carries its reason in the cell's tooltip: MLO holds the radio on, Legacy mode parks it, WMM is a
+
+choice in Legacy only, MU-MIMO follows the OFDMA choice, a fixed channel parks the auto-channel
+
+options, AMPDU RTS off parks the RTS threshold, and so on. Greyed stays the only visible signal.
+
+Sixteen reason texts, translated in all 25 packs.
+
+> Settings tab fixes from a four-radio tester
+
+Numeric boxes are as wide as the selects around
+
+them: the unit sits inside the box. An nvram key shown in two columns on a box with two 5 GHz
+
+radios (the DFS and U-NII-4 auto-channel options) is mirrored on change, counted once and posted
+
+once; before, each copy counted and the untouched second column silently won at apply. The row's
+
+help says what the boxes are and that a fixed DFS channel still moves when radar is detected.
+
+Extension Channel offers only the sidebands the driver lists for the chosen channel (13 is Below
+
+only, 1 is Above only); the composer already corrected an impossible pick, the page showed the
+
+other one. Fragmentation Threshold's help says it is editable in Legacy mode only. Behaviour
+
+change: Set AP Isolated leaves the tab. On this build isolation is a per-network setting on
+
+the Network menu, and the per-radio key here reached only the primary BSS.
+
+> Warden no longer applies inside the boot sequence
+
+The synchronous apply in start_services
+
+was about 6 s of pid 1 on the path to the WAN (the cache split, the per-set ipset restore, the
+
+counter snapshot and 317 iptables calls), and the WAN-up firewall build then deleted those chains
+
+and re-ran the same script about 15 s later, so the boot-time run protected nothing. Warden now
+
+arms at the first firewall build after boot, keyed on a marker that build writes; on a normal
+
+router that is WAN-up. Enabling it from the page later still arms at once, and a router that never
+
+gets a WAN is armed by the watchdog's heal, which says so in the log instead of reporting a fault.
+
+AP, repeater and media-bridge modes are unchanged.
+
+> The idle CPU burn in init is fixed at both sources
+
+Every wake of init cost four full /proc
+
+scans, and an idle RT-BE96U woke it about 1.4 times a second: the stock WAN watcher re-requested
+
+the autowan port prober on every 5 s scan while the WAN was connected (now once a minute while
+
+connected, every 5 s in any other state, so a moved cable is re-detected as before; dual WAN never
+
+reaches that code), and the traffic collector's bounded-command wrapper stranded one sleep on
+
+pid 1 for every QoS class query (the watcher now reaps its own sleep). Measured before the change:
+
+init at 4.5 % of a core on an idle router.
+
+> Boot waits that guarded an observable condition now poll it
+
+The two 3-second sleeps around
+
+the /data mount and the kernel nvram module, the one-second sleep after hotplug2 starts and
+
+the 300 ms wait before debug_monitor (which only served a previous instance) each become a
+
+bounded poll: the mount point, the netlink family the module registers, the uevent socket, an
+
+existing instance. About 7 s on every boot. Sibling-model boots are the beta soak.
+
+> Three daemons stay
+
+The review had netool, sysstate and dns_dpi_check as consumer-less;
+
+re-checked at the moment of change, each has one on this build (the Network Analysis and Netstat
+
+pages, the feedback report, the Bandwidth Monitor's dnsqd). Nothing dropped.
+
+> Dictionaries
+
+17 tokens added in all 25 packs, translated (lockstep 7036). The 33
+
+English-seeded Settings and Warden texts from v3.2.2 stay English this release.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/CHANGELOG.md

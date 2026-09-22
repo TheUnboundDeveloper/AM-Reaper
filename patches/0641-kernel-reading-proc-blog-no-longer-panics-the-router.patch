@@ -1,0 +1,358 @@
+From 9d8a532c5be9701d6be2be5141dc5da247f045a9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 10 Sep 2026 14:20:03 -0400
+Subject: [PATCH] kernel: reading /proc/blog no longer panics the router
+
+Broadcom's skip_wg_network and biqos proc read handlers sprintf() straight
+into the `char __user *` buffer they are handed. This kernel is built with
+CONFIG_ARM64_PAN=y and CONFIG_ARM64_SW_TTBR0_PAN=y, so an EL1 store to a user
+address faults, and CONFIG_PANIC_ON_OOPS=y turns that oops into a panic with
+a five-second reboot. That is the "router reboots shortly after Apply and
+Confirm" that a by-device WireGuard policy rule produced.
+
+An empty table never reaches the sprintf, so the file is harmless until it
+holds an entry, and stock only ever writes these files. Reaper's PBR is the
+only reader in the system and only for a WireGuard target, which is why
+OpenVPN, WAN and Block rules were never affected, and why rwatch re-running
+the PBR script every five minutes turned one rule into a loop.
+
+Both read handlers now build their text in kernel memory and hand it over
+with simple_read_from_buffer(). The matching write handlers bound the
+copy_from_user against the size of the destination - 128 bytes of kernel
+stack, previously unbounded - and NUL-terminate; the 675x write also indexed
+tbuf[minsize + 1] on a char[4].
+
+Applied to both platform trees.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../kernel/bcmkernel/net/core/blog.c          | 96 +++++++++++++------
+ .../kernel/bcmkernel/net/core/blog.c          | 76 ++++++++++-----
+ 2 files changed, 119 insertions(+), 53 deletions(-)
+
+diff --git a/release/src-rt-5.04axhnd.675x/kernel/bcmkernel/net/core/blog.c b/release/src-rt-5.04axhnd.675x/kernel/bcmkernel/net/core/blog.c
+index 8a9fbf4bcc..d6f318e265 100644
+--- a/release/src-rt-5.04axhnd.675x/kernel/bcmkernel/net/core/blog.c
++++ b/release/src-rt-5.04axhnd.675x/kernel/bcmkernel/net/core/blog.c
+@@ -157,15 +157,17 @@ biqos_procfs_init(void)
+ 	proc_fs = proc_create_data(PROCFS_BIQOS, S_IRUGO, init_net.proc_net, &biqos_proc_fops, NULL);
+ }
+ 
++/* REAPER: same defect as the skip_wireguard handlers further down - sprintf()
++ * into the __user pointer is a kernel-mode store to a user address, which
++ * faults under CONFIG_ARM64_PAN and, with CONFIG_PANIC_ON_OOPS=y, reboots the
++ * router. Nothing in this firmware reads this file today; it is fixed because
++ * it is the same one-line trap and a future reader would find it the hard way. */
+ static ssize_t
+ biqos_proc_enable_read(struct file *file, char __user *buf, size_t cnt,
+ 	loff_t *offset) {
+-	int len = 0;
+-	if(*offset != 0)
+-		return 0;
+-	len = sprintf(buf + len, "%d\n", bcm_iqos_enable_g);
+-	*offset = len;
+-	return len;
++	char kbuf[12];
++	size_t len = scnprintf(kbuf, sizeof(kbuf), "%d\n", bcm_iqos_enable_g);
++	return simple_read_from_buffer(buf, cnt, offset, kbuf, len);
+ }
+ 
+ static ssize_t
+@@ -180,7 +182,11 @@ biqos_proc_enable_write(struct file *file, const char __user *buf, size_t cnt,
+ 		return -EFAULT;
+ 	}
+ 
+-	tbuf[minsize + 1] = '\0';
++	/* REAPER: was tbuf[minsize + 1], which writes tbuf[4] on a char[4] for any
++	 * write of 3 bytes or more - one byte off the end of the stack buffer. The
++	 * memset above already zeroed the whole thing, so the correct index is
++	 * minsize, and it is in range for every value min_t() can produce. */
++	tbuf[minsize] = '\0';
+ 
+ 	if(tbuf && *tbuf >= '0' && *tbuf <= '9')
+ 		bcm_iqos_enable_g = *tbuf - '0';
+@@ -305,30 +311,27 @@ blog_procfs_init(void)
+     }
+ }
+ 
++/* REAPER: see the note on skip_wg_network_proc_read() below - this handler
++ * had the same sprintf()-into-a-__user-pointer bug and the same consequence. */
+ static ssize_t
+ skip_wg_port_proc_read(struct file *file, char __user *buf, size_t cnt,
+     loff_t *offset)
+ {
+-    int len = 0;
++    /* "65535 either\n" = 13 bytes; 16 per entry is ample. */
++    char kbuf[(WG_PORT_TBL_SZ * 16) + 1];
++    size_t len = 0;
+     int i;
+ 
+-    if ( *offset != 0 )
+-    {
+-        return 0;
+-    }
+-
+     for ( i = 0; i < WG_PORT_TBL_SZ; i++ )
+     {
+         if ( wg_port[i].port != 0 && wg_port[i].match_type != MATCH_NONE )
+         {
+-            len += sprintf( buf + len, "%u %s\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len, "%u %s\n",
+                 wg_port[i].port, match_type_str[wg_port[i].match_type] );
+         }
+     }
+ 
+-    *offset = len;
+-
+-    return len;
++    return simple_read_from_buffer( buf, cnt, offset, kbuf, len );
+ }
+ 
+ static int
+@@ -385,7 +388,20 @@ skip_wg_port_proc_write(struct file *file, const char __user *buf, size_t cnt,
+     enum match_type match_type;
+     int entry;
+ 
+-    copy_from_user( proc_data, buf, cnt );
++    /* REAPER: bound the copy.  cnt comes from whoever wrote the proc file and
++     * proc_data is 128 bytes of kernel stack, so the unbounded copy_from_user()
++     * was a straight stack smash.  NUL-terminate too: the strsep() walk below
++     * needs a terminator and the caller is not obliged to supply one - stock
++     * writers do not, and only survived on whatever the stack happened to hold. */
++    if ( cnt == 0 || cnt >= sizeof(proc_data) )
++    {
++        return -EINVAL;
++    }
++    if ( copy_from_user( proc_data, buf, cnt ) )
++    {
++        return -EFAULT;
++    }
++    proc_data[cnt] = '\0';
+     pdata = proc_data;
+ 
+     while ( (token = strsep(&pdata, " ")) != NULL )
+@@ -502,23 +518,31 @@ skip_wg_port_proc_write(struct file *file, const char __user *buf, size_t cnt,
+     return cnt;
+ }
+ 
++/* REAPER: this handler used to sprintf() straight into the __user buffer.
++ * That is a kernel-mode store to a user address, which this kernel forbids
++ * (CONFIG_ARM64_PAN=y / CONFIG_ARM64_SW_TTBR0_PAN=y): translation fault ->
++ * oops -> CONFIG_PANIC_ON_OOPS=y -> the router reboots ~5 s later.  It only
++ * fired once the table held at least one entry - an empty table never reaches
++ * the sprintf() - which is why nothing upstream ever tripped over it: stock
++ * code only ever WRITES this file, it never reads it back.
++ * Build the text in kernel memory and hand it over with copy_to_user().
++ * simple_read_from_buffer() also gives honest partial-read/offset semantics,
++ * which the open-coded *offset dance did not have (it ignored cnt entirely). */
+ static ssize_t
+ skip_wg_network_proc_read(struct file *file, char __user *buf, size_t cnt,
+     loff_t *offset)
+ {
+-    int len = 0;
++    /* v4 line "255.255.255.255/32\n" = 19; a v6 line is printed uncompressed
++     * (8 x %x) = 8*4 + 7 colons + "/128" + newline = 44.  Round both up. */
++    char kbuf[(WG_NETWORK_TBL_SZ * 20) + (WG_NETWORK_TBL_SZ * 48) + 1];
++    size_t len = 0;
+     int i;
+ 
+-    if ( *offset != 0 )
+-    {
+-        return 0;
+-    }
+-
+     for ( i = 0; i < WG_NETWORK_TBL_SZ; i++ )
+     {
+         if ( wg_network[i].prefixlen != 0 )
+         {
+-            len += sprintf( buf + len, "%u.%u.%u.%u/%u\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len, "%u.%u.%u.%u/%u\n",
+                 BLOG_IPV4_ADDR(wg_network[i].ip), wg_network[i].prefixlen );
+         }
+     }
+@@ -527,14 +551,13 @@ skip_wg_network_proc_read(struct file *file, char __user *buf, size_t cnt,
+     {
+         if ( wg_network_ip6[i].prefixlen != 0 )
+         {
+-            len += sprintf( buf + len, "%x:%x:%x:%x:%x:%x:%x:%x/%u\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len,
++                "%x:%x:%x:%x:%x:%x:%x:%x/%u\n",
+                 BLOG_IPV6_ADDR(wg_network_ip6[i].ip), wg_network_ip6[i].prefixlen );
+         }
+     }
+ 
+-    *offset = len;
+-
+-    return len;
++    return simple_read_from_buffer( buf, cnt, offset, kbuf, len );
+ }
+ 
+ static int
+@@ -658,7 +681,20 @@ skip_wg_network_proc_write(struct file *file, const char __user *buf, size_t cnt
+     uint32_t prefixlen;
+     int entry;
+ 
+-    copy_from_user( proc_data, buf, cnt );
++    /* REAPER: bound the copy.  cnt comes from whoever wrote the proc file and
++     * proc_data is 128 bytes of kernel stack, so the unbounded copy_from_user()
++     * was a straight stack smash.  NUL-terminate too: the strsep() walk below
++     * needs a terminator and the caller is not obliged to supply one - stock
++     * writers do not, and only survived on whatever the stack happened to hold. */
++    if ( cnt == 0 || cnt >= sizeof(proc_data) )
++    {
++        return -EINVAL;
++    }
++    if ( copy_from_user( proc_data, buf, cnt ) )
++    {
++        return -EFAULT;
++    }
++    proc_data[cnt] = '\0';
+     pdata = proc_data;
+ 
+     while ( (token = strsep(&pdata, " ")) != NULL )
+diff --git a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
+index 736f82195d..424eda4c05 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
++++ b/release/src-rt-5.04behnd.4916/kernel/bcmkernel/net/core/blog.c
+@@ -201,30 +201,27 @@ blog_procfs_init(void)
+     }
+ }
+ 
++/* REAPER: see the note on skip_wg_network_proc_read() below - this handler
++ * had the same sprintf()-into-a-__user-pointer bug and the same consequence. */
+ static ssize_t
+ skip_wg_port_proc_read(struct file *file, char __user *buf, size_t cnt,
+     loff_t *offset)
+ {
+-    int len = 0;
++    /* "65535 either\n" = 13 bytes; 16 per entry is ample. */
++    char kbuf[(WG_PORT_TBL_SZ * 16) + 1];
++    size_t len = 0;
+     int i;
+ 
+-    if ( *offset != 0 )
+-    {
+-        return 0;
+-    }
+-
+     for ( i = 0; i < WG_PORT_TBL_SZ; i++ )
+     {
+         if ( wg_port[i].port != 0 && wg_port[i].match_type != MATCH_NONE )
+         {
+-            len += sprintf( buf + len, "%u %s\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len, "%u %s\n",
+                 wg_port[i].port, match_type_str[wg_port[i].match_type] );
+         }
+     }
+ 
+-    *offset = len;
+-
+-    return len;
++    return simple_read_from_buffer( buf, cnt, offset, kbuf, len );
+ }
+ 
+ static int
+@@ -281,7 +278,20 @@ skip_wg_port_proc_write(struct file *file, const char __user *buf, size_t cnt,
+     enum match_type match_type;
+     int entry;
+ 
+-    copy_from_user( proc_data, buf, cnt );
++    /* REAPER: bound the copy.  cnt comes from whoever wrote the proc file and
++     * proc_data is 128 bytes of kernel stack, so the unbounded copy_from_user()
++     * was a straight stack smash.  NUL-terminate too: the strsep() walk below
++     * needs a terminator and the caller is not obliged to supply one - stock
++     * writers do not, and only survived on whatever the stack happened to hold. */
++    if ( cnt == 0 || cnt >= sizeof(proc_data) )
++    {
++        return -EINVAL;
++    }
++    if ( copy_from_user( proc_data, buf, cnt ) )
++    {
++        return -EFAULT;
++    }
++    proc_data[cnt] = '\0';
+     pdata = proc_data;
+ 
+     while ( (token = strsep(&pdata, " ")) != NULL )
+@@ -398,23 +408,31 @@ skip_wg_port_proc_write(struct file *file, const char __user *buf, size_t cnt,
+     return cnt;
+ }
+ 
++/* REAPER: this handler used to sprintf() straight into the __user buffer.
++ * That is a kernel-mode store to a user address, which this kernel forbids
++ * (CONFIG_ARM64_PAN=y / CONFIG_ARM64_SW_TTBR0_PAN=y): translation fault ->
++ * oops -> CONFIG_PANIC_ON_OOPS=y -> the router reboots ~5 s later.  It only
++ * fired once the table held at least one entry - an empty table never reaches
++ * the sprintf() - which is why nothing upstream ever tripped over it: stock
++ * code only ever WRITES this file, it never reads it back.
++ * Build the text in kernel memory and hand it over with copy_to_user().
++ * simple_read_from_buffer() also gives honest partial-read/offset semantics,
++ * which the open-coded *offset dance did not have (it ignored cnt entirely). */
+ static ssize_t
+ skip_wg_network_proc_read(struct file *file, char __user *buf, size_t cnt,
+     loff_t *offset)
+ {
+-    int len = 0;
++    /* v4 line "255.255.255.255/32\n" = 19; a v6 line is printed uncompressed
++     * (8 x %x) = 8*4 + 7 colons + "/128" + newline = 44.  Round both up. */
++    char kbuf[(WG_NETWORK_TBL_SZ * 20) + (WG_NETWORK_TBL_SZ * 48) + 1];
++    size_t len = 0;
+     int i;
+ 
+-    if ( *offset != 0 )
+-    {
+-        return 0;
+-    }
+-
+     for ( i = 0; i < WG_NETWORK_TBL_SZ; i++ )
+     {
+         if ( wg_network[i].prefixlen != 0 )
+         {
+-            len += sprintf( buf + len, "%u.%u.%u.%u/%u\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len, "%u.%u.%u.%u/%u\n",
+                 BLOG_IPV4_ADDR(wg_network[i].ip), wg_network[i].prefixlen );
+         }
+     }
+@@ -423,14 +441,13 @@ skip_wg_network_proc_read(struct file *file, char __user *buf, size_t cnt,
+     {
+         if ( wg_network_ip6[i].prefixlen != 0 )
+         {
+-            len += sprintf( buf + len, "%x:%x:%x:%x:%x:%x:%x:%x/%u\n",
++            len += scnprintf( kbuf + len, sizeof(kbuf) - len,
++                "%x:%x:%x:%x:%x:%x:%x:%x/%u\n",
+                 BLOG_IPV6_ADDR(wg_network_ip6[i].ip), wg_network_ip6[i].prefixlen );
+         }
+     }
+ 
+-    *offset = len;
+-
+-    return len;
++    return simple_read_from_buffer( buf, cnt, offset, kbuf, len );
+ }
+ 
+ static int
+@@ -554,7 +571,20 @@ skip_wg_network_proc_write(struct file *file, const char __user *buf, size_t cnt
+     uint32_t prefixlen;
+     int entry;
+ 
+-    copy_from_user( proc_data, buf, cnt );
++    /* REAPER: bound the copy.  cnt comes from whoever wrote the proc file and
++     * proc_data is 128 bytes of kernel stack, so the unbounded copy_from_user()
++     * was a straight stack smash.  NUL-terminate too: the strsep() walk below
++     * needs a terminator and the caller is not obliged to supply one - stock
++     * writers do not, and only survived on whatever the stack happened to hold. */
++    if ( cnt == 0 || cnt >= sizeof(proc_data) )
++    {
++        return -EINVAL;
++    }
++    if ( copy_from_user( proc_data, buf, cnt ) )
++    {
++        return -EFAULT;
++    }
++    proc_data[cnt] = '\0';
+     pdata = proc_data;
+ 
+     while ( (token = strsep(&pdata, " ")) != NULL )
+-- 
+2.25.1
+

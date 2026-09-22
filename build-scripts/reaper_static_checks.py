@@ -12,8 +12,8 @@ Prints one summary line per check and a final tally.
 
 The eight checks
   8. pbr-fwmark-regex   The `fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000` rule-form regex
-                        is one literal that lives at FIVE consumer sites
-                        (reaper_pbr.c x3 teardown/expect, rwatch.c heal count,
+                        is one literal that lives at FOUR consumer sites
+                        (reaper_pbr.c x2 teardown, rwatch.c heal count,
                         reaper_diag live count) and must stay byte-identical;
                         and the PRODUCER (`fwmark 0x%X0000/$MASK`, PPBR_MASK)
                         must render a string every one of them matches, in
@@ -420,14 +420,33 @@ def check_pbr_reassert(router):
                                "reaper_pbr_reassert() within %d lines -- the ip "
                                "rule flush would leave policy routing FAIL-OPEN"
                                % (fn, i + 1, REASSERT_LOOKAHEAD))
+    # v3.1.7 (WireGuard policy-routing field report, 2026-09-14): the WireGuard
+    # client start must re-assert too. The flow-cache bypass a WGC-target rule
+    # needs is installed by the apply script, which skips it while the client
+    # interface does not exist; VPN Director re-installs its own on every client
+    # start, and start_wgc() now calls reaper_pbr_reassert() for the same reason.
+    # A C call leaves no string in the binary, so it is pinned here.
+    wg_path = os.path.join(rc_dir, "wireguard.c")
+    if os.path.isfile(wg_path):
+        wg = open(wg_path, "r", encoding="utf-8", errors="replace").read()
+        s = wg.find("void start_wgc(int unit)")
+        e = wg.find("void stop_wgc(int unit)", s if s >= 0 else 0)
+        body = wg[s:e] if s >= 0 and e > s else ""
+        body_code = "\n".join(l for l in body.split("\n") if not _is_comment_line(l))
+        if "reaper_pbr_reassert();" not in body_code:
+            details.append("rc/wireguard.c start_wgc() does not call reaper_pbr_reassert() -- "
+                           "a WireGuard client that comes up after the policy-routing apply "
+                           "never gets its flow-cache bypass")
+        else:
+            nchecked += 1
     if details:
-        return (False, "%d unguarded add_multi_routes() call site(s)" % len(details), details)
+        return (False, "%d unguarded call site(s)" % len(details), details)
     if nchecked == 0:
         # the call sites moving wholesale is itself a change worth stopping on
         return (False, "no add_multi_routes() call sites found -- check moved or "
                        "renamed; re-verify the flush is still guarded", [])
-    return (True, "%d add_multi_routes() call site(s) re-assert PBR (%d compiled-out "
-                  "site(s) excluded)" % (nchecked, nexcluded), [])
+    return (True, "%d call site(s) re-assert PBR - every add_multi_routes() plus start_wgc() "
+                  "(%d compiled-out site(s) excluded)" % (nchecked, nexcluded), [])
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +508,7 @@ def check_warden_log_prefixes(router):
 # ---------------------------------------------------------------------------
 # 8. pbr-fwmark-regex: the rule-form regex is a producer/consumer contract
 #    across three files. reaper_pbr.c WRITES `fwmark 0x<code>0000/$MASK`, and
-#    the same file (teardown + expect_rules), rwatch.c (the ip-rule heal's live
+#    the same file (teardown, twice), rwatch.c (the ip-rule heal's live
 #    count) and others/reaper_diag (the FINDINGS live count) all READ it back
 #    with one grep -E literal. iproute2 prints the mask with leading zeros
 #    stripped (0xf0000, not 0x000F0000), which is why the literal carries
@@ -497,7 +516,10 @@ def check_warden_log_prefixes(router):
 #    moves, that site counts 0 on a healthy box: the heal re-runs forever or the
 #    diag WARNs about a fail-open that is not there - with a green build.
 # ---------------------------------------------------------------------------
-FWMARK_SITES = (("rc/reaper_pbr.c", 3), ("rc/rwatch.c", 1), ("others/reaper_diag", 1))
+# v3.1.5 (review R07): reaper_pbr.c dropped from 3 to 2 - expect_rules is now the
+# number of rules the apply MEANT to install (a shell counter), not a grep of the
+# live table; only the two teardown sites read the literal there now.
+FWMARK_SITES = (("rc/reaper_pbr.c", 2), ("rc/rwatch.c", 1), ("others/reaper_diag", 1))
 FWMARK_LITERAL_RE = re.compile(r"fwmark 0x\[[^\]]+\]\+/0x[0-9A-Fa-f*\[\]]+")
 PPBR_MASK_RE = re.compile(r'#define\s+PPBR_MASK\s+"(0x[0-9A-Fa-f]+)"')
 
@@ -816,6 +838,261 @@ def check_fw_beta_channel(router):
     return (True, "beta line gated + ruled in the check script, beta note, key registered, page opt-in + label, 4 tokens x %d packs" % npacks, [])
 
 # ---------------------------------------------------------------------------
+# wg-blog-proc (v3.1.2): /proc/blog/skip_wireguard_* must be safe to READ.
+#
+# The stock Broadcom handlers built the listing with sprintf() straight into the
+# `char __user *buf` the syscall handed them - a kernel-mode store to a user
+# address. This kernel sets CONFIG_ARM64_PAN=y and CONFIG_ARM64_SW_TTBR0_PAN=y,
+# so that faults at EL1; CONFIG_PANIC_ON_OOPS=y turns the oops into a panic and
+# CONFIG_PANIC_TIMEOUT=5 reboots the box five seconds later. It only fired once
+# the table held an entry, and nothing upstream ever reads these files - stock
+# code only WRITES them - so the bug sat there until Reaper's Policy Routing
+# became the first reader in the system: every WireGuard-target rule rebooted
+# the router shortly after Apply. That is the whole of the "PBR reboot" report.
+#
+# The same handlers also copy_from_user() an unbounded `cnt` into a 128-byte
+# stack buffer, which is a stack smash reachable by any writer of the file.
+#
+# Both are fixed in the kernel source we ship, so this check exists for one
+# reason: a sibling model is ported by replaying our tree onto a different
+# platform tree, and a kernel file that is NOT under release/src/router is
+# exactly the kind of thing a port silently leaves behind. A marker cannot
+# express it either - the fix leaves no string in any binary.
+# ---------------------------------------------------------------------------
+def check_wg_blog_proc(router):
+    # router is <tree>/release/src/router
+    tree = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(router))))
+    rel = os.path.join(tree, "release")
+    if not os.path.isdir(rel):
+        return (True, "no release/ dir -- skipped", [])
+    paths = []
+    for d in sorted(os.listdir(rel)):
+        if not d.startswith("src-rt"):
+            continue
+        p = os.path.join(rel, d, "kernel", "bcmkernel", "net", "core", "blog.c")
+        if os.path.isfile(p):
+            paths.append(p)
+    if not paths:
+        return (True, "no bcmkernel blog.c in this tree -- skipped", [])
+    bad = []
+    for p in paths:
+        name = os.path.relpath(p, tree)
+        src = open(p, "r", encoding="utf-8", errors="replace").read()
+        if "skip_wg_network_proc_read" not in src:
+            # a platform without the WireGuard bypass at all: nothing to assert
+            continue
+        # (a) the listing must never be built into the __user pointer
+        if re.search(r"sprintf\s*\(\s*buf\s*\+", src):
+            bad.append("%s: sprintf() into the __user buffer is back -- reading "
+                       "the proc file will panic the router (PAN -> oops -> "
+                       "PANIC_ON_OOPS)" % name)
+        # (b) both readers must hand the text over properly
+        n_srb = len(re.findall(r"simple_read_from_buffer\s*\(", src))
+        if n_srb < 2:
+            bad.append("%s: %d of 2 proc read handlers use simple_read_from_buffer()"
+                       % (name, n_srb))
+        # (c) both writers must bound the copy into proc_data[128]
+        n_bound = len(re.findall(r"cnt\s*>=\s*sizeof\s*\(\s*proc_data\s*\)", src))
+        if n_bound < 2:
+            bad.append("%s: %d of 2 proc write handlers bound cnt against "
+                       "sizeof(proc_data) -- the rest are a kernel stack smash"
+                       % (name, n_bound))
+        if re.search(r"^\s*copy_from_user\s*\(\s*proc_data", src, re.M):
+            bad.append("%s: an unchecked copy_from_user(proc_data, ...) remains "
+                       "(its return value must be tested)" % name)
+    if bad:
+        return (False, "%d contract break(s)" % len(bad), bad)
+    return (True, "%d blog.c: proc readers use copy_to_user, writers bound cnt"
+                  % len(paths), [])
+
+
+# ---------------------------------------------------------------------------
+# warden-outbound-log (2026-09-10): the OUTBOUND block-logging path, end to end.
+#
+# The owner's report was "Warden does not log and/or drop outbound blocks any
+# more - and I'm sure we have fixed this several times". That is accurate, and
+# the reason it kept coming back is that the existing `warden-log-prefix` check
+# cannot see the regression: it takes whatever prefixes rwarden.c happens to
+# emit and asserts the viewer accepts them. Nothing anywhere REQUIRED the
+# outbound prefix to exist. Delete the RW_ODROP chain, point RW_OUT's drops back
+# at the shared RW_DROP, and every existing gate stays green - the code is still
+# valid C, the build is clean, the markers hold, and the only symptom is a
+# silence that looks exactly like "nothing matched".
+#
+# So this check pins the CONTRACT rather than the prose, in the five places it
+# can break independently:
+#   1. rwarden.c emits a DISTINCT outbound prefix (that is the whole point of
+#      the v2.4.4 split - "REAPER-WARDEN " and "REAPER-WARDEN-OUT " must not be
+#      the same string, or an operator cannot tell inbound from outbound);
+#   2. RW_ODROP logs BEFORE it drops, under the same rwarden_log gate as
+#      inbound (a LOG after the DROP is dead code; a different gate means
+#      turning logging on lights up half the traffic);
+#   3. RW_ODROP is REACHABLE - the dst group targets it and REAPER_WARDEN jumps
+#      to RW_OUT - because an unreachable chain logs nothing and looks fine;
+#   4. the counters bank AND zero RW_ODROP together (miss the read and the
+#      blocks vanish from the total; miss the zero and the same packets are
+#      re-banked every checkpoint);
+#   5. the GUI drops viewer TELLS THE THREE APART. This is the half that
+#      regressed most recently: classOf() matched only the common stem, so all
+#      three prefixes rendered as one "WARDEN" badge and the v2.4.4 split was
+#      undone on the page while syslog was still correct.
+# ---------------------------------------------------------------------------
+WARDEN_PREFIX_IN = "REAPER-WARDEN "
+WARDEN_PREFIX_OUT = "REAPER-WARDEN-OUT "
+WARDEN_PREFIX_SELF = "REAPER-WARDEN-SELF "
+
+
+def check_warden_outbound_log(router):
+    rwarden = os.path.join(router, "rc", "rwarden.c")
+    page = os.path.join(router, "www", "Reaper_Firewall.asp")
+    rwatch = os.path.join(router, "rc", "rwatch.c")
+    if not os.path.isfile(rwarden):
+        return (True, "rwarden.c not present -- skipped", [])
+    src = open(rwarden, "r", encoding="utf-8", errors="replace").read()
+    bad = []
+
+    # -- 1. a distinct outbound prefix actually exists ----------------------
+    emitted = set(re.findall(r'--log-prefix\s+\\"([A-Z0-9][A-Z0-9-]*\s*)\\"', src))
+    emitted = set(x for x in emitted)
+    if not emitted:
+        return (False, "no --log-prefix emissions found in rwarden.c -- the "
+                       "extraction pattern no longer matches; fix this check "
+                       "before trusting it", [])
+    if WARDEN_PREFIX_OUT not in emitted:
+        bad.append('rwarden.c no longer emits "%s" -- outbound blocks are '
+                   "indistinguishable from inbound ones in syslog, which is the "
+                   "exact regression this check exists for (v2.4.2, v2.4.4)"
+                   % WARDEN_PREFIX_OUT.strip())
+    if WARDEN_PREFIX_OUT in emitted and WARDEN_PREFIX_IN in emitted \
+            and WARDEN_PREFIX_OUT.strip() == WARDEN_PREFIX_IN.strip():
+        bad.append("the inbound and outbound LOG prefixes are the same string")
+
+    # -- 2/3. RW_ODROP logs before it drops, gated, and is reachable --------
+    for ipt in ("iptables", "ip6tables"):
+        i_log = src.find('%s -A RW_ODROP -j LOG' % ipt)
+        i_drop = src.find('%s -A RW_ODROP -j DROP' % ipt)
+        if i_drop < 0:
+            bad.append("%s: no `-A RW_ODROP -j DROP` emission -- the outbound "
+                       "drop target is gone" % ipt)
+            continue
+        if i_log < 0:
+            bad.append("%s: RW_ODROP drops but never logs -- outbound blocks "
+                       "would be silent in syslog" % ipt)
+        elif i_log > i_drop:
+            bad.append("%s: the RW_ODROP LOG rule is appended AFTER the DROP, "
+                       "so it can never match" % ipt)
+        else:
+            # the log must sit under the same nvram gate inbound uses
+            window = src[max(0, i_log - 400):i_log]
+            if 'nvram_match("rwarden_log", "1")' not in window:
+                bad.append("%s: the RW_ODROP LOG is not gated on rwarden_log "
+                           "like the inbound one -- the page switch would light "
+                           "up only half the traffic" % ipt)
+    if "RW_ODROP" not in src:
+        bad.append("rwarden.c does not mention RW_ODROP at all")
+    else:
+        # EVERY dst-group call for RW_OUT must target RW_ODROP, and there must be
+        # one per stack. Checking that *a* call is right is not enough: reverting
+        # only the iptables call leaves IPv4 outbound blocks logged under the
+        # inbound prefix while IPv6 stays correct - a half-regression that reads
+        # in syslog exactly like the whole one, and that a "does any call match"
+        # test waves straight through. (Found by the scenario suite, not by
+        # review - the first version of this check missed it.)
+        calls = re.findall(
+            r'rw_emit_dst_group\s*\(\s*\w+\s*,\s*([^,]+?)\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"',
+            src)
+        out_calls = [c for c in calls if c[1] == "RW_OUT"]
+        if not out_calls:
+            bad.append("no rw_emit_dst_group() call builds RW_OUT -- the "
+                       "destination-side group is gone entirely")
+        for ipt, chain, drop in out_calls:
+            if drop != "RW_ODROP":
+                bad.append("rw_emit_dst_group(%s, \"%s\", \"%s\") no longer targets "
+                           "RW_ODROP -- those outbound drops fall back to the "
+                           "shared inbound target and lose their own prefix and "
+                           "counter" % (ipt.strip(), chain, drop))
+        if len(out_calls) < 2:
+            bad.append("only %d rw_emit_dst_group() call(s) build RW_OUT -- one "
+                       "stack (iptables/ip6tables) has lost its outbound "
+                       "destination rules" % len(out_calls))
+        if not re.search(r'-A REAPER_WARDEN -j RW_OUT', src):
+            bad.append("REAPER_WARDEN no longer jumps to RW_OUT -- the whole "
+                       "outbound group is unreachable")
+
+    # -- 4. counters: banked and zeroed together ---------------------------
+    if "RW_ODROP" in src:
+        # 2026-09-20: the readers take ONE whole-table listing per stack and
+        # select RW_ODROP by chain section in awk (ch=="RW_ODROP"), so either
+        # the per-chain listing or the section test proves the chain is read.
+        if not re.search(r'-nvxL RW_ODROP', src) and 'ch==\\"RW_ODROP\\"' not in src:
+            bad.append("the statistics reader does not list RW_ODROP -- outbound "
+                       "blocks would be missing from the total")
+        for m in re.finditer(r'for C in ([A-Z_ ]+); do', src):
+            chains = m.group(1).split()
+            tail = src[m.end():m.end() + 200]
+            if "-Z " in tail and "RW_ODROP" not in chains:
+                bad.append("a counter-zeroing loop omits RW_ODROP (`%s`) -- its "
+                           "packets would be re-banked on every checkpoint"
+                           % " ".join(chains))
+
+    # -- 5. the GUI viewer tells the three prefixes apart -------------------
+    if os.path.isfile(page):
+        pg = open(page, "r", encoding="utf-8", errors="replace").read()
+        m = re.search(r"function classOf\s*\([^)]*\)\s*\{(.*?)\n\}", pg, re.S)
+        if not m:
+            bad.append("Reaper_Firewall.asp: classOf() not found -- fix this "
+                       "check before trusting it")
+        else:
+            body = m.group(1)
+            # Look for the actual TEST, not a mention: the explanatory comment
+            # above these lines names all three prefixes, and matching on bare
+            # substrings made this check fail on its own documentation. Position
+            # is only meaningful for real code, so comments come out first.
+            body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+            body = re.sub(r"//[^\n]*", "", body)
+            pos = {}
+            for name, lit in (("out", "REAPER-WARDEN-OUT"),
+                              ("self", "REAPER-WARDEN-SELF"),
+                              ("in", "REAPER-WARDEN")):
+                # the bare stem must be matched as a WHOLE literal, or the
+                # longer two would satisfy it and the ordering test would be
+                # meaningless
+                test = re.search(r"""indexOf\(\s*['"]%s['"]\s*\)""" % re.escape(lit),
+                                 body)
+                if not test:
+                    bad.append('Reaper_Firewall.asp: classOf() does not test for '
+                               '"%s" -- the drops viewer renders it as the same '
+                               "badge as everything else, which undoes the "
+                               "separate prefixes on the page even though syslog "
+                               "is correct" % lit)
+                else:
+                    pos[name] = test.start()
+            # the bare stem is a prefix of the other two: testing it first wins
+            # every time and silently swallows them
+            if "in" in pos:
+                for longer in ("out", "self"):
+                    if longer in pos and pos[longer] > pos["in"]:
+                        bad.append('Reaper_Firewall.asp: classOf() tests the bare '
+                                   '"REAPER-WARDEN" before "REAPER-WARDEN-%s"; '
+                                   "the stem matches first, so the longer prefix "
+                                   "can never be reached" % longer.upper())
+
+    # -- the watchdog that reports the outbound state ----------------------
+    if os.path.isfile(rwatch):
+        rw = open(rwatch, "r", encoding="utf-8", errors="replace").read()
+        if "RW_ODROP" not in rw:
+            bad.append("rc/rwatch.c no longer inspects RW_ODROP -- the box loses "
+                       "the one line that says WHY no outbound blocks are being "
+                       "logged, which is what made this class hard to diagnose")
+
+    if bad:
+        return (False, "%d outbound-logging contract break(s)" % len(bad), bad)
+    return (True, "distinct outbound prefix, logged before the drop under the "
+                  "shared gate, chain reachable, counters banked+zeroed, viewer "
+                  "tells all three apart", [])
+
+
+# ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
         sys.stderr.write("usage: reaper_static_checks.py <router-src-dir>\n")
@@ -845,6 +1122,8 @@ def main(argv):
         ("firstboot-wifi",     check_firstboot_wifi(router)),
         ("factory-reset-fast", check_factory_reset_fast(router)),
         ("fw-beta-channel",    check_fw_beta_channel(router)),
+        ("wg-blog-proc",       check_wg_blog_proc(router)),
+        ("warden-outbound-log", check_warden_outbound_log(router)),
     ]
 
     npass = 0

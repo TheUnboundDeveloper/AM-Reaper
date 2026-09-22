@@ -1,0 +1,374 @@
+From f434d95c0f078ca54a8c3a25b51d30c665b4dd70 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 20 Sep 2026 18:52:00 -0400
+Subject: [PATCH] rc, rtrafd: boot and idle efficiency items from the
+ 2026-09-20 measurements
+
+Warden's boot-time apply is deferred until a firewall build has happened
+(tmpfs marker /tmp/.reaper_firewall_built, written by start_firewall()'s
+Reaper block and by a completed apply.sh). The synchronous run inside
+start_services was ~6 s of pid 1 on the path to start_wan, and the WAN-up
+start_firewall() deleted those chains and re-ran the same script ~15 s
+later, so it protected nothing. Enabling Warden from the page after boot
+still arms at once (the marker exists by then); a box that never gets a
+WAN is armed by rwatch's missing-chain heal, which now says so instead of
+reporting a fault.
+
+wanduck: restart_autowan is rate-limited to once a minute while the WAN is
+CONNECTED. Every other state keeps the 5 s cadence, and dual WAN never
+reaches the branch. The unconditional respawn was about half of what an
+idle RT-BE96U burned in init (owner's test: 72 -> 38 cs per 15 s with
+wanduck stopped).
+
+rtrafd: rt_bound()'s watcher reaps its own sleep and the main shell reaps
+the watcher, so a fast query no longer strands a `sleep 3` on pid 1 (seven
+per 4 s class poll: the other half of the init burn). Harness under busybox
+ash: a 50 ms command returns in 52 ms with nothing left behind; a hung
+single command is still killed at the cap.
+
+Boot waits that guarded observable conditions: the two `sleep 3` around
+the /data mount and bcm_knvram become polls (a mount point, then the wlcsm
+netlink family the module registers - /proc is not mounted yet there, and
+bcm_knvram's init has no deferred work); start_hotplug2's sleep(1) becomes
+a poll for its uevent netlink socket; start_dhd_monitor pays its 300 ms
+only when a previous debug_monitor exists.
+
+Not done, consumers found at the moment of change: netool (the Network
+Analysis and Netstat pages are installed), sysstate (the feedback page
+reads its logs), dns_dpi_check (Bandwidth Monitor is reachable through
+dns_dpi in rc_support and starts dnsqd). The backlog entry is corrected at
+the cut.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall.c   |  5 +++
+ release/src/router/rc/init.c       | 52 ++++++++++++++++++++++++++++--
+ release/src/router/rc/rc.h         |  7 ++++
+ release/src/router/rc/rwarden.c    | 24 +++++++++++++-
+ release/src/router/rc/rwatch.c     |  8 +++--
+ release/src/router/rc/services.c   | 51 +++++++++++++++++++++++++----
+ release/src/router/rc/wanduck.c    | 20 ++++++++++--
+ release/src/router/rtrafd/rtrafd.c | 21 ++++++++++--
+ 8 files changed, 172 insertions(+), 16 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index d70ba7764f..1b43e5f701 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -10300,6 +10300,11 @@ leave:
+ 	{
+ 	int llock = file_lock("firewall");
+ 
++	/* v3.2.3: a firewall build has reached this point since boot - the boot-time
++	 * deferral in start_rwarden() keys on it (rc.h). Before the Warden re-apply
++	 * below, so the marker never claims a build that has not happened. */
++	f_write_string(REAPER_FW_BUILT_MARK, "1\n", 0, 0);
++
+ 	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
+ 	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 9ceb241a88..1dfeeb8432 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -26551,6 +26551,42 @@ void sync_boot_state()
+ 
+ #endif
+ 
++#if defined(RTCONFIG_HND_ROUTER_BE_4916)
++/* reaper v3.2.3 boot polls (see init_main). /proc is not mounted when they run. */
++static void reaper_mount_data(const char *cmd)
++{
++	struct stat root_st, data_st;
++	int i;
++
++	system(cmd);
++	for (i = 0; i < 100; i++) {
++		if (stat("/", &root_st) == 0 && stat("/data", &data_st) == 0 && root_st.st_dev != data_st.st_dev)
++			return;
++		usleep(100000);
++		if (i % 10 == 9)
++			system(cmd);	/* retry once a second */
++	}
++	_dprintf("reaper: /data is still not mounted after 10 s\n");
++}
++
++#ifndef NETLINK_WLCSM
++#define NETLINK_WLCSM 31	/* kernel include/linux/bcm_netlink.h; what bcm_knvram registers */
++#endif
++static void reaper_wait_knvram(void)
++{
++	int i, fd;
++
++	for (i = 0; i < 100; i++) {
++		if ((fd = socket(PF_NETLINK, SOCK_RAW, NETLINK_WLCSM)) >= 0) {
++			close(fd);
++			return;
++		}
++		usleep(100000);
++	}
++	_dprintf("reaper: bcm_knvram's netlink family is still not registered after 10 s\n");
++}
++#endif
++
+ int init_main(int argc, char *argv[])
+ {
+ 	int state, i;
+@@ -26582,11 +26618,23 @@ int init_main(int argc, char *argv[])
+ 
+ 	_dprintf("init_main start.\n");
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
++	/* reaper v3.2.3: the two fixed `sleep 3` here were 6 s of every boot (measured
++	 * 2026-09-20) guarding observable conditions. (1) mount(2) is synchronous: poll
++	 * for /data being a mount point (its st_dev differs from /) and re-issue the
++	 * mount once a second while it is not. (2) bcm_knvram's init is the wlcsm
++	 * netlink family registration - the module source under
++	 * bcmdrivers/opensource/char/bcm_knvram has no deferred work and never touches
++	 * /data - so probe for that family exactly as the module's own init does. A
++	 * failed insmod keeps the old wait. 10 s ceilings; both flash layouts share it. */
+ #if defined(RTCONFIG_FLASH_TYPE_EMMC)
+-	system("mount -t ext4 /dev/data /data; sleep 3; insmod bcm_knvram; sleep 3");
++	reaper_mount_data("mount -t ext4 /dev/data /data");
+ #else
+-	system("mount -t ubifs ubi:data /data; sleep 3; insmod bcm_knvram; sleep 3");
++	reaper_mount_data("mount -t ubifs ubi:data /data");
+ #endif
++	if (system("insmod bcm_knvram") == 0)
++		reaper_wait_knvram();
++	else
++		sleep(3);
+ #endif
+ 
+ #ifdef RT4GAC68U
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 0786a7479c..6a686d66f9 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2997,6 +2997,13 @@ extern void start_rwarden(void);
+  * commit-confirm state machine; dryrun compiles a preview and executes nothing. */
+ extern void stop_reaper_fw(void);
+ extern void start_reaper_fw(void);
++/* v3.2.3: "a firewall build has happened since boot". Written (tmpfs, so absent on
++ * every fresh boot) by the Reaper block at the tail of start_firewall() and by a
++ * completed Warden apply.sh. start_rwarden() skips its synchronous boot-time apply
++ * while it is absent: the WAN-up start_firewall() deletes those chains and re-runs
++ * the same script anyway, so the boot-time run (~6 s of pid 1 on the path to
++ * start_wan, measured 2026-09-20) protected nothing. */
++#define REAPER_FW_BUILT_MARK	"/tmp/.reaper_firewall_built"
+ /* v2.6.2 shared REAPER_HOOK front chains (rc/reaper_hook.c) */
+ extern void reaper_hook_gen(void);
+ extern void reaper_fwsim_kick(int delay);
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 676845d747..2ef804cc66 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -903,6 +903,11 @@ static void rw_gen_apply(void)
+ 	fprintf(f, "fc flush 2>/dev/null\n");
+ 	rw_emit_ban_conntrack(f);	/* sever live flows to freshly-banned hosts */
+ 	fprintf(f, "echo $RW_FAIL > " RW_DIR "/failcount\n");	/* 2026-09-17: adds that failed twice (see the _rt_add wrapper) */
++	/* v3.2.3: a completed apply also satisfies the boot-time deferral in
++	 * start_rwarden() (rc.h REAPER_FW_BUILT_MARK). rwatch's heal on a box that
++	 * never gets a WAN reaches here; the next page Apply must then arm at once,
++	 * not wait for another heal. */
++	fprintf(f, ": > " REAPER_FW_BUILT_MARK "\n");
+ 	/* Terminate with an explicit status. The last statement emitted above is
+ 	 * `conntrack -D`, which returns 1 when no live flow matches - the NORMAL
+ 	 * case for a freshly-banned address - and a script's exit code is its last
+@@ -1612,10 +1617,27 @@ void start_rwarden(void)
+ 	chmod(RW_UPDATE, 0700);
+ 	chmod(RW_STATS, 0700);
+ 	chmod(RW_FOLD, 0700);
++	/* v3.2.3 boot-time deferral (measured 2026-09-20): this synchronous apply was
++	 * ~6 s of pid 1 on the path to start_wan - the awk split of the 1.7 MB cache,
++	 * per-set ipset restore, the counter snapshot, 317 iptables calls - and the
++	 * WAN-up start_firewall() then deleted the chains and re-ran the same script
++	 * ~15 s later, so it protected nothing (no WAN existed yet). While no firewall
++	 * build has happened since boot (rc.h REAPER_FW_BUILT_MARK: tmpfs, written by
++	 * start_firewall()'s Reaper block and by a completed apply.sh) generate the
++	 * scripts and let the firewall hook arm Warden at the first build: wan_up for
++	 * DHCP/PPPoE/USB-modem, start_wan for a static WAN, the captive-portal start
++	 * inside start_services, each dual-WAN unit's own wan_up. Every later
++	 * restart_rwarden (page Apply, feed update) applies at once because the
++	 * marker is present. A box whose WAN never comes up is armed by rwatch's
++	 * missing-chain heal after HEALGRACE (rwatch.c 3c words that case); nothing
++	 * traverses the chains before then. NOT made asynchronous instead: an apply
++	 * overlapping the WAN-up apply is the v3.1.9 apply-window fight. */
++	if (!f_exists(REAPER_FW_BUILT_MARK))
++		logmessage("rwarden", "boot: Warden arms at the first firewall build (WAN up) - no apply before then");
+ 	/* apply.sh exits non-zero when the LAN is not up yet (cold boot): expected,
+ 	 * not an error - the firewall hook re-runs the same script and arms the
+ 	 * moment the LAN appears (the Gatekeeper cold-boot deferral pattern). */
+-	if (system("sh " RW_APPLY) != 0)
++	else if (system("sh " RW_APPLY) != 0)
+ 		logmessage("rwarden", "LAN not ready at boot - protection deferred, re-arms on firewall hook");
+ 	/* schedule feed refresh (default daily 04:30) unless user set rwarden_sched.
+ 	 * cru convention (rc/wireguard.c): schedule + command are ONE quoted arg. */
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 1dd04b7839..54447d88a7 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -289,14 +289,18 @@ static void rwatch_gen(void)
+ 	  "    _wm=$(cat /tmp/rwarden/miss.at 2>/dev/null || echo 0); case \"$_wm\" in ''|*[!0-9]*) _wm=0;; esac\n"
+ 	  "    if [ \"$_wm\" = 0 ]; then\n"
+ 	  "      echo $UP > /tmp/rwarden/miss.at 2>/dev/null\n"
+-	  "      logger -t rwatch \"Warden chain REAPER_WARDEN is not present right now - an apply may be in progress; checking again next tick before acting\"\n"
++	  /* v3.2.3: a box that never got a WAN has had no firewall build since boot, so
++	   * start_rwarden() deferred its apply (rc.h REAPER_FW_BUILT_MARK). Say so
++	   * instead of implying a fault; the heal below is what arms it. */
++	  "      if [ -f /tmp/.reaper_firewall_built ]; then logger -t rwatch \"Warden chain REAPER_WARDEN is not present right now - an apply may be in progress; checking again next tick before acting\"; else logger -t rwatch \"Warden has not been armed since boot: no firewall build has run yet (no WAN?) - arming it next tick\"; fi\n"
+ 	  "    else\n"
+ 	  "      _wl=$(cat /tmp/rwarden/heal.at 2>/dev/null || echo 0); case \"$_wl\" in ''|*[!0-9]*) _wl=0;; esac\n"
+ 	  "      if [ $((UP - _wl)) -ge 600 ]; then\n"
+ 	  "        echo $UP > /tmp/rwarden/heal.at 2>/dev/null\n"
++	  "        _wb=0; [ -f /tmp/.reaper_firewall_built ] || _wb=1\n"
+ 	  "        if [ -x /tmp/rwarden/heal.sh ]; then reaper_lockrun /tmp/rwarden/heal.sh >/dev/null 2>&1; else reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1; fi\n"
+ 	  "        if iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
+-	  "          logger -t rwatch \"Warden chain REAPER_WARDEN was missing on two ticks - re-applied under the firewall lock, protection is back\"\n"
++	  "          if [ \"$_wb\" = 1 ]; then logger -t rwatch \"Warden armed by the watchdog: no firewall build since boot (no WAN?) - protection is up\"; else logger -t rwatch \"Warden chain REAPER_WARDEN was missing on two ticks - re-applied under the firewall lock, protection is back\"; fi\n"
+ 	  "          rm -f /tmp/rwarden/miss.at 2>/dev/null\n"
+ 	  "        else\n"
+ 	  "          logger -t rwatch \"Warden chain REAPER_WARDEN is STILL missing after a re-apply - the Warden apply script is failing (run /tmp/rwarden/apply.sh by hand and read its output)\"\n"
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index ad980362f1..9f36b68af2 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -4771,16 +4771,50 @@ int start_netmonitor(void)
+ // -----------------------------------------------------------------------------
+ #ifdef LINUX26
+ 
++/* reaper v3.2.3: true once process `pid` has bound a NETLINK_KOBJECT_UEVENT socket
++ * (hotplug2 binds with nl_pid = getpid(), hotplug2_utils.c). /proc/net/netlink
++ * columns: sk Eth Pid Groups ... - protocol 15, port id = the pid. */
++static int uevent_socket_bound(int pid)
++{
++	FILE *f;
++	char line[256];
++	int found = 0;
++
++	if ((f = fopen("/proc/net/netlink", "r")) == NULL)
++		return 0;
++	while (fgets(line, sizeof(line), f)) {
++		unsigned long sk;
++		unsigned proto, port;
++		if (sscanf(line, "%lx %u %u", &sk, &proto, &port) == 3 && proto == 15 && port == (unsigned)pid) {
++			found = 1;
++			break;
++		}
++	}
++	fclose(f);
++	return found;
++}
++
+ static pid_t pid_hotplug2 = -1;
+ 
+ void start_hotplug2(void)
+ {
+ 	stop_hotplug2();
+ 
+-	xstart("hotplug2", "--persistent", "--no-coldplug");
+-	// FIXME: Don't remember exactly why I put "sleep" here -
+-	// but it was not for a race with check_services()... - TB
+-	sleep(1);
++	{
++	/* reaper v3.2.3: the fixed sleep(1) here guarded an observable condition -
++	 * hotplug2 has bound its uevent netlink socket, so the module loads that
++	 * follow raise events it can see. Poll for that socket instead: a few ms on
++	 * this box; the old full second only if the row never appears. */
++	char *argv[] = { "hotplug2", "--persistent", "--no-coldplug", NULL };
++	int pid = 0, i;
++
++	_eval(argv, NULL, 0, &pid);
++	for (i = 0; i < 100; i++) {
++		if (pid > 0 && uevent_socket_bound(pid))
++			break;
++		usleep(10000);
++	}
++	}
+ 
+ 	if (!nvram_contains_word("debug_norestart", "hotplug2")) {
+ 		pid_hotplug2 = -2;
+@@ -24678,8 +24712,13 @@ int start_dhd_monitor(void)
+ #endif
+ 
+ #if defined(RTCONFIG_HND_ROUTER_AX)
+-	killall_tk("debug_monitor");
+-	usleep(300000);
++	/* reaper v3.2.3: the 300 ms only lets a PREVIOUS debug_monitor die before the
++	 * new one starts; on a cold boot there is none (measured 2026-09-20: a dead
++	 * wait on every boot), so pay it only when an instance exists. */
++	if (pids("debug_monitor")) {
++		killall_tk("debug_monitor");
++		usleep(300000);
++	}
+ #else
+ 	killall_tk("dhd_monitor");
+ #endif
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 41f280b8db..3693763d4e 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -1575,8 +1575,24 @@ int chk_proto(int wan_unit){
+ 
+ 	_eval(autowan_argv, NULL, 0, &pid);
+ #else
+-	if(wan_unit == WAN_UNIT_FIRST && (!strcmp(dualwan_wans, "wan none") || !strcmp(dualwan_wans, "wan usb")))
+-		notify_rc_after_period_wait("restart_autowan", 1);
++	if(wan_unit == WAN_UNIT_FIRST && (!strcmp(dualwan_wans, "wan none") || !strcmp(dualwan_wans, "wan usb"))){
++		/* reaper v3.2.3 (measured 2026-09-20): this fired on every 5 s scan with no
++		 * state gate, so rc killed and re-spawned the autowan port prober forever
++		 * while the WAN was connected - each cycle a SIGCHLD wake of init and its
++		 * four /proc scans; the loop was about half of what an idle RT-BE96U burned
++		 * in pid 1. autowan is a prebuilt applet whose full contract is unknown (a
++		 * new source on another port while the old one still links?), so probing
++		 * is slowed while CONNECTED, not removed: once a minute instead of every
++		 * scan. Any other state keeps today's cadence, so a moved cable (link
++		 * drops -> DISCONN) is re-detected exactly as before. Dual WAN never
++		 * reaches this branch (the dualwan_wans condition above). */
++		static long autowan_last = 0;
++		long now = uptime();
++		if(current_state[wan_unit] != WAN_STATE_CONNECTED || now - autowan_last >= 60){
++			autowan_last = now;
++			notify_rc_after_period_wait("restart_autowan", 1);
++		}
++	}
+ #endif
+ 
+ #else
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index e6dc2109a7..f7ca562dfc 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -982,12 +982,27 @@ static void poll_ifaces(const char *wanif)
+  * the page renders as flatlined metrics that lurch forward every ~20 s.
+  * Redirecting the watcher to /dev/null before it forks is the entire fix;
+  * measured in the popen harness: 3.008 s -> 0.005 s fast path, hung child
+- * still killed at `secs`. */
++ * still killed at `secs`.
++ *
++ * v3.2.3 (measured 2026-09-20): `kill $_w` reached the watcher subshell but not
++ * the `sleep` it had forked, so every fast-path query orphaned one sleep to
++ * pid 1, and its exit `secs` later was a SIGCHLD wake of init - four full /proc
++ * scans each (check_services) - seven times per 4 s class poll: half of what an
++ * idle box burned in pid 1. The watcher now traps TERM and kills AND reaps its
++ * own sleep, and the main shell reaps the watcher, so nothing reaches pid 1.
++ * The sleep is forked before the trap is armed: a TERM in the microsecond gap
++ * between the two strands that one sleep (the old behaviour, once); the other
++ * order would have the trap kill an inherited, already-reaped pid instead.
++ * Harness (busybox ash): a 50 ms command
++ * returns in 52 ms with no sleep left behind (the old form left one per call);
++ * a hung single command is still killed at `secs`. The long-term shape is still
++ * fork+exec with a poll() deadline: one process per query, no shell. */
+ static void rt_bound(char *out, size_t n, const char *cmd, int secs)
+ {
+ 	snprintf(out, n,
+-	         "{ %s; } & _c=$!; { sleep %d; kill -9 $_c 2>/dev/null; } >/dev/null 2>&1 & _w=$!; "
+-	         "wait $_c 2>/dev/null; kill $_w 2>/dev/null",
++	         "{ %s; } & _c=$!; "
++	         "{ sleep %d & trap 'kill $! 2>/dev/null; wait $! 2>/dev/null; exit' TERM; wait $!; kill -9 $_c 2>/dev/null; } >/dev/null 2>&1 & _w=$!; "
++	         "wait $_c 2>/dev/null; kill $_w 2>/dev/null; wait $_w 2>/dev/null",
+ 	         cmd, secs);
+ }
+ 
+-- 
+2.25.1
+

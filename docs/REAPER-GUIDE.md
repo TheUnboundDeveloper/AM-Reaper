@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.1.0** · 2026-09-06 <!--@stamp-->
+> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, and the newer RT-BE92U (BCM6765, experimental). This guide describes the feature set as of the v3.1.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -37,6 +37,7 @@ This guide is written for someone who will install and run the firmware: technic
 4. [Each feature page](#4-each-feature-page)
    - 4.1 [Firewall](#41-firewall)
      - 4.1.1 [Status](#411-status)
+     - 4.1.1a [Rule Status](#411a-rule-status)
      - 4.1.2 [General](#412-general)
      - 4.1.3 [Rules](#413-rules)
      - 4.1.4 [Objects](#414-objects)
@@ -66,6 +67,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.3.5 [Your own lists](#435-your-own-lists)
      - 4.3.6 [Direction, and filtering the router itself](#436-direction-and-filtering-the-router-itself)
      - 4.3.7 [Reading the statistics](#437-reading-the-statistics)
+     - 4.3.7a ["I never see any outbound blocks"](#437a-i-never-see-any-outbound-blocks)
      - 4.3.8 [Examples](#438-examples)
      - 4.3.9 [Limits and gotchas](#439-limits-and-gotchas)
    - 4.4 [Policy Routing](#44-policy-routing)
@@ -75,7 +77,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.4.4 [Domain lists](#444-domain-lists)
      - 4.4.5 [Where a rule sends traffic](#445-where-a-rule-sends-traffic)
      - 4.4.6 [Order and precedence](#446-order-and-precedence)
-     - 4.4.7 [Fail-closed](#447-fail-closed)
+     - 4.4.7 [Fail-closed or fail-open: the Killswitch decides](#447-fail-closed-or-fail-open-the-killswitch-decides)
      - 4.4.8 [Examples](#448-examples)
      - 4.4.9 [Limits and gotchas](#449-limits-and-gotchas)
    - 4.5 [QoS (Traffic Manager)](#45-qos-traffic-manager)
@@ -103,12 +105,12 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.8.5 [Filtering and export](#485-filtering-and-export)
      - 4.8.6 [Limits and gotchas](#486-limits-and-gotchas)
    - 4.9 [Connections](#49-connections)
-   - 4.10 [Wireless Quality and WiFi Professional (all bands)](#410-wireless-quality-and-wifi-professional-all-bands)
+   - 4.10 [Wireless Quality and Wi-Fi Settings (all bands)](#410-wireless-quality-and-wi-fi-settings-all-bands)
    - 4.11 [Long-Term Storage and Data Export](#411-long-term-storage-and-data-export)
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
-   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--failover-v311)
+   - 4.14a [Resolver health check](#414a-resolver-health-check-administration--dns-failover-v311)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Tools → Other Settings: the Reaper switches](#417-tools--other-settings-the-reaper-switches)
@@ -128,7 +130,7 @@ This guide is written for someone who will install and run the firmware: technic
 
 ## 1. What Reaper is, and is not
 
-Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin 3006.102.8 for the ASUS RT-BE series (Broadcom BCM4916 — or BCM6765 on the RT-BE92U — Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
+Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin 3006.102.8 for the ASUS RT-BE series (Broadcom BCM4916, Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
 
 Reaper is distributed as a patch series applied to the public Asuswrt-Merlin source. Releases are compiled in a public GitHub Actions clean room from pinned inputs, and the About page in the firmware states the patch count, upstream commit and build date of the image you are running so that it can be rebuilt and checked.
 
@@ -181,8 +183,8 @@ This section is the one to read before you flash and again after you have been r
 ### 2.1 Supported models and the right file
 
 - **RT-BE96U** — primary model; every release is built and validated on this hardware.
-- **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the four siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
-- **RT-BE92U** (BCM6765 / 96765GW) — a newer sixth model, brought up in the v2.7.x line. Its source rides the same rungs and it ships as **experimental prereleases**. It is in the clean-room CI matrix and in the `all` fleet fan-out, but because it publishes as a prerelease it never lands as a standard release alongside the five BCM4916 models.
+- **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
+- **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
 
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 
@@ -329,6 +331,7 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 
 - Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
+- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic (a port, a destination) is tolerated and logged once; so is any chain you list, one name per line, in **`/jffs/reaper/front_exempt`**. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so, names that file, and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
 So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (4.17); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
@@ -393,7 +396,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 **Navigation**
 
-- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) — a single unfolding group on both the dashboard and the shell, instead of being scattered through the stock menus; an external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
+- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
@@ -438,6 +441,29 @@ The eleven tabs follow, in the order they appear in the interface.
 The page no longer runs `iptables`, so auto-refresh is cheap; raw chains are still available over SSH.
 
 **Example.** You add a port forward, apply it, and the Forwards table shows your rule — but Status still reports the engine inactive. That means the generated ruleset did not run (most often the LAN was not up yet at boot). The rule exists in your configuration and does nothing until it does.
+
+<a id="412-rule-status"></a>
+#### 4.1.1a Rule Status
+
+**What it is.** The firewall saying what it is actually doing, per feature, after every change. Each feature owns a few **witness packets** — an ingress interface, source and destination addresses, a protocol and port, a connection state — and the verdict it promises. A small read-only walker (`reaper_fwsim`) pushes each witness through the **live** tables in kernel order (raw, mangle, nat PREROUTING, the routing decision, filter INPUT or FORWARD, POSTROUTING) and reports the verdict together with the rule that decided it. It runs at the end of every firewall apply, on a timer from the watchdog, and when you press **Re-check now**.
+
+The rows are grouped the way the features are: core reachability (LAN to WAN, DNS at the router, WAN unsolicited dropped, management ports, DHCP), port forwards (one pair per saved rule: translated, then passes FORWARD — plus, for a forward restricted to certain sources, a row proving a *different* source is **not** translated), UPnP, VPN (the servers you have enabled, each policy-routing rule's mark, the Killswitch), Gatekeeper (a blocked device is refused everything, DNS included, except the router's own admin page — the escape hatch; an internet-only device reaches the WAN but not the LAN), Warden (the router and its LAN are never in a ban set; the allow list is consulted before the ban list; each blocked country has its rule; the drop chains end in DROP; outbound is checked separately from inbound), the rules engine, Service Intercept (the service is redirected, *and* the host it is redirected to is exempt from its own redirect), the front hooks, each guest network (isolated from the LAN, reaches the WAN, DNS at its gateway), the flood guard, and IPv6 equivalents where the router has IPv6.
+
+Two kinds of row are not packets. Some are **shape** checks — the walker looks at the tables rather than sending anything through them, because the promise is about structure: a chain exists, a chain ends in an unconditional DROP, the allow list is checked before the ban list, the flood guard is rate limited. (A rate limit always lets a flow's *first* packet through, and the first packet is the only one a walker has, so "is the guard armed?" is the only honest question to ask of it.) And **Killswitch** rows read somewhere else entirely: a VPN client's Killswitch is not in the firewall tables at all — it is a routing rule that refuses the marked traffic — so the walker reads the router's routing policy alongside the tables. That row is the difference between a Killswitch that is working and one that was never installed, which otherwise looks exactly the same from inside the firewall.
+
+Finally there is one row that is always **Not applicable** on purpose, named *Out of scope for the walker*. It lists what a walk of the tables cannot see: reverse-path filtering, hardware-accelerated flows that bypass the firewall entirely, traffic between two devices on the *same* network (switched, not routed, and enforced by ebtables — the Gatekeeper row for an internet-only device therefore witnesses the cross-network leg), and drops inside the closed-source wireless and AiMesh components. It is there so a board full of green rows cannot be read as a clean bill of health for things nothing here checked.
+
+**It is advisory.** Everything on this tab is information: the walker reads the tables and writes a report, and nothing reads that report to act on it. A red row is something to look at, not a fault the router has confirmed — the two commonest reasons a healthy box shows one are the witness address itself (see below) and a match the walker does not model — so the count never lights the menu, never turns the dashboard red, and never makes the watchdog declare a failure or write an incident bundle. The watchdog logs one advisory line when the set of red rows changes, and the diagnostics bundle lists them under 14g as information.
+
+**The witness addresses are chosen, not fixed.** On the WAN side the walker tests its candidate source against every address set the live tables match on — a documentation-range address can sit inside a threat feed, and a witness that is itself banned tests the ban, not the port forward — and takes the first one nothing claims; the report says which. On the LAN side, when *Administration › System › Only allow specified IP address* is on, the witness host is one the list allows, because that is the only client the router promises anything to. The same is done for the IPv6 WAN source, and when the admin list allows an address *outside* the LAN, WAN management and WAN SSH are witnessed from that one (with only LAN addresses listed, those rows say so instead of failing). All choices are shown in the report's `wansrc`, `wan6src` and `lanhost` fields.
+
+**It knows an intended exposure from an accident.** A DMZ host turns the "unsolicited WAN traffic never reaches a LAN host" rows into notes and adds a row that witnesses the DMZ itself (handed to the host, and passes). Networks you have deliberately linked in SDN access turn the guest-isolation row into a note, because isolation is then a per-pair question. With dual WAN the rows aim at whichever unit is primary. Two rows watch what no configuration asks for: an unforwarded high port on the router's own address must not be translated anywhere (a leftover catch-all forward would show here), and invalid-state packets from the WAN must be dropped both toward the LAN and toward the router — the latter is an explicit stock rule an early accept can shadow.
+
+**Reading a row.** *OK*: the promise holds and the rule column names what delivered it. *Unsuccessful*: the live tables do not deliver it, and the rule column names what caught the packet instead — that is the thing to fix. *Inconclusive*: a match the walker does not model (string, u32, time, policy) sits on the path, so the row is not judged rather than guessed — note this does **not** mean the row is degraded or half-working; nothing is known to be wrong with it, the walker simply declined to assert. *Not applicable*: the router has no such network yet (no IPv6, no WAN address). The pill colours still carry the same reading at a glance — jade for OK, amber for Inconclusive, red for Unsuccessful, grey for Not applicable — but the word is what the row means, so the tab stays readable to anyone who does not separate those colours. A banner above the table says when the filter table is still the boot-time skeleton, which means the full ruleset never loaded and nothing else on the tab matters until it does.
+
+**How to use it.** Look at it after every Apply and after a reboot, the same way as Status; the difference is that this tab tells you *which* promise broke and *where*. Two rows are worth knowing by name: a Gatekeeper-blocked device that reaches the WAN, and a port forward that is translated but then dropped — both have been real field incidents, and both are exactly what a red row here would have shown on day one. Nothing on the tab changes the firewall; the walker only reads the tables and writes a report, and nothing acts on that report. The same report appears in the diagnostics bundle (section 14g, as information), is logged by the watchdog as one advisory line when the set of red rows changes, and is shown in the Rules tab's confirm window before you press Keep.
+
+**Example.** You add a guest network. Its three rows appear at once: isolated from the LAN (drop), reaches the WAN (accept), DNS at its gateway (accept). If "reaches the WAN" is red and the rule column says `filter/FORWARD policy DROP`, no rule accepts that bridge toward the WAN — the network exists, its clients get addresses, and nothing they send leaves the router.
 
 #### 4.1.2 General
 
@@ -617,10 +643,23 @@ Turn on **Drop** while you are diagnosing a rule that is not doing what you expe
 
 **Example.** A device cannot reach a service and you do not know which rule is stopping it. Set logging to Drop, reproduce the failure, and read the entries — each logged line names the addresses and ports, which tells you which of your rules matched.
 
+**Reading the table.** The columns are Action, Time, Interface, Source, Destination, Protocol and Port. *Interface* is the interface the traffic **arrived on**, which is usually what tells you whether something came from your own network or from the internet. (Before v3.1.2 the first two headings were transposed and the third was labelled "Chain", which it never was.)
+
+The Action badge distinguishes the source of each entry, and for Warden it distinguishes the **direction** too:
+
+| Badge | Meaning |
+|---|---|
+| `DROP` / `ACCEPT` | the stock firewall or the rules engine |
+| `WARDEN` | Warden blocked something **coming in** |
+| `WARDEN-OUT` | Warden blocked something on your network **reaching out** to a flagged address |
+| `WARDEN-SELF` | Warden blocked **the router itself** reaching out (see 4.3) |
+
+Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.
+
 #### 4.1.13 Limits, and things deliberately not built
 
 - **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
-- **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2; pending metal confirmation).
+- **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2).
 - The Status tab shows both of those layers' state, and the Rules tab links to them.
 
 ### 4.2 Gatekeeper
@@ -810,11 +849,38 @@ Drops here always go to the system log with the `REAPER-WARDEN-SELF` prefix, wha
 
 The status card shows **Enforcing** or **Disabled**, the last feed update, which feeds are on, and the counts — **Countries / Threat feeds / Manual blocks / Unclassified**, plus prefixes loaded.
 
-**Blocked hits** and **Top blocked countries** refresh every 30 seconds. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`. *Unclassified* is non-zero only on a statistics store written before those buckets existed; it is shown rather than quietly folded into a named bucket.
+**Blocked packets** and **Top blocked countries** refresh every 30 seconds. The figure counts packets, not connection attempts: a retried SYN or a retransmitted outbound packet counts again. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`; from v3.2.2 every bucket is read from one snapshot of the firewall tables, so they add up exactly. *Unclassified* is non-zero only on a statistics store written before those buckets existed. The counter never matches the log viewer: the log is a rotating 400-line view, gated on *Log blocked traffic*, and a burst can drop lines; the card under *How Warden works* says so on the page.
 
 Totals are saved to internal flash every 15 minutes, and on every path that would otherwise lose them, so they survive reboots, firewall rebuilds and upgrades. **Turning Warden off resets the counters.**
 
 Blocking a single address severs its live connections immediately — a newly blocked address is dropped at once, because the hardware flow cache is flushed on apply.
+
+#### 4.3.7a "I never see any outbound blocks"
+
+This comes up often enough to be worth stating plainly: **an empty outbound log
+is the normal case, not evidence that something is broken.**
+
+Inbound blocks are constant because the internet supplies a steady stream of
+unsolicited traffic to block. An *outbound* block needs something on your own
+network to reach out to a flagged address, which on a healthy network may not
+happen for weeks. Silence is the expected reading.
+
+There are four different reasons the log can be quiet, and they used to look
+identical from the outside. Since v3.1.2 the router reports which one applies —
+look in the system log for a line tagged `rwatch` beginning `Warden outbound:`.
+It is written once whenever the state changes, so it says one of:
+
+| What it says | What to do |
+|---|---|
+| *not filtering outbound* | Direction is set to Inbound only. Set it to Both if you want outbound filtering. |
+| *armed but NOT logging* | Outbound blocking is on but logging is off. Turn on logging while you investigate. |
+| *armed and logging* | It is working. The count of blocks so far is on the same line — if it is 0, nothing has matched. |
+| *the RW_ODROP chain is ABSENT* | A real fault. The chain should exist whenever direction is out/both; report it. |
+
+To confirm it end to end rather than wait, use the **Catch a device calling
+home** example below and browse to an address you know is in a feed you have
+enabled. Blocked outbound entries appear in the system log with the
+`REAPER-WARDEN-OUT` prefix and as a `WARDEN-OUT` badge in Firewall → Logging.
 
 #### 4.3.8 Examples
 
@@ -877,7 +943,6 @@ Each rule matches traffic one of three ways:
 
 A fair question; VPN Director's source rule and a device rule here do steer the same packets. The device rules exist for what they add on top:
 
-- **Fail-closed.** If the tunnel drops, a device routed here is **blocked** until it comes back. VPN Director's rule would quietly fall through to the WAN unless you also enabled its kill switch.
 - **Block as a target.** "This device goes nowhere", without a firewall rule.
 - **MAC keying.** A MAC rule follows the device across DHCP changes; an IP rule does not.
 - **Precedence.** A rule here **overrides** a VPN Director rule for the same device, so you can carve one device out of a broad "route this subnet" policy.
@@ -899,11 +964,11 @@ A domain list is a Firewall object of type *Domain name*: a name plus the domain
 Every rule has one target:
 
 - **A VPN client (OpenVPN 1–5)** — matched traffic goes through that OpenVPN client's tunnel, using the routing table the client already created. The tunnel does not have to be the default route; this steers only the traffic you named through it.
-- **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN. This is how you carve an exception out of "route everything through the tunnel".
+- **WAN** — matched traffic is forced out the normal internet connection, **bypassing** a full-tunnel VPN and any VPN Director rule for it. This is how you carve an exception out of "route everything through the tunnel". The row simply reads `WAN`; the bypass is stated once in the notes under the table, and as a hint when you pick WAN as a target (v3.1.5).
 - **Block** — matched traffic is dropped. Useful as a hard "this device, or this destination, goes nowhere" that does not depend on the firewall rule order.
-- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off is fail-closed: it blocks the selected traffic until that client comes up. Since v2.7.7 the target list **hides tunnels you have not configured** and flags ones that are configured but currently down, so a rule cannot be pointed at a target that was never going to carry it. The accelerator-bypass table has only **eight slots**, so a rule that would overflow it — or that names a tunnel whose interface is absent — is **refused and logged** rather than applied.
+- **WireGuard 1–5** — supported since v2.6.7, with a cost described in 4.4.9. A WireGuard rule whose client is switched off either blocks the selected traffic or lets it use the WAN, depending on that client's Killswitch (4.4.7). Since v2.7.7 the target list **hides tunnels that are not enabled**, so a rule cannot be pointed at a target that was never going to carry it; a rule that already names a switched-off client keeps its target and shows *Inactive · WAN* in the Status column (v3.1.5). The accelerator-bypass table (4.4.9) has **eight IPv4 and eight IPv6 slots**, shared with VPN Director's WireGuard rules and the WireGuard server's peers. A WireGuard rule is never refused for it: the marking and routing rules go in regardless. If no slot is free, the apply reports a **partial failure**, the log names the entry, and until a slot is freed flows from that source that the accelerator has already learned keep their old path. If the tunnel's interface is not up yet when the rules are applied (at boot, Policy Routing applies with the firewall, before the WireGuard client starts), the bypass is recorded as **pending** and installed the moment the client starts (v3.1.7); the diagnostics bundle's section 14d shows each bypass as *new*, *pre* or *pending*.
 
-**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around the tunnel.
+**IPv6 is covered** (v2.6.7): a destination list matches its IPv6 addresses, a MAC rule follows the device on both families, and a source rule may name an IPv6 prefix. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked when that client's Killswitch is on and uses the WAN when it is off - the same rule as for a tunnel that is down (4.4.7).
 
 #### 4.4.6 Order and precedence
 
@@ -911,11 +976,30 @@ Rules read **top to bottom, first match wins** — put specific rules above broa
 
 Between features, **a Policy Routing rule takes precedence over a VPN Director rule** covering the same traffic. So you do not have to unpick VPN Director to make an exception — you add the exception here and it wins.
 
-#### 4.4.7 Fail-closed
+#### 4.4.7 Fail-closed or fail-open: the Killswitch decides
 
-A rule that targets a VPN client **fails closed**: if that tunnel is **down**, the matched traffic is **blocked, not sent out the WAN.** This is deliberate, and it is the safety property that matters most in a routing feature. The whole point of sending a device or a site through a VPN is usually that it must *not* touch the internet directly — so if the tunnel drops, leaking that traffic to the WAN would be the one failure you were trying to prevent. Instead it stops until the tunnel is back.
+A rule chooses the **path**. What happens when that path is gone — the tunnel is down — is decided by that VPN client's own **Killswitch**, on its VPN page, exactly as it is for VPN Director; a client that is switched off is not a path at all, and its traffic uses the WAN:
 
-If you actually want "use the tunnel when it is up, otherwise go direct", that is a **WAN** rule, not a VPN-client rule — state it explicitly rather than relying on a failure.
+- **Killswitch on** — the matched traffic is **blocked** until the tunnel is back. This is the setting to use when the whole point of the rule is that the traffic must *never* touch the internet directly.
+- **Killswitch off** — the matched traffic **falls back to the WAN** while the tunnel is down, and returns to the tunnel when it is up.
+- **Client switched off** — the Killswitch does not apply to a client that is not enabled (v3.1.5, the same condition VPN Director puts on its own rule): the matched traffic **uses the WAN** until you enable the client again.
+
+Reaper does not override that choice. Before v3.1.3 every VPN-client rule was blocked regardless of the Killswitch, which meant Policy Routing and VPN Director disagreed about the same client; now one setting governs both. The rules table's **Status** column says which applies to each rule: *Active*, *Active · Killswitch* (a dropped tunnel blocks rather than leaks) or *Inactive · WAN* (the client is switched off); the notes under the table state the rule once.
+
+What the router actually installs is the same pair VPN Director installs, keyed by the rule's mark instead of its source address. For a rule to WireGuard 2 whose client is enabled with its Killswitch on:
+
+```
+9007:  from all fwmark 0x70000/0xf0000 lookup wgc2
+9107:  from all fwmark 0x70000/0xf0000 prohibit      <- only with the Killswitch on and the client enabled
+...
+11410: from 192.168.1.230 lookup wgc2               <- VPN Director's own pair, for comparison
+12216: from 192.168.1.230 prohibit
+32766: from all lookup main
+```
+
+The `prohibit` sits directly beneath the lookup and above `main`, on both IPv4 and IPv6, so a flushed tunnel table blocks the flow instead of leaking it. The whole 9000 band sits above VPN Director's 10000 band on purpose: a Policy Routing rule is evaluated first and overrides VPN Director for the flows it names. Codes are 1–5 OpenVPN, 6–10 WireGuard, 11 WAN (`lookup main`, never a prohibit) and 15 Block (`prohibit` at 9015). With the Killswitch off, or the client switched off, the 9107 line is simply not installed.
+
+The same decision covers IPv6: a tunnel that carries no IPv6 blocks the selected IPv6 traffic when the Killswitch is on, and lets it use the WAN when it is off.
 
 #### 4.4.8 Examples
 
@@ -926,14 +1010,15 @@ Build a domain list `streaming` in the card on this page, listing the services' 
 Set VPN Director (or a broad rule) to route everything through the tunnel. Then here: selector **Object** = `work-app` (a domain list for the service that dislikes the VPN's exit address), target **WAN**. Because Policy Routing wins over VPN Director, that one service goes direct and everything else stays tunnelled.
 
 **Force one device down a VPN, and nowhere else if it drops.**
-Selector **Source MAC** = the device's address, target **OpenVPN 2**. If OVPN 2 is connected the device uses it; if OVPN 2 goes down the device has no internet (fail-closed) rather than quietly falling back to your real address.
+Selector **Source MAC** = the device's address, target **OpenVPN 2**, and OpenVPN 2's **Killswitch on** (its VPN page). If OVPN 2 is connected the device uses it; if OVPN 2 goes down the device has no internet rather than quietly falling back to your real address. With the Killswitch off it would fall back to the WAN instead.
 
 **Send a device — or a destination — nowhere at all.**
 Selector **Source IP** (or **Object**), target **Block**. A hard stop that does not depend on where it sits in the firewall's own rule order.
 
 #### 4.4.9 Limits and gotchas
 
-- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address (*accel bypass: this source*). A **destination-list or MAC** rule must bypass the **whole LAN** (*accel bypass: whole LAN*) — LAN traffic loses hardware acceleration while such a rule exists. The page says so on the rule and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
+- **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address. A **destination-list or MAC** rule must bypass the **whole LAN** — LAN traffic loses hardware acceleration while such a rule exists. The note under the rules table says so whenever a WireGuard rule exists, and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
+- **Why the bypass has to exist, and what it cannot do.** The accelerator decides a flow's path on its first packets; once a flow has been handed to it, the marking chain and the routing rules never see that flow again. A bypass entry is checked on packets the router's CPU sees, so it cannot pull back a flow that was accelerated *before* the entry existed — which is why every apply that installs a WireGuard bypass also clears the accelerator's learned flows, so that every flow is judged afresh. A *new* connection from a bypassed source always takes the CPU path and is judged by your rule. If a source rule to a WireGuard client still reaches the internet directly, look at the bypass first (section 14d of the diagnostics bundle: *pending* means the client interface was down at apply time — before v3.1.7 nothing installed it later; a *table full* log line means the eight slots for that address family were taken), then at the tunnel's own routing table (14d warns when a rule targets a client whose table has no default-covering route: check the client's Allowed IPs). Before v3.1.7 a rule whose target was changed from one WireGuard client to another also kept routing existing connections by the old, now unrouted verdict; those connections used the WAN until they ended.
 - **Protocol and port matching is not offered.**
 - **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
 - **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
@@ -983,7 +1068,7 @@ Why not 100%? Because the shaper only controls a queue it owns. If your figure m
 2. Select **HW QoS Classful** and let the router reboot.
 3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic.
 4. Leave the **Aggregate cap (port shaper)** on.
-5. Optionally enable **Guaranteed minimums**, **Trust DSCP marking**, **L4S marking** (experimental), and **Wi-Fi downstream priority (WMM)**.
+5. Optionally enable **Guaranteed minimums** and **Trust DSCP marking**.
 6. **Apply.**
 
 **Trust DSCP marking is off by default, deliberately.** DSCP is a claim the sending device makes about its own traffic, and any device on your LAN can mark its packets however it likes. Turn it on only if you control what is on your network and something on it marks correctly.
@@ -1017,7 +1102,7 @@ The traffic manager's queues are an *egress* object: they exist on the way out o
 So:
 
 - **Download bufferbloat** is handled by the aggregate policer (classful mode), or properly by **Cake**, which shapes in software at the cost of the accelerator.
-- **Download prioritisation** is delivered as far as it can be by the **Wi-Fi WMM lift**, which raises the marking on the top classes so your access point serves them first. It only ever lifts; demoting the bulk class was tried and reverted after it measurably hurt throughput.
+- **Download prioritisation** is not offered. The Wi-Fi WMM lift that once tried to deliver it measurably halved wireless throughput in both directions and was removed; the policer is a cap, not a priority scheme.
 - The Traffic Analyzer's "By QoS class" chart therefore shows **upload only**. That is correct, not a missing feature.
 
 #### 4.5.7 Verifying it works
@@ -1122,6 +1207,7 @@ Other details worth knowing:
 - A device-name mis-attribution is possible when a DHCP lease is reused by an offline device's address, and a negligible byte undercount when a duplicate row is folded away. Both are accepted trade-offs.
 - A store that attaches before the clock is set used to have the current month or day wiped — the "Month tab resets after a firmware update" symptom. Slot ageing is now driven by absolute time and nothing is aged while the clock is still unset.
 - IPv6 per-device attribution and the one-year totals for IPv6 devices on a USB store are pending field confirmation.
+- In Access Point, repeater or media-bridge mode the collector is deliberately idle: it accounts from the connection tracking table, which a bridging box never populates. Since v3.2.0 the page says so and names the mode instead of staying blank.
 
 ### 4.8 Devices
 
@@ -1183,7 +1269,8 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** "No active flows in the accelerator cache" means there is no traffic or the accelerator/QoS is off. Queue numbers are mostly zero under Hardware QoS (a single shaped queue) and richer under HW Classful.
 
-### 4.10 Wireless Quality and WiFi Professional (all bands)
+<a id="410-wireless-quality-and-wifi-professional-all-bands"></a>
+### 4.10 Wireless Quality and Wi-Fi Settings (all bands)
 
 **Wireless Quality** (the Wireless tab) is a diagnostics page:
 
@@ -1193,9 +1280,9 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 - **Auto Scan** — sweeps a radio's channels *at the width it will actually run* (6 GHz in 320 MHz blocks, 5 GHz in 80 MHz blocks, 2.4 GHz as 20 MHz channels), ranks them by cleanliness, and **restores the original channel when it finishes**; only **Pin best** commits the winner (an owner decision from v2.5.4 — the page text still describes the earlier auto-pin behaviour in one place). Each candidate restarts the radio, so run it from a wired client or another band; DFS channels are deliberately not swept (each needs a 60-second listening period). Pinning takes that radio off automatic selection until you set it back to Auto. The report can be printed to PDF or downloaded as HTML with a spectrum plot.
 - **Passive Channel Monitor** (`rchqd`, opt-in) watches only the current channel and flags *degrading — consider Auto Scan*; it never changes a channel. Degraded/recovered transitions are logged, edge-triggered and rate-limited; the threshold is tunable (`rchq_degraded`).
 
-**WiFi Professional — All Bands** lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios cycle together (~10 s) instead of once per band. It asks the router once rather than 116 times, so it opens quickly. Region and the wireless scheduler stay on the classic per-band page; main-network SSID visibility and client isolation are set on the General Wireless and Network pages because on this hardware the main network is an SDN profile. *Disable 802.11b* is the master for the 2.4 GHz preamble control; "B/G Protection" was removed because the driver resets it on every restart. Roaming assistant: 0 = off.
+**Wireless › Settings** (v3.2.2) is the one tab that configures every radio setting a user can change; it replaces the stock General and Professional tabs, which redirect to it. It lays every radio side by side (it builds itself from the router's real radio list, so a four-radio GT-BE98 gets four columns) and applies once: only changed fields are written and all radios restart together (~10 s). Network name, security, Wi-Fi 6 and Wi-Fi 7 mode and Smart Connect are set on the Network menu, because on this hardware the main network is an SDN profile. Channel and bandwidth offer what the driver reports for each band; the wireless scheduler opens a 7×24 grid. A greyed control is locked by another setting: Legacy mode parks what stock parks (beamforming, modulation scheme, AMPDU RTS and RTS Threshold), WMM is a choice in Legacy only, Fragmentation Threshold is editable in Legacy only, MU-MIMO follows the OFDMA choice, the scheduler is held off while MLO is enabled, *Disable 802.11b* is the master for the 2.4 GHz preamble control, and a fixed channel parks the auto-channel options. From v3.2.3 a greyed control names its reason when you hover it. *Set AP Isolated* is not on this tab: on this build AP isolation is a per-network setting on the Network menu. Roaming assistant: -90 to -40 dBm, 0 = off. **Wireless Mode** (v3.2.1) is per radio with stock's option sets (2.4 GHz Auto / N only / Legacy; 5 GHz Auto / AX only / N-AC-AX mixed / Legacy; 6 GHz Auto / AX only; the firmware has no Wi-Fi 7-only mode). Every mode except Auto, N/AC/AX mixed and AX only switches Wi-Fi 6 and Wi-Fi 7 off on that band, and Apply asks first; applying an Auto or AX-capable mode restores them, which the firmware alone never did. The radio toggle refuses to switch a radio off while MLO is enabled, and switching a radio off asks for confirmation on an AiMesh router because the setting reaches the nodes. A value a rule forces is written at apply as a derived heal when the stored value disagrees.
 
-**Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal). The Professional page's first load after an upgrade can take ~15 s; the cause is under investigation.
+**Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal).
 
 **AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
 hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed
@@ -1219,6 +1306,7 @@ virtual networks on each band keep serving while the carriers are down, which wa
 RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
 rather than speed.
 
+<a id="411-long-term-storage-data-export-and-the-reaper-settings-backup"></a>
 ### 4.11 Long-Term Storage and Data Export
 
 These share the **Storage** page under System Log.
@@ -1248,13 +1336,14 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 
 The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
 
-### 4.14a Resolver health check (Administration → Failover, v3.1.1)
+<a id="414a-resolver-health-check-administration--failover-v311"></a>
+### 4.14a Resolver health check (Administration → DNS Failover, v3.1.1)
 
 dnsmasq, the router's resolver, keeps no memory of an upstream that stopped answering. In strict order it
 tries the first server again for every new name and only a client's retransmission moves the query to the
 next one, so an outage of a LAN resolver such as AdGuard or Pi-hole costs a client timeout per uncached
 name, and a client that lists the router as its second DNS server can need three attempts before the
-router's own second server answers. The **Reaper resolver health check** lives on the **Failover** tab
+router's own second server answers. The **Reaper resolver health check** lives on the **DNS Failover** tab
 of the Administration group (between System and Firmware Upgrade) together with the three dnsmasq
 switches below, and watches **one DNS server you name** with a real query every few seconds; the tab's
 state strip shows Watch / Fail over / Restore and lights the middle step while the server is down.
@@ -1277,14 +1366,12 @@ them every 50 queries and settling on the fastest, which sends a share of every 
 Pair the two: strict order keeps the LAN resolver first while it is healthy, the health check supplies
 the memory of a dead one that strict order lacks.
 
-Two more switches sit beneath, for the layout where **clients are handed the router alone as their DNS**
+One more switch sits beneath, for the layout where **clients are handed the router alone as their DNS**
 and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
-and catches devices with a hard-coded DNS when paired with the port-53 intercept. **Client addresses**
-attaches the asking client's address to every forwarded query as EDNS Client Subnet, so AdGuard Home
-(with "Use EDNS Client Subnet" on in its DNS settings) or Pi-hole (on by default) still shows and filters
-per client instead of seeing only the router. **Router DNS cache** off turns the router into a pure
-forwarder: a per-client decision is never served from the router's cache to a different client, and the
-filter sees every lookup, as it does when clients talk to it directly. The filter keeps its own cache.
+and catches devices with a hard-coded DNS when paired with the port-53 intercept.
+**Router DNS cache** off turns the router into a pure forwarder: a per-client decision is never served
+from the router's cache to a different client, and the filter sees every lookup, as it does when clients
+talk to it directly. The filter keeps its own cache.
 
 ### 4.15 About
 
@@ -1322,7 +1409,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 1. **Know the layer order.** Traffic meets **Warden → Gatekeeper → the rules engine**, in that order, on every base chain. Use Warden for "never talk to these ranges or countries", Gatekeeper for "which devices are allowed at all", the Firewall rules for the specific policy between them, and Egress defaults for the short "this device gets no internet". Do not re-express a Warden block as a firewall rule, or a Gatekeeper block as a Policy Routing Block; one layer, one job.
 2. **Keep lists small and named for what they are.** A country object points at Warden's set rather than copying it; a domain list should hold one service, split if it is long; an address object is `printer`, not `192-168-50-20`. Warden's feeds merge and de-duplicate, so FireHOL Level 1 alone covers three of the four built-ins.
 3. **Mind the WireGuard bypass cost.** A Policy Routing rule that sends a *device (by MAC)* or a *destination list* to a WireGuard client bypasses hardware acceleration for the **whole LAN** for as long as the rule exists. If you can express the rule as a **source IP/CIDR**, only that address loses acceleration. If you can use an OpenVPN client as the target, nothing loses acceleration.
-4. **VPN Director or Policy Routing?** Use VPN Director for the broad posture — "everything (or this subnet) through the tunnel". Use Policy Routing for what needs an object or a device, or one of its four properties: fail-closed, a Block target, MAC keying, and precedence over VPN Director. If you need none of those, VPN Director alone is fine and simpler.
+4. **VPN Director or Policy Routing?** Use VPN Director for the broad posture — "everything (or this subnet) through the tunnel". Use Policy Routing for what needs an object or a device, or one of its three properties: a Block target, MAC keying, and precedence over VPN Director. Whether traffic blocks or falls back to the WAN when a tunnel drops is that VPN client's Killswitch, for both features. If you need none of those, VPN Director alone is fine and simpler.
 5. **Set the QoS bandwidth honestly.** 90–95 % of the *lowest measured* upload. Too high and the ISP's buffer takes over and nothing here can help; too low just wastes headroom. Put your priority classes in order of latency-sensitivity, not importance, and never give the top class a 100 % ceiling.
 6. **USB choice.** An ext4 stick that stays in the router is the right home for traffic history, the syslog mirror and incident dumps. FAT32 is for disks you carry about. Keep the file share closed to untrusted users if the store is on it.
 7. **Apply, test, then Keep.** On the Firewall and Policy Routing pages, make the change from a device the rule does not touch, confirm what you meant to allow still works, then press Keep. If you are not sure, let the timer run; reverting is free.
@@ -1352,7 +1439,8 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Policy Routing dropdown is empty / a domain rule matches nothing | Log `reaper_pbr`; `ipset list rwfw_<list>` | Fixed in v2.5.9 (token and shared object layer). Check the list has resolved; lists fill from the router's own resolver, so a client on its own DNS or DoH does not feed them. |
 | Some routing mark rules missing after a reboot | Log `rwatch: policy routing: N of M mark rule(s) live — re-applying` | Self-heals within two minutes (v2.6.9); no action needed unless the line repeats forever. |
 | WireGuard rule shows "not supported yet — rule inactive" | Policy Routing page | You are on v2.6.1–v2.6.6; WireGuard targets arrived in v2.6.7. |
-| LAN throughput dropped after adding a routing rule | Policy Routing rule chips "accel bypass: whole LAN"; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
+| LAN throughput dropped after adding a routing rule | Policy Routing page: the WireGuard note under the rules table; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
+| A source rule to a WireGuard client still goes out the WAN, while the same rule to OpenVPN works | Diag §14d (bypass *new/pre/pending*, `table wgcN` route count, last handshake, per-rule packets); log `reaper_pbr: … skip-bypass …` / `blog skip table full`; from the device, `traceroute` to a public address | The accelerator, not the rule, is carrying the flow (4.4.9). A *pending* bypass or a full table means the flow was never diverted; upgrade to v3.1.7 (the bypass is installed when the client starts and a changed target no longer keeps stale verdicts), free a slot if the table is full, and check the client's Allowed IPs cover the destination. |
 | IPv4 stopped working entirely, IPv6 fine, QoS Classful on | Log `hwqos: setqcfg qid N … REJECTED` / `class queues restored …`; QoS Diagnostics queues 1–5 | v2.6.0 makes the rebuild transactional. A `FATAL` line means even the bare recreate failed — report it with a diag. |
 | Games/consoles cannot open ports or connect with UPnP on | Log `IGD desc` lines (which description the console fetched); Firewall Status exposure card | IGD:1 is advertised by default (v2.4.6) and the upstream "all traffic through UPnP" patch is reverted (v2.5.8). If you enabled IPv6 pinholes, IGD:2 is served — that configuration broke the PS5. |
 | UPnP mappings stop working hours after boot | UPnP page vs actual forwarding | Fixed v2.3.5 (the daemon is genuinely restarted on firewall rebuilds). Do not "optimise" that restart away. |
@@ -1380,7 +1468,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Apply and Keep / commit-confirm** — the two-step change on the Firewall and Policy Routing pages: changes go live at once and revert on their own unless you press Keep within the auto-revert timer (2.7).
 - **Auto-revert timer** — 15–3600 seconds, default 60, never off; set on the Firewall Rules tab.
 - **Egress default** — a per-device rule for traffic leaving toward the internet only (Firewall → Egress).
-- **Fail-closed** — a Policy Routing rule whose tunnel is down *blocks* the traffic rather than letting it out the WAN.
+- **Fail-closed** — an enabled VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off, or the client switched off, it falls back to the WAN (v3.1.5 matches VPN Director on the switched-off case).
 - **FINDINGS** — the verdict block at the top of the diagnostics report.
 - **Front chain (`REAPER_HOOK_*`)** — the single shared chain at the head of INPUT/FORWARD/OUTPUT into which Warden, Gatekeeper and the rules engine register, in that fixed order.
 - **Gatekeeper** — device access control; states are Pending, Full access, Internet only, Guest (timed), Blocked.
@@ -1389,7 +1477,6 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **IGD:1 / IGD:2** — the two revisions of the UPnP gateway description. Reaper advertises IGD:1 by default; enabling IPv6 pinholes switches to IGD:2.
 - **ipset** — kernel address sets; one lookup regardless of list size. Warden, the firewall objects and Policy Routing all use them.
 - **/jffs** — the router's internal flash partition, always mounted; where Reaper's lists and Warden's cache live (2.4).
-- **L4S** — an experimental ECN-marking congestion signal for capable flows; harmless if unsupported.
 - **Long-term store** — the durable location (RAM / JFFS / USB) chosen on the Storage page for history datasets.
 - **MCP / AI Advisor** — the optional read-only LAN-only Model Context Protocol server in the `_MCP` build; absent from `noMCP`.
 - **MLO** — Wi-Fi 7 Multi-Link Operation; needs a cold power cycle to change (2.8).

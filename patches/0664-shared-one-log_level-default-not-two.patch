@@ -1,0 +1,35 @@
+From b6a615df07f202735850a43f48c2255f15b0aaca Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 14:00:47 -0400
+Subject: [PATCH] shared: one log_level default, not two
+
+router_defaults[] declared "log_level" twice - ASUS's entry ("7",
+CKN_STR_DEFAULT) and, 1,600 lines later in the Merlin block, a second "7"
+with CKN_STR1. The first match wins, so the second was dead; it misled two
+readers into editing the wrong line while answering the "I set the log level
+to CRITICAL and was still spammed" report. The dead copy is removed and a
+pointer left where it was. Same value, same lookup result, no behaviour change.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/shared/defaults.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index aac764b68d..e2bd50f014 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5267,7 +5267,9 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wan1_mtu", "1500", CKN_STR5, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "ddns_refresh_x", "21", CKN_STR3, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// Forced refresh period (in days)
+ 	{ "smbd_master", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "log_level", "7", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },			// <  LOG_DEBUG
++	/* "log_level" is declared once, above, in the ASUS block ("7"); a second copy here
++	 * was dead - the first match wins - and misled two readers into editing the wrong
++	 * line (Reaper, 2026-09-13). */
+ 	{ "message_loglevel", "5", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// KERN_INFO
+ 	{ "http_dut_redir", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },      // 1: redir lan_ip to router.asus.com
+ 	{ "dns_norebind", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },		// dnsmasq DNS rebind protection
+-- 
+2.25.1
+

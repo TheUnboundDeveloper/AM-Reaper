@@ -1,0 +1,267 @@
+From dd13b881139d5e925686a4c134c21f7a73cae357 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 10 Sep 2026 14:20:05 -0400
+Subject: [PATCH] webui: the Logging table says what each column holds, and
+ Addons opens
+
+Firewall > Logging had its first two heads transposed - Time over the action
+badge, Action over the timestamp - and a third reading "Chain" over a column
+showing the inbound interface. The row now reads Action, Time, Interface and
+on, matching the cells one for one, using the stock <#wan_interface#> token.
+
+The viewer's classOf() matched only "REAPER-WARDEN", so the -OUT and -SELF
+prefixes collapsed back into a single WARDEN badge, undoing the separation
+they exist for. All three are told apart again.
+
+Addons was the one rail item that did not navigate: it unfolded a sub-list.
+It is now an ordinary item that opens the first addon page, with its siblings
+arriving as the shell's tab bar, changed in both rails in lockstep.
+
+The dashboard firmware pill gains a BETA chip read off EXTENDNO, and the
+About page stops treating a channel suffix as a version mismatch - the patch
+series is stamped bare, so "v3.1.2_BETA" would otherwise have fired the
+"series as of vX" qualifier on every beta build, which is the one thing that
+line exists not to do.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 54 ++++++++++++----------
+ release/src/router/www/Reaper_About.asp    |  8 +++-
+ release/src/router/www/Reaper_Firewall.asp | 12 ++++-
+ release/src/router/www/reaper_shell.asp    | 49 +++++++++-----------
+ 4 files changed, 69 insertions(+), 54 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 4d781600f6..a34d8e3231 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -131,14 +131,10 @@ main{min-width:0}
+ .nav a:hover{color:var(--bone);background:var(--panel)}
+ .nav a.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ .nav a.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+-/* Addons section (2026-08-23): one root item that unfolds the installed list */
+-.nav a.aroot svg.chev{margin-left:auto;width:14px;height:14px;transition:transform .15s}
+-.nav a.aroot.open svg.chev{transform:rotate(90deg)}
++/* Addons section: one ordinary rail item carrying a count of what is installed
++   (2026-09-10: the fold-out root and its sub-list markup are gone - see the
++   Addons rail group script at the foot of this file) */
+ .nav a .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+-.nav .sub{display:none;flex-direction:column;gap:2px;padding-left:12px;border-left:1px solid var(--line-soft);margin-left:21px}
+-.nav .sub.open{display:flex}
+-.nav a.subi{height:34px;font-size:13px;padding:0 10px}
+-.nav a.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px;opacity:.6}
+ 
+ /* ---------- topbar ----------
+    single row that must NOT wrap on desktop: brand and buttons stay fixed,
+@@ -153,6 +149,10 @@ main{min-width:0}
+ .pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line-soft);border-radius:8px;background:var(--panel);font-size:11px;white-space:nowrap;flex:0 0 auto}
+ .pill .k{color:var(--steel);text-transform:uppercase;letter-spacing:.12em;font-size:9px}
+ .pill .v{color:var(--bone);font-family:var(--hdr);font-weight:600;letter-spacing:.03em}
++/* pre-release marker. The version string beside it already ends in _beta
++   - it comes straight from EXTENDNO, which the build stamps - so this adds
++   no new source of truth; it just makes the fact impossible to skim past. */
++.pill .btag{color:var(--amber);border:1px solid currentColor;border-radius:4px;padding:0 5px;font-family:var(--hdr);font-weight:700;letter-spacing:.06em;font-size:10px;text-transform:uppercase}
+ /* firmware-update banner: lives in the content column, NOT in the pill strip.
+    The strip is a nowrap flex row and its intrinsic width floors the 1fr grid
+    track, so a 7th pill widened the whole document past the right edge of the
+@@ -484,7 +484,7 @@ main{min-width:0}
+         <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+         <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+         <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+-        <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span></div>
++        <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
+         <div class="pill"><span class="k"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
+         <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+@@ -826,6 +826,11 @@ function v6Up(){
+     var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
+     if(SSI.extendno && SSI.extendno!=='0') fwstr += '_'+cap(SSI.extendno);
+     if(fwstr.length>2) setTxt('p_fw', fwstr);
++    /* A beta build stamps EXTENDNO as <version>_beta (build-scripts/
++       _reaper_build_lib.sh), which is the same string the image filename is
++       built from - so the router and the .pkgtb on disk always agree about
++       whether this is a pre-release, with no extra nvram key to drift. */
++    if(/_beta(_|$)/i.test(String(SSI.extendno||''))){ var bt=$id('p_fwbeta'); if(bt) bt.style.display=''; }
+     /* WAN state: IPv4 from wan0_state_t (2 = connected, non-0.0.0.0 IP),
+        IPv6 from wan_ipv6_network(). Card renders per the ipv6 mock:
+        v4-only = today, dual = v6 line + v6 meta row, v6-only = v6 hero. */
+@@ -1669,25 +1674,26 @@ window.addEventListener('resize', function(){ reaperTips(); });
+        ReaperAddons (reaper_util.js), shared with the shell rail, so the two
+        rails render the same entries. Same outcome as the shell when nothing
+        survives: the group stays hidden. */
+-    /* 2026-08-23: one dedicated section, one root item that unfolds the list -
+-       the same shape the shell rail draws (see ReaperAddons.split there). */
++    /* 2026-09-10 (owner): one dedicated section, and ONE ordinary rail item -
++       it opens the first installed addon page, exactly as every other item on
++       this rail opens a page. It used to unfold a sub-list instead, which no
++       other menu does. The shell supplies the siblings as its tab bar once the
++       page is open, so nothing is lost by not listing them here. Keep this in
++       step with buildRail() in reaper_shell.asp. */
+     function render(res){
+-      var h = '', i, e;
+-      for(i = 0; i < res.entries.length; i++){
+-        e = res.entries[i];
+-        h += e.external
+-          ? '<a class="subi" href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer"><span class="dot"></span><span class="nl">' + esc(e.label) + '</span></a>'
+-          : '<a class="subi" href="/reaper_shell.asp#' + esc(e.url) + '"><span class="dot"></span><span class="nl">' + esc(e.label) + '</span></a>';
+-      }
+-      if(!h) return;
++      var i, first = null;
++      if(!res.entries.length) return;
++      for(i = 0; i < res.entries.length; i++)
++        if(!res.entries[i].external){ first = res.entries[i]; break; }
+       GRP.textContent = `<#Reaper_c_addons#>`;
+       GRP.style.display = '';
+-      NAV.innerHTML = '<a class="aroot" href="#">' + ICON + '<span class="nl">' + `<#Reaper_c_addons#>` + '</span>'
+-                    + '<span class="cnt">' + res.entries.length + '</span>'
+-                    + '<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>'
+-                    + '<div class="sub">' + h + '</div>';
+-      var r = NAV.querySelector('a.aroot'), s = NAV.querySelector('.sub');
+-      r.addEventListener('click', function(ev){ ev.preventDefault(); var o = s.classList.toggle('open'); r.classList.toggle('open', o); });
++      var lbl = '<span class="nl">' + `<#Reaper_c_addons#>` + '</span>'
++              + '<span class="cnt">' + res.entries.length + '</span></a>';
++      /* nothing but off-origin links: open the first one in a new tab, the same
++         rule the shell rail applies to a wholly-external stock menu */
++      NAV.innerHTML = first
++        ? '<a href="/reaper_shell.asp#' + esc(first.url) + '">' + ICON + lbl
++        : '<a href="' + esc(res.entries[0].url) + '" target="_blank" rel="noopener noreferrer">' + ICON + lbl;
+       if(window.reaperTips) reaperTips(NAV);
+     }
+ 
+diff --git a/release/src/router/www/Reaper_About.asp b/release/src/router/www/Reaper_About.asp
+index 746c2325f6..d6a74ffcdb 100644
+--- a/release/src/router/www/Reaper_About.asp
++++ b/release/src/router/www/Reaper_About.asp
+@@ -252,7 +252,13 @@ git am --keep-cr /path/to/patches/*.patch</div>
+ 	/* v2.6.7: a local image built ahead of its public cut carries the series
+ 	   count AS OF the last cut; say so rather than show a dash (field report:
+ 	   every flashed image read a dash) or pass the old count off as this one's. */
+-	if(P.patches && P.series && P.version && P.series !== P.version.replace(/^Reaper_/, '')){
++	/* 2026-09-10: compare the RELEASE numbers, not the build strings. `version`
++	   comes from EXTENDNO verbatim, so a beta build reads "v3.1.2_beta" while
++	   `series` is the bare "v3.1.2" - which is the same release, not an image
++	   running ahead of its cut. Without this every beta would show the "series
++	   as of" qualifier, which is the one thing that line exists NOT to do. */
++	var _pv = P.version ? String(P.version).replace(/^Reaper_/, '').replace(/_(beta|nomcp).*$/i, '') : '';
++	if(P.patches && P.series && P.version && P.series !== _pv){
+ 		var sEl = document.getElementById('p_series');
+ 		if(sEl){ sEl.textContent = `<#RABT_42#>` + ' ' + P.series; sEl.style.display = ''; }
+ 	}
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index d337ad910c..aa66f1a519 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1289,6 +1289,16 @@ function stopAuto(){if(stTimer){clearInterval(stTimer);stTimer=null;}}
+ 
+ /* =================== LOGGING view =================== */
+ function classOf(line){
++  /* Warden emits three distinct prefixes - REAPER-WARDEN (inbound source
++     drops), REAPER-WARDEN-OUT (the destination side, direction=out/both) and
++     REAPER-WARDEN-SELF (traffic the router itself originated). They were
++     given separate prefixes in v2.4.4 precisely so an operator could tell an
++     outbound block from an inbound one; matching only the common stem here
++     collapsed all three back into one badge, which is the same question the
++     prefixes were added to answer. Longest prefix first - the other two are
++     substrings of it. */
++  if(line.indexOf('REAPER-WARDEN-OUT')>=0)return {c:'warden',t:'WARDEN-OUT'};
++  if(line.indexOf('REAPER-WARDEN-SELF')>=0)return {c:'warden',t:'WARDEN-SELF'};
+   if(line.indexOf('REAPER-WARDEN')>=0)return {c:'warden',t:'WARDEN'};
+   if(/ ACCEPT IN=/.test(line))return {c:'accept',t:`<#RFW_138#>`};
+   return {c:'drop',t:`<#RFW_139#>`};
+@@ -1310,7 +1320,7 @@ function loadDrops(){
+       rows.push({cl:cl,tm:tm,inif:inif,src:src,dst:dst,proto:proto,dpt:dpt});
+       if(src)srcCount[src]=(srcCount[src]||0)+1;
+     }
+-    var h=`<table class="logtbl"><thead><tr><th><#RFW_36#></th><th><#RFW_37#></th><th><#RFW_38#></th><th><#RFW_39#></th><th><#RFW_40#></th><th><#RFW_54#></th><th><#RFW_41#></th></tr></thead><tbody>`;
++    var h=`<table class="logtbl"><thead><tr><th><#RFW_37#></th><th><#RFW_36#></th><th><#wan_interface#></th><th><#RFW_39#></th><th><#RFW_40#></th><th><#RFW_54#></th><th><#RFW_41#></th></tr></thead><tbody>`;
+     rows.slice(0,300).forEach(function(r){
+       h+='<tr><td class="cls"><span class="cbadge '+r.cl.c+'">'+esc(r.cl.t)+'</span></td><td>'+esc(r.tm)+'</td><td>'+esc(r.inif)+'</td><td>'+esc(r.src)+'</td><td>'+esc(r.dst)+'</td><td>'+esc(r.proto)+'</td><td>'+esc(r.dpt)+'</td></tr>';
+     });
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index fd1880facb..c6cf505cf4 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -153,14 +153,10 @@ a.item>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ a.item:hover{color:var(--bone);background:var(--panel)}
+ a.item.on{color:var(--crimson);background:linear-gradient(90deg,rgba(225,6,0,.14),transparent)}
+ a.item.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--crimson);border-radius:2px}
+-/* Addons section (2026-08-23): one root item that unfolds the installed list */
+-a.item.aroot .chev{margin-left:auto;width:14px;height:14px;flex:0 0 14px;transition:transform .15s}
+-a.item.aroot.open .chev{transform:rotate(90deg)}
++/* Addons section: one ordinary rail item carrying a count of what is installed
++   (2026-09-10: the fold-out root and its sub-list are gone - see buildRail; the
++   .aroot/.chev/.sub/.subi rules went with them, here and in the narrow layout) */
+ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+-.sub{display:none;flex-direction:column;gap:2px;padding-left:12px;border-left:1px solid var(--line-soft);margin-left:21px}
+-.sub.open{display:flex}
+-a.item.subi{height:34px;font-size:13px;padding:0 10px}
+-a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px;opacity:.6}
+ /* content stage: shell-owned tab bar + frame. The frame auto-grows to its
+    content (JS below), so the ONLY scrollbar is the browser's own - no nested
+    iframe scrollbar on long pages (SDN.asp). min-height keeps short pages
+@@ -210,9 +206,8 @@ a.item.subi .dot{width:6px;height:6px;border-radius:50%;background:currentColor;
+   .railclock .rc-time{font-size:15px} .railclock .rc-date{display:none}
+   .raillang,.grp{display:none}
+   a.item{padding:0 9px;gap:0;height:38px}
+-  a.item>span,a.item .chev,a.item .cnt{display:none}
++  a.item>span,a.item .cnt{display:none}
+   a.item.on::before{left:8px;right:8px;top:auto;bottom:0;width:auto;height:2px}
+-  .sub{flex-direction:row;gap:4px;padding-left:0;margin-left:0;border-left:0}
+   .railabout{margin-top:0;padding:0 0 0 6px;border-top:0;position:static;flex:0 0 auto;background:transparent}
+   .railabout>span:last-child{display:none}
+   .stage{grid-column:1;grid-row:3;min-height:calc(100vh - 110px)}
+@@ -529,8 +524,7 @@ function loadPage(page){
+   for(var i=0;i<links.length;i++){
+     var pages=(links[i].getAttribute('data-pages')||'').split('|');
+     var hit=(pages.indexOf(page)!==-1);
+-    links[i].classList.toggle('on', hit);   /* never rewrite className: subi/aroot/open must survive */
+-    if(hit && links[i].classList.contains('aroot')){ links[i].classList.add('open'); var su=$id('addon_sub'); if(su) su.classList.add('open'); }
++    links[i].classList.toggle('on', hit);   /* toggle, never rewrite className */
+   }
+   renderTabs(page);
+ }
+@@ -593,25 +587,24 @@ function buildRail(menuTree){
+       h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+   }
+   if(sp.addons.length){
+-    var ai='', pl=[], ae=sp.addons, a;
+-    for(a=0;a<ae.length;a++){
+-      if(ae[a].external)
+-        ai+='<a class="item subi" href="'+esc(ae[a].url)+'" target="_blank" rel="noopener noreferrer"><span class="dot"></span><span class="rtip">'+esc(ae[a].label)+'</span></a>';
+-      else{
+-        pl.push(ae[a].url);
+-        ai+='<a class="item subi" href="/reaper_shell.asp#'+esc(ae[a].url)+'" data-page="'+esc(ae[a].url)+'" data-pages="'+esc(ae[a].url)+'"><span class="dot"></span><span class="rtip">'+esc(ae[a].label)+'</span></a>';
+-      }
+-    }
+-    h+='<div class="grp">'+`<#Reaper_c_addons#>`+'</div>'
+-      +'<a class="item aroot" href="#" data-pages="'+esc(pl.join('|'))+'">'+ICONS.menu_Addons
+-      +'<span class="rtip">'+`<#Reaper_c_addons#>`+'</span><span class="cnt">'+ae.length+'</span>'
+-      +'<svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></a>'
+-      +'<div class="sub" id="addon_sub">'+ai+'</div>';
++    /* 2026-09-10 (owner): the Addons root was the ONE rail item that did not
++       navigate - clicking it unfolded a sub-list, which is not what any other
++       menu does, so it read as the menu misbehaving. It now behaves exactly
++       like a stock menu: it opens its FIRST entry, and the siblings arrive as
++       the shell tab bar - which the synthetic menu_Addons entry appended to
++       MENULIST above already supplies, at no extra cost. An addon that
++       contributes nothing but off-origin links has no page to open, so that
++       case keeps the stock-menu behaviour for the same shape: a new-tab link. */
++    var ae=sp.addons, pl=[], a;
++    for(a=0;a<ae.length;a++) if(!ae[a].external) pl.push(ae[a].url);
++    var alab='<span class="rtip">'+`<#Reaper_c_addons#>`+'</span><span class="cnt">'+ae.length+'</span></a>';
++    h+='<div class="grp">'+`<#Reaper_c_addons#>`+'</div>';
++    if(pl.length)
++      h+='<a class="item" href="/reaper_shell.asp#'+esc(pl[0])+'" data-page="'+esc(pl[0])+'" data-pages="'+esc(pl.join('|'))+'">'+ICONS.menu_Addons+alab;
++    else
++      h+='<a class="item" href="'+esc(ae[0].url)+'" target="_blank" rel="noopener noreferrer">'+ICONS.menu_Addons+alab;
+   }
+   rail.insertAdjacentHTML('beforeend', h);
+-  /* the Addons root only unfolds its list; it never navigates */
+-  var ar=rail.querySelector('a.item.aroot'), asub=$id('addon_sub');
+-  if(ar&&asub) ar.addEventListener('click', function(ev){ ev.preventDefault(); var o=asub.classList.toggle('open'); ar.classList.toggle('open', o); });
+   reaperTips(rail);   /* title-tooltip any nav label the language clipped */
+   var links=rail.querySelectorAll('a.item');
+   for(var k=0;k<links.length;k++){
+-- 
+2.25.1
+

@@ -1,0 +1,1070 @@
+From 6d7b0a363305a85748290f1a29c0531840845fb8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 17 Sep 2026 13:29:49 -0400
+Subject: [PATCH] qos: remove L4S marking and the Wi-Fi downstream (WMM) stamp
+
+L4S was never accepted by the traffic manager on the validated port ("dualq
+isn't supported", egress_tm index 6) and its rejection abandoned the whole
+class-queue priority correction, leaving the stock inverted layout for as long
+as the toggle stayed on. The WMM lift was measured to halve wireless throughput
+in both directions (top class on AC_VO defeats aggregation). Both are gone from
+the page, the engine, the defaults, the JSON and all 25 dictionaries
+(lockstep 6994 -> 6990). The download policer stays, opt-in, and its help now
+says a policer drops rather than delays and should stay off on a network that
+carries calls. rq_rebuild takes one argument again.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c        |   2 -
+ release/src/router/rc/qos.c           | 100 +++++++++-----------------
+ release/src/router/shared/defaults.c  |  12 +---
+ release/src/router/www/BR.dict        |   9 +--
+ release/src/router/www/CN.dict        |   9 +--
+ release/src/router/www/CZ.dict        |   9 +--
+ release/src/router/www/DA.dict        |   9 +--
+ release/src/router/www/DE.dict        |   9 +--
+ release/src/router/www/EN.dict        |   9 +--
+ release/src/router/www/ES.dict        |   9 +--
+ release/src/router/www/FI.dict        |   9 +--
+ release/src/router/www/FR.dict        |   9 +--
+ release/src/router/www/HU.dict        |   9 +--
+ release/src/router/www/IT.dict        |   9 +--
+ release/src/router/www/JP.dict        |   9 +--
+ release/src/router/www/KR.dict        |   9 +--
+ release/src/router/www/MS.dict        |   9 +--
+ release/src/router/www/NL.dict        |   9 +--
+ release/src/router/www/NO.dict        |   9 +--
+ release/src/router/www/PL.dict        |   9 +--
+ release/src/router/www/RO.dict        |   9 +--
+ release/src/router/www/RU.dict        |   9 +--
+ release/src/router/www/Reaper_QoS.asp |  22 ------
+ release/src/router/www/SL.dict        |   9 +--
+ release/src/router/www/SV.dict        |   9 +--
+ release/src/router/www/TH.dict        |   9 +--
+ release/src/router/www/TR.dict        |   9 +--
+ release/src/router/www/TW.dict        |   9 +--
+ release/src/router/www/UK.dict        |   9 +--
+ 29 files changed, 87 insertions(+), 274 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index e4530bd9e7..95152d54f4 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22042,8 +22042,6 @@ do_reaper_qdiag_cgi(char *url, FILE *stream)
+ 	gk_json_esc(stream, nvram_safe_get("qos_sched"));
+ 	websWrite(stream, ",\"qos_default\":");
+ 	gk_json_esc(stream, nvram_safe_get("qos_default"));
+-	websWrite(stream, ",\"qos_l4s\":");
+-	gk_json_esc(stream, nvram_safe_get("qos_l4s"));
+ 
+ 	sid[0] = '\0';
+ 	if ((f = fopen("/var/bdmf_sh_id", "r")) != NULL) {
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 0c1e425e7d..aa0a281f9a 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -386,7 +386,7 @@ end:
+ static unsigned qos_cfg_sig(const char *wan_ifname)
+ {
+ 	static const char *keys[] = { "qos_obw", "qos_ibw", "qos_orates", "qos_sched",
+-				      "qos_l4s", "qos_minrates", "qos_pshaper", "qos_ipolicer" };
++				      "qos_minrates", "qos_pshaper", "qos_ipolicer" };
+ 	unsigned h = 5381;
+ 	const char *s;
+ 	int k;
+@@ -613,14 +613,11 @@ static int add_qos_rules(char *pcWANIF)
+ #endif
+ 	QOSDBG("[qos] iptables START\n");
+ 
+-	/* :QOSDL is declared unconditionally (an empty unused chain is harmless);
+-	 * it is only populated/hooked for reaper QoS v5 downstream DSCP marking. */
+ 	fprintf(fn,
+ 		"*mangle\n"
+ 		":PREROUTING ACCEPT [0:0]\n"
+ 		":OUTPUT ACCEPT [0:0]\n"
+ 		":QOSO - [0:0]\n"
+-		":QOSDL - [0:0]\n"
+ 		"-A QOSO -j CONNMARK --restore-mark --mask 0x%x\n"
+ 		"-A QOSO -m connmark ! --mark 0/0x%x -j RETURN\n",
+ 			class_mask,
+@@ -633,7 +630,6 @@ static int add_qos_rules(char *pcWANIF)
+ 		":PREROUTING ACCEPT [0:0]\n"
+ 		":OUTPUT ACCEPT [0:0]\n"
+ 		":QOSO - [0:0]\n"
+-		":QOSDL - [0:0]\n"
+ 		"-A QOSO -j CONNMARK --restore-mark --mask 0x%x\n"
+ 		"-A QOSO -m connmark ! --mark 0/0x%x -j RETURN\n",
+ 			class_mask,
+@@ -998,45 +994,6 @@ static int add_qos_rules(char *pcWANIF)
+ 		}
+ 	}
+ 
+-	/* reaper QoS v5: downstream class -> DSCP stamp (qos_dscp_wmm, HW classful
+-	 * engine only, "0" kills). The Broadcom driver picks the WMM access
+-	 * category on AP egress from the DSCP precedence bits, so stamping
+-	 * LAN-bound packets of classified connections lifts Q1 to AC_VO (CS6) and
+-	 * Q2 to AC_VI (CS5) on every wireless
+-	 * client - the classful model then steers BOTH directions. LIFT-ONLY
+-	 * (v1.5.4): Q3/Q4/Q5 stay unstamped at AC_BE. The original v1.5.3 map also
+-	 * demoted Q5 to CS1/AC_BK - but Q5 in the shipped class template IS the
+-	 * catch-all default class, so that demotion put nearly ALL wifi-bound
+-	 * traffic (including upload ACK streams) into the starved background AC:
+-	 * metal showed 433/265 Mb/s with 1.5%% loss and 77ms jitter on a healthy
+-	 * 6GHz/320MHz client. NEVER stamp the default class down. connmark reads
+-	 * conntrack directly, so this needs no
+-	 * restore-mark ordering; the stamp happens before HW offload freezes the
+-	 * flow and is replayed by the blogged header mods thereafter. Same
+-	 * connection-start freeze semantics as every type-11 rule: classify on
+-	 * port/proto/IP/MAC, never transferred bytes. */
+-	if (IS_HWQOS_CLASSFUL() && !nvram_match("qos_dscp_wmm", "0")) {
+-		static const struct { int cls; const char *dscp; } wmm_map[] = {
+-			{ 1, "CS6" },	/* Q1 Web/VoIP -> AC_VO */
+-			{ 2, "CS5" },	/* Q2 Gaming   -> AC_VI (was Streaming before the 2026-08-11 template swap; both are the right AC for the slot) */
+-		};
+-		int wi;
+-		for (wi = 0; wi < (int)(sizeof(wmm_map)/sizeof(wmm_map[0])); wi++) {
+-			fprintf(fn, "-A QOSDL -m connmark --mark 0x%x/0x%x -j DSCP --set-dscp-class %s\n",
+-				wmm_map[wi].cls, class_mask, wmm_map[wi].dscp);
+-#ifdef RTCONFIG_IPV6
+-			if (fn_ipv6 && ipv6_enabled())
+-				fprintf(fn_ipv6, "-A QOSDL -m connmark --mark 0x%x/0x%x -j DSCP --set-dscp-class %s\n",
+-					wmm_map[wi].cls, class_mask, wmm_map[wi].dscp);
+-#endif
+-		}
+-		fprintf(fn, "-A POSTROUTING -o %s -j QOSDL\n", lan_ifname);
+-#ifdef RTCONFIG_IPV6
+-		if (fn_ipv6 && ipv6_enabled())
+-			fprintf(fn_ipv6, "-A POSTROUTING -o %s -j QOSDL\n", lan_ifname);
+-#endif
+-	}
+-
+ 	/* The default class */
+ 	i = nvram_get_int("qos_default");
+ 	if ((i < 0) || (i > 4)) i = 3;  // "lowest"
+@@ -1108,9 +1065,10 @@ static int add_qos_rules(char *pcWANIF)
+ 	 * wrong; qos_irates ships non-zero by default and is the real trigger.
+ 	 *
+ 	 * The paired PREROUTING restore-mark exists only to feed that qdisc. QOSO
+-	 * opens with its own CONNMARK restore, and the QOSDL downstream stamp reads
+-	 * conntrack directly (see the wmm_map comment above), so neither path
+-	 * depends on it. Condition added inline rather than wrapping the loop so the
++	 * opens with its own CONNMARK restore, so it does not depend on it. (The
++	 * downstream DSCP stamp chain that also read conntrack directly was removed
++	 * 2026-09-17: it halved Wi-Fi throughput on metal.)
++	 * Condition added inline rather than wrapping the loop so the
+ 	 * strdup/free pair around it stays exactly as it was. */
+ 	g = buf = strdup(nvram_safe_get("qos_irates"));
+ 	for (i = 0; i < 10; ++i) {
+@@ -3296,7 +3254,7 @@ int start_hwqos_classful(void)
+ 	unsigned int obw, ibw, burst, rate, ceil, cap, minr;
+ 	unsigned int crate[5], cceil[5], mtot;	/* pre-parsed class table + minrate total */
+ 	int cvalid[5];
+-	int i, qid, minrates, l4s;
++	int i, qid, minrates;
+ 	int sched_w[5];		/* v4: per-class WRR weight, 0 = strict priority */
+ 	char *buf, *g, *p;
+ 	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
+@@ -3351,13 +3309,31 @@ int start_hwqos_classful(void)
+ 		 * put all five back at the stock priority == qid layout (the v2.5.3
+ 		 * behaviour - inverted ranks, but a working link) and say so in syslog.
+ 		 * Worst case is now "old priority order", never "no internet".
+-		 *   rq_rebuild "<p1> <p2> <p3> <p4> <p5>" <l4s>   -> 0 ok / 1 fell back */
++		 *   rq_rebuild "<p1> <p2> <p3> <p4> <p5>"   -> 0 ok / 1 fell back */
+ 		"rq_present() {\n"
+ 		"\tfor q in 1 2 3 4 5; do tmctl getqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 || return 1; done\n"
+ 		"\treturn 0\n"
+ 		"}\n"
++		"rq_wipe() {\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\ttmctl getqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 && tmctl delqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1\n"
++		"\tdone\n"
++		"}\n"
++		/* rq_create "<p1> <p2> <p3> <p4> <p5>": recreate the five class queues
++		 * at those priorities. 0 = all accepted; 1 = the TM rejected one (RQ_BAD says
++		 * which), with the queues created before it left for the caller to wipe. */
++		"rq_create() {\n"
++		"\t_PL=\"$1\"; RQ_BAD=\"\"\n"
++		"\tfor q in 1 2 3 4 5; do\n"
++		"\t\t_P=$(echo \"$_PL\" | cut -d' ' -f$q); eval _S=\\$_QSZ$q\n"
++		"\t\tif ! tmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $_P --qsize $_S --schedmode 1 --weight 1 --l4s 0 >/dev/null 2>&1; then\n"
++		"\t\t\tRQ_BAD=\"qid $q priority $_P\"; return 1\n"
++		"\t\tfi\n"
++		"\tdone\n"
++		"\treturn 0\n"
++		"}\n"
+ 		"rq_rebuild() {\n"
+-		"\t_PL=\"$1\"; _L4S=\"$2\"; _OK=1\n"
++		"\t_PL=\"$1\"\n"
+ 		"\tfor q in 1 2 3 4 5; do\n"
+ 		"\t\t_S=$(tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | grep qsize | awk '{print $3}')\n"
+ 		"\t\tif [ -z \"$_S\" ]; then logger -t hwqos \"class-queue priority correction skipped (qid $q readback failed)\"; return 1; fi\n"
+@@ -3366,17 +3342,9 @@ int start_hwqos_classful(void)
+ 		"\tfor q in 1 2 3 4 5; do\n"
+ 		"\t\ttmctl delqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 || logger -t hwqos \"delqcfg qid $q failed (rc=$?) - continuing\"\n"
+ 		"\tdone\n"
+-		"\tfor q in 1 2 3 4 5; do\n"
+-		"\t\t_P=$(echo \"$_PL\" | cut -d' ' -f$q); eval _S=\\$_QSZ$q\n"
+-		"\t\tif ! tmctl setqcfg --devtype 0 --if $WANIF --qid $q --priority $_P --qsize $_S --schedmode 1 --weight 1 --l4s $_L4S >/dev/null 2>&1; then\n"
+-		"\t\t\tlogger -t hwqos \"setqcfg qid $q priority $_P REJECTED - reverting all class queues to the stock layout\"\n"
+-		"\t\t\t_OK=0; break\n"
+-		"\t\tfi\n"
+-		"\tdone\n"
+-		"\t[ $_OK = 1 ] && return 0\n"
+-		"\tfor q in 1 2 3 4 5; do\n"
+-		"\t\ttmctl getqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1 && tmctl delqcfg --devtype 0 --if $WANIF --qid $q >/dev/null 2>&1\n"
+-		"\tdone\n"
++		"\trq_create \"$_PL\" && return 0\n"
++		"\tlogger -t hwqos \"setqcfg $RQ_BAD REJECTED - reverting all class queues to the stock layout\"\n"
++		"\trq_wipe\n"
+ 		/* layered: the GT-BE98 field box (2026-08-21 diag) rejected ALL five
+ 		 * recreates, so a fallback that repeats the same argument set could
+ 		 * fail the same way. Try stock priority with the full arguments, then
+@@ -3415,8 +3383,9 @@ int start_hwqos_classful(void)
+ 	 * position: "p" = strict priority (default, v3 behavior) or "w<1-63>" =
+ 	 * WRR with that weight. The port scheduler is an SP_WRR combo: SP queues
+ 	 * are always served first, WRR queues share what remains by weight.
+-	 * qos_l4s=1 additionally flags every class queue L4S (EXPERIMENTAL -
+-	 * DualPI2 marking for ECT(1) flows; harmless no-op if the TM rejects it). */
++	 * (The L4S toggle was REMOVED 2026-09-17: the BE96U WAN port answers
++	 * `--l4s 1` with "dualq isn't supported", no port has ever accepted it, and
++	 * the rejection used to abandon the whole priority correction.) */
+ 	{
+ 		char *sbuf, *sg, *st;
+ 		int widx;
+@@ -3431,7 +3400,6 @@ int start_hwqos_classful(void)
+ 		}
+ 		free(sbuf);
+ 	}
+-	l4s = nvram_match("qos_l4s", "1");
+ 
+ 	/* class queues 1..5: PI2 + min%/ceil% of OBW from qos_orates (prio order 0..4).
+ 	 * v3: the min half of each "min-ceil" pair (ignored by v2) is now emitted as
+@@ -3487,7 +3455,7 @@ int start_hwqos_classful(void)
+ 		int wrr_req = 0;
+ 		for (i = 0; i < 5; i++) if (sched_w[i] > 0) wrr_req = 1;
+ 		/* transactional rebuild, see rq_rebuild() in the preamble */
+-		fprintf(f, "\trq_rebuild \"5 4 3 2 1\" %d\n", l4s ? 1 : 0);
++		fprintf(f, "\trq_rebuild \"5 4 3 2 1\"\n");
+ 		if (wrr_req)
+ 			fprintf(f, "\tlogger -t hwqos \"qos_sched requested WRR weights; not supported on this queue layout - using strict priority\"\n");
+ 	}
+@@ -3576,7 +3544,7 @@ int start_hwqos_classful(void)
+ 	 * reset that follows (verified on metal). */
+ 	/* transactional rebuild, see rq_rebuild() in the preamble. A fallback here
+ 	 * lands on the same stock layout anyway, so stop can never make things worse. */
+-	fprintf(f, "\trq_rebuild \"1 2 3 4 5\" 0\n");
++	fprintf(f, "\trq_rebuild \"1 2 3 4 5\"\n");
+ 	for (qid = 0; qid <= 6; qid++) {
+ 		/* reset minrate along with the ceiling - a bare "--shapingrate 0"
+ 		 * would leave a stale committed rate configured on the queue */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index e2bd50f014..f6942828c6 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3110,7 +3110,7 @@ struct nvram_tuple router_defaults[] = {
+ 	 * Minimums sum to 80%, deliberately under the 85% cap that start_hwqos_classful
+ 	 * scales against, so these numbers run as written and the port keeps slack.
+ 	 * ORDER IS ENGINE-VISIBLE: qos_class_names is a label list, but the rules,
+-	 * the DSCP map (rc/qos.c dscp_map) and the WMM lift (wmm_map) all key on the
++	 * the DSCP map (rc/qos.c dscp_map) key on the
+ 	 * QUEUE INDEX -- so this list and that map must be reordered together. */
+ 	{ "qos_orates", "15-100,15-90,20-90,5-95,25-95,0-0,0-0,0-0,0-0,0-0", CKN_STR1024, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "qos_class_names", "Web/VoIP,Gaming,Streaming,Downloads,Default", CKN_STR256, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },  /* reaper: HW QoS Classful editor labels; MUST match the queue identities rc/qos.c maps by index */
+@@ -3121,20 +3121,14 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "qos_minrates", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 guaranteed minimums from qos_orates min half */
+ 	{ "qos_dscp_trust", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v3 DSCP->class mapping ahead of the default class */
+ 	{ "qos_sched", "p,p,w20,w5,w15", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 per-class scheduler: p = strict priority, w<1-63> = WRR weight. Priority rows must stay ABOVE the weighted pool (all SP queues drain ahead of the whole pool) */
+-	{ "qos_l4s", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v4 EXPERIMENTAL: flag class queues L4S (DualPI2 ECT(1) marking) */
+ 	{ "qos_cake_rtt", "50", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* cake AQM RTT target (ms); was the only reaper QoS key with no default, so it never appeared in nvram */
+ 	/* reaper QoS v5 (download side): inert until qos_type 11 is active. The RX
+ 	 * policer defaults OFF ("0"); set "1" to opt in. A policer has no queue, so it
+ 	 * drops (not delays) excess and clips loss-sensitive real-time UDP (metal
+ 	 * 2026-07-20: Teams-call packet loss) - so it is opt-in, not on by default.
+-	 * When opted in, qos_ibw > 0 arms it. qos_dscp_wmm (WMM-lift half) stays ON. */
++	 * When opted in, qos_ibw > 0 arms it. The WMM-lift half was
++	 * REMOVED 2026-09-17: it halved Wi-Fi throughput in both directions on metal. */
+ 	{ "qos_ipolicer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw; default OFF (opt-in) */
+-	{ "qos_dscp_wmm", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 downstream class->DSCP stamp (WMM AC lift on wifi egress) */
+-	/* v5 downstream DSCP stamp: OPT-IN as of 2026-08-10. Defaulting it on put
+-	 * every HTTP/HTTPS flow under 512 KB -- which the shipped preset classifies
+-	 * as Q1 -- into AC_VO (Voice) on the air, where it preempts latency-sensitive
+-	 * traffic sitting in AC_BE and aggregates poorly. Same opt-in treatment
+-	 * qos_ipolicer got after its own field regression. */
+ 
+ 	/* reaper v1.3.0 traffic collector (rtrafd) */
+ 	{ "rtraf_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* collector on/off (no listener) */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 110f87e754..9ea5b750fb 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Mínimos garantidos
+ RQOS_14=Impõe a coluna Mín % como uma taxa comprometida por classe. Garantias só importam sob disputa; devem somar 100% ou menos.
+ RQOS_15=Confiar na marcação DSCP
+ RQOS_16=Mapeia classes DiffServ padrão de dispositivos LAN (EF/CS5+ para Q1, AF4x para Q2, AF3x para Q3, CS1 scavenger para Q5) antes da classe padrão. Suas regras explícitas sempre vencem. Desligado por padrão: qualquer host LAN pode influenciar a própria prioridade quando isto está ligado.
+-RQOS_17=Marcação L4S
+-RQOS_18=EXPERIMENTAL
+-RQOS_19=Sinaliza as filas de classe como L4S: fluxos que negociam L4S ECN têm o congestionamento <i>marcado</i> em vez de descartado, mantendo o enfileiramento próximo de zero para apps compatíveis (pilhas mais novas da Apple/conferência). Inofensivo se não suportado por um fluxo &mdash; o tráfego clássico mantém o comportamento PI2 normal. Não comprovado neste hardware; observe os contadores de descarte após ativar.
+ RQOS_20=Ordem
+ RQOS_21=Nome da classe
+ RQOS_22=Fila
+@@ -5559,11 +5556,9 @@ RQOS_113=Escolha um dispositivo ou insira um endereço MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download e upload devem ser cada um de pelo menos 0.1 Mb/s.
+ RQOS_115=Você pode limitar até 32 dispositivos.
+ RQOS_116=Limite de download (policiador de entrada)
+-RQOS_117=Policia o tráfego de entrada da WAN para que downloads pesados reduzam a velocidade antes que o buffer do ISP encha &mdash; controle de bufferbloat de download com a aceleração de hardware ainda ativa. Digite sua velocidade de download <b>medida</b> (de um teste de velocidade); o roteador mantém automaticamente ~10% de margem, para que o limite preserve a velocidade contratada total com ping mais baixo. Um policiador na taxa total da linha derrubaria a vazão, por isso essa margem é aplicada para você &mdash; sem cálculo manual de 90%. O dimensionamento de burst é automático. <b>Desativado por padrão:</b> um policiador <i>descarta</i> o excesso em vez de enfileirá-lo, então ativar isso pode adicionar perda de pacotes a tráfego em tempo real sensível à latência, como chamadas de vídeo e voz &mdash; ative-o apenas para controle de bufferbloat de download quando você aceitar essa contrapartida.
+-RQOS_118=Prioridade de downstream Wi-Fi (WMM)
+-RQOS_119=Estampa DiffServ no tráfego destinado à LAN para as classes superiores &mdash; Q1 para CS6 (tempo de antena de voz), Q2 para CS5 (tempo de antena de vídeo) &mdash; para que o Wi-Fi atenda suas prioridades também no lado do download. Somente eleva: nada é jamais rebaixado abaixo do best-effort normal. Clientes com fio não são afetados; uma conexão mantém a classe com que começou.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Como funciona o lado do download?
+-RQOS_121=<p>O upload é modelado em hardware com filas por classe. O download não tem fila de hardware definida neste silício, então dois mecanismos o cobrem: o <b>policiador de entrada</b> limita o download agregado antes que o buffer do provedor possa encher, e a <b>estampagem WMM</b> permite que o Wi-Fi transmita as classes altas primeiro. Limites de download por dispositivo ficam no Bandwidth Limiter; AQM completo de download precisa do Cake (que desativa a aceleração).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Nenhum valor de download foi definido, então o limite de download não será ativado. Aplicar mesmo assim?
+ RADV_72=Sessão encerrada - o consultor agora está bloqueado.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index a43f6aedbd..798b79424d 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=保障最低值
+ RQOS_14=将最低 % 列作为每类别的承诺速率强制执行。保障仅在争用时才有意义；它们的总和须不超过 100%。
+ RQOS_15=信任 DSCP 标记
+ RQOS_16=将来自 LAN 设备的标准 DiffServ 类别（EF/CS5+ 映射到 Q1，AF4x 到 Q2，AF3x 到 Q3，CS1 清道夫到 Q5）排在默认类别之前。你的显式规则始终优先。默认关闭：开启时任何 LAN 主机都能影响自身优先级。
+-RQOS_17=L4S 标记
+-RQOS_18=实验性
+-RQOS_19=将类别队列标记为 L4S：协商 L4S ECN 的流量会被拥塞<i>标记</i>而非丢弃，使支持的应用（较新的 Apple/会议协议栈）排队接近零。若某流量不支持也无害 &mdash; 传统流量保持正常 PI2 行为。在本硬件上未经验证；启用后请观察丢弃计数。
+ RQOS_20=顺序
+ RQOS_21=类别名称
+ RQOS_22=队列
+@@ -5559,11 +5556,9 @@ RQOS_113=选择一个设备或输入 MAC 地址（AA:BB:CC:DD:EE:FF）。
+ RQOS_114=下载和上传各须至少 0.1 Mb/s。
+ RQOS_115=你最多可限制 32 个设备。
+ RQOS_116=下载上限（入口管制器）
+-RQOS_117=对 WAN 入站流量进行限速，使大量下载在 ISP 缓冲区填满之前主动减速&mdash;在保持硬件加速开启的同时控制下载方向的缓冲膨胀。请输入您的<b>实测</b>下载速度（来自测速工具）；路由器会自动保留约 10% 的余量，因此该限速值在保持满额速率的同时能降低延迟。若按满线路速率设置限速器会导致吞吐量骤降，因此系统会自动为您预留这部分余量&mdash;无需手动计算 90%。突发流量大小为自动设置。<b>默认关闭：</b>限速器会<i>丢弃</i>超出的流量而非将其排队，因此启用此功能可能会给视频和语音通话等对延迟敏感的实时流量带来丢包&mdash;仅在您能接受这种权衡时才启用它以控制下载方向的缓冲膨胀。
+-RQOS_118=Wi-Fi 下行优先级（WMM）
+-RQOS_119=为顶部类别的 LAN 方向流量打上 DiffServ 标记 &mdash; Q1 到 CS6（语音空口），Q2 到 CS5（视频空口）&mdash; 使 Wi-Fi 在下载侧也服务你的优先级。仅提升：绝不会将任何流量降到正常尽力而为之下。有线客户端不受影响；一个连接保持它开始时的类别。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=下载侧如何工作？
+-RQOS_121=<p>上传以每类别队列在硬件中整形。下载在此芯片上没有硬件队列，因此两种机制覆盖它：<b>入口管制器</b>在 ISP 缓冲区填满前对聚合下载限速，<b>WMM 标记</b>让 Wi-Fi 优先发送高类别。每设备下载上限在带宽限制器中；完整的下载 AQM 需要 Cake（会禁用加速）。</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=未设置下载数值，因此下载上限不会生效。仍要应用？
+ RADV_72=会话已结束 - 顾问现已锁定。
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 45f71b74d0..60b56f2cfa 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Zaručená minima
+ RQOS_14=Vynucuje sloupec Min % jako přislíbenou rychlost pro každou třídu. Záruky se uplatní pouze při soupeření; jejich součet musí být 100 % nebo méně.
+ RQOS_15=Důvěřovat značení DSCP
+ RQOS_16=Mapuje standardní třídy DiffServ z LAN zařízení (EF/CS5+ na Q1, AF4x na Q2, AF3x na Q3, CS1 scavenger na Q5) před výchozí třídu. Vaše explicitní pravidla vždy vyhrávají. Ve výchozím stavu vypnuto: když je zapnuto, jakýkoli LAN host může ovlivnit svou vlastní prioritu.
+-RQOS_17=Značení L4S
+-RQOS_18=EXPERIMENTÁLNÍ
+-RQOS_19=Označí fronty tříd jako L4S: toky, které vyjednají L4S ECN, dostanou zahlcení <i>označeno</i> místo zahození, čímž drží frontování téměř na nule pro schopné aplikace (novější stacky Apple/konferencí). Neškodné, pokud tok nepodporuje &mdash; klasický provoz si zachová normální chování PI2. Na tomto hardwaru neověřeno; po zapnutí sledujte čítače zahození.
+ RQOS_20=Pořadí
+ RQOS_21=Název třídy
+ RQOS_22=Fronta
+@@ -5559,11 +5556,9 @@ RQOS_113=Vyberte zařízení nebo zadejte MAC adresu (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download i upload musí být každý alespoň 0.1 Mb/s.
+ RQOS_115=Můžete limitovat až 32 zařízení.
+ RQOS_116=Limit downloadu (ingress policer)
+-RQOS_117=Reguluje příchozí provoz WAN, aby náročná stahování zpomalila dřív, než se zaplní buffer ISP &mdash; řízení download bufferbloatu při zachování zapnuté hardwarové akcelerace. Zadejte svou <b>naměřenou</b> rychlost stahování (ze speed testu); router automaticky ponechá rezervu ~10 %, takže limit drží plnou nominální rychlost s nižším pingem. Policer nastavený na plnou rychlost linky by propustnost zhroutil, proto se tato rezerva uplatňuje za vás &mdash; žádné ruční počítání 90 %. Velikost burstu se nastavuje automaticky. <b>Ve výchozím stavu vypnuto:</b> policer nadbytečná data <i>zahazuje</i>, místo aby je řadil do fronty, takže zapnutí může přidat ztrátovost paketů u provozu citlivého na latenci v reálném čase, jako je video a hlasové hovory &mdash; zapněte jej pouze pro řízení download bufferbloatu, pokud tento kompromis akceptujete.
+-RQOS_118=Priorita Wi-Fi ve směru dolů (WMM)
+-RQOS_119=Označí DiffServ na provoz směřující do LAN pro horní třídy &mdash; Q1 na CS6 (hlasový éter), Q2 na CS5 (video éter) &mdash; takže Wi-Fi obslouží vaše priority i na straně downloadu. Pouze povýšení: nic není nikdy sníženo pod normální best-effort. Drátoví klienti nejsou dotčeni; spojení si zachová třídu, se kterou začalo.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Jak funguje strana downloadu?
+-RQOS_121=<p>Upload je tvarován v hardwaru s frontami po třídách. Download nemá na tomto křemíku nastavenou hardwarovou frontu, takže ho pokrývají dva mechanismy: <b>ingress policer</b> limituje souhrnný download dřív, než se buffer poskytovatele naplní, a <b>značení WMM</b> umožní Wi-Fi vysílat vyšší třídy jako první. Limity downloadu po zařízeních jsou v Omezovači šířky pásma; plné AQM downloadu vyžaduje Cake (které vypne akceleraci).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Není nastavena hodnota downloadu, takže limit downloadu se nezapojí. Přesto aplikovat?
+ RADV_72=Relace skončila - poradce je nyní uzamčen.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 0062298e3d..4bb16361aa 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garanterede minimum
+ RQOS_14=Håndhæver kolonnen Min. % som en committet hastighed pr. klasse. Garantier betyder kun noget under konkurrence; de skal tilsammen udgøre 100% eller mindre.
+ RQOS_15=Stol på DSCP-mærkning
+ RQOS_16=Kortlægger standard-DiffServ-klasser fra LAN-enheder (EF/CS5+ til Q1, AF4x til Q2, AF3x til Q3, CS1-scavenger til Q5) foran standardklassen. Dine eksplicitte regler vinder altid. Fra som standard: enhver LAN-vært kan påvirke sin egen prioritet, når dette er til.
+-RQOS_17=L4S-mærkning
+-RQOS_18=EKSPERIMENTEL
+-RQOS_19=Flagger klassekøerne som L4S: flows, der forhandler L4S ECN, får overbelastning <i>mærket</i> i stedet for droppet, hvilket holder kødannelse nær nul for kompatible apps (nyere Apple-/konference-stakke). Harmløst, hvis et flow ikke understøtter det &mdash; klassisk trafik beholder normal PI2-adfærd. Ubevist på denne hardware; hold øje med drop-tællerne efter aktivering.
+ RQOS_20=Rækkefølge
+ RQOS_21=Klassenavn
+ RQOS_22=Kø
+@@ -5559,11 +5556,9 @@ RQOS_113=Vælg en enhed, eller indtast en MAC-adresse (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download og upload skal hver være mindst 0.1 Mb/s.
+ RQOS_115=Du kan begrænse op til 32 enheder.
+ RQOS_116=Download-loft (ingress-policer)
+-RQOS_117=Regulerer WAN-indgangstrafik, så tunge downloads bremser op, før ISP'ens buffer fyldes &mdash; download-bufferbloat-kontrol med hardwareacceleration stadig aktiveret. Indtast din <b>målte</b> downloadhastighed (fra en hastighedstest); routeren holder automatisk ~10% margin, så loftet fastholder den fulde nominelle hastighed med lavere ping. En policer på din fulde linjehastighed ville bryde gennemløbet sammen, så den margin anvendes automatisk for dig &mdash; ingen manuel 90%-udregning. Burst-størrelse er automatisk. <b>Fra som standard:</b> en policer <i>dropper</i> overskydende trafik i stedet for at sætte den i kø, så aktivering af dette kan tilføje pakketab til realtidstrafik, der er følsom over for latens, såsom video- og taleopkald &mdash; aktivér det kun til download-bufferbloat-kontrol, når du accepterer det kompromis.
+-RQOS_118=Wi-Fi-downstream-prioritet (WMM)
+-RQOS_119=Stempler DiffServ på LAN-bundet trafik for de øverste klasser &mdash; Q1 til CS6 (tale-airtime), Q2 til CS5 (video-airtime) &mdash; så Wi-Fi også betjener dine prioriteter på download-siden. Kun-løft: intet nedgraderes nogensinde under normal best-effort. Kablede klienter er upåvirkede; en forbindelse beholder den klasse, den startede med.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Hvordan virker download-siden?
+-RQOS_121=<p>Upload formes i hardware med køer pr. klasse. Download har ingen hardwarekø sat på denne silicium, så to mekanismer dækker den: <b>ingress-policeren</b> begrænser samlet download, før ISP-bufferen kan fyldes, og <b>WMM-stempling</b> lader Wi-Fi transmittere høje klasser først. Download-lofter pr. enhed findes i Bandwidth Limiter; fuld download-AQM kræver Cake (som deaktiverer acceleration).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Intet download-tal er angivet, så download-loftet aktiveres ikke. Anvend alligevel?
+ RADV_72=Sessionen sluttede - rådgiveren er nu låst.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 78eb06bf7d..6790fa325c 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garantierte Mindestraten
+ RQOS_14=Erzwingt die Spalte Min % als zugesicherte Rate pro Klasse. Garantien zählen nur bei Konkurrenz; sie müssen zusammen 100% oder weniger ergeben.
+ RQOS_15=DSCP-Markierung vertrauen
+ RQOS_16=Ordnet standardmäßige DiffServ-Klassen von LAN-Geräten (EF/CS5+ zu Q1, AF4x zu Q2, AF3x zu Q3, CS1 Scavenger zu Q5) vor der Standardklasse ein. Ihre expliziten Regeln haben immer Vorrang. Standardmäßig aus: bei aktiviert kann jeder LAN-Host seine eigene Priorität beeinflussen.
+-RQOS_17=L4S-Markierung
+-RQOS_18=EXPERIMENTELL
+-RQOS_19=Kennzeichnet die Klassenwarteschlangen als L4S: Flows, die L4S ECN aushandeln, werden bei Überlast <i>markiert</i> statt verworfen, wodurch die Queue für fähige Apps nahe null bleibt (neuere Apple-/Konferenz-Stacks). Harmlos, wenn ein Flow es nicht unterstützt &mdash; klassischer Traffic behält normales PI2-Verhalten. Auf dieser Hardware unbewiesen; beobachten Sie nach dem Aktivieren die Verwurf-Zähler.
+ RQOS_20=Reihenfolge
+ RQOS_21=Klassenname
+ RQOS_22=Warteschlange
+@@ -5559,11 +5556,9 @@ RQOS_113=Wählen Sie ein Gerät oder geben Sie eine MAC-Adresse ein (AA:BB:CC:DD
+ RQOS_114=Download und Upload müssen jeweils mindestens 0.1 Mb/s betragen.
+ RQOS_115=Sie können bis zu 32 Geräte begrenzen.
+ RQOS_116=Download-Grenze (Ingress-Policer)
+-RQOS_117=Reguliert den WAN-Eingang, sodass starke Downloads abbremsen, bevor der Puffer des ISP voll ist &mdash; Download-Bufferbloat-Kontrolle bei weiterhin aktiver Hardwarebeschleunigung. Geben Sie Ihre <b>gemessene</b> Downloadgeschwindigkeit ein (aus einem Speedtest); der Router hält automatisch ca. 10 % Reserve, sodass die Obergrenze die volle Nenngeschwindigkeit bei niedrigerem Ping beibehält. Ein Policer bei Ihrer vollen Leitungsrate würde den Durchsatz einbrechen lassen, daher wird diese Reserve automatisch für Sie angewendet &mdash; keine manuelle 90-%-Rechnung nötig. Die Burst-Größe wird automatisch festgelegt. <b>Standardmäßig deaktiviert:</b> Ein Policer <i>verwirft</i> überschüssige Daten, statt sie in eine Warteschlange zu stellen. Das Aktivieren kann daher zu Paketverlusten bei latenzempfindlichem Echtzeitverkehr wie Video- und Sprachanrufen führen &mdash; aktivieren Sie es nur zur Download-Bufferbloat-Kontrolle, wenn Sie diesen Kompromiss akzeptieren.
+-RQOS_118=WLAN-Downstream-Priorität (WMM)
+-RQOS_119=Stempelt DiffServ auf LAN-gerichteten Traffic der obersten Klassen &mdash; Q1 auf CS6 (Sprach-Airtime), Q2 auf CS5 (Video-Airtime) &mdash; sodass WLAN Ihre Prioritäten auch auf der Download-Seite bedient. Nur Anhebung: nichts wird je unter normales Best-Effort herabgestuft. Kabelgebundene Clients bleiben unbeeinflusst; eine Verbindung behält die Klasse, mit der sie begann.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Wie funktioniert die Download-Seite?
+-RQOS_121=<p>Der Upload wird in Hardware mit Queues pro Klasse geformt. Der Download hat auf diesem Silizium keine Hardware-Queue, daher decken ihn zwei Mechanismen ab: der <b>Ingress-Policer</b> deckelt den Gesamt-Download, bevor der ISP-Puffer voll werden kann, und das <b>WMM-Stempeln</b> lässt WLAN hohe Klassen zuerst senden. Download-Limits pro Gerät liegen im Bandbreitenbegrenzer; volles Download-AQM braucht Cake (das die Beschleunigung deaktiviert).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Kein Download-Wert gesetzt, daher greift die Download-Grenze nicht. Trotzdem anwenden?
+ RADV_72=Sitzung beendet - der Berater ist jetzt gesperrt.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 5d552f12b1..ebe65e24ac 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Guaranteed minimums
+ RQOS_14=Enforces the Min % column as a committed rate per class. Guarantees only matter under contention; they must total 100% or less.
+ RQOS_15=Trust DSCP marking
+ RQOS_16=Maps standard DiffServ classes from LAN devices (EF/CS5+ to Q1, AF4x to Q2, AF3x to Q3, CS1 scavenger to Q5) ahead of the default class. Your explicit rules always win. Off by default: any LAN host can influence its own priority when this is on.
+-RQOS_17=L4S marking
+-RQOS_18=EXPERIMENTAL
+-RQOS_19=Flags the class queues L4S: flows that negotiate L4S ECN get congestion <i>marked</i> instead of dropped, holding queueing near zero for capable apps (newer Apple/conference stacks). Harmless if unsupported by a flow &mdash; classic traffic keeps normal PI2 behavior. Unproven on this hardware; watch the drop counters after enabling.
+ RQOS_20=Order
+ RQOS_21=Class name
+ RQOS_22=Queue
+@@ -5559,11 +5556,9 @@ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
+ RQOS_116=Download cap (ingress policer)
+-RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off.
+-RQOS_118=Wi-Fi downstream priority (WMM)
+-RQOS_119=Stamps DiffServ onto LAN-bound traffic for the top classes &mdash; Q1 to CS6 (voice airtime), Q2 to CS5 (video airtime) &mdash; so Wi-Fi serves your priorities on the download side too. Lift-only: nothing is ever demoted below normal best-effort. Wired clients are unaffected; a connection keeps the class it started with.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=How does the download side work?
+-RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so two mechanisms cover it: the <b>ingress policer</b> caps aggregate download before the ISP buffer can fill, and <b>WMM stamping</b> lets Wi-Fi transmit high classes first. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No download figure is set, so the download cap will not engage. Apply anyway?
+ RADV_72=Session ended - the advisor is now locked.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 4739b7ded9..44b4624718 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Mínimos garantizados
+ RQOS_14=Aplica la columna Mín % como tasa comprometida por clase. Las garantías solo importan bajo contención; deben sumar 100% o menos.
+ RQOS_15=Confiar en el marcado DSCP
+ RQOS_16=Asigna las clases DiffServ estándar de los dispositivos LAN (EF/CS5+ a Q1, AF4x a Q2, AF3x a Q3, CS1 scavenger a Q5) por delante de la clase por defecto. Tus reglas explícitas siempre ganan. Desactivado por defecto: con esto activado, cualquier host LAN puede influir en su propia prioridad.
+-RQOS_17=Marcado L4S
+-RQOS_18=EXPERIMENTAL
+-RQOS_19=Marca las colas de clase como L4S: los flujos que negocian L4S ECN reciben una <i>marca</i> de congestión en lugar de descartes, manteniendo el encolado cerca de cero para las apps compatibles (stacks recientes de Apple/conferencia). Inofensivo si un flujo no lo admite &mdash; el tráfico clásico mantiene el comportamiento PI2 normal. No comprobado en este hardware; vigila los contadores de descartes tras activarlo.
+ RQOS_20=Orden
+ RQOS_21=Nombre de clase
+ RQOS_22=Cola
+@@ -5559,11 +5556,9 @@ RQOS_113=Elige un dispositivo o introduce una dirección MAC (AA:BB:CC:DD:EE:FF)
+ RQOS_114=La bajada y la subida deben ser de al menos 0,1 Mb/s cada una.
+ RQOS_115=Puedes limitar hasta 32 dispositivos.
+ RQOS_116=Límite de bajada (policer de entrada)
+-RQOS_117=Regula el tráfico entrante de WAN para que las descargas pesadas se frenen antes de que se llene el búfer del ISP &mdash; control de bufferbloat de descarga con la aceleración por hardware todavía activada. Introduzca su velocidad de descarga <b>medida</b> (de una prueba de velocidad); el router mantiene automáticamente un margen de ~10%, de modo que el límite conserva la velocidad contratada completa con un ping más bajo. Un regulador de tráfico a su velocidad de línea completa colapsaría el rendimiento, así que ese margen se aplica por usted &mdash; sin cálculos manuales del 90%. El tamaño de ráfaga es automático. <b>Desactivado por defecto:</b> un regulador de tráfico <i>descarta</i> el exceso en lugar de encolarlo, por lo que activarlo puede añadir pérdida de paquetes al tráfico en tiempo real sensible a la latencia, como las videollamadas y llamadas de voz &mdash; actívelo solo para el control de bufferbloat de descarga cuando acepte esa contrapartida.
+-RQOS_118=Prioridad Wi-Fi de bajada (WMM)
+-RQOS_119=Estampa DiffServ en el tráfico dirigido a la LAN para las clases superiores &mdash; Q1 a CS6 (tiempo de aire de voz), Q2 a CS5 (tiempo de aire de vídeo) &mdash; para que el Wi-Fi también atienda tus prioridades en el lado de bajada. Solo eleva: nada se degrada nunca por debajo del best-effort normal. Los clientes cableados no se ven afectados; una conexión mantiene la clase con la que empezó.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=¿Cómo funciona el lado de bajada?
+-RQOS_121=<p>La subida se modela en hardware con colas por clase. La bajada no tiene cola de hardware en este silicio, así que dos mecanismos la cubren: el <b>policer de entrada</b> limita la bajada agregada antes de que el búfer del ISP se llene, y el <b>estampado WMM</b> deja que el Wi-Fi transmita primero las clases altas. Los límites de bajada por dispositivo están en el Limitador de ancho de banda; el AQM de bajada completo necesita Cake (que desactiva la aceleración).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=No se ha establecido una cifra de bajada, así que el límite de bajada no se activará. ¿Aplicar de todos modos?
+ RADV_72=Sesión terminada - el asesor está ahora bloqueado.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 35a9810fc2..263d4fe000 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Taatut vähimmäismäärät
+ RQOS_14=Pakottaa Min %-sarakkeen sitovaksi nopeudeksi luokkaa kohti. Takuilla on merkitystä vain kilpailun aikana; niiden on oltava yhteensä enintään 100 %.
+ RQOS_15=Luota DSCP-merkintään
+ RQOS_16=Kartoittaa standardit DiffServ-luokat LAN-laitteilta (EF/CS5+ luokkaan Q1, AF4x luokkaan Q2, AF3x luokkaan Q3, CS1 scavenger luokkaan Q5) oletusluokan edelle. Omat sääntösi voittavat aina. Oletuksena pois: mikä tahansa LAN-laite voi vaikuttaa omaan prioriteettiinsa, kun tämä on päällä.
+-RQOS_17=L4S-merkintä
+-RQOS_18=KOKEELLINEN
+-RQOS_19=Merkitsee luokkajonot L4S-yhteensopiviksi: virrat, jotka neuvottelevat L4S ECN:n, saavat ruuhkasta <i>merkinnän</i> pudotuksen sijaan, pitäen jonotuksen lähellä nollaa yhteensopiville sovelluksille (uudemmat Apple/konferenssipinot). Vaaraton, jos virta ei tue &mdash; klassinen liikenne säilyttää normaalin PI2-toiminnan. Todistamaton tällä laitteistolla; tarkkaile pudotuslaskureita käyttöönoton jälkeen.
+ RQOS_20=Järjestys
+ RQOS_21=Luokan nimi
+ RQOS_22=Jono
+@@ -5559,11 +5556,9 @@ RQOS_113=Valitse laite tai anna MAC-osoite (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Latauksen ja lähetyksen on kummankin oltava vähintään 0.1 Mb/s.
+ RQOS_115=Voit rajoittaa enintään 32 laitetta.
+ RQOS_116=Latausraja (tulopoliisi)
+-RQOS_117=Valvoo WAN-liikennettä saapuvassa suunnassa, jotta raskaat lataukset hidastavat ennen kuin operaattorin puskuri täyttyy &mdash; latausten bufferbloat-hallintaa laitteistokiihdytys edelleen päällä. Syötä <b>mitattu</b> latausnopeutesi (nopeustestistä); reititin pitää automaattisesti noin 10 %:n varamarginaalin, joten katto säilyttää täyden nimellisnopeuden pienemmällä pingillä. Policer täydellä linjanopeudella romahduttaisi läpäisyn, joten tämä varamarginaali lisätään puolestasi &mdash; ei tarvetta laskea 90 % käsin. Purskekoko määräytyy automaattisesti. <b>Pois päältä oletuksena:</b> policer <i>pudottaa</i> ylimäärän sen sijaan että jonottaisi sen, joten tämän päälle kytkeminen voi lisätä pakettihäviötä viiveherkälle reaaliaikaliikenteelle, kuten video- ja puhepuheluille &mdash; ota käyttöön vain latausten bufferbloat-hallintaan, kun hyväksyt tämän kompromissin.
+-RQOS_118=Wi-Fi-alavirran prioriteetti (WMM)
+-RQOS_119=Leimaa DiffServ:n LAN-suuntaiseen liikenteeseen ylimmille luokille &mdash; Q1 luokkaan CS6 (ääni-ilmaaika), Q2 luokkaan CS5 (video-ilmaaika) &mdash; jotta Wi-Fi palvelee prioriteettejasi myös lataus puolella. Vain nosto: mitään ei koskaan alenneta normaalin best-effortin alle. Langallisiin asiakkaisiin ei vaikuteta; yhteys säilyttää luokan, jolla se alkoi.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Miten lataus puoli toimii?
+-RQOS_121=<p>Lähetys muokataan laitteistossa luokkakohtaisilla jonoilla. Latauksella ei ole laitteistojonoa tällä piirillä, joten kaksi mekanismia kattaa sen: <b>tulopoliisi</b> rajoittaa kokonaislatauksen ennen kuin ISP:n puskuri voi täyttyä, ja <b>WMM-leimaus</b> antaa Wi-Fin lähettää korkeat luokat ensin. Laitekohtaiset latausrajat ovat Kaistanrajoittimessa; täysi latauksen AQM vaatii Caken (joka poistaa kiihdytyksen käytöstä).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Latauslukua ei ole asetettu, joten latausraja ei kytkeydy päälle. Otetaanko silti käyttöön?
+ RADV_72=Istunto päättyi - neuvoja on nyt lukittu.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index a7dcefc8a6..021d9b1226 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Minimums garantis
+ RQOS_14=Applique la colonne Min % comme débit engagé par classe. Les garanties ne comptent qu’en cas de contention ; elles doivent totaliser 100 % ou moins.
+ RQOS_15=Faire confiance au marquage DSCP
+ RQOS_16=Mappe les classes DiffServ standard des appareils LAN (EF/CS5+ vers Q1, AF4x vers Q2, AF3x vers Q3, scavenger CS1 vers Q5) avant la classe par défaut. Vos règles explicites l’emportent toujours. Désactivé par défaut : tout hôte LAN peut influencer sa propre priorité quand ceci est activé.
+-RQOS_17=Marquage L4S
+-RQOS_18=EXPÉRIMENTAL
+-RQOS_19=Signale les files de classe comme L4S : les flux qui négocient l'ECN L4S voient la congestion <i>marquée</i> au lieu d'être rejetée, maintenant la mise en file près de zéro pour les applications compatibles (piles récentes Apple/conférence). Sans effet si un flux ne le prend pas en charge &mdash; le trafic classique garde le comportement PI2 normal. Non éprouvé sur ce matériel ; surveillez les compteurs de pertes après activation.
+ RQOS_20=Ordre
+ RQOS_21=Nom de classe
+ RQOS_22=File
+@@ -5559,11 +5556,9 @@ RQOS_113=Choisissez un appareil ou saisissez une adresse MAC (AA:BB:CC:DD:EE:FF)
+ RQOS_114=Le download et l’upload doivent chacun être d’au moins 0,1 Mb/s.
+ RQOS_115=Vous pouvez limiter jusqu’à 32 appareils.
+ RQOS_116=Plafond de download (policer d’entrée)
+-RQOS_117=Limite (police) le trafic entrant WAN afin que les téléchargements lourds ralentissent avant que le tampon du FAI ne se remplisse &mdash; contrôle du bufferbloat en réception, avec l'accélération matérielle toujours active. Indiquez votre débit de réception <b>mesuré</b> (via un test de débit) ; le routeur conserve automatiquement une marge d'environ 10 %, afin que le plafond conserve le débit nominal complet avec un ping plus faible. Un limiteur réglé sur le débit de ligne complet effondrerait le débit, cette marge est donc appliquée automatiquement pour vous &mdash; pas de calcul manuel à 90 %. Le dimensionnement des rafales (burst) est automatique. <b>Désactivé par défaut :</b> un limiteur <i>rejette</i> l'excédent au lieu de le mettre en file d'attente, donc l'activer peut ajouter de la perte de paquets sur le trafic temps réel sensible à la latence, comme la vidéo et les appels vocaux &mdash; ne l'activez que pour le contrôle du bufferbloat en réception, si vous acceptez ce compromis.
+-RQOS_118=Priorité descendante Wi-Fi (WMM)
+-RQOS_119=Estampille le DiffServ sur le trafic à destination du LAN pour les classes du haut &mdash; Q1 vers CS6 (temps d’antenne voix), Q2 vers CS5 (temps d’antenne vidéo) &mdash; afin que le Wi-Fi serve vos priorités aussi côté download. Élévation uniquement : rien n’est jamais rétrogradé sous le best-effort normal. Les clients filaires ne sont pas affectés ; une connexion garde la classe avec laquelle elle a commencé.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Comment fonctionne le côté download ?
+-RQOS_121=<p>L'upload est mis en forme en matériel avec des files par classe. Le download n'a pas de file matérielle définie sur ce silicium, donc deux mécanismes le couvrent : le <b>policer d'entrée</b> plafonne le download agrégé avant que le tampon du FAI ne se remplisse, et l'<b>estampillage WMM</b> permet au Wi-Fi de transmettre les classes hautes en premier. Les plafonds de download par appareil se trouvent dans le Limiteur de bande passante ; l'AQM complet en download nécessite Cake (qui désactive l'accélération).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Aucune valeur de download n’est définie, donc le plafond de download ne s’engagera pas. Appliquer quand même ?
+ RADV_72=Session terminée - le conseiller est maintenant verrouillé.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index f6b13cfeba..c8aec7c6ca 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garantált minimumok
+ RQOS_14=A Min % oszlopot lekötött sebességként érvényesíti osztályonként. A garanciák csak versengés esetén számítanak; összegük legfeljebb 100% lehet.
+ RQOS_15=DSCP jelölés megbízása
+ RQOS_16=A LAN eszközök szabványos DiffServ osztályait rendeli (EF/CS5+ a Q1-hez, AF4x a Q2-höz, AF3x a Q3-hoz, CS1 scavenger a Q5-höz) az alapértelmezett osztály elé. Az Ön explicit szabályai mindig győznek. Alapból ki: ha be van kapcsolva, bármely LAN gép befolyásolhatja saját prioritását.
+-RQOS_17=L4S jelölés
+-RQOS_18=KÍSÉRLETI
+-RQOS_19=Az osztálysorokat L4S-ként jelöli: az L4S ECN-t egyeztető folyamok torlódási <i>jelölést</i> kapnak eldobás helyett, a sorbanállást közel nullán tartva a képes alkalmazásoknál (újabb Apple/konferencia stackek). Ártalmatlan, ha egy folyam nem támogatja &mdash; a klasszikus forgalom megtartja a normál PI2 viselkedést. E hardveren nem bizonyított; figyelje az eldobásszámlálókat az engedélyezés után.
+ RQOS_20=Sorrend
+ RQOS_21=Osztály neve
+ RQOS_22=Sor
+@@ -5559,11 +5556,9 @@ RQOS_113=Válasszon egy eszközt, vagy adjon meg egy MAC címet (AA:BB:CC:DD:EE:
+ RQOS_114=A letöltésnek és feltöltésnek egyaránt legalább 0.1 Mb/s-nek kell lennie.
+ RQOS_115=Legfeljebb 32 eszközt korlátozhat.
+ RQOS_116=Letöltési plafon (bejövő szabályozó)
+-RQOS_117=Szabályozza a WAN bejövő forgalmát, hogy a nagy letöltések visszavegyenek, mielőtt megtelne az ISP puffere &mdash; letöltési bufferbloat-szabályozás úgy, hogy a hardveres gyorsítás közben továbbra is bekapcsolva marad. Add meg a <b>mért</b> letöltési sebességedet (egy sebességteszt alapján); a router automatikusan ~10% tartalékot hagy, így a korlát a névleges sebességet is tartja, alacsonyabb pinggel. Egy a teljes vonalsebességre állított policer összeomlasztaná az átviteli sebességet, ezért ezt a tartalékot a rendszer alkalmazza helyetted &mdash; nincs szükség kézi 90%-os számolásra. A burst méretezése automatikus. <b>Alapértelmezésben kikapcsolva:</b> a policer <i>eldobja</i> a többletet ahelyett, hogy sorba állítaná, így a bekapcsolása csomagvesztést okozhat a késleltetésre érzékeny valós idejű forgalomban, például videó- és hanghívásoknál &mdash; csak akkor kapcsold be letöltési bufferbloat-szabályozáshoz, ha elfogadod ezt a kompromisszumot.
+-RQOS_118=Wi-Fi letöltési prioritás (WMM)
+-RQOS_119=DiffServ-et bélyegez a LAN felé tartó forgalomra a felső osztályoknál &mdash; Q1 a CS6-ra (hang légidő), Q2 a CS5-re (videó légidő) &mdash; így a Wi-Fi a letöltési oldalon is kiszolgálja a prioritásait. Csak emel: soha semmi nem kerül a normál best-effort alá. A vezetékes klienseket nem érinti; egy kapcsolat megtartja azt az osztályt, amivel indult.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Hogyan működik a letöltési oldal?
+-RQOS_121=<p>A feltöltés hardveresen szabályozott, osztályonkénti sorokkal. A letöltéshez nincs hardveres sor ezen a szilíciumon, így két mechanizmus fedi le: a <b>bejövő szabályozó</b> az összesített letöltést plafonozza, mielőtt az ISP puffer megtelhetne, a <b>WMM bélyegzés</b> pedig engedi, hogy a Wi-Fi a magas osztályokat továbbítsa elsőként. Az eszközönkénti letöltési plafonok a Sávszélesség-korlátozóban vannak; a teljes letöltési AQM-hez Cake kell (amely letiltja a gyorsítást).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Nincs beállítva letöltési érték, így a letöltési plafon nem lép működésbe. Ennek ellenére alkalmazza?
+ RADV_72=A munkamenet véget ért - a tanácsadó most zárolva van.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 4b3f039f1c..417d4b48b7 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Minimi garantiti
+ RQOS_14=Impone la colonna Min % come velocità impegnata per classe. Le garanzie contano solo sotto contesa; devono totalizzare 100% o meno.
+ RQOS_15=Fidati della marcatura DSCP
+ RQOS_16=Mappa le classi DiffServ standard dai dispositivi LAN (EF/CS5+ a Q1, AF4x a Q2, AF3x a Q3, CS1 scavenger a Q5) prima della classe predefinita. Le tue regole esplicite vincono sempre. Disattivo per impostazione predefinita: qualsiasi host LAN può influenzare la propria priorità quando questo è attivo.
+-RQOS_17=Marcatura L4S
+-RQOS_18=SPERIMENTALE
+-RQOS_19=Contrassegna le code delle classi come L4S: i flussi che negoziano L4S ECN ricevono la congestione <i>marcata</i> invece che scartata, mantenendo l'accodamento vicino a zero per le app compatibili (stack Apple/conferenza più recenti). Innocuo se non supportato da un flusso &mdash; il traffico classico mantiene il normale comportamento PI2. Non provato su questo hardware; controlla i contatori di scarto dopo l'attivazione.
+ RQOS_20=Ordine
+ RQOS_21=Nome classe
+ RQOS_22=Coda
+@@ -5559,11 +5556,9 @@ RQOS_113=Scegli un dispositivo o inserisci un indirizzo MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download e upload devono essere ciascuno almeno 0.1 Mb/s.
+ RQOS_115=Puoi limitare fino a 32 dispositivi.
+ RQOS_116=Cap di download (policer di ingresso)
+-RQOS_117=Regola il traffico in ingresso WAN in modo che i download intensi rallentino prima che si riempia il buffer dell'ISP &mdash; controllo del bufferbloat in download con l'accelerazione hardware ancora attiva. Inserisci la tua velocità di download <b>misurata</b> (da uno speed test); il router mantiene automaticamente un margine di ~10%, così il limite mantiene la velocità nominale piena con un ping più basso. Un limitatore alla velocità di linea piena farebbe crollare il throughput, quindi quel margine viene applicato automaticamente per te &mdash; niente calcoli manuali del 90%. Il dimensionamento del burst è automatico. <b>Disattivato per impostazione predefinita:</b> un limitatore <i>scarta</i> il traffico in eccesso invece di metterlo in coda, quindi attivarlo può aggiungere perdita di pacchetti al traffico in tempo reale sensibile alla latenza, come videochiamate e chiamate vocali &mdash; attivalo solo per il controllo del bufferbloat in download quando accetti questo compromesso.
+-RQOS_118=Priorità downstream Wi-Fi (WMM)
+-RQOS_119=Applica DiffServ al traffico diretto alla LAN per le classi principali &mdash; Q1 a CS6 (airtime voce), Q2 a CS5 (airtime video) &mdash; così il Wi-Fi serve le tue priorità anche sul lato download. Solo promozione: nulla viene mai declassato sotto il normale best-effort. I client cablati non sono influenzati; una connessione mantiene la classe con cui è iniziata.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Come funziona il lato download?
+-RQOS_121=<p>L'upload è modellato in hardware con code per classe. Il download non ha una coda hardware impostata su questo silicio, quindi due meccanismi lo coprono: il <b>policer di ingresso</b> limita il download aggregato prima che il buffer dell'ISP possa riempirsi, e la <b>marcatura WMM</b> permette al Wi-Fi di trasmettere prima le classi alte. I cap di download per dispositivo si trovano nel Bandwidth Limiter; l'AQM di download completo richiede Cake (che disabilita l'accelerazione).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Nessun valore di download impostato, quindi il cap di download non si attiverà. Applicare comunque?
+ RADV_72=Sessione terminata - il consulente è ora bloccato.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 78f3728dc7..026c9912ad 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=保証最小値
+ RQOS_14=最小%列をクラスごとの確約レートとして強制します。保証は競合時のみ意味を持ち、合計は100%以下である必要があります。
+ RQOS_15=DSCPマーキングを信頼
+ RQOS_16=LANデバイスからの標準DiffServクラス（EF/CS5+をQ1、AF4xをQ2、AF3xをQ3、CS1スカベンジャーをQ5）を既定クラスより優先してマッピングします。明示的なルールが常に優先されます。既定でオフ: オンにすると任意のLANホストが自身の優先度に影響を与えられます。
+-RQOS_17=L4Sマーキング
+-RQOS_18=実験的
+-RQOS_19=クラスキューをL4Sとしてフラグ付けします: L4S ECNをネゴシエートするフローは、ドロップされる代わりに輻輳が<i>マーク</i>され、対応アプリ（新しいApple/会議スタック）ではキューをほぼゼロに保ちます。フローが未対応でも無害です &mdash; 従来のトラフィックは通常のPI2動作を保ちます。このハードウェアでは未検証です。有効化後はドロップカウンターを監視してください。
+ RQOS_20=順序
+ RQOS_21=クラス名
+ RQOS_22=キュー
+@@ -5559,11 +5556,9 @@ RQOS_113=デバイスを選ぶか、MACアドレス（AA:BB:CC:DD:EE:FF）を入
+ RQOS_114=ダウンロードとアップロードはそれぞれ最低0.1 Mb/s必要です。
+ RQOS_115=最大32デバイスまで制限できます。
+ RQOS_116=ダウンロード上限（ingressポリサー）
+-RQOS_117=WAN受信トラフィックを制御し、ISPのバッファが埋まる前に大容量のダウンロードを抑制します&mdash;ハードウェアアクセラレーションを有効にしたままのダウンロードバッファブロート制御です。<b>実測</b>のダウンロード速度(スピードテストで計測した値)を入力してください。ルーターが自動的に約10%の余裕を確保するため、上限を設定しても定格速度をフルに保ちながらpingを低く抑えられます。回線の全速度でポリシングするとスループットが低下してしまうため、この余裕は自動的に適用されます&mdash;90%を手計算する必要はありません。バーストサイズは自動設定されます。<b>デフォルトでオフ:</b> ポリサーは超過分をキューイングせずに<i>破棄</i>するため、これを有効にすると動画や音声通話などの遅延に敏感なリアルタイムトラフィックにパケットロスが生じる可能性があります&mdash;このトレードオフを許容できる場合に限り、ダウンロードのバッファブロート制御としてのみ有効にしてください。
+-RQOS_118=Wi-Fi下り優先（WMM）
+-RQOS_119=上位クラスのLAN向けトラフィックにDiffServを刻印します &mdash; Q1をCS6（音声エアタイム）、Q2をCS5（映像エアタイム）に &mdash; そのためWi-Fiはダウンロード側でもあなたの優先度を尊重します。引き上げのみ: 通常のベストエフォート未満に降格されることはありません。有線クライアントは影響を受けません。接続は開始したクラスを維持します。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=ダウンロード側はどう機能する？
+-RQOS_121=<p>アップロードはクラスごとのキューでハードウェア整形されます。このシリコンではダウンロード用のハードウェアキューがないため、2つの仕組みでカバーします: <b>ingressポリサー</b>がISPバッファが満たされる前に集約ダウンロードを制御し、<b>WMM刻印</b>がWi-Fiに上位クラスを先に送信させます。デバイスごとのダウンロード上限は帯域制限にあります。完全なダウンロードAQMにはCake（アクセラレーションが無効化されます）が必要です。</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=ダウンロード値が設定されていないため、ダウンロード上限は機能しません。それでも適用しますか？
+ RADV_72=セッションが終了しました - アドバイザーはロックされました。
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index c9d597c89c..79cafbde2d 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=보장 최소치
+ RQOS_14=최소 % 열을 클래스별 확정 속도로 적용합니다. 보장은 경합 시에만 의미가 있으며, 합계가 100% 이하여야 합니다.
+ RQOS_15=DSCP 마킹 신뢰
+ RQOS_16=LAN 장치의 표준 DiffServ 클래스(EF/CS5+는 Q1, AF4x는 Q2, AF3x는 Q3, CS1 스캐빈저는 Q5)를 기본 클래스보다 앞서 매핑합니다. 명시적 규칙이 항상 우선합니다. 기본값은 꺼짐: 켜면 모든 LAN 호스트가 자신의 우선순위에 영향을 줄 수 있습니다.
+-RQOS_17=L4S 마킹
+-RQOS_18=실험적
+-RQOS_19=클래스 큐를 L4S로 표시합니다: L4S ECN을 협상하는 플로우는 드롭 대신 혼잡 <i>마킹</i>을 받아, 지원 앱(최신 Apple/회의 스택)의 큐잉을 거의 0에 가깝게 유지합니다. 플로우가 지원하지 않아도 무해하며 &mdash; 일반 트래픽은 정상 PI2 동작을 유지합니다. 이 하드웨어에서 검증되지 않았습니다. 활성화 후 드롭 카운터를 관찰하세요.
+ RQOS_20=순서
+ RQOS_21=클래스 이름
+ RQOS_22=큐
+@@ -5559,11 +5556,9 @@ RQOS_113=장치를 선택하거나 MAC 주소를 입력하세요 (AA:BB:CC:DD:EE
+ RQOS_114=다운로드와 업로드는 각각 최소 0.1 Mb/s 이상이어야 합니다.
+ RQOS_115=최대 32개 장치까지 제한할 수 있습니다.
+ RQOS_116=다운로드 상한 (인그레스 폴리서)
+-RQOS_117=ISP 버퍼가 채워지기 전에 대량 다운로드가 속도를 늦추도록 WAN 수신 트래픽을 제어합니다 &mdash; 하드웨어 가속은 켜진 상태로 유지한 채 다운로드 버퍼블로트를 제어합니다. <b>측정된</b> 다운로드 속도(스피드 테스트 결과)를 입력하세요. 라우터가 자동으로 약 10%의 여유를 유지하므로, 이 상한선은 정격 속도를 유지하면서 핑을 낮춥니다. 전체 회선 속도로 폴리서를 설정하면 처리량이 무너지므로, 이 여유분은 자동으로 적용됩니다 &mdash; 수동으로 90%를 계산할 필요가 없습니다. 버스트 크기는 자동으로 조정됩니다. <b>기본적으로 꺼짐:</b> 폴리서는 초과 트래픽을 큐에 넣는 대신 <i>버립니다</i>. 따라서 이 기능을 켜면 영상 통화나 음성 통화처럼 지연에 민감한 실시간 트래픽에 패킷 손실이 추가될 수 있습니다 &mdash; 이러한 트레이드오프를 받아들일 때만 다운로드 버퍼블로트 제어를 위해 활성화하세요.
+-RQOS_118=Wi-Fi 다운스트림 우선순위 (WMM)
+-RQOS_119=상위 클래스의 LAN행 트래픽에 DiffServ를 표시합니다 &mdash; Q1은 CS6(음성 에어타임), Q2는 CS5(영상 에어타임) &mdash; 하여 Wi-Fi가 다운로드 측에서도 우선순위를 처리합니다. 상향만: 정상 베스트 에포트 아래로는 절대 강등되지 않습니다. 유선 클라이언트는 영향받지 않으며, 연결은 시작한 클래스를 유지합니다.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=다운로드 측은 어떻게 작동하나요?
+-RQOS_121=<p>업로드는 클래스별 큐로 하드웨어에서 셰이핑됩니다. 이 실리콘에는 다운로드 하드웨어 큐가 없어서 두 가지 메커니즘이 이를 담당합니다: <b>인그레스 폴리서</b>는 ISP 버퍼가 차기 전에 총 다운로드를 제한하고, <b>WMM 표시</b>는 Wi-Fi가 상위 클래스를 먼저 전송하게 합니다. 장치별 다운로드 상한은 Bandwidth Limiter에 있습니다. 완전한 다운로드 AQM에는 Cake가 필요합니다(가속을 비활성화함).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=다운로드 값이 설정되지 않아 다운로드 상한이 작동하지 않습니다. 그래도 적용할까요?
+ RADV_72=세션 종료됨 - 이제 어드바이저가 잠겼습니다.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 00a1e5cae6..b60b01cbfc 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Minimum terjamin
+ RQOS_14=Menguatkuasakan lajur Min % sebagai kadar komited setiap kelas. Jaminan hanya penting semasa perebutan; ia mesti berjumlah 100% atau kurang.
+ RQOS_15=Percaya penandaan DSCP
+ RQOS_16=Memetakan kelas DiffServ standard daripada peranti LAN (EF/CS5+ ke Q1, AF4x ke Q2, AF3x ke Q3, pemungut CS1 ke Q5) mendahului kelas lalai. Peraturan eksplisit anda sentiasa menang. Mati secara lalai: mana-mana hos LAN boleh mempengaruhi keutamaannya sendiri apabila ini hidup.
+-RQOS_17=Penandaan L4S
+-RQOS_18=EKSPERIMEN
+-RQOS_19=Menanda baris gilir kelas L4S: aliran yang merunding L4S ECN mendapat kesesakan <i>ditandai</i> bukannya dijatuhkan, menahan pemberatur hampir sifar untuk aplikasi berkemampuan (tindanan Apple/persidangan lebih baharu). Tidak berbahaya jika tidak disokong oleh aliran &mdash; trafik klasik kekal kelakuan PI2 biasa. Belum terbukti pada perkakasan ini; perhatikan pembilang jatuh selepas mendayakan.
+ RQOS_20=Susunan
+ RQOS_21=Nama kelas
+ RQOS_22=Baris gilir
+@@ -5559,11 +5556,9 @@ RQOS_113=Pilih peranti atau masukkan alamat MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Muat turun dan muat naik mesti setiap satu sekurang-kurangnya 0.1 Mb/s.
+ RQOS_115=Anda boleh had sehingga 32 peranti.
+ RQOS_116=Had muat turun (pengawal ingres)
+-RQOS_117=Mengawal kemasukan WAN supaya muat turun berat akan perlahan sebelum penampan ISP penuh &mdash; kawalan bufferbloat muat turun dengan pecutan perkakasan masih aktif. Masukkan kelajuan muat turun <b>terukur</b> anda (daripada ujian kelajuan); router secara automatik mengekalkan ~10% ruang lapang, jadi had itu mengekalkan kelajuan penuh berkadar dengan ping yang lebih rendah. Policer pada kadar talian penuh anda akan meruntuhkan throughput, jadi ruang lapang itu diterapkan untuk anda &mdash; tiada pengiraan manual 90%. Saiz burst adalah automatik. <b>Dimatikan secara lalai:</b> policer <i>menggugurkan</i> lebihan berbanding menyusunnya dalam baris gilir, jadi mengaktifkan ini boleh menambah kehilangan paket pada trafik masa nyata yang sensitif kepada kependaman seperti panggilan video dan suara &mdash; aktifkan hanya untuk kawalan bufferbloat muat turun apabila anda menerima pertukaran itu.
+-RQOS_118=Keutamaan hiliran Wi-Fi (WMM)
+-RQOS_119=Menanda DiffServ pada trafik menuju LAN untuk kelas teratas &mdash; Q1 ke CS6 (masa udara suara), Q2 ke CS5 (masa udara video) &mdash; supaya Wi-Fi melayani keutamaan anda di sisi muat turun juga. Angkat-sahaja: tiada apa pernah diturunkan di bawah usaha-terbaik biasa. Klien berwayar tidak terjejas; sambungan kekal kelas yang ia mula.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Bagaimana sisi muat turun berfungsi?
+-RQOS_121=<p>Muat naik dibentuk dalam perkakasan dengan baris gilir setiap kelas. Muat turun tiada baris gilir perkakasan ditetapkan pada silikon ini, jadi dua mekanisme melindunginya: <b>pengawal ingres</b> menghadkan muat turun agregat sebelum penimbal ISP boleh penuh, dan <b>penandaan WMM</b> membenarkan Wi-Fi menghantar kelas tinggi dahulu. Had muat turun setiap peranti berada dalam Bandwidth Limiter; AQM muat turun penuh perlukan Cake (yang melumpuhkan pemecutan).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Tiada angka muat turun ditetapkan, jadi had muat turun tidak akan melibatkan diri. Laksana juga?
+ RADV_72=Sesi tamat - penasihat kini dikunci.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index eb14def0c8..c7f5e96156 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Gegarandeerde minima
+ RQOS_14=Handhaaft de kolom Min % als een toegewezen snelheid per klasse. Garanties tellen alleen onder concurrentie; ze moeten samen 100% of minder zijn.
+ RQOS_15=DSCP-markering vertrouwen
+ RQOS_16=Wijst standaard DiffServ-klassen van LAN-apparaten toe (EF/CS5+ naar Q1, AF4x naar Q2, AF3x naar Q3, CS1 scavenger naar Q5) vóór de standaardklasse. Uw expliciete regels winnen altijd. Standaard uit: elke LAN-host kan zijn eigen prioriteit beïnvloeden wanneer dit aan staat.
+-RQOS_17=L4S-markering
+-RQOS_18=EXPERIMENTEEL
+-RQOS_19=Markeert de klassewachtrijen als L4S: stromen die L4S ECN onderhandelen krijgen congestie <i>gemarkeerd</i> in plaats van gedropt, waardoor de wachtrij bijna nul blijft voor geschikte apps (nieuwere Apple-/conferentiestacks). Onschadelijk indien niet ondersteund door een stroom &mdash; klassiek verkeer behoudt normaal PI2-gedrag. Onbewezen op deze hardware; houd de drop-tellers in de gaten na inschakelen.
+ RQOS_20=Volgorde
+ RQOS_21=Klassenaam
+ RQOS_22=Wachtrij
+@@ -5559,11 +5556,9 @@ RQOS_113=Kies een apparaat of voer een MAC-adres in (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download en upload moeten elk minstens 0.1 Mb/s zijn.
+ RQOS_115=U kunt maximaal 32 apparaten begrenzen.
+ RQOS_116=Downloadlimiet (ingress-policer)
+-RQOS_117=Bewaakt het inkomende WAN-verkeer zodat zware downloads afremmen voordat de buffer van de provider vol raakt &mdash; download-bufferbloat-beheersing met hardwareversnelling nog steeds actief. Voer uw <b>gemeten</b> downloadsnelheid in (uit een snelheidstest); de router houdt automatisch ~10% marge aan, zodat de limiet de volledige nominale snelheid haalt bij een lagere ping. Een begrenzer op uw volledige lijnsnelheid zou de doorvoer laten instorten, dus die marge wordt automatisch voor u toegepast &mdash; geen handmatige 90%-berekening nodig. Burstgrootte wordt automatisch bepaald. <b>Standaard uit:</b> een begrenzer <i>verwerpt</i> overtollig verkeer in plaats van het in de wachtrij te zetten, dus het inschakelen hiervan kan pakketverlies toevoegen aan latency-gevoelig realtimeverkeer zoals video- en spraakoproepen &mdash; schakel dit alleen in voor download-bufferbloat-beheersing wanneer u die afweging accepteert.
+-RQOS_118=Wi-Fi downstream-prioriteit (WMM)
+-RQOS_119=Stempelt DiffServ op LAN-gebonden verkeer voor de topklassen &mdash; Q1 naar CS6 (spraak-airtime), Q2 naar CS5 (video-airtime) &mdash; zodat Wi-Fi uw prioriteiten ook aan de downloadkant bedient. Alleen-verhogen: niets wordt ooit onder normaal best-effort gedegradeerd. Bekabelde clients zijn onaangetast; een verbinding behoudt de klasse waarmee hij begon.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Hoe werkt de downloadkant?
+-RQOS_121=<p>Upload wordt in hardware gevormd met wachtrijen per klasse. Download heeft op dit silicium geen hardwarewachtrij, dus twee mechanismen dekken het: de <b>ingress-policer</b> begrenst de aggregate download voordat de ISP-buffer kan vollopen, en <b>WMM-stempeling</b> laat Wi-Fi hoge klassen eerst verzenden. Downloadlimieten per apparaat staan in de Bandbreedtebegrenzer; volledige download-AQM vereist Cake (dat versnelling uitschakelt).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Er is geen downloadwaarde ingesteld, dus de downloadlimiet wordt niet actief. Toch toepassen?
+ RADV_72=Sessie beëindigd - de adviseur is nu vergrendeld.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index f1338f28c0..71cc09ace8 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garanterte minimum
+ RQOS_14=Håndhever Min %-kolonnen som en fastsatt rate per klasse. Garantier betyr kun noe under konkurranse; de må til sammen være 100 % eller mindre.
+ RQOS_15=Stol på DSCP-merking
+ RQOS_16=Kartlegger standard DiffServ-klasser fra LAN-enheter (EF/CS5+ til Q1, AF4x til Q2, AF3x til Q3, CS1 scavenger til Q5) foran standardklassen. Dine eksplisitte regler vinner alltid. Av som standard: enhver LAN-vert kan påvirke sin egen prioritet når dette er på.
+-RQOS_17=L4S-merking
+-RQOS_18=EKSPERIMENTELL
+-RQOS_19=Flagger klassekøene L4S: flyter som forhandler L4S ECN får trengsel <i>merket</i> i stedet for droppet, og holder køing nær null for kompatible apper (nyere Apple-/konferansestakker). Harmløst hvis en flyt ikke støtter det &mdash; klassisk trafikk beholder normal PI2-oppførsel. Ubevist på denne maskinvaren; følg med på slipp-tellerne etter aktivering.
+ RQOS_20=Rekkefølge
+ RQOS_21=Klassenavn
+ RQOS_22=Kø
+@@ -5559,11 +5556,9 @@ RQOS_113=Velg en enhet eller skriv inn en MAC-adresse (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Nedlasting og opplasting må hver være minst 0.1 Mb/s.
+ RQOS_115=Du kan begrense opptil 32 enheter.
+ RQOS_116=Nedlastingstak (ingress-policer)
+-RQOS_117=Regulerer WAN-inngangstrafikk slik at tunge nedlastinger bremser ned før ISP-bufferen fylles opp &mdash; kontroll av bufferbloat ved nedlasting, med maskinvareakselerasjon fortsatt på. Angi din <b>målte</b> nedlastingshastighet (fra en hastighetstest); ruteren holder automatisk ca. 10 % margin, slik at grensen holder full oppgitt hastighet med lavere ping. En regulator på full linjehastighet ville kollapset gjennomstrømningen, så denne margin påføres automatisk for deg &mdash; ingen manuell 90 %-regning. Burst-størrelse settes automatisk. <b>Av som standard:</b> en regulator <i>dropper</i> overskytende trafikk i stedet for å legge den i kø, så å slå dette på kan gi pakketap på sanntidstrafikk som er følsom for latens, som video- og taleanrop &mdash; aktiver det kun for kontroll av bufferbloat ved nedlasting når du aksepterer denne avveiningen.
+-RQOS_118=Wi-Fi nedstrøms-prioritet (WMM)
+-RQOS_119=Stempler DiffServ på LAN-bundet trafikk for toppklassene &mdash; Q1 til CS6 (tale-airtime), Q2 til CS5 (video-airtime) &mdash; så Wi-Fi betjener prioritetene dine på nedlastingssiden også. Kun løft: ingenting nedgraderes noensinne under normal best-effort. Kablede klienter er upåvirket; en tilkobling beholder klassen den startet med.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Hvordan virker nedlastingssiden?
+-RQOS_121=<p>Opplasting formes i maskinvare med køer per klasse. Nedlasting har ingen maskinvarekø satt på denne silisiumen, så to mekanismer dekker den: <b>ingress-policeren</b> begrenser samlet nedlasting før ISP-bufferen kan fylles, og <b>WMM-stempling</b> lar Wi-Fi sende høye klasser først. Nedlastingstak per enhet ligger i Båndbreddebegrenseren; full nedlastings-AQM krever Cake (som deaktiverer akselerasjon).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Ingen nedlastingstall er satt, så nedlastingstaket vil ikke engasjere seg. Bruk likevel?
+ RADV_72=Økten er avsluttet - rådgiveren er nå låst.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index af977f471f..6e889c0cde 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Gwarantowane minima
+ RQOS_14=Wymusza kolumnę Min % jako przydzieloną przepływność na klasę. Gwarancje mają znaczenie tylko przy rywalizacji; muszą sumować się do 100% lub mniej.
+ RQOS_15=Zaufaj oznaczeniom DSCP
+ RQOS_16=Mapuje standardowe klasy DiffServ z urządzeń LAN (EF/CS5+ do Q1, AF4x do Q2, AF3x do Q3, CS1 scavenger do Q5) przed klasą domyślną. Twoje jawne reguły zawsze wygrywają. Domyślnie wył.: każdy host LAN może wpływać na własny priorytet, gdy to jest włączone.
+-RQOS_17=Oznaczanie L4S
+-RQOS_18=EKSPERYMENTALNE
+-RQOS_19=Oznacza kolejki klas jako L4S: przepływy negocjujące L4S ECN otrzymują <i>oznaczenie</i> przeciążenia zamiast odrzucenia, utrzymując kolejkowanie blisko zera dla zdolnych aplikacji (nowsze stosy Apple/konferencyjne). Nieszkodliwe, jeśli przepływ nie obsługuje &mdash; klasyczny ruch zachowuje normalne zachowanie PI2. Niesprawdzone na tym sprzęcie; po włączeniu obserwuj liczniki odrzuceń.
+ RQOS_20=Kolejność
+ RQOS_21=Nazwa klasy
+ RQOS_22=Kolejka
+@@ -5559,11 +5556,9 @@ RQOS_113=Wybierz urządzenie lub wprowadź adres MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Pobieranie i wysyłanie muszą wynosić co najmniej 0.1 Mb/s każde.
+ RQOS_115=Możesz ograniczyć do 32 urządzeń.
+ RQOS_116=Limit pobierania (policer ingress)
+-RQOS_117=Kontroluje ruch przychodzący WAN, tak aby duże pobierania zwalniały, zanim zapełni się bufor dostawcy internetu &mdash; kontrola bufferbloat pobierania przy wciąż włączonej akceleracji sprzętowej. Podaj swoją <b>zmierzoną</b> prędkość pobierania (z testu prędkości); router automatycznie zachowuje ok. 10% zapasu, dzięki czemu limit utrzymuje pełną nominalną prędkość przy niższym pingu. Ogranicznik ustawiony na pełnej prędkości łącza zawaliłby przepustowość, dlatego ten zapas jest stosowany automatycznie &mdash; bez ręcznego liczenia 90%. Dobór wielkości burst jest automatyczny. <b>Domyślnie wyłączone:</b> ogranicznik <i>odrzuca</i> nadmiar zamiast go kolejkować, więc włączenie tej opcji może dodać utratę pakietów do ruchu czasu rzeczywistego wrażliwego na opóźnienia, takiego jak połączenia wideo i głosowe &mdash; włączaj tylko wtedy, gdy akceptujesz ten kompromis na rzecz kontroli bufferbloat pobierania.
+-RQOS_118=Priorytet Wi-Fi dla pobierania (WMM)
+-RQOS_119=Stempluje DiffServ na ruch kierowany do LAN dla górnych klas &mdash; Q1 do CS6 (czas antenowy głosu), Q2 do CS5 (czas antenowy wideo) &mdash; więc Wi-Fi obsługuje Twoje priorytety także po stronie pobierania. Tylko podnoszenie: nic nie jest nigdy degradowane poniżej normalnego best-effort. Klienci przewodowi są bez zmian; połączenie zachowuje klasę, z którą się zaczęło.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Jak działa strona pobierania?
+-RQOS_121=<p>Wysyłanie jest kształtowane sprzętowo z kolejkami na klasę. Pobieranie nie ma sprzętowej kolejki na tym układzie, więc pokrywają je dwa mechanizmy: <b>policer ingress</b> ogranicza łączne pobieranie, zanim bufor ISP zdąży się zapełnić, a <b>stemplowanie WMM</b> pozwala Wi-Fi transmitować wysokie klasy pierwsze. Limity pobierania na urządzenie są w Bandwidth Limiter; pełny AQM pobierania wymaga Cake (który wyłącza przyspieszenie).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Nie ustawiono wartości pobierania, więc limit pobierania nie zadziała. Zastosować mimo to?
+ RADV_72=Sesja zakończona - doradca jest teraz zablokowany.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 75883edf95..f7dfe1195b 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Minime garantate
+ RQOS_14=Impune coloana Min % ca rată angajată per clasă. Garanțiile contează doar sub contenție; trebuie să totalizeze 100% sau mai puțin.
+ RQOS_15=Ai încredere în marcarea DSCP
+ RQOS_16=Mapează clasele DiffServ standard de la dispozitivele LAN (EF/CS5+ la Q1, AF4x la Q2, AF3x la Q3, CS1 scavenger la Q5) înaintea clasei implicite. Regulile tale explicite câștigă întotdeauna. Oprit implicit: orice gazdă LAN își poate influența propria prioritate când este pornit.
+-RQOS_17=Marcare L4S
+-RQOS_18=EXPERIMENTAL
+-RQOS_19=Marchează cozile claselor ca L4S: fluxurile care negociază L4S ECN primesc congestia <i>marcată</i> în loc de eliminată, menținând cozile aproape de zero pentru aplicațiile capabile (stive Apple/conferință mai noi). Inofensiv dacă nu este suportat de un flux &mdash; traficul clasic păstrează comportamentul PI2 normal. Nedovedit pe acest hardware; urmărește contoarele de pierderi după activare.
+ RQOS_20=Ordine
+ RQOS_21=Nume clasă
+ RQOS_22=Coadă
+@@ -5559,11 +5556,9 @@ RQOS_113=Alege un dispozitiv sau introdu o adresă MAC (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Descărcarea și încărcarea trebuie să fie fiecare cel puțin 0.1 Mb/s.
+ RQOS_115=Poți limita până la 32 de dispozitive.
+ RQOS_116=Plafon de descărcare (poliția de intrare)
+-RQOS_117=Controlează traficul WAN de intrare, astfel încât descărcările mari să încetinească înainte ca bufferul ISP-ului să se umple &mdash; control al bufferbloat-ului la descărcare, cu accelerarea hardware încă activă. Introduceți viteza de descărcare <b>măsurată</b> (dintr-un test de viteză); routerul păstrează automat o marjă de ~10%, astfel încât plafonul menține viteza nominală completă cu un ping mai mic. Un policer la rata maximă a liniei ar prăbuși debitul, așa că această marjă este aplicată automat pentru dvs. &mdash; fără calcule manuale de 90%. Dimensionarea rafalelor este automată. <b>Dezactivat implicit:</b> un policer <i>elimină</i> excesul în loc să îl pună în coadă, astfel încât activarea acestei opțiuni poate adăuga pierderi de pachete traficului în timp real sensibil la latență, precum apelurile video și vocale &mdash; activați-o doar pentru controlul bufferbloat-ului la descărcare, atunci când acceptați acest compromis.
+-RQOS_118=Prioritate în aval Wi-Fi (WMM)
+-RQOS_119=Ștampilează DiffServ pe traficul destinat LAN pentru clasele de top &mdash; Q1 la CS6 (timp aer voce), Q2 la CS5 (timp aer video) &mdash; astfel încât Wi-Fi să îți servească prioritățile și pe partea de descărcare. Doar-ridicare: nimic nu este vreodată retrogradat sub best-effort normal. Clienții cablați nu sunt afectați; o conexiune păstrează clasa cu care a început.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Cum funcționează partea de descărcare?
+-RQOS_121=<p>Încărcarea este modelată în hardware cu cozi per clasă. Descărcarea nu are coadă hardware setată pe acest siliciu, deci două mecanisme o acoperă: <b>poliția de intrare</b> plafonează descărcarea agregată înainte ca bufferul ISP să se poată umple, iar <b>ștampilarea WMM</b> permite Wi-Fi să transmită clasele înalte primele. Plafoanele de descărcare per dispozitiv sunt în Limitatorul de bandă; AQM complet la descărcare necesită Cake (care dezactivează accelerarea).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Nicio valoare de descărcare nu este setată, deci plafonul de descărcare nu se va activa. Aplici oricum?
+ RADV_72=Sesiunea s-a încheiat - consilierul este acum blocat.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 98b5e84277..5e34a036a2 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Гарантированные минимумы
+ RQOS_14=Обеспечивает столбец Мин % как выделенную скорость на класс. Гарантии важны только при конкуренции; в сумме они должны быть не более 100%.
+ RQOS_15=Доверять маркировке DSCP
+ RQOS_16=Сопоставляет стандартные классы DiffServ от устройств LAN (EF/CS5+ в Q1, AF4x в Q2, AF3x в Q3, CS1 scavenger в Q5) перед классом по умолчанию. Ваши явные правила всегда важнее. Выключено по умолчанию: любой хост LAN может влиять на свой приоритет, когда это включено.
+-RQOS_17=Маркировка L4S
+-RQOS_18=ЭКСПЕРИМЕНТАЛЬНО
+-RQOS_19=Помечает очереди классов как L4S: потоки, согласовавшие L4S ECN, получают <i>маркировку</i> перегрузки вместо сброса, удерживая очередь около нуля для совместимых приложений (новые стеки Apple/конференций). Безвредно, если поток не поддерживает &mdash; классический трафик сохраняет обычное поведение PI2. Не проверено на этом оборудовании; следите за счётчиками сбросов после включения.
+ RQOS_20=Порядок
+ RQOS_21=Имя класса
+ RQOS_22=Очередь
+@@ -5559,11 +5556,9 @@ RQOS_113=Выберите устройство или введите MAC-адр
+ RQOS_114=Загрузка и выгрузка каждая должны быть не менее 0.1 Mb/s.
+ RQOS_115=Можно ограничить до 32 устройств.
+ RQOS_116=Лимит загрузки (входящий полисер)
+-RQOS_117=Ограничивает входящий трафик WAN, чтобы при тяжёлых загрузках скорость снижалась ещё до заполнения буфера провайдера &mdash; контроль bufferbloat при загрузке, аппаратное ускорение при этом остаётся включённым. Введите <b>измеренную</b> скорость загрузки (по результатам теста скорости); роутер автоматически оставляет запас ~10%, поэтому ограничение удерживает полную номинальную скорость при более низком пинге. Полисер на полной скорости линии обрушил бы пропускную способность, поэтому этот запас применяется автоматически &mdash; без ручных расчётов 90%. Размер всплеска определяется автоматически. <b>Выключено по умолчанию:</b> полисер <i>отбрасывает</i> избыточный трафик вместо постановки в очередь, поэтому включение этой функции может добавить потери пакетов в чувствительный к задержкам трафик реального времени, например видео- и голосовые звонки &mdash; включайте её только для контроля bufferbloat при загрузке, если вы принимаете этот компромисс.
+-RQOS_118=Приоритет Wi-Fi на загрузку (WMM)
+-RQOS_119=Проставляет DiffServ на трафик, направленный в LAN, для верхних классов &mdash; Q1 в CS6 (эфирное время голоса), Q2 в CS5 (эфирное время видео) &mdash; так что Wi-Fi обслуживает ваши приоритеты и на стороне загрузки. Только повышение: ничто никогда не понижается ниже обычного best-effort. Проводные клиенты не затрагиваются; соединение сохраняет класс, с которым началось.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Как работает сторона загрузки?
+-RQOS_121=<p>Выгрузка формируется в оборудовании с очередями по классам. У загрузки на этом кремнии нет аппаратной очереди, поэтому её покрывают два механизма: <b>входящий полисер</b> ограничивает совокупную загрузку до заполнения буфера провайдера, а <b>маркировка WMM</b> позволяет Wi-Fi передавать высокие классы первыми. Лимиты загрузки на устройство живут в Ограничителе полосы; полный AQM загрузки требует Cake (что отключает ускорение).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Величина загрузки не задана, поэтому лимит загрузки не включится. Всё равно применить?
+ RADV_72=Сессия завершена - советник теперь заблокирован.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 5274489303..baa2d9aa6a 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -227,13 +227,6 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <div class="tdesc"><#RQOS_16#></div>
+     </div>
+   </div>
+-  <div class="togglerow">
+-    <label class="tswitch"><input type="checkbox" id="tg_l4s"><span class="track"></span></label>
+-    <div class="tmeta">
+-      <div class="tname"><#RQOS_17#> <span class="tag warn" style="vertical-align:1px"><#RQOS_18#></span></div>
+-      <div class="tdesc"><#RQOS_19#></div>
+-    </div>
+-  </div>
+   <div class="togglerow">
+     <label class="tswitch"><input type="checkbox" id="tg_ipolicer"><span class="track"></span></label>
+     <div class="tmeta">
+@@ -241,13 +234,6 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <div class="tdesc"><#RQOS_117#></div>
+     </div>
+   </div>
+-  <div class="togglerow">
+-    <label class="tswitch"><input type="checkbox" id="tg_wmm"><span class="track"></span></label>
+-    <div class="tmeta">
+-      <div class="tname"><#RQOS_118#></div>
+-      <div class="tdesc"><#RQOS_119#></div>
+-    </div>
+-  </div>
+ 
+   <table class="classes">
+     <thead><tr>
+@@ -386,9 +372,7 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <input type="hidden" name="qos_minrates" value="" disabled>
+   <input type="hidden" name="qos_dscp_trust" value="" disabled>
+   <input type="hidden" name="qos_sched" value="" disabled>
+-  <input type="hidden" name="qos_l4s" value="" disabled>
+   <input type="hidden" name="qos_ipolicer" value="" disabled>
+-  <input type="hidden" name="qos_dscp_wmm" value="" disabled>
+   <input type="hidden" name="qos_bw_rulelist" value="" disabled>
+ </form>
+ 
+@@ -405,9 +389,7 @@ var NV = {
+   minrates:'<% nvram_get("qos_minrates"); %>',
+   dscp:    '<% nvram_get("qos_dscp_trust"); %>',
+   sched:   '<% nvram_get("qos_sched"); %>',
+-  l4s:     '<% nvram_get("qos_l4s"); %>',
+   ipolicer:'<% nvram_get("qos_ipolicer"); %>',
+-  wmm:     '<% nvram_get("qos_dscp_wmm"); %>',
+   bwrule:  '<% nvram_get("qos_bw_rulelist"); %>',
+   rules:   decodeURIComponent('<% nvram_char_to_ascii("", "qos_rulelist"); %>')
+ };
+@@ -725,9 +707,7 @@ function applyQoS(){
+     f.qos_pshaper.disabled=false;     f.qos_pshaper.value = document.getElementById('tg_pshaper').checked ? '1':'0';
+     f.qos_minrates.disabled=false;    f.qos_minrates.value = document.getElementById('tg_minrates').checked ? '1':'0';
+     f.qos_dscp_trust.disabled=false;  f.qos_dscp_trust.value = document.getElementById('tg_dscp').checked ? '1':'0';
+-    f.qos_l4s.disabled=false;         f.qos_l4s.value = document.getElementById('tg_l4s').checked ? '1':'0';
+     f.qos_ipolicer.disabled=false;    f.qos_ipolicer.value = document.getElementById('tg_ipolicer').checked ? '1':'0';
+-    f.qos_dscp_wmm.disabled=false;    f.qos_dscp_wmm.value = document.getElementById('tg_wmm').checked ? '1':'0';
+     /* v5: the download cap is only as good as the figure it polices */
+     if (document.getElementById('tg_ipolicer').checked && !(parseFloat(dn)>0) &&
+         !confirm(`<#RQOS_122#>`)) return;
+@@ -767,9 +747,7 @@ document.addEventListener('keydown', function(e){ if(e.key==='Escape') faqClose(
+ document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
+ document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
+ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
+-document.getElementById('tg_l4s').checked = (NV.l4s === '1');
+ document.getElementById('tg_ipolicer').checked = (NV.ipolicer !== '0');
+-document.getElementById('tg_wmm').checked = (NV.wmm !== '0');
+ renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats();
+ </script>
+ </body>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 19044b7f37..d23ec548f0 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Zajamčeni minimumi
+ RQOS_14=Uveljavi stolpec Min % kot zavezano hitrost na razred. Jamstva štejejo le ob tekmovanju; njihova vsota mora biti 100% ali manj.
+ RQOS_15=Zaupaj označbi DSCP
+ RQOS_16=Preslika standardne razrede DiffServ z LAN naprav (EF/CS5+ v Q1, AF4x v Q2, AF3x v Q3, CS1 scavenger v Q5) pred privzeti razred. Vaša izrecna pravila vedno zmagajo. Privzeto izklopljeno: ob vklopu lahko vsak LAN gostitelj vpliva na lastno prioriteto.
+-RQOS_17=Označba L4S
+-RQOS_18=EKSPERIMENTALNO
+-RQOS_19=Označi razredne vrste kot L4S: tokovi, ki se dogovorijo za L4S ECN, dobijo prezasedenost <i>označeno</i> namesto izpadov, s čimer čakalno vrsto pri zmožnih aplikacijah držijo blizu nič (novejši Apple/konferenčni skladi). Neškodljivo, če tok tega ne podpira &mdash; klasični promet obdrži običajno vedenje PI2. Nepreverjeno na tej strojni opremi; po vklopu spremljajte števce izpadov.
+ RQOS_20=Vrstni red
+ RQOS_21=Ime razreda
+ RQOS_22=Vrsta
+@@ -5559,11 +5556,9 @@ RQOS_113=Izberite napravo ali vnesite MAC naslov (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Prenos in nalaganje morata biti vsak vsaj 0.1 Mb/s.
+ RQOS_115=Omejite lahko do 32 naprav.
+ RQOS_116=Omejitev prenosa (vhodni policer)
+-RQOS_117=Nadzoruje dohodni promet WAN, tako da se pri velikih prenosih hitrost zniža, preden se zapolni medpomnilnik ponudnika (ISP) &mdash; nadzor nad bufferbloatom pri prenosih, strojno pospeševanje pa ostane vklopljeno. Vnesite svojo <b>izmerjeno</b> hitrost prenosa (iz testa hitrosti); usmerjevalnik samodejno ohrani približno 10 % rezerve, tako da omejitev drži polno nazivno hitrost z nižjim pingom. Regulator (policer) pri polni hitrosti linije bi zrušil prepustnost, zato je ta rezerva uporabljena samodejno &mdash; brez ročnega računanja 90 %. Velikost sunkov (burst) je samodejna. <b>Privzeto izklopljeno:</b> regulator presežek <i>zavrže</i>, namesto da bi ga postavil v čakalno vrsto, zato lahko vklop te možnosti poveča izgubo paketov pri prometu v realnem času, občutljivem na zakasnitve, kot so video in glasovni klici &mdash; omogočite jo le za nadzor bufferbloata pri prenosih, kadar sprejmete ta kompromis.
+-RQOS_118=Wi-Fi prioriteta prenosa (WMM)
+-RQOS_119=Vtisne DiffServ na LAN usmerjeni promet za najvišje razrede &mdash; Q1 v CS6 (glasovni eter), Q2 v CS5 (video eter) &mdash; tako da Wi-Fi postreže vaše prioritete tudi na strani prenosa. Samo dvig: nič ni nikoli znižano pod običajni best-effort. Žični odjemalci niso prizadeti; povezava obdrži razred, s katerim je začela.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Kako deluje stran prenosa?
+-RQOS_121=<p>Nalaganje je oblikovano v strojni opremi z vrstami po razredih. Prenos na tem čipu nima strojne vrste, zato ga pokrivata dva mehanizma: <b>vhodni policer</b> omeji skupni prenos, preden se lahko napolni medpomnilnik ISP, <b>WMM vtiskovanje</b> pa omogoči Wi-Fi, da najprej oddaja visoke razrede. Omejitve prenosa na napravo so v Bandwidth Limiter; poln AQM prenosa potrebuje Cake (ki onemogoči pospešek).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Vrednost prenosa ni nastavljena, zato se omejitev prenosa ne bo vklopila. Vseeno uveljavim?
+ RADV_72=Seja se je končala - svetovalec je zdaj zaklenjen.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 7445a35a6b..a8aa6d9b8e 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garanterade miniminivåer
+ RQOS_14=Framtvingar Min %-kolumnen som en åtagen hastighet per klass. Garantier spelar bara roll under konkurrens; de måste totalt vara 100% eller mindre.
+ RQOS_15=Lita på DSCP-markering
+ RQOS_16=Mappar standard-DiffServ-klasser från LAN-enheter (EF/CS5+ till Q1, AF4x till Q2, AF3x till Q3, CS1 scavenger till Q5) före standardklassen. Dina uttryckliga regler vinner alltid. Av som standard: valfri LAN-värd kan påverka sin egen prioritet när detta är på.
+-RQOS_17=L4S-markering
+-RQOS_18=EXPERIMENTELL
+-RQOS_19=Flaggar klasskökerna som L4S: flöden som förhandlar L4S ECN får trängsel <i>markerad</i> istället för förkastad, vilket håller köbildning nära noll för kapabla appar (nyare Apple-/konferensstackar). Ofarligt om ett flöde inte stöder det &mdash; klassisk trafik behåller normalt PI2-beteende. Obevisat på denna hårdvara; bevaka räknarna för förkastade paket efter aktivering.
+ RQOS_20=Ordning
+ RQOS_21=Klassnamn
+ RQOS_22=Kö
+@@ -5559,11 +5556,9 @@ RQOS_113=Välj en enhet eller ange en MAC-adress (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Nedladdning och uppladdning måste var och en vara minst 0.1 Mb/s.
+ RQOS_115=Du kan begränsa upp till 32 enheter.
+ RQOS_116=Nedladdningstak (ingress-polisierare)
+-RQOS_117=Reglerar (policer) WAN-ingången så att tunga nedladdningar bromsar in innan ISP-buffertarna fylls &mdash; kontroll av nedladdningsbufferbloat med hårdvaruacceleration fortfarande på. Ange din <b>uppmätta</b> nedladdningshastighet (från ett hastighetstest); routern behåller automatiskt ~10% marginal, så taket håller full angiven hastighet med lägre ping. En policer vid din fulla linjehastighet skulle få genomströmningen att kollapsa, så den marginalen läggs till åt dig &mdash; ingen manuell 90%-uträkning. Burststorleken sätts automatiskt. <b>Avstängd som standard:</b> en policer <i>slänger</i> överskott istället för att köa det, så om du slår på detta kan det tillföra paketförluster i latenskänslig realtidstrafik som video- och röstsamtal &mdash; aktivera den bara för kontroll av nedladdningsbufferbloat när du accepterar den avvägningen.
+-RQOS_118=Wi-Fi nedströmsprioritet (WMM)
+-RQOS_119=Stämplar DiffServ på LAN-riktad trafik för toppklasserna &mdash; Q1 till CS6 (röst-sändningstid), Q2 till CS5 (video-sändningstid) &mdash; så att Wi-Fi betjänar dina prioriteter på nedladdningssidan också. Endast lyft: ingenting nedgraderas någonsin under normal best-effort. Trådbundna klienter påverkas inte; en anslutning behåller den klass den startade med.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Hur fungerar nedladdningssidan?
+-RQOS_121=<p>Uppladdning formas i hårdvara med köer per klass. Nedladdning har ingen hårdvarukö inställd på detta chip, så två mekanismer täcker den: <b>ingress-polisieraren</b> begränsar aggregerad nedladdning innan ISP-bufferten kan fyllas, och <b>WMM-stämpling</b> låter Wi-Fi sända höga klasser först. Nedladdningstak per enhet finns i Bandbreddsbegränsaren; full nedladdnings-AQM kräver Cake (som inaktiverar acceleration).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Ingen nedladdningssiffra är angiven, så nedladdningstaket engagerar sig inte. Tillämpa ändå?
+ RADV_72=Sessionen avslutad - rådgivaren är nu låst.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ed27487535..4f81da3c0b 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=ค่าขั้นต่ำที่รับประกัน
+ RQOS_14=บังคับใช้คอลัมน์ Min % เป็นอัตราที่มุ่งมั่นต่อคลาส การรับประกันมีผลเฉพาะเมื่อมีการแย่งชิง และต้องรวมไม่เกิน 100%
+ RQOS_15=เชื่อถือการทำเครื่องหมาย DSCP
+ RQOS_16=แมปคลาส DiffServ มาตรฐานจากอุปกรณ์ LAN (EF/CS5+ ไป Q1, AF4x ไป Q2, AF3x ไป Q3, CS1 scavenger ไป Q5) ก่อนคลาสเริ่มต้น กฎที่คุณกำหนดชนะเสมอ ปิดโดยค่าเริ่มต้น: เมื่อเปิด โฮสต์ LAN ใดก็ได้สามารถกำหนดลำดับความสำคัญของตัวเอง
+-RQOS_17=การทำเครื่องหมาย L4S
+-RQOS_18=ทดลอง
+-RQOS_19=ตั้งค่าคิวคลาสเป็น L4S: โฟลว์ที่เจรจา L4S ECN จะได้รับการ<i>ทำเครื่องหมาย</i>ความแออัดแทนการดรอป ทำให้คิวใกล้ศูนย์สำหรับแอปที่รองรับ (สแตก Apple/การประชุมรุ่นใหม่) ไม่เป็นอันตรายหากโฟลว์ไม่รองรับ &mdash; ทราฟฟิกทั่วไปยังคงพฤติกรรม PI2 ปกติ ยังไม่พิสูจน์บนฮาร์ดแวร์นี้ ให้เฝ้าดูตัวนับดรอปหลังเปิดใช้งาน
+ RQOS_20=ลำดับ
+ RQOS_21=ชื่อคลาส
+ RQOS_22=คิว
+@@ -5559,11 +5556,9 @@ RQOS_113=เลือกอุปกรณ์หรือป้อนที่
+ RQOS_114=ดาวน์โหลดและอัปโหลดต้องมีอย่างน้อย 0.1 Mb/s แต่ละอย่าง
+ RQOS_115=คุณจำกัดได้สูงสุด 32 อุปกรณ์
+ RQOS_116=ขีดจำกัดดาวน์โหลด (ตัวปรับแต่งขาเข้า)
+-RQOS_117=ควบคุมทราฟฟิกขาเข้า WAN เพื่อให้การดาวน์โหลดขนาดใหญ่ลดความเร็วลงก่อนที่บัฟเฟอร์ของ ISP จะเต็ม &mdash; ระบบควบคุม bufferbloat ขาดาวน์โหลด โดยยังเปิดการเร่งความเร็วด้วยฮาร์ดแวร์อยู่ กรอกความเร็วดาวน์โหลดที่<b>วัดได้จริง</b> (จากการทดสอบความเร็ว) เราเตอร์จะรักษาพื้นที่กันชนไว้ประมาณ 10% โดยอัตโนมัติ ทำให้เพดานความเร็วยังคงความเร็วเต็มตามที่กำหนดพร้อม ping ที่ต่ำลง หากตั้ง policer ไว้ที่ความเร็วสายเต็มจะทำให้ทรูพุตพังลง จึงมีการเผื่อพื้นที่กันชนนี้ให้อัตโนมัติ &mdash; ไม่ต้องคำนวณ 90% เอง การกำหนดขนาด burst เป็นแบบอัตโนมัติ <b>ปิดโดยค่าเริ่มต้น:</b> policer จะ<i>ดรอป</i>ส่วนเกินแทนที่จะเข้าคิว การเปิดใช้งานจึงอาจเพิ่มการสูญเสียแพ็กเก็ตให้กับทราฟฟิกเรียลไทม์ที่ไวต่อความหน่วง เช่น การโทรวิดีโอและเสียง &mdash; ควรเปิดใช้เฉพาะเพื่อควบคุม bufferbloat ขาดาวน์โหลดเมื่อคุณยอมรับข้อแลกเปลี่ยนนี้
+-RQOS_118=ลำดับความสำคัญขาลง Wi-Fi (WMM)
+-RQOS_119=ประทับ DiffServ ลงบนทราฟฟิกที่มุ่งสู่ LAN สำหรับคลาสบนสุด &mdash; Q1 ไป CS6 (airtime เสียง), Q2 ไป CS5 (airtime วิดีโอ) &mdash; เพื่อให้ Wi-Fi ให้บริการตามลำดับความสำคัญของคุณฝั่งดาวน์โหลดด้วย ยกอย่างเดียว: ไม่มีอะไรถูกลดต่ำกว่า best-effort ปกติ ไคลเอนต์แบบมีสายไม่ได้รับผลกระทบ การเชื่อมต่อคงคลาสที่เริ่มไว้
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=ฝั่งดาวน์โหลดทำงานอย่างไร
+-RQOS_121=<p>อัปโหลดถูกปรับแต่งในฮาร์ดแวร์ด้วยคิวต่อคลาส ดาวน์โหลดไม่มีคิวฮาร์ดแวร์บนซิลิคอนนี้ จึงมีสองกลไกครอบคลุม: <b>ตัวปรับแต่งขาเข้า</b>จำกัดดาวน์โหลดรวมก่อนบัฟเฟอร์ ISP เต็ม และ<b>การประทับ WMM</b>ให้ Wi-Fi ส่งคลาสสูงก่อน ขีดจำกัดดาวน์โหลดต่ออุปกรณ์อยู่ใน Bandwidth Limiter ส่วน AQM ดาวน์โหลดเต็มต้องใช้ Cake (ซึ่งปิดการเร่ง)</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=ยังไม่ได้ตั้งค่าดาวน์โหลด ขีดจำกัดดาวน์โหลดจะไม่ทำงาน นำไปใช้ต่อหรือไม่
+ RADV_72=เซสชันสิ้นสุด - ที่ปรึกษาถูกล็อกแล้ว
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 2e2bd3f622..a181675a6f 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Garantili alt sınırlar
+ RQOS_14=Min % sütununu sınıf başına taahhüt edilen hız olarak uygular. Garantiler yalnızca çekişme altında önemlidir; toplamda %100 veya daha az olmalıdır.
+ RQOS_15=DSCP işaretlemesine güven
+ RQOS_16=LAN cihazlarından standart DiffServ sınıflarını (EF/CS5+ için Q1, AF4x için Q2, AF3x için Q3, CS1 scavenger için Q5) varsayılan sınıfın önünde eşler. Açık kurallarınız her zaman kazanır. Varsayılan olarak kapalı: bu açıkken herhangi bir LAN ana bilgisayarı kendi önceliğini etkileyebilir.
+-RQOS_17=L4S işaretleme
+-RQOS_18=DENEYSEL
+-RQOS_19=Sınıf kuyruklarını L4S olarak işaretler: L4S ECN görüşen akışlar düşürülmek yerine tıkanıklık <i>işareti</i> alır ve yetenekli uygulamalar için kuyruğu sıfıra yakın tutar (daha yeni Apple/konferans yığınları). Bir akış tarafından desteklenmiyorsa zararsızdır &mdash; klasik trafik normal PI2 davranışını korur. Bu donanımda kanıtlanmamıştır; etkinleştirdikten sonra düşüş sayaçlarını izleyin.
+ RQOS_20=Sıra
+ RQOS_21=Sınıf adı
+ RQOS_22=Kuyruk
+@@ -5559,11 +5556,9 @@ RQOS_113=Bir cihaz seçin veya bir MAC adresi girin (AA:BB:CC:DD:EE:FF).
+ RQOS_114=İndirme ve yükleme her biri en az 0.1 Mb/s olmalıdır.
+ RQOS_115=32 cihaza kadar sınırlayabilirsiniz.
+ RQOS_116=İndirme üst sınırı (giriş denetleyicisi)
+-RQOS_117=ISP arabelleği dolmadan önce ağır indirmelerin yavaşlamasını sağlamak için WAN girişini sınırlar &mdash; donanım hızlandırma açıkken indirme bufferbloat kontrolü. <b>Ölçülen</b> indirme hızınızı (bir hız testinden) girin; router otomatik olarak ~%10 pay bırakır, böylece sınır tam nominal hızı korurken ping daha düşük kalır. Tam hat hızınızda bir policer verimi çökertir, bu yüzden bu pay sizin için otomatik uygulanır &mdash; elle %90 hesabı gerekmez. Burst boyutlandırması otomatiktir. <b>Varsayılan olarak kapalı:</b> bir policer fazlasını kuyruğa almak yerine <i>düşürür</i>, bu yüzden bunu açmak video ve sesli aramalar gibi gecikmeye duyarlı gerçek zamanlı trafiğe paket kaybı ekleyebilir &mdash; yalnızca bu ödünü kabul ettiğinizde indirme bufferbloat kontrolü için etkinleştirin.
+-RQOS_118=Wi-Fi indirme önceliği (WMM)
+-RQOS_119=LAN’a giden trafiğe üst sınıflar için DiffServ damgalar &mdash; Q1’i CS6’ya (ses yayın süresi), Q2’yi CS5’e (video yayın süresi) &mdash; böylece Wi-Fi önceliklerinize indirme tarafında da hizmet eder. Yalnızca yükseltme: hiçbir şey normal en iyi çabanın altına indirilmez. Kablolu istemciler etkilenmez; bir bağlantı başladığı sınıfı korur.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=İndirme tarafı nasıl çalışır?
+-RQOS_121=<p>Yükleme donanımda sınıf başına kuyruklarla şekillendirilir. Bu silikonda indirme için donanım kuyruğu ayarlanmadığından iki mekanizma bunu kapsar: <b>giriş denetleyicisi</b> ISP arabelleği dolabilmeden önce toplam indirmeyi sınırlar ve <b>WMM damgalama</b> Wi-Fi'nin yüksek sınıfları önce iletmesini sağlar. Cihaz başına indirme üst sınırları Bant Genişliği Sınırlayıcı'da bulunur; tam indirme AQM Cake gerektirir (ki bu hızlandırmayı devre dışı bırakır).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=İndirme değeri ayarlanmadı, bu nedenle indirme üst sınırı devreye girmeyecek. Yine de uygulansın mı?
+ RADV_72=Oturum sona erdi - danışman artık kilitli.
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d84a94502f..760533f05e 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=保證最低值
+ RQOS_14=將最低 % 欄位強制為每類別的承諾速率。保證僅在爭用時有意義；其總和須為 100% 或以下。
+ RQOS_15=信任 DSCP 標記
+ RQOS_16=將 LAN 裝置的標準 DiffServ 類別（EF/CS5+ 對應 Q1、AF4x 對應 Q2、AF3x 對應 Q3、CS1 清除流量對應 Q5）置於預設類別之前。您的明確規則永遠優先。預設關閉：開啟時任何 LAN 主機皆可影響自身優先權。
+-RQOS_17=L4S 標記
+-RQOS_18=實驗性
+-RQOS_19=將類別佇列標記為 L4S：協商 L4S ECN 的流會被<i>標記</i>壅塞而非丟棄，讓支援的應用程式（較新的 Apple/會議堆疊）佇列近乎歸零。若某流不支援則無害 &mdash; 傳統流量維持正常 PI2 行為。在此硬體上尚未驗證；啟用後請留意丟棄計數。
+ RQOS_20=順序
+ RQOS_21=類別名稱
+ RQOS_22=佇列
+@@ -5559,11 +5556,9 @@ RQOS_113=選擇裝置或輸入 MAC 位址（AA:BB:CC:DD:EE:FF）。
+ RQOS_114=下載與上傳各須至少 0.1 Mb/s。
+ RQOS_115=最多可限制 32 個裝置。
+ RQOS_116=下載上限（入口管制器）
+-RQOS_117=監管 WAN 入向流量，讓大量下載在 ISP 緩衝區塞滿前提前放慢 &mdash; 在硬體加速仍開啟的情況下進行下載緩衝膨脹控制。請輸入您<b>實測</b>的下載速度（來自速度測試）；路由器會自動保留約 10% 的餘裕，因此上限能維持完整額定速度並降低延遲。若以您的滿載線路速率設定監管器，會導致傳輸量驟降，因此系統會自動為您套用該餘裕 &mdash; 無需手動計算 90%。突發流量大小為自動調整。<b>預設關閉：</b>監管器會<i>丟棄</i>超量流量而非將其排入佇列，因此開啟此功能可能會為視訊和語音通話等對延遲敏感的即時流量增加封包遺失 &mdash; 僅在您能接受此取捨時，才為了下載緩衝膨脹控制而啟用。
+-RQOS_118=Wi-Fi 下行優先權（WMM）
+-RQOS_119=為前段類別的 LAN 導向流量標記 DiffServ &mdash; Q1 對應 CS6（語音空中時間）、Q2 對應 CS5（視訊空中時間）&mdash; 讓 Wi-Fi 在下載側也服務您的優先權。僅提升：絕不會降至正常盡力而為之下。有線用戶端不受影響；連線維持其開始時的類別。
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=下載側如何運作？
+-RQOS_121=<p>上傳以硬體及每類別佇列整形。此晶片上下載無硬體佇列，故以兩種機制涵蓋：<b>入口管制器</b>在 ISP 緩衝區填滿前管制總下載，而 <b>WMM 標記</b>讓 Wi-Fi 優先傳輸高類別。每裝置下載上限位於頻寬限制器中；完整下載 AQM 需要 Cake（會停用加速）。</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=未設定下載數值，故下載上限不會生效。仍要套用嗎？
+ RADV_72=工作階段已結束 - 顧問現在已鎖定。
+ NetworkTools_PktCap=Packet Capture
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index bc524f509f..325426dccd 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5397,9 +5397,6 @@ RQOS_13=Гарантовані мінімуми
+ RQOS_14=Забезпечує стовпець Мін. % як гарантовану швидкість для кожного класу. Гарантії мають значення лише за суперництва; вони повинні складати 100% або менше.
+ RQOS_15=Довіряти маркуванню DSCP
+ RQOS_16=Відображає стандартні класи DiffServ від пристроїв LAN (EF/CS5+ у Q1, AF4x у Q2, AF3x у Q3, CS1 scavenger у Q5) попереду типового класу. Ваші явні правила завжди мають перевагу. Вимкнено за замовчуванням: коли увімкнено, будь-який хост LAN може впливати на власний пріоритет.
+-RQOS_17=Маркування L4S
+-RQOS_18=ЕКСПЕРИМЕНТАЛЬНО
+-RQOS_19=Позначає черги класів як L4S: потоки, що узгоджують L4S ECN, отримують <i>маркування</i> перевантаження замість відкидання, утримуючи чергу біля нуля для сумісних застосунків (новіші стеки Apple/конференцій). Нешкідливо, якщо потік не підтримує &mdash; класичний трафік зберігає звичайну поведінку PI2. Не перевірено на цьому обладнанні; стежте за лічильниками відкидань після ввімкнення.
+ RQOS_20=Порядок
+ RQOS_21=Назва класу
+ RQOS_22=Черга
+@@ -5559,11 +5556,9 @@ RQOS_113=Виберіть пристрій або введіть MAC-адрес
+ RQOS_114=Завантаження та вивантаження мають бути щонайменше 0.1 Mb/s кожне.
+ RQOS_115=Можна обмежити до 32 пристроїв.
+ RQOS_116=Обмеження завантаження (вхідний полісер)
+-RQOS_117=Обмежує вхідний трафік WAN, щоб важкі завантаження уповільнювались ще до заповнення буфера провайдера &mdash; контроль bufferbloat при завантаженні з апаратним прискоренням, яке лишається увімкненим. Введіть вашу <b>виміряну</b> швидкість завантаження (за результатами тесту швидкості); маршрутизатор автоматично залишає запас ~10%, тому обмеження утримує повну номінальну швидкість при нижчому пінгу. Обмежувач на повній швидкості лінії обвалив би пропускну здатність, тому цей запас застосовується автоматично &mdash; без ручних розрахунків 90%. Розмір сплеску (burst) визначається автоматично. <b>Вимкнено за замовчуванням:</b> обмежувач <i>відкидає</i> надлишок замість постановки в чергу, тому увімкнення цієї опції може додати втрати пакетів до трафіку реального часу, чутливого до затримок, як-от відео- та голосові дзвінки &mdash; вмикайте лише для контролю bufferbloat при завантаженні, коли ви приймаєте цей компроміс.
+-RQOS_118=Пріоритет низхідного Wi-Fi (WMM)
+-RQOS_119=Штампує DiffServ на трафік у бік LAN для верхніх класів &mdash; Q1 у CS6 (голосовий ефірний час), Q2 у CS5 (відео ефірний час) &mdash; тож Wi-Fi обслуговує ваші пріоритети й на боці завантаження. Лише підвищення: ніщо ніколи не понижується нижче звичайного best-effort. Дротові клієнти не зачіпаються; з’єднання зберігає клас, з яким почалося.
++RQOS_117=Polices WAN ingress so heavy downloads back off before the ISP buffer fills &mdash; download bufferbloat control with hardware acceleration still on. Enter your <b>measured</b> download speed (from a speed test); the router automatically keeps ~10% headroom, so the cap holds full rated speed with lower ping. A policer at your full line rate would collapse throughput, so that headroom is applied for you &mdash; no manual 90% math. Burst sizing is automatic. <b>Off by default:</b> a policer <i>drops</i> excess rather than queuing it, so turning this on can add packet loss to latency-sensitive real-time traffic such as video and voice calls &mdash; enable it only for download bufferbloat control when you accept that trade-off. <b>Leave it off if the network carries voice or video calls:</b> a policer drops rather than delays, and real-time UDP does not back off, so a saturated download costs the call packets.
+ RQOS_120=Як працює сторона завантаження?
+-RQOS_121=<p>Вивантаження формується в обладнанні чергами за класом. Для завантаження на цьому кристалі немає апаратної черги, тож його покривають два механізми: <b>вхідний полісер</b> обмежує сукупне завантаження перш ніж заповниться буфер провайдера, а <b>штампування WMM</b> дозволяє Wi-Fi передавати високі класи першими. Обмеження завантаження на пристрій знаходяться в Обмежувачі пропускної здатності; повний AQM завантаження потребує Cake (що вимикає прискорення).</p>
++RQOS_121=<p>Upload is shaped in hardware with per-class queues. Download has no hardware queue set on this silicon, so the only download control is the <b>ingress policer</b>, which caps aggregate download before the ISP buffer can fill. It is a policer, not a queue: excess is dropped rather than delayed, which is fine for TCP and QUIC but clips real-time UDP such as voice and video calls under saturation &mdash; leave it off on a network that carries calls. Per-device download caps live in the Bandwidth Limiter; full download AQM needs Cake (which disables acceleration).</p>
+ RQOS_122=Значення завантаження не задано, тож обмеження завантаження не задіється. Усе одно застосувати?
+ RADV_72=Сесію завершено - радника тепер заблоковано.
+ NetworkTools_PktCap=Packet Capture
+-- 
+2.25.1
+

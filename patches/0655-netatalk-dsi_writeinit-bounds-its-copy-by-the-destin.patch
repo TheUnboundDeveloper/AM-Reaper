@@ -1,0 +1,141 @@
+From 00bdc1b5a4af1d319ac155e8418a585f6d473717 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 19:30:20 -0400
+Subject: [PATCH] netatalk: dsi_writeinit() bounds its copy by the destination
+ size (CVE-2022-43634)
+
+The 3.0.5 write path ignored the caller's buffer length and copied
+MIN(server_quantum - doff, datasize) bytes into it - the pre-authentication
+heap overflow Netatalk fixed in 3.1.15. The vendor fix targets 3.1's
+readahead buffer and does not map onto 3.0.5, which pre-reads the command
+into dsi->commands; this adaptation validates every length before any
+arithmetic, bounds each copy by the destination, keeps the over-long
+remainder in the command buffer (two new DSI fields) and delivers it on the
+next dsi_write() - dropping it would misalign the stream - and discards it in
+dsi_writeflush(). Malformed lengths end the client's session (EXITERR_CLNT),
+as dsi_opensess does. Exercised with ASan/UBSan in an isolated harness (204
+cases) by the independent review that found it; the module was rebuilt cold.
+Time Machine is off by default. Security review 2026-09-12, item R01.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../router/netatalk-3.0.5/include/atalk/dsi.h |  5 ++
+ .../netatalk-3.0.5/libatalk/dsi/dsi_write.c   | 59 +++++++++++++------
+ 2 files changed, 46 insertions(+), 18 deletions(-)
+
+diff --git a/release/src/router/netatalk-3.0.5/include/atalk/dsi.h b/release/src/router/netatalk-3.0.5/include/atalk/dsi.h
+index c31b522c39..5d5ab69030 100644
+--- a/release/src/router/netatalk-3.0.5/include/atalk/dsi.h
++++ b/release/src/router/netatalk-3.0.5/include/atalk/dsi.h
+@@ -99,6 +99,11 @@ typedef struct DSI {
+      * write/read just write/read data */
+     pid_t  (*proto_open)(struct DSI *);
+     void   (*proto_close)(struct DSI *);
++
++    /* Unconsumed write payload already received in commands. Keep it until
++     * dsi_write() delivers it, even when the caller supplies a smaller buffer.
++     * Private Netatalk state; no change to the DSI wire format. */
++    size_t writebuf_offset, writebuf_len;
+ } DSI;
+ 
+ /* DSI flags */
+diff --git a/release/src/router/netatalk-3.0.5/libatalk/dsi/dsi_write.c b/release/src/router/netatalk-3.0.5/libatalk/dsi/dsi_write.c
+index dc35cafa93..a609d65a75 100644
+--- a/release/src/router/netatalk-3.0.5/libatalk/dsi/dsi_write.c
++++ b/release/src/router/netatalk-3.0.5/libatalk/dsi/dsi_write.c
+@@ -12,6 +12,7 @@
+ 
+ /* this streams writes */
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -26,30 +27,37 @@
+ /* initialize relevant things for dsi_write. this returns the amount
+  * of data in the data buffer. the interface has been reworked to allow
+  * for arbitrary buffers. */
+-size_t dsi_writeinit(DSI *dsi, void *buf, const size_t buflen _U_)
++size_t dsi_writeinit(DSI *dsi, void *buf, const size_t buflen)
+ {
+-  size_t len, header;
++  size_t header = ntohl(dsi->header.dsi_data.dsi_doff);
++  size_t total = ntohl(dsi->header.dsi_len);
+ 
+-  /* figure out how much data we have. do a couple checks for 0 
+-   * data */
+-  header = ntohl(dsi->header.dsi_data.dsi_doff);
+-  dsi->datasize = header ? ntohl(dsi->header.dsi_len) - header : 0;
++  dsi->datasize = 0;
++  dsi->writebuf_offset = dsi->writebuf_len = 0;
+ 
+-  if (dsi->datasize > 0) {
+-      len = MIN(dsi->server_quantum - header, dsi->datasize);
+-
+-      /* write last part of command buffer into buf */
+-      memmove(buf, dsi->commands + header, len);
++  /* Reaper R01 / CVE-2022-43634: validate before subtraction or pointer
++   * arithmetic. 3.0.5 pre-reads cmdlen bytes into commands, unlike the newer
++   * upstream implementation. An invalid offset must not wrap a length or
++   * turn a partial command into a read outside that received data. As in
++   * dsi_opensession(), reject only the malformed client's session. */
++  if (dsi->cmdlen > dsi->server_quantum || dsi->cmdlen > total ||
++      header > total || header > dsi->cmdlen) {
++      LOG(log_error, logtype_dsi, "dsi_writeinit: invalid write lengths");
++      exit(EXITERR_CLNT);
++  }
+ 
+-      /* recalculate remaining data */
+-      dsi->datasize -= len;
+-  } else
+-    len = 0;
++  /* Preserve the existing no-data convention for a zero data offset. */
++  if (!header)
++      return 0;
+ 
+-  LOG(log_maxdebug, logtype_dsi, "dsi_writeinit: len: %ju, remaining DSI datasize: %jd",
+-      (intmax_t)len, (intmax_t)dsi->datasize);
++  dsi->datasize = total - header;
++  dsi->writebuf_offset = header;
++  dsi->writebuf_len = dsi->cmdlen - header;
+ 
+-  return len;
++  /* Deliver at most buflen; leave remaining buffered bytes for dsi_write().
++   * Merely clipping memmove while consuming the old length would silently
++   * lose data and put subsequent streamed reads at the wrong position. */
++  return dsi_write(dsi, buf, buflen);
+ }
+ 
+ /* fill up buf and then return. this should be called repeatedly
+@@ -62,6 +70,16 @@ size_t dsi_write(DSI *dsi, void *buf, const size_t buflen)
+   LOG(log_maxdebug, logtype_dsi, "dsi_write: remaining DSI datasize: %jd", (intmax_t)dsi->datasize);
+ 
+   if ((length = MIN(buflen, dsi->datasize)) > 0) {
++      if (dsi->writebuf_len > 0) {
++          length = MIN(length, dsi->writebuf_len);
++          /* The file-write caller uses commands itself as its destination;
++           * memmove preserves that existing overlapping-buffer contract. */
++          memmove(buf, dsi->commands + dsi->writebuf_offset, length);
++          dsi->writebuf_offset += length;
++          dsi->writebuf_len -= length;
++          dsi->datasize -= length;
++          return length;
++      }
+       if ((length = dsi_stream_read(dsi, buf, length)) > 0) {
+           LOG(log_maxdebug, logtype_dsi, "dsi_write: received: %ju", (intmax_t)length);
+           dsi->datasize -= length;
+@@ -76,6 +94,11 @@ void dsi_writeflush(DSI *dsi)
+ {
+   size_t length;
+ 
++  /* These bytes have already left the socket. Discard them locally before
++   * draining the rest, otherwise flushing would consume the next request. */
++  dsi->datasize -= dsi->writebuf_len;
++  dsi->writebuf_offset = dsi->writebuf_len = 0;
++
+   while (dsi->datasize > 0) { 
+     length = dsi_stream_read(dsi, dsi->data,
+ 			     MIN(sizeof(dsi->data), dsi->datasize));
+-- 
+2.25.1
+

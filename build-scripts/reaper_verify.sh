@@ -169,6 +169,7 @@ case "$MODEL" in
   GT-BE98)     want_ban=0df4d8c19c9f044a1c2eb8334d2b23d085ff8f090348177251d1518b49572108; ban_file=GT-BE98_REAPER_Header.png;;
   GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
   RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
+  GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -183,6 +184,89 @@ if [ -f "$FS/www/images/REAPER1.png" ]; then fail "banner-stale" "legacy REAPER1
 foreign=$(ls "$FS"/www/images/*_REAPER_Header.png 2>/dev/null | grep -v "/${ban_file}\$")
 if [ -n "$foreign" ]; then fail "banner-foreign" "foreign banner staged: $(echo "$foreign" | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
 else pass "banner-solo" "only $MODEL banner present (no foreign/legacy)"; fi
+
+# ---- 8b. every banner a page REFERENCES is actually staged ------------------
+# The identity checks above ask "is the right banner file here, and no other?"
+# They never asked "does every page point at a file that exists?". Those are
+# different questions, and the gap shipped: Reaper_WiFiSetup.asp (the v3.1.0
+# first-boot Wi-Fi page) was never added to the port tool's or the overlay
+# gate's list of banner-referencing pages, so on every sibling it kept naming
+# canon's RT-96U animated header - a file the sibling overlay deliberately
+# removes. A dangling <img> on the first screen a new owner sees, on five
+# models, across v3.1.0 to v3.1.2, and every gate green. Found 2026-09-10
+# while onboarding the GT-BE19000. This check needs no list: it reads the
+# references out of the staged pages themselves, so a new page cannot be
+# missed the way the seventh one was.
+_brefs=$(grep -rhoE '[A-Za-z0-9-]+_REAPER_Header(_anim)?\.png' "$FS"/www/*.asp "$FS"/www/*.js 2>/dev/null | sort -u)
+_bmiss=""
+for _b in $_brefs; do [ -f "$FS/www/images/$_b" ] || _bmiss="$_bmiss $_b"; done
+if [ -z "$_brefs" ]; then warn "banner-refs" "no staged page references a banner file - unexpected, check the www staging"
+elif [ -n "$_bmiss" ]; then fail "banner-refs" "page(s) reference banner file(s) that are NOT staged:$_bmiss (dangling header image - the v3.1.0 sibling first-boot regression)"
+else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner file(s), all staged"; fi
+
+# ---- 8c. dongle firmware is actually in the image, per model -----------------
+# The build copies dongle/sysdeps/$(BUILD_NAME)/<chip>/rtecdc.bin into place
+# inside `if [ -f ]` and installs it inside `ifneq ($(wildcard ...),)` - both
+# silent when the file is absent. A model with no sysdeps dir therefore builds
+# to completion and ships with NO radio firmware and no error; on a warm canon
+# tree the leftover RT-BE96U copies in dongle/bin/ mask it, so the clean room
+# is where it would first show, as dead 5/6 GHz on a box nobody can reach.
+# Found 2026-09-10 onboarding the GT-BE19000, whose GPL drop (like every ASUS
+# drop) ships none. The expected chip set is per model, read from the pinned
+# base's own sysdeps/ layout; a model not listed here gets a WARN, not a pass.
+#
+# GT-BE19000: 6717a0 + 6726b0 - and the RETRACTION behind that line matters.
+# On 2026-09-12 this was briefly changed to "6726b0" only, on the strength of
+# decomposing the vendor GT-BE19000**AI** image (102_40717), whose rootfs has a
+# single chip dir. Hours later the vendor **non-AI** image (102_39393) - the
+# SKU this build actually targets - was decomposed and carries BOTH
+# rom/etc/wlan/dhd/6717a0/ and 6726b0/. The two SKUs differ in radio hardware,
+# not only in storage. The "6726b0 only" line would have PASSED an image with
+# no 6717a0 firmware, i.e. a dead radio - the exact failure this check exists
+# to catch. Rule, stated twice because it was violated twice in one day: read
+# the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
+# never off the other SKU of the same model.
+case "$MODEL" in
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000)  want_dhd="6717a0 6726b0";;
+  RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
+  *)                                        want_dhd="";;
+esac
+if [ -n "$want_dhd" ]; then
+  _dmiss=""
+  for _c in $want_dhd; do
+    [ -s "$FS/rom/etc/wlan/dhd/$_c/release/rtecdc.bin" ] || _dmiss="$_dmiss $_c"
+  done
+  [ -z "$_dmiss" ] && pass "dongle-fw" "rtecdc.bin staged for every expected chip ($want_dhd)" \
+    || fail "dongle-fw" "NO dongle firmware staged for chip(s):$_dmiss - the radios on those chips will not come up (missing dongle/sysdeps/$MODEL/?)"
+else
+  warn "dongle-fw" "no expected dongle chip set registered for $MODEL - add it to reaper_verify 8c"
+fi
+
+# ---- 8d. every dongle blob names the model it is being installed into -------
+# 8c only proves a file is present; it said PASS on the GT-BE19000 image whose
+# 6726b0 came from the GT-BE19000AI tree - a blob that answers "GT-BE19000AI".
+# Presence is not identity, and the wrong radio firmware is not a dead radio
+# but a locked-out router (ASUS: recovery tool or manual reflash). Owner's
+# rule 2026-09-12: the wifi drivers must always express the model they are
+# being installed in. EVERY staged rtecdc.bin is judged, not only the chips 8c
+# expects, so a stray blob for a chip this model does not have is caught too.
+# The model->name table (GT-BE98 Pro says "GT-BE98 PRO") lives in
+# reaper_dongle_id.sh, shared with the two pre-build gates.
+_did="$(dirname "${BASH_SOURCE[0]}")/reaper_dongle_id.sh"
+_dblobs=$(ls "$FS"/rom/etc/wlan/dhd/*/release/rtecdc.bin 2>/dev/null)
+if [ ! -f "$_did" ]; then
+  fail "dongle-model" "reaper_dongle_id.sh not deployed next to reaper_verify - identity unchecked"
+elif [ -z "$_dblobs" ]; then
+  fail "dongle-model" "no rtecdc.bin staged anywhere under rom/etc/wlan/dhd/ - the image has no radio firmware"
+else
+  _dout=$(bash "$_did" "$MODEL" $_dblobs 2>&1); _drc=$?
+  echo "$_dout" | sed 's/^/    /'
+  if [ "$_drc" -eq 0 ]; then
+    pass "dongle-model" "every staged dongle blob names this model ($(echo "$_dblobs" | wc -l) blob(s))"
+  else
+    fail "dongle-model" "dongle firmware built for ANOTHER model is staged - see [dongle-id] lines; the wrong radio firmware locks the router out"
+  fi
+fi
 
 # ---- 9. shared-code parity vs canon (the /sysdep/ lesson, 2026-08-05) ------
 # Every SHARED file must match canon (be96u-only) at build time; per-model
@@ -311,7 +395,19 @@ else
     if [ -n "$_tc" ] && [ "$_tc" != "$_pv" ]; then
       fail "provenance-stamp" "stamped $_pv patches, tree has $_tc"
     else
-      pass "provenance-stamp" "$_pv patches, version $_vv"
+      # From v3.1.0 this figure is legitimately ONE higher than the published
+      # series: the OpenSSL 3.5 source drop is a real commit that ships as
+      # overlays/openssl-3.5-source.tar.gz and so emits no .patch file. Two
+      # numbers with no explanation get re-questioned every time someone reads
+      # the log against patches/, so state the arithmetic here. --exported is
+      # absent on an older synced engine copy, which just falls back to the
+      # plain line.
+      _xc=$(bash "$_pcs" "$R" --exported 2>/dev/null)
+      if printf '%s' "$_xc" | grep -qE '^[0-9]+$' && [ "$_xc" -ne "$_pv" ] 2>/dev/null; then
+        pass "provenance-stamp" "$_pv patches, version $_vv ($_xc in the published series + $((_pv - _xc)) shipping as an overlays/ archive)"
+      else
+        pass "provenance-stamp" "$_pv patches, version $_vv"
+      fi
     fi
   else
     warn "provenance-stamp" "$_pv patches, version $_vv (patch_count.sh absent, count not cross-checked)"
@@ -356,6 +452,120 @@ if [ -f "$_cko" ]; then
   fi
 else
   warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
+fi
+
+# ---- 23. the OpenVPN PKI chain on the staged binaries (check_ovpn_pki.sh) ---
+# Two silent breaks after the OpenSSL 3.5 move, both found on routers: the
+# [server] extensions on a CSR (v3.1.4) and RANDFILE=$HOME/.rnd with HOME=/
+# (v3.1.5, review R16). Compile, link and symbol checks all passed both times -
+# what fails is the protocol between pkitool, the config and openssl. This runs
+# it: the staged pkitool + config + ARM openssl under qemu-user, with the exact
+# environment libovpn's generated script exports, and requires a CA, a server
+# and a client certificate that verify. Skips (WARN) where qemu-arm is absent.
+_ckp="$(dirname "${BASH_SOURCE[0]}")/check_ovpn_pki.sh"
+if [ -f "$_ckp" ]; then
+  _ckpout=$(bash "$_ckp" "$FS" 2>&1); _ckprc=$?
+  if [ "$_ckprc" = 0 ]; then
+    pass "ovpn-pki" "$(echo "$_ckpout" | tail -1)"
+  elif [ "$_ckprc" = 77 ]; then
+    warn "ovpn-pki" "$(echo "$_ckpout" | tail -1)"
+  else
+    echo "$_ckpout" | sed 's/^/        /'
+    fail "ovpn-pki" "the firmware's own certificate chain does not complete on the staged openssl -- see above"
+  fi
+else
+  warn "ovpn-pki" "check_ovpn_pki.sh absent -- the OpenVPN PKI chain not exercised"
+fi
+
+# ---- 24. the port-forward emitter, executed (check_vts_emitter.py) ---------
+# write_port_forwarding() in rc/firewall.c carries Reaper's charset gate and
+# space-normalisation, and a field report (review R15) blamed a release for
+# every forward going dark with no way to test the claim short of a router.
+# The function is extracted from the real source, compiled with an nvram stub
+# and run against known rule lists (the reporter's included); the DNAT lines
+# must come out exactly. Source-tree check, like 20.
+_cke="$(dirname "${BASH_SOURCE[0]}")/check_vts_emitter.py"
+if [ ! -f "$_cke" ]; then
+  warn "vts-emitter" "check_vts_emitter.py absent -- port-forward emitter not exercised"
+elif [ ! -d "$R/release/src/router" ]; then
+  warn "vts-emitter" "no source tree -- port-forward emitter not exercised"
+else
+  _ckeout=$(python3 "$_cke" "$R/release/src/router" 2>&1); _ckerc=$?
+  if [ "$_ckerc" = 0 ]; then
+    pass "vts-emitter" "$(echo "$_ckeout" | tail -1)"
+  elif [ "$_ckerc" = 77 ]; then
+    warn "vts-emitter" "$(echo "$_ckeout" | tail -1)"
+  else
+    echo "$_ckeout" | sed 's/^/        /'
+    fail "vts-emitter" "write_port_forwarding() no longer emits the expected DNAT lines -- see above"
+  fi
+fi
+
+# ---- 25. netfilter parity: what the firewall can ask for, the kernel provides -
+# RT-BE88U field report (2026-09-14): the whole filter table refused at COMMIT
+# over the closed blob's `-m string` / `-m u32` rules. That kernel HAD both
+# built in (read out of the CI image's IKCONFIG), so the report's diagnosis was
+# wrong - but the class it named is real: a kernel-config drift that drops one
+# match the firewall emits refuses the table on every box, iptables-restore
+# being atomic, and no build gate would have said a word. This one reads the
+# match/target NAMES out of the staged binaries and scripts (the blob is linked
+# into rc, so it is covered), resolves each to the kernel's own Kconfig symbols
+# and requires =y or a staged .ko. Needs the kernel .config the image was built
+# from, which a post-build run has; WARN, not FAIL, when it is not there.
+_cknf="$(dirname "${BASH_SOURCE[0]}")/check_nf_parity.sh"
+_kconf="$P/kernel/linux-4.19/.config"; _ksrc="$P/kernel/linux-4.19"
+if [ ! -f "$_cknf" ]; then
+  warn "nf-parity" "check_nf_parity.sh absent -- netfilter match/target parity not checked"
+elif [ ! -f "$_kconf" ]; then
+  warn "nf-parity" "no kernel .config at $_kconf -- netfilter match/target parity not checked"
+else
+  _cknfout=$(bash "$_cknf" "$FS" "$_kconf" "$_ksrc" 2>&1); _cknfrc=$?
+  if [ "$_cknfrc" = 0 ]; then
+    echo "$_cknfout" | grep '^  note:' | sed 's/^/        /'
+    pass "nf-parity" "$(echo "$_cknfout" | tail -1)"
+  else
+    echo "$_cknfout" | sed 's/^/        /'
+    fail "nf-parity" "the shipped firewall names a netfilter match/target the shipped kernel does not provide -- the filter table would be refused whole (see above)"
+  fi
+fi
+
+# ---- 26. the firewall table walker is staged with its witness file ---------
+# v3.1.7: reaper_fwsim runs at the end of every firewall apply and from rwatch
+# 3g, feeds diag 14g, the Rule Status tab and the MCP. An image without the
+# binary or without usr/share/reaper/witness.static loses all of that silently
+# (rc's kick checks for the binary and simply does nothing). Both must be
+# staged, the binary must be a target-arch ELF, and the static file must hold
+# the core rows.
+check_elf usr/bin/reaper_fwsim reaper_fwsim 1
+if [ -s "$FS/usr/share/reaper/witness.static" ]; then
+  _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
+  if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then
+    pass "fwsim" "witness.static staged with $_nw rows (A1/A4 present)"
+  else
+    fail "fwsim" "usr/share/reaper/witness.static is staged but incomplete ($_nw rows, A1/A4 expected)"
+  fi
+else
+  fail "fwsim" "usr/share/reaper/witness.static missing from the staged fs -- the walker would generate no core rows"
+fi
+
+# ---- 27. the Diagnostics page and the diag script agree on the version ----
+# v3.1.7 (backlog "nothing stops the Diagnostics page's version drifting from
+# the script again"). The page carries a SECOND copy of the version as a plain
+# literal, because it runs the diag only on click and streams the report to a
+# download - there is no report text on screen at load to derive it from. That
+# copy has desynced twice: v1.0.1 against a v1.3.16 script, then v1.3.18 against
+# v1.3.19. The symptom is a page and the report it just generated contradicting
+# each other on the same screen, which makes a user distrust both. Deriving it
+# at runtime needs a new web.c action; a gate is cheaper and catches the same
+# fault, so this compares the two STAGED copies - what actually ships.
+_dgs=$(grep -oE 'REAPER-DIAG v[0-9]+\.[0-9]+\.[0-9]+' "$FS/usr/sbin/reaper_diag" 2>/dev/null | head -1)
+_dgp=$(grep -oE 'REAPER-DIAG v[0-9]+\.[0-9]+\.[0-9]+' "$FS/www/Reaper_Diag.asp" 2>/dev/null | head -1)
+if [ -z "$_dgs" ] || [ -z "$_dgp" ]; then
+  fail "diag-version" "could not read the version from the staged reaper_diag (${_dgs:-missing}) or Reaper_Diag.asp (${_dgp:-missing})"
+elif [ "$_dgs" = "$_dgp" ]; then
+  pass "diag-version" "Diagnostics page and script agree ($_dgs)"
+else
+  fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
 fi
 
 # ---- 20. static source checks (reaper_static_checks.py) --------------------

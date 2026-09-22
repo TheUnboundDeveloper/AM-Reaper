@@ -42,6 +42,7 @@ case "$MODEL" in
   RT-BE88U)    _WANT_BRANCH=rt-be88u;;
   GT-BE98)     _WANT_BRANCH=gt-be98;;
   GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
+  GT-BE19000)  _WANT_BRANCH=gt-be19000;;
   RT-BE92U)    _WANT_BRANCH=rt-be92u;;
   *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
 esac
@@ -364,6 +365,68 @@ else
   MODEL_TREE="$ROUTER_TREE"
 fi
 
+# --- vendor WLCSM blobs (ASUS stock 9.0.0.6.102_42015) -----------------------
+# The WLCSM netlink socket leak ("stuck nvram") is fixed by the vendor in two
+# closed blobs and nowhere in source: libnvram.so and libwlcsm.so. The series
+# carries the swap for router-sysdep.rt-be96u only, because canon holds no
+# other model's platform tree; a sibling's copy arrives with the pinned base or
+# with its platform archive above, both older than the fix. All six models ship
+# the identical pair, so one hash-pinned archive supplies every router-sysdep.*
+# in the tree that carries the files. Same rule as the archives above: verified
+# before it is unpacked, and the model's OWN tree must end up with both - a
+# model whose platform tree never arrived is an error here, not a silent skip.
+_ph vendor-blobs
+BLOB_TGZ="$REPO_DIR/overlays/wlcsm-42015-blobs.tar.gz"
+if [ -f "$BLOB_TGZ" ]; then
+  hr; echo " Vendor WLCSM blobs (stock 42015) for every router-sysdep.* in the tree"; hr
+  BLOB_SUM="$REPO_DIR/overlays/wlcsm-42015-blobs.sha256"
+  [ -f "$BLOB_SUM" ] || { echo "::error::$BLOB_TGZ has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1; }
+  want=$(awk '{print $1}' "$BLOB_SUM" | head -1); got=$(sha256sum "$BLOB_TGZ" | cut -d' ' -f1)
+  echo "   blob archive sha256 $got"
+  [ "$want" = "$got" ] || { echo "::error::wlcsm-42015 blob archive hash mismatch"; echo "   expected $want"; echo "   got      $got"; exit 1; }
+  _BLOB_DIR=$(mktemp -d)
+  tar -xzf "$BLOB_TGZ" -C "$_BLOB_DIR" || { echo "::error::wlcsm-42015 blob archive failed to unpack"; exit 1; }
+  _nblob=0
+  for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
+    _src="$_BLOB_DIR/wlcsm-42015/${_pair##*/}"
+    [ -f "$_src" ] || { echo "::error::wlcsm-42015 archive carries no ${_pair##*/}"; exit 1; }
+    for _dst in release/src-rt-5.04behnd.4916/router-sysdep*/"$_pair"; do
+      [ -f "$_dst" ] || continue
+      cp -f "$_src" "$_dst"; _nblob=$((_nblob+1))
+      echo "   $_dst <- $(sha256sum "$_src" | cut -c1-16)"
+    done
+  done
+  _SYSDEP="release/src-rt-5.04behnd.4916/router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')"
+  for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
+    if ! cmp -s "$_BLOB_DIR/wlcsm-42015/${_pair##*/}" "$_SYSDEP/$_pair"; then
+      echo "::error::$MODEL: $_SYSDEP/$_pair is not the vendor blob after the swap (does this model's platform tree carry it?)"; exit 1
+    fi
+  done
+  rm -rf "$_BLOB_DIR"
+  echo "   [MATCH] $_nblob file(s) replaced; $_SYSDEP carries both vendor blobs"
+else
+  echo "::error::overlays/wlcsm-42015-blobs.tar.gz is missing -- the WLCSM fix would not reach $MODEL"; exit 1
+fi
+
+# --- radio firmware identity, BEFORE the build --------------------------------
+# Every rtecdc.bin the build will install for this model must name this model.
+# Broadcom stamps the model into each blob; the wrong one (a sibling's, or the
+# other SKU's - the GT-BE19000AI tree's blob was staged for the non-AI board on
+# 2026-09-12 and passed every gate then in place) does not degrade a radio, it
+# locks the router out until the ASUS recovery tool or a manual reflash. The
+# same script judges the staged image after the build (reaper_verify 8d); this
+# copy runs first so the clean room fails in seconds, not after a full build.
+# The glob is deliberately unquoted: no match passes the literal pattern and
+# the script reports a MISSING blob, which is the silent-skip class 8c exists
+# for - a model whose sysdeps/<MODEL>/ never arrived.
+_ph dongle-identity
+hr; echo " Radio firmware identity for $MODEL (pre-build)"; hr
+_DONGLE_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/sys/src/dongle/sysdeps/$MODEL"
+if ! "$BUILD_SCRIPTS/reaper_dongle_id.sh" "$MODEL" "$_DONGLE_DIR"/*/rtecdc.bin; then
+  echo "::error::$MODEL: radio firmware under sysdeps/$MODEL/ is missing or belongs to another model - refusing to build (wrong radio firmware bricks the router)"
+  exit 1
+fi
+
 # --- u-boot rtl8372 prebuilt -------------------------------------------------
 # RTL_OBJS.o is the Realtek RTL8372 switch blob. It ships in the ASUS bootloader
 # drop and is UNTRACKED IN EVERY GIT REF -- it has only ever existed on the
@@ -379,6 +442,7 @@ UB_DIR=release/src-rt-5.04behnd.4916/bootloaders/u-boot-2019.07/drivers/net/bcmb
 case "$MODEL" in
   RT-BE96U) UB_SYM=RTBE96U;;  RT-BE86U) UB_SYM=RTBE86U;;  RT-BE88U) UB_SYM=RTBE88U;;
   GT-BE98)  UB_SYM=GTBE98;;   GT-BE98_PRO) UB_SYM=GTBE98_PRO;;
+  GT-BE19000) UB_SYM=GTBE19000;;
   RT-BE92U) UB_SYM=RTBE92U;;
   *) UB_SYM="";;
 esac
@@ -391,6 +455,9 @@ if [ -n "$UB_SYM" ] && grep -B4 'obj-y += rtl8372/' "$UB_DIR/Makefile" 2>/dev/nu
   # release), exactly as with its platform tree.
   case "$MODEL" in
     GT-BE98) RTL_NAME=uboot-rtl8372-GT-BE98;;
+    # The GT-BE19000's blob differs from BOTH the default and GT-BE98's
+    # (8,393,712 B vs 8,395,256 / 8,395,264), so it carries its own archive.
+    GT-BE19000) RTL_NAME=uboot-rtl8372-GT-BE19000;;
     *)       RTL_NAME=uboot-rtl8372-default;;
   esac
   RTL_TGZ="$REPO_DIR/overlays/$RTL_NAME.tar.gz"
@@ -427,6 +494,42 @@ if [ -n "${EXPECTED_VERSION:-}" ] && [ "$VER" != "$EXPECTED_VERSION" ]; then
   exit 1
 fi
 echo "   version: $VER (matches EXPECTED_VERSION)"
+
+# --- channel marker (2026-09-10) ---------------------------------------------
+# The patch series carries the BARE version (Reaper_v3.1.2) and cannot know
+# which channel a given run publishes on. The branch knows: a Dev publish is the
+# beta channel, main is stable. Stamp it HERE, after the assertion above has
+# confirmed the series produced the version the workflow declares -- so the
+# marker can never mask a version mismatch, which is the one thing that
+# assertion exists to catch.
+#
+# WHY THE FILENAME AND NOT JUST THE TAG: the tag and the release title live on
+# the web page. The .pkgtb ends up in somebody's downloads folder, and until now
+# nothing in it said which channel it came from -- which is precisely what users
+# reported. EXTENDNO is the single string the image name, the dashboard version
+# pill, the About page and the provenance record all derive from, so stamping it
+# once covers every surface at the same time.
+#
+# DO NOT stamp version.conf here. reaper_build() in _reaper_build_lib.sh already
+# does it, per variant, and it has to: version.conf is `git checkout`-ed back
+# between the MCP and noMCP passes, so a stamp applied once from out here would
+# be reverted before the second image was built. Export the channel instead and
+# let the ONE implementation do the work -- CI and a local build then produce
+# byte-identically named images by construction rather than by two pieces of
+# code agreeing.
+#
+# EXPORT IT EXPLICITLY, 0 OR 1, NEVER UNSET. The library defaults to BETA when
+# REAPER_BETA is absent (that default is deliberate and correct for a human at a
+# keyboard). Leaving it unset here would silently mark every clean-room build on
+# main as a pre-release, which is the failure this comment exists to prevent.
+export REAPER_BETA="${REAPER_BETA:-0}"
+if [ "$REAPER_BETA" = "1" ]; then
+  VER="${VER}_BETA"
+  SHORT_VER="${VER#Reaper_}"
+  echo "   channel: BETA (pre-release) -- images and the GUI will read $VER"
+else
+  echo "   channel: STABLE (release) -- images keep the unmarked name $VER"
+fi
 
 # --- source-level reproducibility gate --------------------------------------
 # provenance/manifest.json records the release/src/router tree hash produced by

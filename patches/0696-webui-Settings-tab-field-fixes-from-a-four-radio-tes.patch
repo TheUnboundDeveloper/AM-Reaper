@@ -1,0 +1,648 @@
+From ae8290efe5bab0f18e22d48505f2b6fc6f79ddb8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 20 Sep 2026 17:59:06 -0400
+Subject: [PATCH] webui: Settings tab field fixes from a four-radio tester
+
+Numeric boxes are as wide as the selects: the unit (dBm, s) sits inside the
+box instead of beside it, so the Roaming assistant threshold and Group Key
+Rotation align with the rows around them.
+
+A shared nvram key shown in two columns (the DFS and U-NII-4 options on a
+box with two 5 GHz radios) is mirrored on change, counted once and posted
+once from an unlocked copy. Before, each copy counted and the last copy in
+the page won at apply, so a tick under 5 GHz-1 was silently dropped by the
+untouched box under 5 GHz-2. The row's help now says what the boxes are and
+that a fixed DFS channel still moves when radar is detected (RWFP_49, all
+packs).
+
+Extension Channel offers only the sidebands the driver lists for the chosen
+channel: 13 is Below only, 1 is Above only. The composer already corrected
+an impossible pick on apply; the page showed the other one.
+
+Fragmentation Threshold stays editable in Legacy mode only, as on the stock
+page; its help says so (new RWFP_83, translated in 25 packs) in addition to
+the hover reason.
+
+Set AP Isolated leaves the page: on this build isolation is a per-network
+setting on the Network menu, and the per-radio key here reached only the
+primary BSS. wlpro_nv_fields loses ap_isolate.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                |  2 +-
+ release/src/router/www/BR.dict                |  3 +-
+ release/src/router/www/CN.dict                |  3 +-
+ release/src/router/www/CZ.dict                |  3 +-
+ release/src/router/www/DA.dict                |  3 +-
+ release/src/router/www/DE.dict                |  3 +-
+ release/src/router/www/EN.dict                |  3 +-
+ release/src/router/www/ES.dict                |  3 +-
+ release/src/router/www/FI.dict                |  3 +-
+ release/src/router/www/FR.dict                |  3 +-
+ release/src/router/www/HU.dict                |  3 +-
+ release/src/router/www/IT.dict                |  3 +-
+ release/src/router/www/JP.dict                |  3 +-
+ release/src/router/www/KR.dict                |  3 +-
+ release/src/router/www/MS.dict                |  3 +-
+ release/src/router/www/NL.dict                |  3 +-
+ release/src/router/www/NO.dict                |  3 +-
+ release/src/router/www/PL.dict                |  3 +-
+ release/src/router/www/RO.dict                |  3 +-
+ release/src/router/www/RU.dict                |  3 +-
+ .../src/router/www/Reaper_WiFiSettings.asp    | 37 ++++++++++++-------
+ release/src/router/www/SL.dict                |  3 +-
+ release/src/router/www/SV.dict                |  3 +-
+ release/src/router/www/TH.dict                |  3 +-
+ release/src/router/www/TR.dict                |  3 +-
+ release/src/router/www/TW.dict                |  3 +-
+ release/src/router/www/UK.dict                |  3 +-
+ 27 files changed, 74 insertions(+), 40 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 7bb64872a6..780e8a37e0 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -41066,7 +41066,7 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+  * 37 keys per radio, one pass, still the only reader of this emitter.
+  */
+ static const char *wlpro_nv_fields[] = {
+-	"11ax", "ampdu_mpdu", "ampdu_rts", "ap_isolate", "atf", "bcn", "bss_maxassoc",
++	"11ax", "ampdu_mpdu", "ampdu_rts", "atf", "bcn", "bss_maxassoc",
+ 	"btc_mode", "bw", "bw_160", "chanspec", "dtim", "frag", "frameburst", "igs",
+ 	"itxbf", "mbo_enable", "mrate_x", "mumimo", "nctrlsb", "nmode_x", "ofdma",
+ 	"plcphdr", "radio", "rateset", "rts", "sched_v2", "timesched", "turbo_qam",
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 6e9ccbcd05..ceba2319f3 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Exige um canal de controle fixo com 320 MHz disponível.
+ RWFP_80=Exige um canal de controle fixo com 40 MHz disponível.
+ RWFP_81=Somente enquanto a largura de banda do canal é Auto.
+ RWFP_82=Definido por Desativar 802.11b.
++RWFP_83=Editável apenas no modo Legacy, como na página original.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 19dac32198..9f7cbec9a3 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=需要固定控制频道且有 320 MHz 可用。
+ RWFP_80=需要固定控制频道且有 40 MHz 可用。
+ RWFP_81=仅在频道带宽为自动时。
+ RWFP_82=由“停用 802.11b”决定。
++RWFP_83=仅在 Legacy 模式下可编辑，与原厂页面一致。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 7f44384d64..15e78a4353 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Vyžaduje pevný řídicí kanál s dostupnými 320 MHz.
+ RWFP_80=Vyžaduje pevný řídicí kanál s dostupnými 40 MHz.
+ RWFP_81=Pouze když je šířka kanálu Auto.
+ RWFP_82=Nastaveno volbou Zakázat 802.11b.
++RWFP_83=Lze upravit pouze v režimu Legacy, stejně jako na původní stránce.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index fbacf94e1e..846aeeef2e 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Kræver en fast kontrolkanal med 320 MHz tilgængelig.
+ RWFP_80=Kræver en fast kontrolkanal med 40 MHz tilgængelig.
+ RWFP_81=Kun mens kanalbåndbredden er Auto.
+ RWFP_82=Sat af Deaktiver 802.11b.
++RWFP_83=Kan kun redigeres i Legacy-tilstand, som på originalsiden.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 9956e302d7..a19e1cda9d 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Erfordert einen festen Steuerkanal mit verfügbaren 320 MHz.
+ RWFP_80=Erfordert einen festen Steuerkanal mit verfügbaren 40 MHz.
+ RWFP_81=Nur solange die Kanalbandbreite Auto ist.
+ RWFP_82=Wird durch 802.11b deaktivieren gesetzt.
++RWFP_83=Nur im Legacy-Modus änderbar, wie auf der Originalseite.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 80fcf17683..4144bebeae 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Needs a fixed control channel with 320 MHz available.
+ RWFP_80=Needs a fixed control channel with 40 MHz available.
+ RWFP_81=Only while the channel bandwidth is Auto.
+ RWFP_82=Set by Disable 802.11b.
++RWFP_83=Editable in Legacy mode only, as on the stock page.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 88dcda972f..6f79318b98 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Requiere un canal de control fijo con 320 MHz disponibles.
+ RWFP_80=Requiere un canal de control fijo con 40 MHz disponibles.
+ RWFP_81=Solo mientras el ancho de banda del canal sea Auto.
+ RWFP_82=Lo fija Desactivar 802.11b.
++RWFP_83=Editable solo en modo Legacy, como en la página original.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e3030b0ff0..3106da897f 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Vaatii kiinteän ohjauskanavan, jolla 320 MHz on käytettävissä.
+ RWFP_80=Vaatii kiinteän ohjauskanavan, jolla 40 MHz on käytettävissä.
+ RWFP_81=Vain kun kanavan kaistanleveys on Auto.
+ RWFP_82=Asetetaan valinnalla Poista 802.11b käytöstä.
++RWFP_83=Muokattavissa vain Legacy-tilassa, kuten alkuperäisellä sivulla.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 2c4d952972..6c8e65dd23 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Nécessite un canal de contrôle fixe avec 320 MHz disponibles.
+ RWFP_80=Nécessite un canal de contrôle fixe avec 40 MHz disponibles.
+ RWFP_81=Uniquement tant que la largeur de canal est Auto.
+ RWFP_82=Défini par Désactiver 802.11b.
++RWFP_83=Modifiable en mode Legacy uniquement, comme sur la page d’origine.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 724bed2c0c..cbf3c5fba8 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Rögzített vezérlőcsatorna szükséges, elérhető 320 MHz-cel.
+ RWFP_80=Rögzített vezérlőcsatorna szükséges, elérhető 40 MHz-cel.
+ RWFP_81=Csak amíg a csatorna sávszélessége Auto.
+ RWFP_82=A 802.11b letiltása állítja be.
++RWFP_83=Csak Legacy módban szerkeszthető, ahogy az eredeti oldalon is.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index e640fe0f8c..531e6d96b1 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Richiede un canale di controllo fisso con 320 MHz disponibili.
+ RWFP_80=Richiede un canale di controllo fisso con 40 MHz disponibili.
+ RWFP_81=Solo finché la larghezza del canale è Auto.
+ RWFP_82=Impostato da Disabilita 802.11b.
++RWFP_83=Modificabile solo in modalità Legacy, come nella pagina originale.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 5f406a43f9..ba284ae001 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=320 MHz が使える固定コントロールチャンネルが必要で
+ RWFP_80=40 MHz が使える固定コントロールチャンネルが必要です。
+ RWFP_81=チャンネル帯域幅が自動のときのみ。
+ RWFP_82=802.11b を無効にする設定で決まります。
++RWFP_83=Legacy モードでのみ編集できます（純正ページと同じ動作です）。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index fb5aa56fdf..b95fc6cc37 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=320 MHz를 사용할 수 있는 고정 제어 채널이 필요합니다.
+ RWFP_80=40 MHz를 사용할 수 있는 고정 제어 채널이 필요합니다.
+ RWFP_81=채널 대역폭이 자동일 때만.
+ RWFP_82=802.11b 사용 안 함 설정에 따라 정해집니다.
++RWFP_83=Legacy 모드에서만 편집할 수 있으며, 기본 페이지와 동일합니다.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index b008d7ab9b..876f14b451 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Memerlukan saluran kawalan tetap dengan 320 MHz tersedia.
+ RWFP_80=Memerlukan saluran kawalan tetap dengan 40 MHz tersedia.
+ RWFP_81=Hanya semasa lebar jalur saluran ialah Auto.
+ RWFP_82=Ditetapkan oleh Lumpuhkan 802.11b.
++RWFP_83=Boleh diedit dalam mod Legacy sahaja, sama seperti halaman asal.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 45e06fff9e..1c035ded20 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Vereist een vast controlekanaal met 320 MHz beschikbaar.
+ RWFP_80=Vereist een vast controlekanaal met 40 MHz beschikbaar.
+ RWFP_81=Alleen zolang de kanaalbandbreedte Auto is.
+ RWFP_82=Bepaald door 802.11b uitschakelen.
++RWFP_83=Alleen te bewerken in de Legacy-modus, zoals op de originele pagina.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 8b45802f65..43966fe445 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Krever en fast kontrollkanal med 320 MHz tilgjengelig.
+ RWFP_80=Krever en fast kontrollkanal med 40 MHz tilgjengelig.
+ RWFP_81=Kun mens kanalbåndbredden er Auto.
+ RWFP_82=Settes av Deaktiver 802.11b.
++RWFP_83=Kan bare redigeres i Legacy-modus, som på originalsiden.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 6350e9653a..60981c98c7 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Wymaga stałego kanału sterującego z dostępnym pasmem 320 MHz.
+ RWFP_80=Wymaga stałego kanału sterującego z dostępnym pasmem 40 MHz.
+ RWFP_81=Tylko gdy szerokość kanału to Auto.
+ RWFP_82=Ustawiane przez Wyłącz 802.11b.
++RWFP_83=Edytowalne tylko w trybie Legacy, tak jak na oryginalnej stronie.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 01e38f6f94..99db816813 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Necesită un canal de control fix cu 320 MHz disponibili.
+ RWFP_80=Necesită un canal de control fix cu 40 MHz disponibili.
+ RWFP_81=Doar cât timp lățimea de bandă a canalului este Auto.
+ RWFP_82=Stabilit de Dezactivare 802.11b.
++RWFP_83=Editabil doar în modul Legacy, ca pe pagina originală.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 9f44aec94f..f96f6347d2 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Требуется фиксированный канал управле
+ RWFP_80=Требуется фиксированный канал управления с доступными 40 МГц.
+ RWFP_81=Только пока ширина канала равна Авто.
+ RWFP_82=Задаётся параметром «Отключить 802.11b».
++RWFP_83=Редактируется только в режиме Legacy, как и на стандартной странице.
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+index a999125a24..a28f58ac92 100644
+--- a/release/src/router/www/Reaper_WiFiSettings.asp
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -89,11 +89,12 @@ a{color:var(--ice)}
+  cursor:pointer;white-space:nowrap}
+ .copt:hover{background:var(--red-dim);color:var(--bone)}
+ .copt.active{background:rgba(236,231,219,.07);color:var(--bone)}
+-.numwrap{display:flex;align-items:center;gap:6px;width:100%;justify-content:center}
+-.num{flex:1 1 auto;min-width:0;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13px;color:var(--bone);
++.numwrap{position:relative;width:100%}
++.num{width:100%;min-width:0;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:13px;color:var(--bone);
+  background:var(--raised);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;text-align:center}
+ .num:focus-visible{outline:2px solid var(--red);outline-offset:1px}
+-.unit{font-size:11px;color:var(--steel);flex:0 0 auto}
++.unit{position:absolute;right:11px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--steel);pointer-events:none}
++.numwrap.hasunit .num{padding-left:40px;padding-right:40px}
+ .tog{width:44px;height:24px;border-radius:999px;border:1px solid var(--line2);background:#26262b;position:relative;
+  cursor:pointer;padding:0;margin:0 auto;display:block;transition:background .15s}
+ .tog .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#8a8f95;transition:transform .16s,background .16s}
+@@ -243,6 +244,7 @@ a{color:var(--ice)}
+      global true = one nvram key (GNV) shown in the band column it belongs to
+      bands  band TYPES a row applies to (others render a dash); options may be a flat list or a band map
+      links  other pages that change the same setting (rendered "Also on: X") */
++  var EXTLAB={l:`<#WLANConfig11b_EChannelAbove#>`,u:`<#WLANConfig11b_EChannelBelow#>`};
+   var SCHEMA=[
+    {sec:`<#RWFP_2#>`,rows:[
+      /* radio is ALSO driven from the MLO tab (writes _radio=1 for every band) and reaches the AiMesh
+@@ -259,7 +261,7 @@ a{color:var(--ice)}
+      {name:`<#WLANConfig11b_ChannelBW_Enable160M#>`,key:"bw_160",type:"sel",bands:["5"],help:`<#RWFP_48#>`,options:ED},
+      {name:`<#WLANConfig11b_Channel_itemname#>`,key:"@chan",type:"sel",help:`<#WLANConfig11b_Channel_itemdesc#>`,options:"chan"},
+      {name:`<#WLANConfig_BW320_Channel_Range#>`,key:"@range",type:"sel",bands:["6"],options:"range"},
+-     {name:`<#WLANConfig11b_EChannel_itemname#>`,key:"@ext",type:"sel",bands:["2.4"],help:`<#WLANConfig11b_EChannel_itemdesc#>`,options:[["l",`<#WLANConfig11b_EChannelAbove#>`],["u",`<#WLANConfig11b_EChannelBelow#>`]]},
++     {name:`<#WLANConfig11b_EChannel_itemname#>`,key:"@ext",type:"sel",bands:["2.4"],help:`<#WLANConfig11b_EChannel_itemdesc#>`,options:[["l",EXTLAB.l],["u",EXTLAB.u]]},
+      {name:`<#RWFP_66#>`,key:"acs",type:"chks",global:true,help:`<#RWFP_49#>`,
+       chk:{"2.4":[["acs_ch13",`<#WLANConfig11b_EChannel_acs_ch13#>`]],"5":[["acs_dfs",`<#WLANConfig11b_EChannel_dfs#>`],["acs_unii4",`<#WLANConfig11b_EChannel_U-NII-4#>`]],"6":[["psc6g",`<#RWFP_50#>`]]}}
+    ]},
+@@ -269,7 +271,6 @@ a{color:var(--ice)}
+      {name:`<#Roaming_assistant#>`,key:"user_rssi",type:"rssi",min:-90,max:-40,help:`<#RWFP_65#>`},
+      {name:`<#WLANConfig11b_AgileMultiband_itemdesc#>`,key:"mbo_enable",type:"sel",options:ED,help:`<#RWFP_51#>`},
+      {name:`<#WLANConfig11b_WakeTime_itemname#>`,key:"twt",type:"sel",options:ED,help:`<#RWFP_52#>`},
+-     {name:`<#WLANConfig11b_x_IsolateAP_itemname#>`,key:"ap_isolate",type:"sel",options:YN,help:`<#WLANConfig11b_x_IsolateAP_itemdesc#>`},
+      {name:`<#WLANConfig11b_x_Rekey_itemname#>`,key:"wpa_gtk_rekey",type:"num",min:0,max:2592000,unit:"s",help:`<#WLANConfig11b_x_Rekey_itemdesc#>`}
+    ]},
+    {sec:`<#RWFP_4#>`,rows:[
+@@ -282,7 +283,7 @@ a{color:var(--ice)}
+      {name:`<#WLANConfig11b_x_AMPDU#>`,key:"ampdu_mpdu",type:"sel",options:ED,help:`<#RWFP_58#>`},
+      {name:"AMPDU RTS",key:"ampdu_rts",type:"sel",options:ED,help:`<#RWFP_59#>`},
+      {name:`<#WLANConfig11b_x_RTS_itemname#>`,key:"rts",type:"num",min:0,max:2347,help:`<#WLANConfig11b_x_RTS_itemdesc#>`},
+-     {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,help:`<#WLANConfig11b_x_Frag_itemdesc#>`}
++     {name:`<#WLANConfig11b_x_Frag_itemname#>`,key:"frag",type:"num",min:256,max:2346,help:`<#WLANConfig11b_x_Frag_itemdesc#> <#RWFP_83#>`}
+    ]},
+    {sec:`<#RWFP_5#>`,rows:[
+      {name:`<#OFDMA_title#>`,key:"ofdma",type:"sel",help:`<#RWFP_53#>`,options:[["0",`<#WLANConfig11b_WirelessCtrl_buttonname#>`],["1","DL OFDMA"],["2","DL / UL OFDMA"],["3","DL/UL OFDMA + MU-MIMO"]]},
+@@ -417,12 +418,12 @@ a{color:var(--ice)}
+              '<button type="button" class="mini schedEdit" data-u="'+u+'" hidden>'+esc(`<#CTL_modify#>`)+'</button></div></div>';
+     if(row.type==="num"){
+       var un=row.unit?'<span class="unit">'+esc(row.unit)+'</span>':'';
+-      return '<div class="cell"><div class="ctl numwrap"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+un+'</div></div>';
++      return '<div class="cell"><div class="ctl numwrap'+(row.unit?' hasunit':'')+'"><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'">'+un+'</div></div>';
+     }
+     if(row.type==="rssi"){
+       var on=(dv!==""&&dv!=="0");
+       return '<div class="cell"><div class="ctl togrow col"><div class="selwrap"><select class="sel rssiOn" data-u="'+u+'"><option value="1"'+(on?' selected':'')+'>'+esc(`<#CTL_Enabled#>`)+'</option><option value="0"'+(on?'':' selected')+'>'+esc(`<#CTL_Disabled#>`)+'</option></select></div>'+
+-             '<div class="numwrap rssiNum"'+(on?'':' hidden')+'><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'" value="'+esc(on?dv:"-70")+'"><span class="unit">dBm</span></div></div></div>';
++             '<div class="numwrap rssiNum hasunit"'+(on?'':' hidden')+'><input class="num" type="text" inputmode="numeric" data-name="'+nm+'" data-nv="'+esc(dv)+'" data-min="'+row.min+'" data-max="'+row.max+'" value="'+esc(on?dv:"-70")+'"><span class="unit">dBm</span></div></div></div>';
+     }
+     if(row.type==="chks"){
+       var list=row.chk[radio.band]||[]; if(!list.length) return `<div class="cell"><div class="na" title="<#RWFP_36#>">&mdash;</div></div>`;
+@@ -607,18 +608,24 @@ a{color:var(--ice)}
+     var rg=q(u,"@range");
+     if(rg){ var rl=rangeOptions(u), rsig=rl.map(function(o){ return o[0]; }).join("|"); if(rg.getAttribute("data-sig")!==rsig){ rg.setAttribute("data-sig",rsig); rebuildOptions(rg,rl); }
+       setHardLock(rg,!(ch!=="0"&&(bw==="6"||(bw==="0"&&T.c320[ch]))),undefined,WHY.range); }
+-    setHardLock(q(u,"@ext"),bw==="1"||ch==="0"||!T.c40[ch],undefined,WHY.ext);
++    var ex=q(u,"@ext");
++    if(ex){ /* only the sidebands the driver lists for this channel (13 has no "above", 1 no "below") */
++      var eo=[]; if(ch!=="0"&&T.c40[ch]) T.c40[ch].forEach(function(cs){ var sb=cs.slice(-1); if((sb==="l"||sb==="u")&&!eo.some(function(o){ return o[0]===sb; })) eo.push([sb,EXTLAB[sb]]); });
++      if(!eo.length) eo=[["l",EXTLAB.l],["u",EXTLAB.u]];
++      var esig=eo.map(function(o){ return o[0]; }).join("|"); if(ex.getAttribute("data-sig")!==esig){ ex.setAttribute("data-sig",esig); rebuildOptions(ex,eo); }
++      setHardLock(ex,bw==="1"||ch==="0"||!T.c40[ch],undefined,WHY.ext); }
+     setHardLock(q(u,"bw_160"),bw!=="0",undefined,WHY.bwauto);
+     var acs=document.querySelector('.cell[data-acs="'+u+'"]'); if(acs){ acs.classList.toggle("locked",ch!=="0"); if(ch!=="0") acs.title=WHY.acs; else acs.removeAttribute("title"); acs.querySelectorAll("input").forEach(function(i){ i._hardLock=(ch!=="0"); i.disabled=(ch!=="0"); }); }
+   }
+   var chgN=document.getElementById("chgN"), btn=document.getElementById("applyAll");
+   function chanDirty(u){ return composeChanspec(u)!==nv(u,"chanspec"); }
+   function recount(){
+-    var n=0;
++    var n=0, seenG={};
+     document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
+       var c=el.closest(".cell"), nm=el.getAttribute("data-name")||"", d;
+       if(/_@(chan|ext|range)$/.test(nm)){ var u=+nm.slice(2).split("_")[0]; d=(nm.slice(-5)==="@chan")?chanDirty(u):(!lockSuppressed(el)&&getVal(el)!==el._base&&chanDirty(u)); }
+-      else if(el.type==="checkbox") d=!el._hardLock&&((el.checked?"1":"0")!==el._base);
++      else if(el.type==="checkbox"){ d=!el._hardLock&&((el.checked?"1":"0")!==el._base);
++        var gk=el.getAttribute("data-g"); if(gk){ if(seenG[gk]) d=false; else seenG[gk]=1; } }
+       else d=!lockSuppressed(el)&&getVal(el)!==el._base;
+       if(c&&!c.hasAttribute("data-acs")) c.classList.toggle("dirty",d); if(d) n++;
+     });
+@@ -657,7 +664,9 @@ a{color:var(--ice)}
+       recount(); return;
+     }
+     var nm=el.getAttribute("data-name");
+-    if(el.getAttribute("data-g")){ RADIOS.forEach(function(r){ syncLocks(r.unit); }); recount(); return; }
++    if(el.getAttribute("data-g")){ /* one nvram key shown in two columns (two 5 GHz radios): keep the copies equal */
++      document.querySelectorAll('[data-g="'+el.getAttribute("data-g")+'"]').forEach(function(o){ if(o===el) return; if(o.type==="checkbox") o.checked=el.checked; else o.value=el.value; });
++      RADIOS.forEach(function(r){ syncLocks(r.unit); }); recount(); return; }
+     if(!nm) return;
+     var u=+nm.slice(2).split("_")[0], k=nm.slice(nm.indexOf("_")+1);
+     if(k==="nmode_x"){
+@@ -756,11 +765,11 @@ a{color:var(--ice)}
+     var f=document.getElementById("applyform");
+     Array.prototype.slice.call(f.querySelectorAll(".dyn")).forEach(function(n){ n.remove(); });
+     var n=0, add=function(name,value){ var i=document.createElement("input"); i.type="hidden"; i.className="dyn"; i.name=name; i.value=value; f.appendChild(i); n++; };
+-    var reboot=false;
++    var reboot=false, postedG={};
+     document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
+       if(el.closest("[hidden]")) return;
+       var nm=el.getAttribute("data-name")||"", g=el.getAttribute("data-g");
+-      if(g){ var gv=(el.type==="checkbox")?(el.checked?"1":"0"):String(el.value); if(el._hardLock||gv===el._base) return; add(g,gv); if(g==="usb_usb3") reboot=true; return; }
++      if(g){ if(postedG[g]) return; var gv=(el.type==="checkbox")?(el.checked?"1":"0"):String(el.value); if(el._hardLock||gv===el._base) return; postedG[g]=1; add(g,gv); if(g==="usb_usb3") reboot=true; return; }
+       if(/_@(chan|ext|range)$/.test(nm)) return;   /* folded into chanspec below */
+       var v=getVal(el); if(v===el._base||lockSuppressed(el)) return;
+       add(nm,v);
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6536419eda..2e0d9b65a3 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Zahteva fiksni nadzorni kanal z razpoložljivimi 320 MHz.
+ RWFP_80=Zahteva fiksni nadzorni kanal z razpoložljivimi 40 MHz.
+ RWFP_81=Samo dokler je pasovna širina kanala Samodejno.
+ RWFP_82=Nastavi možnost Onemogoči 802.11b.
++RWFP_83=Urejanje je mogoče samo v načinu Legacy, kot na izvirni strani.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 1044ca0584..dd054534ab 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Kräver en fast kontrollkanal med 320 MHz tillgängligt.
+ RWFP_80=Kräver en fast kontrollkanal med 40 MHz tillgängligt.
+ RWFP_81=Endast medan kanalbandbredden är Auto.
+ RWFP_82=Sätts av Inaktivera 802.11b.
++RWFP_83=Kan bara redigeras i Legacy-läge, som på originalsidan.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 2ba6fcdc18..5202b79d6a 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=ต้องใช้ช่องควบคุมแบบกำหน
+ RWFP_80=ต้องใช้ช่องควบคุมแบบกำหนดเองที่มี 40 MHz ให้ใช้
+ RWFP_81=เฉพาะเมื่อความกว้างช่องสัญญาณเป็นอัตโนมัติ
+ RWFP_82=กำหนดโดยการปิดใช้งาน 802.11b
++RWFP_83=แก้ไขได้เฉพาะในโหมด Legacy เช่นเดียวกับหน้าเดิมของระบบ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 39214d3717..ae690566a4 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=320 MHz kullanılabilen sabit bir kontrol kanalı gerekir.
+ RWFP_80=40 MHz kullanılabilen sabit bir kontrol kanalı gerekir.
+ RWFP_81=Yalnızca kanal bant genişliği Otomatik iken.
+ RWFP_82=802.11b devre dışı bırak seçeneğiyle belirlenir.
++RWFP_83=Yalnızca Legacy modunda düzenlenebilir; orijinal sayfadaki gibi.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index dd7e1813ed..a4aa57f6c0 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=需要固定控制頻道且有 320 MHz 可用。
+ RWFP_80=需要固定控制頻道且有 40 MHz 可用。
+ RWFP_81=僅在頻道頻寬為自動時。
+ RWFP_82=由「停用 802.11b」決定。
++RWFP_83=僅能在 Legacy 模式下編輯，與原廠頁面相同。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 4163bf2a67..66bdae0282 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6990,7 +6990,7 @@ RWFP_45=To keep this radio off at all times, set Enable Radio to No instead.
+ RWFP_46=Channel & Bandwidth
+ RWFP_47=Auto is the only mode that keeps Wi-Fi 6 and Wi-Fi 7 on this band. N only and Legacy switch them off; 802.11ax is turned back on when you return to Auto.
+ RWFP_48=Include 160 MHz when the bandwidth is automatic (uses DFS channels).
+-RWFP_49=Only used while the control channel is Auto.
++RWFP_49=Extra channels automatic selection may pick. Editable while the control channel is Auto; a fixed DFS channel still moves when radar is detected.
+ RWFP_50=Preferred scanning channels (PSC) only
+ RWFP_51=Wi-Fi Alliance Agile Multiband signalling for better coverage and steering. Needs Protected Management Frames, set on the Network menu.
+ RWFP_52=Wi-Fi 6 clients schedule their wake-ups to save power. Needs 802.11ax on the band.
+@@ -7033,3 +7033,4 @@ RWFP_79=Потрібен фіксований канал керування з 
+ RWFP_80=Потрібен фіксований канал керування з доступними 40 МГц.
+ RWFP_81=Лише поки ширина каналу дорівнює Авто.
+ RWFP_82=Задається параметром «Вимкнути 802.11b».
++RWFP_83=Можна редагувати лише в режимі Legacy, як і на стандартній сторінці.
+-- 
+2.25.1
+

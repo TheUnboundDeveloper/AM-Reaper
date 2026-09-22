@@ -1,0 +1,147 @@
+From 7c0fb3bb85b7e204399f37177d089beb484de695 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 13 Sep 2026 13:58:02 -0400
+Subject: [PATCH] Warden: outbound blocks get a durable total; rwatch says when
+ it could not read the flag; Policy Routing greys an idle Status cell
+
+The first real capture of rwatch's Warden-outbound line (2026-09-11) found two
+defects in the instrumentation itself. (a) "blocked so far" read the LIVE
+RW_ODROP counter, which fold.sh banks and zeroes every 15 minutes - so a
+healthy box said 0 most of the time, and 0 is the one figure an operator
+quotes to conclude outbound blocking is dead. fold.sh now banks the outbound
+drops under their own durable OUT key beside TOTAL (reset with the retention
+window), and both readers - the rwatch 3e line and stats.sh's out_n - quote
+banked + live, the way total already did. (b) an nvram read that hit _nv's
+5 s ceiling came back empty and took the same branch as 0, telling the
+operator to switch on logging that was already on. Empty is now its own
+state ("could not be read this tick") and gives no advice.
+
+Policy Routing (review R14, owner call 2026-09-13): the Status column stays
+configuration-derived, and the cell is greyed while the rule itself or the
+master switch is off, so "Inactive - WAN" on a rule that is not installed no
+longer reads as a live verdict. A CSS state on the status span; the greying
+follows the master toggle; no dictionary change.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c              | 16 ++++++++++++--
+ release/src/router/rc/rwatch.c               | 22 +++++++++++++++-----
+ release/src/router/www/Reaper_VPNRouting.asp |  5 ++++-
+ 3 files changed, 35 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index e0ab51a8f7..adfc656146 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1254,7 +1254,7 @@ static void rw_gen_fold(void)
+ 	  "  for C in RW_DROP RW_SDROP RW_ODROP REAPER_WARDEN RW_OUT RW_SELF; do\n"
+ 	  "    iptables -Z \"$C\" 2>/dev/null; ip6tables -Z \"$C\" 2>/dev/null\n"
+ 	  "  done\n"
+-	  "  { echo \"SINCE $NOW\"; echo \"TOTAL 0\"; } > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null\n"
++	  "  { echo \"SINCE $NOW\"; echo \"TOTAL 0\"; echo \"OUT 0\"; } > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null\n"
+ 	  "  logger -t rwarden \"block statistics reset - retention interval reached\"\n"
+ 	  "  exit 0\n"
+ 	  "fi\n"
+@@ -1283,6 +1283,14 @@ static void rw_gen_fold(void)
+ 	  "          iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null;\n"
+ 	  "          iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; }"
+ 	  " | awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  /* 2026-09-13 (backlog "Warden outbound blocks appear to have stopped", defect (a)):
++	   * the outbound drops were only ever readable LIVE, and this script zeroes
++	   * them every 15 minutes - so every reader that quoted RW_ODROP as a total
++	   * (rwatch 3e, the page's out_n) read 0 most of the time on a healthy box.
++	   * Bank them under their own key, exactly as TOTAL is banked. Same packets
++	   * as the RW_ODROP share of LIVE, counted a second time under their own name. */
++	  "OUTL=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; }"
++	  " | awk '/ DROP /{s+=$1} END{print s+0}')\n"
+ 	  "# RW_OUT and RW_SELF carry the per-country DESTINATION rules (direction\n"
+ 	  "# out/both, and router-originated respectively) - list them too or those\n"
+ 	  "# country hits are never banked.\n"
+@@ -1308,6 +1316,7 @@ static void rw_gen_fold(void)
+ 	  "  echo \"TOTAL $( { awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null; echo \"$LIVE\"; } | awk '{s+=$1} END{print s+0}')\"\n"
+ 	  "  echo \"THREAT $( { awk '$1==\"THREAT\"{print $2+0; exit}' \"$CTR\" 2>/dev/null; echo \"$THL\"; } | awk '{s+=$1} END{print s+0}')\"\n"
+ 	  "  echo \"BAN $( { awk '$1==\"BAN\"{print $2+0; exit}' \"$CTR\" 2>/dev/null; echo \"$BNL\"; } | awk '{s+=$1} END{print s+0}')\"\n"
++	  "  echo \"OUT $( { awk '$1==\"OUT\"{print $2+0; exit}' \"$CTR\" 2>/dev/null; echo \"$OUTL\"; } | awk '{s+=$1} END{print s+0}')\"\n"
+ 	  "  { awk '$1==\"CC\" && $2 ~ /^[A-Z][A-Z]$/ {print $2, $3+0}' \"$CTR\" 2>/dev/null; cat \"$TMPCC\" 2>/dev/null; } |\n"
+ 	  "    awk '{c[$1]+=$2} END{for(k in c) if(c[k]>0) print \"CC\", k, c[k]}' | sort\n"
+ 	  "} > \"$CTR.tmp\" 2>/dev/null && mv \"$CTR.tmp\" \"$CTR\" 2>/dev/null; then\n"
+@@ -1394,8 +1403,11 @@ static void rw_gen_stats(void)
+ 	   * field question "is direction=out actually doing anything?" cannot be
+ 	   * answered from a single blended total. */
+ 	  "OUTA=0; iptables -nL RW_OUT >/dev/null 2>&1 && OUTA=1\n"
++	  /* 2026-09-13: banked OUT + live, the way total is TOTAL + live; a bare
++	   * live count read 0 for most of every 15-minute fold window (defect (a)). */
++	  "OUTB=0; [ \"$SV\" = 1 ] && [ -f \"$CTR\" ] && OUTB=$(awk '$1==\"OUT\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$OUTB\" ] || OUTB=0\n"
+ 	  "OUTN=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+-	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
++	  "| awk '/ DROP /{s+=$1} END{print s+0}'); OUTN=$((OUTB+OUTN))\n"
+ 	  /* One listing, read by every bucket below - a second `iptables -nvxL` a
+ 	   * moment later would let the buckets disagree with each other and with
+ 	   * TOTAL, which is precisely the confusion being fixed here. */
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index 351f6ba6ec..349bba11c6 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -448,12 +448,24 @@ static void rwatch_gen(void)
+ 	  "  case \"$(_nv rwarden_dir)\" in\n"
+ 	  "    out|both)\n"
+ 	  "      if iptables -nL RW_ODROP >/dev/null 2>&1; then\n"
+-	  "        _od=$( { iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
+-	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
+-	  "        if [ \"$(_nv rwarden_log)\" = 1 ]; then\n"
+-	  "          WOKEY=armed; WOMSG=\"armed and logging (prefix REAPER-WARDEN-OUT); blocked so far: $_od\"\n"
++	  /* 2026-09-13 (the first real capture of this line found two defects in it):
++	   * (a) "blocked so far" read the LIVE counter, which fold.sh zeroes every
++	   *     15 minutes - so a healthy box said 0 most of the time, and 0 is the
++	   *     one figure an operator quotes to conclude outbound blocking is dead.
++	   *     Now banked OUT (/jffs/rwarden/counters, written by fold.sh) + live.
++	   * (b) an nvram read that hit _nv's 5 s ceiling came back EMPTY and took
++	   *     the same branch as 0, telling the operator to switch on logging that
++	   *     was already on. Empty is now its own state and says so. */
++	  "        _ob=''; [ \"$(_nv rwarden_stats_save)\" != 0 ] && _ob=$(awk '$1==\"OUT\"{print $2+0; exit}' /jffs/rwarden/counters 2>/dev/null)\n"
++	  "        _od=$( { echo \"$_ob\"; iptables -nvxL RW_ODROP 2>/dev/null; ip6tables -nvxL RW_ODROP 2>/dev/null; } "
++	  "| awk '/^[0-9]+$/{s+=$1} / DROP /{s+=$1} END{print s+0}')\n"
++	  "        _rl=$(_nv rwarden_log)\n"
++	  "        if [ \"$_rl\" = 1 ]; then\n"
++	  "          WOKEY=armed; WOMSG=\"armed and logging (prefix REAPER-WARDEN-OUT); blocked in this statistics window: $_od\"\n"
++	  "        elif [ -z \"$_rl\" ]; then\n"
++	  "          WOKEY=unread; WOMSG=\"armed; whether it is logging could not be read this tick (nvram did not answer) - blocked in this statistics window: $_od\"\n"
+ 	  "        else\n"
+-	  "          WOKEY=nolog; WOMSG=\"armed but NOT logging - turn on 'Log blocked traffic' on the Warden page; blocked so far: $_od\"\n"
++	  "          WOKEY=nolog; WOMSG=\"armed but NOT logging - turn on 'Log blocked traffic' on the Warden page; blocked in this statistics window: $_od\"\n"
+ 	  "        fi\n"
+ 	  "      else\n"
+ 	  "        WOKEY=nochain; WOMSG='enabled for out/both but the RW_ODROP chain is ABSENT - nothing outbound is being dropped'\n"
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index f9f7992711..5e3288440b 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -31,6 +31,8 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
+ .statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+ .statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++/* R14 (review 2026-09-12, owner call 2026-09-13): the Status column is the TARGET's state; while the rule itself is off, or the master switch is, it is not a live verdict - grey it */
++.st.idle{opacity:.4}
+ .mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
+ .lede{max-width:80ch;margin:6px 0 16px;position:relative;padding-right:40px}
+ .lede b{color:var(--bone);font-weight:600}
+@@ -292,7 +294,7 @@ function render(){
+       '<td>'+ (r.desc? esc(r.desc) : '<span style="color:var(--steel)">&mdash;</span>') +'</td>'+
+       '<td class="sel">'+ selText(r) +'</td>'+
+       '<td><span class="tgt '+tgtClass(r.target)+'"'+'>'+ tgtLabel(r.target) +'</span></td>'+
+-      '<td>'+ tgtStatus(r) +'</td>'+
++      '<td>'+ ((r.en && masterOn) ? tgtStatus(r) : tgtStatus(r).replace('class="st', 'class="st idle')) +'</td>'+
+       '<td style="white-space:nowrap"><button class="rowedt" data-e="'+idx+'">'+esc(`<#CTL_modify#>`)+'</button><button class="rowdel" data-d="'+idx+'">&times;</button></td>';
+     tb.appendChild(tr);
+   })(i); }
+@@ -384,6 +386,7 @@ function syncMaster(){
+   pill.textContent = masterOn ? `<#RVR_03#>` : `<#RVR_04#>`;
+   pill.className = 'statuspill'+(masterOn?'':' off');
+   document.getElementById('offbanner').style.display = masterOn?'none':'block';
++  if(typeof render==='function' && document.getElementById('rulerows')) render();   /* R14: the greyed Status cells follow the master switch */
+ }
+ 
+ function serialize(){
+-- 
+2.25.1
+

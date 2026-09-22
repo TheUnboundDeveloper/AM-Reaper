@@ -1,0 +1,188 @@
+From f97d172a94fa6d45606504856b596ab864e67fd2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 17 Sep 2026 13:29:50 -0400
+Subject: [PATCH] reaper_fwsim: the WAN-bound witness destination is a
+ candidate list
+
+1.1.1.1:443 was a constant, and the moment the operator blocked DNS-over-HTTPS
+to Cloudflare every "reaches the WAN" row went red (24 on the owner's box),
+decided by that block instead of the feature it asked about. wandst_pick()
+mirrors wansrc_pick(): every destination set in the live tables is probed and
+the first unclaimed candidate is used (1.1.1.1 first, so fixtures are
+unchanged), reported as wandst/wandst_note. The static catalog rows A1, A2 and
+A9 carried the address as text and now use $WANDST.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 66 ++++++++++++++++---
+ .../src/router/reaper_fwsim/witness.static    |  6 +-
+ 2 files changed, 60 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 6e46a20863..27fc2810dd 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -1577,6 +1577,52 @@ static const char *wansrc_pick(int fam)
+ 	snprintf(why, 120, "every candidate source is in a source set - WAN rows witness from %s", cand[0]);
+ 	return cand[0];
+ }
++/* 2026-09-17: the WAN-side witness DESTINATION, by the same reasoning as the
++ * source above. 1.1.1.1:443 was a constant, and the moment the operator
++ * blocked DNS-over-HTTPS to Cloudflare - a destination set holding 1.1.1.1
++ * and 1.0.0.1, ports 443/853 - every "reaches the WAN" row went red at once
++ * (24 on the owner's box), decided by that block instead of the feature it
++ * asked about. Every set the live tables match on the DESTINATION side is
++ * collected and the first candidate no set claims is used. 1.1.1.1 stays
++ * first, so a box that does not block it keeps the fixtures' exact witness
++ * text; the alternatives are other public resolvers and the documentation
++ * ranges. Same non-bypass argument as the source: a row that MEANS "to a
++ * blocked destination" names its own address and never uses this. */
++static char wandst_why[120];
++static const char *wandst_pick(void)
++{
++	static const char *c4[] = { "1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222", "198.51.100.7", "203.0.113.99" };
++	const int nc = 6;
++	struct fw *fw = &fw4; char *why = wandst_why;
++	char sets[32][40]; int ns = 0, ci, si, ti, tj, tk;
++	struct addr a;
++
++	why[0] = 0;
++	for (ti = 0; ti < fw->nt; ti++) {
++		struct table *t = &fw->t[ti];
++		for (tj = 0; tj < t->n; tj++) {
++			struct chain *ch = &t->c[tj];
++			for (tk = 0; tk < ch->n; tk++) {
++				struct rule *r = &ch->r[tk];
++				if (!r->has_set || r->set_dir != 2 || r->set_neg) continue;
++				for (si = 0; si < ns; si++) if (!strcmp(sets[si], r->set)) break;
++				if (si < ns || ns >= 32) continue;
++				snprintf(sets[ns++], sizeof(sets[0]), "%s", r->set);
++			}
++		}
++	}
++	for (ci = 0; ci < nc; ci++) {
++		int claimed = 0;
++		if (addr_parse(c4[ci], 4, &a) != 0) continue;
++		for (si = 0; si < ns && !claimed; si++) if (set_test(sets[si], &a)) claimed = 1;
++		if (!claimed) {
++			if (ci) snprintf(why, 120, "%s is in a destination set - WAN-bound rows witness to %s", c4[0], c4[ci]);
++			return c4[ci];
++		}
++	}
++	snprintf(why, 120, "every candidate destination is in a destination set - WAN-bound rows witness to %s", c4[0]);
++	return c4[0];
++}
+ /* The admin access restriction also gates WAN web/SSH: the first enabled v4
+  * entry OUTSIDE the LAN is the only WAN address the admin allowed. */
+ static int acc_wan_pick(const struct addr *lan4, char *out, size_t ol)
+@@ -1637,11 +1683,12 @@ static void gen_witnesses(void)
+ 	char lanhost[48], rtr[48], wanip[48], buf[200], id[16], feat[80], lanmac[20];
+ 	const struct addr *lan4 = own_first(lan_ifname, 4), *lan6 = NULL, *wan4 = own_first(wan_ifname, 4);
+ 	const char *wansrc = wansrc_pick(4);
++	const char *wandst = wandst_pick();
+ 	int i, n;
+ 
+ 	/* placeholders for the static file */
+ 	sub_set("LANIF", lan_ifname); sub_set("WANIF", wan_ifname);
+-	sub_set("WANSRC", wansrc); sub_set("WAN6SRC", wansrc_pick(6));
++	sub_set("WANSRC", wansrc); sub_set("WAN6SRC", wansrc_pick(6)); sub_set("WANDST", wandst);
+ 	if (lan4) { addr_str(lan4, rtr, sizeof(rtr)); host_in_subnet(lan4, 123, lanhost, sizeof(lanhost)); lanhost_pick(lan4, lanhost, sizeof(lanhost)); sub_set("RTR", rtr); sub_set("LANHOST", lanhost); }
+ 	else { rtr[0] = lanhost[0] = 0; }
+ 	if (wan4) { addr_str(wan4, wanip, sizeof(wanip)); sub_set("WANIP", wanip); } else { const char *v = nv_get("wan0_ipaddr"); if (v[0] && strcmp(v, "0.0.0.0")) sub_set("WANIP", v); wanip[0] = 0; }
+@@ -1812,7 +1859,7 @@ static void gen_witnesses(void)
+ 			if (blocked) {
+ 				const char *hp = nv_get("https_lanport");
+ 				snprintf(id, sizeof(id), "D1.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: blocked device %s cannot reach the WAN", r->mac);
+-				wit_pkt(id, feat, 4, lan_ifname, lanhost, "1.1.1.1", "tcp", "443", "NEW", "DROP", "", r->mac);
++				wit_pkt(id, feat, 4, lan_ifname, lanhost, wandst, "tcp", "443", "NEW", "DROP", "", r->mac);
+ 				/* D2 - the emitter's truth (rc/gatekeeper.c gk_emit_mac, state
+ 				 * 0): a BLOCKED device gets a bare REAPER_GKI DROP. The DHCP /
+ 				 * DNS / captive RETURNs exist only in the quarantine tail, for
+@@ -1844,7 +1891,7 @@ static void gen_witnesses(void)
+ 			} else if (lanonly) {
+ 				char lh2[48]; host_in_subnet(lan4, 77, lh2, sizeof(lh2));
+ 				snprintf(id, sizeof(id), "D3a.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: internet-only device %s reaches the WAN", r->mac);
+-				wit_pkt(id, feat, 4, lan_ifname, lanhost, "1.1.1.1", "tcp", "443", "NEW", "ACCEPT", "", r->mac);
++				wit_pkt(id, feat, 4, lan_ifname, lanhost, wandst, "tcp", "443", "NEW", "ACCEPT", "", r->mac);
+ 				snprintf(id, sizeof(id), "D3b.%d", ns); snprintf(feat, sizeof(feat), "Gatekeeper: internet-only device %s cannot reach the LAN (L3)", r->mac);
+ 				wit_pkt(id, feat, 4, lan_ifname, lanhost, lh2, "tcp", "445", "NEW", "DROP", "", r->mac);
+ 			}
+@@ -2046,11 +2093,11 @@ static void gen_witnesses(void)
+ 					} else if (!strcmp(dir, "out")) {
+ 						inif = "gen";					/* the router's own traffic */
+ 						src  = rtr;
+-						dst  = dip[0] ? dip : "1.1.1.1";
++						dst  = dip[0] ? dip : wandst;
+ 					} else {
+ 						inif = lan_ifname;
+ 						src  = sip[0] ? sip : lanhost;
+-						dst  = dip[0] ? dip : "1.1.1.1";
++						dst  = dip[0] ? dip : wandst;
+ 					}
+ 					nr++;
+ 					snprintf(id, sizeof(id), "F1.%d", nr);
+@@ -2124,7 +2171,7 @@ static void gen_witnesses(void)
+ 					ne++;
+ 					snprintf(id, sizeof(id), "F3.%d", ne);
+ 					snprintf(feat, sizeof(feat), "Egress default: %.24s is %.8s to the internet", obj, act);
+-					wit_pkt(id, feat, 4, lan_ifname, dip[0] ? dip : lanhost, "1.1.1.1", "tcp", "443", "NEW", expect, "",
++					wit_pkt(id, feat, 4, lan_ifname, dip[0] ? dip : lanhost, wandst, "tcp", "443", "NEW", expect, "",
+ 						dmac[0] ? dmac : lanmac);
+ 				}
+ 				free(ed);
+@@ -2150,7 +2197,7 @@ static void gen_witnesses(void)
+ 			else
+ 				wit_pkt(id, feat, 4, own[i].ifname, gh, lanhost, "tcp", "445", "NEW", "DROP", "", lanmac);
+ 			snprintf(id, sizeof(id), "G2.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: reaches the WAN", own[i].ifname);
+-			wit_pkt(id, feat, 4, own[i].ifname, gh, "1.1.1.1", "tcp", "443", "NEW", "ACCEPT", "", lanmac);
++			wit_pkt(id, feat, 4, own[i].ifname, gh, wandst, "tcp", "443", "NEW", "ACCEPT", "", lanmac);
+ 			snprintf(id, sizeof(id), "G4.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: DNS at its gateway", own[i].ifname);
+ 			wit_pkt(id, feat, 4, own[i].ifname, gh, gr, "udp", "53", "NEW", "RESOLVED", "", lanmac);
+ 		}
+@@ -2241,7 +2288,7 @@ static void gen_witnesses(void)
+ 			snprintf(feat, sizeof(feat), "Policy routing: %s%.24s is marked for its tunnel",
+ 				 r->has_mac ? "device " : "", r->has_mac ? r->mac : (r->has_src ? sbuf : "the LAN"));
+ 			snprintf(buf, sizeof(buf), "MARK:%s", val);
+-			wit_pkt(id, feat, 4, lan_ifname, src, "1.1.1.1", "tcp", "443", "NEW", buf, "",
++			wit_pkt(id, feat, 4, lan_ifname, src, wandst, "tcp", "443", "NEW", buf, "",
+ 				r->has_mac ? r->mac : lanmac);
+ 		}
+ 	}
+@@ -2519,12 +2566,13 @@ static void write_json(const char *path, int skeleton)
+ 	 * (owner, 2026-09-16) - it informs, it never declares a failure and
+ 	 * nothing acts on it. Consumers key off this field. */
+ 	fprintf(f, "{\"ok\":1,\"ver\":\"%s\",\"mode\":\"advisory\",\"ts\":%ld,\"uptime\":%ld,\"family\":%d,\"skeleton\":%d,\"v4\":%d,\"v6\":%d,"
+-		   "\"wansrc\":\"%s\",\"wansrc_note\":\"%s\",\"wan6src\":\"%s\",\"wan6src_note\":\"%s\",\"lanhost\":\"%s\",\"lanhost_note\":\"%s\","
++		   "\"wansrc\":\"%s\",\"wansrc_note\":\"%s\",\"wan6src\":\"%s\",\"wan6src_note\":\"%s\",\"lanhost\":\"%s\",\"lanhost_note\":\"%s\",\"wandst\":\"%s\",\"wandst_note\":\"%s\","
+ 		   "\"summary\":{\"total\":%d,\"green\":%d,\"red\":%d,\"depends\":%d,\"na\":%d},\"witnesses\":[",
+ 		FWSIM_VER, (long)time(NULL), up, opt_family, skeleton, fw4.loaded, fw6.loaded,
+ 		sub_get("WANSRC") ? sub_get("WANSRC") : "", wansrc_why,
+ 		sub_get("WAN6SRC") ? sub_get("WAN6SRC") : "", wan6src_why,
+ 		sub_get("LANHOST") ? sub_get("LANHOST") : "", lanhost_why,
++		sub_get("WANDST") ? sub_get("WANDST") : "", wandst_why,
+ 		nwit, green, red, dep, na);
+ 	for (i = 0; i < nwit; i++) {
+ 		struct witness *w = &wit[i]; char wtxt[400];
+diff --git a/release/src/router/reaper_fwsim/witness.static b/release/src/router/reaper_fwsim/witness.static
+index 139dd6d1dc..6f163e3a0a 100755
+--- a/release/src/router/reaper_fwsim/witness.static
++++ b/release/src/router/reaper_fwsim/witness.static
+@@ -17,12 +17,12 @@
+ # handed to an intercept target and forwarded), DNAT, DNAT+ACCEPT.
+ 
+ # ---- A. core reachability -------------------------------------------------
+-A1|LAN host reaches the WAN|4|$LANIF|$LANHOST|1.1.1.1|tcp|443|NEW|ACCEPT||$LANMAC
+-A2|Reply from the WAN reaches the LAN host|4|$WANIF|1.1.1.1|$LANHOST|tcp|40000|ESTABLISHED|ACCEPT
++A1|LAN host reaches the WAN|4|$LANIF|$LANHOST|$WANDST|tcp|443|NEW|ACCEPT||$LANMAC
++A2|Reply from the WAN reaches the LAN host|4|$WANIF|$WANDST|$LANHOST|tcp|40000|ESTABLISHED|ACCEPT
+ A3|LAN host resolves DNS at the router|4|$LANIF|$LANHOST|$RTR|udp|53|NEW|RESOLVED||$LANMAC
+ A4|Unsolicited WAN traffic never reaches a LAN host|4|$WANIF|$WANSRC|$LANHOST|tcp|445|NEW|DROP
+ A5|LAN host reaches the router's web interface|4|$LANIF|$LANHOST|$RTR|tcp|80|NEW|ACCEPT||$LANMAC
+-A9|The router's own outbound traffic leaves|4|gen|$RTR|1.1.1.1|tcp|443|NEW|ACCEPT
++A9|The router's own outbound traffic leaves|4|gen|$RTR|$WANDST|tcp|443|NEW|ACCEPT
+ A11|LAN host gets DHCP from the router|4|$LANIF|0.0.0.0|255.255.255.255|udp|67|NEW|ACCEPT||$LANMAC
+ H2|Advisor port 5152 is closed to the LAN|4|$LANIF|$LANHOST|$RTR|tcp|5152|NEW|DROP||$LANMAC
+ H7|Invalid-state packets from the WAN are dropped|4|$WANIF|$WANSRC|$LANHOST|tcp|445|INVALID|DROP
+-- 
+2.25.1
+

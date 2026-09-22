@@ -1,0 +1,50 @@
+From 7b2780920cd7417880f10f63e0f18620733d4d8b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 12 Sep 2026 19:30:23 -0400
+Subject: [PATCH] lighttpd: folded-header append must not leave the value
+ aliases dangling (CVE-2018-25103)
+
+A folded continuation line appends to a header value that http_content_type,
+http_if_modified_since, http_if_none_match and http_range may already point
+into; the append can reallocate it. Upstream's fix (df8e4f95) restructures
+the parser and does not apply to 1.4.39; this is the minimal equivalent: note
+which aliases point into the value, append, rebind. Captive portal only, off
+by default. Security review 2026-09-12, item R12.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../src/router/lighttpd-1.4.39/src/request.c    | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/release/src/router/lighttpd-1.4.39/src/request.c b/release/src/router/lighttpd-1.4.39/src/request.c
+index 39da8c1416..6e1cd10d1b 100755
+--- a/release/src/router/lighttpd-1.4.39/src/request.c
++++ b/release/src/router/lighttpd-1.4.39/src/request.c
+@@ -791,7 +791,24 @@ int http_request_parse(server *srv, connection *con) {
+ 						buffer_copy_string_len(key_b, key, key_len);
+ 
+ 						if (NULL != (ds = (data_string *)array_get_element(con->request.headers, key_b->ptr))) {
++							/* CVE-2018-25103 (Reaper v3.1.5, review R12): the raw char*
++							 * aliases below were taken when this header was first
++							 * inserted; appending a folded line can reallocate
++							 * ds->value->ptr and leave them dangling (use-after-free
++							 * on the next header, or in the handlers). Upstream
++							 * restructured the parser to defer per-header handling
++							 * until folding is complete (df8e4f95); this is the
++							 * minimal equivalent for 1.4.39: note which aliases
++							 * point into this value, append, rebind. */
++							int ct  = con->request.http_content_type == ds->value->ptr;
++							int ims = con->request.http_if_modified_since == ds->value->ptr;
++							int inm = con->request.http_if_none_match == ds->value->ptr;
++							int rng = con->request.http_range && con->request.http_range == ds->value->ptr + 6;
+ 							buffer_append_string(ds->value, value);
++							if (ct)  con->request.http_content_type = ds->value->ptr;
++							if (ims) con->request.http_if_modified_since = ds->value->ptr;
++							if (inm) con->request.http_if_none_match = ds->value->ptr;
++							if (rng) con->request.http_range = ds->value->ptr + 6;
+ 						}
+ 
+ 						buffer_free(key_b);
+-- 
+2.25.1
+

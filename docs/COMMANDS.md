@@ -1,6 +1,6 @@
 # Reaper — the commands, and what each one is for
 
-> **Doc status:** current as of **v2.7.8** · 2026-08-26 <!--@stamp-->
+> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
 
 Everything in [`build-scripts/`](../build-scripts) exists to make one of four
 things happen: **build an image**, **cut a rung**, **fan a rung out to the
@@ -36,10 +36,13 @@ patch series is the release — the images are just what that series compiles to
 ```bash
 build-scripts/build_be96u.sh            # build, leave the image in the tree
 build-scripts/build_be96u.sh ship       # build, then copy to the release ladder
+build-scripts/build_be96u.sh ship stable  # ... as a RELEASE (no _BETA marker)
+
+VARIANTS=MCP build-scripts/build_be96u.sh ship   # one variant instead of both
 ```
 
 One launcher per model — `build_be96u.sh`, `build_be86u.sh`, `build_be88u.sh`,
-`build_gtbe98.sh`, `build_gtbe98pro.sh`, `build_be92u.sh`. Each is a thin wrapper
+`build_gtbe98.sh`, `build_gtbe98pro.sh`, `build_gtbe19000.sh`. Each is a thin wrapper
 that sets the model's branch, make target and banner, then calls the shared
 engine `_reaper_build_lib.sh`. Both variants (**MCP** and **noMCP**) are built by
 default; NAND only.
@@ -60,10 +63,15 @@ printed.
 
 ## Cutting
 
+The cut scripts are maintainer tooling and are not in this repo. They live beside this
+checkout on the build box, in `asuswrt-merlin.ng/Build_Scripts/`, and read this repo through
+`REAPER_LEAN` (default: the sibling `ASUS-Merlin-Reaper` checkout). The gates they call
+(`reaper_hiddencheck.py`, `reaper_docs.py`, `patch_count.sh`, `ci/check_overlays.py`) stay here.
+
 ### `cut_rung.sh` — one branch
 
 ```bash
-build-scripts/cut_rung.sh --version v2.7.8
+../asuswrt-merlin.ng/Build_Scripts/cut_rung.sh --version v2.7.8
 ```
 
 Exports the commits since the previous rung as patches (doc hunks excluded),
@@ -78,7 +86,7 @@ out to the other models.
 ### `cut_fleet.sh` — the golden path
 
 ```bash
-build-scripts/cut_fleet.sh --version v2.7.8
+../asuswrt-merlin.ng/Build_Scripts/cut_fleet.sh --version v2.7.8
 ```
 
 The entry point for a release. It runs, in this order and no other:
@@ -122,12 +130,12 @@ version, the provenance and the CI, and unpicking one is real work. To test:
 
 | Command | Answers |
 |---|---|
-| `patch_count.sh <tree>` | How many patches is this tree? The single source of truth for the About page's count. `--verify <dir>` asserts tree and `patches/` agree. |
+| `patch_count.sh <tree>` | How many patches is this tree? The single source of truth for the About page's count — it counts **commits**. `--exported` subtracts the commits that ship as `overlays/` archives, giving the number of `.patch` files a cut writes; from v3.1.0 that is one lower (the OpenSSL 3.5 source drop). `--verify <dir>` asserts tree and `patches/` agree, so on a post-v3.1.0 tree compare `--exported` against `patches/` instead. |
 | `reaper_verify.sh MODEL VARIANT VERSION` | Does this staged image pass the packaging gate? Run automatically by every build. |
 | `gen_provenance.sh <tree>` | Record this build's source-tree hashes and logs into `provenance/`. |
 | `ci/check_overlays.py overlays` | Does every sibling overlay contain identity changes *only*? Run in CI before the build matrix, so a bad overlay costs seconds rather than twelve builds. |
 | `refresh_manifest.py` | Point the on-router update check at the newest published release. **A manual publish does not do this** — skip it and routers keep reporting "up to date". |
-| `sync_local_engine.sh [--check]` | Is the build box running the same engine as CI? Drift here shipped a broken IPSec stack for three weeks. |
+| `sync_local_engine.sh [--check]` (maintainer tooling, outside this repo) | Is the build box running the same engine as CI? Drift here shipped a broken IPSec stack for three weeks. |
 
 ---
 

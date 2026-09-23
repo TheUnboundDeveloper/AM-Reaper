@@ -21,6 +21,47 @@
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
     {
+      "version": "v3.2.5",
+      "firmware": "3006.102.8_Reaper_v3.2.5",
+      "build_commit": "4d2729d63a",
+      "source_tree": {
+        "release/src/router": "a6d36dd209074c6361f603336b5397dfc1e408fe",
+        "release/src-rt": "2772b1d83cbf1aec4171933c752e01e158cb4cc2"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "5c098f1fe276fcd4f2a07e7fd7ae87dfd141b9c3",
+        "release/src-rt": "2772b1d83cbf1aec4171933c752e01e158cb4cc2"
+      },
+      "images": [
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.2.5_BETA_nand_squashfs.pkgtb",
+          "sha256": "ebae2ab3c10d2dec9ce3c99da7c3311b6cd92784153ec30839ddf6a2aa0e9e8a"
+        },
+        {
+          "model": "RT-BE96U",
+          "variant": "MCP",
+          "file": "RT-BE96U_3006_102.8_Reaper_v3.2.5_BETA_nand_squashfs_loader.pkgtb",
+          "sha256": "1bcdf402575b4a1bf1a647bb8ff11ca4fdda46668b69365ca64db134d0da07fc"
+        }
+      ],
+      "patch_count": 702,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-09-23",
+      "parent": "v3.2.4",
+      "summary": "Optional features ship off. shared/defaults.c: enable_samba 1->0 and smbd_enable 1->0 (stock ships 1; an SMB server started on the LAN as soon as a disk was plugged in, which caused a field problem; the switch is USB Application > Network Place and httpd's cifs on/off handler), and rtraf_enable 1->0 (the Traffic Analyzer collector; Reaper_Traffic.asp carries its own toggle and start_rtraf() already returns on \"0\"). smbd_enable only feeds the pptpd_ms_network condition in rc/vpn.c. Kept by owner decision: rwatch_enable. Kept because no GUI switch exists: reaper_wanbounce_enable and rstats_enable (start_rstats() never reads rstats_enable, so a default change would be inert). reaper_inject (the theme kill-switch, unset = on) deliberately has no default and is untouched. Defaults apply on factory reset or clean NVRAM only; an upgraded router keeps its values. Built and verified locally as an RT-BE96U MCP test image.",
+      "models_note": "Patches 0701-0702 touch 2 files: release/src/router/shared/defaults.c and release/src-rt/version.conf. Neither overlaps a model overlay, so the six overlay files are unchanged (index-line drift only, not rewritten) and pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, and the dormant RT-BE92U 11); the hidden-character scan is clean over all six (36 files, 4678 lines) and over the two new patches. defaults.c is one shared file carried verbatim by the port (identical blob on every sibling before the rung); each changed key occurs once, enable_samba under RTCONFIG_USB (=y on all six), and no per-model tree or prebuilt blob sets these keys. All five roster siblings report post-commit parity 0 with canon, dict lockstep and defaults 0/0/0 at EXTENDNO Reaper_v3.2.5 (rt-be86u 9ed5624e4f, rt-be88u f819afef63, gt-be98 72b31b7ab5, gt-be98-pro ee9328a6fd, gt-be19000 eb82aeacd3). GT-BE19000 remains a prerelease model by design (release.yml always-prerelease); RT-BE92U stays dormant off the roster.",
+      "channel": "beta",
+      "logs": {
+        "build": "provenance/logs/v3.2.5/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.2.5/reaper_verify-rt-be96u.log"
+      }
+    },
+    {
       "version": "v3.2.4",
       "firmware": "3006.102.8_Reaper_v3.2.4",
       "build_commit": "4f7ed3c645",
@@ -40,8 +81,8 @@
       ],
       "date": "2026-09-22",
       "parent": "v3.2.3",
-      "summary": "TODO: what this rung changes, in prose. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "TODO: overlay-overlap result (see step 7)."
+      "summary": "A Policy Routing source rule to a WireGuard client target now carries the replies home. rc/reaper_pbr.c: the rule marked the flow's first packet and saved the mark on the conntrack entry as intended, but the REAPER_PBR PREROUTING jump has no -i, so the REPLY arriving on wgcN had the same mark restored and was routed by lookup wgcN; under MULTILAN_CFG that table holds only 0/1 and 128/1 dev wgcN with no LAN route, so the reply went back into the tunnel. The chain now opens with -m conntrack --ctdir REPLY -j RETURN in both families, ahead of the restores and the trailing --save-mark (scoping only the restores would let an unmarked reply save 0 over the flow's verdict); replies route by main, as VPN Director's do, and wgcN rp_filter is loose. OpenVPN targets (their tables carry the LAN route) and VPN Director (its from <src> rule never matches a reply) were unaffected. reaper_fwsim models --ctdir, so the new rule is a modelled row. Root cause from a tester capture on an RT-BE86U; reproduced in a network-namespace model (without the rule 0/10 pings answered, with it 10/10). Metal confirmation from the reporter owed. No local image was built for this rung; it ships inside v3.2.5.",
+      "models_note": "Patches 0699-0700 touch 3 files: rc/reaper_pbr.c, reaper_fwsim/reaper_fwsim.c and release/src-rt/version.conf. None of them overlaps a model overlay, so the six overlay files are unchanged and pass the identity gate. All five roster siblings were ported at EXTENDNO Reaper_v3.2.4 (rt-be86u 94df18d117, rt-be88u 7bdc57663c, gt-be98 37439c3afd, gt-be98-pro 6fcdc85b2a, gt-be19000 8dafcae5b4). The sibling branches still carry the port add/rename/delete gap recorded in the backlog (tor1_crypt_st.h, openssl-3.5 files, stale www); the CI build is unaffected because it assembles each model from the series plus its overlay."
     },
     {
       "version": "v3.2.3",

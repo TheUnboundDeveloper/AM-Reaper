@@ -23,6 +23,8 @@ for a four-rule list (src->WGC1 with the Killswitch on, src->OVPN2, ipset->WAN, 
 then RUNS it under fake iptables/ip6tables/ip/ipset/fc/logger/nvram that record their
 arguments, with the kernel's skip-list proc file and /sys/class/net stood in by temp files.
 Asserts, on the script text and the recorded calls:
+  - the chain opens with a `--ctdir REPLY` RETURN (v3.2.4: a WG reply that got the flow's
+    code back was routed into the tunnel again);
   - the chain restores exactly the codes in use (2, 6, 11), one CONNMARK --restore-mark
     per code per family, and never an unused code; the RETURN follows them and precedes the
     first selector rule;
@@ -227,6 +229,13 @@ int main(int argc, char **argv) {
     check("the RETURN follows the restores and precedes the first selector rule",
           ret > S.rfind("--restore-mark") and 0 < ret < S.find("pbr_rule iptables"), "")
     check("a chain the loop declares only once (one for-T loop)", S.count("-N REAPER_PBR") == 1 and S.count("-m mark ! --mark 0x0/$MASK -j RETURN") == 1, "")
+    # v3.2.4 (WG field capture 2026-09-22): a reply must never get the flow's code back
+    # (it re-entered the wgcN table and went back into the tunnel), and must never reach
+    # --save-mark (an unmarked reply would zero the flow's verdict).
+    rep = S.find("-m conntrack --ctdir REPLY -j RETURN")
+    check("the REPLY RETURN is the chain's first rule, ahead of every restore",
+          S.count("-m conntrack --ctdir REPLY -j RETURN") == 1
+          and S.find("-F REAPER_PBR") < rep < S.find("--restore-mark"), "")
 
     # run with wgc1 present
     rc, T, FL, F = run(script, wg_up=True)

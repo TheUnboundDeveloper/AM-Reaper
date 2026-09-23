@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**698 <!--@patchcount--> patches, v1.0 → v3.2.3 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**700 <!--@patchcount--> patches, v1.0 → v3.2.4 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -477,7 +477,7 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 > **Model scope:** this published series is the **RT-BE96U** line throughout. The siblings
 > (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000) build from the
 > same shared source via `port_sibling_v2` (full-diff shared sync + per-model identity overlay + a
-> dict lockstep sync). The newest **published** release is **v2.8.8** <!--@pubver-->; many rungs (for
+> dict lockstep sync). The newest **published** release is **v3.1.0** <!--@pubver-->; many rungs (for
 > example v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5) exist in the series without a full
 > published fan-out. For **v2.4.1** specifically, two files in
 > the rung — `www/Main_ReaperDash.asp` and `www/reaper_shell.asp` — are also carried by the per-model

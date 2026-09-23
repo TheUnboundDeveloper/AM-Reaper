@@ -1,0 +1,114 @@
+From 0072ed9171360613f0e63372fa4ac2ee372223e0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 22 Sep 2026 22:26:06 -0400
+Subject: [PATCH] rc, reaper_fwsim: policy-routing replies leave REAPER_PBR
+ before the restore
+
+A source rule to a WireGuard client target marked the flow's first packet
+and saved the code on the conntrack entry, as intended. The PREROUTING jump
+has no -i, so the REPLY arriving on wgcN had the same code restored and was
+routed by `lookup wgcN`. Under MULTILAN_CFG that table holds only 0/1 and
+128/1 dev wgcN, with no LAN route, so the reply went back into the tunnel.
+Tester capture (RT-BE86U): `ip route get <lan> from <remote> iif wgc2 mark
+0x70000` -> dev wgc2, table 8437 empty, MASQUERADE present, peer rx growing.
+OpenVPN targets were unaffected because their tables carry the LAN route;
+VPN Director is unaffected because its `from <src>` rule never matches a
+reply.
+
+The chain now opens with `-m conntrack --ctdir REPLY -j RETURN` (both
+families), ahead of the restores and of the trailing --save-mark. Scoping
+only the restores would let an unmarked reply save 0 over the flow's
+verdict and re-classify every later packet. Replies route by `main`, as
+VPN Director's do; wgcN rp_filter is loose (wireguard.c), so they pass.
+The MARK --set count rwatch and the diag read is unchanged.
+
+reaper_fwsim models --ctdir (the walked packet is ORIGINAL), so the new
+rule is a modelled row rather than a depends row.
+
+Network-namespace reproduction (lan - router - peer, the exact emitted rule
+order, table 0/1+128/1 dev wgc2, fwmark rule, MASQUERADE): without the rule
+0/10 pings answered and all 10 replies returned to the peer; with it 10/10,
+none returned, one MARK per flow.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_pbr.c             | 17 +++++++++++++++--
+ release/src/router/reaper_fwsim/reaper_fwsim.c | 10 +++++++++-
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index bd49fc000d..e8a2d188a9 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -647,11 +647,24 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	 * in use is restored; a stale one is left at 0, the selectors judge the
+ 	 * packet again and --save-mark at the end overwrites the stale verdict.
+ 	 * Same rule count on the mark side (rwatch and the diag count `MARK
+-	 * --set`; these are CONNMARK restores). */
++	 * --set`; these are CONNMARK restores).
++	 * v3.2.4 (WireGuard source-rule field capture, 2026-09-22): a REPLY-direction
++	 * packet leaves the chain first. The PREROUTING jump has no -i, so a reply
++	 * arriving on the tunnel had the flow's code restored and was routed by
++	 * `lookup wgcN`; under MULTILAN_CFG that table holds only 0/1 + 128/1 dev
++	 * wgcN (no LAN route), so the reply went back INTO the tunnel - proven on
++	 * the tester's box with `ip route get <lan> from <remote> iif wgc2 mark
++	 * 0x70000` -> dev wgc2. ovpncN tables carry the LAN route, which is why only
++	 * WG failed; VPN Director is immune because its `from <src>` rule never
++	 * matches a reply. The RETURN sits ahead of the restores AND the trailing
++	 * --save-mark: scoping only the restores would let an unmarked reply save
++	 * 0 over the flow's verdict and re-classify every later packet. Unmarked
++	 * replies route by `main`, as VPN Director's do (wgcN rp_filter is loose). */
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  $T -t mangle -N " PPBR_CHAIN " 2>/dev/null\n"
+-	  "  $T -t mangle -F " PPBR_CHAIN "\n");
++	  "  $T -t mangle -F " PPBR_CHAIN "\n"
++	  "  $T -t mangle -A " PPBR_CHAIN " -m conntrack --ctdir REPLY -j RETURN\n");
+ 	for (i = 1; i < 16; i++)
+ 		if (used[i])
+ 			fprintf(f, "  $T -t mangle -A " PPBR_CHAIN " -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 248dc59b5c..80c350c3c8 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -615,6 +615,7 @@ struct rule {
+ 	int has_mac, mac_neg; char mac[20];
+ 	int has_set, set_neg, set_dir; char set[40];	/* dir 1 = src, 2 = dst */
+ 	int has_ct, ct_neg; unsigned ct;
++	int ctdir, ctdir_neg;		/* --ctdir: 1 ORIGINAL, 2 REPLY; the walked packet is ORIGINAL */
+ 	int has_mark, mark_neg; unsigned mark, mark_mask;
+ 	int has_cmark, cmark_neg; unsigned cmark, cmark_mask;
+ 	int has_icmp, icmp_neg, icmp_type;
+@@ -812,6 +813,12 @@ static int parse_rule(struct fw *fw, struct table *t, char *line)
+ 		else if (!strcmp(o, "--match-set")) { snprintf(r->set, sizeof(r->set), "%s", NEXT()); r->has_set = 1; r->set_neg = neg;
+ 			{ const char *fl = (i + 1 < n) ? tok[++i] : "src"; r->set_dir = (fl[0] == 'd') ? 2 : 1; if (strchr(fl, ',')) set_depends(r, "set-dim"); } }
+ 		else if (!strcmp(o, "--state") || !strcmp(o, "--ctstate")) { r->ct = ct_flags(NEXT()); r->has_ct = 1; r->ct_neg = neg; }
++		else if (!strcmp(o, "--ctdir")) {
++			/* v3.2.4: REAPER_PBR opens with `--ctdir REPLY -j RETURN` */
++			const char *v = NEXT();
++			if (!strcmp(v, "ORIGINAL")) r->ctdir = 1; else if (!strcmp(v, "REPLY")) r->ctdir = 2; else set_depends(r, "ctdir");
++			r->ctdir_neg = neg;
++		}
+ 		else if (!strcmp(o, "--mark")) {
+ 			/* `-m mark --mark` vs `-m connmark --mark`: the last -m decides; iptables-save writes the match right before it */
+ 			int k = i - 1; while (k > 1 && strcmp(tok[k-1], "-m") != 0) k--;
+@@ -954,6 +961,7 @@ static int rule_match(const struct rule *r, const struct pkt *p)
+ 	if (r->has_mac) { m = p->mac[0] && !strcasecmp(r->mac, p->mac); if (r->mac_neg ? m : !m) return 0; }
+ 	if (r->has_set) { m = set_test(r->set, r->set_dir == 2 ? &p->dst : &p->src); if (r->set_neg ? m : !m) return 0; }
+ 	if (r->has_ct) { m = (r->ct & p->ct) != 0; if (r->ct_neg ? m : !m) return 0; }
++	if (r->ctdir) { m = (r->ctdir == 1); if (r->ctdir_neg ? m : !m) return 0; }
+ 	if (r->has_mark) { m = ((p->mark & r->mark_mask) == (r->mark & r->mark_mask)); if (r->mark_neg ? m : !m) return 0; }
+ 	if (r->has_cmark) { m = ((p->cmark & r->cmark_mask) == (r->cmark & r->cmark_mask)); if (r->cmark_neg ? m : !m) return 0; }
+ 	if (r->has_icmp) { m = (p->proto == 1 || p->proto == 58) && p->icmp_type == r->icmp_type; if (r->icmp_neg ? m : !m) return 0; }
+@@ -1399,7 +1407,7 @@ static void eval_shape(struct witness *w)
+ /* an unconditional rule: nothing but the target */
+ static int r_isplain(const struct rule *r)
+ {
+-	return !r->has_src && !r->has_dst && !r->in[0] && !r->out[0] && r->proto < 0 && !r->has_mac && !r->has_set && !r->has_ct &&
++	return !r->has_src && !r->has_dst && !r->in[0] && !r->out[0] && r->proto < 0 && !r->has_mac && !r->has_set && !r->has_ct && !r->ctdir &&
+ 	       !r->has_mark && !r->has_cmark && !r->has_dpt && !r->has_spt && !r->nmp && !r->depends[0];
+ }
+ 
+-- 
+2.25.1
+

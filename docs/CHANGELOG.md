@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,29 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.2.5 — Samba and the Traffic Analyzer ship off
+
+- **Optional features ship off.** A factory-reset or new router no longer starts an SMB file
+  server when a disk is plugged in: `enable_samba` and `smbd_enable` default to `0` (stock ships
+  `1`). Turn sharing on under USB Application › Network Place. The Traffic Analyzer collector
+  (`rtraf_enable`) also defaults to `0`; the Traffic page's own switch turns it on. Defaults only
+  apply after a factory reset or on clean NVRAM; an upgraded router keeps its current values.
+  Unchanged on purpose: the self-monitor (`rwatch_enable`), and the PPPoE re-dial and stock
+  Traffic Monitor history, which have no switch in the GUI. The Reaper theme is untouched. Same
+  change on all six models.
+
+## v3.2.4 — a policy-routing rule to a WireGuard client brings the replies home
+
+- **A source rule to a WireGuard client now works.** The rule marked the flow's first packet and
+  saved the mark on the connection, as intended, but the `REAPER_PBR` jump has no input
+  interface, so the reply arriving from the tunnel had the same mark restored and was routed by
+  the client's table. That table holds only the two half-default routes into the tunnel, with no
+  LAN route, so the reply went back into the tunnel and the LAN host never saw it. OpenVPN
+  targets were unaffected (their tables carry the LAN route), as was VPN Director. The chain now
+  opens with `-m conntrack --ctdir REPLY -j RETURN` in both families, ahead of the restores, so
+  replies route by `main`. The rule walker models it. Found from a tester capture on an
+  RT-BE86U; reproduced and verified in a network-namespace model. **Metal confirmation owed.**
 
 ## v3.2.3 — locked Settings cells say why, four-radio fixes, Warden and boot efficiency
 

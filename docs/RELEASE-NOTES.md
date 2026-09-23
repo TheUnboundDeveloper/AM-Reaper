@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.4** · 2026-09-22 <!--@stamp-->
+> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.4** <!--@treever--> — `3006.102.8_Reaper_v3.2.3`. **Locked Settings cells say why, four-radio fixes, Warden and boot efficiency.** Every greyed control on the Wireless › Settings tab names its reason on hover; the four-radio tester's fixes land (numeric box width, the shared auto-channel options counted once, Extension Channel offering only real sidebands, the Fragmentation help) and *Set AP Isolated* moves to where isolation actually lives, the Network menu. Warden arms with the first firewall build instead of inside the boot sequence, init's idle wake sources are fixed, and four boot waits become polls. Built and verified locally as an RT-BE96U MCP test image before the cut. The series stands at **698 patches** (0695–0698 for v3.2.3); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.5** <!--@treever--> — `3006.102.8_Reaper_v3.2.5`. **Samba and the Traffic Analyzer ship off; a WireGuard policy rule brings its replies home.** A factory-reset or new router no longer starts an SMB server when a disk is plugged in, and the Traffic Analyzer waits for its own switch; v3.2.4's fix, which lets a Policy Routing source rule to a WireGuard client return its replies to the LAN, ships in the same images. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **702 patches** (0699–0700 for v3.2.4, 0701–0702 for v3.2.5); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,20 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.5 — Samba and the Traffic Analyzer ship off
+
+**Nothing optional starts on its own.** A factory-reset or new router no longer runs an SMB file
+server the moment a disk is plugged in; turn sharing on under USB Application › Network Place. The
+Traffic Analyzer also starts off; switch it on from the Traffic page. An upgraded router keeps the
+settings it already has, so if sharing is on today and you do not use it, switch it off yourself.
+
+## What's new in v3.2.4 — a policy-routing rule to a WireGuard client brings the replies home
+
+**A source rule to a WireGuard client works.** Replies to a device routed through a WireGuard client
+went back into the tunnel instead of reaching the device, so the connection never completed.
+OpenVPN targets and VPN Director were unaffected. Replies now leave the policy-routing chain before
+its marks are restored and route normally. The reporter's confirmation on metal is still owed.
 
 ## What's new in v3.2.3 — locked Settings cells say why, four-radio fixes, Warden and boot efficiency
 

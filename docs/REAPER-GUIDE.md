@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.2.4** · 2026-09-22 <!--@stamp-->
+> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -1142,7 +1142,7 @@ Saturate your upload with a large backup or file send, and watch the live column
 
 ### 4.7 Traffic Analyzer
 
-**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput with an optional latency trace, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap.
+**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput with an optional latency trace, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap. **Off by default:** switch it on with the page's toggle; nothing is recorded before that.
 
 **When to use it.** To see who is using the line and when, to confirm QoS classes are actually receiving traffic, and to keep an eye on a metered connection.
 
@@ -1504,7 +1504,7 @@ To read the live value of any key over SSH: `nvram get <key>`.
 
 ### 8.1 Stock settings whose default Reaper changes
 
-Fifteen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
+Seventeen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
 not an accident, and each is reversible from the GUI.
 
 | Setting | Stock | Reaper | Why |
@@ -1519,6 +1519,7 @@ not an accident, and each is reversible from the GUI.
 | `qos_orates` | `80-100,10-100,…` | **`15-100,15-90,20-90,5-95,25-95,…`** | Per-class minimum and maximum rates. The stock profile committed effectively the whole link to class 1. Reaper's leaves headroom and keeps the committed total under 85% of your configured upload. |
 | `qos_rulelist` | Web / HTTPS / File Transfer | **Conferencing, SIP, Game Console, Steam, BitTorrent, Web** | The starting classification rules. The stock set predates modern traffic; Reaper's recognises conferencing and game traffic, which is what people actually want prioritised. |
 | `psc6g` | `0` | **`1`** | Advertise the 6 GHz Preferred Scanning Channel, so 6 GHz clients find the band quickly instead of scanning the whole range. |
+| `enable_samba`, `smbd_enable` | `1` | **`0`** | SMB file sharing is off until you turn it on (USB Application → Network Place). Stock started an SMB server on the LAN the moment a disk was plugged in. |
 | `smbd_simpler_naming` | `0` | **`1`** | USB shares are named after the volume rather than a generated string. |
 | `v3_auth_type` | *(empty)* | **`SHA`** | SNMPv3 authentication defaults to SHA rather than nothing chosen. |
 | `v3_priv_type` | *(empty)* | **`AES`** | SNMPv3 privacy defaults to AES. Both matter only if you enable SNMP at all. |
@@ -1529,9 +1530,10 @@ strips out — AiCloud and WebDAV (`enable_webdav`, `acc_webdavproxy`, `st_webda
 
 ### 8.2 Reaper's own settings and their defaults
 
-Sixty keys, grouped by the feature that owns them. **Almost everything ships off.** No Reaper
-feature enforces anything until you turn it on. The exceptions are the two passive ones that only
-observe — `rtraf_enable` and `rwatch_enable` — plus `reaper_wanbounce_enable`.
+Sixty keys, grouped by the feature that owns them. **Every optional feature ships off.** No Reaper
+feature enforces anything until you turn it on. The exceptions are the self-monitor
+(`rwatch_enable`), which only acts on features you have enabled, and its PPPoE re-dial
+(`reaper_wanbounce_enable`).
 
 **Firewall engine** (4.1) — `reaper_fw_enable` `0`, `reaper_fw_active` `0`, `reaper_fw_armed` `0`,
 `reaper_fw_confirm` `60`. The rule-store keys (`reaper_fw_rules`, `_obj`, `_grp`, `_svc`, `_zone`,
@@ -1551,7 +1553,7 @@ the device list will cut off new arrivals.
 
 **Policy routing** (4.4) — `reaper_pbr_enable` `0`, `reaper_pbr_rulelist` empty.
 
-**Traffic Analyzer** (4.7) — `rtraf_enable` **`1`** (on, because it only records), `rtraf_cap_gb`
+**Traffic Analyzer** (4.7) — `rtraf_enable` `0` (turn it on from the page's toggle), `rtraf_cap_gb`
 `0` (no cap), `rtraf_path` and `rtraf_probe` empty.
 
 **Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds`

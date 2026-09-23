@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -106,11 +106,12 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.2.3 is the current beta** (cut 2026-09-20; patches 0695–0698 over v3.2.2's 0690–0694). It carries the
-hover reasons on locked Settings cells, the four-radio tester fixes and the Warden, idle-CPU and
-boot-wait efficiency items; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.5 is the current beta** (cut 2026-09-23; patches 0701–0702 over v3.2.4's 0699–0700). It ships
+Samba and the Traffic Analyzer off by default, and carries v3.2.4's WireGuard policy-routing reply
+fix; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
 
-*Earlier, in v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
+*Earlier, in v3.2.3 (2026-09-20): the hover reasons on locked Settings cells, the four-radio tester
+fixes and the Warden, idle-CPU and boot-wait efficiency items. In v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
 Download/Upload labels. In v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6
 coupling, the Professional row removals and radio links, and the Rule Status walker fixes.*
 
@@ -156,7 +157,11 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   decided by position rather than by the rule they expected. Ask for a retest on v3.1.9 or later before
   any more WireGuard work. Tester 2026-09-20: it "still does not work" on the v3.2 beta line, and they
   offer to re-create it together when there is time — that session is the capture this entry waits on.
-  **[fix candidates in v3.1.7 and v3.1.9; joint reproduction with the reporter owed]**
+  **Root cause found 2026-09-22 from the tester's capture and fixed in v3.2.4:** the `REAPER_PBR` jump has
+  no `-i`, so the REPLY arriving on `wgcN` had the flow's mark restored and was routed by `lookup wgcN`,
+  a table with no LAN route — the reply went back into the tunnel. The chain now opens with
+  `-m conntrack --ctdir REPLY -j RETURN` (both families); reproduced in a network namespace, 0/10 → 10/10.
+  **[fixed in v3.2.4, ships in v3.2.5; reporter confirmation on metal owed]**
   ↳ notes: `pbr-wg-livetunnel-gaps.md`
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
@@ -320,6 +325,14 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 - **[P2] Heavy ping loss after a router reboot, cured only by rebooting the ONT** (GT-BE98, PPPoE
   over VLAN 835) — best fit a stale PPPoE session at the OLT; v2.5.5 ships a one-shot re-dial.
   **[owed: a capture during the fault]** ↳ notes: `ping-loss-after-reboot-ont.md`
+- **[P2] Firewall engine: a failed `lastgood` snapshot may boot with no user policy** (found
+  2026-09-23 answering the external audit). `rfw_write_lastgood()` unlinks `.committed` first, and a
+  failed file write leaves it absent; boot then falls back to nvram, "which holds this very config"
+  per the comment — stale since v2.6.9, whose migration unsets the `reaper_fw_<key>` nvram lists. So
+  a confirm whose snapshot fails partway (full `/jffs`, power cut mid-write) would boot empty lists
+  with the engine enabled, and `reaper_fw_confirm()` deletes the draft regardless. Reachability
+  unproven: needs a failed JFFS write. **[owed: reachability, then fix]**
+  ↳ memory: `reaper-fw-audit-2026-09-23.md`
 
 ---
 
@@ -474,7 +487,10 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## Documentation
 
-*Nothing open — the `cut_rung` restatement item closed 2026-09-08 and shipped with the v3.1.1 cut.*
+- **[P3] Guide: `reaper_fw_confirm()` is not the only writer of `lastgood`** (2026-09-23).
+  `reaper_fw_promote_objects()` also writes `obj`/`grp` into `/jffs/reaper_fw/lastgood/` when a
+  Policy Routing change is confirmed. Reword wherever the guide or code comments call confirm "the
+  only path that writes flash". **[owed]** ↳ memory: `reaper-fw-audit-2026-09-23.md`
 
 ---
 
@@ -493,6 +509,23 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   `reaper_aimesh_exempt()` helper rather than three open-coded copies of the registry parser.
   **[owed — before a fourth enforcement surface is added]**
   ↳ notes: `aimesh-decompose-2026-09-09.md`
+- **[P3] Sibling port misses adds, renames and deletes** (found 2026-09-22 on an RT-BE86U test
+  build). `port_sibling_v2` syncs files that differ from canon but not files canon added, renamed or
+  deleted, so the sibling branches still hold `onion_tap.*` without `tor1_crypt_st.h`, lack twelve
+  OpenSSL 3.5 files (including `include/openssl/ecdsa.h`), and keep canon-deleted www files
+  (`Reaper_WiFiPro.asp`, `Reaper_BackupCard.asp`, the AdGuard images, `searchIspNameProfile.js`);
+  some also carry a stale `config_base`. CI is immune (it builds each model from the series plus its
+  overlay); a local sibling build breaks. Fix: have the port apply A/R/D from the canon diff, then
+  re-port all five. **[owed]**
+- **[P2] Firewall engine: three silent caps** (2026-09-23). A zone's interfaces past 8
+  (`RFW_MAX_IFACE`), a group's resolved sets past 16 (`RFW_MAX_SETS`) and zone-policy records past 64
+  (`RFW_MAX_ZPOL`) are dropped with no log line, so a DROP rule or zone policy leaves the overflow
+  unmatched. Every other cap in `reaper_fw.c` logs. Fix: log each (and surface in the page), or refuse
+  at save. **[owed]** ↳ memory: `reaper-fw-audit-2026-09-23.md`
+- **[P3] Firewall engine: stale comments** (2026-09-23). The Phase 3 block in `reaper_fw.c` names
+  nat field 7 `desc`; the parser reads it as the schedule (the file header is right). `web.c`
+  `do_reaper_fw_cgi` still says drafts live in "nvram RAM"; since v2.6.9 they are files under
+  `/tmp/reaper_fw/draft/`. **[owed]**
 - **[P2] Warden apply runs twice at boot, once for nothing** (measured 2026-09-20 on the RT-BE96U).
   `start_services()` runs `sh /tmp/rwarden/apply.sh` synchronously in pid 1 (~6 s: awk split of the 1.7 MB
   cache 0.6 s, per-set `ipset restore` 1.6 s, counter snapshot 0.6 s, 317 iptables calls ~3 s), then the

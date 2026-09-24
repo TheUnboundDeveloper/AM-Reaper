@@ -1,0 +1,45 @@
+From 14af8fddaa564322b4a2887e60c23386af2633c9 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Wed, 16 Sep 2026 17:17:51 -0400
+Subject: [PATCH] webui: fix DFS detection for Wireless Log
+
+Mode is set on the parent nvram rather than the subunit instance.
+
+(cherry picked from commit 97218e4d85f1336d6567fdf2d3dbf777f0b7f2da)
+---
+ release/src/router/httpd/sysdeps/web-broadcom-am.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/httpd/sysdeps/web-broadcom-am.c b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+index f6b2d8034a..e8029479ad 100644
+--- a/release/src/router/httpd/sysdeps/web-broadcom-am.c
++++ b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+@@ -352,7 +352,7 @@ wl_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ int
+ ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ {
+-	char tmp[128], prefix[] = "wlXXXXXXXXXX_";
++	char tmp[128], prefix[] = "wlXXXXXXXXXX_", prefix2[] = "wlXXXXXXXXXX_";
+ 	char *name;
+ 	char name_vif[] = "wlX.Y_XXXXXXXXXX";
+ 	struct maclist *auth;
+@@ -401,6 +401,7 @@ ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ #endif
+ 		snprintf(prefix, sizeof(prefix), "wl%d_", unit);
+ 
++	snprintf(prefix2, sizeof(prefix2), "wl%d_", unit);
+ 	name = nvram_safe_get(strcat_r(prefix, "ifname", tmp));
+ 
+ 	wl_ioctl(name, WLC_GET_RADIO, &val, sizeof(val));
+@@ -456,7 +457,7 @@ ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ 
+ // DFS status
+ #ifdef RTCONFIG_BCMWL6
+-	if (!nvram_match(strlcat_r(prefix, "reg_mode", tmp, sizeof(tmp)), "h"))
++	if (!nvram_match(strlcat_r(prefix2, "reg_mode", tmp, sizeof(tmp)), "h"))
+ 		goto sta_list;
+ 
+ 	memset(buf, 0, sizeof(buf));
+-- 
+2.25.1
+

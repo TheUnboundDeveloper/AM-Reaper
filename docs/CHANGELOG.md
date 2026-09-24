@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,26 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.2.6 — Asuswrt-Merlin 3006.102.9 carry: OpenVPN 2.7.7, tzdata 2026c, a 2048-bit DH floor
+
+- **Carried from Asuswrt-Merlin 3006.102.9** (Eric Sauvageau unless noted; cherry-picked with
+  authorship kept): OpenVPN 2.7.7; IANA tzdata 2026c; Wireless Log fixes for Repeater and Media
+  Bridge modes, with the follow-up DFS fix; the System Log page stops querying the router while
+  auto-refresh is off; two MultiWAN help-popup fixes; a parallel libimobiledevice build; amtm 7.0
+  (Decoderman). The rest of 3006.102.9 was already in the tree (OpenSSL 3.5, Tor 0.4.9.11 with
+  IPv6, the Brahma-B53 mitigation backport) or is not carried: the hardware AQM QoS mode (Reaper's
+  Hardware QoS engines cover it), EasyRSA 3 (the existing certificate path is fixed for OpenSSL 3.5
+  and checked on every build), the FTP TLS upgrade change, and the OpenVPN/Tor switch restyle.
+- **Time zones.** The zoneinfo tree dated from a 2017 ASUS GPL merge. About 28 zone names gave the
+  wrong offset under current rules (Mexico, Egypt, Greenland, Kazakhstan, Mongolia, Paraguay, Sudan,
+  North Korea and others); US zones were already correct. New names include `Europe/Kyiv`,
+  `America/Nuuk` and `Pacific/Kanton`. The router's own clock follows the POSIX rule the GUI writes to
+  `TZ`; the database feeds `/etc/localtime` and anything that names a region/city zone.
+- **OpenVPN server DH is at least 2048 bits.** Upstream raised the weak-DH warning from 1024 to 2048
+  bits but left the replacement test at 1024, so a 1024–2047-bit DH was warned about and still used,
+  and OpenSSL 3.x rejects it at the security level OpenVPN requests. Any DH under 2048 bits is now
+  replaced with the built-in RFC 3526 2048-bit group.
 
 ## v3.2.5 — Samba and the Traffic Analyzer ship off
 

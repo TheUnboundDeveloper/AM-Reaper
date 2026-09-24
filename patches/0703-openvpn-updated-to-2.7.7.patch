@@ -1,0 +1,3258 @@
+From 95a63bc0fe2ae6be926e1fd6e27cc43cc2b73f19 Mon Sep 17 00:00:00 2001
+From: Eric Sauvageau <merlin@asuswrt-merlin.net>
+Date: Fri, 4 Sep 2026 16:35:49 -0400
+Subject: [PATCH] openvpn: updated to 2.7.7
+
+(cherry picked from commit 6be5bc84b50ea37be7b5d4307c5042771c3cf95b)
+---
+ release/src/router/openvpn/ChangeLog          |  54 ++++++
+ release/src/router/openvpn/Changes.rst        | 125 +++++++++++++
+ .../router/openvpn/doc/doxygen/Makefile.in    |  24 ++-
+ .../openvpn/doc/doxygen/doc_eventloop.h       |   3 +-
+ .../openvpn/doc/doxygen/doc_tunnel_state.h    |  22 +--
+ .../doc/man-sections/server-options.rst       |   5 +
+ .../src/router/openvpn/doc/openvpn-examples.5 |  12 +-
+ .../openvpn/doc/openvpn-examples.5.html       |   9 +-
+ release/src/router/openvpn/doc/openvpn.8      |  85 +++++----
+ release/src/router/openvpn/doc/openvpn.8.html |  13 +-
+ .../router/openvpn/include/openvpn-plugin.h   |   2 +-
+ .../openvpn/sample/sample-plugins/Makefile    | 142 ++++++++-------
+ .../openvpn/sample/sample-plugins/Makefile.in |  22 ++-
+ .../src/router/openvpn/src/openvpn/clinat.c   |  18 +-
+ .../router/openvpn/src/openvpn/crypto_epoch.c |   7 +-
+ .../openvpn/src/openvpn/crypto_mbedtls.h      |   1 -
+ .../openvpn/src/openvpn/crypto_openssl.c      |  14 +-
+ release/src/router/openvpn/src/openvpn/dhcp.c |   4 +-
+ release/src/router/openvpn/src/openvpn/init.c |   2 +-
+ .../openvpn/src/openvpn/mbedtls_compat.h      |  13 ++
+ .../src/router/openvpn/src/openvpn/multi.c    |   6 +-
+ .../src/router/openvpn/src/openvpn/multi.h    |   5 +-
+ .../openvpn/src/openvpn/networking_sitnl.c    |  54 ++++--
+ .../src/router/openvpn/src/openvpn/options.c  |   9 +-
+ .../openvpn/src/openvpn/pkcs11_mbedtls.c      |   2 +-
+ .../src/router/openvpn/src/openvpn/reliable.c |  50 ++++-
+ .../src/router/openvpn/src/openvpn/reliable.h |  58 ++++--
+ release/src/router/openvpn/src/openvpn/ssl.c  | 171 +++++++++++-------
+ .../router/openvpn/src/openvpn/win32-util.c   |  67 +++++++
+ .../router/openvpn/src/openvpn/win32-util.h   |   8 +-
+ .../src/router/openvpn/src/openvpn/win32.c    | 155 ++++++++++------
+ .../src/router/openvpn/src/openvpn/win32.h    |   6 +
+ .../openvpn/src/openvpnmsica/Makefile.in      |  51 +++---
+ .../openvpn/src/openvpnserv/interactive.c     |  18 +-
+ .../router/openvpn/src/openvpnserv/validate.c |  13 +-
+ .../router/openvpn/src/openvpnserv/validate.h |   1 -
+ .../src/router/openvpn/src/tapctl/Makefile.in |  39 ++--
+ release/src/router/openvpn/src/tapctl/tap.c   |  27 +--
+ .../router/openvpn/tests/t_client.rc-sample   |   9 +-
+ .../src/router/openvpn/tests/t_client.sh.in   |  26 +--
+ .../unit_tests/openvpn/mock_get_random.c      |   2 +-
+ .../tests/unit_tests/openvpn/test_argv.c      |  57 ++++++
+ .../tests/unit_tests/openvpn/test_dhcp.c      |  18 ++
+ .../tests/unit_tests/openvpn/test_misc.c      |  14 +-
+ .../tests/unit_tests/openvpn/test_packet_id.c |  50 ++++-
+ release/src/router/openvpn/version.m4         |   4 +-
+ 46 files changed, 1088 insertions(+), 409 deletions(-)
+
+diff --git a/release/src/router/openvpn/ChangeLog b/release/src/router/openvpn/ChangeLog
+index b9da468066..e946e7f639 100644
+--- a/release/src/router/openvpn/ChangeLog
++++ b/release/src/router/openvpn/ChangeLog
+@@ -1,6 +1,60 @@
+ OpenVPN ChangeLog
+ Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
+ 
++2026.09.03 -- Version 2.7.7
++
++Antonio Quartulli (3):
++      clinat: do not adjust UDP checksum if zero
++      multi: don't let stale-routes-check delete permanent routes
++      networking_sitnl: validate netlink replies against the request
++
++Arne Schwabe (7):
++      Remove local get_random in test_misc.c
++      Make test_misc compile with -Werror again.
++      Reenable xmit_hold when using p2p tcp-server and tls-server
++      Reduce number of future epoch keys from 16 to 4
++      Move check_session_buf_not_used method into the method that free the buffer
++      Avoid unbounded reliable TLS timeout
++      Ignore acks for packets that cannot be outstanding
++
++Frank Lichtenheld (7):
++      t_client.rc-sample: Add missing documentation for FPING_ARGS_x
++      t_client.sh.in: Use printf instead of echo -e
++      ssl: Do not queue control ciphertext while a packet is still queued
++      win32-util.h: Fix includes
++      t_client.sh.in: Do not try to guess the absolute path to LOGDIR
++      .clang-format: Convert deprecated setting KeepEmptyLinesAtTheStartOfBlocks
++      mbedtls: Work-around bug in mbedtls 4.1.0 and 4.2.0
++
++Gert Doering (1):
++      OpenVPN Release 2.7.7
++
++Gleb Pesin (1):
++      OpenSSL: avoid resetting the HMAC key on every packet
++
++Heiko Hund (7):
++      openvpnserv: fix log lines format string
++      openvpnserv: don't allow '/' in config paths
++      openvpnserv: harden CheckConfigPath() a bit more
++      openvpnserv: pass correct NRPT domains size
++      openvpnserv: fix off-by-one input validation
++      win: don't use NULL DACL with system objects
++      tapctl: prevent binary planting with netsh
++
++Lev Stipakov (2):
++      win32: quote arguments that cmd.exe would reinterpret
++      win32: unit-test the CreateProcess() command line quoting
++
++Max Fillinger (1):
++      Fix format string specifier for size_t
++
++Nexory (1):
++      dhcp: Fix off-by-one in write_dhcp_search_str() temp buffer guard
++
++Razvan Cojocaru (1):
++      doc: Update doxygen references to removed tunnel_server_{udp, tcp}()
++
++
+ 2026.08.05 -- Version 2.7.6
+ 
+ Antonio Quartulli (2):
+diff --git a/release/src/router/openvpn/Changes.rst b/release/src/router/openvpn/Changes.rst
+index 36b57eef06..213f1dcd41 100644
+--- a/release/src/router/openvpn/Changes.rst
++++ b/release/src/router/openvpn/Changes.rst
+@@ -1,3 +1,128 @@
++Overview of changes in 2.7.7
++============================
++Security fixes
++--------------
++- reliability layer: Avoid unbounded reliable TLS timeout (CVE-2026-84732)
++
++- reliability layer: Ignore acks for packets that cannot be outstanding
++  (CVE-2026-84732)
++
++  (both reliability layer bugs found by Mark Bregman <mark.bregman@fox-it.com>,
++   tracked in Github: OpenVPN/openvpn-private-issues#161)
++
++- Windows: fix ``CreateProcess()`` command line quoting for characters that
++  are special to ``cmd.exe`` and where a combination of validation script
++  plus rogue CA could lead to misbehavior (CVE-2026-84256)
++
++  (Bug found by Clouditera Security <security@clouditera.com>, tracked
++   in Github: OpenVPN/openvpn-private-issues#159)
++
++- Windows: fix ``tapctl`` to always call ``netsh.exe`` with full path
++  (as we do elsewhere) (CVE-2026-84226)
++
++  (Bug found by BreachX Zero Day Labs, using Typhon AI Mil v2, tracked
++   in Github: OpenVPN/openvpn-private-issues#164)
++
++- Windows: don't use NULL DACL with system objects, namely the
++  ``--service`` exit event and the ``netsh.exe`` guard semaphore.  The
++  old approach was prone to a local DoS where one user could interfere
++  with other users' openvpn processes by blocking the netsh semaphore
++  or sending events.  This only affects setups not using the iservice,
++  or using the automatic service to start/stop openvpn (CVE-2026-82312).
++
++  (Bug found by DEBRAJ BASAK <https://in.linkedin.com/in/debrajbasak>,
++   tracked in Github: OpenVPN/openvpn-private-issues#167)
++
++- Linux Netlink: validate netlink replies against the request
++
++  (Suggested by Joshua Rogers <contact@joshua.hu> as a security improvement,
++   tracked in Github: OpenVPN/openvpn-private-issues#9)
++
++- Windows: fix off-by-one on input validation in openvpnserv
++  (discovered while fixing CVE-2026-78221)
++
++- Windows: openvpnserv: pass correct NRPT domains size - when IDN domains
++  with UTF8 encoding were involved, a buffer overread could be achieved
++  (CVE-2026-78221).
++
++  (Bug found by BreachX Zero Day Labs, using Typhon AI Mil v2,
++   in Github: OpenVPN/openvpn-private-issues#162)
++
++- Windows: harden CheckConfigPath() a bit more
++  (another improvement while working on CVE-2026-78043)
++
++- Windows: openvpnserv: don't allow '/' in config paths
++  (the APIs windows uses for path validation do not handle '/' as path
++   separator, while the file open APIs do, so this could be used to
++   circumvent our config path validation, leading to openvpn.exe
++   starting a user-controlled config file even if administatively not
++   allowed.  CVE-2026-78043)
++
++  (Bug found by BreachX Zero Day Labs, using Typhon AI Mil v2,
++   in Github: OpenVPN/openvpn-private-issues#162)
++
++- Windows: dhcp: Fix off-by-one in write_dhcp_search_str() temp buffer guard
++  (suitable DHCP options could lead to a single-byte overflow of a temp
++   buffer, CVE-2026-81738)
++
++  (Bug found by Andre Kropp (Nexory) and ChinhNguyen, tracked
++   in Github: OpenVPN/openvpn-private-issues#165)
++
++Bugfixes
++--------
++- work around a pubkey-handling bug in mbedTLS 4.1.0 and 4.2.0
++  (supposedly fixed in 4.3.0)
++
++- multi: don't let stale-routes-check delete permanent routes
++  (the ``--stale-routes-check`` did not delete dynamic cached routes,
++   but also routes installed by ``--iroute`` and ``--ifconfig-push``
++   - fix by introducing route flags and restraining the check on them)
++  (Github: #1063)
++
++- Windows: openvpnserv: fix log lines format string
++  interface names with international characters printed in some error
++  messages need to be converted from UTF8 to UCS16 first.
++
++- clinat: do not adjust UDP checksum if zero (as per RFC768)
++  (Github: #1037)
++
++- OpenSSL: avoid resetting the HMAC key on every packet
++  (Github: #1088)
++
++- fix format string specifier for size_t (%zu)
++
++- ssl: Do not queue control ciphertext while a packet is still queued
++  (fixes problems in TCP p2p handshake when both sides try to handshake
++   at the same time)
++  (Github: #1089)
++
++- Reenable xmit_hold when using p2p tcp-server and tls-server
++  (in TCP server mode, the server is not expected to initiate the TLS
++   handshake - bug introduced by the multisocket code, checking the
++   wrong variable for socket protocol)
++  (Github: #1089)
++
++- fix test_misc compile issues with -Werror
++
++User-visible Changes
++--------------------
++- when using EPOCH data channel format, reduce number of future keys
++  from 16 to 4 (calculation was wrong, 4 spare keys are sufficient
++  for 100+ Gbit/s links, less log spam in userland and less resources
++  used in in-kernel implementations)
++
++Building/Testing improvements
++-----------------------------
++- clang-format: Convert deprecated setting KeepEmptyLinesAtTheStartOfBlocks
++
++- t_client.sh: various improvements
++
++Documentation improvements
++--------------------------
++- doc: Update doxygen references to removed tunnel_server_{udp, tcp}()
++  (those functions do not exist in 2.7+ anymore)
++
++
+ Overview of changes in 2.7.6
+ ============================
+ Security fixes
+diff --git a/release/src/router/openvpn/doc/doxygen/Makefile.in b/release/src/router/openvpn/doc/doxygen/Makefile.in
+index de62c2df04..f6f2712268 100644
+--- a/release/src/router/openvpn/doc/doxygen/Makefile.in
++++ b/release/src/router/openvpn/doc/doxygen/Makefile.in
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.16.5 from Makefile.am.
++# Makefile.in generated by automake 1.18.1 from Makefile.am.
+ # @configure_input@
+ 
+-# Copyright (C) 1994-2021 Free Software Foundation, Inc.
++# Copyright (C) 1994-2025 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -79,6 +79,8 @@ am__make_running_with_option = \
+   test $$has_opt = yes
+ am__make_dryrun = (target_option=n; $(am__make_running_with_option))
+ am__make_keepgoing = (target_option=k; $(am__make_running_with_option))
++am__rm_f = rm -f $(am__rm_f_notfound)
++am__rm_rf = rm -rf $(am__rm_f_notfound)
+ pkgdatadir = $(datadir)/@PACKAGE@
+ pkgincludedir = $(includedir)/@PACKAGE@
+ pkglibdir = $(libdir)/@PACKAGE@
+@@ -291,8 +293,10 @@ ac_ct_WINDMC = @ac_ct_WINDMC@
+ am__include = @am__include@
+ am__leading_dot = @am__leading_dot@
+ am__quote = @am__quote@
++am__rm_f_notfound = @am__rm_f_notfound@
+ am__tar = @am__tar@
+ am__untar = @am__untar@
++am__xargs_n = @am__xargs_n@
+ bindir = @bindir@
+ build = @build@
+ build_alias = @build_alias@
+@@ -409,6 +413,7 @@ ctags CTAGS:
+ 
+ cscope cscopelist:
+ 
++
+ distdir: $(BUILT_SOURCES)
+ 	$(MAKE) $(AM_MAKEFLAGS) distdir-am
+ 
+@@ -470,14 +475,14 @@ mostlyclean-generic:
+ clean-generic:
+ 
+ distclean-generic:
+-	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
+-	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
+-	-test -z "$(DISTCLEANFILES)" || rm -f $(DISTCLEANFILES)
++	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
++	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
++	-$(am__rm_f) $(DISTCLEANFILES)
+ 
+ maintainer-clean-generic:
+ 	@echo "This command is intended for maintainers to use"
+ 	@echo "it deletes files that may require special tools to rebuild."
+-	-test -z "$(MAINTAINERCLEANFILES)" || rm -f $(MAINTAINERCLEANFILES)
++	-$(am__rm_f) $(MAINTAINERCLEANFILES)
+ clean: clean-am
+ 
+ clean-am: clean-generic clean-libtool clean-local mostlyclean-am
+@@ -571,3 +576,10 @@ clean-local:
+ # Tell versions [3.59,3.63) of GNU make to not export all variables.
+ # Otherwise a system limit (for SysV at least) may be exceeded.
+ .NOEXPORT:
++
++# Tell GNU make to disable its built-in pattern rules.
++%:: %,v
++%:: RCS/%,v
++%:: RCS/%
++%:: s.%
++%:: SCCS/s.%
+diff --git a/release/src/router/openvpn/doc/doxygen/doc_eventloop.h b/release/src/router/openvpn/doc/doxygen/doc_eventloop.h
+index 55ecd7353e..4c1b012fc9 100644
+--- a/release/src/router/openvpn/doc/doxygen/doc_eventloop.h
++++ b/release/src/router/openvpn/doc/doxygen/doc_eventloop.h
+@@ -60,6 +60,5 @@
+  * event loop function is called to drive the event processing.  The
+  * following implementations are available:
+  * - Client mode using UDP or TCP: \c tunnel_point_to_point()
+- * - Server mode using UDP: \c tunnel_server_udp()
+- * - Server mode using TCP: \c tunnel_server_tcp()
++ * - Server mode using UDP or TCP: \c tunnel_server()
+  */
+diff --git a/release/src/router/openvpn/doc/doxygen/doc_tunnel_state.h b/release/src/router/openvpn/doc/doxygen/doc_tunnel_state.h
+index 296e804f2c..424f81e9a5 100644
+--- a/release/src/router/openvpn/doc/doxygen/doc_tunnel_state.h
++++ b/release/src/router/openvpn/doc/doxygen/doc_tunnel_state.h
+@@ -117,10 +117,10 @@
+  * tunnel_point_to_point() or \c tunnel_server().
+  *
+  * In server-mode, \c main() calls the \c tunnel_server() function, which
+- * transfers control to \c tunnel_server_udp() or \c
+- * tunnel_server_tcp() depending on the external transport protocol.
++ * drives the event loop for both the UDP and TCP external transport
++ * protocols.
+  *
+- * These functions receive the \c context created in \c main().  This
++ * This function receives the \c context created in \c main().  This
+  * object has a special status in server-mode, as it does not represent an
+  * active VPN tunnel, but does contain process-wide configuration
+  * parameters.  In the source code, it is often stored in "top" variables.
+@@ -130,11 +130,10 @@
+  * CM_CHILD_UDP or \c CM_CHILD_TCP, depending on the external transport
+  * protocol.
+  *
+- * Both \c tunnel_server_udp_single_threaded() and \c tunnel_server_tcp()
+- * perform similar initialization.  In either case, a \c multi_context
+- * structure is created, and it is initialized according to the
+- * configuration stored in the top \c context by the \c multi_init() and
+- * \c multi_top_init() functions.
++ * During initialization, \c tunnel_server() creates a \c multi_context
++ * structure, which is initialized according to the configuration stored
++ * in the top \c context by the \c multi_init() and \c multi_top_init()
++ * functions.
+  *
+  * @subsection tunnel_state_server_tunnels Creating and destroying VPN tunnels
+  *
+@@ -146,8 +145,7 @@
+  *
+  * @subsection tunnel_state_server_cleanup Final cleanup
+  *
+- * After the main event loop exits, both \c
+- * tunnel_server_udp_single_threaded() and \c tunnel_server_tcp() perform
+- * similar cleanup.  They call \c multi_uninit() followed by \c
+- * multi_top_free() to clean up the \c multi_context structure.
++ * After the main event loop exits, \c tunnel_server() performs the
++ * cleanup.  It calls \c multi_uninit() followed by \c multi_top_free()
++ * to clean up the \c multi_context structure.
+  */
+diff --git a/release/src/router/openvpn/doc/man-sections/server-options.rst b/release/src/router/openvpn/doc/man-sections/server-options.rst
+index f420588d89..9dfa6bd330 100644
+--- a/release/src/router/openvpn/doc/man-sections/server-options.rst
++++ b/release/src/router/openvpn/doc/man-sections/server-options.rst
+@@ -673,6 +673,11 @@ fast hardware. SSL/TLS authentication must be used in this mode.
+ 
+   If ``t`` is not present it defaults to ``n``.
+ 
++  Only dynamically learned routes are subject to this check. Routes added from
++  configuration, such as ``--iroute`` entries and a client's pushed ifconfig
++  address, are never removed by it; they are dropped only when the client
++  disconnects.
++
+   This option helps to keep the dynamic routing table small. See also
+   ``--max-routes-per-client``
+ 
+diff --git a/release/src/router/openvpn/doc/openvpn-examples.5 b/release/src/router/openvpn/doc/openvpn-examples.5
+index 6531f0f639..e9e2f93f68 100644
+--- a/release/src/router/openvpn/doc/openvpn-examples.5
++++ b/release/src/router/openvpn/doc/openvpn-examples.5
+@@ -1,4 +1,5 @@
+-.\" Man page generated from reStructuredText.
++.\" Man page generated from reStructuredText
++.\" by the Docutils 0.22.3 manpage writer.
+ .
+ .
+ .nr rst2man-indent-level 0
+@@ -27,13 +28,13 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
+ .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
+ .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
+ ..
+-.TH "OPENVPN EXAMPLES" 5 "" "" "Configuration files"
+-.SH NAME
++.TH "openvpn examples" "5" "" "" "Configuration files"
++.SH Name
+ openvpn examples \- Secure IP tunnel daemon
+ .SH INTRODUCTION
+ .sp
+ This man page gives a few simple examples to create OpenVPN setups and configuration files.
+-.SH SMALL OPENVPN SETUP WITH PEER-FINGERPRINT
++.SH Small OpenVPN setup with peer-fingerprint
+ .sp
+ This section consists of instructions how to build a small OpenVPN setup with the
+ \fBpeer\-fingerprint\fP option. This has the advantage of being easy to setup
+@@ -621,5 +622,4 @@ Now any machine on the \fI10.0.0.0/24\fP subnet can access any machine on the
+ .sp
+ In a production environment, you could put the route command(s) in a
+ script and execute with the \fB\-\-up\fP option.
+-.\" Generated by docutils manpage writer.
+-.
++.\" End of generated man page.
+diff --git a/release/src/router/openvpn/doc/openvpn-examples.5.html b/release/src/router/openvpn/doc/openvpn-examples.5.html
+index 3cc02b2753..b40a79bfe0 100644
+--- a/release/src/router/openvpn/doc/openvpn-examples.5.html
++++ b/release/src/router/openvpn/doc/openvpn-examples.5.html
+@@ -3,16 +3,17 @@
+ <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+ <head>
+ <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />
++<meta name="generator" content="Docutils 0.22.3: https://docutils.sourceforge.io/" />
+ <title>openvpn examples</title>
+ <style type="text/css">
+ 
+ /*
+ :Author: David Goodger (goodger@python.org)
+-:Id: $Id: html4css1.css 8954 2022-01-20 10:10:25Z milde $
++:Id: $Id: html4css1.css 9511 2024-01-13 09:50:07Z milde $
+ :Copyright: This stylesheet has been placed in the public domain.
+ 
+ Default cascading style sheet for the HTML output of Docutils.
++Despite the name, some widely supported CSS2 features are used.
+ 
+ See https://docutils.sourceforge.io/docs/howto/html-stylesheets.html for how to
+ customize this style sheet.
+@@ -275,7 +276,7 @@ pre.literal-block, pre.doctest-block, pre.math, pre.code {
+   margin-left: 2em ;
+   margin-right: 2em }
+ 
+-pre.code .ln { color: grey; } /* line numbers */
++pre.code .ln { color: gray; } /* line numbers */
+ pre.code, code { background-color: #eeeeee }
+ pre.code .comment, code .comment { color: #5C6576 }
+ pre.code .keyword, code .keyword { color: #3B0D06; font-weight: bold }
+@@ -301,7 +302,7 @@ span.option {
+ span.pre {
+   white-space: pre }
+ 
+-span.problematic {
++span.problematic, pre.problematic {
+   color: red }
+ 
+ span.section-subtitle {
+diff --git a/release/src/router/openvpn/doc/openvpn.8 b/release/src/router/openvpn/doc/openvpn.8
+index 023f9e8cf3..a543c3a7ca 100644
+--- a/release/src/router/openvpn/doc/openvpn.8
++++ b/release/src/router/openvpn/doc/openvpn.8
+@@ -1,4 +1,5 @@
+-.\" Man page generated from reStructuredText.
++.\" Man page generated from reStructuredText
++.\" by the Docutils 0.22.3 manpage writer.
+ .
+ .
+ .nr rst2man-indent-level 0
+@@ -27,8 +28,8 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
+ .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
+ .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
+ ..
+-.TH "OPENVPN" 8 "" "" "System Manager's Manual"
+-.SH NAME
++.TH "openvpn" "8" "" "" "System Manager's Manual"
++.SH Name
+ openvpn \- Secure IP tunnel daemon
+ .SH SYNOPSIS
+ .nf
+@@ -46,7 +47,7 @@ will see how to construct simple VPNs on the command line without even
+ needing a configuration file.
+ .sp
+ Also note that there\(aqs more documentation and examples on the OpenVPN
+-web site: \fI\%https://openvpn.net/\fP
++web site: \%<https://\:openvpn\:.net/>
+ .sp
+ And if you would like to see a shorter version of this manual, see the
+ openvpn usage message which can be obtained by running \fBopenvpn\fP
+@@ -206,7 +207,7 @@ secret \(dqc:\e\eOpenVPN\e\esecret.key\(dq
+ .UNINDENT
+ .sp
+ For examples of configuration files, see
+-\fI\%https://openvpn.net/community\-resources/how\-to/\fP
++\%<https://\:openvpn\:.net/\:community-resources/\:how-to/>
+ .sp
+ Here is an example configuration file:
+ .INDENT 7.0
+@@ -760,7 +761,7 @@ usually adds 16 or 20 bytes per packet. Set \fBalg=none\fP to disable
+ authentication.
+ .sp
+ For more information on HMAC see
+-\fI\%https://tools.ietf.org/html/rfc2104\fP
++\%<https://\:tools\:.ietf\:.org/\:html/\:rfc2104>
+ .TP
+ .BI \-\-cipher \ alg
+ This option should not be used any longer in TLS mode and still
+@@ -876,7 +877,7 @@ For servers, the first cipher from \fBcipher\-list\fP that is also
+ supported by the client will be pushed to clients that support cipher
+ negotiation.
+ .sp
+-For more details see the chapter on \fI\%Data channel cipher negotiation\fP\&.
++For more details see the chapter on Data channel cipher negotiation\&.
+ \fIEspecially\fP if you need to support clients with OpenVPN versions older
+ than 2.4!
+ .sp
+@@ -1457,7 +1458,7 @@ This may be set by the client UI/GUI using \fB\-\-setenv\fP\&.
+ .UNINDENT
+ .sp
+ The following flags depend on which compression formats are compiled in
+-and whether compression is allowed by options. See \fI\%Protocol options\fP
++and whether compression is allowed by options. See Protocol options
+ for more details.
+ .INDENT 7.0
+ .INDENT 3.5
+@@ -1666,7 +1667,7 @@ address \fBserver\fP and \fBport\fP argument.  If HTTP Proxy\-Authenticate
+ is required, a file name to an \fBauthfile\fP file containing a username
+ and password on 2 lines can be given, or \fBstdin\fP to prompt from
+ console. Its content can also be specified in the config file with the
+-\fB\-\-http\-proxy\-user\-pass\fP option (See \fI\%INLINE FILE SUPPORT\fP).
++\fB\-\-http\-proxy\-user\-pass\fP option (See INLINE FILE SUPPORT).
+ .sp
+ The last optional argument is an \fBauth\-method\fP which should be one
+ of \fBnone\fP, \fBbasic\fP, or \fBntlm2\fP\&.
+@@ -1720,7 +1721,7 @@ attempt to use NTLMv2 authentication.
+ .TP
+ .BI \-\-http\-proxy\-user\-pass \ userpass
+ Overwrite the username/password information for \fB\-\-http\-proxy\fP\&. If specified
+-as an inline option (see \fI\%INLINE FILE SUPPORT\fP), it will be interpreted as
++as an inline option (see INLINE FILE SUPPORT), it will be interpreted as
+ username/password separated by a newline. When specified on the command line
+ it is interpreted as a filename same as the third argument to \fB\-\-http\-proxy\fP\&.
+ .sp
+@@ -2559,6 +2560,11 @@ stale\-routes\-check n [t]
+ .sp
+ If \fBt\fP is not present it defaults to \fBn\fP\&.
+ .sp
++Only dynamically learned routes are subject to this check. Routes added from
++configuration, such as \fB\-\-iroute\fP entries and a client\(aqs pushed ifconfig
++address, are never removed by it; they are dropped only when the client
++disconnects.
++.sp
+ This option helps to keep the dynamic routing table small. See also
+ \fB\-\-max\-routes\-per\-client\fP
+ .TP
+@@ -2964,7 +2970,7 @@ succeed, both OpenVPN peers will exchange temporary session keys, and
+ the tunnel will begin passing data.
+ .sp
+ The OpenVPN project provides a set of scripts for managing RSA
+-certificates and keys: \fI\%https://github.com/OpenVPN/easy\-rsa\fP
++certificates and keys: \%<https://\:github\:.com/\:OpenVPN/\:easy-rsa>
+ .INDENT 0.0
+ .TP
+ .BI \-\-askpass \ file
+@@ -3040,7 +3046,7 @@ signed by a certificate authority whose certificate is in \fB\-\-ca file\fP
+ in the peer configuration. URI is supported only when built with
+ OpenSSL 3.0 or later and any required providers are loaded. Types
+ of URIs supported and their syntax depends on providers. OpenSSL has
+-internal support for \(dq\fI\%file:/absolute/path\fP\(dq URI in which case the scheme
++internal support for \(dq\%<file:/\:absolute/\:path>\(dq URI in which case the scheme
+ \(dqfile:\(dq is optional, and any file format recognized by OpenSSL (e.g., PEM,
+ PKCS12) is supported. PKCS#11 URI (RFC 7512) is supported by pkcs11\-provider.
+ .sp
+@@ -4029,7 +4035,7 @@ always have the \fBAES\-256\-GCM\fP and \fBAES\-128\-GCM\fP ciphers to the \fB\-
+ options to avoid this behaviour.
+ .SS OpenVPN 3 clients
+ .sp
+-Clients based on the OpenVPN 3.x library (\fI\%https://github.com/openvpn/openvpn3/\fP)
++Clients based on the OpenVPN 3.x library (\%<https://\:github\:.com/\:openvpn/\:openvpn3/>)
+ do not have a configurable \fB\-\-ncp\-ciphers\fP or \fB\-\-data\-ciphers\fP option. Newer
+ versions by default disable legacy AES\-CBC, BF\-CBC, and DES\-CBC ciphers.
+ These clients will always announce support for all their supported AEAD ciphers
+@@ -4412,7 +4418,7 @@ The maximum value for \fBn\fP is 86400 seconds.
+ .sp
+ This option is useful in cases where the remote peer has a dynamic IP
+ address and a low\-TTL DNS name is used to track the IP address using a
+-service such as \fI\%https://www.nsupdate.info/\fP + a dynamic DNS client such as
++service such as \%<https://\:www\:.nsupdate\:.info/> + a dynamic DNS client such as
+ \fBddclient\fP\&.
+ .sp
+ If the peer cannot be reached, a restart will be triggered, causing the
+@@ -4472,7 +4478,7 @@ UDP, TCP will usually be somewhat less efficient and less robust when
+ used over unreliable or congested networks.
+ .sp
+ This article outlines some of problems with tunneling IP over TCP:
+-\fI\%https://web.archive.org/web/20141025181658/http://sites.inka.de/sites/bigred/devel/tcp\-tcp.html\fP
++\%<https://\:web\:.archive\:.org/\:web/\:20141025181658/\:http://\:sites\:.inka\:.de/\:sites/\:bigred/\:devel/\:tcp-tcp\:.html>
+ .sp
+ There are certain cases, however, where using TCP may be advantageous
+ from a security and robustness perspective, such as tunneling non\-IP or
+@@ -4664,7 +4670,7 @@ routing.
+ .TP
+ .BI \-\-bind\-dev \ device
+ (Linux only) Set \fBdevice\fP to bind the server socket to a
+-\fI\%Virtual Routing and Forwarding\fP device
++Virtual Routing and Forwarding device
+ .TP
+ .B  \-\-block\-ipv6
+ On the client, instead of sending IPv6 packets over the VPN tunnel, all
+@@ -4805,7 +4811,7 @@ environment variables.  The temporary unix domain socket  will be be passed
+ in the environment variable \fBTUNTAP_SOCKET_FD\fP\&.
+ .sp
+ This \fBunix:\fP mode is designed mainly to use with the lwipovpn network
+-emulator (\fI\%https://github.com/OpenVPN/lwipovpn\fP).
++emulator (\%<https://\:github\:.com/\:OpenVPN/\:lwipovpn>).
+ .TP
+ .BI \-\-dev\-type \ device\-type
+ Which device type are we using? \fBdevice\-type\fP should be \fBtun\fP
+@@ -4899,7 +4905,7 @@ hosts must match, or the two hosts will not be able to communicate.
+ The NetBIOS Scope ID also allows computers to use the same computer
+ name, as they have different scope IDs. The Scope ID becomes a part
+ of the NetBIOS name, making the name unique. (This description of
+-NetBIOS scopes courtesy of \fI\%NeonSurge@abyss.com\fP)
++NetBIOS scopes courtesy of \%<NeonSurge@\:abyss\:.com>)
+ .TP
+ .B \fBDISABLE\-NBT\fP
+ Disable Netbios\-over\-TCP/IP.
+@@ -5078,7 +5084,7 @@ LAN (except for the LAN gateway address) into the tunnel.
+ On Windows WFP filters are added in addition to the routes which
+ block access to resources not routed through the VPN adapter.
+ Push this flag to protect against TunnelCrack type of attacks
+-(see: \fI\%https://tunnelcrack.mathyvanhoef.com/\fP).
++(see: \%<https://\:tunnelcrack\:.mathyvanhoef\:.com/>).
+ .TP
+ .B \fBipv6\fP
+ Redirect IPv6 routing into the tunnel. This works similar to
+@@ -5455,7 +5461,7 @@ bind\-dev vrf_external
+ .UNINDENT
+ .SS Further reading
+ .sp
+-Wikipedia has nice page one VRFs: \fI\%https://en.wikipedia.org/wiki/Virtual_routing_and_forwarding\fP
++Wikipedia has nice page one VRFs: \%<https://\:en\:.wikipedia\:.org/\:wiki/\:Virtual_routing_and_forwarding>
+ .sp
+ This talk from the Network Track of FrOSCon 2018 provides an overview about
+ advanced layer 2 and layer 3 features of Linux
+@@ -5463,9 +5469,9 @@ advanced layer 2 and layer 3 features of Linux
+ .INDENT 3.5
+ .INDENT 0.0
+ .IP \(bu 2
+-Slides: \fI\%https://www.slideshare.net/BarbarossaTM/l2l3\-fr\-fortgeschrittene\-helle\-und\-dunkle\-magie\-im\-linuxnetzwerkstack\fP
++Slides: \%<https://\:www\:.slideshare\:.net/\:BarbarossaTM/\:l2l3-fr-fortgeschrittene-helle-und-dunkle-magie-im-linuxnetzwerkstack>
+ .IP \(bu 2
+-Video (german): \fI\%https://media.ccc.de/v/froscon2018\-2247\-l2_l3_fur_fortgeschrittene_\-_helle_und_dunkle_magie_im_linux\-netzwerkstack\fP
++Video (german): \%<https://\:media\:.ccc\:.de/\:v/\:froscon2018-2247-l2_l3_fur_fortgeschrittene_-_helle_und_dunkle_magie_im_linux-netzwerkstack>
+ .UNINDENT
+ .UNINDENT
+ .UNINDENT
+@@ -5709,7 +5715,7 @@ If a \fB\-\-client\-connect\fP wants to defer the generating of the
+ configuration then the script needs to use the
+ \fBclient_connect_deferred_file\fP and
+ \fBclient_connect_config_file\fP environment variables, and write
+-status accordingly into these files.  See the \fI\%Environmental Variables\fP
++status accordingly into these files.  See the Environmental Variables
+ section for more details.
+ .TP
+ .BI \-\-client\-disconnect \ cmd
+@@ -5792,7 +5798,7 @@ cmd ip address port number
+ Don\(aqt use \fB\-\-ipchange\fP in \fB\-\-mode server\fP mode. Use a
+ \fB\-\-client\-connect\fP script instead.
+ .sp
+-See the \fI\%Environmental Variables\fP section below for additional
++See the Environmental Variables section below for additional
+ parameters passed as environmental variables.
+ .sp
+ If you are running in a dynamic IP address environment where the IP
+@@ -5869,7 +5875,7 @@ followed by arguments. The path and arguments may be single\- or
+ double\-quoted and/or escaped using a backslash, and should be separated
+ by one or more spaces.
+ .sp
+-See the \fI\%Environmental Variables\fP section below for additional
++See the Environmental Variables section below for additional
+ parameters passed as environmental variables.
+ .TP
+ .BI \-\-route\-pre\-down \ cmd
+@@ -5880,7 +5886,7 @@ followed by arguments. The path and arguments may be single\- or
+ double\-quoted and/or escaped using a backslash, and should be separated
+ by one or more spaces.
+ .sp
+-See the \fI\%Environmental Variables\fP section below for additional
++See the Environmental Variables section below for additional
+ parameters passed as environmental variables.
+ .TP
+ .BI \-\-setenv \ args
+@@ -5974,7 +5980,7 @@ certificate and decide whether or not it should be accepted. For a
+ simple perl script which will test the common name field on the
+ certificate, see the file \fBverify\-cn\fP in the OpenVPN distribution.
+ .sp
+-See the \fI\%Environmental Variables\fP section below for additional
++See the Environmental Variables section below for additional
+ parameters passed as environmental variables.
+ .TP
+ .BI \-\-tls\-export\-cert \ dir
+@@ -6018,7 +6024,7 @@ cmd tap_dev tap_mtu 0 ifconfig_local_ip ifconfig_netmask [init | restart]
+ .UNINDENT
+ .UNINDENT
+ .sp
+-See the \fI\%Environmental Variables\fP section below for additional
++See the Environmental Variables section below for additional
+ parameters passed as environmental variables.  The \fB0\fP argument
+ used to be \fBlink_mtu\fP which is no longer passed to scripts \- to
+ keep the argument order, it was replaced with \fB0\fP\&.
+@@ -7186,7 +7192,7 @@ Data channel offload currently requires data\-ciphers to only contain
+ AEAD ciphers (AES\-GCM and Chacha20\-Poly1305) and Linux with the
+ ovpn module. The ovpn module has been integrated into the Linux kernel
+ since 6.16 or is available as backport from
+-\fI\%https://github.com/OpenVPN/ovpn\-backports\fP\&.
++\%<https://\:github\:.com/\:OpenVPN/\:ovpn-backports>\&.
+ .sp
+ Note that some options have no effect or cannot be used when DCO mode
+ is enabled.
+@@ -7398,7 +7404,7 @@ Causes OpenVPN to exit gracefully.
+ .UNINDENT
+ .SH FAQ
+ .sp
+-\fI\%https://community.openvpn.net/openvpn/wiki/FAQ\fP
++\%<https://\:community\:.openvpn\:.net/\:openvpn/\:wiki/\:FAQ>
+ .SH HOWTO
+ .sp
+ The manual \fBopenvpn\-examples\fP(5) gives some examples, especially for
+@@ -7406,21 +7412,21 @@ small setups.
+ .sp
+ For a more comprehensive guide to setting up OpenVPN in a production
+ setting, see the OpenVPN HOWTO at
+-\fI\%https://openvpn.net/community\-resources/how\-to/\fP
++\%<https://\:openvpn\:.net/\:community-resources/\:how-to/>
+ .SH PROTOCOL
+ .sp
+ An ongoing effort to document the OpenVPN protocol can be found under
+-\fI\%https://github.com/openvpn/openvpn\-rfc\fP
++\%<https://\:github\:.com/\:openvpn/\:openvpn-rfc>
+ .SH WEB
+ .sp
+-OpenVPN\(aqs web site is at \fI\%https://community.openvpn.net/\fP
++OpenVPN\(aqs web site is at \%<https://\:community\:.openvpn\:.net/>
+ .sp
+ Go here to download the latest version of OpenVPN, subscribe to the
+ mailing lists, read the mailing list archives, or browse the Git
+ repository.
+ .SH BUGS
+ .sp
+-Report all bugs to the OpenVPN team \fI\%info@openvpn.net\fP
++Report all bugs to the OpenVPN team \%<info@\:openvpn\:.net>
+ .SH SEE ALSO
+ .sp
+ \fBopenvpn\-examples\fP(5),
+@@ -7433,13 +7439,13 @@ Report all bugs to the OpenVPN team \fI\%info@openvpn.net\fP
+ .SH NOTES
+ .sp
+ This product includes software developed by the OpenSSL Project
+-(\fI\%https://www.openssl.org/\fP)
++(\%<https://\:www\:.openssl\:.org/>)
+ .sp
+ For more information on the TLS protocol see:
+-\fI\%https://tools.ietf.org/html/rfc2246\fP
++\%<https://\:tools\:.ietf\:.org/\:html/\:rfc2246>
+ .sp
+ For more information on the LZO real\-time compression library see:
+-\fI\%https://www.oberhumer.com/opensource/lzo/\fP
++\%<https://\:www\:.oberhumer\:.com/\:opensource/\:lzo/>
+ .SH COPYRIGHT
+ .sp
+ Copyright (C) 2002\-2025 OpenVPN Inc This program is free software; you
+@@ -7447,6 +7453,5 @@ can redistribute it and/or modify it under the terms of the GNU General
+ Public License version 2 as published by the Free Software Foundation.
+ .SH AUTHORS
+ .sp
+-James Yonan \fI\%james@openvpn.net\fP
+-.\" Generated by docutils manpage writer.
+-.
++James Yonan \%<james@\:openvpn\:.net>
++.\" End of generated man page.
+diff --git a/release/src/router/openvpn/doc/openvpn.8.html b/release/src/router/openvpn/doc/openvpn.8.html
+index c6deee70c8..02c66a9ab8 100644
+--- a/release/src/router/openvpn/doc/openvpn.8.html
++++ b/release/src/router/openvpn/doc/openvpn.8.html
+@@ -3,16 +3,17 @@
+ <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+ <head>
+ <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+-<meta name="generator" content="Docutils 0.20.1: https://docutils.sourceforge.io/" />
++<meta name="generator" content="Docutils 0.22.3: https://docutils.sourceforge.io/" />
+ <title>openvpn</title>
+ <style type="text/css">
+ 
+ /*
+ :Author: David Goodger (goodger@python.org)
+-:Id: $Id: html4css1.css 8954 2022-01-20 10:10:25Z milde $
++:Id: $Id: html4css1.css 9511 2024-01-13 09:50:07Z milde $
+ :Copyright: This stylesheet has been placed in the public domain.
+ 
+ Default cascading style sheet for the HTML output of Docutils.
++Despite the name, some widely supported CSS2 features are used.
+ 
+ See https://docutils.sourceforge.io/docs/howto/html-stylesheets.html for how to
+ customize this style sheet.
+@@ -275,7 +276,7 @@ pre.literal-block, pre.doctest-block, pre.math, pre.code {
+   margin-left: 2em ;
+   margin-right: 2em }
+ 
+-pre.code .ln { color: grey; } /* line numbers */
++pre.code .ln { color: gray; } /* line numbers */
+ pre.code, code { background-color: #eeeeee }
+ pre.code .comment, code .comment { color: #5C6576 }
+ pre.code .keyword, code .keyword { color: #3B0D06; font-weight: bold }
+@@ -301,7 +302,7 @@ span.option {
+ span.pre {
+   white-space: pre }
+ 
+-span.problematic {
++span.problematic, pre.problematic {
+   color: red }
+ 
+ span.section-subtitle {
+@@ -2509,6 +2510,10 @@ time).  This check is run every <tt class="docutils literal">t</tt> seconds (i.e
+ stale-routes-check n [t]
+ </pre>
+ <p>If <tt class="docutils literal">t</tt> is not present it defaults to <tt class="docutils literal">n</tt>.</p>
++<p>Only dynamically learned routes are subject to this check. Routes added from
++configuration, such as <tt class="docutils literal"><span class="pre">--iroute</span></tt> entries and a client's pushed ifconfig
++address, are never removed by it; they are dropped only when the client
++disconnects.</p>
+ <p class="last">This option helps to keep the dynamic routing table small. See also
+ <tt class="docutils literal"><span class="pre">--max-routes-per-client</span></tt></p>
+ </td></tr>
+diff --git a/release/src/router/openvpn/include/openvpn-plugin.h b/release/src/router/openvpn/include/openvpn-plugin.h
+index 41557916a7..a525dfd23b 100644
+--- a/release/src/router/openvpn/include/openvpn-plugin.h
++++ b/release/src/router/openvpn/include/openvpn-plugin.h
+@@ -52,7 +52,7 @@ extern "C" {
+  */
+ #define OPENVPN_VERSION_MAJOR 2
+ #define OPENVPN_VERSION_MINOR 7
+-#define OPENVPN_VERSION_PATCH ".6"
++#define OPENVPN_VERSION_PATCH ".7"
+ 
+ /*
+  * Plug-in types.  These types correspond to the set of script callbacks
+diff --git a/release/src/router/openvpn/sample/sample-plugins/Makefile b/release/src/router/openvpn/sample/sample-plugins/Makefile
+index e17787d2c7..d07c4b7050 100644
+--- a/release/src/router/openvpn/sample/sample-plugins/Makefile
++++ b/release/src/router/openvpn/sample/sample-plugins/Makefile
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.16.5 from Makefile.am.
++# Makefile.in generated by automake 1.18.1 from Makefile.am.
+ # sample/sample-plugins/Makefile.  Generated from Makefile.in by configure.
+ 
+-# Copyright (C) 1994-2021 Free Software Foundation, Inc.
++# Copyright (C) 1994-2025 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -84,6 +84,8 @@ am__make_running_with_option = \
+   test $$has_opt = yes
+ am__make_dryrun = (target_option=n; $(am__make_running_with_option))
+ am__make_keepgoing = (target_option=k; $(am__make_running_with_option))
++am__rm_f = rm -f $(am__rm_f_notfound)
++am__rm_rf = rm -rf $(am__rm_f_notfound)
+ pkgdatadir = $(datadir)/openvpn
+ pkgincludedir = $(includedir)/openvpn
+ pkglibdir = $(libdir)/openvpn
+@@ -100,8 +102,8 @@ POST_INSTALL = :
+ NORMAL_UNINSTALL = :
+ PRE_UNINSTALL = :
+ POST_UNINSTALL = :
+-build_triplet = x86_64-pc-linux-gnu
+-host_triplet = x86_64-pc-linux-gnu
++build_triplet = aarch64-apple-darwin25.6.0
++host_triplet = aarch64-apple-darwin25.6.0
+ subdir = sample/sample-plugins
+ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
+ am__aclocal_m4_deps = $(top_srcdir)/m4/ax_socklen_t.m4 \
+@@ -141,20 +143,20 @@ am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) $(LISP)
+ am__DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.plugins \
+ 	README
+ DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
+-ACLOCAL = ${SHELL} '/home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/missing' aclocal-1.16
++ACLOCAL = ${SHELL} '/Users/uddr/devel/openvpn/openvpn-build/src/openvpn/missing' aclocal-1.18
+ AMTAR = $${TAR-tar}
+ AM_DEFAULT_VERBOSITY = 0
+ AR = ar
+ AS = as
+-AUTOCONF = ${SHELL} '/home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/missing' autoconf
+-AUTOHEADER = ${SHELL} '/home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/missing' autoheader
+-AUTOMAKE = ${SHELL} '/home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/missing' automake-1.16
+-AWK = gawk
++AUTOCONF = ${SHELL} '/Users/uddr/devel/openvpn/openvpn-build/src/openvpn/missing' autoconf
++AUTOHEADER = ${SHELL} '/Users/uddr/devel/openvpn/openvpn-build/src/openvpn/missing' autoheader
++AUTOMAKE = ${SHELL} '/Users/uddr/devel/openvpn/openvpn-build/src/openvpn/missing' automake-1.18
++AWK = awk
+ CC = gcc
+ CCDEPMODE = depmode=gcc3
+-CFLAGS = -g -O2 -std=c11 -Wno-stringop-truncation -Wstrict-prototypes -Wold-style-definition -Wconversion -Wno-sign-conversion -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter -Wimplicit-fallthrough=2
+-CMOCKA_CFLAGS = 
+-CMOCKA_LIBS = -lcmocka 
++CFLAGS = -g -O2 -std=c11 -Wstrict-prototypes -Wold-style-definition -Wconversion -Wno-sign-conversion -Wall -Wextra -Wno-sign-compare -Wno-unused-parameter
++CMOCKA_CFLAGS = -I/opt/homebrew/Cellar/cmocka/1.1.8/include
++CMOCKA_LIBS = -L/opt/homebrew/Cellar/cmocka/1.1.8/lib -lcmocka
+ CPP = gcc -E
+ CPPFLAGS = 
+ CSCOPE = cscope
+@@ -164,11 +166,11 @@ DEFS = -DHAVE_CONFIG_H
+ DEPDIR = .deps
+ DLLTOOL = false
+ DL_LIBS = -ldl
+-DNS_UPDOWN_TYPE = systemd
+-DSYMUTIL = 
++DNS_UPDOWN_TYPE = macos
++DSYMUTIL = dsymutil
+ DUMPBIN = 
+-ECHO_C = 
+-ECHO_N = -n
++ECHO_C = \c
++ECHO_N = 
+ ECHO_T = 
+ EGREP = /usr/bin/grep -E
+ ENABLE_UNITTESTS = 
+@@ -178,54 +180,54 @@ FGREP = /usr/bin/grep -F
+ FILECMD = file
+ GIT = git
+ GREP = /usr/bin/grep
+-IFCONFIG = /usr/sbin/ifconfig
+-INSTALL = /usr/bin/install -c
++IFCONFIG = /sbin/ifconfig
++INSTALL = /opt/homebrew/opt/coreutils/libexec/gnubin/install -c
+ INSTALL_DATA = ${INSTALL} -m 644
+ INSTALL_PROGRAM = ${INSTALL}
+ INSTALL_SCRIPT = ${INSTALL}
+ INSTALL_STRIP_PROGRAM = $(install_sh) -c -s
+-IPROUTE = /usr/sbin/ip
+-LD = /usr/bin/ld -m elf_x86_64
++IPROUTE = 
++LD = /Library/Developer/CommandLineTools/usr/bin/ld
+ LDFLAGS = 
+ LIBCAPNG_CFLAGS = 
+-LIBCAPNG_LIBS = -lcap-ng 
++LIBCAPNG_LIBS = 
+ LIBNL_GENL_CFLAGS = 
+ LIBNL_GENL_LIBS = 
+ LIBOBJS = 
+ LIBPAM_CFLAGS = 
+ LIBPAM_LIBS = -lpam
+-LIBS = 
++LIBS = -lresolv 
+ LIBTOOL = $(SHELL) $(top_builddir)/libtool
+-LIPO = 
++LIPO = lipo
+ LN_S = ln -s
+ LTLIBOBJS = 
+ LT_SYS_LIBRARY_PATH = 
+ LZ4_CFLAGS = 
+ LZ4_LIBS = 
+-LZO_CFLAGS = -I/usr/include/lzo 
+-LZO_LIBS = -llzo2 
+-MAKEINFO = ${SHELL} '/home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/missing' makeinfo
++LZO_CFLAGS = -I/opt/homebrew/Cellar/lzo/2.10/include/lzo
++LZO_LIBS = -L/opt/homebrew/Cellar/lzo/2.10/lib -llzo2
++MAKEINFO = ${SHELL} '/Users/uddr/devel/openvpn/openvpn-build/src/openvpn/missing' makeinfo
+ MANIFEST_TOOL = :
+ MBEDTLS_CFLAGS = 
+ MBEDTLS_LIBS = 
+-MKDIR_P = /usr/bin/mkdir -p
++MKDIR_P = /opt/homebrew/opt/coreutils/libexec/gnubin/mkdir -p
+ NETSTAT = netstat
+ NM = /usr/bin/nm -B
+-NMEDIT = 
++NMEDIT = nmedit
+ OBJDUMP = objdump
+ OBJEXT = o
+-OPENSSL_CFLAGS = 
+-OPENSSL_LIBS = -lssl -lcrypto 
++OPENSSL_CFLAGS = -I/opt/homebrew/Cellar/openssl@3/3.6.0/include
++OPENSSL_LIBS = -L/opt/homebrew/Cellar/openssl@3/3.6.0/lib -lssl -lcrypto
+ OPENVPN_VERSION_MAJOR = 2
+ OPENVPN_VERSION_MINOR = 7
+-OPENVPN_VERSION_PATCH = .6
+-OPTIONAL_CRYPTO_CFLAGS =  
+-OPTIONAL_CRYPTO_LIBS =  -lssl -lcrypto 
++OPENVPN_VERSION_PATCH = .7
++OPTIONAL_CRYPTO_CFLAGS =  -I/opt/homebrew/Cellar/openssl@3/3.6.0/include
++OPTIONAL_CRYPTO_LIBS =  -L/opt/homebrew/Cellar/openssl@3/3.6.0/lib -lssl -lcrypto
+ OPTIONAL_DL_LIBS = -ldl
+ OPTIONAL_INOTIFY_CFLAGS = 
+ OPTIONAL_INOTIFY_LIBS = 
+ OPTIONAL_LIBCAPNG_CFLAGS = 
+-OPTIONAL_LIBCAPNG_LIBS = -lcap-ng 
++OPTIONAL_LIBCAPNG_LIBS = 
+ OPTIONAL_LIBNL_GENL_CFLAGS = 
+ OPTIONAL_LIBNL_GENL_LIBS = 
+ OPTIONAL_LZ4_CFLAGS = 
+@@ -237,22 +239,22 @@ OPTIONAL_PKCS11_HELPER_LIBS =
+ OPTIONAL_SELINUX_LIBS = 
+ OPTIONAL_SYSTEMD_CFLAGS = 
+ OPTIONAL_SYSTEMD_LIBS = 
+-OTOOL = 
+-OTOOL64 = 
++OTOOL = otool
++OTOOL64 = :
+ P11KIT_CFLAGS = 
+ P11KIT_LIBS = 
+ P11TOOL = 
+ PACKAGE = openvpn
+ PACKAGE_BUGREPORT = openvpn-users@lists.sourceforge.net
+ PACKAGE_NAME = OpenVPN
+-PACKAGE_STRING = OpenVPN 2.7.6
++PACKAGE_STRING = OpenVPN 2.7.7
+ PACKAGE_TARNAME = openvpn
+ PACKAGE_URL = 
+-PACKAGE_VERSION = 2.7.6
++PACKAGE_VERSION = 2.7.7
+ PATH_SEPARATOR = :
+ PKCS11_HELPER_CFLAGS = 
+ PKCS11_HELPER_LIBS = 
+-PKG_CONFIG = /usr/bin/pkg-config
++PKG_CONFIG = /opt/homebrew/bin/pkg-config
+ PKG_CONFIG_LIBDIR = 
+ PKG_CONFIG_PATH = 
+ PLUGINDIR = 
+@@ -260,36 +262,36 @@ PLUGIN_AUTH_PAM_CFLAGS =
+ PLUGIN_AUTH_PAM_LIBS = 
+ RANLIB = ranlib
+ RC = 
+-ROUTE = /usr/sbin/route
++ROUTE = /sbin/route
+ RST2HTML = rst2html
+ RST2MAN = rst2man
+ SCRIPTDIR = 
+-SED = /usr/bin/sed
+-SELINUX_LIBS = -lselinux
++SED = /opt/homebrew/opt/gnu-sed/libexec/gnubin/sed
++SELINUX_LIBS = 
+ SET_MAKE = 
+-SHELL = /bin/bash
++SHELL = /bin/sh
+ SOCKETS_LIBS =  -lresolv
+ SOFTHSM2_MODULE = 
+ SOFTHSM2_UTIL = 
+ STRIP = strip
+-SYSTEMD_ASK_PASSWORD = /usr/bin/systemd-ask-password
++SYSTEMD_ASK_PASSWORD = 
+ SYSTEMD_UNIT_DIR = 
+ TAP_CFLAGS = 
+ TAP_WIN_COMPONENT_ID = tap0901
+ TAP_WIN_MIN_MAJOR = 9
+ TAP_WIN_MIN_MINOR = 9
+-TEST_CFLAGS =       -I$(top_srcdir)/include 
+-TEST_LDFLAGS =  -lssl -lcrypto   -lcap-ng    -lcmocka 
++TEST_CFLAGS =  -I/opt/homebrew/Cellar/openssl@3/3.6.0/include     -I$(top_srcdir)/include -I/opt/homebrew/Cellar/cmocka/1.1.8/include
++TEST_LDFLAGS =  -L/opt/homebrew/Cellar/openssl@3/3.6.0/lib -lssl -lcrypto     -L/opt/homebrew/Cellar/cmocka/1.1.8/lib -lcmocka
+ TMPFILES_DIR = 
+-VERSION = 2.7.6
++VERSION = 2.7.7
+ WINDMC = no
+ WOLFSSL_CFLAGS = 
+ WOLFSSL_INCLUDEDIR = 
+ WOLFSSL_LIBS = 
+-abs_builddir = /home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/sample/sample-plugins
+-abs_srcdir = /home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/sample/sample-plugins
+-abs_top_builddir = /home/flichtenheld/openvpn/community/openvpn-build/src/openvpn
+-abs_top_srcdir = /home/flichtenheld/openvpn/community/openvpn-build/src/openvpn
++abs_builddir = /Users/uddr/devel/openvpn/openvpn-build/src/openvpn/sample/sample-plugins
++abs_srcdir = /Users/uddr/devel/openvpn/openvpn-build/src/openvpn/sample/sample-plugins
++abs_top_builddir = /Users/uddr/devel/openvpn/openvpn-build/src/openvpn
++abs_top_srcdir = /Users/uddr/devel/openvpn/openvpn-build/src/openvpn
+ ac_ct_AR = ar
+ ac_ct_CC = gcc
+ ac_ct_DUMPBIN = 
+@@ -297,29 +299,31 @@ ac_ct_WINDMC =
+ am__include = include
+ am__leading_dot = .
+ am__quote = 
+-am__tar = $${TAR-tar} chof - "$$tardir"
+-am__untar = $${TAR-tar} xf -
++am__rm_f_notfound = 
++am__tar = tar --format=ustar -chf - "$$tardir"
++am__untar = tar -xf -
++am__xargs_n = xargs -n
+ bindir = ${exec_prefix}/bin
+-build = x86_64-pc-linux-gnu
++build = aarch64-apple-darwin25.6.0
+ build_alias = 
+-build_cpu = x86_64
+-build_os = linux-gnu
+-build_vendor = pc
++build_cpu = aarch64
++build_os = darwin25.6.0
++build_vendor = apple
+ builddir = .
+ datadir = ${datarootdir}
+ datarootdir = ${prefix}/share
+ docdir = ${datarootdir}/doc/${PACKAGE_TARNAME}
+ dvidir = ${docdir}
+ exec_prefix = ${prefix}
+-host = x86_64-pc-linux-gnu
++host = aarch64-apple-darwin25.6.0
+ host_alias = 
+-host_cpu = x86_64
+-host_os = linux-gnu
+-host_vendor = pc
++host_cpu = aarch64
++host_os = darwin25.6.0
++host_vendor = apple
+ htmldir = ${docdir}
+ includedir = ${prefix}/include
+ infodir = ${datarootdir}/info
+-install_sh = ${SHELL} /home/flichtenheld/openvpn/community/openvpn-build/src/openvpn/install-sh
++install_sh = ${SHELL} /Users/uddr/devel/openvpn/openvpn-build/src/openvpn/install-sh
+ libdir = ${exec_prefix}/lib
+ libexecdir = ${exec_prefix}/libexec
+ libsystemd_CFLAGS = 
+@@ -411,6 +415,7 @@ ctags CTAGS:
+ 
+ cscope cscopelist:
+ 
++
+ distdir: $(BUILT_SOURCES)
+ 	$(MAKE) $(AM_MAKEFLAGS) distdir-am
+ 
+@@ -475,13 +480,13 @@ mostlyclean-generic:
+ clean-generic:
+ 
+ distclean-generic:
+-	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
+-	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
++	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
++	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
+ 
+ maintainer-clean-generic:
+ 	@echo "This command is intended for maintainers to use"
+ 	@echo "it deletes files that may require special tools to rebuild."
+-	-test -z "$(MAINTAINERCLEANFILES)" || rm -f $(MAINTAINERCLEANFILES)
++	-$(am__rm_f) $(MAINTAINERCLEANFILES)
+ clean-am: clean-generic clean-libtool mostlyclean-am
+ 
+ distclean: distclean-am
+@@ -605,3 +610,10 @@ dist-hook :
+ # Tell versions [3.59,3.63) of GNU make to not export all variables.
+ # Otherwise a system limit (for SysV at least) may be exceeded.
+ .NOEXPORT:
++
++# Tell GNU make to disable its built-in pattern rules.
++%:: %,v
++%:: RCS/%,v
++%:: RCS/%
++%:: s.%
++%:: SCCS/s.%
+diff --git a/release/src/router/openvpn/sample/sample-plugins/Makefile.in b/release/src/router/openvpn/sample/sample-plugins/Makefile.in
+index 930daf64d1..8c381f05f4 100644
+--- a/release/src/router/openvpn/sample/sample-plugins/Makefile.in
++++ b/release/src/router/openvpn/sample/sample-plugins/Makefile.in
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.16.5 from Makefile.am.
++# Makefile.in generated by automake 1.18.1 from Makefile.am.
+ # @configure_input@
+ 
+-# Copyright (C) 1994-2021 Free Software Foundation, Inc.
++# Copyright (C) 1994-2025 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -84,6 +84,8 @@ am__make_running_with_option = \
+   test $$has_opt = yes
+ am__make_dryrun = (target_option=n; $(am__make_running_with_option))
+ am__make_keepgoing = (target_option=k; $(am__make_running_with_option))
++am__rm_f = rm -f $(am__rm_f_notfound)
++am__rm_rf = rm -rf $(am__rm_f_notfound)
+ pkgdatadir = $(datadir)/@PACKAGE@
+ pkgincludedir = $(includedir)/@PACKAGE@
+ pkglibdir = $(libdir)/@PACKAGE@
+@@ -297,8 +299,10 @@ ac_ct_WINDMC = @ac_ct_WINDMC@
+ am__include = @am__include@
+ am__leading_dot = @am__leading_dot@
+ am__quote = @am__quote@
++am__rm_f_notfound = @am__rm_f_notfound@
+ am__tar = @am__tar@
+ am__untar = @am__untar@
++am__xargs_n = @am__xargs_n@
+ bindir = @bindir@
+ build = @build@
+ build_alias = @build_alias@
+@@ -411,6 +415,7 @@ ctags CTAGS:
+ 
+ cscope cscopelist:
+ 
++
+ distdir: $(BUILT_SOURCES)
+ 	$(MAKE) $(AM_MAKEFLAGS) distdir-am
+ 
+@@ -475,13 +480,13 @@ mostlyclean-generic:
+ clean-generic:
+ 
+ distclean-generic:
+-	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
+-	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
++	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
++	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
+ 
+ maintainer-clean-generic:
+ 	@echo "This command is intended for maintainers to use"
+ 	@echo "it deletes files that may require special tools to rebuild."
+-	-test -z "$(MAINTAINERCLEANFILES)" || rm -f $(MAINTAINERCLEANFILES)
++	-$(am__rm_f) $(MAINTAINERCLEANFILES)
+ clean-am: clean-generic clean-libtool mostlyclean-am
+ 
+ distclean: distclean-am
+@@ -605,3 +610,10 @@ dist-hook :
+ # Tell versions [3.59,3.63) of GNU make to not export all variables.
+ # Otherwise a system limit (for SysV at least) may be exceeded.
+ .NOEXPORT:
++
++# Tell GNU make to disable its built-in pattern rules.
++%:: %,v
++%:: RCS/%,v
++%:: RCS/%
++%:: s.%
++%:: SCCS/s.%
+diff --git a/release/src/router/openvpn/src/openvpn/clinat.c b/release/src/router/openvpn/src/openvpn/clinat.c
+index f671feeab5..fe8dc86e17 100644
+--- a/release/src/router/openvpn/src/openvpn/clinat.c
++++ b/release/src/router/openvpn/src/openvpn/clinat.c
+@@ -258,7 +258,23 @@ client_nat_transform(const struct client_nat_option_list *list, struct buffer *i
+         {
+             if (BLEN(ipbuf) >= sizeof(struct openvpn_iphdr) + sizeof(struct openvpn_udphdr))
+             {
+-                ADJUST_CHECKSUM(accumulate, h->u.udp.check);
++                /* RFC 768: a UDP checksum of 0 means "no checksum computed".
++                 * Do not run the incremental adjustment over a non-checksum,
++                 * or we will write a bogus non-zero value into the field.
++                 */
++                if (h->u.udp.check)
++                {
++                    ADJUST_CHECKSUM(accumulate, h->u.udp.check);
++
++                    if (!h->u.udp.check)
++                    {
++                        /* RFC 768: a computed checksum of 0 must be transmitted
++                         * as 0xFFFF (one-complement), because 0 is reserved for
++                         * "no checksum computed"
++                         */
++                        h->u.udp.check = 0xFFFF;
++                    }
++                }
+             }
+         }
+     }
+diff --git a/release/src/router/openvpn/src/openvpn/crypto_epoch.c b/release/src/router/openvpn/src/openvpn/crypto_epoch.c
+index 3a716f4612..41664efd13 100644
+--- a/release/src/router/openvpn/src/openvpn/crypto_epoch.c
++++ b/release/src/router/openvpn/src/openvpn/crypto_epoch.c
+@@ -307,9 +307,10 @@ epoch_replace_update_recv_key(struct crypto_options *co, uint16_t new_epoch)
+         free_key_ctx(&co->key_ctx_bi.encrypt);
+ 
+         /* Update the epoch_key for send to match the current key being used.
+-         * This is a bit of extra work but since we are a maximum of 16
+-         * keys behind, a maximum 16 HMAC invocations are a small price to
+-         * pay for not keeping all the old epoch keys around in future_keys
++         * This is a bit of extra work but since we are a maximum of
++         * epoch_data_keys_future_count keys behind (4 by default),
++         * a maximum 4 HMAC invocations are a small price to pay for not
++         * keeping all the old epoch keys around in future_keys
+          * array */
+         while (co->epoch_key_send.epoch < new_epoch)
+         {
+diff --git a/release/src/router/openvpn/src/openvpn/crypto_mbedtls.h b/release/src/router/openvpn/src/openvpn/crypto_mbedtls.h
+index 16d41e47a5..1d68d49f39 100644
+--- a/release/src/router/openvpn/src/openvpn/crypto_mbedtls.h
++++ b/release/src/router/openvpn/src/openvpn/crypto_mbedtls.h
+@@ -1,4 +1,3 @@
+-
+ /*
+  *  OpenVPN -- An application to securely tunnel IP networks
+  *             over a single TCP/UDP port, with support for SSL/TLS-based
+diff --git a/release/src/router/openvpn/src/openvpn/crypto_openssl.c b/release/src/router/openvpn/src/openvpn/crypto_openssl.c
+index e01bbe933e..7c74f80e10 100644
+--- a/release/src/router/openvpn/src/openvpn/crypto_openssl.c
++++ b/release/src/router/openvpn/src/openvpn/crypto_openssl.c
+@@ -1250,7 +1250,7 @@ hmac_ctx_final(HMAC_CTX *ctx, uint8_t *dst)
+ 
+     HMAC_Final(ctx, dst, &in_hmac_len);
+ }
+-#else  /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
++#else /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
+ hmac_ctx_t *
+ hmac_ctx_new(void)
+ {
+@@ -1316,10 +1316,14 @@ hmac_ctx_size(hmac_ctx_t *ctx)
+ void
+ hmac_ctx_reset(hmac_ctx_t *ctx)
+ {
+-    /* The OpenSSL MAC API lacks a reset method and passing NULL as params
+-     * does not reset it either, so use the params array to reinitialise it the
+-     * same way as before */
+-    if (!EVP_MAC_init(ctx->ctx, NULL, 0, ctx->params))
++    /* OpenSSL 3.0.3 fixed EVP_MAC reinitialization with an existing key.
++     * Older versions need the parameters, including the key, to reset. */
++#if OPENSSL_VERSION_NUMBER >= 0x30000030L
++    const OSSL_PARAM *params = NULL;
++#else
++    const OSSL_PARAM *params = ctx->params;
++#endif
++    if (!EVP_MAC_init(ctx->ctx, NULL, 0, params))
+     {
+         crypto_msg(M_FATAL, "EVP_MAC_init failed");
+     }
+diff --git a/release/src/router/openvpn/src/openvpn/dhcp.c b/release/src/router/openvpn/src/openvpn/dhcp.c
+index a54ab3fcac..5cdcfcfb2a 100644
+--- a/release/src/router/openvpn/src/openvpn/dhcp.c
++++ b/release/src/router/openvpn/src/openvpn/dhcp.c
+@@ -277,7 +277,9 @@ write_dhcp_search_str(struct buffer *buf, const uint8_t type, const char *const
+     {
+         const char *ptr = str_array[i];
+ 
+-        if (strlen(ptr) + len + 1 > sizeof(tmp_buf))
++        /* Each entry consumes strlen(ptr) + 2 bytes: one leading label length
++         * byte and one trailing NUL. */
++        if (strlen(ptr) + len + 2 > sizeof(tmp_buf))
+         {
+             *error = true;
+             msg(M_WARN, "write_dhcp_search_str: temp buffer overflow building DHCP options");
+diff --git a/release/src/router/openvpn/src/openvpn/init.c b/release/src/router/openvpn/src/openvpn/init.c
+index b80bb5987e..7cddca4d97 100644
+--- a/release/src/router/openvpn/src/openvpn/init.c
++++ b/release/src/router/openvpn/src/openvpn/init.c
+@@ -3333,7 +3333,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
+ 
+     /* should we not xmit any packets until we get an initial
+      * response from client? */
+-    if (to.server && c->mode == CM_CHILD_TCP)
++    if (to.server && (c->mode == CM_CHILD_TCP || (c->mode == CM_P2P && options->ce.proto == PROTO_TCP_SERVER)))
+     {
+         to.xmit_hold = true;
+     }
+diff --git a/release/src/router/openvpn/src/openvpn/mbedtls_compat.h b/release/src/router/openvpn/src/openvpn/mbedtls_compat.h
+index 667529e654..1cabdfb5d2 100644
+--- a/release/src/router/openvpn/src/openvpn/mbedtls_compat.h
++++ b/release/src/router/openvpn/src/openvpn/mbedtls_compat.h
+@@ -42,6 +42,7 @@
+ #include "crypto_mbedtls_legacy.h"
+ #else
+ #include <mbedtls/oid.h>
++#include "crypto_mbedtls.h"
+ #endif /* MBEDTLS_VERSION_NUMBER < 0x04000000 */
+ 
+ #ifdef HAVE_PSA_CRYPTO_H
+@@ -227,6 +228,18 @@ static inline int
+ mbedtls_compat_pk_check_pair(const mbedtls_pk_context *pub, const mbedtls_pk_context *prv)
+ {
+ #if MBEDTLS_VERSION_NUMBER >= 0x04000000
++    /* work around bug in mbedtls 4.1.0 by adding missing public key information in prv
++     * cf. https://github.com/Mbed-TLS/TF-PSA-Crypto/issues/807 */
++#if MBEDTLS_VERSION_NUMBER >= 0x04010000
++    if (prv->MBEDTLS_PRIVATE(pub_raw_len) == 0)
++    {
++        mbedtls_pk_context *mut_prv = (mbedtls_pk_context *)prv; /* remove const */
++        ASSERT(mbed_ok(psa_export_public_key(mut_prv->MBEDTLS_PRIVATE(priv_id),
++                                             mut_prv->MBEDTLS_PRIVATE(pub_raw),
++                                             sizeof(mut_prv->MBEDTLS_PRIVATE(pub_raw)),
++                                             &mut_prv->MBEDTLS_PRIVATE(pub_raw_len))));
++    }
++#endif
+     return mbedtls_pk_check_pair(pub, prv);
+ #else
+     return mbedtls_pk_check_pair(pub, prv, mbedtls_ctr_drbg_random, rand_ctx_get());
+diff --git a/release/src/router/openvpn/src/openvpn/multi.c b/release/src/router/openvpn/src/openvpn/multi.c
+index d983793642..1355ffe0f6 100644
+--- a/release/src/router/openvpn/src/openvpn/multi.c
++++ b/release/src/router/openvpn/src/openvpn/multi.c
+@@ -1208,7 +1208,7 @@ multi_learn_in_addr_t(struct multi_context *m, struct multi_instance *mi, in_add
+         addr.netbits = (uint8_t)netbits;
+     }
+ 
+-    struct multi_instance *owner = multi_learn_addr(m, mi, &addr, 0);
++    struct multi_instance *owner = multi_learn_addr(m, mi, &addr, MULTI_ROUTE_PERMANENT);
+ #ifdef ENABLE_MANAGEMENT
+     if (management && owner)
+     {
+@@ -1253,7 +1253,7 @@ multi_learn_in6_addr(struct multi_context *m, struct multi_instance *mi, struct
+         mroute_addr_mask_host_bits(&addr);
+     }
+ 
+-    struct multi_instance *owner = multi_learn_addr(m, mi, &addr, 0);
++    struct multi_instance *owner = multi_learn_addr(m, mi, &addr, MULTI_ROUTE_PERMANENT);
+ #ifdef ENABLE_MANAGEMENT
+     if (management && owner)
+     {
+@@ -1383,7 +1383,7 @@ check_stale_routes(struct multi_context *m)
+     while ((he = hash_iterator_next(&hi)) != NULL)
+     {
+         struct multi_route *r = (struct multi_route *)he->value;
+-        if (multi_route_defined(m, r)
++        if (multi_route_defined(m, r) && !(r->flags & MULTI_ROUTE_PERMANENT)
+             && difftime(now, r->last_reference) >= m->top.options.stale_routes_ageing_time)
+         {
+             dmsg(D_MULTI_DEBUG, "MULTI: Deleting stale route for address '%s'",
+diff --git a/release/src/router/openvpn/src/openvpn/multi.h b/release/src/router/openvpn/src/openvpn/multi.h
+index 7554c810e3..35f4571ca6 100644
+--- a/release/src/router/openvpn/src/openvpn/multi.h
++++ b/release/src/router/openvpn/src/openvpn/multi.h
+@@ -234,8 +234,9 @@ struct multi_route
+     struct mroute_addr addr;
+     struct multi_instance *instance;
+ 
+-#define MULTI_ROUTE_CACHE   (1 << 0)
+-#define MULTI_ROUTE_AGEABLE (1 << 1)
++#define MULTI_ROUTE_CACHE     (1 << 0)
++#define MULTI_ROUTE_AGEABLE   (1 << 1)
++#define MULTI_ROUTE_PERMANENT (1 << 2) /* config-derived (iroute / pushed ifconfig); never stale-aged */
+     unsigned int flags;
+ 
+     unsigned int cache_generation;
+diff --git a/release/src/router/openvpn/src/openvpn/networking_sitnl.c b/release/src/router/openvpn/src/openvpn/networking_sitnl.c
+index ad7edefb4a..a4052d3536 100644
+--- a/release/src/router/openvpn/src/openvpn/networking_sitnl.c
++++ b/release/src/router/openvpn/src/openvpn/networking_sitnl.c
+@@ -206,7 +206,7 @@ sitnl_socket(void)
+  * Bind socket to Netlink subsystem
+  */
+ static int
+-sitnl_bind(int fd, uint32_t groups)
++sitnl_bind(int fd, uint32_t groups, uint32_t *local_pid)
+ {
+     socklen_t addr_len;
+     struct sockaddr_nl local;
+@@ -241,6 +241,14 @@ sitnl_bind(int fd, uint32_t groups)
+         return -EINVAL;
+     }
+ 
++    /* We bound with nl_pid=0, so the kernel assigned this socket a unique port
++     * id (it is not the process pid - a process may own several netlink
++     * sockets). getsockname() above is the only way to learn it: hand it back
++     * to the caller, which uses it to check that replies are addressed to this
++     * socket.
++     */
++    *local_pid = local.nl_pid;
++
+     return 0;
+ }
+ 
+@@ -252,6 +260,7 @@ sitnl_send(struct nlmsghdr *payload, pid_t peer, unsigned int groups, sitnl_pars
+            void *arg_cb)
+ {
+     int fd, ret;
++    uint32_t local_pid = 0;
+     struct sockaddr_nl nladdr;
+     struct nlmsgerr *err;
+     struct nlmsghdr *h;
+@@ -273,11 +282,17 @@ sitnl_send(struct nlmsghdr *payload, pid_t peer, unsigned int groups, sitnl_pars
+     nladdr.nl_pid = peer;
+     nladdr.nl_groups = groups;
+ 
+-    /* NB: We currently do not verify seq and pid on answers.
+-     * If we ever want to start with that we probably need to come up
+-     * with something better than "seconds since epoch"...
++    /* Match replies to requests with a monotonically increasing sequence
++     * number, seeded once from wall-clock time so it differs between runs.
++     * The kernel echoes this seq (and our port id) in its replies, letting the
++     * receive loop below discard any unrelated or spoofed message.
+      */
+-    payload->nlmsg_seq = (uint32_t)time(NULL);
++    static uint32_t sitnl_seq;
++    if (!sitnl_seq)
++    {
++        sitnl_seq = (uint32_t)time(NULL);
++    }
++    payload->nlmsg_seq = ++sitnl_seq;
+ 
+     /* no need to send reply */
+     if (!cb)
+@@ -292,7 +307,7 @@ sitnl_send(struct nlmsghdr *payload, pid_t peer, unsigned int groups, sitnl_pars
+         return -errno;
+     }
+ 
+-    if (sitnl_bind(fd, 0) < 0)
++    if (sitnl_bind(fd, 0, &local_pid) < 0)
+     {
+         msg(M_WARN | M_ERRNO, "%s: can't bind rtnl socket", __func__);
+         ret = -errno;
+@@ -366,18 +381,23 @@ sitnl_send(struct nlmsghdr *payload, pid_t peer, unsigned int groups, sitnl_pars
+                 goto out;
+             }
+ 
+-            /*            if (((int)nladdr.nl_pid != peer) || (h->nlmsg_pid != nladdr.nl_pid)
+-             *               || (h->nlmsg_seq != seq))
+-             *           {
+-             *               rcv_len -= NLMSG_ALIGN(len);
+-             *               h = (struct nlmsghdr *)((char *)h + NLMSG_ALIGN(len));
+-             *               msg(M_DEBUG, "%s: skipping unrelated message. nl_pid:%d (peer:%d)
+-             * nl_msg_pid:%d nl_seq:%d seq:%d",
+-             *                   __func__, (int)nladdr.nl_pid, peer, h->nlmsg_pid,
+-             *                   h->nlmsg_seq, seq);
+-             *               continue;
+-             *           }
++            /* Discard any message that did not come from the kernel or does
++             * not match the request we sent: only the kernel (nl_pid 0) can
++             * legitimately reply, and a valid reply echoes our port id and
++             * sequence number. This prevents a local process from injecting a
++             * spoofed reply that the callback would otherwise act on.
+              */
++            if ((nladdr.nl_pid != 0) || (h->nlmsg_pid != local_pid)
++                || (h->nlmsg_seq != payload->nlmsg_seq))
++            {
++                msg(D_RTNL,
++                    "%s: skipping unrelated message. nl_pid:%u nlmsg_pid:%u (local:%u) nlmsg_seq:%u (seq:%u)",
++                    __func__, nladdr.nl_pid, h->nlmsg_pid, local_pid, h->nlmsg_seq,
++                    payload->nlmsg_seq);
++                rcv_len -= NLMSG_ALIGN(len);
++                h = (struct nlmsghdr *)((char *)h + NLMSG_ALIGN(len));
++                continue;
++            }
+ 
+             if (h->nlmsg_type == NLMSG_DONE)
+             {
+diff --git a/release/src/router/openvpn/src/openvpn/options.c b/release/src/router/openvpn/src/openvpn/options.c
+index e90c81764e..f72fd1c3f0 100644
+--- a/release/src/router/openvpn/src/openvpn/options.c
++++ b/release/src/router/openvpn/src/openvpn/options.c
+@@ -8989,7 +8989,14 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
+     else if (streq(p[0], "tls-timeout") && p[1] && !p[2])
+     {
+         VERIFY_PERMISSION(OPT_P_TLS_PARMS);
+-        options->tls_timeout = positive_atoi(p[1], msglevel);
++        /* Constrain the timeout to not have problems with
++         * RELIABLE_MAX_TIMEOUT_SHIFT creating an overflow. 65k seconds
++         * timeout is already way too much anyway */
++        if (!atoi_constrained(p[1], &options->tls_timeout, "tls-timeout", 1,
++                              RELIABLE_MAX_INITIAL_TIMEOUT, msglevel))
++        {
++            goto err;
++        }
+     }
+     else if (streq(p[0], "reneg-bytes") && p[1] && !p[2])
+     {
+diff --git a/release/src/router/openvpn/src/openvpn/pkcs11_mbedtls.c b/release/src/router/openvpn/src/openvpn/pkcs11_mbedtls.c
+index bf9d953098..2183217431 100644
+--- a/release/src/router/openvpn/src/openvpn/pkcs11_mbedtls.c
++++ b/release/src/router/openvpn/src/openvpn/pkcs11_mbedtls.c
+@@ -64,7 +64,7 @@ pkcs11_get_x509_cert(pkcs11h_certificate_t pkcs11_cert, mbedtls_x509_crt *cert)
+ 
+     if (cert_blob_size > max_cert_size)
+     {
+-        msg(M_WARN, "PKCS#11: Certificate too large: %lu bytes, maximum is %lu", cert_blob_size, max_cert_size);
++        msg(M_WARN, "PKCS#11: Certificate too large: %zu bytes, maximum is %zu", cert_blob_size, max_cert_size);
+         goto cleanup;
+     }
+ 
+diff --git a/release/src/router/openvpn/src/openvpn/reliable.c b/release/src/router/openvpn/src/openvpn/reliable.c
+index 52adacf02a..6cb616e566 100644
+--- a/release/src/router/openvpn/src/openvpn/reliable.c
++++ b/release/src/router/openvpn/src/openvpn/reliable.c
+@@ -390,13 +390,35 @@ reliable_empty(const struct reliable *rel)
+     return true;
+ }
+ 
++int
++validate_packet_id_window(struct reliable *rel, packet_id_type pid)
++{
++    return reliable_pid_min(pid, rel->packet_id)
++           && reliable_pid_min(subtract_pid(rel->packet_id, RELIABLE_CAPACITY), pid);
++}
++
+ /* del acknowledged items from send buf */
+ void
+ reliable_send_purge(struct reliable *rel, const struct reliable_ack *ack)
+ {
++    unsigned int out_of_window = 0;
++    packet_id_type first_out_of_window = 0;
++
+     for (int i = 0; i < ack->len; ++i)
+     {
+         packet_id_type pid = ack->packet_id[i];
++
++
++        if (!validate_packet_id_window(rel, pid))
++        {
++            if (out_of_window == 0)
++            {
++                first_out_of_window = pid;
++            }
++            out_of_window++;
++            continue;
++        }
++
+         for (int j = 0; j < rel->size; ++j)
+         {
+             struct reliable_entry *e = &rel->array[j];
+@@ -417,16 +439,27 @@ reliable_send_purge(struct reliable *rel, const struct reliable_ack *ack)
+ #endif
+                 e->active = false;
+             }
+-            else if (e->active && e->packet_id < pid)
++
++            if (e->active && reliable_pid_min(e->packet_id, pid))
+             {
+                 /* We have received an ACK for a packet with a higher PID. Either
+                  * we have received ACKs out of or order or the packet has been
+                  * lost. We count the number of ACKs to determine if we should
+-                 * resend it early. */
++                 * resend it early. The comparison needs to be wraparound aware,
++                 * otherwise a peer can inflate n_acks with an ACK for a pid from
++                 * the lower half of the id space and force a retransmit. */
+                 e->n_acks++;
+             }
+         }
+     }
++
++    if (out_of_window > 0)
++    {
++        (void)first_out_of_window; /* dmsg might not generate code */
++        dmsg(D_REL_LOW, "ACK contained %u ids outside the send window, "
++                        "first was " packet_id_format,
++             out_of_window, (packet_id_print_type)first_out_of_window);
++    }
+ }
+ 
+ #ifdef ENABLE_DEBUG
+@@ -655,11 +688,22 @@ reliable_send(struct reliable *rel, int *opcode)
+             }
+         }
+     }
++
+     if (best)
+     {
++        /* The initial timeout is bounded by RELIABLE_MAX_INITIAL_TIMEOUT, so
++         * shifting it cannot overflow. */
++        static_assert(RELIABLE_MAX_INITIAL_TIMEOUT <= (INT_MAX >> RELIABLE_MAX_TIMEOUT_SHIFT),
++                      "initial reliable timeout overflows when shifted");
++        const interval_t max_timeout = rel->initial_timeout << RELIABLE_MAX_TIMEOUT_SHIFT;
++
+         /* exponential backoff */
+         best->next_try = local_now + best->timeout;
+-        best->timeout *= 2;
++        if (best->timeout < max_timeout)
++        {
++            best->timeout *= 2;
++        }
++
+         best->n_acks = 0;
+         *opcode = best->opcode;
+         dmsg(D_REL_DEBUG, "ACK reliable_send ID " packet_id_format " (size=%d to=%d)",
+diff --git a/release/src/router/openvpn/src/openvpn/reliable.h b/release/src/router/openvpn/src/openvpn/reliable.h
+index a5ed75cf0d..a85f2e9780 100644
+--- a/release/src/router/openvpn/src/openvpn/reliable.h
++++ b/release/src/router/openvpn/src/openvpn/reliable.h
+@@ -40,21 +40,32 @@
+  *  @{ */
+ 
+ 
+-#define RELIABLE_ACK_SIZE                       \
+-    8 /**< The maximum number of packet IDs     \
+-       *   waiting to be acknowledged which can \
+-       *   be stored in one \c reliable_ack     \
+-       *   structure. */
+-
+-#define RELIABLE_CAPACITY                      \
+-    12 /**< The maximum number of packets that \
+-        *   the reliability layer for one VPN  \
+-        *   tunnel in one direction can store. */
+-
+-#define N_ACK_RETRANSMIT                      \
+-    3 /**< We retry sending a packet early if \
+-       *   this many later packets have been  \
+-       *   ACKed. */
++#define RELIABLE_ACK_SIZE 8
++/**< The maximum number of packet IDs
++ *   waiting to be acknowledged which can
++ *   be stored in one \c reliable_ack
++ *   structure. */
++
++#define RELIABLE_CAPACITY 12
++/**< The maximum number of packets that
++ *   the reliability layer for one VPN
++ *   tunnel in one direction can store. */
++
++#define N_ACK_RETRANSMIT 3
++/**< We retry sending a packet early if
++ *   this many later packets have been
++ *   ACKed. */
++
++#define RELIABLE_MAX_TIMEOUT_SHIFT 6
++/**< Maximum shift or doubling in exponential backoff
++ * we allow. This is a safeguard against an unbounded
++ * exponential backoff. With the default timeout of 2s this
++ * equals 128s */
++
++#define RELIABLE_MAX_INITIAL_TIMEOUT (1 << 16)
++/**< Maximum initial timeout (--tls-timeout) we accept.
++ * Bounded so that shifting it by RELIABLE_MAX_TIMEOUT_SHIFT
++ * cannot overflow an int. */
+ 
+ /**
+  * The acknowledgment structure in which packet IDs are stored for later
+@@ -94,9 +105,9 @@ struct reliable
+ {
+     int size;
+     interval_t initial_timeout;
+-    packet_id_type packet_id;
+-    int offset; /**< Offset of the bufs in the reliable_entry array */
+-    bool hold;  /* don't xmit until reliable_schedule_now is called */
++    packet_id_type packet_id; /**< Packet ID for the next packet to be sent out. */
++    int offset;               /**< Offset of the bufs in the reliable_entry array */
++    bool hold;                /* don't xmit until reliable_schedule_now is called */
+     struct reliable_entry array[RELIABLE_CAPACITY];
+ };
+ 
+@@ -178,6 +189,17 @@ reliable_ack_empty(struct reliable_ack *ack)
+     return !ack->len;
+ }
+ 
++/**
++ * check that pid is inside the window of possible outstanding packets
++ * of size RELIABLE_CAPACITY, ie inside the range
++ * [rel->packet_id - RELIABLE_CAPACITY, rel->packet_id).
++ *
++ * rel->packet is the *next* packet id to be sent out, so it is not
++ * included in the valid range.
++ */
++int
++validate_packet_id_window(struct reliable *rel, packet_id_type pid);
++
+ /**
+  * Returns the number of packets that need to be acked.
+  *
+diff --git a/release/src/router/openvpn/src/openvpn/ssl.c b/release/src/router/openvpn/src/openvpn/ssl.c
+index 97f9958a95..85eb0d0535 100644
+--- a/release/src/router/openvpn/src/openvpn/ssl.c
++++ b/release/src/router/openvpn/src/openvpn/ssl.c
+@@ -95,6 +95,14 @@ show_tls_performance_stats(void)
+ 
+ #endif /* ifdef MEASURE_TLS_HANDSHAKE_STATS */
+ 
++/* forward decleration since tls_process needs this function prototype */
++static void
++check_session_buf_not_used(struct buffer *to_link, struct tls_session *session);
++
++static void
++check_keystate_buf_not_used(struct buffer *to_link, const struct key_state *ks);
++
++
+ /**
+  * Limit the reneg_bytes value when using a small-block (<128 bytes) cipher.
+  *
+@@ -902,10 +910,15 @@ key_state_init(struct tls_session *session, struct key_state *ks)
+  *                       cleaned up.
+  * @param clear        - Whether the memory allocated for the \a ks object
+  *                       should be overwritten with 0s.
++ *
++ * @param to_link      - if not NULL, check that the buffer does not contain
++ *                       any pointer to one of the internal structs of ks
+  */
+ static void
+-key_state_free(struct key_state *ks, bool clear)
++key_state_free(struct key_state *ks, bool clear, struct buffer *to_link)
+ {
++    check_keystate_buf_not_used(to_link, ks);
++
+     ks->state = S_UNDEF;
+ 
+     key_state_ssl_free(&ks->ks_ssl);
+@@ -1049,11 +1062,14 @@ tls_session_init(struct tls_multi *multi, struct tls_session *session)
+  *                       object should be overwritten with 0s. This
+  *                       implicitly sets many states to 0/false,
+  *                       e.g. the validity of the keys in the structure
++ * @param to_link      - if not NULL, check that the buffer does not contain
++ *                       any pointer to one of the internal structs of ks
+  *
+  */
+ static void
+-tls_session_free(struct tls_session *session, bool clear)
++tls_session_free(struct tls_session *session, bool clear, struct buffer *to_link)
+ {
++    check_session_buf_not_used(to_link, session);
+     tls_wrap_free(&session->tls_wrap);
+     tls_wrap_free(&session->tls_wrap_reneg);
+ 
+@@ -1062,7 +1078,7 @@ tls_session_free(struct tls_session *session, bool clear)
+         /* we don't need clear=true for this call since
+          * the structs are part of session and get cleared
+          * as part of session */
+-        key_state_free(&session->key[i], false);
++        key_state_free(&session->key[i], false, to_link);
+     }
+ 
+     free(session->common_name);
+@@ -1081,14 +1097,16 @@ tls_session_free(struct tls_session *session, bool clear)
+ 
+ 
+ static void
+-move_session(struct tls_multi *multi, int dest, int src, bool reinit_src)
++move_session(struct tls_multi *multi, int dest, int src, bool reinit_src,
++             struct buffer *to_link)
+ {
++    check_session_buf_not_used(to_link, &multi->session[dest]);
+     msg(D_TLS_DEBUG_LOW, "TLS: move_session: dest=%s src=%s reinit_src=%d",
+         session_index_name(dest), session_index_name(src), reinit_src);
+     ASSERT(src != dest);
+     ASSERT(src >= 0 && src < TM_SIZE);
+     ASSERT(dest >= 0 && dest < TM_SIZE);
+-    tls_session_free(&multi->session[dest], false);
++    tls_session_free(&multi->session[dest], false, to_link);
+     multi->session[dest] = multi->session[src];
+ 
+     if (reinit_src)
+@@ -1104,9 +1122,9 @@ move_session(struct tls_multi *multi, int dest, int src, bool reinit_src)
+ }
+ 
+ static void
+-reset_session(struct tls_multi *multi, struct tls_session *session)
++reset_session(struct tls_multi *multi, struct tls_session *session, struct buffer *to_link)
+ {
+-    tls_session_free(session, false);
++    tls_session_free(session, false, to_link);
+     tls_session_init(multi, session);
+ }
+ 
+@@ -1259,7 +1277,7 @@ tls_multi_free(struct tls_multi *multi, bool clear)
+ 
+     for (int i = 0; i < TM_SIZE; ++i)
+     {
+-        tls_session_free(&multi->session[i], false);
++        tls_session_free(&multi->session[i], false, NULL);
+     }
+ 
+     if (clear)
+@@ -1338,10 +1356,14 @@ static void
+ init_epoch_keys(struct key_state *ks, struct tls_multi *multi, const struct key_type *key_type,
+                 bool server, struct key2 *key2)
+ {
+-    /* For now we hardcode this to be 16 for the software based data channel
++    /* For now we hardcode this to be 4 for the software based data channel
+      * DCO based implementations/HW implementation might adjust this number
+-     * based on their expected speed */
+-    const uint8_t future_key_count = 16;
++     * based on their expected speed.
++     *
++     * One epoch lasts 910 GiB with 128 byte packets or 78s at 100 GBit/s.
++     * (respectively 1011 GiB and 86s with 1280 byte packets).
++     */
++    const uint8_t future_key_count = 4;
+ 
+     int key_direction = server ? KEY_DIRECTION_INVERSE : KEY_DIRECTION_NORMAL;
+     struct key_direction_state kds;
+@@ -1754,13 +1776,13 @@ flush_payload_buffer(struct key_state *ks)
+  * active key.
+  */
+ static void
+-key_state_soft_reset(struct tls_session *session)
++key_state_soft_reset(struct tls_session *session, struct buffer *to_link)
+ {
+     struct key_state *ks = &session->key[KS_PRIMARY];        /* primary key */
+     struct key_state *ks_lame = &session->key[KS_LAME_DUCK]; /* retiring key */
+ 
+     ks->must_die = now + session->opt->transition_window;    /* remaining lifetime of old key */
+-    key_state_free(ks_lame, false);
++    key_state_free(ks_lame, false, to_link);
+     *ks_lame = *ks;
+ 
+     key_state_init(session, ks);
+@@ -1771,7 +1793,7 @@ key_state_soft_reset(struct tls_session *session)
+ void
+ tls_session_soft_reset(struct tls_multi *tls_multi)
+ {
+-    key_state_soft_reset(&tls_multi->session[TM_ACTIVE]);
++    key_state_soft_reset(&tls_multi->session[TM_ACTIVE], NULL);
+ }
+ 
+ /*
+@@ -2714,8 +2736,15 @@ write_outgoing_tls_ciphertext(struct tls_session *session, bool *continue_tls_pr
+ 
+ static bool
+ check_outgoing_ciphertext(struct key_state *ks, struct tls_session *session,
+-                          bool *continue_tls_process)
++                          struct buffer *to_link, bool *continue_tls_process)
+ {
++    if (to_link->len)
++    {
++        dmsg(D_TLS_DEBUG,
++             "Deferring outgoing ciphertext, previous packet not written out yet");
++        return true;
++    }
++
+     /* Outgoing Ciphertext to reliable buffer */
+     if (ks->state >= S_START)
+     {
+@@ -2896,7 +2925,7 @@ tls_process_state(struct tls_multi *multi, struct tls_session *session, struct b
+         }
+     }
+ 
+-    if (!check_outgoing_ciphertext(ks, session, &continue_tls_process))
++    if (!check_outgoing_ciphertext(ks, session, to_link, &continue_tls_process))
+     {
+         goto error;
+     }
+@@ -2914,7 +2943,7 @@ error:
+     /* Shut down the TLS session but do a last read from the TLS
+      * object to be able to read potential TLS alerts */
+     key_state_ssl_shutdown(&ks->ks_ssl);
+-    check_outgoing_ciphertext(ks, session, &continue_tls_process);
++    check_outgoing_ciphertext(ks, session, to_link, &continue_tls_process);
+ 
+     /* Put ourselves in the pre error state that will only send out the
+      * control channel packets but nothing else */
+@@ -3038,13 +3067,13 @@ tls_process(struct tls_multi *multi, struct tls_session *session, struct buffer
+             session->opt->aead_usage_limit,
+             ks->crypto_options.key_ctx_bi.decrypt.plaintext_blocks + ks->n_packets,
+             session->opt->aead_usage_limit);
+-        key_state_soft_reset(session);
++        key_state_soft_reset(session, to_link);
+     }
+ 
+     /* Kill lame duck key transition_window seconds after primary key negotiation */
+     if (lame_duck_must_die(session, wakeup))
+     {
+-        key_state_free(ks_lame, true);
++        key_state_free(ks_lame, true, to_link);
+         msg(D_TLS_DEBUG_LOW, "TLS: tls_process: killed expiring key");
+     }
+ 
+@@ -3137,6 +3166,55 @@ tls_process(struct tls_multi *multi, struct tls_session *session, struct buffer
+     return false;
+ }
+ 
++static void
++check_keystate_buf_not_used(struct buffer *to_link, const struct key_state *ks)
++{
++    if (ks->state == S_UNDEF || !to_link || !to_link->data)
++    {
++        return;
++    }
++
++    uint8_t *dataptr = to_link->data;
++
++    /* we don't expect send_reliable to be NULL when state is
++     * not S_UNDEF, but people have reported crashes nonetheless,
++     * therefore we better catch this event, report and exit.
++     */
++    if (!ks->send_reliable)
++    {
++        msg(M_FATAL,
++            "ERROR: ks.send_reliable (key-id %d), is NULL "
++            "while key state is %s. Exiting.",
++            ks->key_id, state_name(ks->state));
++    }
++
++    for (int j = 0; j < ks->send_reliable->size; j++)
++    {
++        if (ks->send_reliable->array[j].buf.data == dataptr)
++        {
++            msg(M_INFO,
++                "Warning buffer of freed TLS session is still in"
++                " use (key-id %d, ks.send_reliable->array[%d])",
++                ks->key_id, j);
++
++            goto used;
++        }
++    }
++
++    if (ks->ack_write_buf.data == dataptr)
++    {
++        msg(M_INFO, "Warning buffer of freed TLS session is still in use "
++                    "(ks.ack_write_buf, key-id %d)",
++            ks->key_id);
++
++        goto used;
++    }
++    return;
++
++used:
++    to_link->len = 0;
++    to_link->data = 0;
++}
+ 
+ /**
+  * This is a safe guard function to double check that a buffer from a session is
+@@ -3148,11 +3226,11 @@ tls_process(struct tls_multi *multi, struct tls_session *session, struct buffer
+ static void
+ check_session_buf_not_used(struct buffer *to_link, struct tls_session *session)
+ {
+-    uint8_t *dataptr = to_link->data;
+-    if (!dataptr)
++    if (!to_link || !to_link->data)
+     {
+         return;
+     }
++    const uint8_t *dataptr = to_link->data;
+ 
+     /* Checks buffers in tls_wrap */
+     if (session->tls_wrap.work.data == dataptr)
+@@ -3170,42 +3248,8 @@ check_session_buf_not_used(struct buffer *to_link, struct tls_session *session)
+ 
+     for (int i = 0; i < KS_SIZE; i++)
+     {
+-        struct key_state *ks = &session->key[i];
+-        if (ks->state == S_UNDEF)
+-        {
+-            continue;
+-        }
+-
+-        /* we don't expect send_reliable to be NULL when state is
+-         * not S_UNDEF, but people have reported crashes nonetheless,
+-         * therefore we better catch this event, report and exit.
+-         */
+-        if (!ks->send_reliable)
+-        {
+-            msg(M_FATAL,
+-                "ERROR: session->key[%d]->send_reliable is NULL "
+-                "while key state is %s. Exiting.",
+-                i, state_name(ks->state));
+-        }
+-
+-        for (int j = 0; j < ks->send_reliable->size; j++)
+-        {
+-            if (ks->send_reliable->array[j].buf.data == dataptr)
+-            {
+-                msg(M_INFO,
+-                    "Warning buffer of freed TLS session is still in"
+-                    " use (session->key[%d].send_reliable->array[%d])",
+-                    i, j);
+-
+-                goto used;
+-            }
+-        }
+-        if (ks->ack_write_buf.data == dataptr)
+-        {
+-            msg(M_INFO, "Warning buffer of freed TLS session is still in use (session->key[%d].ack_write_buf)", i);
+-
+-            goto used;
+-        }
++        const struct key_state *ks = &session->key[i];
++        check_keystate_buf_not_used(to_link, ks);
+     }
+     return;
+ 
+@@ -3299,13 +3343,11 @@ tls_multi_process(struct tls_multi *multi, struct buffer *to_link,
+                 if (i == TM_ACTIVE && ks_lame->state >= S_GENERATED_KEYS
+                     && !multi->opt.single_session)
+                 {
+-                    check_session_buf_not_used(to_link, session);
+-                    move_session(multi, TM_LAME_DUCK, TM_ACTIVE, true);
++                    move_session(multi, TM_LAME_DUCK, TM_ACTIVE, true, to_link);
+                 }
+                 else
+                 {
+-                    check_session_buf_not_used(to_link, session);
+-                    reset_session(multi, session);
++                    reset_session(multi, session, to_link);
+                 }
+             }
+         }
+@@ -3358,7 +3400,7 @@ tls_multi_process(struct tls_multi *multi, struct buffer *to_link,
+      */
+     if (lame_duck_must_die(&multi->session[TM_LAME_DUCK], wakeup))
+     {
+-        tls_session_free(&multi->session[TM_LAME_DUCK], true);
++        tls_session_free(&multi->session[TM_LAME_DUCK], true, to_link);
+         msg(D_TLS_DEBUG_LOW, "TLS: tls_multi_process: killed expiring key");
+     }
+ 
+@@ -3373,8 +3415,7 @@ tls_multi_process(struct tls_multi *multi, struct buffer *to_link,
+      */
+     if (TLS_AUTHENTICATED(multi, &multi->session[TM_INITIAL].key[KS_PRIMARY]))
+     {
+-        check_session_buf_not_used(to_link, &multi->session[TM_ACTIVE]);
+-        move_session(multi, TM_ACTIVE, TM_INITIAL, true);
++        move_session(multi, TM_ACTIVE, TM_INITIAL, true, to_link);
+         tas = tls_authentication_status(multi);
+         msg(D_TLS_DEBUG_LOW,
+             "TLS: tls_multi_process: initial untrusted "
+@@ -3776,7 +3817,7 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from,
+                 goto error;
+             }
+ 
+-            key_state_soft_reset(session);
++            key_state_soft_reset(session, NULL);
+ 
+             dmsg(D_TLS_DEBUG, "TLS: received P_CONTROL_SOFT_RESET_V1 s=%d sid=%s", i,
+                  session_id_print(&sid, &gc));
+diff --git a/release/src/router/openvpn/src/openvpn/win32-util.c b/release/src/router/openvpn/src/openvpn/win32-util.c
+index dfe7a5525a..a3a836371b 100644
+--- a/release/src/router/openvpn/src/openvpn/win32-util.c
++++ b/release/src/router/openvpn/src/openvpn/win32-util.c
+@@ -45,6 +45,73 @@ wide_string(const char *utf8, struct gc_arena *gc)
+     return ucs16;
+ }
+ 
++/* special to cmd.exe, which CreateProcess() uses to run .bat/.cmd (VU#123335) */
++#define CMD_QUOTE_TRIGGERS " &|<>^%()!"
++
++static bool
++argv_element_needs_quotes(const char *str)
++{
++    for (const char *c = str; *c != '\0'; ++c)
++    {
++        if (strchr(CMD_QUOTE_TRIGGERS, *c) != NULL)
++        {
++            return true;
++        }
++    }
++    return false;
++}
++
++WCHAR *
++wide_cmd_line(const struct argv *a, struct gc_arena *gc)
++{
++    size_t nchars = 1;
++    size_t maxlen = 0;
++    size_t i;
++    struct buffer buf;
++    char *work = NULL;
++
++    if (!a)
++    {
++        return NULL;
++    }
++
++    for (i = 0; i < a->argc; ++i)
++    {
++        const char *arg = a->argv[i];
++        const size_t len = strlen(arg);
++        nchars += len + 3;
++        if (len > maxlen)
++        {
++            maxlen = len;
++        }
++    }
++
++    work = gc_malloc(maxlen + 1, false, gc);
++    check_malloc_return(work);
++    buf = alloc_buf_gc(nchars, gc);
++
++    for (i = 0; i < a->argc; ++i)
++    {
++        const char *arg = a->argv[i];
++        strcpy(work, arg);
++        string_mod(work, CC_PRINT, CC_DOUBLE_QUOTE | CC_CRLF, '_');
++        if (i)
++        {
++            buf_printf(&buf, " ");
++        }
++        if (argv_element_needs_quotes(work))
++        {
++            buf_printf(&buf, "\"%s\"", work);
++        }
++        else
++        {
++            buf_printf(&buf, "%s", work);
++        }
++    }
++
++    return wide_string(BSTR(&buf), gc);
++}
++
+ char *
+ utf16to8(const wchar_t *utf16, struct gc_arena *gc)
+ {
+diff --git a/release/src/router/openvpn/src/openvpn/win32-util.h b/release/src/router/openvpn/src/openvpn/win32-util.h
+index 4849ea9f70..c2ad64bf34 100644
+--- a/release/src/router/openvpn/src/openvpn/win32-util.h
++++ b/release/src/router/openvpn/src/openvpn/win32-util.h
+@@ -24,15 +24,15 @@
+ #ifndef OPENVPN_WIN32_UTIL_H
+ #define OPENVPN_WIN32_UTIL_H
+ 
+-#include <winioctl.h>
+-
+-#include "mtu.h"
+-#include "openvpn-msg.h"
+ #include "argv.h"
++#include "buffer.h"
+ 
+ /* Convert a string from UTF-8 to UCS-2 */
+ WCHAR *wide_string(const char *utf8, struct gc_arena *gc);
+ 
++/* Build a CreateProcess() command line from argv */
++WCHAR *wide_cmd_line(const struct argv *a, struct gc_arena *gc);
++
+ /* Convert a string from UTF-16 to UTF-8 */
+ char *utf16to8(const wchar_t *utf16, struct gc_arena *gc);
+ 
+diff --git a/release/src/router/openvpn/src/openvpn/win32.c b/release/src/router/openvpn/src/openvpn/win32.c
+index 305b9baa3c..addefea9b4 100644
+--- a/release/src/router/openvpn/src/openvpn/win32.c
++++ b/release/src/router/openvpn/src/openvpn/win32.c
+@@ -35,6 +35,8 @@
+ 
+ #include <minwindef.h>
+ #include <winsock2.h>
++#include <accctrl.h>
++#include <aclapi.h>
+ 
+ #include "buffer.h"
+ #include "error.h"
+@@ -146,6 +148,13 @@ set_pause_exit_win32(void)
+     pause_exit_enabled = true;
+ }
+ 
++/**
++ * @brief Initializes security attributes with a NULL DACL, allowing
++ *        unrestricted access to the resulting object.
++ *
++ * @param obj Security attributes structure to initialize.
++ * @return true on success, false otherwise.
++ */
+ bool
+ init_security_attributes_allow_all(struct security_attributes *obj)
+ {
+@@ -165,6 +174,93 @@ init_security_attributes_allow_all(struct security_attributes *obj)
+     return true;
+ }
+ 
++/**
++ * @brief Initializes security attributes with a DACL restricted to the
++ *        current process user.
++ *
++ * The resulting DACL grants GENERIC_ALL access to the calling user only,
++ * so the created object cannot be opened, signaled or otherwise accessed
++ * by other users on the system. The allocated DACL must be released with
++ * free_security_attributes() once the security attributes are no longer
++ * needed.
++ *
++ * @param obj Security attributes structure to initialize.
++ * @return true on success, false otherwise.
++ */
++static bool
++init_security_attributes_allow_user(struct security_attributes *obj)
++{
++    bool ret = false;
++
++    CLEAR(*obj);
++    obj->sa.nLength = sizeof(SECURITY_ATTRIBUTES);
++    obj->sa.lpSecurityDescriptor = &obj->sd;
++    obj->sa.bInheritHandle = FALSE;
++
++    if (!InitializeSecurityDescriptor(&obj->sd, SECURITY_DESCRIPTOR_REVISION))
++    {
++        return ret;
++    }
++
++    HANDLE token = NULL;
++    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
++    {
++        return ret;
++    }
++
++    PTOKEN_USER info = NULL;
++    DWORD info_len = 0;
++    if (!GetTokenInformation(token, TokenUser, info, info_len, &info_len)
++        && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
++    {
++        goto out;
++    }
++
++    info = malloc(info_len);
++    if (!info || !GetTokenInformation(token, TokenUser, info, info_len, &info_len))
++    {
++        goto out;
++    }
++
++    EXPLICIT_ACCESS ea = { 0 };
++    ea.grfAccessPermissions = GENERIC_ALL;
++    ea.grfAccessMode = SET_ACCESS;
++    ea.grfInheritance = NO_INHERITANCE;
++    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
++    ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
++    ea.Trustee.ptstrName = (LPTSTR)info->User.Sid;
++
++    if (SetEntriesInAcl(1, &ea, NULL, &obj->dacl) != ERROR_SUCCESS)
++    {
++        goto out;
++    }
++
++    if (SetSecurityDescriptorDacl(&obj->sd, TRUE, obj->dacl, FALSE))
++    {
++        ret = true;
++    }
++
++out:
++    free(info);
++    CloseHandle(token);
++    return ret;
++}
++
++/**
++ * @brief Releases resources allocated by init_security_attributes_allow_user().
++ *
++ * @param obj Security attributes structure to release.
++ */
++static void
++free_security_attributes(struct security_attributes *obj)
++{
++    if (obj->dacl)
++    {
++        LocalFree(obj->dacl);
++        obj->dacl = NULL;
++    }
++}
++
+ void
+ overlapped_io_init(struct overlapped_io *o, const struct frame *frame, BOOL event_state)
+ {
+@@ -504,7 +600,7 @@ win32_signal_open(struct win32_signal *ws, int force, const char *exit_event_nam
+         struct gc_arena gc = gc_new();
+         const wchar_t *exit_event_nameW = wide_string(exit_event_name, &gc);
+ 
+-        if (!init_security_attributes_allow_all(&sa))
++        if (!init_security_attributes_allow_user(&sa))
+         {
+             msg(M_ERR, "Error: win32_signal_open: init SA failed");
+         }
+@@ -526,6 +622,7 @@ win32_signal_open(struct win32_signal *ws, int force, const char *exit_event_nam
+                 ws->mode = WSO_MODE_SERVICE;
+             }
+         }
++        free_security_attributes(&sa);
+         gc_free(&gc);
+     }
+     /* set the ctrl handler in both console and service modes */
+@@ -751,14 +848,15 @@ semaphore_open(struct semaphore *s, const char *name)
+     s->name = name;
+     s->hand = NULL;
+ 
+-    if (init_security_attributes_allow_all(&sa))
++    if (init_security_attributes_allow_user(&sa))
+     {
+         s->hand = CreateSemaphore(&sa.sa, 1, 1, name);
+     }
++    free_security_attributes(&sa);
+ 
+     if (s->hand == NULL)
+     {
+-        msg(M_WARN | M_ERRNO, "WARNING: Cannot create Win32 semaphore '%s'", name);
++        msg(M_ERR, "Cannot create Win32 semaphore '%s'", name);
+     }
+     else
+     {
+@@ -936,57 +1034,6 @@ env_block(const struct env_set *es)
+     }
+ }
+ 
+-static WCHAR *
+-wide_cmd_line(const struct argv *a, struct gc_arena *gc)
+-{
+-    size_t nchars = 1;
+-    size_t maxlen = 0;
+-    size_t i;
+-    struct buffer buf;
+-    char *work = NULL;
+-
+-    if (!a)
+-    {
+-        return NULL;
+-    }
+-
+-    for (i = 0; i < a->argc; ++i)
+-    {
+-        const char *arg = a->argv[i];
+-        const size_t len = strlen(arg);
+-        nchars += len + 3;
+-        if (len > maxlen)
+-        {
+-            maxlen = len;
+-        }
+-    }
+-
+-    work = gc_malloc(maxlen + 1, false, gc);
+-    check_malloc_return(work);
+-    buf = alloc_buf_gc(nchars, gc);
+-
+-    for (i = 0; i < a->argc; ++i)
+-    {
+-        const char *arg = a->argv[i];
+-        strcpy(work, arg);
+-        string_mod(work, CC_PRINT, CC_DOUBLE_QUOTE | CC_CRLF, '_');
+-        if (i)
+-        {
+-            buf_printf(&buf, " ");
+-        }
+-        if (string_class(work, CC_ANY, CC_SPACE))
+-        {
+-            buf_printf(&buf, "%s", work);
+-        }
+-        else
+-        {
+-            buf_printf(&buf, "\"%s\"", work);
+-        }
+-    }
+-
+-    return wide_string(BSTR(&buf), gc);
+-}
+-
+ /*
+  * Attempt to simulate fork/execve on Windows
+  */
+diff --git a/release/src/router/openvpn/src/openvpn/win32.h b/release/src/router/openvpn/src/openvpn/win32.h
+index ef320624ba..8be3d96b8d 100644
+--- a/release/src/router/openvpn/src/openvpn/win32.h
++++ b/release/src/router/openvpn/src/openvpn/win32.h
+@@ -63,6 +63,7 @@ struct security_attributes
+ {
+     SECURITY_ATTRIBUTES sa;
+     SECURITY_DESCRIPTOR sd;
++    PACL dacl;
+ };
+ 
+ #define HANDLE_DEFINED(h) ((h) != NULL && (h) != INVALID_HANDLE_VALUE)
+@@ -262,6 +263,11 @@ void semaphore_close(struct semaphore *s);
+  *
+  * It seems you can't run more than one instance
+  * of netsh on the same machine at the same time.
++ *
++ * Its DACL is restricted to the creating user to prevent an unprivileged
++ * local user from starving it and DoS'ing running instances. This means
++ * different user accounts running OpenVPN directly, not via the interactive
++ * service, will make all but the first user's instances exit.
+  */
+ 
+ extern struct semaphore netcmd_semaphore;
+diff --git a/release/src/router/openvpn/src/openvpnmsica/Makefile.in b/release/src/router/openvpn/src/openvpnmsica/Makefile.in
+index 30f02a48af..a662848cbf 100644
+--- a/release/src/router/openvpn/src/openvpnmsica/Makefile.in
++++ b/release/src/router/openvpn/src/openvpnmsica/Makefile.in
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.16.5 from Makefile.am.
++# Makefile.in generated by automake 1.18.1 from Makefile.am.
+ # @configure_input@
+ 
+-# Copyright (C) 1994-2021 Free Software Foundation, Inc.
++# Copyright (C) 1994-2025 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -100,6 +100,8 @@ am__make_running_with_option = \
+   test $$has_opt = yes
+ am__make_dryrun = (target_option=n; $(am__make_running_with_option))
+ am__make_keepgoing = (target_option=k; $(am__make_running_with_option))
++am__rm_f = rm -f $(am__rm_f_notfound)
++am__rm_rf = rm -rf $(am__rm_f_notfound)
+ pkgdatadir = $(datadir)/@PACKAGE@
+ pkgincludedir = $(includedir)/@PACKAGE@
+ pkglibdir = $(libdir)/@PACKAGE@
+@@ -156,10 +158,9 @@ am__base_list = \
+   sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
+   sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
+ am__uninstall_files_from_dir = { \
+-  test -z "$$files" \
+-    || { test ! -d "$$dir" && test ! -f "$$dir" && test ! -r "$$dir"; } \
+-    || { echo " ( cd '$$dir' && rm -f" $$files ")"; \
+-         $(am__cd) "$$dir" && rm -f $$files; }; \
++  { test ! -d "$$dir" && test ! -f "$$dir" && test ! -r "$$dir"; } \
++  || { echo " ( cd '$$dir' && rm -f" $$files ")"; \
++       $(am__cd) "$$dir" && echo $$files | $(am__xargs_n) 40 $(am__rm_f); }; \
+   }
+ am__installdirs = "$(DESTDIR)$(libdir)"
+ LTLIBRARIES = $(lib_LTLIBRARIES)
+@@ -404,8 +405,10 @@ ac_ct_WINDMC = @ac_ct_WINDMC@
+ am__include = @am__include@
+ am__leading_dot = @am__leading_dot@
+ am__quote = @am__quote@
++am__rm_f_notfound = @am__rm_f_notfound@
+ am__tar = @am__tar@
+ am__untar = @am__untar@
++am__xargs_n = @am__xargs_n@
+ bindir = @bindir@
+ build = @build@
+ build_alias = @build_alias@
+@@ -546,21 +549,19 @@ uninstall-libLTLIBRARIES:
+ 	done
+ 
+ clean-libLTLIBRARIES:
+-	-test -z "$(lib_LTLIBRARIES)" || rm -f $(lib_LTLIBRARIES)
++	-$(am__rm_f) $(lib_LTLIBRARIES)
+ 	@list='$(lib_LTLIBRARIES)'; \
+ 	locs=`for p in $$list; do echo $$p; done | \
+ 	      sed 's|^[^/]*$$|.|; s|/[^/]*$$||; s|$$|/so_locations|' | \
+ 	      sort -u`; \
+-	test -z "$$locs" || { \
+-	  echo rm -f $${locs}; \
+-	  rm -f $${locs}; \
+-	}
++	echo rm -f $${locs}; \
++	$(am__rm_f) $${locs}
+ $(top_builddir)/src/tapctl/$(am__dirstamp):
+ 	@$(MKDIR_P) $(top_builddir)/src/tapctl
+-	@: > $(top_builddir)/src/tapctl/$(am__dirstamp)
++	@: >>$(top_builddir)/src/tapctl/$(am__dirstamp)
+ $(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp):
+ 	@$(MKDIR_P) $(top_builddir)/src/tapctl/$(DEPDIR)
+-	@: > $(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)
++	@: >>$(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)
+ $(top_builddir)/src/tapctl/libopenvpnmsica_la-error.lo:  \
+ 	$(top_builddir)/src/tapctl/$(am__dirstamp) \
+ 	$(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)
+@@ -588,7 +589,7 @@ distclean-compile:
+ 
+ $(am__depfiles_remade):
+ 	@$(MKDIR_P) $(@D)
+-	@echo '# dummy' >$@-t && $(am__mv) $@-t $@
++	@: >>$@
+ 
+ am--depfiles: $(am__depfiles_remade)
+ 
+@@ -716,6 +717,7 @@ cscopelist-am: $(am__tagged_files)
+ 
+ distclean-tags:
+ 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
++
+ distdir: $(BUILT_SOURCES)
+ 	$(MAKE) $(AM_MAKEFLAGS) distdir-am
+ 
+@@ -780,22 +782,22 @@ mostlyclean-generic:
+ clean-generic:
+ 
+ distclean-generic:
+-	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
+-	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
+-	-test -z "$(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)" || rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)
+-	-test -z "$(top_builddir)/src/tapctl/$(am__dirstamp)" || rm -f $(top_builddir)/src/tapctl/$(am__dirstamp)
++	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
++	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
++	-$(am__rm_f) $(top_builddir)/src/tapctl/$(DEPDIR)/$(am__dirstamp)
++	-$(am__rm_f) $(top_builddir)/src/tapctl/$(am__dirstamp)
+ 
+ maintainer-clean-generic:
+ 	@echo "This command is intended for maintainers to use"
+ 	@echo "it deletes files that may require special tools to rebuild."
+-	-test -z "$(MAINTAINERCLEANFILES)" || rm -f $(MAINTAINERCLEANFILES)
++	-$(am__rm_f) $(MAINTAINERCLEANFILES)
+ clean: clean-am
+ 
+ clean-am: clean-generic clean-libLTLIBRARIES clean-libtool \
+ 	mostlyclean-am
+ 
+ distclean: distclean-am
+-		-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-error.Plo
++	-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-error.Plo
+ 	-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-tap.Plo
+ 	-rm -f ./$(DEPDIR)/libopenvpnmsica_la-dllmain.Plo
+ 	-rm -f ./$(DEPDIR)/libopenvpnmsica_la-msica_arg.Plo
+@@ -846,7 +848,7 @@ install-ps-am:
+ installcheck-am:
+ 
+ maintainer-clean: maintainer-clean-am
+-		-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-error.Plo
++	-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-error.Plo
+ 	-rm -f $(top_builddir)/src/tapctl/$(DEPDIR)/libopenvpnmsica_la-tap.Plo
+ 	-rm -f ./$(DEPDIR)/libopenvpnmsica_la-dllmain.Plo
+ 	-rm -f ./$(DEPDIR)/libopenvpnmsica_la-msica_arg.Plo
+@@ -901,3 +903,10 @@ uninstall-am: uninstall-libLTLIBRARIES
+ # Tell versions [3.59,3.63) of GNU make to not export all variables.
+ # Otherwise a system limit (for SysV at least) may be exceeded.
+ .NOEXPORT:
++
++# Tell GNU make to disable its built-in pattern rules.
++%:: %,v
++%:: RCS/%,v
++%:: RCS/%
++%:: s.%
++%:: SCCS/s.%
+diff --git a/release/src/router/openvpn/src/openvpnserv/interactive.c b/release/src/router/openvpn/src/openvpnserv/interactive.c
+index 0bc763da16..7379d00d27 100644
+--- a/release/src/router/openvpn/src/openvpnserv/interactive.c
++++ b/release/src/router/openvpn/src/openvpnserv/interactive.c
+@@ -1224,19 +1224,25 @@ InterfaceIdString(PCSTR itf_name, PWSTR str, size_t len)
+     err = InterfaceLuid(itf_name, &luid);
+     if (err)
+     {
+-        MsgToEventLog(M_ERR, L"%S: failed to convert itf alias '%s'", __func__, itf_name);
++        PWSTR wide_name = utf8to16(itf_name);
++        MsgToEventLog(M_ERR, L"%S: failed to convert itf alias '%s'", __func__, wide_name);
++        free(wide_name);
+         goto out;
+     }
+     err = ConvertInterfaceLuidToGuid(&luid, &guid);
+     if (err)
+     {
+-        MsgToEventLog(M_ERR, L"%S: Failed to convert itf '%s' LUID", __func__, itf_name);
++        PWSTR wide_name = utf8to16(itf_name);
++        MsgToEventLog(M_ERR, L"%S: Failed to convert itf '%s' LUID", __func__, wide_name);
++        free(wide_name);
+         goto out;
+     }
+ 
+     if (StringFromIID(&guid, &iid_str) != S_OK)
+     {
+-        MsgToEventLog(M_ERR, L"%S: Failed to convert itf '%s' IID", __func__, itf_name);
++        PWSTR wide_name = utf8to16(itf_name);
++        MsgToEventLog(M_ERR, L"%S: Failed to convert itf '%s' IID", __func__, wide_name);
++        free(wide_name);
+         err = ERROR_OUTOFMEMORY;
+         goto out;
+     }
+@@ -2729,11 +2735,13 @@ SetNrptRules(HKEY nrpt_key, const nrpt_address_t *addresses, const char *domains
+         dom_size = (DWORD)domains_len + 2; /* len + the trailing NULs */
+ 
+         wide_domains = utf8to16_size(domains, dom_size);
+-        dom_size *= sizeof(*wide_domains);
+         if (!wide_domains)
+         {
+             return ERROR_OUTOFMEMORY;
+         }
++        domains_len = wcslen(wide_domains);
++        dom_size = (DWORD)(domains_len + 2) * sizeof(*wide_domains);
++
+         /* Make a MULTI_SZ from a comma separated list */
+         for (size_t i = 0; i < domains_len; ++i)
+         {
+@@ -2951,7 +2959,7 @@ HandleDNSConfigNrptMessage(const nrpt_dns_cfg_message_t *msg, DWORD ovpn_pid, un
+         const char *rdom = msg->resolve_domains;
+         size_t rdom_size = sizeof(msg->resolve_domains);
+         size_t rdom_len = strlen(rdom);
+-        if (rdom_len && (rdom_len + 1 >= rdom_size || rdom[rdom_len + 2] != 0))
++        if (rdom_len && (rdom_len + 1 >= rdom_size || rdom[rdom_len + 1] != 0))
+         {
+             return ERROR_MESSAGE_DATA;
+         }
+diff --git a/release/src/router/openvpn/src/openvpnserv/validate.c b/release/src/router/openvpn/src/openvpnserv/validate.c
+index 7c0a87b392..8e529b9fe7 100644
+--- a/release/src/router/openvpn/src/openvpnserv/validate.c
++++ b/release/src/router/openvpn/src/openvpnserv/validate.c
+@@ -62,12 +62,23 @@ CheckConfigPath(const WCHAR *workdir, const WCHAR *fname, const settings_t *s)
+ {
+     HRESULT res;
+     WCHAR config_path[MAX_PATH];
++    const size_t config_dir_len = wcslen(s->config_dir);
+ 
++    /* config_dir must end with a '\' or the prefix check below could be satisfied by a sibling directory */
++    if (config_dir_len == 0 || s->config_dir[config_dir_len - 1] != L'\\')
++    {
++        return FALSE;
++    }
+     /* fname = stdin is special: do not treat it as a relative path */
+     if (wcscmp(fname, L"stdin") == 0)
+     {
+         return FALSE;
+     }
++    /* do not accept forward slashes in paths, as PathCch* functions do not handle these */
++    if (wcschr(workdir, L'/') || wcschr(fname, L'/'))
++    {
++        return FALSE;
++    }
+     /* convert fname to full canonical path */
+     if (PathIsRelativeW(fname))
+     {
+@@ -78,7 +89,7 @@ CheckConfigPath(const WCHAR *workdir, const WCHAR *fname, const settings_t *s)
+         res = PathCchCanonicalize(config_path, _countof(config_path), fname);
+     }
+ 
+-    return res == S_OK && wcsnicmp(config_path, s->config_dir, wcslen(s->config_dir)) == 0;
++    return res == S_OK && wcsnicmp(config_path, s->config_dir, config_dir_len) == 0;
+ }
+ 
+ 
+diff --git a/release/src/router/openvpn/src/openvpnserv/validate.h b/release/src/router/openvpn/src/openvpnserv/validate.h
+index 12150f1466..2da41dcb31 100644
+--- a/release/src/router/openvpn/src/openvpnserv/validate.h
++++ b/release/src/router/openvpn/src/openvpnserv/validate.h
+@@ -1,4 +1,3 @@
+-
+ /*
+  *  OpenVPN -- An application to securely tunnel IP networks
+  *             over a single TCP/UDP port, with support for SSL/TLS-based
+diff --git a/release/src/router/openvpn/src/tapctl/Makefile.in b/release/src/router/openvpn/src/tapctl/Makefile.in
+index 8553fc01ef..171113c8cb 100644
+--- a/release/src/router/openvpn/src/tapctl/Makefile.in
++++ b/release/src/router/openvpn/src/tapctl/Makefile.in
+@@ -1,7 +1,7 @@
+-# Makefile.in generated by automake 1.16.5 from Makefile.am.
++# Makefile.in generated by automake 1.18.1 from Makefile.am.
+ # @configure_input@
+ 
+-# Copyright (C) 1994-2021 Free Software Foundation, Inc.
++# Copyright (C) 1994-2025 Free Software Foundation, Inc.
+ 
+ # This Makefile.in is free software; the Free Software Foundation
+ # gives unlimited permission to copy and/or distribute it,
+@@ -100,6 +100,8 @@ am__make_running_with_option = \
+   test $$has_opt = yes
+ am__make_dryrun = (target_option=n; $(am__make_running_with_option))
+ am__make_keepgoing = (target_option=k; $(am__make_running_with_option))
++am__rm_f = rm -f $(am__rm_f_notfound)
++am__rm_rf = rm -rf $(am__rm_f_notfound)
+ pkgdatadir = $(datadir)/@PACKAGE@
+ pkgincludedir = $(includedir)/@PACKAGE@
+ pkglibdir = $(libdir)/@PACKAGE@
+@@ -367,8 +369,10 @@ ac_ct_WINDMC = @ac_ct_WINDMC@
+ am__include = @am__include@
+ am__leading_dot = @am__leading_dot@
+ am__quote = @am__quote@
++am__rm_f_notfound = @am__rm_f_notfound@
+ am__tar = @am__tar@
+ am__untar = @am__untar@
++am__xargs_n = @am__xargs_n@
+ bindir = @bindir@
+ build = @build@
+ build_alias = @build_alias@
+@@ -518,16 +522,11 @@ uninstall-sbinPROGRAMS:
+ 	`; \
+ 	test -n "$$list" || exit 0; \
+ 	echo " ( cd '$(DESTDIR)$(sbindir)' && rm -f" $$files ")"; \
+-	cd "$(DESTDIR)$(sbindir)" && rm -f $$files
++	cd "$(DESTDIR)$(sbindir)" && $(am__rm_f) $$files
+ 
+ clean-sbinPROGRAMS:
+-	@list='$(sbin_PROGRAMS)'; test -n "$$list" || exit 0; \
+-	echo " rm -f" $$list; \
+-	rm -f $$list || exit $$?; \
+-	test -n "$(EXEEXT)" || exit 0; \
+-	list=`for p in $$list; do echo "$$p"; done | sed 's/$(EXEEXT)$$//'`; \
+-	echo " rm -f" $$list; \
+-	rm -f $$list
++	$(am__rm_f) $(sbin_PROGRAMS)
++	test -z "$(EXEEXT)" || $(am__rm_f) $(sbin_PROGRAMS:$(EXEEXT)=)
+ 
+ tapctl$(EXEEXT): $(tapctl_OBJECTS) $(tapctl_DEPENDENCIES) $(EXTRA_tapctl_DEPENDENCIES) 
+ 	@rm -f tapctl$(EXEEXT)
+@@ -545,7 +544,7 @@ distclean-compile:
+ 
+ $(am__depfiles_remade):
+ 	@$(MKDIR_P) $(@D)
+-	@echo '# dummy' >$@-t && $(am__mv) $@-t $@
++	@: >>$@
+ 
+ am--depfiles: $(am__depfiles_remade)
+ 
+@@ -672,6 +671,7 @@ cscopelist-am: $(am__tagged_files)
+ 
+ distclean-tags:
+ 	-rm -f TAGS ID GTAGS GRTAGS GSYMS GPATH tags
++
+ distdir: $(BUILT_SOURCES)
+ 	$(MAKE) $(AM_MAKEFLAGS) distdir-am
+ 
+@@ -736,20 +736,20 @@ mostlyclean-generic:
+ clean-generic:
+ 
+ distclean-generic:
+-	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
+-	-test . = "$(srcdir)" || test -z "$(CONFIG_CLEAN_VPATH_FILES)" || rm -f $(CONFIG_CLEAN_VPATH_FILES)
++	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
++	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
+ 
+ maintainer-clean-generic:
+ 	@echo "This command is intended for maintainers to use"
+ 	@echo "it deletes files that may require special tools to rebuild."
+-	-test -z "$(MAINTAINERCLEANFILES)" || rm -f $(MAINTAINERCLEANFILES)
++	-$(am__rm_f) $(MAINTAINERCLEANFILES)
+ clean: clean-am
+ 
+ clean-am: clean-generic clean-libtool clean-sbinPROGRAMS \
+ 	mostlyclean-am
+ 
+ distclean: distclean-am
+-		-rm -f ./$(DEPDIR)/tapctl-error.Po
++	-rm -f ./$(DEPDIR)/tapctl-error.Po
+ 	-rm -f ./$(DEPDIR)/tapctl-main.Po
+ 	-rm -f ./$(DEPDIR)/tapctl-tap.Po
+ 	-rm -f Makefile
+@@ -797,7 +797,7 @@ install-ps-am:
+ installcheck-am:
+ 
+ maintainer-clean: maintainer-clean-am
+-		-rm -f ./$(DEPDIR)/tapctl-error.Po
++	-rm -f ./$(DEPDIR)/tapctl-error.Po
+ 	-rm -f ./$(DEPDIR)/tapctl-main.Po
+ 	-rm -f ./$(DEPDIR)/tapctl-tap.Po
+ 	-rm -f Makefile
+@@ -849,3 +849,10 @@ uninstall-am: uninstall-sbinPROGRAMS
+ # Tell versions [3.59,3.63) of GNU make to not export all variables.
+ # Otherwise a system limit (for SysV at least) may be exceeded.
+ .NOEXPORT:
++
++# Tell GNU make to disable its built-in pattern rules.
++%:: %,v
++%:: RCS/%,v
++%:: RCS/%
++%:: s.%
++%:: SCCS/s.%
+diff --git a/release/src/router/openvpn/src/tapctl/tap.c b/release/src/router/openvpn/src/tapctl/tap.c
+index 1d94988d65..769df6c542 100644
+--- a/release/src/router/openvpn/src/tapctl/tap.c
++++ b/release/src/router/openvpn/src/tapctl/tap.c
+@@ -921,32 +921,38 @@ tap_enable_adapter(_In_opt_ HWND hwndParent, _In_ LPCGUID pguidAdapter, _In_ BOO
+                                     bEnable ? enable_device : disable_device, pbRebootRequired);
+ }
+ 
+-/* stripped version of ExecCommand in interactive.c */
+ static DWORD
+-ExecCommand(const WCHAR *cmdline)
++ExecNetsh(PWSTR cmdline)
+ {
+     DWORD exit_code;
+     STARTUPINFOW si;
+     PROCESS_INFORMATION pi;
+     DWORD proc_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;
+-    WCHAR *cmdline_dup = NULL;
+ 
+     ZeroMemory(&si, sizeof(si));
+     ZeroMemory(&pi, sizeof(pi));
+-
+     si.cb = sizeof(si);
+ 
+-    /* CreateProcess needs a modifiable cmdline: make a copy */
+-    cmdline_dup = _wcsdup(cmdline);
+-    if (cmdline_dup
+-        && CreateProcessW(NULL, cmdline_dup, NULL, NULL, FALSE, proc_flags, NULL, NULL, &si, &pi))
++    WCHAR appName[MAX_PATH];
++    WCHAR netsh_exe[] = L"\\netsh.exe";
++    UINT sysdir_len = GetSystemDirectoryW(appName, _countof(appName));
++    if (sysdir_len == 0)
++    {
++        wcscpy_s(appName, _countof(appName), L"C:\\Windows\\system32");
++    }
++    else if (sysdir_len + _countof(netsh_exe) > _countof(appName))
++    {
++        return ERROR_INSUFFICIENT_BUFFER;
++    }
++    wcscat_s(appName, _countof(appName), netsh_exe);
++
++    if (CreateProcessW(appName, cmdline, NULL, NULL, FALSE, proc_flags, NULL, NULL, &si, &pi))
+     {
+         WaitForSingleObject(pi.hProcess, INFINITE);
+         if (!GetExitCodeProcess(pi.hProcess, &exit_code))
+         {
+             exit_code = GetLastError();
+         }
+-
+         CloseHandle(pi.hProcess);
+         CloseHandle(pi.hThread);
+     }
+@@ -955,7 +961,6 @@ ExecCommand(const WCHAR *cmdline)
+         exit_code = GetLastError();
+     }
+ 
+-    free(cmdline_dup);
+     return exit_code;
+ }
+ 
+@@ -1013,7 +1018,7 @@ tap_set_adapter_name(_In_ LPCGUID pguidAdapter, _In_ LPCWSTR szName, _In_ BOOL b
+ 
+     free(szOldName);
+ 
+-    dwResult = ExecCommand(szCmdLine);
++    dwResult = ExecNetsh(szCmdLine);
+     free(szCmdLine);
+ 
+     if (dwResult != ERROR_SUCCESS)
+diff --git a/release/src/router/openvpn/tests/t_client.rc-sample b/release/src/router/openvpn/tests/t_client.rc-sample
+index d61ecc44a5..a35d185a13 100644
+--- a/release/src/router/openvpn/tests/t_client.rc-sample
++++ b/release/src/router/openvpn/tests/t_client.rc-sample
+@@ -8,9 +8,13 @@
+ # define these - if empty, no tests will run
+ #
+ top_srcdir="${top_srcdir:-..}"
++
++# PKI args
+ CA_CERT="${top_srcdir}/sample/sample-keys/ca.crt"
+ CLIENT_KEY="${top_srcdir}/sample/sample-keys/client.key"
+ CLIENT_CERT="${top_srcdir}/sample/sample-keys/client.crt"
++
++# Customize ping tests
+ #FPING_EXTRA_ARGS="-t 1000"
+ 
+ # Load EXPECT_IFCONFIG* parameters from cache
+@@ -48,8 +52,8 @@ OPENVPN_BASE_P2P="..."
+ 
+ #
+ #
+-# now define the individual tests - all variables suffixed with _1, _2 etc
+-# will be used in test run "1", "2", etc.
++# now define the individual tests - all variables suffixed with _1, _2, _2n etc
++# will be used in test run "1", "2", "2n" etc.
+ #
+ # if something is not defined here, the corresponding test is not run
+ #
+@@ -64,6 +68,7 @@ OPENVPN_BASE_P2P="..."
+ #
+ # hook test options:
+ #
++# FPING_ARGS_x      = "arguments to append to the fping command line"
+ # CHECK_SKIP_x      = "commands to execute before openvpn, skip test on failure"
+ # PREPARE_x         = "commands to execute before openvpn"
+ # POSTINIT_CMD_x    = "commands to execute after openvpn but before ping"
+diff --git a/release/src/router/openvpn/tests/t_client.sh.in b/release/src/router/openvpn/tests/t_client.sh.in
+index 45bf01cfec..caebd5817e 100755
+--- a/release/src/router/openvpn/tests/t_client.sh.in
++++ b/release/src/router/openvpn/tests/t_client.sh.in
+@@ -115,6 +115,7 @@ else
+ fi
+ 
+ LOGDIR=t_client-`hostname`-`date +%Y%m%d-%H%M%S`
++LOGDIR_ABS="$PWD/$LOGDIR"
+ if mkdir $LOGDIR
+ then :
+ else
+@@ -137,21 +138,20 @@ output_start()
+ {
+     case $V in
+ 	0) outbuf="" ;;			# no per-test output at all
+-	1) echo -e "$@"			# compact, details only on failure
++	1) printf "$@\n"			# compact, details only on failure
+            outbuf="\n" ;;
+-	*) echo -e "\n$@\n" ;;		# print all, with a bit formatting
++	*) printf "\n$@\n" ;;		# print all, with a bit formatting
+     esac
+ }
+ 
+ output()
+ {
+-    NO_NL=''; if [ "X$1" = "X-n" ] ; then NO_NL=$1 ; shift ; fi
++    END_NL="\n"; if [ "X$1" = "X-n" ] ; then END_NL="" ; shift ; fi
+     case $V in
+ 	0) ;;				# no per-test output at all
+-	1) outbuf="$outbuf$@" 		# print details only on failure
+-	   test -z "$NO_NL" && outbuf="$outbuf\n"
++	1) outbuf="$outbuf$@${END_NL}"	# print details only on failure
+            ;;
+-	*) echo -e $NO_NL "$@" ;;	# print everything
++	*) printf "$@${END_NL}" ;;	# print everything
+     esac
+ }
+ 
+@@ -345,7 +345,7 @@ do
+         else
+             output "skip check failed, SKIP test $SUF."
+ 	    SUMMARY_SKIP="$SUMMARY_SKIP $SUF"
+-	    echo -e "$outbuf" ; continue
++	    printf "$outbuf" ; continue
+         fi
+     fi
+ 
+@@ -366,10 +366,10 @@ do
+ 	fail "make sure that ping hosts are ONLY reachable via VPN, SKIP test $SUF."
+ 	SUMMARY_FAIL="$SUMMARY_FAIL $SUF"
+ 	exit_code=31
+-	echo -e "$outbuf" ; continue
++	printf "$outbuf" ; continue
+     fi
+ 
+-    pidfile="${top_builddir}/tests/$LOGDIR/openvpn-$SUF.pid"
++    pidfile="$LOGDIR_ABS/openvpn-$SUF.pid"
+     openvpn_conf="$openvpn_conf --writepid $pidfile $up"
+     output " run openvpn $openvpn_conf"
+     echo "# ${openvpn} $openvpn_conf" >$LOGDIR/$SUF:openvpn.log
+@@ -412,7 +412,7 @@ do
+ 	trap - 0 1 2 3 15
+ 	SUMMARY_FAIL="$SUMMARY_FAIL $SUF"
+ 	exit_code=30
+-	echo -e "$outbuf" ; continue
++	printf "$outbuf" ; continue
+     fi
+ 
+     # make sure openvpn client is terminated in case shell exits
+@@ -475,15 +475,15 @@ do
+ 	SUMMARY_OK="$SUMMARY_OK $SUF"
+     else
+ 	if [ "$V" -gt 0 ] ; then
+-	    echo -e -n "$outbuf"
+-	    echo -e "test run $SUF: $fail_count test failures. FAIL.\n"
++	    printf "$outbuf"
++	    echo "test run $SUF: $fail_count test failures. FAIL."
+         fi
+ 	SUMMARY_FAIL="$SUMMARY_FAIL $SUF"
+ 	exit_code=30
+     fi
+ 
+     if [ -n "$test_cleanup" ]; then
+-        echo -e "cleaning up: '$test_cleanup'"
++        echo "cleaning up: '$test_cleanup'"
+         eval $test_cleanup
+     fi
+ 
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/mock_get_random.c b/release/src/router/openvpn/tests/unit_tests/openvpn/mock_get_random.c
+index 0840e31a3a..5cb768b1d5 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/mock_get_random.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/mock_get_random.c
+@@ -28,7 +28,7 @@
+ #include <stdint.h>
+ #include <cmocka.h>
+ 
+-unsigned long
++int64_t
+ get_random(void)
+ {
+     /* rand() is not very random, but it's C99 and this is just for testing */
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_argv.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_argv.c
+index 25c03713e4..77c7455e11 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_argv.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_argv.c
+@@ -14,6 +14,10 @@
+ #include "buffer.h"
+ #include "test_common.h"
+ 
++#ifdef _WIN32
++#include "win32-util.h"
++#endif
++
+ /* Defines for use in the tests and the mock parse_line() */
+ #define PATH1      "/s p a c e"
+ #define PATH2      "/foo bar/baz"
+@@ -250,6 +254,56 @@ argv_insert_head__non_empty_argv__head_added(void **state)
+     argv_free(&a);
+ }
+ 
++#ifdef _WIN32
++/*
++ * An argument is quoted if and only if it holds a space or a character that
++ * cmd.exe would act on when CreateProcess() runs a .bat/.cmd target.
++ */
++static void
++wide_cmd_line__quotes_only_what_cmd_would_reinterpret(void **state)
++{
++    static const struct
++    {
++        const char *arg;
++        const WCHAR *expected;
++    } cases[] = {
++        /* nothing special - must stay unquoted, or existing scripts break */
++        { "CN=user1", L"script.bat 0 CN=user1" },
++        /* the batch delimiters are deliberately not triggers */
++        { "CN=a,b;c=d", L"script.bat 0 CN=a,b;c=d" },
++        /* a space has always forced quoting */
++        { "O=Ctrl, CN=y", L"script.bat 0 \"O=Ctrl, CN=y\"" },
++        /* cmd.exe operators */
++        { "CN=x&ver", L"script.bat 0 \"CN=x&ver\"" },
++        { "CN=x|ver", L"script.bat 0 \"CN=x|ver\"" },
++        { "CN=x>f", L"script.bat 0 \"CN=x>f\"" },
++        { "CN=x<f", L"script.bat 0 \"CN=x<f\"" },
++        { "CN=x^f", L"script.bat 0 \"CN=x^f\"" },
++        { "CN=x%f", L"script.bat 0 \"CN=x%f\"" },
++        { "CN=x(f)", L"script.bat 0 \"CN=x(f)\"" },
++        { "CN=x!f", L"script.bat 0 \"CN=x!f\"" },
++        /* a double quote is replaced, so quoting cannot be broken out of */
++        { "CN=a\"b", L"script.bat 0 CN=a_b" },
++    };
++
++    for (size_t i = 0; i < SIZE(cases); i++)
++    {
++        struct gc_arena gc = gc_new();
++        struct argv a = argv_new();
++
++        argv_printf(&a, "%s %d %s", "script.bat", 0, cases[i].arg);
++        assert_int_equal(a.argc, 3);
++
++        WCHAR *cmd_line = wide_cmd_line(&a, &gc);
++        assert_non_null(cmd_line);
++        assert_int_equal(wcscmp(cmd_line, cases[i].expected), 0);
++
++        argv_free(&a);
++        gc_free(&gc);
++    }
++}
++#endif /* _WIN32 */
++
+ int
+ main(void)
+ {
+@@ -269,6 +323,9 @@ main(void)
+         cmocka_unit_test(argv_str__multiple_argv__correct_output),
+         cmocka_unit_test(argv_insert_head__non_empty_argv__head_added),
+         cmocka_unit_test(argv_insert_head__empty_argv__head_only),
++#ifdef _WIN32
++        cmocka_unit_test(wide_cmd_line__quotes_only_what_cmd_would_reinterpret),
++#endif
+     };
+ 
+     return cmocka_run_group_tests_name("argv", tests, NULL, NULL);
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_dhcp.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_dhcp.c
+index 150a3aa83a..adc86e701c 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_dhcp.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_dhcp.c
+@@ -120,6 +120,24 @@ test_write_dhcp_search_str(void **state)
+     assert_memory_equal(BPTR(&out_buf), output_5, sizeof(output_5));
+     assert_false(error);
+ 
++    /* Several entries whose accumulated length lands exactly on the guard
++     * boundary. Each entry consumes strlen()+2 bytes of tmp_buf (one length
++     * prefix plus one trailing NUL), but the guard only accounts for
++     * strlen()+1, so the last entry writes one byte past tmp_buf[256].
++     * Sizes: 4 x 50 leaves len == 208, the final 47 makes
++     * 47 + 208 + 1 == 256, which the guard still accepts. */
++#define D50 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
++#define D47 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
++    const char *overflow_list[] = { D50, D50, D50, D50, D47 };
++    assert_int_equal(strlen(D50), 50);
++    assert_int_equal(strlen(D47), 47);
++    buf_clear(&out_buf);
++    write_dhcp_search_str(&out_buf, DHCP_DOMAIN_SEARCH, overflow_list, 5, &error);
++    /* total is 257 > 255, so the option must be rejected -- the point of this
++     * case is that tmp_buf must not be written out of bounds on the way. */
++    assert_true(error);
++    error = false;
++
+     gc_free(&gc);
+ }
+ 
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_misc.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_misc.c
+index fb45ba88b1..a9c3845ac4 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_misc.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_misc.c
+@@ -38,6 +38,7 @@
+ #include "test_common.h"
+ #include "list.h"
+ #include "mock_msg.h"
++#include "crypto.h"
+ #ifdef _WIN32
+ #include "win32-util.h"
+ #endif
+@@ -141,13 +142,6 @@ word_compare_function(const void *key1, const void *key2)
+     return strcmp((const char *)key1, (const char *)key2) == 0;
+ }
+ 
+-static uint32_t
+-get_random(void)
+-{
+-    /* rand() is not very random, but it's C99 and this is just for testing */
+-    return (uint32_t)rand();
+-}
+-
+ static struct hash_element *
+ hash_lookup_by_value(struct hash *hash, void *value)
+ {
+@@ -176,8 +170,8 @@ test_list(void **state)
+      */
+ 
+     struct gc_arena gc = gc_new();
+-    struct hash *hash = hash_init(10000, get_random(), word_hash_function, word_compare_function);
+-    struct hash *nhash = hash_init(256, get_random(), word_hash_function, word_compare_function);
++    struct hash *hash = hash_init(10000, (uint32_t)get_random(), word_hash_function, word_compare_function);
++    struct hash *nhash = hash_init(256, (uint32_t)get_random(), word_hash_function, word_compare_function);
+ 
+     printf("hash_init n_buckets=%u mask=0x%08x\n", hash->n_buckets, hash->mask);
+ 
+@@ -264,7 +258,7 @@ test_list(void **state)
+         {
+             struct hash_iterator hi;
+             struct hash_element *he;
+-            inc = (get_random() % 3) + 1;
++            inc = ((uint32_t)get_random() % 3) + 1;
+             hash_iterator_init_range(hash, &hi, base, base + inc);
+ 
+             while ((he = hash_iterator_next(&hi)))
+diff --git a/release/src/router/openvpn/tests/unit_tests/openvpn/test_packet_id.c b/release/src/router/openvpn/tests/unit_tests/openvpn/test_packet_id.c
+index b7538bd5fd..409200c94b 100644
+--- a/release/src/router/openvpn/tests/unit_tests/openvpn/test_packet_id.c
++++ b/release/src/router/openvpn/tests/unit_tests/openvpn/test_packet_id.c
+@@ -324,6 +324,53 @@ test_copy_acks_to_lru(void **state)
+     assert_memory_equal(mru_ack.packet_id, expected_ack.packet_id, sizeof(expected_ack.packet_id));
+ }
+ 
++static void
++test_packet_id_window(void **state)
++{
++    struct reliable rel = { 0 };
++    rel.packet_id = 1;
++
++    assert_true(validate_packet_id_window(&rel, 0));
++
++    /* packet id 1 is outside the window as it is the *next* packet id */
++    assert_false(validate_packet_id_window(&rel, 1));
++
++    /* wrapped around packet id, "-2" */
++    assert_true(validate_packet_id_window(&rel, 0xFFFFFFFD));
++
++    /* wrapped around packet id, "-10" */
++    assert_true(validate_packet_id_window(&rel, 0xFFFFFFF6));
++
++    /* wrapped around packet id, "-11" */
++    assert_false(validate_packet_id_window(&rel, 0xFFFFFFF5));
++    assert_false(validate_packet_id_window(&rel, 0x80000000));
++
++    rel.packet_id = 0x80000000;
++
++    /* near the signed/usigned integer area */
++    assert_false(validate_packet_id_window(&rel, 0x80000001));
++    assert_true(validate_packet_id_window(&rel, 0x7fffffff));
++    assert_true(validate_packet_id_window(&rel, 0x7ffffff5));
++    assert_false(validate_packet_id_window(&rel, 0x7ffffff4));
++
++    rel.packet_id = 0xFFFFFFFD;
++    assert_false(validate_packet_id_window(&rel, 0xFFFFFFFD));
++    assert_false(validate_packet_id_window(&rel, 0));
++    assert_false(validate_packet_id_window(&rel, 1));
++    assert_false(validate_packet_id_window(&rel, 0xFFFFFFFE));
++    assert_false(validate_packet_id_window(&rel, 0xFFFFFFFF));
++    assert_true(validate_packet_id_window(&rel, 0xFFFFFFF3));
++    assert_true(validate_packet_id_window(&rel, 0xFFFFFFF2));
++    assert_false(validate_packet_id_window(&rel, 0xFFFFFFF1));
++
++    rel.packet_id = 500;
++    assert_false(validate_packet_id_window(&rel, 501));
++    assert_true(validate_packet_id_window(&rel, 497));
++    assert_true(validate_packet_id_window(&rel, 500 - (RELIABLE_CAPACITY - 1)));
++    assert_false(validate_packet_id_window(&rel, 500 - RELIABLE_CAPACITY));
++}
++
++
+ int
+ main(void)
+ {
+@@ -345,7 +392,8 @@ main(void)
+                                         test_packet_id_write_teardown),
+ 
+         cmocka_unit_test(test_get_num_output_sequenced_available),
+-        cmocka_unit_test(test_copy_acks_to_lru)
++        cmocka_unit_test(test_copy_acks_to_lru),
++        cmocka_unit_test(test_packet_id_window)
+ 
+     };
+ 
+diff --git a/release/src/router/openvpn/version.m4 b/release/src/router/openvpn/version.m4
+index f479c41983..354e66ace1 100644
+--- a/release/src/router/openvpn/version.m4
++++ b/release/src/router/openvpn/version.m4
+@@ -3,12 +3,12 @@ define([PRODUCT_NAME], [OpenVPN])
+ define([PRODUCT_TARNAME], [openvpn])
+ define([PRODUCT_VERSION_MAJOR], [2])
+ define([PRODUCT_VERSION_MINOR], [7])
+-define([PRODUCT_VERSION_PATCH], [.6])
++define([PRODUCT_VERSION_PATCH], [.7])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_MAJOR])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_MINOR], [[.]])
+ m4_append([PRODUCT_VERSION], [PRODUCT_VERSION_PATCH], [[]])
+ define([PRODUCT_BUGREPORT], [openvpn-users@lists.sourceforge.net])
+-define([PRODUCT_VERSION_RESOURCE], [2,7,6,0])
++define([PRODUCT_VERSION_RESOURCE], [2,7,7,0])
+ dnl define the TAP version
+ define([PRODUCT_TAP_WIN_COMPONENT_ID], [tap0901])
+ define([PRODUCT_TAP_WIN_MIN_MAJOR], [9])
+-- 
+2.25.1
+

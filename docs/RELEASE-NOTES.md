@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.5** <!--@treever--> — `3006.102.8_Reaper_v3.2.5`. **Samba and the Traffic Analyzer ship off; a WireGuard policy rule brings its replies home.** A factory-reset or new router no longer starts an SMB server when a disk is plugged in, and the Traffic Analyzer waits for its own switch; v3.2.4's fix, which lets a Policy Routing source rule to a WireGuard client return its replies to the LAN, ships in the same images. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **702 patches** (0699–0700 for v3.2.4, 0701–0702 for v3.2.5); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.6** <!--@treever--> — `3006.102.8_Reaper_v3.2.6`. **Asuswrt-Merlin 3006.102.9 carried: OpenVPN 2.7.7, current time-zone data, a 2048-bit DH floor.** OpenVPN moves to 2.7.7; the time-zone database moves from 2017 data to IANA 2026c; an OpenVPN server's Diffie-Hellman parameters under 2048 bits are replaced rather than used; Wireless Log fixes for Repeater and Media Bridge modes and amtm 7.0 come with it. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **715 patches** (0703–0715 for v3.2.6); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,20 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.6 — Asuswrt-Merlin 3006.102.9 carried
+
+**Upstream fixes and updates.** OpenVPN 2.7.7, amtm 7.0, Wireless Log fixes for Repeater and Media
+Bridge modes, and a System Log page that stops polling the router while auto-refresh is off, all from
+Asuswrt-Merlin 3006.102.9. Most of that release (OpenSSL 3.5, Tor with IPv6) was already in Reaper.
+
+**Current time zones.** The time-zone database was 2017 data. Places that changed their rules since
+(Mexico, Egypt, Greenland, Kazakhstan, Mongolia, Paraguay and others) now show the right local time
+wherever the router uses the database; US zones were already correct.
+
+**A weak OpenVPN server key is replaced, not used.** Diffie-Hellman parameters under 2048 bits are
+swapped for a built-in 2048-bit set. Before, 1024–2047-bit parameters were only warned about, and
+OpenSSL 3.5 can refuse them.
 
 ## What's new in v3.2.5 — Samba and the Traffic Analyzer ship off
 

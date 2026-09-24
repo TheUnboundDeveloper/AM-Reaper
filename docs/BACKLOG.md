@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.5** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -106,11 +106,12 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.2.5 is the current beta** (cut 2026-09-23; patches 0701–0702 over v3.2.4's 0699–0700). It ships
-Samba and the Traffic Analyzer off by default, and carries v3.2.4's WireGuard policy-routing reply
-fix; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.6 is the current beta** (cut 2026-09-23; patches 0703–0715). It carries Asuswrt-Merlin
+3006.102.9's OpenVPN 2.7.7, tzdata 2026c, Wireless Log and amtm updates, and raises the OpenVPN
+server's DH floor to 2048 bits; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
 
-*Earlier, in v3.2.3 (2026-09-20): the hover reasons on locked Settings cells, the four-radio tester
+*Earlier, in v3.2.5 (2026-09-23): Samba and the Traffic Analyzer ship off. In v3.2.4 (2026-09-22):
+the WireGuard policy-routing reply fix. In v3.2.3 (2026-09-20): the hover reasons on locked Settings cells, the four-radio tester
 fixes and the Warden, idle-CPU and boot-wait efficiency items. In v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
 Download/Upload labels. In v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6
 coupling, the Professional row removals and radio links, and the Rule Status walker fixes.*
@@ -161,7 +162,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   no `-i`, so the REPLY arriving on `wgcN` had the flow's mark restored and was routed by `lookup wgcN`,
   a table with no LAN route — the reply went back into the tunnel. The chain now opens with
   `-m conntrack --ctdir REPLY -j RETURN` (both families); reproduced in a network namespace, 0/10 → 10/10.
-  **[fixed in v3.2.4, ships in v3.2.5; reporter confirmation on metal owed]**
+  **[fixed in v3.2.4, ships in v3.2.5 and v3.2.6; reporter confirmation on metal owed]**
   ↳ notes: `pbr-wg-livetunnel-gaps.md`
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision

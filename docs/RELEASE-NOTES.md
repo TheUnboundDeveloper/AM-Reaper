@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.6** <!--@treever--> — `3006.102.8_Reaper_v3.2.6`. **Asuswrt-Merlin 3006.102.9 carried: OpenVPN 2.7.7, current time-zone data, a 2048-bit DH floor.** OpenVPN moves to 2.7.7; the time-zone database moves from 2017 data to IANA 2026c; an OpenVPN server's Diffie-Hellman parameters under 2048 bits are replaced rather than used; Wireless Log fixes for Repeater and Media Bridge modes and amtm 7.0 come with it. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **715 patches** (0703–0715 for v3.2.6); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.7** <!--@treever--> — `3006.102.8_Reaper_v3.2.7`. **Dual WAN fail-back no longer restarts the primary WAN in a loop.** With a backup WAN in fail-back mode, returning to a PPPoE primary could drop the new session a few seconds after it came up and start the failover cycle again, until the backup was unplugged. A counter in the stock ASUS WAN watchdog was not reset on fail-back; it is now. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **717 patches** (0716–0717 for v3.2.7); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,15 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.7 — Dual WAN fail-back fix
+
+**The primary WAN stays up after fail-back.** In Dual WAN fail-back mode, when the primary line
+recovered and the router switched back to it, a single slow check right after the switch was enough
+to fail over to the backup again and restart the primary connection. On PPPoE that showed as the
+primary WAN flapping until the backup cable was unplugged. The cause was a counter in the stock ASUS
+WAN watchdog that carried over from the fail-back wait; it is now cleared when the router returns to
+the primary. Failover itself is unchanged.
 
 ## What's new in v3.2.6 — Asuswrt-Merlin 3006.102.9 carried
 

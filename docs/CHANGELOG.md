@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,18 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.2.7 — Dual WAN fail-back no longer restarts the primary WAN in a loop
+
+- **Fail-back loop fixed (stock ASUS `wanduck`, every model).** In fail-back mode the primary line's
+  disconnect counter doubles as the fail-back counter while the backup line is active, and reaches
+  `wandog_fb_count` (default 4). Returning to the primary never reset it, so the primary became the
+  active line already at or above `wandog_maxfail` (default 2). One disconnected check just after
+  fail-back, while the default route still pointed at the backup, switched back to the backup and
+  issued `restart_wan_if` for the primary, dropping a PPPoE session that had just come up. The primary
+  recovered, failed back and the cycle repeated; unplugging the backup stopped it only because a
+  disconnected primary is not counted while the other line has no link. The counter is now reset on
+  fail-back. Reported on a GT-BE98 with PPPoE on the WAN port and a LAN-port WAN as backup.
 
 ## v3.2.6 — Asuswrt-Merlin 3006.102.9 carry: OpenVPN 2.7.7, tzdata 2026c, a 2048-bit DH floor
 

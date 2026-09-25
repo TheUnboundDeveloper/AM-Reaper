@@ -1,0 +1,51 @@
+From 246baa51b8ce19b0fd6641f43920fff3148c398e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 25 Sep 2026 09:49:52 -0400
+Subject: [PATCH] wanduck: reset the primary's counter on dual-WAN fail-back
+
+In fail-back mode the primary line's changed_count[] doubles as the
+fail-back counter while the backup is active, and counts up to
+wandog_fb_count (default 4). The return-to-primary block called
+switch_wan_line(primary, 0) without resetting it, so the primary became
+the current line already holding 4, which is at or above
+wandog_maxfail (default 2).
+
+conn_state_old[] of the primary still reads DISCONN from the original
+outage, so a single disconnected scan right after fail-back (the
+default route has not moved yet, because restart_wan_line is not
+waited on) took the DISCONN branch: switch_wan_line(backup, 1), whose
+restart_other loop issues restart_wan_if <primary> and kills the fresh
+PPPoE session. The primary then recovers, fails back, and the cycle
+repeats. Unplugging the backup stops it only because a disconnected
+primary is not counted while the other line has no link.
+
+Field report: GT-BE98, PPPoE on WAN plus a LAN-port WAN in fail-back
+mode. Stock ASUS logic, present on every model.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/rc/wanduck.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 3693763d4e..ae6103de75 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -5193,6 +5193,14 @@ if(test_log) _dprintf("nat_rule: stop_nat_rules 7.\n");
+ 
+ 				handle_wan_line(other_wan_unit, rule_setup);
+ 				switch_wan_line(other_wan_unit, 0);
++				/* reaper (field 2026-09-25, GT-BE98): changed_count[] of the primary doubles as
++				 * the fail-back counter above and was never reset here, so the primary became the
++				 * current line already holding wandog_fb_count (4) >= wandog_maxfail (2). One
++				 * DISCONN scan right after fail-back (default route not yet moved) then tripped
++				 * the DISCONN branch -> switch_wan_line(backup, 1) -> restart_wan_if <primary>,
++				 * killing the fresh PPPoE session in an endless fail-back loop. Start clean.
++				 */
++				set_disconn_count(other_wan_unit, S_IDLE);
+ 			}
+ 			else if(conn_state[other_wan_unit] == PHY_RECONN){
+ 				_dprintf("\n# wanduck(fail-back): Try to prepare the backup line.\n");
+-- 
+2.25.1
+

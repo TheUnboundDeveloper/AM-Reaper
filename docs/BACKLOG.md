@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.6** · 2026-09-23 <!--@stamp-->
+> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -106,11 +106,12 @@ The ordered short list.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
 
-***v3.2.6 is the current beta** (cut 2026-09-23; patches 0703–0715). It carries Asuswrt-Merlin
-3006.102.9's OpenVPN 2.7.7, tzdata 2026c, Wireless Log and amtm updates, and raises the OpenVPN
-server's DH floor to 2048 bits; items closed by it are recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+***v3.2.7 is the current beta** (cut 2026-09-25; patches 0716–0717). It fixes the stock ASUS
+Dual WAN fail-back loop that restarted a PPPoE primary after every return; items closed by it are
+recorded in [`CHANGELOG.md`](CHANGELOG.md).*
 
-*Earlier, in v3.2.5 (2026-09-23): Samba and the Traffic Analyzer ship off. In v3.2.4 (2026-09-22):
+*Earlier, in v3.2.6 (2026-09-23): the Asuswrt-Merlin 3006.102.9 carry (OpenVPN 2.7.7, tzdata 2026c,
+Wireless Log, amtm 7.0) and the 2048-bit OpenVPN DH floor. In v3.2.5 (2026-09-23): Samba and the Traffic Analyzer ship off. In v3.2.4 (2026-09-22):
 the WireGuard policy-routing reply fix. In v3.2.3 (2026-09-20): the hover reasons on locked Settings cells, the four-radio tester
 fixes and the Warden, idle-CPU and boot-wait efficiency items. In v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
 Download/Upload labels. In v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6
@@ -164,6 +165,13 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   `-m conntrack --ctdir REPLY -j RETURN` (both families); reproduced in a network namespace, 0/10 → 10/10.
   **[fixed in v3.2.4, ships in v3.2.5 and v3.2.6; reporter confirmation on metal owed]**
   ↳ notes: `pbr-wg-livetunnel-gaps.md`
+- **[P2] Dual WAN fail-back restarts the PPPoE primary in a loop** (field report 2026-09-24/25,
+  GT-BE98 v3.2.6: PPPoE on WAN, LAN-port WAN as backup, fail-back mode; unplugging the backup stops
+  it). Stock `wanduck`: the primary's `changed_count[]` is also the fail-back counter and was not
+  reset by the return-to-primary block, so one DISCONN scan after fail-back ran
+  `switch_wan_line(backup, 1)` → `restart_wan_if <primary>`. Reset on fail-back.
+  **[fixed in v3.2.7; reporter confirmation on metal owed]**
+  ↳ notes: `dualwan-failback-pppoe-loop.md`
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
   regression 10/10 where Merlin `3006.102.8_4` wedges. The fix is in two closed blobs, nothing in

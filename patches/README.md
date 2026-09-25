@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**715 <!--@patchcount--> patches, v1.0 → v3.2.6 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**717 <!--@patchcount--> patches, v1.0 → v3.2.7 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 

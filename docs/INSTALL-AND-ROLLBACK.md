@@ -2,7 +2,7 @@
 
 > **Doc status:** current as of **v3.2.3** · 2026-09-22 <!--@stamp-->
 
-**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v3.1.0** <!--@pubver--> (`3006.102.8_Reaper_v2.8.8`) — the newest **published** release, available for all five main models on [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases); newer rungs sit beside it as `_BETA` pre-releases — for the **ASUS RT‑BE96U** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BE96U specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, **GT‑BE98 Pro** and **GT‑BE19000**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
+**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v3.1.0** <!--@pubver--> (`3006.102.8_Reaper_v3.1.0`) — the newest **published** release, available for all five main models on [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases); newer rungs sit beside it as `_BETA` pre-releases — for the **ASUS RT‑BE96U** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BE96U specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, **GT‑BE98 Pro** and **GT‑BE19000**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
 **Status:** user‑facing. The Web UI install path (§3), the factory reset and the rollback are the paths this project uses on every release. Items marked **⚠ VERIFY ON UNIT** — the rescue‑mode details and any anti‑rollback gate — are stated from general ASUS/Merlin behaviour; confirm them on your own unit before relying on them.
 
 > **Read first — flash only the image built for your exact model.** These instructions cover the RT‑BE96U; if you have a sibling model (RT‑BE86U / RT‑BE88U / GT‑BE98 / GT‑BE98 Pro / GT‑BE19000) follow the same steps with that model's image. Flashing an image built for a different model/SoC can brick the router. Do **not** cross‑flash between models. Always keep a stock ASUS firmware file **for your exact model** on hand before you begin (your rollback/rescue image).
@@ -15,14 +15,14 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 
 | File | What it is |
 |------|-----------|
-| `RT-BE96U_3006_102.8_<EXTENDNO>_nand_squashfs.pkgtb` | **The firmware you flash** (normal install). |
+| `RT-BE96U_3006_102.8_<EXTENDNO>_nand_squashfs.pkgtb` | The **AI Advisor** firmware (includes the optional MCP server). |
 | — with `_BETA` in `<EXTENDNO>` | A **pre-release** from the Dev branch. Same install steps; less testing behind it. The router reports the same string on the dashboard and the About page, so you can always check which channel the firmware you are running came from. A release carries no marker. |
-| `RT-BE96U_..._noMCP_...pkgtb` | Same firmware **without** the AI Advisor / MCP server compiled in (choose this if you don’t want the MCP feature present at all). |
+| `RT-BE96U_..._noMCP_...pkgtb` | The **Standard** firmware: the same image **without** the AI Advisor / MCP server compiled in (choose this if you don’t want the MCP feature present at all). |
 | `..._loader.pkgtb` | **Recovery loader only** — used in Rescue Mode, *not* a normal firmware. Don’t flash this from the Web UI as your firmware. |
 
 - Output format is **`.pkgtb`** (BCM NAND), not `.trx`.
 - Confirm the file’s SHA‑256 against the published checksum before flashing. A truncated/corrupt image is a common cause of a failed flash.
-- Pick **one** variant (standard *or* noMCP). The MCP server in the standard build is **off until you explicitly arm it** — it is never started at boot — so the standard build is safe to run without ever enabling MCP.
+- Pick **one** variant: **Standard** (`noMCP`) *or* **AI Advisor** (`_MCP`). The MCP server in the AI Advisor build is **off until you explicitly arm it** — it is never started at boot — so that build is safe to run without ever enabling MCP.
 
 > **v1.5.0a note:** the bundled **Packet Capture (tcpdump)** page has been **removed** — the firmware ships no packet-capture tool. Power users who want capture can install `tcpdump` on a USB stick via Entware (`opkg install tcpdump`). This keeps the image free of that dependency and its attack surface.
 
@@ -30,7 +30,7 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 
 ## 2. Pre‑flight checklist (do this every time)
 
-1. **Back up your current config.** Web UI → *Administration → Restore/Save/Upload Setting* → **Save**. Store the `.cfg` off the router.
+1. **Back up your current config.** Coming from stock or Merlin: Web UI → *Administration → Restore/Save/Upload Setting* → **Save**, and store the `.cfg` off the router. Already on Reaper: *Administration → Backup & Restore* → **Download full backup**, and store the `.rbk` off the router.
 2. **Download a stock ASUS RT‑BE96U firmware** from ASUS support and keep it with the Reaper image. This is your rollback and your rescue image. ⚠ VERIFY ON UNIT: confirm it’s the exact RT‑BE96U file.
 3. **Be on a recent stock firmware first.** If you’re far behind, update to a recent official ASUS RT‑BE96U firmware *before* flashing Reaper. This avoids nvram/bootloader‑format mismatches. ⚠ VERIFY ON UNIT: whether the BE96U enforces any minimum‑version / anti‑rollback gate.
 4. **Use a wired connection** (Ethernet from PC to a LAN port). Never flash over Wi‑Fi.
@@ -50,12 +50,12 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 ### Strongly recommended after a major version change: reset to defaults
 A cross‑major upgrade can leave stale nvram. To avoid odd behaviour:
 
-1. After the first successful boot, go to **Administration → Restore/Save/Upload Setting → Factory default** (or hold the physical **Reset** button per §5). Choose the option that **also formats JFFS** if offered. ⚠ VERIFY ON UNIT: exact wording/behaviour of the “initialize/format JFFS” option on the BE96U.
+1. After the first successful boot, go to **Administration → Backup & Restore** and use the factory-reset box (or hold the physical **Reset** button per §6). Leave *Restore to factory default settings while clearing all content and data logs* ticked (the default): that also erases `/jffs`, where Reaper keeps its rule lists.
 2. Reconfigure from scratch (don’t restore the old `.cfg` across a major version if you can avoid it — re‑enter settings, or restore only if the versions are close).
 
 ### Verify the install
 - **Administration → System / firmware version** shows the Reaper build.
-- **System Info → Features** row reflects the Reaper package set (traffic analyzer, classful HW‑QoS, MCP if standard build, etc.).
+- **System Info → Features** row reflects the Reaper package set (traffic analyzer, classful HW‑QoS, MCP on the AI Advisor build, etc.).
 - Internet + Wi‑Fi work.
 
 ---
@@ -77,8 +77,8 @@ Use this if the Web‑UI flash fails, or the router won’t boot normally. This 
 
 Rolling back is the same operation as installing, using the **stock ASUS RT‑BE96U** image instead of Reaper:
 
-- **Easiest:** Web UI → **Administration → Firmware Upgrade** → upload the **stock ASUS `.pkgtb`** → reboot → then **factory‑reset / format JFFS** (§2) so no Reaper nvram remains.
-- **If the UI is unavailable:** use **Rescue Mode** (§3) to push the stock image.
+- **Easiest:** Web UI → **Administration → Firmware Upgrade** → upload the **stock ASUS `.pkgtb`** → reboot → then **factory‑reset / format JFFS** (§3) so no Reaper nvram remains.
+- **If the UI is unavailable:** use **Rescue Mode** (§4) to push the stock image.
 - After rolling back, do a **factory reset** and reconfigure. ⚠ VERIFY ON UNIT: whether the BE96U enforces an anti‑rollback / minimum‑version gate that could block a downgrade to an older stock build (if so, roll back to a stock build at or above your current version).
 
 There is **no cloud/account tie‑in** to undo — Reaper is de‑clouded, so rollback is purely a firmware re‑flash.
@@ -89,7 +89,7 @@ There is **no cloud/account tie‑in** to undo — Reaper is de‑clouded, so ro
 
 **Physical Reset button (factory reset):** with the router on, hold **Reset** ~10 s until the power LED flashes, then release; it reboots to defaults. ⚠ VERIFY ON UNIT: exact hold time / LED behaviour on the BE96U.
 
-**If it won’t boot at all → Rescue Mode (§3).** On ASUS routers the **bootloader (CFE/U‑Boot) is a separate region that a normal firmware flash does not overwrite**, so a bad *firmware* flash almost always recovers via Rescue Mode + a known‑good image.
+**If it won’t boot at all → Rescue Mode (§4).** On ASUS routers the **bootloader (CFE/U‑Boot) is a separate region that a normal firmware flash does not overwrite**, so a bad *firmware* flash almost always recovers via Rescue Mode + a known‑good image.
 
 **Brick taxonomy — set expectations honestly:**
 - **Bad firmware image / interrupted firmware write → recoverable** via Rescue Mode. This is the common, fixable case.
@@ -102,7 +102,7 @@ There is **no cloud/account tie‑in** to undo — Reaper is de‑clouded, so ro
 
 ## 7. This‑version security notes for installers
 
-- **MCP / AI Advisor (standard build):** off by default and **never started at boot**. It only runs after you explicitly *arm* it (with an arming code, optionally a USB key), binds to the LAN only, and pins the client. If you don’t want it present at all, install the **noMCP** variant.
+- **MCP / AI Advisor (`_MCP` build):** off by default and **never started at boot**. It only runs after you explicitly *arm* it (with an arming code, optionally a USB key), binds to the LAN only, and pins the client. If you don’t want it present at all, install the **Standard** (`noMCP`) variant.
 - **MCP diagnostics tier:** even after arming, the active network‑diagnostics tools (ping/traceroute/DNS/netstat) stay **off until you separately opt in per session**. Leave that opt‑in off unless you’re actively using it.
 - **De‑clouded by design:** no AiCloud, no AiMesh cloud, no TrendMicro/bwdpi, no ASUS account, no phone‑home. This removes several known ASUS cloud vulnerability classes outright.
 - **Keep WAN management off.** Do not enable remote/WAN administration or WAN SSH. The biggest real‑world ASUS threats target the internet‑facing management surface; keeping admin LAN‑only is your best protection.

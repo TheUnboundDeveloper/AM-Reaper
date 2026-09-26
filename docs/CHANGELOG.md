@@ -46,6 +46,57 @@ node, not only on the primary router.
 
 ---
 
+## v3.2.8 — preamble puncturing: a static slice per radio, and a dynamic controller that picks one
+
+- **Static preamble puncturing (Wireless › Settings, RT-BE96U-measured).** A Wi-Fi 7 radio can
+  switch off one slice of a wide channel and keep the rest, instead of narrowing the whole channel.
+  The driver has had the control (`wl eht dissubchan`) all along; nothing in the firmware called it.
+  A new per-radio row offers the legal slices: one 20 MHz at 80 MHz (not the primary), one 40 or
+  80 MHz at 320 MHz outside the primary 80 (160 MHz is driver-judged), as **Fixed channel** (tied to
+  one chanspec) or **Follow channel** (tied to the width, so it survives acsd and DFS moves). The
+  pattern applies live, without a radio restart; the beacon's EHT Operation element advertises it
+  and the driver narrows the HE Operation width for Wi-Fi 6 clients by itself. A wireless restart
+  clears it, so a one-shot applier (`rc/reaper_punct.c`) re-applies it at boot, after every
+  wireless start, on the page's apply and on the rwatch tick, and clears only what it set. State in
+  `/tmp/reaper_punct.state`; diag section 7 reports setting, live pattern and result. Off by default.
+- **Dynamic preamble puncturing (`rpunctd`).** Broadcom's own dynamic puncturing is compiled out of
+  this SDK, so this is a policy layer over the static control: *dynamic selection, static
+  application*. Every 10 s the controller asks the driver for one timed `chanim_stats` window,
+  which is the only form that fills the per-sub-band carrier-sense counters (pri20, sec20, sec40,
+  sec80 - measured; the accumulators never do), keeps rolling averages, and evaluates slowly: a
+  slice must stay above the trigger for the hold time, the candidate must be legal and score a
+  minimum expected-capacity gain (kept width × free airtime; a cleaner 240 loses to a slightly
+  noisy 320), and a minimum interval must have passed since the last change. Restoration needs the
+  long clean hold and a meaningful gain too, with a backoff when a restore did not hold. Presets
+  Conservative (default: 80 % trigger, 60 s hold, 20 % gain, 300 s interval), Balanced and
+  Aggressive; minimum gain and hold are overridable. At 320 MHz the counters resolve only the
+  secondary 80 of the primary 160; the far 160 is a remainder. **Passive telemetry** acts on what
+  the counters resolve; the **idle** and **active confirmation scan** sources let the radio listen
+  passively on a candidate's own 20 MHz channels for about a second (measured, clients stay) and
+  read the per-channel figures back from `chanim_stats all`. Every decision is one syslog line that
+  says why (`rpunctd`); the applier stays the one writer. A refused bitmap is blacklisted for the
+  channel, three refusals or two disruptive applies (a channel-switch announcement, a moved
+  chanspec, lost clients) fall back to no puncturing with slowed timers, telemetry loss holds the
+  current pattern, and the daemon never restarts wireless. It runs only while a radio is set to
+  Dynamic, exits when none is, and is restarted by the rwatch tick if it dies. Wireless › Wireless
+  Quality gains a read-only card (state, excluded slice, busy per slice, candidate, last change and
+  why); Settings shows a one-line status. Setting: `wlN_punct = dyn|<preset>|<source>|<gain>|<hold>`.
+  Not gated on routing mode. Decision core host-tested (`test_punct_dyn.py`, 25 checks).
+- **Add-on installers find their menu anchor again (field, Skynet).** Third-party installers
+  register their page by appending a line to the menu tree after the stock line of the page they
+  extend; Skynet appends after the stock firewall page. Reaper had retired that line and the others
+  it replaced with native pages (firewall, wireless, firmware, backup, Sysinfo, QoS, traffic
+  statistics, connections), so those seds matched nothing and the add-on had no tab. The retired
+  lines are back as hidden entries, which the shell and the dashboard skip; a `user<N>.asp` inserted
+  beside one is lifted into the Addons section like every other add-on page.
+- **Diagnostics v1.3.22.** Section 7 reports the puncturing setting, live pattern, applier result
+  and the controller's state (WARN when `rpunctd` should run and does not). Section 5 gains a Dual
+  WAN block - `wans_mode`, `wan_primary`, the watchdog and DNS-probe settings, both units' state,
+  address and gateway presence, and the live default route (WARN when there is none) - and prints
+  `message_loglevel` / `log_level` with an INFO finding when `rc` and `wanduck` lines are being
+  dropped (field, GT-BE98 dual-WAN report).
+- **Dictionaries.** 39 tokens added in all 25 packs, translated; two help texts extended.
+
 ## v3.2.7 — Dual WAN fail-back no longer restarts the primary WAN in a loop
 
 - **Fail-back loop fixed (stock ASUS `wanduck`, every model).** In fail-back mode the primary line's

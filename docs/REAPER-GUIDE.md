@@ -150,9 +150,9 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.3 What it adds
 
-In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer, wireless channel diagnostics, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
+In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic), a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
-Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, Telnet, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off. Reaper also adds an idle auto-logout of 15 minutes on the admin session.
+Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, Telnet, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off (8.1, 8.2). Reaper also adds an idle auto-logout of 15 minutes on the admin session.
 
 ### 1.4 The two builds: Standard (noMCP) and AI Advisor (MCP)
 
@@ -169,7 +169,7 @@ The noMCP build is the right choice if you never want the MCP feature present. T
 
 The Wi-Fi drivers and a set of prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, the Broadcom `hostapd`/`wpa_supplicant` forks, `libnvram`, `libtmctl`, the rdpa driver) are proprietary, are licensed for genuine ASUS hardware only, and are never modified. Reaper hardens the userspace around them. Some defects live inside them and can only be worked around, not fixed:
 
-- The **"settings will not save" freeze** in `libnvram.so` (worked around by the socket bind shim, on by default — see 4.17).
+- The **"settings will not save" freeze** in `libnvram.so` / `libwlcsm.so`. Since v3.1.8 every image ships the vendor's own corrected pair, taken unmodified from ASUS stock 9.0.0.6.102_42015 on the same platform release; Reaper's earlier socket bind shim is retired. The watchdog still kills a hung `nvram` reader as a safety net (log tag `reaper-nv`).
 - **Weighted (WRR) QoS classes** cannot be created on the Ethernet egress scheduler; every class runs strict priority. The UI no longer offers the weight control.
 - On the **GT-BE98**, a Guest Network Pro network with AP isolation combined with a manual WAN VLAN can stop the 2.5 Gbps-1 LAN port passing untagged main-LAN traffic. There is no userspace interface to correct the switch programming. Workarounds: keep Guest Pro off that port, move the device, or tag it with the guest VLAN.
 - A known over-the-air **5 GHz denial-of-service** in the Broadcom radio software (a malformed frame can drop the 5 GHz radio until reboot) cannot be patched from this firmware.
@@ -192,10 +192,11 @@ This section is the one to read before you flash and again after you have been r
 |---|---|
 | `<MODEL>_3006_102.8_<build>_nand_squashfs.pkgtb` | The AI Advisor (MCP) firmware you flash. |
 | `<MODEL>_..._noMCP_...pkgtb` | The Standard firmware without the Advisor. |
-| `..._loader.pkgtb` | A recovery loader for rescue mode only. Do not flash it as your firmware from the web interface. |
 | `SHA256SUMS` | Checksums. Verify the download before flashing; a truncated image is a common cause of a failed flash. |
 
-Images are hosted on the project's GitHub Releases page (also mirrored in-tree under `releases/`). The project asks that images be obtained from there rather than re-hosted copies: the compiled image bundles proprietary components with no redistribution grant, and the release channel is what the router's update check verifies against.
+Recovery `_loader.pkgtb` images are not published; they are available on request (see [`SOURCE-AVAILABILITY.md`](SOURCE-AVAILABILITY.md)). Never flash a loader as your firmware from the web interface.
+
+Images are hosted on the project's GitHub Releases page. The project asks that images be obtained from there rather than re-hosted copies: the compiled image bundles proprietary components with no redistribution grant, and the release channel is what the router's update check verifies against.
 
 ### 2.2 Flashing from stock ASUS or from Merlin
 
@@ -254,7 +255,7 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 
 - `/jffs` is **always mounted**. The "Enable JFFS custom scripts and configs" switch on the Administration page controls only whether `/jffs/scripts` and `/jffs/configs` are honoured; it does not control whether Reaper can use the partition.
 - Reaper uses **well under 4 MB** of it. The diagnostics report (v1.3.4) prints the partition's size, free space, read-only state, a write test and the space Reaper's stores use, and raises a FINDING if the partition is unmounted, read-only, nearly full or unwritable — the cases in which Reaper changes would stop persisting. Warden also shows a banner on its page if `/jffs` is off or read-only.
-- **A factory reset, and "Format JFFS partition at next boot", erase all of these lists.** For Gatekeeper that is the correct default-deny outcome (nothing is approved after a reset); for the rest it means your rules are gone. **Export first** — see 2.5.
+- **A factory reset with *clear all content and data logs* ticked, and "Format JFFS partition at next boot", erase all of these lists.** That option is ticked by default in the factory-reset box on Backup & Restore; a reset with it unticked keeps `/jffs` (8.3). For Gatekeeper that is the correct default-deny outcome (nothing is approved after a reset); for the rest it means your rules are gone. **Export first** — see 2.5.
 - **The stock settings backup does not contain them** (it is an nvram export). Again: export first.
 - Approving or removing a Gatekeeper device no longer forces a full nvram commit per click, so those actions are quicker than they were.
 - The v2.6.x/v2.7.0 migrations are recent. The expected evidence after upgrading is one migration line per feature in the system log, and a list that is still there after a reboot; anything still open about them is in [`BACKLOG.md`](BACKLOG.md).
@@ -333,7 +334,7 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
 - Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic (a port, a destination) is tolerated and logged once; so is any chain you list, one name per line, in **`/jffs/reaper/front_exempt`**. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so, names that file, and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
-So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (4.17); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
+So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (1.5); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
 The diagnostics report lists "an old direct firewall hook left over or the shared front chain missing" as a FINDING, which will catch most script conflicts.
 
@@ -366,7 +367,7 @@ It is plain text. **Open it and read it before you share it.** The router never 
 
 Read it on the **System Log** page, or over SSH as the file `/tmp/syslog.log`. **`logread` returns nothing on this platform** (the log is written to a file, not the in-memory buffer). If you have a USB or JFFS store with the syslog mirror enabled, the mirror holds days of history; the diagnostics report reads both.
 
-Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
+Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
 
 ### 2.13 Keep management off the WAN
 
@@ -389,18 +390,18 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 - **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN.
 - **Clients** — the connected-device list grouped by band; **View List** opens the full Devices page.
-- **Security Posture** — fourteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper** and **Warden**. Every row is clickable and takes you to the page (and tab) that owns the setting.
+- **Security Posture** — fifteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden** and **Rule Status** (the cached result of 4.1.1a; it never starts a walk). Every row is clickable and takes you to the page (and tab) that owns the setting.
 - **Radio tiles** for each band, showing the SSID in its real case, and **USB tiles** per physical port (a hub shows as connected with a device count). A disk selector appears on the Storage card once two or more disks are attached.
 - **System** — CPU load, memory, temperature, uptime, and the **firmware-update banner** at the top of the page when the check has found a release.
 - **Mesh Nodes** and **AiMesh** cards where applicable.
 
 **Navigation**
 
-- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
+- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
-- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It can be switched off from **Tools → Other Settings → Reaper interface theme** to serve the unmodified ASUS interface without reflashing (the web server restarts). The sign-in, set-password and logout screens show an animated model header that plays once.
+- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Tools → Other Settings in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
 - **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
 
 ---
@@ -505,6 +506,8 @@ Because an explicit rule beats an Egress default, which beats a Zone policy, you
 **Worth knowing.**
 
 - Rate limiting needs a kernel module that is not always present. If it is missing, rules that use a rate limit are **skipped** rather than silently applied without the limit, and a line saying so is written to the system log.
+- **Direction decides what a rule can see.** An **Inbound** rule sees only traffic addressed to the router itself (DNS, DHCP, the admin page), so its destination is always one of the router's own addresses. To keep one network away from another, use **Forwarded**. An Inbound "home → kids: Drop" rule does not isolate anything; it can only match the router's kids-side address, which is how it ends up blocking the kids network's DNS and DHCP.
+- **Objects that overlap act as both.** If a `home` subnet object also covers the kids range (a `/16` where a `/24` was meant, say), every kids device is also "home" and matches rules written for home. Keep each network's object to exactly that network. A red Rule Status row whose rule column names one of your own rules is the usual first sign.
 - **An empty source or destination means "anything". A named object that currently resolves to nothing is not the same thing** — that rule is left out entirely rather than becoming a rule that matches everything. A domain object that has not resolved yet, or an emptied group, therefore fails to a missing rule, never to an unintended block.
 
 #### 4.1.4 Objects
@@ -593,7 +596,9 @@ off either.
 **What you give up.** Interception removes the *clients'* fallback. If the server is down, a
 client asking a public server is sent to a dead address and gets nothing — it does not fall
 through to the internet. A firewall rule cannot health-check. For time this is usually an easy
-trade (clocks drift slowly), but decide it deliberately.
+trade (clocks drift slowly), but decide it deliberately. The one exception (v3.1.9): an intercept
+aimed at the DNS server the resolver health check watches (4.14a) is closed while that server is
+down and reopened when it answers.
 
 **Limits.** IPv4 only. On a dual-stack network a device can still reach a public server over
 IPv6; if that matters, add a Rules-tab block for the service on IPv6, which works today. It also
@@ -658,7 +663,7 @@ Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, 
 
 #### 4.1.13 Limits, and things deliberately not built
 
-- **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). A rule tracer is deferred.
+- **Rule negation ("not") does not exist**, because an empty field already means "any" and an ordered pair expresses an allowlist (4.1.3). There is no tracer for an arbitrary packet you type in; Rule Status (4.1.1a) walks each feature's own witness packets.
 - **The layer order is fixed**: Warden, then Gatekeeper, then the rules engine. An Accept rule here cannot let a geo-blocked source or a quarantined device through (v2.6.2).
 - The Status tab shows both of those layers' state, and the Rules tab links to them.
 
@@ -755,7 +760,7 @@ A held device that opens a web page sees a themed **"Awaiting approval"** notice
 #### 4.2.8 Limits and gotchas
 
 - **Phones using rotating private addresses reappear as new devices.** The pending list flags them. This is the single most common source of unexpected pending entries; it is the phone's privacy feature working, not a fault.
-- **The device list is not in the settings backup.** It lives on the router's internal flash, and a factory reset clears it. Export it with **Export settings** in the *Backup & Restore* panel (Administration → Restore/Save/Upload Setting, 2.5) if you have spent time on it.
+- **The device list is not in the stock settings backup.** It lives on the router's internal flash, and a factory reset with *clear all content and data logs* ticked (the default) clears it. Keep it with **Download full backup** or **Export settings** on **Administration → Backup & Restore** (2.5) if you have spent time on it.
 - **Capacity is 512 devices**, tested to 300. The old 45-device ceiling is gone, and existing lists migrate at first boot. A write failure is logged rather than swallowed.
 - The grandfathering step refuses to overwrite its list if that list is ever too large to load, and logs instead of failing quietly.
 - Before v2.5.0, Block and quarantine were enforced only on the main LAN. That is fixed, and a quarantined device on a guest network now also gets the waiting page.
@@ -773,10 +778,10 @@ A held device that opens a web page sees a themed **"Awaiting approval"** notice
 
 1. Tick the **threat feeds** you want: FireHOL Level 1, Feodo Tracker (botnet command-and-control), Spamhaus DROP, DShield top attackers. They merge into one de-duplicated set, so overlapping feeds never double-block or slow matching.
 2. Optionally add up to **eight custom feeds**: a name, an HTTPS list URL, and an optional IPv6 list URL.
-3. Choose **countries** from the searchable checklist. Review that list before enabling — see 4.3.5.
-4. Choose the **direction** (4.3.7).
-5. Add any **whitelist** and **manual block** entries, one address or CIDR per line (4.3.6).
-6. Decide on **Log dropped packets**, the statistics options, and whether to **also filter the router itself** (4.3.7).
+3. Choose **countries** from the searchable checklist. Review that list before enabling — see 4.3.4.
+4. Choose the **direction** (4.3.6).
+5. Add any **whitelist** and **manual block** entries, one address or CIDR per line (4.3.5).
+6. Decide on **Log dropped packets**, the statistics options, and whether to **also filter the router itself** (4.3.6).
 7. **Save & Apply**, then press **Update feeds now** for the first fetch. Afterwards feeds refresh on the schedule in Tools → Other Settings (default 04:30 daily).
 
 #### 4.3.2 The order it decides in
@@ -849,7 +854,7 @@ Drops here always go to the system log with the `REAPER-WARDEN-SELF` prefix, wha
 
 The status card shows **Enforcing** or **Disabled**, the last feed update, which feeds are on, and the counts — **Countries / Threat feeds / Manual blocks / Unclassified**, plus prefixes loaded.
 
-**Blocked packets** and **Top blocked countries** refresh every 30 seconds. The figure counts packets, not connection attempts: a retried SYN or a retransmitted outbound packet counts again. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`; from v3.2.2 every bucket is read from one snapshot of the firewall tables, so they add up exactly. *Unclassified* is non-zero only on a statistics store written before those buckets existed. The counter never matches the log viewer: the log is a rotating 400-line view, gated on *Log blocked traffic*, and a burst can drop lines; the card under *How Warden works* says so on the page.
+**Blocked packets** and **Top blocked countries** refresh every 30 seconds. The figure counts packets, not connection attempts: a retried SYN or a retransmitted outbound packet counts again. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`; from v3.2.2 every bucket is read from one snapshot of the firewall tables, so they add up exactly. *Unclassified* is non-zero only on a statistics store written before those buckets existed. The counter never matches the log viewer: the log is a rotating 400-line view, gated on *Log dropped packets*, and a burst can drop lines; the card under *How Warden works* says so on the page.
 
 Totals are saved to internal flash every 15 minutes, and on every path that would otherwise lose them, so they survive reboots, firewall rebuilds and upgrades. **Turning Warden off resets the counters.**
 
@@ -1019,11 +1024,12 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 
 - **WireGuard costs hardware acceleration.** The traffic accelerator does not honour a routing rule whose exit is a WireGuard tunnel, so Policy Routing does what VPN Director does and tells the accelerator to leave the affected flows alone. A **source** rule bypasses only that address. A **destination-list or MAC** rule must bypass the **whole LAN** — LAN traffic loses hardware acceleration while such a rule exists. The note under the rules table says so whenever a WireGuard rule exists, and the log says so on every apply. Prefer a source rule over a destination-list rule where you can. Entries VPN Director or the WireGuard server placed are never removed.
 - **Why the bypass has to exist, and what it cannot do.** The accelerator decides a flow's path on its first packets; once a flow has been handed to it, the marking chain and the routing rules never see that flow again. A bypass entry is checked on packets the router's CPU sees, so it cannot pull back a flow that was accelerated *before* the entry existed — which is why every apply that installs a WireGuard bypass also clears the accelerator's learned flows, so that every flow is judged afresh. A *new* connection from a bypassed source always takes the CPU path and is judged by your rule. If a source rule to a WireGuard client still reaches the internet directly, look at the bypass first (section 14d of the diagnostics bundle: *pending* means the client interface was down at apply time — before v3.1.7 nothing installed it later; a *table full* log line means the eight slots for that address family were taken), then at the tunnel's own routing table (14d warns when a rule targets a client whose table has no default-covering route: check the client's Allowed IPs). Before v3.1.7 a rule whose target was changed from one WireGuard client to another also kept routing existing connections by the old, now unrouted verdict; those connections used the WAN until they ended.
+- **Replies come home (v3.2.4).** Before v3.2.4 a source rule to a WireGuard client sent the request into the tunnel correctly, but the reply was routed straight back into the tunnel, because the WireGuard client's table has no route to the LAN; the device saw no answer at all. The marking chain now leaves reply traffic to the main table. OpenVPN targets and VPN Director were never affected.
 - **Protocol and port matching is not offered.**
 - **A list that has not resolved yet, or an emptied group, produces no rule** rather than a rule that matches everything — the same fail-to-nothing behaviour the firewall uses.
 - **Objects are shared with the Firewall.** Domain lists are edited here or on Firewall → Objects; they are the same objects. Address, MAC and country objects are still created on the Firewall page and simply appear in the dropdown.
 - **A confirmed set survives a reboot on its own** (v2.7.6/v2.7.7). The marking chain and the routing rules come back complete at boot with no visit to this page, and if the routing half is ever lost the router re-applies it the way it already did for a lost firewall chain.
-- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use **Export settings** in the *Backup & Restore* panel (Administration → Restore/Save/Upload Setting, 2.5). Twenty rules and more save without trouble.
+- **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use **Download full backup** or **Export settings** on **Administration → Backup & Restore** (2.5). Twenty rules and more save without trouble.
 - **Add rules from a device that is not itself being routed** by the rule you are testing.
 - **To check what actually loaded**, the rules appear as routing-policy entries and a marking chain on the router; if something is not behaving, the system log names any rule that was skipped and why.
 - All of v2.6.7 (WireGuard targets, IPv6, apply-and-confirm, the `/jffs` move) and the v2.6.9 address lists are **pending on-metal confirmation**; the WireGuard and IPv6 legs need a WireGuard client and an IPv6 line to test.
@@ -1038,7 +1044,7 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 
 | Mode | What it does | Accelerator |
 |---|---|---|
-| **HW QoS Classful** (type 11) — *recommended* | Five strict-priority classes with guaranteed minimums and per-class ceilings, hardware AQM on every queue, a download policer, and Wi-Fi WMM stamping. | **On** |
+| **HW QoS Classful** (type 11) — *recommended* | Five strict-priority classes with guaranteed minimums and per-class ceilings, hardware AQM on every queue, and an opt-in download policer. | **On** |
 | **Hardware QoS** (type 10) | One shaped upload queue plus AQM. The simplest bufferbloat fix, no classes. | **On** |
 | **Cake** | Software shaper, the best *download* control. One CPU core does all the work. | Off |
 | **Traditional** | The classic software engine. | Off |
@@ -1284,6 +1290,17 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal).
 
+**Preamble puncturing (v3.2.8, Settings tab, 5 and 6 GHz at 80 MHz or wider with Wi-Fi 7 on).** A Wi-Fi 7 radio can switch off one slice of a wide channel - a frequency segment excluded from transmission - and keep using the rest, instead of dropping the whole channel to a narrower width. It is for the dense case: a neighbour's 80 MHz network sitting inside your 320 MHz block, where excluding that 80 keeps 240 MHz instead of falling to 160. It is not a cure for a whole half of the block being noisy; a cleaner channel is. The row has four modes:
+
+- **Off** (default).
+- **Fixed channel:** you choose the slice, tied to the channel set above. Only offered when the channel is fixed.
+- **Follow channel:** you choose the slice by its position in the block ("upper 80 MHz"), and it is re-applied wherever it is legal after acsd or DFS moves the radio. Works on Auto channel.
+- **Dynamic:** the router chooses. It reads the radio's own carrier-sense counters every ten seconds, without disturbing clients, and switches a slice off only when it has stayed busy above the trigger for the hold time, the change is legal, the expected capacity gain clears the minimum, and the minimum interval since the last change has passed. It puts the slice back only after it has stayed clean for the longer restore hold, and slows down by itself if a restore did not hold or a change disturbed clients. Temporary interference never changes anything.
+
+Dynamic has three **sensitivity** presets - Conservative (the default: an 80 % trigger held for 60 s, a 20 % minimum gain, five minutes between changes), Balanced and Aggressive - and the minimum gain and hold can be overridden. The **monitoring source** decides how far it can see. At 320 MHz the passive counters resolve the secondary 80 MHz of the primary 160 only; the far half shows as one remainder, so **Passive telemetry** acts on the slices it can measure and logs the rest as "needs a confirmation scan". **Passive + idle confirmation scan** lets the radio listen passively on a candidate's own 20 MHz channels for about a second, only while your own traffic is light; **Active confirmation scan** does so whenever needed. The legal slices are what the driver accepts (measured on the RT-BE96U): one 20 MHz at 80 MHz, not the primary; one 40 or 80 MHz at 320 MHz outside the primary 80; the primary is never punctured. A slice applies live, with no radio restart; the beacon advertises it, and Wi-Fi 6 clients are narrowed by the driver where the slice sits inside their 160.
+
+Where to look: the Settings cell shows the applier's result and, in Dynamic, the controller's state; **Wireless › Wireless Quality** has a Dynamic puncturing card with the busy figure per slice, the current candidate and how long it has been bad, the last change and the reason for it, and whether a scan was used; every decision is one `rpunctd` line in the system log that says why; the diagnostics report's section 7 carries the setting, the live pattern and the controller's state. A wireless restart clears the driver's pattern and the router re-applies it; a channel change resets the controller's statistics.
+
 **AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
 hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed
 SSID, beacons like any other network, and accepts WPA connections with a key derived inside the
@@ -1315,7 +1332,7 @@ These share the **Storage** page under System Log.
 
 **Data export** (mode control here; destination on **Administration → Data Export**) — per-device connection-health metrics (round-trip latency, jitter, loss, TCP connection count and state, throughput, online state). Modes: **Off** (nothing retained or sent), **Store only** (history on the router, nothing leaves), **Store + Export**, **Export only**. Any mode other than Off turns on the **Health probe**, which can also be enabled on its own for the live view and **Preview payload**. Targets: Splunk HEC, Datadog, Dynatrace, Elastic, generic HTTP/JSON, OpenTelemetry, TLS syslog (push), or a **Prometheus** OpenMetrics scrape endpoint (pull, bearer token required). TLS verification is on by default; the API token is stored masked and kept out of process lists and logs; an option hashes device MACs before they leave. **Test connection** and **Preview payload** show exactly what will go out. The probe is light enough to leave on (spread across ticks, at most 16 pings per tick, skipped while the link is saturated; default interval 60 s); the exporter refuses to push a snapshot older than three minutes, so a crashed collector never masquerades as live data. Not included by choice: wireless RSSI/PHY metrics and TCP retransmit counts.
 
-**Reaper settings backup** — moved. Export and import now live in the *Backup & Restore* panel on **Administration → Restore/Save/Upload Setting**, alongside the full `.rbk` backup, so every backup is in one place (2.5).
+**Reaper settings backup** — moved. Export and import now live on **Administration → Backup & Restore**, alongside the full `.rbk` backup, so every backup is in one place (2.5).
 
 ### 4.12 USB Disks
 
@@ -1323,7 +1340,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 
 ### 4.13 Diagnostics
 
-**Administration → Diagnostics**: the sanitized report described in 2.10. The page lists what is collected and what is removed or masked, shows what the top of the report (the ledger) looks like, and has one **Download Report** button. Stay on the page for the 20–30 seconds it takes. The FINDINGS block at the top is the first thing to read when something is wrong (5.8).
+**Administration → Diagnostics**: the sanitized report described in 2.10. The page lists what is collected and what is removed or masked, shows what the top of the report (the ledger) looks like, and has one **Download Report** button. Stay on the page for the 20–30 seconds it takes. The FINDINGS block at the top is the first thing to read when something is wrong (5, item 9).
 
 ### 4.14 Firmware
 
@@ -1394,11 +1411,11 @@ Its fences: **off by default** and never started at boot; **LAN only** (it binds
 
 ### 4.17 Tools → Other Settings: the Reaper switches
 
-Three settings with a **?** beside each:
+One setting under the **Reaper** heading, with a **?** beside it:
 
-- **Reaper interface theme** — off serves the unmodified ASUS interface (the web server restarts).
-- **Socket bind shim (nvram netlink)** — **on by default**; works around the closed-library defect that can leave settings unable to save until the router is restarted. Needs a reboot to change. Each rescue writes a log line naming the process.
 - **Warden feed update schedule** — cron format; empty = 04:30 daily.
+
+Two earlier rows are gone: the interface theme switch (v2.5.9; the theme is always on, see 3) and the socket bind shim (v3.1.8; the vendor's corrected nvram libraries replace it, see 1.5).
 
 Saving on this page no longer logs you out unless the setting needs a web-server restart.
 
@@ -1424,7 +1441,7 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 
 | Symptom | Where to look | Fix |
 |---|---|---|
-| Settings will not save; one CPU core busy; everything else works | System Log for `reaper-nv` / bind-shim lines; diag FINDINGS "stuck nvram reader" | The closed-library freeze (1.5). The shim is on by default (4.17); a reboot clears a stuck process. Each logged rescue is evidence for the bug. |
+| Settings will not save; one CPU core busy; everything else works | System Log for `reaper-nv` lines; diag FINDINGS "stuck nvram reader" | The closed-library freeze (1.5), fixed in v3.1.8 by the vendor's corrected libraries. On an older image a reboot clears it. On v3.1.8 or later, report it with a diagnostics report. |
 | A Firewall rule or Policy Routing rule "disappeared" | Firewall / Policy Routing page: did you press **Keep**? Log tag `reaper_fw` / `reaper_pbr`: `commit-confirm: reverted …` | It auto-reverted (2.7). Re-apply and press Keep within the timer; lengthen the timer if you need more time. |
 | Firewall table shows a rule but Status says engine inactive | Firewall → Status; log `reaper_fw` | LAN was not up when the rules ran, or part of the ruleset failed; the log counts failures. Apply again after the LAN is up. |
 | Gatekeeper shows **Not enforcing** | Gatekeeper page; log `gatekeeper` / `gkd` "enforcement chains missing" | Its rules keep dropping — usually a script or add-on flushing the chains (2.9). Remove the conflict; the daemon repairs within ~30 s. |
@@ -1441,6 +1458,8 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | WireGuard rule shows "not supported yet — rule inactive" | Policy Routing page | You are on v2.6.1–v2.6.6; WireGuard targets arrived in v2.6.7. |
 | LAN throughput dropped after adding a routing rule | Policy Routing page: the WireGuard note under the rules table; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
 | A source rule to a WireGuard client still goes out the WAN, while the same rule to OpenVPN works | Diag §14d (bypass *new/pre/pending*, `table wgcN` route count, last handshake, per-rule packets); log `reaper_pbr: … skip-bypass …` / `blog skip table full`; from the device, `traceroute` to a public address | The accelerator, not the rule, is carrying the flow (4.4.9). A *pending* bypass or a full table means the flow was never diverted; upgrade to v3.1.7 (the bypass is installed when the client starts and a changed target no longer keeps stale verdicts), free a slot if the table is full, and check the client's Allowed IPs cover the destination. |
+| A device behind a source rule to a WireGuard client gets no replies at all | Policy Routing page; firmware version | Fixed in v3.2.4: replies were routed back into the tunnel (4.4.9). Upgrade. |
+| A firewall rule blocks a network's own DNS or DHCP at the router | Firewall → Rule Status: the red row's rule column; Rules tab: the rule's direction; Objects: the subnet values | Usually an Inbound rule meant to separate two networks, or two subnet objects that overlap (4.1.3). Change the rule to Forwarded and narrow the object. |
 | IPv4 stopped working entirely, IPv6 fine, QoS Classful on | Log `hwqos: setqcfg qid N … REJECTED` / `class queues restored …`; QoS Diagnostics queues 1–5 | v2.6.0 makes the rebuild transactional. A `FATAL` line means even the bare recreate failed — report it with a diag. |
 | Games/consoles cannot open ports or connect with UPnP on | Log `IGD desc` lines (which description the console fetched); Firewall Status exposure card | IGD:1 is advertised by default (v2.4.6) and the upstream "all traffic through UPnP" patch is reverted (v2.5.8). If you enabled IPv6 pinholes, IGD:2 is served — that configuration broke the PS5. |
 | UPnP mappings stop working hours after boot | UPnP page vs actual forwarding | Fixed v2.3.5 (the daemon is genuinely restarted on firewall rebuilds). Do not "optimise" that restart away. |
@@ -1458,6 +1477,10 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
 | Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
+| Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on and 80 MHz or wider. |
+| Dynamic puncturing never switches anything off | Wireless Quality › Dynamic puncturing card; log `rpunctd` | Usually correct: the channel is clean, the busy slice is short-lived, or the gain is below the minimum. At 320 MHz Passive telemetry can act only on the secondary 80 MHz; a busy far half logs "needs a confirmation scan" - choose a scan source if you want it resolved. |
+| Dynamic puncturing is set but the card shows no radio | Diag section 7 "dynamic puncturing: daemon=" | The controller is not running; the rwatch tick restarts it within five minutes and says so in the log. If it stays down, report it with a diagnostics report. |
+| An add-on (Skynet and others) installed but has no tab | `grep -n user /www/require/modules/menuTree.js`; the add-on's own log | From v3.2.8 the stock menu lines add-on installers anchor on are kept as hidden entries, so the tab lands in the Addons section. On an older image, or if the add-on's own startup never reached its web-page step, it has no tab. |
 
 ---
 
@@ -1483,12 +1506,14 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Object / group / service / zone** — the named things Firewall rules refer to (4.1).
 - **Policy Routing (PBR)** — rules that steer matched traffic to a VPN client, the WAN, or a block; they take precedence over VPN Director.
 - **Pseudonym (`MAC-3`)** — a consistent stand-in for a real MAC inside one diagnostics report.
+- **Preamble puncturing** — a Wi-Fi 7 radio excluding one slice of a wide channel from transmission and keeping the rest; Off, Fixed channel, Follow channel or Dynamic per radio (4.10).
 - **rchqd** — the opt-in passive channel-quality monitor.
+- **rpunctd** — the dynamic puncturing controller; runs only while a radio is set to Dynamic.
+- **Slice** — the frequency segment a puncturing pattern excludes from transmission: one 20, 40 or 80 MHz part of the channel, never the primary.
 - **RFC 4638 / baby jumbo** — the PPPoE extension that allows a 1500-byte MTU by widening the WAN port to 1508; requires provider support and both MTU and MRU above 1492.
 - **rtrafd** — the Traffic Analyzer collector.
 - **rwatch** — the health watchdog (every 5 minutes): WAN first-hop ping, loopback DNS, the Warden self-lockout canary, Policy Routing self-heal, hung-nvram reaping, the optional accelerator probe, the PPPoE stale-session re-dial; writes incident dumps on first failure.
 - **SDN / Guest Network Pro** — ASUS's per-network profiles (guest, IoT, VLAN). Gatekeeper enforces on every one; the Traffic Analyzer labels each by name and VLAN.
-- **Socket bind shim** — the on-by-default workaround for the closed nvram library's netlink defect (4.17).
 - **Warden** — the threat-feed, country and manual IP blocking layer.
 - **Zone policy** — the default action between two zones; the weakest statement in the firewall engine, overridden by Egress defaults and explicit rules.
 
@@ -1568,21 +1593,31 @@ three reachability probes after the boot grace period.
 
 **Connections and QoS diagnostics** — `rchq_enable` `0`.
 
+**Preamble puncturing** (4.10) — `wlN_punct` empty (off) on every radio. The one key carries every
+mode: `<chanspec>|0x<bitmap>` (Fixed channel), `w<width>|0x<bitmap>` (Follow channel) or
+`dyn|<c|b|a>|<p|i|a>|<gain %>|<hold s>` (Dynamic: sensitivity Conservative/Balanced/Aggressive,
+source Passive/idle scan/active scan, and the two overrides, 0 = the preset's value). Nothing runs
+and no `wl` command is issued while every radio's key is empty.
+
 **AI Advisor, MCP build only** (4.16) — `rmcp_port` `5199`, `rmcp_timeout` `60` minutes,
 `rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file
 in `/tmp`, so every reboot comes up dark.
 
 **Miscellaneous** — `reaper_fwbeta` `0` (the update check ignores the beta channel),
-`reaper_fwsig_override` `0` (firmware-manifest signature checking stays on).
+`reaper_fwsig_override` `0` (a one-shot override for manifest signature checking; signing is built
+but inert on current images, so the key has no effect, see `SECURITY.md`).
 
 ### 8.3 What a factory reset actually restores
 
-A factory reset clears NVRAM, so everything above returns to the value in the tables above. It does
-**not** erase `/jffs`, which is where the firewall, Warden, Gatekeeper and policy-routing rule
-stores live. For a genuinely clean box, format JFFS as well, from Administration.
+A factory reset clears NVRAM, so everything above returns to the value in the tables above. Whether
+it also erases `/jffs`, where the firewall, Warden, Gatekeeper and policy-routing rule stores live,
+depends on one checkbox in the factory-reset box on **Administration → Backup & Restore**:
 
-The useful consequence: if you are resetting to clear a bad *setting*, your rules survive and you do
-not have to rebuild them.
+- **Ticked** (*Restore to factory default settings while clearing all content and data logs*, the
+  default): `/jffs` is erased at the reboot. This is the genuinely clean box, and your rules are
+  gone; take a full backup first (2.5).
+- **Unticked**: only NVRAM is cleared and `/jffs` survives. If you are resetting to clear a bad
+  *setting*, this keeps your rules and you do not have to rebuild them.
 
 **What the page shows (v3.1.0).** A reset started from Backup & Restore puts up a veil that says how to
 get back: the router returns on its **open factory network** (`ASUS_xx…`) at its default address, with a
@@ -1612,8 +1647,8 @@ It is kept because the two share NVRAM state. Reaper's page reuses the stock upd
 other reader of that state.
 
 The automatic check it used to drive is off (`firmware_check_enable` `0`, see 8.1), because it
-queried ASUS. Reaper checks its own GitHub release manifest instead, and verifies a signature over
-it.
+queried ASUS. Reaper checks its own GitHub release manifest instead, over HTTPS with certificate
+validation and a pinned host, and verifies each image's SHA-256 and size before flashing (2.11).
 
 ### 9.2 The AiProtection pages
 

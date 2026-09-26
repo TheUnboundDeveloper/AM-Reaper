@@ -20,6 +20,33 @@
 
 ---
 
+## What's new in v3.2.8 — preamble puncturing, and add-ons find their menu again
+
+**Preamble puncturing (Wireless › Settings, 5 and 6 GHz, Wi-Fi 7 at 80 MHz or wider).** A radio can
+now exclude one slice of a wide channel from transmission and keep using the rest, instead of
+narrowing the whole channel because a neighbour sits inside it. Four modes per radio: **Off**
+(default), **Fixed channel**, **Follow channel** (survives automatic channel changes) and
+**Dynamic**. The slice applies live with no radio restart, the beacon advertises it, and Wi-Fi 6
+clients are narrowed by the driver where needed. Only the slices the driver accepts are offered;
+the primary is never punctured.
+
+**Dynamic mode** is a slow, conservative controller (`rpunctd`): it reads the radio's own
+carrier-sense counters without disturbing clients and switches a slice off only when it stays busy,
+the change is legal and the expected capacity gain is meaningful, then leaves it alone for the
+minimum interval. Sensitivity presets (Conservative by default, Balanced, Aggressive), three
+monitoring sources (Passive, plus optional short confirmation scans) and overrides for gain and hold.
+Every decision is one log line that says why; Wireless › Wireless Quality gains a card showing it.
+This is Reaper's own policy layer over the static control: Broadcom's dynamic puncturing is not in
+this SDK.
+
+**Add-ons.** Installers that register their page by editing the menu after a stock page (Skynet
+anchors on the stock firewall page) now find that anchor again: the stock lines Reaper replaced are
+kept as hidden entries, and the add-on lands in the Addons section like every other.
+
+**Diagnostics** (v1.3.22) report both puncturing modes, and for Dual WAN the mode, watchdog and probe
+settings, both units and the live default route, plus a finding when the log level is hiding the
+router's own WAN decisions.
+
 ## What's new in v3.2.7 — Dual WAN fail-back fix
 
 **The primary WAN stays up after fail-back.** In Dual WAN fail-back mode, when the primary line

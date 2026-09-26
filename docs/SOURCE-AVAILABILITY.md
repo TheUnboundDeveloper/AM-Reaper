@@ -92,13 +92,12 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 Reaper firmware images are **publicly hosted in this GitHub repository.** A
 flashable build for every model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease) is published two ways:
-
-- the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
-  page — one per-model release per version (`v<version>-<MODEL>`), each carrying
-  both variants plus a `SHA256SUMS-<MODEL>-<version>.txt`, and
-- in-tree under [`../releases/`](../releases/)`<MODEL>/<MODEL>-REAPER-<version>/`
-  for direct file-tree browsing, with the same checksums.
+RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease) is published on
+the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
+page — one per-model release per version (`v<version>-<MODEL>`), each carrying
+both variants plus a `SHA256SUMS-<MODEL>-<version>.txt`. The in-tree
+[`../releases/`](../releases/) folder holds only the firmware update check's
+manifest, not images.
 
 Each image is published **from the same repository as its complete corresponding
 source** (§1: the `patches/` series against the pinned upstream commit, plus

@@ -170,8 +170,30 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   it). Stock `wanduck`: the primary's `changed_count[]` is also the fail-back counter and was not
   reset by the return-to-primary block, so one DISCONN scan after fail-back ran
   `switch_wan_line(backup, 1)` → `restart_wan_if <primary>`. Reset on fail-back.
-  **[fixed in v3.2.7; reporter confirmation on metal owed]**
+  **[fixed in v3.2.7; reporter confirmed on metal 2026-09-25]**
   ↳ notes: `dualwan-failback-pppoe-loop.md`
+- **[P2] Dual WAN: a LAN-port primary flaps every few minutes from boot** (same GT-BE98, v3.2.7_BETA,
+  2026-09-26: DHCP primary on the 2.5G WAN/LAN-1 port = `vlan4094` over the RTL8372 switch, USB
+  tether backup; Control D removed, ping-reboot cron off). Diag 13 min after boot: `link down LAN1`
+  / `link up LAN1` six times in fourteen minutes, the 6in4 tunnel rebuilt after each, `wan0_auxstate_t=2`,
+  no default route at the snapshot. Desk: the v3.2.7 hunk runs only on the fail-back return and cannot
+  start this; with the watchdog off and `dns_probe` 0 (this platform's default) `detect_internet()` calls
+  a line down only for a lost link or a missing default route, so wanduck is reacting, not causing.
+  Open question: a real link loss on the 2.5G port, or `restart_wan_if` reconfiguring the switch port
+  and manufacturing the next link loss. Reporter asked for the single-WAN control test with the
+  `auto-mtu` add-on hooks disabled and the log level raised (its `syslogd -l 5` drops every wanduck
+  line), plus the USB checks (`ping -I usb0`, `wan1_dns`, POSTROUTING/FORWARD for `usb0`). If the flap
+  stops with Dual WAN off, the switch-port reset on a LAN-port WAN is ours to chase in `wanduck` /
+  `config_switch`. **[waiting on the reporter's control test]** ↳ notes: `dualwan-failback-pppoe-loop.md`
+- **[P2] Warden enabled but every `RW_*` chain absent 13 minutes after boot on a flapping WAN**
+  (same report: `rwarden_enable=1`, sets loaded - `rw_threat` 4824 - but `REAPER_WARDEN`, `RW_DROP`,
+  `RW_ODROP`, `RW_SELF` all missing, two rwatch ticks already run, Gatekeeper's chains present).
+  Warden arms at the first firewall build after boot and re-arms on later builds; with a WAN that
+  restarts every two minutes the firewall is rebuilt each time, and the rwatch heal should have
+  restored the chains within five minutes regardless. Reproduce on the bench with a WAN that flaps
+  (pull the cable on a timer) and read what the arm script and the heal do between two rebuilds;
+  the constant `stop_firewall` / `start_firewall` racing the arm is the first suspect. The
+  add-on-update variant of a missing chain is item 6 under Work next. **[open]**
 - **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
   `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
   regression 10/10 where Merlin `3006.102.8_4` wedges. The fix is in two closed blobs, nothing in
@@ -309,15 +331,6 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   for it, and established that AiMesh ships with **no source at all** — see
   `aimesh-decompose-2026-09-09.md`, which also carries the triage of every AiMesh item below.
   ↳ notes: `aimesh-pairing-failures-tester.md`, `aimesh-decompose-2026-09-09.md`
-- **[P2] AiMesh backhaul parking could park a carrier on top of a node that has just joined**
-  (found by the 2026-09-09 decompose) — whether the paired-node registry lags the join is **not
-  provable from source** (both files are written only by the closed `cfg_server`), so this is a
-  latent risk rather than a proven defect. **Closed without knowing, shipped in v3.1.2:** a carrier
-  with a station associated to it is never parked whatever the registry says, and parking is held off
-  for 120 s after a search/onboarding window closes; both log on transition only. Parking is opt-in
-  and off by default, so this cannot explain any report from a tester who never enabled it.
-  **[CLOSED 2026-09-17 — shipped in v3.1.2. Parking is opt-in and off by default. NOTE a pairing test would need a second node, which no lab box has, so this closes on the shipped behaviour rather than on a mesh trial.]**
-  ↳ notes: `aimesh-decompose-2026-09-09.md`, `aimesh-park-idle-backhaul.md`
 - **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
   nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
   calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
@@ -395,6 +408,26 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 ## Features to add
 
+- **[P3] Static preamble puncturing** — `wl eht dissubchan`, which no stock code calls (OFDMA/MU-MIMO
+  do not enable it; they only enable MRU scheduling). Metal 2026-09-25 (RT-BE96U): the beacon's EHT
+  Operation element carries the bitmap, Wi-Fi 6 clients are narrowed by the driver, `restart_wireless`
+  clears it; legal = one slice, 320: an aligned 40/80 outside the primary 80, 80: one 20 not the
+  primary (160 unmeasured). Built: `rc/reaper_punct.c` applier (boot, wireless start, page apply,
+  rwatch re-check), Wireless > Settings rows with a Fixed / Follow channel choice, diag §7.
+  **[built, test image; metal owed: page apply, restart re-apply, Follow on a channel move, iperf,
+  a Wi-Fi 6 client on 6 GHz, 160 MHz legality]**
+- **[P3] Dynamic preamble puncturing** — a policy layer over the static control (`rpunctd` +
+  `punct_core`, v3.2.8): timed `chanim_stats` windows give per-sub-band carrier sense (measured
+  2026-09-26: pri20/sec20/sec40/sec80 fill only in a timed window; the accumulators never do; an
+  all-zero window happens and is discarded; a scan resets it), a passive 4-channel `escan` takes
+  about a second and `chanim_stats all` returns per-20 MHz figures (measured, clients stayed).
+  Built: daemon, applier `dyn` branch, Settings rows, Wireless Quality card, diag §7, 39 tokens x25,
+  `test_punct_dyn.py` (25 checks). **[built, test image; metal owed: `rxcrs_sec80` ever non-zero
+  and the far-160 remainder under a real interferer (the dirty low 320 block would do); whether the
+  counters keep moving on a punctured slice (decides restore evidence vs the timed probe-restore);
+  apply disruption with a 6 GHz client pinging through a set and a clear; exclusive-vs-inclusive
+  reading of the sec counters under wide own-BSS frames; a full Dynamic cycle - candidate, apply,
+  hold, restore - on the owner's box; four-radio tester]**
 - **[P3] OSPF + BGP dynamic routing** — achievable: Quagga's ospfd/bgpd are vendored and switched
   off; kernel ready except BGP MD5. **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces** — a multi-VID trunk port (UI-only) and an inter-VLAN
@@ -448,14 +481,8 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   Firewall/VPNRouting/Failover/About/Sysinfo — the last of those, System Information, shipped in
   v3.1.8. **[ongoing]**
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P2] Firewall table walker + Rule Status page** (owner, 2026-09-13; **shipped in v3.1.8**).
-  `reaper_fwsim` walks each feature's witness packets through the live tables in kernel order and
-  reports the verdict plus the deciding rule. **Advisory by design** (owner, 2026-09-16): passive and
-  informative, never authoritative. Five inputs - iptables/ip6tables, ipsets, the routing policy
-  database, Warden's ban list, and the router's own listening sockets from `/proc/net/{tcp,udp}`.
-  Catalog coverage 51 of 59 rows; host suites at 214 checks plus 23 advisory-posture checks. The
-  design history, the per-row build notes and the two convergence passes are in the changelog
-  (v3.1.7, v3.1.8) and the memory file; only what is still open is kept below.
+- **Firewall table walker + Rule Status page — open follow-ups.** The walker itself shipped in v3.1.8
+  (advisory by design; history in the changelog). What is still open:
   ↳ notes: `firewall-witness-catalog.md`; memory `firewall-walker-plan`; fixtures in
   `ASUS/audits/firewall-fixtures/`
   - **[P3] 8 catalog rows have no emitter** (was 14; F2 F3 F6 F7 G7 and a re-scoped H3 landed
@@ -535,50 +562,6 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   nat field 7 `desc`; the parser reads it as the schedule (the file header is right). `web.c`
   `do_reaper_fw_cgi` still says drafts live in "nvram RAM"; since v2.6.9 they are files under
   `/tmp/reaper_fw/draft/`. **[owed]**
-- **[P2] Warden apply runs twice at boot, once for nothing** (measured 2026-09-20 on the RT-BE96U).
-  `start_services()` runs `sh /tmp/rwarden/apply.sh` synchronously in pid 1 (~6 s: awk split of the 1.7 MB
-  cache 0.6 s, per-set `ipset restore` 1.6 s, counter snapshot 0.6 s, 317 iptables calls ~3 s), then the
-  WAN-up `start_firewall()` deletes the chains and re-runs the same script under the firewall lock. The
-  boot-time run protects nothing (no WAN exists yet) and delays `start_wan` by its whole length. Fix: on
-  the first `start_rwarden()` after boot, generate the scripts and skip the apply, exactly as the existing
-  LAN-not-ready deferral does, keyed on a tmpfs marker `apply.sh` writes at its tail; the WAN-up hook
-  arms it, rwatch's missing-chain heal is the fallback for a router with no WAN (log that case, so the
-  Warden card explains itself). Checked per configuration: AP/repeater/media-bridge unchanged; static
-  WAN arms inside `start_wan`; DHCP/PPPoE/USB-modem at `wan_up`; dual WAN per unit's `wan_up`; routed
-  IPTV units pass `wan_up`, bridged IPTV never traverses the chains; captive portal arms inside
-  `start_services`. Gatekeeper (LAN-facing, small) and the native firewall (operator rules) stay
-  synchronous. Not async: an apply overlapping the WAN-up apply is the v3.1.9 watcher fight.
-  **Built in v3.2.3**, with one change to the design: the marker is written by the firewall build itself
-  (`/tmp/.reaper_firewall_built`, also by a completed apply), not by Warden alone, so enabling Warden
-  from the page after boot arms at once; rwatch words the no-WAN case. **[metal measure owed: the boot
-  gap, the chains after WAN-up, rwatch's first tick]** ↳ notes: `boot-efficiency.md`
-- **[P2] pid 1 burns 4.5 % of a core at idle: two wake sources, one of them ours** (measured 2026-09-20,
-  owner-confirmed by pausing wanduck: 72 → 38 cs per 15 s). Every wake of init's signal loop runs
-  `check_services()`, four full `/proc` scans, 34 ms each. (a) Stock: `wanduck.c` `chk_proto()` requests
-  `restart_autowan` on every 5 s scan for single-WAN configs with no state gate, so rc kills and respawns
-  the port prober forever while the WAN is connected. Fix: rate-limit to once a minute while
-  `WAN_STATE_CONNECTED`, keep 5 s otherwise — the blob's contract is unknown, so probing is slowed, not
-  removed; dual WAN is already excluded by the `wans_dualwan` condition; IPTV/VPN uninvolved. Metal:
-  move the cable between ports. (b) Ours: `rtrafd` `rt_bound()` kills its watcher subshell but not the
-  `sleep` the watcher forked, so seven `sleep 3` per 4 s class poll are orphaned to pid 1 (eight seen
-  parented to init at once). Fix: the watcher traps TERM and kills and reaps its own sleep (one
-  format-string change; the long-term shape is fork+exec with a poll deadline). Gate: the v2.8.6 popen
-  harness plus `pgrep -P 1 sleep` empty on the box. Expected idle busy ~2 % instead of 3.7 %.
-  **Built in v3.2.3** (the watcher forks its sleep before arming the trap, on purpose; the main shell
-  reaps the watcher too). **[metal measure owed: init cs per 15 s, autowan once a minute, no sleep
-  parented to pid 1, the moved-cable re-detection]** ↳ notes: `idle-cpu-burners.md`
-- **[P3] Boot: fixed sleeps that guard an observable condition** (measured boot 133 s to settled;
-  `/proc` start-time timeline in the notes). Reached on this build: two `sleep 3` around the `/data`
-  mount and `bcm_knvram` load (readiness = `/data` being a mount point, then the wlcsm netlink family
-  the module registers — there is no `/dev/nvram` on this platform, and `/proc` is not mounted yet at
-  that point, so neither poll reads it), `sleep(1)` after `hotplug2`, and a 300 ms wait in
-  `start_dhd_monitor` that only serves a previous instance. Polls with a 10 s ceiling are never earlier
-  than the fixed sleep on a slow model and shorter on a fast one; both flash layouts share them. ~7 s.
-  Hold the two `sleep 3` conversions at beta until a sibling-model boot report arrives; the USB power
-  cycle stays where it is (USB-modem WAN and boot-time mount ordering). **Built in v3.2.3** — the hotplug2
-  poll watches for its uevent netlink socket, the debug_monitor wait runs only when an instance exists.
-  **[beta soak]**
-  ↳ notes: `boot-efficiency.md`
 - **[P3] Boot: three daemons that looked consumer-less — kept** (re-checked 2026-09-20 at the moment of
   change, as the entry asked): `netool` answers `/netool.cgi` for the installed Network Analysis and
   Netstat pages; `sysstate` writes the CPU, RAM and temperature logs the feedback report packs;
@@ -631,7 +614,7 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   **[deferred]** ↳ notes: `tmp-dir-ownership.md`
 - **[P3] `poll_fcache` O(n²) pairing · `do_reaper_dev_cgi` static
   snapshot arrays** — bounded, measured small, or latent-only. **[shelved]** (the `poll_classes`
-  `tmctl` popen moved to the idle-CPU entry above, 2026-09-20)
+  `tmctl` popen left this entry on 2026-09-20; see `idle-cpu-burners.md`)
 - **[P3] Theme-token vocabulary consolidation (remainder of D4)** — `--panel2`/`--red*` and the
   `--line` divergence. **[owed — to the page migration]** ↳ notes: `theme-token-consolidation.md`
 - **[P3] Inherited httpd core: two pre-auth robustness gaps** (an unclamped `Content-Length` drain;
@@ -697,8 +680,15 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 - **B-3. [P3] Guest Network Pro breaks the 2.5G-1 LAN port when a manual WAN VLAN is active
   (GT-BE98)** — no userspace interface to the switch VLAN/PVID table. **[blocked — blob;
   risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`, `GUESTPRO-2.5G-VLAN-PLAN.md`
-- **B-4. [P3] Dynamic preamble puncturing needs the 2025 Broadcom SDK** — only the static bitmap
-  exists on this SDK. **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
+- **B-3b. [P2] Diag section 5 reports the wrong link for a LAN-port WAN** (GT-BE98 field, two
+  reports 2026-09-25/26) — `wan0_ifname` is `vlan4094`, whose carrier follows the switch uplink
+  (always 1, 10 Gb/s), while the physical 2.5G port sits on the RTL8372 switch and its link state
+  appears only as `link down LAN1` in the kernel log. Print the port behind the VLAN (rtkswitch /
+  ethctl) and count its link transitions in the syslog history. **[owed]**
+- **B-4. [P3] Broadcom's own dynamic puncturing (`punct_features`) needs the 2025 SDK** — compiled
+  out on `WIFI7_SDK_20231126`. Superseded in practice by Reaper's controller over the static bitmap
+  (see Features, v3.2.8); this entry stays for the vendor feature only. **[blocked — SDK]** ↳ notes:
+  `blocked-b4-dynamic-puncturing.md`
 - **B-5. [P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
   from source; instrumented in v3.0.5. Also a first-run-after-boot "Latency test failed" on the
   BE96U. Owner ruling 2026-09-05: not chased further. **[blocked — development]** ↳ notes: `speedtest-10g-links.md`

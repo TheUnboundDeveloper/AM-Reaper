@@ -14,9 +14,10 @@ the RT-BE96U on 2026-09-25; the scorer on the two textbook cases (a 79 % busy se
 is worth switching off, a 40 % one is not); the hysteresis traces (a 20 s burst never
 punctures, a sustained one does at Conservative after its hold; a punctured slice is only
 restored after the long clean hold and a meaningful gain; the change interval blocks a flip;
-a refused bitmap is blacklisted; two disruptive applies fall back); the scan tiers (an
-unresolved far-160 candidate asks for a scan, Passive only holds); and the reset on a
-channel change.
+a refused bitmap is blacklisted; two disruptive applies fall back); a slice reported lost
+(fell off the radio) is forgotten at once and re-applied only after the change interval,
+a refusal never leaves anything to restore; the scan tiers (an unresolved far-160 candidate
+asks for a scan, Passive only holds); and the reset on a channel change.
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass release/src/router
 as argv[1] or REAPER_ROUTER_SRC).
 """
@@ -152,6 +153,24 @@ ok(len(a) == 2 and a[1].split()[1] == "APPLY" and a[1].split()[2] == "0xf000", "
 # idle tier waits while own airtime is high
 busy_own = base.replace("init c p", "init c i") + ticks(10, 6, 100, 0, 0, 0, 150, 400) + ticks(70, 30, 100, 0, 0, 0, 950, 400)
 ok(acts(run(busy_own)) == [], "Idle tier must not scan while own airtime is high")
+
+# ---- 4b. a slice that left the radio (crawl 2026-09-26 F1): the daemon reports it lost,
+# the core forgets it and monitors afresh - and a re-apply still waits out the change interval
+s9 = s + "apply ok %d\n" % t_apply + "lost %d\n" % (t_apply + 20)
+out = run(s9)
+ok(any(l.endswith("STATE monitoring") and int(l.split()[0]) == t_apply + 20 for l in out),
+   "a lost slice must put the core back to monitoring at once, got %s" % [l for l in out if "STATE" in l])
+# the problem is still there: the same slice is applied again, but not inside the interval
+s10 = s9 + ticks(t_apply + 30, 40, 100, 0, 0, 850, 950)
+a = acts(run(s10))
+ok(len(a) == 2 and a[1].split()[1] == "APPLY" and a[1].split()[2] == "0xf0", "after a loss a sustained problem must APPLY again, got %s" % a)
+ok(int(a[1].split()[0]) - t_apply >= 300, "the re-apply at +%d s must respect the 300 s change interval" % (int(a[1].split()[0]) - t_apply))
+# nothing on the radio: a lost report is a no-op (no state line, no change)
+out = run(base + ticks(10, 3, 100, 0, 0, 0, 150) + "lost 40\n" + ticks(50, 3, 100, 0, 0, 0, 150))
+ok(not any("STATE" in l and int(l.split()[0]) == 40 for l in out), "lost with no slice on the radio must change nothing")
+# a refused apply leaves the core believing nothing is on the radio: no CLEAR is ever issued for it
+s11 = s + "apply refused %d\n" % t_apply + ticks(t_apply + 10, 70, 100, 0, 0, 0, 100)
+ok(not any(l.split()[1] == "CLEAR" for l in acts(run(s11))), "after a refusal there is nothing to restore")
 
 # ---- 5. a channel change resets everything; 80 MHz sec20 is a resolved candidate
 s7 = base + ticks(10, 30, 100, 0, 0, 850, 950) + "geom 80 0 320\n" + ticks(330, 6, 100, 0, 0, 0, 150)

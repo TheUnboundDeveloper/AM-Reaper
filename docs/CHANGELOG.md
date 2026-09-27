@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
+> **Doc status:** current as of **v3.2.8** · 2026-09-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -81,20 +81,77 @@ node, not only on the primary router.
   Dynamic, exits when none is, and is restarted by the rwatch tick if it dies. Wireless › Wireless
   Quality gains a read-only card (state, excluded slice, busy per slice, candidate, last change and
   why); Settings shows a one-line status. Setting: `wlN_punct = dyn|<preset>|<source>|<gain>|<hold>`.
-  Not gated on routing mode. Decision core host-tested (`test_punct_dyn.py`, 25 checks).
-- **Add-on installers find their menu anchor again (field, Skynet).** Third-party installers
-  register their page by appending a line to the menu tree after the stock line of the page they
-  extend; Skynet appends after the stock firewall page. Reaper had retired that line and the others
-  it replaced with native pages (firewall, wireless, firmware, backup, Sysinfo, QoS, traffic
-  statistics, connections), so those seds matched nothing and the add-on had no tab. The retired
-  lines are back as hidden entries, which the shell and the dashboard skip; a `user<N>.asp` inserted
-  beside one is lifted into the Addons section like every other add-on page.
+  Not gated on routing mode. Decision core host-tested (`test_punct_dyn.py`, 30 checks).
+- **Dynamic puncturing: the controller's file always says what it believes is on the radio (crawl
+  2026-09-26).** A refused or failed apply used to leave its bitmap in `/tmp/reaper_punct.dyn`, so
+  the rwatch tick sent a refused slice to the driver every five minutes, or applied a failed one
+  while the controller and the card said none - and nothing cleared it. The file now mirrors the
+  controller's belief and carries the channel the choice was made on: a restarted controller
+  resumes a slice only on that channel and takes a stale one off, and every tick the applier's
+  record is reconciled against the belief (a slice that fell off the radio is forgotten, one the
+  controller did not choose is taken off). The controller also waits for an idle applier before
+  running it, gates interface names before they reach a shell (the applier too), reads the raw
+  chanspec without a fork and parses the printed form only on a change, and no longer logs "below
+  80 MHz" every tick on a narrow channel.
+- **Front chains: what may sit ahead of them, decided once.** The narrowness patterns hook.sh and
+  rwatch 3d judge a rule by come from one header (`rc/reaper_hook.h`). In FORWARD only a
+  destination now counts as narrow: a port-only or interface-only ACCEPT there passed every device
+  to every host on that port past Warden, Gatekeeper and the rules engine, and stayed there. INPUT
+  and OUTPUT keep port-or-destination. A RETURN inside a user chain no longer counts as a bypass
+  (it resumes the base chain), so a whitelist chain ahead is tolerated instead of fought; a negated
+  match narrows nothing. Pinned by `test_front_narrow.py` on the shell lifted from both emitters.
+- **Rule Status re-walk off the request path.** "Re-check now" ran reaper_fwsim inside httpd,
+  which serves one request at a time, so every admin page stalled for the walk (up to 12 s). It is
+  a detached worker now; the page shows the current report and polls until its timestamp moves.
+- **Wireless Quality: the puncturing card polls once a minute with no Dynamic radio, and not at
+  all in a hidden tab.**
+- **strongSwan 6.0.4: CVE-2026-78127** (payload enumerator leaked on a truncated log line,
+  pre-authentication), **CVE-2026-78135** (CREATE_CHILD_SA accepted on an unestablished IKE_SA before
+  EAP completed), **CVE-2026-78133** (use-after-free after a failed passive multi-KE rekeying
+  collision) - the upstream 6.1.0 fixes applied to the vendored source. The IPsec server ships off.
+- **Kernel: CVE-2026-90110.** The inetpeer tree was ordered by raw address, so a remote sender could
+  shape it; mainline's SipHash ordering backported to 4.19.294.
+- **`wlcsm_bindfix` default removed** - the shim was retired in v3.1.8 and the leftover default
+  made every box log "retired" on every boot. The Reaper daemons' build outputs are git-ignored.
+- **Add-on installers find their menu anchor again (field: Skynet, MerlinAU, YazFi).** Third-party
+  installers register their page by appending a line to the menu tree after the stock line of the
+  page they extend; Skynet appends after the stock firewall page, MerlinAU after the firmware page.
+  Reaper had retired that line and the others it replaced with native pages (firewall, wireless,
+  firmware, backup, Sysinfo, QoS, traffic statistics, connections), so those seds matched nothing
+  and the add-on had no tab. The retired lines are back as hidden entries, which the shell and the
+  dashboard skip; a `user<N>.asp` inserted beside one is lifted into the Addons section like every
+  other add-on page. YazFi anchors on a plain `Guest_network.asp` line that 3006 only names inside a
+  ternary (stock Merlin included); a hidden line for it is added too. FlexQoS gets no anchor: it
+  refuses to install without Adaptive QoS (`qos_type=1`), which Reaper retired with the DPI stack.
+- **Dual WAN: no line-switch ping-pong at boot (stock ASUS `wanduck`, every model; field,
+  GT-BE98).** A line switch restarts the line it leaves, and the grace before the next switch was
+  `wandog_maxfail` x interval (~6 s), while a LAN-port WAN takes 15-20 s to come back. From boot the
+  two lines kept failing each other over until they happened to be up together. After a switch
+  the next one now waits up to 30 s, and the hold ends as soon as the new line connects; a line
+  that is really down still switches when the hold ends,
+  and an unplugged USB modem is not held. The hold logs once per switch under `wanduck`.
+- **Nine stock `wanduck` defects (every model; review of the whole file).** The backup-line DNS probe's
+  child could return out of its fork into a second main loop with an armed alarm, and a short read
+  returned the parent's uninitialized status; the backup ping probe leaked its `getaddrinfo` result on
+  every scan of an outage; the IPv6 exemption in the ping probe let any `wandog_target` reach `popen`
+  unvalidated (it now requires an IPv6 literal); the redirect web server lost its terminator on a
+  full-size request and on the URL/host cap paths, indexed before the buffer on a request under four
+  bytes, cut a five-digit HTTPS LAN port to four, and never closed an idle client, so 100 of them
+  wedged it (idle clients are now swept after 30 s).
 - **Diagnostics v1.3.22.** Section 7 reports the puncturing setting, live pattern, applier result
   and the controller's state (WARN when `rpunctd` should run and does not). Section 5 gains a Dual
   WAN block - `wans_mode`, `wan_primary`, the watchdog and DNS-probe settings, both units' state,
   address and gateway presence, and the live default route (WARN when there is none) - and prints
   `message_loglevel` / `log_level` with an INFO finding when `rc` and `wanduck` lines are being
   dropped (field, GT-BE98 dual-WAN report).
+- **Diagnostics v1.3.23: the hardware, stated.** Section 1 gains a hardware block: the SoC name and
+  revision as the chip-ID register reports them (`/proc/socinfo` - a BCM6813 and a BCM4916 both
+  run the 96813 platform), CPU and DDR clocks and DDR size, the boot loader's board ID (the device
+  tree the unit booted), the LAN switch actually running (Realtek RTL8372, MaxLinear, or Broadcom
+  only) and each radio's chip and revision. One model name covers several boards - the GT-BE98
+  ships as `GT-BE98` (RTL8372 switch), `GT-BE98_BCM` (Broadcom PHYs) and `GT-BE98_ICP`, the RT-BE96U
+  has a B0 board - and rc switches its port handling on that ID, so a variant board now raises an
+  INFO finding instead of having to be inferred from the process list (field, GT-BE98).
 - **Dictionaries.** 39 tokens added in all 25 packs, translated; two help texts extended.
 
 ## v3.2.7 — Dual WAN fail-back no longer restarts the primary WAN in a loop

@@ -1,0 +1,254 @@
+From 2581f3a4a73253214e1f8373db47a00cbc4d39ef Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 27 Sep 2026 13:02:16 -0400
+Subject: [PATCH] wanduck: hold the next line switch, and nine stock defects
+
+Line-switch hold-off (field, GT-BE98): a switch restarts the line it
+leaves, and the stock grace before the next switch is wandog_maxfail x
+interval (~6 s), while a LAN-port WAN needs 15-20 s to return. From
+boot the two lines failed each other over until they were up together.
+After a switch the DISCONN branch now holds the next one for up to
+REAPER_SWITCH_HOLDOFF (30 s); the hold ends when the new line connects,
+an unplugged USB modem is not held, and it logs once per switch.
+
+Stock defects fixed:
+- do_dns_detect: the child's early return escaped the fork into a second
+  main loop with an armed alarm; a short read returned uninitialized
+  status.
+- do_backup_ping_detect: getaddrinfo result leaked every scan.
+- do_ping_detect: the IPv6 exemption let any wandog_target reach popen;
+  it now requires an IPv6 literal.
+- run_http_serv / parse_dst_url / handle_http_req: unterminated buffers
+  on the cap paths and a negative index on a short request.
+- send_page: a 5-digit https_lanport was truncated.
+- redirect server: idle clients held their slot forever; they are now
+  swept after 30 s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/wanduck.c | 89 ++++++++++++++++++++++++++++++---
+ 1 file changed, 81 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index ae6103de75..dd3f91f8ea 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -32,6 +32,22 @@ static int wdbg = 0;
+ 
+ #define _wdbg(fmt, args...) do { if (wdbg) { dbg(fmt, ## args); }; } while (0)
+ 
++/* reaper 2026-09-26: accept time per redirect-client slot, for the idle sweep in
++ * wanduck_main() - a client that connected and never sent anything held its slot
++ * for ever, and MAX_USER of them wedged the redirect server. uptime()-based so an
++ * NTP clock step cannot age live clients. */
++static long client_accept_ts[MAX_USER];
++
++/* reaper 2026-09-27 (field, GT-BE98, fb + LAN-port WAN + USB tether): after a line switch
++ * the DISCONN branch may not switch again for REAPER_SWITCH_HOLDOFF seconds. The stock grace
++ * is wandog_maxfail x wandog_interval (~6 s) while a LAN-port WAN needs 15-20 s to come back
++ * (port reprogram + DHCP), and switch_wan_line(x, 1) restarts the line it leaves - so at boot
++ * each line tripped DISCONN before it was up and the two restarted each other in a loop.
++ * uptime()-based so the NTP clock step cannot shorten or stretch the hold. */
++#define REAPER_SWITCH_HOLDOFF	30
++static long last_line_switch_ts = 0;
++static long last_holdoff_log_ts = -1;
++
+ 
+ #if defined(RTCONFIG_WANRED_LED)
+ #if defined(RTCONFIG_WANLEDX2)
+@@ -667,6 +683,9 @@ int do_ping_detect(int wan_unit, const char *target)
+ 	char cmd[512];
+ 	int count, ret = -1;
+ 	int debug = nvram_get_int("ping_debug");
++#if defined(RTCONFIG_IPV6) && defined(RTCONFIG_USB_MODEM)
++	struct in6_addr pdp_target;
++#endif
+ 
+ 	/* can be default target, if necesary *//*
+ 	if (!target)
+@@ -674,9 +693,13 @@ int do_ping_detect(int wan_unit, const char *target)
+ 	*/
+ 
+ 	/* Check for valid domain to avoid shell escaping */
++	/* reaper 2026-09-26: the PDP2 exemption existed because an IPv6 literal target
++	 * fails is_valid_domainname(); as written it let ANY string through to popen()
++	 * on such a modem WAN. Keep it only for a real IPv6 address. */
+ 	if (!is_valid_domainname(target)
+ #if defined(RTCONFIG_IPV6) && defined(RTCONFIG_USB_MODEM)
+-		&& !(dualwan_unit__usbif(wan_unit) && modem_pdp == 2)
++		&& !(dualwan_unit__usbif(wan_unit) && modem_pdp == 2
++			&& inet_pton(AF_INET6, target, &pdp_target) == 1)
+ #endif
+ 			)
+ 		return -1;
+@@ -925,7 +948,9 @@ int do_dns_detect(int wan_unit)
+ 		/* ret > 0: status has been read, return real status
+ 		 * ret = 0: child timeout or dead w/o status, return 0
+ 		 * ret < 0: child read error, return -1 */
+-		if (ret >= sizeof(status))
++		/* reaper 2026-09-26: ret is signed; ">= sizeof()" promoted a read() error
++		 * of -1 to unsigned and returned the parent's uninitialized status byte. */
++		if (ret == (int)sizeof(status))
+ 			ret = status;
+ 		else if (ret != 0)
+ 			ret = -1;
+@@ -975,7 +1000,11 @@ int do_dns_detect(int wan_unit)
+ 		if (p) *p = '\0';
+ 		if (inet_pton(AF_INET, wan_dns, &dns_server) != 1) {
+ 			_dprintf("dns server %s is error\n", wan_dns);
+-			return -1;
++			/* reaper 2026-09-26: this runs in the forked child - a return here
++			 * escaped into the caller and ran a second wanduck main loop against
++			 * a dead sigsetjmp frame once the armed alarm fired. Report failure
++			 * and exit like every other child path. */
++			goto dns_timeout;
+ 		}
+ 		dns_server_sock.sin_family = AF_INET;
+ 		dns_server_sock.sin_port = htons(53);
+@@ -1124,6 +1153,10 @@ int do_backup_ping_detect(int wan_unit)
+ 		if (paddr)
+ 			break;
+ 	}
++	/* reaper 2026-09-26: res was never freed - this runs on every scan while the
++	 * backup line carries the traffic, for the length of the outage. paddr points
++	 * into the local addr[], not into res, so res is done here. */
++	freeaddrinfo(res);
+ 
+ 	if (paddr) {
+ 		// add route
+@@ -2589,7 +2622,7 @@ void send_page(int wan_unit, int sfd, char *file_dest, char *url){
+ 	char timebuf[100];
+ 	char dut_addr[64];
+ 	char dut_proto[16];
+-	char dut_port[5];
++	char dut_port[6];	/* reaper 2026-09-26: a 5-digit https_lanport was cut to 4 */
+ 	char redirection[100];
+ 	char indexpage[128];
+ 	int i=0, wl_url_hit=0;
+@@ -2708,7 +2741,7 @@ void parse_dst_url(char *page_src){
+ 	memset(host, 0, sizeof(host));
+ 
+ 	for(i = 0; i < strlen(page_src); ++i){
+-		if(i >= PATHLEN)
++		if(i >= PATHLEN-1)	/* reaper 2026-09-26: stop a byte early so the memset NUL survives */
+ 			break;
+ 
+ 		if(page_src[i] == ' ' || page_src[i] == '?'){
+@@ -2723,7 +2756,7 @@ void parse_dst_url(char *page_src){
+ 		hp += 6;
+ 		j = 0;
+ 		for(i = 0; i < strlen(hp); ++i){
+-			if(i >= 64)
++			if(i >= (int)sizeof(host)-1)	/* reaper 2026-09-26: as above */
+ 				break;
+ 
+ 			if(hp[i] == '\r' || hp[i] == '\n'){
+@@ -2745,7 +2778,10 @@ void handle_http_req(int sfd, char *line){
+ 		parse_dst_url(line+5);
+ 
+ 		len = strlen(dst_url);
+-		if((dst_url[len-4] == '.') &&
++		/* reaper 2026-09-26: a bare "GET /" with no Host header yields len 1 and
++		 * read dst_url[-3]. */
++		if((len >= 4) &&
++				(dst_url[len-4] == '.') &&
+ 				(dst_url[len-3] == 'i') &&
+ 				(dst_url[len-2] == 'c') &&
+ 				(dst_url[len-1] == 'o')){
+@@ -2932,7 +2968,7 @@ void run_http_serv(int sockfd){
+ 
+ 	memset(line, 0, sizeof(line));
+ 
+-	if((n = read(sockfd, line, MAXLINE)) == 0){	// client close
++	if((n = read(sockfd, line, sizeof(line)-1)) == 0){	// client close; -1 keeps the memset NUL (reaper 2026-09-26)
+ 		close_socket(sockfd, T_HTTP);
+ 
+ 		return;
+@@ -3439,6 +3475,10 @@ int switch_wan_line(const int wan_unit, const int restart_other){
+ 	}
+ #endif
+ 
++	/* reaper 2026-09-27: start the switch hold-off HERE, not at set_wan_primary_ifunit() -
++	 * restart_other waits (notify_rc_and_wait_2min) for the old line's restart, ~20 s on a
++	 * LAN-port WAN, and that time must not come out of the new line's hold. */
++	last_line_switch_ts = uptime();
+ 	_dprintf("%s: wan(%d) End.\n", __FUNCTION__, wan_unit);
+ 	return 1;
+ }
+@@ -4257,6 +4297,7 @@ _dprintf("wanduck(%d)(fo   conn): state %d, state_old %d, changed %d, wan_state
+ 				if(test_log) _dprintf("# wanduck: set S_IDLE: %s.\n", (conn_changed_state[current_wan_unit] == D2C)?"D2C":"CONNED");
+ 				conn_state_old[current_wan_unit] = conn_state[current_wan_unit];
+ 				set_disconn_count(current_wan_unit, S_IDLE);
++				last_line_switch_ts = 0;	/* reaper 2026-09-27: the line is up - end the switch hold-off early */
+ 			}
+ 			else if(conn_state[current_wan_unit] == DISCONN){
+ 				if(conn_state_old[current_wan_unit] == CONNED)
+@@ -4434,6 +4475,7 @@ _dprintf("wanduck(%d) fail-back: state %d, state_old %d, changed %d, wan_state %
+ 				if(test_log) _dprintf("# wanduck: set S_IDLE: %s.\n", (conn_changed_state[current_wan_unit] == D2C)?"D2C":"CONNED");
+ 				conn_state_old[current_wan_unit] = conn_state[current_wan_unit];
+ 				set_disconn_count(current_wan_unit, S_IDLE);
++				last_line_switch_ts = 0;	/* reaper 2026-09-27: the line is up - end the switch hold-off early */
+ 			}
+ 			else if(conn_state[current_wan_unit] == DISCONN){
+ 				if(conn_state_old[current_wan_unit] == CONNED)
+@@ -5106,12 +5148,31 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 							)
+ 					)
+ 			{
++				/* reaper 2026-09-27: hold the switch while the line we just moved to is still
++				 * coming up (see REAPER_SWITCH_HOLDOFF). The count is left as it is, so a line
++				 * that is really down switches the moment the hold ends. An unplugged USB modem
++				 * is not held - there is nothing to wait for. */
++				long hold_now = uptime();
++				int hold = (last_line_switch_ts != 0 && hold_now - last_line_switch_ts < REAPER_SWITCH_HOLDOFF);
++#ifdef RTCONFIG_USB_MODEM
++				if(dualwan_unit__usbif(current_wan_unit) && !link_wan[current_wan_unit])
++					hold = 0;
++#endif
++				if(hold){
++					if(last_holdoff_log_ts != last_line_switch_ts){
++						last_holdoff_log_ts = last_line_switch_ts;
++						logmessage("wanduck", "WAN(%d) not up yet after a line switch - holding the next switch for up to %d s", current_wan_unit, REAPER_SWITCH_HOLDOFF);
++					}
++					_dprintf("# wanduck(%d): switch hold-off, %lds left.\n", current_wan_unit, REAPER_SWITCH_HOLDOFF - (hold_now - last_line_switch_ts));
++				}
++				else{
+ 				_dprintf("# wanduck(%d): Switching the connect to the %d WAN line...\n", current_wan_unit, get_next_unit(current_wan_unit));
+ 				set_disconn_count(current_wan_unit, S_IDLE);;
+ 				if(!link_wan[current_wan_unit] && dualwan_unit__usbif(current_wan_unit))
+ 					switch_wan_line(other_wan_unit, 0);
+ 				else
+ 					switch_wan_line(other_wan_unit, 1);
++				}
+ 			}
+ 			else
+ #endif // RTCONFIG_DUALWAN || RTCONFIG_USB_MODEM
+@@ -5264,6 +5325,17 @@ if(test_log) _dprintf("nat_rule: stop_nat_rules 7.\n");
+ 		start_demand_ppp(current_wan_unit, 1);
+ 
+ WANDUCK_SELECT:
++		/* reaper 2026-09-26: drop redirect clients that connected and never spoke;
++		 * close_socket() indexes by the global fd_i, so iterate with it. 30 s is
++		 * generous for a captive-portal probe. */
++		{
++			long sweep_now = uptime();
++			for(fd_i = 0; fd_i <= maxi; ++fd_i){
++				if(client[fd_i].sfd >= 0 && sweep_now - client_accept_ts[fd_i] > 30)
++					close_socket(client[fd_i].sfd, T_HTTP);
++			}
++		}
++
+ 		if((nready = select(maxfd+1, &rset, NULL, NULL, &tval)) <= 0)
+ 			continue;
+ 
+@@ -5283,6 +5355,7 @@ WANDUCK_SELECT:
+ 				if(client[fd_i].sfd < 0){
+ 					client[fd_i].sfd = cur_sockfd;
+ 					client[fd_i].type = T_HTTP;
++					client_accept_ts[fd_i] = uptime();
+ 					break;
+ 				}
+ 			}
+-- 
+2.25.1
+

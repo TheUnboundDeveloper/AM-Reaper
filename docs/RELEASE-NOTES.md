@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
+> **Doc status:** current as of **v3.2.8** · 2026-09-27 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.7** <!--@treever--> — `3006.102.8_Reaper_v3.2.7`. **Dual WAN fail-back no longer restarts the primary WAN in a loop.** With a backup WAN in fail-back mode, returning to a PPPoE primary could drop the new session a few seconds after it came up and start the failover cycle again, until the backup was unplugged. A counter in the stock ASUS WAN watchdog was not reset on fail-back; it is now. Built and verified locally as an RT-BE96U MCP test image before the commit. The series stands at **717 patches** (0716–0717 for v3.2.7); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.8** <!--@treever--> — `3006.102.8_Reaper_v3.2.8`. **Preamble puncturing, static and dynamic, and a Dual WAN that settles at boot.** Wi-Fi 7 radios can switch off one busy slice of a wide channel instead of narrowing it, either as a fixed setting or chosen by a slow controller; the two lines of a Dual WAN no longer fail each other over from boot; nine stock WAN-watchdog defects are fixed; add-on installers find their menu anchor again; three strongSwan CVEs and one kernel CVE are fixed. The code was built and verified on RT-BE96U MCP test images (v3.2.7_BETA r5–r8) before the cut; the release images come from the public CI build. The series stands at **722 patches** (0718–0722 for v3.2.8); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -20,7 +20,7 @@
 
 ---
 
-## What's new in v3.2.8 — preamble puncturing, and add-ons find their menu again
+## What's new in v3.2.8 — preamble puncturing, a Dual WAN that settles at boot, and add-ons find their menu again
 
 **Preamble puncturing (Wireless › Settings, 5 and 6 GHz, Wi-Fi 7 at 80 MHz or wider).** A radio can
 now exclude one slice of a wide channel from transmission and keep using the rest, instead of
@@ -39,13 +39,32 @@ Every decision is one log line that says why; Wireless › Wireless Quality gain
 This is Reaper's own policy layer over the static control: Broadcom's dynamic puncturing is not in
 this SDK.
 
-**Add-ons.** Installers that register their page by editing the menu after a stock page (Skynet
-anchors on the stock firewall page) now find that anchor again: the stock lines Reaper replaced are
-kept as hidden entries, and the add-on lands in the Addons section like every other.
+**Add-ons.** Installers that register their page by editing the menu after a stock page (Skynet,
+MerlinAU, YazFi) now find that anchor again: the stock lines Reaper replaced are kept as hidden
+entries, and the add-on lands in the Addons section like every other. FlexQoS still cannot install:
+it requires Adaptive QoS, which Reaper does not carry.
 
-**Diagnostics** (v1.3.22) report both puncturing modes, and for Dual WAN the mode, watchdog and probe
-settings, both units and the live default route, plus a finding when the log level is hiding the
-router's own WAN decisions.
+**Dual WAN settles at boot.** Switching lines restarts the line being left, and the stock watchdog
+allowed only about 6 s before the next switch while a LAN-port WAN needs 15–20 s to come back, so
+from boot the two lines could keep failing each other over. After a switch the next one now waits up
+to 30 s, ending as soon as the new line connects; a line that is really down still fails over.
+
+**WAN watchdog fixes.** Nine defects in the stock ASUS watchdog are fixed: a backup-line DNS check that
+could leave a stray copy of the watchdog running, a small leak on every check while on the backup, a
+ping target that could skip validation, and several bugs in the "no internet" redirect page's small
+web server, including idle connections that were never closed and could lock it up.
+
+**Firewall.** A rule placed ahead of Reaper's chains in FORWARD that matched only a port or an
+interface is no longer treated as safe; only a destination-specific rule is. Rule Status "Re-check
+now" runs in the background instead of stalling the admin pages.
+
+**Security.** strongSwan CVE-2026-78127, CVE-2026-78135 and CVE-2026-78133 (upstream 6.1.0 fixes; the
+IPsec server ships off) and kernel CVE-2026-90110 (inetpeer, reachable from the WAN).
+
+**Diagnostics** (v1.3.22, v1.3.23) report both puncturing modes, and for Dual WAN the mode, watchdog
+and probe settings, both units and the live default route, plus a finding when the log level is
+hiding the router's own WAN decisions; a hardware block names the SoC, clocks, board ID, LAN switch
+and radio chips.
 
 ## What's new in v3.2.7 — Dual WAN fail-back fix
 

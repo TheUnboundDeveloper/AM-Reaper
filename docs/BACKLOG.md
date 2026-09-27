@@ -104,7 +104,13 @@ The ordered short list.
    current tree; the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only locally. The CI
    matrix builds all six from the series, so this is about a local image to hold, not the release path.
 10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
+    The 2026-09-26 crawl added one kernel backport to v3.2.8 (CVE-2026-90110, inetpeer SipHash
+    ordering; `inetpeer.o` compiled with the kernel's own command) - a kernel change, so the soak on
+    the owner's box before the cut is the gate.
 11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
+12. **[P2] OpenSSL security release, 2026-09-29** — pre-announced as High (3.5.9 for the overlay,
+    1.1.1zj marking a new ESM level for the 1.1.1w backports). The day it publishes: re-check both
+    against the advisory, carry the result in the next cut. ↳ notes: `crawl-2026-09-26.md`
 
 ***v3.2.7 is the current beta** (cut 2026-09-25; patches 0716–0717). It fixes the stock ASUS
 Dual WAN fail-back loop that restarted a PPPoE primary after every return; items closed by it are
@@ -422,12 +428,19 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
   all-zero window happens and is discarded; a scan resets it), a passive 4-channel `escan` takes
   about a second and `chanim_stats all` returns per-20 MHz figures (measured, clients stayed).
   Built: daemon, applier `dyn` branch, Settings rows, Wireless Quality card, diag §7, 39 tokens x25,
-  `test_punct_dyn.py` (25 checks). **[built, test image; metal owed: `rxcrs_sec80` ever non-zero
+  `test_punct_dyn.py` (30 checks). Crawl 2026-09-26: the controller's file now mirrors its belief
+  and carries the channel; the applier's record is reconciled every tick; one applier at a time.
+  **[built, test image; metal owed: `rxcrs_sec80` ever non-zero
   and the far-160 remainder under a real interferer (the dirty low 320 block would do); whether the
   counters keep moving on a punctured slice (decides restore evidence vs the timed probe-restore);
   apply disruption with a 6 GHz client pinging through a set and a clear; exclusive-vs-inclusive
   reading of the sec counters under wide own-BSS frames; a full Dynamic cycle - candidate, apply,
-  hold, restore - on the owner's box; four-radio tester]**
+  hold, restore - on the owner's box; four-radio tester. From the crawl: a hand-written refused
+  bitmap in `/tmp/reaper_punct.dyn` produces ONE `refused` line and the file resets to 0x0 within
+  a tick; `restart_wireless` with a slice on the air resumes it without an apply/clear flap; a
+  channel change forgets it (`wl eht dissubchan` = 0x0); no periodic `wl chanspec` forks; the Rule
+  Status re-check leaves the UI responsive; a port-only FORWARD ACCEPT ahead of the hook is
+  displaced while the lab's INPUT rule stays; no `wlcsm_bindfix retired` line at boot]**
 - **[P3] OSPF + BGP dynamic routing** — achievable: Quagga's ospfd/bgpd are vendored and switched
   off; kernel ready except BGP MD5. **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces** — a multi-VID trunk port (UI-only) and an inter-VLAN

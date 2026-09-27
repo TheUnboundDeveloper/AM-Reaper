@@ -55,6 +55,15 @@ lighttpd advisories reach this configuration. Both of those turned out narrower 
 string suggests, which is the same lesson the netatalk correction taught in the other direction -
 a version match is not a finding, and a version is not a clean bill of health either.
 
+A fourth pass on 2026-09-26 crawled everything changed since the second review, plus the inherited
+components against the fortnight's advisories. It backported strongSwan's 2026-09-07 batch to the
+vendored 6.0.4 - CVE-2026-78127 (payload enumerator leaked on a truncated log line, pre-authentication),
+CVE-2026-78135 (CREATE_CHILD_SA accepted before EAP completed) and CVE-2026-78133 (use-after-free after
+a failed multi-KE rekeying collision) - and the kernel's SipHash ordering of the inetpeer tree
+(CVE-2026-90110, reachable from the WAN with nothing enabled). Open at the time of writing: OpenSSL's
+security release of 2026-09-29 (announced as High; 3.5.9 and 1.1.1zj), to be checked against the 3.5
+overlay and the 1.1.1 backports the day it publishes.
+
 If any of these is upgraded it gets its own release and hardware validation rather than riding along
 with unrelated work — the versions are load-bearing for the features that use them.
 

@@ -1,0 +1,140 @@
+Reaper v3.2.9 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> OpenSSL 3.5.9: CVE-2026-84782 (High)
+
+The DTLS retransmission logic resumed a suspended
+
+handshake write from a stale buffer offset, so a retransmission could disclose heap memory to the
+
+peer or crash. Also fixed, all Low: CVE-2026-35189 (relative CRLDP memory growth), CVE-2026-35191
+
+(QUIC amplification credit), CVE-2026-42772 (QUIC O(n²) reassembly), CVE-2026-54872 (non-NIST EC
+
+scalar-multiplication timing), CVE-2026-54873 (QUIC STREAM fragment memory). Taken from the release
+
+tarball (signature verified) with the two carried differences of the 3.5.8 import (RSDNTWK): the
+
+Broadcom build targets in Configurations/10-main.conf and no empty submodule directories. Same
+
+library SONAME; the closed components still reach it through the 1.1 shim.
+
+> IPv6: CVE-2023-52340
+
+Forged ICMPv6 Packet Too Big messages, accepted from the WAN, each add
+
+a route-cache exception; past the 4,096 net.ipv6.route.max_size default, dst_alloc() fails
+
+and neighbour discovery stops, taking IPv6 down. rc now sets max_size to INT_MAX at boot, the
+
+same change as mainline af6d10345ca7; the GC and exception expiry still bound the cache. Only
+
+boxes with IPv6 enabled were exposed.
+
+> e2fsprogs 1.45.6: CVE-2022-1304
+
+An extent-tree leaf with zero entries sent libext2fs out of
+
+bounds; the disk check (e2fsck, run on a USB app-folder disk at mount, from the USB page and on schedule)
+
+could be attacked with a crafted disk. Upstream ab51d587bb9b (1.46.6) applied.
+
+> First-boot setup box: the main network is usable on the Network page
+
+The banner's box wrote
+
+the radios and Smart Connect but never ran the SDN reconcile, so a factory box kept its single
+
+default profile row until some later SDN apply, and the Network page's main card could not be
+
+opened (adding a guest network was the workaround, because that apply is the reconcile). The box's
+
+CGI now calls sync_apgx_to_wlunit() before it commits and the page's apply ends in restart_sdn,
+
+the order every stock SDN writer uses.
+
+> USB Format and Scan reach the right disk (field, RT-BE86U)
+
+The page posted diskmon_usbport
+
+through start_apply, which rewrites every diskmon_ key, so the port never reached rc: Format
+
+did nothing and disk_monitor then crashed on a missing disk. The page now sets the port through
+
+change_diskmon_unit and reads it back before scanning or formatting (which also stops a two-disk
+
+box acting on the wrong disk); start_diskformat returns cleanly when the disk is gone and reports
+
+a failed format; the scan says when a FAT/exFAT volume cannot be checked.
+
+> Dynamic puncturing survives a wireless restart (field, GT-BE98)
+
+restart_wireless never
+
+stopped rpunctd, so the controller kept arming measurement windows through the radio teardown and
+
+a dongle radio could die until reboot. It is now stopped before the radios go down and started after
+
+they are ready, and it touches no radio while they are not.
+
+> Dual WAN: the backup line is shown and lit
+
+The Dashboard read unit 0 only; it now follows
+
+wan_primary, so a fail-over shows the backup line as connected with its address. The WAN LED
+
+logic is in a closed ASUS object that lights white only for the WAN port; a connected backup line
+
+now lights the LED red and white together, red alone while it is down, and the stock logic repaints
+
+it on fail-back.
+
+> Rules engine
+
+A group, zone or zone-policy list longer than the engine takes used to drop the
+
+rest silently; each cap now logs once per ruleset and the page refuses it at save. The confirmed
+
+snapshot on /jffs is written in full before any file is replaced, a boot that finds snapshot files
+
+without their completion marker re-adopts them instead of saving empty lists over them, and a save
+
+that fails (a full /jffs) keeps the draft and says so.
+
+> Warden applies in one batch
+
+Its rules are restored with one iptables-restore --noflush per
+
+stack instead of one command per rule, with a per-rule fallback.
+
+> Rule Status tests a rule from its own zone
+
+A rules-engine witness entered from the LAN bridge
+
+whatever zone the rule named, so a VLAN-only drop was judged by the stock LAN accept and a VLAN-only
+
+accept could read OK without being tested. It now enters on the rule's source zone from that
+
+subnet and aims at the router's address there, or at the destination zone for a forward rule; a zone
+
+with no live interface gives no row (reaper_fwsim 1.7). Report only; no rule changes.
+
+> AiMesh: "Ethernet Backhaul Mode" is now "Ethernet-Only Backhaul"
+
+The setting forbids the
+
+wireless fallback; wired backhaul already works with it off.
+
+> Diagnostics v1.3.24
+
+adds roaming, scheduler, DFS and auth/PMF settings, roamast and radar event
+
+counts, and a warning when the log store is in RAM while a USB disk is attached.
+
+> Dictionaries
+
+4 tokens added and 4 relabelled in all 25 packs.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

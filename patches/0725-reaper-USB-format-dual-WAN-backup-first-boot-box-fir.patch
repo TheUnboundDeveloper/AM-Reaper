@@ -1,0 +1,2589 @@
+From a46b90fe77d866c751a32a10e339ba3d4b6ee036 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 29 Sep 2026 13:42:58 -0400
+Subject: [PATCH] reaper: USB format, dual-WAN backup, first-boot box, firewall
+ fixes
+
+- USB Format/Scan: the page set diskmon_usbport through start_apply,
+  which validate_apply rewrites, so the port never reached rc; it now
+  uses change_diskmon_unit and reads it back. start_diskformat no longer
+  dereferences a missing disk; the scan says when a FAT/exFAT volume
+  cannot be checked.
+- rpunctd: stopped and started around restart_wireless and idle until
+  the radios are ready (field: GT-BE98 wl2 dongle death on Dynamic).
+- AiMesh "Ethernet Backhaul Mode" relabelled "Ethernet-Only Backhaul"
+  (it disables the wireless fallback), 25 packs.
+- Rules engine: the group/zone/zone-policy caps log once per ruleset and
+  the page refuses them at save; the confirmed snapshot is staged in full
+  before publishing, boot re-adopts an unmarked snapshot instead of
+  blessing empty lists over it, and a failed save keeps the draft.
+- Warden: rules restored in one iptables-restore --noflush batch per
+  stack, per-rule fallback.
+- Dual WAN: the Dashboard follows wan_primary; a connected backup WAN
+  lights the WAN LED red and white, red alone when down.
+- First-boot setup box: runs the SDN reconcile a guest-network apply
+  runs (sync_apgx_to_wlunit before commit, restart_sdn in the chain), so
+  the Network page's main card opens after a factory reset.
+- Rule Status (reaper_fwsim 1.7): a rules-engine witness enters on the
+  rule's own source zone and aims at its destination zone; VLAN-scoped
+  rules were judged from br0. reaper_fwsim build outputs git-ignored.
+- Diagnostics v1.3.24: roaming/scheduler/DFS/auth+PMF, roamast and radar
+  counts, RAM log store with a USB disk present.
+- New tokens RDST_78, RFW_323-325; 25 packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                |  22 +-
+ release/src/router/others/reaper_diag         |  36 +++-
+ release/src/router/rc/lan.c                   |  10 +
+ release/src/router/rc/reaper_fw.c             | 198 +++++++++++++++---
+ release/src/router/rc/rwarden.c               |  52 ++++-
+ release/src/router/rc/services.c              |   9 +-
+ release/src/router/rc/usb.c                   |  21 +-
+ release/src/router/rc/wanduck.c               |  85 +++++++-
+ release/src/router/reaper_fwsim/.gitignore    |   5 +
+ .../src/router/reaper_fwsim/reaper_fwsim.c    |  69 ++++--
+ release/src/router/rpunctd/rpunctd.c          |  39 +++-
+ release/src/router/shared/reaper_jfile.c      |   3 +-
+ release/src/router/www/BR.dict                |  12 +-
+ release/src/router/www/CN.dict                |  12 +-
+ release/src/router/www/CZ.dict                |  12 +-
+ release/src/router/www/DA.dict                |  12 +-
+ release/src/router/www/DE.dict                |  12 +-
+ release/src/router/www/EN.dict                |  12 +-
+ release/src/router/www/ES.dict                |  12 +-
+ release/src/router/www/FI.dict                |  12 +-
+ release/src/router/www/FR.dict                |  12 +-
+ release/src/router/www/HU.dict                |  12 +-
+ release/src/router/www/IT.dict                |  12 +-
+ release/src/router/www/JP.dict                |  12 +-
+ release/src/router/www/KR.dict                |  12 +-
+ release/src/router/www/MS.dict                |  12 +-
+ release/src/router/www/Main_ReaperDash.asp    |  41 +++-
+ release/src/router/www/NL.dict                |  12 +-
+ release/src/router/www/NO.dict                |  12 +-
+ release/src/router/www/PL.dict                |  12 +-
+ release/src/router/www/RO.dict                |  12 +-
+ release/src/router/www/RU.dict                |  12 +-
+ release/src/router/www/Reaper_Diag.asp        |   2 +-
+ release/src/router/www/Reaper_Firewall.asp    |   6 +
+ release/src/router/www/Reaper_USB.asp         |  93 ++++++--
+ release/src/router/www/Reaper_WiFiSetup.asp   |   7 +-
+ release/src/router/www/SL.dict                |  12 +-
+ release/src/router/www/SV.dict                |  12 +-
+ release/src/router/www/TH.dict                |  12 +-
+ release/src/router/www/TR.dict                |  12 +-
+ release/src/router/www/TW.dict                |  12 +-
+ release/src/router/www/UK.dict                |  12 +-
+ 42 files changed, 795 insertions(+), 203 deletions(-)
+ mode change 100755 => 100644 release/src/router/others/reaper_diag
+ create mode 100644 release/src/router/reaper_fwsim/.gitignore
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 986192e492..49c1b7dada 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21802,6 +21802,14 @@ static void reaper_gate_deny(FILE *stream, int why, const char *ns)
+  * cfg_server then performs the fronthaul/backhaul split off the same
+  * restart_wireless the stock page fires; nothing about that path is touched.
+  *
++ * v3.2.9: the box also runs the SDN reconcile every stock SDN writer runs
++ * (create_sdn_mwl_profile, the guest-network apply, rc's check_sdn_onoff):
++ * sync_apgx_to_wlunit() before the commit, restart_sdn after restart_wireless
++ * in the page's chain. Without it a factory box stayed on the one DEFAULT
++ * sdn_rl row until some later SDN apply, and the Network page's main card
++ * could not be opened - adding a guest network was the field workaround,
++ * because that apply is exactly this reconcile.
++ *
+  * nvram + commit ONLY. The page fires the restart itself, chained behind the
+  * password apply ("saveNvram;restart_chpass;restart_wireless"), so the radios
+  * never restart with a half-applied box. Gated on http_id like every other
+@@ -21885,8 +21893,11 @@ do_reaper_wifisetup_cgi(char *url, FILE *stream)
+ 	snprintf(buf, sizeof(buf), "%d", selif);
+ 	nvram_set("smart_connect_selif_x", buf);
+ 	nvram_set("w_Setting", "1");
++#ifdef RTCONFIG_MULTILAN_CFG
++	sync_apgx_to_wlunit(NULL);	/* v3.2.9: the reconcile a guest-network apply runs */
++#endif
+ 	nvram_commit();
+-	logmessage("reaper", "wifisetup: network name and key set on %d radio(s), Smart Connect on (selif %d); restart follows the password apply", n, selif);
++	logmessage("reaper", "wifisetup: network name and key set on %d radio(s), Smart Connect on (selif %d), SDN synced; restart follows the password apply", n, selif);
+ 	websWrite(stream, "{\"ok\":1,\"radios\":%d,\"selif\":%d}", n, selif);
+ }
+ 
+@@ -24390,10 +24401,11 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 	}
+ 
+ 	/* ---------------- Phase 1: the object-model rules engine ----------------
+-	 * Everything below edits the DRAFT only. Values land in nvram RAM and are
+-	 * never committed here: the single path that writes flash is
+-	 * reaper_fw_confirm(), after the operator has confirmed a ruleset that is
+-	 * already live. That is what makes the commit-confirm window meaningful -
++	 * Everything below edits the DRAFT only. Since v2.6.9 the lists are staged
++	 * as files under /tmp/reaper_fw/draft/ (tmpfs) and never reach /jffs here:
++	 * the confirmed snapshot is written by reaper_fw_confirm(), after the
++	 * operator has confirmed a ruleset that is already live (and, for obj/grp
++	 * only, by reaper_fw_promote_objects() on a Policy Routing confirm). That is what makes the commit-confirm window meaningful -
+ 	 * a box that reboots mid-window comes back on the last CONFIRMED config.
+ 	 */
+ 
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+old mode 100755
+new mode 100644
+index 8892b55eb2..91b3a114db
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.23 (2026-09-26) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.24 (2026-09-28) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -48,7 +48,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.23"
++VER="REAPER-DIAG v1.3.24"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -495,6 +495,15 @@ V6="$(ifconfig br0 2>/dev/null | grep -c 'Scope:Global')"
+ echo "  br0 global IPv6: $( [ "${V6:-0}" -gt 0 ] && echo "PRESENT x$V6 (redacted)" || echo none )"
+ 
+ sec "7. WIRELESS (radios discovered at runtime)"
++# v1.3.24: the settings that explain overnight client drops (RT-BE88U field diag
++# 2026-09-27 could neither confirm nor rule them out). roamast's [EXAP] deauth is
++# gated per band by wlN_user_rssi and globally by disable_exap; roamast_disable
++# stops the daemon. Schedules and DFS follow per radio, auth/PMF per VIF.
++if pidof roamast >/dev/null 2>&1; then RAST=running; else RAST=not-running; fi
++echo "  roaming assistant : roamast=$RAST  roamast_disable=$(nvram get roamast_disable 2>/dev/null)  disable_exap=$(nvram get disable_exap 2>/dev/null)"
++APGS=""
++for k in $(nvram show 2>/dev/null | grep -E '^apg[0-9]+_timesched=1$' | cut -d_ -f1); do APGS="$APGS $k"; done
++echo "  SDN access-time schedules on:${APGS:- none}"
+ u=0; while [ $u -le 3 ]; do
+   IFN="$(nvram get wl${u}_ifname 2>/dev/null)"
+   [ -z "$IFN" ] && { u=$((u+1)); continue; }
+@@ -503,6 +512,15 @@ u=0; while [ $u -le 3 ]; do
+   echo "  -- unit $u  ifname=$IFN  band=$BAND --"
+   echo "     radio_on=$(nvram get wl${u}_radio 2>/dev/null)  closed=$(nvram get wl${u}_closed 2>/dev/null)  country=$(nvram get wl${u}_country_code 2>/dev/null)"
+   echo "     chanspec: $(wl -i $IFN chanspec 2>/dev/null)"
++  # v1.3.24: Roaming Assistant threshold (0 = off for this band), the Wireless
++  # Scheduler (timesched=1 turns the radio off on its schedule; only the length
++  # of the schedule string is printed) and, on 5 GHz, the DFS state.
++  WSV="$(nvram get wl${u}_sched_v2 2>/dev/null)"
++  echo "     roaming: user_rssi=$(nvram get wl${u}_user_rssi 2>/dev/null)   scheduler: timesched=$(nvram get wl${u}_timesched 2>/dev/null) sched_v2_len=${#WSV}"
++  if [ "$NB" = 1 ]; then
++    wl -i $IFN dfs_status 2>/dev/null | head -3 | sed 's/^/     dfs: /'
++  fi
++  echo "     auth: $(nvram get wl${u}_auth_mode_x 2>/dev/null) crypto=$(nvram get wl${u}_crypto 2>/dev/null) pmf=$(nvram get wl${u}_mfp 2>/dev/null)"
+   # v1.3.20: static preamble puncturing (rc/reaper_punct.c) - the saved setting, what the
+   # driver carries now, and the applier's last result. 5/6 GHz only (2.4 GHz cannot puncture).
+   if [ "$NB" = 1 ] || [ "$NB" = 4 ]; then
+@@ -545,7 +563,7 @@ u=0; while [ $u -le 3 ]; do
+     # v1.3.10: tr -d newline before wc -c - nvram get appends one, so every
+     # VIF ssid_len read +1 (live report: 7 for a 6-char SSID, 33 for the
+     # 32-hex onboarding BSS). The primary-radio path was already exact.
+-    echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | tr -d "\n" | wc -c)"
++    echo "     vif $VIF: up=$(ifconfig $VIF 2>/dev/null | grep -c UP) stations=${VAC:-0} ssid_len=$(nvram get ${VIF}_ssid 2>/dev/null | tr -d "\n" | wc -c) auth=$(nvram get ${VIF}_auth_mode_x 2>/dev/null) crypto=$(nvram get ${VIF}_crypto 2>/dev/null) pmf=$(nvram get ${VIF}_mfp 2>/dev/null)"
+     wl -i $VIF assoclist 2>/dev/null | awk '{print $2}' | while read M; do
+       echo "     .. sta $M (on $VIF):"
+       wl -i $VIF sta_info "$M" 2>/dev/null | grep -E "rate of last|rssi|smoothed|PS :|idle|in network|flags|link bandwidth|tx pkts:|tx failures" | sed 's/^/        /'
+@@ -1107,6 +1125,11 @@ case "$(nvram get reaper_store 2>/dev/null)" in
+   usb)  for d in /tmp/mnt/*/; do [ -d "$d" ] || continue; m="${d%/}"; grep -qF " $m " /proc/mounts 2>/dev/null || continue; [ -d "${d}.reaper" ] && { RS_BASE="${d}.reaper"; break; }; done ;;
+ esac
+ echo "  durable store     : $RS_BASE$( [ "$RS_BASE" = /tmp/reaper ] && echo ' (VOLATILE - lost at reboot)')"
++# v1.3.24: a RAM store beside a mounted USB disk means the history a field report
++# needs (the syslog mirror above all) is lost at the next reboot for no reason.
++if [ "$RS_BASE" = /tmp/reaper ] && grep -q ' /tmp/mnt/' /proc/mounts 2>/dev/null; then
++  finding WARN "Reaper's durable store is RAM although a USB disk is mounted - log history is lost at every reboot; set the store to USB - see 17"
++fi
+ echo "  datastore opt-ins : $(nvram get reaper_store_ds 2>/dev/null)"
+ # v1.3.7: the one-shot PPPoE stale-session bounce (rwatch_gen, v1.9.2) is armed
+ # by DEFAULT - its test is `!= 0`, so an UNSET key counts as enabled - and it
+@@ -1200,6 +1223,13 @@ function pe(m,d,t){split(t,T,":");return mn[m]*2629800+d*86400+T[1]*3600+T[2]*60
+     finding INFO "station $2 on ${3%:} disassociated $1 times (~$RATE) - assoc/deauth loop; Gatekeeper cannot stop this, a wireless MAC filter can (see 19b)"
+   fi
+   echo "  deauthorize -30   : $(cat $SLF 2>/dev/null | grep -c 'DEAUTHORIZE error')   ocv_cap unsupported: $(cat $SLF 2>/dev/null | grep -c 'ocv_cap unsupported')"
++  # v1.3.24: drops the ROUTER initiated, counted next to the disassociations above.
++  # roamast logs "[EXAP]Deauth old sta" and then a (misleading) "weak signal
++  # strength" line for the same kick; radar/channel-switch lines explain a whole
++  # 5 GHz band dropping at once.
++  EXAPN="$(grep -c 'roamast: .*\[EXAP\]Deauth' "$SNAP" 2>/dev/null)"
++  echo "  roamast kicks     : exap_deauth=${EXAPN:-0}   weak_signal=$(grep -c 'roamast: .*weak signal' "$SNAP" 2>/dev/null)   radar=$(grep -ciE 'radar[^a-z]*(detect|found)' "$SNAP" 2>/dev/null)   channel_switch=$(grep -ciE 'channel switch|[^a-z]csa[^a-z]' "$SNAP" 2>/dev/null)"
++  [ "${EXAPN:-0}" -gt 0 ] && finding INFO "roamast [EXAP] deauthed ${EXAPN} station(s) - nvram disable_exap=1 stops that path only (Roaming Assistant keeps working) - see 7/19b"
+   echo "  -- dhcp: top DISCOVER sources --"
+   cat $SLF 2>/dev/null | grep 'DHCPDISCOVER' | awk '{print $NF}' | sort | uniq -c | sort -rn | head -5 | awk '{printf "  %6d %s\n", $1, $2}'
+   echo "  -- reaper events --"
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index cbb2c25fcc..17cb41ebd0 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -6662,6 +6662,15 @@ void restart_wireless(void)
+ 	nvram_set_int("led_status", LED_RESTART_WL);
+ #endif
+ 	nvram_set_int("wlready", 0);
++	/* reaper v3.2.8: the dynamic puncturing controller reads each Dynamic
++	 * radio's chanspec and arms a firmware measurement window (chanim_stats us
++	 * dur) on it every tick - stop it before anything below touches the
++	 * radios, as acsd is. GT-BE98 field report 2026-09-28: wl2 went into
++	 * dhdpcie_checkdied one second into a restart_wireless while rpunctd was
++	 * still running, and stayed dead until a reboot; the same restart with
++	 * static or no puncturing (no daemon) recovered. Started again below,
++	 * once wlready is back to 1. */
++	stop_rpunctd();
+ #ifdef RTCONFIG_AMAS
+ 	nvram_set_int("amas_ready", 0);
+ #endif
+@@ -7101,6 +7110,7 @@ void restart_wireless(void)
+ 	nvram_set_int("wlready", 1);
+ 	timecheck();
+ #endif
++	start_rpunctd();	/* reaper v3.2.8: stopped at the top; a no-op unless a radio is Dynamic */
+ 	file_unlock(lock);
+ #if defined(RTCONFIG_CONCURRENTREPEATER)
+ 	nvram_set_int("led_status", LED_RESTART_WL_DONE);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index f601ad484d..5223586af0 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -614,6 +614,18 @@ static int rfw_find(const char *list, const char *name, char *out, size_t ol)
+ 
+ #define RFW_MAX_SETS 16
+ 
++/* 2026-09-28 (backlog rfw-silent-caps): the group-set, zone-interface and
++ * zone-policy caps dropped the overflow with no log line, unlike every other
++ * cap here - so a DROP rule or zone policy silently left part of what the
++ * operator named unmatched. Each now logs, once per generated ruleset (the
++ * resolvers run per rule and per family, so an unguarded line would repeat
++ * hundreds of times). rfw_gen_apply() clears these. The page refuses the same
++ * limits at save time (RFW_323-325). */
++#define RFW_CAPLOG_SETS  0x1
++#define RFW_CAPLOG_IFACE 0x2
++#define RFW_CAPLOG_ZPOL  0x4
++static unsigned rfw_caplog;
++
+ typedef struct { char name[40]; } rfw_setname_t;
+ 
+ /* resolve one OBJECT (not a group) to its set name for `v6`. Returns 0 when the
+@@ -703,6 +715,10 @@ static int rfw_resolve(const rfw_cfg_t *c, const char *ref, int v6,
+ 			if (!rfw_valid_name(tok)) continue;
+ 			if (rfw_obj_set(c, tok, v6, out[n].name, sizeof(out[n].name))) n++;
+ 		}
++		if (tok && !(rfw_caplog & RFW_CAPLOG_SETS)) {
++			rfw_caplog |= RFW_CAPLOG_SETS;
++			logmessage("reaper_fw", "group '%s' resolves to more than %d sets - the rest are IGNORED (split the group)", ref, max);
++		}
+ 		free(dup);
+ 	}
+ 	return n;
+@@ -1215,6 +1231,10 @@ static int rfw_zone_ifaces(const rfw_cfg_t *c, const char *zname,
+ 		if (!rfw_valid_iface(tok)) continue;
+ 		strlcpy(ifs[n++], tok, IFNAMSIZ + 2);
+ 	}
++	if (tok && !(rfw_caplog & RFW_CAPLOG_IFACE)) {
++		rfw_caplog |= RFW_CAPLOG_IFACE;
++		logmessage("reaper_fw", "zone '%s' lists more than %d interfaces - the rest are IGNORED", zname, max);
++	}
+ 	free(dup);
+ 	return n;
+ }
+@@ -1481,7 +1501,13 @@ static void rfw_emit_zpol(FILE *f, const rfw_cfg_t *c, int v6)
+ 		char sz[RFW_NAME_MAX + 2], dz[RFW_NAME_MAX + 2], act[12];
+ 		char sifs[RFW_MAX_IFACE][IFNAMSIZ + 2], difs[RFW_MAX_IFACE][IFNAMSIZ + 2];
+ 		int nsi, ndi, i, j;
+-		if (++n > RFW_MAX_ZPOL) break;
++		if (++n > RFW_MAX_ZPOL) {
++			if (!(rfw_caplog & RFW_CAPLOG_ZPOL)) {
++				rfw_caplog |= RFW_CAPLOG_ZPOL;
++				logmessage("reaper_fw", "more than %d zone policies - the rest are IGNORED", RFW_MAX_ZPOL);
++			}
++			break;
++		}
+ 		if (!rfw_field(tok, 0, sz,  sizeof(sz))  ||
+ 		    !rfw_field(tok, 1, dz,  sizeof(dz))  ||
+ 		    !rfw_field(tok, 2, act, sizeof(act)) || !rfw_valid_zpol_action(act))
+@@ -1585,7 +1611,8 @@ static void rfw_emit_edef(FILE *f, const rfw_cfg_t *c, int v6)
+  * adds forwards that can be restricted to a source object - including a geo
+  * object, which resolves to Warden's country set - and scheduled.
+  *
+- * Record: enable > proto > extport > intip > intport > srcobj > log > desc
++ * Record: enable > proto > extport > intip > intport > srcobj > log > sched
++ * (Service Intercept records append mode > szone > exempt > snat.)
+  *
+  * IPv4 only, deliberately. DNAT is a v4 NAT construct; the v6 equivalent of
+  * "publish a service" is a filter ACCEPT to a global address, which this engine
+@@ -1941,6 +1968,7 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	f = fopen(tmp, "w");
+ 	if (!f) return 0;
+ 	keep[0] = 0;
++	rfw_caplog = 0;		/* each cap logs once per generated ruleset */
+ 
+ 	fprintf(f,
+ 	  "#!/bin/sh\n" REAPER_NV_HELPER
+@@ -2255,15 +2283,25 @@ static int rfw_confirm_secs(void)
+ /* P2-H2: the confirmed snapshot is BOTH the boot-time ruleset and the rollback
+  * source, so a half-written one is a security event - a truncated zpol reads as
+  * "no zone policy" (default-deny gone) yet boot would still mark the engine
+- * active. Write each key to a temp file, fsync it, atomically rename it into
+- * place, and only THEN write a .committed marker (also fsync'd). Boot trusts the
+- * snapshot only when that marker is present, so a full /jffs or a power cut
+- * mid-write leaves no marker and boot falls back to nvram - which, after the
+- * confirm path's nvram_commit(), holds this very config. Returns 1 on a
++ * active. Each key goes to a temp file (fsync'd), then is renamed into place,
++ * and only THEN is the .committed marker written (also fsync'd).
++ *
++ * 2026-09-28 (backlog rfw-lastgood-snapshot): the marker used to be unlinked
++ * BEFORE the first temp write, on the premise that boot would fall back to
++ * nvram "which holds this very config". That premise died in v2.6.9, whose
++ * migration unsets the reaper_fw_<key> nvram lists - so a write that failed
++ * part-way (a full /jffs is the ordinary way) left no marker, boot loaded
++ * eight EMPTY lists with the engine enabled, and rfw_migrate_lists() then
++ * wrote those empties back as a freshly-blessed snapshot over the good files.
++ * Now all eight temp files are written first; a failure there removes them
++ * and leaves the previous snapshot AND its marker untouched. The marker only
++ * goes away for the renames, which need no new data blocks. If one of those
++ * fails anyway, every file on disk is still a whole list (rename is atomic per
++ * file), and boot re-adopts them - see rfw_readopt_lastgood(). Returns 1 on a
+  * complete durable write. */
+ static int rfw_write_lastgood(void)
+ {
+-	int i, ok = 1;
++	int i, ok = 1, staged = 0;
+ 	char marker[128];
+ 	mkdir(RFW_CACHE, 0700);
+ 	mkdir(RFW_LASTGOOD, 0700);
+@@ -2288,22 +2326,45 @@ static int rfw_write_lastgood(void)
+ 		vals[i] = strdup(cur);
+ 		if (!vals[i]) { while (i--) free(vals[i]); logmessage("reaper_fw", "lastgood snapshot: out of memory"); return 0; }
+ 	}
+-	unlink(marker);		/* invalidate the old marker until this one completes */
++	/* stage: every key to <key>.tmp. Nothing confirmed is touched yet. */
+ 	for (i = 0; i < RFW_NKEYS; i++) {
+-		char p[128], tmp[140];
++		char tmp[140];
+ 		FILE *f;
+-		const char *val = vals[i];
+-		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, rfw_keys[i].file);
+-		snprintf(tmp, sizeof(tmp), "%s.tmp", p);
++		snprintf(tmp, sizeof(tmp), "%s/%s.tmp", RFW_LASTGOOD, rfw_keys[i].file);
+ 		if ((f = fopen(tmp, "w")) == NULL) { ok = 0; break; }
+-		if (fputs(val, f) == EOF || fflush(f) != 0 ||
++		fchmod(fileno(f), 0600);
++		if (fputs(vals[i], f) == EOF || fflush(f) != 0 ||
+ 		    fsync(fileno(f)) != 0) { fclose(f); unlink(tmp); ok = 0; break; }
+ 		if (fclose(f) != 0) { unlink(tmp); ok = 0; break; }
+-		chmod(tmp, 0600);
+-		if (rename(tmp, p) != 0) { unlink(tmp); ok = 0; break; }
+-		rjf_syncdir(p);
++		staged++;
+ 	}
+ 	for (i = 0; i < RFW_NKEYS; i++) free(vals[i]);
++	if (!ok) {
++		for (i = 0; i < staged; i++) {
++			char tmp[140];
++			snprintf(tmp, sizeof(tmp), "%s/%s.tmp", RFW_LASTGOOD, rfw_keys[i].file);
++			unlink(tmp);
++		}
++		logmessage("reaper_fw", "lastgood snapshot NOT saved (write to %s failed - is /jffs full?)"
++		                        " - the previous confirmed ruleset stays in place", RFW_LASTGOOD);
++		return 0;
++	}
++	/* publish: the marker is invalid only for the renames */
++	unlink(marker);
++	for (i = 0; i < RFW_NKEYS; i++) {
++		char p[128], tmp[140];
++		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, rfw_keys[i].file);
++		snprintf(tmp, sizeof(tmp), "%s.tmp", p);
++		if (rename(tmp, p) != 0) {
++			ok = 0;
++			for (; i < RFW_NKEYS; i++) {
++				snprintf(tmp, sizeof(tmp), "%s/%s.tmp", RFW_LASTGOOD, rfw_keys[i].file);
++				unlink(tmp);
++			}
++			break;
++		}
++	}
++	rjf_syncdir(marker);
+ 	if (ok) {
+ 		FILE *m = fopen(marker, "w");
+ 		if (!m) ok = 0;
+@@ -2316,10 +2377,49 @@ static int rfw_write_lastgood(void)
+ 		}
+ 	}
+ 	if (!ok)
+-		logmessage("reaper_fw", "lastgood snapshot incomplete - boot will fall back to nvram");
++		logmessage("reaper_fw", "lastgood snapshot incomplete (marker not written) - the next boot re-adopts the files on %s", RFW_LASTGOOD);
+ 	return ok;
+ }
+ 
++/* Boot found no .committed marker. On a box that has migrated (v2.6.9+) that
++ * does NOT mean "no confirmed config": nvram no longer holds the lists, so the
++ * old fallback booted eight empty lists and then blessed them over the real
++ * files. If any snapshot file is present, the marker is what went missing -
++ * each file was published by rename, so each is a whole list - and the files
++ * are re-adopted as confirmed. One exception: a box whose FIRST migration off
++ * nvram was interrupted still has the lists in nvram, and a partial file set
++ * must not win over them - then this defers (0) and the migration re-runs.
++ * Returns 1 when it re-wrote the marker, 0 when there is nothing to re-adopt,
++ * -1 when files must be kept but the marker could not be written. */
++static int rfw_readopt_lastgood(void)
++{
++	char p[128], marker[128];
++	int i, have = 0, nv = 0;
++	FILE *m;
++	for (i = 0; i < RFW_NKEYS; i++) {
++		snprintf(p, sizeof(p), "%s/%s", RFW_LASTGOOD, rfw_keys[i].file);
++		if (f_exists(p)) have++;
++		if (nvram_safe_get(rfw_keys[i].nv)[0]) nv++;
++	}
++	if (!have) return 0;
++	if (have < RFW_NKEYS && nv) return 0;	/* interrupted first migration: nvram still wins */
++	snprintf(marker, sizeof(marker), "%s/.committed", RFW_LASTGOOD);
++	if ((m = fopen(marker, "w")) == NULL) {
++		logmessage("reaper_fw", "lastgood marker missing and could not be re-written - firewall lists kept on %s, engine not started from them", RFW_LASTGOOD);
++		return -1;
++	}
++	fchmod(fileno(m), 0600);
++	if (fputs("1\n", m) == EOF || fflush(m) != 0 || fsync(fileno(m)) != 0) {
++		fclose(m); unlink(marker);
++		logmessage("reaper_fw", "lastgood marker missing and could not be re-written - firewall lists kept on %s, engine not started from them", RFW_LASTGOOD);
++		return -1;
++	}
++	fclose(m);
++	rjf_syncdir(marker);
++	logmessage("reaper_fw", "WARNING: lastgood marker was missing (an interrupted save) - re-adopted the firewall lists on %s", RFW_LASTGOOD);
++	return 1;
++}
++
+ /* the pre-generated recovery script: restore the last confirmed config into
+  * nvram (RAM), rebuild the chains from it, and disarm. Runs from cron. */
+ static void rfw_gen_rollback(void)
+@@ -2520,13 +2620,23 @@ void reaper_fw_sets_only(void)
+  * boot on this build seeds the confirmed snapshot from nvram and clears the
+  * nvram copies; runs whether or not the engine is enabled, because the object
+  * lists are read by policy routing too. Returns 1 when a committed snapshot
+- * exists afterwards. */
++ * exists afterwards, -1 when snapshot files exist that could not be re-blessed
++ * (the engine must not start from nvram over them). */
+ static int rfw_migrate_lists(void)
+ {
+ 	char probe[128];
+ 	int from_good;
+ 	snprintf(probe, sizeof(probe), "%s/.committed", RFW_LASTGOOD);
+ 	from_good = f_exists(probe) ? 1 : 0;
++	/* 2026-09-28: a migrated box with snapshot files but no marker had a save
++	 * interrupted - re-adopt the files rather than "migrate" empty nvram over
++	 * them. If even the marker cannot be written, the files must still never
++	 * be overwritten: report -1 so the caller does not start from nvram. */
++	if (!from_good) {
++		int r = rfw_readopt_lastgood();
++		if (r < 0) return -1;
++		if (r > 0) from_good = 1;
++	}
+ 	/* v2.6.9: first boot on this build - what nvram holds IS the confirmed
+ 	 * config. Seed the snapshot from it (rfw_write_lastgood reads through the
+ 	 * resolver, which falls back to nvram while no snapshot exists), then
+@@ -2612,7 +2722,16 @@ void start_reaper_fw(void)
+ 	int from_good = 0;	/* P2-H2: boot the confirmed snapshot, not nvram */
+ 
+ 	if (!is_routing_enabled()) return;
+-	rfw_migrate_lists();				/* v2.6.9: nvram -> /jffs, once; drops any draft */
++	/* v2.6.9: nvram -> /jffs, once; drops any draft */
++	if (rfw_migrate_lists() < 0 && nvram_match("reaper_fw_enable", "1")) {
++		/* 2026-09-28: confirmed lists are on /jffs but their marker could not
++		 * be restored (/jffs full or read-only). Starting would load the empty
++		 * nvram fallback; stay down and say why - the stock firewall still runs. */
++		nvram_set("reaper_fw_active", "0");
++		nvram_set("reaper_fw_err", "firewall lists could not be loaded from /jffs (marker missing, /jffs not writable) - engine not started; free space on /jffs and reboot");
++		logmessage("reaper_fw", "engine NOT started: confirmed lists present on %s but unmarked, and the marker could not be re-written", RFW_LASTGOOD);
++		return;
++	}
+ 	if (!nvram_match("reaper_fw_enable", "1")) {
+ 		if (f_exists(RFW_APPLY) || nvram_match("reaper_fw_armed", "1")) {
+ 			stop_reaper_fw();          /* clears reaper_fw_active itself */
+@@ -2641,16 +2760,17 @@ void start_reaper_fw(void)
+ 	 * left to time it out - so a rule that locked the admin out survived the
+ 	 * very reboot that was supposed to undo it.
+ 	 *
+-	 * lastgood is written by reaper_fw_confirm() and by nothing else, and every
+-	 * apply goes through arm-then-confirm, so it is precisely "the ruleset that
+-	 * was already confirmed" the old premise assumed nvram held. Fall back to
+-	 * nvram only when no snapshot exists at all, so a box that has never
+-	 * confirmed one still behaves as it did before. */
++	 * lastgood is written by reaper_fw_confirm() - and, for the two additive
++	 * lists obj/grp only, by reaper_fw_promote_objects() when a Policy Routing
++	 * change is confirmed - and every engine apply goes through arm-then-confirm,
++	 * so it is precisely "the ruleset that was already confirmed" the old premise
++	 * assumed nvram held. Fall back to nvram only when no snapshot exists at all,
++	 * so a box that has never confirmed one still behaves as it did before. */
+ 	{
+-		/* P2-H2: trust the snapshot only if its completion marker is present - a
+-		 * partial one (obj written but zpol truncated by a full /jffs) must NOT be
+-		 * booted as if whole. No marker -> load nvram, which after the confirm
+-		 * path's nvram_commit() is this same confirmed config. */
++		/* P2-H2: trust the snapshot only if its completion marker is present.
++		 * rfw_migrate_lists() above has already re-adopted unmarked snapshot
++		 * files (2026-09-28), so no marker here means no snapshot files either:
++		 * a box that has never confirmed, or one not yet migrated off nvram. */
+ 		char probe[128];
+ 		snprintf(probe, sizeof(probe), "%s/.committed", RFW_LASTGOOD);
+ 		from_good = f_exists(probe) ? 1 : 0;
+@@ -2719,7 +2839,8 @@ void start_reaper_fw(void)
+ 	nvram_set("reaper_fw_active", applied ? "1" : "0");
+ }
+ 
+-/* Apply the DRAFT (already in nvram RAM, not committed) and arm the revert. */
++/* Apply the DRAFT (staged files under /tmp/reaper_fw/draft/, not yet confirmed)
++ * and arm the revert. */
+ void reaper_fw_apply(void)
+ {
+ 	rfw_cfg_t c;
+@@ -2811,7 +2932,9 @@ void reaper_fw_apply(void)
+ 	rfw_cfg_free(&c);
+ }
+ 
+-/* Operator confirmed: keep it. This is the ONLY path that writes flash. */
++/* Operator confirmed: keep it. This writes the confirmed snapshot to /jffs
++ * (reaper_fw_promote_objects() also writes obj/grp there on a Policy Routing
++ * confirm). */
+ void reaper_fw_confirm(void)
+ {
+ 	/* R6: test-and-clear. If nothing was armed this is a no-op, not a commit -
+@@ -2823,12 +2946,19 @@ void reaper_fw_confirm(void)
+ 	eval("cru", "d", "reaper_fw_cc");
+ 	unlink(RFW_DEADLINE);
+ 	nvram_commit();
+-	rfw_write_lastgood();
+-	eval("rm", "-rf", REAPER_FW_DRAFT_DIR);	/* v2.6.9: consumed into lastgood */
++	/* 2026-09-28: the draft used to be deleted whether or not the snapshot
++	 * landed, so a failed save lost the operator's edits as well. Keep it on
++	 * failure: the page still shows the ruleset, and Apply + Keep retries. */
++	if (rfw_write_lastgood()) {
++		eval("rm", "-rf", REAPER_FW_DRAFT_DIR);	/* v2.6.9: consumed into lastgood */
++		logmessage("reaper_fw", "ruleset confirmed and saved");
++	} else {
++		nvram_set("reaper_fw_err", "ruleset is live but could not be saved to /jffs - it will not survive a reboot; free space on /jffs, then Apply and Keep again");
++		logmessage("reaper_fw", "ruleset confirmed but NOT saved - the previous confirmed ruleset is what boots");
++	}
+ 	/* the confirmed candidate becomes the boot-time ruleset */
+ 	rename(RFW_CAND, RFW_APPLY);
+ 	nvram_set("reaper_fw_armed", "0");
+-	logmessage("reaper_fw", "ruleset confirmed and saved");
+ 	reaper_fwsim_kick(1);
+ }
+ 
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 2ef804cc66..3adbf66d45 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -574,6 +574,49 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ 	/* v2.6.2: hooked by hook.sh into REAPER_HOOK_O, ahead of REAPER_FWO */
+ }
+ 
++/* The per-rule tool wrappers (see the 2026-09-17 note in rw_gen_apply). Kept
++ * in one place because apply.sh defines them twice: at the top, and again
++ * after the batched build below has finished with its own definitions. */
++#define RW_SH_WRAPPERS \
++  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n" \
++  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++
++/* 2026-09-28 (backlog warden-restore-batch): the build section used to be ~317
++ * separate iptables calls, each a full read-modify-write of a ~500-rule filter
++ * table - about 3 s of every firewall rebuild (boot, WAN-up, restart_firewall,
++ * every Apply). The emitters are unchanged; while the chains are built, the
++ * two tools are shadowed by a shim that COLLECTS -N/-A into one payload per
++ * stack (-F is implied: a chain declared in a --noflush payload is created or
++ * flushed), and _rw_commit() hands each payload to iptables-restore --noflush,
++ * which rebuilds only the chains it declares and leaves every other chain
++ * (stock, VPN, Gatekeeper, the rules engine) alone. Collection goes through
++ * FILES, not shell variables: the resolver exemption loop in RW_SELF runs in a
++ * pipeline subshell. If a COMMIT is refused, the same payload is replayed rule
++ * by rule through _rt_add, i.e. exactly the old behaviour, and each rule that
++ * still fails is logged and counted as before. The jump into the shared front
++ * chains stays a separate insert (hook.sh, after the wrappers are restored). */
++#define RW_SH_BATCH_BEGIN \
++  "RWB=" RW_DIR "/batch; rm -f \"$RWB\".*\n" \
++  "_rwq() { _f=$1; shift; _l=''; for _a in \"$@\"; do case \"$_a\" in ''|*[!A-Za-z0-9_./:,+=@%-]*) _l=\"$_l \\\"$_a\\\"\";; *) _l=\"$_l $_a\";; esac; done; echo \"${_l# }\" >> \"$_f\"; }\n" \
++  "_rwb() { _s=$1; _b=$2; shift 2; case \"$1\" in -N) echo \":$2 - [0:0]\" >> \"$RWB.$_s.h\";; -F) ;; -A) _rwq \"$RWB.$_s.r\" \"$@\";; *) /usr/sbin/$_b \"$@\";; esac; }\n" \
++  "iptables()  { _rwb 4 iptables \"$@\"; }\n" \
++  "ip6tables() { _rwb 6 ip6tables \"$@\"; }\n"
++#define RW_SH_BATCH_COMMIT \
++  "_rw_commit() {\n" \
++  "  _s=$1; _b=$2\n" \
++  "  [ -s \"$RWB.$_s.h\" ] || return 0\n" \
++  "  { echo '*filter'; cat \"$RWB.$_s.h\"; cat \"$RWB.$_s.r\" 2>/dev/null; echo COMMIT; } > \"$RWB.$_s\"\n" \
++  "  _e=$(/usr/sbin/$_b-restore --noflush < \"$RWB.$_s\" 2>&1) && return 0\n" \
++  "  logger -t rwarden \"batched $_b rebuild refused ($_e) - replaying rule by rule\"\n" \
++  "  while read -r _c; do _n=${_c#:}; _n=${_n%% *}; /usr/sbin/$_b -N \"$_n\" 2>/dev/null; /usr/sbin/$_b -F \"$_n\" 2>/dev/null; done < \"$RWB.$_s.h\"\n" \
++  "  [ -f \"$RWB.$_s.r\" ] && while read -r _r; do eval \"_rt_add /usr/sbin/$_b $_r\"; done < \"$RWB.$_s.r\"\n" \
++  "  return 0\n" \
++  "}\n" \
++  RW_SH_WRAPPERS \
++  "_rw_commit 4 iptables\n" \
++  "_rw_commit 6 ip6tables\n" \
++  "rm -f \"$RWB\".*\n"
++
+ static void rw_gen_apply(void)
+ {
+ 	FILE *f = fopen(RW_APPLY ".tmp", "w");
+@@ -600,8 +643,7 @@ static void rw_gen_apply(void)
+ 	   * straight through. The count is left in a file for the watchdog. */
+ 	  "RW_FAIL=0\n"
+ 	  "_rt_add() { \"$@\" 2>/dev/null && return 0; usleep 50000 2>/dev/null; \"$@\" 2>/dev/null && return 0; RW_FAIL=$((RW_FAIL+1)); logger -t rwarden \"rule add failed twice: $*\"; return 1; }\n"
+-	  "iptables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/iptables \"$@\";;  *) /usr/sbin/iptables \"$@\";; esac; }\n"
+-	  "ip6tables() { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ip6tables \"$@\";; *) /usr/sbin/ip6tables \"$@\";; esac; }\n"
++	  RW_SH_WRAPPERS
+ 	  "ebtables()  { case \" $* \" in *\" -A \"*|*\" -I \"*) _rt_add /usr/sbin/ebtables \"$@\";;  *) /usr/sbin/ebtables \"$@\";; esac; }\n"
+ 	  "LANIF=\"$(_nv lan_ifname)\"\n"
+ 	  "LANIP=\"$(_nv lan_ipaddr)\"\n"
+@@ -745,6 +787,9 @@ static void rw_gen_apply(void)
+ 	  "  $T -F RW_ODROP 2>/dev/null; $T -X RW_ODROP 2>/dev/null\n"
+ 	  "  $T -F RW_DROP 2>/dev/null; $T -X RW_DROP 2>/dev/null\n"
+ 	  "done\n");
++	/* 2026-09-28: collect the build below into one restore payload per stack.
++	 * fputs, not fprintf: the shim carries literal '%' characters. */
++	fputs(RW_SH_BATCH_BEGIN, f);
+ 	/* ---- build ---- the allow/ban/threat set names and country set prefixes
+ 	 * differ per stack, so emit the IPv4 and IPv6 dispatch chains directly.
+ 	 * ORDER (2026-07-29 lockout fix; keeps the audit-L2 property):
+@@ -895,6 +940,9 @@ static void rw_gen_apply(void)
+ 	rw_emit_country_rules(f, "ip6tables", "REAPER_WARDEN", "src", "RW_DROP", 1);
+ 	fprintf(f,
+ 	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_threat6 src -j RW_DROP\n");
++	/* 2026-09-28: commit both payloads, then put the per-rule wrappers back
++	 * before anything that must act immediately (hook.sh's inserts). */
++	fputs(RW_SH_BATCH_COMMIT, f);
+ 	fprintf(f, REAPER_HOOK_RUN);	/* v2.6.2: register both stacks in the front chains */
+ 	/* Offloaded/established flows bypass the freshly-hooked chain in the HW
+ 	 * accelerator, so a peer banned via rw_ban keeps its existing flows until
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index b18016fda6..2e89d347b7 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -18855,11 +18855,12 @@ _dprintf("multipath(%s): unit_now: (%d, %d, %s), unit_next: (%d, %d, %s).\n", mo
+ 			start_amas_adtbw();
+ #endif
+ 			/* reaper v3.2.8: a wireless restart clears the driver's puncture pattern
+-			 * (measured) - put it back once the radios are up again, and start the
+-			 * dynamic controller afresh (its rolling statistics belong to the old
+-			 * channel) */
++			 * (measured) - put it back once the radios are up again. The dynamic
++			 * controller is not started here: restart_wireless() (rc/lan.c) stops
++			 * it before the teardown and starts it afresh at the end, for every
++			 * caller, not only this one (its rolling statistics belong to the old
++			 * channel). */
+ 			start_reaper_punct();
+-			start_rpunctd();
+ 		}
+ 		nvram_set("restart_wifi", "0");
+ 	}
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index c1cb19f066..8286193a12 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -4684,7 +4684,7 @@ static int __inc_mount_counter(struct mntent *mnt, uint flags)
+  */
+ static void start_diskformat(char *port_path)
+ {
+-	int fd, len, nr_format = 0;
++	int fd, len, nr_format = 0, fmt_err = 0;
+ 	char **cmd = NULL;
+ 	char write_file_name[32], line[128], usbport[16];
+ 	char disk_system[32], disk_label[32], devpath[16], ofdev[16 + 3], *ptr_path;
+@@ -4735,6 +4735,15 @@ static void start_diskformat(char *port_path)
+ 	if (!di) {
+ 		dbg("disk_format: Can't find device via ptr_path [%s]\n", ptr_path);
+ 		logmessage("disk_format", "Can't find device via ptr_path [%s]", ptr_path);
++		/* reaper 2026-09-28: stock fell through to the re-mount loop below,
++		 * which walks di->partitions with di == NULL - disk_monitor died on
++		 * SIGSEGV and every later Format / Scan signal went to a dead pid until
++		 * a reboot (RT-BE86U field report). Nothing was unmounted and the NAS
++		 * services were not stopped, so there is nothing to restore. */
++		free_disk_data(&disk_list);
++		nvram_set("disk_format_flag", "-1");
++		diskmon_status(DISKMON_FINISH);
++		return;
+ 	} else if (mount_counter) {
+ 		dbg("disk_format: Can't unmount %d partition(s) of device %s\n", di->device, mount_counter);
+ 		logmessage("disk_format", "Can't unmount %d partition(s) of device %s", di->device, mount_counter);
+@@ -4852,7 +4861,10 @@ static void start_diskformat(char *port_path)
+ 
+ 			dbg("disk_format: Format %s ...\n", devpath);
+ 			logmessage("disk_format", "Format %s ...", devpath);
+-			_eval(cmd, write_file_name, 0, NULL);
++			if (_eval(cmd, write_file_name, 0, NULL) != 0) {
++				fmt_err = 1;
++				logmessage("disk_format", "Format %s failed, see %s", devpath, write_file_name);
++			}
+ 		}
+ 	}
+ 
+@@ -4879,7 +4891,10 @@ static void start_diskformat(char *port_path)
+ 	// finish & restart USB apps.
+ 	dbg("disk_format: done.\n");
+ 	diskmon_status(DISKMON_FINISH);
+-	nvram_set("disk_format_flag", "4");
++	/* reaper 2026-09-28: stock reported 4 (finished) even when nothing was
++	 * formatted (partition busy, no tool) or mke2fs failed; -1 is the stock
++	 * error value, which Reaper_USB.asp reads for its verdict. */
++	nvram_set("disk_format_flag", (nr_format && !fmt_err) ? "4" : "-1");
+ 	return;
+ }
+ 
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index dd3f91f8ea..290161352c 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -231,6 +231,66 @@ int update_wan_led_and_wanred_led(int wan_unit) { return 0; }
+ #endif	// !RTCONFIG_RALINK
+ #endif	/* RTCONFIG_WANRED_LED */
+ 
++#if defined(RTCONFIG_HND_ROUTER_AX) && defined(HND_ROUTER) && defined(RTCONFIG_DUALWAN)
++/* reaper 2026-09-28 (field: dual-WAN fail-over, internet fine on the backup
++ * line, front LED dark). The prebuilt update_wan_leds() (rc/prebuild/
++ * broadcom.o, closed) drives two LEDs from link_internet: the red LED_WAN is
++ * off when link_internet == 2, and the white LED_WAN_NORMAL is set through
++ * set_specific_wan_white_led(), which only acts when the unit's type is
++ * WANS_DUALWAN_IF_WAN (or in load-balance mode). On a fail-over to a USB,
++ * LAN-port, second-WAN or SFP+ line the red LED goes off correctly and the
++ * white one is never lit, so a connected router shows no LED at all.
++ * Owner decision (2026-09-28): a backup line gets its OWN indication, red AND
++ * white together, so "online, but on the backup" is visibly different from
++ * both normal (white) and down (red). While the PRIMARY line is not the WAN
++ * port (and not load-balance): connected (AllLED set, no LED schedule,
++ * x_Setting, link_internet == 2 and that line's own wanN_state_t CONNECTED -
++ * the blob's rule plus the state check) = red + white; otherwise red only.
++ * Back on the WAN port, or in load-balance, the blob owns both LEDs again and
++ * is asked to repaint once at the hand-back. This runs after every
++ * update_wan_leds() in this file (the blob turns red off when
++ * link_internet == 2, so it must be re-asserted) and on every wanduck tick,
++ * because on a fail-over link_internet is often already 2
++ * (set_link_internet() returns early) and no LED call is guaranteed. Two GPIO
++ * writes per tick, and only while on a backup line. */
++static int reaper_wled_backup;	/* 1 while this code owns the WAN LEDs */
++
++static void reaper_backup_wan_led(void)
++{
++	int unit = wan_primary_ifunit(), type, on;
++	char s[32];
++
++	type = get_dualwan_by_unit(unit);
++	if (!strcmp(dualwan_mode, "lb") || type == WANS_DUALWAN_IF_WAN || type == WANS_DUALWAN_IF_NONE) {
++		if (reaper_wled_backup) {
++			reaper_wled_backup = 0;
++			update_wan_leds(unit, link_wan[unit]);	/* hand back: the blob repaints */
++		}
++		return;
++	}
++	if (inhibit_led_on()) {		/* AllLED off / LED schedule: the blob leaves them alone too */
++		reaper_wled_backup = 0;
++		return;
++	}
++	snprintf(s, sizeof(s), "wan%d_state_t", unit);
++	on = (nvram_get_int("x_Setting") && nvram_get_int("link_internet") == 2
++		&& nvram_get_int(s) == WAN_STATE_CONNECTED);
++	led_control(LED_WAN, LED_ON);
++	led_control(LED_WAN_NORMAL, on ? LED_ON : LED_OFF);
++	reaper_wled_backup = 1;
++}
++
++static int reaper_wan_leds(int wan_unit, int link_wan_unit)
++{
++	int ret = update_wan_leds(wan_unit, link_wan_unit);
++	reaper_backup_wan_led();
++	return ret;
++}
++#else
++#define reaper_backup_wan_led() do { } while (0)
++#define reaper_wan_leds(u, l) update_wan_leds(u, l)
++#endif
++
+ void set_link_internet(int wan_unit, int link_internet){
+ #if !defined(RTCONFIG_WANLEDX2)
+ 	if(nvram_get_int("link_internet") == link_internet){
+@@ -242,7 +302,7 @@ void set_link_internet(int wan_unit, int link_internet){
+ 	nvram_set_int("link_internet", link_internet);
+ 
+ #if defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-	update_wan_leds(wan_unit, link_wan[wan_unit]);
++	reaper_wan_leds(wan_unit, link_wan[wan_unit]);
+ #endif
+ #ifdef DSL_AC68U
+ 	if (nvram_match("AllLED", "1")) {
+@@ -408,7 +468,7 @@ static void wan_led_control(int sig) {
+ 				)
+ 			continue;
+ 
+-		update_wan_leds(unit, !rule_setup);
++		reaper_wan_leds(unit, !rule_setup);
+ 	}
+ #elif defined(RTAC68U) ||  defined(RTAC87U) || defined(RTAC3200) || defined(RTCONFIG_BCM_7114) || defined(DSL_AC68U) || defined(HND_ROUTER) || defined(RTAX53U) || defined(RT4GAX56) || defined(RTAX54) || defined(XD4S)
+ 	if(nvram_match("AllLED", "1")
+@@ -430,7 +490,7 @@ static void wan_led_control(int sig) {
+ 		}
+ #elif defined(RTAX53U) || defined(RT4GAX56) || defined(RTAX54) || defined(XD4S)
+ 		int unit;
+-		update_wan_leds(unit, link_wan[unit]);
++		reaper_wan_leds(unit, link_wan[unit]);
+ #endif
+ 	}
+ #elif (defined(RTCONFIG_QCA) || defined(RTCONFIG_RALINK)) \
+@@ -443,7 +503,7 @@ static void wan_led_control(int sig) {
+ 				continue;
+ 
+ #if defined(RTCONFIG_LANWAN_LED)
+-			update_wan_leds(unit, link_wan[unit]);
++			reaper_wan_leds(unit, link_wan[unit]);
+ #endif
+ 		}
+ 	}
+@@ -2532,7 +2592,7 @@ void handle_wan_line(int wan_unit, int action){
+ 	 */
+ 	else if(conn_changed_state[wan_unit] == D2C || conn_changed_state[wan_unit] == CONNED){
+ #if defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-		update_wan_leds(wan_unit, link_wan[wan_unit]);
++		reaper_wan_leds(wan_unit, link_wan[wan_unit]);
+ #endif
+ 		// When DUT got IP during the detect interval, the DNS setting might be missed by no PHY.
+ 		update_resolvconf();
+@@ -3914,7 +3974,7 @@ _dprintf("wanduck(%d)(first detect start): state %d, state_old %d, changed %d, w
+ 				)
+ 			continue;
+ 
+-		update_wan_leds(wan_unit, !rule_setup);
++		reaper_wan_leds(wan_unit, !rule_setup);
+ 	}
+ #endif
+ 
+@@ -4023,7 +4083,7 @@ _dprintf("wanduck(%d): detect the modem to be reset...\n", wan_unit);
+ 				else{
+ #if defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+ 					if(link_wan[wan_unit] != link_wan_old)
+-						update_wan_leds(wan_unit, link_wan[wan_unit]);
++						reaper_wan_leds(wan_unit, link_wan[wan_unit]);
+ #endif
+ 
+ 					if(conn_state[wan_unit] == CONNED){
+@@ -5008,7 +5068,7 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ #if defined(RTCONFIG_WPS_ALLLED_BTN) || defined(RTCONFIG_DSL)
+ 					led_control(LED_WAN, LED_OFF);
+ #elif defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-					update_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
++					reaper_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
+ #elif defined(RTAC68U) || defined(RTAC87U) || defined(RTAC3200) || defined(RTCONFIG_BCM_7114) || defined(HND_ROUTER)
+ 					if(
+ #ifdef RTAC68U
+@@ -5108,7 +5168,7 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ #elif defined(DSL_N55U) || defined(DSL_N55U_B)
+ 				led_control(LED_WAN, LED_ON);
+ #elif defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-				update_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
++				reaper_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
+ #elif defined(RTAC68U) || defined(RTAC87U) || defined(RTAC3200) || defined(RTCONFIG_BCM_7114) || defined(HND_ROUTER)
+ 				if(nvram_match("AllLED", "1")
+ #ifdef RTAC68U
+@@ -5211,7 +5271,7 @@ if(test_log) _dprintf("nat_rule: stop_nat_rules 7.\n");
+ 			}
+ 
+ #if defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-			update_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
++			reaper_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
+ #endif
+ 		}
+ 		// phy connected -> disconnected -> connected
+@@ -5240,10 +5300,13 @@ if(test_log) _dprintf("nat_rule: stop_nat_rules 7.\n");
+ 			conn_changed_state[current_wan_unit] = conn_state[current_wan_unit];
+ 
+ #if defined(RTCONFIG_HND_ROUTER_AX) || defined(RTCONFIG_LANWAN_LED) || defined(RTCONFIG_WANRED_LED) || defined(RTCONFIG_FAILOVER_LED)
+-			update_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
++			reaper_wan_leds(current_wan_unit, link_wan[current_wan_unit]);
+ #endif
+ 		}
+ 
++		/* reaper 2026-09-28: white WAN LED for a backup line (see reaper_backup_wan_led) */
++		reaper_backup_wan_led();
++
+ #ifdef RTCONFIG_DUALWAN
+ 		if(!strcmp(dualwan_mode, "fb") && other_wan_unit == WAN_FB_UNIT){
+ 			if(conn_state[other_wan_unit] == CONNED
+diff --git a/release/src/router/reaper_fwsim/.gitignore b/release/src/router/reaper_fwsim/.gitignore
+new file mode 100644
+index 0000000000..3cd0f59c9d
+--- /dev/null
++++ b/release/src/router/reaper_fwsim/.gitignore
+@@ -0,0 +1,5 @@
++# build outputs (the rc/.gitignore pattern): never commit the binary or its objects
++*.o
++*.depend
++.reaper_fwsim.depend
++reaper_fwsim
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 80c350c3c8..61393ba475 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -46,7 +46,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.6"
++#define FWSIM_VER	"1.7"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -2072,17 +2072,32 @@ static void gen_witnesses(void)
+ 			 * literal address here to aim a packet at). A rule carrying a
+ 			 * schedule or a rate limit is still emitted - the walker answers
+ 			 * `depends` on the match it cannot model, which is the honest
+-			 * result and exactly what `depends` is for. */
++			 * result and exactly what `depends` is for.
++			 * v1.7 (field 2026-09-29): the rule's own ZONES are part of the
++			 * promise. Record = en>dir>action>szone>sobj>dzone>dobj>svc>...;
++			 * the emitter matches `-i` on the source zone's interfaces, and
++			 * this block used to aim every in/fwd witness from the LAN bridge
++			 * regardless - so a VLAN-only drop rule was judged by the stock
++			 * LAN accept (a false red) and a VLAN-only accept by the same
++			 * rule (a false green). Now the packet enters on the zone's first
++			 * interface, from .123 in its subnet, to the router's own address
++			 * there (an `in` rule); a destination zone aims at .124 in that
++			 * subnet. The WAN zone uses the WAN witness source / WAN address /
++			 * wandst. A zone with no live addressed interface emits NO row -
++			 * F2's rule: an absent segment is not a broken rule. */
+ 			{
+ 				char *rl = xstrdup(fwlist("rules"));
+ 				const char *objs = fwlist("obj"), *svcs = fwlist("svc");
++				const char *zones = fwlist("zone");
+ 				char *rec, *save = NULL;
+ 				int nr = 0;
+ 				for (rec = strtok_r(rl, "<", &save); rec && nr < 24; rec = strtok_r(NULL, "<", &save)) {
+ 					char en[4], dir[8], act[12], sobj[72], dobj[72], svcn[72];
+ 					char sip[52] = "", dip[52] = "", smac[24] = "", dmac[24] = "";
+ 					char proto[8] = "tcp", port[16] = "443";
+-					const char *expect, *inif, *src, *dst;
++					char szone[72], dzone[72], zif[24] = "", zsrc[48] = "", zrtr[48] = "", zdst[48] = "";
++					const char *expect, *inif, *src, *dst, *dlab;
++					int zwan = 0;
+ 					int sk, dk;
+ 					if (!rec_field(rec, 0, en, sizeof(en)) || strcmp(en, "1")) continue;
+ 					if (!rec_field(rec, 1, dir, sizeof(dir))) continue;
+@@ -2090,6 +2105,8 @@ static void gen_witnesses(void)
+ 					rec_field(rec, 4, sobj, sizeof(sobj));
+ 					rec_field(rec, 6, dobj, sizeof(dobj));
+ 					rec_field(rec, 7, svcn, sizeof(svcn));
++					if (!rec_field(rec, 3, szone, sizeof(szone))) szone[0] = 0;
++					if (!rec_field(rec, 5, dzone, sizeof(dzone))) dzone[0] = 0;
+ 					if (!strcmp(act, "accept"))      expect = "ACCEPT";
+ 					else if (!strcmp(act, "drop"))   expect = "DROP";
+ 					else if (!strcmp(act, "reject")) expect = "DROP";	/* REJECT counts as DROP */
+@@ -2098,30 +2115,56 @@ static void gen_witnesses(void)
+ 					dk = dobj[0] ? obj_pick(objs, dobj, dip, sizeof(dip), dmac, sizeof(dmac)) : 1;
+ 					if (!sk || !dk) continue;				/* fqdn / geo / unknown */
+ 					if (svcn[0] && !svc_pick(svcs, svcn, proto, sizeof(proto), port, sizeof(port))) continue;
++					/* the source zone decides where an in/fwd packet ENTERS */
++					if (szone[0] && strcmp(dir, "out")) {
++						const struct addr *za;
++						if (!zone_iface(zones, szone, zif, sizeof(zif))) continue;
++						if (!strcmp(zif, wan_ifname)) {
++							if (!wanip[0]) continue;
++							zwan = 1;
++							snprintf(zsrc, sizeof(zsrc), "%s", wansrc);
++							snprintf(zrtr, sizeof(zrtr), "%s", wanip);
++						} else {
++							if ((za = own_first(zif, 4)) == NULL) continue;
++							host_in_subnet(za, 123, zsrc, sizeof(zsrc));
++							addr_str(za, zrtr, sizeof(zrtr));
++						}
++					}
++					/* the destination zone decides where fwd/out traffic is AIMED */
++					if (dzone[0] && strcmp(dir, "in")) {
++						char dif[24];
++						const struct addr *da;
++						if (!zone_iface(zones, dzone, dif, sizeof(dif))) continue;
++						if (strcmp(dif, wan_ifname)) {
++							if ((da = own_first(dif, 4)) == NULL) continue;
++							host_in_subnet(da, 124, zdst, sizeof(zdst));
++						}					/* WAN zone: wandst */
++					}
+ 					if (!strcmp(dir, "in")) {
+-						inif = lan_ifname;
+-						src  = sip[0] ? sip : lanhost;
+-						dst  = rtr;					/* INPUT: the router itself */
++						inif = zif[0] ? zif : lan_ifname;
++						src  = sip[0] ? sip : (zsrc[0] ? zsrc : lanhost);
++						dst  = zrtr[0] ? zrtr : rtr;		/* INPUT: the router itself */
+ 					} else if (!strcmp(dir, "out")) {
+ 						inif = "gen";					/* the router's own traffic */
+ 						src  = rtr;
+-						dst  = dip[0] ? dip : wandst;
++						dst  = dip[0] ? dip : (zdst[0] ? zdst : wandst);
+ 					} else {
+-						inif = lan_ifname;
+-						src  = sip[0] ? sip : lanhost;
+-						dst  = dip[0] ? dip : wandst;
++						inif = zif[0] ? zif : lan_ifname;
++						src  = sip[0] ? sip : (zsrc[0] ? zsrc : lanhost);
++						dst  = dip[0] ? dip : (zdst[0] ? zdst : wandst);
+ 					}
++					dlab = dobj[0] ? dobj : (strcmp(dir, "in") ? dzone : "");
+ 					nr++;
+ 					snprintf(id, sizeof(id), "F1.%d", nr);
+ 					/* bounded so the label provably fits feat[80]; object and
+ 					 * service names are the only unbounded parts */
+ 					snprintf(feat, sizeof(feat), "Rules engine: %.3s %.16s%s%.16s%s%.12s is %.6s",
+-						 dir, sobj[0] ? sobj : "any",
+-						 dobj[0] ? " -> " : "", dobj[0] ? dobj : "",
++						 dir, sobj[0] ? sobj : (szone[0] ? szone : "any"),
++						 dlab[0] ? " -> " : "", dlab,
+ 						 svcn[0] ? " " : "", svcn[0] ? svcn : "",
+ 						 act);
+ 					wit_pkt(id, feat, 4, inif, src, dst, proto, port, "NEW", expect, "",
+-						smac[0] ? smac : (!strcmp(dir, "out") ? "" : lanmac));
++						smac[0] ? smac : ((!strcmp(dir, "out") || zwan) ? "" : lanmac));
+ 				}
+ 				free(rl);
+ 			}
+diff --git a/release/src/router/rpunctd/rpunctd.c b/release/src/router/rpunctd/rpunctd.c
+index 093c274557..cca06ce2f5 100644
+--- a/release/src/router/rpunctd/rpunctd.c
++++ b/release/src/router/rpunctd/rpunctd.c
+@@ -109,6 +109,7 @@ struct radio {
+ };
+ 
+ static volatile sig_atomic_t running = 1;
++static int paused;	/* wireless restart seen: logged once, cleared on resume */
+ static void on_term(int sig) { (void)sig; running = 0; }
+ static struct radio R[RP_MAXU];
+ static char iobuf[WL_CHANIM_BUF_LEN];
+@@ -332,7 +333,7 @@ static int csa_flag(struct radio *r)
+ static int run_applier(void)
+ {
+ 	int i, st;
+-	for (i = 0; i < RP_APPLIER_WAIT && pids(RP_APPLIER_NAME); i++)
++	for (i = 0; i < RP_APPLIER_WAIT && pids(RP_APPLIER_NAME) && running; i++)
+ 		sleep(1);
+ 	st = system(RP_APPLIER " >/dev/null 2>&1");
+ 	return st == -1 ? -1 : WEXITSTATUS(st);
+@@ -652,6 +653,22 @@ static int seed_from_driver(struct radio *r)
+ 	return 1;
+ }
+ 
++/* No ioctl while the radios are being torn down or brought up. rc's
++ * restart_wireless() holds wlready at 0 for its whole sequence (stock daemons
++ * key on the same flag) and stops this daemon at its top, but the rwatch
++ * backstop can start one inside that window and other paths also drop
++ * wlready. The applier's readiness wait right after a wireless start is the
++ * other quiet time: the radio is not proven up yet. An armed chanim window or
++ * a chanspec read into a dongle being reset is what the GT-BE98 field report
++ * (2026-09-28, dhdpcie_checkdied during restart_wireless) points at.
++ * 2 = wireless down (geometry is re-read after), 1 = applier waiting, 0 = go. */
++static int radio_quiet(void)
++{
++	if (!nvram_match("wlready", "1")) return 2;
++	if (pids(RP_APPLIER_NAME)) return 1;
++	return 0;
++}
++
+ int main(int argc, char **argv)
+ {
+ 	(void)argc; (void)argv;
+@@ -664,12 +681,28 @@ int main(int argc, char **argv)
+ 
+ 	while (running) {
+ 		long t0 = mono_s(), now;
+-		int u, changed;
++		int u, changed, q;
+ 
+ 		if (!sweep_config()) {
+ 			syslog(LOG_NOTICE, "rpunctd: no radio set to Dynamic, exiting");
+ 			break;
+ 		}
++		if ((q = radio_quiet()) != 0) {
++			if (q == 2 && !paused) {
++				syslog(LOG_NOTICE, "rpunctd: wireless is restarting - radio reads paused");
++				paused = 1;
++			}
++			for (u = 0; u < RP_MAXU; u++) {
++				R[u].armed = 0;
++				if (q == 2) { R[u].raw_cs = 0; R[u].cs[0] = 0; }	/* re-read the channel after */
++			}
++			sleep(2);
++			continue;
++		}
++		if (paused) {
++			syslog(LOG_NOTICE, "rpunctd: wireless is up - radio reads resumed");
++			paused = 0;
++		}
+ 		/* geometry, then arm every radio's window in the same second */
+ 		for (u = 0; u < RP_MAXU; u++) {
+ 			struct radio *r = &R[u];
+@@ -689,6 +722,8 @@ int main(int argc, char **argv)
+ 		}
+ 		usleep((RP_WINDOW_MS + 600) * 1000);
+ 		now = mono_s();
++		if (radio_quiet())	/* went down while the window ran: do not read it, next tick re-checks */
++			continue;
+ 		for (u = 0; u < RP_MAXU && running; u++) {
+ 			struct radio *r = &R[u];
+ 			pc_sample_t s;
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index 0f8a0e69f0..a071d4090e 100644
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -150,7 +150,8 @@ int rjf_set(const char *path, const char *v, const char *tag)
+  * key = obj|grp|svc|zone|zpol|rules|edef|nat. Resolution order as for the
+  * routing list: the staged draft (httpd `save`, an edit not yet applied or
+  * applied-and-awaiting-confirm), then the last CONFIRMED list (/jffs, written
+- * only by reaper_fw_confirm), then - on a box that has not migrated - the old
++ * by reaper_fw_confirm, and for obj/grp also by reaper_fw_promote_objects on a
++ * Policy Routing confirm), then - on a box that has not migrated - the old
+  * nvram value. The eight lists hit the same 1 KB kernel cap the device and
+  * routing lists did (v2.6.3 / v2.6.7): a 40-domain object silently never
+  * saved. */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index a9887ff992..99b76a6f24 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet mudará o tipo de conexão do seu sistema para
+ AiMesh_Node_ConnPrio_Auto_Desc=O sistema vai adaptar o tipo de conexão entre com fio e sem fio, dependendo da qualidade/status da conexão atual.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Primeiro Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=O sistema dará prioridade à conexão Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Quando o modo backhaul Ethernet estiver habilitado, o sistema usará apenas conexão com fio como backhaul Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Quando o Backhaul somente Ethernet estiver habilitado, o sistema usará apenas conexões com fio como backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Você pode escolher Automático (com base em Ethernet) para usar uma das WANs ou a porta WAN preferida.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Apenas Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Com base em Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Se estiver usando uma conexão cabeada, assegure que o cabo
+ AiMesh_OfflineTips5=Se ainda estiver com problemas, redefina seu nó AiMesh pressionando o botão \"Reset\" e tente novamente para adicionar este nó.
+ AiMesh_Pairing=Por favor, espere por outros nós AiMesh para terminar o emparelhamento.
+ AiMesh_Router=Roteador AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Modo Backhaul Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Backhaul somente Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Para garantir uma boa conexão para o seu sistema AiMesh, verifique se você conectou todos os nós ao uplink AP com os cabos de ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=De outro modo, seu(s) nó(s) podem perder sua conexão uplink.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Se você já configurou a prioridade de conexão para os nó(s), confirme sua configuração correspondente.
+-AiMesh_EAP_WiFi_Settings_Confirm=Antes de ativar o modo backhaul de Ethernet, confirme novamente as configurações de sua rede WiFi, conforme indicado a seguir.
++AiMesh_EAP_WiFi_Settings_Confirm=Antes de ativar o Backhaul somente Ethernet, confirme novamente as configurações de sua rede WiFi, conforme indicado a seguir.
+ AiMesh_EAP_WiFi_Node01=O recurso somente está disponível quando todos os nós estão conectados com um cabo Ethernet.
+ AiMesh_EAP_WiFi_Node02=Os nós a seguir não estão conectados com um cabo Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Para liberar mais largura de banda sem fio para a conexão de dispositivos terminais, você pode habilitar o modo backhaul Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Os nós cabeados já usam o backhaul Ethernet automaticamente, com o WiFi como alternativa. Ative esta opção para usar apenas conexões com fio e liberar mais largura de banda sem fio para seus dispositivos. Um nó cujo cabo falhar ficará offline em vez de voltar ao WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Atualmente, seu sistema AiMesh está construído com uma conexão com fio. Esta função ajuda a otimizar sua rede apenas ao usar uma conexão sem fio.
+ AiMesh_System_Reboot=Reinicialização do sistema
+ AiMesh_System_Reboot_Hint=Seu roteador e nó(s) no sistema AiMesh serão reiniciados.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Um grupo pode ter no máximo 16 membros.
++RFW_324=Uma zona pode ter no máximo 8 interfaces.
++RFW_325=É possível salvar no máximo 64 políticas de zona - remova uma primeiro.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamico
+ RWFP_114=Escolhido automaticamente no modo Dinamico.
+ RWFP_115=Escolha Dinamico primeiro.
+ RWFP_116=Dinamico
++RDST_78=O roteador não pode verificar este sistema de arquivos. Verifique o disco em um computador.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b0b3435d53..edd874c007 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=【以太网】将会将系统连接类型更改为有
+ AiMesh_Node_ConnPrio_Auto_Desc=系统将根据当前连接质量/状态调整有线或无线连接类型。
+ AiMesh_Node_ConnPrio_Eth_First_Title=以太网优先
+ AiMesh_Node_ConnPrio_Eth_First_Desc=系统将优化以太网连接。
+-AiMesh_Node_ConnPrio_EAP_Enabled01=启用以太网回传模式后，系统将仅使用有线连接作为以太网回传。
++AiMesh_Node_ConnPrio_EAP_Enabled01=启用仅以太网回传后，系统将仅使用有线连接作为回传。
+ AiMesh_Node_ConnPrio_EAP_Enabled02=您可选择自动（基于以太网）使用 WAN 之一或首选 WAN 端口。
+ AiMesh_Node_ConnPrio_Eth_Only_Title=仅限以太网
+ AiMesh_Node_ConnPrio_Eth_Based_Title=基于以太网
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=若您正在使用有线连接，请确认网线已正确连
+ AiMesh_OfflineTips5=若仍存在问题，请按下 \"Reset\" (重置按钮) 重置您的 AiMesh 节点并尝试重新添加此节点。
+ AiMesh_Pairing=请等待其它 AiMesh 节点完成配对。
+ AiMesh_Router=AiMesh 路由器
+-AiMesh_Ethernet_Backhaul_Mode=以太网回传模式
++AiMesh_Ethernet_Backhaul_Mode=仅以太网回传
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=为了确保与 AiMesh 随心组网系统的连接良好，请确保已使用以太网电缆将所有节点连接到上行链路 AP。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=否则，您的节点可能丢失上传连接。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=如果您已为节点设置了连接优先级，请确认相应设置是正确的。
+-AiMesh_EAP_WiFi_Settings_Confirm=在启用以太网回传模式之前，请再次确认您的 WiFi 网络设置，如下所示。
++AiMesh_EAP_WiFi_Settings_Confirm=在启用仅以太网回传之前，请再次确认您的 WiFi 网络设置，如下所示。
+ AiMesh_EAP_WiFi_Node01=仅当所有节点都已通过以太网电缆连接时，此功能才可用。
+ AiMesh_EAP_WiFi_Node02=以下节点当前未通过以太网电缆连接。
+-AiMesh_Ethernet_Backhaul_Mode_Hint=要为终端设备连接释放更多无线带宽，您可启用以太网回传模式。
++AiMesh_Ethernet_Backhaul_Mode_Hint=有线连接的节点已会自动使用以太网回传，并以 WiFi 作为备用。启用此项后仅使用有线连接，可为您的设备释放更多无线带宽。节点的网线一旦故障，该节点将离线，而不会改用 WiFi。
+ AiMesh_Ethernet_Backhaul_Connect_Hint=当前您的 AiMesh 系统是通过有线连接构建的。此功能仅在使用无线连接时有助于优化您的网络。
+ AiMesh_System_Reboot=系统重启
+ AiMesh_System_Reboot_Hint=您的 AiMesh 随心组网系统中的路由器和节点将重新启动。
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=一个组最多可包含 16 个成员。
++RFW_324=一个区域最多可包含 8 个接口。
++RFW_325=最多可保存 64 条区域策略，请先删除一条。
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=动态
+ RWFP_114=在动态模式下自动选择。
+ RWFP_115=请先选择动态。
+ RWFP_116=动态
++RDST_78=路由器无法检查此文件系统。请在电脑上检查该磁盘。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 8c0c88822a..ce546383d2 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Nastavení Ethernet mění typ připojení vašeho syst
+ AiMesh_Node_ConnPrio_Auto_Desc=Systém přizpůsobí typ připojení mezi drátovým nebo bezdrátovým podle kvality/stavu aktuálního připojení.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Nejdříve Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Systém upřednostní připojení k síti Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Pokud je povolen režim páteřní sítě Ethernet, systém použije pouze drátové připojení jako páteřní síť Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Pokud je povoleno Pouze páteřní připojení Ethernet, systém použije pro páteřní síť pouze drátová připojení.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Funkcí Automaticky (podle sítě Ethernet) použijete jednu ze sítí WLAN nebo upřednostňovaný port WAN.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Pouze Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Na základě Ethernetu
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Používáte-li drátové připojení, zkontrolujte, zda je
+ AiMesh_OfflineTips5=Máte-li stále potíže, resetujte svůj uzel AiMesh stisknutím \"tlačítka Reset\" a zkuste tento uzel znovu přidat.
+ AiMesh_Pairing=Počkejte prosím, než se spárují ostatní uzle AiMesh.
+ AiMesh_Router=Směrovač AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Režim páteřního připojení Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Pouze páteřní připojení Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Chcete-li vytvořit kvalitní připojení k systému AiMesh, ujistěte se, zda jste připojili všechny uzly k přístupovému bodu odchozího připojení pomocí ethernetového kabelu.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Jinak mohou uzly přijít o odchozí připojení.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Pokud jste již nastavili prioritu připojení pro uzly, potvrďte analogicky shodu nastavení.
+-AiMesh_EAP_WiFi_Settings_Confirm=Dříve než povolíte režim páteřního připojení Ethernet, potvrďte nastavení sítě WiFi níže.
++AiMesh_EAP_WiFi_Settings_Confirm=Dříve než povolíte Pouze páteřní připojení Ethernet, potvrďte nastavení sítě WiFi níže.
+ AiMesh_EAP_WiFi_Node01=Tato funkce je dostupná, pokud jsou všechny uzly propojené ethernetovým kabelem.
+ AiMesh_EAP_WiFi_Node02=Následující uzly nejsou v současnosti propojené ethernetovým kabelem.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Chcete-li uvolnit více bezdrátové šířky pásma pro koncová zařízené, můžete povolit režim páteřní sítě Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Uzly připojené kabelem již páteřní připojení Ethernet používají automaticky, s WiFi jako zálohou. Zapnutím této volby se použijí pouze drátová připojení a uvolní se více bezdrátové šířky pásma pro vaše zařízení. Uzel, jehož kabel selže, přejde do režimu offline místo přepnutí na WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Váš systém AiMesh je momentálně postaven na kabelovém připojení. Tato funkce pomáhá optimalizovat vaši síť pouze při použití bezdrátového připojení.
+ AiMesh_System_Reboot=Restartování systému
+ AiMesh_System_Reboot_Hint=Router a uzel v systému AiMesh se restartují.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Skupina může obsahovat nejvýše 16 členů.
++RFW_324=Zóna může obsahovat nejvýše 8 rozhraní.
++RFW_325=Lze uložit nejvýše 64 zásad zón - nejprve jednu odeberte.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamicky
+ RWFP_114=V dynamickem rezimu se vybira automaticky.
+ RWFP_115=Nejprve zvolte Dynamicky.
+ RWFP_116=Dynamicky
++RDST_78=Router nemůže zkontrolovat tento souborový systém. Zkontrolujte disk v počítači.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index d077e6e160..53416b5b4d 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet ændrer systemets forbindelsestype til kabelfo
+ AiMesh_Node_ConnPrio_Auto_Desc=Systemet vil tilpasse forbindelsestypen mellem trådført eller trådløst baseret på den aktulle forbindelseskvalitet/-status.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Først ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Systemet vil prioritere Ethernet-forbindelsen.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Når Ethernet backhaul-tilstand er aktiveret, vil systemet kun brug trådført forbindelse som Ethernet backhaul.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Når Kun Ethernet-backhaul er aktiveret, bruger systemet kun kablede forbindelser som backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Du kan vælge auto (Ethernet-baseret) for at bruge en af WAN’erne eller den foretrukne WAN-port.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Kun ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-baseret
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Hvis du bruger en kabelforbindelse, skal du sørge for at ka
+ AiMesh_OfflineTips5=Hvis du stadig har problemer, skal du nulstille dit AiMesh-forbindelsespunkt, ved at trykke på \"Reset\" (Nulstillingsknappen). Prøv derefter at tilføje dette forbindelsespunkt igen.
+ AiMesh_Pairing=Vent venligst indtil de andre AiMesh-forbindelsespunkter har dannet par.
+ AiMesh_Router=AiMesh-router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet backhaul-tilstand
++AiMesh_Ethernet_Backhaul_Mode=Kun Ethernet-backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Du sikrer en god forbindelse til dit AiMesh-system ved at sørge for, at du har tilsluttet alle noderne til uplink AP med ethernetkabler.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Eller kan dine node(r) miste uplink-forbindelsen.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Hvis du allerede har konfigureret forbindelsesprioritet for node(r), skal du bekræfte konfigurationsmatch tilsvarende.
+-AiMesh_EAP_WiFi_Settings_Confirm=Før du aktiverer Ethernet backhaul-tilstand, skal du bekræfte dine WiFi-netværksindstillinger to gange som nedenfor:
++AiMesh_EAP_WiFi_Settings_Confirm=Før du aktiverer Kun Ethernet-backhaul, skal du bekræfte dine WiFi-netværksindstillinger nedenfor.
+ AiMesh_EAP_WiFi_Node01=Denne funktion er kun tilgængelig, år alle noder(ne) er tilsluttet med et Ethernetkabel.
+ AiMesh_EAP_WiFi_Node02=Følgende node(r) er ikke tilsluttet med et Ethernetkabel i øjeblikket.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Du kan aktivere Ethernet backhaul-tilstand for at frigive mere trådløs båndbredde, så slutenheder kan tilsluttes.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Kablede noder bruger allerede Ethernet-backhaul automatisk med WiFi som reserve. Slå dette til for kun at bruge kablede forbindelser og frigive mere trådløs båndbredde til dine enheder. En node, hvis kabel svigter, går offline i stedet for at skifte til WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=I øjeblikket er dit AiMesh-system bygget med en kablet forbindelse. Denne funktion hjælper kun med at optimere dit netværk, når du bruger en trådløs forbindelse.
+ AiMesh_System_Reboot=Systemgenstart
+ AiMesh_System_Reboot_Hint=Din router og node(r) i AiMesh-systemet bliver genstartet.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=En gruppe kan højst have 16 medlemmer.
++RFW_324=En zone kan højst have 8 grænseflader.
++RFW_325=Der kan højst gemmes 64 zonepolitikker - fjern en først.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamisk
+ RWFP_114=Vaelges automatisk i dynamisk tilstand.
+ RWFP_115=Vaelg Dynamisk foerst.
+ RWFP_116=Dynamisk
++RDST_78=Routeren kan ikke kontrollere dette filsystem. Kontrollér disken på en computer i stedet.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 281a9bbe4b..1bf8d654ef 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Mit der Option 'Ethernet' wird die Verbindungsart Ihres
+ AiMesh_Node_ConnPrio_Auto_Desc=Das System passt den Verbindungstyp zwischen drahtgebunden oder drahtlos auf der Grundlage der aktuellen Verbindungsqualität/des aktuellen Verbindungsstatus an.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet zuerst
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Das System gibt der Ethernet-Verbindung Vorrang.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Wenn der Ethernet-Backhaul-Modus aktiviert ist, verwendet das System als Ethernet-Backhaul nur drahtgebundene Verbindungen.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Wenn Nur-Ethernet-Backhaul aktiviert ist, verwendet das System nur kabelgebundene Verbindungen als Backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Sie können automatisch (Ethernet-basiert) wählen, um eines der WANs oder den bevorzugten WAN-Port zu verwenden.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Nur Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-basiert
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Wenn Sie eine kabelgebundene Verbindung verwenden, stellen S
+ AiMesh_OfflineTips5=Falls Sie immer noch Probleme haben, setzen Sie Ihren AiMesh-Netzknoten bitte zurück, indem Sie die Reset-Taste drücken und versuchen Sie dann, diesen Netzknoten erneut hinzuzufügen.
+ AiMesh_Pairing=Bitte warten Sie, bis die anderen AiMesh-Netzknoten die Kopplung abgeschlossen haben.
+ AiMesh_Router=AiMesh-Router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet-Backhaul-Modus
++AiMesh_Ethernet_Backhaul_Mode=Nur-Ethernet-Backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Um eine gute Verbindung für Ihr AiMesh-System zu gewährleisten, stellen Sie bitte sicher, dass Sie alle Knoten mit Ethernet-Kabel(n) an den Uplink-AP angeschlossen haben.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Andernfalls könnte(n) Ihr(e) Knoten seine/ihre Uplink-Verbindung verlieren.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Wenn Sie bereits eine Verbindungspriorität für Knoten eingerichtet haben, bestätigen Sie bitte Ihre Einrichtungsübereinstimmung entsprechend.
+-AiMesh_EAP_WiFi_Settings_Confirm=Bevor Sie den Ethernet-Backhaul-Modus aktivieren, bestätigen Sie bitte doppelt Ihre WLAN-Netzwerkeinstellungen wie unten angegeben.
++AiMesh_EAP_WiFi_Settings_Confirm=Bitte bestätigen Sie vor dem Aktivieren von Nur-Ethernet-Backhaul Ihre WiFi-Netzwerkeinstellungen wie unten angegeben.
+ AiMesh_EAP_WiFi_Node01=Diese Funktion ist nur verfügbar, wenn alle Knoten mit einem Ethernet-Kabel verbunden sind.
+ AiMesh_EAP_WiFi_Node02=Die folgenden Knoten sind derzeit nicht mit einem Ethernet-Kabel verbunden.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Um mehr drahtlose Bandbreite für die Verbindung von Endgeräten freizugeben, können Sie den Ethernet-Backhaul-Modus aktivieren.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Verkabelte Knoten nutzen den Ethernet-Backhaul bereits automatisch, mit WiFi als Ausweichlösung. Aktivieren Sie diese Option, um nur kabelgebundene Verbindungen zu nutzen und mehr drahtlose Bandbreite für Ihre Geräte freizugeben. Ein Knoten, dessen Kabel ausfällt, geht offline, statt auf WiFi auszuweichen.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Ihr AiMesh-System ist derzeit mit einer Kabelverbindung aufgebaut. Diese Funktion hilft nur, Ihr Netzwerk zu optimieren, wenn Sie eine drahtlose Verbindung verwenden.
+ AiMesh_System_Reboot=System-Neustart
+ AiMesh_System_Reboot_Hint=Ihr Router und Ihre Knoten im AiMesh-System werden neu gestartet.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Eine Gruppe kann höchstens 16 Mitglieder enthalten.
++RFW_324=Eine Zone kann höchstens 8 Schnittstellen enthalten.
++RFW_325=Es können höchstens 64 Zonenrichtlinien gespeichert werden - entfernen Sie zuerst eine.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamisch
+ RWFP_114=Wird im dynamischen Modus automatisch gewaehlt.
+ RWFP_115=Zuerst Dynamisch waehlen.
+ RWFP_116=Dynamisch
++RDST_78=Der Router kann dieses Dateisystem nicht prüfen. Prüfen Sie den Datenträger an einem Computer.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 0c6a418a8f..8b989a5a01 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet will change your system's connection type to w
+ AiMesh_Node_ConnPrio_Auto_Desc=The system will adapt the connection type between wired or wireless based on the current connection quality/status.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet first
+ AiMesh_Node_ConnPrio_Eth_First_Desc=The system will prioritize Ethernet connection.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=When Ethernet backhaul mode is enabled, the system will use only wired connection as Ethernet backhaul.
++AiMesh_Node_ConnPrio_EAP_Enabled01=When Ethernet-Only Backhaul is enabled, the system uses only wired connections for backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=You can choose auto (Ethernet-based) to use one of the WANs or the preferred WAN port.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Ethernet only
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-based
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=If you are using a wired connection, please ensure the cable
+ AiMesh_OfflineTips5=If you are still having issues, please reset your AiMesh node by pressing the \"Reset button\" and retry to add this node.
+ AiMesh_Pairing=Please wait for other AiMesh nodes to finish pairing.
+ AiMesh_Router=AiMesh router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet Backhaul Mode
++AiMesh_Ethernet_Backhaul_Mode=Ethernet-Only Backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=To make sure a good connection for your AiMesh system, please make sure you have connected all the node(s) to the uplink AP with ethernet cable(s).
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Otherwise, your node(s) might lose its uplink connection.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=If you have already set up connection priority for node(s), please confirm your setup match correspondingly.
+-AiMesh_EAP_WiFi_Settings_Confirm=Before enabling Ethernet backhaul mode, please double confirm your WiFi network settings as below.
++AiMesh_EAP_WiFi_Settings_Confirm=Before enabling Ethernet-Only Backhaul, please double confirm your WiFi network settings as below.
+ AiMesh_EAP_WiFi_Node01=This feature is only available when all the node(s) are connected with an Ethernet cable.
+ AiMesh_EAP_WiFi_Node02=The following node(s) are not connected with an Ethernet cable currently.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=To release more wireless bandwidth for end devices to connect, you can enable Ethernet backhaul mode.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Wired nodes already use Ethernet backhaul automatically, with WiFi as a fallback. Turn this on to use only wired connections and free more wireless bandwidth for your devices. A node whose cable fails will go offline instead of falling back to WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Currently your AiMesh system is built with hardwired connection. This function helps to optimize your network only when using a wireless connection.
+ AiMesh_System_Reboot=System Reboot
+ AiMesh_System_Reboot_Hint=Your router and node(s) in the AiMesh system are going to reboot.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=A group can hold at most 16 members.
++RFW_324=A zone can hold at most 8 interfaces.
++RFW_325=At most 64 zone policies can be saved - remove one first.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamic
+ RWFP_114=Chosen automatically in Dynamic mode.
+ RWFP_115=Choose Dynamic first.
+ RWFP_116=Dynamic
++RDST_78=The router cannot check this file system. Check the disk on a computer instead.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 55080ee97c..5c140a5b1a 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet cambiará el tipo de conexión del sistema a c
+ AiMesh_Node_ConnPrio_Auto_Desc=El sistema adaptará el tipo de conexión entre por cable o inalámbrica en función del estado y la calidad de la conexión.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Primero Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=El sistema priorizará la conexión Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Con el modo Red de transmisión Ethernet activado, el sistema solo usará la conexión por cable como Red de transmisión Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Cuando el retorno solo por Ethernet está habilitado, el sistema usa solo conexiones cableadas como retorno.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=También puede elegir automático (Basado en Ethernet) para usar una de las redes WAN o el puerto WAN preferido.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Solo Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Basado en Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Si está utilizando una conexión cableada, asegúrese de qu
+ AiMesh_OfflineTips5=Si todavía tiene problemas, restablezca el nodo AiMesh presionando el \"Reset\" (botón de restablecimiento) e intente agregar de nuevo este nodo.
+ AiMesh_Pairing=Espere a que otros nodos AiMesh finalicen la asociación.
+ AiMesh_Router=Router AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Modo de retorno de Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Retorno solo por Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Para asegurar una buena conexión para su sistema AiMesh, asegúrese de que ha conectado todos los nodos al punto de acceso de enlace ascendente con cables de Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=De lo contrario, los nodos podrían perder su conexión ascendente.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Si ya ha configurado una prioridad de la conexión para los nodos, confirme la coincidencia de la configuración como corresponda.
+-AiMesh_EAP_WiFi_Settings_Confirm=Antes de activar el modo Red de transmisión Ethernet, vuelva a confirmar la configuración de su red WiFi como sigue.
++AiMesh_EAP_WiFi_Settings_Confirm=Antes de habilitar el retorno solo por Ethernet, confirme la configuración de su red WiFi que se indica a continuación.
+ AiMesh_EAP_WiFi_Node01=Esta característica solo está disponible si todos los nodos están conectados con un cable Ethernet.
+ AiMesh_EAP_WiFi_Node02=Los nodos siguientes no están conectados con un cable Ethernet en la actualidad.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Para liberar más ancho de banda inalámbrico para la conexión de los dispositivos finales, puede habilitar el modo de red de transmisión Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Los nodos cableados ya usan el retorno Ethernet automáticamente, con WiFi como respaldo. Active esta opción para usar solo conexiones cableadas y liberar más ancho de banda inalámbrico para sus dispositivos. Un nodo cuyo cable falle quedará sin conexión en lugar de volver a WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Actualmente, su sistema AiMesh está construido con una conexión por cable. Esta función ayuda a optimizar su red solo cuando se utiliza una conexión inalámbrica.
+ AiMesh_System_Reboot=Reinicio del sistema
+ AiMesh_System_Reboot_Hint=Su enrutador y su(s) nodos(s) del sistema AiMesh se van a reiniciar.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Un grupo puede tener como máximo 16 miembros.
++RFW_324=Una zona puede tener como máximo 8 interfaces.
++RFW_325=Se pueden guardar como máximo 64 políticas de zona; elimine una primero.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamico
+ RWFP_114=Se elige automaticamente en modo Dinamico.
+ RWFP_115=Elija primero Dinamico.
+ RWFP_116=Dinamico
++RDST_78=El router no puede comprobar este sistema de archivos. Compruebe el disco en un ordenador.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 5417f2e1e2..909a0183d1 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet muuttaa järjestelmäsi yhteystyypin langallis
+ AiMesh_Node_ConnPrio_Auto_Desc=Järjestelmä mukauttaa yhteystyypin langalliseksi tai langattomaksi nykyisen yhteyden laadun tai tilan perusteella.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet ensin
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Järjestelmä priorisoi Ethernet-yhteyden.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Kun Ethernet-taustatila on käytössä, järjestelmä käyttää vain langallista yhteyttä Ethernet backhaul -verkkona.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Kun Vain Ethernet-backhaul on käytössä, järjestelmä käyttää backhaul-yhteytenä vain kiinteitä yhteyksiä.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Voit valita auto (Ethernetiin perustuva), jos haluat käyttää yhtä WAN-verkoista tai ensisijaista WAN-porttia.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Vain Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernetiin perustuva
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Jos käytät langallista yhteyttä, varmista, että kaapeli
+ AiMesh_OfflineTips5=Jos ongelmat jatkuvat, nollaa AiMesh-noodi painamalla \"Reset\" (Nollauspainketta) ja yritä uudelleen tämän noodin lisäämistä.
+ AiMesh_Pairing=Odota, että muiden AiMesh-solmujen pariutus on valmis.
+ AiMesh_Router=AiMesh-reititin
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet-taustapalvelun tila
++AiMesh_Ethernet_Backhaul_Mode=Vain Ethernet-backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Jotta yhteytesi AiMesh-järjestelmääsi on riittävän hyvä, varmista, että olet yhdistänyt kaikki solmut Ethernet-kaapeleilla uplink-tukiasemaan.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Muussa tapauksessa solmut saattavat menettää uplink-yhteyden.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Jos olet jo asettanut yhteyden prioriteetin solmuille, vahvista asetukset vastaavasti.
+-AiMesh_EAP_WiFi_Settings_Confirm=Ennen kuin otat käyttöön Ethernet-taustapalvelun tilan, varmista vielä uudelleen, että WiFi-verkkoasetuksesi ovat seuraavat.
++AiMesh_EAP_WiFi_Settings_Confirm=Ennen kuin otat Vain Ethernet-backhaulin käyttöön, tarkista WiFi-verkkoasetuksesi alla.
+ AiMesh_EAP_WiFi_Node01=Tämä ominaisuus on käytettävissä vain silloin, kun solmu(t) on yhdistetty Ethernet-kaapelilla.
+ AiMesh_EAP_WiFi_Node02=Seuraavia solmuja ei ole tällä hetkellä yhdistetty Ethernet-kaapelilla.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Voit vapauttaa lisää kaistanleveyttä päätelaitteiden yhteyksille ottamalla käyttöön Ethernet backhaul -tilan.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Kaapelilla liitetyt solmut käyttävät Ethernet-backhaulia jo automaattisesti, ja WiFi toimii varayhteytenä. Ota tämä käyttöön, jos haluat käyttää vain kiinteitä yhteyksiä ja vapauttaa lisää langatonta kaistaa laitteillesi. Solmu, jonka kaapeli vikaantuu, katkeaa verkosta eikä siirry WiFi-yhteyteen.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Tällä hetkellä AiMesh-järjestelmäsi on rakennettu langallisella yhteydellä. Tämä toiminto auttaa optimoimaan verkkoasi vain langattoman yhteyden käytössä.
+ AiMesh_System_Reboot=Järjestelmän uudelleenkäynnistys
+ AiMesh_System_Reboot_Hint=Reitittimesi ja AiMesh-järjestelmän solmusi käynnistetään uudelleen.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Ryhmässä voi olla enintään 16 jäsentä.
++RFW_324=Vyöhykkeessä voi olla enintään 8 liitäntää.
++RFW_325=Vyöhykekäytäntöjä voi tallentaa enintään 64 - poista ensin yksi.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynaaminen
+ RWFP_114=Valitaan automaattisesti dynaamisessa tilassa.
+ RWFP_115=Valitse ensin Dynaaminen.
+ RWFP_116=Dynaaminen
++RDST_78=Reititin ei voi tarkistaa tätä tiedostojärjestelmää. Tarkista levy tietokoneella.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d2a7b74177..2106ea8a1e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet - Sélectionne la connexion filaire pour votre
+ AiMesh_Node_ConnPrio_Auto_Desc=Le système adaptera le type de connexion entre filaire ou sans fil en fonction de la qualité/état actuel de la connexion.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet d'abord
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Le système donnera la priorité à la connexion Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Lorsque le mode de liaison dorsale Ethernet est activé, le système utilise uniquement une connexion câblée comme liaison dorsale Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Lorsque la liaison Ethernet uniquement est activée, le système utilise uniquement des connexions filaires pour la liaison.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Vous pouvez choisir auto (basé sur Ethernet) pour utiliser l'un des WAN ou le port WAN préféré.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Ethernet uniquement
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Basé sur Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Si vous utilisez une connexion filaire, assurez-vous que le
+ AiMesh_OfflineTips5=Si les problèmes persistent, veuillez réinitialiser votre nœud AiMesh en appuyant sur le \"Reset\" (Bouton de réinitialisation) puis essayez à nouveau d'ajouter ce nœud.
+ AiMesh_Pairing=Veuillez attendre la fin de l'association des autres nœuds AiMesh.
+ AiMesh_Router=Routeur AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Mode de liaison Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Liaison Ethernet uniquement
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Pour assurer une bonne connexion pour votre système AiMesh, veuillez vous assurer que vous avez connecté tous les nœuds au point d'accès de liaison montante avec un ou plusieurs câbles Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Dans le cas contraire, votre ou vos nœuds pourraient perdre leur connexion montante.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Si vous avez déjà configuré la priorité de connexion pour un ou des nœuds, confirmez votre configuration en conséquence.
+-AiMesh_EAP_WiFi_Settings_Confirm=Avant d'activer le mode de liaison Ethernet, veuillez confirmer deux fois les paramètres de votre réseau WiFi comme ci-dessous.
++AiMesh_EAP_WiFi_Settings_Confirm=Avant d’activer la liaison Ethernet uniquement, veuillez vérifier les paramètres de votre réseau WiFi ci-dessous.
+ AiMesh_EAP_WiFi_Node01=Cette fonction n'est disponible que lorsque tous les nœuds sont connectés avec un câble Ethernet.
+ AiMesh_EAP_WiFi_Node02=Les nœuds suivants ne sont actuellement pas connectés avec un câble Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Pour libérer plus de bande passante sans fil afin que les périphériques finaux puissent se connecter, vous pouvez activer le mode de liaison dorsale Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Les nœuds câblés utilisent déjà automatiquement la liaison Ethernet, avec le WiFi en secours. Activez cette option pour n’utiliser que des connexions filaires et libérer plus de bande passante sans fil pour vos appareils. Un nœud dont le câble tombe en panne se déconnecte au lieu de repasser en WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Actuellement, votre système AiMesh est construit avec une connexion câblée. Cette fonction aide à optimiser votre réseau uniquement lorsque vous utilisez une connexion sans fil.
+ AiMesh_System_Reboot=Redémarrage du système
+ AiMesh_System_Reboot_Hint=Votre routeur et vos nœuds dans le système AiMesh vont redémarrer.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Un groupe peut contenir au plus 16 membres.
++RFW_324=Une zone peut contenir au plus 8 interfaces.
++RFW_325=Au plus 64 règles de zone peuvent être enregistrées - supprimez-en une au préalable.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamique
+ RWFP_114=Choisi automatiquement en mode Dynamique.
+ RWFP_115=Choisissez d abord Dynamique.
+ RWFP_116=Dynamique
++RDST_78=Le routeur ne peut pas vérifier ce système de fichiers. Vérifiez le disque sur un ordinateur.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 4bc62084d2..54b9c1e048 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Az Ethernet megváltoztatja a rendszer csatlakozási t
+ AiMesh_Node_ConnPrio_Auto_Desc=A rendszer a vezetékes vagy vezeték nélküli kapcsolat típusát az aktuális kapcsolat minősége/állapota alapján állítja be.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Első helyen Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=A rendszer az Ethernet-kapcsolatoknak biztosít prioritást.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Ha az Ethernet backhaul mód engedélyezve van, a rendszer Ethernet backhaulként csak vezetékes kapcsolatot fog használni.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Ha a Csak Ethernet backhaul engedélyezve van, a rendszer csak vezetékes kapcsolatokat használ backhaulként.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=A WAN-ok egyikének vagy az előnyben részesített WAN-portnak a használatához választhatja az automatikus (Ethernet-alapú) lehetőséget.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Csak Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-alapú
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Ha vezetékes kapcsolatot használ, győződjön meg arról,
+ AiMesh_OfflineTips5=Ha ennek ellenére is problémákat tapasztal, állítsa alaphelyzetbe AiMesh csomópontját az \"Reset\" (Alaphelyzet gomb) megnyomásával, majd próbálja meg újra hozzáadni ezt a csomópontot.
+ AiMesh_Pairing=Várjon, amíg kész a párosítás a többi AiMesh csomópontnál.
+ AiMesh_Router=AiMesh router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet backhaul mód
++AiMesh_Ethernet_Backhaul_Mode=Csak Ethernet backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Az AiMesh rendszer megfelelő kapcsolódásának biztosítása érdekében az összes csomópontot Ethernet-kábellel csatlakoztassa a felfelé irányuló hozzáférési ponthoz.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Ellenkező esetben a csomópont(ok) elveszíthetik a felfelé irányuló kapcsolataikat.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Ha már beállította a kapcsolati prioritást a csomópont(ok) számára, erősítse meg ennek megfelelően az adott beállításokat.
+-AiMesh_EAP_WiFi_Settings_Confirm=Mielőtt engedélyezné az Ethernet backhaul módot, erősítse meg kétszer a WiFi hálózat beállításait az alábbiak szerint.
++AiMesh_EAP_WiFi_Settings_Confirm=A Csak Ethernet backhaul engedélyezése előtt ellenőrizze az alábbi WiFi-hálózati beállításokat.
+ AiMesh_EAP_WiFi_Node01=Ez a szolgáltatás csak akkor érhető el, ha az összes csomópont Ethernet-kábellel csatlakozik.
+ AiMesh_EAP_WiFi_Node02=A következő csomópont(ok) jelenleg nincs(enek) Ethernet-kábellel csatlakoztatva.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Ha több vezeték nélküli sávszélességet szeretne felszabadítani a végeszközök számára a csatlakozáshoz, engedélyezheti az Ethernet backhaul módot.
++AiMesh_Ethernet_Backhaul_Mode_Hint=A kábellel csatlakozó csomópontok már automatikusan Ethernet backhault használnak, tartalékként WiFi-vel. Kapcsolja be, ha csak vezetékes kapcsolatokat szeretne használni, és több vezeték nélküli sávszélességet szeretne felszabadítani az eszközei számára. Az a csomópont, amelynek kábele meghibásodik, offline állapotba kerül ahelyett, hogy WiFi-re váltana.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Jelenleg az AiMesh rendszered kábelkapcsolattal van kiépítve. Ez a funkció csak akkor segíti a hálózat optimalizálását, ha vezeték nélküli kapcsolatot használ.
+ AiMesh_System_Reboot=Rendszer újraindítása
+ AiMesh_System_Reboot_Hint=A router és az AiMesh rendszerben található csomópont(ok) újraindulnak.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Egy csoport legfeljebb 16 tagot tartalmazhat.
++RFW_324=Egy zóna legfeljebb 8 interfészt tartalmazhat.
++RFW_325=Legfeljebb 64 zónaszabályzat menthető - előbb távolítson el egyet.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamikus
+ RWFP_114=Dinamikus modban automatikusan kerul kivalasztasra.
+ RWFP_115=Eloszor valassza a Dinamikus lehetoseget.
+ RWFP_116=Dinamikus
++RDST_78=A router nem tudja ellenőrizni ezt a fájlrendszert. Ellenőrizze a lemezt számítógépen.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index f82b4dadb5..d1654f8cbf 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Nella modalità Ethernet il sistema usa la connessione
+ AiMesh_Node_ConnPrio_Auto_Desc=Il sistema adatterà il tipo di connessione (cablato o wireless) in base alla qualità/allo stato della connessione corrente.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Prima Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Il sistema darà priorità alla connessione Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Quando è abilitata la modalità Backhaul Ethernet, il sistema utilizza come backhaul Ethernet solo la connessione cablata.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Quando il Backhaul solo Ethernet è abilitato, il sistema usa solo connessioni cablate come backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Puoi scegliere la modalità automatica (In base a Ethernet) oppure usare una delle WAN o la porta WAN preferita.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Solo Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=In base a Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Se stai usando una connessione cablata assicurati che il cav
+ AiMesh_OfflineTips5=Se riscontri ancora problemi riavvia il nodo AiMesh premendo il pulsante di \"Reset\" e riprova ad aggiungere il nodo.
+ AiMesh_Pairing=Attendete il completamento dell'associazione degli altri nodi AiMesh.
+ AiMesh_Router=Router AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Modalità Backhaul Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Backhaul solo Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Per assicurarti di avere una connessione valida per il sistema AiMesh, controlla di aver connesso tutti i nodi all'Uplink AP con uno o più cavi ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Altrimenti il nodo/i nodi potrebbero perdere la connessione uplink.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Se hai già impostato la priorità della connessione per il nodo/i nodi, conferma che la configurazione corrisponda.
+-AiMesh_EAP_WiFi_Settings_Confirm=Prima di abilitare la modalità backhaul Ethernet, riconferma le impostazioni della rete WiFi come indicato di seguito.
++AiMesh_EAP_WiFi_Settings_Confirm=Prima di abilitare il Backhaul solo Ethernet, verifica le impostazioni della rete WiFi riportate di seguito.
+ AiMesh_EAP_WiFi_Node01=Questa funzione è disponibile solo quando tutti i nodi sono connessi con un cavo Ethernet.
+ AiMesh_EAP_WiFi_Node02=Al momento il seguente o i seguenti nodi non sono connessi con un cavo Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Per lasciare più larghezza di banda wireless per la connessione dei dispositivi finali, puoi abilitare la modalità Backhaul Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=I nodi cablati usano già automaticamente il backhaul Ethernet, con il WiFi come riserva. Attiva questa opzione per usare solo connessioni cablate e liberare più larghezza di banda wireless per i tuoi dispositivi. Un nodo il cui cavo si guasta va offline invece di passare al WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Attualmente il tuo sistema AiMesh è costruito con una connessione cablata. Questa funzione aiuta a ottimizzare la rete solo quando si utilizza una connessione wireless.
+ AiMesh_System_Reboot=Riavvio del sistema
+ AiMesh_System_Reboot_Hint=Il router e il/i nodo/i nel sistema AiMesh stanno per essere riavviati.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Un gruppo può contenere al massimo 16 membri.
++RFW_324=Una zona può contenere al massimo 8 interfacce.
++RFW_325=Si possono salvare al massimo 64 criteri di zona - rimuoverne prima uno.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamico
+ RWFP_114=Scelto automaticamente in modalita Dinamico.
+ RWFP_115=Scegliere prima Dinamico.
+ RWFP_116=Dinamico
++RDST_78=Il router non può controllare questo file system. Controlla il disco su un computer.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 03676cfcc4..66dbb54301 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=イーサネット接続を行うと接続タイプが
+ AiMesh_Node_ConnPrio_Auto_Desc=接続品質状況に応じて有線、無線の接続タイプを自動的に行います。
+ AiMesh_Node_ConnPrio_Eth_First_Title=イーサネットを優先
+ AiMesh_Node_ConnPrio_Eth_First_Desc=イーサネット接続を優先します
+-AiMesh_Node_ConnPrio_EAP_Enabled01=イーサネットバックホールモードが有効な場合、システムは有線接続だけをイーサネットバックホールとして使用します。
++AiMesh_Node_ConnPrio_EAP_Enabled01=イーサネットのみのバックホールが有効な場合、システムはバックホールに有線接続のみを使用します。
+ AiMesh_Node_ConnPrio_EAP_Enabled02=WAN のひとつまたは有線 WAN ポートを使用するためには、自動 [イーサネットベース] を選択できます。
+ AiMesh_Node_ConnPrio_Eth_Only_Title=イーサネットのみ
+ AiMesh_Node_ConnPrio_Eth_Based_Title=イーサネットベース
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=AiMesh を有線接続で構成している場合は、正
+ AiMesh_OfflineTips5=上記を試しても解決しない場合は、AiMesh ノードを「Reset」リセットし、もう一度、初めから設定を行ってください
+ AiMesh_Pairing=他の AiMesh ノードのペアリングが完了するまでお待ちください。
+ AiMesh_Router=AiMesh メインルーター
+-AiMesh_Ethernet_Backhaul_Mode=イーサネットバックホールモード
++AiMesh_Ethernet_Backhaul_Mode=イーサネットのみのバックホール
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=AiMesh システムを良好な状態に保つためには、全てのノードをイーサネットケーブルで接続してください。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=ケーブルが接続されていない場合、接続ができなくなる場合があります。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=ノードに優先接続を設定している場合は、設定が正しいことをご確認ください。
+-AiMesh_EAP_WiFi_Settings_Confirm=イーサネットバックホールを有効にする前に、WiFi ネットワーク、スマートコネクトがご希望の設定であることをご確認ください。
++AiMesh_EAP_WiFi_Settings_Confirm=イーサネットのみのバックホールを有効にする前に、以下の WiFi ネットワーク設定を再度ご確認ください。
+ AiMesh_EAP_WiFi_Node01=この機能は、すべてのノードがイーサネットケーブルで接続されている場合にのみ有効になります。
+ AiMesh_EAP_WiFi_Node02=現在、次のノードがイーサネットケーブルで接続されていません。
+-AiMesh_Ethernet_Backhaul_Mode_Hint=より多くのデバイスに安定した速度を提供する場合は、イーサネットバックホールを有効にすることをおすすめします。
++AiMesh_Ethernet_Backhaul_Mode_Hint=有線接続のノードは、すでに自動的にイーサネットバックホールを使用し、WiFi を予備として使います。この設定をオンにすると有線接続のみを使用し、デバイス用の無線帯域をより多く確保できます。ケーブルに障害が発生したノードは、WiFi に切り替わらずオフラインになります。
+ AiMesh_Ethernet_Backhaul_Connect_Hint=現在、お使いのAiMeshシステムは有線接続で構築されています。この機能は、無線接続を使用する際にのみネットワークの最適化に役立ちます。
+ AiMesh_System_Reboot=システム再起動
+ AiMesh_System_Reboot_Hint=AiMesh システム内のルーターとノードは再起動されます。
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=グループに含められるメンバーは最大 16 個です。
++RFW_324=ゾーンに含められるインターフェースは最大 8 個です。
++RFW_325=保存できるゾーンポリシーは最大 64 件です。先に 1 件削除してください。
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=動的
+ RWFP_114=動的モードでは自動的に選択されます。
+ RWFP_115=先に「動的」を選択してください。
+ RWFP_116=動的
++RDST_78=ルーターではこのファイルシステムをチェックできません。パソコンでディスクをチェックしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index f849c1a465..0b119f5c77 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=이더넷의 경우 시스템의 연결 유형을 유
+ AiMesh_Node_ConnPrio_Auto_Desc=이 시스템에서는 현재 연결 품질/유형에 따라 무선 또는 유선 기반의 연결 유형 중 선택합니다.
+ AiMesh_Node_ConnPrio_Eth_First_Title=이더넷 우선
+ AiMesh_Node_ConnPrio_Eth_First_Desc=시스템은 이더넷 연결을 우선으로 합니다.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=이더넷 백홀 모드가 활성화되면, 시스템은 이더넷 백홀로 유선 연결만 사용합니다.
++AiMesh_Node_ConnPrio_EAP_Enabled01=이더넷 전용 백홀이 활성화되면 시스템은 백홀로 유선 연결만 사용합니다.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=WAN 중 하나를 사용하는 자동 또는 선호 WAN 포트 중 선택하실 수 있습니다.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=이더넷 전용
+ AiMesh_Node_ConnPrio_Eth_Based_Title=이더넷 기반
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=유선연결을사용하는경우케이블이올바로설치
+ AiMesh_OfflineTips5=문제가지속되면 \"Reset\"(리셋버튼) 을눌러 AiMesh 노드를리셋한후이노드의추가를다시시도하십시오.
+ AiMesh_Pairing=다른 AiMesh 노드가페어링을완료할때까지기다리십시오.
+ AiMesh_Router=AiMesh 라우터
+-AiMesh_Ethernet_Backhaul_Mode=이더넷 백홀 모드
++AiMesh_Ethernet_Backhaul_Mode=이더넷 전용 백홀
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=AiMesh 시스템에 대한 양호한 연결을 보장하기 위해 이더넷 케이블을 사용해 모든 노드를 업링크 AP에 연결하도록 하십시오.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=그렇지 않으면, 노드에서 업링크 연결을 잃을 수 있습니다.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=이미 노드를 선호 연결로 설정하신 경우, 설정이 서로 매치되는지 확인하십시오.
+-AiMesh_EAP_WiFi_Settings_Confirm=이더넷 백홀 모드를 활성화하기 전에 WiFi 네트워크 설정이 다음과 같은지 다시 확인해 주십시오.
++AiMesh_EAP_WiFi_Settings_Confirm=이더넷 전용 백홀을 활성화하기 전에 아래 WiFi 네트워크 설정을 다시 확인하십시오.
+ AiMesh_EAP_WiFi_Node01=이 기능은 모든 노드가 이더넷 케이블로 연결되어 있는 경우에만 사용 가능합니다.
+ AiMesh_EAP_WiFi_Node02=다음 노드는 현재 이더넷 케이블로 연결되어 있지 않습니다.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=최종 기기 연결에 더 많은 무선 대역을 릴리스하려면 이더넷 백홀 모드를 활성화하실 수 있습니다.
++AiMesh_Ethernet_Backhaul_Mode_Hint=유선으로 연결된 노드는 이미 이더넷 백홀을 자동으로 사용하며, WiFi를 예비로 사용합니다. 이 설정을 켜면 유선 연결만 사용하여 기기에 더 많은 무선 대역폭을 확보할 수 있습니다. 케이블에 문제가 생긴 노드는 WiFi로 전환되지 않고 오프라인이 됩니다.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=현재 AiMesh 시스템이 유선 연결로 구축되어 있습니다. 이 기능은 무선 연결을 사용할 때만 네트워크 최적화에 도움이 됩니다.
+ AiMesh_System_Reboot=시스템 재부팅
+ AiMesh_System_Reboot_Hint=AiMesh 시스템의 라우터와 노드가 재부팅됩니다.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=그룹에는 최대 16개의 구성원을 포함할 수 있습니다.
++RFW_324=영역에는 최대 8개의 인터페이스를 포함할 수 있습니다.
++RFW_325=영역 정책은 최대 64개까지 저장할 수 있습니다. 먼저 하나를 삭제하십시오.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=동적
+ RWFP_114=동적 모드에서는 자동으로 선택됩니다.
+ RWFP_115=먼저 동적을 선택하십시오.
+ RWFP_116=동적
++RDST_78=라우터에서 이 파일 시스템을 검사할 수 없습니다. 컴퓨터에서 디스크를 검사하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 073307627e..0168cc18a8 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet akan menukar jenis sambungan sistem anda kepad
+ AiMesh_Node_ConnPrio_Auto_Desc=Sistem akan menyesuaikan jenis sambungan antara berwayar atau tanpa wayar berdasarkan kualiti/status sambungan semasa.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet terlebih dahulu
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Sistem akan mengutamakan sambungan Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Apabila mod backhaul Ethernet didayakan, sistem hanya akan menggunakan sambungan berwayar sebagai backhaul Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Apabila Backhaul Ethernet Sahaja didayakan, sistem hanya menggunakan sambungan berwayar sebagai backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Anda boleh memilih automatik (berasaskan Ethernet) untuk menggunakan salah satu WAN atau port WAN diutamakan.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Ethernet sahaja
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Berasaskan Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Jika anda menggunakan sambungan berwayar, sila pastikan kabe
+ AiMesh_OfflineTips5=Jika anda masih mempunyai masalah, sila tetapkan semula nod AiMesh anda dengan menekan \"Reset\" (butang Tetapkan Semula) dan cuba semula untuk menambah nod ini.
+ AiMesh_Pairing=Sila tunggu nod AiMesh lain selesai berpasangan.
+ AiMesh_Router=Penghala AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Mod Backhaul Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Backhaul Ethernet Sahaja
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Untuk memastikan sambungan yang baik untuk sistem AiMesh anda, sila pastikan anda telah menyambung semua nod ke paut naik AP dengan kabel ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Jika tidak, nod anda mungkin kehilangan sambungan paut naik ia.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Jika anda sudah menetapkan keutamaan sambungan untuk nod, sila sahkan padanan persediaan anda.
+-AiMesh_EAP_WiFi_Settings_Confirm=Sebelum mengaktifkan mod backhaul Ethernet, sila sahkan semula tetapan rangkaian WiFi anda seperti di bawah.
++AiMesh_EAP_WiFi_Settings_Confirm=Sebelum mendayakan Backhaul Ethernet Sahaja, sila sahkan tetapan rangkaian WiFi anda seperti di bawah.
+ AiMesh_EAP_WiFi_Node01=Ciri ini hanya tersedia apabila semua nod disambungkan dengan kabel Ethernet.
+ AiMesh_EAP_WiFi_Node02=Nod berikut tidak disambungkan dengan kabel Ethernet pada masa ini.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Untuk melepaskan lebih lebar jalur tanpa wayar supaya peranti akhir dapat disambungkan, anda boleh mendayakan mod backhaul Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Nod berwayar sudah menggunakan backhaul Ethernet secara automatik, dengan WiFi sebagai sandaran. Hidupkan pilihan ini untuk menggunakan sambungan berwayar sahaja dan membebaskan lebih banyak lebar jalur tanpa wayar untuk peranti anda. Nod yang kabelnya gagal akan terputus dan tidak beralih ke WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Currently your AiMesh system is built with hardwired connection. This function helps to optimize your network only when using a wireless connection.
+ AiMesh_System_Reboot=But semula sistem
+ AiMesh_System_Reboot_Hint=Penghala dan nod anda dalam sistem AiMesh akan but semula.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Satu kumpulan boleh mengandungi maksimum 16 ahli.
++RFW_324=Satu zon boleh mengandungi maksimum 8 antara muka.
++RFW_325=Maksimum 64 dasar zon boleh disimpan - alih keluar satu dahulu.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamik
+ RWFP_114=Dipilih secara automatik dalam mod Dinamik.
+ RWFP_115=Pilih Dinamik dahulu.
+ RWFP_116=Dinamik
++RDST_78=Penghala tidak dapat menyemak sistem fail ini. Semak cakera pada komputer.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index e776048d5f..e9da4140fd 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -764,6 +764,12 @@ var SSI = {
+   wan_unit: '<% get_wan_unit(); %>',
+   wan0_en:  '<% nvram_get("wan0_enable"); %>',
+   wan1_en:  '<% nvram_get("wan1_enable"); %>',
++  /* the second unit's view, swapped in below when it is the primary (fail-over) */
++  wanip1:   '<% nvram_get("wan1_ipaddr"); %>',
++  gw1:      decodeURIComponent('<% nvram_char_to_ascii("", "wan1_gateway"); %>'),
++  dns1:     decodeURIComponent('<% nvram_char_to_ascii("", "wan1_dns"); %>'),
++  wan_state1:'<% nvram_get("wan1_state_t"); %>',
++  wans_mode:'<% nvram_get("wans_mode"); %>',
+   ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
+   ddns_host:decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+   fw4:      '<% nvram_get("fw_enable_x"); %>',
+@@ -858,6 +864,19 @@ function paintOpmodeWan(){
+  * silently aborted the rest of the dashboard). v6 is up when the WAN face has a
+  * global address OR a default gateway (native/DHCP-PD put the global on the LAN
+  * side, leaving only a gateway on the WAN face). */
++/* reaper 2026-09-28 (dual-WAN field report): the Internet card read wan0 only,
++ * so a fail-over to the second line painted "Disconnected" while traffic flowed
++ * over it. Read the PRIMARY unit (wan_primary / get_wan_unit()); in load-balance
++ * either line being up means the router is online. `v` carries wanN_state_t,
++ * wanN_ipaddr, wanN_gateway and wanN_dns for both units. Shared by the initial
++ * render and the live poll, so it lives at top level like v6Up(). */
++function wanPick(v, prim, lb){
++  function up(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
++  var u=(String(prim)==='1')?1:0;
++  if(!up(u) && lb && up(1-u)) u=1-u;
++  return {unit:u, st:v['wan'+u+'_state_t']||'', ip:v['wan'+u+'_ipaddr']||'',
++          gw:v['wan'+u+'_gateway']||'', dns:v['wan'+u+'_dns']||''};
++}
+ function v6Up(){
+   if(!(WAN6 && WAN6.status==='1')) return false;
+   var a=String((WAN6.IPv6_Address)||'').split('/')[0];
+@@ -966,9 +985,14 @@ function paintPosture(){
+        built from - so the router and the .pkgtb on disk always agree about
+        whether this is a pre-release, with no extra nvram key to drift. */
+     if(/_beta(_|$)/i.test(String(SSI.extendno||''))){ var bt=$id('p_fwbeta'); if(bt) bt.style.display=''; }
+-    /* WAN state: IPv4 from wan0_state_t (2 = connected, non-0.0.0.0 IP),
+-       IPv6 from wan_ipv6_network(). Card renders per the ipv6 mock:
+-       v4-only = today, dual = v6 line + v6 meta row, v6-only = v6 hero. */
++    /* WAN state: IPv4 from the PRIMARY unit's wanN_state_t (2 = connected,
++       non-0.0.0.0 IP; see wanPick), IPv6 from wan_ipv6_network(). Card renders
++       per the ipv6 mock: v4-only = today, dual = v6 line + v6 meta row,
++       v6-only = v6 hero. */
++    var pw=wanPick({wan0_state_t:SSI.wan_state, wan0_ipaddr:SSI.wanip, wan0_gateway:SSI.gw, wan0_dns:SSI.dns,
++                    wan1_state_t:SSI.wan_state1, wan1_ipaddr:SSI.wanip1, wan1_gateway:SSI.gw1, wan1_dns:SSI.dns1},
++                   SSI.wan_unit, SSI.wans_mode==='lb');
++    SSI.wan_state=pw.st; SSI.wanip=pw.ip; SSI.gw=pw.gw; SSI.dns=pw.dns;
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+     /* WAN-face global first, else the br0 global (V6RTR). Never show the
+        fe80:: gateway/link-local as the WAN address - the gateway has its own
+@@ -1073,7 +1097,11 @@ function paintPosture(){
+   /* also read the primary unit's enable flag, so the header switch stays honest if
+      the WAN is turned off from another tab, the CLI, or a failover */
+   var ENK='wan'+((SSI.wan_unit==='1')?'1':'0')+'_enable';
+-  var HOOK='/appGet.cgi?hook=nvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan0_gateway)%3bnvram_get(wan0_dns)%3bnvram_get('+ENK+')';
++  /* v3.2.8: both units plus wan_primary, so a fail-over (or fail-back) while the
++     page is open moves the card and the header switch to the live line. */
++  var HK=['wan_primary','wan0_enable','wan1_enable'];
++  [0,1].forEach(function(u){ ['state_t','ipaddr','gateway','dns'].forEach(function(k){ HK.push('wan'+u+'_'+k); }); });
++  var HOOK='/appGet.cgi?hook='+HK.map(function(k){ return 'nvram_get('+k+')'; }).join('%3b');
+   var timer=null;
+   function schedule(ms){ if(timer) clearTimeout(timer); timer=setTimeout(tick, ms); }
+   function tick(){
+@@ -1090,7 +1118,10 @@ function paintPosture(){
+       if(ok){
+         try{
+           var j=JSON.parse(x.responseText);
+-          up=apply(j.wan0_state_t||'', j.wan0_ipaddr||'', j.wan0_gateway||'', j.wan0_dns||'');
++          var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:SSI.wan_unit;
++          var p=wanPick(j, pu, SSI.wans_mode==='lb');
++          up=apply(p.st, p.ip, p.gw, p.dns);
++          ENK='wan'+((String(pu)==='1')?'1':'0')+'_enable';
+           if(window.wanSetEnable) window.wanSetEnable(j[ENK]);
+         }catch(e){}
+       }
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 11dd9dad8a..2577471947 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet zal het verbindingstype van uw systeem wijzige
+ AiMesh_Node_ConnPrio_Auto_Desc=Het systeem zal tussen de bedrade of draadloze verbinding wisselen op basis van de huidige status/kwaliteit van de verbinding.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet eerst
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Het systeem zal prioriteit geven aan de ethernetverbinding.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Als de ethernet-backhaul-modus is ingeschakeld, zal het systeem alleen een bedrade verbinding gebruiken als ethernet-backhaul.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Wanneer Alleen ethernet-backhaul is ingeschakeld, gebruikt het systeem alleen bekabelde verbindingen als backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=U kunt kiezen uit automatisch (op basis van ethernet) om een van de WAN's of de WAN-voorkeurspoort te gebruiken.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Alleen ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Op basis van ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Als u een bekabelde aansluiting gebruikt, dient u te control
+ AiMesh_OfflineTips5=Als u nog steeds problemen ondervindt, kunt u een reset uitvoeren van uw AiMesh-knooppunt door te drukken op de knop \"Reset\" en vervolgens opnieuw proberen om dit knooppunt toe te voegen.
+ AiMesh_Pairing=Wacht tot het paren van de andere AiMesh-nodes voltooid is.
+ AiMesh_Router=AiMesh-router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet Backhaul-modus
++AiMesh_Ethernet_Backhaul_Mode=Alleen ethernet-backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Zorg dat u alle knooppunten met het bovenliggende toegangspunt hebt verbonden door middel van ethernetkabels om een goede verbinding met uw AiMesh-systeem te waarborgen.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Anders kan de verbinding van uw knooppunt(en) met de uplink-verbinding worden verbroken.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Als u al een verbindingsprioriteit voor knooppunten hebt geconfigureerd, moet u controleren of de installatie daar mee overeenkomt.
+-AiMesh_EAP_WiFi_Settings_Confirm=Voordat u de ethernet-terughaalmodus inschakelt, moet u nog een keer controleren dat uw WiFi-netwerkinstellingen zo zijn als hieronder.
++AiMesh_EAP_WiFi_Settings_Confirm=Controleer voordat u Alleen ethernet-backhaul inschakelt uw WiFi-netwerkinstellingen hieronder.
+ AiMesh_EAP_WiFi_Node01=Deze functie is alleen beschikbaar wanneer alle knooppunten zijn verbonden met een ethernetkabel.
+ AiMesh_EAP_WiFi_Node02=De volgende knooppunten zijn op dit moment niet verbonden met een ethernetkabel.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=U kunt de ethernet-backhaul-modus inschakelen om meer draadloze bandbreedte vrij te maken voor uw eindapparaten.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Bekabelde nodes gebruiken al automatisch ethernet-backhaul, met WiFi als terugval. Schakel dit in om alleen bekabelde verbindingen te gebruiken en meer draadloze bandbreedte vrij te maken voor uw apparaten. Een node waarvan de kabel uitvalt, gaat offline in plaats van terug te vallen op WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Momenteel is uw AiMesh-systeem gebouwd met een bekabelde verbinding. Deze functie helpt alleen uw netwerk te optimaliseren bij gebruik van een draadloze verbinding.
+ AiMesh_System_Reboot=Systeem opnieuw starten
+ AiMesh_System_Reboot_Hint=Uw router en knooppunt(en) in het AiMesh-systeem worden opnieuw gestart.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Een groep kan maximaal 16 leden bevatten.
++RFW_324=Een zone kan maximaal 8 interfaces bevatten.
++RFW_325=Er kunnen maximaal 64 zonebeleidsregels worden opgeslagen - verwijder er eerst een.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamisch
+ RWFP_114=Wordt in de dynamische modus automatisch gekozen.
+ RWFP_115=Kies eerst Dynamisch.
+ RWFP_116=Dynamisch
++RDST_78=De router kan dit bestandssysteem niet controleren. Controleer de schijf op een computer.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 1b322fab3e..a51ad42fa9 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet vil endre systemets tilkoblingstype til kablet
+ AiMesh_Node_ConnPrio_Auto_Desc=Systemet tilpasser tilkoblingstypen mellom kabelbasert eller trådløs basert på gjeldende tilkoblingskvalitet/-status.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet først
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Systemet prioriterer Ethernet-tilkobling.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Når Ethernet-backhaulmodus er aktivert, bruker systemet bare kabelbasert tilkobling som Ethernet-backhaul.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Når Kun Ethernet-backhaul er aktivert, bruker systemet bare kablede tilkoblinger som backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Du kan velge Automatisk (Ethernet-basert) for å bruke et av WAN-nettverkene eller den foretrukne WAN-porten.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Bare Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-basert
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Hvis du bruker kablet tilkobling, må du sørge for at kabel
+ AiMesh_OfflineTips5=Hvis du fortsatt har problemer, kan du tilbakestille AiMesh-noden ved å trykke «Reset» (Tilbakestill-knappen) og prøve å legge til denne noden igjen.
+ AiMesh_Pairing=Vent på andre AiMesh-noder for å fullføre parring.
+ AiMesh_Router=AiMesh-ruter
+-AiMesh_Ethernet_Backhaul_Mode=Backhaul-modus for Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Kun Ethernet-backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=For å sikre en god tilkobling for AiMesh-systemet ditt må du sørge fot at alle tilgangspunktene er tilkoblet tilgangspunktene for oppkobling med Ethernet-kabler.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Ellers kan tilgangspunktene dine miste tilkoblingen for oppkobling.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Hvis du allerede har konfigurert tilkoblingsprioritet for tilgangspunktene, må du bekrefte at konfigurasjonen din samsvarer med denne.
+-AiMesh_EAP_WiFi_Settings_Confirm=Før du aktiverer Ethernet-backhaulmodus, må du dobbeltsjekke WiFi-nettverksinnstillingene nedenfor.
++AiMesh_EAP_WiFi_Settings_Confirm=Før du aktiverer Kun Ethernet-backhaul, må du bekrefte WiFi-nettverksinnstillingene nedenfor.
+ AiMesh_EAP_WiFi_Node01=Denne funksjonen er bare tilgjengelig når alle nodene er tilkoblet via Ethernet-kabler.
+ AiMesh_EAP_WiFi_Node02=Følgende noder er for øyeblikket ikke tilkoblet via Ethernet-kabler.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Hvis du vil frigjøre mer trådløs båndbredde for tilkobling av sluttenheter, kan du aktivere Ethernet-backhaulmodus.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Kablede noder bruker allerede Ethernet-backhaul automatisk, med WiFi som reserve. Slå på dette for å bruke bare kablede tilkoblinger og frigjøre mer trådløs båndbredde til enhetene dine. En node der kabelen svikter, går frakoblet i stedet for å gå over til WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=For øyeblikket er AiMesh-systemet ditt bygget med en kablet tilkobling. Denne funksjonen hjelper til med å optimalisere nettverket ditt kun når du bruker en trådløs tilkobling.
+ AiMesh_System_Reboot=Omstart av systemet
+ AiMesh_System_Reboot_Hint=Ruteren din og tilgangspunktene i AiMesh-systemet startes på nytt.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=En gruppe kan ha maks. 16 medlemmer.
++RFW_324=En sone kan ha maks. 8 grensesnitt.
++RFW_325=Maks. 64 sonepolicyer kan lagres - fjern én først.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamisk
+ RWFP_114=Velges automatisk i dynamisk modus.
+ RWFP_115=Velg Dynamisk foerst.
+ RWFP_116=Dynamisk
++RDST_78=Ruteren kan ikke kontrollere dette filsystemet. Kontroller disken på en datamaskin i stedet.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index f990bdd3ac..18bda9263d 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ustawienie Ethernet zmienia typ połączenia systemu na
+ AiMesh_Node_ConnPrio_Auto_Desc=Zależnie od jakości i stanu połączenia system będzie odpowiednio przełączać między łącznością przewodową i bezprzewodową.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Najpierw Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=System będzie nadawać priorytet połączeniom Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Gdy włączony jest tryb sieci Ethernet zaplecza, system będzie używać wyłącznie połączeń przewodowych jako sieci zaplecza.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Gdy włączone jest Zaplecze tylko przez Ethernet, system używa jako zaplecza wyłącznie połączeń przewodowych.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Aby używać jednej z sieci WAN lub preferowanego portu WAN, można wybrać ustawienie Automatycznie (oparte na Ethernet).
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Tylko Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Oparte na Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Jeśli korzystasz z połączenia przewodowego, upewnij się,
+ AiMesh_OfflineTips5=Jeśli problemy nadal występują, zresetuj węzeł AiMesh, naciskając \"Reset\" (przycisk resetowania), a następnie spróbuj ponownie dodać ten węzeł.
+ AiMesh_Pairing=Poczekaj na ukończenie parowania innych węzłów AiMesh.
+ AiMesh_Router=Router AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Tryb sieci Ethernet zaplecza
++AiMesh_Ethernet_Backhaul_Mode=Zaplecze tylko przez Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Aby zapewnić dobrą łączność systemu AiMesh, upewnij się, że wszystkie węzły zostały podłączone do punktu dostępu łącza kablami Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=W przeciwnym razie węzły mogą utracić połączenia dostępowe.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Jeśli już skonfigurowano priorytety połączeń dla węzłów, upewnij się, że odpowiadają one ustawionej konfiguracji.
+-AiMesh_EAP_WiFi_Settings_Confirm=Przed włączeniem trybu sieci Ethernet zaplecza, dokładnie sprawdź, czy ustawienia sieci WiFi są takie jak poniżej.
++AiMesh_EAP_WiFi_Settings_Confirm=Przed włączeniem opcji Zaplecze tylko przez Ethernet sprawdź poniższe ustawienia sieci WiFi.
+ AiMesh_EAP_WiFi_Node01=Ta funkcja jest dostępna tylko wtedy, gdy wszystkie węzły są połączone przewodem Ethernet.
+ AiMesh_EAP_WiFi_Node02=Wymienione poniżej węzły nie są obecnie połączone przewodem Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Aby zwolnić pasmo bezprzewodowe dla połączeń urządzeń końcowych, można włączyć tryb sieci Ethernet zaplecza.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Węzły podłączone kablem już automatycznie korzystają z sieci zaplecza Ethernet, a WiFi służy jako rezerwa. Włącz tę opcję, aby używać wyłącznie połączeń przewodowych i zwolnić więcej pasma bezprzewodowego dla swoich urządzeń. Węzeł, którego kabel ulegnie awarii, przejdzie w tryb offline zamiast przełączyć się na WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Obecnie twój system AiMesh jest zbudowany na połączeniu przewodowym. Ta funkcja pomaga zoptymalizować sieć tylko podczas korzystania z połączenia bezprzewodowego.
+ AiMesh_System_Reboot=Ponowne uruchomienie systemu
+ AiMesh_System_Reboot_Hint=Nastąpi ponowne uruchomienie routera i węzłów systemu AiMesh.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Grupa może zawierać maksymalnie 16 członków.
++RFW_324=Strefa może zawierać maksymalnie 8 interfejsów.
++RFW_325=Można zapisać maksymalnie 64 zasady stref - najpierw usuń jedną.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamiczny
+ RWFP_114=Wybierany automatycznie w trybie dynamicznym.
+ RWFP_115=Najpierw wybierz Dynamiczny.
+ RWFP_116=Dynamiczny
++RDST_78=Router nie może sprawdzić tego systemu plików. Sprawdź dysk na komputerze.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 3bf155b17b..785fc61ec7 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet: va schimba tipul de conexiune al sistemului d
+ AiMesh_Node_ConnPrio_Auto_Desc=Sistemul va adapta tipul conexiunii dintre cea cu cablu și cea wireless în funcție de starea sau calitatea conexiunii curente.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet mai întâi
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Sistemul va acorda prioritate conexiunii Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Când este activat modul Ethernet backhaul, sistemul va utiliza doar conexiunea prin cablu ca și Ethernet backhaul.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Când este activat Backhaul doar Ethernet, sistemul folosește doar conexiuni prin cablu ca backhaul.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Puteți să alegeți automat (Pe bază de Ethernet) pentru a utiliza una din rețelele WAN sau portul WAN preferat.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Doar Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Pe bază de Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Dacă folosiți o conexiune prin cablu, asigurați-vă că a
+ AiMesh_OfflineTips5=Dacă întâmpinați în continuare probleme, resetați nodul AiMesh apăsând \"Reset\" (butonul Resetare) și încercați din nou să adăugați acest nod.
+ AiMesh_Pairing=Așteptați terminarea asocierii celorlalte noduri AiMesh.
+ AiMesh_Router=Ruter AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Mod Backhaul Ethernet
++AiMesh_Ethernet_Backhaul_Mode=Backhaul doar Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Pentru a asigura o conexiune bună pentru sistemul dvs. AiMesh, asigurați-vă că ați conectat toate nodurile la AP-ul superior cu cablu(uri) Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Altfel, nodurile este posibil să piardă conexiunea uplink.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Dacă ați configurat deja prioritatea conexiunii pentru noduri, confirmați că configurarea se potrivește corespunzător.
+-AiMesh_EAP_WiFi_Settings_Confirm=Înainte de a activa modul Ethernet backhaul, verificați încă o dată că setările rețelei dvs. WiFi sunt ca mai jos.
++AiMesh_EAP_WiFi_Settings_Confirm=Înainte de a activa Backhaul doar Ethernet, verificați încă o dată setările rețelei WiFi de mai jos.
+ AiMesh_EAP_WiFi_Node01=Această funcție este disponibilă doar când toate nodurile sunt conectate cu un cablu Ethernet.
+ AiMesh_EAP_WiFi_Node02=Momentan, următoarele noduri nu sunt conectate cu un cablu Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Pentru a elibera mai multă lățime de bandă pentru conectarea terminalelor, puteți să activați modul Ethernet backhaul.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Nodurile conectate prin cablu folosesc deja automat backhaul-ul Ethernet, cu WiFi ca rezervă. Activați această opțiune pentru a folosi doar conexiuni prin cablu și a elibera mai multă lățime de bandă wireless pentru dispozitivele dvs. Un nod al cărui cablu se defectează va deveni offline în loc să revină la WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=În prezent, sistemul dvs. AiMesh este construit cu o conexiune prin cablu. Această funcție ajută la optimizarea rețelei dvs. doar atunci când utilizați o conexiune wireless.
+ AiMesh_System_Reboot=Repornire sistem
+ AiMesh_System_Reboot_Hint=Routerul și nodurile din sistemul AiMesh vor reporni.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Un grup poate conține cel mult 16 membri.
++RFW_324=O zonă poate conține cel mult 8 interfețe.
++RFW_325=Se pot salva cel mult 64 de politici de zonă - eliminați mai întâi una.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamic
+ RWFP_114=Ales automat in modul Dinamic.
+ RWFP_115=Alegeti mai intai Dinamic.
+ RWFP_116=Dinamic
++RDST_78=Routerul nu poate verifica acest sistem de fișiere. Verificați discul pe un computer.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 5e74688ced..a74dbcd7bd 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet изменяет тип подключения
+ AiMesh_Node_ConnPrio_Auto_Desc=Система адаптирует тип подключения (проводное и беспроводное) на основе качества/состояния текущего подключения.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Сначала Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Система отдаст приоритет подключению Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Если активирован режим маршрутизатора и узла Ethernet, система будет использовать только беспроводное подключение для маршрутизатора и узла Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Если включен режим Backhaul только через Ethernet, система использует для backhaul только проводные подключения.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Вы можете выбрать автоматический режим (на основе Ethernet), чтобы использовать один из портов WAN или предпочтительный порт WAN.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Только Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=На основе Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=При использовании проводного по
+ AiMesh_OfflineTips5=Если проблема осталась, выполните сброс узла AiMesh, нажав кнопку \"Reset\" (Сброс) и повторите попытку добавления этого узла.
+ AiMesh_Pairing=Дождитесь завершения сопряжения узлов AiMesh.
+ AiMesh_Router=Роутер AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Режим сети Ethernet маршрутизатора и узла
++AiMesh_Ethernet_Backhaul_Mode=Backhaul только через Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Для обеспечения хорошего подключения системы AiMesh убедитесь, что вы подключили все узлы к точке доступа восходящего канала связи с помощью кабелей Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=В противном случает ваш узел может потерять восходящее подключение.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Если вы уже настроили приоритет подключения для узлов, проверьте соответствие настройки.
+-AiMesh_EAP_WiFi_Settings_Confirm=Перед активацией режима сети Ethernet маршрутизатора и узла проверьте настройки сети WiFi.
++AiMesh_EAP_WiFi_Settings_Confirm=Перед включением режима Backhaul только через Ethernet проверьте настройки сети WiFi ниже.
+ AiMesh_EAP_WiFi_Node01=Эта функция доступна, только если все узлы подключены с помощью кабеля Ethernet.
+ AiMesh_EAP_WiFi_Node02=Следующие узлы не подключены с помощью кабеля Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Чтобы освободить полосу пропускания беспроводной сети для подключения конечных устройств, можно активировать режим маршрутизатора и узла Ethernet.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Узлы, подключенные кабелем, уже автоматически используют Ethernet в качестве backhaul, а WiFi служит резервом. Включите этот параметр, чтобы использовать только проводные подключения и освободить больше полосы пропускания беспроводной сети для ваших устройств. Узел, у которого откажет кабель, отключится, а не перейдет на WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=В настоящее время ваша система AiMesh построена с проводным подключением. Эта функция помогает оптимизировать сеть только при использовании беспроводного подключения.
+ AiMesh_System_Reboot=Перезагрузка системы
+ AiMesh_System_Reboot_Hint=Ваш маршрутизатор и узлы в системе AiMesh будут перезагружены.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Группа может содержать не более 16 участников.
++RFW_324=Зона может содержать не более 8 интерфейсов.
++RFW_325=Можно сохранить не более 64 политик зон - сначала удалите одну.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Динамический
+ RWFP_114=Выбирается автоматически в динамическом режиме.
+ RWFP_115=Сначала выберите Динамический.
+ RWFP_116=Динамический
++RDST_78=Роутер не может проверить эту файловую систему. Проверьте диск на компьютере.
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index f5226ba7e8..5b72ea97ca 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.23</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.24</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index adb5754465..cde1dd7070 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1675,6 +1675,8 @@ function initRfw(){
+     if(!m)return bad(`<#RFW_66#>`);
+     var members=m.split(','),known=RFW.obj.map(function(r){return r[0];}),i;
+     for(i=0;i<members.length;i++)if(known.indexOf(members[i])<0)return bad(`<#RFW_67#>`);
++    /* reaper_fw.c RFW_MAX_SETS: the engine matches at most 16 sets per group */
++    if(members.length>16)return bad(`<#RFW_323#>`);
+     var gi=EDIT.grp;
+     if(RFW.grp.some(function(r,k){return k!==gi&&r[0]===n;})||RFW.obj.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     editCommit('grp',[n,m.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+@@ -1697,6 +1699,8 @@ function initRfw(){
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!f)return bad(`<#RFW_66#>`);
+     if(!/^[A-Za-z0-9._+,]+$/.test(f))return bad(`<#RFW_67#>`);
++    /* reaper_fw.c RFW_MAX_IFACE: the engine matches at most 8 interfaces per zone */
++    if(f.split(',').filter(function(x){return x;}).length>8)return bad(`<#RFW_324#>`);
+     if(!editCommit('zone',[n,f,c.replace(/[<>]/g,'')],function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value='';
+     rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,S);
+@@ -1791,6 +1795,8 @@ function initRfw(){
+   $('zp_add').onclick=function(){
+     var s=$('zp_src').value,d=$('zp_dst').value,a=$('zp_act').value;
+     if(!s||!d)return bad(`<#RFW_66#>`);
++    /* reaper_fw.c RFW_MAX_ZPOL: the engine emits at most 64 zone policies */
++    if(EDIT.zpol<0&&RFW.zpol.length>=64)return bad(`<#RFW_325#>`);
+     if(!editCommit('zpol',[s,d,a],function(r){return r[0]===s&&r[1]===d;}))return bad(`<#RFW_65#>`);
+     rfwRenderZpol();rfwSave('zpol',RFW.zpol,S);
+   };
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index 060a2147be..8e471faa6b 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -7,8 +7,9 @@
+      Long-Term Storage tab (System Log group); they belong with the other USB
+      services, so they moved HERE and the storage page keeps only the store
+      selection. Same stock backends: get_usb_info for the inventory,
+-     start_diskscan / start_diskformat via the normal apply flow (posted nvram
+-     diskmon_usbport selects the disk), the safely_remove_disk ej for eject,
++     start_diskscan / start_diskformat via the normal apply flow (diskmon_usbport
++     selects the disk; it is set first through apply.cgi change_diskmon_unit and
++     read back, see dkSelectPort), the safely_remove_disk ej for eject,
+      disk_fsck.xml for scan results; reaper_dev.cgi store_status (read-only) marks
+      which partition holds the long-term store. -->
+ <!DOCTYPE html>
+@@ -139,6 +140,40 @@ function dkPost(fields){ /* stock apply: posted nvram vars are written, then act
+   setTimeout(function(){ f.parentNode && f.parentNode.removeChild(f); }, 4000);
+ }
+ 
++/* diskmon_usbport picks the disk for start_diskscan / start_diskformat. A POST
++   to start_apply.htm cannot set it: validate_apply rewrites every posted
++   diskmon_* field to usb_path<port>_diskmon_*, so the value never reached
++   diskmon_usbport and rc logged "Can't find device via ptr_path []" (2026-09-28
++   field report, every box where the retired stock page never set it). Stock
++   pages set it first with action_mode=change_diskmon_unit on apply.cgi; do the
++   same, then read it back - a format must never run against whichever port an
++   earlier action left selected. cb(true) only on a confirmed match. */
++function dkSelectPort(port, cb){
++  var x = new XMLHttpRequest(), done = 0;
++  function check(){
++    if(done) return;
++    done = 1;
++    var r = new XMLHttpRequest();
++    r.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('nvram_get(diskmon_usbport)') + '&_=' + Date.now(), true);
++    r.timeout = 8000;
++    r.onreadystatechange = function(){
++      if(r.readyState !== 4) return;
++      var v = null;
++      if(r.status === 200){
++        try{ var j = JSON.parse(r.responseText), k; for(k in j){ v = String(j[k]); break; } }catch(e){}
++      }
++      cb(v !== null && v === String(port));
++    };
++    r.send();
++  }
++  x.open('POST', '/apply.cgi', true);
++  x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  x.timeout = 8000;
++  x.onload = x.onerror = x.ontimeout = x.onabort = check;
++  x.send('action_mode=change_diskmon_unit&action_script=&action_wait=1&current_page=Reaper_USB.asp&next_page=' +
++         '&diskmon_usbport=' + encodeURIComponent(port));
++}
++
+ function dkStatus(cb){   /* diskmon_status: 0 idle, 1-4 scan phases, 5 done, 7 formatting */
+   var x = new XMLHttpRequest();
+   x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('nvram_get(diskmon_status)') + '&_=' + Date.now(), true);
+@@ -177,25 +212,46 @@ function dkPoll(port, mode, tries, seen){   /* wait for the diskmon run to finis
+     }
+     dkBusy = 0;
+     if(mode === 'fmt'){
+-      dkVerdict[port] = { txt: esc(`<#format_complete#>`), cls: 'ok' };
+-      dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
+-      dkFresh(renderDisks);
++      /* disk_format_flag: 4 = formatted, -1 = nothing formatted or the tool failed */
++      var xf = new XMLHttpRequest();
++      xf.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('nvram_get(disk_format_flag)') + '&_=' + Date.now(), true);
++      xf.timeout = 8000;
++      xf.onreadystatechange = function(){
++        if(xf.readyState !== 4) return;
++        var fl = '';
++        if(xf.status === 200){
++          try{ var j = JSON.parse(xf.responseText), k; for(k in j){ fl = String(j[k]); break; } }catch(e){}
++        }
++        dkVerdict[port] = (fl === '4') ? { txt: esc(`<#format_complete#>`), cls: 'ok' }
++                                       : { txt: esc(`<#ALERT_OF_ERROR_Action12#>`), cls: 'err' };
++        dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
++        dkFresh(renderDisks);
++      };
++      xf.send();
+     } else {
+       /* verdict from the fsck return codes (same codes stock maps: 1 = errors) */
+       var xr = new XMLHttpRequest();
+       xr.open('GET', '/appGet.cgi?hook=' + encodeURIComponent('apps_fsck_ret()') + '&_=' + Date.now(), true);
+       xr.onreadystatechange = function(){
+         if(xr.readyState !== 4) return;
+-        var bad = false;
++        var bad = false, checked = false;
+         if(xr.status === 200){
+           try{
+             var j = JSON.parse(xr.responseText), k, a = null;
+             for(k in j){ a = j[k]; break; }
+-            (a || []).forEach(function(p){ if(parseInt(p[1], 10) === 1) bad = true; });
++            (a || []).forEach(function(p){
++              var c = parseInt(p[1], 10);
++              if(c === 1) bad = true;
++              if(c === 0 || c === 1) checked = true;
++            });
+           }catch(e){}
+         }
+-        dkVerdict[port] = { txt: esc(bad ? `<#diskUtility_crash_found#>` : `<#diskUtility_problem_found#>`),
+-                            cls: bad ? 'err' : 'ok' };
++        /* app_fsck.sh has no checker for vfat / msdos / fuseblk (FAT32, exFAT,
++           NTFS via FUSE): it writes code 3 and no log, so "check the results
++           below" pointed at nothing (2026-09-28 field report) - say so. */
++        dkVerdict[port] = bad ? { txt: esc(`<#diskUtility_crash_found#>`), cls: 'err' }
++                        : checked ? { txt: esc(`<#diskUtility_problem_found#>`), cls: 'ok' }
++                        : { txt: esc(`<#RDST_78#>`), cls: '' };
+         dkSetStat(port, dkVerdict[port].txt, dkVerdict[port].cls);
+       };
+       xr.send();
+@@ -227,8 +283,11 @@ function dkScan(port){
+   delete dkLog[port];   /* fresh scan: drop the previous result */
+   delete dkVerdict[port];
+   dkSetStat(port, esc(`<#Scan#>`) + '&hellip;');
+-  dkPost({ action_script: 'start_diskscan', diskmon_usbport: port });
+-  setTimeout(function(){ dkPoll(port, 'scan', 0); }, 3000);
++  dkSelectPort(port, function(ok){
++    if(!ok){ dkBusy = 0; dkSetStat(port, esc(`<#RDST_33#>`), 'err'); return; }
++    dkPost({ action_script: 'start_diskscan' });
++    setTimeout(function(){ dkPoll(port, 'scan', 0); }, 3000);
++  });
+ }
+ 
+ function dkFormat(port){
+@@ -244,11 +303,13 @@ function dkFormat(port){
+     delete dkLog[port];   /* the disk is changing: any prior scan result is stale */
+     delete dkVerdict[port];
+     dkSetStat(port, esc(`<#format_formatting#>`) + '&hellip;');
+-    dkPost({ action_script: 'start_diskformat',
+-             diskmon_usbport: port,
+-             diskformat_file_system: fsSel.value,
+-             diskformat_label: (lb && lb.value) ? lb.value.replace(/[^0-9A-Za-z_-]/g, '') : 'USBDISK' });
+-    setTimeout(function(){ dkPoll(port, 'fmt', 0); }, 3000);
++    dkSelectPort(port, function(ok){
++      if(!ok){ dkBusy = 0; dkSetStat(port, esc(`<#RDST_33#>`), 'err'); return; }
++      dkPost({ action_script: 'start_diskformat',
++               diskformat_file_system: fsSel.value,
++               diskformat_label: (lb && lb.value) ? lb.value.replace(/[^0-9A-Za-z_-]/g, '') : 'USBDISK' });
++      setTimeout(function(){ dkPoll(port, 'fmt', 0); }, 3000);
++    });
+   });
+ }
+ 
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index 44f9e6303e..171d58ba90 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -412,8 +412,9 @@ function submitForm(){
+ 			fail("<#RWFS_12#> " + (r && r.error ? r.error : "HTTP"));
+ 			return;
+ 		}
+-		/* 3. one apply: commit, rebuild shadow, then restart the radios */
+-		document.form.action_script.value = "saveNvram;restart_chpass;restart_wireless";
++		/* 3. one apply: commit, rebuild shadow, restart the radios, then the SDN
++		   profiles (stock order, as rc's check_sdn_onoff and create_sdn_mwl_profile) */
++		document.form.action_script.value = "saveNvram;restart_chpass;restart_wireless;restart_sdn";
+ 		document.form.submit();
+ 		$("#loadingIcon").hide();
+ 		var done = `<#RWFS_11#>`.replace("%1$@", ssid.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+@@ -529,7 +530,7 @@ function showError(str){
+ <form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+ <input type="hidden" name="group_id" value="">
+ <input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="saveNvram;restart_chpass;restart_wireless">
++<input type="hidden" name="action_script" value="saveNvram;restart_chpass;restart_wireless;restart_sdn">
+ <input type="hidden" name="action_wait" value="0">
+ <input type="hidden" name="current_page" value="Reaper_WiFiSetup.asp">
+ <input type="hidden" name="next_page" value="">
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index d81dae4702..23425fa019 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Možnost »Ethernet« preklopi vrsto povezave vašega s
+ AiMesh_Node_ConnPrio_Auto_Desc=Sistem bo prilagodil vrsto povezave med žično ali brezžično glede na trenutno kakovost/stanje povezave.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Najprej ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Sistem bo prednostno uporabil ethernetno povezavo.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Ko je omogočen način ethernetnega vmesnega omrežja, bo sistem kot ethernetno vmesno omrežje uporabljal samo žično povezavo.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Ko je omogočeno Samo ethernetno vmesno omrežje, sistem kot vmesno omrežje uporablja samo žične povezave.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Če želite uporabiti eno od omrežij WAN ali prednostna vrata WAN, lahko uporabite samodejno možnost (na podlagi etherneta).
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Samo ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Na podlagi etherneta
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Če uporabljate žično povezavo, preverite, ali je kabel pr
+ AiMesh_OfflineTips5=Če še vedno prihaja do težav, ponastavite svoje vozlišče AiMesh tako, da pritisnete gumb »Reset« (Ponastavi), in nato poskusite znova dodati to vozlišče.
+ AiMesh_Pairing=Počakajte, da druga vozlišča AiMesh dokončajo seznanjanje.
+ AiMesh_Router=Usmerjevalnik AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Vmesni način etherneta
++AiMesh_Ethernet_Backhaul_Mode=Samo ethernetno vmesno omrežje
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Če želite zagotoviti dobro povezavo za svoj sistem AiMesh, poskrbite, da bodo vsa vozlišča povezana z dostopno točko v smeri navzgor z ethernetnim kablom.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=V nasprotnem primeru lahko vozlišča izgubijo povezavo v smeri navzgor.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Če ste že nastavili prednost povezave za vozlišča, potrdite, da se nastavitev ujema z njo.
+-AiMesh_EAP_WiFi_Settings_Confirm=Preden omogočite vmesni način etherneta, dvakrat potrdite nastavitve omrežja WiFi, kot so navedene spodaj.
++AiMesh_EAP_WiFi_Settings_Confirm=Preden omogočite Samo ethernetno vmesno omrežje, dvakrat potrdite nastavitve omrežja WiFi, kot so navedene spodaj.
+ AiMesh_EAP_WiFi_Node01=Ta funkcija je na voljo samo, če so vsa vozlišča povezana z ethernetnim kablom.
+ AiMesh_EAP_WiFi_Node02=Naslednja vozlišča niso povezana z ethernetnim kablom.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Če želite sprostiti več brezžične pasovne širine za povezavo končnih naprav, lahko omogočite način ethernetnega vmesnega omrežja.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Vozlišča, povezana s kablom, že samodejno uporabljajo ethernetno vmesno omrežje, WiFi pa služi kot rezerva. To možnost vklopite, če želite uporabljati samo žične povezave in sprostiti več brezžične pasovne širine za svoje naprave. Vozlišče, katerega kabel odpove, preide v način brez povezave, namesto da bi preklopilo na WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Trenutno je vaš sistem AiMesh zgrajen z žično povezavo. Ta funkcija pomaga optimizirati vaše omrežje le, če uporabljate brezžično povezavo.
+ AiMesh_System_Reboot=Vnovični zagon sistema
+ AiMesh_System_Reboot_Hint=Usmerjevalnik in vozlišča v sistemu AiMesh se bodo znova zagnali.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Skupina lahko vsebuje največ 16 članov.
++RFW_324=Območje lahko vsebuje največ 8 vmesnikov.
++RFW_325=Shranite lahko največ 64 pravilnikov območij - najprej enega odstranite.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamicno
+ RWFP_114=V dinamicnem nacinu se izbere samodejno.
+ RWFP_115=Najprej izberite Dinamicno.
+ RWFP_116=Dinamicno
++RDST_78=Usmerjevalnik ne more preveriti tega datotečnega sistema. Disk preverite v računalniku.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 03ae4825f9..2a907fa042 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet kommer att ändra systemets anslutningstyp til
+ AiMesh_Node_ConnPrio_Auto_Desc=Systemet anpassar anslutningstypen mellan trådbundet och trådlöst baserat på den aktuella anslutningens kvalitet/status.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Ethernet först
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Systemet prioriterar Ethernetanslutning.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=När Ethernet-basnät-läge är aktiverat använder systemet endast trådbunden anslutning som Ethernet-basnät.
++AiMesh_Node_ConnPrio_EAP_Enabled01=När Endast Ethernet-basnät är aktiverat använder systemet bara trådbundna anslutningar som basnät.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Du kan välja automatisk (Ethernet-baserat) för att använda en av WAN-portarna eller den föredragna WAN-porten.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Ethernet endast
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet-baserat
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Om du använder en kabelansluten uppkoppling, kontyrollera a
+ AiMesh_OfflineTips5=Om du ändå har problem, återställ AiMesh-noden genom att trycka på knappen \"Reset\" (Återställ) för att lägga till noden.
+ AiMesh_Pairing=Vänta tills andra AiMesh-noder har länkats.
+ AiMesh_Router=AiMesh-router
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet-basnät-läge
++AiMesh_Ethernet_Backhaul_Mode=Endast Ethernet-basnät
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=För att vara säker på att få en bra anslutning med ditt AiMesh-system behöver du kontrollera att du anslutit nod(erna) till uppströms-AP med ethernetkabel(lar).
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Annars kan din nod(er) förlora sin uppströmsanslutning.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Om du redan har konfigurerat anslutningsprioritet för nod(er) behöver du bekräfta att din konfiguration är överensstämmande.
+-AiMesh_EAP_WiFi_Settings_Confirm=Innan basnätsläget med Ethernet aktiveras ber vi dig bekräfta dina WiFi-nätverksinställningar enligt nedan.
++AiMesh_EAP_WiFi_Settings_Confirm=Innan Endast Ethernet-basnät aktiveras ber vi dig bekräfta dina WiFi-nätverksinställningar enligt nedan.
+ AiMesh_EAP_WiFi_Node01=De här funktionen är bara tillgänglig när varje nod är ansluten med en Ethernetkabel.
+ AiMesh_EAP_WiFi_Node02=Följande nod(er) är inte för närvarande inte anslutna med en Ethernetkabel.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=För att frigöra mer trådlös bandbredd för ändenheter som ska anslutas kan du aktivera Ethernet-basnät-läge.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Trådanslutna noder använder redan Ethernet-basnät automatiskt, med WiFi som reserv. Slå på detta för att bara använda trådbundna anslutningar och frigöra mer trådlös bandbredd för dina enheter. En nod vars kabel slutar fungera kopplas från i stället för att växla till WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=För närvarande är ditt AiMesh-system byggt med en trådbunden anslutning. Denna funktion hjälper till att optimera ditt nätverk endast när du använder en trådlös anslutning.
+ AiMesh_System_Reboot=Systemomstart
+ AiMesh_System_Reboot_Hint=Din router och noden(erna) i AiMesh-systemet kommer att startas om.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=En grupp kan innehålla högst 16 medlemmar.
++RFW_324=En zon kan innehålla högst 8 gränssnitt.
++RFW_325=Högst 64 zonpolicyer kan sparas - ta bort en först.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dynamisk
+ RWFP_114=Vaeljs automatiskt i dynamiskt laege.
+ RWFP_115=Vaelj Dynamisk foerst.
+ RWFP_116=Dynamisk
++RDST_78=Routern kan inte kontrollera det här filsystemet. Kontrollera disken på en dator i stället.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index ab2de36de7..f3e6a8b4f0 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=อีเธอร์เน็ตจะเปลี่
+ AiMesh_Node_ConnPrio_Auto_Desc=ระบบจะปรับชนิดของการเชื่อมต่อระหว่างแบบใช้สายและแบบไร้สาย ตามสถานะ/คุณภาพของการเชื่อมต่อปัจจุบัน
+ AiMesh_Node_ConnPrio_Eth_First_Title=อีเทอร์เน็ตก่อน
+ AiMesh_Node_ConnPrio_Eth_First_Desc=ระบบจะจัดระดับความสำคัญของการเชื่อมต่ออีเทอร์เน็ต
+-AiMesh_Node_ConnPrio_EAP_Enabled01=เมื่อเปิดใช้งานโหมดการเชื่อมต่อแบบ Backhaul ผ่านอีเทอร์เน็ต ระบบจะใช้เฉพาะการเชื่อมต่อแบบใช้สายเท่านั้นเป็นการเชื่อมต่อแบบ Backhaul ผ่านอีเทอร์เน็ต
++AiMesh_Node_ConnPrio_EAP_Enabled01=เมื่อเปิดใช้งาน Backhaul ผ่านอีเทอร์เน็ตเท่านั้น ระบบจะใช้เฉพาะการเชื่อมต่อแบบใช้สายเป็น Backhaul
+ AiMesh_Node_ConnPrio_EAP_Enabled02=คุณสามารถเลือก 'อัตโนมัติ' (ยึดตามอีเทอร์เน็ต) เพื่อใช้ WAN หนึ่งเครือข่าย หรือพอร์ต WAN ที่ต้องการ
+ AiMesh_Node_ConnPrio_Eth_Only_Title=เฉพาะอีเทอร์เน็ตเท่านั้น
+ AiMesh_Node_ConnPrio_Eth_Based_Title=ยึดตามอีเทอร์เน็ต
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=หากคุณกำลังใช้การเชื
+ AiMesh_OfflineTips5=หากยังคงมีปัญหาโปรดรีเซ็ตโหนด AiMesh ของคุณโดยการกดที่ \"Reset button (ปุ่มรีเซ็ต)\"และลองเพิ่มโหนดนี้
+ AiMesh_Pairing=โปรดรอให้โหนด AiMesh อื่นๆทำการจับคู่ให้เสร็จสิ้น
+ AiMesh_Router=เราเตอร์ AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=โหมดการเชื่อมต่อแบบ Backhaul ผ่านอีเทอร์เน็ต
++AiMesh_Ethernet_Backhaul_Mode=Backhaul ผ่านอีเทอร์เน็ตเท่านั้น
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=เพื่อการเชื่อมต่อที่ดีสำหรับระบบ AiMesh ของคุณ กรุณาตรวจสอบให้แน่ใจว่าคุณได้เชื่อมต่อโหนดทั้งหมดกับจุดเข้าใช้งานของการเชื่อมโยงขึ้น (Uplink) ด้วยสายอีเทอร์เน็ตแล้ว
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=มิเช่นนั้น โหนดของคุณอาจสูญเสียการเชื่อมต่อแบบการเชื่อมโยงขึ้น (Uplink)
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=ถ้าคุณได้เซ็ตอัพลำดับความสำคัญของการเชื่อมต่อสำหรับโหนดต่างๆ ไว้แล้ว กรุณายืนยันว่าการเซ็ตอัพของคุณสอดคล้องกับลำดับความสำคัญดังกล่าว
+-AiMesh_EAP_WiFi_Settings_Confirm=ก่อนที่จะเปิดใช้งานโหมดการเชื่อมต่อแบบ Backhaul ผ่านอีเทอร์เน็ต กรุณายืนยันการตั้งค่าเครือข่าย WiFi ของคุณอีกครั้งตามรายละเอียดด้านล่างนี้
++AiMesh_EAP_WiFi_Settings_Confirm=ก่อนเปิดใช้งาน Backhaul ผ่านอีเทอร์เน็ตเท่านั้น กรุณายืนยันการตั้งค่าเครือข่าย WiFi ของคุณอีกครั้งตามรายละเอียดด้านล่างนี้
+ AiMesh_EAP_WiFi_Node01=ฟีเจอร์นี้สามารถใช้งานได้ หลังจากที่เชื่อมต่อโหนดทั้งหมดด้วยสายอีเทอร์เน็ตแล้วเท่านั้น
+ AiMesh_EAP_WiFi_Node02=คุณยังไม่ได้เชื่อมต่อโหนดต่อไปนี้ด้วยสายอีเทอร์เน็ตเลยในขณะนี้
+-AiMesh_Ethernet_Backhaul_Mode_Hint=หากต้องการให้มีแบนด์วิธแบบไร้สายที่สูงกว่านี้ เพื่อให้อุปกรณ์ของผู้ใช้งานปลายทางเชื่อมต่อ คุณสามารถเปิดใช้งานโหมดการเชื่อมต่อแบบ Backhaul ผ่านอีเทอร์เน็ต
++AiMesh_Ethernet_Backhaul_Mode_Hint=โหนดที่เชื่อมต่อด้วยสายจะใช้ Backhaul ผ่านอีเทอร์เน็ตโดยอัตโนมัติอยู่แล้ว โดยมี WiFi เป็นการเชื่อมต่อสำรอง เปิดตัวเลือกนี้เพื่อใช้เฉพาะการเชื่อมต่อแบบใช้สายและเพิ่มแบนด์วิดท์ไร้สายให้กับอุปกรณ์ของคุณ โหนดที่สายเกิดขัดข้องจะออฟไลน์แทนที่จะสลับไปใช้ WiFi
+ AiMesh_Ethernet_Backhaul_Connect_Hint=ปัจจุบันระบบ AiMesh ของคุณถูกสร้างขึ้นด้วยการเชื่อมต่อแบบใช้สาย ฟังก์ชันนี้ช่วยเพิ่มประสิทธิภาพเครือข่ายของคุณได้เฉพาะเมื่อใช้การเชื่อมต่อแบบไร้สาย
+ AiMesh_System_Reboot=การเริ่มระบบใหม่
+ AiMesh_System_Reboot_Hint=เราเตอร์ของคุณและโหนดในระบบ AiMesh กำลังจะเริ่มระบบใหม่
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=กลุ่มหนึ่งมีสมาชิกได้สูงสุด 16 รายการ
++RFW_324=โซนหนึ่งมีอินเทอร์เฟซได้สูงสุด 8 รายการ
++RFW_325=บันทึกนโยบายโซนได้สูงสุด 64 รายการ - โปรดลบหนึ่งรายการก่อน
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=ไดนามิก
+ RWFP_114=เลือกโดยอัตโนมัติในโหมดไดนามิก
+ RWFP_115=เลือกไดนามิกก่อน
+ RWFP_116=ไดนามิก
++RDST_78=เราเตอร์ไม่สามารถตรวจสอบระบบไฟล์นี้ได้ โปรดตรวจสอบดิสก์บนคอมพิวเตอร์
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index ea1b17aa81..e69716700c 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet, sisteminizin bağlantı türünü kablolu ola
+ AiMesh_Node_ConnPrio_Auto_Desc=Sistem geçerli bağlantı kalitesine/durumuna göre kablolu veya kablosuz arasındaki bağlantı türüne uyum sağlayacak.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Önce Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Sistem Ethernet bağlantısını önceliklendirecek.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Ethernet backhaul modu etkinleştirildiğinde, sistem Ethernet backhaul’u olarak sadece kablolu bağlantı kullanacak.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Yalnızca Ethernet Backhaul etkinleştirildiğinde, sistem backhaul olarak yalnızca kablolu bağlantıları kullanır.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=WAN’lardan birini veya tercih edilen WAN portunu kullanmak için oto (Ethernet tabanlı) öğesini seçebilirsiniz.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Sadece Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=Ethernet tabanlı
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Kablolu bağlantı kullanıyorsanız, lütfen kablonun uygun
+ AiMesh_OfflineTips5=Sorun yaşamaya devam ederseniz, lütfen \"Sıfırlama düğmesine\" basarak AiMesh düğümünüzü sıfırlayıp bu düğümü tekrar eklemeyi deneyin.
+ AiMesh_Pairing=Lütfen diğer AiMesh düğümlerinin eşleştirmeyi tamamlamasını bekleyin.
+ AiMesh_Router=AiMesh yönlendirici
+-AiMesh_Ethernet_Backhaul_Mode=Ethernet Backhaul Modu
++AiMesh_Ethernet_Backhaul_Mode=Yalnızca Ethernet Backhaul
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=AiMesh sisteminizde iyi bir bağlantı kurmak için lütfen tüm düğümü ethernet kablosu/kabloları ile üst bağlantı AP’sine bağladığınızdan emin olun.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=Aksi takdirde, düğümünüz/düğümleriniz üst bağlantı bağlantısını kaybedecektir.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Düğüm/düğümler için bağlantı önceliğini zaten ayarladıysanız, lütfen ayar eşleşmenizi uygun şekilde onaylayın.
+-AiMesh_EAP_WiFi_Settings_Confirm=Ethernet backhaul modunu etkinleştirmeden önce lütfen WiFi ağ ayarlarınızın aşağıdaki gibi olduğunu kontrol edin.
++AiMesh_EAP_WiFi_Settings_Confirm=Yalnızca Ethernet Backhaul özelliğini etkinleştirmeden önce lütfen WiFi ağ ayarlarınızın aşağıdaki gibi olduğunu kontrol edin.
+ AiMesh_EAP_WiFi_Node01=Bu özellik, sadece tüm düğümler bir Ethernet kablosu ile bağlı olduğunda kullanılabilir.
+ AiMesh_EAP_WiFi_Node02=Aşağdaki düğümler şu anda bir Ethernet kablosuyla bağlı değil.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Uç cihazların bağlanması için daha fazla kablosuz bant genişliği serbest bırakmak istiyorsanız, Ethernet backhaul modunu etkinleştirebilirsiniz.
++AiMesh_Ethernet_Backhaul_Mode_Hint=Kablolu düğümler zaten otomatik olarak Ethernet backhaul kullanır ve WiFi yedek olarak kalır. Yalnızca kablolu bağlantıları kullanmak ve cihazlarınız için daha fazla kablosuz bant genişliği boşaltmak için bunu açın. Kablosu arızalanan bir düğüm WiFi bağlantısına geçmek yerine çevrimdışı olur.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Şu anda AiMesh sisteminiz kablolu bağlantı ile yapılandırılmış durumda. Bu işlev yalnızca kablosuz bağlantı kullanırken ağınızı optimize etmeye yardımcı olur.
+ AiMesh_System_Reboot=Sistemi yeniden başlatma
+ AiMesh_System_Reboot_Hint=AiMesh sistemindeki yönlendiriciniz ve düğümleriniz yeniden başlatılacak.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Bir grup en fazla 16 üye içerebilir.
++RFW_324=Bir bölge en fazla 8 arayüz içerebilir.
++RFW_325=En fazla 64 bölge ilkesi kaydedilebilir - önce birini kaldırın.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Dinamik
+ RWFP_114=Dinamik modda otomatik secilir.
+ RWFP_115=Once Dinamik secin.
+ RWFP_116=Dinamik
++RDST_78=Yönlendirici bu dosya sistemini denetleyemez. Diski bir bilgisayarda denetleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index d9590906ac..a6b303874c 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=【乙太網路】將會將系統連線類型更改為
+ AiMesh_Node_ConnPrio_Auto_Desc=系統將依據目前的連線品質/狀態在有線和無線之間切換連線類型。
+ AiMesh_Node_ConnPrio_Eth_First_Title=乙太網路優先
+ AiMesh_Node_ConnPrio_Eth_First_Desc=系統將優先使用乙太網路連線。
+-AiMesh_Node_ConnPrio_EAP_Enabled01=啟用乙太網路回傳模式時，系統只會使用有線連線做為乙太網路回傳網路。
++AiMesh_Node_ConnPrio_EAP_Enabled01=啟用僅限乙太網路回傳時，系統只會使用有線連線做為回傳。
+ AiMesh_Node_ConnPrio_EAP_Enabled02=您可以選擇自動模式 (依據乙太網路)，來使用 WAN 或偏好的 WAN 通訊埠。
+ AiMesh_Node_ConnPrio_Eth_Only_Title=僅使用乙太網路
+ AiMesh_Node_ConnPrio_Eth_Based_Title=依據乙太網路
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=若您正在使用有線連線，請確認網路線已正確
+ AiMesh_OfflineTips5=若仍存在問題，請按下 \"Reset\" (重置按鈕) 重置您的 AiMesh 節點並嘗試重新新增此節點。
+ AiMesh_Pairing=請等待其它 AiMesh 節點配對完成。
+ AiMesh_Router=AiMesh 路由器
+-AiMesh_Ethernet_Backhaul_Mode=乙太網路回程模式
++AiMesh_Ethernet_Backhaul_Mode=僅限乙太網路回傳
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=為確保 AiMesh 系統的良好連線狀況，請確認 AiMesh 系統內所有節點皆使用乙太網路線連接。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=如否，您的節點可能會中斷其上行鏈路連線。
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=如果您已為節點設定連線優先順序，請確認與您的設定正確相符。
+-AiMesh_EAP_WiFi_Settings_Confirm=啟用乙太網路回傳模式前，請再次確認您的 WiFi 網路設定如下。
++AiMesh_EAP_WiFi_Settings_Confirm=啟用僅限乙太網路回傳前，請再次確認您的 WiFi 網路設定如下。
+ AiMesh_EAP_WiFi_Node01=僅在所有節點都透過網路線連接時，才能使用此功能。
+ AiMesh_EAP_WiFi_Node02=以下節點未使用網路線正確連接。
+-AiMesh_Ethernet_Backhaul_Mode_Hint=若要釋出更多無線頻寬供端點裝置連線，您可以啟用乙太網路回傳模式。
++AiMesh_Ethernet_Backhaul_Mode_Hint=以有線連接的節點已會自動使用乙太網路回傳，並以 WiFi 作為備援。開啟此選項後只使用有線連線，可為您的裝置釋出更多無線頻寬。節點的網路線一旦故障，該節點將會離線，而不會改用 WiFi。
+ AiMesh_Ethernet_Backhaul_Connect_Hint=您當前的 AiMesh 系統是通過有線連接。此功能僅在使用無線連接時有助於優化您的網路。
+ AiMesh_System_Reboot=系統重新啟動
+ AiMesh_System_Reboot_Hint=您 AiMesh 中的路由器與節點將被重新啟動。
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=一個群組最多可包含 16 個成員。
++RFW_324=一個區域最多可包含 8 個介面。
++RFW_325=最多可儲存 64 條區域原則，請先刪除一條。
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=動態
+ RWFP_114=在動態模式下自動選擇。
+ RWFP_115=請先選擇動態。
+ RWFP_116=動態
++RDST_78=路由器無法檢查此檔案系統。請在電腦上檢查該磁碟。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index fa6edec79b..677ddf41b0 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -1392,7 +1392,7 @@ AiMesh_Node_ConnPrio_Eth=Ethernet змінить тип підключення 
+ AiMesh_Node_ConnPrio_Auto_Desc=Система змінить тип з’єднання, вибравши дротове або бездротове, залежно від поточної якості або статусу підключення.
+ AiMesh_Node_ConnPrio_Eth_First_Title=Спершу Ethernet
+ AiMesh_Node_ConnPrio_Eth_First_Desc=Система надаватиме пріоритет з’єднанню Ethernet.
+-AiMesh_Node_ConnPrio_EAP_Enabled01=Коли активовано режим «Backhaul-мережа Ethernet», система використовуватиме лише проводове з’єднання для backhaul-мережі Ethernet.
++AiMesh_Node_ConnPrio_EAP_Enabled01=Коли увімкнено режим Backhaul лише через Ethernet, система використовує для backhaul лише проводові з’єднання.
+ AiMesh_Node_ConnPrio_EAP_Enabled02=Ви можете вибрати автоматичний режим (на базі Ethernet) для використання одного з WAN-портів або основного порта WAN.
+ AiMesh_Node_ConnPrio_Eth_Only_Title=Лише Ethernet
+ AiMesh_Node_ConnPrio_Eth_Based_Title=На базі Ethernet
+@@ -1453,14 +1453,14 @@ AiMesh_OfflineTips4=Якщо ви користуєтеся дротовим пі
+ AiMesh_OfflineTips5=Якщо проблеми продовжуються, скиньте Вузол AiMesh, натиснувши Reset button (Кнопка скидання) і повторіть спробу додати цей вузол.
+ AiMesh_Pairing=Почекайте поки інші вузли AiMesh будуть готові, щоб завершити поєднання в пару.
+ AiMesh_Router=Маршрутизатор AiMesh
+-AiMesh_Ethernet_Backhaul_Mode=Режим «Backhaul-мережа Ethernet»
++AiMesh_Ethernet_Backhaul_Mode=Backhaul лише через Ethernet
+ AiMesh_Ethernet_Backhaul_Mode_Confirm=Щоб забезпечити якісний зв’язок із вашою системою AiMesh, переконайтеся, що всі вузли підключено до точки доступу висхідного каналу зв’язку за допомогою кабелів Ethernet.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm01=В іншому разі ваші вузли можуть втратити висхідне з’єднання.
+ AiMesh_Ethernet_Backhaul_Mode_Confirm02=Ви вже налаштували пріоритет з’єднання для вузлів, підтвердьте відповідні налаштування.
+-AiMesh_EAP_WiFi_Settings_Confirm=Перш ніж вмикати режим «Backhaul-мережа Ethernet», двічі підтвердьте налаштування мережі WiFi, як показано нижче.
++AiMesh_EAP_WiFi_Settings_Confirm=Перш ніж вмикати Backhaul лише через Ethernet, двічі підтвердьте налаштування мережі WiFi, як показано нижче.
+ AiMesh_EAP_WiFi_Node01=Ця функція доступна, тільки коли всі вузли підключено за допомогою кабелю Ethernet.
+ AiMesh_EAP_WiFi_Node02=Наразі наведені нижче вузли не підключено за допомогою кабелю Ethernet.
+-AiMesh_Ethernet_Backhaul_Mode_Hint=Щоб забезпечити більшу пропускну здатність бездротового з’єднання для підключення кінцевих пристроїв, ви можете активувати режим «Backhaul-мережа Ethernet».
++AiMesh_Ethernet_Backhaul_Mode_Hint=Вузли, підключені кабелем, уже автоматично використовують Ethernet як backhaul, а WiFi слугує резервом. Увімкніть цей параметр, щоб використовувати лише проводові з’єднання та звільнити більше пропускної здатності бездротової мережі для ваших пристроїв. Вузол, у якого пошкодиться кабель, перейде в офлайн, а не на WiFi.
+ AiMesh_Ethernet_Backhaul_Connect_Hint=Зараз ваша система AiMesh побудована з дротовим підключенням. Ця функція допомагає оптимізувати мережу лише при використанні бездротового підключення.
+ AiMesh_System_Reboot=Перезавантаження системи
+ AiMesh_System_Reboot_Hint=Ваш маршрутизатор і вузли в системі AiMesh буде перезавантажено.
+@@ -7002,6 +7002,9 @@ RSYS_40=IP address
+ RSYS_41=headroom
+ RFW_321=not armed: the firewall master switch is off (or the router is in access-point mode)
+ RFW_322=Stand-in addresses, used to walk the rules - not devices on your network
++RFW_323=Група може містити не більше 16 учасників.
++RFW_324=Зона може містити не більше 8 інтерфейсів.
++RFW_325=Можна зберегти не більше 64 політик зон - спочатку видаліть одну.
+ RTRF_77=Per-device accounting is not available in %1 mode. The Traffic Analyzer accounts from the connection tracking table, which a bridging router never populates, so the collector is deliberately left idle. This is not a fault.
+ RWFP_40=Network name, security, Wi-Fi 6/7 mode and Smart Connect are set on the Network menu.
+ RWFP_41=A change to the USB 3.0 interference setting reboots the router instead.
+@@ -7088,3 +7091,4 @@ RWFP_113=Динамічний
+ RWFP_114=Вибирається автоматично в динамічному режимі.
+ RWFP_115=Спочатку виберіть Динамічний.
+ RWFP_116=Динамічний
++RDST_78=Роутер не може перевірити цю файлову систему. Перевірте диск на комп’ютері.
+-- 
+2.25.1
+

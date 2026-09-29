@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.2.8** · 2026-09-27 <!--@stamp-->
+> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.8 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.2.9 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -113,7 +113,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.14a [Resolver health check](#414a-resolver-health-check-administration--dns-failover-v311)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
-   - 4.17 [Tools → Other Settings: the Reaper switches](#417-tools--other-settings-the-reaper-switches)
+   - 4.17 [Administration → Tweaks: the Reaper setting](#417-administration--tweaks-the-reaper-setting)
 5. [Efficiency and good practice](#5-efficiency-and-good-practice)
 6. [Troubleshooting quick table](#6-troubleshooting-quick-table)
 7. [Glossary](#7-glossary)
@@ -317,7 +317,7 @@ The **auto-revert timer** is set on the Firewall page (Rules tab): default **60 
 Three consequences worth knowing:
 
 - **A change still awaiting confirmation at a reboot boots the last confirmed rules**, not the pending ones (v2.5.0 closed a hole where an unrelated save could have carried a pending rule across a reboot).
-- On Policy Routing, **Keep is the only thing that writes flash**; the confirmed list is the snapshot on `/jffs`.
+- On the Firewall and Policy Routing pages, **Keep is what writes flash**; each page's confirmed lists are its snapshot on `/jffs`. A Policy Routing Keep also saves the address objects and groups it uses into the firewall's snapshot, because the two pages share them. If `/jffs` is too full to save, Keep leaves the rules live, keeps your edits as a draft and says so on the page; the previous confirmed rules are what a reboot brings back.
 - Test from a device that is **not** itself affected by the rule you are testing, so that the browser you are using is not the thing that gets cut off while you look for the Keep button.
 
 The Firewall page's other tabs (General, Network Services, URL Filter, Keyword Filter) are the long-standing Asuswrt controls and apply straight away with no countdown. The Firewall Status tab tells you what is actually live; what you configured and what is live can differ while a restart is in flight or if a ruleset failed to build.
@@ -401,7 +401,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
-- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Tools → Other Settings in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
+- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
 - **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
 
 ---
@@ -524,6 +524,7 @@ Because an explicit rule beats an Egress default, which beats a Zone policy, you
 - **A long list pastes in one go.** Domain and address lists take one entry per line or comma-separated, and the editor normalises the whitespace and line endings for you, so a forty-domain object goes in as a single paste rather than a few entries at a time. If something in the paste cannot be accepted the editor says so and keeps saying so — it never silently drops the remainder. These lists live on the router's internal flash (`/jffs`), not in nvram, which is what lifted the old size ceiling; a 40-domain object therefore saves only from v2.6.9 onward.
 - **MAC objects** only work as a *source* on traffic into or through the router. A MAC address does not survive being routed, so it cannot be used as a destination or on outbound traffic.
 - **Object names** are restricted to letters, digits and underscores; anything else is dropped and logged.
+- **A group holds at most 16 members.** The page refuses a larger one; split it into two groups.
 - **Country objects** are owned by Warden, not by this engine — set them up on the Warden page.
 
 #### 4.1.5 Zones
@@ -534,7 +535,7 @@ Because an explicit rule beats an Egress default, which beats a Zone policy, you
 
 **Example.** Define a zone `guest` with interface `br1`, and a zone `lan` with `br0`. Add a zone policy: source `guest`, destination `lan`, action `Drop`. Guests can now reach the internet but nothing on your home network — and you have not written a single address anywhere.
 
-**Worth knowing.** A zone policy is the weakest statement in the engine; both explicit Rules and Egress defaults override it. That is what makes "deny everything, then allow what I need" workable.
+**Worth knowing.** A zone policy is the weakest statement in the engine; both explicit Rules and Egress defaults override it. That is what makes "deny everything, then allow what I need" workable. A zone holds at most 8 interfaces (a `+` wildcard counts as one), and at most 64 zone policies can be saved; the page refuses more.
 
 #### 4.1.6 Egress
 
@@ -782,7 +783,7 @@ A held device that opens a web page sees a themed **"Awaiting approval"** notice
 4. Choose the **direction** (4.3.6).
 5. Add any **whitelist** and **manual block** entries, one address or CIDR per line (4.3.5).
 6. Decide on **Log dropped packets**, the statistics options, and whether to **also filter the router itself** (4.3.6).
-7. **Save & Apply**, then press **Update feeds now** for the first fetch. Afterwards feeds refresh on the schedule in Tools → Other Settings (default 04:30 daily).
+7. **Save & Apply**, then press **Update feeds now** for the first fetch. Afterwards feeds refresh on the schedule in Administration → Tweaks (default 04:30 daily).
 
 #### 4.3.2 The order it decides in
 
@@ -1409,9 +1410,9 @@ Its fences: **off by default** and never started at boot; **LAN only** (it binds
 
 **Limits.** Repeated wrong codes lock arming temporarily. The diagnostics tier refuses loopback, link-local, ULA and private targets that are not on this router's own LAN, so it cannot be turned into an internal scanner; every probe is logged. If the key is lost, only a factory reset clears the USB factor.
 
-### 4.17 Tools → Other Settings: the Reaper switches
+### 4.17 Administration → Tweaks: the Reaper setting
 
-One setting under the **Reaper** heading, with a **?** beside it:
+The menu names this tab **Tweaks**, under **Administration**. There is no Tools menu. One setting sits under the **Reaper** heading, with a **?** beside it:
 
 - **Warden feed update schedule** — cron format; empty = 04:30 daily.
 

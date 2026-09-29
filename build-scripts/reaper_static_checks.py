@@ -590,9 +590,11 @@ def check_pbr_fwmark_regex(router):
 # a CGI that writes a weak auth mode or an unbounded key. Lock the contract:
 #   page   : exists, calls the CGI with http_id, uses httpApi.chpass, enforces
 #            the 8..63 key bound client-side, fires the exact action_script chain
+#            (ending in restart_sdn since v3.2.9)
 #   web.c  : the CGI exists, gates BEFORE any nvram write, writes auth_mode_x
 #            only as "sae"/"psk2sae", enforces 8..63, turns Smart Connect on,
-#            commits, never restarts services itself, registered with do_auth
+#            runs sync_apgx_to_wlunit before it commits (v3.2.9), commits,
+#            never restarts services itself, registered with do_auth
 #   inject : the banner CTA points at the page; the page is in reaper_skip[] and
 #            reaper_css_only[] (theme yes, bounce no) and NOT in reaper_banner_only[]
 #   dicts  : every pack carries the same RWFS_ set as EN; the page uses only those
@@ -610,7 +612,7 @@ def check_firstboot_wifi(router):
         ("/reaper_wifisetup.cgi", "page does not call reaper_wifisetup.cgi"),
         ("http_id=", "page does not send http_id to the CGI"),
         ("httpApi.chpass(", "page does not change the login password through httpApi.chpass"),
-        ('"saveNvram;restart_chpass;restart_wireless"', "page does not fire the saveNvram;restart_chpass;restart_wireless chain"),
+        ('"saveNvram;restart_chpass;restart_wireless;restart_sdn"', "page does not fire the saveNvram;restart_chpass;restart_wireless;restart_sdn chain"),
         ('"saveNvram;restart_chpass"', "page has no password-only fallback apply (rule 28)"),
         ('current_page" value="Reaper_WiFiSetup.asp"', "form current_page is not the page itself"),
     ]:
@@ -643,6 +645,11 @@ def check_firstboot_wifi(router):
             bad.append("CGI does not turn Smart Connect on")
         if "nvram_commit()" not in body:
             bad.append("CGI does not commit")
+        # v3.2.9: without the SDN reconcile a factory box keeps the lone DEFAULT
+        # sdn_rl row and the Network page's main card cannot be opened.
+        sy = body.find("sync_apgx_to_wlunit(NULL)")
+        if sy < 0 or sy > body.find("nvram_commit()"):
+            bad.append("CGI does not run sync_apgx_to_wlunit before its commit (the SDN reconcile)")
         if "notify_rc(" in body:
             bad.append("CGI restarts services itself (the page must chain the restart behind the password apply)")
     if not re.search(r'\{\s*"reaper_wifisetup\.cgi\*",[^\n]*do_reaper_wifisetup_cgi,\s*do_auth\s*\}', web):

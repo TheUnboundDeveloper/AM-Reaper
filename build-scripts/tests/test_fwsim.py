@@ -364,6 +364,45 @@ try:
     check("F1: no rows while the rules engine is disabled",
           not any(i.startswith("F1.") for i in ids), ids)
 
+    # F1 zones (v1.7, field 2026-09-29): record field 3 is the source zone and
+    # 5 the destination zone, and the emitter matches `-i` on the source
+    # zone. v1.6 aimed every in/fwd witness from br0, so the owner's VLAN52
+    # "in drop" rules were judged by the stock `-i br0 NEW ACCEPT` (false red)
+    # and a VLAN-only accept by the same rule (false green).
+    ZADDR = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
+    FWZONE = "reaper_fw_zone=<lan>br0>c<VLAN52>br55>c<wan>eth0>c<dmz>br99>c\n"
+    def zfwnv(rules):
+        return fwnv(rules) + FWZONE
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>drop>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z1")
+    x = wit(j, "F1.1")
+    check("F1 zone: an `in` rule on VLAN52 enters on br55 from its own subnet, aimed at the router's br55 address",
+          x and x["witness"].startswith("br55 10.20.0.123 -> 10.20.0.1 tcp:443"), x)
+    check("F1 zone: the owner's case - a VLAN drop rule is not judged by the LAN accept (green via the chain's DROP)",
+          x and x["expect"] == "DROP" and x["state"] == "green" and "-i br0" not in x["rule"], x)
+    check("F1 zone: the label names the zone when no source object is set",
+          x and "in VLAN52 web is drop" in x["feature"], x)
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>accept>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z2")
+    x = wit(j, "F1.1")
+    check("F1 zone neg: a VLAN accept rule the table does not keep is RED (v1.6 read it green off the br0 accept)",
+          x and x["expect"] == "ACCEPT" and x["state"] == "red", x)
+    keep = SAVE4.replace("-A INPUT -i br0 -m state --state NEW -j ACCEPT\n",
+                         "-A INPUT -i br55 -p tcp -m tcp --dport 443 -j ACCEPT\n-A INPUT -i br0 -m state --state NEW -j ACCEPT\n")
+    j, out, rc = run(save4=keep, addr=ZADDR, nv=zfwnv("<1>in>accept>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z3")
+    x = wit(j, "F1.1")
+    check("F1 zone: the same accept is green once the table accepts it on br55",
+          x and x["state"] == "green" and "-i br55" in x["rule"], x)
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>drop>dmz>>>>web>>>0>1>c"), witness=None, tag="f1z4")
+    check("F1 zone: a zone with no live interface emits NO row - an absent segment is not a broken rule",
+          wit(j, "F1.1") is None, [i["id"] for i in j["witnesses"] if i["id"].startswith("F1")])
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>fwd>drop>lan>>VLAN52>>web>>>0>1>c"), witness=None, tag="f1z5")
+    x = wit(j, "F1.1")
+    check("F1 zone: a forward rule aims at .124 in its destination zone, entering on the source zone",
+          x and x["witness"].startswith("br0 192.168.50.123 -> 10.20.0.124 tcp:443") and "lan -> VLAN52" in x["feature"], x)
+    j, out, rc = run(addr=ZADDR, nv=fwnv("<1>in>drop>>>>>web>>>0>1>c"), witness=None, tag="f1z6")
+    x = wit(j, "F1.1")
+    check("F1 zone: a rule with no zone still enters on the LAN bridge (unchanged)",
+          x and x["witness"].startswith("br0 192.168.50.") and "in any web is drop" in x["feature"], x)
+
     # C7: the walker reads the live REAPER_PBR chain. The fixture's chain is
     # called PBR, so name it the way the router does.
     pbr = SAVE4.replace(":PBR - [0:0]", ":REAPER_PBR - [0:0]").replace("-j PBR", "-j REAPER_PBR").replace("-A PBR ", "-A REAPER_PBR ")
@@ -615,7 +654,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.6", j.get("ver") == "1.6", j.get("ver"))
+    check("pass2: walker is v1.7", j.get("ver") == "1.7", j.get("ver"))
 
     # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
     j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")

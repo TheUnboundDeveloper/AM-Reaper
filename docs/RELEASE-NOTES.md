@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.8** · 2026-09-27 <!--@stamp-->
+> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.8** <!--@treever--> — `3006.102.8_Reaper_v3.2.8`. **Preamble puncturing, static and dynamic, and a Dual WAN that settles at boot.** Wi-Fi 7 radios can switch off one busy slice of a wide channel instead of narrowing it, either as a fixed setting or chosen by a slow controller; the two lines of a Dual WAN no longer fail each other over from boot; nine stock WAN-watchdog defects are fixed; add-on installers find their menu anchor again; three strongSwan CVEs and one kernel CVE are fixed. The code was built and verified on RT-BE96U MCP test images (v3.2.7_BETA r5–r8) before the cut; the release images come from the public CI build. The series stands at **722 patches** (0718–0722 for v3.2.8); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.2.9** <!--@treever--> — `3006.102.8_Reaper_v3.2.9`. **OpenSSL 3.5.9, a first-boot box that finishes setup, and a visible Dual WAN backup.** OpenSSL moves to 3.5.9 for its High DTLS fix and five Low fixes; two more CVEs are closed (IPv6 route cache, e2fsprogs); the banner's setup box now leaves the main network usable on the Network page; USB Format and Scan reach the right disk; a Dual WAN backup line shows on the Dashboard and lights the WAN LED; dynamic puncturing survives a wireless restart; the rules engine's saved ruleset survives a full `/jffs`. The code was built and verified on RT-BE96U MCP test images (v3.2.8_BETA r1–r7) before the cut; the release images come from the public CI build. The series stands at **726 patches** (0723–0726 for v3.2.9); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,34 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.2.9 — OpenSSL 3.5.9, first-boot setup, Dual WAN backup, USB format
+
+**Security.** OpenSSL 3.5.9 fixes CVE-2026-84782 (High: a DTLS retransmission could disclose heap
+memory to the peer or crash) and five Low issues in CRL handling, QUIC and elliptic-curve timing.
+Also fixed: CVE-2023-52340 (forged IPv6 "packet too big" messages could fill the route cache and take
+IPv6 down) and CVE-2022-1304 (a crafted USB disk could crash the disk check).
+
+**First-boot setup box.** After a factory reset, setting up through the banner's box now leaves the
+main network usable on the Network page. Before, its card could not be opened until a guest network
+was added.
+
+**USB Format and Scan** act on the disk you picked (field report: Format did nothing), and a scan says
+when a FAT or exFAT disk cannot be checked.
+
+**Dual WAN.** When the backup line takes over, the Dashboard shows it as connected with its address,
+and the WAN LED lights red and white together (red alone while the backup is down).
+
+**Wireless.** Dynamic preamble puncturing no longer disturbs a radio restart (field report: a radio
+died until reboot). AiMesh "Ethernet Backhaul Mode" is renamed "Ethernet-Only Backhaul", which is
+what it does.
+
+**Firewall.** The rules engine refuses lists longer than it can apply instead of dropping the rest,
+and a save that fails for lack of space keeps your edits and the last good ruleset. Warden applies
+its rules in one batch. Rule Status now tests each rule from the zone it names.
+
+**Diagnostics** (v1.3.24) add roaming, scheduler, DFS and security settings and a warning when logs
+are kept in RAM while a USB disk is attached.
 
 ## What's new in v3.2.8 — preamble puncturing, a Dual WAN that settles at boot, and add-ons find their menu again
 

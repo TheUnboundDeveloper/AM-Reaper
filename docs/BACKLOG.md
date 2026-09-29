@@ -1,10 +1,11 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.7** · 2026-09-25 <!--@stamp-->
+> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
-**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
+**[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
+**[awaiting field]** (fixed; closes when a field tester confirms on the named image).
 
 **Priority** by impact on user-facing function: **[P1]** core function broken or at risk ·
 **[P2]** degraded function, meaningful annoyance, or privacy exposure · **[P3]** cosmetic, polish,
@@ -23,6 +24,7 @@ internal quality, or deferred by decision.
 ## Contents
 
 - [Work next](#work-next)
+- [Waiting on field response](#waiting-on-field-response)
 - [Open bugs / under investigation](#open-bugs--under-investigation)
 - [UI / UX polish](#ui--ux-polish)
 - [Features to add](#features-to-add)
@@ -35,604 +37,189 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list.
+The ordered short list. *v3.2.9 is the newest rung (cut 2026-09-29); earlier releases are in
+[`CHANGELOG.md`](CHANGELOG.md).*
 
-1. **[P1] Port forwards dead on an RT-BE88U since v3.1.0 — the full filter table never loads on
-   that box** (review R15, reopened 2026-09-13). The general fix is built in the canon tree: a refused
-   restore now names the line and applies the table without it, and rwatch and the diag report say when
-   the box is running the boot skeleton. **Root cause found 2026-09-14 and fixed in v3.1.7: it is a RACE,
-   not a bad ruleset.** This iptables (1.4.x) has no xtables lock, so `xt_replace_table()` returns EAGAIN
-   when another process changes the table between the `*filter` snapshot and `COMMIT` — and `nat-start` is
-   FORKED by `start_nat_rules()` inside `nat_setting()`, which runs BEFORE `filter_setting()`, so a user
-   `nat-start` script that touches iptables (the reporter's is `tailscale-fw.sh`) races every boot. A
-   COMMIT-line failure is now retried with the identical file up to five times (100/200/400/800 ms) before
-   any hoist/probe/drop is considered; the same loop guards the nat restore. The refused line is still
-   wanted from the reporter's router to confirm the diagnosis on that box (one command) — see the entry
-   under Open bugs. **[fix in the v3.1.7_BETA image; reporter confirmation owed]**
-2. **[P1] v3.2.3 — the stable candidate.** v3.2.3 (patches 0695–0698, cut 2026-09-20) is v3.2.2 plus the hover
-   reasons on locked Settings cells, the four-radio tester fixes (AP Isolated leaves the tab) and the
-   Warden boot deferral, autowan rate limit, rtrafd orphan fix and boot polls; v3.2.2 (0690–0694,
-   2026-09-20) added the Wireless Settings tab that replaces General and Professional (the seven rows
-   back, locked as stock locks them), the Warden counter fix and the Download/Upload labels; v3.2.1
-   (0685–0689, 2026-09-19)
-   added the Wireless Mode row's return with its 11ax coupling and the Rule Status walker fixes (C7
-   cap, H6 note, VPN label); v3.2.0 (0681–0684) added the Professional row removal, the Traffic
-   bridging-mode note and the two help-link fixes over v3.1.9. Reviewed against this file 2026-09-19: no open P1 is unfixed in tree, and the current
-   stable line, v3.1.0 (2026-09-08), lacks the v3.1.2 WireGuard kernel fix, the v3.1.5 review fixes,
-   the v3.1.7 restore-race fix and the v3.1.8 WLCSM swap. Before the stable cut: the stable channel
-   path has never run with the channel marker (v3.1.0 predates it) — a miss there is a mis-named
-   release, recoverable by re-dispatch; the manifest half is now proven — on 2026-09-19 the current
-   `refresh_manifest.py` replayed the v3.1.0 stable publish into a scratch directory and reproduced
-   main's `manifest_3006.txt` and `latest.json` byte for byte — and the image-naming half runs at
-   the first main publish;
-   GT-BE19000 stays a prerelease by design and gains no stable line; the release retention prune runs
-   after the stable (owner, 2026-09-18); code signing (3b) is not a stability item and is the same
-   posture as every stable so far. Known issues to carry in the notes: the WireGuard source-rule
-   report (fix candidates in v3.1.7 and the v3.1.9 order; reporter unconfirmed), the R15 reporter
-   confirmation. v3.2.3 becomes the stable release when Dev is merged to main after the beta has
-   soaked.
-3. **[P2] GT-BE19000 — on the roster since v3.1.4; the write-up and the diag ARRIVED 2026-09-13.**
-   The tester's report (four items) and a `reaper_diag` v1.3.14 capture from a v3.1.4_BETA_noMCP box
-   are in. **The decisive fact the report did not state: that router is in Access Point mode
-   (`sw_mode=3`)** — and three of the four items are AP-mode behaviour in Reaper code shared by every
-   model, not GT-BE19000 port defects. **All three are fixed in tree for v3.1.6**, together with a
-   fourth from the same capture (the diag's false `rtrafd` warning): the socket ceilings now load in
-   every operation mode, the dashboard counts clients from Reaper's own device store when networkmap
-   has no leases to count from, and the Internet card names the operation mode instead of painting a
-   working router red. The fix is scoped to the operation mode rather than to the model (owner,
-   2026-09-13), so a routing box behaves exactly as before and a box of any model later switched to
-   AP mode is covered too. The fifth item (duplicate menus off UPnP) is the only one still wanting
-   data. So the port itself is so far clean — nothing in the report is specific to this model. Still
-   owed with the tester: the networkmap 39995 pin check for the GT-BE98 SHM-skew class, and a
-   confirming capture from the same box on a v3.1.9 or later image (v3.1.6 is superseded and on the
-   retention prune list). The model stays a prerelease until the
-   glitch list is closed.
-   ↳ memory: `gt-be19000-port.md`
-4. **[P2] Code signing, fully automated — scheduled for a release later this week** (owner,
-  2026-09-13), after v3.1.6 is stable and the GT-BE19000 glitch list is triaged: images signed in
-  CI with an Ed25519 trailer, the manifest signing re-enabled and automated, router-side verify on
-  both install paths, and the Firmware page's pre-upload signed / NOT-signed verdict. The gate test
-  (a trailered image flashing on the BE96U) runs first and alone. Details under Features.
-5. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru-driven job dead on that box.
-6. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — the defensive half is
-   built; the root cause still wants a syslog. The suspected fault is in shared Warden code, so it
-   would affect every model.
-7. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — needs a repro.
-8. **[P3] Build one `stable` image** — the channel marker has been through real beta builds end to
-   end, but the stable path has never been exercised, and that is the path a release goes out on.
-9. **[P3] Local sibling images** — the RT-BE96U and the GT-BE19000 have local images from the
-   current tree; the RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only locally. The CI
-   matrix builds all six from the series, so this is about a local image to hold, not the release path.
-10. **[P3] CVE check 2026-08-30 residue** — the kernel one-hunk set; everything else landed in v3.1.5.
-    The 2026-09-26 crawl added one kernel backport to v3.2.8 (CVE-2026-90110, inetpeer SipHash
-    ordering; `inetpeer.o` compiled with the kernel's own command) - a kernel change, so the soak on
-    the owner's box before the cut is the gate.
-11. **[P3] Code-review tail, batch B** — two items owner-deferred; `pinTarget()` closed.
-12. **[P2] OpenSSL security release, 2026-09-29** — pre-announced as High (3.5.9 for the overlay,
-    1.1.1zj marking a new ESM level for the 1.1.1w backports). The day it publishes: re-check both
-    against the advisory, carry the result in the next cut. ↳ notes: `crawl-2026-09-26.md`
+1. **[P1] v3.2.3 — the stable candidate**; no open P1 unfixed in tree; the stable channel path is
+   unexercised. **[owed: soak, then Dev → main]** ↳ notes: `stable-candidate.md`
+2. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
+   verdict; gate test first. **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
+3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru job dead on that box.
+   **[needs data]** ↳ notes: `gt-be98-empty-crontab.md`
+4. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built;
+   root cause wants a syslog. **[needs data]** ↳ notes: `warden-crash-addon-update.md`
+5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1). **[owed: repro]**
+   ↳ notes: `firewall-hosts-paste-blanks-gui.md`
+6. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]**
+   ↳ notes: `channel-marker.md`
+7. **[P3] Local sibling images** — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only
+   locally; CI unaffected. **[hygiene]**
+8. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport in v3.2.8
+   needs the soak. **[owed]** ↳ notes: `cve-check-2026-08-30.md`
+9. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
+   ↳ notes: `code-review-tail.md`
 
-***v3.2.7 is the current beta** (cut 2026-09-25; patches 0716–0717). It fixes the stock ASUS
-Dual WAN fail-back loop that restarted a PPPoE primary after every return; items closed by it are
-recorded in [`CHANGELOG.md`](CHANGELOG.md).*
+---
 
-*Earlier, in v3.2.6 (2026-09-23): the Asuswrt-Merlin 3006.102.9 carry (OpenVPN 2.7.7, tzdata 2026c,
-Wireless Log, amtm 7.0) and the 2048-bit OpenVPN DH floor. In v3.2.5 (2026-09-23): Samba and the Traffic Analyzer ship off. In v3.2.4 (2026-09-22):
-the WireGuard policy-routing reply fix. In v3.2.3 (2026-09-20): the hover reasons on locked Settings cells, the four-radio tester
-fixes and the Warden, idle-CPU and boot-wait efficiency items. In v3.2.2 (2026-09-20): the Wireless Settings tab, the Warden counter fix and the
-Download/Upload labels. In v3.2.1 (2026-09-19): the Wireless Mode row's return with its Wi-Fi 6
-coupling, the Professional row removals and radio links, and the Rule Status walker fixes.*
+## Waiting on field response
 
-*Earlier, in v3.2.0 (2026-09-19): the WiFi Professional row removal, the Traffic bridging-mode note
-and the two help-link fixes.*
+*Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
+is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
-*Earlier, in v3.1.9 (2026-09-17): Policy Routing first-match order, the firewall rebuild contention
-fixes, retried rule adds, the DNS intercept failing open, L4S and WMM removed, DoS armed state. In
-v3.1.8 (2026-09-16): the vendor WLCSM libraries, Rule Status false reds, System Information. In
-v3.1.7: the Rule Status walker, the firewall restore race, the Gatekeeper and VLAN apply fixes. In
-v3.1.6 (2026-09-14): a refused filter line is survivable, Access Point mode as a first-class mode.
-In v3.1.5 (2026-09-12): the security-review remediation (netatalk, strongSwan, Tor, avahi, lighttpd
-and net-snmp), the Policy Routing failure paths, the second OpenVPN certificate cause, the Policy
-Routing Target and Status columns. In v3.1.4 (2026-09-12): the first OpenVPN certificate cause, the dual-WAN DDNS restart loop,
-the removal of EDNS Client Subnet, and the GT-BE19000 joining the fleet. In v3.1.3 (2026-09-11): the
-Killswitch decides, the first-boot Wi-Fi page header on every sibling, the front-chain classifier,
-the diagnostic report's six overstated figures, and the build test suites running in CI. In v3.1.2
-(2026-09-10): the kernel fix for the WireGuard Policy Routing panic on every model, the `_BETA`
-channel marker, the chain-integrity watchdog, the Warden outbound logging contract, the resolver
-health check's dual-stack fallback, DoT strict order, and the auto-logout idle timer.*
+- **[P1] R15: port forwards dead on an RT-BE88U** — restore race, **fixed v3.1.7**. Asked: confirm
+  on v3.1.7+, and the refused line from `err_rules`. **[awaiting field]**
+  ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md`
+- **[P2] Source-IP Policy Routing to a WireGuard client bypasses the tunnel** — reply-direction
+  fix, **v3.2.4**. Asked: retest on v3.2.4+. **[awaiting field]** ↳ notes: `pbr-wg-livetunnel-gaps.md`
+- **[P2] Dual WAN: a LAN-port primary flaps from boot** (GT-BE98) — boot line-switch hold,
+  **v3.2.8**. Asked: confirm on v3.2.8; else the single-WAN control test. **[awaiting field]**
+  ↳ notes: `dualwan-lanport-flap.md`
+- **[P2] GT-BE19000 AP-mode glitches** — three items **fixed v3.1.6**. Asked: a confirming capture on
+  v3.1.9+ and the networkmap 39995 pin check. **[awaiting field]** ↳ notes: `gt-be19000-glitch-list.md`
+- **[P3] Auto-logout setting has no effect** (GT-BE98) — true idle timer, **v3.1.2**. Asked:
+  re-check on the current beta. **[awaiting field]** ↳ notes: `auto-logout-ineffective.md`
+- **[P2] Heavy ping loss after a router reboot, cured by rebooting the ONT** (GT-BE98, PPPoE) —
+  one-shot re-dial mitigation, **v2.5.5**. Asked: does it recur; a capture if so. **[awaiting field]**
+  ↳ notes: `ping-loss-after-reboot-ont.md`
+- **[P1] WLCSM protocol-31 socket leak** — 42015 blob swap shipped in v3.1.8. **[reproducer run on
+  the cut image owed]** ↳ notes: `wlcsm-42015-reproducer.md`
+- **[P2] CVE-2023-52340: remote IPv6 DoS via forged Packet Too Big** (IPv6 on only) — fixed in tree:
+  rc sets `route/max_size`=INT_MAX at boot; **v3.2.9**. **[soak owed]** ↳ notes: `review-carry-forward-queue.md`
+- **[P2] Router UI on mobile-device browsers** — first fit shipped in v3.1.0. **[minor
+  adjustments]** ↳ notes: `mobile-browser-ui-compat.md`
+- **[P3] e2fsprogs CVE-2022-1304 via a crafted USB disk** — upstream `ab51d587bb9b` applied; host
+  test 2026-09-28: the guard fires on a crafted empty leaf, repair converges. **[metal owed: USB scan
+  of an ext4 + ext3 disk]** ↳ notes: `review-carry-forward-queue.md`
+- **[P2] Warden outbound blocks appear to have stopped** — `rwarden_log` read 0/1/0. **[owed: the
+  owner's recollection or a repro]** ↳ notes: `warden-outbound-quiet.md`
+- **[P2] Dual WAN fail-over: dashboard shows Disconnected and the WAN LED goes dark on the backup
+  line** — dashboard read wan0 only; the prebuilt LED code lights white only for the WAN-port type.
+  Dashboard follows the primary unit; a backup line shows red + white together (owner choice); **v3.2.9**.
+  ↳ notes: `dualwan-failover-ui-led.md`
+- **[P2] Firewall engine: a failed `lastgood` snapshot may boot with no user policy** — staged
+  write, draft kept on failure, boot re-adopts unmarked files; **v3.2.9**. **[metal owed:
+  Keep with /jffs full]** ↳ notes: `rfw-lastgood-snapshot.md`
+- **[P3] Dynamic preamble puncturing** (`rpunctd`, v3.2.8) — built. **[metal owed]**
+  ↳ notes: `preamble-puncturing-metal.md`
+- **[P3] Firewall DNAT / Redirect: the residual gaps.** **[project]**
+  ↳ notes: `firewall-dnat-redirect-residual.md`
+- **[P3] Rule Status walker: fixtures from a second and third topology** — RT-BE88U, GT-BE98 with
+  VLANs. Ask for: `reaper_fwsim --dump-inputs DIR`. **[needs data]**
+  ↳ notes: `firewall-witness-catalog.md`
+- **[P2] Main-network card unclickable after the first-boot setup box** — the box now runs the SDN
+  reconcile a guest apply runs; **v3.2.9**. **[metal owed: reset test]** ↳ notes: `wifi-cards-unclickable-post-reset.md`
 
 ---
 
 ## Open bugs / under investigation
 
-- **[P2] Source-IP Policy Routing rule to a WireGuard client does not use the tunnel; the same rule
-  to OpenVPN does** (field report 2026-09-14 on v3.1.6, follow-up 2026-09-16: "the router is fully
-  functional", and the reporter's own reading of the guide — the accelerator is carrying the flow, "the
-  slot is not applied to the live flow, or the flow is offloaded first"). That reading is the right
-  mechanism: the flow-cache bypass is checked only on packets the CPU sees, so a flow accelerated before
-  the bypass existed is never diverted; the apply script has always cleared learned flows after
-  installing the bypass, so it only holds when the bypass was never installed. Two v3.1.6 gaps made
-  exactly that possible and both are closed in v3.1.7: the bypass was skipped silently when the client
-  interface was down at apply time (boot order) and nothing installed it later; and a rule whose target
-  changed from one WireGuard client to another kept routing existing connections by the old verdict.
-  A full bypass table (eight IPv4 slots, shared with VPN Director rules and WireGuard-server peers) is
-  the third path and is named in the log. Neither is proven to be the reporter's cause: no capture yet.
-  Wanted from the reporter on a v3.1.7 image: `reaper_diag` (section 14d), `ip rule`, `ip route show
-  table wgcN`, `iptables -t mangle -nvL REAPER_PBR`, `cat /proc/blog/skip_wireguard_network`,
-  `cat /tmp/reaper_pbr/skipnets`, syslog `reaper_pbr:` lines, and from the routed device a `traceroute`
-  to a public address — plus which of Killswitch on/off gave WAN egress and which gave no connectivity.
-  The v3.1.9 first-match order is the strongest untested candidate: the same tester's list was being
-  decided by position rather than by the rule they expected. Ask for a retest on v3.1.9 or later before
-  any more WireGuard work. Tester 2026-09-20: it "still does not work" on the v3.2 beta line, and they
-  offer to re-create it together when there is time — that session is the capture this entry waits on.
-  **Root cause found 2026-09-22 from the tester's capture and fixed in v3.2.4:** the `REAPER_PBR` jump has
-  no `-i`, so the REPLY arriving on `wgcN` had the flow's mark restored and was routed by `lookup wgcN`,
-  a table with no LAN route — the reply went back into the tunnel. The chain now opens with
-  `-m conntrack --ctdir REPLY -j RETURN` (both families); reproduced in a network namespace, 0/10 → 10/10.
-  **[fixed in v3.2.4, ships in v3.2.5 and v3.2.6; reporter confirmation on metal owed]**
-  ↳ notes: `pbr-wg-livetunnel-gaps.md`
-- **[P2] Dual WAN fail-back restarts the PPPoE primary in a loop** (field report 2026-09-24/25,
-  GT-BE98 v3.2.6: PPPoE on WAN, LAN-port WAN as backup, fail-back mode; unplugging the backup stops
-  it). Stock `wanduck`: the primary's `changed_count[]` is also the fail-back counter and was not
-  reset by the return-to-primary block, so one DISCONN scan after fail-back ran
-  `switch_wan_line(backup, 1)` → `restart_wan_if <primary>`. Reset on fail-back.
-  **[fixed in v3.2.7; reporter confirmed on metal 2026-09-25]**
-  ↳ notes: `dualwan-failback-pppoe-loop.md`
-- **[P2] Dual WAN: a LAN-port primary flaps every few minutes from boot** (same GT-BE98, v3.2.7_BETA,
-  2026-09-26: DHCP primary on the 2.5G WAN/LAN-1 port = `vlan4094` over the RTL8372 switch, USB
-  tether backup; Control D removed, ping-reboot cron off). Diag 13 min after boot: `link down LAN1`
-  / `link up LAN1` six times in fourteen minutes, the 6in4 tunnel rebuilt after each, `wan0_auxstate_t=2`,
-  no default route at the snapshot. Desk: the v3.2.7 hunk runs only on the fail-back return and cannot
-  start this; with the watchdog off and `dns_probe` 0 (this platform's default) `detect_internet()` calls
-  a line down only for a lost link or a missing default route, so wanduck is reacting, not causing.
-  Open question: a real link loss on the 2.5G port, or `restart_wan_if` reconfiguring the switch port
-  and manufacturing the next link loss. Reporter asked for the single-WAN control test with the
-  `auto-mtu` add-on hooks disabled and the log level raised (its `syslogd -l 5` drops every wanduck
-  line), plus the USB checks (`ping -I usb0`, `wan1_dns`, POSTROUTING/FORWARD for `usb0`). If the flap
-  stops with Dual WAN off, the switch-port reset on a LAN-port WAN is ours to chase in `wanduck` /
-  `config_switch`. **[waiting on the reporter's control test]** ↳ notes: `dualwan-failback-pppoe-loop.md`
-- **[P2] Warden enabled but every `RW_*` chain absent 13 minutes after boot on a flapping WAN**
-  (same report: `rwarden_enable=1`, sets loaded - `rw_threat` 4824 - but `REAPER_WARDEN`, `RW_DROP`,
-  `RW_ODROP`, `RW_SELF` all missing, two rwatch ticks already run, Gatekeeper's chains present).
-  Warden arms at the first firewall build after boot and re-arms on later builds; with a WAN that
-  restarts every two minutes the firewall is rebuilt each time, and the rwatch heal should have
-  restored the chains within five minutes regardless. Reproduce on the bench with a WAN that flaps
-  (pull the cable on a timer) and read what the arm script and the heal do between two rebuilds;
-  the constant `stop_firewall` / `start_firewall` racing the arm is the first suspect. The
-  add-on-update variant of a missing chain is item 6 under Work next. **[open]**
-- **[P1] WLCSM protocol-31 netlink socket leak ("stuck nvram") - shipped in v3.1.8.** ASUS stock
-  `9.0.0.6.102_42015` (GT-BE98 Pro image, same Broadcom BSP as our base) passes the forced-collision
-  regression 10/10 where Merlin `3006.102.8_4` wedges. The fix is in two closed blobs, nothing in
-  source (`/bin/nvram` is byte-identical): `libnvram.so` - `_wlcsm_init` closes its fds on re-init,
-  the port candidate gets its own `wlcsm_agent+28` field instead of aliasing the saved PID, plus
-  error-path cleanup - and `libwlcsm.so`, where `wlcsm_nvram_getall`'s retry is bounded with `usleep`
-  backoff. Both swapped from the vendor's own copies: a blob SWAP with provenance, not a binary patch.
-  All six models ship the identical pair, so canon patch `0673` carries the RT-BE96U swap, each
-  sibling branch carries it on its own `router-sysdep.<model>` tree, and the clean-room build takes it
-  from the hash-pinned `overlays/wlcsm-42015-blobs.tar.gz`. The `wlcsm_bindfix` LD_PRELOAD shim is
-  retired and its Tools > Other Settings toggle removed; the rwatch hung-nvram reaper stays as the
-  safety net until the fix has field history. Blobs, hashes and both disassemblies in
-  `ASUS/audits/socket-leak-42015/` (private). The CI fleet step is proven: the v3.1.8 and v3.1.9
-  Dev builds tagged all six models, and the step errors rather than skips when a tree lacks either
-  file. Lab check 2026-09-19 on the v3.2.0 beta (RT-BE96U, 15 h up): both libraries hash-identical
-  to the overlay, proto-31 sockets 42 against a baseline of 44, and zero orphaned sockets once every
-  socket is joined to its owning process - the stage-one signature that fired on every unmitigated
-  boot. **Owed:** the reproducer bundle on the cut image (10 runs, `rc=0`, no `X+1..X+9`
-  accumulation). **[shipped in v3.1.8; reproducer run owed]**
-- **[P1] Port forwards dead on an RT-BE88U since v3.1.0 - the full filter table never loads**
-  (review R15, reopened 2026-09-13). The nat emitter was never the bug. The reporter's trace shows
-  VSERVER's DNAT counters climbing and a FORWARD chain of exactly six rules ending in policy DROP -
-  the boot-time skeleton `start_default_filter()` lays down before every `start_firewall()`.
-  `iptables-restore` is atomic, so one rejected line in `/tmp/filter_rules` leaves the skeleton in
-  place while the nat table lands: translated, then dropped.
-  **Root cause 2026-09-14: a RACE, not a bad ruleset.** This iptables (1.4.x) has no xtables lock, so
-  `xt_replace_table()` returns EAGAIN when another process changes the table between the `*filter`
-  snapshot and `COMMIT` - and `nat-start` is FORKED by `start_nat_rules()` inside `nat_setting()`,
-  which runs BEFORE `filter_setting()`, so a user `nat-start` script that touches iptables (the
-  reporter's is `tailscale-fw.sh`) races every boot.
-  **Shipped in v3.1.7:** a COMMIT-line failure is retried with the identical file up to five times
-  (100/200/400/800 ms) before any hoist, probe or drop is considered; the same loop guards the nat
-  restore. v3.1.6 shipped the surrounding work - the refused line named in syslog, the table applied
-  without it, rwatch `3f` recognising the skeleton, diag `14f` reporting which table is running.
-  **Owed:** the reporter's confirmation on a v3.1.7-or-later image, and the refused line from their
-  `err_rules` copy (`iptables-restore --test`, exit 2 names it) to confirm the diagnosis on that box.
-  **[shipped in v3.1.7; reporter confirmation owed]**
-  ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md`
-- **[P2] Warden outbound blocks appear to have stopped: the `rwarden_log` 0/1/0 question** (owner,
-  2026-09-10). The emitter was never at fault and both instrumentation defects shipped fixed in
-  v3.1.2 and v3.1.6 (the durable `OUT` key, and an nvram read that does not answer being its own
-  state). What is left: `rwarden_log` genuinely read 0, then 1, then 0 inside 25 minutes. Its only
-  writer is the Warden page's own form post, whose hidden field is filled at submit time from the
-  toggle's CSS class, so a submit beating the toggle being painted would post `0`. Wanted: whether
-  the Warden page was applied around 23:05 and again around 23:20 on 2026-09-11.
-  **[owed — the owner's recollection or a repro]** ↳ notes: `warden-outbound-quiet.md`
-- **[P2] The AiMesh card shows zero clients in a bridging mode** (GT-BE19000 tester, 2026-09-13).
-  The dashboard tiles were fixed in v3.1.6 (in a non-routing mode they read Reaper's own device
-  store rather than `get_clientlist()`, which needs DHCP leases and conntrack a bridging box does
-  not have). The AiMesh card shows the same symptom and the shared cause is unproved — it was never
-  established that the card reads the same source. **[owed — confirm the card's source, then fix or
-  close]**
-- **[P3] Duplicate menu entries after opening UPnP** (GT-BE19000 tester, 2026-09-13) — "UPnP" here is
-  `mediaserver.asp` (UPnP Media Server, `RTCONFIG_MEDIA_SERVER=y`), not the IGD console. Not
-  reproduced and not root-caused. Two candidates, both cheap to separate with one screenshot and the
-  tester's add-on list: (a) the add-on overlay class — `reaper_util.js:232` records that `menuTree.js`
-  is exactly the file third-party add-ons bind-mount over, and the capture reports `amtm-ish mounts: 4`
-  on that box; (b) a menuTree variant mismatch — six trees ship (`menuTree.js`, `_v4`, `_GS`,
-  `_BUSINESS`, `_ROG`, `_TUF`) and the GT-BE19000 is the first ROG-class model on the roster, so a
-  tree Reaper's injection does not cover would show stock and injected entries together. Reaper's own
-  injector dedupes by URL, which argues against (b) alone. **[needs data — a screenshot and the
-  add-on list]**
-- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98 tester, 2026-09-06) — WAN on DHCP,
-  IPv6 native and stateful, working until about v2.7.1; since then the router shows its IPv6, a laptop
-  and a NAS get it, but hosts behind a Proxmox server do not — a Windows VM fails testipv6.com even
-  with a static address. The tester also sees `nmbd: queue_query_name: interface 0 has NULL IP
-  address` in the log. Whether this is the router (RA/DHCPv6 behind an SDN bridge, an ip6tables
-  change in that window) or the hypervisor bridge is undecided; more detail promised.
-  **[needs data]** ↳ notes: `gt-be98-ipv6-partial-lan.md`
-- **[P3] Auto-logout setting has no effect** (GT-BE98 tester, 2026-09-06) — reported as present
-  since before Reaper. v3.1.2 replaced the timer on every page with a true idle timer and made the
-  dashboard read the setting, which covers the two shapes the report could have had; whether the
-  tester's symptom survives on a v3.1.2+ image is not yet known. Which page, which browser, and
-  whether a second login from another device or tab is involved, still to be captured.
-  **[needs data — re-check on the current beta]** ↳ notes: `auto-logout-ineffective.md`
-- **[P2] Network page: Delete does nothing on a main-network card** (owner, 2026-09-06) — two empty
-  Main Network cards (per-band profiles left behind by a Smart Connect off-and-on) could not be removed
-  from the page; the same writes applied by hand cleared them. Whether the delete popup, the nvram set
-  or an injected-script interaction is at fault is still to be found. **[owed: repro on a spare
-  profile]** ↳ notes: `sdn-mainfh-delete-dead.md`
-- **[P2] Router UI on mobile-device browsers: compatibility investigation** (owner, 2026-09-06)
-  — survey how the web UI behaves in phone and tablet browsers (iOS Safari, Android Chrome,
-  Samsung Internet): layout at narrow widths, touch targets, the theme and loading overlays, the
-  Devices/QoS/Traffic tables, and whether every page is reachable and applies correctly. Which
-  pages break, on which browser, and how, still to be captured before any fix is scoped. The
-  first fit shipped in v3.1.0: the shell and the dashboard collapse the rail into an icon strip
-  below 680px, so a phone gets the full width; framed stock pages pan sideways until each is
-  replaced by a native one. **[minor adjustments]** ↳ notes: `mobile-browser-ui-compat.md`
-- **[P3] Policy Routing page: the first-open symptom was never identified** — the screenshot did not
-  reach the record; the strongest candidate shipped fixed in v3.0.5. **[needs the screenshot]**
-  ↳ notes: `pbr-first-open-symptom.md`
-- **[P3] Two dropdowns on the System Log page offer the same severity names and only one filters**
-  (found 2026-09-12 while answering "I set the log level to CRITICAL and was still spammed"). *Default
-  message log level* (`message_loglevel`) sets the priority `logmessage()` stamps on its own messages
-  and filters nothing; *Log only messages more urgent than* (`log_level`) is the one wired to syslogd's
-  `-l` — and busybox logs priorities strictly below `-l`, so the option named *critical* excludes
-  critical itself. Both labels are ASUS's. A clarifying explainer is a candidate, at the usual i18n
-  cost; the labels are not dict tokens, so the scope wants checking first. (The two `log_level`
-  defaults in `shared/defaults.c` noted here were the same value; the dead second copy was removed
-  2026-09-13.) **[owner call]**
-- **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — rwatch, Warden refresh and the PBR
-  deadline watcher all dead on that box. **[needs the GT-BE98 syslog]** ↳ notes: `gt-be98-empty-crontab.md`
-- **[P3] CVE / component check 2026-08-30 residue** — no reachable HIGH, nothing MED at defaults.
-  The five off-by-default inherited components and the accepted update-manifest-signature trade are
-  stated in [`../SECURITY.md`](../SECURITY.md) under *Known limitations*. v3.1.5 landed strongSwan
-  (CVE-2026-47895), the avahi CNAME trio, Tor 0.4.9.12, netatalk CVE-2022-43634 (which the 08-30 check
-  had wrongly called absent — `SECURITY.md` corrected), lighttpd CVE-2018-25103 and net-snmp
-  CVE-2022-44792/3. **Remaining:** the kernel one-hunk set. ↳ notes: `cve-check-2026-08-30.md`
-- **[P3] Policy Routing rebuild is not atomic (review R07, second half).** The generated script tears
-  the live chain and pref band down before rebuilding, so every apply has a window with no rules.
-  Design as shipped since v2.5; the window was never measured. A swap-in rebuild (build under a
-  staging chain name, then rename) would close it. **[design]**
-- **[P3] Policy Routing on Warden's country sets.** A geo object now drops the rule (it never matched
-  anything before); the firewall engine resolves the same object to Warden's `rw_g_<cc>` set when
-  Warden manages that country, and PBR could do the same — "route everything bound for country X
-  through the tunnel" is a real ask. Needs the Warden set lifecycle (swap vs destroy) checked
-  against a live iptables reference first. **[feature, owner call]**
-- **[P3] Update-manifest signature stays inert (review R09)** — re-recorded as an accepted trade, not
-  reopened. **[accepted]**
-- **[P3] Review carry-forward queue (not findings):** kernel 4.19.294 CVE set (CVE-2023-52340 IPv6
-  route GC and the 08-30 list), wpa_supplicant 0.6.10 on the wired 802.1X path (needs an EAP-MD5-
-  specific match), the BusyBox/Quagga/e2fsprogs/wget inventory against current binaries, and the
-  proprietary runtime. A second adversarial sweep of the v3.1.5 window is queued, to be run as
-  sequential slices. **[queue]**
-- **[P2] AiMesh: repeated pairing failures reported against Reaper** (tester via owner, 2026-09-09)
-  — seven failed pairings, attributed to Reaper by the reporter; the owner is not convinced.
-  Establish what "seven" counts (attempts, nodes, or reporters) before anything else. The syslog
-  line offered as evidence — `parent ... partial for node ... - missing rssi_5g rssi_5g2 (still
-  usable)` — is the **fixed** path, not the v2.9.3 defect, which read `skipped` and discarded the
-  parent; on a CAP that heard the node on 2.4 GHz alone the `partial` line is expected output and
-  is not an error. Split the problem on whether the node ever reaches the Add Node list (the
-  listing gates and the join path are independent), then rule out Gatekeeper quarantine, MLO (may
-  be the item below rather than a new one), and the versions on each end. **[needs data]**
-  A full decompose of the feature (2026-09-09) found nothing in the listing path that accounts
-  for it, and established that AiMesh ships with **no source at all** — see
-  `aimesh-decompose-2026-09-09.md`, which also carries the triage of every AiMesh item below.
+*Not fixed yet — work still to start or finish.*
+
+- **[P2] Warden chains absent 13 min after boot on a flapping WAN** — suspect `stop/start_firewall`
+  racing the arm. **[owed: bench repro]** ↳ notes: `warden-chains-absent-wan-flap.md`
+- **[P2] AiMesh card shows zero clients in a bridging mode** (GT-BE19000). **[owed: confirm the
+  card's source]** ↳ notes: `aimesh-card-zero-clients-bridge.md`
+- **[P3] Duplicate menu entries after opening UPnP Media Server** (GT-BE19000). **[needs data]**
+  ↳ notes: `duplicate-menus-mediaserver.md`
+- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98, since ~v2.7.1). **[needs data]**
+  ↳ notes: `gt-be98-ipv6-partial-lan.md`
+- **[P3] Policy Routing page: the first-open symptom was never identified.** **[needs the
+  screenshot]** ↳ notes: `pbr-first-open-symptom.md`
+- **[P3] System Log page: two severity dropdowns, only one filters.** **[owner call]**
+  ↳ notes: `syslog-level-dropdowns.md`
+- **[P3] Policy Routing rebuild is not atomic** (R07, second half). **[design]**
+  ↳ notes: `pbr-rebuild-not-atomic.md`
+- **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]**
+  ↳ notes: `pbr-warden-country-sets.md`
+- **[P3] Update-manifest signature stays inert (R09)** — accepted trade. **[accepted]**
+- **[P2] AiMesh: repeated pairing failures reported against Reaper.** **[needs data]**
   ↳ notes: `aimesh-pairing-failures-tester.md`, `aimesh-decompose-2026-09-09.md`
-- **[P2] MLO ON kills the AiMesh backhaul; MLO OFF restores it** (tester, GT-BE98 CAP + RT-AX92U
-  nodes) — rule out the nodes' MLO capability, the cold-cycle rule and dirty-install residue before
-  calling it Reaper's; a missing guardrail would be ours. **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] Warden chain missing after an add-on update** (amtm + Diversion; one field report,
-  2026-08-23) — one code-plausible path (add-on `nvram get` storm → wlcsm wedge → Warden's `apply.sh`
-  reads an empty LAN IP and exits after the chain was flushed). The two other hypotheses are
-  code-refuted. The defensive half is built (v3.0.9, rwatch check 3c re-applies a missing
-  `REAPER_WARDEN` chain once per ten minutes). The root cause still wants a syslog from a box that
-  reproduces it; the original reporter's model has since left the roster, so that capture will have
-  to come from elsewhere. **[needs data]** ↳ notes: `warden-crash-addon-update.md`
-- **[P2] Firewall hosts rule: pasting an IP list blanks the GUI until httpd restarts** (BE88U,
-  v2.7.1) — no blocking operation visible in the save/apply path. **[owed: repro]**
-  ↳ notes: `firewall-hosts-paste-blanks-gui.md`
-- **[P2] Heavy ping loss after a router reboot, cured only by rebooting the ONT** (GT-BE98, PPPoE
-  over VLAN 835) — best fit a stale PPPoE session at the OLT; v2.5.5 ships a one-shot re-dial.
-  **[owed: a capture during the fault]** ↳ notes: `ping-loss-after-reboot-ont.md`
-- **[P2] Firewall engine: a failed `lastgood` snapshot may boot with no user policy** (found
-  2026-09-23 answering the external audit). `rfw_write_lastgood()` unlinks `.committed` first, and a
-  failed file write leaves it absent; boot then falls back to nvram, "which holds this very config"
-  per the comment — stale since v2.6.9, whose migration unsets the `reaper_fw_<key>` nvram lists. So
-  a confirm whose snapshot fails partway (full `/jffs`, power cut mid-write) would boot empty lists
-  with the engine enabled, and `reaper_fw_confirm()` deletes the draft regardless. Reachability
-  unproven: needs a failed JFFS write. **[owed: reachability, then fix]**
-  ↳ memory: `reaper-fw-audit-2026-09-23.md`
+- **[P2] MLO ON kills the AiMesh backhaul.** **[owed: needs a mesh]**
+  ↳ notes: `mlo-kills-aimesh-backhaul.md`
 
 ---
 
 ## UI / UX polish
 
-- **[P3] Rule Status does not witness masquerade** (tester question, 2026-09-19). The walker already
-  models POSTROUTING source NAT (the hairpin row F6) but asserts nothing about LAN→WAN masquerade; a
-  one-row `A1b` (expect SNAT, gated on `wan_nat_x=1`) would, and a tunnel-side row needs the walker
-  to read routing tables (mark → `ip rule` → table). Restated by the tester 2026-09-20 as a catalog
-  check, the same shape as "is this port-forward really in the table": for every egress interface
-  (wan0, wan1, each OpenVPN and WireGuard client, a guest uplink) — is there a MASQUERADE/SNAT rule
-  with `-o` naming it; is it unrestricted or scoped (`-s`, a mark, `! -d` private ranges); does a rule
-  exist for an interface that is down. Advisory posture: not built. **[owner call]**
-- **[P3] Tx power's lowest step** (2026-09-19). The lowest step writes `10` where stock's slider
-  writes `0`, and the consumer is the prebuilt wlconf, so which is right is metal-only. Fragmentation
-  Threshold follows stock from v3.2.2 (editable in Legacy mode only). **[owner call]**
-- **[P3] 39 tokens are English in the 24 non-English packs** — `RQOS_117`, `RQOS_121`, `RFW_321`,
-  `RFW_322` (v3.1.9), `RTRF_77` (v3.2.0), `RWFP_39` (v3.2.1) and, from v3.2.2, the Settings row texts
-  `RWFP_40–43`, `RWFP_45–66` and the Warden card `RWDN_102–108`, seeded in English to keep lockstep
-  (v3.2.3's 17 new tokens arrived translated, so the count is unchanged). **[owed — the next translation
-  pass; owner: they stay English for v3.2.3]**
-- **[P3] Firmware page: the download phase still has no true cancel** — the upload half shipped in
-  v3.1.1 (the hatch reads **Cancel** and aborts the in-flight POST). During a download from the
-  update server the button still says **Close** and only leaves the overlay, honestly labelled:
-  the generic `webs_*` rc dispatch handles START only (`services.c` ~20175), so `stop_webs_upgrade`
-  is a no-op, and `reaper_webs_upgrade.sh` runs download → verify → flash in one shot on the router.
-  A real cancel there means a kill on a flash-adjacent path, which is a service change and not a UI
-  one. **[deferred — needs an rc stop service]** ↳ notes: `firmware-veil-cancel.md`
-- **[P3] Chain-integrity watchdog covers the Warden drop chains only** (scope note, 2026-09-10) —
-  rwatch 3d asserts "ends in DROP, nothing ahead of it that ACCEPTs or RETURNs" for `RW_DROP`,
-  `RW_ODROP` and `RW_SDROP`, and checks what sits ahead of the three front chains (since v3.1.3 by
-  classifying it, rather than requiring position 1 — see the changelog). The Gatekeeper
-  and rules-engine chains have **no equivalent invariant checked**, deliberately: they interleave
-  DROP and RETURN by design, so "ends in DROP" is not a property they have and asserting it would
-  produce noise, not safety. If those need guarding, the invariant has to be defined first —
-  probably "the chain still contains the rules the generator emitted", which is a different and
-  more expensive check. Note also that only chains are checked, not ipset **contents**; the Warden
-  poison canary (rwatch 3) is the only set-level guard. (The "bare inline ACCEPT judged broad even
-  with `--dport`" gap was closed in v3.1.3b — the rule is judged the way a chain is; the line that
-  said otherwise here was stale, corrected 2026-09-13.) **[owed — needs the invariant defined]**
-  ↳ notes: `chain-integrity-scope.md`
-- **[P3] Loading/Restarting overlay: native redesign remainder** — several overlays still centre on
-  the shell viewport; adopt the themed dialog page by page. **[owed]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Loader z-index raise is class-wide** — benign; scope to `#Loading` if a modal ever renders
-  behind it. **[watch]** ↳ notes: `loader-zindex-watch.md`
-- **[P3] Smart Connect band-mask hazards** — a `return 7;` fallback that drops 6 GHz if its guard is
-  ever edited; the 6 GHz-out-of-Smart-Connect default is an owner RF decision. **[watch]**
-  ↳ notes: `smart-connect-band-mask.md`
+- **[P3] Rule Status does not witness masquerade.** **[owner call]**
+  ↳ notes: `rule-status-masquerade-witness.md`
+- **[P3] Tx power's lowest step** writes `10` where stock writes `0`. **[owner call]**
+  ↳ notes: `tx-power-lowest-step.md`
+- **[P3] 39 tokens are English in the 24 non-English packs.** **[owed — next translation pass]**
+  ↳ notes: `english-tokens-residual.md`
+- **[P3] Firmware page: the download phase has no true cancel.** **[deferred — needs an rc stop
+  service]** ↳ notes: `firmware-veil-cancel.md`
+- **[P3] Chain-integrity watchdog covers the Warden drop chains only.** **[owed — needs the
+  invariant defined]** ↳ notes: `chain-integrity-scope.md`
+- **[P3] Loading/Restarting overlay: native redesign remainder.** **[owed]**
+  ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Loader z-index raise is class-wide.** **[watch]** ↳ notes: `loader-zindex-watch.md`
+- **[P3] Smart Connect band-mask hazards.** **[watch]** ↳ notes: `smart-connect-band-mask.md`
 
 ---
 
 ## Features to add
 
-- **[P3] Static preamble puncturing** — `wl eht dissubchan`, which no stock code calls (OFDMA/MU-MIMO
-  do not enable it; they only enable MRU scheduling). Metal 2026-09-25 (RT-BE96U): the beacon's EHT
-  Operation element carries the bitmap, Wi-Fi 6 clients are narrowed by the driver, `restart_wireless`
-  clears it; legal = one slice, 320: an aligned 40/80 outside the primary 80, 80: one 20 not the
-  primary (160 unmeasured). Built: `rc/reaper_punct.c` applier (boot, wireless start, page apply,
-  rwatch re-check), Wireless > Settings rows with a Fixed / Follow channel choice, diag §7.
-  **[built, test image; metal owed: page apply, restart re-apply, Follow on a channel move, iperf,
-  a Wi-Fi 6 client on 6 GHz, 160 MHz legality]**
-- **[P3] Dynamic preamble puncturing** — a policy layer over the static control (`rpunctd` +
-  `punct_core`, v3.2.8): timed `chanim_stats` windows give per-sub-band carrier sense (measured
-  2026-09-26: pri20/sec20/sec40/sec80 fill only in a timed window; the accumulators never do; an
-  all-zero window happens and is discarded; a scan resets it), a passive 4-channel `escan` takes
-  about a second and `chanim_stats all` returns per-20 MHz figures (measured, clients stayed).
-  Built: daemon, applier `dyn` branch, Settings rows, Wireless Quality card, diag §7, 39 tokens x25,
-  `test_punct_dyn.py` (30 checks). Crawl 2026-09-26: the controller's file now mirrors its belief
-  and carries the channel; the applier's record is reconciled every tick; one applier at a time.
-  **[built, test image; metal owed: `rxcrs_sec80` ever non-zero
-  and the far-160 remainder under a real interferer (the dirty low 320 block would do); whether the
-  counters keep moving on a punctured slice (decides restore evidence vs the timed probe-restore);
-  apply disruption with a 6 GHz client pinging through a set and a clear; exclusive-vs-inclusive
-  reading of the sec counters under wide own-BSS frames; a full Dynamic cycle - candidate, apply,
-  hold, restore - on the owner's box; four-radio tester. From the crawl: a hand-written refused
-  bitmap in `/tmp/reaper_punct.dyn` produces ONE `refused` line and the file resets to 0x0 within
-  a tick; `restart_wireless` with a slice on the air resumes it without an apply/clear flap; a
-  channel change forgets it (`wl eht dissubchan` = 0x0); no periodic `wl chanspec` forks; the Rule
-  Status re-check leaves the UI responsive; a port-only FORWARD ACCEPT ahead of the hook is
-  displaced while the lab's INPUT rule stays; no `wlcsm_bindfix retired` line at boot]**
-- **[P3] OSPF + BGP dynamic routing** — achievable: Quagga's ospfd/bgpd are vendored and switched
-  off; kernel ready except BGP MD5. **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
-- **[P3] Wi-Fi VLANs: the two missing pieces** — a multi-VID trunk port (UI-only) and an inter-VLAN
-  ACL page; everything else already ships via SDN. **[project]** ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Firewall DNAT / Redirect: the residual gaps** — 1:1 NETMAP, per-zone forced NTP,
-  raw-protocol DNAT; extend Service Intercept, never a new page. **[project]**
-  ↳ notes: `firewall-dnat-redirect-residual.md`
-- **[P3] Attainder — control by names** — a generic domain blocker at the resolver step
-  (Diversion-shaped, Warden-like): subscribed lists, custom entries, exceptions, per-name statistics,
-  and a page that says what was refused and why. Names are answered or refused; no traffic is copied.
-  Not tied to one resolver: it has to sit in front of dnsmasq's upstreams, DoT through stubby, or
-  Unbound alike. **[project]**
-- **[P3] Mime — copy of the flows** — switch port mirroring to an external IDS: copy the traffic of a
-  port or a network to a host that inspects it (Suricata, Zeek); the router never judges it. The
-  software `tc mirred` path is present; whether it sees hardware-accelerated flows is the decisive
-  unknown. This is the "witness as a mirror of the flows" a tester asked for on 2026-09-20; the Rule
-  Status witness is a synthetic packet and is not this. **[project]** ↳ notes: `port-mirroring-ids.md`
-- **[P3] Unbound beside the existing resolver path** (tester, 2026-09-20) — a recursive, DNSSEC-validating
-  resolver with its own cache, shipped in the image and selectable on the DNS page, with dnsmasq
-  forwarding to it. Today the path is dnsmasq → the configured upstreams (the resolver health check in
-  front, DoT through stubby); Merlin users bootstrap Unbound by hand through Entware. Needs the package
-  and its libraries, the page switch, the forwarder wiring, root-hints and trust-anchor upkeep, and a
-  memory-footprint check on the RT-BE96U. **[project]**
-- **[P2] Code signing: manifest + images, with a pre-upload verdict** — the manifest half was
-  implemented for v2.7.3 and shelved inert (re-enable = flip two switches + rebuild). Reviewed again
-  2026-09-13 with the clone threat in mind: the manifest signature covers only the router-initiated
-  update path; a lookalike image arrives through the Firmware Upgrade upload or a first install, so
-  the images themselves need a signature (an Ed25519 trailer, now possible on the router since the
-  OpenSSL 3.5 move) plus a router-side verify in the upload handler and a page-side check that shows
-  a signed / NOT-signed choice before the upload starts, with the existing typed gate to proceed
-  unsigned. **Owner decision 2026-09-13 (evening): SCHEDULED, fully automated, for a release later
-  this week, after v3.1.6 is stable and the GT-BE19000 glitch list is triaged.** No manual signing
-  step per publish: the manifest key and a separate image key live as GitHub Actions secrets, the
-  release job signs each image as it publishes it, the manifest-refresh job signs the manifest in
-  the commit it already makes, and the publish job runs under GitHub environment protection so the
-  secrets are readable only from the release workflow on the release branch. The trade — a CI
-  compromise could sign a clone — is the exposure the project already carries (whoever controls CI
-  controls what is published as Reaper); signing adds a rotation path, not a new risk. Order of
-  work: **(1) the gate test first and alone — a trailered image must flash cleanly on the BE96U
-  through the stock flash writer and bootloader; if trailing bytes are refused, the signature moves
-  inside the image and the effort roughly doubles;** (2) Ed25519 keys generated, both public keys
-  shipped in the firmware (rotation path for the v2.7.3 RSA manifest key); (3) CI signing of images
-  + manifest, `.sig` release assets, GitHub build attestations; (4) router-side verify in the upload
-  handler and `webs_upgrade.sh`, result recorded for the About page; (5) the Firmware page's
-  pre-upload verdict modal (signed → Install/Cancel; unsigned or bad → danger dialog, Cancel default,
-  typed gate to proceed); (6) README/SECURITY.md key fingerprints and a "verify before you flash"
-  section; RELEASE-PROCESS updated. Estimated two to three days. Ships before the firewall walker.
-  **[scheduled — this week, after v3.1.6 stable]** ↳ notes: `manifest-signing-shelved.md`
-- **[P3] North star — progressively replace stock GUI pages with Reaper-native ones.** Done for
-  Dashboard/QoS/Traffic/Wireless/GK/Warden/Devices/Advisor/Conn/QoSDiag/Analytics/Storage/Firmware/
-  Firewall/VPNRouting/Failover/About/Sysinfo — the last of those, System Information, shipped in
-  v3.1.8. **[ongoing]**
-- **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
-- **Firewall table walker + Rule Status page — open follow-ups.** The walker itself shipped in v3.1.8
-  (advisory by design; history in the changelog). What is still open:
-  ↳ notes: `firewall-witness-catalog.md`; memory `firewall-walker-plan`; fixtures in
-  `ASUS/audits/firewall-fixtures/`
-  - **[P3] 8 catalog rows have no emitter** (was 14; F2 F3 F6 F7 G7 and a re-scoped H3 landed
-    2026-09-15, taking coverage to 51 of 59): B4, C8, D4, D7, G3, G5, G6, H4. Each carries a stated
-    reason; none is merely unwritten. G3 is deferred rather than owed because `sdn_access_rl` links
-    SDNs by index.
-  - **[P2] TRACE validation of the deciding rule.** Tiers 1 and 2 check the walker's verdicts against
-    synthetic and fixture tables; nothing checks its **path / deciding rule** against real kernel
-    TRACE output, which is its most useful and least verified output. **This cannot be done on a lab
-    router:** the shipped kernel carries `# CONFIG_NETFILTER_XT_TARGET_TRACE is not set`, so `-j
-    TRACE` does not exist in the firmware at all, and arming it needs a kernel config change and a
-    rebuild. `CONFIG_NF_LOG_IPV4` and `xt_LOG` are in, which is what the fallback uses.
-    `test_fwsim_trace.py` exists and needs root for a network namespace. **[owed]**
-  - **[P3] Fixtures from a second and third topology.** Only the owner's BE96U fixture exists, so
-    tier 2 proves the walker against one topology. Wanted: the R15 reporter's RT-BE88U, the box that
-    motivated the feature, and a GT-BE98 with VLANs, which would exercise the four uncovered G rows.
-    Collection is one command, `reaper_fwsim --dump-inputs DIR`, which masks the WAN v4 and v6
-    addresses and takes nvram from an explicit allowlist rather than a prefix sweep, so a fixture
-    cannot carry a key or a client list off the box. The collector lives behind `#ifndef FWSIM_HOST`,
-    so no host gate covers it; read the `nv` and `topology.txt` files before sending one on.
-    **[needs data]**
-  - **[P3] repair-on-red - refused by design** (owner, 2026-09-16). rwatch 3g is report-only and the
-    position-based heals it was meant to retire are still in `rwatch.c`, with `front_exempt` still
-    referenced from `rc/reaper_hook.h`, so the walker sits alongside the heuristics rather than
-    instead of them. Nothing will ever act on a red row. **[refused by design]**
-  - **[P3] `rfwWitPreview` is the one walker surface never exercised** - the Rules-tab confirm-window
-    preview. One arm/confirm cycle closes it. **[owed]**
-  - **[P3] The ASUS admin allowlist defeats Gatekeeper's escape hatch.** With *Only allow specified IP
-    address* on, `REAPER_GKI#1` RETURNs the blocked device toward the admin port and INPUT then lands
-    in `ACCESS_RESTRICTION`, whose tail DROPs any source not in the admin's list - normally including
-    the blocked device's. The hatch exists so that blocking the device you administer from is
-    recoverable; on such a box it is not. The walker reports this as a note rather than a red, because
-    it is the admin's own list deciding. Candidate fixes: emit the GK admin RETURN after the
-    allowlist, or exempt the hatch port from `ACCESS_RESTRICTION` for LAN sources - each changes a
-    stock chain and wants the owner's call. **[needs decision]**
+- **[P3] `reaper_diag`: print the settings that explain Wi-Fi client drops** — diag v1.3.24,
+  **v3.2.9**. **[metal owed: one diag run]** ↳ notes: `diag-wifi-drop-settings.md`
+- **[P3] Static preamble puncturing** — built. **[metal owed]** ↳ notes: `preamble-puncturing-metal.md`
+- **[P3] OSPF + BGP dynamic routing.** **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
+- **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
+- **[P3] Attainder — control by names** (resolver-step domain blocker). **[project]**
+  ↳ notes: `attainder-name-control.md`
+- **[P3] Mimic — copy of the flows** (port mirroring to an external IDS) — Runner hardware mirror,
+  user-chosen ports. **[planned: metal feasibility check first]**
+  ↳ notes: `port-mirroring-ids.md`
+- **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
+- **[P2] Code signing: manifest + images, with a pre-upload verdict.** **[scheduled]**
+  ↳ notes: `manifest-signing-shelved.md`
+- **[P3] North star — replace stock GUI pages with Reaper-native ones.** **[ongoing]**
+  ↳ notes: `native-page-migration.md`
+- **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]**
+  ↳ notes: `staged-batch-changes.md`
 
 ---
 
 ## Documentation
 
-- **[P3] Guide: `reaper_fw_confirm()` is not the only writer of `lastgood`** (2026-09-23).
-  `reaper_fw_promote_objects()` also writes `obj`/`grp` into `/jffs/reaper_fw/lastgood/` when a
-  Policy Routing change is confirmed. Reword wherever the guide or code comments call confirm "the
-  only path that writes flash". **[owed]** ↳ memory: `reaper-fw-audit-2026-09-23.md`
+- **[P3] Guide: `reaper_fw_confirm()` is not the only writer of `lastgood`** — guide §2.7 and the
+  code comments reworded 2026-09-28. **[done; drops at the cut]** ↳ notes: `rfw-lastgood-snapshot.md`
 
 ---
 
 ## Code quality / deferred (with reason)
 
-- **[P2] The code-review MEDIUM/LOW tail, batch B** — `do_reaper_conn_cgi` lock order and the
-  iptables-restore batching are owner-deferred; `pinTarget()` is closed; the `rexport` batched sed
-  and the dashboard CSS audit shipped. **[owed: the two deferred items]** ↳ notes: `code-review-tail.md`
-- **[P2] Only Gatekeeper knows AiMesh exists** (structural, found 2026-09-09) — `reaper_fw.c`
-  (the rules engine, including Service Intercept's DNAT chain `REAPER_FWN`), `rwarden.c` and
-  `reaper_pbr.c` carry **zero** `cfg_relist` references. Not a defect today (no default deny,
-  zone policy is FORWARD-only, Warden returns on LAN subnets first, PBR only marks), so harm
-  needs an operator-authored rule — but it is exactly the trap recorded after the v2.7.3
-  quarantine incident, and Service Intercept is the sharp edge because an intercept rewrites a
-  service for every LAN source and a node is a LAN source. Wants one shared
-  `reaper_aimesh_exempt()` helper rather than three open-coded copies of the registry parser.
-  **[owed — before a fourth enforcement surface is added]**
-  ↳ notes: `aimesh-decompose-2026-09-09.md`
-- **[P3] Sibling port misses adds, renames and deletes** (found 2026-09-22 on an RT-BE86U test
-  build). `port_sibling_v2` syncs files that differ from canon but not files canon added, renamed or
-  deleted, so the sibling branches still hold `onion_tap.*` without `tor1_crypt_st.h`, lack twelve
-  OpenSSL 3.5 files (including `include/openssl/ecdsa.h`), and keep canon-deleted www files
-  (`Reaper_WiFiPro.asp`, `Reaper_BackupCard.asp`, the AdGuard images, `searchIspNameProfile.js`);
-  some also carry a stale `config_base`. CI is immune (it builds each model from the series plus its
-  overlay); a local sibling build breaks. Fix: have the port apply A/R/D from the canon diff, then
-  re-port all five. **[owed]**
-- **[P2] Firewall engine: three silent caps** (2026-09-23). A zone's interfaces past 8
-  (`RFW_MAX_IFACE`), a group's resolved sets past 16 (`RFW_MAX_SETS`) and zone-policy records past 64
-  (`RFW_MAX_ZPOL`) are dropped with no log line, so a DROP rule or zone policy leaves the overflow
-  unmatched. Every other cap in `reaper_fw.c` logs. Fix: log each (and surface in the page), or refuse
-  at save. **[owed]** ↳ memory: `reaper-fw-audit-2026-09-23.md`
-- **[P3] Firewall engine: stale comments** (2026-09-23). The Phase 3 block in `reaper_fw.c` names
-  nat field 7 `desc`; the parser reads it as the schedule (the file header is right). `web.c`
-  `do_reaper_fw_cgi` still says drafts live in "nvram RAM"; since v2.6.9 they are files under
-  `/tmp/reaper_fw/draft/`. **[owed]**
-- **[P3] Boot: three daemons that looked consumer-less — kept** (re-checked 2026-09-20 at the moment of
-  change, as the entry asked): `netool` answers `/netool.cgi` for the installed Network Analysis and
-  Netstat pages; `sysstate` writes the CPU, RAM and temperature logs the feedback report packs;
-  `dns_dpi_check` supervises `dnsqd`, which the Bandwidth Monitor page starts (reachable because
-  `dns_dpi` is in `rc_support`). None is dropped; the earlier claim came from a grep against the wrong
-  path. `rstats` stays too — its history files may be read by user scripts. Deferring VPN- or firewall-adjacent starts
-  (`wgsall`, `pptpd`, OpenVPN, PBR, Gatekeeper, native firewall) past `start_wan` is **not** proposed:
-  their order relative to the firewall build matters. **[closed — no change]** ↳ notes: `boot-efficiency.md`
-- **[P2] Warden chain build as one `iptables-restore --noflush` payload per stack** — the 317 iptables
-  calls in `apply.sh` (each a full table read-modify-write on a ~500-rule filter) are ~3 s of every
-  firewall rebuild: boot, WAN-up, every `restart_firewall`, every Apply. Verified in the tree: iptables
-  1.4.18's restore with `--noflush` flushes and rebuilds only the user chains the payload declares and
-  touches nothing else, so a payload naming only `REAPER_WARDEN`/`RW_*` cannot reach OpenVPN, WireGuard,
-  IPTV, Gatekeeper, native-firewall or stock chains. Conditions: the jump into the shared front chain
-  stays a separate insert; runs under the firewall lock (1.4.18 has no xtables lock or `-w`, and a
-  restore COMMIT overwrites the table image, so an unlocked concurrent writer loses its rule — the same
-  race the P1 above records, per call, so total exposure drops); a failed COMMIT falls back to the
-  per-rule script. This is the batching item deferred in the code-review tail, now with a number.
-  **[owed — own rung: metal soak plus a VPN reconnect during an apply]** ↳ notes: `boot-efficiency.md`
-- **[P3] Boot: what is not to be reordered, and why** (so the question is not re-opened): the three radio
-  dongle probes run sequentially in the kernel from one `insmod dhd` and interfaces are named by probe
-  order (a prebuilt `wl_ifname_align_war()` already exists) — no async probe; radio configuration is
-  MLO-ordered — no parallel `wlconf`; `start_wan` follows `start_services` because the WAN-up rebuild
-  is an iptables-restore without `--noflush` that would flush every NAT-touching service started after
-  it, and wanduck (started inside `start_lan`) is what kicks NTP; `start_service_ready` and
-  `success_start_service` are the watchdog's boot barrier. The remaining budget is kernel 20 s, radio
-  firmware 17 s, closed-source wireless bring-up 34 s, DHCP 12 s, NTP 10 s. **[recorded; closed]**
-  ↳ notes: `boot-efficiency.md`
-- **[P3] Throughput: every dataplane interrupt lands on CPU0 by GIC default** — affinity masks say all
-  four cores, delivery goes to the lowest; NET_RX softirq is ~70 % on CPU0. No CPU-path pressure on a
-  hardware-forwarded box (softnet squeezed 3, dropped 10 in 80 min; Runner healthy; GDX pool full), so
-  nothing to change by default — this is the packet-steering item in Open bugs, which stays gated on
-  `fc_disable=1` or an active VPN, runtime-reversible, measured. Optional for many-flow boxes: a larger
-  conntrack hash (buckets 16384 for max 300000). **[recorded; no change]** ↳ notes: `idle-cpu-burners.md`
-- **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** — healer path
-  only, if ever; never a blanket `conntrack -F`. **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
-- **[P3] The channel marker: BETA exercised, STABLE not yet** — the beta path has been through the
-  local build, the staging step (`stage_release.ps1 -Channel`, which refuses to mix channels in one
-  version folder) and the public pipeline end to end. No image has been built with `stable` since the
-  marker was added, and that is the path a release goes out on. A CI-side cross-check of the published
-  assets against the `prerelease` flag remains optional belt-and-braces.
-  **[owed — build one `stable` image before the next release cut]** ↳ notes: `channel-marker.md`
-- **[P3] GitHub release retention — the prune is the owner's to run.** The retention plan and
-  `prune_releases.sh` are written (166 releases → 18 kept), and v3.1.5 made the pruner fail closed on
-  an empty or comment-only manifest. The delete itself has not been run. **[owner action]**
-- **[P3] Sibling worktrees carry build detritus** — the five port worktrees hold untracked build
-  output from earlier local builds; `git checkout -- .` before any archive or overlay regeneration.
-  The stale `rt-be88u-v300` worktree can go. **[hygiene]**
-- **[P3] `/tmp` dir-ownership hardening** — one shared validate-or-refuse helper, ~11 sites.
-  **[deferred]** ↳ notes: `tmp-dir-ownership.md`
-- **[P3] `poll_fcache` O(n²) pairing · `do_reaper_dev_cgi` static
-  snapshot arrays** — bounded, measured small, or latent-only. **[shelved]** (the `poll_classes`
-  `tmctl` popen left this entry on 2026-09-20; see `idle-cpu-burners.md`)
-- **[P3] Theme-token vocabulary consolidation (remainder of D4)** — `--panel2`/`--red*` and the
-  `--line` divergence. **[owed — to the page migration]** ↳ notes: `theme-token-consolidation.md`
-- **[P3] Inherited httpd core: two pre-auth robustness gaps** (an unclamped `Content-Length` drain;
-  a `url[128]` off-by-one) — present in every stock build; opt-in hardening only.
-  **[inherited; deferred]** ↳ notes: `httpd-inherited-preauth-gaps.md`
+- **[P2] The code-review MEDIUM/LOW tail, batch B.** **[owed: the two deferred items]**
+  ↳ notes: `code-review-tail.md`
+- **[P3] Second review of the v3.1.0–v3.1.5 code** — seven sequential slices, reachability before any
+  finding. **[planned — not started]** ↳ notes: `review-carry-forward-queue.md` §4
+- **[P2] Only Gatekeeper knows AiMesh exists** — wants one shared `reaper_aimesh_exempt()`.
+  **[owed — before a fourth enforcement surface]** ↳ notes: `aimesh-exempt-helper.md`
+- **[P3] Sibling port misses adds, renames and deletes** — local sibling builds break; CI immune.
+  **[owed]** ↳ notes: `sibling-port-add-rename-delete.md`
+- **[P2] Firewall engine: three silent caps** (`RFW_MAX_IFACE`/`_SETS`/`_ZPOL`) — each logs once
+  per ruleset, the page refuses them (RFW_323-325); **v3.2.9**. **[metal owed]**
+  ↳ notes: `rfw-silent-caps.md`
+- **[P3] Firewall engine: stale comments** — fixed in tree 2026-09-28. **[done; drops at the cut]**
+  ↳ notes: `rfw-stale-comments.md`
+- **[P2] Warden chain build as one `iptables-restore --noflush` payload** (~3 s per rebuild) —
+  shim + per-rule fallback, host-tested; **v3.2.9**. **[metal owed: soak + VPN reconnect during
+  an apply; `start_rwarden()`'s direct apply is not under the firewall lock]**
+  ↳ notes: `warden-restore-batch.md`
+- **[P3] Policy Routing: recapture of flows that leaked while the rules were absent.** **[deferred]**
+  ↳ notes: `pbr-conntrack-recapture.md`
+- **[P3] GitHub release retention — the prune is the owner's to run.** **[owner action]**
+  ↳ notes: `release-retention-prune.md`
+- **[P3] Sibling worktrees carry build detritus.** **[hygiene]** ↳ notes: `sibling-worktree-detritus.md`
+- **[P3] `/tmp` dir-ownership hardening.** **[deferred]** ↳ notes: `tmp-dir-ownership.md`
+- **[P3] `poll_fcache` O(n²) pairing · `do_reaper_dev_cgi` snapshot arrays.** **[shelved]**
+  ↳ notes: `shelved-perf-items.md`
+- **[P3] Theme-token vocabulary consolidation (remainder of D4).** **[owed — to the page
+  migration]** ↳ notes: `theme-token-consolidation.md`
+- **[P3] Inherited httpd core: two pre-auth robustness gaps.** **[inherited; deferred]**
+  ↳ notes: `httpd-inherited-preauth-gaps.md`
+- **[P2] Network page: Delete does nothing on a main-network card.** development based issue no firmware wide
+  ↳ notes: `sdn-mainfh-delete-dead.md`
 
 ---
 
@@ -640,44 +227,37 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
-- **Dual-WAN: both NextDNS profiles receive DNS logs** — stubby round-robins every DoT endpoint;
-  enter one. ↳ notes: `wad-dual-wan-nextdns.md`
-- **Investigated, not a bug (do not re-raise)** — the `Reaper_Firewall.asp` field "XSS", Warden's own
-  addresses, the `/etc/hosts` IP field, `custom_clientlist` truncation, the scrape-token stub, the
-  store-chooser TOCTOU. ↳ notes: `wad-investigated-not-a-bug.md`
-- **Translations — closed 2026-09-08, kept as a guard.** The functional-token pass across all 24
-  languages shipped in v2.7.7 and nothing is owed: the RABT credits and jokes stay English **by
-  choice**, and the rest of the entry was always a do-not-translate list — the pinned
-  `value="TCP|UDP|BOTH|OTHER"` attributes that `rc/firewall.c` compares, and the deliberately
-  literal strings (Splunk placeholders, Broadcom counter names, the parsed schedule placeholder,
-  product names). Re-read before any translation work; do not re-file as a task.
+- **Dual-WAN: both NextDNS profiles receive DNS logs** — stubby round-robins every DoT endpoint.
+  ↳ notes: `wad-dual-wan-nextdns.md`
+- **Investigated, not a bug (do not re-raise).** ↳ notes: `wad-investigated-not-a-bug.md`
+- **Translations — closed 2026-09-08, kept as a guard** (do-not-translate list).
   ↳ notes: `translations-residual.md`
 - **SNMP `rwuser` — keep as-is** (owner, 2026-08-19): `rouser` would remove SNMP-SET.
-- **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting**, not a fault.
+- **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting.**
   ↳ notes: `wad-warden-self-drop-failure.md`
-- **Firewall rule negation — considered, not building**; an ordered allow-above-drop pair already
-  expresses it. ↳ notes: `wad-firewall-rule-negation.md`
-- **`dig` on the Network Tools page — declined** (owner, 2026-08-24): a full dig would widen the
-  shared input filter that guards the existing tools. ↳ notes: `wad-dig-network-tools.md`
-- **`possible DNS-rebind attack detected` for names a LAN filter blocks** (owner, 2026-09-06) — the
-  filter's `0.0.0.0` block answers trip the router's rebind guard once clients go through the router;
-  set the filter's blocking mode to NXDOMAIN, keep the guard. ↳ notes: `wad-rebind-lan-filter-blocks.md`
-- **DNSSEC validation on the router fails every blocked name in a signed zone** (owner, 2026-09-06)
-  — `limit exceeded: per-query subqueries` / `resource limit exceeded`: a validator downstream of a
-  filter cannot validate answers the filter invents; validate in the filter, not the router.
+- **Firewall rule negation — not building.** ↳ notes: `wad-firewall-rule-negation.md`
+- **`dig` on the Network Tools page — declined.** ↳ notes: `wad-dig-network-tools.md`
+- **DNS-rebind warnings for names a LAN filter blocks** — use NXDOMAIN blocking.
   ↳ notes: `wad-rebind-lan-filter-blocks.md`
-- **The DDNS *Interface* selector on a dual-WAN box is stock ASUS**, present since the RT-AC86U GPL
-  drop and gated by `RTCONFIG_MULTIWAN_IF` — not new in Reaper. Worth setting explicitly: `Auto`
-  resolves to `wan_primary_ifunit()`, which in a load-balance pair is not a stable answer.
-- **Mobile device metrics reported incorrect** (owner report, 2026-09-05) — a page-rendering
-  report, not a data one. ↳ notes: `mobile-device-metrics.md`
-- **AiMesh nodes refuse the firmware** (owner report, 2026-09-05) — the user reset the device and it
-  worked. **[watch]** ↳ notes: `aimesh-node-firmware-refused.md`
-- **Service Intercept in redirect-to-router mode with nothing listening** (owner, 2026-09-06) —
-  an NTP intercept set to redirect to the router silently sent every client's time request to a closed
-  port because "Enable local NTP server" was off; clients then polled every public server they knew.
-  Enabling the router's NTP server is the answer; a page warning when the redirect target port has no
-  listener remains a candidate. ↳ notes: `intercept-redirect-no-listener.md`
+- **DNSSEC on the router fails every blocked name in a signed zone** — validate in the filter.
+  ↳ notes: `wad-rebind-lan-filter-blocks.md`
+- **DDNS *Interface* selector on dual WAN is stock ASUS.** ↳ notes: `wad-ddns-interface-selector.md`
+- **Mobile device metrics reported incorrect** — a rendering report. ↳ notes: `mobile-device-metrics.md`
+- **AiMesh nodes refuse the firmware** — a reset cured it. **[watch]**
+  ↳ notes: `aimesh-node-firmware-refused.md`
+- **Service Intercept redirect-to-router with nothing listening** — enable the router's service.
+  ↳ notes: `intercept-redirect-no-listener.md`
+- **Boot: three "consumer-less" daemons are kept; no VPN/firewall start is reordered.**
+  ↳ notes: `boot-efficiency.md`
+- **Boot: what is not to be reordered, and why.** ↳ notes: `boot-efficiency.md`
+- **Throughput: dataplane IRQs land on CPU0** — no pressure; no change. ↳ notes: `idle-cpu-burners.md`
+- **Rule Status walker: repair-on-red — refused by design** (owner, 2026-09-16); report-only.
+  ↳ notes: `firewall-witness-catalog.md`
+- **Rule Status walker: 8 catalog rows not built** (B4 C8 D4 D7 G3 G5 G6 H4) — each with a stated
+  reason. ↳ notes: `firewall-witness-catalog.md`
+- **Gatekeeper's admin escape hatch under the ASUS admin allowlist** — the administering device is
+  on the list, so the hatch holds; unlisted devices are refused by the owner's own list (owner,
+  2026-09-29). ↳ notes: `firewall-witness-catalog.md`
 
 ---
 
@@ -685,23 +265,15 @@ health check's dual-stack fallback, DoT strict order, and the auto-logout idle t
 
 > Root-caused on RT-BE96U hardware; the responsible code lives in prebuilt Broadcom blobs.
 
-- **B-1. Classful QoS WRR is non-functional on eth ports** — every port's egress_tm is created with
-  8 of 8 SP elements inside the closed rdpa driver; v2.5.4 forces strict priority and removed the
-  weight controls. ↳ notes: `blocked-b1-classful-wrr.md`
-- **B-2. [P3] Unused onboarding/backhaul BSS generated when disabled → RADIUS log spam.** A boot-time
-  suppression script did not work and was reverted. **[blocked — blob; risk-accepted]**
-- **B-3. [P3] Guest Network Pro breaks the 2.5G-1 LAN port when a manual WAN VLAN is active
-  (GT-BE98)** — no userspace interface to the switch VLAN/PVID table. **[blocked — blob;
-  risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`, `GUESTPRO-2.5G-VLAN-PLAN.md`
-- **B-3b. [P2] Diag section 5 reports the wrong link for a LAN-port WAN** (GT-BE98 field, two
-  reports 2026-09-25/26) — `wan0_ifname` is `vlan4094`, whose carrier follows the switch uplink
-  (always 1, 10 Gb/s), while the physical 2.5G port sits on the RTL8372 switch and its link state
-  appears only as `link down LAN1` in the kernel log. Print the port behind the VLAN (rtkswitch /
-  ethctl) and count its link transitions in the syslog history. **[owed]**
-- **B-4. [P3] Broadcom's own dynamic puncturing (`punct_features`) needs the 2025 SDK** — compiled
-  out on `WIFI7_SDK_20231126`. Superseded in practice by Reaper's controller over the static bitmap
-  (see Features, v3.2.8); this entry stays for the vendor feature only. **[blocked — SDK]** ↳ notes:
-  `blocked-b4-dynamic-puncturing.md`
-- **B-5. [P1] Internet speed test fails on 10 Gbit/s links** (GT-BE98 field diag, v3.0.0) — not explainable
-  from source; instrumented in v3.0.5. Also a first-run-after-boot "Latency test failed" on the
-  BE96U. Owner ruling 2026-09-05: not chased further. **[blocked — development]** ↳ notes: `speedtest-10g-links.md`
+- **B-1. Classful QoS WRR is non-functional on eth ports.** ↳ notes: `blocked-b1-classful-wrr.md`
+- **B-2. [P3] Unused onboarding/backhaul BSS → RADIUS log spam.** **[blocked — blob;
+  risk-accepted]** ↳ notes: `blocked-b2-onboarding-bss.md`
+- **B-3. [P3] Guest Network Pro breaks the 2.5G-1 LAN port with a manual WAN VLAN** (GT-BE98).
+  **[blocked — blob; risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`,
+  `GUESTPRO-2.5G-VLAN-PLAN.md`
+- **B-3b. [P2] Diag section 5 reports the wrong link for a LAN-port WAN** (GT-BE98). **[owed]**
+  ↳ notes: `diag-lanport-wan-link.md`
+- **B-4. [P3] Broadcom's own dynamic puncturing needs the 2025 SDK.** **[blocked — SDK]**
+  ↳ notes: `blocked-b4-dynamic-puncturing.md`
+- **B-5. [P1] Internet speed test fails on 10 Gbit/s links** — owner ruling: not chased.
+  **[blocked — development]** ↳ notes: `speedtest-10g-links.md`

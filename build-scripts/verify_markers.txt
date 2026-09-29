@@ -19,10 +19,11 @@ www/Advanced_WAN_Content.asp|!128, 1492
 www/Advanced_WAN_Content.asp|!1280, 1508
 # v3.1.0 -- the first-boot box (Reaper_WiFiSetup.asp) is the security banner's
 # Wi-Fi target; it sets SSID + Wi-Fi key on every radio through its gated CGI and
-# fires the credential apply chained with restart_wireless. The stock Wireless
+# fires the credential apply chained with restart_wireless (+ restart_sdn since
+# v3.2.9, the SDN reconcile a guest-network apply runs). The stock Wireless
 # page must no longer be what the banner points at.
 www/Reaper_WiFiSetup.asp|reaper_wifisetup.cgi|1
-www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;restart_wireless|1
+www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;restart_wireless;restart_sdn|1
 www/Reaper_WiFiSetup.asp|httpApi.chpass(|1
 usr/sbin/httpd|reaper_wifisetup.cgi|1
 usr/sbin/httpd|Reaper_WiFiSetup.asp|1
@@ -106,7 +107,7 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.23|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.24|1
 usr/sbin/reaper_diag|/proc/nvram/boardid|1
 # v3.1.7 -- the firewall table walker: binary + static witness rows + the
 # rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
@@ -486,6 +487,9 @@ www/Reaper_WiFiSettings.asp|@pdyn|1
 www/Reaper_Wireless.asp|action=punct|1
 usr/sbin/httpd|_punct_dyn|1
 usr/sbin/reaper_diag|dynamic puncturing:|1
+# v3.2.8 -- rpunctd does no radio I/O while wlready != 1 (restart_wireless also stops
+# it first): GT-BE98 field report 2026-09-28, wl2 dongle died mid-restart_wireless.
+bin/rpunctd|radio reads paused|1
 # v3.2.8 -- hidden add-on anchors in the served menu tree (field: Skynet's installer
 # appends its tab after the stock firewall line, which Reaper had retired). The
 # retired stock lines stay as __HIDE__ entries so third-party installers find them.
@@ -496,3 +500,28 @@ www/require/modules/menuTree.js|{url: "Guest_network.asp", tabName: "__HIDE__"}|
 # v3.2.8 -- wanduck line-switch hold-off (field: GT-BE98 fb + LAN-port WAN + USB tether
 # ping-ponged from boot; switch_wan_line restarts the line it leaves).
 sbin/rc|holding the next switch for up to|1
+# v3.2.8 -- CVE-2023-52340: net.ipv6.route.max_size raised to INT_MAX at boot (forged ICMPv6
+# Packet Too Big could fill the IPv6 route cache and stop neighbour discovery).
+sbin/rc|/proc/sys/net/ipv6/route/max_size|1
+# v3.2.8 -- firewall engine: the confirmed snapshot stages all eight lists before the
+# marker goes, and boot re-adopts unmarked snapshot files instead of blessing empty
+# nvram over them (backlog rfw-lastgood-snapshot).
+sbin/rc|lastgood marker was missing (an interrupted save)|1
+sbin/rc|the previous confirmed ruleset stays in place|1
+# v3.2.8 -- firewall engine: the three silent caps log, and the page refuses them at
+# save (backlog rfw-silent-caps).
+sbin/rc|the rest are IGNORED (split the group)|1
+sbin/rc|interfaces - the rest are IGNORED|1
+sbin/rc|more than %d zone policies|1
+www/Reaper_Firewall.asp|members.length>16|1
+# v3.2.8 -- diag v1.3.24: Wi-Fi drop settings (roaming, schedules, DFS, auth/PMF),
+# roamast/radar counts, RAM-store-beside-USB warning (backlog diag-wifi-drop-settings).
+# v3.2.8 -- Warden builds its chains with one iptables-restore --noflush payload per
+# stack, falling back to per-rule adds if a COMMIT is refused (backlog warden-restore-batch).
+sbin/rc|rebuild refused ($_e) - replaying rule by rule|1
+# v3.2.8 -- dashboard Internet card follows the PRIMARY WAN unit (field: a dual-WAN
+# fail-over showed Disconnected while the second line carried traffic).
+www/Main_ReaperDash.asp|function wanPick|1
+usr/sbin/reaper_diag|roamast kicks|1
+usr/sbin/reaper_diag|SDN access-time schedules on|1
+usr/sbin/reaper_diag|durable store is RAM although a USB disk is mounted|1

@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.9** <!--@treever--> — `3006.102.8_Reaper_v3.2.9`. **OpenSSL 3.5.9, a first-boot box that finishes setup, and a visible Dual WAN backup.** OpenSSL moves to 3.5.9 for its High DTLS fix and five Low fixes; two more CVEs are closed (IPv6 route cache, e2fsprogs); the banner's setup box now leaves the main network usable on the Network page; USB Format and Scan reach the right disk; a Dual WAN backup line shows on the Dashboard and lights the WAN LED; dynamic puncturing survives a wireless restart; the rules engine's saved ruleset survives a full `/jffs`. The code was built and verified on RT-BE96U MCP test images (v3.2.8_BETA r1–r7) before the cut; the release images come from the public CI build. The series stands at **726 patches** (0723–0726 for v3.2.9); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.0** <!--@treever--> — `3006.102.8_Reaper_v3.3.0`. **pppd, strongSwan and Tor security fixes, and Gatekeeper no longer races a firewall restart.** pppd closes CVE-2026-85495 (a pre-authentication buffer overrun a PPPoE peer could trigger) and an MS-CHAP out-of-bounds read; strongSwan takes seven official CVE patches and Tor moves to 0.4.9.13; Gatekeeper's re-apply now waits for a firewall restart instead of racing it, which could drop a VLAN's new WAN connections; Rule Status no longer tests VPN and port-forward rows from an address the threat feed blocks on a box blocking many countries. The code was built and verified on RT-BE96U MCP test images (v3.2.9_BETA r1–r3) before the cut, and the Gatekeeper fix was exercised on hardware with a forced firewall restart; the release images come from the public CI build. The series stands at **731 patches** (0727–0731 for v3.3.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,23 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.0 — pppd, strongSwan and Tor security fixes, Gatekeeper and firewall restarts
+
+**Security.** pppd fixes CVE-2026-85495: a PPPoE peer on the WAN side could overrun a buffer before
+authentication by repeating a configuration option. If you connect over PPPoE, update. An MS-CHAP
+challenge that was too short is no longer read past its end. strongSwan takes the seven official
+patches from 2026-09-07 (certificate parsing and EAP identity binding) and Tor moves to 0.4.9.13;
+both are off unless you turned them on.
+
+**Gatekeeper.** Applying settings that restart the firewall (the System page, for one) while
+Gatekeeper was on could make two copies of Gatekeeper's rules collide. Its per-device rules came out
+in the wrong order and a VLAN network lost internet access for new connections until that network
+was restarted. Gatekeeper now waits for the firewall restart to finish.
+
+**Rule Status.** On a router blocking about 30 or more countries in Warden, the VPN-server and
+port-forward rows could show Unsuccessful because they were tested from an address the threat feed
+blocks. Only the report was wrong; real traffic was not affected.
 
 ## What's new in v3.2.9 — OpenSSL 3.5.9, first-boot setup, Dual WAN backup, USB format
 

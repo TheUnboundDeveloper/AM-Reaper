@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,38 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.3.0 — pppd, strongSwan and Tor security fixes, Gatekeeper no longer races a firewall restart
+
+- **pppd: CVE-2026-85495.** `lcp_reqci()` wrote one Configure-NAK entry per repeated option into a
+  fixed 1500-byte buffer with no bound, so a PPPoE peer (the ISP's access concentrator or a rogue one
+  on the WAN segment) could overrun it before authentication by repeating an option a few hundred
+  times. Ported from ppp 2.5.4: each option type is processed once and duplicates are ignored with
+  one warning, and a NAK that would outgrow the buffer becomes a Configure-Reject. Exposed mainly
+  with PPPoE authentication set to CHAP.
+- **pppd: GHSA-j686-vmph-4m7c.** An MS-CHAP challenge shorter than the protocol requires was read
+  past its end, leaking up to 15 bytes into the response; it now gets an empty response. The
+  `ascii2unicode` length clamp from 2.5.4 is also taken.
+- **strongSwan: seven CVEs from 2026-09-07.** The official patches, applied as-is:
+  CVE-2026-78123 and -78124 (PKCS#7 in the openssl plugin), -78129 (PKCS#5 parameters), -78130,
+  -78131 and -78132 (x509 attribute certificates), -78134 (EAP inner-authentication identity
+  binding). IPsec is off by default.
+- **Tor 0.4.9.13.** Ten fixes rated High upstream, among them a use-after-free on a failed TLS
+  handshake, a reverse-DNS double free and a stream-isolation bypass; geoip and fallback
+  directories refreshed. Taken from the signature-verified release tarball. Tor is off by default.
+- **Gatekeeper no longer races a firewall restart (field, RT-BE96U).** After a System-page Apply,
+  the firewall rebuild re-applied Gatekeeper while `gkd`'s self-heal applied it a second time.
+  iptables here has no lock between writers, so the two lost each other's updates: Gatekeeper's
+  per-device rules came out in the wrong order, and a VLAN network lost its WAN accept rule, so new
+  connections from that VLAN were dropped until the network was restarted. Every Gatekeeper apply now
+  runs under the lock the firewall rebuild holds, and the self-heal skips the apply when the rebuild
+  has already restored the chains. Rule Status showed it as D3b and G2 rows turning Unsuccessful.
+- **Rule Status: VPN-server and port-forward rows on a box blocking many countries (field,
+  RT-BE86U).** The WAN test address is chosen from a list so that one the threat feed blocks is
+  skipped, but only the first 32 block lists were checked. Warden adds one list per blocked country
+  ahead of the threat feed's, so with about 30 countries blocked the feed was never checked and the
+  rows were tested from an address it drops. Every list is checked now (`reaper_fwsim` 1.8). Report
+  only; no rule changes.
 
 ## v3.2.9 — OpenSSL 3.5.9, the first-boot box finishes setup, Dual WAN backup shown, USB format works
 

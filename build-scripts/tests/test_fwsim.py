@@ -572,6 +572,13 @@ try:
     check("wansrc: nothing claims it = the documented default, no note", j.get("wansrc") == "198.51.100.7" and j.get("wansrc_note") == "", (j.get("wansrc"), j.get("wansrc_note")))
     j, out, rc = run(save4=wsrc, nv=NV, members=MEMBERS + "rw_ban 198.51.100.7\n", witness=None, tag="ws4")
     check("wansrc: a set matched only on the DESTINATION side does not claim the source", j.get("wansrc") == "198.51.100.7", (j.get("wansrc"), j.get("wansrc_note")))
+    # 2026-09-29 (RT-BE86U field report): Warden emits one source rule per
+    # blocked country ahead of rw_threat; the picker's old 32-slot set list
+    # filled up first and rw_threat was never tested
+    cc = "".join("-A REAPER_WARDEN -m set --match-set rw_g_c%02d src -j RW_DROP\n" % i for i in range(40))
+    wcc = wsrc.replace("-A REAPER_WARDEN -m set --match-set rw_threat src", cc + "-A REAPER_WARDEN -m set --match-set rw_threat src")
+    j, out, rc = run(save4=wcc, nv=NV, members=MEMBERS + "rw_threat 198.51.100.7\n", witness=None, tag="ws5")
+    check("wansrc: 40 country sets ahead of rw_threat still leave rw_threat tested", j.get("wansrc") == "203.0.113.99", (j.get("wansrc"), j.get("wansrc_note")))
 
     # ---- the convergence pass (owner, 2026-09-16) ----
     # mode is a constant: the report is advisory by design
@@ -654,7 +661,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.7", j.get("ver") == "1.7", j.get("ver"))
+    check("pass2: walker is v1.8", j.get("ver") == "1.8", j.get("ver"))
 
     # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
     j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")

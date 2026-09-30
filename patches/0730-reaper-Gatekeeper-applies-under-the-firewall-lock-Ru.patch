@@ -1,0 +1,284 @@
+From e06a2475e21ff95de28600ef7ac39a16b1208dc4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 29 Sep 2026 20:13:32 -0400
+Subject: [PATCH] reaper: Gatekeeper applies under the firewall lock, Rule
+ Status source picker
+
+- Gatekeeper: gkd's self-heal, IPv6-prefix re-apply, failed-rule retry
+  and captive-rule re-insert, and rc's start_gk/gk_refresh, now run
+  apply.sh under file_lock("firewall"), the lock start_firewall holds
+  while its tail re-applies Gatekeeper. iptables 1.4 has no xtables
+  lock, so the two concurrent applies after a System-page Apply lost
+  each other's updates: REAPER_GKF came out interleaved and SDN_FF lost
+  an SDN bridge's WAN ACCEPT (new VLAN connections dropped until
+  restart_sdn). The self-heal re-checks the chains under the lock and
+  skips when the firewall tail already rebuilt them.
+- Rule Status (reaper_fwsim 1.8): the WAN witness source/destination
+  pickers tested only the first 32 sets they found. Warden emits one
+  source rule per blocked country ahead of rw_threat, so with about 30
+  countries blocked rw_threat was never tested and the VPN-server and
+  port-forward rows were witnessed from a bogon the threat feed drops.
+  The pickers now test every set rule directly.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c                  | 58 +++++++++++-----
+ release/src/router/rc/gatekeeper.c            | 17 ++++-
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 66 +++++++++----------
+ 3 files changed, 88 insertions(+), 53 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index fb7492c9db..603a0f7adf 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -450,6 +450,41 @@ static void expire_guests(void)
+ 	free(rl);
+ }
+ 
++/* 2026-09-29: every apply.sh run from this daemon takes the "firewall" lock
++ * (/var/lock/firewall.lock, shared/files.c) that start_firewall holds. iptables
++ * 1.4 has no xtables lock: each rule add is a read-modify-write of the whole
++ * table, so two writers at once lose each other's updates. Field-hit: the
++ * firewall tail and this self-heal ran apply.sh one second apart - REAPER_GKF
++ * came out interleaved and SDN_FF lost a bridge's WAN ACCEPT (new VLAN
++ * connections dropped until restart_sdn). Serialized, a heal that finds the
++ * chains already rebuilt by the firewall tail does nothing. */
++static int chains_armed(void)
++{
++	/* one shell fork for the whole armed check (was five); the && chain
++	 * short-circuits identically and the result is true iff all six pass.
++	 * v2.6.2: chain EXISTENCE is not enforcement - the jump that reaches the
++	 * chain lives in the shared front chain REAPER_HOOK_F (rc/reaper_hook.h),
++	 * so assert that too; a lost jump with a live chain used to read "armed"
++	 * forever. */
++	return system("iptables -nL REAPER_GKF >/dev/null 2>&1 && "
++	              "iptables -nL REAPER_GKI >/dev/null 2>&1 && "
++	              "iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "
++	              "ip6tables -nL REAPER_GKF >/dev/null 2>&1 && "
++	              "iptables -nL REAPER_HOOK_F 2>/dev/null | grep -q REAPER_GKF && "
++	              "ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0;
++}
++
++/* run a rule script under the firewall lock; unless_armed skips it when the
++ * chains are complete by the time the lock is ours */
++static void run_locked(const char *cmd, int unless_armed)
++{
++	int lk = file_lock("firewall");
++
++	if (!unless_armed || !chains_armed())
++		system(cmd);
++	if (lk >= 0) file_unlock(lk);
++}
++
+ /* v2.6.5: the three multi-network drifts the armed probe cannot see.
+  *  1. a bridge with an IPv4 address that is not in /tmp/gk/ifs (an SDN created
+  *     by a path that never reached the sdn service handler) -> restart_gk
+@@ -538,13 +573,13 @@ static void heal_networks(void)
+ 			}
+ 		} else if (!strcmp(out, "SDNFI=missing")) {
+ 			if (!sdnfi_logged) { logmessage("gatekeeper", "captive admit rule missing from SDN_FI (SDN rules rebuilt) - re-inserting"); sdnfi_logged = 1; }
+-			system("sh " GK_DIR "/sdnfi.sh 2>/dev/null");
++			run_locked("sh " GK_DIR "/sdnfi.sh 2>/dev/null", 0);
+ 		} else if (!strcmp(out, "SDNFI=ok")) {
+ 			sdnfi_logged = 0;
+ 		} else if (!strcmp(out, "V6=changed") && now - last_v6 >= 60) {
+ 			last_v6 = now;
+ 			logmessage("gatekeeper", "a network's IPv6 prefix changed - re-applying internet-only rules");
+-			system("sh " APPLY_SH);
++			run_locked("sh " APPLY_SH, 0);
+ 		}
+ 	}
+ 	pclose(p);
+@@ -579,7 +614,7 @@ static void heal_lost_rules(void)
+ 	last = now;
+ 	strikes++;
+ 	logmessage("gatekeeper", "%ld rule(s) failed to load in the last apply (a concurrent iptables writer) - re-applying (%d of 3)", n, strikes);
+-	system("sh " APPLY_SH);
++	run_locked("sh " APPLY_SH, 0);
+ }
+ 
+ static void self_heal(void)
+@@ -611,18 +646,7 @@ static void self_heal(void)
+ 	/* §4 (v1.7.1): probe EVERY enforcement component, not just GKF + the
+ 	 * ebtables hook. apply.sh always creates GKF/GKI/GKN (v4+v6) and the
+ 	 * ebtables chain, so any one missing means a flush occurred - reapply. */
+-	/* one shell fork for the whole armed check (was five); the && chain
+-	 * short-circuits identically and 'armed' is still true iff all five pass. */
+-	/* v2.6.2: chain EXISTENCE is not enforcement - the jump that reaches the
+-	 * chain lives in the shared front chain REAPER_HOOK_F (rc/reaper_hook.h),
+-	 * so assert that too; a lost jump with a live chain used to read "armed"
+-	 * forever. */
+-	armed = (system("iptables -nL REAPER_GKF >/dev/null 2>&1 && "
+-	                "iptables -nL REAPER_GKI >/dev/null 2>&1 && "
+-	                "iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "
+-	                "ip6tables -nL REAPER_GKF >/dev/null 2>&1 && "
+-	                "iptables -nL REAPER_HOOK_F 2>/dev/null | grep -q REAPER_GKF && "
+-	                "ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0);
++	armed = chains_armed();
+ 
+ 	if (armed) {
+ 		int fd = open(CHAIN_STAMP, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+@@ -640,7 +664,9 @@ static void self_heal(void)
+ 		logmessage("gatekeeper", "enforcement chains missing (firewall/wireless restart or LAN not ready) - reapplying");
+ 		last_armed = 0;
+ 	}
+-	system("sh " APPLY_SH);
++	/* a firewall restart in progress holds the lock and re-runs apply.sh in
++	 * its tail: wait for it, then re-check instead of racing it */
++	run_locked("sh " APPLY_SH, 1);
+ }
+ 
+ /* v2.7.3: AiMesh awareness (see rc/gatekeeper.c gk_emit_relist).
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 104b01a928..bdfb2f3604 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -670,6 +670,19 @@ void stop_gk(void)
+ 	unlink(GK_STAMP);
+ }
+ 
++/* 2026-09-29: apply.sh under the "firewall" lock (see gkd.c run_locked) -
++ * start_firewall runs it in its tail under the same lock, and iptables 1.4
++ * loses concurrent writers' updates. file_lock returns -1 without blocking
++ * when this process already holds the lock. */
++static int gk_apply_locked(void)
++{
++	int lk = file_lock("firewall");
++	int ret = system("sh " GK_APPLY);
++
++	if (lk >= 0) file_unlock(lk);
++	return ret;
++}
++
+ void start_gk(void)
+ {
+ 	stop_gk();
+@@ -699,7 +712,7 @@ void start_gk(void)
+ 	/* apply.sh exits non-zero when the LAN bridge is not up yet (cold boot):
+ 	 * that is expected, not an error - gkd's self-heal and the firewall hook
+ 	 * re-run the same script and arm enforcement the moment the bridge appears. */
+-	if (system("sh " GK_APPLY) != 0)
++	if (gk_apply_locked() != 0)
+ 		logmessage("gatekeeper", "LAN not ready at boot - enforcement deferred, will arm automatically once the bridge is up");
+ 	xstart("gkd");
+ }
+@@ -715,7 +728,7 @@ void gk_refresh(void)
+ 	if (!nvram_match("gk_enable", "1") || !f_exists(GK_APPLY))
+ 		return;
+ 	gk_gen_apply();
+-	if (system("sh " GK_APPLY) != 0)
++	if (gk_apply_locked() != 0)
+ 		logmessage("gatekeeper", "network set changed - re-apply deferred (LAN not ready)");
+ 	else
+ 		logmessage("gatekeeper", "network set changed - enforcement re-applied on every bridge");
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 61393ba475..1b86275f78 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -46,7 +46,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.7"
++#define FWSIM_VER	"1.8"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -1532,6 +1532,32 @@ static void load_witness_file(const char *path, int resolve)
+ /* ------------------------------------------------------------------ */
+ /* generated witnesses (from the live configuration)                   */
+ /* ------------------------------------------------------------------ */
++/* 2026-09-29: does any set the live tables match on the given side (1 = src,
++ * 2 = dst) hold this address? Walks the rules directly. The pickers used to
++ * copy set names into a fixed 32-slot list first, and Warden emits one source
++ * rule per blocked country BEFORE its rw_threat rule (rc/rwarden.c; the UI
++ * offers 89 countries), so a box blocking ~30 countries never tested
++ * rw_threat at all and witnessed from a bogon the feed drops (RT-BE86U field
++ * report: C1.1/C3 red at filter/RW_DROP#2). set_test() caches each answer,
++ * so a set referenced by several rules is asked once per candidate. */
++static int set_claims(struct fw *fw, int dir, const struct addr *a)
++{
++	int ti, tj, tk;
++
++	for (ti = 0; ti < fw->nt; ti++) {
++		struct table *t = &fw->t[ti];
++		for (tj = 0; tj < t->n; tj++) {
++			struct chain *ch = &t->c[tj];
++			for (tk = 0; tk < ch->n; tk++) {
++				struct rule *r = &ch->r[tk];
++				if (!r->has_set || r->set_dir != dir || r->set_neg) continue;
++				if (set_test(r->set, a)) return 1;
++			}
++		}
++	}
++	return 0;
++}
++
+ /* The WAN-side witness source. 2026-09-16 field report (GT-BE98, and the
+  * same shape on a second box's WireGuard row): 198.51.100.7 is TEST-NET-2,
+  * and the firehol1 feed carries the bogon ranges, so on any box with that
+@@ -1560,28 +1586,13 @@ static const char *wansrc_pick(int fam)
+ 	static const char *c6[] = { "2001:db8:ffff::7", "2606:4700:4700::1111", "2001:4860:4860::8888", "2620:fe::fe" };
+ 	const char **cand = fam == 6 ? c6 : c4; int nc = fam == 6 ? 4 : 6;
+ 	struct fw *fw = fam == 6 ? &fw6 : &fw4; char *why = fam == 6 ? wan6src_why : wansrc_why;
+-	char sets[32][40]; int ns = 0, ci, si, ti, tj, tk;
++	int ci;
+ 	struct addr a;
+ 
+ 	why[0] = 0;
+-	for (ti = 0; ti < fw->nt; ti++) {
+-		struct table *t = &fw->t[ti];
+-		for (tj = 0; tj < t->n; tj++) {
+-			struct chain *ch = &t->c[tj];
+-			for (tk = 0; tk < ch->n; tk++) {
+-				struct rule *r = &ch->r[tk];
+-				if (!r->has_set || r->set_dir != 1 || r->set_neg) continue;
+-				for (si = 0; si < ns; si++) if (!strcmp(sets[si], r->set)) break;
+-				if (si < ns || ns >= 32) continue;
+-				snprintf(sets[ns++], sizeof(sets[0]), "%s", r->set);
+-			}
+-		}
+-	}
+ 	for (ci = 0; ci < nc; ci++) {
+-		int claimed = 0;
+ 		if (addr_parse(cand[ci], fam, &a) != 0) continue;
+-		for (si = 0; si < ns && !claimed; si++) if (set_test(sets[si], &a)) claimed = 1;
+-		if (!claimed) {
++		if (!set_claims(fw, 1, &a)) {
+ 			if (ci) snprintf(why, 120, "%s is in a source set - witnessing from %s", cand[0], cand[ci]);
+ 			return cand[ci];
+ 		}
+@@ -1606,28 +1617,13 @@ static const char *wandst_pick(void)
+ 	static const char *c4[] = { "1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222", "198.51.100.7", "203.0.113.99" };
+ 	const int nc = 6;
+ 	struct fw *fw = &fw4; char *why = wandst_why;
+-	char sets[32][40]; int ns = 0, ci, si, ti, tj, tk;
++	int ci;
+ 	struct addr a;
+ 
+ 	why[0] = 0;
+-	for (ti = 0; ti < fw->nt; ti++) {
+-		struct table *t = &fw->t[ti];
+-		for (tj = 0; tj < t->n; tj++) {
+-			struct chain *ch = &t->c[tj];
+-			for (tk = 0; tk < ch->n; tk++) {
+-				struct rule *r = &ch->r[tk];
+-				if (!r->has_set || r->set_dir != 2 || r->set_neg) continue;
+-				for (si = 0; si < ns; si++) if (!strcmp(sets[si], r->set)) break;
+-				if (si < ns || ns >= 32) continue;
+-				snprintf(sets[ns++], sizeof(sets[0]), "%s", r->set);
+-			}
+-		}
+-	}
+ 	for (ci = 0; ci < nc; ci++) {
+-		int claimed = 0;
+ 		if (addr_parse(c4[ci], 4, &a) != 0) continue;
+-		for (si = 0; si < ns && !claimed; si++) if (set_test(sets[si], &a)) claimed = 1;
+-		if (!claimed) {
++		if (!set_claims(fw, 2, &a)) {
+ 			if (ci) snprintf(why, 120, "%s is in a destination set - WAN-bound rows witness to %s", c4[0], c4[ci]);
+ 			return c4[ci];
+ 		}
+-- 
+2.25.1
+

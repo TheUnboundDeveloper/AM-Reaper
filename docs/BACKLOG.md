@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.2.9** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,26 +37,24 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.2.9 is the newest rung (cut 2026-09-29); earlier releases are in
+The ordered short list. *v3.3.0 is the newest rung (cut 2026-09-29); earlier releases are in
 [`CHANGELOG.md`](CHANGELOG.md).*
 
-1. **[P1] v3.2.3 — the stable candidate**; no open P1 unfixed in tree; the stable channel path is
-   unexercised. **[owed: soak, then Dev → main]** ↳ notes: `stable-candidate.md`
-2. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
+1. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
    verdict; gate test first. **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
-3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru job dead on that box.
+2. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru job dead on that box.
    **[needs data]** ↳ notes: `gt-be98-empty-crontab.md`
-4. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built;
+3. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built;
    root cause wants a syslog. **[needs data]** ↳ notes: `warden-crash-addon-update.md`
-5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1). **[owed: repro]**
+4. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1). **[owed: repro]**
    ↳ notes: `firewall-hosts-paste-blanks-gui.md`
-6. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]**
+5. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]**
    ↳ notes: `channel-marker.md`
-7. **[P3] Local sibling images** — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only
+6. **[P3] Local sibling images** — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only
    locally; CI unaffected. **[hygiene]**
-8. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport in v3.2.8
+7. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport in v3.2.8
    needs the soak. **[owed]** ↳ notes: `cve-check-2026-08-30.md`
-9. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
+8. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
    ↳ notes: `code-review-tail.md`
 
 ---
@@ -66,6 +64,9 @@ The ordered short list. *v3.2.9 is the newest rung (cut 2026-09-29); earlier rel
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
+- **[P3] Rule Status: VPN-server rows red on an RT-BE86U** — test address in `rw_threat`; the
+  picker saw only 32 sets, **fixed v3.3.0**. Ask: version + blocked-country count. **[awaiting field]**
+  ↳ notes: `fwsim-wansrc-set-cap.md`
 - **[P1] R15: port forwards dead on an RT-BE88U** — restore race, **fixed v3.1.7**. Asked: confirm
   on v3.1.7+, and the refused line from `err_rules`. **[awaiting field]**
   ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md`
@@ -277,3 +278,5 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   ↳ notes: `blocked-b4-dynamic-puncturing.md`
 - **B-5. [P1] Internet speed test fails on 10 Gbit/s links** — owner ruling: not chased.
   **[blocked — development]** ↳ notes: `speedtest-10g-links.md`
+- **B-6. [P2] Internet speed test may stop on 2026-10-01** — ASUS retires the Ookla setup Reaper uses;
+  the new keys + quota wait for the ASUS GPL. **[blocked — GPL]** ↳ notes: `speedtest-embed-key-retired.md`

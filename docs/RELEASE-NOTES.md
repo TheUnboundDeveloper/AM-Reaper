@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.1** · 2026-10-01 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.0** <!--@treever--> — `3006.102.8_Reaper_v3.3.0`. **pppd, strongSwan and Tor security fixes, and Gatekeeper no longer races a firewall restart.** pppd closes CVE-2026-85495 (a pre-authentication buffer overrun a PPPoE peer could trigger) and an MS-CHAP out-of-bounds read; strongSwan takes seven official CVE patches and Tor moves to 0.4.9.13; Gatekeeper's re-apply now waits for a firewall restart instead of racing it, which could drop a VLAN's new WAN connections; Rule Status no longer tests VPN and port-forward rows from an address the threat feed blocks on a box blocking many countries. The code was built and verified on RT-BE96U MCP test images (v3.2.9_BETA r1–r3) before the cut, and the Gatekeeper fix was exercised on hardware with a forced firewall restart; the release images come from the public CI build. The series stands at **731 patches** (0727–0731 for v3.3.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.1** <!--@treever--> — `3006.102.8_Reaper_v3.3.0`. **pppd, strongSwan and Tor security fixes, and Gatekeeper no longer races a firewall restart.** pppd closes CVE-2026-85495 (a pre-authentication buffer overrun a PPPoE peer could trigger) and an MS-CHAP out-of-bounds read; strongSwan takes seven official CVE patches and Tor moves to 0.4.9.13; Gatekeeper's re-apply now waits for a firewall restart instead of racing it, which could drop a VLAN's new WAN connections; Rule Status no longer tests VPN and port-forward rows from an address the threat feed blocks on a box blocking many countries. The code was built and verified on RT-BE96U MCP test images (v3.2.9_BETA r1–r3) before the cut, and the Gatekeeper fix was exercised on hardware with a forced firewall restart; the release images come from the public CI build. The series stands at **731 patches** (0727–0731 for v3.3.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
@@ -19,6 +19,51 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.1 — a minimum channel width on Auto, one factory state, the setup box finishes the main network
+
+**Wireless.** A new per-radio switch on Wireless › Settings, **Minimum width on Auto**, keeps the
+automatic channel picker at 80 MHz or wider - "80/160 MHz" on 5 GHz, "80/160/320 MHz" on 6 GHz -
+instead of letting it narrow the whole channel to 40 or 20 MHz when part of it is busy. Those are
+the widths preamble puncturing works at, so the two pair: the picker keeps the wide channel and
+puncturing cuts the busy slice out of it, and the puncturing rows, locked on Auto bandwidth until
+now, open once the floor is on. Each client still uses what it supports within the width
+the radio is on. If the radio cannot hold it - after radar, or with no wide channel free - the floor
+is lifted for 30 minutes and re-arms by itself; the Settings cell says so. Off by default. Dynamic
+puncturing's confirmation scan now also uses the neighbouring networks it hears and each channel's
+noise and PHY error figures, and with a scan source an excluded slice is put back only after a scan
+agrees it is clean; the Wireless Quality card shows what the scan found. It now also watches the
+radio's own noise and error figures, which can reveal interference that never shows as busy
+time, and uses them to decide when a confirmation scan is worth running. After each change it
+checks whether your devices' speeds and retries got better or worse, and takes a slice back off
+if most of them got worse. A confirmation scan that loses a connected device stops all further
+scans on that radio, and the Active source no longer scans while the radio itself is busy. When
+the minimum width re-arms on a radio that is already wide, it no longer restarts the channel
+picker, so the channel stays put. A new **Interference mitigation** row exposes the radio driver's
+hardware adjacent-channel mitigation; in testing it did not improve speeds, so leave it on Driver
+default unless advised otherwise.
+
+**IPv6.** Stateful mode now also offers SLAAC, so devices without a DHCPv6 client (Android, most
+Linux VMs and containers) get an IPv6 address again. Devices that use DHCPv6 may now show a SLAAC
+address beside their lease.
+
+**DNS on a VLAN network.** A DNS server that lives on one of the router's VLAN (Guest Network Pro)
+networks and is set as the WAN DNS server is no longer routed out the WAN, which made every query
+to it time out.
+
+**First boot.** Every model now resets to the same state: admin/admin and open Wi-Fi, secured
+through the setup box. Units with a printed Wi-Fi key used to skip the box, which left the main
+network's card unclickable on the Network page. The box now reboots the router after saving (about
+three minutes) so the main network is created properly, and the Network page points to the box
+while it is missing.
+
+**Dual WAN.** The WAN pill at the top of every page follows the line that is carrying traffic after
+a fail-over, as the dashboard already did.
+
+**AiMesh in Access Point mode.** On a router set to Access Point, repeater or media-bridge mode, the
+AiMesh page's node cards showed no connected devices. They now list and count the devices on each
+node and on the router itself, from the same presence data the dashboard has used in those modes
+since v3.1.6. A router in normal routing mode is unchanged.
 
 ## What's new in v3.3.0 — pppd, strongSwan and Tor security fixes, Gatekeeper and firewall restarts
 

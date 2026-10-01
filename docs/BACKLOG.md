@@ -37,7 +37,7 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.3.0 is the newest rung (cut 2026-09-29); earlier releases are in
+The ordered short list. *v3.3.1 is the newest rung (cut 2026-10-01); earlier releases are in
 [`CHANGELOG.md`](CHANGELOG.md).*
 
 1. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
@@ -67,27 +67,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Rule Status: VPN-server rows red on an RT-BE86U** — test address in `rw_threat`; the
   picker saw only 32 sets, **fixed v3.3.0**. Ask: version + blocked-country count. **[awaiting field]**
   ↳ notes: `fwsim-wansrc-set-cap.md`
-- **[P1] R15: port forwards dead on an RT-BE88U** — restore race, **fixed v3.1.7**. Asked: confirm
-  on v3.1.7+, and the refused line from `err_rules`. **[awaiting field]**
-  ↳ notes: `r15-port-forwards-rt-be88u.md`; `R15-NOTES.md`
-- **[P2] Source-IP Policy Routing to a WireGuard client bypasses the tunnel** — reply-direction
-  fix, **v3.2.4**. Asked: retest on v3.2.4+. **[awaiting field]** ↳ notes: `pbr-wg-livetunnel-gaps.md`
-- **[P2] Dual WAN: a LAN-port primary flaps from boot** (GT-BE98) — boot line-switch hold,
-  **v3.2.8**. Asked: confirm on v3.2.8; else the single-WAN control test. **[awaiting field]**
-  ↳ notes: `dualwan-lanport-flap.md`
-- **[P2] GT-BE19000 AP-mode glitches** — three items **fixed v3.1.6**. Asked: a confirming capture on
-  v3.1.9+ and the networkmap 39995 pin check. **[awaiting field]** ↳ notes: `gt-be19000-glitch-list.md`
-- **[P3] Auto-logout setting has no effect** (GT-BE98) — true idle timer, **v3.1.2**. Asked:
-  re-check on the current beta. **[awaiting field]** ↳ notes: `auto-logout-ineffective.md`
-- **[P2] Heavy ping loss after a router reboot, cured by rebooting the ONT** (GT-BE98, PPPoE) —
-  one-shot re-dial mitigation, **v2.5.5**. Asked: does it recur; a capture if so. **[awaiting field]**
-  ↳ notes: `ping-loss-after-reboot-ont.md`
-- **[P1] WLCSM protocol-31 socket leak** — 42015 blob swap shipped in v3.1.8. **[reproducer run on
-  the cut image owed]** ↳ notes: `wlcsm-42015-reproducer.md`
+- **[P2] AiMesh node cards show zero clients in a bridging mode** (GT-BE19000) — overlay from the device
+  store, **fixed v3.3.1**. Ask: node card counts on the AP-mode box. **[awaiting field]** ↳ notes: `aimesh-card-zero-clients-bridge.md`
 - **[P2] CVE-2023-52340: remote IPv6 DoS via forged Packet Too Big** (IPv6 on only) — fixed in tree:
   rc sets `route/max_size`=INT_MAX at boot; **v3.2.9**. **[soak owed]** ↳ notes: `review-carry-forward-queue.md`
-- **[P2] Router UI on mobile-device browsers** — first fit shipped in v3.1.0. **[minor
-  adjustments]** ↳ notes: `mobile-browser-ui-compat.md`
 - **[P3] e2fsprogs CVE-2022-1304 via a crafted USB disk** — upstream `ab51d587bb9b` applied; host
   test 2026-09-28: the guard fires on a crafted empty leaf, repair converges. **[metal owed: USB scan
   of an ext4 + ext3 disk]** ↳ notes: `review-carry-forward-queue.md`
@@ -100,8 +83,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] Firewall engine: a failed `lastgood` snapshot may boot with no user policy** — staged
   write, draft kept on failure, boot re-adopts unmarked files; **v3.2.9**. **[metal owed:
   Keep with /jffs full]** ↳ notes: `rfw-lastgood-snapshot.md`
-- **[P3] Dynamic preamble puncturing** (`rpunctd`, v3.2.8) — built. **[metal owed]**
-  ↳ notes: `preamble-puncturing-metal.md`
 - **[P3] Firewall DNAT / Redirect: the residual gaps.** **[project]**
   ↳ notes: `firewall-dnat-redirect-residual.md`
 - **[P3] Rule Status walker: fixtures from a second and third topology** — RT-BE88U, GT-BE98 with
@@ -109,6 +90,13 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   ↳ notes: `firewall-witness-catalog.md`
 - **[P2] Main-network card unclickable after the first-boot setup box** — the box now runs the SDN
   reconcile a guest apply runs; **v3.2.9**. **[metal owed: reset test]** ↳ notes: `wifi-cards-unclickable-post-reset.md`
+- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98) — Stateful had no SLAAC; `slaac`
+  added to the Stateful range, **v3.3.1**. Ask: VM IPv6 + one diag. **[awaiting field]** ↳ notes: `gt-be98-ipv6-partial-lan.md`
+- **[P3] Minimum width on Auto** (`reaper_bwfloor`, v3.3.1) — built; the floor is 80 MHz on both bands;
+  re-arm while wide no longer restarts acsd2 (`picker-pending`). **[metal owed]** ↳ notes: `min-width-auto.md`
+- **[P3] Static preamble puncturing** — built. **[metal owed]** ↳ notes: `preamble-puncturing-metal.md`
+- **[P3] `reaper_diag`: print the settings that explain Wi-Fi client drops** — diag v1.3.24,
+  **v3.2.9**. **[metal owed: one diag run]** ↳ notes: `diag-wifi-drop-settings.md`
 
 ---
 
@@ -118,12 +106,8 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 - **[P2] Warden chains absent 13 min after boot on a flapping WAN** — suspect `stop/start_firewall`
   racing the arm. **[owed: bench repro]** ↳ notes: `warden-chains-absent-wan-flap.md`
-- **[P2] AiMesh card shows zero clients in a bridging mode** (GT-BE19000). **[owed: confirm the
-  card's source]** ↳ notes: `aimesh-card-zero-clients-bridge.md`
 - **[P3] Duplicate menu entries after opening UPnP Media Server** (GT-BE19000). **[needs data]**
   ↳ notes: `duplicate-menus-mediaserver.md`
-- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98, since ~v2.7.1). **[needs data]**
-  ↳ notes: `gt-be98-ipv6-partial-lan.md`
 - **[P3] Policy Routing page: the first-open symptom was never identified.** **[needs the
   screenshot]** ↳ notes: `pbr-first-open-symptom.md`
 - **[P3] System Log page: two severity dropdowns, only one filters.** **[owner call]**
@@ -161,9 +145,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 ## Features to add
 
-- **[P3] `reaper_diag`: print the settings that explain Wi-Fi client drops** — diag v1.3.24,
-  **v3.2.9**. **[metal owed: one diag run]** ↳ notes: `diag-wifi-drop-settings.md`
-- **[P3] Static preamble puncturing** — built. **[metal owed]** ↳ notes: `preamble-puncturing-metal.md`
+- **[P3] Dynamic puncturing: PHY trigger + client evidence** (v3.3.1 r6) — built; trigger levels are
+  heuristics. **[metal owed: calibration + one proof line]** ↳ notes: `punct-detection-inputs.md`
+- **[P3] Interference mitigation switch** (`wlN_rmit`, v3.3.1) — built (driver default / + HW ACI);
+  `obss_dyn_bw` dropped (CSA width switch); 91 did not help clients. **[metal owed: restart re-apply]** ↳ notes: `punct-detection-inputs.md`
 - **[P3] OSPF + BGP dynamic routing.** **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Attainder — control by names** (resolver-step domain blocker). **[project]**
@@ -183,8 +168,7 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 ## Documentation
 
-- **[P3] Guide: `reaper_fw_confirm()` is not the only writer of `lastgood`** — guide §2.7 and the
-  code comments reworded 2026-09-28. **[done; drops at the cut]** ↳ notes: `rfw-lastgood-snapshot.md`
+*Nothing open.*
 
 ---
 
@@ -201,8 +185,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] Firewall engine: three silent caps** (`RFW_MAX_IFACE`/`_SETS`/`_ZPOL`) — each logs once
   per ruleset, the page refuses them (RFW_323-325); **v3.2.9**. **[metal owed]**
   ↳ notes: `rfw-silent-caps.md`
-- **[P3] Firewall engine: stale comments** — fixed in tree 2026-09-28. **[done; drops at the cut]**
-  ↳ notes: `rfw-stale-comments.md`
 - **[P2] Warden chain build as one `iptables-restore --noflush` payload** (~3 s per rebuild) —
   shim + per-rule fallback, host-tested; **v3.2.9**. **[metal owed: soak + VPN reconnect during
   an apply; `start_rwarden()`'s direct apply is not under the firewall lock]**

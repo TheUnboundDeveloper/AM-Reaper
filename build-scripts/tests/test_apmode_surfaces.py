@@ -19,6 +19,9 @@ only a routing box has:
                          bridging box.
   * others/reaper_diag   12c warns when a routing-only daemon is idle, which on a
                          non-routing box is the designed state.
+  * aimesh_topology.html (v3.3.1) the stock AiMesh node card counts clientList rows
+                         built from the same networkmap isOnline flag, so every
+                         node card read 0 on the same box.
 
 The fixes are cheap and the ways to lose them are cheaper: a sibling port that
 drops a hunk, or a later refactor that "simplifies" the guard back. This test is
@@ -37,6 +40,11 @@ WHAT IT DOES.
      WITH the CSRF token.
   4. Asserts others/reaper_diag's 12c svc() is operation-mode aware and that its
      routing-only note names the modes it applies to.
+  5. Asserts the node-card path end to end: httpd/web.c records and emits the node
+     each device hangs off ("via") from both cfg_mnt lists with this router as the
+     default; aimesh_topology.html routes every client-list rebuild through the
+     overlay, which is gated on the operation mode, reads reaper_dev.cgi with the
+     token AiMesh.asp provides, and folds MLO links and nodes.
 
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass the
 tree's release/src/router as argv[1] or REAPER_ROUTER_SRC).
@@ -59,7 +67,10 @@ if not src_root or not os.path.isdir(src_root):
 FW   = os.path.join(src_root, "rc", "firewall.c")
 DASH = os.path.join(src_root, "www", "Main_ReaperDash.asp")
 DIAG = os.path.join(src_root, "others", "reaper_diag")
-for p in (FW, DASH, DIAG):
+WEB  = os.path.join(src_root, "httpd", "web.c")
+TOPO = os.path.join(src_root, "www", "aimesh", "aimesh_topology.html")
+HOST = os.path.join(src_root, "www", "AiMesh.asp")
+for p in (FW, DASH, DIAG, WEB, TOPO, HOST):
     if not os.path.isfile(p):
         skip("missing %s" % p)
 
@@ -263,5 +274,63 @@ if "routing-only" not in svc:
     die("svc()'s non-routing line does not say why the daemon is idle")
 ok("svc() is operation-mode aware")
 
-print("PASS: the non-routing paths are present on all four surfaces")
+# ---------------------------------------------------------------------------
+# 5. the AiMesh node card (v3.3.1)
+# ---------------------------------------------------------------------------
+print("5. AiMesh node card: httpd/web.c + www/aimesh/aimesh_topology.html + www/AiMesh.asp")
+web_src, topo_src, host_src = read(WEB), read(TOPO), read(HOST)
+
+s = web_src.index("struct rdev {")
+if "char via[18];" not in web_src[s:web_src.index("};", s)]:
+    die("struct rdev has no via field - the device store cannot say which node a "
+        "client hangs off, and the node card has nothing to count against")
+setter = extract(web_src, "static void rdev_set_via(struct rdev *d, const char *mac)", "web.c")
+if "gk_valid_mac(" not in setter:
+    die("rdev_set_via() does not validate the MAC - via is written into the JSON unescaped")
+# the real definition of the scan (not a stub): the one carrying the station loop
+i = web_src.find("static void rdev_scan_amesh(struct rdev *v, int *n)\n{")
+if i < 0:
+    die("rdev_scan_amesh() definition not found")
+scan = extract(web_src[i:], "static void rdev_scan_amesh(struct rdev *v, int *n)", "web.c")
+if "rdev_set_via(&v[idx], nodemac);" not in scan:
+    die("rdev_scan_amesh() does not record the node a Wi-Fi client is listed under")
+if "rdev_set_via(&v[idx], wnode);" not in scan:
+    die("rdev_scan_amesh() does not record the node a wired client is cabled to")
+if scan.index("rdev_set_via(&v[idx], nodemac);") > scan.index("if (v[idx].wifi) continue;"):
+    die("via is recorded after the own-radio skip - clients of this router never get one")
+if "rdev_set_via(&dev[i], self);" not in web_src or "get_lan_hwaddr();" not in web_src:
+    die("the status action does not default via to this router")
+if '\\"via\\":\\"%s\\"}' not in web_src:
+    die("the status JSON does not emit via")
+ok("web.c records via (Wi-Fi, wired, default) and emits it")
+
+if topo_src.count("genClientList();") != 1:
+    die("aimesh_topology.html calls genClientList() outside the overlay wrapper - "
+        "that rebuild drops the non-routing rows and the card reads 0 again")
+if topo_src.count("reaper_gen_client_list();") != 3:
+    die("expected the three stock rebuild sites to route through reaper_gen_client_list()")
+wrap = extract(topo_src, "function reaper_gen_client_list(){", "aimesh_topology.html")
+if "reaper_ap_apply();" not in wrap:
+    die("reaper_gen_client_list() does not apply the overlay after the rebuild")
+gate = topo_src[topo_src.index("var reaperAp = {"):]
+gate = gate[:gate.index("};")]
+if 'sw_mode == "1"' not in gate or 'sw_mode == "4"' not in gate:
+    die("the overlay is not gated on routing (sw_mode 1|4) - a routing box would take it")
+fetch = extract(topo_src, "function reaper_ap_fetch(){", "aimesh_topology.html")
+if '"/reaper_dev.cgi"' not in fetch or "http_id: REAPER_HTTPID" not in fetch or 'action: "status"' not in fetch:
+    die("the overlay does not read reaper_dev.cgi action=status with the token")
+if "30000" not in fetch:
+    die("the overlay fetch is not cached - action=status popen()s wl per station on a "
+        "single-flight httpd and the tree refreshes every 10 s")
+apply_ = extract(topo_src, "function reaper_ap_apply(){", "aimesh_topology.html")
+for tok in ("d.mlo_link", "d.node", "d.via", "amesh_papMac"):
+    if tok not in apply_:
+        die("reaper_ap_apply() does not handle %s" % tok)
+if "d.isOnline" in apply_:
+    die("reaper_ap_apply() consults networkmap's isOnline - the flag this path avoids")
+if "var REAPER_HTTPID = '<% nvram_get(\"http_id\"); %>';" not in host_src:
+    die("AiMesh.asp does not provide REAPER_HTTPID - every overlay request would be refused")
+ok("topology overlay: every rebuild wrapped, mode-gated, cached, token-carrying, folds links and nodes")
+
+print("PASS: the non-routing paths are present on all five surfaces")
 sys.exit(0)

@@ -19,11 +19,17 @@ www/Advanced_WAN_Content.asp|!128, 1492
 www/Advanced_WAN_Content.asp|!1280, 1508
 # v3.1.0 -- the first-boot box (Reaper_WiFiSetup.asp) is the security banner's
 # Wi-Fi target; it sets SSID + Wi-Fi key on every radio through its gated CGI and
-# fires the credential apply chained with restart_wireless (+ restart_sdn since
-# v3.2.9, the SDN reconcile a guest-network apply runs). The stock Wireless
+# fires the credential apply chained with a REBOOT since v3.3.1 (was
+# restart_wireless;restart_sdn in v3.2.9, which could never create the main
+# network: closed init_apg -> check_mwl_convert builds it only at boot, and only
+# once x_Setting=1 - the CGI's log line proves httpd sets it). The stock Wireless
 # page must no longer be what the banner points at.
 www/Reaper_WiFiSetup.asp|reaper_wifisetup.cgi|1
-www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;restart_wireless;restart_sdn|1
+www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;reboot|1
+www/Reaper_WiFiSetup.asp|!restart_wireless;restart_sdn
+usr/sbin/httpd|x_Setting=1; reboot follows the password apply|1
+# v3.3.1 -- the Network page points a box with no main network at the setup box.
+www/SDN.asp|rsdn_main_notice|1
 www/Reaper_WiFiSetup.asp|httpApi.chpass(|1
 usr/sbin/httpd|reaper_wifisetup.cgi|1
 usr/sbin/httpd|Reaper_WiFiSetup.asp|1
@@ -107,7 +113,7 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.24|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.25|1
 usr/sbin/reaper_diag|/proc/nvram/boardid|1
 # v3.1.7 -- the firewall table walker: binary + static witness rows + the
 # rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
@@ -522,6 +528,35 @@ sbin/rc|rebuild refused ($_e) - replaying rule by rule|1
 # v3.2.8 -- dashboard Internet card follows the PRIMARY WAN unit (field: a dual-WAN
 # fail-over showed Disconnected while the second line carried traffic).
 www/Main_ReaperDash.asp|function wanPick|1
+# v3.3.1 -- the shell's WAN pill (every page but the dashboard) follows it too.
+www/reaper_shell.asp|function wanUpPick|1
+# v3.3.1 -- minimum channel width on Auto (80 MHz floor on 5 and 6 GHz: "80/160" and
+# "80/160/320", each client uses what it supports within the picked width) + the radar
+# escape: the rc applet and its /sbin symlink, the lift record, the lift log line, the
+# rwatch backstop, httpd's state reader, the Settings row and the diag line.
+sbin/rc|minimum width could not be held|1
+sbin/rc|/tmp/reaper_bwfloor/escape|1
+sbin/rc|reaper_bwfloor is not running with a minimum width configured|1
+sbin/reaper_bwfloor|minimum width could not be held|1
+usr/sbin/httpd|/tmp/reaper_bwfloor/state|1
+www/Reaper_WiFiSettings.asp|floorStatus|1
+# v3.3.1 -- the floor's re-arm no longer restarts acsd2 when the radio already meets the
+# floor (metal 2026-10-01: the needless re-pick moved wl1 twice and dropped two clients).
+sbin/reaper_bwfloor|the channel picker takes it at its next restart|1
+# v3.3.1 -- receiver interference mitigation (wlN_rmit): the puncturing applier's second
+# pass and its state file, the rwatch backstop, httpd's result field, the Settings row
+# (posted on the live path, no wireless restart) and the diag line.
+sbin/reaper_punct|/tmp/reaper_wlmit.state|1
+sbin/rc|wl${_u}_rmit|1
+usr/sbin/httpd|_rmit_st|1
+www/Reaper_WiFiSettings.asp|mitStatus|1
+usr/sbin/reaper_diag|interference: mode=|1
+# v3.3.1 -- the dynamic puncturing confirmation scan also reads the neighbouring networks
+# and the PHY figures (the scan log line, the JSON detail the Wireless Quality card lists).
+bin/rpunctd|network(s) heard|1
+bin/rpunctd|scan_detail|1
+www/Reaper_Wireless.asp|scan_detail|1
+usr/sbin/reaper_diag|min width: on|1
 usr/sbin/reaper_diag|roamast kicks|1
 usr/sbin/reaper_diag|SDN access-time schedules on|1
 usr/sbin/reaper_diag|durable store is RAM although a USB disk is mounted|1
@@ -530,3 +565,23 @@ usr/sbin/reaper_diag|durable store is RAM although a USB disk is mounted|1
 usr/sbin/pppd|LCP: ignoring duplicate configuration option(s)|1
 # CVE delta 2026-09-29 -- Tor 0.4.9.13 (ten TROVE fixes); a stale configure would keep 0.4.9.12.
 usr/sbin/Tor|0.4.9.13|1
+# v3.3.1 -- the AiMesh node card on a box that is not routing (GT-BE19000 tester,
+# Access Point mode). The stock card counts networkmap rows whose isOnline is set,
+# and networkmap has no leases or conntrack to set it from on a bridging box, so
+# every node read 0. httpd now names the node each device hangs off ("via") and the
+# topology page overlays Reaper's store after every client-list rebuild.
+www/aimesh/aimesh_topology.html|function reaper_gen_client_list(){|1
+www/AiMesh.asp|var REAPER_HTTPID =|1
+usr/sbin/httpd|"node":%d,"via":"%s"}|1
+# v3.3.1 r6 -- dynamic puncturing gains two passive inputs: the radio's own PHY figures as a
+# second trigger that may only ask for a confirmation scan, and the station table (read with
+# -noreset: a plain read clears the counters bsd steers on) for a tie-breaker and a post-change
+# proof. A scan that loses a client stops scanning on that radio.
+bin/rpunctd|bs_data -noreset|1
+bin/rpunctd|PHY impairment above|1
+bin/rpunctd|client evidence|1
+bin/rpunctd|a client left during the confirmation scan|1
+# v3.3.1 r7 -- the PHY noise term is measured above the radio's own baseline (a 320 MHz channel
+# rests near -79 dBm); station windows are summed across the table's frequent resets.
+bin/rpunctd|baseline %ld dBm|1
+bin/rpunctd|MHz per packet|1

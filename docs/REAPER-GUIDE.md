@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.1** · 2026-10-01 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -106,6 +106,19 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.8.6 [Limits and gotchas](#486-limits-and-gotchas)
    - 4.9 [Connections](#49-connections)
    - 4.10 [Wireless Quality and Wi-Fi Settings (all bands)](#410-wireless-quality-and-wi-fi-settings-all-bands)
+     - 4.10.1 [Preamble puncturing: what it is](#4101-preamble-puncturing-what-it-is)
+     - 4.10.2 [The parts and how they connect](#4102-the-parts-and-how-they-connect)
+     - 4.10.3 [The four modes and what each puts in effect](#4103-the-four-modes-and-what-each-puts-in-effect)
+     - 4.10.4 [Dynamic: sensitivity presets](#4104-dynamic-sensitivity-presets)
+     - 4.10.5 [Dynamic: monitoring sources](#4105-dynamic-monitoring-sources)
+     - 4.10.6 [What the controller measures, and what it costs](#4106-what-the-controller-measures-and-what-it-costs)
+     - 4.10.7 [What keeps clients connected](#4107-what-keeps-clients-connected)
+     - 4.10.8 [What each client sees](#4108-what-each-client-sees)
+     - 4.10.9 [Minimum width on Auto](#4109-minimum-width-on-auto)
+     - 4.10.10 [Interference mitigation (all bands)](#41010-interference-mitigation-all-bands)
+     - 4.10.11 [Driver functions Reaper leaves alone](#41011-driver-functions-reaper-leaves-alone)
+     - 4.10.12 [Where to look](#41012-where-to-look)
+     - 4.10.13 [AiMesh backhaul parking](#41013-aimesh-backhaul-parking)
    - 4.11 [Long-Term Storage and Data Export](#411-long-term-storage-and-data-export)
    - 4.12 [USB Disks](#412-usb-disks)
    - 4.13 [Diagnostics](#413-diagnostics)
@@ -150,7 +163,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.3 What it adds
 
-In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic), a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
+In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
 Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, Telnet, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off (8.1, 8.2). Reaper also adds an idle auto-logout of 15 minutes on the admin session.
 
@@ -367,7 +380,7 @@ It is plain text. **Open it and read it before you share it.** The router never 
 
 Read it on the **System Log** page, or over SSH as the file `/tmp/syslog.log`. **`logread` returns nothing on this platform** (the log is written to a file, not the in-memory buffer). If you have a USB or JFFS store with the syslog mirror enabled, the mirror holds days of history; the diagnostics report reads both.
 
-Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
+Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver; also an interference-mitigation mode set, restored or refused), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why), `reaper_bwfloor` (the minimum channel width: a floor lifted after radar, re-armed, a channel-picker restart deferred or run, or not applied). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
 
 ### 2.13 Keep management off the WAN
 
@@ -1291,16 +1304,130 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **Gotchas.** Smart Connect excludes 6 GHz by default on some configurations (visible in the Smart Connect Rules table as "- -" columns, which is normal).
 
-**Preamble puncturing (v3.2.8, Settings tab, 5 and 6 GHz at 80 MHz or wider with Wi-Fi 7 on).** A Wi-Fi 7 radio can switch off one slice of a wide channel - a frequency segment excluded from transmission - and keep using the rest, instead of dropping the whole channel to a narrower width. It is for the dense case: a neighbour's 80 MHz network sitting inside your 320 MHz block, where excluding that 80 keeps 240 MHz instead of falling to 160. It is not a cure for a whole half of the block being noisy; a cleaner channel is. The row has four modes:
+#### 4.10.1 Preamble puncturing: what it is
 
-- **Off** (default).
-- **Fixed channel:** you choose the slice, tied to the channel set above. Only offered when the channel is fixed.
-- **Follow channel:** you choose the slice by its position in the block ("upper 80 MHz"), and it is re-applied wherever it is legal after acsd or DFS moves the radio. Works on Auto channel.
-- **Dynamic:** the router chooses. It reads the radio's own carrier-sense counters every ten seconds, without disturbing clients, and switches a slice off only when it has stayed busy above the trigger for the hold time, the change is legal, the expected capacity gain clears the minimum, and the minimum interval since the last change has passed. It puts the slice back only after it has stayed clean for the longer restore hold, and slows down by itself if a restore did not hold or a change disturbed clients. Temporary interference never changes anything.
+A Wi-Fi 7 radio can switch off one **slice** of a wide channel - a 20, 40 or 80 MHz segment excluded from transmission - and keep using the rest, instead of dropping the whole channel to a narrower width. It is for the dense case: a neighbour's 80 MHz network inside your 320 MHz block, where excluding that 80 keeps 240 MHz instead of falling to 160. It is not a cure for half the block being noisy; a cleaner channel is.
 
-Dynamic has three **sensitivity** presets - Conservative (the default: an 80 % trigger held for 60 s, a 20 % minimum gain, five minutes between changes), Balanced and Aggressive - and the minimum gain and hold can be overridden. The **monitoring source** decides how far it can see. At 320 MHz the passive counters resolve the secondary 80 MHz of the primary 160 only; the far half shows as one remainder, so **Passive telemetry** acts on the slices it can measure and logs the rest as "needs a confirmation scan". **Passive + idle confirmation** lets the radio listen passively on a candidate's own 20 MHz channels for about a second, only while your own traffic is light; **Active confirmation** does so whenever needed. The legal slices are what the driver accepts (measured on the RT-BE96U): one 20 MHz at 80 MHz, not the primary; one 40 or 80 MHz at 320 MHz outside the primary 80; the primary is never punctured. A slice applies live, with no radio restart; the beacon advertises it, and Wi-Fi 6 clients are narrowed by the driver where the slice sits inside their 160.
+- **Where it works.** 5 and 6 GHz, Wi-Fi 7 on, 80 MHz or wider: a fixed width, or Auto bandwidth with **Minimum width on Auto** (4.10.9). 2.4 GHz runs at 20 or 40 MHz and cannot be punctured (the driver refuses any pattern there).
+- **What the driver accepts** (measured on the RT-BE96U, driver 17.10.369.39012). Exactly one slice, never the primary: at 80 MHz one 20 that is not the primary; at 320 MHz one aligned 40 or 80 outside the primary 80; at 160 MHz the driver judges. Anything else is refused (`rc=211`) and nothing changes.
+- **How it applies.** `wl eht dissubchan <bitmap>`, bit 0 = the lowest 20 MHz of the block. It takes effect live, with no radio restart; the beacon's EHT Operation element advertises it, and the driver narrows the HE Operation width by itself where the slice sits inside the 160 MHz that Wi-Fi 6 clients use. A wireless restart clears it; the router puts it back (4.10.2).
+- **Stock firmware never calls it.** Broadcom's own dynamic puncturing (`punct_features`) is compiled out of this SDK, and nothing in wlconf, acsd2, hostapd or the OFDMA setting sets a pattern. Every slice on the air is Reaper's.
 
-Where to look: the Settings cell shows the applier's result and, in Dynamic, the controller's state; **Wireless › Wireless Quality** has a Dynamic puncturing card with the busy figure per slice, the current candidate and how long it has been bad, the last change and the reason for it, and whether a scan was used; every decision is one `rpunctd` line in the system log that says why; the diagnostics report's section 7 carries the setting, the live pattern and the controller's state. A wireless restart clears the driver's pattern and the router re-applies it; the controller then resumes with its slice if the channel is the one it chose it on, and forgets it after a channel move (its statistics belonged to the old channel). Every ten seconds it also checks the applier's record against its own: a slice that fell off the radio is forgotten, and one it did not choose is taken off.
+#### 4.10.2 The parts and how they connect
+
+| Part | What it is | When it runs |
+|---|---|---|
+| **Applier** `/sbin/reaper_punct` | The only program that writes a pattern. Waits up to 60 s for the radio (radio up and one of its networks up), checks the shape, applies, reads back, records the result in `/tmp/reaper_punct.state`, and clears only a pattern it set itself. A second pass applies interference mitigation (4.10.10), recorded in `/tmp/reaper_wlmit.state`. | Boot, every wireless start, an Apply of the puncturing or mitigation rows, the rwatch tick (every 5 min) and on request from the controller. One run at a time. With every radio Off and nothing of ours on the air it issues no `wl` command. |
+| **Controller** `rpunctd` | Dynamic mode's decision-maker: measures, decides, writes its choice to `/tmp/reaper_punct.dyn` and runs the applier. Never calls `wl eht dissubchan` itself. | Only while some radio is set to Dynamic; exits by itself when none is. Paused for the whole of a wireless restart and while the applier runs. Restarted by rwatch if it dies. |
+| **Minimum width** `reaper_bwfloor` | Keeps the channel picker at 80 MHz or wider on Auto bandwidth, so puncturing stays possible (4.10.9). | While a radio has the floor set; a 15 s watcher. |
+| **rwatch** | Backstop: re-runs the applier every 5 minutes (which also moves a Follow pattern after a channel change, since acsd2 has no change hook) and restarts a dead controller. | Every 5 min, only when puncturing or mitigation is set. |
+
+#### 4.10.3 The four modes and what each puts in effect
+
+| Mode | Who picks the slice | What runs | Channel needed | After a channel change |
+|---|---|---|---|---|
+| **Off** (default) | - | Nothing. A slice of ours still on the air is cleared once. | - | - |
+| **Fixed channel** | You, for one exact chanspec | Applier only | A fixed channel at 80 MHz or wider | Not applied ("different channel or width") until the radio is back on that chanspec |
+| **Follow channel** | You, by position ("upper 80 MHz") for a width | Applier only | That width; works on Auto channel | Re-applied wherever that position is legal at the same width; skipped at another width |
+| **Dynamic** | The controller | Controller + applier | 80 MHz or wider; works on Auto | The controller forgets its slice and its statistics and starts afresh on the new channel |
+
+Stored in one key, `wlN_punct` (8.2). An Apply that changes only puncturing or mitigation rows runs the applier directly - no wireless restart, no client dropped.
+
+#### 4.10.4 Dynamic: sensitivity presets
+
+The controller switches a slice off only when all of these hold: the slice has stayed above the **trigger** for the **hold**, the shape is legal, the expected capacity gain clears the **minimum gain**, and the **change interval** since the last change has passed. It puts a slice back after the slice has read below the **restore** level for the **clean hold**. Temporary interference never changes anything.
+
+| | Conservative (default) | Balanced | Aggressive |
+|---|---|---|---|
+| Trigger (busy on a slice) | 80 % | 65 % | 50 % |
+| Held for | 60 s | 30 s | 15 s |
+| Minimum capacity gain | 20 % | 15 % | 10 % |
+| Change interval | 300 s | 180 s | 60 s |
+| Restore below / clean hold | 35 % / 240 s | 35 % / 120 s | 30 % / 60 s |
+| Evaluation step | 60 s | 45 s | 30 s |
+| Scan cooldown | 900 s | 600 s | 300 s |
+| PHY impairment trigger | 35 % | 25 % | 20 % |
+
+**Minimum gain** and **hold** can be overridden on the Settings tab (5-50 %, 60-3600 s; blank = the preset). The **score** of a pattern is the kept width times the airtime left free on it, with a punctured transmission counted at 97 % efficiency; the gain is the score change against the current pattern. **Self-correction:** a restore that does not hold doubles the next clean hold (up to eight times); a change that disturbed clients (4.10.7) triples the clean hold, change interval and scan cooldown; three refused applies, or two disturbing changes, put the radio in **fallback**, where it makes no change for 30 minutes; a refused slice is not offered again on that channel; no valid measurement for 60 s is **error**, and the current pattern is held.
+
+#### 4.10.5 Dynamic: monitoring sources
+
+What the radio's counters can see depends on the width. They resolve the primary 20, the other 20 of the primary 40, the other 40 of the primary 80 and the other 80 of the primary 160 - nothing finer, and nothing for the far half of a 320. A candidate the counters cannot resolve needs a **confirmation scan**: a passive listen on that candidate's own 20 MHz channels (`escanresults -t passive`, about a second off-channel for four channels, measured), read back through the per-channel statistics.
+
+| Source | Sees | Confirmation scan | Restore of a slice |
+|---|---|---|---|
+| **Passive telemetry** | The counters only. At 320 MHz: the secondary 80 of the primary 160 only. At 160 MHz the legal slices are finer than the counters, so it can never act there. | Never; an unresolved candidate logs "needs a confirmation scan" | By the counters |
+| **Passive + idle confirmation** | Counters, plus scans | Only while your own airtime is under **10 %**, at most once per scan cooldown | Only after a fresh scan of the switched-off channels agrees they are clean |
+| **Active confirmation** | Counters, plus scans | Whenever needed, but never while your own airtime is above **30 %** (the scan ceiling), at most once per scan cooldown | As idle |
+
+A scan also lists the networks heard on those channels - channel, width and signal only, no names or addresses - and each channel's noise floor and PHY error counts. A neighbour's home channels take the busy the counters saw (weighted by signal: full at -70 dBm or stronger, 70 % to -80, 40 % to -88, none below), and a channel whose noise or errors are high counts as busy even when carrier sense reads low. A scan reading stays usable for 5 minutes and stands in for the live counters for 2.5. For a busy far half at 320 MHz, the idle source is the setting that resolves it; Aggressive does not.
+
+#### 4.10.6 What the controller measures, and what it costs
+
+| Input | How | How often | Disturbs clients? |
+|---|---|---|---|
+| **Carrier-sense window** | A timed `chanim_stats` window armed and read through the driver (`wl_iovar_getbuf`, no process started): busy, own airtime and the per-sub-band counters, as permille. An empty or short window is discarded. | 4 s window every 10 s, all Dynamic radios armed in the same second | No - it never goes off-channel and never resets the driver's own accumulators (acsd2 reads those) |
+| **PHY figures** | `wl chanim_stats`: glitches and bad PLCP headers per second, background noise in dBm. Impairment = noise above this radio's own quiet baseline (more than 5 dB, 4.5 % per dB) or glitches + bad PLCP above 50/s. The baseline follows a quieter reading at once and a louder one over about an hour, and starts over on a channel change or a mitigation change. | Each tick, after the window closes | No |
+| **Station table** | `wl bs_data -noreset` on the radio and its networks: per-client acked packets, retries, rate and the width each client used. `-noreset` is essential - a plain read clears the table that band steering (bsd) also reads. | Every 30 s; every 10 s during a 120 s proof | No |
+| **Confirmation scan** | 4.10.5 | At most once per scan cooldown, gated by source | About a second off-channel; see 4.10.7 |
+
+The PHY trigger can only ask for a scan of the channels a slice could be taken from; it never applies anything by itself. Client widths break ties: when two slices qualify, the one that does not cut into the width narrower clients use is preferred. 120 s after each change, every client with traffic before and after is compared: **worse** = rate down a quarter and retries up 5 points. If at least two were compared, at least two and at least half got worse, and worse outnumber better, the change comes off - an applied slice is not retried on that channel, a restore waits twice as long next time.
+
+Cost per Dynamic radio: one driver request pair and one `wl` call every 10 s, one station-table read per network every 30 s. Nothing runs on a radio that is not Dynamic.
+
+#### 4.10.7 What keeps clients connected
+
+- **Nothing here restarts a radio.** Slices and mitigation apply live; the controller never runs `restart_wireless`.
+- **No radio access while wireless restarts.** The controller reads nothing while `wlready` is 0 or the applier is waiting, and rc stops it at the top of `restart_wireless` and starts it after.
+- **Scans are short, rare and load-gated** (4.10.5): passive, only the candidate's own channels, cooldown-limited, never above 10 % (idle) or 30 % (Active) own airtime.
+- **A scan that loses a client stops scanning.** If the radio's client count drops during a confirmation scan, scans are off on that radio (Passive from then) until the setting is saved again or the controller restarts.
+- **A change that disturbs clients is undone.** A channel-switch announcement, a moved chanspec, two or more clients lost, or every client lost marks an apply as disruptive: the slice is taken off at once and the controller slows down.
+- **Measured.** No client was disconnected by a set or a clear on the RT-BE96U; the change rides the next beacon.
+
+#### 4.10.8 What each client sees
+
+A client's width is anchored on the radio's primary channel: an 80 MHz client on a 160 or 320 MHz channel lives on the primary 80, a 160 MHz client on the primary 160. The driver accepts no slice inside the primary 80 at 320 MHz (measured) and, by the same rule, at 160 MHz (driver-judged), so at those widths an 80 MHz client is untouched by any slice. A 160 MHz client is affected only when the slice falls inside its 160 (at 320 MHz: the secondary 80 of the primary 160): a Wi-Fi 7 client skips the slice and keeps the rest of its width; a Wi-Fi 6 client, which cannot understand puncturing, is narrowed by the driver to the widest width free of the slice (measured at 320 MHz: HE Operation went from 160 to 80 for a slice in the secondary 80). A slice in the far half of a 320 MHz channel touches nothing a Wi-Fi 6 client can use. Only an 80 MHz channel puts a slice inside every client's width, because there the one legal slice is a 20 in the primary 80: Wi-Fi 7 clients keep 60 MHz, others are told the 40 or 20 MHz the slice leaves whole. The controller scores the channel's airtime, not the widths of the clients on it.
+
+#### 4.10.9 Minimum width on Auto
+
+With Channel bandwidth on Auto the channel picker (acsd2) chooses the width as well as the channel, and narrows the whole channel to 40 or 20 MHz when it judges part of a wide one busy - exactly the case puncturing exists for. The switch (`wlN_bwfloor`, 5 and 6 GHz) keeps the picker at 80 MHz or wider: **80/160 MHz** on 5 GHz, **80/160/320 MHz** on 6 GHz. Each client still uses what it supports within the width the radio is on, and 160 MHz on 5 GHz still needs Enable 160 MHz.
+
+- **How.** The radio's 20 and 40 MHz chanspecs are added to the picker's exclusion list (`wlN_acs_excl_chans`, the list Channel Selection Constraints decodes), only those not already there, and recorded on `/jffs` so exactly those - never a stock DFS or user exclusion - come out again. Nothing is added when no wide channel would be left (acsd2 would otherwise discard the whole list).
+- **Radar escape.** A 15 s watcher lifts the floor for that radio when it stays below the floor for 120 s or off the air for 180 s outside a DFS listening period: its entries come out and acsd2 restarts so the radio can use any width. The lift lasts 30 minutes (the DFS non-occupancy period), doubling on a repeat within 2 hours, 4 hours at most, then the floor re-arms by itself.
+- **Re-arm without a channel move.** When the floor re-arms while the radio is already at 80 MHz or wider, acsd2 is not restarted - a restart makes it pick the channel again from scratch, which moves clients for nothing. The watcher marks the restart as pending (`note=picker-pending`) and restarts acsd2 only if the radio later narrows. When the radio is narrow at re-arm, acsd2 restarts at once.
+- **Needs** Auto channel and Auto bandwidth; the cell says why it is locked otherwise. With the floor on, the puncturing rows unlock on Auto bandwidth (Follow lists the slices of the width the radio is on now; Dynamic follows the radio); without it they stay locked, because the picker could narrow below 80 MHz.
+
+#### 4.10.10 Interference mitigation (all bands)
+
+The radio's receiver has its own interference defences, run by the driver per frame (`wl interference`, a bit mask). They are **on by default on every radio**: mode **75** = glitch-based receiver desense (1) + hardware-ACI packet-gain limit (2) + preemption (8) + hardware OBSS detection and mitigation (64), as read on the RT-BE96U. The Settings row **Interference mitigation** (`wlN_rmit`) offers:
+
+- **Driver default** (default, recommended) - Reaper writes nothing; the radio runs its own mode.
+- **Add hardware ACI mitigation** - the driver's mode plus bit 16 (75 becomes 91): the receiver also limits its gain when a strong signal sits on a neighbouring channel.
+
+How it is applied: the applier's second pass (4.10.2) reads the driver's mode, records it as the base, sets base + 16 and reads it back; it re-applies after every wireless start and on the rwatch tick, and going back to Driver default writes the recorded base back - only a mode Reaper set is ever undone. It applies live on any band, with no channel change and no radio restart. A change restarts the controller's noise baseline and PHY average (twice: at once and 30 s later), because desense moves those figures by design. Results: applied / the driver already runs it / refused / waiting.
+
+**Measured** on the RT-BE96U at 2.4 GHz under microwave interference, with a phone held on 2.4 GHz and streaming: with mode 91 the radio counted about 30 % fewer glitches, but the phone's retries rose (to about 79 % of transmissions in one run) and its rate fell to 16-52 Mbit/s, against a steady 206-229 Mbit/s with the driver's own mode. The radio's noise reading also rose from about -92 to -76 dBm for one 91 interval, which other 91 intervals did not show. A lower glitch count is the receiver hearing less, not clients doing better - keep Driver default unless a specific problem points at adjacent-channel interference, and judge the change by client speed, not by the glitch figure.
+
+#### 4.10.11 Driver functions Reaper leaves alone
+
+| Function | What it does | Why it is not a setting |
+|---|---|---|
+| **Dynamic bandwidth switch** (`obss_dyn_bw`, default 0) | Narrows the whole network when neighbours occupy a secondary channel | Measured: within a minute of enabling it, the driver channel-switched a 5 GHz network from 40/160 to 20 MHz and it stayed narrow after the switch was turned off. That overrides both the minimum width and puncturing, and with the floor on it led to two channel moves that disconnected clients. |
+| **Spatial reuse** (OBSS-PD, `wlN_bss_sr` 1 = on for HE frames) | Lets the radio transmit over distant overlapping networks | Already on by default, and the stock watchdog re-asserts the stored setting within seconds (a live change was reverted in 5-10 s). No measured benefit to expose. |
+| **EDCRS_HI channel escape** (`edcrs_hi_event_mode` -1 = automatic) | Changes channel on sustained high energy | The driver enables it by band and regulation: on the RT-BE96U it is active on 6 GHz (events and an in-driver channel change) and off on 2.4 and 5 GHz. A regulatory function - never overridden. acsd2 does not manage the 6 GHz radio, so an unexplained 6 GHz channel move can be this. The diagnostics report shows it. |
+| **Energy-detect threshold** (`phy_ed_thresh`) | The level at which the radio treats a channel as busy | Regulatory (EU adaptivity). Read for diagnostics only. |
+
+#### 4.10.12 Where to look
+
+- **Settings cell** - the applier's result for puncturing (Active on the radio now / refused / waiting / different channel or width), the controller's state in Dynamic, the floor's state (Holding / Lifted / Not active / Not applied), and the mitigation result.
+- **Wireless › Wireless Quality** - the Dynamic puncturing card: busy per slice, the current candidate and how long it has been bad, the last change and why, the last scan's channels and the networks heard.
+- **System log** - `rpunctd` (one line per decision, saying why; scans with their clients-before/after; PHY impairment edges with the raw figures; client evidence after a change), `reaper_punct` (a slice or mitigation mode set, cleared or refused), `reaper_bwfloor` (lifts, re-arms, a pending picker restart).
+- **Diagnostics report, section 7** per radio: `interference: mode= setting= applier= edcrs= sr=`, `puncturing: setting= live= applier=`, `dynamic puncturing:` (the controller's state line) and `min width:`.
+- **State files** - `/tmp/reaper_punct.state`, `/tmp/reaper_wlmit.state`, `/tmp/reaper_punct.dyn.state` and `.json`, `/tmp/reaper_bwfloor/state`.
+
+A wireless restart clears the driver's pattern and mode; the router re-applies both. The controller then resumes with its slice if the channel is the one it chose it on, and forgets it after a channel move. Every ten seconds it checks the applier's record against its own: a slice that fell off the radio is forgotten, and one it did not choose is taken off.
+
+#### 4.10.13 AiMesh backhaul parking
 
 **AiMesh backhaul parking (v3.0.8, off by default).** Even with no mesh node paired, AiMesh keeps its
 hidden backhaul network on the air on every band: the primary BSS of each radio carries a hashed
@@ -1478,9 +1605,13 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
 | Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
-| Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on and 80 MHz or wider. |
+| Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on, and 80 MHz or wider: a fixed width, or Auto bandwidth with Minimum width on Auto. |
 | Dynamic puncturing never switches anything off | Wireless Quality › Dynamic puncturing card; log `rpunctd` | Usually correct: the channel is clean, the busy slice is short-lived, or the gain is below the minimum. At 320 MHz Passive telemetry can act only on the secondary 80 MHz; a busy far half logs "needs a confirmation scan" - choose a scan source if you want it resolved. |
 | Dynamic puncturing is set but the card shows no radio | Diag section 7 "dynamic puncturing: daemon=" | The controller is not running; the rwatch tick restarts it within five minutes and says so in the log. If it stays down, report it with a diagnostics report. |
+| Clients slower on a band after choosing Add hardware ACI mitigation | Settings cell; diag section 7 `interference:` line; client speed | Expected on some setups: the receiver limits its gain, which can cost rate and range (4.10.10). Set the row back to Driver default; the router restores the radio's own mode at once. |
+| Interference mitigation set but the cell says refused or waiting | Settings cell; `/tmp/reaper_wlmit.state`; log `reaper_punct` | *Refused*: the driver did not accept the mode on that radio. *Waiting*: the radio was not up within 60 s; the rwatch tick retries within five minutes. |
+| Dynamic puncturing with the Active source never scans | Wireless Quality card; log `rpunctd` "WAIT: own airtime ... above the scan ceiling" | By design: no confirmation scan while your own airtime is above 30 % (4.10.5). It scans when traffic eases. |
+| Minimum width set but the Settings cell says Lifted or Not applied | Settings cell status; `/tmp/reaper_bwfloor/state`; log `reaper_bwfloor`; diag section 7 "min width:" | *Lifted*: the radio could not hold 80 MHz or wider (radar, or no wide channel free); the floor is off for 30 minutes and re-arms by itself. *Not applied*: no channel at 80 MHz or wider is left after the existing exclusions (DFS channels off?), so nothing was excluded. *Not active*: needs Auto channel and Auto bandwidth. |
 | An add-on (Skynet and others) installed but has no tab | `grep -n user /www/require/modules/menuTree.js`; the add-on's own log | From v3.2.8 the stock menu lines add-on installers anchor on are kept as hidden entries, so the tab lands in the Addons section. On an older image, or if the add-on's own startup never reached its web-page step, it has no tab. |
 
 ---
@@ -1504,12 +1635,15 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 - **Long-term store** — the durable location (RAM / JFFS / USB) chosen on the Storage page for history datasets.
 - **MCP / AI Advisor** — the optional read-only LAN-only Model Context Protocol server in the `_MCP` build; absent from `noMCP`.
 - **MLO** — Wi-Fi 7 Multi-Link Operation; needs a cold power cycle to change (2.8).
+- **Minimum width on Auto** — a per-radio switch that keeps the channel picker at 80 MHz or wider on Auto bandwidth ("80/160 MHz" on 5 GHz, "80/160/320 MHz" on 6 GHz), the widths preamble puncturing works at; lifts itself after radar (4.10).
 - **Object / group / service / zone** — the named things Firewall rules refer to (4.1).
 - **Policy Routing (PBR)** — rules that steer matched traffic to a VPN client, the WAN, or a block; they take precedence over VPN Director.
 - **Pseudonym (`MAC-3`)** — a consistent stand-in for a real MAC inside one diagnostics report.
 - **Preamble puncturing** — a Wi-Fi 7 radio excluding one slice of a wide channel from transmission and keeping the rest; Off, Fixed channel, Follow channel or Dynamic per radio (4.10).
 - **rchqd** — the opt-in passive channel-quality monitor.
 - **rpunctd** — the dynamic puncturing controller; runs only while a radio is set to Dynamic.
+- **Interference mitigation** — the radio receiver's own defences against nearby interference (`wl interference`, mode 75 by default); the Settings row can add hardware ACI mitigation (4.10.10).
+- **Scan ceiling** — the own-airtime level above which dynamic puncturing never runs a confirmation scan: 10 % on the idle source, 30 % on Active (4.10.5).
 - **Slice** — the frequency segment a puncturing pattern excludes from transmission: one 20, 40 or 80 MHz part of the channel, never the primary.
 - **RFC 4638 / baby jumbo** — the PPPoE extension that allows a 1500-byte MTU by widening the WAN port to 1508; requires provider support and both MTU and MRU above 1492.
 - **rtrafd** — the Traffic Analyzer collector.
@@ -1594,11 +1728,18 @@ three reachability probes after the boot grace period.
 
 **Connections and QoS diagnostics** — `rchq_enable` `0`.
 
-**Preamble puncturing** (4.10) — `wlN_punct` empty (off) on every radio. The one key carries every
+**Minimum width on Auto** (4.10.9) — `wlN_bwfloor` `0` on every radio. Nothing is added to a radio's
+channel-exclusion list and no watcher runs while every radio's key is `0`.
+
+**Preamble puncturing** (4.10.3) — `wlN_punct` empty (off) on every radio. The one key carries every
 mode: `<chanspec>|0x<bitmap>` (Fixed channel), `w<width>|0x<bitmap>` (Follow channel) or
 `dyn|<c|b|a>|<p|i|a>|<gain %>|<hold s>` (Dynamic: sensitivity Conservative/Balanced/Aggressive,
 source Passive/idle scan/active scan, and the two overrides, 0 = the preset's value). Nothing runs
 and no `wl` command is issued while every radio's key is empty.
+
+**Interference mitigation** (4.10.10) — `wlN_rmit` empty (Driver default) on every radio; `hwaci` adds
+hardware ACI mitigation to the driver's own mode. While every radio's key is empty no `wl` command is
+issued and the radio runs its own mode (75 on the RT-BE96U).
 
 **AI Advisor, MCP build only** (4.16) — `rmcp_port` `5199`, `rmcp_timeout` `60` minutes,
 `rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file

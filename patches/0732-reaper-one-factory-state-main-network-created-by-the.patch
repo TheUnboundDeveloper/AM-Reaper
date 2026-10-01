@@ -1,0 +1,1257 @@
+From 49d0c2ae8016a3507d56d333e3297441723ecc59 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 30 Sep 2026 09:20:15 -0400
+Subject: [PATCH] reaper: one factory state, main network created by the setup
+ box, dual-WAN shell pill
+
+- Factory reset: restore_defaults_wifi() no longer applies the printed-label
+  key (rc_support "defpsk" + wifi_psk). Label units reset to psk2 + the label
+  key + w_Setting=1 while the rest reset open, so the first-boot banner judged
+  them apart (GT-BE98_ICP field report). Every unit now resets to admin/admin
+  and the open template Wi-Fi. rc_support "defpsk" itself is kept
+  (firewall.c, ntpclient.c read it).
+- Banner: reaper_wifi_default() also treats a key equal to wifi_psk as the
+  factory key (backstop for the above).
+- Setup box: the main network (MAINFH sdn_rl row + apm profile) is built only
+  at boot by the closed init_apg() -> check_mwl_convert(), and only once
+  x_Setting=1. The v3.2.9 reconcile (sync_apgx_to_wlunit + restart_sdn) only
+  syncs existing rows and could not create it. The CGI now sets x_Setting=1
+  and the page chain is saveNvram;restart_chpass;reboot; the done message
+  says the router is restarting.
+- Network page (SDN.asp): with no main network in router/AP mode, a notice
+  links to the setup box.
+- Banner strings: factory Wi-Fi is open, not "admin" (RSEC_5/9/13).
+- Dual WAN: the shell WAN pill follows wan_primary (load-balance: either line
+  up), as the dashboard already did; it read wan0 only.
+- Tokens: RSEC_5/9/13 and RWFS_11 reworded, RSDN_1 new; 25 packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                | 46 ++++++++++++++-----
+ release/src/router/rc/init.c                  | 10 +++-
+ release/src/router/www/BR.dict                |  9 ++--
+ release/src/router/www/CN.dict                |  9 ++--
+ release/src/router/www/CZ.dict                |  9 ++--
+ release/src/router/www/DA.dict                |  9 ++--
+ release/src/router/www/DE.dict                |  9 ++--
+ release/src/router/www/EN.dict                |  9 ++--
+ release/src/router/www/ES.dict                |  9 ++--
+ release/src/router/www/FI.dict                |  9 ++--
+ release/src/router/www/FR.dict                |  9 ++--
+ release/src/router/www/HU.dict                |  9 ++--
+ release/src/router/www/IT.dict                |  9 ++--
+ release/src/router/www/JP.dict                |  9 ++--
+ release/src/router/www/KR.dict                |  9 ++--
+ release/src/router/www/MS.dict                |  9 ++--
+ release/src/router/www/NL.dict                |  9 ++--
+ release/src/router/www/NO.dict                |  9 ++--
+ release/src/router/www/PL.dict                |  9 ++--
+ release/src/router/www/RO.dict                |  9 ++--
+ release/src/router/www/RU.dict                |  9 ++--
+ release/src/router/www/Reaper_WiFiSetup.asp   | 22 +++++----
+ release/src/router/www/SL.dict                |  9 ++--
+ release/src/router/www/SV.dict                |  9 ++--
+ release/src/router/www/TH.dict                |  9 ++--
+ release/src/router/www/TR.dict                |  9 ++--
+ release/src/router/www/TW.dict                |  9 ++--
+ release/src/router/www/UK.dict                |  9 ++--
+ release/src/router/www/reaper_shell.asp       | 29 +++++++++---
+ .../router/www/sysdep/FUNCTION/SDN/SDN.asp    | 19 ++++++++
+ 30 files changed, 223 insertions(+), 128 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 49c1b7dada..6a8cb63612 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -21802,17 +21802,18 @@ static void reaper_gate_deny(FILE *stream, int why, const char *ns)
+  * cfg_server then performs the fronthaul/backhaul split off the same
+  * restart_wireless the stock page fires; nothing about that path is touched.
+  *
+- * v3.2.9: the box also runs the SDN reconcile every stock SDN writer runs
+- * (create_sdn_mwl_profile, the guest-network apply, rc's check_sdn_onoff):
+- * sync_apgx_to_wlunit() before the commit, restart_sdn after restart_wireless
+- * in the page's chain. Without it a factory box stayed on the one DEFAULT
+- * sdn_rl row until some later SDN apply, and the Network page's main card
+- * could not be opened - adding a guest network was the field workaround,
+- * because that apply is exactly this reconcile.
++ * v3.3.1 (supersedes the v3.2.9 note): a factory box has one DEFAULT sdn_rl
++ * row and no main network, so the Network page's main card cannot be opened.
++ * The main network is created only at BOOT by the closed init_apg() ->
++ * check_mwl_convert(), and only when x_Setting=1. v3.2.9 ran
++ * sync_apgx_to_wlunit() + restart_sdn instead, which only syncs rows that
++ * already exist and so could not fix it. The box now sets x_Setting=1 and the
++ * page's chain ends in reboot (GT-BE98_ICP field report, 2026-09-30: a WAN
++ * apply set x_Setting, the box rebooted, the mains appeared).
+  *
+- * nvram + commit ONLY. The page fires the restart itself, chained behind the
+- * password apply ("saveNvram;restart_chpass;restart_wireless"), so the radios
+- * never restart with a half-applied box. Gated on http_id like every other
++ * nvram + commit ONLY. The page fires the reboot itself, chained behind the
++ * password apply ("saveNvram;restart_chpass;reboot"), so the box never
++ * restarts with a half-applied setup. Gated on http_id like every other
+  * state-changing Reaper CGI; the caller must already be authenticated (do_auth).
+  *
+  * The key bound is enforced HERE as well as in the page: hostapd accepts
+@@ -21893,11 +21894,21 @@ do_reaper_wifisetup_cgi(char *url, FILE *stream)
+ 	snprintf(buf, sizeof(buf), "%d", selif);
+ 	nvram_set("smart_connect_selif_x", buf);
+ 	nvram_set("w_Setting", "1");
++	/* v3.3.1: "router configured" - what stock QIS sets on finishing. The main
++	 * network (MAINFH row + apm profile) is built from the wlN_* values above
++	 * ONLY by the closed init_apg() -> check_mwl_convert() at BOOT, and only
++	 * when x_Setting=1 (disassembled amas_apg.o, 2026-09-30). The page's chain
++	 * therefore ends in reboot. Set here rather than trusting validate_apply()
++	 * to do it on the page's start_apply. */
++	nvram_set("x_Setting", "1");
+ #ifdef RTCONFIG_MULTILAN_CFG
+-	sync_apgx_to_wlunit(NULL);	/* v3.2.9: the reconcile a guest-network apply runs */
++	/* Syncs EXISTING SDN rows only; it cannot create the main network (v3.2.9
++	 * assumed it could). Kept: harmless on a factory box, keeps a re-run of the
++	 * box consistent with whatever rows already exist. */
++	sync_apgx_to_wlunit(NULL);
+ #endif
+ 	nvram_commit();
+-	logmessage("reaper", "wifisetup: network name and key set on %d radio(s), Smart Connect on (selif %d), SDN synced; restart follows the password apply", n, selif);
++	logmessage("reaper", "wifisetup: network name and key set on %d radio(s), Smart Connect on (selif %d), x_Setting=1; reboot follows the password apply", n, selif);
+ 	websWrite(stream, "{\"ok\":1,\"radios\":%d,\"selif\":%d}", n, selif);
+ }
+ 
+@@ -40321,6 +40332,17 @@ ej_reaper_wifi_default(int eid, webs_t wp, int argc, char_t **argv)
+ 		def = nvram_default_get(key);
+ 		if (def && *def && !strcmp(psk, def))
+ 			return websWrite(wp, "1");
++
++		/* The printed-label key. A unit that carries one ("wifi_psk", added to
++		 * rc_support as "defpsk") resets through restore_defaults_wifi() to
++		 * psk2 + that key + w_Setting=1, never to open - so both tests above
++		 * read it as secured, the Wi-Fi row never showed, the setup box never
++		 * ran, and its SDN reconcile with it (GT-BE98_ICP field report,
++		 * 2026-09-30: main-network cards missing until an unrelated apply).
++		 * Same nvram restore_defaults_wifi() read; the value never leaves here. */
++		def = nvram_safe_get("wifi_psk");
++		if (*def && !strcmp(psk, def))
++			return websWrite(wp, "1");
+ 	}
+ 
+ 	return websWrite(wp, "0");
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index a04639a6a2..8c9969a0ce 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -1446,7 +1446,15 @@ restore_defaults_wifi(int all)
+ #if defined(EBG15) || defined(EBG19)
+ 	char psk[32];
+ #endif
+-	int defpsk = strlen(nvram_safe_get("wifi_psk")) && nvram_contains_word("rc_support", "defpsk");
++	/* Reaper: the printed-label key is NOT applied. Stock would, on a unit with
++	 * "wifi_psk" + rc_support "defpsk", overwrite every radio with psk2 + that
++	 * key + the label SSID and set w_Setting=1 - so label units reset secured
++	 * while the rest reset open, and the first-boot banner judged them apart
++	 * (GT-BE98_ICP field report, 2026-09-30). One factory state on every unit:
++	 * admin/admin + the open template Wi-Fi (owner, v2.9.2), secured through
++	 * the setup box. rc_support "defpsk" itself is left alone - firewall.c and
++	 * ntpclient.c read it for unrelated behaviour. */
++	int defpsk = 0;
+ 	char word[256], *next;
+ 	int unit, subunit;
+ 	unsigned int max_mssid;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 99b76a6f24..f8381fdbbe 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Este roteador nao esta protegido
+ RSEC_2=Falta um passo para proteger este roteador
+ RSEC_3=Ele ainda usa a senha de fabrica. Qualquer pessoa que alcance esta pagina ou o seu Wi-Fi pode assumir o controle do roteador. Defina as duas e este aviso desaparece.
+ RSEC_4=O seu Wi-Fi esta definido, mas o login do roteador ainda e o padrao de fabrica. Qualquer pessoa na rede pode abrir esta pagina e alterar tudo.
+-RSEC_5=O login do roteador esta definido, mas o Wi-Fi ainda usa a senha de fabrica. Qualquer pessoa ao alcance pode entrar na rede.
++RSEC_5=O login do roteador está definido, mas o Wi-Fi está aberto. Qualquer pessoa ao alcance pode entrar na rede.
+ RSEC_6=O login do roteador ainda e admin / admin
+ RSEC_7=O login do roteador foi alterado
+ RSEC_8=Alterar login
+-RSEC_9=A senha do Wi-Fi ainda e admin
++RSEC_9=O Wi-Fi não tem senha
+ RSEC_10=A senha do Wi-Fi foi alterada
+ RSEC_11=Alterar senha do Wi-Fi
+ RSEC_12=Este aviso nao pode ser fechado. Ele desaparece sozinho quando as duas forem alteradas.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Pronto. O roteador está reiniciando para concluir a configuração (cerca de 3 minutos). Depois, reconecte-se a %1$@ e entre com a nova senha do roteador.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=O roteador está sendo redefinido e vai reiniciar com as configurações de fábrica. O Wi-Fi volta como uma rede aberta chamada ASUS_xx. Conecte-se a essa rede ou use uma porta com fio e depois abra o roteador no endereço padrão:
+ RBKP_51=O roteador não reiniciou em 3 minutos, portanto o pedido de redefinição não foi aceito e nada foi alterado. Verifique o registro do sistema e tente novamente.
+-RSEC_13=O login do roteador e a senha do Wi-Fi ainda são admin
++RSEC_13=O login do roteador ainda é admin / admin e o Wi-Fi está aberto
+ RFWU_54=Canal beta
+ RFWU_55=Oferecer também versões beta do ramo Dev. Uma beta só é oferecida quando este roteador já executa a versão estável mais recente e a beta tem um número de versão maior; quando a versão estável tem o mesmo número, só a estável é oferecida. As betas foram menos testadas que as versões estáveis.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Escolhido automaticamente no modo Dinamico.
+ RWFP_115=Escolha Dinamico primeiro.
+ RWFP_116=Dinamico
+ RDST_78=O roteador não pode verificar este sistema de arquivos. Verifique o disco em um computador.
++RSDN_1=Sua rede principal ainda não foi criada. Execute a configuração do roteador para criá-la.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index edd874c007..8a159e5aab 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=此路由器尚未受到保护
+ RSEC_2=还差一步即可保护此路由器
+ RSEC_3=它仍在使用出厂密码。任何能够打开此页面或连接您 Wi-Fi 的人都可以接管路由器。两项都设置后，此警告将消失。
+ RSEC_4=您的 Wi-Fi 已设置，但路由器登录仍为出厂默认值。网络上的任何人都可以打开此页面并更改任何设置。
+-RSEC_5=路由器登录已设置，但 Wi-Fi 仍使用出厂密码。附近范围内的任何人都可以加入网络。
++RSEC_5=路由器登录已设置，但 Wi-Fi 未设密码。附近范围内的任何人都可以加入网络。
+ RSEC_6=路由器登录仍为 admin / admin
+ RSEC_7=路由器登录已更改
+ RSEC_8=更改登录
+-RSEC_9=Wi-Fi 密码仍为 admin
++RSEC_9=Wi-Fi 未设密码
+ RSEC_10=Wi-Fi 密码已更改
+ RSEC_11=更改 Wi-Fi 密码
+ RSEC_12=此提示无法关闭。两项都更改后它会自动消失。
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=完成。路由器正在重新启动以完成设置（约 3 分钟）。之后请重新连接到 %1$@，并使用新的路由器密码登录。
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=路由器正在重置，并将以出厂设置重新启动。Wi-Fi 会恢复为名为 ASUS_xx 的开放网络。请重新连接该网络或使用有线端口，然后通过默认地址打开路由器：
+ RBKP_51=路由器在 3 分钟内没有重新启动，重置请求未被接受，未作任何更改。请查看系统日志后重试。
+-RSEC_13=路由器登录密码和 Wi-Fi 密码都仍为 admin
++RSEC_13=路由器登录仍为 admin / admin，Wi-Fi 未设密码
+ RFWU_54=测试版通道
+ RFWU_55=同时提供来自 Dev 分支的测试版。仅当本路由器已运行最新稳定版且测试版的版本号更高时才会提供测试版；当稳定版的版本号相同时，只提供稳定版。测试版的测试程度低于稳定版。
+ RFWU_56=测试版
+@@ -7092,3 +7092,4 @@ RWFP_114=在动态模式下自动选择。
+ RWFP_115=请先选择动态。
+ RWFP_116=动态
+ RDST_78=路由器无法检查此文件系统。请在电脑上检查该磁盘。
++RSDN_1=尚未创建主网络。请运行路由器设置来创建它。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index ce546383d2..9fdeb4c572 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Tento router neni zabezpecen
+ RSEC_2=Zbyva jeden krok k zabezpeceni tohoto routeru
+ RSEC_3=Stale pouziva tovarni heslo. Kdokoli, kdo se dostane na tuto stranku nebo k vasi Wi-Fi, muze router prevzit. Nastavte obe a toto varovani zmizi.
+ RSEC_4=Vase Wi-Fi je nastavena, ale prihlaseni k routeru je stale tovarni. Kdokoli v siti muze otevrit tuto stranku a cokoli zmenit.
+-RSEC_5=Prihlaseni k routeru je nastaveno, ale Wi-Fi stale pouziva tovarni heslo. Kdokoli v dosahu se muze pripojit k siti.
++RSEC_5=Přihlášení k routeru je nastaveno, ale Wi-Fi je otevřená. Kdokoli v dosahu se může připojit k síti.
+ RSEC_6=Prihlaseni k routeru je stale admin / admin
+ RSEC_7=Prihlaseni k routeru bylo zmeneno
+ RSEC_8=Zmenit prihlaseni
+-RSEC_9=Heslo Wi-Fi je stale admin
++RSEC_9=Wi-Fi nemá heslo
+ RSEC_10=Heslo Wi-Fi bylo zmeneno
+ RSEC_11=Zmenit heslo Wi-Fi
+ RSEC_12=Toto upozorneni nelze zavrit. Zmizi samo, jakmile budou zmeneny obe polozky.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Hotovo. Router se restartuje, aby dokončil nastavení (asi 3 minuty). Poté se znovu připojte k %1$@ a přihlaste se novým heslem routeru.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Router se resetuje a restartuje se s továrním nastavením. Wi-Fi se vrátí jako otevřená síť s názvem ASUS_xx. Připojte se znovu k této síti nebo použijte kabelový port a poté otevřete router na výchozí adrese:
+ RBKP_51=Router se do 3 minut nerestartoval, požadavek na reset tedy nebyl přijat a nic se nezměnilo. Zkontrolujte systémový protokol a zkuste to znovu.
+-RSEC_13=Přihlášení k routeru i heslo Wi-Fi jsou stále admin
++RSEC_13=Přihlášení k routeru je stále admin / admin a Wi-Fi je otevřená
+ RFWU_54=Beta kanál
+ RFWU_55=Nabízet také beta verze z větve Dev. Beta se nabídne jen tehdy, když už router běží na nejnovější stabilní verzi a beta má vyšší číslo verze; má-li stabilní verze stejné číslo, nabídne se pouze stabilní. Beta verze jsou méně otestované než stabilní.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=V dynamickem rezimu se vybira automaticky.
+ RWFP_115=Nejprve zvolte Dynamicky.
+ RWFP_116=Dynamicky
+ RDST_78=Router nemůže zkontrolovat tento souborový systém. Zkontrolujte disk v počítači.
++RSDN_1=Hlavní síť ještě nebyla vytvořena. Vytvořte ji spuštěním nastavení routeru.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 53416b5b4d..a76b4a994f 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Denne router er ikke sikret
+ RSEC_2=Et skridt tilbage for at sikre denne router
+ RSEC_3=Den bruger stadig fabrikskodeordet. Enhver, der kan na denne side eller dit Wi-Fi, kan overtage routeren. Saet begge, sa forsvinder denne advarsel.
+ RSEC_4=Dit Wi-Fi er sat, men router-loginet er stadig fabriksstandarden. Enhver pa netvaerket kan abne denne side og aendre alt.
+-RSEC_5=Router-loginet er sat, men Wi-Fi bruger stadig fabrikskodeordet. Enhver inden for raekkevidde kan koble sig pa netvaerket.
++RSEC_5=Router-loginet er sat, men Wi-Fi er åbent. Enhver inden for rækkevidde kan koble sig på netværket.
+ RSEC_6=Router-login er stadig admin / admin
+ RSEC_7=Router-login er blevet aendret
+ RSEC_8=Skift login
+-RSEC_9=Wi-Fi-kodeordet er stadig admin
++RSEC_9=Wi-Fi har ingen adgangskode
+ RSEC_10=Wi-Fi-kodeordet er blevet aendret
+ RSEC_11=Skift Wi-Fi-kodeord
+ RSEC_12=Denne meddelelse kan ikke lukkes. Den forsvinder af sig selv, nar begge er aendret.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Færdig. Routeren genstarter for at fuldføre opsætningen (ca. 3 minutter). Opret derefter forbindelse til %1$@ igen, og log ind med din nye routeradgangskode.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Routeren nulstilles og genstarter med fabriksindstillingerne. Wi-Fi vender tilbage som et åbent netværk med navnet ASUS_xx. Opret forbindelse til det netværk igen, eller brug en kablet port, og åbn derefter routeren på standardadressen:
+ RBKP_51=Routeren genstartede ikke inden for 3 minutter, så nulstillingsanmodningen blev ikke accepteret, og intet blev ændret. Kontrollér systemloggen, og prøv igen.
+-RSEC_13=Routerens login og Wi-Fi-adgangskoden er stadig admin
++RSEC_13=Routerens login er stadig admin / admin, og Wi-Fi er åbent
+ RFWU_54=Betakanal
+ RFWU_55=Tilbyd også betaudgivelser fra Dev-grenen. En beta tilbydes kun, når denne router allerede kører den nyeste stabile udgivelse, og betaen har et højere versionsnummer; har den stabile udgivelse samme nummer, tilbydes kun den stabile. Betaer er mindre testet end stabile udgivelser.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Vaelges automatisk i dynamisk tilstand.
+ RWFP_115=Vaelg Dynamisk foerst.
+ RWFP_116=Dynamisk
+ RDST_78=Routeren kan ikke kontrollere dette filsystem. Kontrollér disken på en computer i stedet.
++RSDN_1=Dit hovednetværk er ikke oprettet endnu. Kør routeropsætningen for at oprette det.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 1bf8d654ef..aef8b4e9b5 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Dieser Router ist nicht gesichert
+ RSEC_2=Noch ein Schritt, um diesen Router zu sichern
+ RSEC_3=Er verwendet noch das Werkspasswort. Wer diese Seite oder Ihr WLAN erreicht, kann den Router uebernehmen. Setzen Sie beide, und diese Warnung verschwindet.
+ RSEC_4=Ihr WLAN ist gesetzt, aber die Router-Anmeldung ist noch die Werkseinstellung. Jeder im Netzwerk kann diese Seite oeffnen und alles aendern.
+-RSEC_5=Die Router-Anmeldung ist gesetzt, aber das WLAN nutzt noch das Werkspasswort. Jeder in Reichweite kann dem Netzwerk beitreten.
++RSEC_5=Die Router-Anmeldung ist gesetzt, aber das WLAN ist offen. Jeder in Reichweite kann dem Netzwerk beitreten.
+ RSEC_6=Router-Anmeldung ist noch admin / admin
+ RSEC_7=Router-Anmeldung wurde geaendert
+ RSEC_8=Anmeldung aendern
+-RSEC_9=WLAN-Passwort ist noch admin
++RSEC_9=WLAN hat kein Passwort
+ RSEC_10=WLAN-Passwort wurde geaendert
+ RSEC_11=WLAN-Passwort aendern
+ RSEC_12=Dieser Hinweis laesst sich nicht schliessen. Er verschwindet von selbst, sobald beide geaendert sind.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Fertig. Der Router startet neu, um die Einrichtung abzuschließen (etwa 3 Minuten). Verbinde dich danach erneut mit %1$@ und melde dich mit deinem neuen Router-Passwort an.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Der Router wird zurückgesetzt und startet mit den Werkseinstellungen neu. Das WLAN kommt als offenes Netzwerk mit dem Namen ASUS_xx zurück. Verbinden Sie sich erneut mit diesem Netzwerk oder nutzen Sie einen LAN-Anschluss und öffnen Sie den Router dann unter der Standardadresse:
+ RBKP_51=Der Router hat innerhalb von 3 Minuten nicht neu gestartet, die Zurücksetzung wurde also nicht angenommen und nichts wurde geändert. Prüfen Sie das Systemprotokoll und versuchen Sie es erneut.
+-RSEC_13=Router-Login und WLAN-Passwort sind beide noch admin
++RSEC_13=Router-Login ist noch admin / admin und das WLAN ist offen
+ RFWU_54=Beta-Kanal
+ RFWU_55=Auch Beta-Versionen aus dem Dev-Zweig anbieten. Eine Beta wird nur angeboten, wenn dieser Router bereits die neueste stabile Version ausführt und die Beta eine höhere Versionsnummer trägt; hat die stabile Version dieselbe Nummer, wird nur die stabile angeboten. Betas sind weniger getestet als stabile Versionen.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Wird im dynamischen Modus automatisch gewaehlt.
+ RWFP_115=Zuerst Dynamisch waehlen.
+ RWFP_116=Dynamisch
+ RDST_78=Der Router kann dieses Dateisystem nicht prüfen. Prüfen Sie den Datenträger an einem Computer.
++RSDN_1=Dein Hauptnetzwerk wurde noch nicht erstellt. Führe die Router-Einrichtung aus, um es zu erstellen.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 8b989a5a01..d24a8ddd28 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=This router is not secured
+ RSEC_2=One step left to secure this router
+ RSEC_3=It is still using the factory password. Anyone who can reach this page or your Wi-Fi can take over the router. Set both, and this warning goes away.
+ RSEC_4=Your Wi-Fi is set, but the router login is still the factory default. Anyone on the network can open this page and change anything.
+-RSEC_5=Your router login is set, but the Wi-Fi is still on the factory password. Anyone in range can join the network.
++RSEC_5=Your router login is set, but the Wi-Fi is open. Anyone in range can join the network.
+ RSEC_6=Router login is still admin / admin
+ RSEC_7=Router login has been changed
+ RSEC_8=Change login
+-RSEC_9=Wi-Fi password is still admin
++RSEC_9=Wi-Fi has no password
+ RSEC_10=Wi-Fi password has been changed
+ RSEC_11=Change Wi-Fi password
+ RSEC_12=This notice cannot be dismissed. It disappears on its own once both are changed.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Done. The router is restarting to finish setup (about 3 minutes). Then reconnect to %1$@ and log in with your new router password.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=The router is resetting and will reboot with its factory settings. Its Wi-Fi comes back as an open network named ASUS_xx. Reconnect to that network or use a wired port, then open the router at its default address:
+ RBKP_51=The router did not restart within 3 minutes, so the reset request was not accepted and nothing was changed. Check the system log, then try again.
+-RSEC_13=Router login and Wi-Fi password are both still admin
++RSEC_13=Router login is still admin / admin and Wi-Fi is open
+ RFWU_54=Beta Channel
+ RFWU_55=Also offer beta releases from the Dev branch. A beta is offered only when this router already runs the newest stable release and the beta carries a higher version number; when the stable release has the same number, only the stable one is offered. Betas have had less testing than stable releases.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Chosen automatically in Dynamic mode.
+ RWFP_115=Choose Dynamic first.
+ RWFP_116=Dynamic
+ RDST_78=The router cannot check this file system. Check the disk on a computer instead.
++RSDN_1=Your main network has not been created yet. Run the router setup to create it.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 5c140a5b1a..bfc1fca27f 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Este router no esta protegido
+ RSEC_2=Falta un paso para proteger este router
+ RSEC_3=Todavia usa la contrasena de fabrica. Cualquiera que alcance esta pagina o su Wi-Fi puede tomar el control del router. Configure ambas y este aviso desaparecera.
+ RSEC_4=Su Wi-Fi esta configurado, pero el acceso al router sigue siendo el de fabrica. Cualquiera en la red puede abrir esta pagina y cambiarlo todo.
+-RSEC_5=El acceso al router esta configurado, pero el Wi-Fi sigue con la contrasena de fabrica. Cualquiera dentro del alcance puede unirse a la red.
++RSEC_5=El acceso al router está configurado, pero el Wi-Fi está abierto. Cualquiera dentro del alcance puede unirse a la red.
+ RSEC_6=El acceso al router sigue siendo admin / admin
+ RSEC_7=El acceso al router se ha cambiado
+ RSEC_8=Cambiar acceso
+-RSEC_9=La contrasena del Wi-Fi sigue siendo admin
++RSEC_9=El Wi-Fi no tiene contraseña
+ RSEC_10=La contrasena del Wi-Fi se ha cambiado
+ RSEC_11=Cambiar contrasena del Wi-Fi
+ RSEC_12=Este aviso no se puede cerrar. Desaparece solo cuando ambas se hayan cambiado.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Listo. El router se está reiniciando para terminar la configuración (unos 3 minutos). Después, vuelve a conectarte a %1$@ e inicia sesión con la nueva contraseña del router.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=El router se está restableciendo y se reiniciará con la configuración de fábrica. El Wi-Fi vuelve como una red abierta llamada ASUS_xx. Vuelva a conectarse a esa red o use un puerto por cable y luego abra el router en su dirección predeterminada:
+ RBKP_51=El router no se reinició en 3 minutos, por lo que la solicitud de restablecimiento no fue aceptada y no se cambió nada. Revise el registro del sistema e inténtelo de nuevo.
+-RSEC_13=El acceso al router y la contraseña del Wi-Fi siguen siendo admin
++RSEC_13=El acceso al router sigue siendo admin / admin y el Wi-Fi está abierto
+ RFWU_54=Canal beta
+ RFWU_55=Ofrecer también versiones beta de la rama Dev. Una beta solo se ofrece cuando este router ya ejecuta la versión estable más reciente y la beta tiene un número de versión mayor; cuando la versión estable tiene el mismo número, solo se ofrece la estable. Las betas se han probado menos que las versiones estables.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Se elige automaticamente en modo Dinamico.
+ RWFP_115=Elija primero Dinamico.
+ RWFP_116=Dinamico
+ RDST_78=El router no puede comprobar este sistema de archivos. Compruebe el disco en un ordenador.
++RSDN_1=Tu red principal aún no se ha creado. Ejecuta la configuración del router para crearla.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 909a0183d1..36d9d8da91 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Tata reititinta ei ole suojattu
+ RSEC_2=Yksi askel jaljella taman reitittimen suojaamiseen
+ RSEC_3=Se kayttaa yha tehdasasetusten salasanaa. Kuka tahansa, joka paasee tahan sivuun tai Wi-Fi-verkkoosi, voi ottaa reitittimen haltuunsa. Aseta molemmat, niin tama varoitus katoaa.
+ RSEC_4=Wi-Fi on asetettu, mutta reitittimen kirjautuminen on yha tehdasasetus. Kuka tahansa verkossa voi avata taman sivun ja muuttaa mita tahansa.
+-RSEC_5=Reitittimen kirjautuminen on asetettu, mutta Wi-Fi kayttaa yha tehdassalasanaa. Kuka tahansa kantaman sisalla voi liittya verkkoon.
++RSEC_5=Reitittimen kirjautuminen on asetettu, mutta Wi-Fi on avoin. Kuka tahansa kantaman sisällä voi liittyä verkkoon.
+ RSEC_6=Reitittimen kirjautuminen on yha admin / admin
+ RSEC_7=Reitittimen kirjautuminen on vaihdettu
+ RSEC_8=Vaihda kirjautuminen
+-RSEC_9=Wi-Fi-salasana on yha admin
++RSEC_9=Wi-Fi-verkolla ei ole salasanaa
+ RSEC_10=Wi-Fi-salasana on vaihdettu
+ RSEC_11=Vaihda Wi-Fi-salasana
+ RSEC_12=Tata ilmoitusta ei voi sulkea. Se katoaa itsestaan, kun molemmat on vaihdettu.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Valmis. Reititin käynnistyy uudelleen asennuksen viimeistelemiseksi (noin 3 minuuttia). Yhdistä sitten uudelleen verkkoon %1$@ ja kirjaudu uudella reitittimen salasanalla.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Reititin palautetaan ja se käynnistyy uudelleen tehdasasetuksilla. Wi-Fi palaa avoimena verkkona nimeltä ASUS_xx. Yhdistä uudelleen kyseiseen verkkoon tai käytä kaapeliporttia ja avaa sitten reititin sen oletusosoitteessa:
+ RBKP_51=Reititin ei käynnistynyt uudelleen 3 minuutin kuluessa, joten palautuspyyntöä ei hyväksytty eikä mitään muutettu. Tarkista järjestelmäloki ja yritä uudelleen.
+-RSEC_13=Reitittimen kirjautuminen ja Wi-Fi-salasana ovat molemmat yhä admin
++RSEC_13=Reitittimen kirjautuminen on yhä admin / admin ja Wi-Fi on avoin
+ RFWU_54=Beetakanava
+ RFWU_55=Tarjoa myös Dev-haaran beetajulkaisuja. Beeta tarjotaan vain, kun tämä reititin on jo uusimmassa vakaassa julkaisussa ja beetan versionumero on suurempi; jos vakaalla julkaisulla on sama numero, tarjotaan vain vakaa. Beetoja on testattu vähemmän kuin vakaita julkaisuja.
+ RFWU_56=Beeta
+@@ -7092,3 +7092,4 @@ RWFP_114=Valitaan automaattisesti dynaamisessa tilassa.
+ RWFP_115=Valitse ensin Dynaaminen.
+ RWFP_116=Dynaaminen
+ RDST_78=Reititin ei voi tarkistaa tätä tiedostojärjestelmää. Tarkista levy tietokoneella.
++RSDN_1=Pääverkkoa ei ole vielä luotu. Luo se suorittamalla reitittimen asennus.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 2106ea8a1e..e733fa7654 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Ce routeur n'est pas securise
+ RSEC_2=Une etape reste pour securiser ce routeur
+ RSEC_3=Il utilise encore le mot de passe d'usine. Toute personne qui atteint cette page ou votre Wi-Fi peut prendre le controle du routeur. Definissez les deux et cet avertissement disparaitra.
+ RSEC_4=Votre Wi-Fi est defini, mais l'identifiant du routeur reste celui d'usine. N'importe qui sur le reseau peut ouvrir cette page et tout modifier.
+-RSEC_5=L'identifiant du routeur est defini, mais le Wi-Fi utilise encore le mot de passe d'usine. Toute personne a portee peut rejoindre le reseau.
++RSEC_5=L’identifiant du routeur est défini, mais le Wi-Fi est ouvert. Toute personne à portée peut rejoindre le réseau.
+ RSEC_6=L'identifiant du routeur est encore admin / admin
+ RSEC_7=L'identifiant du routeur a ete change
+ RSEC_8=Changer l'identifiant
+-RSEC_9=Le mot de passe Wi-Fi est encore admin
++RSEC_9=Le Wi-Fi n’a pas de mot de passe
+ RSEC_10=Le mot de passe Wi-Fi a ete change
+ RSEC_11=Changer le mot de passe Wi-Fi
+ RSEC_12=Cet avis ne peut pas etre ferme. Il disparait de lui-meme une fois les deux changes.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Terminé. Le routeur redémarre pour finaliser la configuration (environ 3 minutes). Reconnectez-vous ensuite à %1$@ et connectez-vous avec le nouveau mot de passe du routeur.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Le routeur se réinitialise et va redémarrer avec ses réglages d’usine. Le Wi-Fi revient sous la forme d’un réseau ouvert nommé ASUS_xx. Reconnectez-vous à ce réseau ou utilisez un port filaire, puis ouvrez le routeur à son adresse par défaut :
+ RBKP_51=Le routeur n’a pas redémarré dans les 3 minutes : la demande de réinitialisation n’a pas été acceptée et rien n’a été modifié. Consultez le journal système, puis réessayez.
+-RSEC_13=L’identifiant du routeur et le mot de passe Wi-Fi sont encore admin
++RSEC_13=L’identifiant du routeur est encore admin / admin et le Wi-Fi est ouvert
+ RFWU_54=Canal bêta
+ RFWU_55=Proposer aussi les versions bêta de la branche Dev. Une bêta n’est proposée que lorsque ce routeur exécute déjà la version stable la plus récente et que la bêta porte un numéro de version supérieur ; quand la version stable porte le même numéro, seule la stable est proposée. Les bêtas sont moins testées que les versions stables.
+ RFWU_56=Bêta
+@@ -7092,3 +7092,4 @@ RWFP_114=Choisi automatiquement en mode Dynamique.
+ RWFP_115=Choisissez d abord Dynamique.
+ RWFP_116=Dynamique
+ RDST_78=Le routeur ne peut pas vérifier ce système de fichiers. Vérifiez le disque sur un ordinateur.
++RSDN_1=Votre réseau principal n’a pas encore été créé. Lancez la configuration du routeur pour le créer.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 54b9c1e048..456c4fb461 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Ez a router nincs vedve
+ RSEC_2=Egy lepes van hatra a router vedelmehez
+ RSEC_3=Meg mindig a gyari jelszot hasznalja. Barki, aki eleri ezt az oldalt vagy a Wi-Fi halozatot, atveheti a router iranyitasat. Allitsa be mindkettot, es ez a figyelmeztetes eltunik.
+ RSEC_4=A Wi-Fi be van allitva, de a router bejelentkezes meg a gyari. A halozaton barki megnyithatja ezt az oldalt es barmit megvaltoztathat.
+-RSEC_5=A router bejelentkezes be van allitva, de a Wi-Fi meg a gyari jelszot hasznalja. Hatotavolsagon belul barki csatlakozhat a halozathoz.
++RSEC_5=A router bejelentkezés be van állítva, de a Wi-Fi nyitott. Hatótávolságon belül bárki csatlakozhat a hálózathoz.
+ RSEC_6=A router bejelentkezes meg admin / admin
+ RSEC_7=A router bejelentkezes megvaltozott
+ RSEC_8=Bejelentkezes modositasa
+-RSEC_9=A Wi-Fi jelszo meg admin
++RSEC_9=A Wi-Fi-nek nincs jelszava
+ RSEC_10=A Wi-Fi jelszo megvaltozott
+ RSEC_11=Wi-Fi jelszo modositasa
+ RSEC_12=Ez az ertesites nem zarhato be. Magatol eltunik, amint mindketto megvaltozott.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Kész. A router újraindul a beállítás befejezéséhez (kb. 3 perc). Ezután csatlakozzon újra a(z) %1$@ hálózathoz, és jelentkezzen be az új router jelszóval.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=A router visszaállítás alatt áll, és a gyári beállításokkal indul újra. A Wi-Fi ASUS_xx nevű nyílt hálózatként tér vissza. Csatlakozzon újra ehhez a hálózathoz, vagy használjon vezetékes portot, majd nyissa meg a routert az alapértelmezett címén:
+ RBKP_51=A router 3 percen belül nem indult újra, így a visszaállítási kérést nem fogadta el, és semmi sem változott. Ellenőrizze a rendszernaplót, majd próbálja újra.
+-RSEC_13=A router bejelentkezése és a Wi-Fi jelszó még mindig admin
++RSEC_13=A router bejelentkezése még mindig admin / admin, és a Wi-Fi nyitott
+ RFWU_54=Béta csatorna
+ RFWU_55=A Dev ág béta kiadásainak felajánlása is. Béta csak akkor kerül felajánlásra, ha a router már a legújabb stabil kiadást futtatja és a béta verziószáma magasabb; ha a stabil kiadás száma ugyanaz, csak a stabil kerül felajánlásra. A béták kevésbé teszteltek, mint a stabil kiadások.
+ RFWU_56=Béta
+@@ -7092,3 +7092,4 @@ RWFP_114=Dinamikus modban automatikusan kerul kivalasztasra.
+ RWFP_115=Eloszor valassza a Dinamikus lehetoseget.
+ RWFP_116=Dinamikus
+ RDST_78=A router nem tudja ellenőrizni ezt a fájlrendszert. Ellenőrizze a lemezt számítógépen.
++RSDN_1=A fő hálózat még nincs létrehozva. Futtassa a router beállítását a létrehozásához.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index d1654f8cbf..ece78c798a 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Questo router non e protetto
+ RSEC_2=Manca un passaggio per proteggere questo router
+ RSEC_3=Usa ancora la password di fabbrica. Chiunque raggiunga questa pagina o il tuo Wi-Fi puo prendere il controllo del router. Impostale entrambe e questo avviso scomparira.
+ RSEC_4=Il Wi-Fi e impostato, ma l'accesso al router e ancora quello di fabbrica. Chiunque sulla rete puo aprire questa pagina e modificare tutto.
+-RSEC_5=L'accesso al router e impostato, ma il Wi-Fi usa ancora la password di fabbrica. Chiunque nel raggio d'azione puo entrare nella rete.
++RSEC_5=L’accesso al router è impostato, ma il Wi-Fi è aperto. Chiunque nel raggio d’azione può entrare nella rete.
+ RSEC_6=L'accesso al router e ancora admin / admin
+ RSEC_7=L'accesso al router e stato modificato
+ RSEC_8=Modifica accesso
+-RSEC_9=La password del Wi-Fi e ancora admin
++RSEC_9=Il Wi-Fi non ha password
+ RSEC_10=La password del Wi-Fi e stata modificata
+ RSEC_11=Modifica password Wi-Fi
+ RSEC_12=Questo avviso non puo essere chiuso. Scompare da solo quando entrambe sono state modificate.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Fatto. Il router si sta riavviando per completare la configurazione (circa 3 minuti). Poi riconnettiti a %1$@ e accedi con la nuova password del router.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Il router si sta ripristinando e si riavvierà con le impostazioni di fabbrica. Il Wi-Fi torna come rete aperta chiamata ASUS_xx. Ricollegati a quella rete o usa una porta cablata, poi apri il router al suo indirizzo predefinito:
+ RBKP_51=Il router non si è riavviato entro 3 minuti, quindi la richiesta di ripristino non è stata accettata e nulla è cambiato. Controlla il registro di sistema e riprova.
+-RSEC_13=L’accesso al router e la password Wi-Fi sono ancora admin
++RSEC_13=L’accesso al router è ancora admin / admin e il Wi-Fi è aperto
+ RFWU_54=Canale beta
+ RFWU_55=Offri anche le versioni beta del ramo Dev. Una beta viene offerta solo quando questo router esegue già la versione stabile più recente e la beta ha un numero di versione maggiore; quando la versione stabile ha lo stesso numero, viene offerta solo la stabile. Le beta sono meno testate delle versioni stabili.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Scelto automaticamente in modalita Dinamico.
+ RWFP_115=Scegliere prima Dinamico.
+ RWFP_116=Dinamico
+ RDST_78=Il router non può controllare questo file system. Controlla il disco su un computer.
++RSDN_1=La rete principale non è ancora stata creata. Esegui la configurazione del router per crearla.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 66dbb54301..76d057c86d 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=このルーターは保護されていません
+ RSEC_2=このルーターを保護するにはあと 1 ステップです
+ RSEC_3=工場出荷時のパスワードのままです。このページまたは Wi-Fi に到達できる人は誰でもルーターを乗っ取れます。両方を設定すると、この警告は消えます。
+ RSEC_4=Wi-Fi は設定済みですが、ルーターのログインは工場出荷時のままです。ネットワーク上の誰でもこのページを開いてすべてを変更できます。
+-RSEC_5=ルーターのログインは設定済みですが、Wi-Fi は工場出荷時のパスワードのままです。電波の届く範囲にいる誰でもネットワークに参加できます。
++RSEC_5=ルーターのログインは設定済みですが、Wi-Fi にパスワードが設定されていません。電波の届く範囲にいる誰でもネットワークに参加できます。
+ RSEC_6=ルーターのログインは admin / admin のままです
+ RSEC_7=ルーターのログインが変更されました
+ RSEC_8=ログインを変更
+-RSEC_9=Wi-Fi パスワードは admin のままです
++RSEC_9=Wi-Fi にパスワードが設定されていません
+ RSEC_10=Wi-Fi パスワードが変更されました
+ RSEC_11=Wi-Fi パスワードを変更
+ RSEC_12=この通知は閉じられません。両方を変更すると自動的に消えます。
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=完了しました。セットアップを完了するためにルーターを再起動しています（約 3 分）。その後 %1$@ に再接続し、新しいルーターのパスワードでログインしてください。
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=ルーターをリセット中です。工場出荷時の設定で再起動します。Wi-Fi は ASUS_xx という名前のオープンネットワークとして復帰します。そのネットワークに再接続するか有線ポートを使い、初期アドレスでルーターを開いてください：
+ RBKP_51=ルーターが 3 分以内に再起動しなかったため、リセット要求は受け付けられず、何も変更されていません。システムログを確認してからもう一度お試しください。
+-RSEC_13=ルーターのログインと Wi-Fi パスワードはどちらもまだ admin です
++RSEC_13=ルーターのログインはまだ admin / admin で、Wi-Fi はパスワードなしです
+ RFWU_54=ベータチャネル
+ RFWU_55=Dev ブランチのベータ版も提供します。ベータ版が提供されるのは、このルーターが既に最新の安定版を実行しており、かつベータ版のバージョン番号がより大きい場合だけです。安定版が同じ番号の場合は安定版のみが提供されます。ベータ版は安定版よりテストが少ない状態です。
+ RFWU_56=ベータ
+@@ -7092,3 +7092,4 @@ RWFP_114=動的モードでは自動的に選択されます。
+ RWFP_115=先に「動的」を選択してください。
+ RWFP_116=動的
+ RDST_78=ルーターではこのファイルシステムをチェックできません。パソコンでディスクをチェックしてください。
++RSDN_1=メインネットワークはまだ作成されていません。ルーターのセットアップを実行して作成してください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 0b119f5c77..e377ea385e 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=이 라우터는 보호되어 있지 않습니다
+ RSEC_2=이 라우터를 보호하기까지 한 단계 남았습니다
+ RSEC_3=아직 공장 출하 시 비밀번호를 사용 중입니다. 이 페이지나 Wi-Fi에 접근할 수 있는 사람은 누구나 라우터를 장악할 수 있습니다. 둘 다 설정하면 이 경고가 사라집니다.
+ RSEC_4=Wi-Fi는 설정되었지만 라우터 로그인은 아직 공장 기본값입니다. 네트워크의 누구나 이 페이지를 열고 무엇이든 변경할 수 있습니다.
+-RSEC_5=라우터 로그인은 설정되었지만 Wi-Fi는 아직 공장 출하 시 비밀번호입니다. 전파가 닿는 범위의 누구나 네트워크에 접속할 수 있습니다.
++RSEC_5=라우터 로그인은 설정되었지만 Wi-Fi에 비밀번호가 없습니다. 전파가 닿는 범위의 누구나 네트워크에 접속할 수 있습니다.
+ RSEC_6=라우터 로그인이 아직 admin / admin 입니다
+ RSEC_7=라우터 로그인이 변경되었습니다
+ RSEC_8=로그인 변경
+-RSEC_9=Wi-Fi 비밀번호가 아직 admin 입니다
++RSEC_9=Wi-Fi에 비밀번호가 없습니다
+ RSEC_10=Wi-Fi 비밀번호가 변경되었습니다
+ RSEC_11=Wi-Fi 비밀번호 변경
+ RSEC_12=이 알림은 닫을 수 없습니다. 둘 다 변경하면 저절로 사라집니다.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=완료되었습니다. 설정을 마치기 위해 공유기가 다시 시작됩니다(약 3분). 그런 다음 %1$@에 다시 연결하고 새 공유기 비밀번호로 로그인하세요.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=공유기를 초기화하는 중이며 공장 설정으로 다시 시작됩니다. Wi-Fi는 ASUS_xx라는 이름의 개방형 네트워크로 돌아옵니다. 해당 네트워크에 다시 연결하거나 유선 포트를 사용한 다음 기본 주소로 공유기를 여십시오:
+ RBKP_51=공유기가 3분 안에 다시 시작되지 않아 초기화 요청이 수락되지 않았고 아무것도 변경되지 않았습니다. 시스템 로그를 확인한 후 다시 시도하십시오.
+-RSEC_13=공유기 로그인과 Wi-Fi 비밀번호가 모두 아직 admin입니다
++RSEC_13=공유기 로그인은 아직 admin / admin이고 Wi-Fi에 비밀번호가 없습니다
+ RFWU_54=베타 채널
+ RFWU_55=Dev 브랜치의 베타 릴리스도 제공합니다. 베타는 이 공유기가 이미 최신 안정 릴리스를 실행 중이고 베타의 버전 번호가 더 높을 때만 제공됩니다. 안정 릴리스의 번호가 같으면 안정 릴리스만 제공됩니다. 베타는 안정 릴리스보다 테스트가 적습니다.
+ RFWU_56=베타
+@@ -7092,3 +7092,4 @@ RWFP_114=동적 모드에서는 자동으로 선택됩니다.
+ RWFP_115=먼저 동적을 선택하십시오.
+ RWFP_116=동적
+ RDST_78=라우터에서 이 파일 시스템을 검사할 수 없습니다. 컴퓨터에서 디스크를 검사하십시오.
++RSDN_1=기본 네트워크가 아직 만들어지지 않았습니다. 공유기 설정을 실행하여 만드세요.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 0168cc18a8..4a3ae356ee 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Penghala ini tidak dilindungi
+ RSEC_2=Tinggal satu langkah untuk melindungi penghala ini
+ RSEC_3=Ia masih menggunakan kata laluan kilang. Sesiapa yang boleh mencapai halaman ini atau Wi-Fi anda boleh mengambil alih penghala. Tetapkan kedua-duanya dan amaran ini akan hilang.
+ RSEC_4=Wi-Fi anda telah ditetapkan, tetapi log masuk penghala masih tetapan kilang. Sesiapa dalam rangkaian boleh membuka halaman ini dan mengubah apa-apa.
+-RSEC_5=Log masuk penghala telah ditetapkan, tetapi Wi-Fi masih menggunakan kata laluan kilang. Sesiapa dalam liputan boleh menyertai rangkaian.
++RSEC_5=Log masuk penghala telah ditetapkan, tetapi Wi-Fi terbuka. Sesiapa dalam liputan boleh menyertai rangkaian.
+ RSEC_6=Log masuk penghala masih admin / admin
+ RSEC_7=Log masuk penghala telah ditukar
+ RSEC_8=Tukar log masuk
+-RSEC_9=Kata laluan Wi-Fi masih admin
++RSEC_9=Wi-Fi tiada kata laluan
+ RSEC_10=Kata laluan Wi-Fi telah ditukar
+ RSEC_11=Tukar kata laluan Wi-Fi
+ RSEC_12=Notis ini tidak boleh ditutup. Ia hilang dengan sendirinya apabila kedua-duanya ditukar.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Selesai. Penghala sedang dimulakan semula untuk melengkapkan persediaan (kira-kira 3 minit). Kemudian sambung semula ke %1$@ dan log masuk dengan kata laluan penghala baharu anda.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Penghala sedang ditetapkan semula dan akan but semula dengan tetapan kilang. Wi-Fi kembali sebagai rangkaian terbuka bernama ASUS_xx. Sambung semula ke rangkaian itu atau gunakan port berwayar, kemudian buka penghala di alamat lalainya:
+ RBKP_51=Penghala tidak dimulakan semula dalam masa 3 minit, jadi permintaan tetapan semula tidak diterima dan tiada apa yang diubah. Semak log sistem, kemudian cuba lagi.
+-RSEC_13=Log masuk penghala dan kata laluan Wi-Fi masih admin
++RSEC_13=Log masuk penghala masih admin / admin dan Wi-Fi terbuka
+ RFWU_54=Saluran beta
+ RFWU_55=Tawarkan juga keluaran beta daripada cabang Dev. Beta hanya ditawarkan apabila penghala ini sudah menjalankan keluaran stabil terbaru dan beta itu membawa nombor versi yang lebih tinggi; apabila keluaran stabil mempunyai nombor yang sama, hanya yang stabil ditawarkan. Beta kurang diuji berbanding keluaran stabil.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Dipilih secara automatik dalam mod Dinamik.
+ RWFP_115=Pilih Dinamik dahulu.
+ RWFP_116=Dinamik
+ RDST_78=Penghala tidak dapat menyemak sistem fail ini. Semak cakera pada komputer.
++RSDN_1=Rangkaian utama anda belum dicipta. Jalankan persediaan penghala untuk menciptanya.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 2577471947..e43c354103 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Deze router is niet beveiligd
+ RSEC_2=Nog een stap om deze router te beveiligen
+ RSEC_3=Hij gebruikt nog het fabriekswachtwoord. Iedereen die deze pagina of uw Wi-Fi bereikt, kan de router overnemen. Stel beide in en deze waarschuwing verdwijnt.
+ RSEC_4=Uw Wi-Fi is ingesteld, maar de router-login is nog de fabrieksinstelling. Iedereen op het netwerk kan deze pagina openen en alles wijzigen.
+-RSEC_5=De router-login is ingesteld, maar de Wi-Fi gebruikt nog het fabriekswachtwoord. Iedereen binnen bereik kan aan het netwerk deelnemen.
++RSEC_5=De router-login is ingesteld, maar de Wi-Fi is open. Iedereen binnen bereik kan aan het netwerk deelnemen.
+ RSEC_6=Router-login is nog admin / admin
+ RSEC_7=Router-login is gewijzigd
+ RSEC_8=Login wijzigen
+-RSEC_9=Wi-Fi-wachtwoord is nog admin
++RSEC_9=Wi-Fi heeft geen wachtwoord
+ RSEC_10=Wi-Fi-wachtwoord is gewijzigd
+ RSEC_11=Wi-Fi-wachtwoord wijzigen
+ RSEC_12=Deze melding kan niet worden gesloten. Hij verdwijnt vanzelf zodra beide zijn gewijzigd.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Klaar. De router start opnieuw op om de installatie te voltooien (ongeveer 3 minuten). Maak daarna opnieuw verbinding met %1$@ en log in met je nieuwe routerwachtwoord.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=De router wordt gereset en start opnieuw op met de fabrieksinstellingen. De wifi komt terug als een open netwerk met de naam ASUS_xx. Maak opnieuw verbinding met dat netwerk of gebruik een bekabelde poort en open de router daarna op het standaardadres:
+ RBKP_51=De router is niet binnen 3 minuten opnieuw gestart, dus het resetverzoek is niet geaccepteerd en er is niets gewijzigd. Controleer het systeemlogboek en probeer het opnieuw.
+-RSEC_13=De routerlogin en het wifi-wachtwoord zijn allebei nog admin
++RSEC_13=De routerlogin is nog admin / admin en de Wi-Fi is open
+ RFWU_54=Bètakanaal
+ RFWU_55=Bied ook bètaversies uit de Dev-tak aan. Een bèta wordt alleen aangeboden wanneer deze router al de nieuwste stabiele versie draait en de bèta een hoger versienummer heeft; heeft de stabiele versie hetzelfde nummer, dan wordt alleen de stabiele aangeboden. Bèta’s zijn minder getest dan stabiele versies.
+ RFWU_56=Bèta
+@@ -7092,3 +7092,4 @@ RWFP_114=Wordt in de dynamische modus automatisch gekozen.
+ RWFP_115=Kies eerst Dynamisch.
+ RWFP_116=Dynamisch
+ RDST_78=De router kan dit bestandssysteem niet controleren. Controleer de schijf op een computer.
++RSDN_1=Je hoofdnetwerk is nog niet aangemaakt. Voer de routerinstallatie uit om het aan te maken.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a51ad42fa9..24c45d6138 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Denne ruteren er ikke sikret
+ RSEC_2=Ett steg igjen for a sikre denne ruteren
+ RSEC_3=Den bruker fortsatt fabrikkpassordet. Alle som nar denne siden eller Wi-Fi-nettet ditt kan ta over ruteren. Sett begge, sa forsvinner denne advarselen.
+ RSEC_4=Wi-Fi er satt, men ruterpalogging er fortsatt fabrikkstandard. Alle pa nettverket kan apne denne siden og endre alt.
+-RSEC_5=Ruterpalogging er satt, men Wi-Fi bruker fortsatt fabrikkpassordet. Alle innenfor rekkevidde kan koble seg til nettverket.
++RSEC_5=Ruterpåloggingen er satt, men Wi-Fi er åpent. Alle innenfor rekkevidde kan koble seg til nettverket.
+ RSEC_6=Ruterpalogging er fortsatt admin / admin
+ RSEC_7=Ruterpalogging er endret
+ RSEC_8=Endre palogging
+-RSEC_9=Wi-Fi-passordet er fortsatt admin
++RSEC_9=Wi-Fi har ikke passord
+ RSEC_10=Wi-Fi-passordet er endret
+ RSEC_11=Endre Wi-Fi-passord
+ RSEC_12=Denne meldingen kan ikke lukkes. Den forsvinner av seg selv nar begge er endret.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Ferdig. Ruteren starter på nytt for å fullføre oppsettet (ca. 3 minutter). Koble deretter til %1$@ igjen og logg på med det nye ruterpassordet.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Ruteren tilbakestilles og starter på nytt med fabrikkinnstillingene. Wi-Fi kommer tilbake som et åpent nettverk med navnet ASUS_xx. Koble til det nettverket på nytt, eller bruk en kablet port, og åpne deretter ruteren på standardadressen:
+ RBKP_51=Ruteren startet ikke på nytt innen 3 minutter, så tilbakestillingsforespørselen ble ikke godtatt og ingenting ble endret. Sjekk systemloggen og prøv igjen.
+-RSEC_13=Ruterens pålogging og Wi-Fi-passordet er fortsatt admin
++RSEC_13=Ruterens pålogging er fortsatt admin / admin, og Wi-Fi er åpent
+ RFWU_54=Betakanal
+ RFWU_55=Tilby også betautgivelser fra Dev-grenen. En beta tilbys bare når denne ruteren allerede kjører den nyeste stabile utgivelsen og betaen har et høyere versjonsnummer; har den stabile utgivelsen samme nummer, tilbys bare den stabile. Betaer er mindre testet enn stabile utgivelser.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Velges automatisk i dynamisk modus.
+ RWFP_115=Velg Dynamisk foerst.
+ RWFP_116=Dynamisk
+ RDST_78=Ruteren kan ikke kontrollere dette filsystemet. Kontroller disken på en datamaskin i stedet.
++RSDN_1=Hovednettverket er ikke opprettet ennå. Kjør ruteroppsettet for å opprette det.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 18bda9263d..bee5750b47 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Ten router nie jest zabezpieczony
+ RSEC_2=Zostal jeden krok do zabezpieczenia tego routera
+ RSEC_3=Nadal uzywa fabrycznego hasla. Kazdy, kto dotrze do tej strony lub do Twojego Wi-Fi, moze przejac router. Ustaw oba, a to ostrzezenie zniknie.
+ RSEC_4=Wi-Fi jest ustawione, ale logowanie do routera nadal jest fabryczne. Kazdy w sieci moze otworzyc te strone i zmienic wszystko.
+-RSEC_5=Logowanie do routera jest ustawione, ale Wi-Fi nadal ma fabryczne haslo. Kazdy w zasiegu moze dolaczyc do sieci.
++RSEC_5=Logowanie do routera jest ustawione, ale Wi-Fi jest otwarte. Każdy w zasięgu może dołączyć do sieci.
+ RSEC_6=Logowanie do routera to nadal admin / admin
+ RSEC_7=Logowanie do routera zostalo zmienione
+ RSEC_8=Zmien logowanie
+-RSEC_9=Haslo Wi-Fi to nadal admin
++RSEC_9=Wi-Fi nie ma hasła
+ RSEC_10=Haslo Wi-Fi zostalo zmienione
+ RSEC_11=Zmien haslo Wi-Fi
+ RSEC_12=Tego powiadomienia nie mozna zamknac. Znika samo, gdy oba zostana zmienione.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Gotowe. Router uruchamia się ponownie, aby dokończyć konfigurację (około 3 minuty). Następnie połącz się ponownie z %1$@ i zaloguj się nowym hasłem routera.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Router jest resetowany i uruchomi się ponownie z ustawieniami fabrycznymi. Wi-Fi wraca jako otwarta sieć o nazwie ASUS_xx. Połącz się ponownie z tą siecią lub użyj portu przewodowego, a następnie otwórz router pod adresem domyślnym:
+ RBKP_51=Router nie uruchomił się ponownie w ciągu 3 minut, więc żądanie resetu nie zostało przyjęte i nic nie zmieniono. Sprawdź dziennik systemowy i spróbuj ponownie.
+-RSEC_13=Login routera i hasło Wi-Fi nadal mają wartość admin
++RSEC_13=Login routera to nadal admin / admin, a Wi-Fi jest otwarte
+ RFWU_54=Kanał beta
+ RFWU_55=Oferuj także wydania beta z gałęzi Dev. Beta jest oferowana tylko wtedy, gdy ten router ma już najnowsze wydanie stabilne, a beta ma wyższy numer wersji; gdy wydanie stabilne ma ten sam numer, oferowane jest tylko stabilne. Wersje beta są mniej przetestowane niż stabilne.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Wybierany automatycznie w trybie dynamicznym.
+ RWFP_115=Najpierw wybierz Dynamiczny.
+ RWFP_116=Dynamiczny
+ RDST_78=Router nie może sprawdzić tego systemu plików. Sprawdź dysk na komputerze.
++RSDN_1=Sieć główna nie została jeszcze utworzona. Uruchom konfigurację routera, aby ją utworzyć.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 785fc61ec7..de3a104fe4 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Acest router nu este securizat
+ RSEC_2=Mai este un pas pana la securizarea acestui router
+ RSEC_3=Foloseste inca parola din fabrica. Oricine ajunge la aceasta pagina sau la reteaua dumneavoastra Wi-Fi poate prelua routerul. Setati-le pe amandoua si acest avertisment dispare.
+ RSEC_4=Wi-Fi este setat, dar autentificarea routerului este inca cea din fabrica. Oricine din retea poate deschide aceasta pagina si poate schimba orice.
+-RSEC_5=Autentificarea routerului este setata, dar Wi-Fi foloseste inca parola din fabrica. Oricine se afla in raza de acoperire se poate conecta la retea.
++RSEC_5=Autentificarea routerului este setată, dar Wi-Fi este deschis. Oricine se află în raza de acoperire se poate conecta la rețea.
+ RSEC_6=Autentificarea routerului este inca admin / admin
+ RSEC_7=Autentificarea routerului a fost schimbata
+ RSEC_8=Schimba autentificarea
+-RSEC_9=Parola Wi-Fi este inca admin
++RSEC_9=Wi-Fi nu are parolă
+ RSEC_10=Parola Wi-Fi a fost schimbata
+ RSEC_11=Schimba parola Wi-Fi
+ RSEC_12=Aceasta notificare nu poate fi inchisa. Dispare singura dupa ce amandoua au fost schimbate.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Gata. Routerul repornește pentru a finaliza configurarea (aproximativ 3 minute). Apoi reconectați-vă la %1$@ și autentificați-vă cu noua parolă a routerului.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Routerul se resetează și va reporni cu setările din fabrică. Wi-Fi-ul revine ca rețea deschisă numită ASUS_xx. Reconectați-vă la acea rețea sau folosiți un port cu fir, apoi deschideți routerul la adresa sa implicită:
+ RBKP_51=Routerul nu a repornit în 3 minute, deci cererea de resetare nu a fost acceptată și nimic nu a fost modificat. Verificați jurnalul sistemului, apoi încercați din nou.
+-RSEC_13=Datele de conectare la router și parola Wi-Fi sunt încă admin
++RSEC_13=Datele de conectare la router sunt încă admin / admin, iar Wi-Fi este deschis
+ RFWU_54=Canal beta
+ RFWU_55=Oferă și versiuni beta din ramura Dev. O beta este oferită doar când acest router rulează deja cea mai nouă versiune stabilă și beta are un număr de versiune mai mare; când versiunea stabilă are același număr, se oferă doar cea stabilă. Versiunile beta sunt mai puțin testate decât cele stabile.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Ales automat in modul Dinamic.
+ RWFP_115=Alegeti mai intai Dinamic.
+ RWFP_116=Dinamic
+ RDST_78=Routerul nu poate verifica acest sistem de fișiere. Verificați discul pe un computer.
++RSDN_1=Rețeaua principală nu a fost încă creată. Rulați configurarea routerului pentru a o crea.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index a74dbcd7bd..d80de5829a 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Этот роутер не защищен
+ RSEC_2=Остался один шаг до защиты этого роутера
+ RSEC_3=Он до сих пор использует заводской пароль. Любой, кто получит доступ к этой странице или к вашей сети Wi-Fi, может захватить роутер. Задайте оба, и это предупреждение исчезнет.
+ RSEC_4=Wi-Fi настроен, но вход в роутер остается заводским. Любой в сети может открыть эту страницу и изменить что угодно.
+-RSEC_5=Вход в роутер настроен, но Wi-Fi по-прежнему использует заводской пароль. Любой в зоне действия может подключиться к сети.
++RSEC_5=Вход в роутер настроен, но Wi-Fi открыт. Любой в зоне действия может подключиться к сети.
+ RSEC_6=Вход в роутер по-прежнему admin / admin
+ RSEC_7=Вход в роутер изменен
+ RSEC_8=Изменить вход
+-RSEC_9=Пароль Wi-Fi по-прежнему admin
++RSEC_9=У Wi-Fi нет пароля
+ RSEC_10=Пароль Wi-Fi изменен
+ RSEC_11=Изменить пароль Wi-Fi
+ RSEC_12=Это уведомление нельзя закрыть. Оно исчезнет само, когда оба будут изменены.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Готово. Роутер перезагружается, чтобы завершить настройку (около 3 минут). Затем снова подключитесь к %1$@ и войдите с новым паролем роутера.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Роутер сбрасывается и перезагрузится с заводскими настройками. Wi-Fi вернётся в виде открытой сети с именем ASUS_xx. Подключитесь к этой сети заново или используйте проводной порт, затем откройте роутер по адресу по умолчанию:
+ RBKP_51=Роутер не перезагрузился в течение 3 минут, поэтому запрос на сброс не был принят и ничего не изменилось. Проверьте системный журнал и повторите попытку.
+-RSEC_13=Логин роутера и пароль Wi-Fi всё ещё admin
++RSEC_13=Логин роутера всё ещё admin / admin, а Wi-Fi открыт
+ RFWU_54=Бета-канал
+ RFWU_55=Также предлагать бета-версии из ветки Dev. Бета предлагается только когда роутер уже работает на новейшей стабильной версии и номер бета-версии выше; если у стабильной версии тот же номер, предлагается только стабильная. Бета-версии протестированы меньше стабильных.
+ RFWU_56=Бета
+@@ -7092,3 +7092,4 @@ RWFP_114=Выбирается автоматически в динамическ
+ RWFP_115=Сначала выберите Динамический.
+ RWFP_116=Динамический
+ RDST_78=Роутер не может проверить эту файловую систему. Проверьте диск на компьютере.
++RSDN_1=Основная сеть ещё не создана. Запустите настройку роутера, чтобы создать её.
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index 171d58ba90..3b1b2b6334 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -16,9 +16,11 @@
+ 	CREDENTIALS follow Main_Password.asp exactly (reaper-ui rule 28): the
+ 	synchronous httpApi.chpass() call (it supplies http_id itself), then the
+ 	start_apply form with action_script "saveNvram;restart_chpass" so the new
+-	password is committed and reaches /etc/shadow. restart_wireless is appended
+-	to that chain so the radios restart AFTER the password is persisted, and only
+-	when both halves were accepted.
++	password is committed and reaches /etc/shadow. reboot is appended to that
++	chain (v3.3.1; was restart_wireless;restart_sdn) so the box restarts AFTER
++	the password is persisted, and only when both halves were accepted: the
++	main network card on the Network page is created only at boot, from these
++	settings, once x_Setting=1 (closed init_apg -> check_mwl_convert).
+ 
+ 	ORDER MATTERS: chpass first (it needs the CURRENT session), then the Wi-Fi
+ 	CGI (nvram only, no restart), then the single form submit that restarts both.
+@@ -412,14 +414,18 @@ function submitForm(){
+ 			fail("<#RWFS_12#> " + (r && r.error ? r.error : "HTTP"));
+ 			return;
+ 		}
+-		/* 3. one apply: commit, rebuild shadow, restart the radios, then the SDN
+-		   profiles (stock order, as rc's check_sdn_onoff and create_sdn_mwl_profile) */
+-		document.form.action_script.value = "saveNvram;restart_chpass;restart_wireless;restart_sdn";
++		/* 3. one apply: commit, rebuild shadow, then REBOOT. The main network
++		   (MAINFH sdn_rl row + apm profile) is built only at boot, by the closed
++		   init_apg() -> check_mwl_convert(), and only once x_Setting=1 (the CGI
++		   sets it). restart_wireless/restart_sdn cannot create it - v3.2.9 tried
++		   that and the main card stayed unclickable. The boot also carries any
++		   MLO change, which needs one anyway. */
++		document.form.action_script.value = "saveNvram;restart_chpass;reboot";
+ 		document.form.submit();
+ 		$("#loadingIcon").hide();
+ 		var done = `<#RWFS_11#>`.replace("%1$@", ssid.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+ 		$("#done_field").html(done).show();
+-		setTimeout(function(){ location.href = "/"; }, 12000);
++		setTimeout(function(){ location.href = "/"; }, 180000);
+ 	}, 100);
+ }
+ function fail(msg){
+@@ -530,7 +536,7 @@ function showError(str){
+ <form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+ <input type="hidden" name="group_id" value="">
+ <input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="saveNvram;restart_chpass;restart_wireless;restart_sdn">
++<input type="hidden" name="action_script" value="saveNvram;restart_chpass;reboot">
+ <input type="hidden" name="action_wait" value="0">
+ <input type="hidden" name="current_page" value="Reaper_WiFiSetup.asp">
+ <input type="hidden" name="next_page" value="">
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 23425fa019..12937d41fc 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Ta usmerjevalnik ni zasciten
+ RSEC_2=Se en korak do zascite tega usmerjevalnika
+ RSEC_3=Se vedno uporablja tovarnisko geslo. Kdor koli doseze to stran ali vase omrezje Wi-Fi, lahko prevzame usmerjevalnik. Nastavite oboje in to opozorilo bo izginilo.
+ RSEC_4=Wi-Fi je nastavljen, prijava v usmerjevalnik pa je se vedno tovarniska. Kdor koli v omrezju lahko odpre to stran in spremeni karkoli.
+-RSEC_5=Prijava v usmerjevalnik je nastavljena, Wi-Fi pa se vedno uporablja tovarnisko geslo. Kdor koli v dosegu se lahko pridruzi omrezju.
++RSEC_5=Prijava v usmerjevalnik je nastavljena, Wi-Fi pa je odprt. Kdor koli v dosegu se lahko pridruži omrežju.
+ RSEC_6=Prijava v usmerjevalnik je se vedno admin / admin
+ RSEC_7=Prijava v usmerjevalnik je bila spremenjena
+ RSEC_8=Spremeni prijavo
+-RSEC_9=Geslo za Wi-Fi je se vedno admin
++RSEC_9=Wi-Fi nima gesla
+ RSEC_10=Geslo za Wi-Fi je bilo spremenjeno
+ RSEC_11=Spremeni geslo za Wi-Fi
+ RSEC_12=Tega obvestila ni mogoce zapreti. Izgine samo, ko sta oboje spremenjena.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Končano. Usmerjevalnik se znova zaganja, da dokonča nastavitev (približno 3 minute). Nato se znova povežite z %1$@ in se prijavite z novim geslom usmerjevalnika.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Usmerjevalnik se ponastavlja in se bo znova zagnal s tovarniškimi nastavitvami. Wi-Fi se vrne kot odprto omrežje z imenom ASUS_xx. Znova se povežite s tem omrežjem ali uporabite žični priključek, nato odprite usmerjevalnik na privzetem naslovu:
+ RBKP_51=Usmerjevalnik se v 3 minutah ni znova zagnal, zato zahteva za ponastavitev ni bila sprejeta in nič ni bilo spremenjeno. Preverite sistemski dnevnik in poskusite znova.
+-RSEC_13=Prijava v usmerjevalnik in geslo Wi-Fi sta še vedno admin
++RSEC_13=Prijava v usmerjevalnik je še vedno admin / admin, Wi-Fi pa je odprt
+ RFWU_54=Kanal beta
+ RFWU_55=Ponudi tudi izdaje beta iz veje Dev. Beta se ponudi le, kadar ta usmerjevalnik že teče na najnovejši stabilni izdaji in ima beta višjo številko različice; kadar ima stabilna izdaja isto številko, se ponudi samo stabilna. Izdaje beta so manj preizkušene kot stabilne.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=V dinamicnem nacinu se izbere samodejno.
+ RWFP_115=Najprej izberite Dinamicno.
+ RWFP_116=Dinamicno
+ RDST_78=Usmerjevalnik ne more preveriti tega datotečnega sistema. Disk preverite v računalniku.
++RSDN_1=Glavno omrežje še ni ustvarjeno. Zaženite nastavitev usmerjevalnika, da ga ustvarite.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 2a907fa042..206463cb6b 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Den har routern ar inte sakrad
+ RSEC_2=Ett steg kvar for att sakra den har routern
+ RSEC_3=Den anvander fortfarande fabrikslosenordet. Alla som nar den har sidan eller ditt Wi-Fi kan ta over routern. Stall in bada, sa forsvinner den har varningen.
+ RSEC_4=Ditt Wi-Fi ar installt, men routerinloggningen ar fortfarande fabriksinstallningen. Alla i natverket kan oppna den har sidan och andra vad som helst.
+-RSEC_5=Routerinloggningen ar installd, men Wi-Fi anvander fortfarande fabrikslosenordet. Alla inom rackhall kan ansluta till natverket.
++RSEC_5=Routerinloggningen är inställd, men Wi-Fi är öppet. Alla inom räckhåll kan ansluta till nätverket.
+ RSEC_6=Routerinloggningen ar fortfarande admin / admin
+ RSEC_7=Routerinloggningen har andrats
+ RSEC_8=Andra inloggning
+-RSEC_9=Wi-Fi-losenordet ar fortfarande admin
++RSEC_9=Wi-Fi har inget lösenord
+ RSEC_10=Wi-Fi-losenordet har andrats
+ RSEC_11=Andra Wi-Fi-losenord
+ RSEC_12=Det har meddelandet gar inte att stanga. Det forsvinner av sig sjalvt nar bada har andrats.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Klart. Routern startar om för att slutföra installationen (cirka 3 minuter). Anslut sedan till %1$@ igen och logga in med ditt nya routerlösenord.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Routern återställs och startar om med fabriksinställningarna. Wi-Fi kommer tillbaka som ett öppet nätverk med namnet ASUS_xx. Anslut till det nätverket igen eller använd en trådbunden port och öppna sedan routern på standardadressen:
+ RBKP_51=Routern startade inte om inom 3 minuter, så återställningsbegäran godtogs inte och inget ändrades. Kontrollera systemloggen och försök igen.
+-RSEC_13=Routerns inloggning och Wi-Fi-lösenordet är fortfarande admin
++RSEC_13=Routerns inloggning är fortfarande admin / admin och Wi-Fi är öppet
+ RFWU_54=Betakanal
+ RFWU_55=Erbjud även betautgåvor från Dev-grenen. En beta erbjuds bara när den här routern redan kör den senaste stabila utgåvan och betan har ett högre versionsnummer; har den stabila utgåvan samma nummer erbjuds bara den stabila. Betor är mindre testade än stabila utgåvor.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Vaeljs automatiskt i dynamiskt laege.
+ RWFP_115=Vaelj Dynamisk foerst.
+ RWFP_116=Dynamisk
+ RDST_78=Routern kan inte kontrollera det här filsystemet. Kontrollera disken på en dator i stället.
++RSDN_1=Ditt huvudnätverk har inte skapats ännu. Kör routerinstallationen för att skapa det.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index f3e6a8b4f0..1088ac9acb 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=เราเตอร์นี้ยังไม่ได้รับก
+ RSEC_2=เหลืออีกหนึ่งขั้นตอนในการป้องกันเราเตอร์นี้
+ RSEC_3=ยังคงใช้รหัสผ่านจากโรงงาน ใครก็ตามที่เข้าถึงหน้านี้หรือ Wi-Fi ของคุณได้สามารถยึดเราเตอร์ไปได้ ตั้งค่าทั้งสองอย่างแล้วคำเตือนนี้จะหายไป
+ RSEC_4=ตั้งค่า Wi-Fi แล้ว แต่การเข้าสู่ระบบเราเตอร์ยังเป็นค่าจากโรงงาน ใครก็ตามในเครือข่ายสามารถเปิดหน้านี้และเปลี่ยนแปลงอะไรก็ได้
+-RSEC_5=ตั้งค่าการเข้าสู่ระบบเราเตอร์แล้ว แต่ Wi-Fi ยังใช้รหัสผ่านจากโรงงาน ใครก็ตามที่อยู่ในระยะสัญญาณสามารถเข้าร่วมเครือข่ายได้
++RSEC_5=ตั้งค่าการเข้าสู่ระบบเราเตอร์แล้ว แต่ Wi-Fi ยังไม่มีรหัสผ่าน ใครก็ตามที่อยู่ในระยะสัญญาณสามารถเข้าร่วมเครือข่ายได้
+ RSEC_6=การเข้าสู่ระบบเราเตอร์ยังเป็น admin / admin
+ RSEC_7=เปลี่ยนการเข้าสู่ระบบเราเตอร์แล้ว
+ RSEC_8=เปลี่ยนการเข้าสู่ระบบ
+-RSEC_9=รหัสผ่าน Wi-Fi ยังเป็น admin
++RSEC_9=Wi-Fi ยังไม่มีรหัสผ่าน
+ RSEC_10=เปลี่ยนรหัสผ่าน Wi-Fi แล้ว
+ RSEC_11=เปลี่ยนรหัสผ่าน Wi-Fi
+ RSEC_12=ประกาศนี้ไม่สามารถปิดได้ จะหายไปเองเมื่อเปลี่ยนทั้งสองอย่างแล้ว
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=เสร็จแล้ว เราเตอร์กำลังรีสตาร์ทเพื่อตั้งค่าให้เสร็จสมบูรณ์ (ประมาณ 3 นาที) จากนั้นเชื่อมต่อ %1$@ อีกครั้งและเข้าสู่ระบบด้วยรหัสผ่านเราเตอร์ใหม่
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=เราเตอร์กำลังรีเซ็ตและจะรีบูตด้วยการตั้งค่าจากโรงงาน Wi-Fi จะกลับมาเป็นเครือข่ายเปิดชื่อ ASUS_xx ให้เชื่อมต่อเครือข่ายนั้นอีกครั้งหรือใช้พอร์ตแบบมีสาย จากนั้นเปิดเราเตอร์ที่ที่อยู่เริ่มต้น:
+ RBKP_51=เราเตอร์ไม่ได้รีสตาร์ทภายใน 3 นาที คำขอรีเซ็ตจึงไม่ได้รับการยอมรับและไม่มีการเปลี่ยนแปลงใด ๆ โปรดตรวจสอบบันทึกระบบแล้วลองอีกครั้ง
+-RSEC_13=การเข้าสู่ระบบเราเตอร์และรหัสผ่าน Wi-Fi ยังคงเป็น admin
++RSEC_13=การเข้าสู่ระบบเราเตอร์ยังคงเป็น admin / admin และ Wi-Fi ยังไม่มีรหัสผ่าน
+ RFWU_54=ช่องทางเบต้า
+ RFWU_55=เสนอรุ่นเบต้าจากสาขา Dev ด้วย รุ่นเบต้าจะถูกเสนอเฉพาะเมื่อเราเตอร์นี้ใช้รุ่นเสถียรล่าสุดอยู่แล้วและรุ่นเบต้ามีหมายเลขเวอร์ชันสูงกว่า หากรุ่นเสถียรมีหมายเลขเดียวกันจะเสนอเฉพาะรุ่นเสถียร รุ่นเบต้าผ่านการทดสอบน้อยกว่ารุ่นเสถียร
+ RFWU_56=เบต้า
+@@ -7092,3 +7092,4 @@ RWFP_114=เลือกโดยอัตโนมัติในโหมด
+ RWFP_115=เลือกไดนามิกก่อน
+ RWFP_116=ไดนามิก
+ RDST_78=เราเตอร์ไม่สามารถตรวจสอบระบบไฟล์นี้ได้ โปรดตรวจสอบดิสก์บนคอมพิวเตอร์
++RSDN_1=ยังไม่ได้สร้างเครือข่ายหลัก เรียกใช้การตั้งค่าเราเตอร์เพื่อสร้าง
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index e69716700c..4e00e35b92 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Bu yonlendirici guvenli degil
+ RSEC_2=Bu yonlendiriciyi guvene almak icin bir adim kaldi
+ RSEC_3=Hala fabrika parolasini kullaniyor. Bu sayfaya veya Wi-Fi aginiza ulasabilen herkes yonlendiriciyi ele gecirebilir. Ikisini de ayarlayin, bu uyari kaybolsun.
+ RSEC_4=Wi-Fi ayarlandi, ancak yonlendirici girisi hala fabrika varsayilani. Agdaki herkes bu sayfayi acip her seyi degistirebilir.
+-RSEC_5=Yonlendirici girisi ayarlandi, ancak Wi-Fi hala fabrika parolasini kullaniyor. Kapsama alanindaki herkes aga katilabilir.
++RSEC_5=Yönlendirici girişi ayarlandı, ancak Wi-Fi açık. Kapsama alanındaki herkes ağa katılabilir.
+ RSEC_6=Yonlendirici girisi hala admin / admin
+ RSEC_7=Yonlendirici girisi degistirildi
+ RSEC_8=Girisi degistir
+-RSEC_9=Wi-Fi parolasi hala admin
++RSEC_9=Wi-Fi parolası yok
+ RSEC_10=Wi-Fi parolasi degistirildi
+ RSEC_11=Wi-Fi parolasini degistir
+ RSEC_12=Bu bildirim kapatilamaz. Ikisi de degistirildiginde kendiliginden kaybolur.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Tamam. Yönlendirici kurulumu tamamlamak için yeniden başlatılıyor (yaklaşık 3 dakika). Ardından %1$@ ağına yeniden bağlanın ve yeni yönlendirici parolanızla oturum açın.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Yönlendirici sıfırlanıyor ve fabrika ayarlarıyla yeniden başlayacak. Wi-Fi, ASUS_xx adlı açık bir ağ olarak geri gelir. O ağa yeniden bağlanın veya kablolu bir bağlantı noktası kullanın, ardından yönlendiriciyi varsayılan adresinden açın:
+ RBKP_51=Yönlendirici 3 dakika içinde yeniden başlamadı; sıfırlama isteği kabul edilmedi ve hiçbir şey değiştirilmedi. Sistem günlüğünü kontrol edip yeniden deneyin.
+-RSEC_13=Yönlendirici girişi ve Wi-Fi parolası hâlâ admin
++RSEC_13=Yönlendirici girişi hâlâ admin / admin ve Wi-Fi açık
+ RFWU_54=Beta kanalı
+ RFWU_55=Dev dalındaki beta sürümleri de sun. Beta yalnızca bu yönlendirici zaten en yeni kararlı sürümü çalıştırıyorsa ve betanın sürüm numarası daha yüksekse sunulur; kararlı sürüm aynı numaraya sahipse yalnızca kararlı sürüm sunulur. Betalar kararlı sürümlerden daha az test edilmiştir.
+ RFWU_56=Beta
+@@ -7092,3 +7092,4 @@ RWFP_114=Dinamik modda otomatik secilir.
+ RWFP_115=Once Dinamik secin.
+ RWFP_116=Dinamik
+ RDST_78=Yönlendirici bu dosya sistemini denetleyemez. Diski bir bilgisayarda denetleyin.
++RSDN_1=Ana ağınız henüz oluşturulmadı. Oluşturmak için yönlendirici kurulumunu çalıştırın.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index a6b303874c..77d515d556 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=此路由器尚未受到保護
+ RSEC_2=還差一步即可保護此路由器
+ RSEC_3=它仍在使用出廠密碼。任何能夠開啟此頁面或連上您 Wi-Fi 的人都可以接管路由器。兩項都設定後，此警告將消失。
+ RSEC_4=您的 Wi-Fi 已設定，但路由器登入仍為出廠預設值。網路上的任何人都可以開啟此頁面並變更任何設定。
+-RSEC_5=路由器登入已設定，但 Wi-Fi 仍使用出廠密碼。附近範圍內的任何人都可以加入網路。
++RSEC_5=路由器登入已設定，但 Wi-Fi 未設密碼。附近範圍內的任何人都可以加入網路。
+ RSEC_6=路由器登入仍為 admin / admin
+ RSEC_7=路由器登入已變更
+ RSEC_8=變更登入
+-RSEC_9=Wi-Fi 密碼仍為 admin
++RSEC_9=Wi-Fi 未設密碼
+ RSEC_10=Wi-Fi 密碼已變更
+ RSEC_11=變更 Wi-Fi 密碼
+ RSEC_12=此提示無法關閉。兩項都變更後它會自動消失。
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=完成。路由器正在重新啟動以完成設定（約 3 分鐘）。之後請重新連線到 %1$@，並使用新的路由器密碼登入。
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=路由器正在重設，並將以出廠設定重新啟動。Wi-Fi 會恢復為名為 ASUS_xx 的開放網路。請重新連線至該網路或使用有線連接埠，然後以預設位址開啟路由器：
+ RBKP_51=路由器在 3 分鐘內未重新啟動，重設要求未被接受，未做任何變更。請檢查系統記錄後再試一次。
+-RSEC_13=路由器登入與 Wi-Fi 密碼都仍是 admin
++RSEC_13=路由器登入仍是 admin / admin，Wi-Fi 未設密碼
+ RFWU_54=測試版頻道
+ RFWU_55=同時提供來自 Dev 分支的測試版。僅當本路由器已執行最新穩定版且測試版的版本號較高時才會提供測試版；當穩定版的版本號相同時，只提供穩定版。測試版的測試程度低於穩定版。
+ RFWU_56=測試版
+@@ -7092,3 +7092,4 @@ RWFP_114=在動態模式下自動選擇。
+ RWFP_115=請先選擇動態。
+ RWFP_116=動態
+ RDST_78=路由器無法檢查此檔案系統。請在電腦上檢查該磁碟。
++RSDN_1=尚未建立主網路。請執行路由器設定來建立它。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 677ddf41b0..ec367bb154 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6758,11 +6758,11 @@ RSEC_1=Цей маршрутизатор не захищено
+ RSEC_2=Залишився один крок до захисту цього маршрутизатора
+ RSEC_3=Він досі використовує заводський пароль. Будь-хто, хто отримає доступ до цієї сторінки або до вашої мережі Wi-Fi, може захопити маршрутизатор. Задайте обидва, і це попередження зникне.
+ RSEC_4=Wi-Fi налаштовано, але вхід до маршрутизатора досі заводський. Будь-хто в мережі може відкрити цю сторінку та змінити будь-що.
+-RSEC_5=Вхід до маршрутизатора налаштовано, але Wi-Fi досі використовує заводський пароль. Будь-хто в зоні дії може приєднатися до мережі.
++RSEC_5=Вхід до маршрутизатора налаштовано, але мережа Wi-Fi відкрита. Будь-хто в зоні дії може приєднатися до мережі.
+ RSEC_6=Вхід до маршрутизатора досі admin / admin
+ RSEC_7=Вхід до маршрутизатора змінено
+ RSEC_8=Змінити вхід
+-RSEC_9=Пароль Wi-Fi досі admin
++RSEC_9=Wi-Fi не має пароля
+ RSEC_10=Пароль Wi-Fi змінено
+ RSEC_11=Змінити пароль Wi-Fi
+ RSEC_12=Це сповіщення неможливо закрити. Воно зникне саме, коли обидва буде змінено.
+@@ -6864,12 +6864,12 @@ RWFS_7=Show passwords
+ RWFS_8=Set up and restart Wi-Fi
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+-RWFS_11=Done. Wi-Fi is restarting as %1$@ - reconnect to it, then log in with your new router password.
++RWFS_11=Готово. Маршрутизатор перезавантажується, щоб завершити налаштування (близько 3 хвилин). Потім знову підключіться до %1$@ і увійдіть з новим паролем маршрутизатора.
+ RWFS_12=The router refused the Wi-Fi settings:
+ RWFS_13=Using the same password for Wi-Fi and for the router login is not recommended. Continue anyway?
+ RBKP_50=Маршрутизатор скидається й перезавантажиться із заводськими налаштуваннями. Wi-Fi повернеться як відкрита мережа з назвою ASUS_xx. Підключіться до цієї мережі знову або скористайтеся дротовим портом, а потім відкрийте маршрутизатор за адресою за замовчуванням:
+ RBKP_51=Маршрутизатор не перезавантажився протягом 3 хвилин, тому запит на скидання не прийнято й нічого не змінено. Перевірте системний журнал і спробуйте ще раз.
+-RSEC_13=Логін маршрутизатора та пароль Wi-Fi досі admin
++RSEC_13=Логін маршрутизатора досі admin / admin, а мережа Wi-Fi відкрита
+ RFWU_54=Бета-канал
+ RFWU_55=Також пропонувати бета-версії з гілки Dev. Бета пропонується лише тоді, коли маршрутизатор уже працює на найновішій стабільній версії й номер бета-версії вищий; якщо стабільна версія має той самий номер, пропонується лише стабільна. Бета-версії протестовано менше, ніж стабільні.
+ RFWU_56=Бета
+@@ -7092,3 +7092,4 @@ RWFP_114=Вибирається автоматично в динамічному
+ RWFP_115=Спочатку виберіть Динамічний.
+ RWFP_116=Динамічний
+ RDST_78=Роутер не може перевірити цю файлову систему. Перевірте диск на комп’ютері.
++RSDN_1=Основну мережу ще не створено. Запустіть налаштування маршрутизатора, щоб створити її.
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 56f8e87d05..205b9e2417 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -999,9 +999,22 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+      charAt(0).toUpperCase(), which leaves the _beta suffix alone but there is no
+      reason to depend on that. Same regex the dashboard uses. */
+   if(/_beta(_|$)/i.test('<% nvram_get("extendno"); %>')){ var _bt=$id('p_fwbeta'); if(_bt) _bt.style.display=''; }
+-  /* WAN state: connected = wan0_state_t==2 with a real IP */
+-  var wSt='<% nvram_get("wan0_state_t"); %>', wIP='<% nvram_get("wan0_ipaddr"); %>';
+-  var up=(wSt==='2' && wIP && wIP!=='0.0.0.0');
++  /* WAN state: connected = the PRIMARY unit's wanN_state_t==2 with a real IP.
++     2026-09-30 (dual-WAN, follow-up to the dashboard's wanPick): this pill read
++     wan0 only, so after a fail-over to the second line every page but the
++     dashboard said "Disconnected" while traffic flowed. Same rule as the
++     dashboard: wan_primary picks the unit (get_wan_unit() on first render); in
++     load-balance either line being up means online. `v` carries
++     wanN_state_t / wanN_ipaddr for both units. */
++  var WANS_LB=('<% nvram_get("wans_mode"); %>'==='lb');
++  function wanUpPick(v, prim){
++    function ok(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
++    var u=(String(prim)==='1')?1:0;
++    return ok(u) || (WANS_LB && ok(1-u));
++  }
++  var up=wanUpPick({wan0_state_t:'<% nvram_get("wan0_state_t"); %>', wan0_ipaddr:'<% nvram_get("wan0_ipaddr"); %>',
++                    wan1_state_t:'<% nvram_get("wan1_state_t"); %>', wan1_ipaddr:'<% nvram_get("wan1_ipaddr"); %>'},
++                   '<% get_wan_unit(); %>');
+   $t('p_wan', up?`<#Connected#>`:`<#Disconnected#>`);
+   var dot=$id('p_wan_dot'); if(dot && !up){ dot.style.background='#E10600'; dot.style.boxShadow='0 0 0 3px rgba(225,6,0,.15)'; }
+   /* live WAN poll: on a boot the WAN comes up after the header renders, so keep
+@@ -1009,8 +1022,7 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+      Fast while down, slow once up (mirrors the dashboard's poll). */
+   (function(){
+     var FAST=4000, SLOW=30000;
+-    function apply(st,ip){
+-      var u=(st==='2') && !!ip && ip!=='0.0.0.0';
++    function apply(u){
+       $t('p_wan', u?`<#Connected#>`:`<#Disconnected#>`);
+       var d=$id('p_wan_dot');
+       if(d){ if(u){ d.style.background=''; d.style.boxShadow=''; } else { d.style.background='#E10600'; d.style.boxShadow='0 0 0 3px rgba(225,6,0,.15)'; } }
+@@ -1037,11 +1049,14 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+         var up=false;
+         if(ok){
+           try{ var j=JSON.parse(x.responseText);
+-               up=apply(j.wan0_state_t||'', j.wan0_ipaddr||''); }catch(e){}
++               /* wan_primary each poll, so a fail-over or fail-back while the
++                  shell is open moves the pill to the live line */
++               var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:'<% get_wan_unit(); %>';
++               up=apply(wanUpPick(j, pu)); }catch(e){}
+         }
+         schedule(up?SLOW:FAST);
+       }
+-      x.open('GET','/appGet.cgi?hook=nvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)&_='+(new Date()).getTime(),true);
++      x.open('GET','/appGet.cgi?hook=nvram_get(wan_primary)%3bnvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan1_state_t)%3bnvram_get(wan1_ipaddr)&_='+(new Date()).getTime(),true);
+       x.timeout=8000;
+       x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
+       x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+index 07678edb42..42a073dddb 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+@@ -37,8 +37,23 @@ function reaperGrowFrame(ifr){
+ 		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
++/* reaper v3.3.1: no main network yet -> point at the setup box. The main network
++   (MAINFH sdn_rl row) is created only at boot by the closed init_apg ->
++   check_mwl_convert, and only once x_Setting=1 in router or AP mode; until then
++   the stock app below shows no usable main card and the only field workaround
++   was adding a guest network. The box writes the settings, sets x_Setting and
++   reboots. Not shown on an AiMesh node or in repeater/bridge modes, where
++   check_mwl_convert never builds one. */
++function reaperMainNotice(){
++	var rl = decodeURIComponent('<% nvram_char_to_ascii("", "sdn_rl"); %>');
++	var sw = '<% nvram_get("sw_mode"); %>', psta = '<% nvram_get("wlc_psta"); %>', re = '<% nvram_get("re_mode"); %>';
++	var routerOrAp = (sw == "1") || (sw == "3" && psta != "1");
++	if(rl.indexOf(">MAINFH>") < 0 && routerOrAp && re != "1")
++		document.getElementById("rsdn_main_notice").style.display = "";
++}
+ function initial(){
+ 	show_menu();
++	reaperMainNotice();
+ 	setTimeout(function(){
+ 		var curTheme = "";
+ 		if(parent.webWrapper){
+@@ -88,6 +103,10 @@ function initial(){
+ 			<table width="98%" border="0" align="left" cellpadding="0" cellspacing="0">
+ 				<tr>
+ 					<td align="left" valign="top">
++						<div id="rsdn_main_notice" style="display:none;width:760px;box-sizing:border-box;margin:0 0 10px;padding:12px 16px;border-radius:6px;background:rgba(224,169,59,.10);border:1px solid rgba(224,169,59,.38);box-shadow:inset 3px 0 0 #E0A93B;">
++							<span style="font-size:13px;line-height:1.5;color:#ECE7DB;"><#RSDN_1#></span>
++							<a href="Reaper_WiFiSetup.asp" class="rsdn_btn" style="display:inline-block;margin-left:12px;font-weight:600;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;background:#E0A93B;color:#1a1206;text-decoration:none;border-radius:6px;padding:7px 11px;white-space:nowrap;"><#RWFS_1#></a>
++						</div>
+ 						<table width="760px" border="0" cellpadding="5" cellspacing="0" class="FormTitle" id="FormTitle" style="border-radius:3px;">
+ 							<tbody>
+ 								<tr>
+-- 
+2.25.1
+

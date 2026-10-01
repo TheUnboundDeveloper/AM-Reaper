@@ -1,0 +1,296 @@
+Reaper v3.3.1 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> Minimum width on Auto (Wireless › Settings, 5 and 6 GHz)
+
+With Channel bandwidth on Auto the
+
+closed channel picker (acsd2) chooses the width as well as the channel, and it narrows to 40 or
+
+20 MHz when it judges part of a wide channel busy; preamble puncturing exists only at 80 MHz and
+
+wider, so each such narrowing removed the one state puncturing could have handled. A per-radio
+
+switch keeps the picker at 80 MHz or wider: 80/160 MHz on 5 GHz and 80/160/320 MHz on
+
+6 GHz name the widths it may still choose, and each client uses what it supports within the width
+
+the radio is on (160 MHz on 5 GHz still needs Enable 160 MHz). rc/reaper_bwfloor.c appends the
+
+radio's 20 and 40 MHz chanspecs (wl chanspecs) to wlN_acs_excl_chans at the end of
+
+set_acs_ifnames(), the list stock rebuilds at boot and every wireless restart; records them
+
+under /jffs/reaper_bwfloor/ (the list lives on /jffs and survives a reboot); strips exactly
+
+those entries before stock reads the list; and adds nothing when no channel at 80 MHz or wider
+
+would remain, because acsd2 discards an all-excluded list, DFS exclusions included. No closed
+
+code touched. Needs Auto channel; inactive on a fixed channel or width, an AiMesh node and
+
+2.4 GHz. Off by default (wlN_bwfloor). With the floor on, the puncturing rows unlock on Auto
+
+bandwidth (Follow channel lists the slices of the width the radio is on, taken from the
+
+watcher's report; Dynamic follows the radio); without it they stay locked there, and the
+
+hover reason says which of the two would open them.
+
+> The floor lifts itself after radar
+
+A radar hit vacates the channel, and with the floor armed
+
+the picker may have no wide channel to return to for the non-occupancy period. A watcher
+
+(/sbin/reaper_bwfloor, every 15 s) lifts a radio's floor when it has run narrower than 80 MHz
+
+for 120 s, or has been off the air for 180 s outside a DFS availability check (up to 11 minutes)
+
+and outside a Wi-Fi schedule: it removes its own entries and restarts acsd2, for 30 minutes,
+
+doubling on a repeat within two hours (four hours at most), then re-arms. One reaper_bwfloor
+
+log line per lift and re-arm; the Settings cell reads Holding, Lifted, Not active or Not applied;
+
+the diagnostics report (v1.3.25, section 7) adds a min width: line and flags a lifted floor or
+
+a stopped watcher. The rwatch tick restarts the watcher if it dies.
+
+> Dynamic puncturing: the confirmation scan reads more than busy time
+
+The passive scan that
+
+resolves a candidate already returns, per 20 MHz channel, the neighbouring networks heard there
+
+(channel, width and signal; names and addresses are not kept) and the PHY figures (noise floor,
+
+carrier-sense glitches, bad PLCP headers). Both count now: a neighbour's home channels (its 20 or
+
+40, or the 80 MHz block holding its control channel) take their counter group's persistent busy
+
+as a prior, weighted by signal, so a 110 ms snapshot that caught a gap no longer hides where the
+
+interference lives; a noise floor above the scan's quietest channel or a stream of PHY errors
+
+counts as busy on that channel even when carrier sense reads low. Neither ever lowers a reading.
+
+On a scan source a slice is put back only after a fresh scan (150 s) of its channels agrees,
+
+taken at most once per scan cooldown; the counters alone no longer restore there (Passive is
+
+unchanged). The Wireless Quality card lists the scanned channels (carrier sense / PHY impairment
+
+/ neighbour signal) and the networks heard; the rpunctd scan line in the log carries the same.
+
+Decision core host-tested (test_punct_dyn.py, 38 checks).
+
+> Dynamic puncturing: two passive inputs, and no scan may cost a client
+
+(1) Every tick the
+
+controller reads the radio's own PHY figures (wl chanim_stats: glitches and bad PLCP headers
+
+per second, background noise in dBm) - the energy below carrier sense that never reads busy. The
+
+noise term is the rise above the radio's own quiet baseline on its channel (it follows a quieter
+
+reading at once and a louder one over about an hour): the whole-channel figure grows with the
+
+width, and a 320 MHz channel at rest reads about -79 dBm where a 160 MHz one reads -93. A
+
+second trigger (Conservative 35 %, Balanced 25 %, Aggressive 20 % on the scan's impairment scale,
+
+held like the busy trigger) may only request a confirmation scan of the puncturable channels,
+
+under the same cooldown and idle gate; a slice is chosen only where that scan reads it at trigger
+
+level. Its edges are logged with the raw figures for calibration. (2) Every 30 s (every tick
+
+while a change is being judged) it reads the station table (wl bs_data -noreset: a plain read
+
+clears the counters). Another reader resets that table every few seconds, so each read is taken
+
+as its own short window and the windows are summed; the per-packet width (txbw / acked) gives
+
+each client's operating width.
+
+Clients narrower than the radio break ties between qualifying slices (the slice outside their
+
+block wins), and 120 s after each change every client's rate and retries are compared with the
+
+interval before it: when at least two and at least half of the compared clients got worse
+
+(rate down a quarter and retries up five points), the slice comes off and is not retried on that
+
+channel; after a restore the same finding only lengthens the next restore hold. A confirmation
+
+scan that loses a client now stops scanning on that radio (Passive from then). The scan's
+
+impairment figure takes glitch and bad-PLCP counts as the per-second counts the vendor header
+
+documents; the r4 image scaled them by 9. The status line repeats only when its verdict
+
+changes, not when a busy figure moves a point. Host-tested (test_punct_dyn.py, 76 checks,
+
+including the station parser and noise baseline run on the router's real output; five
+
+mutants caught).
+
+> One factory state on every model (field, GT-BE98)
+
+Units with a printed Wi-Fi key reset to
+
+that key with the Wi-Fi setup flagged done, so the first-boot banner showed only the password row
+
+and the setup box - and the main-network reconcile it runs - never ran; the Network page then
+
+showed an unclickable main card until an unrelated apply. restore_defaults_wifi() no longer
+
+applies the label key, label SSID or the done flag: every reset is admin/admin with open template
+
+Wi-Fi, secured through the setup box. The banner also treats a key equal to the printed key as
+
+factory, and the RSEC_5/9/13 texts say the factory Wi-Fi is open.
+
+> The setup box reboots into a working main network
+
+The main network's SDN rows are created
+
+only at boot (init_apg, gated on setup being complete), so the v3.2.9 in-place reconcile could
+
+never create them. The box now marks setup complete, saves and reboots (the page waits about
+
+three minutes); the result is one all-band main card. The Network page shows a notice pointing
+
+to the box while no main rows exist on a router or access point.
+
+> The WAN pill follows the primary WAN
+
+The shell's WAN pill, shown on every page but the
+
+dashboard, read the first WAN only and said Disconnected after a Dual WAN fail-over. It follows
+
+wan_primary now (either line up in load balance), as the dashboard's Internet card has since
+
+v3.2.8.
+
+> AiMesh node cards count clients on a box that is not routing (field, GT-BE19000)
+
+In Access
+
+Point, repeater or media-bridge mode every node card on the AiMesh page read 0. The card is stock:
+
+it counts get_clientlist() rows whose isOnline is set and whose parent-node MAC is the node,
+
+and networkmap (a closed binary) derives that flag from DHCP leases and conntrack, which a
+
+bridging box does not have. Same cause as the v3.1.6 dashboard tiles. reaper_dev.cgi now names
+
+the node each device hangs off (via, from cfg_mnt's per-node wireless and wired client lists,
+
+this router otherwise), and on a non-routing box the topology page overlays that store after
+
+every client-list rebuild, read asynchronously and cached 30 s. Rows networkmap already placed are
+
+kept; MLO links and nodes are folded as on the dashboard. A routing box does not take the path.
+
+Tripwire: test_apmode_surfaces.py section 5.
+
+> IPv6 Stateful also offers SLAAC (field, GT-BE98)
+
+In Stateful mode dnsmasq's dhcp-range
+
+carried no slaac flag, so the router advertisement had no autonomous prefix: hosts with a
+
+DHCPv6 client got an address, SLAAC-only hosts (most Linux VMs and containers, Android) got
+
+none. rc/services.c now adds slaac to the Stateful range (and its constructor: form) when
+
+the prefix is a /64, so the advertisement sets the A flag while DHCPv6 still hands out leases.
+
+Behaviour change: on Stateful, DHCPv6-capable hosts may now hold a SLAAC address beside their
+
+lease. Stateless and SLAAC-only modes are unchanged. Diagnostics section 6 now prints the
+
+autoconfiguration type, the dnsmasq range mode, the DHCPv6 lease count, ipv6_fw_enable and
+
+the ip6tables policies, with a finding when the LAN is DHCPv6-only.
+
+> A DNS server on one of the router's VLAN networks is no longer routed out the WAN
+
+On every
+
+WAN-up stock wan_up() adds a /32 host route via the WAN gateway for each WAN DNS server unless
+
+it is in the WAN subnet, the main LAN subnet or lan_route. Guest Network Pro / VLAN subnets were
+
+not checked, so a resolver on such a network (AdGuard Home on a VLAN, set as the WAN DNS server)
+
+got <dns> via <WAN gateway>, which beats the bridge's own route: the router's queries to it and
+
+the replies to its upstream lookups left through the WAN and timed out. rc/wan.c
+
+dns_in_sdn_subnet() reads the saved VLAN subnets (get_mtsubnet(), so it is right even when
+
+the WAN comes up before the bridges) and skips the route for any address inside one.
+
+> Interference mitigation (Wireless › Settings, per radio)
+
+A new row sets the radio driver's
+
+own interference mitigation: Driver default (Reaper writes nothing) or + HW ACI, which
+
+adds the hardware adjacent-channel mitigation bit (16) to the driver's mask (default 75 on this
+
+dongle). /sbin/reaper_punct applies it at start-up, after every wireless restart and on save
+
+without a radio restart; it records the value it found, undoes only its own write, and reports
+
+applied / driver / refused / waiting in /tmp/reaper_wlmit.state, shown as the row's status.
+
+The rwatch tick re-runs the applier while the row is set. A change resets dynamic puncturing's
+
+noise baseline and PHY-impairment state, since the mitigation moves those figures by design.
+
+In a 2.4 GHz microwave A/B on the RT-BE96U, + HW ACI did not improve client throughput and at
+
+times reduced it; the help text says so and recommends Driver default. Off by default
+
+(wlN_rmit). The diagnostics report (section 7) adds an interference: line per radio. Of the
+
+other driver functions trialled, dynamic BSS width (obss_dyn_bw) was dropped (it switches the
+
+whole BSS width by channel-switch announcement and cost clients), spatial reuse stays with
+
+stock's watchdog, and the energy-detect thresholds are regulatory and left alone.
+
+> The floor's re-arm no longer moves the channel
+
+When a lifted floor re-armed while the radio
+
+was already 80 MHz or wider, the watcher still restarted acsd2, which could pick a new channel
+
+and drop clients. The re-arm now only restores the exclusions and marks the radio
+
+picker-pending; acsd2 picks them up at its next restart, and is restarted by the watcher only
+
+if the radio later runs below the floor.
+
+> Dynamic puncturing: a ceiling on the Active scan source
+
+The Active source scanned whatever
+
+the radio's own airtime; it now scans only while the radio's own traffic is at or below 30 % of
+
+airtime (the idle-scan tier keeps its preset level), so a confirmation scan does not land in
+
+the middle of a busy client's stream. The status line says own airtime above the scan
+
+ceiling while it waits. test_punct_dyn.py 78 checks; test_wlmit.py covers the mitigation
+
+applier and the re-arm.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

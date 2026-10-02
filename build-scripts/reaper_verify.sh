@@ -170,6 +170,7 @@ case "$MODEL" in
   GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
   RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
   GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
+  BQ16)        want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE25000_REAPER_Header.png;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -227,7 +228,7 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
 # never off the other SKU of the same model.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000)  want_dhd="6717a0 6726b0";;
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16)  want_dhd="6717a0 6726b0";;   # BQ16: read off stock ZenWiFi_BQ16 102_39256
   RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
   *)                                        want_dhd="";;
 esac

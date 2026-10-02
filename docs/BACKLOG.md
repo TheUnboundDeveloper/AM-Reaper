@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.2** · 2026-10-02 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,7 +37,7 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.3.1 is the newest rung (cut 2026-10-01); earlier releases are in
+The ordered short list. *v3.3.2 is the newest rung (cut 2026-10-02); earlier releases are in
 [`CHANGELOG.md`](CHANGELOG.md).*
 
 1. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
@@ -56,6 +56,10 @@ The ordered short list. *v3.3.1 is the newest rung (cut 2026-10-01); earlier rel
    needs the soak. **[owed]** ↳ notes: `cve-check-2026-08-30.md`
 8. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
    ↳ notes: `code-review-tail.md`
+9. **[P2] ZenWiFi BQ16 (BE25000) on the roster since v3.3.2** — onboarded from the ASUS 102_39256 GPL drop +
+   stock radio firmware; MCP and noMCP 34/34 locally; first CI build (the clean-room proof of its
+   platform archive) and a tester owed. Prerelease-only until a unit boots one. **[owed: CI run, a tester]**
+   ↳ notes: `bq16-onboarding.md`
 
 ---
 
@@ -69,34 +73,31 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   ↳ notes: `fwsim-wansrc-set-cap.md`
 - **[P2] AiMesh node cards show zero clients in a bridging mode** (GT-BE19000) — overlay from the device
   store, **fixed v3.3.1**. Ask: node card counts on the AP-mode box. **[awaiting field]** ↳ notes: `aimesh-card-zero-clients-bridge.md`
-- **[P2] CVE-2023-52340: remote IPv6 DoS via forged Packet Too Big** (IPv6 on only) — fixed in tree:
-  rc sets `route/max_size`=INT_MAX at boot; **v3.2.9**. **[soak owed]** ↳ notes: `review-carry-forward-queue.md`
 - **[P3] e2fsprogs CVE-2022-1304 via a crafted USB disk** — upstream `ab51d587bb9b` applied; host
   test 2026-09-28: the guard fires on a crafted empty leaf, repair converges. **[metal owed: USB scan
   of an ext4 + ext3 disk]** ↳ notes: `review-carry-forward-queue.md`
 - **[P2] Warden outbound blocks appear to have stopped** — `rwarden_log` read 0/1/0. **[owed: the
   owner's recollection or a repro]** ↳ notes: `warden-outbound-quiet.md`
-- **[P2] Dual WAN fail-over: dashboard shows Disconnected and the WAN LED goes dark on the backup
-  line** — dashboard read wan0 only; the prebuilt LED code lights white only for the WAN-port type.
-  Dashboard follows the primary unit; a backup line shows red + white together (owner choice); **v3.2.9**.
-  ↳ notes: `dualwan-failover-ui-led.md`
-- **[P2] Firewall engine: a failed `lastgood` snapshot may boot with no user policy** — staged
-  write, draft kept on failure, boot re-adopts unmarked files; **v3.2.9**. **[metal owed:
-  Keep with /jffs full]** ↳ notes: `rfw-lastgood-snapshot.md`
 - **[P3] Firewall DNAT / Redirect: the residual gaps.** **[project]**
   ↳ notes: `firewall-dnat-redirect-residual.md`
 - **[P3] Rule Status walker: fixtures from a second and third topology** — RT-BE88U, GT-BE98 with
   VLANs. Ask for: `reaper_fwsim --dump-inputs DIR`. **[needs data]**
   ↳ notes: `firewall-witness-catalog.md`
-- **[P2] Main-network card unclickable after the first-boot setup box** — the box now runs the SDN
-  reconcile a guest apply runs; **v3.2.9**. **[metal owed: reset test]** ↳ notes: `wifi-cards-unclickable-post-reset.md`
+- **[P2] First-boot setup box: browser autofill put the router password into the Wi-Fi key; the apply
+  bounced back to the page instead of showing the reboot** (GT-BE98) — Wi-Fi fields moved out of the
+  credential form, nothing prepopulated, login name lowercase-only, "Apply & Reboot" ends in the
+  REBOOTING screen; **fixed v3.3.2**. Ask: one factory reset through the box in Chrome.
+  **[awaiting field]** ↳ notes: `firstboot-box-autofill-reboot.md`
+- **[P1] A firmware flash left the Entware USB volume busy, then dirty; the next boot had no DNS**
+  (RT-BE86U) — the flash now releases the USB volumes before the eject and a boot clears a pending
+  `rc_service`; **fixed v3.3.2**. Ask: one upgrade with the drive attached (no busy lines in the log).
+  The reported reboot loop is NOT explained - kept in Open bugs. **[awaiting field]**
+  ↳ notes: `usb-release-before-flash.md`
 - **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98) — Stateful had no SLAAC; `slaac`
   added to the Stateful range, **v3.3.1**. Ask: VM IPv6 + one diag. **[awaiting field]** ↳ notes: `gt-be98-ipv6-partial-lan.md`
 - **[P3] Minimum width on Auto** (`reaper_bwfloor`, v3.3.1) — built; the floor is 80 MHz on both bands;
   re-arm while wide no longer restarts acsd2 (`picker-pending`). **[metal owed]** ↳ notes: `min-width-auto.md`
 - **[P3] Static preamble puncturing** — built. **[metal owed]** ↳ notes: `preamble-puncturing-metal.md`
-- **[P3] `reaper_diag`: print the settings that explain Wi-Fi client drops** — diag v1.3.24,
-  **v3.2.9**. **[metal owed: one diag run]** ↳ notes: `diag-wifi-drop-settings.md`
 
 ---
 
@@ -104,6 +105,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 *Not fixed yet — work still to start or finish.*
 
+- **[P1] Reboot loop after a flash on an Entware box** (RT-BE86U) — the busy/dirty USB half is fixed
+  in v3.3.2 (Waiting above); nothing in Reaper reboots on a dnsmasq failure, so the loop itself is
+  unexplained. **[needs data: `sys_reboot_reason` + the pre-reboot syslog from the box]**
+  ↳ notes: `usb-release-before-flash.md`
 - **[P2] Warden chains absent 13 min after boot on a flapping WAN** — suspect `stop/start_firewall`
   racing the arm. **[owed: bench repro]** ↳ notes: `warden-chains-absent-wan-flap.md`
 - **[P3] Duplicate menu entries after opening UPnP Media Server** (GT-BE19000). **[needs data]**

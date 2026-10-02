@@ -1,0 +1,629 @@
+From 74d6741a11f0f942fa029e9a699096e68a1f30b9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 1 Oct 2026 22:07:14 -0400
+Subject: [PATCH] www: the first-boot box isolates its fields from browser
+ autofill, prefills nothing, lowercases the login name and ends in the
+ REBOOTING screen
+
+GT-BE98 field report after a factory reset: with Chrome's autocompletion on
+"Router Login Name" the Wi-Fi password was set to the saved router login
+password, and "Set up and restart Wi-Fi" showed an update widget for a few
+seconds and then reloaded the page while the router went down.
+
+- One <form> wrapped the whole box, and a browser pairs a saved login with the
+  first visible password field in the same form - the Wi-Fi password. The
+  start_apply form now wraps only the credential fields; the Wi-Fi inputs are
+  formless and reach the box through reaper_wifisetup.cgi alone. wifi_psk and
+  http_passwd_x carry autocomplete="new-password", the current-password field
+  "current-password".
+- Nothing is prepopulated: the login name starts empty (it came from nvram).
+- The router login name is lowercase only: folded as typed (lowerLogin, caret
+  kept) and validated with a lowercase regex.
+- action_wait was 0, so start_apply.htm in the hidden frame redirected the top
+  window back to this page as soon as nvram was committed. It is now the
+  model's reboot time (what the shell's rebootForm sends), the page shows the
+  shell's REBOOTING overlay (same tokens and colours) with a countdown, then
+  polls /httpd_check.xml and lands on "/" when httpd answers; the hidden frame
+  is dropped once its reply has loaded, so its own redirect can never fire.
+- Button: RWFS_8 = "Apply & Reboot" in all 25 packs.
+
+Gate: reaper_static_checks check_firstboot_wifi asserts the form order, the two
+new-password inputs, no nvram-prefilled login name, lowerLogin + the lowercase
+regex, action_wait = reboot time and the overlay; six verify_markers lines.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/BR.dict              |   2 +-
+ release/src/router/www/CN.dict              |   2 +-
+ release/src/router/www/CZ.dict              |   2 +-
+ release/src/router/www/DA.dict              |   2 +-
+ release/src/router/www/DE.dict              |   2 +-
+ release/src/router/www/EN.dict              |   2 +-
+ release/src/router/www/ES.dict              |   2 +-
+ release/src/router/www/FI.dict              |   2 +-
+ release/src/router/www/FR.dict              |   2 +-
+ release/src/router/www/HU.dict              |   2 +-
+ release/src/router/www/IT.dict              |   2 +-
+ release/src/router/www/JP.dict              |   2 +-
+ release/src/router/www/KR.dict              |   2 +-
+ release/src/router/www/MS.dict              |   2 +-
+ release/src/router/www/NL.dict              |   2 +-
+ release/src/router/www/NO.dict              |   2 +-
+ release/src/router/www/PL.dict              |   2 +-
+ release/src/router/www/RO.dict              |   2 +-
+ release/src/router/www/RU.dict              |   2 +-
+ release/src/router/www/Reaper_WiFiSetup.asp | 150 +++++++++++++++++---
+ release/src/router/www/SL.dict              |   2 +-
+ release/src/router/www/SV.dict              |   2 +-
+ release/src/router/www/TH.dict              |   2 +-
+ release/src/router/www/TR.dict              |   2 +-
+ release/src/router/www/TW.dict              |   2 +-
+ release/src/router/www/UK.dict              |   2 +-
+ 26 files changed, 153 insertions(+), 47 deletions(-)
+
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 14164ed8c8..7d35699e15 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Pronto. O roteador está reiniciando para concluir a configuração (cerca de 3 minutos). Depois, reconecte-se a %1$@ e entre com a nova senha do roteador.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index bd19950281..e032b1c3c5 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=完成。路由器正在重新启动以完成设置（约 3 分钟）。之后请重新连接到 %1$@，并使用新的路由器密码登录。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 216fb0f648..717cc7cc0c 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Hotovo. Router se restartuje, aby dokončil nastavení (asi 3 minuty). Poté se znovu připojte k %1$@ a přihlaste se novým heslem routeru.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 3c4e23667a..37293bf409 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Færdig. Routeren genstarter for at fuldføre opsætningen (ca. 3 minutter). Opret derefter forbindelse til %1$@ igen, og log ind med din nye routeradgangskode.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index d552d2c4c2..373a57f3a3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Fertig. Der Router startet neu, um die Einrichtung abzuschließen (etwa 3 Minuten). Verbinde dich danach erneut mit %1$@ und melde dich mit deinem neuen Router-Passwort an.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f7132875e9..eaf116f57e 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Done. The router is restarting to finish setup (about 3 minutes). Then reconnect to %1$@ and log in with your new router password.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 931ba3bdbc..f49adc6f40 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Listo. El router se está reiniciando para terminar la configuración (unos 3 minutos). Después, vuelve a conectarte a %1$@ e inicia sesión con la nueva contraseña del router.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index e10a3cb067..6a9616c226 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Valmis. Reititin käynnistyy uudelleen asennuksen viimeistelemiseksi (noin 3 minuuttia). Yhdistä sitten uudelleen verkkoon %1$@ ja kirjaudu uudella reitittimen salasanalla.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 6259f0f9bf..70568339e1 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Terminé. Le routeur redémarre pour finaliser la configuration (environ 3 minutes). Reconnectez-vous ensuite à %1$@ et connectez-vous avec le nouveau mot de passe du routeur.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 593472c459..3f7bd8c213 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Kész. A router újraindul a beállítás befejezéséhez (kb. 3 perc). Ezután csatlakozzon újra a(z) %1$@ hálózathoz, és jelentkezzen be az új router jelszóval.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 996626250f..4d64e73493 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Fatto. Il router si sta riavviando per completare la configurazione (circa 3 minuti). Poi riconnettiti a %1$@ e accedi con la nuova password del router.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 1e32b74039..5daafdc5ae 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=完了しました。セットアップを完了するためにルーターを再起動しています（約 3 分）。その後 %1$@ に再接続し、新しいルーターのパスワードでログインしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index b3fc83f001..f12687ada0 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=완료되었습니다. 설정을 마치기 위해 공유기가 다시 시작됩니다(약 3분). 그런 다음 %1$@에 다시 연결하고 새 공유기 비밀번호로 로그인하세요.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index d99f21d859..46f406d291 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Selesai. Penghala sedang dimulakan semula untuk melengkapkan persediaan (kira-kira 3 minit). Kemudian sambung semula ke %1$@ dan log masuk dengan kata laluan penghala baharu anda.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index ff3edef9c6..ba249ec3da 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Klaar. De router start opnieuw op om de installatie te voltooien (ongeveer 3 minuten). Maak daarna opnieuw verbinding met %1$@ en log in met je nieuwe routerwachtwoord.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 831b95efad..2614dafd65 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Ferdig. Ruteren starter på nytt for å fullføre oppsettet (ca. 3 minutter). Koble deretter til %1$@ igjen og logg på med det nye ruterpassordet.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index c765226f4f..1a692ee99a 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Gotowe. Router uruchamia się ponownie, aby dokończyć konfigurację (około 3 minuty). Następnie połącz się ponownie z %1$@ i zaloguj się nowym hasłem routera.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index a45bf25d8a..fb46be8e55 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Gata. Routerul repornește pentru a finaliza configurarea (aproximativ 3 minute). Apoi reconectați-vă la %1$@ și autentificați-vă cu noua parolă a routerului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 4dfa156b4f..d2f90e5db1 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Готово. Роутер перезагружается, чтобы завершить настройку (около 3 минут). Затем снова подключитесь к %1$@ и войдите с новым паролем роутера.
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index 3b1b2b6334..c97cadde1d 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -27,6 +27,21 @@
+ 	A refused password stops everything; a refused Wi-Fi setting still persists
+ 	the password change so the box is never left half-done.
+ 
++	v3.3.2 (GT-BE98 field report): (1) the Wi-Fi inputs live OUTSIDE the credential
++	form. Chrome pairs a saved login with the first visible password field in the
++	same form - which was the Wi-Fi password - so picking a saved router login
++	silently set the Wi-Fi key to the router password. The start_apply form now
++	wraps only the credential fields; the Wi-Fi fields reach the box through the
++	CGI alone. Both new-password fields carry autocomplete="new-password".
++	(2) Nothing is prepopulated: the login name starts empty (placeholder only).
++	(3) The login name is lowercase-only - lowercased as typed, rejected otherwise.
++	(4) After "Apply & Reboot" the page shows the shell's REBOOTING overlay
++	(same look as the GUI's Reboot: title, countdown, note), counts the model's
++	reboot time down, then polls /httpd_check.xml and lands on "/". The form's
++	action_wait is the model's reboot time (was 0, so the hidden frame's own
++	redirect bounced the user back to this page within seconds), and the frame
++	is removed once its reply has arrived so it can never pull the page back.
++
+ 	i18n: RWFS_* tokens (English-seeded, 25 packs) plus reused stock tokens.
+ 	Tokens appear only in double-quoted or backtick JS strings (rule 29) and in
+ 	HTML text. ASCII only (rule 1). Rendered with the reaper theme via
+@@ -154,6 +169,46 @@ body{
+ 	margin-right: 8px;
+ 	height: 100%;
+ }
++#reboot_overlay{
++	display: none;
++	position: fixed;
++	top: 0; left: 0; right: 0; bottom: 0;
++	z-index: 2147483000;
++	background: rgba(4,4,5,.92);
++}
++#reboot_overlay .rb_box{
++	position: absolute;
++	top: 50%; left: 50%;
++	transform: translate(-50%,-50%);
++	text-align: center;
++	max-width: 520px;
++	width: calc(100% - 32px);
++}
++#reboot_overlay .rb_title{
++	font-family: 'Rajdhani','Oswald',system-ui,sans-serif;
++	color: #E10600;
++	font-size: 22px;
++	letter-spacing: .2em;
++	text-transform: uppercase;
++}
++#reboot_overlay .rb_count{
++	margin-top: 12px;
++	color: #ECE7DB;
++	font-family: 'Rajdhani','Oswald',system-ui,sans-serif;
++	font-size: 34px;
++	font-weight: 700;
++}
++#reboot_overlay .rb_done{
++	margin-top: 14px;
++	color: #ECE7DB;
++	font-size: 14px;
++	line-height: 1.5;
++}
++#reboot_overlay .rb_note{
++	margin-top: 10px;
++	color: #71767b;
++	font-size: 12px;
++}
+ /*for mobile device*/
+ @media screen and (max-width: 1000px){
+ 	.main_content{
+@@ -241,6 +296,15 @@ function initial(){
+ 		document.getElementById("cur_password_field").style.display = "";
+ 	}
+ 	document.getElementById("wifi_ssid").focus();
++	/* once the apply's reply has loaded in the hidden frame the box has taken the
++	   settings and is on its way down; drop the frame so start_apply.htm's own
++	   timer can never redirect this window back here (it did, with action_wait 0) */
++	document.getElementById("hidden_frame").onload = function(){
++		if(frameArmed){
++			var f = document.getElementById("hidden_frame");
++			if(f && f.parentNode) f.parentNode.removeChild(f);
++		}
++	};
+ 	var order = ["wifi_ssid", "wifi_psk", "http_username_x", "http_passwd_x"];
+ 	for(var i = 0; i < order.length; i++){
+ 		(function(idx){
+@@ -253,6 +317,39 @@ function initial(){
+ 		})(i);
+ 	}
+ }
++/* the router login name is lowercase only (owner rule): fold as typed, keep the caret */
++function lowerLogin(el){
++	var l = el.value.toLowerCase();
++	if(el.value !== l) el.value = l;
++}
++var frameArmed = false;
++var rebootWait = parseInt('<% get_default_reboot_time(); %>', 10) || 170;
++function showRebooting(ssid){
++	document.getElementById("loginTable").style.visibility = "hidden";
++	var done = `<#RWFS_11#>`.replace("%1$@", ssid.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
++	document.getElementById("reboot_done").innerHTML = done;
++	document.getElementById("reboot_overlay").style.display = "block";
++	var left = rebootWait, c = document.getElementById("reboot_count");
++	c.textContent = left + "s";
++	var tick = setInterval(function(){
++		left--;
++		c.textContent = left > 0 ? (left + "s") : "...";
++		if(left <= 0){ clearInterval(tick); pollBack(); }
++	}, 1000);
++	/* whatever happens, do not sit here forever */
++	setTimeout(function(){ location.href = "/"; }, (rebootWait + 300) * 1000);
++}
++/* the box is up again when httpd answers (the same probe Restarting.asp uses) */
++function pollBack(){
++	var x = new XMLHttpRequest();
++	x.onreadystatechange = function(){
++		if(x.readyState != 4) return;
++		if(x.status == 200) location.href = "/";
++		else setTimeout(pollBack, 2000);
++	};
++	try{ x.open("GET", "/httpd_check.xml?" + Date.now(), true); x.send(null); }
++	catch(e){ setTimeout(pollBack, 2000); }
++}
+ function toggleShow(){
+ 	var t = document.getElementById("show_pw").checked ? "text" : "password";
+ 	document.getElementById("wifi_psk").type = t;
+@@ -421,11 +518,10 @@ function submitForm(){
+ 		   that and the main card stayed unclickable. The boot also carries any
+ 		   MLO change, which needs one anyway. */
+ 		document.form.action_script.value = "saveNvram;restart_chpass;reboot";
++		frameArmed = true;
+ 		document.form.submit();
+ 		$("#loadingIcon").hide();
+-		var done = `<#RWFS_11#>`.replace("%1$@", ssid.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+-		$("#done_field").html(done).show();
+-		setTimeout(function(){ location.href = "/"; }, 180000);
++		showRebooting(ssid);
+ 	}, 100);
+ }
+ function fail(msg){
+@@ -436,7 +532,8 @@ function fail(msg){
+ }
+ var validator = {
+ 	chkLoginId: function(obj){
+-		var re = new RegExp("^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$","gi");
++		lowerLogin(obj);
++		var re = new RegExp("^[a-z0-9][a-z0-9\-\_]+$","g");
+ 		if(obj.value == ""){
+ 			showError("<#File_Pop_content_alert_desc1#>");
+ 			obj.focus(); obj.select();
+@@ -533,17 +630,6 @@ function showError(str){
+ <body class="wrapper" onload="initial();">
+ <iframe name="hidden_frame" id="hidden_frame" width="0" height="0" frameborder="0"></iframe>
+ 
+-<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+-<input type="hidden" name="group_id" value="">
+-<input type="hidden" name="action_mode" value="apply">
+-<input type="hidden" name="action_script" value="saveNvram;restart_chpass;reboot">
+-<input type="hidden" name="action_wait" value="0">
+-<input type="hidden" name="current_page" value="Reaper_WiFiSetup.asp">
+-<input type="hidden" name="next_page" value="">
+-<input type="hidden" name="flag" value="">
+-<input type="hidden" name="login_authorization" value="">
+-<input name="foilautofill" style="display: none;" type="password">
+-<input type="hidden" name="cfg_pause" value="0">
+ <table id="loginTable" align="center" cellpadding="0" cellspacing="0" style="display:none">
+ 	<tr>
+ 		<td>
+@@ -554,32 +640,45 @@ function showError(str){
+ 
+ 				<div class="sect"><#QIS_finish_wireless_item1#></div>
+ 				<div>
+-					<!-- no name= attributes on the Wi-Fi fields: they must not ride the
+-					     start_apply form POST; reaper_wifisetup.cgi is their only path -->
++					<!-- the Wi-Fi fields are OUTSIDE the start_apply form and carry no name=:
++					     they reach the box only through reaper_wifisetup.cgi, and a browser's
++					     saved-login autofill (paired with the form below) cannot land here -->
+ 					<input type="text" id="wifi_ssid" tabindex="1" class="form_input" maxlength="32" value="" autocapitalize="off" autocomplete="off" placeholder="<#QIS_finish_wireless_item1#>">
+ 				</div>
+ 				<div class="lbl"><#RWFS_3#></div>
+ 				<div>
+-					<input type="password" id="wifi_psk" tabindex="2" class="form_input" maxlength="64" value="" autocapitalize="off" autocomplete="off" placeholder="<#RWFS_3#>">
++					<input type="password" id="wifi_psk" tabindex="2" class="form_input" maxlength="64" value="" autocapitalize="off" autocomplete="new-password" placeholder="<#RWFS_3#>">
+ 				</div>
+ 				<div class="hint"><#RWFS_4#></div>
+ 
++				<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++				<input type="hidden" name="group_id" value="">
++				<input type="hidden" name="action_mode" value="apply">
++				<input type="hidden" name="action_script" value="saveNvram;restart_chpass;reboot">
++				<input type="hidden" name="action_wait" value="<% get_default_reboot_time(); %>">
++				<input type="hidden" name="current_page" value="Reaper_WiFiSetup.asp">
++				<input type="hidden" name="next_page" value="">
++				<input type="hidden" name="flag" value="">
++				<input type="hidden" name="login_authorization" value="">
++				<input name="foilautofill" style="display: none;" type="password">
++				<input type="hidden" name="cfg_pause" value="0">
+ 				<div class="sect"><#PASS_changepasswd#></div>
+ 				<div id="cur_password_tr" class="lbl" style="display:none"><#Current_Login_Password#></div>
+ 				<div id="cur_password_field" style="display:none">
+-					<input type="password" autocapitalize="off" autocomplete="off" value="" id="http_passwd_cur" class="form_input" maxlength="33" placeholder="<#Current_Login_Password#>">
++					<input type="password" autocapitalize="off" autocomplete="current-password" value="" id="http_passwd_cur" class="form_input" maxlength="33" placeholder="<#Current_Login_Password#>">
+ 				</div>
+ 				<div class="lbl"><#Router_Login_Name#></div>
+ 				<div>
+-					<input type="text" name="http_username_x" id="http_username_x" tabindex="3" class="form_input" maxlength="32" value="<% nvram_get("http_username"); %>" autocapitalize="off" autocomplete="off" placeholder="<#Router_Login_Name#>">
++					<input type="text" name="http_username_x" id="http_username_x" tabindex="3" class="form_input" maxlength="32" value="" autocapitalize="off" autocomplete="off" spellcheck="false" oninput="lowerLogin(this)" placeholder="<#Router_Login_Name#>">
+ 				</div>
+ 				<div class="lbl"><#RWFS_5#></div>
+ 				<div>
+-					<input type="password" autocapitalize="off" autocomplete="off" value="" name="http_passwd_x" id="http_passwd_x" tabindex="4" class="form_input" maxlength="33" placeholder="<#RWFS_5#>">
++					<input type="password" autocapitalize="off" autocomplete="new-password" value="" name="http_passwd_x" id="http_passwd_x" tabindex="4" class="form_input" maxlength="33" placeholder="<#RWFS_5#>">
+ 				</div>
+ 				<div class="hint"><#RWFS_6#></div>
+ 				<div id="KRHint" class="hint" style="display:none">Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.</div>
+ 				<div class="show_row"><label><input type="checkbox" id="show_pw" onchange="toggleShow()" style="vertical-align:middle;margin-right:8px"><#RWFS_7#></label></div>
++				</form>
+ 
+ 				<div id="error_status_field"></div>
+ 				<div id="done_field"></div>
+@@ -591,6 +690,13 @@ function showError(str){
+ 		</td>
+ 	</tr>
+ </table>
+-</form>
++<div id="reboot_overlay">
++	<div class="rb_box">
++		<div class="rb_title"><#Reaper_c_rebooting#></div>
++		<div id="reboot_count" class="rb_count">&mdash;</div>
++		<div id="reboot_done" class="rb_done"></div>
++		<div class="rb_note"><#RSHL_reboot_note#></div>
++	</div>
++</div>
+ </body>
+ </html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 51931e14da..3330d1c8b4 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Končano. Usmerjevalnik se znova zaganja, da dokonča nastavitev (približno 3 minute). Nato se znova povežite z %1$@ in se prijavite z novim geslom usmerjevalnika.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index edcb5b178d..3d4a74762e 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Klart. Routern startar om för att slutföra installationen (cirka 3 minuter). Anslut sedan till %1$@ igen och logga in med ditt nya routerlösenord.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index c402ebdd60..b2f4a28d52 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=เสร็จแล้ว เราเตอร์กำลังรีสตาร์ทเพื่อตั้งค่าให้เสร็จสมบูรณ์ (ประมาณ 3 นาที) จากนั้นเชื่อมต่อ %1$@ อีกครั้งและเข้าสู่ระบบด้วยรหัสผ่านเราเตอร์ใหม่
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 43d37fae82..4efbefeb7b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Tamam. Yönlendirici kurulumu tamamlamak için yeniden başlatılıyor (yaklaşık 3 dakika). Ardından %1$@ ağına yeniden bağlanın ve yeni yönlendirici parolanızla oturum açın.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 2b6d6987f9..163f332651 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=完成。路由器正在重新啟動以完成設定（約 3 分鐘）。之後請重新連線到 %1$@，並使用新的路由器密碼登入。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 2a0276d38a..df302e5d48 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6861,7 +6861,7 @@ RWFS_4=8 to 63 characters. This is what people type to join the network.
+ RWFS_5=Router login password
+ RWFS_6=This is what you type to open these pages. Keep it different from the Wi-Fi password.
+ RWFS_7=Show passwords
+-RWFS_8=Set up and restart Wi-Fi
++RWFS_8=Apply & Reboot
+ RWFS_9=The Wi-Fi password must be 8 to 63 characters (or a 64-digit hexadecimal key).
+ RWFS_10=The network name must be 1 to 32 characters.
+ RWFS_11=Готово. Маршрутизатор перезавантажується, щоб завершити налаштування (близько 3 хвилин). Потім знову підключіться до %1$@ і увійдіть з новим паролем маршрутизатора.
+-- 
+2.25.1
+

@@ -1,13 +1,13 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.1** · 2026-10-01 <!--@stamp-->
+> **Doc status:** current as of **v3.3.2** · 2026-10-01 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.1** <!--@treever--> — `3006.102.8_Reaper_v3.3.0`. **pppd, strongSwan and Tor security fixes, and Gatekeeper no longer races a firewall restart.** pppd closes CVE-2026-85495 (a pre-authentication buffer overrun a PPPoE peer could trigger) and an MS-CHAP out-of-bounds read; strongSwan takes seven official CVE patches and Tor moves to 0.4.9.13; Gatekeeper's re-apply now waits for a firewall restart instead of racing it, which could drop a VLAN's new WAN connections; Rule Status no longer tests VPN and port-forward rows from an address the threat feed blocks on a box blocking many countries. The code was built and verified on RT-BE96U MCP test images (v3.2.9_BETA r1–r3) before the cut, and the Gatekeeper fix was exercised on hardware with a forced firewall restart; the release images come from the public CI build. The series stands at **731 patches** (0727–0731 for v3.3.0); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.2** <!--@treever--> — `3006.102.8_Reaper_v3.3.2`. **A firmware flash releases the USB volumes before it ejects them, the first-boot setup box ends in the reboot screen, and the ZenWiFi BQ16 (BE25000) joins the roster.** The flash fix ends the forty-second eject fight and the dirty volume that left an Entware box without DNS on the next boot; the setup box no longer lets browser autofill cross its fields and no longer reloads itself while the router goes down. The code was built and verified on RT-BE96U MCP test images (v3.3.1_BETA r12 and the cut build) before the cut, and the BQ16 on both variants locally; the release images come from the public CI build. The series stands at **738 patches** (0735–0738 for v3.3.2); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
+| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** and from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band), both of which build and pass verification and publish as prereleases. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
 | **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6 and **v2.8.8** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
@@ -19,6 +19,27 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
+
+**Firmware upgrades with a USB drive attached.** Upgrading used to unplug the USB drive in
+software while Entware, a dnsmasq writing its log to the drive and the traffic history were
+still using it. The unplug failed for about forty seconds, the router flashed anyway, and the
+drive came back dirty: on the next boot it mounted late, and anything that needed it at startup
+(an Entware-based DNS setup, for one) failed. A flash now stops those programs first, the way a
+normal reboot does - your `services-stop` script runs, then anything still using the drive is
+stopped - and unplugs a drive nothing is using. A router that has just been flashed also no
+longer refuses its first service restarts.
+
+**First boot.** The setup box shown after a factory reset no longer lets a browser's saved login
+fill the router password into the Wi-Fi password field. Nothing is filled in for you, the router
+login name is lowercase only, and the button now reads **Apply & Reboot**: after it, the page
+shows the same rebooting countdown as the Reboot button and returns to the login page when the
+router is back, instead of reloading itself while the router restarts.
+
+**New model: ZenWiFi BQ16 (BE25000).** The quad-band ZenWiFi BQ16 now builds from the same tree
+as the rest of the fleet, both variants. It is published only as a prerelease until a unit has
+run it; if you have one and can test, see the issue tracker.
 
 ## What's new in v3.3.1 — a minimum channel width on Auto, one factory state, the setup box finishes the main network
 

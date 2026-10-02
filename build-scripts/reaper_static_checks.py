@@ -621,6 +621,30 @@ def check_firstboot_wifi(router):
             bad.append(why)
     if not re.search(r"length\s*<\s*8\s*\|\|\s*v\.length\s*>\s*63", page):
         bad.append("page does not enforce the 8..63 Wi-Fi key bound client-side")
+    # v3.3.2 (GT-BE98 field report): a browser pairs a saved router login with the
+    # first visible password field in the SAME form, which was the Wi-Fi password -
+    # picking a saved login set the Wi-Fi key to the router password. The Wi-Fi
+    # inputs must sit outside the credential form, the two new-password fields
+    # must say so, nothing may be prepopulated, and the apply must end in the
+    # REBOOTING overlay with the model's reboot time, not a 0 s hidden-frame bounce.
+    fpos = page.find('<form method="post" name="form"')
+    if fpos < 0:
+        bad.append("page has no start_apply form")
+    else:
+        for wid in ('id="wifi_ssid"', 'id="wifi_psk"'):
+            wpos = page.find(wid)
+            if wpos < 0 or wpos > fpos:
+                bad.append("%s is inside the credential form (saved-login autofill can land in it)" % wid)
+    if len(re.findall(r'<input[^>]*autocomplete="new-password"', page)) != 2:
+        bad.append("the Wi-Fi key and the new login password are not both autocomplete=new-password")
+    if 'value="<% nvram_get("http_username"); %>"' in page:
+        bad.append("the login name is prepopulated from nvram (must start empty)")
+    if 'oninput="lowerLogin(this)"' not in page or '"^[a-z0-9][a-z0-9' not in page:
+        bad.append("the login name is not lowercase-only (lowerLogin + lowercase regex)")
+    if 'name="action_wait" value="<% get_default_reboot_time(); %>"' not in page:
+        bad.append("action_wait is not the model's reboot time (the hidden frame bounces back at 0)")
+    if 'id="reboot_overlay"' not in page or "/httpd_check.xml" not in page:
+        bad.append("the REBOOTING overlay (reboot_overlay + httpd_check.xml poll) is missing")
     if re.search(r"'[^'\n]*<#[A-Za-z_0-9]+#>[^'\n]*'", page):
         bad.append("a <#token#> sits inside a single-quoted JS string (rule 29)")
 

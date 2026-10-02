@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.3.1** · 2026-10-01 <!--@stamp-->
+> **Doc status:** current as of **v3.3.2** · 2026-10-01 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -24,11 +24,11 @@ same file that produces the published releases, and runs the same
    - `MCP` — the standard image (includes the read-only Advisor MCP server).
    - `noMCP` — the same firmware with the MCP server compiled out.
    - `both` — builds each in its own job, in parallel.
-5. Choose a model. Any one of the six <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
-   `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO`, `GT-BE19000` <!--@models--> — or `all`, which
-   fans out to every model. `all` with `both` is 12 <!--@fleetjobs--> concurrent jobs.
-   *The GT-BE19000 joined the roster on 2026-09-12. It publishes only as a prerelease
-   until field testers have run it.*
+5. Choose a model. Any one of the seven <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
+   `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO`, `GT-BE19000`, `BQ16` <!--@models--> — or `all`, which
+   fans out to every model. `all` with `both` is 14 <!--@fleetjobs--> concurrent jobs.
+   *The GT-BE19000 joined the roster on 2026-09-12 and the ZenWiFi BQ16 (BE25000) on
+   2026-10-01. Both publish only as prereleases until field testers have run them.*
 6. When the run finishes, download the artifacts from the run summary page.
 
 It runs on free GitHub-hosted runners and uses your fork's Actions minutes.
@@ -304,7 +304,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0734` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0738` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

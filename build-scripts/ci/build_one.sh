@@ -31,6 +31,7 @@ case "$MODEL" in
   GT-BE98)     BRANCH=gt-be98;     TARGET=gt-be98;     PREFIX=GT-BE98;;
   GT-BE98_PRO) BRANCH=gt-be98-pro; TARGET=gt-be98_pro; PREFIX=GT-BE98_PRO;;
   GT-BE19000)  BRANCH=gt-be19000;  TARGET=gt-be19000;  PREFIX=GT-BE19000;;
+  BQ16)        BRANCH=bq16;        TARGET=bq16;        PREFIX=BQ16;;
   RT-BE92U)    BRANCH=rt-be92u;    TARGET=rt-be92u;    PREFIX=RT-BE92U;;
   *) echo "FATAL: unknown model '$MODEL'"; exit 2;;
 esac
@@ -60,6 +61,7 @@ case "$MODEL" in
   GT-BE98)     WANT_BANNER=GT-BE98_REAPER_Header.png;;
   GT-BE98_PRO) WANT_BANNER=GT-BE98P_REAPER_Header.png;;
   GT-BE19000)  WANT_BANNER=GT-BE19000_REAPER_Header.png;;
+  BQ16)        WANT_BANNER=BE25000_REAPER_Header.png;;   # the BQ16's banner is named by its class, BE25000
   RT-BE92U)    WANT_BANNER=RT-BE92U_REAPER_Header.png;;
 esac
 if [ ! -f "$BANNER_DIR/$WANT_BANNER" ]; then

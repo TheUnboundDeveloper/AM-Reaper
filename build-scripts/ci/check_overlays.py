@@ -35,6 +35,7 @@ MODEL_BANNER = {
     "GT-BE98":     "GT-BE98",
     "GT-BE98_PRO": "GT-BE98P",
     "GT-BE19000":  "GT-BE19000",
+    "BQ16":        "BE25000",      # the ZenWiFi BQ16 banner is named by its class (GT-BE98P precedent)
     "RT-BE92U":    "RT-BE92U",
 }
 

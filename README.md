@@ -1,8 +1,8 @@
 # AM-Reaper
 
-> **Doc status:** current as of **v3.3.1** · 2026-10-01 <!--@stamp-->
+> **Doc status:** current as of **v3.3.2** · 2026-10-01 <!--@stamp-->
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.3.1** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings).
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.3.2** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings).
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE-series owners.
 
@@ -42,7 +42,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 **In the repo:**
 - **[`patches/`](patches/)** — the hardening, as patch files you apply onto an upstream Asuswrt-Merlin checkout.
 - **[`docs/`](docs/)** — all project documentation (see **Documentation** below).
-- **[`overlays/`](overlays/)** — the per-model identity overlays for the six siblings, the GT-BE98 and GT-BE19000 platform archives, the u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (hash-pinned; too large to ship as a patch).
+- **[`overlays/`](overlays/)** — the per-model identity overlays for the siblings, the GT-BE98, GT-BE19000 and BQ16 platform archives, the u-boot rtl8372 archives, and the OpenSSL 3.5 source archive (hash-pinned; too large to ship as a patch).
 - Root: [`LICENSE`](LICENSE) (GPL v2), [`LICENSE.reaper`](LICENSE.reaper) (the Reaper-specific notice), [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), [`DEPENDENCIES.md`](DEPENDENCIES.md), [`LICENSES/`](LICENSES/) (license texts), plus `SECURITY.md` and `CONTRIBUTING.md`.
 - **Compliance:** [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) (GPL source + written offer).
 
@@ -81,17 +81,17 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models
   (published 2026-09-08 <!--@pubdate-->). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on.
   Source rungs are cut more often than releases are published (many rungs — e.g. v2.6.1–v2.6.9, v2.7.0,
-  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.3.1** <!--@treever-->) is normally
+  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.3.2** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the
   static checks and the patch-marker manifest) before it is cut; the maintainer's RT-BE96U runs each rung on metal,
-  and the OpenSSL 3.5 move was validated there before its cut. The five BCM4916 siblings are built
-  clean-room in CI from the same patch series plus their identity overlays (the GT-BE98 and GT-BE19000 also
+  and the OpenSSL 3.5 move was validated there before its cut. The six BCM4916 siblings are built
+  clean-room in CI from the same patch series plus their identity overlays (the GT-BE98, GT-BE19000 and BQ16 also
   carry a platform archive); on-metal validation is owed on them.
 
 ## Legal
 
 - **GPL:** the GPL portions are under GPL v2 ([`LICENSE`](LICENSE)); the Reaper modifications are likewise GPL v2, with a Reaper-specific notice in [`LICENSE.reaper`](LICENSE.reaper). Publish your changes if you redistribute the GPL code.
-- **Proprietary components** (ASUS / Broadcom / Trend Micro / Tuxera) are **licensed for genuine ASUS hardware only** ([`docs/README.proprietary`](docs/README.proprietary)) and are intentionally **not** included here. This fork targets the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000, all BCM4916).
+- **Proprietary components** (ASUS / Broadcom / Trend Micro / Tuxera) are **licensed for genuine ASUS hardware only** ([`docs/README.proprietary`](docs/README.proprietary)) and are intentionally **not** included here. This fork targets the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 / ZenWiFi BQ16, all BCM4916).
 - **No warranty:** provided as-is; keep a recovery path ready when flashing. See the Disclaimer above for redistribution and support terms.
 
 Security reports: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

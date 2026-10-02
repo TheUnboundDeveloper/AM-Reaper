@@ -146,8 +146,8 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 12 <!--@fleetjobs--> jobs,
-      ~1.5 h each — six models)
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 14 <!--@fleetjobs--> jobs,
+      ~1.5 h each — seven models)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.3.0** · 2026-09-29 <!--@stamp-->
+> **Doc status:** current as of **v3.3.2** · 2026-10-02 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -9,8 +9,8 @@ per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
 Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
 The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
-**RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** are
-built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+**RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
+the **ZenWiFi BQ16** (BE25000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -46,6 +46,49 @@ node, not only on the primary router.
 
 ---
 
+## v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
+
+- **A firmware flash releases the USB volumes before it ejects them (field, RT-BE86U).** Every
+  flash path - the GUI upload handlers, the `upgrade` service and the update-check script - ran
+  `ejusb -1 0` before anything else was stopped. Stock's unmount stops only the NAS services and
+  the ASUS apps, so Entware's daemons (they stop from the user's `services-stop`, which only the
+  normal reboot path runs), a dnsmasq writing its log under `/opt` and rtrafd's history store
+  kept the volume busy: the eject failed for forty seconds, fell back to a lazy detach, and the
+  router flashed with a filesystem that was never cleanly unmounted. The next boot mounted it
+  only after dnsmasq had already failed to start. A new step, `reaper_usb_release`
+  (`rc/reaper_usbrel.c`), runs just before each of those ejects (and before the factory reset's)
+  and does what a reboot would have done first: the user's `services-stop` (once per flash),
+  rtrafd (it saves on SIGTERM), then every process still holding a file, its working directory,
+  its executable or a mapped library under `/tmp/mnt` - SIGTERM, five seconds, SIGKILL, names
+  logged. It does nothing while no USB volume is mounted, and the GUI's own Eject does not use
+  it. The watchdog leaves dnsmasq alone while it runs, so it cannot restart one that would
+  reopen a log on the volume. Behaviour change: a dnsmasq holding a file on the USB volume is
+  stopped for the length of the flash. Test `test_usb_flash_release.py` runs the sweep against
+  real holder processes.
+- **A boot clears a service request that survived the flash.** The new image refused every
+  `notify_rc` with "rc could not be informed (rc_last:restart_upgrade)" because `rc_service` still
+  named a service from the previous image; nothing on a boot ever cleared it. `init.c` now unsets
+  `rc_service`, `rc_service_pid` and `last_rc_service` beside the `ASUS_STOP_COMMIT` unset -
+  nothing can be mid-service that early. (The same report's reboot loop is not explained by
+  either fix and is still open.)
+- **The first-boot setup box (field, GT-BE98).** Chrome's saved-login autofill could put the
+  router password into the Wi-Fi password field, because both sat in one form and a browser
+  pairs a saved login with the first visible password field there. The Wi-Fi fields now live
+  outside the credential form, and the Wi-Fi key and the new login password are marked as new
+  passwords. Nothing is prepopulated any more, the router login name is lowercase only (folded
+  as you type), and the button reads **Apply & Reboot**. The form used to send a wait of zero,
+  so the hidden frame's reply sent the page back to itself within seconds while the router went
+  down; it now sends the model's reboot time, and the page shows the same REBOOTING screen the
+  GUI's Reboot shows - countdown, then it waits for the router to answer and goes to the login
+  page.
+- **ZenWiFi BQ16 (BE25000) joins the roster.** Quad-band 2.4/5/5/6 GHz on the BCM4916, built
+  from the ASUS 102_39256 GPL drop for every closed object and the stock 102_39256 image for the
+  radio firmware (BCM6717 + BCM6726, both stamped for the BQ16). networkmap is pinned to the
+  fleet's binary, so the client list does not hit the shared-memory mismatch the GT-BE98 once
+  had. No Realtek switch on this board (Broadcom PHYs and a BCM53134), so no switch blob. Both
+  variants build and pass verification; the System Information page maps its four radios like
+  the GT-BE98's. It publishes only as a prerelease until a unit has booted an image.
+
 ## v3.3.1 — a minimum channel width on Auto, one factory state on every model, the setup box finishes the main network
 
 - **Minimum width on Auto (Wireless › Settings, 5 and 6 GHz).** With Channel bandwidth on Auto the
@@ -73,7 +116,9 @@ node, not only on the primary router.
   doubling on a repeat within two hours (four hours at most), then re-arms. One `reaper_bwfloor`
   log line per lift and re-arm; the Settings cell reads Holding, Lifted, Not active or Not applied;
   the diagnostics report (v1.3.25, section 7) adds a `min width:` line and flags a lifted floor or
-  a stopped watcher. The rwatch tick restarts the watcher if it dies.
+  a stopped watcher. The rwatch tick restarts the watcher if it dies. A wireless restart stops the
+  watcher with the radios and starts it again once they are back (`wlready=1`), so the teardown
+  never counts towards a lift; `service restart_reaper_bwfloor` restarts it by hand.
 - **Dynamic puncturing: the confirmation scan reads more than busy time.** The passive scan that
   resolves a candidate already returns, per 20 MHz channel, the neighbouring networks heard there
   (channel, width and signal; names and addresses are not kept) and the PHY figures (noise floor,

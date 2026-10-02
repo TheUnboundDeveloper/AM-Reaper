@@ -43,6 +43,7 @@ case "$MODEL" in
   GT-BE98)     _WANT_BRANCH=gt-be98;;
   GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
   GT-BE19000)  _WANT_BRANCH=gt-be19000;;
+  BQ16)        _WANT_BRANCH=bq16;;
   RT-BE92U)    _WANT_BRANCH=rt-be92u;;
   *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
 esac
@@ -443,6 +444,9 @@ case "$MODEL" in
   RT-BE96U) UB_SYM=RTBE96U;;  RT-BE86U) UB_SYM=RTBE86U;;  RT-BE88U) UB_SYM=RTBE88U;;
   GT-BE98)  UB_SYM=GTBE98;;   GT-BE98_PRO) UB_SYM=GTBE98_PRO;;
   GT-BE19000) UB_SYM=GTBE19000;;
+  # BQ16 (2026-10-01): Broadcom PHYs + a BCM53134 switch, NO RTL8372. The Makefile
+  # gate below does not list $(BQ16), so the derivation stages no switch blob.
+  BQ16) UB_SYM=BQ16;;
   RT-BE92U) UB_SYM=RTBE92U;;
   *) UB_SYM="";;
 esac

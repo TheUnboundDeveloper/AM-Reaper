@@ -332,5 +332,122 @@ if "var REAPER_HTTPID = '<% nvram_get(\"http_id\"); %>';" not in host_src:
     die("AiMesh.asp does not provide REAPER_HTTPID - every overlay request would be refused")
 ok("topology overlay: every rebuild wrapped, mode-gated, cached, token-carrying, folds links and nodes")
 
-print("PASS: the non-routing paths are present on all five surfaces")
+# ---------------------------------------------------------------------------
+# 6. v3.3.3: the get_clientlist hook itself carries the device store on a box that
+#    is not routing, so the Network page cards, Parental Controls and the QoS
+#    pickers fill without a per-page overlay; each device names its network.
+# ---------------------------------------------------------------------------
+print("6. get_clientlist hook: httpd/web.c merges the device store when not routing")
+
+s = web_src.index("struct rdev {")
+rdev_struct = web_src[s:web_src.index("};", s)]
+for fld in ("char vif[16];", "int  unit;", "int  sdn;"):
+    if fld not in rdev_struct:
+        die("struct rdev lacks %r - a device cannot say which network it is on" % fld)
+hook = extract(web_src, "static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)", "web.c")
+if "if(!have_nmp && !rdev_nonrouting()){" not in hook:
+    die("the hook still answers empty without networkmap on a box that is not routing")
+if "if (have_nmp)\n\t\tget_client_detail_info(clients, macArray, SHMKEY_LAN);" not in hook:
+    die("the hook reads networkmap's shm even when networkmap is not running")
+m = hook.find("if (rdev_nonrouting())\n\t\trdev_merge_clientlist(clients, macArray);")
+if m < 0 or m > hook.index('json_object_object_add(clients, "maclist", macArray);'):
+    die("the device store is not merged before the maclist is sealed")
+# the DEFINITION, not the early prototype that shares its signature
+i = web_src.find("static void rdev_merge_clientlist(struct json_object *clients, struct json_object *macArray)\n{")
+if i < 0:
+    die("rdev_merge_clientlist() definition not found")
+merge = extract(web_src[i:], "static void rdev_merge_clientlist(struct json_object *clients, struct json_object *macArray)", "web.c")
+if "rdev_snapshot(RDEV_TTL);" not in merge:
+    die("the merge does not take the cached snapshot - the hook is polled every 10 s and the scan popen()s wl per VIF")
+if "if (!d->online || d->node || d->bh_sta) continue;" not in merge or "if (mlo_link) continue;" not in merge:
+    die("the merge does not leave nodes, backhaul stations and affiliated MLO links out")
+for tok in ('"from", json_object_new_string("reaper_dev")', '"isOnline", json_object_new_string("1")',
+            '"sdn_idx", json_object_new_string(sdn)', '"amesh_papMac", json_object_new_string(d->via)',
+            "rdev_maclist_has(macArray, d->mac)"):
+    if tok not in merge:
+        die("the merge lacks %s" % tok)
+i = web_src.find("static int rdev_nonrouting(void)\n{")
+if i < 0:
+    die("rdev_nonrouting() definition not found")
+gate = extract(web_src[i:], "static int rdev_nonrouting(void)", "web.c")
+if "SW_MODE_ROUTER" not in gate or "SW_MODE_HOTSPOT" not in gate:
+    die("rdev_nonrouting() is not the routing-modes gate the tiles and the topology overlay use")
+status = web_src[web_src.index("static void do_reaper_dev_cgi(char *url, FILE *stream)"):]
+status = status[:status.index('/* ---------------- SET_NAME')]
+if "rdev_snapshot(0);" not in status:
+    die("the status action no longer takes a fresh pass")
+if '\\"sdn\\":%d,\\"node\\":%d,\\"via\\":\\"%s\\"}' not in status:
+    die("the status JSON does not emit the device's network")
+fdb = extract(web_src, "static void rdev_scan_fdb(struct rdev *v, int *n)", "web.c")
+if "get_mtlan(pmtl, &sz)" not in fdb or 'rdev_scan_fdb_br(v, n, "br0"' not in fdb:
+    die("the bridge scan does not walk br0 plus every SDN bridge")
+i = web_src.find("static void rdev_scan_amesh(struct rdev *v, int *n)\n{")
+scan = extract(web_src[i:], "static void rdev_scan_amesh(struct rdev *v, int *n)", "web.c")
+if "rdev_sta_sdn(staval)" not in scan or "rdev_sta_sdn(wval)" not in scan:
+    die("the mesh scan does not record cfg_mnt's own network index for Wi-Fi and wired node clients")
+ok("hook merges the store when not routing; nodes/links left out; snapshot cached; status fresh; sdn emitted")
+
+# the three pure helpers, compiled from the real source against the in-tree json-c
+jsonc = os.path.join(src_root, "json-c")
+jsonc_srcs = [os.path.join(jsonc, f) for f in ("json_object.c", "json_tokener.c", "json_util.c", "linkhash.c",
+              "arraylist.c", "printbuf.c", "debug.c", "random_seed.c", "json_c_version.c", "json_object_iterator.c")]
+if all(os.path.isfile(p) for p in jsonc_srcs):
+    bridge_fn = extract(web_src, "static int rdev_sdn_of_bridge(const char *br, MTLAN_T *pmtl, size_t sz)", "web.c")
+    vif_in_fn = extract(web_src, "static int rdev_sdn_of_vif_in(json_object *list, const char *vif)", "web.c")
+    i = web_src.find("static int rdev_sta_sdn(json_object *staval)\n{")
+    sta_fn = extract(web_src[i:], "static int rdev_sta_sdn(json_object *staval)", "web.c")
+    harness = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "json.h"
+typedef struct { int enable; char name[64]; struct { char br_ifname[16]; } nw_t; struct { int sdn_idx; } sdn_t; } MTLAN_T;
+''' + bridge_fn + "\n" + vif_in_fn + "\n" + sta_fn + r'''
+static void row(MTLAN_T *m, int en, const char *name, const char *br, int idx)
+{ m->enable = en; snprintf(m->name, sizeof(m->name), "%s", name); snprintf(m->nw_t.br_ifname, 16, "%s", br); m->sdn_t.sdn_idx = idx; }
+int main(void)
+{
+	MTLAN_T t[5]; int fails = 0;
+	row(&t[0], 1, "LAN", "br0", 0); row(&t[1], 1, "MAINFH", "br0", 4); row(&t[2], 1, "MAINFH", "br0", 3);
+	row(&t[3], 1, "Guest", "br55", 5); row(&t[4], 0, "IoT", "br56", 6);
+	if (rdev_sdn_of_bridge("br0", t, 5) != 3) { puts("br0 should map to the lowest MAINFH row (3)"); fails++; }
+	if (rdev_sdn_of_bridge("br55", t, 5) != 5) { puts("br55 should map to its guest row (5)"); fails++; }
+	if (rdev_sdn_of_bridge("br56", t, 5) != -1) { puts("a disabled row must not place a device"); fails++; }
+	if (rdev_sdn_of_bridge("br99", t, 5) != -1) { puts("an unknown bridge must stay unknown"); fails++; }
+	if (rdev_sdn_of_bridge("br0", t, 1) != 0) { puts("without a MAINFH row br0 is the LAN row (0)"); fails++; }
+	{
+		const char *js = "{\"vif_used\":{\"AA:BB:CC:DD:EE:FF\":[{\"sdn_idx\":\"3\",\"sdn_vid\":\"1\",\"sdn_band\":[{\"band_idx\":\"1\",\"wl_prefix\":\"wl0.1\",\"wl_ifname\":\"wl0.1\"},{\"wl_ifname\":\"wl1.1\"}]},{\"sdn_idx\":5,\"sdn_band\":[{\"wl_ifname\":\"wl0.2\"}]},{\"sdn_idx\":\"9\"}]}}";
+		json_object *root = json_tokener_parse(js), *used = NULL, *list = NULL;
+		if (!root || !json_object_object_get_ex(root, "vif_used", &used) || !json_object_object_get_ex(used, "AA:BB:CC:DD:EE:FF", &list)) { puts("fixture parse"); return 2; }
+		if (rdev_sdn_of_vif_in(list, "wl1.1") != 3) { puts("wl1.1 should resolve to 3 (string sdn_idx)"); fails++; }
+		if (rdev_sdn_of_vif_in(list, "wl0.2") != 5) { puts("wl0.2 should resolve to 5 (int sdn_idx)"); fails++; }
+		if (rdev_sdn_of_vif_in(list, "wl9.9") != -1) { puts("an unmapped VIF must stay unknown"); fails++; }
+		if (rdev_sdn_of_vif_in(NULL, "wl1.1") != -1 || rdev_sdn_of_vif_in(root, "wl1.1") != -1) { puts("a missing or non-array list must be rejected"); fails++; }
+		json_object_put(root);
+	}
+	{
+		json_object *a = json_tokener_parse("{\"sdn_idx\":\"5\"}"), *b = json_tokener_parse("{\"sdn_idx\":7}"), *c = json_tokener_parse("{\"mld_mac\":\"x\"}"), *d = json_tokener_parse("[1]");
+		if (rdev_sta_sdn(a) != 5 || rdev_sta_sdn(b) != 7) { puts("sdn_idx as string and as int must both resolve"); fails++; }
+		if (rdev_sta_sdn(c) != -1 || rdev_sta_sdn(d) != -1 || rdev_sta_sdn(NULL) != -1) { puts("a station without sdn_idx, a non-object or NULL must stay unknown"); fails++; }
+		json_object_put(a); json_object_put(b); json_object_put(c); json_object_put(d);
+	}
+	return fails ? 1 : 0;
+}
+'''
+    td = tempfile.mkdtemp(prefix="apmode-sdn-")
+    csrc = os.path.join(td, "h.c"); cbin = os.path.join(td, "h")
+    with open(csrc, "w") as f:
+        f.write(harness)
+    p = subprocess.run([CC, "-O0", "-w", "-I", jsonc, "-o", cbin, csrc] + jsonc_srcs + ["-lm"], capture_output=True, text=True)
+    if p.returncode != 0:
+        die("the extracted sdn helpers do not compile against the in-tree json-c:\n" + p.stderr[:2000])
+    p = subprocess.run([cbin], capture_output=True, text=True)
+    if p.returncode != 0:
+        die("the sdn helpers misbehave:\n" + p.stdout)
+    ok("rdev_sdn_of_bridge / rdev_sdn_of_vif_in / rdev_sta_sdn compiled from source: 13 checks pass")
+    shutil.rmtree(td, ignore_errors=True)
+else:
+    ok("json-c sources absent - helper compile skipped, static checks above stand")
+
+print("PASS: the non-routing paths are present on all six surfaces")
 sys.exit(0)

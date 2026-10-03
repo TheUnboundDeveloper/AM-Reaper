@@ -595,6 +595,22 @@ sbin/rc|flash: releasing USB volumes before the eject|1
 sbin/rc|/tmp/.reaper_usb_release|1
 usr/sbin/httpd|/sbin/reaper_usb_release|1
 usr/sbin/webs_upgrade.sh|/sbin/reaper_usb_release|1
+# v3.3.3 -- a GUI reboot raced the same way (services-stop in the background, unmount seconds
+# later): init's reboot/halt path runs the release first and logs this line.
+sbin/rc|reboot: releasing USB volumes before the unmount|1
+# v3.3.3 -- swap on the volume is the one holder a process sweep cannot clear; the release
+# turns it off last. And the soft-lockup panic (held at 0 since v3.3.3) is put back by the
+# watchdog once the box has settled, dropped again by rc/usb.c around every mount.
+sbin/rc|swapoff %s FAILED|1
+sbin/rc|soft-lockup panic armed|1
+sbin/rc|/tmp/.reaper_usb_mount_at|1
+# v3.3.3 -- the USB mount watchdog (rc/reaper_usbmon.c): a lost mount event is re-sent (never
+# for a partition mounted once since boot), an aborted flash gives the volumes back, a
+# disk-less bus on a box with a post-mount script is re-enumerated once.
+sbin/rc|sending its mount event again|1
+sbin/rc|/tmp/.reaper_usb_mounted_|1
+sbin/rc|never happened - giving them back|1
+sbin/rc|UNTESTED recovery|1
 # v3.3.2 -- the first-boot box (GT-BE98 field report): Chrome's saved-login autofill set the
 # Wi-Fi key to the router password (same form), the login name came prepopulated, and the
 # apply bounced back to the page after a few seconds instead of showing the reboot. The Wi-Fi
@@ -606,3 +622,51 @@ www/Reaper_WiFiSetup.asp|oninput="lowerLogin(this)"|1
 www/Reaper_WiFiSetup.asp|!name="action_wait" value="0"
 www/Reaper_WiFiSetup.asp|!value="<% nvram_get("http_username"); %>"
 www/EN.dict|Apply & Reboot|1
+# v3.3.3 -- every stock client view on a box that is not routing (the Network page cards
+# and Clients tab, Parental Controls, the QoS pickers): the get_clientlist hook merges
+# Reaper's device store itself, with the network each device is on, instead of one
+# overlay per page (GT-BE19000 tester, Access Point mode).
+usr/sbin/httpd|"sdn":%d,"node":%d,"via":"%s"}|1
+usr/sbin/httpd|%s_ssid|1
+# v3.3.3 -- the USB boot chain (RT-BE86U field 2026-10-02, Entware/amtm on a USB SSD):
+# the pre-mount cap stops the whole process group (libshared, run_custom_script_bounded),
+# an EBUSY mount is waited for (rc, mount_r), a dnsmasq log-facility into a missing
+# directory is dropped instead of killing the resolver (rc, start_dnsmasq + watchdog),
+# and a soft lockup logs instead of panicking into a reboot loop (rc, init sysctl).
+usr/lib/libshared.so|did not finish in %d s - stopped it and everything it started|1
+sbin/rc|is busy (a disk check still running?)|1
+sbin/rc|/tmp/.reaper_dnsmasq_logdrop|1
+sbin/rc|/proc/sys/kernel/softlockup_panic|1
+# v3.3.3 -- br0 dnsmasq exited on "failed to send packet: Network is unreachable" (RT-BE96U
+# metal, every boot + WAN re-home: auto-WAN-port swaps br0's address, the IP_PKTINFO source is
+# no longer local, the kernel answers ENETUNREACH, the ASUS exit(0) fires) and the LAN had no
+# DNS/DHCP for ~20 s. Transient routing errnos now log and drop the one reply (dnsmasq,
+# send_from); every other errno keeps the exit.
+usr/sbin/dnsmasq|transient, reply dropped, not exiting|1
+# v3.3.3 -- dashboard Security Posture card (field "cut off in Safari", 2026-10-03): the
+# two-column grid used 1fr tracks, which floor at a row min-content, so the Wi-Fi
+# Encryption label pinned the first column and .card{overflow:hidden} cut the second
+# column tags under ~1500 px and on phones. The shipped page must carry the shrinkable
+# tracks and the 15 tooltip-enabled labels, and never the old 1fr pair.
+www/Main_ReaperDash.asp|repeat(2,minmax(0,1fr))|1
+www/Main_ReaperDash.asp|class="sub2 rtip"|15
+www/Main_ReaperDash.asp|!grid-template-columns:1fr 1fr
+# v3.3.3 -- the stock boot-time slabdbg() dump (closed rc/broadcom.o: meminfo, free,
+# slabinfo, bpm status, ~230 "dbg:" lines after start_services) sits behind the stock
+# dbg nvram flag; the gate logs one line when it is enabled, which is this marker.
+sbin/rc|slabdbg: nvram dbg=1, dumping memory statistics|1
+# v3.3.3 -- five efficiency fixes from the 2026-08-28 performance audit (2026-10-03):
+# the diag collector runs detached and the page starts/polls/fetches (P2), the Warden
+# stats poll reads one ipset header listing instead of forking per set (P13), the
+# Warden cache replay skips sets that are already populated (P9), rtrafd runs tmctl
+# and ping by fork+exec with a poll() deadline instead of a four-process shell wrapper,
+# and the fqdn set cache is rewritten to /jffs only when it changed (P14). The bondst
+# and clientlist nvram write guards (P35a / P30) leave no string to pin.
+usr/sbin/httpd|diag collector started detached|1
+www/Reaper_Diag.asp|'&action='+action|1
+www/Reaper_Diag.asp|req('status', 15000|1
+www/Reaper_Diag.asp|!x.timeout=180000
+sbin/rc|# stats: one ipset -t list for every set|1
+sbin/rc|already populated, skipped|1
+bin/rtrafd|did not answer in|1
+sbin/rc|# fqdn cache: rewrite only when changed|1

@@ -1,0 +1,434 @@
+From 8d0b70213e8c741f8fb98fca88645ba60ed083f0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 3 Oct 2026 12:24:33 -0400
+Subject: [PATCH] reaper: Warden stats from one ipset listing, cache replay
+ skips populated sets, rtrafd runs tmctl and ping without a shell, the fqdn
+ cache is written only when it changed
+
+Four items from the 2026-08-28 efficiency audit (P13, P9, the rtrafd item,
+P14); P35a and P30 ride in the previous commits' files.
+
+- rwarden.c rw_gen_stats() (P13): the Warden page's 30 s poll forked one
+  `ipset -t list` and one sed per country set inside httpd (~360 processes).
+  Now ONE `ipset -t list`, parsed by awk into "<name> <entries>" lines, and
+  TN/TN6/GN/GE/GZ are read from that (7 processes). Marker "# stats: one ipset
+  -t list for every set".
+- rwarden.c rw_gen_apply() (P9): the cache replay in apply.sh re-fed every set
+  on every firewall rebuild - up to 800k add-lines into sets that were already
+  full on each WAN bounce or Apply. The replay loop takes RWFULL/RWEMPTY from
+  one header listing, skips populated sets and logs "cache replay: N set(s)
+  already populated, skipped". Boot is unchanged: every set is empty there and
+  is replayed. fprintf-emitted shell - no % in that block.
+- rtrafd.c rt_exec_bounded(): pipe + fork + execvp, poll() against a
+  CLOCK_MONOTONIC deadline, a bounded post-EOF waitpid loop, SIGKILL and
+  "rtrafd: %s did not answer in %d s - killed" on timeout. Replaces rt_bound(),
+  the four-process shell wrapper (command, watcher subshell, its sleep, wait)
+  that seven tmctl queries per 4 s under HW QoS turned into ~7 forks/s, the
+  largest Reaper-owned share of an idle box's churn. poll_classes() keeps the
+  last reading when a queue answers nothing - no zero that the next poll turns
+  into a full-counter spike; the other queues carry on. poll_probe's ping goes
+  the same way (host_ok() bounds the characters). rtrafd has no SIGCHLD
+  handler. The store windows' monotonic clock (mono_secs: the NTP step expired
+  STORE_RETRY_SECS at once and parked a merely late USB store's history as
+  .prev) is in the same file.
+- reaper_fw.c rfw_gen_resolve() (P14): the fqdn set cache under /jffs is
+  rewritten only when `cmp -s` says the members changed - a static list was
+  hitting flash 144 times a day per set (busybox CMP=y). Marker "# fqdn cache:
+  rewrite only when changed".
+- rtrafd/.gitignore: the rc/.gitignore pattern for the build outputs.
+
+Built and verified on RT-BE96U MCP v3.3.3_BETA_r5 (reaper_verify 34/0/0);
+QoS class tiles live and no "sleep 3" orphans are the metal asks.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_fw.c    |   6 +-
+ release/src/router/rc/rwarden.c      |  36 +++--
+ release/src/router/rtrafd/.gitignore |   5 +
+ release/src/router/rtrafd/rtrafd.c   | 200 ++++++++++++++++++---------
+ 4 files changed, 173 insertions(+), 74 deletions(-)
+ create mode 100644 release/src/router/rtrafd/.gitignore
+
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 5223586af0..fc8ef1d41a 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -1109,7 +1109,11 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 	  "  for s in $SAVE; do\n"
+ 	  "    N=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$N\" ] || N=0\n"
+ 	  "    [ \"$N\" -gt 0 ] || continue\n"
+-	  "    ipset save $s 2>/dev/null | sed -n 's/ timeout [0-9]*$//; /^add /p' > " RFW_SETCACHE "/$s.tmp && mv " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s\n"
++	  /* 2026-10-03 (perf audit P14): rewrite only when the members changed - a
++	   * static list was hitting /jffs 144 times a day per set. */
++	  "    ipset save $s 2>/dev/null | sed -n 's/ timeout [0-9]*$//; /^add /p' > " RFW_SETCACHE "/$s.tmp\n"
++	  "    # fqdn cache: rewrite only when changed\n"
++	  "    if cmp -s " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s 2>/dev/null; then rm -f " RFW_SETCACHE "/$s.tmp; else mv " RFW_SETCACHE "/$s.tmp " RFW_SETCACHE "/$s; fi\n"
+ 	  "  done\n"
+ 	  "  for fpath in " RFW_SETCACHE "/" RFW_SET4 "* " RFW_SETCACHE "/" RFW_SET6 "*; do\n"
+ 	  "    [ -f \"$fpath\" ] || continue; b=${fpath##*/}; case \" $SAVE \" in *\" $b \"*) ;; *) rm -f \"$fpath\";; esac\n"
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 3adbf66d45..2769332e68 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -744,14 +744,26 @@ static void rw_gen_apply(void)
+ 	   * 2026-08-21 fix established - just not quadratic. */
+ 	  "  RWRP=" RW_DIR "/replay; rm -rf \"$RWRP\"; mkdir -p \"$RWRP\"\n"
+ 	  "  awk -v d=\"$RWRP\" '$1==\"add\" && $2 ~ /^rw_[A-Za-z0-9_]*$/ { o=d \"/\" $2; if (o!=cur) { if (cur!=\"\") close(cur); cur=o } print >> o }' " RW_SAVE " 2>/dev/null\n"
+-	  "  RWLIVE=$(ipset list -n 2>/dev/null)\n"
++	  /* 2026-10-03 (perf audit P9): a set that is already populated keeps what
++	   * it has. The replay exists for the boot-without-internet case, where
++	   * every set was just created empty; on every later rebuild (WAN bounce,
++	   * Apply, rwatch heal) the live sets are at least as fresh as the cache
++	   * written FROM them, so re-feeding up to 800k add-lines through the
++	   * kernel bought nothing. One header listing names the empty sets (the
++	   * ones to replay) and the populated ones (skipped, counted, logged). */
++	  "  RWSETS=$(ipset -t list 2>/dev/null | awk '/^Name:/{n=$2} /^Number of entries:/{print n, $4+0}')\n"
++	  "  RWEMPTY=\" $(echo \"$RWSETS\" | awk '$2==0{s=s $1 \" \"} END{print s}')\"\n"
++	  "  RWFULL=\" $(echo \"$RWSETS\" | awk '$2>0{s=s $1 \" \"} END{print s}')\"\n"
++	  "  RWSK=0\n"
+ 	  "  for p in \"$RWRP\"/rw_*; do\n"
+ 	  "    [ -f \"$p\" ] || continue\n"
+ 	  "    s=${p##*/}\n"
+-	  "    echo \"$RWLIVE\" | grep -qx \"$s\" || continue\n"
++	  "    case \"$RWFULL\" in *\" $s \"*) RWSK=$((RWSK+1)); continue;; esac\n"
++	  "    case \"$RWEMPTY\" in *\" $s \"*) ;; *) continue;; esac\n"
+ 	  "    RN=$(ipset restore -exist < \"$p\" 2>&1 | head -1)\n"
+ 	  "    [ -z \"$RN\" ] || logger -t rwarden \"cache restore for set $s: $RN\"\n"
+ 	  "  done\n"
++	  "  [ \"$RWSK\" -eq 0 ] || logger -t rwarden \"cache replay: $RWSK set(s) already populated, skipped\"\n"
+ 	  "  rm -rf \"$RWRP\"\n"
+ 	  "fi\n");
+ 	/* manual allow/ban from nvram (validated; v4/v6 auto-routed) */
+@@ -1475,18 +1487,22 @@ static void rw_gen_stats(void)
+ 	  "LU=$(_nv rwarden_lastupd); [ -n \"$LU\" ] || LU=0\n"
+ 	  "ARMED=0; iptables -nL REAPER_WARDEN >/dev/null 2>&1 && ARMED=1\n"
+ 	  "V6=0; ip6tables -nL REAPER_WARDEN >/dev/null 2>&1 && V6=1\n"
+-	  "TN=$(ipset -t list rw_threat 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN\" ] || TN=0\n"
+-	  "TN6=$(ipset -t list rw_threat6 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$TN6\" ] || TN6=0\n"
+-	  "GN=$(ipset list -n 2>/dev/null | grep -c '^rw_g_')\n"
++	  /* 2026-10-03 (perf audit P13): ONE `ipset -t list` for every set, parsed
++	   * once. This used to fork ipset+sed PER SET - ~180 sets with a full
++	   * country selection, ~360 processes - inside httpd on every 30 s poll,
++	   * and the whole GUI stalled for the duration each time. The header
++	   * listing is a "Name:" line and a "Number of entries:" line per set. */
++	  "# stats: one ipset -t list for every set\n"
++	  "SETS=$(ipset -t list 2>/dev/null | awk '/^Name:/{n=$2} /^Number of entries:/{print n, $4+0}')\n"
++	  "TN=$(echo \"$SETS\" | awk '$1==\"rw_threat\"{print $2; exit}'); [ -n \"$TN\" ] || TN=0\n"
++	  "TN6=$(echo \"$SETS\" | awk '$1==\"rw_threat6\"{print $2; exit}'); [ -n \"$TN6\" ] || TN6=0\n"
++	  "GN=$(echo \"$SETS\" | grep -c '^rw_g_')\n"
+ 	  /* geo_e = prefixes actually loaded across every country set (v4+v6);
+ 	   * geo_empty = selected countries whose v4 set holds nothing. The page used
+ 	   * to show only the number of countries SELECTED, which read as healthy
+ 	   * while every set was empty (the 2026-08-21 report). */
+-	  "GE=0; GZ=0\n"
+-	  "for s in $(ipset list -n 2>/dev/null | grep -E '^rw_g6?_[a-z][a-z]$'); do\n"
+-	  "  n=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p'); [ -n \"$n\" ] || n=0\n"
+-	  "  GE=$((GE+n)); case $s in rw_g_*) [ \"$n\" -eq 0 ] && GZ=$((GZ+1));; esac\n"
+-	  "done\n"
++	  "GE=$(echo \"$SETS\" | awk '$1 ~ /^rw_g6?_[a-z][a-z]$/ {s+=$2} END{print s+0}')\n"
++	  "GZ=$(echo \"$SETS\" | awk '$1 ~ /^rw_g_[a-z][a-z]$/ && $2==0 {z++} END{print z+0}')\n"
+ 	  "SV=1; [ \"$(_nv rwarden_stats_save)\" = 0 ] && SV=0\n"
+ 	  "RI=$(_nv rwarden_reset)\n"
+ 	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
+diff --git a/release/src/router/rtrafd/.gitignore b/release/src/router/rtrafd/.gitignore
+new file mode 100644
+index 0000000000..1f9f8b2576
+--- /dev/null
++++ b/release/src/router/rtrafd/.gitignore
+@@ -0,0 +1,5 @@
++# build outputs (the rc/.gitignore pattern): never commit the binary or its objects
++*.o
++*.depend
++.rtrafd.depend
++rtrafd
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index f7ca562dfc..28dbfe981c 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -41,6 +41,8 @@
+ #include <stdint.h>
+ #include <time.h>
+ #include <signal.h>
++#include <poll.h>
++#include <sys/wait.h>
+ #include <syslog.h>
+ #include <errno.h>
+ #include <dirent.h>
+@@ -112,6 +114,17 @@
+ 				 * slow HDD spin-up can blow past STORE_RETRY_SECS,
+ 				 * and the saved history is worth far more than the
+ 				 * since-boot RAM rings. Past this, RAM data wins. */
++/* v3.3.3: seconds on the monotonic clock. The two store windows compared time(NULL)
++ * with a start time taken before NTP: the step (hours, or years on a box without an RTC)
++ * expired STORE_RETRY_SECS at once and a step past LATE_LOAD_SECS parked a merely
++ * late USB store's history as .prev. */
++static time_t mono_secs(void)
++{
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return ts.tv_sec;
++}
++
+ #define DB_MAGIC	0x52545246	/* "RTRF" */
+ #define DB_VER		2	/* v2.2.2: NCLI 64->192 changed dbhdr_t layout; a v1
+ 				 * file no longer matches and is safely parked as .prev */
+@@ -962,69 +975,124 @@ static void poll_ifaces(const char *wanif)
+ 	last_if_rx[0] = rxb; last_if_tx[0] = txb; have_if_last[0] = 1;
+ }
+ 
+-/* Bound a child command in the SHELL. rtrafd is a single-threaded ~10 Hz
+- * collector with no watchdog: poll_classes() forks seven `tmctl` every 4 s and
+- * poll_probe() one `ping` every 5 s, and plain popen()/pclose() puts no ceiling
+- * on either - pclose() blocks until the child exits, however long that takes.
+- * `ping -W` bounds the REPLY wait, not name resolution, so with dnsmasq
+- * restarting a hostname probe parks in the resolver for tens of seconds and the
+- * whole collector - WAN sampling, live.json, history rollover - stops with it.
+- * busybox has no `timeout` applet (rmcpd records the same) and popen() hands
+- * back no pid to kill, so the ceiling goes inside the command: run it in the
+- * background, arm a killer, take whichever finishes first.
+- *
+- * The watcher MUST NOT inherit the pipe (v2.8.6 field regression): a popen
+- * reader gets EOF only when every holder of the write fd has closed it, and
+- * the watcher subshell - and the sleep it forks, which `kill $_w` does not
+- * reach - held a copy for the full timeout. So a tmctl that answered in
+- * milliseconds still cost the caller `secs` seconds of fgets(): 7 queues x 3 s
+- * every 4 s class poll froze the whole collector, live.json included, which
+- * the page renders as flatlined metrics that lurch forward every ~20 s.
+- * Redirecting the watcher to /dev/null before it forks is the entire fix;
+- * measured in the popen harness: 3.008 s -> 0.005 s fast path, hung child
+- * still killed at `secs`.
+- *
+- * v3.2.3 (measured 2026-09-20): `kill $_w` reached the watcher subshell but not
+- * the `sleep` it had forked, so every fast-path query orphaned one sleep to
+- * pid 1, and its exit `secs` later was a SIGCHLD wake of init - four full /proc
+- * scans each (check_services) - seven times per 4 s class poll: half of what an
+- * idle box burned in pid 1. The watcher now traps TERM and kills AND reaps its
+- * own sleep, and the main shell reaps the watcher, so nothing reaches pid 1.
+- * The sleep is forked before the trap is armed: a TERM in the microsecond gap
+- * between the two strands that one sleep (the old behaviour, once); the other
+- * order would have the trap kill an inherited, already-reaped pid instead.
+- * Harness (busybox ash): a 50 ms command
+- * returns in 52 ms with no sleep left behind (the old form left one per call);
+- * a hung single command is still killed at `secs`. The long-term shape is still
+- * fork+exec with a poll() deadline: one process per query, no shell. */
+-static void rt_bound(char *out, size_t n, const char *cmd, int secs)
+-{
+-	snprintf(out, n,
+-	         "{ %s; } & _c=$!; "
+-	         "{ sleep %d & trap 'kill $! 2>/dev/null; wait $! 2>/dev/null; exit' TERM; wait $!; kill -9 $_c 2>/dev/null; } >/dev/null 2>&1 & _w=$!; "
+-	         "wait $_c 2>/dev/null; kill $_w 2>/dev/null; wait $_w 2>/dev/null",
+-	         cmd, secs);
++/* Run ONE command with a deadline and no shell. rtrafd is a single-threaded
++ * ~10 Hz collector with no watchdog: poll_classes() runs seven `tmctl` every
++ * 4 s and poll_probe() one `ping` every 5 s, and plain popen()/pclose() puts
++ * no ceiling on either - `ping -W` bounds the reply wait, not name resolution.
++ * Until 2026-10-03 the ceiling lived in a shell wrapper (rt_bound: the
++ * command, a watcher subshell and its sleep, wait on whichever finished
++ * first). It was correct after two field fixes - v2.8.6: the watcher must not
++ * inherit the pipe or the reader waits the full timeout; v3.2.3: the watcher
++ * must reap its own sleep or pid 1 pays four /proc scans per orphan - but it
++ * was four processes per query, and seven queries per 4 s under HW QoS made
++ * that ~7 forks/s, the largest Reaper-owned share of an idle box's churn. This
++ * is the shape those notes named as the long-term one: fork + exec, the
++ * child's stdout on a pipe, the parent poll()ing it against a CLOCK_MONOTONIC
++ * deadline, and a child that has not finished by then killed and reaped here.
++ * Output beyond the caller's buffer is drained and dropped (both callers read
++ * short key: value lines). Returns the byte count - 0 when nothing arrived
++ * (timeout, missing binary) - or -1 when the pipe or the fork itself failed. */
++static long rt_now_ms(void)
++{
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
++}
++
++static ssize_t rt_exec_bounded(char *const argv[], char *out, size_t outsz, int secs)
++{
++	int pfd[2], status, timedout = 0;
++	pid_t pid;
++	size_t got = 0;
++	long deadline;
++
++	if (outsz == 0) return -1;
++	out[0] = '\0';
++	if (pipe(pfd) != 0) return -1;
++	pid = fork();
++	if (pid < 0) {
++		close(pfd[0]); close(pfd[1]);
++		return -1;
++	}
++	if (pid == 0) {
++		int fd;
++		close(pfd[0]);
++		dup2(pfd[1], 1);
++		if (pfd[1] != 1) close(pfd[1]);
++		fd = open("/dev/null", O_RDWR);
++		if (fd >= 0) {
++			dup2(fd, 0);
++			dup2(fd, 2);
++			if (fd > 2) close(fd);
++		}
++		execvp(argv[0], argv);
++		_exit(127);
++	}
++	close(pfd[1]);
++	deadline = rt_now_ms() + (long)secs * 1000L;
++	for (;;) {
++		struct pollfd pd;
++		long left = deadline - rt_now_ms();
++		ssize_t n;
++		int r;
++		if (left <= 0) { timedout = 1; break; }
++		pd.fd = pfd[0]; pd.events = POLLIN; pd.revents = 0;
++		r = poll(&pd, 1, (int)left);
++		if (r < 0) {
++			if (errno == EINTR) continue;
++			break;
++		}
++		if (r == 0) { timedout = 1; break; }
++		if (got + 1 < outsz) {
++			n = read(pfd[0], out + got, outsz - 1 - got);
++			if (n > 0) { got += (size_t)n; out[got] = '\0'; }
++		} else {
++			char sink[256];
++			n = read(pfd[0], sink, sizeof(sink));
++		}
++		if (n <= 0) break;	/* EOF: the child closed its end (or an error) */
++	}
++	close(pfd[0]);
++	/* EOF normally means the child is exiting; give it the rest of the
++	 * deadline, never an open-ended wait (a child that closed stdout and
++	 * kept running would otherwise park the whole collector). */
++	while (!timedout) {
++		pid_t w = waitpid(pid, &status, WNOHANG);
++		if (w == pid) return (ssize_t)got;
++		if (w < 0 && errno != EINTR) return (ssize_t)got;
++		if (rt_now_ms() >= deadline) { timedout = 1; break; }
++		usleep(10000);
++	}
++	syslog(LOG_WARNING, "rtrafd: %s did not answer in %d s - killed", argv[0], secs);
++	kill(pid, SIGKILL);
++	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
++		;
++	return (ssize_t)got;
+ }
+ 
+ static void poll_classes(const char *wanif)
+ {
+ 	int qid;
+-	char raw[160], cmd[512], line[160];
++	char out[2048], qs[8], *l, *nl;
+ 	if (!cfg_qos_on) {			/* cached at 1 Hz (refresh_cfg), same test */
+ 		have_cls_last = 0;
+ 		return;
+ 	}
+ 	for (qid = 0; qid <= 6; qid++) {
+ 		uint64_t txb = 0, dp = 0;
+-		FILE *p;
+-		snprintf(raw, sizeof(raw), "tmctl getqstats --devtype 0 --if %s --qid %d", wanif, qid);
+-		rt_bound(cmd, sizeof(cmd), raw, 3);
+-		if ((p = popen(cmd, "r")) == NULL) return;
+-		while (fgets(line, sizeof(line), p)) {
+-			sscanf(line, " txBytes: %llu", (unsigned long long *)&txb);
+-			sscanf(line, " droppedPackets: %llu", (unsigned long long *)&dp);
++		char *av[] = { "tmctl", "getqstats", "--devtype", "0", "--if", (char *)wanif, "--qid", qs, NULL };
++		snprintf(qs, sizeof(qs), "%d", qid);
++		/* 2026-10-03: one process per query (rt_exec_bounded), no shell. A
++		 * query that answered nothing - timed out, tmctl missing - leaves the
++		 * last reading alone instead of banking a zero that the next poll
++		 * would turn into a full-counter spike; the other queues carry on. */
++		if (rt_exec_bounded(av, out, sizeof(out), 3) <= 0) continue;
++		for (l = out; l != NULL && *l != '\0'; l = nl) {
++			nl = strchr(l, '\n');
++			if (nl != NULL) *nl++ = '\0';
++			sscanf(l, " txBytes: %llu", (unsigned long long *)&txb);
++			sscanf(l, " droppedPackets: %llu", (unsigned long long *)&dp);
+ 		}
+-		pclose(p);
+ 		if (have_cls_last && txb >= last_cls_txb[qid] && dp >= last_cls_dp[qid])
+ 			ring_add(r_cls[qid], txb - last_cls_txb[qid], dp - last_cls_dp[qid]);
+ 		last_cls_txb[qid] = txb; last_cls_dp[qid] = dp;
+@@ -1541,23 +1609,28 @@ static void poll_conntrack(void)
+ 
+ static void poll_probe(void)
+ {
+-	char tgt[64], raw[128], cmd[512], line[256];
+-	FILE *p;
++	char tgt[64], out[2048], *l, *nl;
+ 	int got = 0;
++	ssize_t r;
+ 	strlcpy(tgt, nvram_safe_get("rtraf_probe"), sizeof(tgt));
+ 	if (!host_ok(tgt)) return;
+-	snprintf(raw, sizeof(raw), "ping -c 1 -W 2 %s 2>/dev/null", tgt);
+-	rt_bound(cmd, sizeof(cmd), raw, 6);
+-	if ((p = popen(cmd, "r")) == NULL) return;
+-	while (fgets(line, sizeof(line), p)) {
+-		char *t = strstr(line, "time=");
++	{
++		/* 2026-10-03: no shell - host_ok() already bounds the characters */
++		char *av[] = { "ping", "-c", "1", "-W", "2", tgt, NULL };
++		r = rt_exec_bounded(av, out, sizeof(out), 6);
++	}
++	if (r < 0) return;
++	for (l = out; l != NULL && *l != '\0'; l = nl) {
++		char *t;
++		nl = strchr(l, '\n');
++		if (nl != NULL) *nl++ = '\0';
++		t = strstr(l, "time=");
+ 		if (t) {
+ 			double ms = atof(t + 5);
+ 			prb_rtt_sum += (uint64_t)(ms * 1000.0);
+ 			got = 1;
+ 		}
+ 	}
+-	pclose(p);
+ 	prb_n++;
+ 	if (!got) prb_lost++;
+ }
+@@ -2463,7 +2536,7 @@ int main(int argc, char **argv)
+ 	umask(077);
+ 	char wanif[24], dbpath[160];
+ 	const char *store;
+-	time_t last_save, boot_t;
++	time_t last_save, boot_m;	/* v3.3.3: monotonic, see mono_secs() */
+ 	int db_attached = 0;	/* requested store reachable + old db (if any) loaded */
+ 	int db_gave_up = 0;	/* retry window expired without the medium appearing */
+ 	int i;
+@@ -2534,7 +2607,7 @@ int main(int argc, char **argv)
+ 		       "rtrafd: store '%s' not mounted yet - holding history in RAM and retrying for %d s",
+ 		       nvram_safe_get("rtraf_path"), STORE_RETRY_SECS);
+ 	}
+-	boot_t = time(NULL);
++	boot_m = mono_secs();
+ 	last_save = time(NULL);
+ 	refresh_cfg();		/* seed cached config before the first live write */
+ 	/* LOG_NOTICE so it clears the default syslog threshold and shows in logread */
+@@ -2551,6 +2624,7 @@ int main(int argc, char **argv)
+ 	int h_phase = HP_IDLE;			/* v2.2.4 health-cycle phase (was: single h_open flag) */
+ 	while (running) {
+ 		time_t now = time(NULL);
++		time_t now_m = mono_secs();	/* v3.3.3: the store windows below */
+ 		uint64_t wrx0, wtx0;
+ 		struct timespec t0, tsamp, tcls;
+ 
+@@ -2687,7 +2761,7 @@ int main(int argc, char **argv)
+ 			 * Restoring overwrites at most STORE_RETRY_SECS of since-boot RAM
+ 			 * data with the whole saved history - the right trade this early. */
+ 			if (!db_attached && !db_gave_up && nvram_safe_get("rtraf_path")[0]) {
+-				if (now - boot_t <= STORE_RETRY_SECS) {
++				if (now_m - boot_m <= STORE_RETRY_SECS) {
+ 					store = resolve_store(dbpath, sizeof(dbpath));
+ 					set_store_dir(dbpath);
+ 					if (dbpath[0]) {
+@@ -2721,7 +2795,7 @@ int main(int argc, char **argv)
+ 			 * box up for hours, the RAM data wins: park the file as .prev,
+ 			 * then own the path. Either way never overwrite unread history. */
+ 			if (dbpath[0] && !db_attached) {
+-				if (now - boot_t <= LATE_LOAD_SECS && db_load(dbpath) > 0) {
++				if (now_m - boot_m <= LATE_LOAD_SECS && db_load(dbpath) > 0) {
+ 					db_align();
+ 					syslog(LOG_NOTICE, "rtrafd: store appeared late - history restored from %s", dbpath);
+ 				} else
+-- 
+2.25.1
+

@@ -46,6 +46,84 @@ node, not only on the primary router.
 
 ---
 
+## v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
+
+- **A USB volume that is late or missing no longer takes the LAN resolver down (field, RT-BE86U,
+  Entware).** The stock boot order loads the USB storage drivers after `services-start`, so a
+  dnsmasq whose postconf put its log, a `conf-file` or a `conf-dir` on `/opt` exited on every boot
+  and the LAN had no DNS or DHCP until the volume mounted - or for good when it did not.
+  `start_dnsmasq` now drops such a line whose path is not there yet, logs it, and the watchdog
+  restarts dnsmasq once the path exists. Beside it: the `pre-mount` cap (now 300 s) stops the
+  script together with anything it started - an orphaned `e2fsck` used to hold the device and the
+  mount then failed for good; a busy device is waited for up to 120 s instead of abandoned; and a
+  new mount watchdog (`rc/reaper_usbmon.c`) re-sends a lost mount event for a partition never
+  mounted since boot (three tries, 30 min window), gives the volumes back after a flash that never
+  took, and once re-enumerates a storage device that produced no disk - RT-BE96U and RT-BE86U have
+  no USB power control, and that last path is logged as untested.
+- **A reboot releases the USB volumes before it unmounts them (field, RT-BE86U).** v3.3.2 fixed the
+  flash path; a GUI reboot had the same race - `init` started `services-stop` in the background and
+  unmounted seconds later with Entware still up (35 busy retries, a lazy detach, a dirty volume).
+  The reboot and halt paths now run `reaper_usb_release reboot` first: `services-stop` to
+  completion, the holder sweep, then `swapoff` of every swap under `/tmp/mnt` - a swap file is the
+  one holder a process sweep cannot clear, and it kept a detached volume mounted through the final
+  kill. The flash path gets the swapoff too. On the RT-BE96U the volume unmounted 12 s after the
+  release with no busy line and the next boot mounted a clean journal.
+- **The soft-lockup panic is held off through boot and USB mounts.** This kernel is built with
+  `BOOTPARAM_SOFTLOCKUP_PANIC=y`, so a CPU stalled for 20 s - swap I/O to a USB disk through the
+  post-mount storm on a 1 GB box - panics and reboots with nothing kept. `init` writes
+  `softlockup_panic=0` at boot and `rc/usb.c` around every mount; the watchdog arms it again once
+  the box has been up 600 s and no mount has been active for 300 s (logged; seen at 624 s on the
+  RT-BE96U). A truly hung box is still reset by the hardware watchdog.
+- **LAN DNS and DHCP no longer drop for ~20 s at boot or when the WAN re-homes (RT-BE96U).**
+  dnsmasq exited on a transient "Network is unreachable" while auto-WAN-port briefly held the WAN
+  address on `br0`, and came back only when the watchdog respawned it. The `exit(0)` in
+  `send_from()` is an ASUS addition: for `ENETUNREACH` and `EHOSTUNREACH` it now logs (at most once
+  per 10 s) and drops the one reply, as upstream dnsmasq does; every other send failure keeps the
+  exit. The conf is `bind-dynamic`, so the address is re-tracked without a restart.
+- **Every client list fills on a box that is not routing (GT-BE19000 tester, Access Point mode).**
+  The Network page's cards and Clients tab, Parental Controls and the QoS pickers all read
+  networkmap's `get_clientlist` hook, which never marks a client present without DHCP leases and
+  conntrack. httpd now merges Reaper's own presence scan into that hook on a non-routing box, once,
+  for all of them (the dashboard tiles and the AiMesh node card had each grown their own overlay);
+  a row networkmap produced is kept and marked present, a device it does not know is added. Each
+  present device is also given its network - cfg_mnt's answer, the VIF map, or the bridge the cable
+  was learned on; the FDB scan now walks every SDN bridge, so a guest VLAN's wired clients land on
+  their own card.
+- **The Diagnostics report no longer freezes the web interface while it is collected.** The
+  collector ran inside httpd's single thread, so every page and the login page waited for it. It
+  now runs as a detached worker; the page starts it, polls every 2 s and fetches the report when it
+  is ready (cap 5 min). Same tokens, no dictionary change.
+- **Less background churn (from the 2026-08-28 efficiency audit).** The Warden page's 30 s poll ran
+  one `ipset` and one `sed` per country set inside httpd (~360 processes); it now reads one
+  `ipset -t list` listing (7). Firewall rebuilds re-fed every Warden block list from the on-disk
+  cache - up to 800,000 entries into sets that were already full, on each WAN bounce or Apply;
+  populated sets are now skipped and the count logged (a boot still restores them). rtrafd's seven
+  per-queue `tmctl` reads every 4 s and its `ping` each cost four processes through a shell
+  wrapper; each is now one process with a `poll()` deadline, and a queue that answers nothing keeps
+  its last reading instead of banking a zero. The firewall's fqdn set cache is rewritten to `/jffs`
+  only when the members changed, the bonding state is published only when it changes, and the
+  client-list refresh flag is no longer re-written on every poll.
+- **Boot no longer dumps ~230 lines of memory statistics into syslog.** Stock `rc` called a closed
+  Broadcom debug routine after the services started, which logged `/proc/meminfo`, `free`, the
+  whole `/proc/slabinfo` and the buffer-pool status under the tag `dbg` on every boot. It now runs
+  only with the stock `dbg` nvram flag set to `1`.
+- **Layout: the Security Posture card, the shell on phones, the Warden list boxes, the setup box.**
+  The dashboard's Security Posture card cut off its right column below ~1500 px (reported on
+  Safari, reproduced in Chromium): `1fr` tracks cannot shrink below a row's longest unbroken label,
+  and the card's overflow clip hid the second column's status pills. The tracks are now
+  `minmax(0,1fr)`; a long label truncates and shows its full text on hover. The shell laid every
+  phone out at 481 px (the topbar's minimum width) and clipped the right edge of every page; the
+  topbar now wraps. Warden's Manual block list and Whitelist boxes stack into one full-width column
+  whenever they would be narrower than 400 px side by side. The first-boot box's login rows regained
+  their label column and row gap, lost when v3.3.2 wrapped them in a form.
+- **Tooling: sibling ports carry canon's added and deleted files.** `git diff --name-only` paired a
+  canon add with a stale branch file by rename detection, so only the branch path showed and the
+  add was never ported; a `.bin` suffix alone protected the OpenSSL test vectors; canon's deletes
+  were never replayed. The port now diffs `--no-renames`, syncs those files and removes what canon
+  removed (`build-scripts/_port_protect.sh`). Three new host suites cover the rung
+  (`test_dnsmasq_send_exit.py`, `test_usb_boot_mount.py`, `test_usb_late_mount.py`) beside the
+  extended `test_usb_flash_release.py` and `test_apmode_surfaces.py`.
+
 ## v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
 
 - **A firmware flash releases the USB volumes before it ejects them (field, RT-BE86U).** Every

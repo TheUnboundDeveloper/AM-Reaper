@@ -1,0 +1,91 @@
+From 170b08ba3bce2d9b6f9a39184f9d87d28785642c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 3 Oct 2026 12:24:30 -0400
+Subject: [PATCH] dnsmasq: a transient send error drops the one reply instead
+ of exiting the LAN instance
+
+RT-BE96U, every boot and WAN re-home (field 2026-10-02; the owner's grep over
+three boots and one ISP drop on v3.3.2 found one death in five windows):
+"dnsmasq[4033]: failed to send packet: Network is unreachable" two seconds after
+the WAN link dropped, and the br0 instance was gone until the watchdog
+respawned it ~20 s later - no LAN DNS or DHCP meanwhile.
+
+Cause: the exit(0) in send_from() is an ASUS addition; upstream dnsmasq logs
+and returns 0. It fires when auto-WAN-port briefly bridges eth0 into br0 and
+swaps br0's address: the IP_PKTINFO source address is no longer local, and the
+kernel's route lookup answers ENETUNREACH (net/ipv4/route.c refuses a non-local
+fl4->saddr).
+
+Fix: reaper_send_errno_transient() = ENETUNREACH || EHOSTUNREACH. For those the
+reply is dropped and a LOG_WARNING line is written at most once per 10 s; every
+other errno keeps the ASUS exit. The generated conf is bind-dynamic, so the new
+address is re-tracked without a restart.
+
+Metal: RT-BE96U r3 and r4 boots plus a WAN unplug/replug under a client query
+loop - the br0 instance survived every window and exited only on the orderly
+wan_up SIGTERM.
+
+Test: build-scripts/tests/test_dnsmasq_send_exit.py compiles the helper on the
+host, runs it on eight errnos, asserts the wiring order and the single exit(0);
+one verify_markers line (usr/sbin/dnsmasq: "transient, reply dropped, not
+exiting").
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/forward.c | 33 ++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index b86586b3ec..2d41eea422 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -16,6 +16,17 @@
+ 
+ #include "dnsmasq.h"
+ 
++/* reaper v3.3.3: errnos sendmsg() returns while a route or an address is in flux -
++ * the one packet is lost, the daemon is fine. ENETUNREACH: no route, or our IP_PKTINFO
++ * source address is no longer local (net/ipv4/route.c refuses a non-local fl4->saddr
++ * with ENETUNREACH; br0 while auto-WAN-port holds the WAN address on it); EHOSTUNREACH:
++ * the same at host level (an unreachable nexthop). Nothing else is transient here.
++ * libc only - host-tested by build-scripts/tests/test_dnsmasq_send_exit.py. */
++static int reaper_send_errno_transient(int e)
++{
++  return e == ENETUNREACH || e == EHOSTUNREACH;
++}
++
+ static struct frec *get_new_frec(time_t now, struct server *serv, int force);
+ static struct frec *lookup_frec(time_t now, char *target, int class, int rrtype, int id, int flags, int flagmask);
+ #ifdef HAVE_DNSSEC
+@@ -101,6 +112,28 @@ int send_from(int fd, int nowild, char *packet, size_t len,
+       /* If interface is still in DAD, EINVAL results - ignore that. */
+       if (errno != EINVAL)
+       {
++	/* reaper v3.3.3: the exit(0) below is an ASUS addition - upstream dnsmasq
++	 * logs and returns 0. It fired on every RT-BE96U boot and WAN re-home:
++	 * auto-WAN-port briefly bridges eth0 into br0 and swaps br0's address, our
++	 * IP_PKTINFO source is no longer local, the kernel's route lookup answers
++	 * ENETUNREACH, and the LAN instance exited - no LAN DNS or DHCP until the
++	 * watchdog respawned it ~20 s later. The conf uses bind-dynamic, so the
++	 * address is re-tracked without a restart: for the transient routing
++	 * errnos log (at most once per 10 s) and drop the one reply; every other
++	 * errno keeps the ASUS exit. */
++	if (reaper_send_errno_transient(errno))
++	  {
++	    static time_t reaper_last_warn = 0;
++	    int e = errno;
++	    time_t now = dnsmasq_time();
++
++	    if (reaper_last_warn == 0 || now - reaper_last_warn >= 10)
++	      {
++		reaper_last_warn = now;
++		my_syslog(LOG_WARNING, _("failed to send packet: %s - transient, reply dropped, not exiting"), strerror(e));
++	      }
++	    return 0;
++	  }
+ 	my_syslog(LOG_ERR, _("failed to send packet: %s"), strerror(errno));
+ 	exit(0);
+       }
+-- 
+2.25.1
+

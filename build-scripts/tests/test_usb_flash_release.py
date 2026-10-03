@@ -85,7 +85,8 @@ b = applet.find("/* 1 when a filesystem is mounted")
 if a < 0 or b < 0 or b <= a:
     die("rc/reaper_usbrel.c: helper markers not found (usbrel_gone .. reaper_kill_usb_holders)")
 helpers = applet[a:b]
-for fn in ("static int usbrel_gone(", "static int usbrel_holds(", "int reaper_kill_usb_holders("):
+for fn in ("static int usbrel_gone(", "static int usbrel_holds(", "int reaper_kill_usb_holders(",
+           "static int usbrel_swaps_under("):
     if fn not in helpers:
         die("rc/reaper_usbrel.c: %s not in the helper slice" % fn)
 
@@ -102,7 +103,13 @@ harness = r'''
 %s
 int main(int argc, char **argv) {
     char names[512]; int killed = -1;
-    (void)argc;
+    if (argc > 3 && !strcmp(argv[1], "swaps")) {	/* swaps <file> <prefix>: the /proc/swaps reader */
+        char out[1024], *p;
+        int k = usbrel_swaps_under(argv[2], argv[3], out, sizeof out);
+        for (p = out; *p; p++) if (*p == '\n') *p = '|';
+        printf("k=%%d out=%%s\n", k, out);
+        return 0;
+    }
     int n = reaper_kill_usb_holders(argv[1], 3, names, sizeof names, &killed);
     printf("n=%%d killed=%%d names=%%s\n", n, killed, names);
     return 0;
@@ -155,6 +162,21 @@ try:
         die("a process outside the prefix was stopped: %s" % out2)
     bystander.kill(); bystander.wait()
     ok("a process outside the prefix is left alone: %s" % out2)
+
+    # v3.3.3: swap files on the volume are found from /proc/swaps (header skipped, other swaps ignored)
+    sw = os.path.join(tmp, "swaps")
+    with open(sw, "w") as f:
+        f.write("Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n"
+                "/tmp/mnt/sda1/myswap.swp                file\t\t2097148\t40960\t-2\n"
+                "/dev/zram0                              partition\t262140\t0\t100\n"
+                "/tmp/mnt/sdb1/.swap                     file\t\t524284\t0\t-3\n")
+    out3 = subprocess.run([exe, "swaps", sw, "/tmp/mnt/"], stdout=subprocess.PIPE, text=True, timeout=10).stdout.strip()
+    if out3 != "k=2 out=/tmp/mnt/sda1/myswap.swp|/tmp/mnt/sdb1/.swap|":
+        die("swaps reader: unexpected %r" % out3)
+    out4 = subprocess.run([exe, "swaps", sw, "/mnt/nothing/"], stdout=subprocess.PIPE, text=True, timeout=10).stdout.strip()
+    if out4 != "k=0 out=":
+        die("swaps reader with no match: unexpected %r" % out4)
+    ok("swap files under the prefix are listed from /proc/swaps; the header and other swaps are not")
 finally:
     for p in ("h1", "h2"):
         proc = locals().get(p)
@@ -223,11 +245,38 @@ if not re.search(r'if \(first\) \{[^}]*run_custom_script\("services-stop"', body
 if 'stop_rtraf();' not in body:
     die("rc/reaper_usbrel.c: rtrafd is not stopped (its history store may be on the volume)")
 ok("applet: no-op without a mounted volume; services-stop once per flash; rtrafd stopped")
+ks = body.find('reaper_kill_usb_holders("/tmp/mnt/"')
+sw = body.find('usbrel_swaps_under("/proc/swaps", "/tmp/mnt/"')
+if ks < 0 or sw < 0 or sw < ks or 'eval("swapoff", p)' not in body[sw:]:
+    die("rc/reaper_usbrel.c: swap on the volume must be turned off AFTER the holder sweep (RAM freed first)")
+ok("applet: swap files on the volume are turned off after the holders are gone")
 
 dc = watchdog.find("void dnsmasq_check()")
 if dc < 0 or "f_exists(REAPER_USBREL_FLAG)" not in watchdog[dc:dc + 1200]:
     die("rc/watchdog.c: dnsmasq_check does not stand down on REAPER_USBREL_FLAG")
 ok("rc/watchdog.c: dnsmasq_check stands down while a flash is releasing the volumes")
+
+# v3.3.3: a plain reboot/halt releases first too - init's SIGTERM branch ran services-stop
+# in the background (stop_services) and unmounted seconds later with Entware still up
+i_case = init.find("case SIGTERM:\t\t/* REBOOT */")
+i_rel = init.find('eval("/sbin/reaper_usb_release", "reboot");', i_case)
+i_stop = init.find("stop_services();", i_case)
+i_rsm = init.find("remove_storage_main(1);", i_case)
+if i_case < 0 or not (0 <= i_rel < i_stop < i_rsm):
+    die("rc/init.c: the reboot path must run `reaper_usb_release reboot` before stop_services() and the unmount")
+if "state == SIGTERM /* REBOOT */ || state == SIGQUIT /* HALT */" not in init[i_case:i_rel]:
+    die("rc/init.c: the reboot release must be limited to reboot and halt (SIGHUP keeps the volumes)")
+ok("rc/init.c: reboot/halt release the USB volumes before stop_services() and remove_storage_main(1)")
+
+ss = services.find("stop_services(void)")
+blk = services[ss:ss + 800] if ss >= 0 else ""
+if 'if (!f_exists(REAPER_USBREL_FLAG))\n\t\trun_custom_script("services-stop", 0, NULL, NULL);' not in blk:
+    die("rc/services.c: stop_services() must skip its background services-stop once the release has run it")
+ok("rc/services.c: stop_services() does not re-run services-stop after a release")
+
+if 'reboot: releasing USB volumes before the unmount' not in applet or 'flash: releasing USB volumes before the eject' not in applet:
+    die("rc/reaper_usbrel.c: both log lines (flash and reboot) must be present - verify markers pin them")
+ok("rc/reaper_usbrel.c: logs say whether a flash or a reboot released the volumes")
 
 sc = init.find("nvram_unset(ASUS_STOP_COMMIT);")
 if sc < 0:

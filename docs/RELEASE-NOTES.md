@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.2** · 2026-10-01 <!--@stamp-->
+> **Doc status:** current as of **v3.3.3** · 2026-10-03 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.2** <!--@treever--> — `3006.102.8_Reaper_v3.3.2`. **A firmware flash releases the USB volumes before it ejects them, the first-boot setup box ends in the reboot screen, and the ZenWiFi BQ16 (BE25000) joins the roster.** The flash fix ends the forty-second eject fight and the dirty volume that left an Entware box without DNS on the next boot; the setup box no longer lets browser autofill cross its fields and no longer reloads itself while the router goes down. The code was built and verified on RT-BE96U MCP test images (v3.3.1_BETA r12 and the cut build) before the cut, and the BQ16 on both variants locally; the release images come from the public CI build. The series stands at **738 patches** (0735–0738 for v3.3.2); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.3** <!--@treever--> — `3006.102.8_Reaper_v3.3.3`. **A USB volume that is late, missing or being unmounted at reboot no longer takes the LAN resolver down, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, and the router does less background work.** The boot fixes let an Entware box survive the stock order that loads the USB drivers after the services; the reboot path releases the volumes and their swap before the unmount; the Diagnostics collector, the Warden poll, the cache replay and the traffic collector each shed most of their process churn. The code was built and verified on RT-BE96U MCP test images (v3.3.3_BETA r1-r5 and the cut build) before the cut, and r2-r4 ran on the RT-BE96U (flash boot, GUI reboot, WAN replug, the soft-lockup re-arm at 624 s); the release images come from the public CI build. The series stands at **744 patches** (0739–0744 for v3.3.3); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** and from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band), both of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,31 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
+
+**USB drives at boot and reboot.** If a program on your USB drive is part of the LAN's DNS - an
+Entware setup whose dnsmasq log or config lives on the drive - the router no longer loses DNS and
+DHCP while the drive is still coming up at boot: the resolver starts without the missing file and
+is restarted with it once the drive is mounted. A drive whose first mount fails is tried again, a
+disk check that overruns is stopped cleanly instead of blocking the mount for good, and a reboot
+now stops the programs on the drive, turns off a swap file on it and unmounts it cleanly - the
+same fix v3.3.2 made for firmware flashes. A kernel safety that could turn a long stall on a slow
+USB disk into a silent reboot loop is held off through boot and every mount.
+
+**DNS during a WAN hiccup.** When the ISP link dropped and came back, the router's resolver could
+exit for about twenty seconds, taking LAN DNS and DHCP with it. It now rides the hiccup out.
+
+**Access Point mode.** On a router running as an access point, the Network page, Parental Controls
+and the QoS device pickers now list your clients; they were empty because those pages rely on
+DHCP data an access point does not have.
+
+**Snappier interface, quieter router.** The Diagnostics report no longer freezes the web interface
+while it is collected; the Warden page's status poll and the firewall rebuilds do far less work;
+the traffic collector spawns one process per query instead of four; a 230-line memory dump no
+longer lands in the system log on every boot. The dashboard's Security Posture card no longer cuts
+off its right column on a laptop-width window, the interface fits phone screens edge to edge, and
+the Warden list boxes stack on narrow screens.
 
 ## What's new in v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
 

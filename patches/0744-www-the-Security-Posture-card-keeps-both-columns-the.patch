@@ -1,0 +1,215 @@
+From b7b5b30cc2a9b6ea8d82adca75e05bf7d03a8a30 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 3 Oct 2026 12:24:34 -0400
+Subject: [PATCH] www: the Security Posture card keeps both columns, the shell
+ topbar wraps on phones, the Warden list boxes stack at 400 px, the setup
+ box's login rows keep their layout
+
+Four layout fixes from field screenshots (2026-10-02/03).
+
+- Main_ReaperDash.asp: the Security Posture card cut off its right column
+  ("cut off in Safari"; reproduced in Chromium at the same widths - the window
+  width is the variable, not the engine). .rows.two was "1fr 1fr", and a 1fr
+  track is minmax(auto,1fr): the Wi-Fi Encryption row's 300 px nowrap
+  sub-label floored the first column and .card{overflow:hidden} hid the second
+  column's tags below ~1500 px (42 px hidden at 1440, 215 at 1181; the col12
+  band 905-1090; phones through the <=900 single-column rule). Now
+  repeat(2,minmax(0,1fr)) and minmax(0,1fr) in the 900 rule, .srow .l>div
+  {min-width:0}, the tag flex:0 0 auto; a truncated .sub2 label carries its
+  full text as a tooltip (rtip, reaperTips() after paintPosture). Measured on
+  the mock at 1920/1440/1366/1000/390: 0 overflow.
+- reaper_shell.asp: every phone narrower than 481 px laid the whole shell out
+  at 481 and clipped the right edge of every framed page - the topbar is a
+  nowrap row (brand 248 + help + REBOOT + LOGOUT) and the 1fr app column
+  floored at its min-content. minmax(0,1fr) on the column; the topbar wraps
+  with the brand left and the buttons right-aligned on their own line.
+- Reaper_Warden.asp: .duo was repeat(auto-fit,minmax(320px,1fr)), so at a
+  768 px tablet or a narrow shell iframe the Manual block list and Whitelist
+  boxes sat side by side at ~300 px each. Now minmax(min(100%,400px),1fr): one
+  full-width column whenever a box would be under 400 px; desktop keeps two
+  inside the page's 1120 px cap.
+- Reaper_WiFiSetup.asp: v3.3.2 wrapped the credential rows in a <form>, so
+  they stopped being direct children of .main_content and lost the 78 px label
+  column and the 22 px row gap (GT-BE98 screenshot). The layout rule matches
+  .main_content > form > div too.
+
+Gates: jscheck ok, hiddencheck no fatal, static_checks 13/13, csrfcheck 0
+breakers; verify_markers lines for the posture grid and the rtip rows.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp  | 48 +++++++++++++--------
+ release/src/router/www/Reaper_Warden.asp    |  5 ++-
+ release/src/router/www/Reaper_WiFiSetup.asp |  7 ++-
+ release/src/router/www/reaper_shell.asp     | 13 ++++--
+ 4 files changed, 50 insertions(+), 23 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index e9da4140fd..30b97dcb3a 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -272,14 +272,24 @@ main{min-width:0}
+ 
+ /* security rows */
+ .rows{display:flex;flex-direction:column;gap:10px}
+-.rows.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
++/* repeat(2,minmax(0,1fr)), not "1fr 1fr" (2026-10-03, field "cut off in Safari"):
++   a 1fr track is minmax(auto,1fr) and floors at its row's min-content, so the
++   longest nowrap .sub2 (Wi-Fi Encryption, 439 px with three radios) pinned the
++   first column and .card{overflow:hidden} cut the second column's tags on any
++   window under ~1500 px - 1440 is a 13" MacBook. Same mechanism as the topbar
++   (main{min-width:0}) and the shell's rail floor. */
++.rows.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+ .srow{display:flex;align-items:center;justify-content:space-between;padding:11px 12px;border:1px solid var(--line-soft);border-radius:10px;background:rgba(255,255,255,.015);gap:10px}
+ .srow .l{display:flex;align-items:center;gap:11px;min-width:0}
++/* the label wrapper is a flex item with min-width:auto: without this .sub2 can
++   never be narrower than its text and its ellipsis is decorative */
++.srow .l>div{min-width:0}
+ .ico{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:#000;border:1px solid var(--line);flex:0 0 30px}
+ .ico svg{width:16px;height:16px;stroke:var(--crimson);fill:none;stroke-width:1.7}
+ .srow .name{color:var(--bone);font-weight:500;font-size:13px}
+ .srow .sub2{color:var(--steel);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .tag{font-family:var(--hdr);font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:5px 10px;border-radius:6px;font-weight:600;white-space:nowrap}
++.srow .tag{flex:0 0 auto}  /* the pill keeps its width; the label beside it truncates */
+ .tag.ok{color:var(--jade);border:1px solid rgba(79,178,134,.35);background:rgba(79,178,134,.08)}
+ .tag.warn{color:var(--amber);border:1px solid rgba(224,169,59,.35);background:rgba(224,169,59,.08)}
+ .tag.danger{color:#fff;border:1px solid var(--danger);background:rgba(255,59,48,.18)}
+@@ -357,7 +367,7 @@ main{min-width:0}
+ @media (max-width:900px){
+   .hero{grid-template-columns:1fr;gap:18px}
+   .col8,.col7,.col6,.col5,.col4,.col3{grid-column:span 12}
+-  .rows.two{grid-template-columns:1fr}
++  .rows.two{grid-template-columns:minmax(0,1fr)}  /* same floor as the two-column rule: phones clipped too */
+   .pills .pill:nth-child(n+3){display:none}
+ }
+ @media (max-width:680px){
+@@ -603,35 +613,35 @@ main{min-width:0}
+           <div class="head"><h3><#Reaper_c_security_posture#></h3></div>
+           <div class="rows two">
+             <div class="srow" id="srow_wifi_enc" data-go="Advanced_Wireless_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg></div>
+-              <div><div class="name"><#RDSH_08#></div><div class="sub2" id="s_wifi_sub">&mdash;</div></div></div><span class="tag ok" id="s_wifi_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_08#></div><div class="sub2 rtip" id="s_wifi_sub">&mdash;</div></div></div><span class="tag ok" id="s_wifi_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/></svg></div>
+-              <div><div class="name"><#RDSH_09#></div><div class="sub2" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_09#></div><div class="sub2 rtip" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=witness"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 7h9M4 12h9M4 17h5"/><path d="M14 16l2.2 2.2L21 13"/></svg></div>
+-              <div><div class="name"><#RFW_290#></div><div class="sub2" id="s_wit_sub">&mdash;</div></div></div><span class="tag ok" id="s_wit_tag">&mdash;</span></div>
++              <div><div class="name"><#RFW_290#></div><div class="sub2 rtip" id="s_wit_sub">&mdash;</div></div></div><span class="tag ok" id="s_wit_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+-              <div><div class="name"><#RDSH_10#></div><div class="sub2" id="s_rc_sub">&mdash;</div></div></div><span class="tag ok" id="s_rc_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_10#></div><div class="sub2 rtip" id="s_rc_sub">&mdash;</div></div></div><span class="tag ok" id="s_rc_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
+-              <div><div class="name"><#RDSH_11#></div><div class="sub2" id="s_adm_sub">&mdash;</div></div></div><span class="tag ok" id="s_adm_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_11#></div><div class="sub2 rtip" id="s_adm_sub">&mdash;</div></div></div><span class="tag ok" id="s_adm_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
+-              <div><div class="name"><#RDSH_12#></div><div class="sub2" id="s_jffs_sub">&mdash;</div></div></div><span class="tag ok" id="s_jffs_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_12#></div><div class="sub2 rtip" id="s_jffs_sub">&mdash;</div></div></div><span class="tag ok" id="s_jffs_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+-              <div><div class="name"><#RDSH_13#></div><div class="sub2" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_13#></div><div class="sub2 rtip" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
+-              <div><div class="name">UPnP</div><div class="sub2" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
++              <div><div class="name">UPnP</div><div class="sub2 rtip" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_WWPS_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+-              <div><div class="name">WPS</div><div class="sub2" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
++              <div><div class="name">WPS</div><div class="sub2 rtip" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_QoS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
+-              <div><div class="name"><#EzQoS_type_QoS#></div><div class="sub2" id="s_qos_sub">&mdash;</div></div></div><span class="tag ok" id="s_qos_tag">&mdash;</span></div>
++              <div><div class="name"><#EzQoS_type_QoS#></div><div class="sub2 rtip" id="s_qos_sub">&mdash;</div></div></div><span class="tag ok" id="s_qos_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
+-              <div><div class="name"><#RDSH_14#></div><div class="sub2" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_14#></div><div class="sub2 rtip" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
+             <div class="srow" data-go="MLO.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+-              <div><div class="name"><#RDSH_15#></div><div class="sub2" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_15#></div><div class="sub2 rtip" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+-              <div><div class="name"><#RDSH_16#></div><div class="sub2" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
++              <div><div class="name"><#RDSH_16#></div><div class="sub2 rtip" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_GK.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M12 15v2"/></svg></div>
+-              <div><div class="name"><#RGK_00#></div><div class="sub2" id="s_gk_sub">&mdash;</div></div></div><span class="tag ok" id="s_gk_tag">&mdash;</span></div>
++              <div><div class="name"><#RGK_00#></div><div class="sub2 rtip" id="s_gk_sub">&mdash;</div></div></div><span class="tag ok" id="s_gk_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Warden.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></div>
+-              <div><div class="name"><#RWDN_00#></div><div class="sub2" id="s_wdn_sub">&mdash;</div></div></div><span class="tag ok" id="s_wdn_tag">&mdash;</span></div>
++              <div><div class="name"><#RWDN_00#></div><div class="sub2 rtip" id="s_wdn_sub">&mdash;</div></div></div><span class="tag ok" id="s_wdn_tag">&mdash;</span></div>
+           </div>
+         </section>
+ 
+@@ -972,6 +982,10 @@ function paintPosture(){
+       var nrOn=(SSI.norebind==='1'), dsOn=(SSI.dnssec==='1');
+       setTxt('s_dnsr_sub', (nrOn?`<#RDSH_70#>`:`<#RDSH_71#>`)+' \u00b7 '+(dsOn?`<#RDSH_72#>`:`<#RDSH_73#>`));
+       setTag('s_dnsr_tag', (nrOn&&dsOn)?`<#Reaper_c_on#>`:((nrOn||dsOn)?`<#RDSH_74#>`:`<#Outdoor_mode_off#>`), (nrOn&&dsOn)?'ok':'warn');
++      /* .sub2 truncates now (standing rule 26): give a clipped row its full text as a
++         native tooltip. reaperTips is declared later in this same script block, so it
++         is hoisted and defined on the first paint too. */
++      reaperTips();
+   }catch(e){}
+ }
+ 
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 8d38627c1a..6bb3f6cede 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -53,7 +53,10 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+ .card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
+-.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++/* two cards side by side only while each gets 400 px or more; below that one column, full width
++   (field request 2026-10-02: at tablet / narrow-iframe widths the list boxes sat side by side at
++   ~300 px each). min(100%,400px) lets the track shrink below 400 px on a phone instead of overflowing. */
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
+ .duo .card{margin:0}
+ .feedrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
+ .feedrow:last-child{border-bottom:none}
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index c97cadde1d..cb2f690093 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -96,7 +96,10 @@ body{
+ 	max-width: 640px;
+ 	color: #FFF;
+ }
+-.main_content > div{
++/* v3.3.2's <form> wraps only the credential rows (autofill isolation), so its
++ * rows are no longer direct children: match them too or the login half loses
++ * the 78 px column and the 22 px row gap (GT-BE98 screenshot, 2026-10-02). */
++.main_content > div, .main_content > form > div{
+ 	position: relative;
+ 	margin: 22px 0px 0px 78px;
+ }
+@@ -215,7 +218,7 @@ body{
+ 		max-width: initial;
+ 		padding: 0px 10px;
+ 	}
+-	.main_content > div{
++	.main_content > div, .main_content > form > div{
+ 		margin: 16px 0px 0px 0px;
+ 	}
+ 	.main_content .title_name:before{
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 205b9e2417..4aa8aa4fe7 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -215,9 +215,16 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+    sideways on the stage scrollbar as they do on tablets. A temporary fit until
+    the stock pages are replaced by native ones; nothing here changes wider layouts. */
+ @media (max-width:680px){
+-  .app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}
+-  .top{grid-column:1;grid-row:1;position:static;gap:8px;padding:10px 12px}
+-  .top .brand img{height:28px}
++  /* 2026-10-02: the topbar is a nowrap row (brand 248 + help + REBOOT + LOGOUT = 481 px), and a
++     1fr track's automatic minimum is its content's min-content, so every phone narrower than 481 px
++     laid the whole shell out at 481 and clipped the right edge of every framed page (measured at
++     390: innerWidth 481). minmax(0,1fr) lets the track shrink; the row wraps with the brand left and
++     the action buttons right-aligned on their own line when they do not fit beside it. */
++  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto 1fr}
++  .top{grid-column:1;grid-row:1;position:static;gap:8px;padding:10px 12px;flex-wrap:wrap;justify-content:flex-end}
++  .top .brand{margin-right:auto;min-width:0}
++  .top .spacer{display:none}
++  .top .brand img{height:28px;max-width:100%}
+   .rail{grid-column:1;grid-row:2;position:sticky;top:0;z-index:290;height:auto;width:100%;
+     flex-direction:row;align-items:center;gap:4px;padding:6px 8px;overflow-x:auto;
+     -webkit-overflow-scrolling:touch;border-right:0;border-bottom:1px solid var(--line-soft)}
+-- 
+2.25.1
+

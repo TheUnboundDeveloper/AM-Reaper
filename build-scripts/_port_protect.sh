@@ -18,7 +18,10 @@ PP_PROTECT_RE='(release/src/router/(www/)?sysdep/|/prebuild/|/prebuilt/|targets/
 
 # Inside the protected www/sysdep, FUNCTION/ is FLAG-keyed shared code
 # (MSWAN WAN page, VPN pages, SDN, QIS, themes) -- ALWAYS shared.
-PP_SYNC_ANYWAY_RE='^release/src/router/www/sysdep/FUNCTION/'
+# 2026-10-02: openssl-3.5/test/ too - its data.bin, smcont.bin, encap_*.bin are
+# vendored test vectors, not firmware blobs, but `\.bin$` above protected them, so
+# no sibling ever received the seven canon added (found building RT-BE86U r1).
+PP_SYNC_ANYWAY_RE='^release/src/router/www/sysdep/FUNCTION/|^release/src/router/openssl-3\.5/test/'
 
 # Protected by design (per-model divergence is intentional):
 #   dicts (supplemented separately, lockstep-checked) and the GT-BE98 chanlist
@@ -84,15 +87,33 @@ pp_classify(){ # $1 = repo-relative path
 # strip the model-unique banner filename for normalized comparison
 pp_norm_banner(){ sed -E 's/[A-Za-z0-9_-]*_REAPER_Header_anim\.png/BANNER_ANIM/g; s/[A-Za-z0-9_-]*_REAPER_Header\.(png|mp4)/BANNER.\1/g'; }
 
+# pp_canon_deleted CANON_REF REF PATH -> 0 when PATH is absent from CANON_REF and
+# REF's copy is byte-identical to a blob canon's history once carried at that path:
+# a canon delete the branch never received. A file canon never had (model-only, or
+# a build artifact committed on the branch) returns 1 and is left alone.
+# 2026-10-02: the port synced only paths canon still has, so 17 web files canon had
+# deleted (an ASUS-CDN request among them) stayed on RT-BE86U, and parity never saw them.
+pp_canon_deleted(){
+  local canon="$1" ref="$2" f="$3" b
+  git cat-file -e "$canon:$f" 2>/dev/null && return 1
+  b=$(git rev-parse -q --verify "$ref:$f" 2>/dev/null) || return 1
+  git log --format= --raw --no-abbrev "$canon" -- "$f" 2>/dev/null \
+    | awk -v b="$b" '$3 == b || $4 == b { hit = 1; exit } END { exit !hit }'
+}
+
 # pp_parity_check CANON_REF HEAD_REF  -> prints offending files, returns 1 if any
-# shared file differs from canon (model-only files -- absent from canon -- skip).
+# shared file differs from canon or survives a canon delete (model-only files --
+# never in canon -- skip).
 pp_parity_check(){
   local canon="$1" head="$2" f cls bad=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     cls=$(pp_classify "$f")
     [ "$cls" = 0 ] && continue
-    if ! git cat-file -e "$canon:$f" 2>/dev/null; then continue; fi   # model-only
+    if ! git cat-file -e "$canon:$f" 2>/dev/null; then
+      pp_canon_deleted "$canon" "$head" "$f" && { echo "STALE(canon deleted it): $f"; bad=1; }
+      continue   # model-only
+    fi
     if [ "$cls" = 2 ]; then
       a=$(git show "$canon:$f" 2>/dev/null | pp_norm_banner | md5sum | cut -d' ' -f1)
       b=$(git show "$head:$f"  2>/dev/null | pp_norm_banner | md5sum | cut -d' ' -f1)
@@ -100,6 +121,6 @@ pp_parity_check(){
     else
       git diff --quiet "$canon" "$head" -- "$f" 2>/dev/null || { echo "UNSYNCED(shared): $f"; bad=1; }
     fi
-  done < <(git diff --name-only "$canon" "$head" 2>/dev/null)
+  done < <(git diff --no-renames --name-only "$canon" "$head" 2>/dev/null)   # a rename pair hides the canon-side path
   return $bad
 }

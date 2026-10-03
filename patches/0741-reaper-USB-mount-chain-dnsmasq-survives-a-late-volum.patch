@@ -1,0 +1,1231 @@
+From cb9c221f4a140b557b417e653260dcaa00453860 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 3 Oct 2026 12:24:31 -0400
+Subject: [PATCH] reaper: USB mount chain - dnsmasq survives a late volume, a
+ reboot releases the volumes and their swap, a mount watchdog, the soft-lockup
+ panic re-armed once the box has settled
+
+Field (RT-BE86U, Entware + amtm on a USB SSD, 2026-10-02): the LAN had no DNS
+or DHCP after a boot until the volume mounted, a volume whose first mount failed
+never mounted, and USB that was fine after a flash came back dirty after a GUI
+reboot. Stock's boot order and caps cause all three; none is a Reaper regression
+(checked against the v3.2.9 e2fsprogs CVE change and the v3.2.3 boot polls).
+
+Boot:
+- start_dnsmasq(): reaper_dnsmasq_log_guard() drops a log-facility, conf-file or
+  conf-dir whose path is not there yet - the storage drivers load AFTER
+  start_services, so a postconf pointing at /opt killed dnsmasq "cannot open
+  log" on every boot. Each drop is logged and recorded in
+  REAPER_DNSMASQ_LOGDROP_FLAG; watchdog's dnsmasq_check() restarts dnsmasq once
+  the dependency exists. Both sides judge with reaper_dnsmasq_dep_missing(), so
+  a restart is never re-dropped.
+- pre-mount: run_custom_script_bounded() (shared/scripts.c, reaper_wait_pgrp)
+  stops the script AND its process group at the cap. Stock's alarm() killed the
+  shell only and left an e2fsck holding the device O_EXCL, so the mount that
+  followed failed EBUSY for good. The cap is 300 s: amtm's disk check waits
+  ~60 s for NTP before a full e2fsck of a dirty SSD even starts.
+- mount_r(): EBUSY is waited out (up to 120 s) instead of abandoned. The hotplug
+  add is one-shot, so a mount that failed there was never retried.
+
+Reboot:
+- init's SIGTERM/SIGQUIT path runs `reaper_usb_release reboot` BEFORE
+  stop_services(): services-stop to completion, the holder sweep, then swapoff
+  of every swap under /tmp/mnt (usbrel_swaps_under). The swap file is the one
+  holder no process sweep clears and it survives shutdn()'s kill -1, so a lazily
+  detached volume with amtm's swap on it rebooted dirty. stop_services() skips
+  its own background services-stop while REAPER_USBREL_FLAG says the release
+  already ran. SIGHUP (restart services) keeps the volumes.
+- Soft-lockup panic: this kernel has BOOTPARAM_SOFTLOCKUP_PANIC=y, so a 20 s
+  I/O stall (swap to a USB disk through the post-mount storm on a 1 GB box) is
+  a reboot with no trace. init writes softlockup_panic=0 at boot, usb.c writes 0
+  and stamps the uptime around every mount (reaper_usb_mount_stamp), and the
+  watchdog re-arms 1 once the box is up >= 600 s and >= 300 s past the last
+  stamp (reaper_slp_should_arm; REAPER_SLP_* in rc.h). A truly hung box is
+  still reset by the hardware watchdog. panic_on_oops is unchanged.
+- rc/reaper_usbmon.c, on the watchdog tick at a 30 s cadence: re-sends the
+  block add event for an attached partition never mounted since boot (3 tries,
+  30 s apart, within 30 min of boot or the last mount activity, usb lock free; a
+  GUI eject is never touched); clears a release flag older than 10 min with no
+  image waiting (an aborted flash) and gives the volumes back; once at 600 s, on
+  a box that expects a volume (post-mount exists) and has no USB WAN,
+  re-enumerates a storage device that produced no disk - RT-BE96U and RT-BE86U
+  have no USB power control (pwr_usb_gpio 0xff), so a wedged UAS enclosure is
+  never power-cycled. That path is logged UNTESTED.
+
+Riding in the same files: watchdog.c publishes bondst only when it changes
+(perf audit P35a - an nvram write every 10 s for an unchanging value); init.c
+calls the closed slabdbg() only with nvram dbg=1 (stock dumped ~230 lines of
+meminfo, free, slabinfo and bpm status into syslog on every boot).
+
+Metal: RT-BE96U r2/r3/r4 - flash boot and GUI reboot clean, volume mounted
+first try at ~95 s, "soft-lockup panic armed: up 624 s, no USB mount activity
+for 530 s", every new path correctly idle. Field r2 (the reporter's box): four
+retries, waited for the mount. The Entware box's GUI reboot on r4 (the swapoff
+branch) is still owed.
+
+Tests: build-scripts/tests/test_usb_boot_mount.py (56 checks),
+test_usb_flash_release.py (16) and test_usb_late_mount.py (36) compile the
+libc-only pieces on the host and run them; verify_markers lines for each path.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile        |   1 +
+ release/src/router/rc/init.c          |  35 +-
+ release/src/router/rc/rc.h            |  20 ++
+ release/src/router/rc/reaper_usbmon.c | 453 ++++++++++++++++++++++++++
+ release/src/router/rc/reaper_usbrel.c |  66 +++-
+ release/src/router/rc/services.c      | 133 +++++++-
+ release/src/router/rc/usb.c           |  51 ++-
+ release/src/router/rc/watchdog.c      |  84 ++++-
+ release/src/router/shared/scripts.c   |  75 +++++
+ release/src/router/shared/shared.h    |   2 +
+ 10 files changed, 911 insertions(+), 9 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_usbmon.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 8f3f60a893..8d5e0ad983 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -457,6 +457,7 @@ OBJS += reaper_punct.o
+ OBJS += reaper_bwfloor.o
+ # reaper v3.3.2: release the USB volumes (services-stop, rtrafd, holders) before a flash ejects them
+ OBJS += reaper_usbrel.o
++OBJS += reaper_usbmon.o
+ # reaper v3.1.1: LAN resolver health check (primary/standby for dnsmasq's upstream list)
+ OBJS += rdnshc.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index e15b7bab02..4247ca117a 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -25932,6 +25932,17 @@ def_boot_reinit:
+ 	// autoreboot after kernel panic
+ 	f_write_string("/proc/sys/kernel/panic", "3", 0, 0);
+ 	f_write_string("/proc/sys/kernel/panic_on_oops", "3", 0, 0);
++	/* reaper v3.3.3: this kernel is built with BOOTPARAM_SOFTLOCKUP_PANIC=y, so a CPU
++	 * that does not schedule for 2 x watchdog_thresh (20 s) PANICS, and PANIC_TIMEOUT=5
++	 * reboots it with nothing kept (no pstore, no console on a shipped box). That turns
++	 * a long I/O stall - a 1 GB box doing swap I/O to a USB disk through the post-mount
++	 * boot storm, RT-BE86U field 2026-10-02 - into a reboot loop. Mainline defaults
++	 * this to 0: the stall logs "BUG: soft lockup" and the box carries on once the I/O
++	 * drains. A box that is truly hung is still reset - wdtd stops feeding the hardware
++	 * watchdog and it fires at 30 s. panic_on_oops above is unchanged.
++	 * v3.3.3: held at 0 only through boot and around USB mounts - rc/watchdog.c
++	 * puts the stock panic back once the box has settled (rc.h REAPER_SLP_*). */
++	f_write_string("/proc/sys/kernel/softlockup_panic", "0", 0, 0);
+ 
+ 	// be precise about vm commit
+ #ifdef CONFIG_BCMWL5
+@@ -26927,6 +26938,17 @@ int init_main(int argc, char *argv[])
+ 
+ #ifdef RTCONFIG_DSL_TCLINUX
+ 			system("req_dsl_drv reboot &");
++#endif
++#ifdef RTCONFIG_USB
++			/* reaper v3.3.3: stop_services() starts services-stop in the background
++			 * and remove_storage_main(1) below then finds Entware still holding /opt -
++			 * busy retries, a lazy detach, a dirty volume on the next boot (field:
++			 * fine after a flash, failing after a GUI reboot). Release the volumes
++			 * first, synchronously, while every daemon is still up (rc/reaper_usbrel.c;
++			 * a no-op with nothing mounted). Reboot and halt only - SIGHUP restarts
++			 * services and keeps the volumes. */
++			if (state == SIGTERM /* REBOOT */ || state == SIGQUIT /* HALT */)
++				eval("/sbin/reaper_usb_release", "reboot");
+ #endif
+ 			stop_services();
+ 
+@@ -27151,7 +27173,18 @@ logmessage("ATE", "boot/continue fail= %d/%d\n", nvram_get_int("Ate_boot_fail"),
+ #endif
+ 
+ #ifdef CONFIG_BCMWL5
+-			slabdbg();
++			/* reaper 2026-10-03: stock called the closed-source slabdbg() here on
++			   every boot - ~230 syslog lines tagged "dbg" (meminfo, free, the whole
++			   slabinfo, bpm status), a quarter of the 1 MB ring, with no gate inside
++			   rc/broadcom.o. It is a developer aid: keep it behind the stock "dbg"
++			   nvram flag that already gates the other debug prints (watchdog DST
++			   check, dump_ledtable). The one line logged when it IS enabled says
++			   where the dump comes from and is the rung marker for this gate.
++			   memleakdbg() stays on mem_chk_period. */
++			if (nvram_match("dbg", "1")) {
++				logmessage("dbg", "slabdbg: nvram dbg=1, dumping memory statistics");
++				slabdbg();
++			}
+ 			if (restore_defaults_g)
+ 			{
+ 				restore_defaults_g = 0;
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 363ea08195..900a042f30 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3007,6 +3007,26 @@ extern void start_reaper_fw(void);
+  * start_wan, measured 2026-09-20) protected nothing. */
+ #define REAPER_FW_BUILT_MARK	"/tmp/.reaper_firewall_built"
+ #define REAPER_USBREL_FLAG	"/tmp/.reaper_usb_release"	/* v3.3.2: a flash is releasing the USB volumes; watchdog leaves dnsmasq alone */
++#define REAPER_DNSMASQ_LOGDROP_FLAG	"/tmp/.reaper_dnsmasq_logdrop"	/* v3.3.3: start_dnsmasq dropped a log-facility/conf-file/conf-dir that was missing; one "<kind> <path>" line each; watchdog restarts dnsmasq once one exists */
++extern int reaper_dnsmasq_dep_missing(char kind, const char *path);	/* rc/services.c */
++/* v3.3.3: the soft-lockup panic (kernel BOOTPARAM_SOFTLOCKUP_PANIC=y) is held at 0 by
++ * rc/init.c through boot and by rc/usb.c around every USB mount - the storm that
++ * followed a mount on a 1 GB box was a 20 s stall, and a panic there is a reboot loop
++ * with no trace. rc/watchdog.c arms it once the box has been up REAPER_SLP_FLOOR_SECS
++ * and no mount has been active for REAPER_SLP_GRACE_SECS. The stamp holds the uptime
++ * (seconds) of the last mount_partition entry or post-mount return. */
++#define REAPER_USB_MOUNT_STAMP	"/tmp/.reaper_usb_mount_at"
++#define REAPER_SLP_FLOOR_SECS	600
++#define REAPER_SLP_GRACE_SECS	300
++extern void reaper_usb_mount_stamp(void);	/* rc/usb.c */
++/* v3.3.3: the USB mount watchdog (rc/reaper_usbmon.c): re-sends a lost mount event,
++ * gives the volumes back after an aborted flash, re-enumerates a disk-less bus once. */
++#define REAPER_USB_MOUNTED_MARK	"/tmp/.reaper_usb_mounted_"	/* + partition: mounted at least once since boot - never retried (a GUI eject stays ejected) */
++#define REAPER_USB_RETRY_MARK	"/tmp/.reaper_usb_retry_"	/* + partition: mount events re-sent so far */
++#define REAPER_USB_RETRY_MAX	3
++extern void reaper_usbmon_check(void);
++extern void reaper_usb_mounted_mark(const char *part);
++extern int reaper_slp_should_arm(unsigned long up, unsigned long stamp, int have_stamp, unsigned long floor, unsigned long grace);	/* rc/watchdog.c, libc only */
+ /* v2.6.2 shared REAPER_HOOK front chains (rc/reaper_hook.c) */
+ extern void reaper_hook_gen(void);
+ extern void reaper_fwsim_kick(int delay);
+diff --git a/release/src/router/rc/reaper_usbmon.c b/release/src/router/rc/reaper_usbmon.c
+new file mode 100644
+index 0000000000..5a59fa0554
+--- /dev/null
++++ b/release/src/router/rc/reaper_usbmon.c
+@@ -0,0 +1,453 @@
++/*
++ * reaper_usbmon.c - the USB mount watchdog.
++ *
++ * reaper v3.3.3. Three holes the stock hotplug flow leaves open, found in the
++ * end-to-end review of the mount lifecycle (2026-10-02):
++ *
++ *  1. A partition's mount is asked for exactly once, by the kernel's add event.
++ *     If that one attempt fails (the device still held by a disk check, the EBUSY
++ *     wait exhausted, the event dropped because the action lock was busy) nothing
++ *     ever asks again; the volume stays unmounted until a replug. Stock re-sends
++ *     the events only on `rc restart`. This file re-sends the same block event, to
++ *     the same handler, for a partition that is attached, has NEVER been mounted
++ *     since boot (rc/usb.c marks every successful mount - so a volume the user
++ *     ejected from the GUI is never touched) and is not mounted now, while no
++ *     mount is in progress (the hotplug's usb lock is free). Three tries, 30 s
++ *     apart, within 30 min of boot or of the last mount activity.
++ *
++ *  2. A firmware flash releases and ejects the volumes first (rc/reaper_usbrel.c),
++ *     then httpd hands the image to rc. If rc never takes it (upgrade_rc("start")
++ *     fails three times) the box stays up with its volumes ejected, its release
++ *     flag set - so the watchdog's dnsmasq check stands down and stop_services()
++ *     skips services-stop - and nothing puts that right until a reboot. Here: a
++ *     flag older than 10 min with no image waiting gives the volumes back.
++ *
++ *  3. RT-BE96U and RT-BE86U have no USB power control (pwr_usb_gpio = 0xff), so
++ *     a UAS enclosure wedged by a crash reset is not power-cycled at boot and the
++ *     kernel may never see a disk at all (RT-BE86U field: two of five boots). Once,
++ *     10 min after boot, on a box that expects a volume (/jffs/scripts/post-mount
++ *     exists) and has no USB WAN: a storage-class USB device that produced no disk
++ *     is re-enumerated (authorized 0/1); no USB device at all and the xhci host
++ *     controller is unbound and bound again. Both are UNTESTED on metal and say so
++ *     in their log line - they run only when the USB subsystem is already useless.
++ *
++ * The helpers up to the "rc side" marker use libc only and are compiled on the
++ * host by build-scripts/tests/test_usb_late_mount.py against fake sysfs trees.
++ */
++#include "rc.h"
++#include <ctype.h>
++#include <dirent.h>
++#include <fcntl.h>
++#include <limits.h>
++
++/* ---- libc only, from here to the rc side (host-compiled by the test) ---- */
++
++static int usbmon_is_disk(const char *name)
++{
++	return name[0] == 's' && name[1] == 'd' && name[2] >= 'a' && name[2] <= 'z' && name[3] == '\0';
++}
++
++/* 1 when /dev/<name> is the device of a line in a /proc/mounts-shaped file */
++static int usbmon_mounted(const char *mounts, const char *name)
++{
++	char line[PATH_MAX + 128], dev[64], want[64];
++	FILE *f;
++	int hit = 0;
++
++	snprintf(want, sizeof(want), "/dev/%s", name);
++	if ((f = fopen(mounts, "r")) == NULL)
++		return 0;
++	while (!hit && fgets(line, sizeof(line), f))
++		if (sscanf(line, "%63s", dev) == 1 && !strcmp(dev, want))
++			hit = 1;
++	fclose(f);
++	return hit;
++}
++
++static void usbmon_consider(const char *mounts, const char *markprefix, const char *name,
++			    char *out, size_t nsz, size_t *used, int *n)
++{
++	char mark[PATH_MAX];
++	int w;
++
++	snprintf(mark, sizeof(mark), "%s%s", markprefix, name);
++	if (access(mark, F_OK) == 0 || usbmon_mounted(mounts, name))
++		return;
++	w = nsz > *used ? snprintf(out + *used, nsz - *used, "%s\n", name) : -1;
++	if (w > 0 && (size_t)w < nsz - *used)
++		*used += w;
++	else if (nsz > *used)
++		out[*used] = '\0';
++	(*n)++;
++}
++
++/* The sd* partitions under sysblock (the disk itself when it has none) that have
++ * never been mounted since boot - no <markprefix><name> file - and are not mounted
++ * now: one name per line into out. Returns how many; *ndisks = how many sd* disks
++ * exist at all. */
++int reaper_usbmon_candidates(const char *sysblock, const char *mounts, const char *markprefix,
++			     char *out, size_t nsz, int *ndisks)
++{
++	char path[PATH_MAX];
++	DIR *d, *dd;
++	struct dirent *e, *ee;
++	size_t used = 0, dl;
++	int n = 0, parts;
++
++	if (nsz)
++		out[0] = '\0';
++	*ndisks = 0;
++	if ((d = opendir(sysblock)) == NULL)
++		return 0;
++	while ((e = readdir(d)) != NULL) {
++		if (!usbmon_is_disk(e->d_name))
++			continue;
++		(*ndisks)++;
++		dl = strlen(e->d_name);
++		snprintf(path, sizeof(path), "%s/%s", sysblock, e->d_name);
++		parts = 0;
++		if ((dd = opendir(path)) != NULL) {
++			while ((ee = readdir(dd)) != NULL) {
++				if (strncmp(ee->d_name, e->d_name, dl) || !isdigit((unsigned char)ee->d_name[dl]))
++					continue;
++				parts++;
++				usbmon_consider(mounts, markprefix, ee->d_name, out, nsz, &used, &n);
++			}
++			closedir(dd);
++		}
++		if (!parts)
++			usbmon_consider(mounts, markprefix, e->d_name, out, nsz, &used, &n);
++	}
++	closedir(d);
++	return n;
++}
++
++/* The SCSI host a disk hangs off: the hostN element of <sysblock>/<disk>/device's
++ * link target. 1 with host set, 0 (host empty) when it cannot be told. */
++int reaper_usbmon_host_of(const char *sysblock, const char *disk, char *host, size_t hsz)
++{
++	char path[PATH_MAX], target[PATH_MAX], *p;
++	ssize_t len;
++
++	if (hsz)
++		host[0] = '\0';
++	snprintf(path, sizeof(path), "%s/%s/device", sysblock, disk);
++	if ((len = readlink(path, target, sizeof(target) - 1)) <= 0)
++		return 0;
++	target[len] = '\0';
++	for (p = target; (p = strstr(p, "/host")) != NULL; p++)
++		if (isdigit((unsigned char)p[5])) {
++			snprintf(host, hsz, "%d", atoi(p + 5));
++			return 1;
++		}
++	return 0;
++}
++
++/* The minor number of a partition (or of the disk when part == disk) from its
++ * sysfs dev file ("8:17"); -1 when unknown. */
++int reaper_usbmon_minor_of(const char *sysblock, const char *disk, const char *part)
++{
++	char path[PATH_MAX], buf[32];
++	int ma, mi = -1;
++	FILE *f;
++
++	if (strcmp(disk, part))
++		snprintf(path, sizeof(path), "%s/%s/%s/dev", sysblock, disk, part);
++	else
++		snprintf(path, sizeof(path), "%s/%s/dev", sysblock, disk);
++	if ((f = fopen(path, "r")) == NULL)
++		return -1;
++	if (!fgets(buf, sizeof(buf), f) || sscanf(buf, "%d:%d", &ma, &mi) != 2)
++		mi = -1;
++	fclose(f);
++	return mi;
++}
++
++/* a two-digit hex sysfs class file; -1 when absent */
++static int usbmon_read_hex(const char *path)
++{
++	char buf[16];
++	FILE *f;
++	long v;
++
++	if ((f = fopen(path, "r")) == NULL)
++		return -1;
++	v = fgets(buf, sizeof(buf), f) ? strtol(buf, NULL, 16) : -1;
++	fclose(f);
++	return (int)v;
++}
++
++/* What hangs off the USB bus, from a /sys/bus/usb/devices-shaped tree: 0 = nothing
++ * but root hubs and hubs, 1 = a storage-class interface (its device's name in dev),
++ * 2 = other devices only. */
++int reaper_usbmon_usb_state(const char *usbdevs, char *dev, size_t dsz)
++{
++	char path[PATH_MAX], *colon;
++	DIR *d;
++	struct dirent *e;
++	int storage = 0, other = 0, cls;
++	size_t l;
++
++	if (dsz)
++		dev[0] = '\0';
++	if ((d = opendir(usbdevs)) == NULL)
++		return 0;
++	while ((e = readdir(d)) != NULL) {
++		if (e->d_name[0] == '.' || !strncmp(e->d_name, "usb", 3))
++			continue;	/* . .. and the root hubs usbN */
++		if ((colon = strchr(e->d_name, ':')) != NULL) {	/* an interface, B-P:C.I */
++			snprintf(path, sizeof(path), "%s/%s/bInterfaceClass", usbdevs, e->d_name);
++			if (usbmon_read_hex(path) == 0x08 && !storage) {
++				storage = 1;
++				if (dsz) {
++					l = (size_t)(colon - e->d_name);
++					if (l >= dsz)
++						l = dsz - 1;
++					memcpy(dev, e->d_name, l);
++					dev[l] = '\0';
++				}
++			}
++			continue;
++		}
++		snprintf(path, sizeof(path), "%s/%s/bDeviceClass", usbdevs, e->d_name);
++		cls = usbmon_read_hex(path);
++		if (cls >= 0 && cls != 0x09)
++			other = 1;
++	}
++	closedir(d);
++	return storage ? 1 : (other ? 2 : 0);
++}
++
++/* 1 when a POSIX write lock is held on lockfile by anyone - the hotplug holds
++ * /var/lock/usb.lock (shared/files.c _file_lock, F_WRLCK) for a whole mount or
++ * unmount, so a busy lock means a mount IS in progress and no retry is wanted. */
++int reaper_usbmon_lock_busy(const char *lockfile)
++{
++	struct flock fl;
++	int fd, busy;
++
++	if ((fd = open(lockfile, O_RDONLY)) < 0)
++		return 0;
++	memset(&fl, 0, sizeof(fl));
++	fl.l_type = F_WRLCK;
++	fl.l_whence = SEEK_SET;
++	busy = fcntl(fd, F_GETLK, &fl) == 0 && fl.l_type != F_UNLCK;
++	close(fd);
++	return busy;
++}
++
++/* ---- rc side ---- */
++
++#define USBMON_EVERY_SECS	30	/* the check runs on the 1 s watchdog tick; acts this often */
++#define USBMON_WINDOW_SECS	1800	/* retries within this long of boot or of the last mount activity */
++#define USBMON_FLASH_WAIT_SECS	600	/* a release flag this old with no image waiting = an aborted flash */
++#define USBMON_RECOVER_AT_SECS	600	/* the no-disk recovery runs once, not before this uptime */
++
++/* rc/usb.c mount_partition(): this partition has been mounted at least once since
++ * boot. The retry never touches a marked partition - a GUI eject is the user's. */
++void reaper_usb_mounted_mark(const char *part)
++{
++	char p[128];
++
++	snprintf(p, sizeof(p), REAPER_USB_MOUNTED_MARK "%s", part);
++	f_write_string(p, "1", 0, 0);
++}
++
++static int usbmon_retry_count(const char *part, int bump)
++{
++	char p[128], buf[16];
++	int c = 0;
++
++	snprintf(p, sizeof(p), REAPER_USB_RETRY_MARK "%s", part);
++	if (f_read_string(p, buf, sizeof(buf)) > 0)
++		c = atoi(buf);
++	if (bump) {
++		snprintf(buf, sizeof(buf), "%d\n", c + 1);
++		f_write_string(p, buf, 0, 0);
++	}
++	return c;
++}
++
++/* 1 when the partition carries something mount_partition() would mount: not swap,
++ * not an EFI/unknown blob, not the partition table itself */
++static int usbmon_mountable(const char *part)
++{
++	char dev[64], label[128], uuid[40], *type = NULL;
++
++	snprintf(dev, sizeof(dev), "/dev/%s", part);
++	if (probe_fs(dev, &type, label, uuid) < 0 || type == NULL)
++		return 0;
++	return strcmp(type, "swap") && strcmp(type, "unknown") && strcmp(type, "mbr") && strcmp(type, "apple_efi");
++}
++
++/* The event hotplug2 delivered the first time, re-sent to the same handler
++ * (rc/usb.c hotplug_usb, the block branch) in the background: pre-mount, the
++ * EBUSY wait and post-mount can take minutes and the watchdog must not. */
++static void usbmon_resend_add(const char *part)
++{
++	char disk[32], host[16], minor[16];
++	char *argv[] = { "/sbin/hotplug", "block", NULL };
++	int pid, mi;
++	size_t l;
++
++	strlcpy(disk, part, sizeof(disk));
++	for (l = strlen(disk); l > 0 && isdigit((unsigned char)disk[l - 1]); l--)
++		disk[l - 1] = '\0';
++	if (!reaper_usbmon_host_of("/sys/block", disk, host, sizeof(host)))
++		strlcpy(host, "-1", sizeof(host));	/* hotplug_usb tolerates an unknown host */
++	mi = reaper_usbmon_minor_of("/sys/block", disk, part);
++	snprintf(minor, sizeof(minor), "%d", mi >= 0 ? mi : (strcmp(disk, part) ? 1 : 0));
++	setenv("SUBSYSTEM", "block", 1);
++	setenv("ACTION", "add", 1);
++	setenv("DEVICENAME", part, 1);
++	setenv("MAJOR", "8", 1);	/* SCSI disk */
++	setenv("MINOR", minor, 1);
++	setenv("SCSI_HOST", host, 1);
++	_eval(argv, NULL, 0, &pid);
++	unsetenv("SUBSYSTEM");
++	unsetenv("ACTION");
++	unsetenv("DEVICENAME");
++	unsetenv("MAJOR");
++	unsetenv("MINOR");
++	unsetenv("SCSI_HOST");
++}
++
++/* Hole 2: the release flag is set by a flash that then did not happen. */
++static void usbmon_aborted_flash_check(void)
++{
++	struct stat st;
++	long age;
++
++	if (stat(REAPER_USBREL_FLAG, &st) != 0)
++		return;
++	age = (long)(time(NULL) - st.st_mtime);
++	if (age < USBMON_FLASH_WAIT_SECS || f_exists("/tmp/linux.trx"))
++		return;
++	logmessage("reaper", "a firmware flash released the USB volumes %ld min ago and never happened - giving them back", age / 60);
++	unlink(REAPER_USBREL_FLAG);
++	start_rtraf();
++	add_remove_usbhost("-1", 1);	/* the remount stock runs on `rc restart` */
++}
++
++/* every device bound to an xhci platform driver: unbind, 1 s, bind. Names are
++ * collected first - unbinding edits the directory being read. */
++static int usbmon_xhci_rebind(void)
++{
++	char drv[PATH_MAX], p[PATH_MAX], names[8][64];
++	DIR *d, *dd;
++	struct dirent *e, *ee;
++	struct stat st;
++	int n = 0, k, i;
++
++	if ((d = opendir("/sys/bus/platform/drivers")) == NULL)
++		return 0;
++	while ((e = readdir(d)) != NULL) {
++		if (!strstr(e->d_name, "xhci"))
++			continue;
++		snprintf(drv, sizeof(drv), "/sys/bus/platform/drivers/%s", e->d_name);
++		if ((dd = opendir(drv)) == NULL)
++			continue;
++		for (k = 0; (ee = readdir(dd)) != NULL && k < 8; ) {
++			if (ee->d_name[0] == '.')
++				continue;
++			snprintf(p, sizeof(p), "%s/%s", drv, ee->d_name);
++			if (lstat(p, &st) != 0 || !S_ISLNK(st.st_mode))
++				continue;	/* bound devices are the symlinks; bind/unbind/uevent/module are not */
++			strlcpy(names[k++], ee->d_name, sizeof(names[0]));
++		}
++		closedir(dd);
++		for (i = 0; i < k; i++) {
++			snprintf(p, sizeof(p), "%s/unbind", drv);
++			f_write_string(p, names[i], 0, 0);
++			sleep(1);
++			snprintf(p, sizeof(p), "%s/bind", drv);
++			f_write_string(p, names[i], 0, 0);
++			n++;
++		}
++	}
++	closedir(d);
++	return n;
++}
++
++/* Hole 3: no disk at all on a box that expects one. Once per boot. */
++static void usbmon_recover_bus(void)
++{
++	char dev[32], path[PATH_MAX];
++	int n;
++
++	switch (reaper_usbmon_usb_state("/sys/bus/usb/devices", dev, sizeof(dev))) {
++	case 1:
++		logmessage("reaper", "USB device %s is a storage device the kernel never turned into a disk - re-enumerating it once (authorized 0/1). UNTESTED recovery: tell the maintainer whether the disk appeared", dev);
++		snprintf(path, sizeof(path), "/sys/bus/usb/devices/%s/authorized", dev);
++		f_write_string(path, "0", 0, 0);
++		sleep(1);
++		f_write_string(path, "1", 0, 0);
++		break;
++	case 0:
++		n = usbmon_xhci_rebind();
++		if (n)
++			logmessage("reaper", "no USB device at all on a box with a post-mount script - reset %d host controller(s) once (xhci unbind/bind). UNTESTED recovery: tell the maintainer whether the disk appeared", n);
++		else
++			logmessage("reaper", "no USB device at all on a box with a post-mount script, and no xhci platform driver to reset - power-cycle the disk");
++		break;
++	default:
++		logmessage("reaper", "no USB disk %d min after boot, but other USB devices are present - leaving the bus alone", USBMON_RECOVER_AT_SECS / 60);
++		break;
++	}
++}
++
++/* The watchdog's 1 s tick (rc/watchdog.c). */
++void reaper_usbmon_check(void)
++{
++	static unsigned long last = 0;
++	static int recovered = 0;
++	unsigned long up = (unsigned long)uptime(), stamp = 0;
++	char list[1024], buf[32], *p, *e;
++	int n, ndisks = 0, have_stamp = 0, in_window, c;
++
++	if (up - last < USBMON_EVERY_SECS)
++		return;
++	last = up;
++
++	usbmon_aborted_flash_check();
++	if (f_exists(REAPER_USBREL_FLAG))
++		return;	/* a flash is releasing the volumes - nothing is to be mounted now */
++	if (!nvram_get_int("usb_enable") || !nvram_get_int("usb_storage") || !nvram_get_int("usb_automount"))
++		return;
++	if (check_action() != ACT_IDLE)
++		return;
++
++	if (f_read_string(REAPER_USB_MOUNT_STAMP, buf, sizeof(buf)) > 0) {
++		stamp = strtoul(buf, NULL, 10);
++		have_stamp = 1;
++	}
++	n = reaper_usbmon_candidates("/sys/block", "/proc/mounts", REAPER_USB_MOUNTED_MARK, list, sizeof(list), &ndisks);
++
++	if (n > 0) {
++		/* hole 1 */
++		in_window = (up >= 120 && up <= USBMON_WINDOW_SECS)
++			 || (have_stamp && up > stamp && up - stamp >= 60 && up - stamp <= USBMON_WINDOW_SECS);
++		if (!in_window)
++			return;
++		if (reaper_usbmon_lock_busy("/var/lock/usb.lock"))
++			return;	/* a mount or unmount is running - that IS the attempt; wait */
++		for (p = list; *p && (e = strchr(p, '\n')) != NULL; p = e + 1) {
++			*e = '\0';
++			if ((c = usbmon_retry_count(p, 0)) >= REAPER_USB_RETRY_MAX || !usbmon_mountable(p))
++				continue;
++			usbmon_retry_count(p, 1);
++			logmessage("reaper", "USB %s is attached but not mounted (%lu s up) - sending its mount event again (try %d of %d)",
++				p, up, c + 1, REAPER_USB_RETRY_MAX);
++			usbmon_resend_add(p);
++			return;	/* one per tick; the next tick sees the lock busy while it runs */
++		}
++		return;
++	}
++
++	/* hole 3 */
++	if (ndisks == 0 && !recovered && up >= USBMON_RECOVER_AT_SECS
++	    && f_exists("/jffs/scripts/post-mount") && !strstr(nvram_safe_get("wans_dualwan"), "usb")) {
++		recovered = 1;
++		usbmon_recover_bus();
++	}
++}
+diff --git a/release/src/router/rc/reaper_usbrel.c b/release/src/router/rc/reaper_usbrel.c
+index 119499164a..6bbe68e266 100644
+--- a/release/src/router/rc/reaper_usbrel.c
++++ b/release/src/router/rc/reaper_usbrel.c
+@@ -24,6 +24,16 @@
+  * (httpd's eject, then the upgrade service's): services-stop runs only the
+  * first time.
+  *
++ * v3.3.3 (field: "USB fine after a flash, failing again after a GUI reboot"): a
++ * plain reboot had the same race. init's SIGTERM path starts services-stop in
++ * the BACKGROUND (stop_services, timeout 0), then remove_storage_main(1) a few
++ * seconds later finds Entware still holding /opt: 35 busy retries, a remount ro
++ * that fails on open files, a lazy detach, and the volume goes down dirty. init
++ * now runs `reaper_usb_release reboot` first, and stop_services() skips its own
++ * services-stop when this flag says it has already run to completion. A swap file
++ * on the volume is turned off last: it is the one holder that is not a process,
++ * so it alone can keep a detached volume mounted through the final kill -1.
++ *
+  * The two helpers above reaper_usb_release_main() use libc only, so the test
+  * (build-scripts/tests/test_usb_flash_release.py) compiles them on the host and
+  * runs them against a real holder process.
+@@ -151,6 +161,38 @@ int reaper_kill_usb_holders(const char *prefix, int grace_s, char *names, size_t
+ 	return n;
+ }
+ 
++/* v3.3.3: the swap files under prefix, from a /proc/swaps-shaped file, one path
++ * per line into out (NUL-terminated, truncated at nsz). Returns how many. A swap
++ * file is the holder no process sweep can clear - umount() is EBUSY while it is
++ * active, and it survives shutdn()'s kill -1 - so a lazily detached volume with
++ * swap on it reboots dirty. The usual case is amtm's myswap.swp; its own swapoff
++ * runs from a user hook that can fail ENOMEM while Entware is still up. The
++ * caller swapoffs each one after the holders are gone (RAM freed). libc only. */
++static int usbrel_swaps_under(const char *swaps_file, const char *prefix, char *out, size_t nsz)
++{
++	char line[PATH_MAX + 128], path[PATH_MAX];
++	size_t plen = strlen(prefix), used = 0;
++	int n = 0, w;
++	FILE *f;
++
++	if (nsz)
++		out[0] = '\0';
++	if ((f = fopen(swaps_file, "r")) == NULL)
++		return 0;
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%4095s", path) != 1 || strncmp(path, prefix, plen))
++			continue;	/* the header line, or a swap elsewhere */
++		w = nsz > used ? snprintf(out + used, nsz - used, "%s\n", path) : -1;
++		if (w > 0 && (size_t)w < nsz - used)
++			used += w;
++		else if (nsz > used)
++			out[used] = '\0';
++		n++;
++	}
++	fclose(f);
++	return n;
++}
++
+ /* 1 when a filesystem is mounted under /tmp/mnt/ */
+ static int usbrel_volume_mounted(void)
+ {
+@@ -170,6 +212,8 @@ int reaper_usb_release_main(int argc, char *argv[])
+ {
+ 	char names[256];
+ 	int n, killed = 0, first;
++	/* v3.3.3: init's reboot/halt path calls `reaper_usb_release reboot` (rc/init.c) */
++	const char *why = (argc > 1 && !strcmp(argv[1], "reboot")) ? "reboot" : "flash";
+ 
+ 	if (!usbrel_volume_mounted())
+ 		return 0;
+@@ -181,15 +225,31 @@ int reaper_usb_release_main(int argc, char *argv[])
+ 	f_write_string(REAPER_USBREL_FLAG, "1", 0, 0);
+ 
+ 	if (first) {
+-		logmessage("reaper", "flash: releasing USB volumes before the eject");
++		if (why[0] == 'r')
++			logmessage("reaper", "reboot: releasing USB volumes before the unmount");
++		else
++			logmessage("reaper", "flash: releasing USB volumes before the eject");
+ 		run_custom_script("services-stop", 60, NULL, NULL);
+ 	}
+ 	stop_rtraf();
+ 
+ 	n = reaper_kill_usb_holders("/tmp/mnt/", 5, names, sizeof(names), &killed);
+ 	if (n)
+-		logmessage("reaper", "flash: stopped %d process(es) still holding USB files: %s%s",
+-			n, names, killed ? " (some needed SIGKILL)" : "");
++		logmessage("reaper", "%s: stopped %d process(es) still holding USB files: %s%s",
++			why, n, names, killed ? " (some needed SIGKILL)" : "");
++	/* v3.3.3: swap on the volume, after the holders are gone and their RAM is back */
++	{
++		char swaps[1024], *p, *e;
++		if (usbrel_swaps_under("/proc/swaps", "/tmp/mnt/", swaps, sizeof(swaps)) > 0) {
++			for (p = swaps; *p && (e = strchr(p, '\n')) != NULL; p = e + 1) {
++				*e = '\0';
++				if (eval("swapoff", p) == 0)
++					logmessage("reaper", "%s: swap on %s turned off", why, p);
++				else
++					logmessage("reaper", "%s: swapoff %s FAILED - the volume will not unmount cleanly (not enough free RAM to take the swap back?)", why, p);
++			}
++		}
++	}
+ 	sync();
+ 	return 0;
+ }
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index c533895a16..f745fe091d 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1605,6 +1605,117 @@ void gen_apmode_dnsmasq(void)
+ }
+ #endif
+ 
++/* reaper v3.3.3: a `log-facility=/path` whose directory is missing or not writable
++ * makes dnsmasq exit "cannot open log" - and with it LAN DNS and DHCP. The usual way
++ * to get one is a dnsmasq.postconf pointing the log at a USB volume: the stock boot
++ * order loads the storage drivers (start_usb) AFTER start_services, so the volume is
++ * never there for the first start, and a disk that fails to enumerate keeps the
++ * resolver down for good. v3.3.3: `conf-file=/path` and `conf-dir=/dir[,...]` into
++ * the same volume die the same way ("cannot read", "cannot access directory",
++ * dnsmasq/src/option.c), so they are judged too. Rewrite `conf` without such lines.
++ * Returns the number dropped (0 = nothing to do, file untouched; -1 = could not read
++ * or write); `dropped` gets one "<kind> <path>\n" line per drop that fits (kind L =
++ * log, F = conf-file, D = conf-dir) - the watchdog reads it back. Only `/`-paths are
++ * judged: `-` (stderr) and syslog facility names pass through. libc only - host-tested
++ * (build-scripts/tests/test_usb_boot_mount.py). */
++static int reaper_logdir_unusable(const char *path)
++{
++	char dir[1024], *slash;
++	struct stat st;
++
++	strlcpy(dir, path, sizeof(dir));
++	if ((slash = strrchr(dir, '/')) == NULL)
++		return 0;
++	*slash = '\0';
++	if (!dir[0])
++		strcpy(dir, "/");
++	return stat(dir, &st) != 0 || !S_ISDIR(st.st_mode) || access(dir, W_OK) != 0;
++}
++
++/* 1 when dnsmasq would die on this dependency now. Shared with the watchdog
++ * (reaper_dnsmasq_logdrop_check) so both sides judge alike and a restart can
++ * never be followed by the same drop. */
++int reaper_dnsmasq_dep_missing(char kind, const char *path)
++{
++	struct stat st;
++
++	switch (kind) {
++	case 'L':
++		return reaper_logdir_unusable(path);
++	case 'F':
++		return access(path, R_OK) != 0;
++	case 'D':
++		return stat(path, &st) != 0 || !S_ISDIR(st.st_mode) || access(path, R_OK | X_OK) != 0;
++	}
++	return 0;
++}
++
++static int reaper_dnsmasq_log_guard(const char *conf, char *dropped, size_t dsz)
++{
++	static const struct { const char *key; char kind; } deps[] = {
++		{ "log-facility=/", 'L' }, { "conf-file=/", 'F' }, { "conf-dir=/", 'D' },
++	};
++	FILE *in, *out;
++	char tmp[128], line[1024], val[1024];
++	int n = 0, pass;
++	size_t i, used = 0;
++
++	if (dsz)
++		dropped[0] = '\0';
++	/* pass 0 counts, pass 1 rewrites - a conf with nothing to drop is not touched */
++	for (pass = 0; pass < 2; pass++) {
++		if ((in = fopen(conf, "r")) == NULL)
++			return -1;
++		out = NULL;
++		if (pass) {
++			snprintf(tmp, sizeof(tmp), "%s.rlg", conf);
++			if ((out = fopen(tmp, "w")) == NULL) {
++				fclose(in);
++				return -1;
++			}
++			fchmod(fileno(out), 0644);	/* rc runs umask 0 */
++		}
++		while (fgets(line, sizeof(line), in)) {
++			const char *v = line;
++			int drop = 0;
++			while (*v == ' ' || *v == '\t')
++				v++;
++			for (i = 0; i < sizeof(deps) / sizeof(deps[0]); i++) {
++				size_t kl = strlen(deps[i].key);
++				if (strncmp(v, deps[i].key, kl))
++					continue;
++				strlcpy(val, v + kl - 1, sizeof(val));
++				/* conf-dir=/dir,.bak,*.conf: the directory is the first field */
++				val[strcspn(val, deps[i].kind == 'D' ? ",\r\n" : "\r\n")] = '\0';
++				if (reaper_dnsmasq_dep_missing(deps[i].kind, val)) {
++					drop = 1;
++					if (!pass) {
++						int w = dsz > used ? snprintf(dropped + used, dsz - used, "%c %s\n", deps[i].kind, val) : -1;
++						if (w > 0 && (size_t)w < dsz - used)
++							used += w;
++						else if (dsz > used)
++							dropped[used] = '\0';	/* drop the partial line */
++						n++;
++					}
++				}
++				break;
++			}
++			if (drop)
++				continue;	/* drop the line */
++			if (out)
++				fputs(line, out);
++		}
++		fclose(in);
++		if (!pass && n == 0)
++			return 0;
++		if (out && (fclose(out) != 0 || rename(tmp, conf) != 0)) {
++			unlink(tmp);
++			return -1;
++		}
++	}
++	return n;
++}
++
+ #ifdef RTCONFIG_MULTILAN_CFG
+ /* reaper v3.1.1: the router-side cache size. "Do not cache DNS answers on the
+  * router" means cache-size=0 - except that dnsmasq refuses to start with a
+@@ -2447,6 +2558,23 @@ void start_dnsmasq(void)
+ 
+ 	use_custom_config("dnsmasq.conf","/etc/dnsmasq.conf");
+ 	run_postconf("dnsmasq","/etc/dnsmasq.conf");
++	{
++		/* reaper v3.3.3: see reaper_dnsmasq_log_guard(). The flag carries the dropped
++		 * items; watchdog's dnsmasq_check() restarts us once any of them is there. */
++		char lg[1024], *p, *e;
++		int nd = reaper_dnsmasq_log_guard("/etc/dnsmasq.conf", lg, sizeof(lg));
++		if (nd > 0) {
++			for (p = lg; *p && (e = strchr(p, '\n')) != NULL; p = e + 1) {
++				*e = '\0';
++				logmessage("reaper", "dnsmasq: %s %s dropped for this start - it is not there (USB volume not mounted yet?); %s",
++				           p[0] == 'L' ? "log-facility" : p[0] == 'F' ? "conf-file" : "conf-dir", p + 2,
++				           p[0] == 'L' ? "logging to syslog until it appears" : "restarting with it once it appears");
++				*e = '\n';
++			}
++			f_write_string(REAPER_DNSMASQ_LOGDROP_FLAG, lg, 0, 0);
++		} else
++			unlink(REAPER_DNSMASQ_LOGDROP_FLAG);
++	}
+ 	chmod("/etc/dnsmasq.conf", 0644);
+ 
+ 	/* Create resolv.conf with empty nameserver list */
+@@ -14372,7 +14500,10 @@ stop_services(void)
+ 	unsigned long _svc_t0 = (unsigned long)uptime();
+ 
+ 	logmessage("services", "stop_services: begin");
+-	run_custom_script("services-stop", 0, NULL, NULL);
++	/* reaper v3.3.3: the USB release (flash, reboot) has already run services-stop
++	 * to completion - a second, background run would race the unmount again */
++	if (!f_exists(REAPER_USBREL_FLAG))
++		run_custom_script("services-stop", 0, NULL, NULL);
+ #ifdef RTCONFIG_GTBOOSTER
+ 	stop_ark_engine(1);
+ #endif
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 8286193a12..98aaf98108 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -1390,6 +1390,33 @@ void start_usblpsrv(void)
+ #define MOUNT_VAL_RW 	2
+ #define MOUNT_VAL_EXIST	3
+ 
++#define REAPER_MOUNT_BUSY_SECS 120	/* v3.3.3: how long mount_r() waits out EBUSY on an ext volume */
++/* reaper v3.3.3: EBUSY = something holds the device open exclusively, an e2fsck most
++ * often (every rw run opens it O_EXCL). The hotplug add is one-shot and the kernel
++ * raises no event when that process closes the device, so a mount that fails here is
++ * never retried and the volume stays unmounted until a replug. Wait for the holder.
++ * Bounded; the hotplug process holds file_lock("usb") meanwhile, as it already does
++ * for the whole pre-mount. errno is preserved for the caller's fallbacks. */
++static int reaper_mount_wait_busy(const char *dev, const char *dir, const char *type, unsigned long flags, const char *opts)
++{
++	int i, ret = -1, e = EBUSY;
++
++	syslog(LOG_NOTICE, "reaper: USB %s is busy (a disk check still running?) - waiting up to %d s to mount it", dev, REAPER_MOUNT_BUSY_SECS);
++	for (i = 1; i <= REAPER_MOUNT_BUSY_SECS; i++) {
++		sleep(1);
++		ret = mount(dev, dir, type, flags, opts);
++		e = errno;
++		if (ret == 0 || e != EBUSY)
++			break;
++	}
++	if (ret == 0)
++		syslog(LOG_NOTICE, "reaper: USB %s mounted after %d s", dev, i);
++	else if (e == EBUSY)
++		syslog(LOG_WARNING, "reaper: USB %s still busy after %d s - giving up; replug it or mount it by hand", dev, REAPER_MOUNT_BUSY_SECS);
++	errno = e;
++	return ret;
++}
++
+ int mount_r(char *mnt_dev, char *mnt_dir, char *_type)
+ {
+ 	struct mntent *mnt;
+@@ -1608,6 +1635,8 @@ int mount_r(char *mnt_dev, char *mnt_dir, char *_type)
+ 
+ 			if(!strncmp(type, "ext", 3)){
+ 				ret = mount(mnt_dev, mnt_dir, type, flags, options[0] ? options : "");
++				if (ret != 0 && errno == EBUSY)	/* reaper v3.3.3: wait the holder out, see above */
++					ret = reaper_mount_wait_busy(mnt_dev, mnt_dir, type, flags, options[0] ? options : "");
+ 				if(ret != 0){
+ 					if(!strcmp(type, "ext4")){
+ 						snprintf(type, 16, "ext3");
+@@ -2189,6 +2218,19 @@ static inline void remove_disk_log(char *device) { }
+  * directory of the newly mounted partition.
+  * Returns NZ for success, 0 if we did not mount anything.
+  */
++/* reaper v3.3.3: a USB mount is starting or has just finished (rc.h). Drop the
++ * soft-lockup panic here and now - the watchdog's 1 s tick would be late for a
++ * stall that begins in pre-mount's fsck - and leave the uptime for the watchdog,
++ * which re-arms the panic REAPER_SLP_GRACE_SECS after the last stamp. */
++void reaper_usb_mount_stamp(void)
++{
++	char buf[32];
++
++	f_write_string("/proc/sys/kernel/softlockup_panic", "0", 0, 0);
++	snprintf(buf, sizeof(buf), "%lu\n", (unsigned long)uptime());
++	f_write_string(REAPER_USB_MOUNT_STAMP, buf, 0, 0);
++}
++
+ int mount_partition(char *dev_name, int host_num, char *dsc_name, char *pt_name, uint flags)
+ {
+ 	char the_label[128], mountpoint[128], uuid[40];
+@@ -2205,7 +2247,11 @@ int mount_partition(char *dev_name, int host_num, char *dsc_name, char *pt_name,
+ 	if (type == NULL)
+ 		type = "unknown";
+ 
+-	run_custom_script("pre-mount", 120, dev_name, type);
++	reaper_usb_mount_stamp();	/* v3.3.3: no soft-lockup panic through the mount (rc.h) */
++	/* reaper v3.3.3: the cap stops the script AND what it started (shared/scripts.c).
++	 * v3.3.3: 300 s, not stock's 120 - the cap now cancels the disk check too, and
++	 * amtm's waits ~60 s for NTP before a full e2fsck of a dirty SSD even starts. */
++	run_custom_script_bounded("pre-mount", 300, dev_name, type);
+ 
+ #if !defined(RTCONFIG_HND_ROUTER_AX_6710) && !defined(RTCONFIG_BCM_502L07P2) && !defined(BCM4912) && !defined(BCM4906_504)
+ 	char *end;
+@@ -2264,6 +2310,8 @@ done:
+ 	if (ret == MOUNT_VAL_RONLY || ret == MOUNT_VAL_RW)
+ 	{
+ 		chmod(mountpoint, 0775);	/* L3: drop world-write on the auto-mounted volume root (keep owner/group write for sharing daemons) */
++		if (pt_name)
++			reaper_usb_mounted_mark(pt_name);	/* v3.3.3: mounted once - the retry leaves it alone from here (rc/reaper_usbmon.c) */
+ 
+ 		char usb_node[32], port_path[8];
+ 		char prefix[] = "usb_pathXXXXXXXXXXXXXXXXX_", tmp[100];
+@@ -2409,6 +2457,7 @@ _dprintf("usb_path: 4. don't set %s.\n", tmp);
+ 			// run_nvscript("script_usbmount", mountpoint, 3);
+ 
+ 		run_custom_script("post-mount", 120, mountpoint, NULL);
++		reaper_usb_mount_stamp();	/* v3.3.3: the grace runs from here (swapon + Entware start = the storm) */
+ 
+ #if defined(RTCONFIG_CLOUDSYNC)
+ 		char word[PATH_MAX], *next_word;
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 4e59f8bb12..08e94a43cc 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -8358,6 +8358,76 @@ void wave_monitor_check()
+ }
+ #endif
+ 
++/* reaper v3.3.3: when the soft-lockup panic may be on (rc.h). Pure, host-tested
++ * (build-scripts/tests/test_usb_boot_mount.py): never before `floor` seconds of
++ * uptime, never within `grace` seconds of USB mount activity, and a stamp from
++ * the future (a clock the watchdog cannot make sense of) counts as activity. */
++int reaper_slp_should_arm(unsigned long up, unsigned long stamp, int have_stamp, unsigned long floor, unsigned long grace)
++{
++	if (up < floor)
++		return 0;
++	if (have_stamp && (stamp > up || up - stamp < grace))
++		return 0;
++	return 1;
++}
++
++/* The arm/disarm itself. rc/init.c writes 0 at boot and rc/usb.c writes 0 at
++ * every mount, so the sysctl is already right when this first runs; `armed`
++ * tracks what WE last wrote, and a mount after the arm shows up as a fresh stamp
++ * that flips it back (the 0 was written by usb.c already - this just logs it). */
++static void reaper_softlockup_arm_check(void)
++{
++	static int armed = 0;
++	char buf[32];
++	unsigned long up = (unsigned long)uptime(), stamp = 0;
++	int have = 0, want;
++
++	if (f_read_string(REAPER_USB_MOUNT_STAMP, buf, sizeof(buf)) > 0) {
++		stamp = strtoul(buf, NULL, 10);
++		have = 1;
++	}
++	want = reaper_slp_should_arm(up, stamp, have, REAPER_SLP_FLOOR_SECS, REAPER_SLP_GRACE_SECS);
++	if (want == armed)
++		return;
++	f_write_string("/proc/sys/kernel/softlockup_panic", want ? "1" : "0", 0, 0);
++	armed = want;
++	if (want)
++		logmessage("reaper", "soft-lockup panic armed: up %lu s, no USB mount activity for %lu s (a CPU stuck 20 s now reboots the router)",
++			up, have ? up - stamp : up);
++	else
++		logmessage("reaper", "soft-lockup panic disarmed for a USB mount; re-arms %d s after it settles", REAPER_SLP_GRACE_SECS);
++}
++
++/* reaper v3.3.3: start_dnsmasq() dropped a log-facility, conf-file or conf-dir that
++ * was not there (rc/services.c, reaper_dnsmasq_log_guard; one "<kind> <path>" line
++ * each). Once any of them is, restart dnsmasq so the postconf takes full effect. The
++ * guard clears the flag at that start, or re-arms it with whatever is still missing;
++ * both sides use reaper_dnsmasq_dep_missing(), so a restart is never re-dropped. */
++static void reaper_dnsmasq_logdrop_check(void)
++{
++	char buf[1024], *p, *e, *ready = NULL;
++
++	if (!f_exists(REAPER_DNSMASQ_LOGDROP_FLAG))
++		return;
++	if (f_read_string(REAPER_DNSMASQ_LOGDROP_FLAG, buf, sizeof(buf)) <= 0)
++		return;
++	for (p = buf; *p && !ready; p = e ? e + 1 : p + strlen(p)) {
++		if ((e = strchr(p, '\n')) != NULL)
++			*e = '\0';
++		if (p[0] && p[1] == ' ' && p[2] == '/' && !reaper_dnsmasq_dep_missing(p[0], p + 2))
++			ready = p + 2;
++	}
++	if (!ready)
++		return;
++	logmessage("reaper", "dnsmasq: %s is available now - restarting dnsmasq to pick it up", ready);
++	unlink(REAPER_DNSMASQ_LOGDROP_FLAG);
++#ifdef RTCONFIG_MULTILAN_CFG
++	start_dnsmasq(0);	/* LAN_IN_SDN_IDX (rc/sdn.h): the main LAN, the instance the postconf shapes */
++#else
++	start_dnsmasq();
++#endif
++}
++
+ void dnsmasq_check()
+ {
+ 	if (nvram_get_int("asus_mfg") == 1)
+@@ -8373,6 +8443,7 @@ void dnsmasq_check()
+ #endif
+ 	)
+ 		return;
++	reaper_dnsmasq_logdrop_check();	/* reaper v3.3.3 */
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	int i;
+@@ -11699,10 +11770,15 @@ void watchdog(int sig)
+ 		return;
+ 	}
+ #ifdef RTCONFIG_BONDING
+-	nvram_set_int("bondst", (bs = get_bonding_status()));
+-
+-	if(bs!=bs_pre)
++	/* reaper 2026-10-03 (perf audit P35a): publish the state only when it
++	 * changes - this wrote nvram every 10 s, 8,640 transactions a day for an
++	 * unchanging value through the netlink nvram path. bs_pre starts at -1,
++	 * so the first tick after boot still publishes it. */
++	bs = get_bonding_status();
++	if (bs != bs_pre) {
++		nvram_set_int("bondst", bs);
+ 		logmessage("BONDING", bs_desc[bs]);
++	}
+ 	bs_pre = bs;
+ #endif
+ #endif
+@@ -11902,6 +11978,8 @@ wdp:
+ 	mtketh_reset_check();
+ #endif
+ 	dnsmasq_check();
++	reaper_softlockup_arm_check();	/* reaper v3.3.3 */
++	reaper_usbmon_check();		/* reaper v3.3.3: lost mount events, aborted flashes, a disk-less bus (rc/reaper_usbmon.c) */
+ #ifdef RTCONFIG_NEW_USER_LOW_RSSI
+ 	roamast_check();
+ #endif
+diff --git a/release/src/router/shared/scripts.c b/release/src/router/shared/scripts.c
+index e21f300d0e..33206396df 100644
+--- a/release/src/router/shared/scripts.c
++++ b/release/src/router/shared/scripts.c
+@@ -25,6 +25,9 @@
+ #include <stdarg.h>
+ #include <dirent.h>
+ #include <ctype.h>
++#include <signal.h>
++#include <errno.h>
++#include <sys/wait.h>
+ #include "shutils.h"
+ #include "shared.h"
+ 
+@@ -94,6 +97,78 @@ void run_custom_script(char *name, int timeout, char *arg1, char *arg2)
+ 	}
+ }
+ 
++/* reaper v3.3.3: wait for `pid` - an _eval() child, so a session leader whose pgid is
++ * its pid - up to `timeout` s. At the cap TERM the whole group, give it `grace` s,
++ * then KILL what is left. kill(-pgid, 0) probes the group as a whole, so grandchildren
++ * we cannot waitpid() (an e2fsck the script ran) are covered; the leader is reaped as
++ * soon as it goes so a zombie does not hold the probe. 0 = exited in time (a child it
++ * left behind is left alone), 1 = timed out and the group was stopped. libc only -
++ * host-tested (build-scripts/tests/test_usb_boot_mount.py). */
++int reaper_wait_pgrp(pid_t pid, int timeout, int grace)
++{
++	int st, i, reaped = 0;
++	pid_t w;
++
++	for (i = 0; i < timeout * 10; i++) {
++		w = waitpid(pid, &st, WNOHANG);
++		if (w == pid || (w < 0 && errno == ECHILD))
++			return 0;
++		usleep(100000);
++	}
++	kill(-pid, SIGTERM);		/* e2fsck handles TERM: it cancels and exits cleanly */
++	for (i = 0; i < grace * 10; i++) {
++		if (!reaped && waitpid(pid, &st, WNOHANG) != 0)
++			reaped = 1;
++		if (kill(-pid, 0) != 0)
++			return 1;
++		usleep(100000);
++	}
++	kill(-pid, SIGKILL);
++	for (i = 0; i < 50; i++) {
++		if (!reaped && waitpid(pid, &st, WNOHANG) != 0)
++			reaped = 1;
++		if (kill(-pid, 0) != 0)
++			break;
++		usleep(100000);
++	}
++	return 1;
++}
++
++/* reaper v3.3.3: run_custom_script() whose cap stops the script and everything it
++ * started. Stock caps with alarm(timeout) in the child, which kills the SHELL only: a
++ * pre-mount still inside e2fsck (amtm's disk check waits for NTP first) left the check
++ * orphaned, holding the device open O_EXCL, so the mount that followed failed EBUSY
++ * and nothing retried it (RT-BE86U field, 2026-10-02). Only pre-mount uses this: a
++ * hook may legitimately leave daemons behind (post-mount starts Entware), a pre-mount
++ * by contract may not - the volume is not mounted yet. Returns 1 if it timed out. */
++int run_custom_script_bounded(char *name, int timeout, char *arg1, char *arg2)
++{
++	char script[120];
++	char *cmd[4];
++	int pid = 0;
++	struct stat st;
++
++	snprintf(script, sizeof(script), "/jffs/scripts/%s", name);
++	if (stat(script, &st) != 0)
++		return 0;
++	if (nvram_match("jffs2_scripts", "0") || !(st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
++		run_custom_script(name, timeout, arg1, arg2);	/* logs the refusal the stock way */
++		return 0;
++	}
++	logmessage("custom_script", "Running %s (args: %s%s%s)", script, arg1 ? arg1 : "", arg2 ? " " : "", arg2 ? arg2 : "");
++	cmd[0] = script;
++	cmd[1] = arg1;
++	cmd[2] = arg2;
++	cmd[3] = NULL;
++	if (_eval(cmd, NULL, 0, &pid) != 0 || pid <= 0)
++		return 0;
++	if (reaper_wait_pgrp(pid, timeout, 10)) {
++		logmessage("custom_script", "%s did not finish in %d s - stopped it and everything it started", script, timeout);
++		return 1;
++	}
++	return 0;
++}
++
+ 
+ void run_postconf(char *name, char *config)
+ {
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 2f45a212b7..68d7d45988 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -4025,6 +4025,8 @@ extern int vpnc_use_tunnel(int vpnc_unit, const char *proto);
+ /* scripts.c */
+ extern void run_custom_script(char *name, int timeout, char *arg1, char *arg2);
+ extern void run_postconf(char *name, char *config);
++extern int reaper_wait_pgrp(pid_t pid, int timeout, int grace);	/* v3.3.3: wait a session leader out, then stop its whole group */
++extern int run_custom_script_bounded(char *name, int timeout, char *arg1, char *arg2);	/* v3.3.3: the cap stops the script AND what it started (pre-mount) */
+ extern void use_custom_config(char *config, char *target);
+ extern void append_custom_config(char *config, FILE *fp);
+ extern void setup_jffs_dirs();
+-- 
+2.25.1
+

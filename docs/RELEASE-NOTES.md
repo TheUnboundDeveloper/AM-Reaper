@@ -43,8 +43,10 @@ scheduled jobs and add-ons start on time instead of waiting twenty minutes or mo
 **Under the hood.** The firewall checks its own rules and restores them if something changes them
 behind its back; the Diagnostics report reads a boot that rotated out of the live log and flags a
 clock that never synced; a stray file that could never run on this router is gone from the image;
-the DTIM Interval defaults to 1 on every radio, set once; 94 more interface strings are translated
-in all 25 languages.
+the DTIM Interval defaults to 1 on every radio, set once; the Rule Status page now checks that LAN
+traffic leaves with the router's address; two misleading boot log lines are gone; the Wireless
+Settings schedule grid opens next to the row you clicked; the firmware page no longer shows buttons
+that do nothing; 94 more interface strings are translated in all 25 languages.
 
 **New model: ZenWiFi BQ16 Pro** (BE30000). It builds and passes the same verification as the other
 models and publishes as a prerelease. No one has run it on hardware yet, so treat the first image

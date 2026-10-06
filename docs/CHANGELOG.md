@@ -104,11 +104,37 @@ node, not only on the primary router.
   into `/lib` of every image (197 KB no ARM process could load); it is gone, and `reaper_verify`
   gained a `host-arch` check that fails on any non-ARM binary in the staged filesystem. Quagga
   (zebra, ripd) is no longer built: it shipped inert, with a default vty password.
-- **Interface.** DTIM Interval defaults to 1 on every radio, set once per box, with the explainer
-  saying why; the Wireless Settings scheduler grid opens over the row you clicked; the firmware
-  overlay shows no button during a download and the upload veil lost its dead Cancel; the System Log
-  dropdowns explain themselves; the About page's vendor credits are reworded; 94 strings that were
-  still English in every language pack are translated (19 brand and acronym tokens stay).
+- **Rule Status witnesses the WAN masquerade.** A new witness row (A1b) checks that a LAN-to-WAN
+  flow leaves source-translated, judged on `POSTROUTING` like the existing F6 row; its expectation
+  comes from the primary WAN's NAT setting and reads n/a when NAT is off. A per-egress-interface
+  audit is not built.
+- **Quieter, truer logs.** The `stop_lan` trace logged "wl radio off" for `eth1`-`eth4` because its
+  marker sat in the loop over every LAN interface; it now fires for `wl*` names only, and the stock
+  `wlconf`/`wl` calls are untouched. A hand-set `wlcsm_bindfix=1` (v3.2.8 dropped only the default)
+  logged "retired ... ignored" on every boot; it now logs once more, then removes the key from
+  nvram. The Wireless Quality card's neighbour list is labelled as the puncturing confirmation scan
+  of the radio's own block, not a site survey (`RWIF_117`, 25 packs).
+- **DTIM Interval defaults to 1 on every radio.** The stock explainer said 3, and a box kept the 3 its
+  nvram carried from stock. The first boot on v3.3.4 sets `wlN_dtim=1` once per radio before the
+  radios come up (marker `/jffs/reaper/.dtim1`, one log line); a user may raise it afterwards, and
+  the explainer now says 1 and why.
+- **Every Reaper overlay opens where you are looking.** Inside the shell frame a fixed-position box
+  centres on the middle of the whole page, not the screen. The Wireless Settings scheduler grid, the
+  last overlay that did, now opens over the row you clicked; the Flow Explorer's detail panel (above)
+  uses the same visible-slice values. The 24 stock `confirm()` dialogs on nine pages are unchanged.
+- **The firmware page has no dead buttons.** During a download from the update server the overlay
+  shows no button (the 25 s timed reveal of a Cancel that could not cancel is gone), and the
+  manual-upload veil's Cancel hatch is removed; Close still appears on a failure.
+- **Smart Connect's band mask loses an unreachable fallback.** `Advanced_Wireless_Content.asp` built
+  the mask behind two identical guards with a `return 7` (slots 0-2, no 6 GHz) behind the second; it
+  could not run, but it would have dropped 6 GHz on a tri-band box the moment either guard was edited.
+  Removed; no behaviour change.
+- **Wording and languages.** The System Log page's two dropdowns now say what each one does (the
+  filter excludes the level it names); the About page's ASUS and Broadcom credits are reworded to
+  describe the hardware, the GPL source drops and the closed components left unmodified; 94 of the
+  113 strings that were still English in every language pack are translated (19 brand and acronym
+  tokens stay English; a native-speaker review is owed). The BQ16 now appears on the GT-BE98
+  branch of the Wireless status page, where Reaper's own quad-band branch had never listed it.
 - **The ZenWiFi BQ16 Pro joins (BE30000, quad-band 2.4/5/6/6 GHz).** Same GPL drop as the BQ16, the
   GT-BE98 Pro's radio layout, its own radio driver and dongle firmware from the stock Pro image. It
   builds and passes verification and publishes as a prerelease; it carries the BQ16's header art

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
+> **Doc status:** current as of **v3.3.5** · 2026-10-06 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -1479,10 +1479,10 @@ virtual networks on each band keep serving while the carriers are down, which wa
 RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
 rather than speed.
 
-**DTIM Interval defaults to 1.** Reaper sets the DTIM interval to 1 on every radio: a sleeping client wakes at every
-beacon, so phones, watches and smart-home devices answer at once and multicast (casting, AirPlay, discovery) is never
-held back, for a small battery cost. The first boot of a build that carries this sets 1 once on each radio (the
-system log says so) and never touches it again; raise it on the Wi-Fi Settings page if you prefer longer client sleeps.
+**DTIM Interval defaults to 1.** A router with no DTIM value set, such as a new box or one just factory reset, uses
+1 on every radio: a sleeping client wakes at every beacon, so phones, watches and smart-home devices answer at once and
+multicast (casting, AirPlay, discovery) is never held back, for a small battery cost. A firmware update never changes
+the value you already have. Raise it on the Wi-Fi Settings page if you prefer longer client sleeps (Apple recommends 3).
 
 <a id="411-long-term-storage-data-export-and-the-reaper-settings-backup"></a>
 ### 4.11 Long-Term Storage and Data Export

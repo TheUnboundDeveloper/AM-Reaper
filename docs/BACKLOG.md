@@ -157,9 +157,12 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   only OUR stale ones removed afterwards; bypass entries pruned to what the new config wants. Host test 34/34 (fresh, live jump,
   changed target). **[in v3.3.4 r8, metal owed]**
   ↳ notes: `pbr-rebuild-not-atomic.md`
-- **[P3] DTIM Interval defaults to 1 on every radio** — the stock explainer said 3 and a box keeps the 3 its nvram carried from
-  stock; the paragraph now says 1 and why (25 packs), and the first boot sets 1 once per radio before the radios come up
-  (marker `/jffs/reaper/.dtim1`, one log line) - the user may raise it afterwards. **[in v3.3.4 r5, metal owed]**
+- **[P1] v3.3.4 overwrote the user's DTIM on upgrade** (tester, 3 → 1) — `reaper_dtim_default()` keyed "once" on a new
+  `/jffs/reaper/.dtim1` marker that no earlier image wrote, so EVERY dirty flash over an older Reaper forced `wlN_dtim=1`.
+  Removed (init.c call, services.c function, rc.h); verify marker now requires the log line ABSENT. Default 1 stays only
+  as the compiled default (fresh/reset nvram); the explainer still says 1. Lost values cannot be restored (old value
+  only in the one syslog line) - affected users re-set it. v3.3.5 = v3.3.4 + this fix only; the v3.3.4 prereleases
+  were withdrawn. **[in v3.3.5, metal owed]**
 - **[P2] Flow Explorer: the Advanced detail panel stayed at the top while the list scrolled** (owner) — sticky inside a
   cell shrunk to the panel's own height, and inside the shell frame (grown to the page's height) sticky never engages at
   all; the panel now slides inside its stretched cell to the shell's published visible slice (--rv-top/--rv-h; standalone:

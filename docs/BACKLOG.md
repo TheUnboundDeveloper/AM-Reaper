@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.3.2** · 2026-10-02 <!--@stamp-->
+> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,29 +37,38 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.3.3 is the newest rung (cut 2026-10-03); earlier releases are in
+The ordered short list. *v3.3.4 is the newest rung (cut 2026-10-06); earlier releases are in
 [`CHANGELOG.md`](CHANGELOG.md).*
 
 1. **[P2] Code signing, fully automated** — CI-signed images + manifest, router verify, pre-upload
    verdict; gate test first. **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 2. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru job dead on that box.
    **[needs data]** ↳ notes: `gt-be98-empty-crontab.md`
-3. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built;
+3. **[P2] GT-BE98 LAN5 (1G LAN-5) links but gets no DHCP** (field, v3.3.3) — the model's only 1 GbE port
+   (internal GPHY: eth2 on the RTL8372 board, eth5 on the BCM board); Reaper touches no port membership or
+   PHY state; stock paths that isolate one port: LAN-port Dual WAN (`wans_lanport=5`), SDN wired binding
+   (blob), ebtables isolation, or the GPHY at 100 Mb/s. Diag gap owed (wans_lanport, apg dut_list, ebtables,
+   per-port counters). **[needs data]** ↳ notes: `gt-be98-lan5-no-dhcp.md`
+4. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built;
    root cause wants a syslog. **[needs data]** ↳ notes: `warden-crash-addon-update.md`
-4. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1). **[owed: repro]**
+5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1). **[owed: repro]**
    ↳ notes: `firewall-hosts-paste-blanks-gui.md`
-5. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]**
+6. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]**
    ↳ notes: `channel-marker.md`
-6. **[P3] Local sibling images** — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only
+7. **[P3] Local sibling images** — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro are source-only
    locally; CI unaffected. **[hygiene]**
-7. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport in v3.2.8
+8. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport in v3.2.8
    needs the soak. **[owed]** ↳ notes: `cve-check-2026-08-30.md`
-8. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
+9. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]**
    ↳ notes: `code-review-tail.md`
-9. **[P2] ZenWiFi BQ16 (BE25000) on the roster since v3.3.2** — onboarded from the ASUS 102_39256 GPL drop +
-   stock radio firmware; MCP and noMCP 34/34 locally; first CI build (the clean-room proof of its
-   platform archive) and a tester owed. Prerelease-only until a unit boots one. **[owed: CI run, a tester]**
+10. **[P2] ZenWiFi BQ16 (BE25000) on the roster since v3.3.2** — onboarded from the ASUS 102_39256 GPL drop +
+   stock radio firmware; first CI build passed in v3.3.3 (MCP + noMCP, the clean-room proof of its
+   platform archive), published as a prerelease. Prerelease-only until a unit boots one. **[owed: a tester]**
    ↳ notes: `bq16-onboarding.md`
+11. **[P2] ZenWiFi BQ16 Pro (BQ16_PRO) onboarding** — from its own 102_39256 GPL drop + stock radio firmware
+    (2.4/5/6/6, the GT-BE98 Pro's layout); placeholder banner = the BQ16's art; MCP + noMCP built, overlay +
+    platform archive staged. **[owed: lean commit, CI run, a tester, Pro banner art]**
+    ↳ notes: `bq16-pro-onboarding.md`
 
 ---
 
@@ -68,52 +77,6 @@ The ordered short list. *v3.3.3 is the newest rung (cut 2026-10-03); earlier rel
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
-- **[P2] Security Posture card clipped its right column** — `1fr` tracks floored at the Wi-Fi row and `.card{overflow:hidden}`
-  cut the second column's tags under ~1500 px, at 905-1090 px and on phones ("Safari" report, Chromium repro). Fixed in
-  **v3.3.3 r5**: `minmax(0,1fr)` tracks, labels truncate with a tooltip. Ask: the reporter's Safari at its usual width.
-  **[awaiting field]** ↳ notes: `dashboard-posture-clip.md`
-- **[P3] A `dbg:` memory dump landed in syslog at the end of every boot** — stock `init.c` called the closed `slabdbg()`
-  (rc/broadcom.o: meminfo, free, slabinfo, bpm status, ~230 lines, no gate) after `start_services()`; now behind the stock
-  `dbg` nvram flag, **v3.3.3 r5**. Ask: one boot log with no `dbg: command:` line. **[awaiting field]** ↳ notes: `dbg-boot-dump.md`
-- **[P2] Diagnostics button froze the whole GUI for the length of the collection** — httpd ran the collector inline (perf
-  audit P2); now a detached worker, the page starts it, polls every 2 s and fetches the report, **v3.3.3 r5**. Ask: a diag
-  run with a second tab still responsive, and the report still downloads. **[awaiting field]** ↳ notes: `diag-collector-detached.md`
-- **[P2] Warden page poll forked ~360 processes every 30 s inside httpd** — `ipset -t list` + `sed` per set (audit P13);
-  now one header listing parsed once, **v3.3.3 r5**. Ask: the Warden page open for a minute with the GUI responsive and the
-  same threat / geo counts as before. **[awaiting field]** ↳ notes: `warden-stats-one-listing.md`
-- **[P2] Warden cache replay re-fed every set on every firewall rebuild** — up to 800k add-lines into already-populated sets
-  on each WAN bounce or Apply (audit P9); now skipped when the live set holds entries, **v3.3.3 r5**. Ask: `rwarden: cache
-  replay: N set(s) already populated, skipped` after an Apply, and a boot that still restores. **[awaiting field]**
-  ↳ notes: `warden-replay-skip.md`
-- **[P3] rtrafd ran tmctl and ping through a four-process shell wrapper** — seven queries per 4 s under HW QoS, ~7 forks/s
-  (the idle-churn item); now fork+exec with a poll() deadline, **v3.3.3 r5**. Ask: QoS class tiles still live, `ps | grep -c
-  "[s]leep 3"` = 0, no `did not answer` line. **[awaiting field]** ↳ notes: `rtrafd-exec-no-shell.md`
-- **[P3] Three needless writes: the fqdn set cache to /jffs every 10 min, `bondst` nvram every 10 s, a clientlist nvram
-  write per poll** — each now only when the value changed (audit P14 / P35a / P30), **v3.3.3 r5**. Ask: the fqdn cache
-  files' mtimes stop advancing on a static list. **[awaiting field]** ↳ notes: `write-only-when-changed.md`
-- **[P2] A USB volume whose first mount fails is never mounted** — the hotplug add is one-shot; `rc/reaper_usbmon.c` re-sends
-  the block event for an attached, never-mounted partition (3 tries, 30 s apart, 30 min window), in **r4**. Ask: a boot
-  where `sending its mount event again` is followed by the mount. **[awaiting field]** ↳ notes: `usb-boot-mount-chain.md`
-- **[P3] The 120 s pre-mount cap could cancel a long disk check** — 300 s for pre-mount only, in **r4**. **[awaiting field]**
-  ↳ notes: `usb-boot-mount-chain.md`
-- **[P3] RT-BE96U / RT-BE86U have no USB power control** — `pwr_usb_gpio` 255; the mount watchdog re-enumerates a disk-less
-  storage device once at 10 min (`authorized` 0/1, else xhci unbind/bind), logged UNTESTED, in **r4**. **[metal owed]**
-  ↳ notes: `usb-boot-mount-chain.md`
-- **[P3] A flash that fails after the USB release left its flag** — the watchdog clears a flag older than 10 min with no
-  image waiting, restarts rtrafd and remounts, in **r4**. **[awaiting field]** ↳ notes: `usb-release-before-flash.md`
-- **[P3] dnsmasq `conf-file=`/`conf-dir=` into `/opt` was not guarded** — a missing one is dropped and logged, the watchdog
-  restarts on its return, in **r4**; a `log-facility` in `dnsmasq-sdn.postconf` is still unguarded. **[awaiting field]**
-  ↳ notes: `usb-boot-mount-chain.md`
-- **[P2] Firewall engine: three silent caps** (`RFW_MAX_IFACE`/`_SETS`/`_ZPOL`) — each logs once per ruleset and the page
-  refuses them (RFW_323-325), **v3.2.9**. **[metal owed]** ↳ notes: `rfw-silent-caps.md`
-- **[P2] Warden chain build as one `iptables-restore --noflush` payload** (~3 s per rebuild) — shim + per-rule fallback,
-  host-tested, **v3.2.9**. **[metal owed: soak + a VPN reconnect during an apply]** ↳ notes: `warden-restore-batch.md`
-- **[P3] Rule Status: VPN-server rows red on an RT-BE86U** — test address in `rw_threat`; the
-  picker saw only 32 sets, **fixed v3.3.0**. Ask: version + blocked-country count. **[awaiting field]**
-  ↳ notes: `fwsim-wansrc-set-cap.md`
-- **[P3] e2fsprogs CVE-2022-1304 via a crafted USB disk** — upstream `ab51d587bb9b` applied; host
-  test 2026-09-28: the guard fires on a crafted empty leaf, repair converges. **[metal owed: USB scan
-  of an ext4 + ext3 disk]** ↳ notes: `review-carry-forward-queue.md`
 - **[P2] Warden outbound blocks appear to have stopped** — `rwarden_log` read 0/1/0. **[owed: the
   owner's recollection or a repro]** ↳ notes: `warden-outbound-quiet.md`
 - **[P3] Firewall DNAT / Redirect: the residual gaps.** **[project]**
@@ -121,50 +84,100 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Rule Status walker: fixtures from a second and third topology** — RT-BE88U, GT-BE98 with
   VLANs. Ask for: `reaper_fwsim --dump-inputs DIR`. **[needs data]**
   ↳ notes: `firewall-witness-catalog.md`
-- **[P2] First-boot setup box: browser autofill put the router password into the Wi-Fi key; the apply
-  bounced back to the page instead of showing the reboot** (GT-BE98) — Wi-Fi fields moved out of the
-  credential form, nothing prepopulated, login name lowercase-only, "Apply & Reboot" ends in the
-  REBOOTING screen; **fixed v3.3.2**. The form also shifted the login rows out of the layout rule (GT-BE98
-  screenshot); selector fix in **r5**. Ask: one factory reset through the box in Chrome.
-  **[awaiting field]** ↳ notes: `firstboot-box-autofill-reboot.md`
-- **[P1] A firmware flash left the Entware USB volume busy, then dirty; the next boot had no DNS**
-  (RT-BE86U) — release before the eject + `rc_service` cleared at boot, **fixed v3.3.2**; the 2026-10-02
-  "still broken" report flashed FROM v3.3.1 (fix not exercised). RT-BE96U flash FROM v3.3.2 2026-10-02: release
-  ran, rtrafd saved, clean mount next boot. Field 2026-10-02: the flash path now works; a GUI **reboot** brings the
-  failure back - init's reboot path ran services-stop in the background and unmounted seconds later with Entware
-  still up (35 busy retries, lazy detach). Checked 2026-10-02: a detached ext4 still unmounts cleanly once its last
-  process dies, and `shutdn()` kills everything before `reboot()` - so a dirty volume on the reboot path needs a holder
-  that is not a process: the swap file on the volume (amtm), whose hook `swapoff` can fail ENOMEM while Entware is still
-  up. Reboot/halt now run `reaper_usb_release reboot` first (services-stop to completion, holder sweep, then `swapoff`
-  of every swap under `/tmp/mnt` - the flash path gets the swapoff too), `stop_services()` skips the second
-  services-stop; in r4. RT-BE96U r4 GUI reboot 2026-10-02: `reboot: releasing USB volumes before the unmount`, rtrafd
-  saved, `init: USB partition unmounted` 12 s later with no busy line, the next boot (`BOOT REASON REBOOT`) mounted
-  a clean journal first try at 94 s - the reboot path works on a box with no swap and no Entware. Still to ask: the
-  same GUI reboot on the Entware box (`grep -E 'reaper:|unmounted|busy|swap' /jffs/syslog.log` from the shutdown -
-  the `swap on ... turned off` line is the one unexercised here - and whether the next boot logs `recovery complete`).
-  **[awaiting field]** ↳ notes: `usb-release-before-flash.md`
-- **[P2] dnsmasq exits when its `log-facility` directory is missing; a USB volume never mounts when the
-  pre-mount script outlives 120 s** (RT-BE86U, Entware/amtm) — `start_dnsmasq` drops a `log-facility` whose
-  directory is missing, logs it, and the watchdog restarts dnsmasq once it exists; pre-mount's cap stops the
-  whole process group and says so; `mount_r` waits out EBUSY up to 120 s; in r2 (RT-BE96U r2 boot clean, none
-  triggered there). Field 2026-10-02: the tester's box booted with the SSD, four retries, waited for the
-  volume - working. Still to ask: the `reaper:` lines from that boot (which mechanism fired) and one boot
-  without the SSD. **[awaiting field]** ↳ notes: `usb-boot-mount-chain.md`
-- **[P3] rtrafd store windows are wall-clock** — `STORE_RETRY_SECS`/`LATE_LOAD_SECS` now on CLOCK_MONOTONIC;
-  in r2 (RT-BE96U r2: store attached at +15 s, before the NTP step, so the window was not exercised). Ask: no
-  "never appeared within 900 s" at the NTP step on a USB-store box. **[awaiting field]** ↳ notes: `usb-boot-mount-chain.md`
-- **[P2] IPv6 reaches some LAN hosts but not others** (GT-BE98) — Stateful had no SLAAC; `slaac`
-  added to the Stateful range, **v3.3.1**. Ask: VM IPv6 + one diag. **[awaiting field]** ↳ notes: `gt-be98-ipv6-partial-lan.md`
-- **[P3] Warden list boxes side by side at ~300 px on tablets; phones laid the shell out at 481 px** (tester
-  screenshot) — `.duo` stacks below 400 px per box; the shell's phone topbar wraps instead of setting a
-  width floor; in **r5**. Ask: the tester's width + one phone. **[awaiting field]** ↳ notes: `warden-list-boxes-wrap.md`
-- **[P2] Every client list empty on a box that is not routing** (GT-BE19000, AP mode: Network page cards
-  and Clients tab, Parental Controls, QoS pickers) — the `get_clientlist` hook now merges Reaper's device
-  store with each device's network index; in **r5**. Ask: Main card count + Wired/Wireless tabs
-  vs the Devices page. **[awaiting field]** ↳ notes: `sdn-clients-ap-mode.md`
-- **[P3] Minimum width on Auto** (`reaper_bwfloor`, v3.3.1) — built; the floor is 80 MHz on both bands;
-  re-arm while wide no longer restarts acsd2 (`picker-pending`). **[metal owed]** ↳ notes: `min-width-auto.md`
-- **[P3] Static preamble puncturing** — built. **[metal owed]** ↳ notes: `preamble-puncturing-metal.md`
+- **[P3] Wireless Settings: scheduler grid opens mid-page, far from its toggle** — the modal centres in the shell's
+  auto-grown frame, so "viewport centre" is the document middle; now opens upper left over the clicked row. **[in v3.3.4 r1, metal owed]** ↳ notes: `wifi-scheduler-modal-position.md`
+- **[P3] Diag section 3 shows two shadowed mounts with /tmp's figures** — rc's /tmp tmpfs hides the platform's
+  /tmp/mnt + defaults mounts; cosmetic. Diag v1.3.26 labels the hidden rows (owner's choice). **[in v3.3.4 r1, metal owed]** ↳ notes: `diag-shadowed-mounts.md`
+- **[P3] rpunctd resets on a transient chanspec read** — a scan-time iovar read logs "below 80 MHz" then
+  "monitoring afresh" and drops the baseline (6x in 13 h on wl1, no CSA); a second read must agree. **[in v3.3.4 r1, metal owed]** ↳ notes: `rpunctd-scan-chanspec-reset.md`
+- **[P3] System Log page: two severity dropdowns, only one filters.** Both hints now say what each
+  does. **[in v3.3.4 r1, metal owed]** ↳ notes: `syslog-level-dropdowns.md`
+- **[P3] Firmware page: the download phase has no true cancel** — resolved by removing the button there (owner):
+  nothing can be dismissed during a download or the flash; Close on failure, Cancel only while an upload is in flight. **[in v3.3.4 r2, metal owed]** ↳ notes: `firmware-veil-cancel.md`
+- **[P3] About page: the ASUS and Broadcom credit boxes read as jokes** (owner) — reworded to what each vendor
+  supplies, 25 packs (`RABT_25`/`RABT_26`); page untouched. **[in v3.3.4 r2, metal owed]** ↳ notes: `about-vendor-credits.md`
+- **[P3] Rule Status does not witness masquerade** — A1b added: the LAN→WAN flow must leave source-translated
+  (judged on POSTROUTING like F6), n/a while NAT is off; the per-egress-interface audit is not built. **[in v3.3.4 r2, metal owed]** ↳ notes: `rule-status-masquerade-witness.md`
+- **[P3] English tokens in the 24 non-English packs** — recount found 113 (the 39 plus everything seeded since);
+  94 translated, 19 brand/acronym tokens kept English by design. **[in v3.3.4 r2; native review owed]** ↳ notes: `english-tokens-residual.md`
+- **[P3] Chain-integrity watchdog covers the Warden drop chains only** — invariant defined and built for the rules
+  engine: apply.sh signs REAPER_FW* (md5 of `-S`), rwatch 3f recomputes, a two-tick mismatch is `rules-chain-drift`, heal = the committed apply.sh, capped at two. **[in v3.3.4 r2, metal owed]** ↳ notes: `chain-integrity-scope.md`
+- **[P3] Loading/Restarting overlay: native redesign remainder** — every Reaper fixed overlay now anchors to the
+  visible slice (the Wireless Settings scheduler modal was the last); 24 stock `confirm()` dialogs on 9 pages remain. **[owed: the confirm() pass + metal]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Smart Connect band-mask hazards** — the dead `return 7` fallback is gone from the mask builder (no behaviour
+  change); the 6 GHz-outside-Smart-Connect default stays an owner RF decision. **[in v3.3.4 r2, metal owed]** ↳ notes: `smart-connect-band-mask.md`
+- **[P3] Diagnostics v1.3.28 read on r11: three small defects** — the name-map counters line called `od`, which this busybox has no
+  applet for (line printed blank) -> the `hexdump` applet; a log kept on /jffs is reached through /tmp symlinks, so the rotated file was
+  listed and read twice in 19b -> one entry per resolved path; the syslog mirror read "none" on a USB store with `slog` on, because rwatch
+  rotated the 8 MB mirror AFTER appending and the live file was absent until the next tick -> rwatch rotates first, and the diag names
+  the rotated copy. Diag v1.3.29. **[in v3.3.4 r12, metal owed]** ↳ notes: `diag-syslog-rotated-boot.md`
+- **[P3] The image shipped the toolchain's x86-64 libexpat.so** — a stock Makefile line (`# why precompiled?`) copied `$(TOOLCHAIN)/lib/libexpat.so`
+  into /lib of every image: 197 KB no ARM process could load (the real one is expat-2.0.1's /usr/lib/libexpat.so.1). Line removed;
+  reaper_verify gained `host-arch` (no non-ARM ELF in the staged fs; engine synced). **[in v3.3.4 r12, metal owed]**
+- **[P2] Site Survey stops at channel 44 (RT-BE86U)** — a 5 GHz radio under radar monitoring refuses every scan request on
+  this platform (full, passive, own block, prohibited type; owner probes 2026-10-04); the stock core gets its list by moving the radio
+  off the radar channel and back (prebuilt wlcscan_core_escan), which costs every 5 GHz client the change and a radar check. **Owner
+  ruling 2026-10-04: option 1 - Reaper never moves the radio; the page states the limit per radio (err 4) and stops at the first
+  refusal.** Built in canon, needs r6; 6 GHz and 2.4 GHz survey fine on r5. Owner 2026-10-05: r6 works; channel cards replace the bars (channel, count, 0-1/2-3/4+ colour, this router marked),
+  radar line shortened to the owner's sentence - canon, needs r7. Owner 2026-10-05 (r7 metal): the 6 GHz line carried the old radar wording -> RSVY_26 re-texted (Own channel block only; the radio
+  refused a full-band scan.), radio lines stacked, a bare Error now carries the exit code; and the ruling is revised: **Scan with
+  channel move** - an explicit two-step button moves a radar-bound 5 GHz radio to 36/80 (or 149/80), scans the whole band, returns
+  it (restore file for a killed worker; clients drop, radar check on return, AiMesh nodes follow - said on the page).
+  r12 metal: the move never left 40/160 (a bare `chanspec` set only changes the configured value; stock adds the `acs_update` iovar and returns through `dfs_ap_move` when the driver has `bgdfs`) and every exit code read -1 (the worker inherits httpd's SIGCHLD reaper). Fixed in canon 2026-10-05: stock method (chanspec + acs_update, operating-chanspec check, dfs_ap_move return when bgdfs), SIGCHLD reset, click decides, raw radar line on the page, RSVY_32 re-texted (batch R). **[in v3.3.4 r13, metal owed]** ↳ notes: `site-survey-page.md`
+- **[P3] Flow Explorer labels VLAN / guest sources with the WAN address** — the CGI's lan flag was the nvram br0
+  subnet only; now every live `br*` subnet, nvram as the fallback. **[in v3.3.4 r3, metal owed]** ↳ notes: `conn-lan-flag-br0-only.md`
+- **[P3] Diag section 5 labels the lease's expiry uptime as time remaining** — `wan0_expires` is boot-uptime + lease;
+  v1.3.27 prints remaining = expiry minus uptime, clamped at 0. **[metal OK 2026-10-04: owner r3 diag reads lease=1800s remaining=1745s]** ↳ notes: `diag-lease-expires-absolute.md`
+- **[P3] stop_lan trace says "wl radio off eth1..eth4"** — the marker now fires for `wl*` names only; the stock
+  wlconf/wl calls are untouched. **[in v3.3.4 r3, metal owed]** ↳ notes: `stop-lan-trace-eth-label.md`
+- **[P3] A hand-set `wlcsm_bindfix=1` logs "retired ... ignored" on every boot** — the retired branch logs once more,
+  then unsets and commits the key. **[in v3.3.4 r3, metal owed]** ↳ notes: `wlcsm-bindfix-stale-nvram.md`
+- **[P1] ntp_ready never set when the clock is already right at the first NTP reply** (RT-BE86U, two diags 2026-10-04) —
+  busybox ntpd runs `/sbin/ntpd_synced` with "step" only after a step (threshold 1 s); a clock pre-set by amtm RouterDate is slewed,
+  the hook ignored "stratum" and "periodic", and ntp_ready stayed 0 for 36+ min with WireGuard, OpenVPN, diskmon, ddns and every
+  add-on NTP wait behind it. Fix: "stratum"/"periodic" with the exported stratum below 16 count as the first sync (logged as slewed).
+  **[in v3.3.4 r5 (RT-BE96U); a BE86U build is the real test; tester confirm: `Started ntpd` lines without `Initial clock set` + `nvram get ntp_ready` 0 with the clock right]**
+  ↳ notes: `be86u-warm-reboot-ntp-never-syncs.md`
+- **[P3] reaper_diag syslog sections miss a rotated boot** — 19/19b read /tmp/syslog.log (+ mirror) only; a busy box rotates
+  the boot into syslog.log-1 within ~25 min and span / syslogd-starts / custom_script counts then describe a window that
+  starts after boot (BE86U 2026-10-04). Proposed: read syslog.log-1 first + findings "live log starts N min after boot",
+  "ntp_ready=0 N min after boot", "probes 100 % loss"; print ls -l + first line of /tmp/syslog.log* /jffs/syslog.log*;
+  section 5 prints ntp_ready / ntp_server0 / dns_local_cache. Built as diag v1.3.28: slog_files emits syslog.log-1 (jffs and tmp)
+  ahead of the live file, 19b lists each file's size and first stamp and says how long after boot the live log starts (finding),
+  section 5 prints the ntp line with a WARN when ntp_ready is not 1 after 5 min, section 16 WARNs when every probe lost 100 %.
+  **[in v3.3.4 r8 (diag v1.3.28), metal owed]**
+  ↳ notes: `diag-syslog-rotated-boot.md`
+- **[P3] rdnshc fails a healthy resolver over whenever the uplink is down** — AdGuard on br55 answers a real-query probe only
+  through the WAN, so every WAN blip costs a failover, a re-apply after wan_up's stock rewrite, a restore 3 hits later and two
+  extra dnsmasq reloads (owner 2026-10-04 19:45-19:46, 93 s). Now a miss is not counted while `link_wan` reads 0 or `wan0_state_t` is set and not 2; hits always count. **[in v3.3.4 r4, metal owed]**
+  ↳ notes: `wan-rehome-dns-blips-2026-10-04.md`
+- **[P3] rwatch incident bundle swamps its own syslog tail** — `fcctl status` and `bpmctl status` print ~150 kernel lines
+  before the dump takes its 200-line tail, so the owner's 19:45:08 bundle (reason wan-gw) held BPM tables and not the WAN
+  loss; the dump now takes dmesg and a 300-line syslog tail first. **[in v3.3.4 r4, metal owed]** ↳ notes: `wan-rehome-dns-blips-2026-10-04.md`
+- **[P3] Policy Routing rebuild is not atomic** (R07, second half) — every apply and every VPN event that regenerates tore the
+  mark chain, the 9000-band rules and the bypass entries down before rebuilding: a window with no rules, new flows out the WAN,
+  tunnel flows cut mid-stream. Now a swap-in: the new chain is built under the other name, the PREROUTING jump is replaced in
+  place, the old chain dropped and the new one renamed; routing rules already live are kept and counted, the missing ones added,
+  only OUR stale ones removed afterwards; bypass entries pruned to what the new config wants. Host test 34/34 (fresh, live jump,
+  changed target). **[in v3.3.4 r8, metal owed]**
+  ↳ notes: `pbr-rebuild-not-atomic.md`
+- **[P3] DTIM Interval defaults to 1 on every radio** — the stock explainer said 3 and a box keeps the 3 its nvram carried from
+  stock; the paragraph now says 1 and why (25 packs), and the first boot sets 1 once per radio before the radios come up
+  (marker `/jffs/reaper/.dtim1`, one log line) - the user may raise it afterwards. **[in v3.3.4 r5, metal owed]**
+- **[P2] Flow Explorer: the Advanced detail panel stayed at the top while the list scrolled** (owner) — sticky inside a
+  cell shrunk to the panel's own height, and inside the shell frame (grown to the page's height) sticky never engages at
+  all; the panel now slides inside its stretched cell to the shell's published visible slice (--rv-top/--rv-h; standalone:
+  the window's scroll). Same pass: the two columns needed ~1157 px but stacked only below 1040 - compact band to 1110 px,
+  stack below. Measured in the mock: panel top 80 px vs -530 before at a 900 px scroll. **[in v3.3.4 r12, metal owed]**
+  ↳ notes: `conn-detail-panel-follow.md`
+- **[P3] Flow Explorer: friendly hostname in the Destination column** (tester; owner widened it to external
+  flows) — internal: a free page change; external: a passive listener (rdnsmapd: AF_PACKET + kernel filter for UDP replies from port 53, a blocking recv, a 128 KB
+  table in /tmp/reaper/dnsmap that httpd mmaps and probes in place), no PTR lookups, no query log; the name the device asked
+  for renders over the address in Quick Look, Advanced and the detail panel, the router's own addresses read This router; default
+  on, Names toggle on the page (off removes the table). Host test 22 checks incl. the kernel filter interpreted. Off wipes the table; on runs a one-shot reverse backfill of the addresses in flight (PTR to dnsmasq, ~50/s,
+  muted until a forward reply takes over). **[in v3.3.4 r10, metal owed]** ↳ notes: `conn-destination-hostname.md`
+- **[P3] Quagga (zebra/ripd) dropped from the Reaper model builds** — shipped inert (~790 KB; `quagga_enable` default 0,
+  no page sets it, started only for an IPTV/VoIP WAN unit) with the vty password defaulting to "zebra" on every interface. **[in v3.3.4 r2, metal owed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 
 ---
 
@@ -183,73 +196,35 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   lockup reboots in 5 s with no trace (no pstore), where v3.3.3 would have logged the stack. RT-BE96U r4 2026-10-02/03:
   reads 0 at 196 s and 285 s, then `soft-lockup panic armed: up 624 s, no USB mount activity for 530 s` and
   `softlockup_panic` = 1 (mount stamp 94 + 530 = 624; the first watchdog tick past 600) - the re-arm works as
-  specified. **[needs data: 3 reboots with swapon removed from post-mount]**
+  specified. Field 2026-10-04 (tester, v3.3.3 beta, swap file OFF): flash boot, cold reboot and two UI reboots
+  all came back, no panic or loop (n=3 without swap; the boot logs were not seen - /tmp/syslog.log had rotated).
+  **[needs data: syslog.log-1 of a UI-reboot boot]**
   ↳ notes: `usb-boot-mount-chain.md`
-- **[P3] Local sibling port: canon adds and deletes did not reach a sibling branch** — RT-BE86U lacked 14 adds
-  (rename detection hid 7, `\.bin$` protected OpenSSL's 7 test vectors) and kept 25 files canon deleted; CI
-  images unaffected. Fixed in tooling: `--no-renames`, `openssl-3.5/test/` shared, the port removes a file whose
-  blob canon once carried, parity reports it `STALE`. Dry run on rt-be86u: 21 sync, 25 delete. Sibling parity fails
-  until each branch is ported (the next cut does it). **[proves at the next cut]** ↳ notes: `sibling-port-add-delete-gap.md`
-- **[P2] Warden chains absent 13 min after boot on a flapping WAN** (GT-BE98, v3.2.7_BETA) — desk pass
-  2026-10-02: rwatch's heal was not overdue at minute 13 (300 s grace + two-tick confirm), and every
-  firewall build re-arms Warden under the lock; no reachable path found. Ask: `grep -E 'rwarden|rwatch'
-  /jffs/syslog.log` over one boot + `/tmp/rwarden/failcount`. **[needs data]** ↳ notes: `warden-chains-absent-wan-flap.md`
-- **[P3] Duplicate menu entries after opening UPnP Media Server** (GT-BE19000). **[needs data]**
-  ↳ notes: `duplicate-menus-mediaserver.md`
-- **[P3] Policy Routing page: the first-open symptom was never identified.** **[needs the
-  screenshot]** ↳ notes: `pbr-first-open-symptom.md`
-- **[P3] System Log page: two severity dropdowns, only one filters.** **[owner call]**
-  ↳ notes: `syslog-level-dropdowns.md`
-- **[P3] Policy Routing rebuild is not atomic** (R07, second half). **[design]**
-  ↳ notes: `pbr-rebuild-not-atomic.md`
+- **[P2] The dashboard says Connected while LAN clients have no name resolution** — wanduck's `link_internet=2` comes from the
+  router's own resolver (`/tmp/resolv.conf` = the WAN DNS) resolving `dns_probe_host`, so it is green whenever the uplink works,
+  even when the path clients use (dnsmasq -> unbound / a LAN resolver) is dead or the tunnels are down (BE86U 2026-10-04). Proposed:
+  a client-path probe through 127.0.0.1:53 beside the uplink probe; the pill reads "Connected, LAN name resolution failing" and the
+  System log says which upstream is silent. **[proposed, owner call]**
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]**
   ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade. **[accepted]**
-- **[P2] AiMesh: repeated pairing failures reported against Reaper.** **[needs data]**
-  ↳ notes: `aimesh-pairing-failures-tester.md`, `aimesh-decompose-2026-09-09.md`
 - **[P2] MLO ON kills the AiMesh backhaul.** **[owed: needs a mesh]**
   ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] Minimum width on Auto in an AiMesh: phones will not roam to the node** (RT-BE88U + RT-BE58) — the
-  floor is CAP-only and never synced; hypothesis: it leaves only DFS channels at 80 MHz+, the node beacons
-  after CAC and phones do not find a DFS BSS. **[needs data: region, backhaul, CAP + node chanspec floor on/off]** ↳ notes: `bwfloor-aimesh-roaming.md`
-
+  
 ---
 
 ## UI / UX polish
 
-- **[P3] Rule Status does not witness masquerade.** **[owner call]**
-  ↳ notes: `rule-status-masquerade-witness.md`
-- **[P3] Tx power's lowest step** writes `10` where stock writes `0`. **[owner call]**
-  ↳ notes: `tx-power-lowest-step.md`
-- **[P3] 39 tokens are English in the 24 non-English packs.** **[owed — next translation pass]**
-  ↳ notes: `english-tokens-residual.md`
-- **[P3] Firmware page: the download phase has no true cancel.** **[deferred — needs an rc stop
-  service]** ↳ notes: `firmware-veil-cancel.md`
-- **[P3] Chain-integrity watchdog covers the Warden drop chains only.** **[owed — needs the
-  invariant defined]** ↳ notes: `chain-integrity-scope.md`
-- **[P3] Loading/Restarting overlay: native redesign remainder.** **[owed]**
-  ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Loader z-index raise is class-wide.** **[watch]** ↳ notes: `loader-zindex-watch.md`
-- **[P3] Smart Connect band-mask hazards.** **[watch]** ↳ notes: `smart-connect-band-mask.md`
 
 ---
 
-## Features to add
+## Potential Features to add
 
-- **[P3] Dynamic puncturing: PHY trigger + client evidence** (v3.3.1 r6) — built; trigger levels are
-  heuristics. **[metal owed: calibration + one proof line]** ↳ notes: `punct-detection-inputs.md`
-- **[P3] Interference mitigation switch** (`wlN_rmit`, v3.3.1) — built (driver default / + HW ACI);
-  `obss_dyn_bw` dropped (CSA width switch); 91 did not help clients. **[metal owed: restart re-apply]** ↳ notes: `punct-detection-inputs.md`
-- **[P3] Flow Explorer: friendly hostname in the Destination column for internal hosts** (tester) — the
-  Device cell's IP-keyed name lookup and the row's internal/external flag already exist; render name over
-  address for internal destinations. **[owner: investigate]** ↳ notes: `conn-destination-hostname.md`
-- **[P3] OSPF + BGP dynamic routing.** **[project]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Attainder — control by names** (resolver-step domain blocker). **[project]**
   ↳ notes: `attainder-name-control.md`
-- **[P3] Mimic — copy of the flows** (port mirroring to an external IDS) — Runner hardware mirror,
-  user-chosen ports. **[planned: metal feasibility check first]**
-  ↳ notes: `port-mirroring-ids.md`
+- **[P3] Mimic — copy of the flows** (hardware port mirror to an external IDS) — Firewall-tab mock built
+  2026-10-04 (`reaper-mockups/mimic/`); open: bandwidth mismatch (10G source, 2.5G tap). **[paused - owner thinking]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict.** **[scheduled]**
   ↳ notes: `manifest-signing-shelved.md`
@@ -298,6 +273,11 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   `/proc/partitions` name with an unbounded `%[^\n ]` into a 32-byte buffer (kernel-generated input, so not
   reachable; add a width), and `create_custom_passwd()` leaks its `FILE *` when the account list cannot be read
   (an rc process that exits). No behaviour change either way. ↳ notes: `usb-boot-mount-chain.md`
+- **[P3] avahi CVE-2024-52615 / -52616 (wide-area: fixed source port, predictable query ID)** — wide-area is on,
+  but only non-`.local` lookups use it and nothing on the box asks for one. **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
+- **[P3] avahi CVE-2021-3468 / CVE-2025-59529 (local socket: HUP loop, no client cap)** — reachable only by
+  processes on the router, all root. **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
+- **[P3] OSPF + BGP dynamic routing.** **[Not Needed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 
 ---
 
@@ -339,6 +319,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **USB storage attaches after `services-start` on every boot** — stock order: `start_usb()` loads
   usb-storage/`uas` after `start_services()` and `start_wan()`; anything started from `/opt` before the
   mount fails by design. ↳ notes: `usb-boot-mount-chain.md`
+- **"Every flash rewrites the bootloader" — it does not** — the plain pkgtb carries bootfs + rootfs; the U-Boot the
+  kernel names rides in bootfs (A/B slots); only the `_loader.pkgtb` writes the loader partition (2026-10-03). ↳ notes: `uboot-in-bootfs-not-loader.md`
+- **Minimum width on Auto in an AiMesh: phones stay on the router** (RT-BE88U + RT-BE58) — the floor only shapes the
+  router's channel pick, which AiMesh channel sync mirrors onto every node; a DFS pick silences the node 1-10 min (CAC), no roaming candidate. Floor on + DFS off, or fixed 36-48/80 (2026-10-04). ↳ notes: `bwfloor-aimesh-roaming.md`
 
 ---
 

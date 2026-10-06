@@ -138,6 +138,7 @@ lan_ipaddr=192.168.50.1
 wan0_ifname=eth0
 wan0_proto=dhcp
 wan0_ipaddr=203.0.113.5
+wan0_nat_x=1
 https_lanport=8443
 misc_http_x=0
 misc_httpsport_x=8443
@@ -288,6 +289,13 @@ try:
     ids = [x["id"] for x in j["witnesses"]]
     check("gen: static rows resolved (A1, A3, A4, A5, H2 present)", all(i in ids for i in ("A1", "A3", "A4", "A5", "A9", "H2")), ids)
     x = wit(j, "A1"); check("gen: A1 green with no Gatekeeper MAC", x and x["state"] == "green" and " mac " not in x["witness"], x)
+    # 2026-10-04 (A1b, the masquerade witness): the same LAN->WAN flow must leave source-translated,
+    # judged on the POSTROUTING rule like F6, and the row is n/a - never red - while NAT is off.
+    x = wit(j, "A1b"); check("gen: A1b LAN->WAN is source-translated and names the POSTROUTING masquerade",
+          x and x["state"] == "green" and x["expect"] == "SNAT" and x["verdict"].startswith("source translated")
+          and "POSTROUTING" in x["rule"] and "MASQUERADE" in x["rule"], x)
+    j2, _, _ = run(witness=None, nv=NV.replace("wan0_nat_x=1\n", ""), tag="g1nat")
+    x = wit(j2, "A1b"); check("gen: A1b is n/a while NAT is off, never red", x and x["state"] == "na" and "NAT" in x["note"], x)
     x = wit(j, "A3"); check("gen: A3 resolved at the router", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)
     x = wit(j, "A8"); check("gen: A8 skeleton row present in router mode and green", x and x["state"] == "green", x)
     check("gen: port forwards produce B1/B2 rows per rule", "B1.1" in ids and "B2.1" in ids and "B1.2" in ids and "B2.2" in ids, ids)

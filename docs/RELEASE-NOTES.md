@@ -1,13 +1,13 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.3** · 2026-10-03 <!--@stamp-->
+> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.3** <!--@treever--> — `3006.102.8_Reaper_v3.3.3`. **A USB volume that is late, missing or being unmounted at reboot no longer takes the LAN resolver down, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, and the router does less background work.** The boot fixes let an Entware box survive the stock order that loads the USB drivers after the services; the reboot path releases the volumes and their swap before the unmount; the Diagnostics collector, the Warden poll, the cache replay and the traffic collector each shed most of their process churn. The code was built and verified on RT-BE96U MCP test images (v3.3.3_BETA r1-r5 and the cut build) before the cut, and r2-r4 ran on the RT-BE96U (flash boot, GUI reboot, WAN replug, the soft-lockup re-arm at 624 s); the release images come from the public CI build. The series stands at **744 patches** (0739–0744 for v3.3.3); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.4** <!--@treever--> — `3006.102.8_Reaper_v3.3.4`. **A real Site Survey replaces the stock one, the Flow Explorer names each destination from the DNS answers devices already receive, Policy Routing rebuilds without a rules-free window, the DNS health check and the clock stop misreading a brief WAN loss or an already-correct clock, and the ZenWiFi BQ16 Pro joins.** The survey lists every network each radio hears and can move a radar-bound 5 GHz radio for a full scan on request; the destination names come from a passive listener and a shared in-memory table, with a switch that deletes them; the firewall signs its own chains and restores them if they drift; a host x86 library that had shipped in every image since the GPL drop is gone; Quagga is no longer built on any model. The code was built and verified on RT-BE96U MCP test images (v3.3.4_BETA r1-r13 and the cut build) before the cut, and the rungs ran on the RT-BE96U through the cycle; the Site Survey channel move of r13 and the BQ16 Pro have not yet been run by a tester. The release images come from the public CI build. The series stands at **752 patches** (0745–0752 for v3.3.4); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** and from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band), both of which build and pass verification and publish as prereleases. |
+| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
 | **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6 and **v2.8.8** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
@@ -19,6 +19,37 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
+
+**A real Site Survey.** Network Tools > WiFi Site Survey now lists every network each radio can
+hear, not just the first few channels, and tells you what each radio did: how many networks it
+found, or why it found none. Neighbouring networks are shown as one card per channel, with your
+router's channel marked. A 5 GHz radio on a radar channel cannot scan where it is; the new **Scan
+with channel move** button briefly moves it to a channel that can scan, lists the band, and moves it
+back. Its clients drop for the scan, and you confirm before it starts.
+
+**Names in the Flow Explorer.** System Log > Connections now shows the name a device looked up
+(for example `video.example.com`) above the address it connected to. The names come from the DNS
+answers your devices already receive; nothing extra is looked up. A **Names** switch on the page
+turns the feature off and deletes what was learned. In Advanced view the detail panel now follows
+you down the list.
+
+**Steadier connections.** Applying a Policy Routing change no longer drops traffic for a moment
+while the rules are rebuilt. A brief ISP outage no longer makes the router switch DNS servers back
+and forth. A router whose clock was already right at boot now reports it as synced, so VPN clients,
+scheduled jobs and add-ons start on time instead of waiting twenty minutes or more.
+
+**Under the hood.** The firewall checks its own rules and restores them if something changes them
+behind its back; the Diagnostics report reads a boot that rotated out of the live log and flags a
+clock that never synced; a stray file that could never run on this router is gone from the image;
+the DTIM Interval defaults to 1 on every radio, set once; 94 more interface strings are translated
+in all 25 languages.
+
+**New model: ZenWiFi BQ16 Pro** (BE30000). It builds and passes the same verification as the other
+models and publishes as a prerelease. No one has run it on hardware yet, so treat the first image
+as a test build.
+
 
 ## What's new in v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
 

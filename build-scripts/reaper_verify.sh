@@ -171,6 +171,7 @@ case "$MODEL" in
   RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
   GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
   BQ16)        want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE25000_REAPER_Header.png;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
+  BQ16_PRO)    want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE30000_REAPER_Header.png;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -228,7 +229,7 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
 # never off the other SKU of the same model.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16)  want_dhd="6717a0 6726b0";;   # BQ16: read off stock ZenWiFi_BQ16 102_39256
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)  want_dhd="6717a0 6726b0";;   # BQ16 / BQ16_PRO: read off each one's own stock 102_39256 image
   RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
   *)                                        want_dhd="";;
 esac
@@ -538,6 +539,18 @@ fi
 # staged, the binary must be a target-arch ELF, and the static file must hold
 # the core rows.
 check_elf usr/bin/reaper_fwsim reaper_fwsim 1
+
+# ---- host-arch: nothing built for the build host may ship in the image --------
+# reaper 2026-10-05 (r11 first-boot image read): the stock router Makefile copied the
+# TOOLCHAIN's own x86-64 libexpat.so into /lib of every image (197 KB no ARM process
+# could load). The install line is gone; this keeps any host-architecture ELF out.
+# (`file` pads the column after the colon when given many names, so the ELF word is matched past any run of blanks)
+_hostelf="$(find "$FS" -type f -size +1k -exec file {} + 2>/dev/null | grep -E ':[[:space:]]*ELF' | grep -v -E 'ARM|aarch64' | sed "s|^$FS/||; s|:.*||" | head -5 | tr '\n' ' ')"
+if [ -z "$_hostelf" ]; then
+  pass "host-arch" "no host-architecture ELF in the staged fs"
+else
+  fail "host-arch" "host-architecture ELF in the image: $_hostelf"
+fi
 if [ -s "$FS/usr/share/reaper/witness.static" ]; then
   _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
   if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then

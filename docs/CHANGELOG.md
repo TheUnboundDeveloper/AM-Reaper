@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.3.2** · 2026-10-02 <!--@stamp-->
+> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -10,7 +10,7 @@ All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
 Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
 The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
 **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
-the **ZenWiFi BQ16** (BE25000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -45,6 +45,80 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
+
+- **A real Site Survey replaces the stock one (field, RT-BE86U: "nothing beyond channel 44").** The
+  stock Network Tools page ran a prebuilt scan core whose fixed event buffer kept only the first
+  networks in channel order. `Reaper_Survey.asp` reads `wl escanresults` per radio through a
+  detached worker (`httpd/reaper_survey.c`, a libc parser; 512-network cap; never runs beside a
+  capture or Auto Scan) and shows each radio's own outcome - networks and time, a passive or
+  own-block fallback, radio off, or the driver's own error text and exit code. Channel occupancy is
+  drawn as one card per channel with this router's channel marked. A 5 GHz radio under radar
+  monitoring refuses every scan request on this platform; a plain Scan never moves a radio and says
+  so. **Scan with channel move** (two-step confirm) does what the stock core did silently: it moves a
+  5 GHz radio that heard nothing to 36/80 or 149/80 with the `chanspec` and `acs_update` iovars - a
+  bare `wl chanspec` changes only the configured value of a running radio - scans once the radio
+  really operates there, and returns through `dfs_ap_move` when the driver has background radar
+  checks, so the radio keeps serving through the minute-long check. A move cut short is undone at the
+  next start. The worker resets `SIGCHLD`: it inherited httpd's reaper, and every exit status had read
+  -1.
+- **The Flow Explorer names the destination.** `rdnsmapd` learns names at DNS time instead of looking
+  anything up: an `AF_PACKET` socket with a 16-instruction classic BPF filter (UDP replies from port
+  53) blocks in `recv`, and every A record in a reply's answer section is stored under the question's
+  name, which follows the CNAME chain for free. The table is a 131,136-byte tmpfs file that the daemon
+  and httpd both map (`shared/reaper_dnsmap.h`: 2048 slots, earliest-expiry replacement, TTL clamped
+  to 1-24 h), so there is no publish or parse step and no idle CPU. A **Names** switch on the page
+  (default on) stops the daemon and deletes the table; switching it back on sends one reverse query
+  per listed remote address to the local resolver (about 50 per second, capped at 512) and shows those
+  names muted until a forward reply replaces them. The page keeps a name while its address is listed,
+  labels the router's own bridge addresses "This router", treats every live bridge subnet as LAN (not
+  only `br0` - guest and VLAN sources showed the WAN address), and its detail panel now follows the
+  reader down the list.
+- **Policy Routing rebuilds without a rules-free window.** An Apply used to tear the chain down and
+  build it again. `rc/reaper_pbr.c` now builds the new rules under a second chain name, replaces the
+  `PREROUTING` jump in place (`-R`), drops the old chain and renames the new one; routing rules are
+  kept or added first and only stale ones are deleted afterwards. A full teardown happens only when
+  the feature is switched off.
+- **The DNS health check holds its verdict while the uplink is down (owner RT-BE96U).** Each WAN blip
+  cost a resolver failover, a re-apply, a restore and two extra dnsmasq reloads, because a
+  LAN-side resolver failed the real-query probe whenever the uplink was gone. `rc/rdnshc.c` no longer
+  counts a miss while the WAN is known down; boxes without the WAN state keys are never held.
+- **A clock that is already right counts as synced (field, RT-BE86U).** busybox `ntpd` slews a clock
+  that is within a second, and amtm's RouterDate pre-sets it, so the sync hook - which honoured only
+  `step` - never set `ntp_ready`, and WireGuard, OpenVPN, cron and add-ons waited 23 minutes or more.
+  A stratum or periodic event with a valid stratum now counts as the first sync.
+- **The firewall chains are signed and watched.** `apply.sh` writes an md5 of each Reaper filter chain
+  and the nat chain; `rwatch` recomputes it, and two ticks of drift re-apply the committed rules under
+  the firewall lock (600 s apart, at most twice, never while a change is armed). rwatch's incident
+  bundle now takes the kernel log and a 300-line syslog tail first, before its own accelerator dumps
+  push the trigger out, and the syslog mirror rotates before appending, not after.
+- **rpunctd no longer resets on one odd read.** A single differing chanspec read was taken as a
+  channel change (six false resets on wl1 in two days, each discarding the puncturing baseline); a
+  second read must now agree.
+- **Diagnostics v1.3.29.** Reads a boot that rotated into `syslog.log-1`; adds findings for an unset
+  `ntp_ready` after 300 s, for every probe lost and for a log that starts after the boot; prints the
+  lease time remaining (udhcpc stores boot uptime plus lease); labels mounts hidden by a later mount;
+  lists each log file once when `/tmp` names are symlinks to `/jffs`; adds the name map's counters.
+- **Image and build hygiene.** A stock Makefile line copied the toolchain's own x86-64 `libexpat.so`
+  into `/lib` of every image (197 KB no ARM process could load); it is gone, and `reaper_verify`
+  gained a `host-arch` check that fails on any non-ARM binary in the staged filesystem. Quagga
+  (zebra, ripd) is no longer built: it shipped inert, with a default vty password.
+- **Interface.** DTIM Interval defaults to 1 on every radio, set once per box, with the explainer
+  saying why; the Wireless Settings scheduler grid opens over the row you clicked; the firmware
+  overlay shows no button during a download and the upload veil lost its dead Cancel; the System Log
+  dropdowns explain themselves; the About page's vendor credits are reworded; 94 strings that were
+  still English in every language pack are translated (19 brand and acronym tokens stay).
+- **The ZenWiFi BQ16 Pro joins (BE30000, quad-band 2.4/5/6/6 GHz).** Same GPL drop as the BQ16, the
+  GT-BE98 Pro's radio layout, its own radio driver and dongle firmware from the stock Pro image. It
+  builds and passes verification and publishes as a prerelease; it carries the BQ16's header art
+  until its own is drawn. No tester has run it yet.
+- **Tooling.** New host suites `test_site_survey.py` and `test_dnsmap.py` (the DNS parser, the BPF
+  program run through an interpreter, the backfill), `test_pbr_apply_script.py` drives the swap-in
+  against a stateful fake `iptables`, and `test_reaper_diag_counters.py` covers the rotated boot. The
+  stale-configure guard (`build-scripts/reaper_stale_configure.sh`) now also clears a package's
+  `stamp-h1`: 76 packages in the router Makefile re-run configure only when that sentinel is missing, so
+  clearing the Makefile alone left the package unbuildable (hit by this rung's cut build on expat).
 
 ## v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
 

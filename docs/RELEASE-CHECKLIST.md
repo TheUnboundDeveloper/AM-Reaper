@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.3.3** · 2026-10-04 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -146,7 +146,7 @@ Choose one:
 
 **Actions → Public build → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 14 <!--@fleetjobs--> jobs,
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 16 <!--@fleetjobs--> jobs,
       ~1.5 h each — seven models)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override

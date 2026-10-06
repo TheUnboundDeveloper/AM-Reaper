@@ -61,6 +61,13 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # templates (RSYS_17/24/29/30/32/41, two of which carry a %1 placeholder)
        # - translations must stay free of ` ${ and ".
        'Reaper_Sysinfo.asp',
+       # Added 2026-10-04 with v3.3.4's Site Survey page (Network Tools), which
+       # supersedes the stock Advanced_Wireless_Survey.asp. Caught by this file's
+       # own LANGCOVERAGE assertion on the r3 test build - the fourth time. Its
+       # RSVY_ tokens sit in HTML text and in backtick JS templates only (one is
+       # an <option> text set from a backtick) - translations must stay free of
+       # ` ${ and ".
+       'Reaper_Survey.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

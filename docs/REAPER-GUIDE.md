@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.3.3** · 2026-10-03 <!--@stamp-->
+> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.3 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.4 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -127,6 +127,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Administration → Tweaks: the Reaper setting](#417-administration--tweaks-the-reaper-setting)
+   - 4.18 [Site Survey (Network Tools)](#418-site-survey-network-tools)
 5. [Efficiency and good practice](#5-efficiency-and-good-practice)
 6. [Troubleshooting quick table](#6-troubleshooting-quick-table)
 7. [Glossary](#7-glossary)
@@ -163,7 +164,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.3 What it adds
 
-In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
+In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
 Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, Telnet, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off (8.1, 8.2). Reaper also adds an idle auto-logout of 15 minutes on the admin session.
 
@@ -296,7 +297,7 @@ For the record, the sealed container is plain enough to open without a router: a
 
 ### 2.6 A USB disk for the long-term store
 
-Live data — the traffic graphs, device presence, channel quality — is kept in RAM and resets at reboot. If you want history over long spans, you choose a **durable location** on the Long-Term Storage page (System Log → Long-Term Storage): **RAM only**, **Internal (JFFS)**, or **USB storage**, per dataset. The datasets are device history and the action audit trail, Traffic Analyzer history, watchdog (`rwatch`) incident dumps, channel-quality history, and a syslog mirror. Warden's cache is locked to JFFS regardless. Connection-health history for analytics export lands in the same location.
+Live data — the traffic graphs, device presence, channel quality, the Flow Explorer's destination-name table — is kept in RAM and resets at reboot. If you want history over long spans, you choose a **durable location** on the Long-Term Storage page (System Log → Long-Term Storage): **RAM only**, **Internal (JFFS)**, or **USB storage**, per dataset. The datasets are device history and the action audit trail, Traffic Analyzer history, watchdog (`rwatch`) incident dumps, channel-quality history, and a syslog mirror. Warden's cache is locked to JFFS regardless. Connection-health history for analytics export lands in the same location.
 
 A USB disk is the right place for anything that grows: it has the most space and no flash-wear concern, so the Traffic Analyzer saves to it every 15 minutes (JFFS stays hourly to protect the router's NAND). History is written under `/.reaper/` on the volume with restricted permissions, but anyone with file-share access to that volume can read it — it maps every device with timestamps — so prefer JFFS if the share is open to untrusted users. Writes are batched and low-priority; pulling the stick loses history, never policy or performance.
 
@@ -355,6 +356,13 @@ The diagnostics report lists "an old direct firewall hook left over or the share
 
 **Administration → Diagnostics** has one button: **Download Report**. It gathers in one pass what a network engineer would collect by hand — model and firmware identity, uptime and memory, each radio's channel, width, signal health and client counts, wired port link states and speeds, hardware-acceleration and QoS readings, DHCP lease count, running services and open ports, recent kernel and system log excerpts — and, since v1.3.0 of the report, a **FINDINGS** block at the top, syslog history over the live log *and* the `rwatch` mirror (days, not hours), process health, the state of every Reaper layer, the data plane, nvram hygiene, a network inventory, and `/jffs` health. It takes roughly 20–30 seconds; the web server is blocked while it runs, so do not navigate away. The same collector is available over SSH as `reaper_diag`.
 
+**Recent additions to the report.** The syslog history section reads the *rotated* log file ahead of the live one, so on a
+busy router the boot is in the report even when the live file starts twenty minutes later (and a finding says so); the WAN
+section prints the NTP state with a warning when the clock never synchronised, since every service that waits for the
+first sync sits behind it; the connectivity section warns when every probe from the router itself failed; and the
+conntrack section prints the destination-name table's counters (how many DNS replies were read, how many names kept -
+counts only, never a name).
+
 **What the report masks.** The whole document passes through a redaction engine before a byte is written:
 
 - Passwords, Wi-Fi keys and tokens are **never collected** — the report only notes SET or EMPTY.
@@ -380,7 +388,7 @@ It is plain text. **Open it and read it before you share it.** The router never 
 
 Read it on the **System Log** page, or over SSH as the file `/tmp/syslog.log`. **`logread` returns nothing on this platform** (the log is written to a file, not the in-memory buffer). If you have a USB or JFFS store with the syslog mirror enabled, the mirror holds days of history; the diagnostics report reads both.
 
-Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver; also an interference-mitigation mode set, restored or refused), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why), `reaper_bwfloor` (the minimum channel width: a floor lifted after radar, re-armed, a channel-picker restart deferred or run, or not applied). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
+Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `reaper_survey` (a Site Survey channel move and its return), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver; also an interference-mitigation mode set, restored or refused), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why), `reaper_bwfloor` (the minimum channel width: a floor lifted after radar, re-armed, a channel-picker restart deferred or run, or not applied). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
 
 ### 2.13 Keep management off the WAN
 
@@ -936,6 +944,12 @@ A rule has two halves: **what to match**, and **where to send it**. When traffic
 
 It is built entirely from mechanisms already in the firmware — a firewall mark plus a routing-policy rule — so it adds no new moving parts and reuses the routing tables your OpenVPN clients already set up. Nothing here dials a tunnel or changes a VPN's own settings; it only decides what rides through one that is already connected.
 
+**Applying never interrupts routed flows.** Since v3.3.4 an apply - and a VPN client's Killswitch change, which regenerates
+the rules - builds the new marking chain beside the live one and swaps the hook in a single step, keeps every routing
+rule that is unchanged, and adds the new ones before any stale one is removed. Earlier versions tore everything down
+first, so each apply had a moment with no rules in which a new flow could reach the WAN directly and a flow in a tunnel
+lost its path.
+
 **Policy Routing and VPN Director are meant to sit side by side.** Use VPN Director for the broad posture ("send everything through the tunnel", or "send this subnet through the tunnel"), and Policy Routing for the exceptions that need an object or a device — because a Policy Routing rule **wins** over a VPN Director rule for the same traffic. That is what lets you say "tunnel everything, *except* send this one streaming service straight out the WAN."
 
 #### 4.4.2 The page
@@ -1285,6 +1299,20 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 **What it is.** A live **flow explorer** drawn from the Runner flow accelerator. **Quick Look** (the default) lists device name, local IP, remote IP:port, an internal/external badge, protocol and TCP state. **Advanced** shows, per flow, whether it is forwarded in hardware or by the CPU (with a real per-flow percentage split), egress queue and QoS class, DSCP, live rate, total bytes and true age; summary cards show how many flows are accelerated and the overall hardware-versus-CPU split; filters narrow to accelerated or CPU-path flows; a **Pause** control freezes the view. Polling (500 ms – 4 s) runs only while the page is open; the stock connection page is retained as a fallback.
 
+**Destination names.** Since v3.3.4 the Destination column shows a name over the address: a LAN destination by its
+device name (the router's own addresses as *This router*), an external one by the name the device asked DNS for. The names
+come from a small listener on the router that reads the DNS replies your devices receive as they pass - nothing is looked up,
+nothing is logged, and the table it keeps (128 KB, in RAM) names only what the household resolved. A name stays on a row while
+the address is listed and is forgotten when the flow is gone; a small *+N* marks an address that answered for several names
+(a shared CDN host). The **Names** button in the header turns the listener off and removes the table. Devices using DNS over
+HTTPS or TLS, and a wired device talking to a wired LAN resolver on the same switch, never get a name - the reply never passes
+the router.
+
+Switching **Names** off removes the table. Switching it back on runs a one-off reverse lookup of the addresses already in
+flight, through the router's own resolver, so the column fills at once; those names are shown in italics because they are
+what the address's owner registered rather than what the device asked for, and each is replaced the moment a real DNS
+reply for that address is seen. The lookup runs only on that switch, never at boot.
+
 **When to use it.** To see what a device is talking to right now, to confirm that bulk traffic is hardware-accelerated, or to understand why a WireGuard Policy Routing rule cost acceleration (you will see the affected flows on the CPU path).
 
 **Gotchas.** "No active flows in the accelerator cache" means there is no traffic or the accelerator/QoS is off. Queue numbers are mostly zero under Hardware QoS (a single shaped queue) and richer under HW Classful.
@@ -1451,6 +1479,11 @@ virtual networks on each band keep serving while the carriers are down, which wa
 RT-BE96U with MLO on and clients attached on all three bands. The gain is mostly hygiene, a listener fewer and a quieter channel,
 rather than speed.
 
+**DTIM Interval defaults to 1.** Reaper sets the DTIM interval to 1 on every radio: a sleeping client wakes at every
+beacon, so phones, watches and smart-home devices answer at once and multicast (casting, AirPlay, discovery) is never
+held back, for a small battery cost. The first boot of a build that carries this sets 1 once on each radio (the
+system log says so) and never touches it again; raise it on the Wi-Fi Settings page if you prefer longer client sleeps.
+
 <a id="411-long-term-storage-data-export-and-the-reaper-settings-backup"></a>
 ### 4.11 Long-Term Storage and Data Export
 
@@ -1479,7 +1512,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 - **Manual Upload** — with a real progress bar; it warns if the file does not look like an image for this model or variant. The page gives a good image up to ~5 minutes to be verified before calling it rejected.
 - **Mesh Nodes** (at the bottom) — every AiMesh node with name, address, reported firmware version and online state; **Update** opens that node's own firmware page in a new tab where you flash it natively (the image is never relayed through this router), and **Update all nodes** pushes the current firmware the way the stock AiMesh upgrade does. Update one node at a time and let it come back.
 
-The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat; a Close button appears on any error and during download/upload, but not during the flash itself. After the flash the page waits for the router and returns you to sign-in. Known open item: cancelling at the upgrade confirmation during an upload leaves the buttons dead until the page is reloaded.
+The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat. While an image you chose is still uploading, a **Cancel** button stops the upload; nothing can be dismissed during a download from the update server or during the flash itself, because neither can be stopped from the page; a **Close** button appears on any error. After the flash the page waits for the router and returns you to sign-in.
 
 <a id="414a-resolver-health-check-administration--failover-v311"></a>
 ### 4.14a Resolver health check (Administration → DNS Failover, v3.1.1)
@@ -1548,6 +1581,50 @@ Two earlier rows are gone: the interface theme switch (v2.5.9; the theme is alwa
 Saving on this page no longer logs you out unless the setting needs a web-server restart.
 
 ---
+
+### 4.18 Site Survey (Network Tools)
+
+**Network Tools → WiFi Site Survey.** Every network each radio can hear, on every channel its regulatory
+domain allows - not only the channel the radio runs on. Pick one radio or all of them and press **Scan
+now**. Each radio in turn listens across its whole band (a few seconds; its clients may stutter briefly)
+and the table fills as the radios report: name (hidden networks are marked), BSSID, band, control channel,
+channel width, signal with a strength bar, SNR, security (the AKM suites the network advertises - WPA2-PSK,
+WPA3-SAE, 802.1X, Open, WEP), Wi-Fi generation (4/5/6/6E/7 from the capability elements) and which radio
+heard it. Filter by name or address, sort by any column, export the list as CSV. **Networks per channel**
+below the table shows one card per control channel in use, per band: the channel number and how many networks
+sit on it, coloured green (0-1, quiet), amber (2-3, shared) or red (4 or more, crowded). The card of the channel
+this router runs on is marked *This router* and is shown even when nobody else is there; hovering a card lists
+the networks heard on it. A crowded channel is a poor home for your own network, and the Wireless Quality
+page's Auto Scan is the tool that measures the cleanest one. Results stay until the next scan.
+
+Under the progress bar each radio reports its own outcome: how many networks it heard and how long it
+listened, *radio off*, or the wireless utility's own error text. A radio whose active scan returns nothing is
+asked once more a second later and then listened to passively; a passive result is marked as such. An empty
+radio is therefore always a result with a reason, never a blank.
+
+A 5 GHz radio that runs on a block containing radar channels (36/160 or 40/160 under in-service monitoring,
+the usual Wi-Fi 7 setting) refuses every scan request while it watches for radar - the full band, a passive
+listen, even its own channels - with *Scan Rejected*. The survey tries each of those in turn, then says so on the
+radio's line: *On a radar channel under monitoring; a full scan needs it moved to a non-radar channel.* The stock
+survey gets a list from such a radio by moving it to a non-radar channel for the scan and setting it back
+afterwards, which costs every 5 GHz client the channel change and a fresh radar check on return; Reaper never does
+that behind your back. **Scan with channel move** does it on request: a 5 GHz radio that heard nothing in place is moved to 36 or
+149 at 80 MHz the way the stock scan core moves it, the scan starts only once the radio really operates there,
+and it is moved back afterwards. A confirm step comes first because that radio's clients drop for the scan and
+AiMesh nodes follow the channel. The way back waits for a radar check of about a minute: a radio with background
+radar checks keeps serving on the scan channel meanwhile, others stay quiet, and a second move inside that minute
+is refused. A radio that does not change channel says so and is not scanned; hovering a radio's line shows its
+raw radar status. Every other radio scans in place, and the radio's line then reads *full scan after a channel move via 36/80*. A radio
+that refused a full-band scan for some other reason reports *Own channel block only; the radio refused a full-band
+scan.*, and an error with no text of its own now carries the utility's exit code.
+
+What changed and why: the stock page under this tab ran the router's built-in scan core, which collects the
+driver's scan events into a fixed buffer and keeps only the networks that fit, in channel order - on a
+single-radio 5 GHz band in a busy block that cut the list at channel 44 while a quad-band router four feet
+away listed the rest. The Reaper page reads the wireless utility's own text per radio instead, so nothing
+is dropped. The scan never changes a channel or width; preamble puncturing and the minimum-width floor do
+not bound a scan either. The survey refuses to start while a Channel Quality capture or an Auto Scan is
+running on the Wireless Quality page, and those refuse while a survey runs.
 
 ## 5. Efficiency and good practice
 

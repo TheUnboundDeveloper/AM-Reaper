@@ -17,7 +17,9 @@ restored after the long clean hold and a meaningful gain; the change interval bl
 a refused bitmap is blacklisted; two disruptive applies fall back); a slice reported lost
 (fell off the radio) is forgotten at once and re-applied only after the change interval,
 a refusal never leaves anything to restore; the scan tiers (an unresolved far-160 candidate
-asks for a scan, Passive only holds); and the reset on a channel change.
+asks for a scan, Passive only holds); the reset on a channel change; and the chanspec
+debounce (a one-read excursion to a scan channel is not a channel change, a real one is
+taken on its second read).
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass release/src/router
 as argv[1] or REAPER_ROUTER_SRC).
 """
@@ -184,6 +186,22 @@ ok(len(acts(run(s7))) == 1, "state after a channel change must not carry the old
 s8 = "init c p\ngeom 80 0 0\n" + ticks(10, 6, 100, 0, 0, 0, 150) + ticks(70, 40, 100, 900, 0, 0, 950)
 a = acts(run(s8))
 ok(len(a) == 1 and a[0].split()[2] == "0x2", "80 MHz: a busy sec20 must APPLY 0x2, got %s" % a)
+
+# ---- 5b. a channel change must be read twice (2026-10-03, owner RT-BE96U: six one-tick reads
+# of a scan/DFS channel on wl1 in 13 h, each logged "monitoring afresh" with no CSA)
+def cs(*reads):
+    return [l.split()[2:] for l in run("".join("cs %s\n" % c for c in reads)) if l.startswith("cs ")]
+v = cs("40/160", "165", "40/160", "40/160")
+ok([x[0] for x in v] == ["ACCEPT", "HOLD", "SAME", "SAME"] and v[-1][1] == "40/160",
+   "old/new/old: the first read is taken, a one-read excursion changes nothing, got %s" % v)
+v = cs("40/160", "36/160", "36/160", "36/160")
+ok([x[0] for x in v] == ["ACCEPT", "HOLD", "ACCEPT", "SAME"] and v[-1][1] == "36/160",
+   "old/new/new: a real change is taken on its second read, once, got %s" % v)
+v = cs("40/160", "128", "40/160", "128", "40/160")
+ok("ACCEPT" not in [x[0] for x in v[1:]], "an excursion that recurs between home reads is never taken, got %s" % v)
+v = cs("40/160", "165", "60", "60")
+ok([x[0] for x in v] == ["ACCEPT", "HOLD", "HOLD", "ACCEPT"] and v[-1][1] == "60",
+   "old/a/b/b: the held read is replaced, b is taken when it repeats, got %s" % v)
 
 # ---- 6. the scan's other evidence (v3.3.1): a neighbour's home channels take the group's
 # persistent busy as a prior, PHY impairment counts as busy where carrier sense read low,

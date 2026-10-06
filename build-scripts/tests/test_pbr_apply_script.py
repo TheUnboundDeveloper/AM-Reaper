@@ -35,7 +35,13 @@ Asserts, on the script text and the recorded calls:
   - the source's bypass is recorded `new` when wgc1 exists, `pending` when it does not (with
     the "installed when the client starts" log line), and the LAN-wide bypass for the MAC
     rule is `new` either way; `fc flush` runs because a WG rule exists;
-  - the script passes `sh -n` and, when a busybox is on the host, `busybox sh -n`.
+  - the script passes `sh -n` and, when a busybox is on the host, `busybox sh -n`;
+  - v3.3.4 (review R07, second half - the rebuild was not atomic): the new chain is complete
+    before PREROUTING points at it, the jump is REPLACED in place when one is live (-R, not
+    -D then -A), the old chain goes only after the swap and the new one is then renamed to
+    REAPER_PBR; a routing rule already live in its wanted form is kept (no add, no del) and
+    still counted, a changed target is added BEFORE the stale rule at that pref is deleted,
+    and the stale delete names the old rule exactly (fwmark + lookup/prohibit + pref).
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass the tree's
 release/src/router as argv[1] or REAPER_ROUTER_SRC).
 """
@@ -152,8 +158,20 @@ int main(int argc, char **argv) {
         os.chmod(pth, 0o755)
     # a delete must FAIL once there is nothing to delete, or the teardown's
     # `while iptables -D ...; do :; done` never ends - exactly as on a router
-    fake("iptables", 'echo "iptables $*" >> "$FAKE_TRACE"; case " $* " in *" -D "*|*" -X "*) exit 1;; esac; exit 0\n')
-    fake("ip6tables", 'echo "ip6tables $*" >> "$FAKE_TRACE"; case " $* " in *" -D "*|*" -X "*) exit 1;; esac; exit 0\n')
+    # the jump state of a real table: -S lists the jump that -A/-R installed (or that run(live=True)
+    # seeded), -D removes it exactly once, -E follows a rename; every other -D/-X fails as on a router
+    XT = (
+        'echo "TBL $*" >> "$FAKE_TRACE"; J="$FAKE_TRACE.jumpFAM"; for a; do :; done; o=""; n=""; p=""; pp=""\n'
+        'for x; do [ "$pp" = -E ] && n="$x"; [ "$p" = -E ] && o="$x"; pp="$p"; p="$x"; done\n'
+        'case " $* " in\n'
+        '  *" -S PREROUTING "*) echo "-P PREROUTING ACCEPT"; [ -s "$J" ] && echo "-A PREROUTING -j $(cat "$J")"; exit 0;;\n'
+        '  *" -A PREROUTING -j "*|*" -R PREROUTING "*) echo "$a" > "$J"; exit 0;;\n'
+        '  *" -D PREROUTING -j "*) if [ -s "$J" ] && [ "$(cat "$J")" = "$a" ]; then rm -f "$J"; exit 0; fi; exit 1;;\n'
+        '  *" -E "*) if [ -s "$J" ] && [ "$(cat "$J")" = "$o" ]; then echo "$n" > "$J"; fi; exit 0;;\n'
+        '  *" -D "*|*" -X "*) exit 1;;\n'
+        'esac; exit 0\n')
+    fake("iptables", XT.replace("TBL", "iptables").replace("FAM", "4"))
+    fake("ip6tables", XT.replace("TBL", "ip6tables").replace("FAM", "6"))
     fake("ipset", 'echo "ipset $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("fc", 'echo "fc $*" >> "$FAKE_TRACE"; exit 0\n')
     fake("logger", 'echo "logger $*" >> "$FAKE_LOG"; exit 0\n')
@@ -161,6 +179,7 @@ int main(int argc, char **argv) {
     fake("usleep", 'sleep 0.02\n')
     fake("ip", 'echo "ip $*" >> "$FAKE_TRACE"\n'
                'if [ "$1" = "-4" ] && [ "$2" = route ] && [ "$3" = show ]; then echo "192.168.50.0/24 dev br0 proto kernel scope link src 192.168.50.1"; fi\n'
+               'if [ "$1" = "-4" ] && [ "$2" = rule ] && [ "$3" = show ] && [ -n "$FAKE_RULES4" ]; then printf "%s\\n" "$FAKE_RULES4"; fi\n'
                'exit 0\n')
     env = dict(os.environ, PATH=binp + os.pathsep + os.environ.get("PATH", ""))
 
@@ -183,7 +202,15 @@ int main(int argc, char **argv) {
         with open(script, "w") as f: f.write(S2)
         return script, S
 
-    def run(script, wg_up):
+    def run(script, wg_up, live=False, rules4=""):
+        # live: a jump to REAPER_PBR is already in PREROUTING; rules4: what `ip -4 rule show` lists
+        for fam in ("4", "6"):
+            jf = os.path.join(td, "trace.jump" + fam)
+            if live:
+                with open(jf, "w") as f: f.write("REAPER_PBR\n")
+            elif os.path.exists(jf):
+                os.unlink(jf)
+        env["FAKE_RULES4"] = rules4
         for f in ("expect", "expect_rules", "expect_rules6", "failcount", "skipnets"):
             try: os.unlink(os.path.join(PDIR, f))
             except OSError: pass
@@ -224,37 +251,37 @@ int main(int argc, char **argv) {
     # the chain header, on the text
     restores = re.findall(r"-m connmark --mark 0x([0-9A-F])0000/\$MASK -j CONNMARK --restore-mark --nfmask \$MASK --ctmask \$MASK", S)
     check("restores exactly the codes in use (2, 6, B)", sorted(restores) == ["2", "6", "B"], repr(restores))
-    check("no unconditional restore is left", "-A REAPER_PBR -j CONNMARK --restore-mark" not in S, "")
+    check("no unconditional restore is left", "-A $C -j CONNMARK --restore-mark" not in S and "-A REAPER_PBR -j CONNMARK --restore-mark" not in S, "")
     ret = S.find("-m mark ! --mark 0x0/$MASK -j RETURN")
     check("the RETURN follows the restores and precedes the first selector rule",
           ret > S.rfind("--restore-mark") and 0 < ret < S.find("pbr_rule iptables"), "")
-    check("a chain the loop declares only once (one for-T loop)", S.count("-N REAPER_PBR") == 1 and S.count("-m mark ! --mark 0x0/$MASK -j RETURN") == 1, "")
+    check("a chain the loop declares only once (one for-T loop)", S.count("-N $C") == 1 and S.count("-m mark ! --mark 0x0/$MASK -j RETURN") == 1, "")
     # v3.2.4 (WG field capture 2026-09-22): a reply must never get the flow's code back
     # (it re-entered the wgcN table and went back into the tunnel), and must never reach
     # --save-mark (an unmarked reply would zero the flow's verdict).
     rep = S.find("-m conntrack --ctdir REPLY -j RETURN")
     check("the REPLY RETURN is the chain's first rule, ahead of every restore",
           S.count("-m conntrack --ctdir REPLY -j RETURN") == 1
-          and S.find("-F REAPER_PBR") < rep < S.find("--restore-mark"), "")
+          and S.find("-F $C") < rep < S.find("--restore-mark"), "")
 
     # run with wgc1 present
     rc, T, FL, F = run(script, wg_up=True)
     check("wg up: script exits 0", rc == 0, T[-800:])
     check("wg up: restores issued for both families",
-          "iptables -t mangle -A REAPER_PBR -m connmark --mark 0x60000/0x000F0000 -j CONNMARK --restore-mark --nfmask 0x000F0000 --ctmask 0x000F0000" in T
-          and "ip6tables -t mangle -A REAPER_PBR -m connmark --mark 0x20000/0x000F0000 -j CONNMARK --restore-mark" in T
+          "iptables -t mangle -A REAPER_PBR_N -m connmark --mark 0x60000/0x000F0000 -j CONNMARK --restore-mark --nfmask 0x000F0000 --ctmask 0x000F0000" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m connmark --mark 0x20000/0x000F0000 -j CONNMARK --restore-mark" in T
           and "--mark 0x10000/" not in T, T)
     check("wg up: one mark rule per selector entry with its code",
-          "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -s 192.0.2.20 -j MARK --set-xmark 0x20000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
-          and "ip6tables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
-          and "iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/0x000F0000 -m mac --mac-source aa:bb:cc:dd:ee:ff -j MARK --set-xmark 0x60000/0x000F0000" in T, T)
+          "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -s 192.0.2.10 -j MARK --set-xmark 0x60000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -s 192.0.2.20 -j MARK --set-xmark 0x20000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -m set --match-set rwfw6_myobj dst -j MARK --set-xmark 0xB0000/0x000F0000" in T
+          and "iptables -t mangle -A REAPER_PBR_N -m mark --mark 0x0/0x000F0000 -m mac --mac-source aa:bb:cc:dd:ee:ff -j MARK --set-xmark 0x60000/0x000F0000" in T, T)
     # v3.1.9 (field report 2026-09-17): MARK does not terminate a chain and
     # --set-xmark overwrites, so before the guard every matching rule ran and the
     # LAST in the list decided - a broad source rule silently beat a specific
     # ipset rule above it. The guard is what makes the list read top-down.
-    _mk = [l for l in T.splitlines() if "-A REAPER_PBR" in l and "-j MARK --set-xmark" in l]
+    _mk = [l for l in T.splitlines() if "-A REAPER_PBR_N" in l and "-j MARK --set-xmark" in l]
     check("first match wins: every selector rule is guarded on an unset mark",
           bool(_mk) and all("-m mark --mark 0x0/" in l for l in _mk), "\n".join(_mk))
     check("first match wins: the guard precedes the selector and the target",
@@ -270,7 +297,59 @@ int main(int argc, char **argv) {
     check("wg up: the source bypass and the LAN-wide bypass are recorded new",
           F["skipnets"] is not None and "192.0.2.10/32 new" in F["skipnets"] and "192.168.50.0/24 new" in F["skipnets"], repr(F["skipnets"]))
     check("wg up: fc flush because a WireGuard rule exists", "fc flush" in T, "")
-    check("wg up: PREROUTING jump added", "iptables -t mangle -A PREROUTING -j REAPER_PBR" in T, "")
+    check("wg up: PREROUTING jump added to the new chain, then renamed to REAPER_PBR",
+          "iptables -t mangle -A PREROUTING -j REAPER_PBR_N" in T and "iptables -t mangle -E REAPER_PBR_N REAPER_PBR" in T, T)
+    # v3.3.4 (review R07, second half): nothing is exposed before it is complete, nothing
+    # is torn down before its replacement is in place
+    _tl = T.splitlines()
+    def _first(pred):
+        for n, l in enumerate(_tl):
+            if pred(l): return n
+        return -1
+    def _last(pred):
+        r = -1
+        for n, l in enumerate(_tl):
+            if pred(l): r = n
+        return r
+    _jump = _first(lambda l: l.startswith("iptables -t mangle -A PREROUTING -j REAPER_PBR_N"))
+    _lastrule = _last(lambda l: l.startswith("iptables -t mangle -A REAPER_PBR_N "))
+    _drop = _first(lambda l: l == "iptables -t mangle -X REAPER_PBR")
+    _ren = _first(lambda l: l == "iptables -t mangle -E REAPER_PBR_N REAPER_PBR")
+    check("swap-in: the new chain is complete (save-mark included) before PREROUTING points at it",
+          0 <= _lastrule < _jump and "--save-mark" in _tl[_lastrule], "\n".join(_tl[max(0, _jump - 3):_jump + 1]))
+    check("swap-in: the old chain is dropped after the jump moved, and the rename follows the drop",
+          _jump < _drop < _ren, "jump=%d drop=%d rename=%d" % (_jump, _drop, _ren))
+    check("swap-in: no full teardown runs on an apply (no -D of the live jump before the build)",
+          _first(lambda l: l.startswith("iptables -t mangle -D PREROUTING")) > _jump, "")
+    _addr = _first(lambda l: l.startswith("ip -4 rule add "))
+    _delr = _first(lambda l: l.startswith("ip -4 rule del "))
+    check("swap-in: routing rules are added before any stale one is deleted (none to delete on a fresh box)",
+          _addr >= 0 and _delr < 0, "add=%d del=%d" % (_addr, _delr))
+
+    # a jump is already live: it is REPLACED in place, never -D then -A
+    rc, T, FL, F = run(script, wg_up=True, live=True)
+    check("live jump: script exits 0", rc == 0, T[-600:])
+    check("live jump: the PREROUTING jump is replaced in place (-R rule 1), not appended",
+          "iptables -t mangle -R PREROUTING 1 -j REAPER_PBR_N" in T and "iptables -t mangle -A PREROUTING" not in T, T)
+    check("live jump: the old chain is flushed and removed only after the replace, then the new one renamed",
+          T.index("iptables -t mangle -R PREROUTING 1 -j REAPER_PBR_N") < T.index("iptables -t mangle -F REAPER_PBR\n")
+          < T.index("iptables -t mangle -X REAPER_PBR\n") < T.index("iptables -t mangle -E REAPER_PBR_N REAPER_PBR"), T)
+    check("live jump: counts unchanged 6 / 4 / 4 / 0", (F["expect"], F["expect_rules"], F["expect_rules6"], F["failcount"]) == ("6", "4", "4", "0"), repr(F))
+
+    # routing rules already live: 9006 is exactly the wanted rule (kept, counted); 9002 points at the
+    # OLD target ovpnc1 (the wanted ovpnc2 is added first, then the stale one deleted by its full form)
+    rc, T, FL, F = run(script, wg_up=True,
+                       rules4="9002:\tfrom all fwmark 0x20000/0xf0000 lookup ovpnc1\n9006:\tfrom all fwmark 0x60000/0xf0000 lookup wgc1")
+    check("live rules: script exits 0", rc == 0, T[-600:])
+    check("live rules: the rule already in its wanted form is neither added nor deleted",
+          "ip -4 rule add fwmark 0x60000/0x000F0000 lookup wgc1 pref 9006" not in T
+          and not any(l.startswith("ip -4 rule del") and "pref 9006" in l for l in T.splitlines()), T)
+    check("live rules: the changed target is added before its stale rule is deleted, and the delete names the old rule",
+          "ip -4 rule add fwmark 0x20000/0x000F0000 lookup ovpnc2 pref 9002" in T
+          and "ip -4 rule del fwmark 0x20000/0xf0000 lookup ovpnc1 pref 9002" in T
+          and T.index("ip -4 rule add fwmark 0x20000/0x000F0000 lookup ovpnc2 pref 9002") < T.index("ip -4 rule del fwmark 0x20000/0xf0000 lookup ovpnc1 pref 9002"), T)
+    check("live rules: a kept rule still counts towards expect_rules (4 / 4)", (F["expect_rules"], F["expect_rules6"], F["failcount"]) == ("4", "4", "0"), repr(F))
+    check("live rules: the v6 half, with nothing live, is added in full", T.count("ip -6 rule add ") == 4, "")
 
     # run with wgc1 absent
     rc, T, FL, F = run(script, wg_up=False)
@@ -282,6 +361,6 @@ int main(int argc, char **argv) {
 
     if fails:
         print("\n%d check(s) failed:\n  " % len(fails) + "\n  ".join(fails)); sys.exit(1)
-    print("all checks passed: the generated policy-routing script restores only live codes, records a pending bypass, and installs what it must")
+    print("all checks passed: the generated policy-routing script restores only live codes, records a pending bypass, installs what it must, and swaps in without a rules-free window")
 finally:
     shutil.rmtree(td, ignore_errors=True)

@@ -1,0 +1,1162 @@
+From bbcb82ef3ac361f6a6be7b1b3fbf641ecd7c11c1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 08:41:27 -0400
+Subject: [PATCH] rdnsmapd: Flow Explorer destination names from a passive DNS
+ map
+
+The Connections page printed every destination as a bare address. rdnsmapd
+learns names at DNS time instead of resolving from the page: an AF_PACKET
+socket with a 16-instruction classic BPF filter (udp src port 53) blocks in
+recv, and every A record in a reply's answer section is stored under the
+question's name, which follows the CNAME chain for free. Zero idle CPU, no
+timer, no sweep.
+
+The table is a 131,136-byte tmpfs file (/tmp/reaper/dnsmap, 2048 x 64-byte
+slots, open addressing, probe window 8, earliest-expiry replacement, TTL
+clamped to 1-24 h) that the daemon and httpd both mmap. The layout is the
+contract, in shared/reaper_dnsmap.h; httpd probes it in place per flow and
+extends an entry while it is on screen. No publish step, no parse step.
+
+Names on/off (nvram rconn_names, default 1): off stops the daemon and removes
+the table. Switching it back on runs a one-shot backfill: conntrack's remote
+ends (private, CGNAT and already-named addresses skipped, capped at 512) get
+one PTR query each to the local resolver at about 50 per second, stored as
+reverse names that a later forward reply replaces. The page keeps a name while
+its address is listed and forgets it when no flow to it remains, labels the
+router's own bridge addresses "This router", and shows reverse names muted.
+
+The Advanced detail panel now follows the reader down the list: inside the
+shell frame nothing scrolls, so sticky never engaged; the panel is placed from
+the visible slice the shell publishes (--rv-top/--rv-h). The two-column layout
+gains a compact band and stacks below 1110 px instead of overflowing.
+
+Mixed hunks in this commit: services.c also carries the one-time DTIM 1
+default (once per box, marker /jffs/reaper/.dtim1) and drops a stale
+wlcsm_bindfix value from nvram; rc.h their externs; the router Makefile also
+stops installing the toolchain's x86-64 libexpat.so into /lib of the image.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/Makefile               |  11 +-
+ release/src/router/rc/rc.h                |   3 +
+ release/src/router/rc/services.c          |  83 +++-
+ release/src/router/rdnsmapd/Makefile      |  44 ++
+ release/src/router/rdnsmapd/rdnsmapd.c    | 501 ++++++++++++++++++++++
+ release/src/router/shared/defaults.c      |   2 +
+ release/src/router/shared/reaper_dnsmap.h | 138 ++++++
+ release/src/router/www/Reaper_Conn.asp    |  78 +++-
+ 8 files changed, 849 insertions(+), 11 deletions(-)
+ create mode 100644 release/src/router/rdnsmapd/Makefile
+ create mode 100644 release/src/router/rdnsmapd/rdnsmapd.c
+ create mode 100644 release/src/router/shared/reaper_dnsmap.h
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 3a7ea4fd30..16ae03f903 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1211,6 +1211,7 @@ obj-y += rtrafd
+ obj-y += rchqd
+ # reaper v3.2.8: dynamic preamble puncturing controller (runs only while a radio is set to Dynamic)
+ obj-y += rpunctd
++obj-y += rdnsmapd
+ # reaper v3.1.7: the firewall table walker (read-only; witness packets through the live tables)
+ obj-y += reaper_fwsim
+ # reaper v1.6.8: Gatekeeper watcher (detection/expiry only; enforcement lives in rc)
+@@ -2543,8 +2544,11 @@ reinstall:
+ 	@echo ---
+ 
+ 	# extra install in case build-process skip them
+-# why precompiled?
+-	install -D $(TOOLCHAIN)/lib/libexpat.so $(INSTALLDIR)/lib/public/libexpat.so
++# reaper 2026-10-05 (r11 first-boot image read): the stock line here copied the TOOLCHAIN's own
++# host library ($(TOOLCHAIN)/lib/libexpat.so, an x86-64 ELF) into the router image as
++# /lib/libexpat.so - 197 KB that no ARM process could ever load. The library the image
++# uses is expat-2.0.1's ARM build at /usr/lib/libexpat.so.1 (installed above). Removed;
++# a host-architecture binary must never ship in the image (reaper_verify checks for one).
+ 	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/ld-linux.so.3 $(INSTALLDIR)/lib/ld-linux.so.3
+ 	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libresolv.so.2 $(INSTALLDIR)/lib/libresolv.so.2
+ 	install -D $(TOOLCHAIN)/arm-buildroot-linux-gnueabi/sysroot/lib/libcrypt.so.1 $(INSTALLDIR)/lib/libcrypt.so.1
+@@ -6517,6 +6521,9 @@ rpunctd: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ rpunctd-install:
+ 	$(MAKE) -C rpunctd INSTALLDIR=$(INSTALLDIR)/rpunctd install
+ 
++rdnsmapd-install:
++	$(MAKE) -C rdnsmapd INSTALLDIR=$(INSTALLDIR)/rdnsmapd install
++
+ reaper_fwsim: nvram$(BCMEX)$(EX7) shared $(if $(BCM_502L07P2),ethctl_lib)
+ 
+ reaper_fwsim-install:
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 900a042f30..492655a8e8 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2982,6 +2982,8 @@ extern void stop_httpd(void);
+ extern void stop_rstats(void);
+ extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
+ extern void start_rtraf(void);
++extern void stop_rdnsmap(void);	/* reaper v3.3.4 passive DNS name map (Flow Explorer names) */
++extern void start_rdnsmap(void);
+ extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor */
+ extern void start_rchqd(void);
+ extern void stop_rpunctd(void);	/* reaper v3.2.8 dynamic preamble puncturing controller */
+@@ -2992,6 +2994,7 @@ extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit *
+ extern void gk_teardown_rules(void);
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
++extern void reaper_dtim_default(void);	/* reaper: DTIM 1 on every radio, once (owner 2026-10-04) */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ /* reaper v2.3.8 native firewall: object-model custom rules engine (rc/reaper_fw.c).
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index f745fe091d..a46b1290e9 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -7433,6 +7433,7 @@ stop_misc(void)
+ 	stop_snooper();
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
++	stop_rdnsmap();	/* reaper v3.3.4 passive DNS name map */
+ 	stop_rchqd();	/* reaper v1.6.1 */
+ 	stop_rpunctd();	/* reaper v3.2.8 dynamic puncturing controller */
+ 	stop_reaper_bwfloor();	/* reaper v3.3.1 minimum channel width watcher */
+@@ -8022,6 +8023,31 @@ start_rtraf(void)
+ 	xstart("rtrafd");
+ }
+ 
++/* reaper v3.3.4: the passive DNS name map behind the Flow Explorer's destination
++ * names (rdnsmapd, shared/reaper_dnsmap.h). One AF_PACKET socket with a kernel
++ * filter for UDP replies from port 53, a blocking recv, a 128 KB table in
++ * /tmp/reaper/dnsmap that httpd mmaps in place - no tick, no publish step.
++ * Default on (nvram rconn_names); the Connections page toggle is the opt-out,
++ * and off removes the table: it names what the household looked up. */
++void
++stop_rdnsmap(void)
++{
++	if (pids("rdnsmapd"))
++		killall_tk("rdnsmapd");
++}
++
++void
++start_rdnsmap(void)
++{
++	stop_rdnsmap();
++	if (!is_routing_enabled()) return;
++	if (nvram_match("rconn_names", "0")) {
++		unlink("/tmp/reaper/dnsmap");	/* RDM_PATH in shared/reaper_dnsmap.h */
++		return;
++	}
++	xstart("rdnsmapd");
++}
++
+ /* reaper v1.6.1: passive channel-quality monitor. Opt-in (nvram rchq_enable),
+  * read-only - it samples chanim_stats on each radio's current channel and
+  * publishes /tmp/reaper_chq/live.json; it NEVER changes a channel or restarts
+@@ -8786,6 +8812,45 @@ static void wlcsm_bindfix_remove(void)
+ 		unlink(LD_SO_PRELOAD);
+ }
+ 
++/* reaper 2026-10-04 (owner): the DTIM interval is 1 on every radio. The
++ * compiled default for this family already reads 1 (defaults.c, the HND AX
++ * branch) but a box keeps whatever its nvram carries - ASUS stock sets 3 on
++ * these models and the stock explainer said so - so the first boot of an
++ * image with this function sets 1 on each radio ONCE, says so, and leaves a
++ * marker. From then on the value is the user's: the Wi-Fi Settings page may
++ * raise it again and this never runs twice (a factory reset clears both the
++ * marker and the value, so it runs once more and finds 1). Called before
++ * start_lan(), so the radios come up with it. */
++#define REAPER_DTIM_MARK	"/jffs/reaper/.dtim1"
++void reaper_dtim_default(void)
++{
++	char key[32], was[8] = "";
++	int unit, n = 0;
++
++	if (f_exists(REAPER_DTIM_MARK))
++		return;
++	for (unit = 0; unit < 4; unit++) {
++		snprintf(key, sizeof(key), "wl%d_ifname", unit);
++		if (!*nvram_safe_get(key))
++			continue;
++		snprintf(key, sizeof(key), "wl%d_dtim", unit);
++		if (nvram_match(key, "1"))
++			continue;
++		if (!was[0])
++			strlcpy(was, nvram_safe_get(key), sizeof(was));
++		nvram_set(key, "1");
++		n++;
++	}
++	if (!nvram_match("wl_dtim", "1"))
++		nvram_set("wl_dtim", "1");
++	if (n) {
++		nvram_commit();
++		logmessage("wireless", "DTIM interval set to 1 on %d radio(s) (was %s) - the Reaper default: sleeping clients wake at every beacon; raise it on the Wi-Fi Settings page if you prefer longer client sleeps", n, was[0] ? was : "unset");
++	}
++	mkdir("/jffs/reaper", 0755);
++	f_write_string(REAPER_DTIM_MARK, "1\n", 0, 0);
++}
++
+ void start_wlcsm_bindfix(void)
+ {
+ 	/* RETIRED 2026-09-16. libnvram.so and libwlcsm.so now carry Broadcom's own
+@@ -8798,9 +8863,17 @@ void start_wlcsm_bindfix(void)
+ 	 * shim). The .so is no longer built (router Makefile). Function kept so the
+ 	 * caller and rc.h stay untouched. */
+ 	wlcsm_bindfix_remove();
+-	if (nvram_match("wlcsm_bindfix", "1"))
++	if (nvram_match("wlcsm_bindfix", "1")) {
++		/* reaper 2026-10-04: v3.2.8 dropped the DEFAULT, but a value the user
++		 * set by hand while the shim was opt-in survives in nvram and re-logged
++		 * this line on every boot (owner, v3.3.4 r2 first boot). Say it once
++		 * more, then drop the retired key - committed - so the next boot is quiet. */
+ 		logmessage("wlcsm_bindfix", "retired - the WLCSM fix ships in libnvram.so/libwlcsm.so "
+-			   "(stock 42015); the preload shim is not installed and wlcsm_bindfix=1 is ignored");
++			   "(stock 42015); the preload shim is not installed and wlcsm_bindfix=1 is ignored - "
++			   "the retired setting has been removed from nvram");
++		nvram_unset("wlcsm_bindfix");
++		nvram_commit();
++	}
+ }
+ 
+ /* reaper 2026-08-11: the IGDv2 build runs under a DIFFERENT process name
+@@ -14144,6 +14217,7 @@ start_services(void)
+ 	start_infosvr();
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
++	start_rdnsmap();	/* reaper v3.3.4 passive DNS name map (Flow Explorer destination names) */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
+ 	start_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (router mode; idle unless amas_bh_park) */
+@@ -22390,6 +22464,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rtraf();
+ 		if(action & RC_SERVICE_START) start_rtraf();
+ 	}
++	else if (strcmp(script, "rdnsmap") == 0)	/* reaper v3.3.4 passive DNS name map */
++	{
++		if(action & RC_SERVICE_STOP) stop_rdnsmap();
++		if(action & RC_SERVICE_START) start_rdnsmap();
++	}
+ 	else if (strcmp(script, "rchqd") == 0)	/* reaper v1.6.1 channel-quality monitor */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rchqd();
+diff --git a/release/src/router/rdnsmapd/Makefile b/release/src/router/rdnsmapd/Makefile
+new file mode 100644
+index 0000000000..04cfbc151e
+--- /dev/null
++++ b/release/src/router/rdnsmapd/Makefile
+@@ -0,0 +1,44 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++# rdnsmapd: passive DNS name map for the Flow Explorer. libc only - rc decides
++# whether it runs, so it links neither libnvram nor libshared.
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared
++# same exploit-mitigation set as rtrafd (FORTIFY, strong canaries, format-security, PIE)
++CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
++LDFLAGS	= -pie -Wl,-z,relro,-z,now
++
++OBJS = rdnsmapd.o
++
++all: rdnsmapd
++
++rdnsmapd: $(OBJS)
++	@echo " [rdnsmapd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rdnsmapd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rdnsmapd] Installing..."
++	install -D rdnsmapd $(INSTALLDIR)/bin/rdnsmapd
++	$(STRIP) $(INSTALLDIR)/bin/rdnsmapd
++
++%.o: %.c .%.depend
++	@echo " [rdnsmapd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+new file mode 100644
+index 0000000000..9ae527ec54
+--- /dev/null
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -0,0 +1,501 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * rdnsmapd - passive DNS name map for the Flow Explorer (Reaper_Conn.asp).
++ *
++ * The page showed every destination as a bare address because the router has
++ * no address-to-name source: a reverse lookup per row floods the resolver and
++ * returns CDN host names nobody recognises, dnsmasq's query log is lossy and
++ * churns the syslog, its pcap dump never rotates (conn-destination-hostname.md).
++ * This daemon takes the one source that is already on the wire: the DNS reply
++ * a client receives names exactly the address it is about to connect to.
++ *
++ * Mechanism, sized for zero idle cost:
++ *   - one AF_PACKET socket, unbound (every interface, both directions), with a
++ *     classic BPF filter attached BEFORE bind so the kernel rejects everything
++ *     that is not a UDP datagram from port 53 before a byte is copied;
++ *   - a blocking recv: no tick, no timer, no sweep - asleep while the LAN is quiet;
++ *   - per reply: parse the ANSWER section and map every A record to the QNAME the
++ *     client asked for (every A record there belongs to the question's CNAME
++ *     chain, so this IS the chain walked back, with no CNAME parsing);
++ *   - the table lives in /tmp/reaper/dnsmap, mmap'd MAP_SHARED by this daemon and
++ *     by httpd (shared/reaper_dnsmap.h): no publish step, nothing to parse.
++ * rc starts it in router mode while nvram rconn_names is not 0 and removes the
++ * file when the owner switches it off; the daemon itself reads no configuration.
++ *
++ * One-shot backfill (owner, 2026-10-05): switching the feature off wipes the
++ * table, so switching it back on would show bare addresses until every client
++ * resolved its destinations again. When httpd has left RDM_BACKFILL (written
++ * only on the off -> on toggle, never at boot), the daemon reads the active
++ * remote addresses from conntrack once, sends one PTR query each to dnsmasq
++ * (127.0.0.1 - its cache answers what the LAN resolved, misses go upstream),
++ * paced at ~50 a second, and stores the answers as REVERSE names (ndist 0):
++ * what the address owner registered, not what a device asked for. The page
++ * shows them muted; the first forward reply for the address takes over. The
++ * packet socket is drained throughout, so nothing is missed meanwhile.
++ *
++ * The same reply is seen once on the bridge and once on the egress port; the
++ * second copy is a same-name refresh that costs one hash probe. A reply that is
++ * 802.1Q-tagged on eth0 is delivered untagged on the VLAN interface too, so the
++ * filter needs no tag branch. DoH/DoT clients, and a wired client talking to a
++ * wired LAN resolver on the same switch, never cross the CPU and get no name. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <unistd.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <time.h>
++#include <poll.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <linux/filter.h>
++#include <linux/if_ether.h>
++#include <linux/if_packet.h>
++#include <arpa/inet.h>
++#include "reaper_dnsmap.h"
++
++#ifndef RDM_CT
++#define RDM_CT "/proc/net/nf_conntrack"	/* the host test points this at a fixture */
++#endif
++#define RDM_BF_MAX   512		/* addresses the backfill will ask about */
++#define RDM_BF_PACE  20			/* ms between PTR queries: ~50 a second */
++#define RDM_BF_WAIT  5000		/* ms to wait for the last answers */
++
++#ifndef RDM_TEST
++static volatile sig_atomic_t running = 1;
++static void on_term(int sig) { (void)sig; running = 0; }
++#endif
++
++/* tcpdump -dd 'udp src port 53' (EN10MB). IPv4 or IPv6 outer, UDP, source
++ * port 53, first fragment only. Interpreted by build-scripts/tests/test_dnsmap.py
++ * against sample frames, so a transcription slip fails the host test. */
++static struct sock_filter rdm_bpf[] = {
++	{ 0x28, 0, 0, 0x0000000c },	/* ldh [12]              ethertype */
++	{ 0x15, 0, 4, 0x000086dd },	/* jeq #0x86dd  -> 2 / 6  IPv6? */
++	{ 0x30, 0, 0, 0x00000014 },	/* ldb [20]              next header */
++	{ 0x15, 0, 11, 0x00000011 },	/* jeq #17      -> 4 / 15 UDP? */
++	{ 0x28, 0, 0, 0x00000036 },	/* ldh [54]              src port */
++	{ 0x15, 8, 9, 0x00000035 },	/* jeq #53      -> 14 / 15 */
++	{ 0x15, 0, 8, 0x00000800 },	/* jeq #0x0800  -> 7 / 15  IPv4? */
++	{ 0x30, 0, 0, 0x00000017 },	/* ldb [23]              protocol */
++	{ 0x15, 0, 6, 0x00000011 },	/* jeq #17      -> 9 / 15 */
++	{ 0x28, 0, 0, 0x00000014 },	/* ldh [20]              flags + fragment offset */
++	{ 0x45, 4, 0, 0x00001fff },	/* jset #0x1fff -> 15 / 11 (a later fragment: drop) */
++	{ 0xb1, 0, 0, 0x0000000e },	/* ldxb 4*([14]&0xf)     X = IP header length */
++	{ 0x48, 0, 0, 0x0000000e },	/* ldh [x+14]            src port */
++	{ 0x15, 0, 1, 0x00000035 },	/* jeq #53      -> 14 / 15 */
++	{ 0x06, 0, 0, 0x00040000 },	/* ret #262144  accept */
++	{ 0x06, 0, 0, 0x00000000 },	/* ret #0       drop */
++};
++
++/* skip an RR owner name: labels, or a compression pointer that ends it */
++static int rdm_skipname(const uint8_t *p, int n, int off)
++{
++	while (off < n) {
++		uint8_t l = p[off];
++
++		if (l == 0)
++			return off + 1;
++		if ((l & 0xc0) == 0xc0)
++			return off + 2 <= n ? off + 2 : -1;
++		if (l & 0xc0)
++			return -1;
++		off += 1 + l;
++	}
++	return -1;
++}
++
++/* read a name into out (>= 254 bytes), lower-cased, labels joined by '.',
++ * compression followed (bounded). Returns the offset just past the name as it
++ * sits at off, or -1: malformed, empty, or a byte the page must never see
++ * (outside 0x21..0x7e, or a double quote / backslash - the CGI prints the
++ * name raw inside JSON, so this charset IS the escaping). */
++static int rdm_readname(const uint8_t *p, int n, int off, char *out)
++{
++	int end = -1, hops = 0, o = 0, i;
++
++	while (off < n) {
++		uint8_t l = p[off];
++
++		if (l == 0) {
++			if (end < 0)
++				end = off + 1;
++			break;
++		}
++		if ((l & 0xc0) == 0xc0) {
++			if (off + 1 >= n || ++hops > 8)
++				return -1;
++			if (end < 0)
++				end = off + 2;
++			off = ((l & 0x3f) << 8) | p[off + 1];
++			continue;
++		}
++		if ((l & 0xc0) || off + 1 + l > n || o + 1 + l > 253)
++			return -1;
++		if (o)
++			out[o++] = '.';
++		for (i = 1; i <= l; i++) {
++			uint8_t c = p[off + i];
++
++			if (c >= 'A' && c <= 'Z')
++				c += 32;
++			if (c < 0x21 || c > 0x7e || c == '"' || c == '\\')
++				return -1;
++			out[o++] = (char)c;
++		}
++		off += 1 + l;
++	}
++	if (end < 0 || o == 0)
++		return -1;
++	out[o] = 0;
++	return end;
++}
++
++/* a name longer than the slot keeps its registrable tail: drop leading labels */
++static int rdm_fit(char *name)
++{
++	size_t len = strlen(name);
++
++	while (len > RDM_NAME) {
++		char *dot = memchr(name, '.', len);
++
++		if (!dot)
++			return 0;
++		len -= (size_t)(dot + 1 - name);
++		memmove(name, dot + 1, len + 1);
++	}
++	return (int)len;
++}
++
++/* one captured frame: Ethernet, IPv4/IPv6, UDP from port 53, a DNS response */
++static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
++{
++	struct rdm_hdr *h = map;
++	struct rdm_ent *t = rdm_table(map);
++	const uint8_t *q;
++	char qn[256];
++	int l4, dns, off, i, an, ql, ul;
++
++	if (n < 14 + 20 + 8 + 12)
++		return;
++	if (p[12] == 0x08 && p[13] == 0x00) {
++		int ihl = (p[14] & 0x0f) * 4;
++
++		if (ihl < 20 || p[23] != 17 || (((p[20] << 8) | p[21]) & 0x1fff) != 0)
++			return;
++		l4 = 14 + ihl;
++	} else if (p[12] == 0x86 && p[13] == 0xdd) {
++		if (p[20] != 17)
++			return;
++		l4 = 54;
++	} else
++		return;
++	dns = l4 + 8;
++	if (dns + 12 > n || ((p[l4] << 8) | p[l4 + 1]) != 53)
++		return;
++	ul = (p[l4 + 4] << 8) | p[l4 + 5];		/* trim Ethernet padding */
++	if (ul >= 8 && l4 + ul < n)
++		n = l4 + ul;
++	q = p + dns;
++	/* QR set, opcode 0, TC clear, RCODE 0, QDCOUNT 1, ANCOUNT >= 1 */
++	if (!(q[2] & 0x80) || (q[2] & 0x7a) || (q[3] & 0x0f) || q[4] != 0 || q[5] != 1)
++		return;
++	an = (q[6] << 8) | q[7];
++	if (!an)
++		return;
++	off = rdm_readname(p, n, dns + 12, qn);
++	if (off < 0 || off + 4 > n)
++		return;
++	off += 4;					/* QTYPE, QCLASS */
++	ql = rdm_fit(qn);
++	if (!ql)
++		return;
++	h->seen++;
++	if (an > 32)
++		an = 32;
++	for (i = 0; i < an; i++) {
++		int type, rdl;
++		uint32_t ttl;
++
++		off = rdm_skipname(p, n, off);
++		if (off < 0 || off + 10 > n)
++			return;
++		type = (p[off] << 8) | p[off + 1];
++		ttl = ((uint32_t)p[off + 4] << 24) | ((uint32_t)p[off + 5] << 16) |
++		      ((uint32_t)p[off + 6] << 8) | p[off + 7];
++		rdl = (p[off + 8] << 8) | p[off + 9];
++		off += 10;
++		if (off + rdl > n)
++			return;
++		if (type == 1 && rdl == 4) {
++			uint32_t ip;
++
++			memcpy(&ip, p + off, 4);		/* network order, as httpd's inet_aton gives it */
++			if (ttl < RDM_TTL_MIN)
++				ttl = RDM_TTL_MIN;
++			if (ttl > RDM_TTL_MAX)
++				ttl = RDM_TTL_MAX;
++			rdm_put(t, ip, qn, (uint8_t)ql, now + ttl);
++			h->upd++;
++		}
++		off += rdl;
++	}
++}
++
++/* ---- the one-shot backfill ---- */
++
++/* an address the Flow Explorer would show as a remote end: not private,
++ * loopback, link-local, carrier-NAT, multicast or unspecified (host order) */
++static int rdm_remote(uint32_t ip)
++{
++	uint8_t a = ip >> 24, b = (ip >> 16) & 255;
++
++	if (a == 10 || a == 127 || a == 0 || a >= 224)
++		return 0;
++	if ((a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) ||
++	    (a == 169 && b == 254) || (a == 100 && b >= 64 && b <= 127))
++		return 0;
++	return 1;
++}
++
++/* the active remote addresses from conntrack's original tuples, deduplicated,
++ * minus those the table already names (network order out) */
++static int rdm_targets(uint32_t *out, int max, struct rdm_ent *t, uint32_t now)
++{
++	FILE *f = fopen(RDM_CT, "r");
++	char ln[1024], ip[24];
++	int n = 0, i, j;
++
++	if (!f)
++		return 0;
++	while (n < max && fgets(ln, sizeof(ln), f)) {
++		const char *k[2] = { "src=", "dst=" };
++
++		if (strncmp(ln, "ipv4", 4) != 0)
++			continue;
++		for (i = 0; i < 2 && n < max; i++) {
++			const char *p = strstr(ln, k[i]);
++			struct in_addr a;
++
++			if (!p || sscanf(p + 4, "%23[0-9.]", ip) != 1 || !inet_aton(ip, &a))
++				continue;
++			if (!rdm_remote(ntohl(a.s_addr)) || rdm_find(t, a.s_addr, now))
++				continue;
++			for (j = 0; j < n; j++)
++				if (out[j] == a.s_addr)
++					break;
++			if (j == n)
++				out[n++] = a.s_addr;
++		}
++	}
++	fclose(f);
++	return n;
++}
++
++/* a PTR query for ip (network order): id, RD, "d.c.b.a.in-addr.arpa PTR IN" */
++static int rdm_ptr_query(uint8_t *b, int blen, uint16_t id, uint32_t ip)
++{
++	uint8_t o[4];
++	int i, n = 12;
++
++	if (blen < 12 + 16 + 14 + 4)
++		return 0;
++	memcpy(o, &ip, 4);
++	memset(b, 0, 12);
++	b[0] = id >> 8;
++	b[1] = id & 255;
++	b[2] = 0x01;				/* RD */
++	b[5] = 1;				/* QDCOUNT */
++	for (i = 3; i >= 0; i--) {
++		int l = snprintf((char *)b + n + 1, 4, "%u", o[i]);
++
++		b[n] = (uint8_t)l;
++		n += 1 + l;
++	}
++	memcpy(b + n, "\x07in-addr\x04" "arpa", 14);	/* split: "\x04a" would read as one escape */
++	n += 14;
++	b[n++] = 0;
++	b[n++] = 12;				/* PTR */
++	b[n++] = 0;
++	b[n++] = 1;				/* IN */
++	return n;
++}
++
++/* a PTR answer (UDP payload): the id indexes the target list; the first PTR
++ * record becomes a REVERSE name (ndist 0) unless a forward reply named the
++ * address first - a learned name always wins */
++static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, const uint32_t *tg, int ntg)
++{
++	struct rdm_hdr *h = map;
++	struct rdm_ent *t = rdm_table(map), *e;
++	char nm[256];
++	int off, i, an, id, ql;
++
++	if (n < 12)
++		return;
++	id = (q[0] << 8) | q[1];
++	if (id >= ntg || !(q[2] & 0x80) || (q[2] & 0x7a) || (q[3] & 0x0f) || q[4] != 0 || q[5] != 1)
++		return;
++	an = (q[6] << 8) | q[7];
++	if (!an)
++		return;
++	off = rdm_skipname(q, n, 12);
++	if (off < 0 || off + 4 > n)
++		return;
++	off += 4;
++	if (an > 8)
++		an = 8;
++	for (i = 0; i < an; i++) {
++		int type, rdl;
++
++		off = rdm_skipname(q, n, off);
++		if (off < 0 || off + 10 > n)
++			return;
++		type = (q[off] << 8) | q[off + 1];
++		rdl = (q[off + 8] << 8) | q[off + 9];
++		off += 10;
++		if (off + rdl > n)
++			return;
++		if (type == 12) {
++			if (rdm_readname(q, n, off, nm) < 0)
++				return;
++			ql = rdm_fit(nm);
++			if (!ql || rdm_find(t, tg[id], now))
++				return;
++			rdm_put(t, tg[id], nm, (uint8_t)ql, now + RDM_TTL_MIN);
++			if ((e = rdm_find(t, tg[id], now)) != NULL)
++				e->ndist = 0;
++			h->upd++;
++			return;
++		}
++		off += rdl;
++	}
++}
++
++#ifndef RDM_TEST
++/* drain both sockets for ms milliseconds: forward replies keep being learned
++ * while the backfill runs, PTR answers land as reverse names */
++static void rdm_bf_drain(struct pollfd *pf, void *map, const uint32_t *tg, int ntg, int ms)
++{
++	static uint8_t rb[4096];
++	struct timespec t0, t1;
++	int n, left;
++
++	clock_gettime(CLOCK_MONOTONIC, &t0);
++	for (;;) {
++		clock_gettime(CLOCK_MONOTONIC, &t1);
++		left = ms - (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
++		if (left <= 0 || poll(pf, 2, left) <= 0)
++			return;
++		if ((pf[0].revents & POLLIN) && (n = (int)recv(pf[0].fd, rb, sizeof(rb), 0)) > 0)
++			rdm_parse(rb, n, map, (uint32_t)time(NULL));
++		if ((pf[1].revents & POLLIN) && (n = (int)recv(pf[1].fd, rb, sizeof(rb), 0)) > 0)
++			rdm_parse_ptr(rb, n, map, (uint32_t)time(NULL), tg, ntg);
++	}
++}
++
++static void rdm_backfill(void *map, int pk)
++{
++	static uint32_t tg[RDM_BF_MAX];
++	uint8_t qb[64];
++	struct sockaddr_in rs;
++	struct pollfd pf[2];
++	int ntg, us, i, n;
++
++	ntg = rdm_targets(tg, RDM_BF_MAX, rdm_table(map), (uint32_t)time(NULL));
++	if (ntg <= 0)
++		return;
++	if ((us = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
++		return;
++	memset(&rs, 0, sizeof(rs));
++	rs.sin_family = AF_INET;
++	rs.sin_port = htons(53);
++	rs.sin_addr.s_addr = htonl(0x7f000001);	/* dnsmasq: its cache first, upstream on a miss */
++	pf[0].fd = pk;
++	pf[0].events = POLLIN;
++	pf[1].fd = us;
++	pf[1].events = POLLIN;
++	for (i = 0; i < ntg; i++) {
++		n = rdm_ptr_query(qb, sizeof(qb), (uint16_t)i, tg[i]);
++		if (n > 0)
++			sendto(us, qb, n, 0, (struct sockaddr *)&rs, sizeof(rs));
++		rdm_bf_drain(pf, map, tg, ntg, RDM_BF_PACE);
++	}
++	for (i = 0; i < RDM_BF_WAIT; i += 100)
++		rdm_bf_drain(pf, map, tg, ntg, 100);
++	close(us);
++}
++
++int main(void)
++{
++	struct sock_fprog prog = { sizeof(rdm_bpf) / sizeof(rdm_bpf[0]), rdm_bpf };
++	struct sockaddr_ll sll;
++	struct rdm_hdr *h;
++	struct stat st;
++	static uint8_t buf[4096];			/* EDNS replies fit; longer ones are truncated by the sender */
++	void *map;
++	int fd, sk, n, rcv = 262144;
++
++	signal(SIGTERM, on_term);
++	signal(SIGINT, on_term);
++	signal(SIGPIPE, SIG_IGN);
++
++	mkdir("/tmp/reaper", 0700);
++	if ((fd = open(RDM_PATH, O_RDWR | O_CREAT, 0600)) < 0)
++		return 1;
++	if (fstat(fd, &st) != 0 || (st.st_size < (off_t)RDM_SIZE && ftruncate(fd, RDM_SIZE) != 0)) {
++		close(fd);
++		return 1;
++	}
++	map = mmap(NULL, RDM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++	if (map == MAP_FAILED) {
++		close(fd);
++		return 1;
++	}
++	h = map;
++	if (h->magic != RDM_MAGIC || h->slots != RDM_SLOTS || h->esize != sizeof(struct rdm_ent)) {
++		memset(map, 0, RDM_SIZE);		/* fresh file or a layout change: start empty */
++		h->slots = RDM_SLOTS;
++		h->esize = sizeof(struct rdm_ent);
++		__sync_synchronize();
++		h->magic = RDM_MAGIC;
++	}
++	h->gen++;					/* entries survive a restart; the counter says it happened */
++
++	/* protocol 0 delivers nothing until bind(): the filter is in place first */
++	if ((sk = socket(AF_PACKET, SOCK_RAW, 0)) < 0)
++		return 1;
++	if (setsockopt(sk, SOL_SOCKET, SO_ATTACH_FILTER, &prog, sizeof(prog)) != 0)
++		return 1;
++	setsockopt(sk, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
++	memset(&sll, 0, sizeof(sll));
++	sll.sll_family = AF_PACKET;
++	sll.sll_protocol = htons(ETH_P_ALL);
++	if (bind(sk, (struct sockaddr *)&sll, sizeof(sll)) != 0)
++		return 1;
++
++	/* the flag exists only when the owner just switched Names back on */
++	if (unlink(RDM_BACKFILL) == 0)
++		rdm_backfill(map, sk);
++
++	while (running) {
++		n = (int)recv(sk, buf, sizeof(buf), 0);
++		if (n < 0) {
++			if (errno == EINTR)
++				continue;
++			break;
++		}
++		rdm_parse(buf, n, map, (uint32_t)time(NULL));
++	}
++	close(sk);
++	munmap(map, RDM_SIZE);
++	close(fd);
++	return 0;
++}
++#endif
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index fcf3022b08..3ae542ca42 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3141,6 +3141,8 @@ struct nvram_tuple router_defaults[] = {
+ 	 * REMOVED 2026-09-17: it halved Wi-Fi throughput in both directions on metal. */
+ 	{ "qos_ipolicer", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* v5 download cap: WAN ingress RX policer at qos_ibw; default OFF (opt-in) */
+ 
++	/* reaper v3.3.4 passive DNS name map (rdnsmapd): Flow Explorer destination names */
++	{ "rconn_names", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* names on/off; default on, the Connections page toggle is the opt-out */
+ 	/* reaper v1.3.0 traffic collector (rtrafd) */
+ 	{ "rtraf_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* collector on/off (no listener); reaper 2026-09-23: optional features default OFF (Traffic page toggle) */
+ 	{ "rtraf_path", "", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* history store: "" = RAM, "jffs", "usb" (rstats_path-style choice) */
+diff --git a/release/src/router/shared/reaper_dnsmap.h b/release/src/router/shared/reaper_dnsmap.h
+new file mode 100644
+index 0000000000..9a52ab1299
+--- /dev/null
++++ b/release/src/router/shared/reaper_dnsmap.h
+@@ -0,0 +1,138 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * Passive DNS name map, shared by rdnsmapd (the writer) and httpd (the reader
++ * behind reaper_conn.cgi). The table is a fixed open-addressing hash in a tmpfs
++ * file that both sides mmap MAP_SHARED: the daemon's in-memory table IS the file,
++ * so there is no publish step and nothing to parse - httpd probes it in place.
++ * IPv4 only: the Flow Explorer feed (/proc/fcache/nflist) is IPv4 only.
++ *
++ * Lifetime of an entry: written with now + clamp(record TTL, RDM_TTL_MIN,
++ * RDM_TTL_MAX); the reader extends it (rdm_touch) while a flow to that address
++ * is being viewed. A stale entry is one whose exp has passed - rdm_find treats
++ * it as absent and rdm_put as the first victim, so nothing ever sweeps.
++ *
++ * ndist: how many times the name for an address changed (a shared-CDN hint for
++ * the page). 0 is reserved: a REVERSE name from the one-shot backfill that runs
++ * when the owner switches the feature back on (what the address owner
++ * registered, not what a device asked for); the first forward reply for that
++ * address raises it to 1 and takes the name over.
++ *
++ * Concurrency (one writer, one reader, no lock): the writer clears ip, writes
++ * the body, then stores ip behind a barrier; the reader walks the whole probe
++ * window (a slot being refilled never ends the probe early) and trusts a name
++ * only when nlen and its NUL agree. The worst case is one missed label for one
++ * page poll. */
++#ifndef REAPER_DNSMAP_H
++#define REAPER_DNSMAP_H
++
++#include <stdint.h>
++#include <string.h>
++
++#define RDM_PATH     "/tmp/reaper/dnsmap"
++#define RDM_BACKFILL RDM_PATH ".backfill"	/* one-shot flag: httpd writes it on off -> on, the daemon consumes it */
++#define RDM_MAGIC    0x314d4452u	/* "RDM1" read as a little-endian u32 */
++#define RDM_SLOTS    2048u		/* power of two: 2048 x 64 B = 128 KB */
++#define RDM_PROBES   8			/* linear probe window, always walked in full */
++#define RDM_NAME     52			/* name bytes kept; name[RDM_NAME] is the NUL */
++#define RDM_TTL_MIN  3600u		/* a 20 s CDN TTL is useless to someone watching a flow */
++#define RDM_TTL_MAX  86400u
++#define RDM_SIZE     (64u + RDM_SLOTS * 64u)
++
++struct rdm_hdr {			/* 64 bytes */
++	uint32_t magic, slots, esize, gen;	/* gen: how many times a writer started */
++	uint32_t seen, upd;			/* replies parsed, records written (diag) */
++	uint32_t pad[10];
++};
++
++struct rdm_ent {			/* 64 bytes: 4 + 4 + 2 + 1 + 53 */
++	uint32_t ip;			/* network byte order; 0 = never used */
++	uint32_t exp;			/* epoch after which the entry is stale */
++	uint16_t ndist;			/* name changes seen; 0 = reverse (backfill) name */
++	uint8_t  nlen;
++	char     name[RDM_NAME + 1];
++};
++
++typedef char rdm_assert_hdr_[(sizeof(struct rdm_hdr) == 64) ? 1 : -1];
++typedef char rdm_assert_ent_[(sizeof(struct rdm_ent) == 64) ? 1 : -1];
++
++static inline uint32_t rdm_hash(uint32_t ip)
++{
++	return (ip * 0x9E3779B1u) >> 21;	/* top 11 bits -> 0..2047 */
++}
++
++static inline struct rdm_ent *rdm_table(void *map)
++{
++	return (struct rdm_ent *)((char *)map + sizeof(struct rdm_hdr));
++}
++
++/* reader: the live entry for ip, or NULL */
++static inline struct rdm_ent *rdm_find(struct rdm_ent *t, uint32_t ip, uint32_t now)
++{
++	uint32_t h = rdm_hash(ip);
++	int i;
++
++	for (i = 0; i < RDM_PROBES; i++) {
++		struct rdm_ent *e = &t[(h + i) & (RDM_SLOTS - 1)];
++
++		if (e->ip == ip)
++			return (e->exp > now && e->nlen && e->nlen <= RDM_NAME &&
++				e->name[e->nlen] == 0) ? e : NULL;
++	}
++	return NULL;
++}
++
++/* reader: a name stays while someone is looking at the flow */
++static inline void rdm_touch(struct rdm_ent *e, uint32_t now)
++{
++	if (e->exp < now + RDM_TTL_MIN)
++		e->exp = now + RDM_TTL_MIN;
++}
++
++/* writer (forward replies): refresh in place; else the first never-used slot in
++ * the window; else the earliest-expiring one (stale entries go first by
++ * construction). A reverse name (ndist 0) is confirmed or replaced either way. */
++static inline void rdm_put(struct rdm_ent *t, uint32_t ip, const char *name, uint8_t nlen, uint32_t exp)
++{
++	uint32_t h = rdm_hash(ip), vexp = ~0u;
++	struct rdm_ent *v = NULL;
++	int i;
++
++	for (i = 0; i < RDM_PROBES; i++) {
++		struct rdm_ent *e = &t[(h + i) & (RDM_SLOTS - 1)];
++
++		if (e->ip == ip) {
++			if (e->nlen != nlen || memcmp(e->name, name, nlen) != 0) {
++				memcpy(e->name, name, nlen);
++				e->name[nlen] = 0;
++				e->nlen = nlen;
++				if (e->ndist < 0xffff)
++					e->ndist++;
++			} else if (e->ndist == 0)
++				e->ndist = 1;
++			if (exp > e->exp)
++				e->exp = exp;
++			return;
++		}
++		if (e->ip == 0) {
++			v = e;
++			break;
++		}
++		if (e->exp < vexp) {
++			vexp = e->exp;
++			v = e;
++		}
++	}
++	v->ip = 0;
++	__sync_synchronize();
++	memcpy(v->name, name, nlen);
++	v->name[nlen] = 0;
++	v->nlen = nlen;
++	v->ndist = 1;
++	v->exp = exp;
++	__sync_synchronize();
++	v->ip = ip;
++}
++
++#endif /* REAPER_DNSMAP_H */
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index e0f05f113f..f553c46c1b 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -30,6 +30,7 @@ code{font-family:var(--mono)}
+ .livebtn{font-family:var(--hdr);font-weight:700;text-transform:uppercase;letter-spacing:.07em;font-size:12px;color:var(--bone);border:1px solid var(--line2);border-radius:999px;padding:7px 14px 7px 12px;cursor:pointer;background:var(--raised);display:flex;align-items:center;gap:8px}
+ .livebtn .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 8px var(--jade);animation:pulse 1.6s infinite}
+ .livebtn.paused .dot{background:var(--steel);box-shadow:none;animation:none}
++.livebtn.off{color:var(--steel)}
+ @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+ .rate{display:flex;gap:2px;background:var(--raised);border:1px solid var(--line2);border-radius:999px;padding:3px}
+ .rate button{font-family:var(--mono);font-size:11px;color:var(--bone-dim);background:transparent;border:0;border-radius:999px;padding:5px 10px;cursor:pointer}
+@@ -54,9 +55,17 @@ code{font-family:var(--mono)}
+ .filters button{font-family:var(--body);font-size:11px;color:var(--bone-dim);background:transparent;border:0;border-radius:999px;padding:4px 11px;cursor:pointer}
+ .filters button.on{background:var(--red);color:#fff}
+ .split{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
+-@media(max-width:1040px){.split{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,1fr)}}
++/* v3.3.4: the detail panel follows the reader down the list (placeDetail). Its cell
++   stretches to the row so there is room to travel; the panel scrolls inside itself
++   when taller than the visible slice. */
++.dside{align-self:stretch}
+ .ftable{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+ .fhead,.frow{display:grid;grid-template-columns:52px 2.3fr 52px 84px 58px 44px 76px 66px 62px 84px;gap:10px;align-items:center;padding:9px 14px}
++/* v3.3.4 (after the row rule - same specificity, later wins): the two columns need ~1157px (ten fixed flow columns + the 340px panel); between
++   that and the old 1040px stack point the page overflowed the shell's stage. Compact band
++   first (panel 320, row gap 7 -> 1110px), then stack. */
++@media(max-width:1200px){.split{grid-template-columns:1fr 320px}.fhead,.frow{gap:7px}}
++@media(max-width:1110px){.split{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,1fr)}}
+ .fhead{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.08em;font-size:9px;color:var(--steel);border-bottom:1px solid var(--line2)}
+ .fhead .r,.frow .r{text-align:right}
+ .frow{border-bottom:1px solid var(--line);cursor:pointer;transition:background .12s}
+@@ -78,7 +87,8 @@ code{font-family:var(--mono)}
+ .mix i{display:block;height:100%}
+ .mix span{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-family:var(--mono);font-size:9px;color:var(--bone);text-shadow:0 1px 2px #000}
+ .qpill{font-family:var(--mono);font-size:11px;color:var(--bone);background:var(--raised);border:1px solid var(--line2);border-radius:5px;padding:1px 0;text-align:center;display:block}
+-.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:hidden;position:sticky;top:96px}
++.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:auto;position:relative}
++.detail:empty{display:none}
+ .dhd{padding:13px 15px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(225,6,0,.08),transparent);display:flex;align-items:center;justify-content:space-between;gap:10px}
+ .dhd .k{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.12em;font-size:9.5px;color:var(--steel)}
+ .dhd .n{font-family:var(--hdr);font-size:20px;font-weight:700;color:var(--bone);margin-top:2px}
+@@ -107,6 +117,9 @@ code{font-family:var(--mono)}
+ .qdev{min-width:0}
+ .qdev .qn{font-family:var(--body);font-weight:600;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .qip{font-family:var(--mono);font-size:11.5px;color:var(--bone-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.qx{margin-left:6px;font-size:10px;color:var(--steel);font-family:var(--body)}
++.rev{font-style:italic}
++.qdev .qn.rev{font-weight:500;color:var(--bone-dim)}
+ .scope{font-family:var(--hdr);font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 9px;border-radius:999px;border:1px solid;text-align:center;display:inline-block}
+ .scope.int{color:var(--jade);border-color:rgba(79,178,134,.45);background:rgba(79,178,134,.08)}
+ .scope.ext{color:var(--ice);border-color:rgba(126,166,201,.4);background:rgba(126,166,201,.07)}
+@@ -135,6 +148,7 @@ code{font-family:var(--mono)}
+         <button data-ms="4000">4 s</button>
+         <button data-ms="0"><#RCON_40#></button>
+       </div>
++      <button class="livebtn" id="namesbtn" title="<#RCON_45#>"><#RCON_44#></button>
+       <button class="livebtn" id="livebtn"><span class="dot"></span><#RCON_04#></button>
+     </div>
+   </div>
+@@ -154,12 +168,13 @@ code{font-family:var(--mono)}
+           </span></h2>
+         <div id="fbody"></div>
+       </div>
+-      <div><div class="detail" id="detail"></div></div>
++      <div class="dside"><div class="detail" id="detail"></div></div>
+     </div>
+     <div class="note">
+       <b><#RCON_09#></b> (<code>/proc/fcache/nflist</code>), <#RCON_11#> <b><#RCON_10#> %/CPU %</b> <#RCON_12#>
+       <b><#RCON_07#></b> <#RCON_13#> <b><#RWIF_28#></b> <#RCON_14#>
+       <b><#RQOS_22#>/DSCP</b> <#RCON_15#> <#RCON_16#>
++      <b><#RCON_44#></b> <#RCON_45#>
+     </div>
+   </div>
+ </div>
+@@ -181,6 +196,10 @@ code{font-family:var(--mono)}
+   var CERR={ RDEVE_1:`<#RDEVE_1#>` };
+   function cerr(j){ return (j&&j.ek&&CERR[j.ek])||(j&&j.error)||""; }
+   var filter="all", currentMs=1000, live=true, timer=null;
++  /* v3.3.4: destination names from the passive DNS map (rdnsmapd via the feed): a name
++     shown once stays on its row while the address is listed, and is forgotten the moment
++     no flow to it remains - the owner's drop-on-leave rule, kept where the page is. */
++  var names={}, rtr=[], namesOn=1;
+   /* v2.1.3: view mode (Quick Look = default) + device-name map */
+   var view=(function(){ try{ return localStorage.getItem("reaper_conn_view")||"quick"; }catch(e){ return "quick"; } })();
+   var nameTimer=null;   /* D1: names now resolved via reaper_util.js ReaperNames */
+@@ -210,6 +229,14 @@ code{font-family:var(--mono)}
+     ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ if(view==="quick") render(); });
+   }
+   function devName(ip){ return ReaperNames.byIp(ip,""); }
++  /* the destination's name: a LAN address by device name (the router's own addresses
++     as "This router"), an external one from the DNS map */
++  function destName(c){ if(isPrivate(c.srv)) return rtr.indexOf(c.srv)>=0 ? `<#RSYS_02#>` : devName(c.srv); return c.srvn||""; }
++  function destCell(c){ var dn=destName(c), ap=esc(c.srv+(c.spt?(":"+c.spt):""));
++    if(!dn) return '<div class="qip">'+ap+'</div>';
++    /* srvx 0 = a reverse name from the one-shot backfill (what the address owner registered); muted until a forward reply takes over */
++    var rev=(c.srvx===0&&!isPrivate(c.srv));
++    return '<div class="qdev"><div class="qn'+(rev?' rev':'')+'"'+(rev?' title="'+`<#RCON_46#>`+'"':'')+'>'+esc(dn)+(c.srvx>1?'<span class="qx">+'+Math.min(c.srvx-1,9)+'</span>':"")+'</div><div class="qip">'+ap+'</div></div>'; }
+ 
+   function fetchOnce(){
+     var x=new XMLHttpRequest();
+@@ -221,12 +248,14 @@ code{font-family:var(--mono)}
+   function ingest(j){
+     state.err=(j&&j.ok===0)?(cerr(j)||`<#RDEV_92#>`):null;
+     state.qos=j.qos_type;
++    if(j.names!=null) namesOn=+j.names; if(j.rtr) rtr=j.rtr;
+     var g={}, order=[], seen=j.seen||{}, now=j.now||0;
+     (j.flows||[]).forEach(function(r){
+       var c=g[r.nfc];
+       if(!c){ c=g[r.nfc]={nfc:r.nfc,proto:r.proto,dscp:0,q:0,bytes:0,tot:0,sw:0,hw:0,cli:"",cp:0,srv:"",spt:0,st:"",haveC:0}; order.push(r.nfc); }
+       c.bytes+=r.bytes; c.tot+=r.tot; c.sw+=r.sw; c.hw+=r.hw; c.proto=r.proto;
+       if(r.dscp) c.dscp=r.dscp; if(r.q) c.q=r.q; if(r.st) c.st=r.st;
++      if(r.srvn){ c.srvn=r.srvn; c.srvx=(r.srvx!=null)?+r.srvx:1; }
+       if(r.lan){ c.cli=r.sip; c.cp=r.sp; c.srv=r.dip; c.spt=r.dp; c.haveC=1; }
+       else if(!c.haveC){ c.cli=r.dip; c.cp=r.dp; c.srv=r.sip; c.spt=r.sp; }
+     });
+@@ -241,6 +270,14 @@ code{font-family:var(--mono)}
+     });
+     var np={}; conns.forEach(function(c){ np[c.nfc]={bytes:c.bytes,ts:tnow}; }); state.prev=np;
+     state.conns=conns;
++    var liveIp={};
++    conns.forEach(function(c){
++      if(c.srvn) names[c.srv]={n:c.srvn,x:c.srvx};
++      else if(names[c.srv]){ c.srvn=names[c.srv].n; c.srvx=names[c.srv].x; }
++      liveIp[c.srv]=1;
++    });
++    Object.keys(names).forEach(function(k){ if(!liveIp[k]) delete names[k]; });
++    var nb=document.getElementById("namesbtn"); if(nb) nb.classList.toggle("off",!namesOn);
+     if(state.sel==null || !conns.some(function(c){return c.nfc===state.sel;}))
+       state.sel = conns.length ? conns.slice().sort(function(a,b){return b.rate-a.rate;})[0].nfc : null;
+   }
+@@ -268,7 +305,7 @@ code{font-family:var(--mono)}
+       var st=c.st?('<span class="st '+stateClass(c.st)+'">'+esc(c.st)+'</span>'):'<span class="st" style="color:var(--steel)">&mdash;</span>';
+       return '<div class="qrow">'+
+         '<div class="qdev">'+dev+'</div>'+
+-        '<div class="qip">'+esc(c.srv+(c.spt?(":"+c.spt):""))+'</div>'+
++        destCell(c)+
+         '<div>'+(inside?`<span class="scope int"><#IPConnection_VSList_Internal#></span>`:`<span class="scope ext"><#IPConnection_VSList_External#></span>`)+'</div>'+
+         '<div><span class="proto '+esc(protoName(c.proto).toLowerCase())+'">'+esc(protoName(c.proto))+'</span></div>'+
+         '<div>'+st+'</div>'+
+@@ -304,7 +341,7 @@ code{font-family:var(--mono)}
+       var hw=Math.round(c.hwPct*10)/10, cpu=Math.round((100-c.hwPct)*10)/10, acc=c.hwPct>=50;
+       return '<div class="frow'+(c.nfc===state.sel?" sel":"")+'" data-n="'+esc(c.nfc)+'">'+
+         '<div class="fid">'+esc(c.nfc.slice(-6))+'</div>'+
+-        '<div class="flow5"><div class="ep">'+esc(c.cli+':'+c.cp)+'<span class="ar">&rarr;</span>'+esc(c.srv+':'+c.spt)+'</div></div>'+
++        '<div class="flow5"><div class="ep">'+esc(c.cli+':'+c.cp)+'<span class="ar">&rarr;</span>'+esc(c.srv+':'+c.spt)+(destName(c)?' <span class="num dim'+(c.srvx===0&&!isPrivate(c.srv)?' rev':'')+'">'+esc(destName(c))+'</span>':"")+'</div></div>'+
+         '<div><span class="proto '+esc(protoName(c.proto).toLowerCase())+'">'+esc(protoName(c.proto))+'</span></div>'+
+         '<div>'+(acc?'<span class="pathbadge acc"><span class="ck">&#10003;</span>Runner</span>':'<span class="pathbadge slow">CPU</span>')+'</div>'+
+         '<div><span class="qpill">'+c.q+'</span></div>'+
+@@ -328,12 +365,12 @@ code{font-family:var(--mono)}
+     var hw=c.hwPct, cpu=100-hw, acc=hw>=50;
+     var nm=devName(c.cli);
+     document.getElementById("detail").innerHTML=
+-      '<div class="dhd"><div><div class="k">'+`<#RCON_26#>`+' '+esc(c.nfc.slice(-6))+'</div><div class="n">'+esc(c.srv)+'</div></div>'+
++      '<div class="dhd"><div><div class="k">'+`<#RCON_26#>`+' '+esc(c.nfc.slice(-6))+'</div><div class="n">'+esc(destName(c)||c.srv)+'</div></div>'+
+         (acc?'<span class="chip acc">&#10003; '+`<#RCON_07#>`+'</span>':'<span class="chip" style="color:var(--amber);border-color:rgba(224,169,59,.4)">'+`<#RCON_08#>`+'</span>')+'</div>'+
+       '<div class="drows">'+
+         (nm?drow(`<#RCON_26#>`,esc(nm)):"")+
+         drow(`<#AiProtection_event_Source#>`,esc(c.cli+':'+c.cp))+
+-        drow(`<#AiProtection_event_Destination#>`,esc(c.srv+':'+c.spt))+
++        drow(`<#AiProtection_event_Destination#>`,esc(c.srv+':'+c.spt)+(destName(c)?' &middot; '+esc(destName(c)):""))+
+         drow(`<#IPConnection_VServerProto_itemname#>`,esc(protoName(c.proto))+(c.st?(' &middot; '+esc(c.st)):""))+
+         drow(`<#RCON_19#>`,(acc?'<span style="color:var(--jade)">&#10003; Runner</span>':'<span style="color:var(--amber)">'+`<#RCON_32#>`+'</span>'))+
+         drow(`<#RQOS_22#>`,c.q)+
+@@ -345,8 +382,26 @@ code{font-family:var(--mono)}
+       '</div>'+
+       '<div class="dsplit"><div class="row2"><span class="hwt">'+`<#RCON_10#>`+' '+hw.toFixed(1)+'%</span><span class="cput">CPU '+cpu.toFixed(1)+'%</span></div>'+
+         '<div class="mix" style="height:16px"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i></div></div>';
++    placeDetail();
+   }
+   function drow(k,v){ return '<div class="drow"><span class="dk">'+k+'</span><span class="dv">'+v+'</span></div>'; }
++  /* v3.3.4: the detail panel follows the reader down the list. Inside reaper_shell the page
++     frame never scrolls (the shell grows it to the page's height and publishes the visible
++     slice as --rv-top / --rv-h on this document's root), so position:sticky can never engage;
++     standalone, the window scrolls under the page's own top bar. One placement for both:
++     slide the panel inside its stretched grid cell to the top of what is visible, never past
++     the cell's end, and cap its height to the slice so a tall panel scrolls inside itself. */
++  function placeDetail(){
++    var d=document.getElementById("detail"), w=d&&d.parentNode; if(!d||!w||!d.firstChild) return;
++    var cs=getComputedStyle(document.documentElement), rv=parseFloat(cs.getPropertyValue("--rv-top")), rh=parseFloat(cs.getPropertyValue("--rv-h"));
++    var hdr=document.querySelector(".stickytop"), hh=hdr?hdr.offsetHeight:0, sy=window.pageYOffset||0;
++    var vt=isNaN(rv)?sy+hh:rv, vh=isNaN(rh)?window.innerHeight-hh:rh;
++    d.style.maxHeight=Math.max(160,vh-32)+"px";
++    var wt=w.getBoundingClientRect().top+sy, off=Math.max(0,Math.min(vt+16-wt,w.offsetHeight-d.offsetHeight));
++    d.style.transform=off>0?"translateY("+Math.round(off)+"px)":"";
++  }
++  try{ new MutationObserver(placeDetail).observe(document.documentElement,{attributes:true,attributeFilter:["style"]}); }catch(e){}
++  window.addEventListener("scroll",placeDetail,{passive:true}); window.addEventListener("resize",placeDetail);
+ 
+   /* toggle Quick Look / Advanced */
+   function applyView(){
+@@ -374,6 +429,15 @@ code{font-family:var(--mono)}
+     /* when paused via the button, clear the rate 'on' state so Pause isn't implied */
+     if(live){ document.querySelectorAll("#rate button").forEach(function(x){ x.classList.toggle("on", +x.getAttribute("data-ms")===currentMs); }); }
+   });
++  /* v3.3.4: destination names on/off (nvram rconn_names; rc restarts the listener) */
++  var nb=document.getElementById("namesbtn");
++  nb.addEventListener("click",function(){
++    var x=new XMLHttpRequest(), want=namesOn?0:1;
++    x.open("GET",ENDPOINT+"?names="+want+"&http_id="+encodeURIComponent('<% nvram_get("http_id"); %>')+"&_="+Date.now(),true); x.timeout=6000;
++    x.onreadystatechange=function(){ if(x.readyState!==4)return; var j; try{ j=JSON.parse(x.responseText); }catch(e){ return; }
++      if(j&&j.ok){ namesOn=+j.names; nb.classList.toggle("off",!namesOn); if(!namesOn){ names={}; render(); } } };
++    x.onerror=x.ontimeout=function(){}; x.send();
++  });
+   document.addEventListener("visibilitychange",function(){ document.hidden?stop():(live&&start()); });
+ 
+   applyView();
+-- 
+2.25.1
+

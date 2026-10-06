@@ -17,12 +17,13 @@ models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u
 | GT-BE98       | `gt-be98`      | `gt-be98`   | GT-BE98       | quad (2.4/5/5/6) |
 | GT-BE98 Pro   | `gt-be98-pro`  | `gt-be98_pro` | GT-BE98_PRO | quad (2.4/5/5/6) |
 | GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |
-| ZenWiFi BQ16  | `bq16`         | `bq16`       | BQ16         | quad (2.4/5/5/6) |   <!--@models-->
+| ZenWiFi BQ16  | `bq16`         | `bq16`       | BQ16         | quad (2.4/5/5/6) |
+| ZenWiFi BQ16 Pro | `bq16-pro`  | `bq16_pro`   | BQ16_PRO     | quad (2.4/5/6/6) |   <!--@models-->
 
 BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a
 whitelist) + a small per-model identity overlay (banner, `target.mak` block,
-`version.conf`, model-only www/blobs). All seven models share PROFILE
-`96813GW`. The **GT-BE19000** and the **BQ16** build in git worktrees (`REAPER_TREE`/`REAPER_TDIR`)
+`version.conf`, model-only www/blobs). All eight models share PROFILE
+`96813GW`. The **GT-BE19000**, the **BQ16** and the **BQ16 Pro** build in git worktrees (`REAPER_TREE`/`REAPER_TDIR`)
 and publish as prereleases. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
 
 ## Files

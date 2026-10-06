@@ -81,7 +81,9 @@ on:
         # verifies, but no hardware has run an image.
         # BQ16 (ZenWiFi, quad-band) joined 2026-10-01 under the same three conditions,
         # from the ASUS GPL 102_39256 drop; prerelease-only until a unit has booted one.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, BQ16, all]
+        # BQ16_PRO (ZenWiFi BQ16 Pro, 2.4/5/6/6) joined 2026-10-04 from its own 102_39256 drop
+        # and stock image; the same prerelease-only rule until a unit has booted one.
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, BQ16, BQ16_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -136,7 +138,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.3.3'
+    ${{ inputs.version == '' && 'Reaper_v3.3.4'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -251,7 +253,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -547,7 +549,7 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -600,7 +602,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -694,7 +696,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
           else
             export MODELS="$MODELSEL"
           fi

@@ -25,8 +25,8 @@
 #
 # USAGE:  reaper_stale_configure.sh [--check|--fix] [tree-root]
 #   --check (default) report only, exit 1 if anything is stale
-#   --fix             also remove <pkg>/Makefile + <pkg>/config.status so the
-#                     next build re-runs configure with the current flags
+#   --fix             also remove <pkg>/Makefile + <pkg>/config.status + <pkg>/stamp-h1
+#                     so the next build re-runs configure with the current flags
 # ============================================================================
 
 case "${1:-}" in
@@ -60,8 +60,12 @@ for cs in "$R"/*/config.status; do
   echo "          configured $(date -d "@$cs_epoch" +%Y-%m-%d), rules changed $(date -d "@$chg" +%Y-%m-%d)"
   echo "          $subj"
   if [ "$MODE" = "--fix" ]; then
-    rm -f "$d/Makefile" "$d/config.status"
-    echo "          -> cleared Makefile + config.status; next build re-configures"
+    # v3.3.4 cut (2026-10-06): the router Makefile re-runs configure only when the
+    # package's stamp-h1 sentinel is missing (76 packages use one). Clearing the
+    # Makefile without it left expat-2.0.1 "configured" with no Makefile, and the
+    # build died "no makefile found". The sentinel goes with the rest.
+    rm -f "$d/Makefile" "$d/config.status" "$d/stamp-h1"
+    echo "          -> cleared Makefile + config.status + stamp-h1; next build re-configures"
   fi
 done
 
@@ -71,5 +75,5 @@ if [ "$found" -eq 0 ]; then
 fi
 echo "  stale-configure: $found package(s) flagged"
 [ "$MODE" = "--fix" ] && exit 0
-echo "  run with --fix, or: rm -f <pkg>/Makefile <pkg>/config.status"
+echo "  run with --fix, or: rm -f <pkg>/Makefile <pkg>/config.status <pkg>/stamp-h1"
 exit 1

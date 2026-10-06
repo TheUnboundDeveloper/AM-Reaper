@@ -159,6 +159,22 @@ def p_taint_decoded(s):
     return None
 
 
+def p_rotated_first(s):
+    # v1.3.28: the boot is in syslog.log-1 on any busy box; slog_files() must emit it
+    # ahead of the live file so the (order-preserving) snapshot starts at boot
+    i = s.find("slog_files() {")
+    j = s.find("\n}", i) if i >= 0 else -1
+    body = s[i:j] if i >= 0 and j > i else ""
+    # v1.3.29: the sources are one loop over the four candidates, rotated files first, each
+    # listed once by its resolved path; the live file is the last candidate in that list
+    a = body.find("syslog.log-1")
+    b = body.find("/tmp/syslog.log;")
+    if a < 0 or b < 0 or a > b:
+        return ("slog_files() does not emit syslog.log-1 ahead of the live file - a busy box "
+                "rotates the boot out of /tmp/syslog.log within ~25 min and every 19b count "
+                "then describes a window that starts after boot")
+
+
 PROPERTIES = [
     ("syslog sources collapsed with an order-preserving dedup", p_snapshot_deduped),
     ("lab command echoes dropped from the snapshot", p_snapshot_lab_filtered),
@@ -168,6 +184,7 @@ PROPERTIES = [
     ("conntrack figures all derive from one snapshot", p_conntrack_single_read),
     ("RW_FDROP is not probed as if it were a fault", p_no_rw_fdrop_probe),
     ("kernel taint rendered as flags", p_taint_decoded),
+    ("the rotated syslog is read ahead of the live file", p_rotated_first),
 ]
 
 
@@ -224,6 +241,9 @@ SCENARIOS = [
      "for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP",
      "for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_FDROP RW_ODROP",
      "RW_FDROP is probed"),
+    ("the rotated syslog is dropped from the sources",
+     '  for _r in /jffs/syslog.log-1 /tmp/syslog.log-1 /jffs/syslog.log /tmp/syslog.log; do',
+     '  for _r in /jffs/syslog.log /tmp/syslog.log; do', "syslog.log-1"),
 ]
 
 print("\n== 2. reverting any one fix is caught ==")

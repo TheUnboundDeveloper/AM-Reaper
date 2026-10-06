@@ -44,6 +44,7 @@ case "$MODEL" in
   GT-BE98_PRO) _WANT_BRANCH=gt-be98-pro;;
   GT-BE19000)  _WANT_BRANCH=gt-be19000;;
   BQ16)        _WANT_BRANCH=bq16;;
+  BQ16_PRO)    _WANT_BRANCH=bq16-pro;;
   RT-BE92U)    _WANT_BRANCH=rt-be92u;;
   *) echo "ERROR: unknown MODEL '$MODEL'"; exit 2;;
 esac
@@ -447,6 +448,7 @@ case "$MODEL" in
   # BQ16 (2026-10-01): Broadcom PHYs + a BCM53134 switch, NO RTL8372. The Makefile
   # gate below does not list $(BQ16), so the derivation stages no switch blob.
   BQ16) UB_SYM=BQ16;;
+  BQ16_PRO) UB_SYM=BQ16_PRO;;   # same board family as the BQ16: no RTL8372
   RT-BE92U) UB_SYM=RTBE92U;;
   *) UB_SYM="";;
 esac
@@ -651,7 +653,7 @@ fi
 _ph repro-compare
 hr; echo " Reproducibility comparison"; hr
 # releases/ uses short model dirs: BE96U, BE86U, BE88U, BE98, BE98Pro
-REL_DIR="$REPO_DIR/releases/$(echo "$MODEL" | sed 's/^GT-BE98_PRO$/BE98Pro/; s/^RT-//; s/^GT-//')"
+REL_DIR="$REPO_DIR/releases/$(echo "$MODEL" | sed 's/^GT-BE98_PRO$/BE98Pro/; s/^BQ16_PRO$/BQ16Pro/; s/^RT-//; s/^GT-//')"
 REF="$REL_DIR/$(basename "$REL_DIR")-REAPER-${SHORT_VER}/SHA256SUMS-${MODEL}-${VER}.txt"
 REPRO="not-compared"
 if [ -f "$REF" ]; then

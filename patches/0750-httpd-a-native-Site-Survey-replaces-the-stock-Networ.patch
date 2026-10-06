@@ -1,0 +1,1903 @@
+From 407f7e9e3b53413f68d8cdde795cb5eb5ac06796 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 08:41:28 -0400
+Subject: [PATCH] httpd: a native Site Survey replaces the stock Network Tools
+ survey, with a scan that moves a radar-bound radio on request
+
+The stock page ran the prebuilt wlcscan core, whose fixed event buffer keeps
+only the first networks in channel order (nothing past channel 44 on a
+single 5 GHz radio). Reaper_Survey.asp reads `wl escanresults` text per radio
+through a detached worker (httpd/reaper_survey.c parses it in libc; progressive
+JSON, 512-network cap, mutually exclusive with capture and Auto Scan). Each
+radio reports its own outcome: count and time, passive fallback, own block,
+radio off, or the driver's own error text and exit code. Channel occupancy is
+drawn as cards per band with this router's channel marked.
+
+A 5 GHz radio under radar monitoring refuses every scan request on this
+platform. Plain Scan never moves a radio and says so. "Scan with channel move"
+(two-step confirm) does what the stock core does silently: moves a 5 GHz radio
+that heard nothing to 36/80 or 149/80 with the chanspec and acs_update iovars
+(a bare `wl chanspec` changes only the configured value), scans once the radio
+really operates there, and returns through dfs_ap_move when the driver has
+background radar checks, so the radio keeps serving during the check. A killed
+worker's move is undone at the next start. The worker resets SIGCHLD: it
+inherited httpd's reaper, so every exit status had read -1.
+
+Mixed hunks in web.c: the Connections feed labels every live bridge subnet as
+LAN (not only br0), carries the destination name and the Names switch, and
+publishes the router's own bridge addresses. reaper_inject.c and both menu
+trees point the stock survey URL at the new page.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/Makefile             |   1 +
+ release/src/router/httpd/reaper_inject.c      |   6 +-
+ release/src/router/httpd/reaper_survey.c      | 405 ++++++++++
+ release/src/router/httpd/reaper_survey.h      |  78 ++
+ release/src/router/httpd/web.c                | 701 +++++++++++++++++-
+ release/src/router/www/Reaper_Survey.asp      | 488 ++++++++++++
+ .../router/www/require/menuTrees/menuTree.js  |   2 +-
+ .../www/require/menuTrees/menuTree_ROG.js     |   2 +-
+ 8 files changed, 1667 insertions(+), 16 deletions(-)
+ create mode 100755 release/src/router/httpd/reaper_survey.c
+ create mode 100755 release/src/router/httpd/reaper_survey.h
+ create mode 100755 release/src/router/www/Reaper_Survey.asp
+
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index 62c4bda078..b33e8ab1da 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -148,6 +148,7 @@ OBJS = httpd.o cgi.o ej.o
+ OBJS += web.o common.o nvram_f.o
+ OBJS += aspbw.o initial_web_hook.o
+ OBJS += reaper_inject.o	# reaper: serve-time theme injection
++OBJS += reaper_survey.o	# reaper: Site Survey escan parser (Reaper_Survey.asp)
+ OBJS += apps.o
+ OBJS += sysinfo.o data_arrays.o web-broadcom-am.o
+ 
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 43a9e00070..54b63cd219 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -101,7 +101,8 @@
+ 	"\"tools_sysinfo.asp\":\"Reaper_Sysinfo.asp\"," \
+ 	"\"advanced_wireless_content.asp\":\"Reaper_WiFiSettings.asp\"," \
+ 	"\"advanced_wadvanced_content.asp\":\"Reaper_WiFiSettings.asp\"," \
+-	"\"reaper_wifipro.asp\":\"Reaper_WiFiSettings.asp\"};" \
++	"\"reaper_wifipro.asp\":\"Reaper_WiFiSettings.asp\"," \
++	"\"advanced_wireless_survey.asp\":\"Reaper_Survey.asp\"};" \
+ 	"if(rp.toLowerCase()===\"index.asp\"){top.location.replace(\"/Main_ReaperDash.asp\");return;}" \
+ 	"var s=SUP[rp.toLowerCase()];" \
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+@@ -343,6 +344,9 @@ static const char *reaper_native[] = {
+ 	"Reaper_Sysinfo.asp",	/* v3.1.8: native System Information - replaces stock
+ 				   Tools_Sysinfo.asp (SUP-redirected). Same data, grouped by
+ 				   the question being asked rather than by data source. */
++	"Reaper_Survey.asp",	/* 2026-10-04: Site Survey (Network Tools) - replaces the stock
++				   Advanced_Wireless_Survey.asp (SUP-redirected), whose prebuilt scan
++				   core kept only the networks that fit a fixed buffer */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/httpd/reaper_survey.c b/release/src/router/httpd/reaper_survey.c
+new file mode 100755
+index 0000000000..a9d6fe7eb9
+--- /dev/null
++++ b/release/src/router/httpd/reaper_survey.c
+@@ -0,0 +1,405 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * Parser for the text of `wl escanresults` (Broadcom wl utility, dump_bss_info).
++ * One network prints as, for example:
++ *
++ *   SSID: "MyNet"
++ *   Mode: Managed   RSSI: -45 dBm   SNR: 50 dB   noise: -95 dBm   Flags: RSSI on-channel   Channel: 36/80
++ *   BSSID: 00:11:22:33:44:55   Capability: ESS RRM
++ *   Supported Rates: [ 6(b) 9 12(b) 18 24(b) 36 48 54 ]
++ *   HT Capable:
++ *           Chanspec: 5GHz channel 42 80MHz (0xe02a)
++ *           Primary channel: 36
++ *   VHT Capable:
++ *   HE Capable:
++ *   EHT Capable:
++ *   RSN:
++ *           multicast cipher: AES-CCMP
++ *           unicast ciphers(1): AES-CCMP
++ *           AKM Suites(2): WPA2-PSK WPA3-SAE
++ *
++ * The record starts at "SSID:" and ends at the next "SSID:" or EOF. Only the
++ * lines named above are read; anything else is skipped, so a field the driver
++ * does not print, or prints differently, degrades to "not reported" rather than
++ * to a lost record. rpunctd already parses the SSID / RSSI / Channel lines of
++ * this very output on metal (rpunctd/rpunctd.c execute_scan), which is what
++ * makes those three the anchors here. */
++#include <ctype.h>
++#include <stdlib.h>
++#include <string.h>
++#include "reaper_survey.h"
++
++int rsvy_parse_cs(const char *s, int *band, int *chan, int *width)
++{
++	const char *p = s;
++	char *e;
++	int six = 0, ch, w = 20;
++
++	if (!s || !*s)
++		return 0;
++	if (strncmp(p, "6g", 2) == 0) {
++		six = 1;
++		p += 2;
++	}
++	ch = (int)strtol(p, &e, 10);
++	if (e == p || ch <= 0 || ch > 255)
++		return 0;
++	if (*e == 'l' || *e == 'u') {
++		w = 40;
++		e++;
++	} else if (*e == '/') {
++		w = atoi(e + 1);
++		if (w != 40 && w != 80 && w != 160 && w != 320)
++			return 0;
++	}
++	/* anything else trailing (a space, "(0x...)", "-1" of a 320 block) is fine */
++	*band = six ? 6 : (ch <= 14 ? 2 : 5);
++	*chan = ch;
++	*width = w;
++	return 1;
++}
++
++void rsvy_json_str(FILE *out, const char *s)
++{
++	fputc('"', out);
++	for (; *s; s++) {
++		unsigned char c = (unsigned char)*s;
++		if (c == '"' || c == '\\') {
++			fputc('\\', out);
++			fputc(c, out);
++		} else if (c < 0x20) {
++			fprintf(out, "\\u%04x", c);
++		} else {
++			fputc(c, out);
++		}
++	}
++	fputc('"', out);
++}
++
++/* the number after "<key>" on a line, e.g. key "RSSI: " -> -45; 0 when absent */
++static int num_after(const char *line, const char *key)
++{
++	const char *q = strstr(line, key);
++	if (!q)
++		return 0;
++	return atoi(q + strlen(key));
++}
++
++/* append a space-separated word once */
++static void sec_add(struct rsvy_ap *ap, const char *w, size_t n)
++{
++	char tok[24];
++	size_t l = strlen(ap->sec);
++	const char *p;
++
++	if (n == 0 || n >= sizeof(tok))
++		return;
++	memcpy(tok, w, n);
++	tok[n] = 0;
++	/* already listed? (whole-word match) */
++	p = ap->sec;
++	while ((p = strstr(p, tok)) != NULL) {
++		int at_start = (p == ap->sec || p[-1] == ' ');
++		int at_end = (p[n] == 0 || p[n] == ' ');
++		if (at_start && at_end)
++			return;
++		p += n;
++	}
++	if (l + 1 + n >= sizeof(ap->sec))
++		return;
++	if (l) {
++		ap->sec[l] = ' ';
++		l++;
++	}
++	memcpy(ap->sec + l, tok, n + 1);
++}
++
++/* wl prints an SSID with a backslash doubled and every non-printable byte as
++ * a backslash-x hex pair (a hidden network's zero-length or all-zero name
++ * arrives as "" or as a run of zero pairs). Undo that so a UTF-8 name reaches
++ * the page as UTF-8; a decoded zero byte ends the name, which is what makes an
++ * all-zero SSID read as hidden. */
++static void ssid_decode(char *dst, size_t dn, const char *src, size_t sn)
++{
++	size_t i = 0, o = 0;
++
++	while (i < sn && o + 1 < dn) {
++		unsigned char c = (unsigned char)src[i];
++		if (c == '\\' && i + 1 < sn && src[i + 1] == '\\') {
++			dst[o++] = '\\';
++			i += 2;
++		} else if (c == '\\' && i + 3 < sn && src[i + 1] == 'x' &&
++			   isxdigit((unsigned char)src[i + 2]) && isxdigit((unsigned char)src[i + 3])) {
++			char h[3];
++			unsigned v;
++			h[0] = src[i + 2];
++			h[1] = src[i + 3];
++			h[2] = 0;
++			v = (unsigned)strtoul(h, NULL, 16);
++			if (v == 0)
++				break;			/* NUL: the name ends here */
++			dst[o++] = (char)v;
++			i += 4;
++		} else {
++			dst[o++] = (char)c;
++			i++;
++		}
++	}
++	dst[o] = 0;
++}
++
++static int flush(struct rsvy_ap *ap, int have, int radio_band, rsvy_cb cb, void *ctx, int *n)
++{
++	int b, c, w;
++
++	if (!have || !ap->bssid[0])
++		return 0;
++	if (rsvy_parse_cs(ap->cs, &b, &c, &w)) {
++		ap->band = b;
++		ap->chan = c;
++		ap->width = w;
++	} else {
++		ap->band = radio_band;
++		ap->chan = 0;
++		ap->width = 0;
++	}
++	if (!ap->sec[0])
++		strcpy(ap->sec, "Open");
++	ap->hidden = (ap->ssid[0] == 0);
++	(*n)++;
++	return cb(ap, ctx);
++}
++
++int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *err, size_t errn)
++{
++	char line[1024];
++	struct rsvy_ap ap;
++	int have = 0, n = 0, in_sec = 0, wep = 0;
++
++	memset(&ap, 0, sizeof(ap));
++	while (fgets(line, sizeof(line), in)) {
++		char *p = line;
++		size_t l = strlen(line);
++
++		while (l && (line[l - 1] == '\n' || line[l - 1] == '\r'))
++			line[--l] = 0;
++		while (*p == ' ' || *p == '\t')
++			p++;
++
++		/* the utility's own words - "wl: Scan Rejected" on a radio that may not
++		 * leave its radar block, a timeout - are not records; keep the first */
++		if (err != NULL && err[0] == 0 && *p &&
++		    (strncmp(p, "wl:", 3) == 0 || strstr(p, "Scan Rejected") || strstr(p, "Timeout") || strstr(p, "timed out"))) {
++			size_t i2, o2 = 0;
++			for (i2 = 0; p[i2] && o2 + 1 < errn; i2++) {
++				unsigned char c = (unsigned char)p[i2];
++				err[o2++] = (c >= 0x20 && c < 0x7f) ? (char)c : ' ';
++			}
++			err[o2] = 0;
++			continue;
++		}
++		if (strncmp(p, "SSID:", 5) == 0) {
++			char *q, *e;
++
++			if (wep && !ap.sec[0])
++				strcpy(ap.sec, "WEP");
++			if (flush(&ap, have, radio_band, cb, ctx, &n))
++				return n;
++			memset(&ap, 0, sizeof(ap));
++			have = 1;
++			in_sec = 0;
++			wep = 0;
++			q = strchr(p, '"');
++			e = q ? strrchr(q + 1, '"') : NULL;
++			if (q && e && e > q)
++				ssid_decode(ap.ssid, sizeof(ap.ssid), q + 1, (size_t)(e - q - 1));
++			continue;
++		}
++		if (!have)
++			continue;
++
++		if (strstr(p, "RSSI: ") && strstr(p, "Channel: ")) {
++			const char *q = strstr(p, "Channel: ") + 9;
++			size_t cl = strcspn(q, " \t(");
++			ap.rssi = num_after(p, "RSSI: ");
++			ap.snr = num_after(p, "SNR: ");
++			ap.noise = num_after(p, "noise: ");
++			if (cl >= sizeof(ap.cs))
++				cl = sizeof(ap.cs) - 1;
++			memcpy(ap.cs, q, cl);
++			ap.cs[cl] = 0;
++			continue;
++		}
++		if (strncmp(p, "BSSID:", 6) == 0) {
++			const char *q = p + 6;
++			int i;
++			while (*q == ' ' || *q == '\t')
++				q++;
++			for (i = 0; i < 17 && q[i] && q[i] != ' ' && q[i] != '\t'; i++)
++				ap.bssid[i] = (char)tolower((unsigned char)q[i]);
++			ap.bssid[i] = 0;
++			if (i != 17)
++				ap.bssid[0] = 0;	/* not a MAC - the record is dropped at flush */
++			if (strstr(p, "Capability:") && (strstr(p, " WEP") || strstr(p, "Privacy")))
++				wep = 1;
++			continue;
++		}
++		if (strncmp(p, "EHT Capable", 11) == 0) { if (ap.phy < 7) ap.phy = 7; continue; }
++		if (strncmp(p, "HE Capable", 10) == 0)  { if (ap.phy < 6) ap.phy = 6; continue; }
++		if (strncmp(p, "VHT Capable", 11) == 0) { if (ap.phy < 5) ap.phy = 5; continue; }
++		if (strncmp(p, "HT Capable", 10) == 0)  { if (ap.phy < 4) ap.phy = 4; continue; }
++		if (strcmp(p, "RSN:") == 0 || strcmp(p, "WPA:") == 0) {
++			in_sec = 1;
++			continue;
++		}
++		if (in_sec && strncmp(p, "AKM Suites", 10) == 0) {
++			const char *q = strchr(p, ':');
++			if (q) {
++				q++;
++				while (*q) {
++					size_t wl;
++					while (*q == ' ' || *q == '\t')
++						q++;
++					wl = strcspn(q, " \t");
++					if (!wl)
++						break;
++					sec_add(&ap, q, wl);
++					q += wl;
++				}
++			}
++			continue;
++		}
++	}
++	/* a WEP network has no RSN/WPA block: the Capability flag is all there is */
++	if (wep && !ap.sec[0])
++		strcpy(ap.sec, "WEP");
++	flush(&ap, have, radio_band, cb, ctx, &n);
++	return n;
++}
++
++int rsvy_parse_escan(FILE *in, int radio_band, rsvy_cb cb, void *ctx)
++{
++	return rsvy_parse_escan_err(in, radio_band, cb, ctx, NULL, 0);
++}
++
++/* The channel block a radio sits in: rpunctd's proven block maths (its passive
++ * confirmation scans name exactly these channels and the driver accepts them
++ * on a radio that refuses a full-band scan), extended to 40 MHz pairs and to
++ * a single 20 MHz channel. */
++static const int rsvy_p5_80[] = { 36, 52, 100, 116, 132, 149, 165, 0 };
++static const int rsvy_p5_160[] = { 36, 100, 149, 0 };
++
++static int rsvy_block_start(int is6g, int ch, int width, int range2)
++{
++	int i;
++
++	if (!is6g) {
++		const int *l = width == 160 ? rsvy_p5_160 : width == 80 ? rsvy_p5_80 : NULL;
++
++		if (l == NULL)
++			return -1;
++		for (i = 0; l[i]; i++)
++			if (ch >= l[i] && ch <= l[i] + width / 5 - 4)
++				return l[i];
++		return -1;
++	}
++	if (width == 80)
++		return 1 + 16 * ((ch - 1) / 16);
++	if (width == 160)
++		return 1 + 32 * ((ch - 1) / 32);
++	if (width == 320)
++		return range2 ? (ch < 33 ? -1 : 33 + 64 * ((ch - 33) / 64)) : 1 + 64 * ((ch - 1) / 64);
++	return -1;
++}
++
++int rsvy_home_chans(const char *cs, char *out, size_t n)
++{
++	int band, ch, width, is6g, start, cnt, i, k = 0;
++	size_t len, o = 0;
++	char lu = 0;
++
++	out[0] = 0;
++	if (!rsvy_parse_cs(cs, &band, &ch, &width))
++		return 0;
++	is6g = (band == 6);
++	len = strlen(cs);
++	while (len && (cs[len - 1] == ' ' || cs[len - 1] == '\t'))
++		len--;
++	if (len && (cs[len - 1] == 'l' || cs[len - 1] == 'u'))
++		lu = cs[len - 1];
++	if (width <= 20) {
++		start = ch;
++		cnt = 1;
++	} else if (width == 40) {
++		cnt = 2;
++		if (lu == 'l')
++			start = ch;
++		else if (lu == 'u')
++			start = ch - 4;
++		else if (band == 2) {
++			start = ch;
++			cnt = 1;	/* no side given: the primary alone */
++		} else if (is6g)
++			start = 1 + 8 * ((ch - 1) / 8);
++		else if (ch >= 149)
++			start = 149 + 8 * ((ch - 149) / 8);
++		else
++			start = 36 + 8 * ((ch - 36) / 8);
++	} else {
++		start = rsvy_block_start(is6g, ch, width, strstr(cs, "320-2") != NULL);
++		cnt = width / 20;
++		if (start < 0) {
++			start = ch;
++			cnt = 1;
++		}
++	}
++	for (i = 0; i < cnt; i++) {
++		int w = snprintf(out + o, n - o, "%s%s%d", i ? "," : "", is6g ? "6g" : "", start + 4 * i);
++
++		if (w < 0 || (size_t)w >= n - o) {
++			out[o] = 0;
++			break;
++		}
++		o += (size_t)w;
++		k++;
++	}
++	return k;
++}
++
++int rsvy_chans_nonradar(char *list)
++{
++	char out[160], tok[16];
++	size_t o = 0, i = 0, n, tl;
++	int k = 0;
++
++	out[0] = 0;
++	while (list[i]) {
++		n = strcspn(list + i, ",");
++		tl = n < sizeof(tok) ? n : sizeof(tok) - 1;
++		memcpy(tok, list + i, tl);
++		tok[tl] = 0;
++		i += n;
++		if (list[i] == ',')
++			i++;
++		if (!tok[0])
++			continue;
++		if (strncmp(tok, "6g", 2) != 0) {
++			int ch = atoi(tok);
++
++			if (ch >= 52 && ch <= 144)
++				continue;
++		}
++		if (o + tl + 2 > sizeof(out))
++			break;
++		if (o)
++			out[o++] = ',';
++		memcpy(out + o, tok, tl);
++		o += tl;
++		out[o] = 0;
++		k++;
++	}
++	strcpy(list, out);	/* never longer than what came in */
++	return k;
++}
+diff --git a/release/src/router/httpd/reaper_survey.h b/release/src/router/httpd/reaper_survey.h
+new file mode 100755
+index 0000000000..b469c8209f
+--- /dev/null
++++ b/release/src/router/httpd/reaper_survey.h
+@@ -0,0 +1,78 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_survey: parse the text that `wl -i <ifname> escanresults` prints into one
++ * record per network heard. Pure libc - no httpd or nvram dependency - so the
++ * host test (build-scripts/tests/test_site_survey.py) compiles this file as-is.
++ *
++ * Why this exists (2026-10-04, RT-BE86U field report "Site Survey shows nothing
++ * beyond channel 44"): the stock Network Tools survey runs the prebuilt
++ * wlcscan_core_escan(), which collects the driver's escan events into a fixed
++ * buffer ("Memory not enough for scan results") and so lists only the first
++ * networks the scan meets, in channel order. The Reaper page reads the wl
++ * utility's own text instead - every network, every channel the regulatory
++ * domain allows - and never touches the running chanspec, the puncturing
++ * bitmap or the minimum-width exclusions, none of which bound a scan.
++ *
++ * Correction (2026-10-04, owner RT-BE96U on r4): a 5 GHz radio that sits on a
++ * 160 MHz block containing radar channels under in-service monitoring answers
++ * a full-band scan request with "Scan Rejected", active and passive alike -
++ * such a radio may not leave its block. That, more than the buffer, is why the
++ * stock page on the RT-BE86U (36/160) listed only the channels inside its
++ * block. rsvy_home_chans() derives that block so the page can at least listen
++ * there and say so. */
++#ifndef REAPER_SURVEY_H
++#define REAPER_SURVEY_H
++
++#include <stdio.h>
++
++#define RSVY_SSID_MAX	128	/* wl prints up to 32 bytes, non-printables as \xNN */
++#define RSVY_SEC_MAX	48
++
++struct rsvy_ap {
++	char ssid[RSVY_SSID_MAX];	/* as printed, quotes stripped; "" = hidden */
++	char bssid[18];			/* lower-case aa:bb:cc:dd:ee:ff */
++	char cs[20];			/* chanspec as printed: 36/80, 157l, 6g37/320-1, 6 */
++	int band;			/* 2, 5 or 6 */
++	int chan;			/* control channel */
++	int width;			/* 20, 40, 80, 160 or 320 MHz */
++	int rssi;			/* dBm; 0 = not reported */
++	int noise;			/* dBm; 0 = not reported */
++	int snr;			/* dB; 0 = not reported */
++	int phy;			/* 0 legacy (a/b/g), 4 HT, 5 VHT, 6 HE, 7 EHT */
++	char sec[RSVY_SEC_MAX];		/* "Open", "WEP", "WPA2-PSK", "WPA2-PSK WPA3-SAE", ... */
++	int hidden;			/* 1 = the SSID is empty or all \x00 */
++};
++
++/* called once per network; return non-zero to stop the parse early */
++typedef int (*rsvy_cb)(const struct rsvy_ap *ap, void *ctx);
++
++/* radio_band (2, 5, 6 or 0 = unknown) is the fallback when a record carries no
++ * usable channel. Returns the number of records delivered to cb. */
++int rsvy_parse_escan(FILE *in, int radio_band, rsvy_cb cb, void *ctx);
++
++/* As rsvy_parse_escan; when err is given, the first line the utility printed that
++ * is not part of a record ("wl: Scan Rejected", a timeout) lands in err as
++ * printable ASCII, so the page can show WHY a radio came back empty. */
++int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *err, size_t errn);
++
++/* The radio's own channel block as a wl -c list: "40/160" -> "36,40,...,64",
++ * "6g5/320-1" -> "6g1,...,6g61", "157l" -> "157,161", "6" -> "6". Returns the
++ * channel count, 0 when the string is not a chanspec. */
++int rsvy_home_chans(const char *cs, char *out, size_t n);
++
++/* Drop the 5 GHz radar channels (52-144) from a comma list in place - what a
++ * radio under in-service monitoring may not listen on off channel; 6 GHz
++ * entries and the rest stay. Returns the channels left. */
++int rsvy_chans_nonradar(char *list);
++
++/* "36/80" -> band 5, chan 36, width 80; "157l" -> 5/157/40; "6g37/320-1" ->
++ * 6/37/320; "6" -> 2/6/20. Returns 0 when the string is not a chanspec. */
++int rsvy_parse_cs(const char *s, int *band, int *chan, int *width);
++
++/* JSON string literal with the quotes, escaping " \ and control bytes; bytes
++ * above 0x7f (UTF-8 in an SSID) pass through unchanged */
++void rsvy_json_str(FILE *out, const char *s);
++
++#endif
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 32481c391d..a8c33fe924 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -45,6 +45,9 @@
+ #include <sys/klog.h>
+ #include <stdarg.h>
+ #include <sys/wait.h>
++#include "reaper_survey.h"	/* reaper: Site Survey escan parser (Reaper_Survey.asp) */
++#include <sys/mman.h>
++#include "reaper_dnsmap.h"	/* reaper: passive DNS name map (rdnsmapd) for the Flow Explorer */
+ #include <dirent.h>
+ #include <sys/statvfs.h>	/* reaper v1.9.1: Storage tab free-space reporting (do_reaper_dev_cgi store_status) */
+ #if !defined(__GLIBC__) && !defined(__UCLIBC__) && !defined(MUSL_LIBC)/* musl */
+@@ -22212,6 +22215,99 @@ static void reaper_ip_strip_zeros(char *ip)
+ 		sprintf(ip, "%d.%d.%d.%d", a, b, c, d);
+ }
+ 
++/* reaper 2026-10-04: every live LAN bridge and its IPv4 subnet, so a flow
++ * from a guest / SDN / VLAN bridge is attributed to its device. The nvram
++ * lan_ipaddr + lan_netmask pair names br0 only; the Flow Explorer labelled a
++ * flow from any other bridge with the router's WAN address (owner, br55).
++ * Enumerated from the live interfaces, as rtrafd's brsub_refresh() does, so a
++ * bridge counts the moment it exists - one SIOCGIFCONF per poll, no nvram. */
++#define RCONN_NBR 16
++struct rconn_brsub { uint32_t net, mask, addr; };	/* host order; addr = the bridge's own address */
++
++static int rconn_brsubs(struct rconn_brsub *out, int max)
++{
++	struct ifconf ifc;
++	struct ifreq buf[32], ifr;
++	int s, i, n, k = 0;
++
++	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
++		return 0;
++	memset(&ifc, 0, sizeof(ifc));
++	ifc.ifc_len = sizeof(buf);
++	ifc.ifc_req = buf;
++	if (ioctl(s, SIOCGIFCONF, &ifc) < 0) {
++		close(s);
++		return 0;
++	}
++	n = ifc.ifc_len / (int)sizeof(struct ifreq);
++	for (i = 0; i < n && k < max; i++) {
++		uint32_t a, m;
++
++		if (strncmp(buf[i].ifr_name, "br", 2) != 0) continue;	/* LAN bridges only */
++		if (buf[i].ifr_addr.sa_family != AF_INET) continue;
++		a = ntohl(((struct sockaddr_in *)&buf[i].ifr_addr)->sin_addr.s_addr);
++		memset(&ifr, 0, sizeof(ifr));
++		strlcpy(ifr.ifr_name, buf[i].ifr_name, sizeof(ifr.ifr_name));
++		if (ioctl(s, SIOCGIFNETMASK, &ifr) < 0) continue;
++		m = ntohl(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr);
++		if (!m) continue;
++		out[k].mask = m;
++		out[k].net = a & m;
++		out[k].addr = a;
++		k++;
++	}
++	close(s);
++	return k;
++}
++
++static int rconn_is_lan(const struct rconn_brsub *bs, int n, uint32_t ip)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		if ((ip & bs[i].mask) == bs[i].net) return 1;
++	return 0;
++}
++
++/* reaper v3.3.4: the passive DNS name map (rdnsmapd, shared/reaper_dnsmap.h).
++ * The daemon's table is a tmpfs file; httpd maps it MAP_SHARED once and keeps
++ * the mapping across requests (one process), probing it in place per flow -
++ * no read, no parse. A stat every 5 s notices a removed or recreated file. */
++static void reaper_audit(const char *feat, const char *act, const char *detail);	/* defined below; the Names toggle audits */
++static void *rdm_map;
++static ino_t rdm_ino;
++static time_t rdm_chk;
++
++static struct rdm_ent *rconn_names_table(time_t now)
++{
++	struct stat st;
++
++	if (now - rdm_chk >= 5) {
++		rdm_chk = now;
++		if (stat(RDM_PATH, &st) != 0 || st.st_size < (off_t)RDM_SIZE) {
++			if (rdm_map) {
++				munmap(rdm_map, RDM_SIZE);
++				rdm_map = NULL;
++				rdm_ino = 0;
++			}
++		} else if (!rdm_map || st.st_ino != rdm_ino) {
++			int fd = open(RDM_PATH, O_RDWR);
++
++			if (rdm_map)
++				munmap(rdm_map, RDM_SIZE);
++			rdm_map = fd < 0 ? NULL : mmap(NULL, RDM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++			if (rdm_map == MAP_FAILED)
++				rdm_map = NULL;
++			if (fd >= 0)
++				close(fd);
++			rdm_ino = rdm_map ? st.st_ino : 0;
++		}
++	}
++	if (!rdm_map || ((struct rdm_hdr *)rdm_map)->magic != RDM_MAGIC)
++		return NULL;
++	return rdm_table(rdm_map);
++}
++
+ /* reaper v2.0.6: Connections / Flow Explorer feed for Reaper_Conn.asp. Read-only;
+  * no request input is parsed. Streams every Runner flow-cache entry from
+  * /proc/fcache/nflist as JSON rows (the page groups them by nf_conn and computes
+@@ -22223,12 +22319,17 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ {
+ 	FILE *f;
+ 	char line[1024];
+-	uint32_t lan_net = 0, lan_mask = 0;
++	uint32_t lan_net = 0, lan_mask = 0, lan_ip = 0;
++	struct rconn_brsub brs[RCONN_NBR];
++	int nbrs = 0;
+ 	struct in_addr ia;
+ 	int first, cf;
+ 	/* v2.1.3 (Quick Look): conntrack TCP-state table, matched to each flow below */
+ 	struct rc_ctst { uint32_t s, d; unsigned sp, dp; char st[16]; } *ctv = NULL;
+ 	int ctn = 0, ctcap = 0;
++	struct rdm_ent *rdm = NULL;	/* v3.3.4: the passive DNS name map, when the switch is on */
++	uint32_t rdm_now = (uint32_t)time(NULL);
++	char *v;
+ 
+ 	/* A1-SEC-002: every other Reaper reader is token-gated because these
+ 	 * handlers are subprocess/scan amplifiers a cross-site GET can drive. This
+@@ -22245,12 +22346,56 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 		}
+ 	}
+ 
+-	if (inet_aton(nvram_safe_get("lan_ipaddr"), &ia)) lan_net = ntohl(ia.s_addr);
++	/* v3.3.4: the Names toggle (Connections page). nvram + rc restart of the
++	 * daemon; off also removes the table (start_rdnsmap does both). */
++	if ((v = get_cgi("names")) != NULL) {
++		int on = atoi(v) ? 1 : 0;
++
++		/* off -> on (owner 2026-10-05): the table was wiped at off, so ask the
++		 * daemon for its one-shot reverse backfill of the addresses already in
++		 * flight. Only here - a boot never sets the flag, so it stays passive. */
++		if (on && !nvram_get_int("rconn_names")) {
++			mkdir("/tmp/reaper", 0700);
++			f_write_string(RDM_BACKFILL, "1\n", 0, 0);
++		}
++		nvram_set_int("rconn_names", on);
++		nvram_commit();
++		notify_rc("restart_rdnsmap");
++		reaper_audit("connections", "names", on ? "on" : "off");
++		websWrite(stream, "{\"ok\":1,\"names\":%d}", on);
++		return;
++	}
++
++	if (inet_aton(nvram_safe_get("lan_ipaddr"), &ia)) lan_net = lan_ip = ntohl(ia.s_addr);
+ 	if (inet_aton(nvram_safe_get("lan_netmask"), &ia)) lan_mask = ntohl(ia.s_addr);
+ 	lan_net &= lan_mask;
++	/* reaper 2026-10-04: the nvram pair above is br0 only - a flow from a
++	 * guest / SDN / VLAN bridge was never flagged lan, so the page labelled it
++	 * with the WAN address (the reply direction's pre-de-NAT dst). Test every
++	 * live LAN bridge instead; nvram is the fallback if the enumeration fails. */
++	nbrs = rconn_brsubs(brs, RCONN_NBR);
++	if (nbrs == 0 && lan_mask) {
++		brs[0].net = lan_net;
++		brs[0].mask = lan_mask;
++		brs[0].addr = lan_ip;
++		nbrs = 1;
++	}
++
++	/* v3.3.4: names = the switch; rtr = every bridge's own address, so the page
++	 * can label the router's VLAN gateways as well as br0 */
++	rdm = nvram_get_int("rconn_names") ? rconn_names_table((time_t)rdm_now) : NULL;
++	websWrite(stream, "{\"qos_type\":%d,\"now\":%ld,\"names\":%d,\"rtr\":[",
++		nvram_get_int("qos_type"), (long)rdm_now, nvram_get_int("rconn_names") ? 1 : 0);
++	{
++		struct in_addr ra;
++		int k;
+ 
+-	websWrite(stream, "{\"qos_type\":%d,\"now\":%ld,\"seen\":{",
+-		nvram_get_int("qos_type"), (long)time(NULL));
++		for (k = 0; k < nbrs; k++) {
++			ra.s_addr = htonl(brs[k].addr);
++			websWrite(stream, "%s\"%s\"", k ? "," : "", inet_ntoa(ra));
++		}
++	}
++	websWrite(stream, "],\"seen\":{");
+ 
+ 	/* resident first-seen table: lines "<nfc-hex> <epoch>" written by rtrafd */
+ 	first = 1;
+@@ -22369,11 +22514,30 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 				}
+ 			}
+ 
+-			websWrite(stream,
+-				"%s{\"nfc\":\"%s\",\"lan\":%d,\"sip\":\"%s\",\"sp\":%d,\"dip\":\"%s\",\"dp\":%d,"
+-				"\"proto\":%d,\"dscp\":%d,\"q\":%d,\"bytes\":%llu,\"tot\":%llu,\"sw\":%llu,\"hw\":%llu,\"st\":\"%s\"}",
+-				first ? "" : ",", nfc, (lan_mask && (sipn & lan_mask) == lan_net) ? 1 : 0,
+-				sip, sp, dip, dp, prot, dscp, iq, tbytes, tot, sw, hw, cstate);
++			/* v3.3.4: the remote end's name from the passive DNS map (the LAN end is
++			 * named by the page from its device list). Eight compares and, on a
++			 * hit, one store that keeps the entry alive while it is being viewed. */
++			{
++				struct in_addr ra;
++				struct rdm_ent *e = NULL;
++				int lan_s = rconn_is_lan(brs, nbrs, sipn);
++
++				if (rdm) {
++					uint32_t dipn = inet_aton(dip, &ra) ? ntohl(ra.s_addr) : 0;
++					const char *rem = lan_s ? dip : (rconn_is_lan(brs, nbrs, dipn) ? sip : dip);
++
++					if (inet_aton(rem, &ra) && (e = rdm_find(rdm, ra.s_addr, rdm_now)) != NULL)
++						rdm_touch(e, rdm_now);
++				}
++				websWrite(stream,
++					"%s{\"nfc\":\"%s\",\"lan\":%d,\"sip\":\"%s\",\"sp\":%d,\"dip\":\"%s\",\"dp\":%d,"
++					"\"proto\":%d,\"dscp\":%d,\"q\":%d,\"bytes\":%llu,\"tot\":%llu,\"sw\":%llu,\"hw\":%llu,\"st\":\"%s\"",
++					first ? "" : ",", nfc, lan_s,
++					sip, sp, dip, dp, prot, dscp, iq, tbytes, tot, sw, hw, cstate);
++				if (e)
++					websWrite(stream, ",\"srvn\":\"%s\",\"srvx\":%u", e->name, (unsigned)e->ndist);
++				websWrite(stream, "}");
++			}
+ 			first = 0;
+ 		}
+ 		fclose(f);
+@@ -22454,6 +22618,11 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ #define RWIFI_SCAN_MAX		12	/* max candidate channels a sweep will visit (6 GHz ~6 blocks, 5 GHz 9 non-DFS) */
+ #define RWIFI_SCAN_DWELL	5	/* chanim samples averaged per candidate (s) */
+ #define RWIFI_SCAN_SETTLE	25	/* max wait for a restart to land on the chanspec (s) */
++#define RWIFI_VRUN	RWIFI_DIR "/svyrun"	/* site survey run token (PID-stamped); unlink = stop */
++#define RWIFI_SVYBK	RWIFI_DIR "/svyback"	/* a background return (dfs_ap_move) is under way; no new move for 90 s */
++#define RWIFI_SVYMV	RWIFI_DIR "/svymove"	/* "ifname original-chanspec" while a move-scan has a radio away from its channel */
++#define RWIFI_SVY	RWIFI_DIR "/survey.json"	/* site survey results, published progressively */
++#define RSVY_MAX	512	/* networks kept per survey: bounded RAM, far above any home block */
+ 
+ static int rwifi_ifname(int unit, char *buf, size_t blen)
+ {
+@@ -23003,13 +23172,436 @@ static void reaper_audit(const char *feat, const char *act, const char *detail)
+ 		(detail && detail[0]) ? " " : "", (detail && detail[0]) ? detail : "");
+ }
+ 
++/* reaper 2026-10-04: Site Survey (Reaper_Survey.asp, Network Tools). Replaces the
++ * stock Advanced_Wireless_Survey.asp, whose prebuilt wlcscan_core_escan() keeps
++ * only the networks that fit a fixed event buffer ("Memory not enough for scan
++ * results") - in channel order, so a single 5 GHz radio in a busy block stopped
++ * at channel 44 (RT-BE86U field report). This reads `wl escanresults` text per
++ * radio through httpd/reaper_survey.c: every network, every channel the
++ * regulatory domain allows. The scan never changes a chanspec; the puncturing
++ * bitmap and the minimum-width exclusions do not bound a scan either. Same
++ * shape as the capture and the auto-scan: detached grandchild, PID-stamped
++ * token, results published tmp + rename after every radio, stop = unlink. */
++struct rsvy_radio { int unit, nband, n, ms, err, tries, passive, home, dfs, mvtry; char ifname[32]; char msg[96]; char moved[24]; char dfsl[112]; };
++struct rsvy_merge { struct rsvy_ap *ap; int *unit_of; int n, unit, heard; };
++
++static int rsvy_merge_cb(const struct rsvy_ap *ap, void *ctx)
++{
++	struct rsvy_merge *m = ctx;
++	int i;
++
++	m->heard++;
++	for (i = 0; i < m->n; i++) {
++		if (m->ap[i].band == ap->band && strcmp(m->ap[i].bssid, ap->bssid) == 0) {
++			if (ap->rssi > m->ap[i].rssi) {	/* keep the strongest sighting */
++				m->ap[i] = *ap;
++				m->unit_of[i] = m->unit;
++			}
++			return 0;
++		}
++	}
++	if (m->n >= RSVY_MAX)
++		return 1;				/* full: stop reading this radio */
++	m->ap[m->n] = *ap;
++	m->unit_of[m->n] = m->unit;
++	m->n++;
++	return 0;
++}
++
++static void rwifi_survey_publish(int done, int aborted, time_t ts, const char *cur, int idx, int total,
++	const struct rsvy_radio *rad, int nrad, const struct rsvy_merge *m)
++{
++	char tmp[80];
++	FILE *f;
++	int i;
++
++	snprintf(tmp, sizeof(tmp), "%s.tmp", RWIFI_SVY);
++	if ((f = fopen(tmp, "w")) == NULL)
++		return;
++	/* cur and ifname passed rwifi_ifname()'s charset check; bssid is 17 validated
++	 * MAC bytes; ssid, cs and sec go through rsvy_json_str */
++	fprintf(f, "{\"done\":%d,\"aborted\":%d,\"ts\":%ld,\"cur\":\"%s\",\"idx\":%d,\"total\":%d,\"radios\":[",
++		done, aborted, (long)ts, cur, idx, total);
++	for (i = 0; i < nrad; i++) {
++		fprintf(f, "%s{\"unit\":%d,\"ifname\":\"%s\",\"nband\":%d,\"n\":%d,\"ms\":%d,\"err\":%d,\"tries\":%d,\"passive\":%d,\"home\":%d,\"dfs\":%d,\"moved\":\"%s\",\"dfsl\":\"%s\",\"msg\":",
++			i ? "," : "", rad[i].unit, rad[i].ifname, rad[i].nband, rad[i].n, rad[i].ms, rad[i].err, rad[i].tries, rad[i].passive, rad[i].home, rad[i].dfs, rad[i].moved, rad[i].dfsl);
++		rsvy_json_str(f, rad[i].msg);	/* printable ASCII only (the parser keeps it so), escaped like every other string */
++		fputc('}', f);
++	}
++	fprintf(f, "],\"aps\":[");
++	for (i = 0; i < m->n; i++) {
++		const struct rsvy_ap *a = &m->ap[i];
++
++		fprintf(f, "%s{\"ssid\":", i ? "," : "");
++		rsvy_json_str(f, a->ssid);
++		fprintf(f, ",\"bssid\":\"%s\",\"band\":%d,\"ch\":%d,\"w\":%d,\"cs\":", a->bssid, a->band, a->chan, a->width);
++		rsvy_json_str(f, a->cs);
++		fprintf(f, ",\"rssi\":%d,\"noise\":%d,\"snr\":%d,\"phy\":%d,\"sec\":", a->rssi, a->noise, a->snr, a->phy);
++		rsvy_json_str(f, a->sec);
++		fprintf(f, ",\"hidden\":%d,\"unit\":%d}", a->hidden, m->unit_of[i]);
++	}
++	fprintf(f, "]}\n");
++	fclose(f);
++	rename(tmp, RWIFI_SVY);
++}
++
++/* r12 metal (owner, 2026-10-05): helpers for the live channel move.
++ * rsvy_cmd_hex: the first "0x..." number on the first output line of cmd that contains key
++ * (any line when key is NULL), 0 when there is none - reads `wl chanspec` "40/160 (0xe932)",
++ * `wl chanspecs` rows, and the OPERATING chanspec in `wl status` ("Chanspec: ... (0xe932)").
++ * The pipe is always drained so the utility never blocks on a full pipe. */
++static unsigned int rsvy_cmd_hex(const char *cmd, const char *key)
++{
++	FILE *p = popen(cmd, "r");
++	char ln[256], *h;
++	unsigned int v = 0;
++
++	if (p == NULL)
++		return 0;
++	while (fgets(ln, sizeof(ln), p) != NULL)
++		if (!v && (!key || strstr(ln, key)) && (h = strstr(ln, "0x")) != NULL)
++			v = (unsigned int)strtoul(h, NULL, 16);
++	pclose(p);
++	return v;
++}
++
++/* does any output line of cmd contain needle as a whole word ("bgdfs" in `wl cap`) */
++static int rsvy_cmd_has(const char *cmd, const char *needle)
++{
++	FILE *p = popen(cmd, "r");
++	char ln[512], *h;
++	size_t nl = strlen(needle);
++	int hit = 0;
++
++	if (p == NULL)
++		return 0;
++	while (fgets(ln, sizeof(ln), p) != NULL)
++		for (h = ln; !hit && (h = strstr(h, needle)) != NULL; h += nl)
++			if ((h == ln || h[-1] == ' ' || h[-1] == '\t') && (h[nl] == 0 || h[nl] == ' ' || h[nl] == '\t' || h[nl] == '\n' || h[nl] == '\r'))
++				hit = 1;
++	pclose(p);
++	return hit;
++}
++
++/* a driver line made safe for the JSON string and the page tooltip: printable ASCII minus quote
++ * and backslash, line end dropped */
++static void rsvy_safe_line(char *dst, size_t len, const char *src)
++{
++	size_t i = 0;
++
++	for (; *src && *src != '\n' && *src != '\r' && i + 1 < len; src++)
++		if (*src >= 0x20 && *src <= 0x7e && *src != '"' && *src != '\\')
++			dst[i++] = *src;
++	dst[i] = 0;
++}
++
++/* apply a chanspec on a RUNNING radio the way stock wlcscan_core does (prebuilt broadcom.o): the
++ * "chanspec" iovar alone only changes the configured value; "acs_update" -1 makes the driver act on it */
++static int rsvy_cs_apply(char *ifname, unsigned int cs)
++{
++	if (wl_iovar_setint(ifname, "chanspec", (int)cs) != 0)
++		return -1;
++	return wl_iovar_setint(ifname, "acs_update", -1);
++}
++
++/* owner 2026-10-05 ("Scan with channel move"): a worker killed between the
++ * move and the return (httpd restart, box reboot) would leave the radio on
++ * the scan chanspec. The move writes "ifname original" to RWIFI_SVYMV first;
++ * the next survey start puts the radio back before it does anything else. */
++static void rwifi_survey_restore(void)
++{
++	FILE *f = fopen(RWIFI_SVYMV, "r");
++	char ifn[32], cs[32], cmd[160];
++	unsigned int hx = 0;
++	int i;
++
++	if (f == NULL)
++		return;
++	if (fscanf(f, "%31s %31s %x", ifn, cs, &hx) >= 2) {
++		for (i = 0; ifn[i]; i++)		/* our own file, still: an interface name's charset only */
++			if (!((ifn[i] >= 'a' && ifn[i] <= 'z') || (ifn[i] >= '0' && ifn[i] <= '9') || ifn[i] == '.'))
++				break;
++		if (!ifn[i] && strspn(cs, "0123456789g/-ul") == strlen(cs)) {
++			snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifn);
++			if (!hx)
++				hx = rsvy_cmd_hex(cmd, NULL);	/* an old two-field file: the configured value is still the original */
++			logmessage("reaper_survey", "%s: a previous move-scan did not return - setting %s back now (%s)",
++				ifn, cs, (hx && rsvy_cs_apply(ifn, hx) == 0) ? "done" : "FAILED, set the channel on the Wireless page");
++		}
++	}
++	fclose(f);
++	unlink(RWIFI_SVYMV);
++}
++
++/* want = a radio unit, or -1 for every radio in turn */
++static void rwifi_survey_worker(int want, int move)
++{
++	static struct rsvy_ap aps[RSVY_MAX];
++	static int unit_of[RSVY_MAX];
++	struct rsvy_radio rad[RWIFI_MAXUNIT + 1];
++	struct rsvy_merge m;
++	char ifname[32], cmd[256], nvk[32], csbuf[64], home[96], nonr[96], prim[16], copt[112];
++	int unit, nrad = 0, total = 0, idx = 0, aborted = 0, t;
++	time_t ts = time(NULL);
++
++	memset(&m, 0, sizeof(m));
++	m.ap = aps;
++	m.unit_of = unit_of;
++	/* r12 metal (owner, 2026-10-05): this worker is forked from httpd without an exec, so it inherited
++	 * httpd's chld_reap (a SIGCHLD loop over waitpid(-1)). It reaped every popen child before pclose()
++	 * could, every exit status read -1, and a clean scan that heard nothing showed "Error: exit -1". */
++	signal(SIGCHLD, SIG_DFL);
++	rwifi_token_own(RWIFI_VRUN, "survey");
++	rwifi_survey_restore();
++	for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {	/* radios to visit, for the progress bar */
++		if (want >= 0 && unit != want)
++			continue;
++		if (rwifi_ifname(unit, ifname, sizeof(ifname)))
++			total++;
++	}
++	rwifi_survey_publish(0, 0, ts, "", 0, total, rad, 0, &m);
++	for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {
++		struct rsvy_radio *r;
++		struct timespec t0, t1;
++		FILE *p;
++		int band, rc;
++
++		if (want >= 0 && unit != want)
++			continue;
++		if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
++			continue;
++		if (access(RWIFI_VRUN, F_OK) != 0) {	/* svystop unlinked the token */
++			aborted = 1;
++			break;
++		}
++		r = &rad[nrad];
++		memset(r, 0, sizeof(*r));
++		r->unit = unit;
++		strlcpy(r->ifname, ifname, sizeof(r->ifname));
++		snprintf(nvk, sizeof(nvk), "wl%d_nband", unit);
++		r->nband = nvram_get_int(nvk);
++		band = r->nband == 2 ? 2 : r->nband == 4 ? 6 : 5;
++		idx++;
++		rwifi_survey_publish(0, 0, ts, ifname, idx, total, rad, nrad, &m);
++		snprintf(nvk, sizeof(nvk), "wl%d_radio", unit);
++		if (!nvram_get_int(nvk)) {
++			r->err = 2;			/* radio off: nothing to listen with */
++			nrad++;
++			continue;
++		}
++		clock_gettime(CLOCK_MONOTONIC, &t0);
++		m.unit = unit;
++		rc = -1;
++		/* the one command, with the one charset-checked variable, plus a channel
++		 * list that is our own digits. Metal 2026-10-04 (owner RT-BE96U, r3 then
++		 * r4): the 5 GHz radio on 40/160 - radar channels under in-service
++		 * monitoring - answers a full-band escan with "Scan Rejected", active and
++		 * passive alike: such a radio may not leave its block. rpunctd's passive
++		 * scan of that same radio succeeds every day because it names only the
++		 * block's own channels. So: active, full band; passive, full band, a second
++		 * later (also covers a scan already in progress); then passive on the
++		 * radio's own block, reported as such. stderr rides with stdout and the
++		 * utility's first non-record line - its error - reaches the page. */
++		home[0] = 0;
++		nonr[0] = 0;
++		prim[0] = 0;
++		/* a 5 GHz radio under radar monitoring (in-service monitoring, or a
++		 * channel availability check) refuses every scan request on this
++		 * platform - active, passive, its own block, prohibited channels (owner
++		 * r5 metal, 2026-10-04). The stock survey core moves such a radio to a
++		 * non-radar chanspec for its scan and sets it back afterwards (read from
++		 * the prebuilt wlcscan_core_escan); that is an owner decision, so the page
++		 * says what is going on instead of a bare error. */
++		if (r->nband == 1) {
++			snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s dfs_status 2>/dev/null", ifname);
++			if ((p = popen(cmd, "r")) != NULL) {
++				char dl[160];
++
++				if (fgets(dl, sizeof(dl), p) != NULL) {
++					if (strstr(dl, "In-Service Monitoring") || strstr(dl, "Channel Availability Check"))
++						r->dfs = 1;
++					rsvy_safe_line(r->dfsl, sizeof(r->dfsl), dl);	/* shown as the line's tooltip */
++				}
++				pclose(p);
++			}
++		}
++		snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifname);
++		if ((p = popen(cmd, "r")) != NULL) {
++			if (fgets(csbuf, sizeof(csbuf), p) != NULL) {
++				int cb, cc, cw;
++
++				csbuf[strcspn(csbuf, " \t\r\n")] = 0;
++				rsvy_home_chans(csbuf, home, sizeof(home));
++				strlcpy(nonr, home, sizeof(nonr));
++				rsvy_chans_nonradar(nonr);
++				if (rsvy_parse_cs(csbuf, &cb, &cc, &cw))
++					snprintf(prim, sizeof(prim), "%s%d", cb == 6 ? "6g" : "", cc);
++			}
++			pclose(p);
++		}
++		/* r5 metal (owner, 2026-10-04 21:50): 6 GHz answered the passive full-band
++		 * try; 5 GHz refused even its own block. So the narrowing goes on: the
++		 * block without its radar channels (52-144 are what in-service monitoring
++		 * forbids off channel - the stock page on the tester's 36/160 box listed
++		 * exactly 36-44), then the primary alone. A refusal returns at once, so
++		 * each extra try costs about a second. */
++		for (r->tries = 0, t = 0; t < 5; t++) {
++			const char *lst = t == 2 ? home : t == 3 ? nonr : t == 4 ? prim : NULL;
++
++			if (t >= 2 && (!lst[0] || (t == 3 && strcmp(nonr, home) == 0) ||
++				       (t == 4 && (strcmp(prim, nonr) == 0 || strcmp(prim, home) == 0))))
++				continue;
++			copt[0] = 0;
++			if (lst)
++				snprintf(copt, sizeof(copt), " -c %s", lst);
++			r->passive = (t >= 1);
++			r->home = t >= 2 ? t - 1 : 0;	/* 1 own block, 2 its non-radar part, 3 the primary alone */
++			r->tries++;
++			if (r->tries > 1)
++				sleep(1);
++			m.heard = 0;
++			r->msg[0] = 0;
++			snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s escanresults%s%s 2>&1",
++				 ifname, r->passive ? " -t passive" : "", copt);
++			if ((p = popen(cmd, "r")) != NULL) {
++				rsvy_parse_escan_err(p, band, rsvy_merge_cb, &m, r->msg, sizeof(r->msg));
++				rc = pclose(p);
++			} else
++				rc = -1;
++			if (m.heard > 0 || access(RWIFI_VRUN, F_OK) != 0)
++				break;
++			/* owner ruling 2026-10-04 (option 1): the radio is never moved off its
++			 * radar channel, and under monitoring every narrower request is refused
++			 * just the same - the first refusal is the answer, report it at once */
++			if (r->dfs && r->msg[0])
++				break;
++		}
++		/* owner 2026-10-05 ("Scan with channel move"): an explicit, per-click request to do what
++		 * the stock survey core does - move a 5 GHz radio that heard nothing in place to a non-radar
++		 * chanspec, scan the whole band there, and put it back. The click decides, not our radar probe:
++		 * any 5 GHz radio with no result is moved (r12 metal).
++		 * r12 metal (owner, 2026-10-05): `wl chanspec X` on a running radio changes only the CONFIGURED
++		 * chanspec - its get echoes the new value while the radio stays put - so the old settle check
++		 * passed and the scan was refused on 40/160 again. Stock wlcscan_core (prebuilt broadcom.o)
++		 * applies the move with the "acs_update" iovar after the chanspec, and returns through
++		 * "dfs_ap_move" when the driver has background radar checks (`wl cap` lists bgdfs): the check runs
++		 * on the spare core while the radio keeps serving on the scan channel, then it moves back. The
++		 * move is verified on the OPERATING chanspec (`wl status` Chanspec line); a radio that did not
++		 * move is reported as such, gets no scan, and has only its configuration put back. The original
++		 * goes to RWIFI_SVYMV first ("ifname 40/160 0xe932"; rwifi_survey_restore undoes a killed worker).
++		 * A background return takes about a minute; RWIFI_SVYBK refuses another move meanwhile. */
++		if (move && m.heard == 0 && r->nband == 1 && csbuf[0]) {
++			const char *cand[] = { "36/80", "149/80", NULL };
++			char mv[24] = "", rd[96];
++			unsigned int ocs, ncs = 0;
++			struct stat sb;
++			int i2, settled = 0, rc2 = -1, bg;
++
++			r->mvtry = 1;
++			snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspec 2>/dev/null", ifname);
++			ocs = rsvy_cmd_hex(cmd, NULL);
++			for (i2 = 0; cand[i2] && !mv[0]; i2++) {	/* the first the driver offers that is not where we are */
++				if (strcmp(csbuf, cand[i2]) == 0)
++					continue;
++				snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s chanspecs -b 5 -w 80 2>/dev/null", ifname);
++				if ((p = popen(cmd, "r")) != NULL) {
++					while (fgets(rd, sizeof(rd), p))
++						if (!mv[0] && strncmp(rd, cand[i2], strlen(cand[i2])) == 0 && rd[strlen(cand[i2])] == ' ' && strstr(rd, "0x")) {
++							strlcpy(mv, cand[i2], sizeof(mv));
++							ncs = (unsigned int)strtoul(strstr(rd, "0x"), NULL, 16);
++						}
++					pclose(p);
++				}
++			}
++			if (stat(RWIFI_SVYBK, &sb) == 0 && time(NULL) - sb.st_mtime < 90) {
++				snprintf(r->msg, sizeof(r->msg), "the last move is still returning through a radar check - try again in a minute");
++			} else if (!ocs) {
++				snprintf(r->msg, sizeof(r->msg), "current chanspec unreadable - not moved");
++			} else if (!mv[0] || !ncs) {
++				snprintf(r->msg, sizeof(r->msg), "no non-radar 80 MHz chanspec offered");
++			} else {
++				FILE *rf = fopen(RWIFI_SVYMV, "w");
++
++				if (rf != NULL) {
++					fprintf(rf, "%s %s 0x%x\n", ifname, csbuf, ocs);
++					fclose(rf);
++				}
++				snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s cap 2>/dev/null", ifname);
++				bg = rsvy_cmd_has(cmd, "bgdfs");
++				logmessage("reaper_survey", "%s: moving from %s to %s for a full-band scan - its clients drop for the scan",
++					ifname, csbuf, mv);
++				if (rsvy_cs_apply(ifname, ncs) != 0) {
++					snprintf(r->msg, sizeof(r->msg), "the driver refused chanspec %s", mv);
++				} else {
++					snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s status 2>/dev/null", ifname);
++					for (i2 = 0; i2 < 20 && !settled; i2++) {	/* the OPERATING chanspec; a switch counts down beacons */
++						usleep(500000);
++						if (rsvy_cmd_hex(cmd, "Chanspec:") == ncs)
++							settled = 1;
++					}
++					if (!settled)
++						snprintf(r->msg, sizeof(r->msg), "the radio did not leave %.40s - not scanned", csbuf);
++				}
++				if (settled) {
++					sleep(1);				/* beaconing again before the scan */
++					for (t = 0; t < 2 && m.heard == 0; t++) {	/* active, then passive, full band */
++						if (t)
++							sleep(1);
++						r->passive = t;
++						r->tries++;
++						m.heard = 0;
++						r->msg[0] = 0;
++						snprintf(cmd, sizeof(cmd), "/usr/sbin/wl -i %s escanresults%s 2>&1", ifname, t ? " -t passive" : "");
++						if ((p = popen(cmd, "r")) != NULL) {
++							rsvy_parse_escan_err(p, band, rsvy_merge_cb, &m, r->msg, sizeof(r->msg));
++							rc2 = pclose(p);
++						} else
++							rc2 = -1;
++					}
++					rc = rc2;
++					r->home = 0;
++					strlcpy(r->moved, mv, sizeof(r->moved));
++					if (bg && wl_iovar_setint(ifname, "dfs_ap_move", (int)ocs) == 0) {
++						f_write_string(RWIFI_SVYBK, csbuf, 0, 0);
++						logmessage("reaper_survey", "%s: returning to %s after the scan (%d networks) through a background radar check - it keeps serving on %s for about a minute, then moves back",
++							ifname, csbuf, m.heard, mv);
++					} else if (rsvy_cs_apply(ifname, ocs) == 0) {
++						logmessage("reaper_survey", "%s: back on %s after the scan (%d networks); the radar check keeps the radio quiet for about a minute",
++							ifname, csbuf, m.heard);
++					} else
++						logmessage("reaper_survey", "%s: could NOT return to %s - set the channel on the Wireless page", ifname, csbuf);
++				} else {
++					/* nothing moved: put the configured value back, without acs_update - the radio never left */
++					wl_iovar_setint(ifname, "chanspec", (int)ocs);
++					logmessage("reaper_survey", "%s: did not leave %s - configuration put back, no scan", ifname, csbuf);
++				}
++				unlink(RWIFI_SVYMV);
++			}
++		}
++		clock_gettime(CLOCK_MONOTONIC, &t1);
++		r->n = m.heard;
++		r->ms = (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
++		/* 0 heard networks; 1 the utility failed (exit status or an error line);
++		 * 2 radio off; 3 ran clean and heard nothing; 4 refused while under radar
++		 * monitoring (every attempt rejected - the platform rule, not a fault) */
++		r->err = m.heard > 0 ? 0 : (rc != 0 || r->msg[0]) ? ((r->dfs && !r->mvtry) ? 4 : 1) : 3;
++		if (r->err == 1 && !r->msg[0])	/* owner 2026-10-05: a bare "Error" said nothing (6 GHz, first run) */
++			snprintf(r->msg, sizeof(r->msg), "exit %d", WIFEXITED(rc) ? WEXITSTATUS(rc) : rc);
++		nrad++;
++		rwifi_survey_publish(0, 0, ts, ifname, idx, total, rad, nrad, &m);
++	}
++	rwifi_survey_publish(1, aborted, ts, "", idx, total, rad, nrad, &m);
++	unlink(RWIFI_VRUN);
++}
++
+ static void
+ do_reaper_wifi_cgi(char *url, FILE *stream)
+ {
+ 	static const int durs[] = { 30, 60, 120, 300, 0 };
+ 	char ifname[32], run[64], tmp[64], buf[4096];
+ 	struct stat st;
+-	char *act, *up, *dp;
++	char *act, *up, *dp, *mp;
++	int move = 0;	/* svystart: move a radar-bound 5 GHz radio for the scan (owner 2026-10-05) */
+ 	FILE *f;
+ 	size_t n;
+ 	pid_t pid;
+@@ -23026,7 +23618,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	 * because it popen()s 'wl chanspec' per radio - a token-free status was CSRF
+ 	 * subprocess-amplification (pre-release audit 2026-08-02). Every mutating
+ 	 * action (capstart/capstop/scanstart/scanstop/chqset) is gated. */
+-	if (strcmp(act, "capdata") != 0 &&
++	if (strcmp(act, "capdata") != 0 && strcmp(act, "svydata") != 0 &&
+ 	    strcmp(act, "scandata") != 0 && strcmp(act, "chq") != 0) {
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+@@ -23039,9 +23631,10 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	if (strcmp(act, "status") == 0) {
+ 		websWrite(stream, "{\"territory\":");
+ 		rwifi_json_str(stream, nvram_safe_get("territory_code"));
+-		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"scan\":%d,\"chq_on\":%d,\"bands\":[",
++		websWrite(stream, ",\"psc6g\":\"%d\",\"cap\":%d,\"scan\":%d,\"svy\":%d,\"chq_on\":%d,\"bands\":[",
+ 			nvram_get_int("psc6g"), rwifi_token_live(RWIFI_RUN, 400) ? 1 : 0,
+-			rwifi_token_live(RWIFI_SRUN, 600) ? 1 : 0, nvram_get_int("rchq_enable"));
++			rwifi_token_live(RWIFI_SRUN, 600) ? 1 : 0, rwifi_token_live(RWIFI_VRUN, 180) ? 1 : 0,
++			nvram_get_int("rchq_enable"));
+ 		first = 1;
+ 		for (unit = 0; unit <= RWIFI_MAXUNIT; unit++) {
+ 			if (!rwifi_ifname(unit, ifname, sizeof(ifname)))
+@@ -23097,6 +23690,10 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"err\":\"busy\"}");
+ 			return;
+ 		}
++		if (rwifi_token_live(RWIFI_VRUN, 180)) {
++			websWrite(stream, "{\"err\":\"busysvy\"}");
++			return;
++		}
+ 		unlink(RWIFI_RUN);
+ 		if ((f = fopen(RWIFI_RUN, "w")) != NULL) {
+ 			fprintf(f, "0 %d %d\n", unit, secs);	/* PID 0 = reserved; worker stamps its own */
+@@ -23164,6 +23761,10 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"err\":\"busy\"}");
+ 			return;
+ 		}
++		if (rwifi_token_live(RWIFI_VRUN, 180)) {
++			websWrite(stream, "{\"err\":\"busysvy\"}");
++			return;
++		}
+ 		unlink(RWIFI_SRUN);
+ 		if ((f = fopen(RWIFI_SRUN, "w")) != NULL) {
+ 			fprintf(f, "0 %d\n", unit);	/* PID 0 = reserved; worker stamps its own */
+@@ -23220,6 +23821,80 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* reaper 2026-10-04: Site Survey (Reaper_Survey.asp) - see rwifi_survey_worker().
++	 * svystart / svystop are token-gated above; svydata is a file read. */
++	if (strcmp(act, "svystart") == 0) {
++		unit = -1;				/* every radio */
++		up = get_cgi("unit");
++		if (up && strlen(up) == 1 && up[0] >= '0' && up[0] <= '0' + RWIFI_MAXUNIT)
++			unit = up[0] - '0';
++		else if (up && *up && strcmp(up, "a") != 0) {
++			websWrite(stream, "{\"err\":\"params\"}");
++			return;
++		}
++		if (unit >= 0 && !rwifi_ifname(unit, ifname, sizeof(ifname))) {
++			websWrite(stream, "{\"err\":\"params\"}");
++			return;
++		}
++		mp = get_cgi("move");
++		move = (mp != NULL && strcmp(mp, "1") == 0);
++		mkdir(RWIFI_DIR, 0700);
++		if (rwifi_token_live(RWIFI_RUN, 400)) {
++			websWrite(stream, "{\"err\":\"busycap\"}");
++			return;
++		}
++		if (rwifi_token_live(RWIFI_SRUN, 600) || rwifi_token_live(RWIFI_VRUN, 180)) {
++			websWrite(stream, "{\"err\":\"busy\"}");
++			return;
++		}
++		unlink(RWIFI_VRUN);
++		if ((f = fopen(RWIFI_VRUN, "w")) != NULL) {
++			fprintf(f, "0 %d\n", unit);	/* PID 0 = reserved; worker stamps its own */
++			fclose(f);
++		}
++		unlink(RWIFI_SVY);
++		if (move)
++			reaper_audit("wireless", "survey-move", unit >= 0 ? ifname : "all");
++		pid = fork();
++		if (pid == 0) {
++			/* detach a grandchild so httpd reaps immediately */
++			if (fork() == 0) {
++				int fd;
++				setsid();
++				for (fd = 0; fd < 64; fd++)
++					close(fd);
++				fd = open("/dev/null", O_RDWR);
++				if (fd == 0) {
++					dup2(0, 1);
++					dup2(0, 2);
++				}
++				rwifi_survey_worker(unit, move);
++			}
++			_exit(0);
++		}
++		if (pid > 0)
++			waitpid(pid, NULL, 0);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (strcmp(act, "svystop") == 0) {
++		unlink(RWIFI_VRUN);
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	if (strcmp(act, "svydata") == 0) {
++		if ((f = fopen(RWIFI_SVY, "r")) == NULL) {
++			websWrite(stream, "{\"done\":0,\"radios\":[],\"aps\":[]}");
++			return;
++		}
++		while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
++			fwrite(buf, 1, n, stream);
++		fclose(f);
++		return;
++	}
++
+ 	/* reaper v3.2.8: the dynamic puncturing controller's snapshot (read-only, rpunctd writes it) */
+ 	if (strcmp(act, "punct") == 0) {
+ 		if ((f = fopen("/tmp/reaper_punct.dyn.json", "r")) == NULL) {
+diff --git a/release/src/router/www/Reaper_Survey.asp b/release/src/router/www/Reaper_Survey.asp
+new file mode 100755
+index 0000000000..ca9317dd9e
+--- /dev/null
++++ b/release/src/router/www/Reaper_Survey.asp
+@@ -0,0 +1,488 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     Site Survey (Network Tools): every network each radio can hear, on every channel its
++     regulatory domain allows. Replaces the stock Advanced_Wireless_Survey.asp, whose prebuilt
++     scan core keeps only the networks that fit a fixed buffer (RT-BE86U field report
++     2026-10-04: nothing beyond channel 44). Backend: reaper_wifi.cgi svystart/svystop/svydata
++     + httpd/reaper_survey.c. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#WiFi_sitesurvey#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line-soft:rgba(255,255,255,.06); --line:rgba(225,6,0,.16);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-variant-numeric:tabular-nums}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++::-webkit-scrollbar{width:12px;height:12px}::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.spacer{flex:1}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade)}
++.pill .dot.rec{background:var(--crimson);animation:blink 1.1s infinite}
++@keyframes blink{50%{opacity:.25}}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:12.5px;letter-spacing:.05em;border-radius:9px;padding:8px 14px;cursor:pointer;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn[disabled]{opacity:.45;cursor:default}
++.btn.hot{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.ghost{background:transparent;color:var(--bone-dim)}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:16px 18px;margin-bottom:16px}
++.panel h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:2px}
++.panel .sub{font-size:12px;color:var(--steel);margin:2px 0 12px;line-height:1.55}
++table.ta{width:100%;border-collapse:collapse}
++table.ta th{font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
++  color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
++table.ta th.sort{cursor:pointer;user-select:none}
++table.ta th.sort:hover,table.ta th.on{color:var(--bone)}
++table.ta td{padding:8px;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--bone-dim)}
++table.ta tr:last-child td{border-bottom:none}
++table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bone)}
++.tname{color:var(--bone);font-weight:500}
++.hid{font-style:italic;color:var(--steel)}
++.badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
++.badge.off{color:var(--steel)}
++.badge.warn{color:var(--amber);border-color:rgba(224,169,59,.35)}
++.badge.ok{color:var(--jade);border-color:rgba(79,178,134,.45)}
++.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:12px 0 4px}
++.tile{border:1px solid var(--line-soft);border-radius:12px;background:var(--panel-2);padding:13px 15px;min-width:0}
++.tile .k{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.tile .v{font-family:var(--hdr);font-weight:700;font-size:23px;color:var(--bone);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.tile .v small{font-size:13px;color:var(--bone-dim);font-weight:600}
++.fld{display:inline-block;margin:0 14px 10px 0;vertical-align:top}
++.fld label{display:block;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
++.fld select,.fld input{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:9px 11px;outline:none;min-width:130px}
++.fld select:focus,.fld input:focus{border-color:var(--line)}
++.note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:8px}
++.note b{color:var(--bone-dim)}
++.note.msg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
++.exwrap{max-height:560px;overflow:auto;border:1px solid var(--line-soft);border-radius:10px;margin-top:10px}
++.empty{padding:22px 8px;text-align:center;color:var(--steel);font-size:12.5px}
++.pbar{height:10px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:999px;overflow:hidden;margin:12px 0 6px;display:none}
++.pfill{height:100%;width:0;background:linear-gradient(90deg,var(--crimson),var(--crimson-deep));border-radius:999px;transition:width .5s ease}
++.pfill.active{animation:pulse 1.2s ease-in-out infinite}
++@keyframes pulse{50%{opacity:.5}}
++.sig{display:inline-block;width:56px;height:6px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:3px;vertical-align:middle;margin-right:7px;overflow:hidden}
++.sig i{display:block;height:100%;border-radius:3px}
++.sig i.s3{background:var(--jade)} .sig i.s2{background:var(--amber)} .sig i.s1{background:var(--crimson)}
++.chleg{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11.5px;color:var(--steel);margin:0 0 6px}
++.chleg span{display:inline-flex;align-items:center;gap:7px}
++.chleg i{display:inline-block;width:10px;height:10px;border-radius:3px}
++.chleg i.t1{background:var(--jade)} .chleg i.t2{background:var(--amber)} .chleg i.t3{background:var(--crimson)}
++.chleg b{color:var(--bone-dim);font-weight:600;font-variant-numeric:tabular-nums}
++.chband{margin:12px 0 4px}
++.chband .bn{display:flex;align-items:baseline;gap:10px;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone-dim);margin:8px 0}
++.chband .bn small{font-family:var(--body);font-weight:400;font-size:11.5px;letter-spacing:0;text-transform:none;color:var(--steel)}
++.chcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px}
++.chcard{position:relative;border:1px solid var(--line-soft);border-left:3px solid var(--jade);border-radius:12px;background:var(--panel-2);padding:10px 12px 11px;min-width:0}
++.chcard.t2{border-left-color:var(--amber)}
++.chcard.t3{border-left-color:var(--crimson);background:linear-gradient(180deg,rgba(225,6,0,.12),var(--panel-2) 70%)}
++.chcard.mine{border-top-color:rgba(225,6,0,.45);border-right-color:rgba(225,6,0,.45);border-bottom-color:rgba(225,6,0,.45)}
++.chcard .ck{display:flex;align-items:center;justify-content:space-between;gap:6px;font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.chcard .cn{font-family:var(--hdr);font-weight:700;font-size:24px;line-height:1.1;color:var(--bone);margin-top:2px;font-variant-numeric:tabular-nums}
++.chcard .cc{margin-top:6px;font-size:11.5px;color:var(--bone-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.chcard .cc b{font-family:var(--hdr);font-weight:700;font-size:17px;color:var(--jade);margin-right:4px;font-variant-numeric:tabular-nums}
++.chcard.t2 .cc b{color:var(--amber)} .chcard.t3 .cc b{color:var(--crimson)}
++.chcard .me{font-size:8.5px;padding:1px 5px;color:var(--bone);border-color:rgba(225,6,0,.45);letter-spacing:.06em;white-space:nowrap}
++.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--panel-2);border:1px solid var(--line);
++  color:var(--bone);font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.04em;padding:11px 18px;border-radius:10px;
++  box-shadow:0 8px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .3s;z-index:50}
++.toast.show{opacity:1}
++.radios{display:flex;flex-direction:column;gap:3px;margin-top:6px;font-size:12px;color:var(--bone-dim)}
++.radios b{color:var(--bone);font-weight:600}
++.radios .bad{color:var(--crimson)}
++.radios .warn{color:#e0a63a}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <div>
++    <div class="eyebrow">REAPER</div>
++    <h1><#WiFi_sitesurvey#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#418-site-survey-network-tools" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill" id="svypill" style="display:none"><span class="dot rec"></span><span><#RSVY_9#></span></span>
++</div>
++
++<div class="panel">
++  <h2><#WiFi_sitesurvey#></h2>
++  <div class="sub"><#WiFi_sitesurvey_desc#> <#RSVY_3#></div>
++  <div class="note"><#RSVY_20#></div>
++  <div style="margin-top:10px">
++    <div class="fld"><label><#RWIF_58#></label><select id="svyunit"></select></div>
++    <div class="fld"><label><#RSVY_5#></label><input id="svyfilter" type="text" oninput="svyRender()" autocomplete="off"></div>
++  </div>
++  <div>
++    <button class="btn hot" id="svygo" onclick="svyStart()"><#RSVY_1#></button>
++    <button class="btn" id="svymove" onclick="svyMove()"><#RSVY_31#></button>
++    <button class="btn" id="svystop" onclick="svyStop()" disabled><#RWIF_12#></button>
++    <button class="btn ghost" id="svycsv" onclick="svyExport()" disabled><#RSVY_2#></button>
++  </div>
++  <div class="note"><#RSVY_32#></div>
++  <div class="pbar" id="svybar"><div class="pfill" id="svyfill"></div></div>
++  <div class="note msg" id="svyprog"></div>
++  <div class="radios" id="svyradios"></div>
++  <div class="tiles" id="svytiles"></div>
++</div>
++
++<div class="panel">
++  <h2><#RSVY_4#></h2>
++  <div class="exwrap" id="svywrap" style="display:none">
++    <table class="ta" id="svytable">
++      <thead><tr>
++        <th class="sort" data-k="ssid"><#Wireless_name#></th>
++        <th class="sort" data-k="bssid"><#MAC_Address#></th>
++        <th class="sort" data-k="band"><#RWIF_58#></th>
++        <th class="sort num" data-k="ch"><#WLANConfig11b_Channel_itemname#></th>
++        <th class="sort num" data-k="w"><#WLANConfig11b_ChannelBW_itemname#></th>
++        <th class="sort" data-k="rssi"><#RSVY_15#></th>
++        <th class="sort num" data-k="snr">SNR</th>
++        <th class="sort" data-k="sec"><#Security#></th>
++        <th class="sort" data-k="phy"><#RSVY_21#></th>
++        <th class="sort" data-k="unit"><#RSVY_14#></th>
++      </tr></thead>
++      <tbody></tbody>
++    </table>
++  </div>
++  <div class="empty" id="svyempty"><#RSVY_6#></div>
++</div>
++
++<div class="panel">
++  <h2><#RSVY_7#></h2>
++  <div class="sub"><#RSVY_22#></div>
++  <div id="svychan"><div class="empty"><#RSVY_6#></div></div>
++</div>
++
++<div class="toast" id="toast"></div>
++
++<script src="/reaper_util.js"></script>
++<script>
++(function(){
++"use strict";
++var REAPER_HTTPID = '<% nvram_get("http_id"); %>';
++function reaperTok(){ return "&http_id="+encodeURIComponent(REAPER_HTTPID); }
++
++var NBANDNAME={2:"2.4 GHz",1:"5 GHz",4:"6 GHz"};   /* wlN_nband codes, from action=status */
++var BANDNAME={2:"2.4 GHz",5:"5 GHz",6:"6 GHz"};    /* parsed band of a heard network */
++var ST=null, DATA=null, POLL=null, SORTK="rssi", SORTD=-1, USERSTOP=false;
++
++function showToast(msg){
++  var t=document.getElementById("toast"); if(!t) return;
++  t.textContent=msg; t.className="toast show";
++  setTimeout(function(){t.className="toast";},3500);
++}
++/* rule 41: a clipped message carries its full text as a native tooltip, only while clipped */
++function clipTitle(el){
++  if(!el) return;
++  if(el.scrollWidth>el.clientWidth+1) el.title=el.textContent; else el.removeAttribute("title");
++}
++function ifnameOf(unit){
++  var i;
++  if(DATA&&DATA.radios) for(i=0;i<DATA.radios.length;i++) if(DATA.radios[i].unit===unit) return DATA.radios[i].ifname;
++  if(ST&&ST.bands) for(i=0;i<ST.bands.length;i++) if(ST.bands[i].unit===unit) return ST.bands[i].ifname;
++  return "wl"+unit;
++}
++/* a band name for the selector; a quad-band device has two 5 GHz radios */
++function bandLabel(b){
++  var i,c=0; for(i=0;ST&&i<ST.bands.length;i++) if(ST.bands[i].nband===b.nband) c++;
++  return (NBANDNAME[b.nband]||b.ifname)+(c>1?" ("+b.ifname+")":"");
++}
++function genLabel(a){
++  if(a.phy>=7) return "Wi-Fi 7";
++  if(a.phy===6) return a.band===6?"Wi-Fi 6E":"Wi-Fi 6";
++  if(a.phy===5) return "Wi-Fi 5";
++  if(a.phy===4) return "Wi-Fi 4";
++  return `<#RSVY_19#>`;
++}
++function sigCell(rssi){
++  var q=Math.max(0,Math.min(100,Math.round((rssi+95)*100/60)));
++  var cls=rssi>=-60?"s3":rssi>=-75?"s2":"s1";
++  return "<span class=\"sig\"><i class=\""+cls+"\" style=\"width:"+q+"%\"></i></span><span class=\"mono\">"+rssi+" dBm</span>";
++}
++
++function fetchStatus(cb){
++  var x=new XMLHttpRequest(), done=false;
++  x.open("GET","/reaper_wifi.cgi?action=status"+reaperTok()+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||done) return; done=true;
++    try{ST=JSON.parse(x.responseText);}catch(e){ST=null;}
++    fillUnits();
++    if(ST&&ST.svy&&!POLL) svyPoll();
++    if(cb) cb();
++  };
++  x.onerror=x.ontimeout=function(){};
++  x.send();
++}
++function fillUnits(){
++  var sel=document.getElementById("svyunit"), i, b, o;
++  if(!ST||!ST.bands||sel.options.length) return;
++  o=document.createElement("option"); o.value="a"; o.text=`<#RSVY_13#>`; o.selected=true; sel.appendChild(o);
++  for(i=0;i<ST.bands.length;i++){
++    b=ST.bands[i];
++    o=document.createElement("option"); o.value=b.unit; o.text=bandLabel(b)+(b.radio?"":" - "+`<#RSVY_23#>`);
++    sel.appendChild(o);
++  }
++}
++
++function svyStart(move){
++  var u=document.getElementById("svyunit").value||"a";
++  var x=new XMLHttpRequest(), done=false;
++  USERSTOP=false;
++  x.open("GET","/reaper_wifi.cgi?action=svystart&unit="+encodeURIComponent(u)+(move?"&move=1":"")+reaperTok()+"&_="+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||done) return; done=true;
++    var r=null; try{r=JSON.parse(x.responseText);}catch(e){}
++    if(!r||!r.ok){
++      showToast((r&&(r.err==="busy"||r.err==="busycap"))?`<#RSVY_12#>`:((r&&r.err)?(`<#RWIF_83#>: `+r.err):`<#RWIF_83#>`));
++      return;
++    }
++    DATA=null; svyRender();
++    svyPoll();
++  };
++  x.onerror=x.ontimeout=function(){};
++  x.send();
++}
++/* owner 2026-10-05: an explicit, two-step request to move a radar-bound 5 GHz radio
++   for the scan (the stock page does this silently); the hint under the buttons says
++   what it costs. The first click arms the button for 6 s, the second runs. */
++var MOVEARM=null;
++function svyMove(){
++  var b=document.getElementById("svymove");
++  if(MOVEARM){ clearTimeout(MOVEARM); MOVEARM=null; b.className="btn"; b.textContent=`<#RSVY_31#>`; svyStart(1); return; }
++  b.className="btn hot"; b.textContent=`<#RSVY_33#>`;
++  MOVEARM=setTimeout(function(){ MOVEARM=null; b.className="btn"; b.textContent=`<#RSVY_31#>`; },6000);
++}
++function svyStop(){
++  USERSTOP=true;
++  var x=new XMLHttpRequest();
++  x.open("GET","/reaper_wifi.cgi?action=svystop"+reaperTok()+"&_="+Date.now(),true);
++  x.onerror=x.ontimeout=function(){};
++  x.send();
++}
++function svyPoll(){
++  document.getElementById("svygo").disabled=true;
++  document.getElementById("svymove").disabled=true;
++  document.getElementById("svystop").disabled=false;
++  document.getElementById("svypill").style.display="";
++  if(POLL) return;
++  var tick=function(){
++    var x=new XMLHttpRequest(), done=false;
++    x.open("GET","/reaper_wifi.cgi?action=svydata&_="+Date.now(),true);
++    x.onreadystatechange=function(){
++      if(x.readyState!==4||done) return; done=true;
++      try{DATA=JSON.parse(x.responseText);}catch(e){}
++      svyRender();
++      if(DATA&&DATA.done){
++        clearInterval(POLL); POLL=null;
++        document.getElementById("svygo").disabled=false;
++        document.getElementById("svymove").disabled=false;
++        document.getElementById("svystop").disabled=true;
++        document.getElementById("svypill").style.display="none";
++      }
++    };
++    x.onerror=x.ontimeout=function(){};
++    x.send();
++  };
++  tick();
++  POLL=setInterval(tick,1500);
++}
++
++function filtered(){
++  var q=(document.getElementById("svyfilter").value||"").toLowerCase(), out=[], i, a;
++  if(!DATA||!DATA.aps) return out;
++  for(i=0;i<DATA.aps.length;i++){
++    a=DATA.aps[i];
++    if(q && (a.ssid||"").toLowerCase().indexOf(q)<0 && (a.bssid||"").toLowerCase().indexOf(q)<0) continue;
++    out.push(a);
++  }
++  out.sort(function(p,r){
++    var k=SORTK, x=p[k], y=r[k];
++    if(k==="ssid"||k==="bssid"||k==="sec"){ x=String(x||"").toLowerCase(); y=String(y||"").toLowerCase(); return (x<y?-1:x>y?1:0)*SORTD; }
++    x=+x||0; y=+y||0;
++    if(x===y) return (+r.rssi||0)-(+p.rssi||0);
++    return (x-y)*SORTD;
++  });
++  return out;
++}
++
++function svyRender(){
++  var prog=document.getElementById("svyprog"), bar=document.getElementById("svybar"), fill=document.getElementById("svyfill");
++  var tiles=document.getElementById("svytiles"), wrap=document.getElementById("svywrap"), empty=document.getElementById("svyempty");
++  var chan=document.getElementById("svychan"), tb=document.querySelector("#svytable tbody");
++  var i,a,rows="",list,n=0,hidden=0,best=null,per={},chans={},names={};
++  if(!DATA){
++    prog.textContent=""; bar.style.display="none"; tiles.innerHTML=""; document.getElementById("svyradios").innerHTML="";
++    wrap.style.display="none"; empty.style.display=""; tb.innerHTML="";
++    chan.innerHTML=`<div class="empty"><#RSVY_6#></div>`;
++    document.getElementById("svycsv").disabled=true;
++    return;
++  }
++  if(!DATA.done){
++    bar.style.display=""; fill.className="pfill active";
++    fill.style.width=(DATA.total?Math.round((DATA.idx||0)/DATA.total*100):0)+"%";
++    prog.textContent=`<#RSVY_9#>`+(DATA.cur?" "+DATA.cur:"")+" ("+(DATA.idx||0)+"/"+(DATA.total||0)+")"+(DATA.aps&&DATA.aps.length?" \u00b7 "+DATA.aps.length+" "+`<#RSVY_24#>`:"");
++  } else {
++    fill.className="pfill"; fill.style.width="100%";
++    setTimeout(function(){bar.style.display="none";},1200);
++    prog.textContent=DATA.aborted?`<#RSVY_11#>`:(`<#RSVY_10#>`+(DATA.ts?" \u00b7 "+`<#RSVY_17#>`+": "+new Date(DATA.ts*1000).toLocaleTimeString():""));
++  }
++  clipTitle(prog);
++  /* each radio reports its own outcome - an empty radio is a result with a reason, not a blank */
++  var rs=DATA.radios||[], rt="", r, lab, s;
++  for(i=0;i<rs.length;i++){
++    r=rs[i]; lab=(NBANDNAME[r.nband]||r.ifname);
++    if(r.err===2) s=`<#RSVY_23#>`;
++    else if(r.err===4) s="<span class=\"warn\">"+`<#RSVY_27#>`+"</span>";
++    else if(r.err===1) s="<span class=\"bad\">"+`<#RWIF_83#>`+(r.msg?": "+esc(r.msg):"")+"</span>"+(r.moved?" \u00b7 "+`<#RSVY_34#>`+" "+esc(r.moved):"");
++    else s=(r.n||0)+" "+`<#RSVY_24#>`+(r.ms?" \u00b7 "+(r.ms/1000).toFixed(1)+" s":"")+(r.moved?" \u00b7 "+`<#RSVY_34#>`+" "+esc(r.moved):(r.home?" \u00b7 "+`<#RSVY_26#>`:(r.passive?" \u00b7 "+`<#RSVY_25#>`:"")));
++    /* r12 metal: the radio's raw radar-status line, so a surprising result can be read off the page */
++    rt+="<div"+(r.dfsl?" title=\""+esc(r.dfsl)+"\"":"")+"><b>"+lab+"</b> <span class=\"mono\">"+esc(r.ifname)+"</span>: "+s+"</div>";
++  }
++  document.getElementById("svyradios").innerHTML=rt;
++  list=DATA.aps||[];
++  for(i=0;i<list.length;i++){
++    a=list[i]; n++;
++    if(a.hidden) hidden++;
++    if(!best||a.rssi>best.rssi) best=a;
++    per[a.band]=(per[a.band]||0)+1;
++    if(a.ch){ if(!chans[a.band]){ chans[a.band]={}; names[a.band]={}; } chans[a.band][a.ch]=(chans[a.band][a.ch]||0)+1; (names[a.band][a.ch]=names[a.band][a.ch]||[]).push(a); }
++  }
++  var t="";
++  t+=`<div class="tile"><div class="k"><#RSVY_4#></div><div class="v">`+n+"</div></div>";
++  var bands=[2,5,6], b;
++  for(i=0;i<bands.length;i++){ b=bands[i]; if(per[b]) t+="<div class=\"tile\"><div class=\"k\">"+BANDNAME[b]+"</div><div class=\"v\">"+per[b]+"</div></div>"; }
++  if(hidden) t+=`<div class="tile"><div class="k"><#RSVY_8#></div><div class="v">`+hidden+"</div></div>";
++  if(best) t+=`<div class="tile"><div class="k"><#RSVY_16#></div><div class="v"><small>`+(best.hidden?`<#RSVY_8#>`:esc(best.ssid))+" \u00b7 "+best.rssi+" dBm</small></div></div>";
++  tiles.innerHTML=t;
++
++  list=filtered();
++  for(i=0;i<list.length;i++){
++    a=list[i];
++    rows+="<tr><td class=\"tname\">"+(a.hidden?`<span class="hid"><#RSVY_8#></span>`:esc(a.ssid))+"</td>"+
++      "<td class=\"mono\">"+esc(a.bssid)+"</td>"+
++      "<td>"+(BANDNAME[a.band]||"&ndash;")+"</td>"+
++      "<td class=\"num\">"+(a.ch?a.ch:"&ndash;")+"</td>"+
++      "<td class=\"num\">"+(a.w?a.w+" MHz":"&ndash;")+"</td>"+
++      "<td>"+sigCell(+a.rssi)+"</td>"+
++      "<td class=\"num\">"+(a.snr?a.snr+" dB":"&ndash;")+"</td>"+
++      "<td>"+(a.sec==="Open"?`<span class="badge warn"><#RSVY_18#></span>`:esc(a.sec))+"</td>"+
++      "<td>"+genLabel(a)+"</td>"+
++      "<td class=\"mono\">"+esc(ifnameOf(a.unit))+"</td></tr>";
++  }
++  tb.innerHTML=rows;
++  wrap.style.display=n?"":"none";
++  empty.style.display=n?"none":"";
++  document.getElementById("svycsv").disabled=!n;
++
++  /* one card per control channel in use, per band: the channel, how many networks share it, coloured
++   * 0-1 quiet / 2-3 shared / 4+ crowded; the channel this router runs on is marked and shown even when
++   * nobody else is there (only once its radio has scanned clean). Hover lists the networks heard. */
++  var ch="", keys, j, k, c, tier, me, mine={}, NB2B={2:2,1:5,4:6}, u, mt, lst2, tip;
++  for(i=0;ST&&ST.bands&&i<ST.bands.length;i++){
++    u=ST.bands[i]; mt=/^(?:6g)?([0-9]+)/.exec(String(u.run_chanspec||"")); b=NB2B[u.nband];
++    if(!mt||!b) continue;
++    for(j=0;j<rs.length;j++) if(rs[j].unit===u.unit&&(rs[j].err===0||rs[j].err===3)) break;
++    if(j>=rs.length) continue;
++    k=+mt[1]; if(!mine[b]) mine[b]={}; mine[b][k]=1;
++    if(!chans[b]) chans[b]={}; if(!chans[b][k]) chans[b][k]=0;
++  }
++  for(i=0;i<bands.length;i++){
++    b=bands[i]; if(!chans[b]) continue;
++    keys=Object.keys(chans[b]).map(Number).sort(function(p,r){return p-r;});
++    if(!ch) ch+="<div class=\"chleg\"><span><i class=\"t1\"></i><b>0-1</b> "+`<#RSVY_28#>`+"</span><span><i class=\"t2\"></i><b>2-3</b> "+`<#RSVY_29#>`+"</span><span><i class=\"t3\"></i><b>4+</b> "+`<#RSVY_30#>`+"</span></div>";
++    ch+="<div class=\"chband\"><div class=\"bn\">"+BANDNAME[b]+"<small>"+(per[b]||0)+" "+`<#RSVY_24#>`+"</small></div><div class=\"chcards\">";
++    for(j=0;j<keys.length;j++){
++      k=keys[j]; c=chans[b][k]; tier=c>=4?3:c>=2?2:1; me=!!(mine[b]&&mine[b][k]);
++      lst2=(names[b]&&names[b][k])?names[b][k].slice().sort(function(p,r){return (+r.rssi||0)-(+p.rssi||0);}):[];
++      tip=lst2.slice(0,8).map(function(x){return (x.hidden?`<#RSVY_8#>`:x.ssid)+" "+x.rssi+" dBm";}).join(", ")+(lst2.length>8?" ...":"");
++      ch+="<div class=\"chcard t"+tier+(me?" mine":"")+"\""+(tip?" title=\""+esc(tip)+"\"":"")+">"+
++        "<div class=\"ck\"><span>CH</span>"+(me?"<span class=\"badge me\">"+`<#RSYS_02#>`+"</span>":"")+"</div>"+
++        "<div class=\"cn\">"+k+"</div>"+
++        "<div class=\"cc\"><b>"+c+"</b>"+`<#RSVY_24#>`+"</div></div>";
++    }
++    ch+="</div></div>";
++  }
++  chan.innerHTML=ch||`<div class="empty"><#RSVY_6#></div>`;
++}
++
++function svyExport(){
++  if(!DATA||!DATA.aps||!DATA.aps.length) return;
++  var i,a,csv="ssid,bssid,band,channel,width_mhz,chanspec,rssi_dbm,noise_dbm,snr_db,security,generation,heard_by\n";
++  function q(s){ return "\""+String(s==null?"":s).replace(/"/g,"\"\"")+"\""; }
++  for(i=0;i<DATA.aps.length;i++){
++    a=DATA.aps[i];
++    csv+=[q(a.ssid),q(a.bssid),q(BANDNAME[a.band]||""),a.ch||"",a.w||"",q(a.cs),a.rssi||"",a.noise||"",a.snr||"",q(a.sec),q(genLabel(a).replace(/<[^>]*>/g,"")),q(ifnameOf(a.unit))].join(",")+"\n";
++  }
++  var blob=new Blob([csv],{type:"text/csv"}), u=URL.createObjectURL(blob), l=document.createElement("a");
++  l.href=u; l.download="reaper-site-survey-"+(DATA.ts?new Date(DATA.ts*1000).toISOString().slice(0,19).replace(/[:T]/g,"-"):"now")+".csv";
++  document.body.appendChild(l); l.click(); document.body.removeChild(l);
++  setTimeout(function(){URL.revokeObjectURL(u);},2000);
++}
++
++/* column sort: click toggles direction; signal and SNR default to strongest first */
++(function(){
++  var ths=document.querySelectorAll("#svytable th.sort"), i;
++  function on(th){
++    var k=th.getAttribute("data-k"), j;
++    if(SORTK===k) SORTD=-SORTD; else { SORTK=k; SORTD=(k==="rssi"||k==="snr")?-1:1; }
++    for(j=0;j<ths.length;j++) ths[j].className=ths[j].className.replace(" on","");
++    th.className+=" on";
++    svyRender();
++  }
++  for(i=0;i<ths.length;i++) (function(th){ th.addEventListener("click",function(){on(th);}); })(ths[i]);
++})();
++
++/* a closed tab should not leave a scan running unattended */
++function svyUnloadStop(){
++  if(POLL && navigator.sendBeacon){
++    try{ navigator.sendBeacon("/reaper_wifi.cgi?action=svystop"+reaperTok()); }catch(e){}
++  }
++}
++window.addEventListener("pagehide",svyUnloadStop);
++window.addEventListener("beforeunload",svyUnloadStop);
++window.addEventListener("resize",function(){ clipTitle(document.getElementById("svyprog")); });
++
++window.svyStart=svyStart; window.svyMove=svyMove; window.svyStop=svyStop; window.svyExport=svyExport; window.svyRender=svyRender;
++fetchStatus(function(){
++  /* a survey from an earlier visit is still on disk: show it */
++  var x=new XMLHttpRequest(), done=false;
++  x.open("GET","/reaper_wifi.cgi?action=svydata&_="+Date.now(),true);
++  x.onreadystatechange=function(){
++    if(x.readyState!==4||done) return; done=true;
++    try{ var d=JSON.parse(x.responseText); if(d&&d.aps&&d.aps.length){ DATA=d; svyRender(); } }catch(e){}
++  };
++  x.onerror=x.ontimeout=function(){};
++  x.send();
++});
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index e0e6b11643..5240401e18 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -449,7 +449,7 @@ define(function(){
+ 					{url: "Main_WOL_Content.asp", tabName: "<#NetworkTools_WOL#>"},
+ 					// {url: "Main_ChkSta_Content.asp", tabName: "<#NetworkTools_ChkSta#>"},
+ 					{url: "Advanced_Smart_Connect.asp", tabName: "<#smart_connect_rule#>"},
+-					{url: "Advanced_Wireless_Survey.asp", tabName: "<#WiFi_sitesurvey#>"},
++					{url: "Reaper_Survey.asp", tabName: "<#WiFi_sitesurvey#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			}
+diff --git a/release/src/router/www/require/menuTrees/menuTree_ROG.js b/release/src/router/www/require/menuTrees/menuTree_ROG.js
+index 24c06879e6..7d17432d81 100644
+--- a/release/src/router/www/require/menuTrees/menuTree_ROG.js
++++ b/release/src/router/www/require/menuTrees/menuTree_ROG.js
+@@ -343,7 +343,7 @@ define(function(){
+ 					{url: "Main_Netstat_Content.asp", tabName: "Netstat"},
+ 					{url: "Main_WOL_Content.asp", tabName: "<#NetworkTools_WOL#>"},
+ 					{url: "Advanced_Smart_Connect.asp", tabName: "<#smart_connect_rule#>"},
+-					{url: "Advanced_Wireless_Survey.asp", tabName: "Site Survey"},
++					{url: "Reaper_Survey.asp", tabName: "<#WiFi_sitesurvey#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			}
+-- 
+2.25.1
+

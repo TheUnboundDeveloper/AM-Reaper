@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
+> **Doc status:** current as of **v3.3.5** · 2026-10-06 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.4** <!--@treever--> — `3006.102.8_Reaper_v3.3.4`. **A real Site Survey replaces the stock one, the Flow Explorer names each destination from the DNS answers devices already receive, Policy Routing rebuilds without a rules-free window, the DNS health check and the clock stop misreading a brief WAN loss or an already-correct clock, and the ZenWiFi BQ16 Pro joins.** The survey lists every network each radio hears and can move a radar-bound 5 GHz radio for a full scan on request; the destination names come from a passive listener and a shared in-memory table, with a switch that deletes them; the firewall signs its own chains and restores them if they drift; a host x86 library that had shipped in every image since the GPL drop is gone; Quagga is no longer built on any model. The code was built and verified on RT-BE96U MCP test images (v3.3.4_BETA r1-r13 and the cut build) before the cut, and the rungs ran on the RT-BE96U through the cycle; the Site Survey channel move of r13 and the BQ16 Pro have not yet been run by a tester. The release images come from the public CI build. The series stands at **752 patches** (0745–0752 for v3.3.4); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.5** <!--@treever--> — `3006.102.8_Reaper_v3.3.5`. **A firmware update keeps the DTIM Interval you set.** v3.3.4 reset it to 1 on the first boot after an update; v3.3.5 is v3.3.4 with that removed and nothing else, and the v3.3.4 prereleases are withdrawn. Built and verified on an RT-BE96U MCP image; the release images come from the public CI build. The series stands at **754 patches** (0753–0754 for v3.3.5); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,18 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.5 — an update keeps the DTIM Interval you set
+
+**Your DTIM Interval is yours again.** Updating to v3.3.4 from an earlier Reaper reset the DTIM
+Interval to 1 on every radio, even when you had set a different value (for example 3, which
+Apple recommends for battery life). v3.3.5 removes that: a firmware update never changes the DTIM
+Interval you have. A new or factory-reset router still starts at 1.
+
+If you ran v3.3.4, check Wireless > Wireless Settings. The system log line "DTIM interval set to
+1 ... (was N)" shows the value you had. Everything else in v3.3.5 is the same as v3.3.4, whose
+prerelease images have been withdrawn.
+
 
 ## What's new in v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
 
@@ -43,10 +55,16 @@ scheduled jobs and add-ons start on time instead of waiting twenty minutes or mo
 **Under the hood.** The firewall checks its own rules and restores them if something changes them
 behind its back; the Diagnostics report reads a boot that rotated out of the live log and flags a
 clock that never synced; a stray file that could never run on this router is gone from the image;
-the DTIM Interval defaults to 1 on every radio, set once; the Rule Status page now checks that LAN
+the DTIM Interval defaults to 1 on every radio; the Rule Status page now checks that LAN
 traffic leaves with the router's address; two misleading boot log lines are gone; the Wireless
 Settings schedule grid opens next to the row you clicked; the firmware page no longer shows buttons
 that do nothing; 94 more interface strings are translated in all 25 languages.
+
+**Known issue: check your DTIM Interval after updating.** The first boot of v3.3.4 over an earlier
+Reaper sets the DTIM Interval to 1 on every radio, replacing a value you chose (for example 3,
+which Apple recommends for battery life). The system log line "DTIM interval set to 1 ... (was N)"
+shows the old value. Set it again under Wireless > Wireless Settings; it is not changed after that.
+v3.3.5 removes this, and the v3.3.4 prerelease images were withdrawn.
 
 **New model: ZenWiFi BQ16 Pro** (BE30000). It builds and passes the same verification as the other
 models and publishes as a prerelease. No one has run it on hardware yet, so treat the first image

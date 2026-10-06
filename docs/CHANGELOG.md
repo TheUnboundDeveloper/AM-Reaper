@@ -46,6 +46,19 @@ node, not only on the primary router.
 
 ---
 
+## v3.3.5 — an update keeps the DTIM Interval you set
+
+- **A firmware update no longer changes the DTIM Interval (field: 3 → 1 after flashing v3.3.4).**
+  v3.3.4 set `wlN_dtim=1` on the first boot that found no `/jffs/reaper/.dtim1` marker. The marker
+  was new in v3.3.4, so every flash over an earlier Reaper replaced the value the user had chosen.
+  `reaper_dtim_default()` and its call before `start_lan()` are removed. 1 stays the compiled
+  default, which only a router with no value set receives (a new box or a factory reset). The
+  build gate now requires the old log line to be ABSENT from `sbin/rc`.
+- **The v3.3.4 prereleases are withdrawn.** v3.3.5 is v3.3.4 plus this fix and nothing else. A
+  router that already ran v3.3.4 keeps whatever DTIM it has now; one that was reset to 1 shows
+  "DTIM interval set to 1 ... (was N)" in the system log - set it again under Wireless > Wireless
+  Settings.
+
 ## v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
 
 - **A real Site Survey replaces the stock one (field, RT-BE86U: "nothing beyond channel 44").** The
@@ -118,6 +131,10 @@ node, not only on the primary router.
   nvram carried from stock. The first boot on v3.3.4 sets `wlN_dtim=1` once per radio before the
   radios come up (marker `/jffs/reaper/.dtim1`, one log line); a user may raise it afterwards, and
   the explainer now says 1 and why.
+  **Known issue:** the marker is new, so the first boot after a flash over ANY earlier Reaper also
+  replaces a DTIM the user chose (for example 3, Apple's recommendation); the log line names the old
+  value. Re-set it under Wireless > Wireless Settings; it is not changed again. Removed in v3.3.5;
+  the v3.3.4 prereleases were withdrawn.
 - **Every Reaper overlay opens where you are looking.** Inside the shell frame a fixed-position box
   centres on the middle of the whole page, not the screen. The Wireless Settings scheduler grid, the
   last overlay that did, now opens over the row you clicked; the Flow Explorer's detail panel (above)

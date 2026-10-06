@@ -67,7 +67,7 @@ The ordered short list. *v3.3.4 is the newest rung (cut 2026-10-06); earlier rel
    ↳ notes: `bq16-onboarding.md`
 11. **[P2] ZenWiFi BQ16 Pro (BQ16_PRO) onboarding** — from its own 102_39256 GPL drop + stock radio firmware
     (2.4/5/6/6, the GT-BE98 Pro's layout); placeholder banner = the BQ16's art; MCP + noMCP built, overlay +
-    platform archive staged. **[owed: lean commit, CI run, a tester, Pro banner art]**
+    platform archive in v3.3.4. **[owed: the CI run, a tester, Pro banner art]**
     ↳ notes: `bq16-pro-onboarding.md`
 
 ---
@@ -102,8 +102,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   94 translated, 19 brand/acronym tokens kept English by design. **[in v3.3.4 r2; native review owed]** ↳ notes: `english-tokens-residual.md`
 - **[P3] Chain-integrity watchdog covers the Warden drop chains only** — invariant defined and built for the rules
   engine: apply.sh signs REAPER_FW* (md5 of `-S`), rwatch 3f recomputes, a two-tick mismatch is `rules-chain-drift`, heal = the committed apply.sh, capped at two. **[in v3.3.4 r2, metal owed]** ↳ notes: `chain-integrity-scope.md`
-- **[P3] Loading/Restarting overlay: native redesign remainder** — every Reaper fixed overlay now anchors to the
-  visible slice (the Wireless Settings scheduler modal was the last); 24 stock `confirm()` dialogs on 9 pages remain. **[owed: the confirm() pass + metal]** ↳ notes: `loading-overlay-redesign.md`
 - **[P3] Smart Connect band-mask hazards** — the dead `return 7` fallback is gone from the mask builder (no behaviour
   change); the 6 GHz-outside-Smart-Connect default stays an owner RF decision. **[in v3.3.4 r2, metal owed]** ↳ notes: `smart-connect-band-mask.md`
 - **[P3] Diagnostics v1.3.28 read on r11: three small defects** — the name-map counters line called `od`, which this busybox has no
@@ -126,8 +124,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   r12 metal: the move never left 40/160 (a bare `chanspec` set only changes the configured value; stock adds the `acs_update` iovar and returns through `dfs_ap_move` when the driver has `bgdfs`) and every exit code read -1 (the worker inherits httpd's SIGCHLD reaper). Fixed in canon 2026-10-05: stock method (chanspec + acs_update, operating-chanspec check, dfs_ap_move return when bgdfs), SIGCHLD reset, click decides, raw radar line on the page, RSVY_32 re-texted (batch R). **[in v3.3.4 r13, metal owed]** ↳ notes: `site-survey-page.md`
 - **[P3] Flow Explorer labels VLAN / guest sources with the WAN address** — the CGI's lan flag was the nvram br0
   subnet only; now every live `br*` subnet, nvram as the fallback. **[in v3.3.4 r3, metal owed]** ↳ notes: `conn-lan-flag-br0-only.md`
-- **[P3] Diag section 5 labels the lease's expiry uptime as time remaining** — `wan0_expires` is boot-uptime + lease;
-  v1.3.27 prints remaining = expiry minus uptime, clamped at 0. **[metal OK 2026-10-04: owner r3 diag reads lease=1800s remaining=1745s]** ↳ notes: `diag-lease-expires-absolute.md`
 - **[P3] stop_lan trace says "wl radio off eth1..eth4"** — the marker now fires for `wl*` names only; the stock
   wlconf/wl calls are untouched. **[in v3.3.4 r3, metal owed]** ↳ notes: `stop-lan-trace-eth-label.md`
 - **[P3] A hand-set `wlcsm_bindfix=1` logs "retired ... ignored" on every boot** — the retired branch logs once more,
@@ -215,6 +211,8 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 ## UI / UX polish
 
+- **[P3] Loading/Restarting overlay: native redesign remainder** — every Reaper fixed overlay now anchors to the
+  visible slice (the Wireless Settings scheduler modal was the last); 24 stock `confirm()` dialogs on 9 pages remain. The anchoring shipped in v3.3.4. **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
 
 ---
 

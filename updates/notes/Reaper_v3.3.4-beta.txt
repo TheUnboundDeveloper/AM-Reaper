@@ -1,0 +1,236 @@
+Reaper v3.3.4 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> A real Site Survey replaces the stock one (field, RT-BE86U: "nothing beyond channel 44")
+
+The
+
+stock Network Tools page ran a prebuilt scan core whose fixed event buffer kept only the first
+
+networks in channel order. Reaper_Survey.asp reads wl escanresults per radio through a
+
+detached worker (httpd/reaper_survey.c, a libc parser; 512-network cap; never runs beside a
+
+capture or Auto Scan) and shows each radio's own outcome - networks and time, a passive or
+
+own-block fallback, radio off, or the driver's own error text and exit code. Channel occupancy is
+
+drawn as one card per channel with this router's channel marked. A 5 GHz radio under radar
+
+monitoring refuses every scan request on this platform; a plain Scan never moves a radio and says
+
+so. Scan with channel move (two-step confirm) does what the stock core did silently: it moves a
+
+5 GHz radio that heard nothing to 36/80 or 149/80 with the chanspec and acs_update iovars - a
+
+bare wl chanspec changes only the configured value of a running radio - scans once the radio
+
+really operates there, and returns through dfs_ap_move when the driver has background radar
+
+checks, so the radio keeps serving through the minute-long check. A move cut short is undone at the
+
+next start. The worker resets SIGCHLD: it inherited httpd's reaper, and every exit status had read
+
+-1.
+
+> The Flow Explorer names the destination
+
+rdnsmapd learns names at DNS time instead of looking
+
+anything up: an AF_PACKET socket with a 16-instruction classic BPF filter (UDP replies from port
+
+53) blocks in recv, and every A record in a reply's answer section is stored under the question's
+
+name, which follows the CNAME chain for free. The table is a 131,136-byte tmpfs file that the daemon
+
+and httpd both map (shared/reaper_dnsmap.h: 2048 slots, earliest-expiry replacement, TTL clamped
+
+to 1-24 h), so there is no publish or parse step and no idle CPU. A Names switch on the page
+
+(default on) stops the daemon and deletes the table; switching it back on sends one reverse query
+
+per listed remote address to the local resolver (about 50 per second, capped at 512) and shows those
+
+names muted until a forward reply replaces them. The page keeps a name while its address is listed,
+
+labels the router's own bridge addresses "This router", treats every live bridge subnet as LAN (not
+
+only br0 - guest and VLAN sources showed the WAN address), and its detail panel now follows the
+
+reader down the list.
+
+> Policy Routing rebuilds without a rules-free window
+
+An Apply used to tear the chain down and
+
+build it again. rc/reaper_pbr.c now builds the new rules under a second chain name, replaces the
+
+PREROUTING jump in place (-R), drops the old chain and renames the new one; routing rules are
+
+kept or added first and only stale ones are deleted afterwards. A full teardown happens only when
+
+the feature is switched off.
+
+> The DNS health check holds its verdict while the uplink is down (owner RT-BE96U)
+
+Each WAN blip
+
+cost a resolver failover, a re-apply, a restore and two extra dnsmasq reloads, because a
+
+LAN-side resolver failed the real-query probe whenever the uplink was gone. rc/rdnshc.c no longer
+
+counts a miss while the WAN is known down; boxes without the WAN state keys are never held.
+
+> A clock that is already right counts as synced (field, RT-BE86U)
+
+busybox ntpd slews a clock
+
+that is within a second, and amtm's RouterDate pre-sets it, so the sync hook - which honoured only
+
+step - never set ntp_ready, and WireGuard, OpenVPN, cron and add-ons waited 23 minutes or more.
+
+A stratum or periodic event with a valid stratum now counts as the first sync.
+
+> The firewall chains are signed and watched
+
+apply.sh writes an md5 of each Reaper filter chain
+
+and the nat chain; rwatch recomputes it, and two ticks of drift re-apply the committed rules under
+
+the firewall lock (600 s apart, at most twice, never while a change is armed). rwatch's incident
+
+bundle now takes the kernel log and a 300-line syslog tail first, before its own accelerator dumps
+
+push the trigger out, and the syslog mirror rotates before appending, not after.
+
+> rpunctd no longer resets on one odd read
+
+A single differing chanspec read was taken as a
+
+channel change (six false resets on wl1 in two days, each discarding the puncturing baseline); a
+
+second read must now agree.
+
+> Diagnostics v1.3.29
+
+Reads a boot that rotated into syslog.log-1; adds findings for an unset
+
+ntp_ready after 300 s, for every probe lost and for a log that starts after the boot; prints the
+
+lease time remaining (udhcpc stores boot uptime plus lease); labels mounts hidden by a later mount;
+
+lists each log file once when /tmp names are symlinks to /jffs; adds the name map's counters.
+
+> Image and build hygiene
+
+A stock Makefile line copied the toolchain's own x86-64 libexpat.so
+
+into /lib of every image (197 KB no ARM process could load); it is gone, and reaper_verify
+
+gained a host-arch check that fails on any non-ARM binary in the staged filesystem. Quagga
+
+(zebra, ripd) is no longer built: it shipped inert, with a default vty password.
+
+> Rule Status witnesses the WAN masquerade
+
+A new witness row (A1b) checks that a LAN-to-WAN
+
+flow leaves source-translated, judged on POSTROUTING like the existing F6 row; its expectation
+
+comes from the primary WAN's NAT setting and reads n/a when NAT is off. A per-egress-interface
+
+audit is not built.
+
+> Quieter, truer logs
+
+The stop_lan trace logged "wl radio off" for eth1-eth4 because its
+
+marker sat in the loop over every LAN interface; it now fires for wl names only, and the stock
+
+wlconf/wl calls are untouched. A hand-set wlcsm_bindfix=1 (v3.2.8 dropped only the default)
+
+logged "retired ... ignored" on every boot; it now logs once more, then removes the key from
+
+nvram. The Wireless Quality card's neighbour list is labelled as the puncturing confirmation scan
+
+of the radio's own block, not a site survey (RWIF_117, 25 packs).
+
+> DTIM Interval defaults to 1 on every radio
+
+The stock explainer said 3, and a box kept the 3 its
+
+nvram carried from stock. The first boot on v3.3.4 sets wlN_dtim=1 once per radio before the
+
+radios come up (marker /jffs/reaper/.dtim1, one log line); a user may raise it afterwards, and
+
+the explainer now says 1 and why.
+
+> Every Reaper overlay opens where you are looking
+
+Inside the shell frame a fixed-position box
+
+centres on the middle of the whole page, not the screen. The Wireless Settings scheduler grid, the
+
+last overlay that did, now opens over the row you clicked; the Flow Explorer's detail panel (above)
+
+uses the same visible-slice values. The 24 stock confirm() dialogs on nine pages are unchanged.
+
+> The firmware page has no dead buttons
+
+During a download from the update server the overlay
+
+shows no button (the 25 s timed reveal of a Cancel that could not cancel is gone), and the
+
+manual-upload veil's Cancel hatch is removed; Close still appears on a failure.
+
+> Smart Connect's band mask loses an unreachable fallback
+
+Advanced_Wireless_Content.asp built
+
+the mask behind two identical guards with a return 7 (slots 0-2, no 6 GHz) behind the second; it
+
+could not run, but it would have dropped 6 GHz on a tri-band box the moment either guard was edited.
+
+Removed; no behaviour change.
+
+> Wording and languages
+
+The System Log page's two dropdowns now say what each one does (the
+
+filter excludes the level it names); the About page's ASUS and Broadcom credits are reworded to
+
+describe the hardware, the GPL source drops and the closed components left unmodified; 94 of the
+
+113 strings that were still English in every language pack are translated (19 brand and acronym
+
+tokens stay English; a native-speaker review is owed). The BQ16 now appears on the GT-BE98
+
+branch of the Wireless status page, where Reaper's own quad-band branch had never listed it.
+
+> The ZenWiFi BQ16 Pro joins (BE30000, quad-band 2.4/5/6/6 GHz)
+
+Same GPL drop as the BQ16, the
+
+GT-BE98 Pro's radio layout, its own radio driver and dongle firmware from the stock Pro image. It
+
+builds and passes verification and publishes as a prerelease; it carries the BQ16's header art
+
+until its own is drawn. No tester has run it yet.
+
+> Tooling
+
+New host suites test_site_survey.py and test_dnsmap.py (the DNS parser, the BPF
+
+program run through an interpreter, the backfill), test_pbr_apply_script.py drives the swap-in
+
+against a stateful fake iptables, and test_reaper_diag_counters.py covers the rotated boot. The
+
+stale-configure guard (build-scripts/reaper_stale_configure.sh) now also clears a package's
+
+stamp-h1: 76 packages in the router Makefile re-run configure only when that sentinel is missing, so
+
+clearing the Makefile alone left the package unbuildable (hit by this rung's cut build on expat).
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

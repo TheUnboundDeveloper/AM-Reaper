@@ -1,0 +1,439 @@
+From a9dee93d74899b10040c065ada42e5a898a54465 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:49 -0400
+Subject: [PATCH] rtrafd: the conntrack pass is paced by its own cost, and the
+ health count shares it
+
+Field (RT-BE88U): with a LAN DHT crawler holding ~10.7k conntrack entries,
+rtrafd re-read all of /proc/net/nf_conntrack every 2 s and sat at about one
+core, mostly kernel time spent formatting lines. The pass interval now
+follows the cheapest of the last three pass costs so the pass stays near 3%
+of one core (2 s floor, 30 s ceiling, one log line per change), every rate,
+staleness and grace figure uses the measured interval, and the connection
+health probe counts inside the same pass instead of a second full read.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c | 234 +++++++++++++++++++----------
+ 1 file changed, 158 insertions(+), 76 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 28dbfe981c..775a25d5dd 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -86,6 +86,18 @@
+ 					 * FCACHE_SECS and every rate division derive from this). */
+ #define PROBE_EVERY	(5 * TPS)	/* ping probe every 5 s */
+ #define FCACHE_SECS	(HEAVY_EVERY * TICK_MS / 1000)	/* flow-cache sample interval (s) */
++/* v3.3.5: the conntrack + flow-cache pass is paced by its own measured cost
++ * (ct_pace). FCACHE_SECS is now the FLOOR of that interval, not the interval;
++ * every rate and every seconds-to-passes conversion uses ct_iv_ms, the interval
++ * the current deltas actually span. */
++#define CT_MIN_MS	(FCACHE_SECS * 1000)	/* the normal cadence (2 s) */
++#define CT_MAX_MS	30000	/* never sample slower than this */
++#define CT_BUDGET_PCT	3	/* target share of one core for the pass */
++#define CT_BPS(b)	((uint64_t)(b) * 8 * 1000 / (uint64_t)ct_iv_ms)	/* bytes this pass -> bits/s */
++static long ct_iv_ms = CT_MIN_MS;	/* measured interval the current pass's deltas span */
++static int ct_lines = 0;		/* entries the last pass read (for the pacing log line) */
++static int hp_ct_want = 0;		/* health probe: count TCP connections in the next pass */
++static int hp_ct_ready = 0;		/* health probe: that pass has published its counts */
+ #define N5		288	/* 5-min slots  (24 h) */
+ #define NH		336	/* hour slots   (14 d) */
+ #define ND		366	/* day slots    (~1 y) */
+@@ -140,7 +152,6 @@ static time_t mono_secs(void)
+  * cycle is now a small bounded slice per tick: SCAN a few conntrack lines, SEND a
+  * few echoes, spool history to RAM (flash flush folds into the hourly db_save). */
+ #define HSEND_PER_TICK	16	/* ICMP echoes emitted per base tick (was: all NCLI at once) */
+-#define HCONN_PER_TICK	256	/* nf_conntrack lines parsed per base tick */
+ #define HBUSY_BPS	(300ULL * 1000000)	/* defer a new cycle while either WAN dir is busier than this (speed-test back-off) */
+ #define HSPOOL		"/tmp/rtraf/healthhist.spool"	/* RAM staging for history rows; flushed to the store off the hot loop */
+ enum { HP_IDLE = 0, HP_SCAN, HP_SEND, HP_WAIT };	/* v2.2.4 health-cycle phase */
+@@ -198,7 +209,13 @@ static int flow_strain = 0;		/* a probe ran long this poll - compact after */
+ #define FLOW_STALE_SECS	15
+ static int flow_stale(uint32_t g)
+ {
+-	return (int)(flowgen - g) * FCACHE_SECS >= FLOW_STALE_SECS;
++	/* v3.3.5: a generation is ct_iv_ms long now (paced), so convert with the
++	 * measured interval. A live flow is seen on EVERY pass, so it is never stale
++	 * after fewer than two missed passes - a floor of one would let a slow pass
++	 * reclaim a live flow's slot before the flow is reached in the same pass. */
++	long need = (FLOW_STALE_SECS * 1000L + ct_iv_ms - 1) / ct_iv_ms;
++	if (need < 2) need = 2;
++	return (long)(flowgen - g) >= need;
+ }
+ 
+ /* Open addressing has no cheap delete: zeroing a stale slot in place would cut
+@@ -1116,9 +1133,9 @@ static int top_is_self(const char *ip)
+ static void top_note(const char *src, const char *dst, int dport, int proto,
+ 		     uint64_t up, uint64_t dn, const char *smac)
+ {
+-	/* top_note is only called from poll_fcache, whose deltas span one flow-cache
+-	 * sample interval (FCACHE_SECS), not one base tick - divide by that. */
+-	uint64_t rate = (up + dn) / FCACHE_SECS;
++	/* the deltas span one conntrack pass (ct_iv_ms, measured - v3.3.5), not one
++	 * base tick - divide by that. */
++	uint64_t rate = (up + dn) * 1000 / (uint64_t)ct_iv_ms;
+ 	int i, worst = 0;
+ 	if (rate == 0) return;
+ 
+@@ -1179,6 +1196,11 @@ put:
+  * client. This is what conntrack byte-accounting cannot see once the Runner
+  * offloads a flow to hardware. Falls back to conntrack if the table is absent. */
+ static void poll_conntrack(void);	/* fwd decl - fallback */
++/* v3.3.5: the health probe's per-device TCP counts ride poll_conntrack's pass
++ * (the chealth array they fill is declared further down) */
++static void hp_count_begin(void);
++static void hp_count_conn(const char *src, const char *line);
++static void hp_count_publish(void);
+ 
+ struct fcf {
+ 	uint64_t nfc;		/* nf_conn[0] pointer (connection correlation key) */
+@@ -1200,8 +1222,11 @@ struct fcf {
+  * 5 s; the 2026-08-28 cadence change to 2 s silently made it 24 s, so idle
+  * connections started reporting a much younger age than their real one. */
+ #define CONNSEEN_GRACE_SECS 60
+-#define CONNSEEN_MISS_MAX ((CONNSEEN_GRACE_SECS) / (FCACHE_SECS) > 0 \
+-                           ? (CONNSEEN_GRACE_SECS) / (FCACHE_SECS) : 1)
++static int connseen_miss_max(void)	/* v3.3.5: passes are ct_iv_ms long (paced) */
++{
++	long n = CONNSEEN_GRACE_SECS * 1000L / ct_iv_ms;
++	return n > 0 ? (int)n : 1;
++}
+ #define CONNSEEN_MAX 2048
+ static struct { uint64_t nfc; time_t seen; int miss; } connseen[CONNSEEN_MAX];
+ static int connseen_n = 0;
+@@ -1227,7 +1252,7 @@ static void connseen_update(struct fcf *fl, int nfl)
+ 		connseen[j].miss = 0;
+ 	}
+ 	for (i = 0; i < connseen_n; ) {
+-		if (connseen[i].miss > CONNSEEN_MISS_MAX) { connseen[i] = connseen[--connseen_n]; dirty = 1; }
++		if (connseen[i].miss > connseen_miss_max()) { connseen[i] = connseen[--connseen_n]; dirty = 1; }
+ 		else i++;
+ 	}
+ 	/* the file holds only (nfc, seen) per live flow, and neither changes for an
+@@ -1350,17 +1375,17 @@ static void poll_fcache(void)
+ 				if (rci < 0) rci = cli_slot(RT_DEVKEY, RT_DEVLBL);
+ 				if (into_router) {	/* delivered to the router = a download */
+ 					ring_add(r_cli[rci], d, 0);
+-					lv_cli_rx[rci] += d * 8 / FCACHE_SECS;
++					lv_cli_rx[rci] += CT_BPS(d);
+ 					if (ns >= 0) {
+ 						ring_add(r_net[ns], d, 0);
+-						lv_net_rx[ns] += d * 8 / FCACHE_SECS;
++						lv_net_rx[ns] += CT_BPS(d);
+ 					}
+ 				} else {		/* sourced by the router, out the WAN = an upload */
+ 					ring_add(r_cli[rci], 0, d);
+-					lv_cli_tx[rci] += d * 8 / FCACHE_SECS;
++					lv_cli_tx[rci] += CT_BPS(d);
+ 					if (ns >= 0) {
+ 						ring_add(r_net[ns], 0, d);
+-						lv_net_tx[ns] += d * 8 / FCACHE_SECS;
++						lv_net_tx[ns] += CT_BPS(d);
+ 					}
+ 				}
+ 			}
+@@ -1408,7 +1433,14 @@ static void poll_conntrack(void)
+ {
+ 	FILE *f = fopen("/proc/net/nf_conntrack", "r");
+ 	char line[768];
+-	if (!f) return;
++	int hcount = hp_ct_want;	/* v3.3.5: the health probe asked for this pass's TCP counts */
++	if (!f) {
++		/* nothing to count: let an open health cycle go on with its last counts */
++		if (hcount) { hp_ct_want = 0; hp_ct_ready = 1; }
++		return;
++	}
++	if (hcount) hp_count_begin();
++	ct_lines = 0;
+ 	flowgen++;
+ 	ntop = 0;
+ 	if (flow_strain) { flow_compact(); flow_strain = 0; }
+@@ -1424,6 +1456,7 @@ static void poll_conntrack(void)
+ 		int sport = 0, dport = 0, pnum = 0, v6;
+ 		char *p;
+ 
++		ct_lines++;
+ 		if (strncmp(line, "ipv4", 4) == 0)      v6 = 0;
+ 		else if (strncmp(line, "ipv6", 4) == 0) v6 = 1;
+ 		else continue;
+@@ -1433,6 +1466,9 @@ static void poll_conntrack(void)
+ 		/* original direction: first src=/dst=/sport=/dport=/bytes= */
+ 		if ((p = strstr(line, "src=")) == NULL) continue;
+ 		sscanf(p, "src=%63s", src);
++		/* v3.3.5: the health probe's count, from this same line - the probe used
++		 * to read the whole table a second time on its own */
++		if (hcount && !v6 && strcmp(proto, "tcp") == 0) hp_count_conn(src, line);
+ 		if ((p = strstr(p, "dst=")) == NULL) continue;
+ 		sscanf(p, "dst=%63s", dst);
+ 		if ((p = strstr(p, "sport=")) != NULL) sscanf(p, "sport=%d", &sport);
+@@ -1566,15 +1602,15 @@ static void poll_conntrack(void)
+ 				int ns = net_slot(br ? br : RT_NETLBL);
+ 				if (ns >= 0) {
+ 					ring_add(r_net[ns], drb, dob);
+-					lv_net_rx[ns] += drb * 8 / FCACHE_SECS;
+-					lv_net_tx[ns] += dob * 8 / FCACHE_SECS;
++					lv_net_rx[ns] += CT_BPS(drb);
++					lv_net_tx[ns] += CT_BPS(dob);
+ 				}
+ 			}
+ 			if (!br) {			/* router-sourced: the Router device bucket */
+ 				ci = cli_slot(RT_DEVKEY, RT_DEVLBL);
+ 				ring_add(r_cli[ci], drb, dob);
+-				lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
+-				lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
++				lv_cli_rx[ci] += CT_BPS(drb);
++				lv_cli_tx[ci] += CT_BPS(dob);
+ 				top_note(src, dst, dport, pnum, dob, drb, NULL);
+ 				continue;
+ 			}
+@@ -1595,8 +1631,8 @@ static void poll_conntrack(void)
+ 			ring_add(r_cli[ci], drb, dob);	/* rx=download(reply), tx=upload(orig) */
+ 			/* live per-device rates, same bits/sec convention as the rings.
+ 			 * The caller zeroes the lv_* accumulators before this pass. */
+-			lv_cli_rx[ci] += drb * 8 / FCACHE_SECS;
+-			lv_cli_tx[ci] += dob * 8 / FCACHE_SECS;
++			lv_cli_rx[ci] += CT_BPS(drb);
++			lv_cli_tx[ci] += CT_BPS(dob);
+ 			/* show the DEVICE end as the row's source, and the port that names
+ 			 * the service, whichever direction the flow was opened from */
+ 			top_note(cli_dst ? rsrc : src, cli_dst ? src : dst,
+@@ -1605,6 +1641,7 @@ static void poll_conntrack(void)
+ 		}
+ 	}
+ 	fclose(f);
++	if (hcount) { hp_count_publish(); hp_ct_want = 0; hp_ct_ready = 1; }
+ }
+ 
+ static void poll_probe(void)
+@@ -1853,7 +1890,6 @@ static int hp_disabled = 0;
+ static uint16_t hp_id = 0;
+ static int hp_ip_hash[CLI_HASH];	/* v2.2.4: fnv(ip)->slot, rebuilt per scan for O(1) conn attribution */
+ static int hp_send_cur = 0;		/* v2.2.4: next slot to probe in the spread SEND phase */
+-static FILE *hp_ctf = NULL;		/* v2.2.4: nf_conntrack held open across the amortized SCAN */
+ static char g_store_dir[160];		/* durable store dir (healthhist.log); "" = RAM */
+ 
+ static void set_store_dir(const char *dbpath)
+@@ -2025,58 +2061,38 @@ static void health_drain(void)
+ /* per-client TCP connection count + established-state, independent of the byte
+  * fallback so it runs whether or not the accelerator is on.
+  *
+- * v2.2.4: amortized. health_conn_begin() opens /proc/net/nf_conntrack, zeroes the
+- * SCRATCH counters and builds the ip index; health_conn_step() parses HCONN_PER_TICK
+- * lines per tick and, on EOF, publishes scratch -> the live tcp_total/tcp_estab. The
+- * live gauges therefore always hold the last COMPLETE pass (never a partial), and no
+- * single tick eats a whole conntrack table x NCLI scan. */
+-static int health_conn_begin(void)
++ * v3.3.5: counted inside poll_conntrack()'s own pass. Until then the probe read the
++ * whole table a second time (v2.2.4 sliced that read across ticks, but the kernel
++ * still formatted every line twice per cycle), which doubled rtrafd's cost on a box
++ * with a large table. The probe now asks (hp_ct_want), the next byte-accounting pass
++ * counts while it parses, and publishes scratch -> the live tcp_total/tcp_estab at
++ * its end, so the gauges still hold the last COMPLETE pass (never a partial). Same
++ * rule as before: IPv4 TCP whose original source is a br0 client. */
++static void hp_count_begin(void)
+ {
+ 	int i;
+-	if (hp_ctf) { fclose(hp_ctf); hp_ctf = NULL; }		/* drop a stale handle from an aborted cycle */
+-	/* "e" = CLOEXEC: this handle is deliberately held open across ticks, during
+-	 * which poll_classes() forks tmctl and poll_probe() forks ping - they would
+-	 * otherwise inherit a root-opened conntrack fd. The author is CLOEXEC-aware
+-	 * elsewhere in this file (rd_u64_fd, hp_open), so this was an oversight. */
+-	if ((hp_ctf = fopen("/proc/net/nf_conntrack", "re")) == NULL) return 0;
+ 	for (i = 0; i < NCLI; i++) { chealth[i].tcp_next = 0; chealth[i].te_next = 0; }
+ 	hp_ipindex_build();
+-	return 1;
+ }
+ 
+-/* returns 1 while more of the table remains; 0 when the pass has been published */
+-static int health_conn_step(void)
++static void hp_count_conn(const char *src, const char *line)
+ {
+-	char line[768];
+-	int n = 0;
+-	if (!hp_ctf) return 0;
+-	while (n < HCONN_PER_TICK && fgets(line, sizeof(line), hp_ctf)) {
+-		char proto[16] = "", src[64] = "";
+-		struct in_addr a;
+-		char *p;
+-		int pnum = 0, slot;
+-		n++;
+-		if (strncmp(line, "ipv4", 4) != 0) continue;
+-		if (sscanf(line, "%*s %*d %15s %d", proto, &pnum) != 2) continue;
+-		if (strcmp(proto, "tcp") != 0) continue;
+-		if ((p = strstr(line, "src=")) == NULL) continue;
+-		sscanf(p, "src=%63s", src);
+-		if (inet_aton(src, &a) == 0) continue;
+-		if ((ntohl(a.s_addr) & lan_mask) != lan_net) continue;
+-		if ((slot = hp_ipindex_get(src)) < 0) continue;
+-		chealth[slot].tcp_next++;
+-		if (strstr(line, "ESTABLISHED")) chealth[slot].te_next++;
+-	}
+-	if (n < HCONN_PER_TICK) {		/* short read == EOF: publish the completed pass */
+-		int i;
+-		for (i = 0; i < NCLI; i++) {
+-			chealth[i].tcp_total = chealth[i].tcp_next;
+-			chealth[i].tcp_estab = chealth[i].te_next;
+-		}
+-		fclose(hp_ctf); hp_ctf = NULL;
+-		return 0;
++	struct in_addr a;
++	int slot;
++	if (inet_aton(src, &a) == 0) return;
++	if ((ntohl(a.s_addr) & lan_mask) != lan_net) return;
++	if ((slot = hp_ipindex_get(src)) < 0) return;
++	chealth[slot].tcp_next++;
++	if (strstr(line, "ESTABLISHED")) chealth[slot].te_next++;
++}
++
++static void hp_count_publish(void)
++{
++	int i;
++	for (i = 0; i < NCLI; i++) {
++		chealth[i].tcp_total = chealth[i].tcp_next;
++		chealth[i].tcp_estab = chealth[i].te_next;
+ 	}
+-	return 1;
+ }
+ 
+ static void write_health(void)
+@@ -2525,6 +2541,54 @@ static void hist_tick(time_t now, unsigned long tick)
+ 	}
+ }
+ 
++/* v3.3.5 (field 2026-10-06, RT-BE88U): a DHT crawler on the LAN held ~10,700
++ * conntrack entries, 9,000 of them unanswered SYNs, and rtrafd used a whole core,
++ * mostly in the kernel. The pass re-reads the entire table and the kernel formats
++ * every line (with Broadcom's accelerated-byte lookup per entry), so its cost grows
++ * with the table, and a fixed 2 s cadence turns a big table into a busy loop. Pace
++ * it by its own measured cost instead: the next pass waits until this one amounts
++ * to CT_BUDGET_PCT of one core - never sooner than the normal 2 s, never later than
++ * CT_MAX_MS. Byte counters are cumulative per connection, so device totals and the
++ * history stay exact; only connections that open AND close between two passes go
++ * uncounted, and the live view refreshes less often while the table is large.
++ * The cost used is the CHEAPEST of the last three reads: a big table makes every
++ * read slow, while a read that merely lost the CPU to something else is a one-off
++ * and must not stretch the interval or log a table size that is not the cause.
++ * Returns the interval in ms; logs each change of state, at most once per 10 min. */
++static long ct_pace(long cost_ms)
++{
++	static long recent[3] = { -1, -1, -1 };	/* last three pass costs, ms; -1 = none yet */
++	static int ri = 0;
++	static int slow = 0;		/* the state last logged */
++	static time_t last_log = 0;
++	long iv, avg = -1;		/* avg: the cost the interval is derived from */
++	int now_slow, k;
++	time_t m;
++
++	if (cost_ms < 0) cost_ms = 0;
++	recent[ri] = cost_ms;
++	ri = (ri + 1) % 3;
++	for (k = 0; k < 3; k++)
++		if (recent[k] >= 0 && (avg < 0 || recent[k] < avg)) avg = recent[k];
++	iv = avg * 100 / CT_BUDGET_PCT;
++	if (iv < CT_MIN_MS) iv = CT_MIN_MS;
++	if (iv > CT_MAX_MS) iv = CT_MAX_MS;
++
++	now_slow = (iv >= 2L * CT_MIN_MS);	/* a margin, so the log cannot flap at the floor */
++	m = mono_secs();
++	if (now_slow != slow && (last_log == 0 || m - last_log >= 600)) {
++		if (now_slow)
++			syslog(LOG_NOTICE, "rtrafd: connection table holds %d entries and one read takes %ld ms - "
++			       "sampling every %ld s to stay near %d%% of one core", ct_lines, avg, iv / 1000, CT_BUDGET_PCT);
++		else
++			syslog(LOG_NOTICE, "rtrafd: connection table down to %d entries - sampling every %d s again",
++			       ct_lines, CT_MIN_MS / 1000);
++		slow = now_slow;
++		last_log = m;
++	}
++	return iv;
++}
++
+ /* ---------- main ---------- */
+ int main(int argc, char **argv)
+ {
+@@ -2622,6 +2686,7 @@ int main(int argc, char **argv)
+ 	int have_tcls = 0;
+ 	unsigned long h_deadline = 0;		/* tick at which the open health cycle closes */
+ 	int h_phase = HP_IDLE;			/* v2.2.4 health-cycle phase (was: single h_open flag) */
++	long ct_due_ms = 0, ct_last_ms = 0;	/* v3.3.5: next paced conntrack pass, and when the last began */
+ 	while (running) {
+ 		time_t now = time(NULL);
+ 		time_t now_m = mono_secs();	/* v3.3.3: the store windows below */
+@@ -2688,21 +2753,33 @@ int main(int argc, char **argv)
+ 		 * the client and network rings, so it zeroes the live accumulators and
+ 		 * runs first. poll_fcache() then adds only the router's own traffic and
+ 		 * refreshes the Connections page's flow ages. */
+-		if (tick % HEAVY_EVERY == 0) {
+-			memset(lv_cli_rx, 0, sizeof(lv_cli_rx));
+-			memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
+-			memset(lv_net_rx, 0, sizeof(lv_net_rx));
+-			memset(lv_net_tx, 0, sizeof(lv_net_tx));
+-			poll_conntrack();
+-			poll_fcache();
++		/* v3.3.5: on a clock, paced by the pass's own cost (ct_pace), no longer
++		 * every HEAVY_EVERY ticks. ct_iv_ms is the MEASURED time since the last
++		 * pass began, which is what this pass's deltas span - every rate divides
++		 * by it. */
++		{
++			long nms = rt_now_ms();
++			if (nms >= ct_due_ms) {
++				ct_iv_ms = ct_last_ms ? nms - ct_last_ms : CT_MIN_MS;
++				if (ct_iv_ms < 1) ct_iv_ms = 1;
++				ct_last_ms = nms;
++				memset(lv_cli_rx, 0, sizeof(lv_cli_rx));
++				memset(lv_cli_tx, 0, sizeof(lv_cli_tx));
++				memset(lv_net_rx, 0, sizeof(lv_net_rx));
++				memset(lv_net_tx, 0, sizeof(lv_net_tx));
++				poll_conntrack();
++				poll_fcache();
++				ct_due_ms = nms + ct_pace(rt_now_ms() - nms);
++			}
+ 		}
+ 		if (tick % PROBE_EVERY == 0)
+ 			poll_probe();
+ 
+ 		/* per-device connection health (opt-in). v2.2.4: run as a phased state
+ 		 * machine so no single 10 Hz tick carries the whole conntrack parse, the
+-		 * 192-wide ICMP burst, or a flash append. On the interval boundary we
+-		 * SCAN the conntrack table a slice at a time, then SEND echoes a few per
++		 * 192-wide ICMP burst, or a flash append. On the interval boundary SCAN
++		 * waits for the next paced conntrack pass to count TCP connections for
++		 * us (v3.3.5 - it used to read the table itself), then SEND echoes a few per
+ 		 * tick (draining replies as they arrive), then WAIT out the reply window
+ 		 * and close. A new cycle only starts from IDLE, so a long cycle just
+ 		 * delays the next one instead of overlapping. */
+@@ -2722,14 +2799,18 @@ int main(int argc, char **argv)
+ 						 * back-off as a dead collector; the last snapshot's gauges
+ 						 * remain valid meanwhile. */
+ 						utime("/tmp/rtraf/metrics.prom", NULL);
+-					} else if (health_conn_begin()) {
++					} else {
++						/* v3.3.5: the next conntrack pass counts for us */
++						hp_ct_want = 1;
++						hp_ct_ready = 0;
+ 						health_send_begin();
+ 						h_phase = HP_SCAN;
+ 					}
+ 				}
+ 				break;
+ 			case HP_SCAN:
+-				if (!health_conn_step()) h_phase = HP_SEND;
++				/* wait for that pass - at most one paced interval */
++				if (hp_ct_ready) { hp_ct_ready = 0; h_phase = HP_SEND; }
+ 				break;
+ 			case HP_SEND:
+ 				health_drain();		/* collect early replies while still sending */
+@@ -2752,7 +2833,8 @@ int main(int argc, char **argv)
+ 			 * handle and reset the phase so no fd is held while it's disabled
+ 			 * (also self-heals on re-enable, but don't wait for that). */
+ 			if (!cfg_hprobe && h_phase != HP_IDLE) {
+-				if (hp_ctf) { fclose(hp_ctf); hp_ctf = NULL; }
++				hp_ct_want = 0;		/* v3.3.5: a pending count request goes with it */
++				hp_ct_ready = 0;
+ 				h_phase = HP_IDLE;
+ 			}
+ 			check_quota();	/* monthly cap: once a second is plenty */
+-- 
+2.25.1
+

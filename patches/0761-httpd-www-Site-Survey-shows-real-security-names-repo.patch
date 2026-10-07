@@ -1,0 +1,302 @@
+From 60d67b66ebffa1791f5babda2dc0c235da168ce8 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:53 -0400
+Subject: [PATCH] httpd, www: Site Survey shows real security names, reports an
+ empty band as empty, keeps its heading row in view
+
+- This platform's wl prints the privacy bit as "WEP" on every protected
+  network and the RSN header as "RSN (WPA2):" / "RSN (WPA3-SAE):"; the
+  parser matched only "RSN:", so WPA2/WPA3 networks read WEP (field). Both
+  header forms are read, and the AKM suites fold into one label:
+  WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal, WPA/WPA2-Personal,
+  WPA2-Enterprise, OWE. WEP only without an RSN/WPA block.
+- The worker narrowed to the radio's own channel block after a clean but
+  empty full-band scan, and the page then said the radio refused (6 GHz
+  with no network in range). It narrows only after a rejected try now.
+- The network list's heading row sticks to the top of its scroll box.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_survey.c | 159 ++++++++++++++++++-----
+ release/src/router/httpd/web.c           |   6 +
+ release/src/router/www/Reaper_Survey.asp |   3 +
+ 3 files changed, 134 insertions(+), 34 deletions(-)
+ mode change 100755 => 100644 release/src/router/httpd/reaper_survey.c
+ mode change 100755 => 100644 release/src/router/www/Reaper_Survey.asp
+
+diff --git a/release/src/router/httpd/reaper_survey.c b/release/src/router/httpd/reaper_survey.c
+old mode 100755
+new mode 100644
+index a9d6fe7eb9..ab59b98d0c
+--- a/release/src/router/httpd/reaper_survey.c
++++ b/release/src/router/httpd/reaper_survey.c
+@@ -7,7 +7,7 @@
+  *
+  *   SSID: "MyNet"
+  *   Mode: Managed   RSSI: -45 dBm   SNR: 50 dB   noise: -95 dBm   Flags: RSSI on-channel   Channel: 36/80
+- *   BSSID: 00:11:22:33:44:55   Capability: ESS RRM
++ *   BSSID: 00:11:22:33:44:55   Capability: ESS WEP ShortSlot RRM
+  *   Supported Rates: [ 6(b) 9 12(b) 18 24(b) 36 48 54 ]
+  *   HT Capable:
+  *           Chanspec: 5GHz channel 42 80MHz (0xe02a)
+@@ -15,10 +15,17 @@
+  *   VHT Capable:
+  *   HE Capable:
+  *   EHT Capable:
+- *   RSN:
++ *   RSN (WPA2 + WPA3-SAE):
+  *           multicast cipher: AES-CCMP
+  *           unicast ciphers(1): AES-CCMP
+- *           AKM Suites(2): WPA2-PSK WPA3-SAE
++ *           AKM Suites(2): WPA2-PSK SAE
++ *
++ * (Format strings of this platform's prebuilt /usr/sbin/wl: the Capability line
++ * names the privacy bit "WEP" on EVERY protected network, the RSN header carries
++ * a summary in brackets - "RSN (WPA2):", "RSN (WPA3-SAE):", "RSN (WPA2 + WPA3-SAE):"
++ * - and the AKM names are wl's own: WPA-PSK / WPA2-PSK, WPA / WPA2 (802.1X),
++ * FT-PSK, FT-802.1x, SAE, SAE-FT, SAE-EXT, SAE-FT-EXT, "None", and
++ * "Unknown-00:0F:AC(#n)" for a suite wl does not name.)
+  *
+  * The record starts at "SSID:" and ends at the next "SSID:" or EOF. Only the
+  * lines named above are read; anything else is skipped, so a field the driver
+@@ -87,33 +94,108 @@ static int num_after(const char *line, const char *key)
+ 	return atoi(q + strlen(key));
+ }
+ 
+-/* append a space-separated word once */
+-static void sec_add(struct rsvy_ap *ap, const char *w, size_t n)
++/* AKM classes a network offers, folded into one Wi-Fi Alliance style label */
++#define SEC_P1   0x001	/* WPA-Personal (PSK in a WPA block) */
++#define SEC_P2   0x002	/* WPA2-Personal (PSK, FT-PSK, PSK-SHA256/384) */
++#define SEC_P3   0x004	/* WPA3-Personal (SAE in every form) */
++#define SEC_E1   0x008	/* WPA-Enterprise (802.1X in a WPA block) */
++#define SEC_E2   0x010	/* WPA2-Enterprise (802.1X, FT-802.1X, 802.1X-SHA256) */
++#define SEC_E3   0x020	/* WPA3-Enterprise (Suite B, 802.1X-SHA384) */
++#define SEC_OWE  0x040	/* Enhanced Open */
++#define SEC_FILS 0x080
++#define SEC_UNK  0x100	/* a suite this table does not know */
++
++/* One wl AKM name -> its class bit; 0 = nothing ("None"). rsn: the name sits in an
++ * RSN block (else a legacy WPA block). Suite numbers are the IEEE 802.11 AKM
++ * selectors under OUI 00:0F:AC, for the names wl prints as Unknown-00:0F:AC(#n). */
++static unsigned akm_bits(const char *t, size_t n, int rsn)
+ {
+-	char tok[24];
+-	size_t l = strlen(ap->sec);
+-	const char *p;
++	char w[40];
++	const char *h;
+ 
+-	if (n == 0 || n >= sizeof(tok))
+-		return;
+-	memcpy(tok, w, n);
+-	tok[n] = 0;
+-	/* already listed? (whole-word match) */
+-	p = ap->sec;
+-	while ((p = strstr(p, tok)) != NULL) {
+-		int at_start = (p == ap->sec || p[-1] == ' ');
+-		int at_end = (p[n] == 0 || p[n] == ' ');
+-		if (at_start && at_end)
+-			return;
+-		p += n;
++	if (n == 0 || n >= sizeof(w))
++		return 0;
++	memcpy(w, t, n);
++	w[n] = 0;
++	if (strcmp(w, "None") == 0)
++		return 0;
++	if (strcmp(w, "WPA-PSK") == 0)
++		return SEC_P1;
++	if (strcmp(w, "WPA2-PSK") == 0 || strcmp(w, "FT-PSK") == 0)
++		return rsn ? SEC_P2 : SEC_P1;
++	if (strcmp(w, "WPA") == 0 || strcmp(w, "WPA2") == 0 || strcmp(w, "FT-802.1x") == 0)
++		return rsn ? SEC_E2 : SEC_E1;
++	if (strncmp(w, "SAE", 3) == 0 || strcmp(w, "WPA3-SAE") == 0)
++		return SEC_P3;
++	if (strncmp(w, "Unknown-", 8) == 0 && (h = strstr(w, "(#")) != NULL && strstr(w, "00:0F:AC") != NULL) {
++		switch (atoi(h + 2)) {
++		case 1: case 3: case 5:				return SEC_E2;
++		case 2: case 4: case 6: case 19: case 20:	return SEC_P2;
++		case 8: case 9: case 24: case 25:		return SEC_P3;
++		case 11: case 12: case 13: case 22: case 23:	return SEC_E3;
++		case 14: case 15: case 16: case 17:		return SEC_FILS;
++		case 18:					return SEC_OWE;
++		}
++	}
++	return SEC_UNK;
++}
++
++/* "WPA/WPA2" etc. from three version bits; returns the length written */
++static size_t sec_versions(char *o, size_t n, unsigned v1, unsigned v2, unsigned v3, const char *kind)
++{
++	const char *ver[3] = { "WPA", "WPA2", "WPA3" };
++	unsigned on[3] = { v1, v2, v3 };
++	size_t l = 0;
++	int i;
++
++	o[0] = 0;
++	for (i = 0; i < 3; i++) {
++		if (!on[i])
++			continue;
++		l += (size_t)snprintf(o + l, l < n ? n - l : 0, "%s%s", l ? "/" : "", ver[i]);
+ 	}
+-	if (l + 1 + n >= sizeof(ap->sec))
++	if (l)
++		l += (size_t)snprintf(o + l, l < n ? n - l : 0, "-%s", kind);
++	return l < n ? l : n - 1;
++}
++
++/* the page label for a record's AKM classes: "WPA2/WPA3-Personal", "WPA2-Enterprise",
++ * "WPA2-Personal + WPA2-Enterprise", "OWE", ... (owner 2026-10-06: the raw suite names
++ * "WPA-PSK WPA2-PSK" and "WPA2-802.1X" read oddly) */
++static void sec_compose(struct rsvy_ap *ap, unsigned m)
++{
++	char part[4][32];
++	int np = 0, i;
++	size_t l = 0;
++
++	if (sec_versions(part[np], sizeof(part[np]), m & SEC_P1, m & SEC_P2, m & SEC_P3, "Personal"))
++		np++;
++	if (sec_versions(part[np], sizeof(part[np]), m & SEC_E1, m & SEC_E2, m & SEC_E3, "Enterprise"))
++		np++;
++	if (m & SEC_OWE)
++		strcpy(part[np++], "OWE");
++	if (np < 4 && (m & SEC_FILS))
++		strcpy(part[np++], "FILS");
++	if (np == 0 && (m & SEC_UNK))
++		strcpy(part[np++], "Unknown");
++	ap->sec[0] = 0;
++	for (i = 0; i < np; i++)
++		l += (size_t)snprintf(ap->sec + l, l < sizeof(ap->sec) ? sizeof(ap->sec) - l : 0, "%s%s", i ? " + " : "", part[i]);
++}
++
++/* the label of a record whose security fields are all read */
++static void sec_finish(struct rsvy_ap *ap, unsigned m, int blk, int wep)
++{
++	if (m) {
++		sec_compose(ap, m);
+ 		return;
+-	if (l) {
+-		ap->sec[l] = ' ';
+-		l++;
+ 	}
+-	memcpy(ap->sec + l, tok, n + 1);
++	if (blk == 1)
++		strcpy(ap->sec, "WPA2");	/* an RSN block whose AKM line was absent or empty */
++	else if (blk == 2)
++		strcpy(ap->sec, "WPA");
++	else if (wep)
++		strcpy(ap->sec, "WEP");		/* privacy bit with no RSN/WPA block: real WEP */
+ }
+ 
+ /* wl prints an SSID with a backslash doubled and every non-printable byte as
+@@ -176,14 +258,15 @@ int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *
+ {
+ 	char line[1024];
+ 	struct rsvy_ap ap;
+-	int have = 0, n = 0, in_sec = 0, wep = 0;
++	int have = 0, n = 0, in_sec = 0, wep = 0, blk = 0;
++	unsigned secm = 0;	/* in_sec: 1 RSN, 2 WPA; blk: the strongest block seen */
+ 
+ 	memset(&ap, 0, sizeof(ap));
+ 	while (fgets(line, sizeof(line), in)) {
+ 		char *p = line;
+ 		size_t l = strlen(line);
+ 
+-		while (l && (line[l - 1] == '\n' || line[l - 1] == '\r'))
++		while (l && (line[l - 1] == '\n' || line[l - 1] == '\r' || line[l - 1] == ' ' || line[l - 1] == '\t'))
+ 			line[--l] = 0;
+ 		while (*p == ' ' || *p == '\t')
+ 			p++;
+@@ -203,14 +286,15 @@ int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *
+ 		if (strncmp(p, "SSID:", 5) == 0) {
+ 			char *q, *e;
+ 
+-			if (wep && !ap.sec[0])
+-				strcpy(ap.sec, "WEP");
++			sec_finish(&ap, secm, blk, wep);
+ 			if (flush(&ap, have, radio_band, cb, ctx, &n))
+ 				return n;
+ 			memset(&ap, 0, sizeof(ap));
+ 			have = 1;
+ 			in_sec = 0;
+ 			wep = 0;
++			blk = 0;
++			secm = 0;
+ 			q = strchr(p, '"');
+ 			e = q ? strrchr(q + 1, '"') : NULL;
+ 			if (q && e && e > q)
+@@ -250,8 +334,16 @@ int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *
+ 		if (strncmp(p, "HE Capable", 10) == 0)  { if (ap.phy < 6) ap.phy = 6; continue; }
+ 		if (strncmp(p, "VHT Capable", 11) == 0) { if (ap.phy < 5) ap.phy = 5; continue; }
+ 		if (strncmp(p, "HT Capable", 10) == 0)  { if (ap.phy < 4) ap.phy = 4; continue; }
+-		if (strcmp(p, "RSN:") == 0 || strcmp(p, "WPA:") == 0) {
++		/* "RSN:" or this wl's "RSN (WPA2 + WPA3-SAE):"; "WPA:" for a legacy WPA IE */
++		if (strncmp(p, "RSN", 3) == 0 && (p[3] == ':' || p[3] == ' ') && l && line[l - 1] == ':') {
+ 			in_sec = 1;
++			blk = 1;
++			continue;
++		}
++		if (strcmp(p, "WPA:") == 0) {
++			in_sec = 2;
++			if (!blk)
++				blk = 2;
+ 			continue;
+ 		}
+ 		if (in_sec && strncmp(p, "AKM Suites", 10) == 0) {
+@@ -265,16 +357,15 @@ int rsvy_parse_escan_err(FILE *in, int radio_band, rsvy_cb cb, void *ctx, char *
+ 					wl = strcspn(q, " \t");
+ 					if (!wl)
+ 						break;
+-					sec_add(&ap, q, wl);
++					secm |= akm_bits(q, wl, in_sec == 1);
+ 					q += wl;
+ 				}
+ 			}
+ 			continue;
+ 		}
+ 	}
+-	/* a WEP network has no RSN/WPA block: the Capability flag is all there is */
+-	if (wep && !ap.sec[0])
+-		strcpy(ap.sec, "WEP");
++	/* the privacy bit alone (no RSN/WPA block) is a WEP network */
++	sec_finish(&ap, secm, blk, wep);
+ 	flush(&ap, have, radio_band, cb, ctx, &n);
+ 	return n;
+ }
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 4ce19a4364..018a71c66b 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23448,6 +23448,12 @@ static void rwifi_survey_worker(int want, int move)
+ 		for (r->tries = 0, t = 0; t < 5; t++) {
+ 			const char *lst = t == 2 ? home : t == 3 ? nonr : t == 4 ? prim : NULL;
+ 
++			/* lab metal 2026-10-06 (owner RT-BE96U, 6g5/320): the 6 GHz radio's full-band scans run
++			 * for real (about 200 ms a channel, 3 s for the band), exit 0 and print nothing - no
++			 * network in range. Narrowing after that made the page say the radio refused a full-band
++			 * scan. Narrow only after a try the utility rejected (an error line or a failed exit). */
++			if (t >= 2 && rc == 0 && !r->msg[0])
++				break;
+ 			if (t >= 2 && (!lst[0] || (t == 3 && strcmp(nonr, home) == 0) ||
+ 				       (t == 4 && (strcmp(prim, nonr) == 0 || strcmp(prim, home) == 0))))
+ 				continue;
+diff --git a/release/src/router/www/Reaper_Survey.asp b/release/src/router/www/Reaper_Survey.asp
+old mode 100755
+new mode 100644
+index ca9317dd9e..0bf9f3cac8
+--- a/release/src/router/www/Reaper_Survey.asp
++++ b/release/src/router/www/Reaper_Survey.asp
+@@ -60,6 +60,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ table.ta{width:100%;border-collapse:collapse}
+ table.ta th{font-family:var(--hdr);font-weight:600;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+   color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
++/* the network list scrolls inside .exwrap (its own scroll box), so the heading row can stick to its top; an
++   opaque fill keeps rows from showing through, and the inset line stands in for the collapsed border */
++#svytable thead th{position:sticky;top:0;z-index:2;background:var(--panel);border-bottom:none;box-shadow:inset 0 -1px 0 var(--line-soft)}
+ table.ta th.sort{cursor:pointer;user-select:none}
+ table.ta th.sort:hover,table.ta th.on{color:var(--bone)}
+ table.ta td{padding:8px;border-bottom:1px solid var(--line-soft);font-size:12.5px;color:var(--bone-dim)}
+-- 
+2.25.1
+

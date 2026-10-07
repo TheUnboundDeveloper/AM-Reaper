@@ -672,3 +672,20 @@ was re-run against the remediated engine: a failed `ip rule add` now exits 2 wit
 intended count, a full bypass table exits 2 with the cause logged, a geo object and a missing object drop
 their rule with the reason, and a group of four objects expands into its two usable members. The per-fix
 hardware items are in `BACKLOG.md`.
+
+## Vulnerability and CVE audit 2026-10-06 — remediation (in canon, unreleased)
+
+The v3.3.4 end-to-end audit (internal report) ranked unauthenticated takeover or settings change first.
+Nothing CRITICAL at factory defaults and no unauthenticated settings-change path; the items below were
+re-verified in code before anything changed, and one was withdrawn by that verification.
+
+| # | Sev | Item | Decision | What landed |
+|---|---|---|---|---|
+| V1 | High when on | A stock httpd download row served a VPN client credential file without authentication while that VPN server was enabled (a row shared with stock ASUS and Asuswrt-Merlin; the detail is withheld here until the upstream report has had time) | **Fixed.** `do_auth` on the row, as its sibling row already had | `httpd/web.c`; regression `build-scripts/tests/test_preauth_rows.py` |
+| V2 | Medium | rdnsmapd's unbound packet socket heard the WAN port ahead of netfilter, so an Internet host could write names into the Flow Explorer's table | **Fixed.** A frame is parsed only when its ingress device is a LAN bridge (`recvfrom` + `if_indextoname`, per-ifindex verdict cached 30 s); the kernel filter is unchanged | `rdnsmapd/rdnsmapd.c`; `test_dnsmap.py` needles |
+| V6 | Medium when on | strongSwan 6.0.4 lacked the 6.0.6 security set CVE-2026-35328 … -35334 (libtls, pkcs7, constraints, gmp, radius, simaka) | **Fixed.** The seven official patches for the 5.9.x–6.0.5 range, signatures verified, applied clean | nine files under `strongswan/src` |
+| V7 | — | dnsmasq 2.93 and CVE-2026-13002 (DNSSEC type-bitmap loop), listed open by a distribution tracker | **Withdrawn on verification.** Both loops already advance by `p[1] + 2` behind the bounds check (`dnssec.c`) | — |
+
+Compile check so far: the daemon on the host with `-Wall -Wextra`; the ARM build is the next test rung.
+Metal owed: a logged-out request for the credential file returns the login page and the page still shows it
+when logged in; Flow Explorer names still populate; the IPsec server is unchanged (off by default).

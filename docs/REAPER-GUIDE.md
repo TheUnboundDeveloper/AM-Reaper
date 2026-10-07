@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.3.5** · 2026-10-06 <!--@stamp-->
+> **Doc status:** current as of **v3.3.6** · 2026-10-07 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -128,6 +128,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Administration → Tweaks: the Reaper setting](#417-administration--tweaks-the-reaper-setting)
    - 4.18 [Site Survey (Network Tools)](#418-site-survey-network-tools)
+   - 4.19 [WAN Ports](#419-wan-ports)
 5. [Efficiency and good practice](#5-efficiency-and-good-practice)
 6. [Troubleshooting quick table](#6-troubleshooting-quick-table)
 7. [Glossary](#7-glossary)
@@ -1588,9 +1589,9 @@ Saving on this page no longer logs you out unless the setting needs a web-server
 domain allows - not only the channel the radio runs on. Pick one radio or all of them and press **Scan
 now**. Each radio in turn listens across its whole band (a few seconds; its clients may stutter briefly)
 and the table fills as the radios report: name (hidden networks are marked), BSSID, band, control channel,
-channel width, signal with a strength bar, SNR, security (the AKM suites the network advertises - WPA2-PSK,
-WPA3-SAE, 802.1X, Open, WEP), Wi-Fi generation (4/5/6/6E/7 from the capability elements) and which radio
-heard it. Filter by name or address, sort by any column, export the list as CSV. **Networks per channel**
+channel width, signal with a strength bar, SNR, security (named from the AKM suites the network advertises - WPA2-Personal,
+WPA2/WPA3-Personal, WPA3-Personal, WPA2-Enterprise, OWE, Open, WEP), Wi-Fi generation (4/5/6/6E/7 from the capability elements) and which radio
+heard it. Filter by name or address, sort by any column (the heading row stays in view while the list scrolls), export the list as CSV. **Networks per channel**
 below the table shows one card per control channel in use, per band: the channel number and how many networks
 sit on it, coloured green (0-1, quiet), amber (2-3, shared) or red (4 or more, crowded). The card of the channel
 this router runs on is marked *This router* and is shown even when nobody else is there; hovering a card lists
@@ -1625,6 +1626,32 @@ away listed the rest. The Reaper page reads the wireless utility's own text per 
 is dropped. The scan never changes a channel or width; preamble puncturing and the minimum-width floor do
 not bound a scan either. The survey refuses to start while a Channel Quality capture or an Auto Scan is
 running on the Wireless Quality page, and those refuse while a survey runs.
+
+<a id="wan-ports"></a>
+### 4.19 WAN Ports
+
+**WAN → WAN Ports** replaces the stock Dual WAN tab (the stock page redirects here and is left unchanged in the
+firmware). It saves the same settings the stock page saves, so a configuration made on either page reads back
+the same on the other.
+
+- **Internet port** — the port the internet cable is in, or **Auto**. Auto works only by trying: every
+  WAN-capable port is joined to the LAN bridge and the router asks for an address on the bridge until the
+  provider answers on one of them. That happens even with Dual WAN off. Once a port has carried the WAN,
+  Reaper keeps it (`reaper_wanport`) and never joins it to the LAN again, not at boot and not when the
+  link drops; the status line says **Found by Auto and kept out of the local network**. **Detect again**
+  forgets the kept port and searches again (the candidates are on the LAN during the search). Picking a
+  fixed port turns Auto off and clears the kept port. Auto is not offered while Dual WAN, WAN aggregation,
+  IPTV/VLAN tagging, a static WAN address, MAC clone or a second WAN service is in use, and the card says
+  which one is the reason. A LAN port used as the WAN has its own port picker.
+- **Dual WAN** — a second connection that takes over when the first fails (**Fail Over**, with optional
+  **Allow failback**) or shares the traffic (**Load Balance**, with a ratio). **Hot standby** keeps the
+  second connection up while idle. **USB backup** keeps a USB modem as the backup without enabling Dual WAN.
+- **Network Monitoring** — DNS query, ping, or both, with the interval, the failures before a switch and the
+  successes before failback. With Dual WAN off it only feeds the connection status.
+- **Load Balance rules** — up to 64 source/destination pairs pinned to one connection (each address is an IP,
+  IP/netmask or `all`) and the ISP profile per connection.
+
+The IPTV, Switch Control and WAN connection pages are unchanged.
 
 ## 5. Efficiency and good practice
 

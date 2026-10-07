@@ -1,0 +1,379 @@
+From ac9737463acf3a00fe278bace6cda370f2f58d69 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:51 -0400
+Subject: [PATCH] rc, shared: a WAN port found by Auto is pinned and never
+ bridged into the LAN again
+
+Stock auto WAN port detection finds the internet port by bridging every
+candidate into br0 and running a DHCP client on the bridge; the closed
+restore_auto_wanport() redid that at every boot and every WAN link loss, so
+the ISP port carried LAN traffic for ~35-45 s each time (only DHCP and
+RS/RA were filtered).
+
+Once a port has carried the WAN it is pinned (nvram reaper_wanport,
+rc/reaper_wanpin.c): stock's detected state is seeded from it at LAN start,
+the boot and link-loss restore calls are skipped, wanduck stops relaunching
+the search, and shared _eval refuses a `brctl addif` of the pinned port
+while Auto is on and Dual WAN is off. Choosing a fixed port clears the pin;
+`service start_reaper_wanredetect` forgets it and runs one detection.
+Everything sits behind stock is_auto_wanport_enabled(), so AP mode, Dual
+WAN, bonding, IPTV, static WAN and MAC clone are untouched. A new or reset
+router still defaults to Auto.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile        |   2 +
+ release/src/router/rc/init.c          |   1 +
+ release/src/router/rc/lan.c           |   5 +-
+ release/src/router/rc/rc.h            |   6 +
+ release/src/router/rc/reaper_wanpin.c | 155 ++++++++++++++++++++++++++
+ release/src/router/rc/services.c      |   6 +
+ release/src/router/rc/udhcpc.c        |   1 +
+ release/src/router/rc/wanduck.c       |  17 ++-
+ release/src/router/shared/shutils.c   |  18 +++
+ 9 files changed, 206 insertions(+), 5 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_wanpin.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 8d5e0ad983..9a2d700d10 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -458,6 +458,8 @@ OBJS += reaper_bwfloor.o
+ # reaper v3.3.2: release the USB volumes (services-stop, rtrafd, holders) before a flash ejects them
+ OBJS += reaper_usbrel.o
+ OBJS += reaper_usbmon.o
++# reaper v3.3.6: a known WAN port is never bridged into the LAN again (auto-WAN-port pin)
++OBJS += reaper_wanpin.o
+ # reaper v3.1.1: LAN resolver health check (primary/standby for dnsmasq's upstream list)
+ OBJS += rdnshc.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 4247ca117a..f0eccbf42b 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -28163,6 +28163,7 @@ void reconfig_manual_wan_ifnames(void) {
+ #endif
+ 
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
++	reaper_wanpin_seed();	/* reaper v3.3.6: a pinned WAN port is the detected one from boot */
+ 	if(is_auto_wanport_enabled() == 2)
+ 		snprintf(wan_ifname, sizeof(wan_ifname), "%s", nvram_safe_get("autowan_detected_ifname"));
+ #endif
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index 0224a09404..8297ffc1ce 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -1418,6 +1418,7 @@ void start_lan(void)
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+ 	char autowan_detected_ifname[8];
+ 
++	reaper_wanpin_seed();	/* reaper v3.3.6: a pinned WAN port stays "detected", so it is left out of br0 below */
+ 	strlcpy(autowan_detected_ifname, nvram_safe_get("autowan_detected_ifname"), sizeof(autowan_detected_ifname));
+ #endif
+ 
+@@ -2720,7 +2721,9 @@ _dprintf("nat_rule: stop_nat_rules 1.\n");
+ #endif
+ 
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+-	if(is_auto_wanport_enabled() > 0)
++	/* reaper v3.3.6: stock restored (re-bridged and re-detected) the WAN port on
++	 * every boot; a pinned port is left where it is (rc/reaper_wanpin.c) */
++	if(is_auto_wanport_enabled() > 0 && !reaper_wanpin_hold("Boot"))
+ 		restore_auto_wanport();
+ #endif
+ 
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 8a0315b882..56e04498bb 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1643,6 +1643,12 @@ extern int autowan_main(int argc, char *argv[]);
+ extern void restore_auto_wanport();
+ extern void set_auto_wanport(const char *wan_ifname, int restart_wan);
+ extern int get_num_of_auto_wanport(const char *ifname);
++/* reaper v3.3.6: a known WAN port is never bridged into the LAN again (rc/reaper_wanpin.c) */
++extern const char *reaper_wanpin_get(void);
++extern void reaper_wanpin_seed(void);
++extern void reaper_wanpin_learn(void);
++extern int reaper_wanpin_hold(const char *why);
++extern void reaper_wanpin_redetect(void);
+ extern int get_auto_wanport_phy_status(void);
+ #endif // RTCONFIG_AUTO_WANPORT
+ extern void start_wan_if(int unit);
+diff --git a/release/src/router/rc/reaper_wanpin.c b/release/src/router/rc/reaper_wanpin.c
+new file mode 100644
+index 0000000000..869af46ad6
+--- /dev/null
++++ b/release/src/router/rc/reaper_wanpin.c
+@@ -0,0 +1,155 @@
++/*
++ * reaper_wanpin.c - once the WAN port is known, it never joins the LAN bridge again.
++ *
++ * reaper v3.3.6 (owner, 2026-10-06: "leaking LAN into WAN is a big no no"). Stock
++ * auto-WAN-port detection (RTCONFIG_AUTO_WANPORT, nvram autowan_enable, default on)
++ * lets the ISP cable go into either candidate port (autowan_ifnames). It can only
++ * find the WAN by BRIDGING: every candidate port is added to br0, a DHCP client runs
++ * on br0 itself (rc/udhcpc.c - the LAN interface briefly carries the ISP address),
++ * and the port the ISP's DHCP/PPPoE server is learned on (brctl showmacs) becomes
++ * the WAN. The closed restore_auto_wanport() (rc/prebuild private.o) undoes the
++ * detection - "addif ... for auto WANPORT", STP off, detection cleared - and stock
++ * calls it at EVERY boot (start_lan) and on EVERY WAN link loss (wanduck, three
++ * places). So the ISP-facing port was a forwarding member of the LAN bridge for
++ * ~35-45 s at each boot and each link loss: LAN broadcast, ARP, mDNS and unicast to
++ * the ISP segment, and frames from it to LAN hosts, bridged past the firewall. The
++ * only stock guard is an ebtables drop of DHCP and IPv6 RS/RA on those ports. Field
++ * (owner's RT-BE96U, 10G fibre): link drops minutes after boots and after the first
++ * recovery, a new ISP subnet each time - consistent with ISP port protection.
++ *
++ * The pin: the first time a port carries the WAN (stock detection, by DHCP or
++ * PPPoE) Reaper records it in nvram reaper_wanport. From then on, in router mode
++ * with auto-detection on:
++ *   - the boot and link-loss restore calls are skipped, so the port is never
++ *     re-bridged and detection is never re-run; stock's own "detected" state
++ *     (autowan_detected_ifname) is kept pointing at the pin, which the open code
++ *     already honours (wan.c uses it as the WAN interface, init.c builds the port
++ *     lists from it, lan.c leaves it out of br0);
++ *   - shared _eval() refuses `brctl addif <bridge> <pinned port>` from any caller,
++ *     the closed code included (belt and braces, logged).
++ * Moving the ISP cable is a deliberate act: choose the port on the WAN page (that
++ * turns auto-detection off, which clears the pin) or run Detect again
++ * (`service start_reaper_wanredetect`), which clears the pin and runs stock detection once.
++ * No user setting is changed: autowan_enable stays what the user set. A new or
++ * factory-reset router still detects once, bridged, at first setup.
++ */
++#include "rc.h"
++
++#if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
++
++#define WANPIN_KEY	"reaper_wanport"
++
++static int wanpin_candidate(const char *ifname)
++{
++	char word[32], *next;
++
++	if (!ifname || !*ifname)
++		return 0;
++	foreach(word, nvram_safe_get("autowan_ifnames"), next)
++		if (!strcmp(word, ifname))
++			return 1;
++	return 0;
++}
++
++/* The pinned port, or "" when nothing is pinned, the stored name is no longer a
++ * candidate port, or stock auto-WAN-port is not in effect. The last test is stock's
++ * own gate, is_auto_wanport_enabled() (closed, private.o): 0 outside router mode and
++ * whenever Dual WAN, WAN bonding, IPTV/VLAN tagging, a static WAN, MAC clone or SDN on
++ * the port is in use - so the pin never touches Dual WAN fail-over or switching, and
++ * nothing here runs in any of those modes. */
++const char *reaper_wanpin_get(void)
++{
++	static char pin[16];
++	const char *p;
++
++	if (!nvram_match("sw_mode", "1") || !nvram_match("autowan_enable", "1")
++	    || is_auto_wanport_enabled() <= 0)
++		return "";
++	p = nvram_safe_get(WANPIN_KEY);
++	if (strlen(p) >= sizeof(pin) || !wanpin_candidate(p))
++		return "";
++	strlcpy(pin, p, sizeof(pin));
++	return pin;
++}
++
++/* Keep stock's detected state on the pin. Called early at boot (before the port
++ * lists and the LAN bridge are built) and wherever a restore is being skipped. */
++void reaper_wanpin_seed(void)
++{
++	const char *pin;
++
++	/* a fixed WAN port was chosen (the Dual WAN page sets autowan_enable=0 for any
++	 * Primary WAN other than Auto): forget the pin, so turning Auto back on later
++	 * starts a fresh detection instead of trusting an old port */
++	if (!nvram_match("autowan_enable", "1")) {
++		if (*nvram_safe_get(WANPIN_KEY)) {
++			nvram_unset(WANPIN_KEY);
++			nvram_commit();
++			logmessage("reaper", "WAN port pin cleared: auto-detection is off (a fixed WAN port was chosen)");
++		}
++		return;
++	}
++	pin = reaper_wanpin_get();
++	if (*pin && !nvram_match("autowan_detected_ifname", pin))
++		nvram_set("autowan_detected_ifname", pin);
++}
++
++/* Record the port stock detection settled on; forget the pin when the user turns
++ * auto-detection off (a fixed WAN port was chosen), so turning it back on starts a
++ * fresh detection. Cheap; wanduck calls it on every scan. */
++void reaper_wanpin_learn(void)
++{
++	char det[16];
++
++	if (!nvram_match("autowan_enable", "1")) {
++		reaper_wanpin_seed();		/* clears the pin */
++		return;
++	}
++	if (!nvram_match("sw_mode", "1") || is_auto_wanport_enabled() != 2)
++		return;
++	strlcpy(det, nvram_safe_get("autowan_detected_ifname"), sizeof(det));
++	if (!wanpin_candidate(det) || nvram_match(WANPIN_KEY, det))
++		return;
++	nvram_set(WANPIN_KEY, det);
++	nvram_commit();
++	logmessage("reaper", "WAN port %s pinned: it stays out of the LAN bridge from now on "
++		   "(a link loss or reboot no longer re-runs auto-detection; to move the ISP cable, "
++		   "choose the port on the WAN page or run Detect again)", det);
++}
++
++/* 1 = the caller must NOT call restore_auto_wanport(): a WAN port is pinned. wanduck
++ * calls this on every 5 s scan while the link is down, so the log line is limited to
++ * a change of reason or once per 10 min. */
++int reaper_wanpin_hold(const char *why)
++{
++	static char last_why[24];
++	static long last_log = 0;
++	const char *pin = reaper_wanpin_get();
++	long now = uptime();
++
++	if (!*pin)
++		return 0;
++	reaper_wanpin_seed();
++	if (strcmp(last_why, why ? why : "") || now - last_log >= 600) {
++		strlcpy(last_why, why ? why : "", sizeof(last_why));
++		last_log = now;
++		logmessage("reaper", "%s on the pinned WAN port %s: auto-detection not re-run, port not bridged into the LAN",
++			   why ? why : "restore", pin);
++	}
++	return 1;
++}
++
++/* `service start_reaper_wanredetect`: the user moved the ISP cable. Forget the pin and run
++ * stock detection once (this IS the bridged search, on request). */
++void reaper_wanpin_redetect(void)
++{
++	if (*nvram_safe_get(WANPIN_KEY)) {
++		nvram_unset(WANPIN_KEY);
++		nvram_commit();
++	}
++	logmessage("reaper", "WAN port detection restarted on request: the candidate ports join the LAN bridge until the ISP answers on one, then that port is pinned");
++	if (nvram_match("sw_mode", "1") && is_auto_wanport_enabled() > 0)
++		restore_auto_wanport();
++}
++
++#endif	/* RTCONFIG_AUTO_WANPORT && !RTCONFIG_BCM_MFG */
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 4e83f75905..6b1fe46ccc 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -22430,6 +22430,12 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rdnsmap();
+ 		if(action & RC_SERVICE_START) start_rdnsmap();
+ 	}
++#if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
++	else if (strcmp(script, "reaper_wanredetect") == 0)	/* reaper v3.3.6: forget the pinned WAN port, detect once */
++	{
++		if(action & RC_SERVICE_START) reaper_wanpin_redetect();
++	}
++#endif
+ 	else if (strcmp(script, "rchqd") == 0)	/* reaper v1.6.1 channel-quality monitor */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rchqd();
+diff --git a/release/src/router/rc/udhcpc.c b/release/src/router/rc/udhcpc.c
+index 8fc110bf16..7753a4cd3e 100644
+--- a/release/src/router/rc/udhcpc.c
++++ b/release/src/router/rc/udhcpc.c
+@@ -433,6 +433,7 @@ _dprintf("%s(%d): ifunit=%d, if=%s.\n", __func__, getpid(), ifunit, wan_ifname);
+ 
+ 			_dprintf("%s(%d): auto_wanport: Choose the WAN interface %s because of DHCP.\n", __func__, getpid(), wan_ifname);
+ 			set_auto_wanport(wan_ifname, 1);
++			reaper_wanpin_learn();	/* reaper v3.3.6: pin it - it is never bridged into the LAN again */
+ 
+ 			return 0;
+ 		}
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 290161352c..3eb110e788 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -1681,7 +1681,13 @@ int chk_proto(int wan_unit){
+ 		 * reaches this branch (the dualwan_wans condition above). */
+ 		static long autowan_last = 0;
+ 		long now = uptime();
+-		if(current_state[wan_unit] != WAN_STATE_CONNECTED || now - autowan_last >= 60){
++		/* reaper v3.3.6: record the port detection settled on, and once a port is
++		 * pinned leave the prober alone - it only exists to find a port, and its
++		 * search is the bridged one (rc/reaper_wanpin.c) */
++		reaper_wanpin_learn();
++		if(*reaper_wanpin_get())
++			;
++		else if(current_state[wan_unit] != WAN_STATE_CONNECTED || now - autowan_last >= 60){
+ 			autowan_last = now;
+ 			notify_rc_after_period_wait("restart_autowan", 1);
+ 		}
+@@ -5092,7 +5098,8 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 					_dprintf("\n# Enable direct rule(C2D)......\n");
+ 
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+-					if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2){
++					if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2
++							&& !reaper_wanpin_hold("WAN link lost")){	/* reaper v3.3.6: never re-bridge a known WAN port */
+ 						_dprintf("wanduck(C2D): Got the auto-detected WAN was unplugged...\n");
+ 						restore_auto_wanport();
+ 					}
+@@ -5149,7 +5156,8 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 				}
+ 			}
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+-			else if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2){
++			else if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2
++					&& !reaper_wanpin_hold("WAN link lost")){	/* reaper v3.3.6 */
+ 				_dprintf("wanduck 1: Got the auto-detected WAN was unplugged...\n");
+ 				restore_auto_wanport();
+ 			}
+@@ -5190,7 +5198,8 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 		 */
+ 		else if(conn_changed_state[current_wan_unit] == DISCONN){
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+-			if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2){
++			if(link_wan[current_wan_unit] == 0 && is_auto_wanport_enabled() == 2
++					&& !reaper_wanpin_hold("WAN link lost")){	/* reaper v3.3.6 */
+ 				_dprintf("wanduck(DISCONN): Got the auto-detected WAN was unplugged...\n");
+ 				restore_auto_wanport();
+ 			}
+diff --git a/release/src/router/shared/shutils.c b/release/src/router/shared/shutils.c
+index 4485d0dd4d..20fae3482e 100644
+--- a/release/src/router/shared/shutils.c
++++ b/release/src/router/shared/shutils.c
+@@ -37,6 +37,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/wait.h>
++#include <syslog.h>	/* reaper v3.3.6: the pinned-WAN-port guard in _eval() */
+ #include <sys/ioctl.h>
+ #include <assert.h>
+ #include <sys/sysinfo.h>
+@@ -269,6 +270,23 @@ int _eval(char *const argv[], const char *path, int timeout, int *ppid)
+ 	int fd, flags, sig, n;
+ 	char s[256], *p;
+ 	int debug_logeval = nvram_get_int("debug_logeval");
++
++#if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
++	/* reaper v3.3.6: a WAN port that has carried the WAN (nvram reaper_wanport,
++	 * rc/reaper_wanpin.c) is never bridged into a LAN bridge again while stock
++	 * auto-WAN-port is in effect - router mode, auto-detection on, Dual WAN off
++	 * (wan none / wan usb: the only layouts stock auto-detection runs in). rc skips
++	 * the stock restore calls; this catches any other caller, the closed code
++	 * included. Pretends success so the caller carries on as if bridged. */
++	if (argv[0] && argv[1] && argv[2] && argv[3]
++	    && !strcmp(argv[0], "brctl") && !strcmp(argv[1], "addif")
++	    && nvram_match("sw_mode", "1") && nvram_match("autowan_enable", "1")
++	    && (nvram_match("wans_dualwan", "wan none") || nvram_match("wans_dualwan", "wan usb"))
++	    && nvram_match("reaper_wanport", argv[3])) {
++		syslog(LOG_WARNING, "reaper: refused to bridge the pinned WAN port %s into %s", argv[3], argv[2]);
++		return 0;
++	}
++#endif
+ #if 0
+ 	char *cpu = "0";
+ 	char *cpu_argv[32] = { "taskset", "-c", cpu, NULL};
+-- 
+2.25.1
+

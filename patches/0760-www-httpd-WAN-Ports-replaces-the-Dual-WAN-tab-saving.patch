@@ -1,0 +1,2207 @@
+From b81767a250e47ce402b505225af1840d97494ba7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:52 -0400
+Subject: [PATCH] www, httpd: WAN Ports replaces the Dual WAN tab, saving
+ exactly what the stock page saves
+
+The only place to choose the WAN port was the Dual WAN tab, and nothing
+said that Auto searches several ports even with Dual WAN off. The native
+Reaper_WANPorts.asp takes the tab's place (menuTree url + label, the
+dualWAN gate kept; SUP redirect from Advanced_WANPort_Content.asp, which
+stays unchanged; reaper_native[]): port tiles with Auto and its explainer,
+the pinned port with Detect again, Dual WAN, monitoring, Load Balance rules
+and the ISP profile. The apply is a field-for-field port of the stock
+applyRule(); a mock parity harness (28 scenarios incl. refusals) shows the
+same nvram changes. One deliberate difference: a legacy single-WAN "lan" on
+the combo port shows that port instead of silently selecting Auto.
+JSON hooks are read as literals and free text through nvram_char_to_ascii
+(ej_get_ethernet_wan_list ends in a newline; nvram_get passes ' raw).
+RWAN_1..22 in all 25 packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |    6 +-
+ release/src/router/www/BR.dict                |   22 +
+ release/src/router/www/CN.dict                |   22 +
+ release/src/router/www/CZ.dict                |   22 +
+ release/src/router/www/DA.dict                |   22 +
+ release/src/router/www/DE.dict                |   22 +
+ release/src/router/www/EN.dict                |   22 +
+ release/src/router/www/ES.dict                |   22 +
+ release/src/router/www/FI.dict                |   22 +
+ release/src/router/www/FR.dict                |   22 +
+ release/src/router/www/HU.dict                |   22 +
+ release/src/router/www/IT.dict                |   22 +
+ release/src/router/www/JP.dict                |   22 +
+ release/src/router/www/KR.dict                |   22 +
+ release/src/router/www/MS.dict                |   22 +
+ release/src/router/www/NL.dict                |   22 +
+ release/src/router/www/NO.dict                |   22 +
+ release/src/router/www/PL.dict                |   22 +
+ release/src/router/www/RO.dict                |   22 +
+ release/src/router/www/RU.dict                |   22 +
+ release/src/router/www/Reaper_WANPorts.asp    | 1349 +++++++++++++++++
+ release/src/router/www/SL.dict                |   22 +
+ release/src/router/www/SV.dict                |   22 +
+ release/src/router/www/TH.dict                |   22 +
+ release/src/router/www/TR.dict                |   22 +
+ release/src/router/www/TW.dict                |   22 +
+ release/src/router/www/UK.dict                |   22 +
+ .../router/www/require/menuTrees/menuTree.js  |    4 +-
+ 28 files changed, 1906 insertions(+), 3 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_WANPorts.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 54b63cd219..fd596028fc 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -102,7 +102,8 @@
+ 	"\"advanced_wireless_content.asp\":\"Reaper_WiFiSettings.asp\"," \
+ 	"\"advanced_wadvanced_content.asp\":\"Reaper_WiFiSettings.asp\"," \
+ 	"\"reaper_wifipro.asp\":\"Reaper_WiFiSettings.asp\"," \
+-	"\"advanced_wireless_survey.asp\":\"Reaper_Survey.asp\"};" \
++	"\"advanced_wireless_survey.asp\":\"Reaper_Survey.asp\"," \
++	"\"advanced_wanport_content.asp\":\"Reaper_WANPorts.asp\"};" \
+ 	"if(rp.toLowerCase()===\"index.asp\"){top.location.replace(\"/Main_ReaperDash.asp\");return;}" \
+ 	"var s=SUP[rp.toLowerCase()];" \
+ 	"if(s){top.location.replace(\"/reaper_shell.asp#\"+s);return;}" \
+@@ -347,6 +348,9 @@ static const char *reaper_native[] = {
+ 	"Reaper_Survey.asp",	/* 2026-10-04: Site Survey (Network Tools) - replaces the stock
+ 				   Advanced_Wireless_Survey.asp (SUP-redirected), whose prebuilt scan
+ 				   core kept only the networks that fit a fixed buffer */
++	"Reaper_WANPorts.asp",	/* v3.3.6: WAN Ports - replaces the stock Dual WAN tab
++				   (Advanced_WANPort_Content.asp, SUP-redirected); same nvram
++				   writes, plus the Auto-port pin status and Detect again */
+ 	NULL
+ };
+ 
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index e8767bd1bd..e60ebe8d66 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Varredura com troca de canal
+ RSVY_32=Um rádio de 5 GHz sob monitoramento de radar não consegue varrer a partir do seu canal. Esta varredura o move para um canal sem radar (36 ou 149 em 80 MHz), varre toda a banda e o devolve. Seus clientes caem durante a varredura, o retorno a um canal de radar aguarda a verificação de radar (cerca de um minuto; um rádio com verificação de radar em segundo plano continua atendendo nesse tempo, os outros ficam em silêncio) e os nós AiMesh seguem a mudança. Os outros rádios varrem no lugar.
+ RSVY_33=Confirmar: os clientes desse rádio vão cair
+ RSVY_34=varredura completa após troca de canal via
++RWAN_1=Portas WAN
++RWAN_2=Quais portas levam sua conexão de internet: uma porta, ou duas com Dual WAN.
++RWAN_3=Porta de internet
++RWAN_4=Onde vai o cabo de internet
++RWAN_5=Auto encontra a porta em que seu provedor de internet responde. Ele testa todas as portas compatíveis com WAN deste roteador, mesmo com Dual WAN desligado; durante a busca, essas portas ficam ligadas à sua rede local para que o equipamento do provedor possa ser ouvido nelas.
++RWAN_6=O Reaper mantém a porta que o Auto encontra e nunca mais a liga à sua rede local: nem após uma reinicialização, nem quando o cabo ou o provedor derruba o link. Se você sabe em qual porta está o cabo, escolha essa porta.
++RWAN_7=Portas que o Auto testa
++RWAN_8=Porta de internet em uso
++RWAN_9=Uma segunda conexão que assume quando a primeira falha (Fail Over) ou divide o tráfego com ela (Load Balance). Desligar o Dual WAN volta para a porta única acima.
++RWAN_10=Como o roteador decide que uma conexão caiu: a cada poucos segundos ele resolve um nome, faz ping em um host, ou ambos. Com Dual WAN isso decide quando trocar de conexão.
++RWAN_11=Com Load Balance, o tráfego de uma origem para um destino pode ser fixado em uma conexão. Cada endereço é um IP, um endereço com máscara (192.168.50.0/24) ou all.
++RWAN_12=Detectar novamente
++RWAN_13=Encontrada pelo Auto e mantida fora da rede local
++RWAN_14=Buscando: as portas candidatas ficam ligadas à rede local até o provedor responder
++RWAN_15=Porta fixa: Auto desligado
++RWAN_16=Procurar a porta de internet novamente? O Reaper esquece a porta encontrada, e as portas candidatas se ligam à sua rede local até o provedor responder em uma delas.
++RWAN_17=Auto não está disponível enquanto %1$@ estiver em uso.
++RWAN_18=Porta LAN
++RWAN_19=um WAN com tag VLAN
++RWAN_20=Escolha a porta em que está o cabo de internet, ou Auto para que o roteador a encontre.
++RWAN_21=mais de um serviço WAN
++RWAN_22=este tipo de conexão
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index b87573c12c..952a323bbb 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=切换信道后扫描
+ RSVY_32=处于雷达监测的 5 GHz 射频无法在当前信道扫描。此扫描会将其切换到非雷达信道（36 或 149，80 MHz），扫描整个频段后再切回。扫描期间其客户端会掉线，切回雷达信道需等待雷达检测（约一分钟；支持后台雷达检测的射频期间继续服务，其他射频保持静默），AiMesh 节点会跟随变更。其他射频原地扫描。
+ RSVY_33=确认：该射频上的客户端将掉线
+ RSVY_34=切换信道后的完整扫描，经由
++RWAN_1=WAN 端口
++RWAN_2=哪些端口承载您的互联网连接：一个端口，或启用 Dual WAN 时两个端口。
++RWAN_3=互联网端口
++RWAN_4=互联网线缆插在哪里
++RWAN_5=Auto 会找到您的互联网服务商作出响应的端口。即使关闭 Dual WAN，它也会尝试本路由器上每个支持 WAN 的端口；搜索期间，这些端口会加入您的本地网络，以便侦听服务商设备的响应。
++RWAN_6=Reaper 会保留 Auto 找到的端口，并且不再将其加入您的本地网络：重启后不会，线缆或服务商断开链路时也不会。如果您知道线缆插在哪个端口，请直接选择该端口。
++RWAN_7=Auto 尝试的端口
++RWAN_8=正在使用的互联网端口
++RWAN_9=第二条连接：在第一条连接故障时接管（Fail Over），或与其分担流量（Load Balance）。关闭 Dual WAN 将恢复为上方的单一端口。
++RWAN_10=路由器如何判断连接已中断：每隔几秒解析一个域名、Ping 一个主机，或两者兼做。在 Dual WAN 中，这决定何时切换连接。
++RWAN_11=使用 Load Balance 时，可将从某个来源到某个目标的流量固定到一条连接。每个地址可以是 IP 地址、带掩码的地址（192.168.50.0/24）或 all。
++RWAN_12=重新检测
++RWAN_13=由 Auto 找到，并已排除在本地网络之外
++RWAN_14=搜索中：候选端口会加入本地网络，直到服务商响应
++RWAN_15=固定端口：Auto 已关闭
++RWAN_16=要重新搜索互联网端口吗？Reaper 会忘记已找到的端口，候选端口将加入您的本地网络，直到服务商在其中一个端口上响应。
++RWAN_17=使用 %1$@ 时无法使用 Auto。
++RWAN_18=LAN 端口
++RWAN_19=带 VLAN 标记的 WAN
++RWAN_20=选择互联网线缆所插的端口，或选择 Auto 让路由器自行查找。
++RWAN_21=多个 WAN 服务
++RWAN_22=此连接类型
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 6b232b5c21..edaec0aff2 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Sken se změnou kanálu
+ RSVY_32=Rádio 5 GHz pod radarovým dohledem nemůže skenovat ze svého kanálu. Tento sken je přesune na neradarový kanál (36 nebo 149 při 80 MHz), proskenuje celé pásmo a vrátí je zpět. Jeho klienti během skenu vypadnou, návrat na radarový kanál čeká na kontrolu radaru (asi minuta; rádio s kontrolou radaru na pozadí mezitím dál obsluhuje klienty, ostatní mlčí) a uzly AiMesh změnu následují. Ostatní rádia skenují na místě.
+ RSVY_33=Potvrdit: klienti tohoto rádia vypadnou
+ RSVY_34=úplný sken po změně kanálu přes
++RWAN_1=Porty WAN
++RWAN_2=Které porty nesou vaše připojení k internetu: jeden port, nebo dva s Dual WAN.
++RWAN_3=Internetový port
++RWAN_4=Kam vede kabel k internetu
++RWAN_5=Auto najde port, na kterém odpovídá váš poskytovatel internetu. Zkouší každý port tohoto routeru, který umí WAN, i při vypnutém Dual WAN; během hledání jsou tyto porty připojeny k vaší místní síti, aby na nich bylo slyšet zařízení poskytovatele.
++RWAN_6=Reaper si port nalezený funkcí Auto ponechá a už jej nikdy nepřipojí k místní síti: ani po restartu, ani když kabel nebo poskytovatel přeruší spojení. Pokud víte, ve kterém portu je kabel, zvolte raději ten port.
++RWAN_7=Porty, které Auto zkouší
++RWAN_8=Používaný internetový port
++RWAN_9=Druhé připojení, které převezme provoz při výpadku prvního (Fail Over), nebo s ním provoz sdílí (Load Balance). Vypnutím Dual WAN se vrátíte k jedinému portu výše.
++RWAN_10=Jak router pozná, že připojení nefunguje: každých několik sekund přeloží jméno, pingne hostitele, nebo obojí. U Dual WAN to rozhoduje, kdy přepnout připojení.
++RWAN_11=Při Load Balance lze provoz ze zdroje do cíle připnout k jednomu připojení. Každá adresa je IP adresa, adresa s maskou (192.168.50.0/24), nebo all.
++RWAN_12=Zjistit znovu
++RWAN_13=Nalezen funkcí Auto a držen mimo místní síť
++RWAN_14=Hledání: kandidátské porty jsou připojeny k místní síti, dokud poskytovatel neodpoví
++RWAN_15=Pevný port: Auto je vypnuto
++RWAN_16=Znovu hledat internetový port? Reaper zapomene nalezený port a kandidátské porty se připojí k místní síti, dokud poskytovatel neodpoví na jednom z nich.
++RWAN_17=Auto není k dispozici, dokud se používá %1$@.
++RWAN_18=Port LAN
++RWAN_19=WAN se značkou VLAN
++RWAN_20=Zvolte port, ve kterém je kabel k internetu, nebo Auto, aby jej router našel sám.
++RWAN_21=více než jedna služba WAN
++RWAN_22=tento typ připojení
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 0ad189b8ab..ed8b839a40 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scan med kanalskift
+ RSVY_32=En 5 GHz-radio under radarovervågning kan ikke scanne fra sin kanal. Denne scanning flytter den til en kanal uden radar (36 eller 149 ved 80 MHz), scanner hele båndet og flytter den tilbage. Dens klienter falder fra under scanningen, tilbagevenden til en radarkanal venter på radarkontrollen (cirka et minut; en radio med radarkontrol i baggrunden betjener fortsat imens, andre er tavse), og AiMesh-noder følger skiftet. Andre radioer scanner på stedet.
+ RSVY_33=Bekræft: klienter på den radio falder fra
+ RSVY_34=fuld scanning efter kanalskift via
++RWAN_1=WAN-porte
++RWAN_2=Hvilke porte der bærer din internetforbindelse: én port, eller to med Dual WAN.
++RWAN_3=Internetport
++RWAN_4=Hvor internetkablet sidder
++RWAN_5=Auto finder den port, din internetudbyder svarer på. Den prøver alle WAN-egnede porte på routeren, også med Dual WAN slået fra; mens den søger, er de porte koblet til dit lokale netværk, så udbyderens udstyr kan høres på dem.
++RWAN_6=Reaper beholder den port, Auto finder, og kobler den aldrig til dit lokale netværk igen: hverken efter en genstart eller når kablet eller udbyderen taber forbindelsen. Hvis du ved, hvilken port kablet sidder i, så vælg den port.
++RWAN_7=Porte Auto prøver
++RWAN_8=Internetport i brug
++RWAN_9=En anden forbindelse, der tager over, når den første svigter (Fail Over), eller deler trafikken med den (Load Balance). Slås Dual WAN fra, vender du tilbage til den ene port ovenfor.
++RWAN_10=Sådan afgør routeren, at en forbindelse er nede: med få sekunders mellemrum slår den et navn op, pinger en vært eller begge dele. Med Dual WAN afgør det, hvornår der skiftes forbindelse.
++RWAN_11=Med Load Balance kan trafik fra en kilde til en destination låses til én forbindelse. Hver adresse er en IP-adresse, en adresse med netmaske (192.168.50.0/24) eller all.
++RWAN_12=Find igen
++RWAN_13=Fundet af Auto og holdt uden for det lokale netværk
++RWAN_14=Søger: kandidatportene er koblet til det lokale netværk, indtil udbyderen svarer
++RWAN_15=Fast port: Auto er slået fra
++RWAN_16=Søg efter internetporten igen? Reaper glemmer den fundne port, og kandidatportene kobles til dit lokale netværk, indtil udbyderen svarer på en af dem.
++RWAN_17=Auto er ikke tilgængelig, mens %1$@ er i brug.
++RWAN_18=LAN-port
++RWAN_19=et VLAN-mærket WAN
++RWAN_20=Vælg den port, internetkablet sidder i, eller Auto for at lade routeren finde den.
++RWAN_21=mere end én WAN-tjeneste
++RWAN_22=denne forbindelsestype
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 671cc172b8..27d7d42623 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scan mit Kanalwechsel
+ RSVY_32=Ein 5-GHz-Funkmodul unter Radarüberwachung kann von seinem Kanal aus nicht scannen. Dieser Scan verschiebt es auf einen radarfreien Kanal (36 oder 149 bei 80 MHz), scannt das ganze Band und setzt es zurück. Seine Clients fallen für den Scan ab, die Rückkehr auf einen Radarkanal wartet die Radarprüfung ab (etwa eine Minute; ein Funkmodul mit Radarprüfung im Hintergrund bedient in der Zeit weiter, andere bleiben still), und AiMesh-Knoten folgen dem Wechsel. Andere Funkmodule scannen an Ort und Stelle.
+ RSVY_33=Bestätigen: Clients dieses Funkmoduls fallen ab
+ RSVY_34=voller Scan nach Kanalwechsel über
++RWAN_1=WAN-Ports
++RWAN_2=Welche Ports Ihre Internetverbindung führen: ein Port oder zwei mit Dual WAN.
++RWAN_3=Internet-Port
++RWAN_4=Wo das Internetkabel steckt
++RWAN_5=Auto findet den Port, an dem Ihr Internetanbieter antwortet. Es probiert jeden WAN-fähigen Port dieses Routers, auch bei ausgeschaltetem Dual WAN; während der Suche sind diese Ports mit Ihrem lokalen Netzwerk verbunden, damit die Geräte des Anbieters darauf gehört werden können.
++RWAN_6=Reaper behält den von Auto gefundenen Port und verbindet ihn nie wieder mit Ihrem lokalen Netzwerk: weder nach einem Neustart noch wenn Kabel oder Anbieter die Verbindung verlieren. Wenn Sie wissen, in welchem Port das Kabel steckt, wählen Sie stattdessen diesen Port.
++RWAN_7=Ports, die Auto probiert
++RWAN_8=Verwendeter Internet-Port
++RWAN_9=Eine zweite Verbindung, die übernimmt, wenn die erste ausfällt (Fail Over), oder den Verkehr mit ihr teilt (Load Balance). Ausschalten von Dual WAN kehrt zum einzelnen Port oben zurück.
++RWAN_10=Wie der Router erkennt, dass eine Verbindung ausgefallen ist: alle paar Sekunden löst er einen Namen auf, pingt einen Host oder beides. Bei Dual WAN entscheidet das, wann die Verbindung gewechselt wird.
++RWAN_11=Bei Load Balance kann Verkehr von einer Quelle zu einem Ziel an eine Verbindung gebunden werden. Jede Adresse ist eine IP-Adresse, eine Adresse mit Netzmaske (192.168.50.0/24) oder all.
++RWAN_12=Erneut erkennen
++RWAN_13=Von Auto gefunden und aus dem lokalen Netzwerk herausgehalten
++RWAN_14=Suche: Die Kandidaten-Ports sind mit dem lokalen Netzwerk verbunden, bis der Anbieter antwortet
++RWAN_15=Fester Port: Auto ist aus
++RWAN_16=Erneut nach dem Internet-Port suchen? Reaper vergisst den gefundenen Port, und die Kandidaten-Ports werden mit Ihrem lokalen Netzwerk verbunden, bis der Anbieter an einem davon antwortet.
++RWAN_17=Auto ist nicht verfügbar, solange %1$@ verwendet wird.
++RWAN_18=LAN-Port
++RWAN_19=ein VLAN-getaggtes WAN
++RWAN_20=Wählen Sie den Port, in dem Ihr Internetkabel steckt, oder Auto, damit der Router ihn findet.
++RWAN_21=mehr als ein WAN-Dienst
++RWAN_22=dieser Verbindungstyp
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index df80e775d8..4f792309a8 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scan with channel move
+ RSVY_32=A 5 GHz radio under radar monitoring cannot scan from its channel. This scan moves it to a non-radar channel (36 or 149 at 80 MHz), scans the whole band, then moves it back. Its clients drop for the scan, the return to a radar channel waits for the radar check (about a minute; a radio with background radar checks keeps serving meanwhile, others stay quiet), and AiMesh nodes follow the change. Other radios scan in place.
+ RSVY_33=Confirm: clients on that radio will drop
+ RSVY_34=full scan after a channel move via
++RWAN_1=WAN Ports
++RWAN_2=Which ports carry your internet connection: one port, or two with Dual WAN.
++RWAN_3=Internet port
++RWAN_4=Where the internet cable goes
++RWAN_5=Auto finds the port your internet provider answers on. It tries every WAN-capable port on this router, even with Dual WAN off; while it searches, those ports are joined to your local network so the equipment of the provider can be heard on them.
++RWAN_6=Reaper keeps the port Auto finds and never joins it to your local network again: not after a reboot, and not when the cable or the provider drops the link. If you know which port the cable is in, choose that port instead.
++RWAN_7=Ports Auto tries
++RWAN_8=Internet port in use
++RWAN_9=A second connection that takes over when the first one fails (Fail Over), or shares the traffic with it (Load Balance). Turning Dual WAN off returns to the single port above.
++RWAN_10=How the router decides that a connection is down: every few seconds it resolves a name, pings a host, or both. With Dual WAN this decides when to switch connections.
++RWAN_11=With Load Balance, traffic from a source to a destination can be pinned to one connection. Each address is an IP address, an address with a netmask (192.168.50.0/24), or all.
++RWAN_12=Detect again
++RWAN_13=Found by Auto and kept out of the local network
++RWAN_14=Searching: the candidate ports are joined to the local network until the provider answers
++RWAN_15=Fixed port: Auto is off
++RWAN_16=Search for the internet port again? Reaper forgets the port it found, and the candidate ports join your local network until the provider answers on one of them.
++RWAN_17=Auto is not available while %1$@ is in use.
++RWAN_18=LAN port
++RWAN_19=a VLAN-tagged WAN
++RWAN_20=Choose the port your internet cable is in, or Auto to let the router find it.
++RWAN_21=more than one WAN service
++RWAN_22=this connection type
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 98980f250d..57a5452330 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Escaneo con cambio de canal
+ RSVY_32=Una radio de 5 GHz bajo supervisión de radar no puede escanear desde su canal. Este escaneo la mueve a un canal sin radar (36 o 149 a 80 MHz), escanea toda la banda y la devuelve. Sus clientes se desconectan durante el escaneo, la vuelta a un canal de radar espera la comprobación de radar (alrededor de un minuto; una radio con comprobación de radar en segundo plano sigue dando servicio mientras tanto, las demás quedan en silencio) y los nodos AiMesh siguen el cambio. Las demás radios escanean en su sitio.
+ RSVY_33=Confirmar: los clientes de esa radio se desconectarán
+ RSVY_34=escaneo completo tras cambio de canal vía
++RWAN_1=Puertos WAN
++RWAN_2=Qué puertos llevan su conexión a internet: un puerto, o dos con Dual WAN.
++RWAN_3=Puerto de internet
++RWAN_4=Dónde va el cable de internet
++RWAN_5=Auto encuentra el puerto en el que responde su proveedor de internet. Prueba todos los puertos compatibles con WAN de este router, incluso con Dual WAN desactivado; mientras busca, esos puertos se unen a su red local para poder oír en ellos el equipo del proveedor.
++RWAN_6=Reaper conserva el puerto que encuentra Auto y nunca vuelve a unirlo a su red local: ni tras un reinicio, ni cuando el cable o el proveedor pierden el enlace. Si sabe en qué puerto está el cable, elija ese puerto.
++RWAN_7=Puertos que prueba Auto
++RWAN_8=Puerto de internet en uso
++RWAN_9=Una segunda conexión que toma el relevo cuando falla la primera (Fail Over) o reparte el tráfico con ella (Load Balance). Al desactivar Dual WAN se vuelve al puerto único de arriba.
++RWAN_10=Cómo decide el router que una conexión ha caído: cada pocos segundos resuelve un nombre, hace ping a un host, o ambas cosas. Con Dual WAN esto decide cuándo cambiar de conexión.
++RWAN_11=Con Load Balance, el tráfico de un origen a un destino puede fijarse a una conexión. Cada dirección es una IP, una dirección con máscara (192.168.50.0/24) o all.
++RWAN_12=Detectar de nuevo
++RWAN_13=Encontrado por Auto y mantenido fuera de la red local
++RWAN_14=Buscando: los puertos candidatos se unen a la red local hasta que responda el proveedor
++RWAN_15=Puerto fijo: Auto desactivado
++RWAN_16=¿Buscar de nuevo el puerto de internet? Reaper olvida el puerto encontrado y los puertos candidatos se unen a su red local hasta que el proveedor responda en uno de ellos.
++RWAN_17=Auto no está disponible mientras se use %1$@.
++RWAN_18=Puerto LAN
++RWAN_19=un WAN con etiqueta VLAN
++RWAN_20=Elija el puerto donde está el cable de internet, o Auto para que el router lo encuentre.
++RWAN_21=más de un servicio WAN
++RWAN_22=este tipo de conexión
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 10bb0741a1..1dfa653655 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Haku kanavanvaihdolla
+ RSVY_32=Tutkavalvonnassa oleva 5 GHz:n radio ei voi hakea omalta kanavaltaan. Tämä haku siirtää sen tutkavapaalle kanavalle (36 tai 149, 80 MHz), hakee koko kaistan ja palauttaa sen. Sen asiakkaat putoavat haun ajaksi, paluu tutkakanavalle odottaa tutkatarkistusta (noin minuutti; taustatutkatarkistusta tukeva radio palvelee sillä aikaa edelleen, muut ovat hiljaa) ja AiMesh-solmut seuraavat muutosta. Muut radiot hakevat paikallaan.
+ RSVY_33=Vahvista: kyseisen radion asiakkaat putoavat
+ RSVY_34=täysi haku kanavanvaihdon jälkeen kanavalta
++RWAN_1=WAN-portit
++RWAN_2=Mitkä portit kuljettavat internetyhteytesi: yksi portti tai kaksi Dual WAN -tilassa.
++RWAN_3=Internetportti
++RWAN_4=Mihin internetkaapeli kytketään
++RWAN_5=Auto etsii portin, jossa internetpalveluntarjoajasi vastaa. Se kokeilee jokaista tämän reitittimen WAN-kelpoista porttia, myös Dual WAN pois päältä; etsinnän ajan nämä portit liitetään lähiverkkoosi, jotta palveluntarjoajan laitteet kuuluvat niissä.
++RWAN_6=Reaper pitää Auton löytämän portin eikä enää koskaan liitä sitä lähiverkkoosi: ei uudelleenkäynnistyksen jälkeen eikä silloin, kun kaapeli tai palveluntarjoaja katkaisee yhteyden. Jos tiedät, missä portissa kaapeli on, valitse se portti.
++RWAN_7=Portit, joita Auto kokeilee
++RWAN_8=Käytössä oleva internetportti
++RWAN_9=Toinen yhteys, joka ottaa vastuun ensimmäisen pettäessä (Fail Over) tai jakaa liikenteen sen kanssa (Load Balance). Dual WAN pois päältä palauttaa yllä olevan yhden portin.
++RWAN_10=Miten reititin päättää, että yhteys on poikki: muutaman sekunnin välein se selvittää nimen, pingaa isäntää tai molempia. Dual WAN -tilassa tämä ratkaisee, milloin yhteys vaihdetaan.
++RWAN_11=Load Balance -tilassa liikenne lähteestä kohteeseen voidaan sitoa yhteen yhteyteen. Jokainen osoite on IP-osoite, osoite verkkopeitteellä (192.168.50.0/24) tai all.
++RWAN_12=Tunnista uudelleen
++RWAN_13=Auton löytämä ja pidetty lähiverkon ulkopuolella
++RWAN_14=Etsitään: ehdokasportit on liitetty lähiverkkoon, kunnes palveluntarjoaja vastaa
++RWAN_15=Kiinteä portti: Auto on pois päältä
++RWAN_16=Etsitäänkö internetportti uudelleen? Reaper unohtaa löytämänsä portin, ja ehdokasportit liitetään lähiverkkoosi, kunnes palveluntarjoaja vastaa jossakin niistä.
++RWAN_17=Auto ei ole käytettävissä, kun %1$@ on käytössä.
++RWAN_18=LAN-portti
++RWAN_19=VLAN-merkitty WAN
++RWAN_20=Valitse portti, jossa internetkaapeli on, tai Auto, jolloin reititin etsii sen.
++RWAN_21=useampi kuin yksi WAN-palvelu
++RWAN_22=tämä yhteystyyppi
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index ecdade1a8c..2a25171e77 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Balayage avec changement de canal
+ RSVY_32=Une radio 5 GHz sous surveillance radar ne peut pas balayer depuis son canal. Ce balayage la déplace vers un canal sans radar (36 ou 149 en 80 MHz), balaie toute la bande puis la ramène. Ses clients se déconnectent pendant le balayage, le retour sur un canal radar attend la vérification radar (environ une minute ; une radio avec vérification radar en arrière-plan continue de servir pendant ce temps, les autres restent silencieuses) et les noeuds AiMesh suivent le changement. Les autres radios balaient sur place.
+ RSVY_33=Confirmer : les clients de cette radio seront déconnectés
+ RSVY_34=balayage complet après changement de canal via
++RWAN_1=Ports WAN
++RWAN_2=Quels ports portent votre connexion internet : un port, ou deux avec Dual WAN.
++RWAN_3=Port internet
++RWAN_4=Où va le câble internet
++RWAN_5=Auto trouve le port sur lequel répond votre fournisseur internet. Il essaie chaque port compatible WAN de ce routeur, même avec Dual WAN désactivé ; pendant la recherche, ces ports sont reliés à votre réseau local pour que l’équipement du fournisseur puisse y être entendu.
++RWAN_6=Reaper conserve le port trouvé par Auto et ne le relie plus jamais à votre réseau local : ni après un redémarrage, ni quand le câble ou le fournisseur coupe le lien. Si vous savez sur quel port se trouve le câble, choisissez plutôt ce port.
++RWAN_7=Ports essayés par Auto
++RWAN_8=Port internet utilisé
++RWAN_9=Une seconde connexion qui prend le relais quand la première tombe (Fail Over) ou partage le trafic avec elle (Load Balance). Désactiver Dual WAN revient au port unique ci-dessus.
++RWAN_10=Comment le routeur décide qu’une connexion est coupée : toutes les quelques secondes, il résout un nom, envoie un ping à un hôte, ou les deux. Avec Dual WAN, cela décide quand basculer de connexion.
++RWAN_11=Avec Load Balance, le trafic d’une source vers une destination peut être lié à une connexion. Chaque adresse est une adresse IP, une adresse avec masque (192.168.50.0/24) ou all.
++RWAN_12=Détecter à nouveau
++RWAN_13=Trouvé par Auto et tenu hors du réseau local
++RWAN_14=Recherche : les ports candidats sont reliés au réseau local jusqu’à la réponse du fournisseur
++RWAN_15=Port fixe : Auto désactivé
++RWAN_16=Rechercher à nouveau le port internet ? Reaper oublie le port trouvé et les ports candidats rejoignent votre réseau local jusqu’à ce que le fournisseur réponde sur l’un d’eux.
++RWAN_17=Auto n’est pas disponible tant que %1$@ est utilisé.
++RWAN_18=Port LAN
++RWAN_19=un WAN étiqueté VLAN
++RWAN_20=Choisissez le port où se trouve le câble internet, ou Auto pour que le routeur le trouve.
++RWAN_21=plus d’un service WAN
++RWAN_22=ce type de connexion
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 70078ab35b..3f71cd7ed6 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Vizsgálat csatornaváltással
+ RSVY_32=A radarfelügyelet alatt álló 5 GHz-es rádió nem tud a saját csatornájáról vizsgálni. Ez a vizsgálat radarmentes csatornára viszi (36 vagy 149, 80 MHz), végigvizsgálja a teljes sávot, majd visszaállítja. A kliensei a vizsgálat idejére lekapcsolódnak, a radarcsatornára való visszatérés megvárja a radarellenőrzést (körülbelül egy perc; a háttérben radarellenőrzést végző rádió közben tovább szolgál, a többi csendben marad), és az AiMesh csomópontok követik a váltást. A többi rádió helyben vizsgál.
+ RSVY_33=Megerősítés: a rádió kliensei lekapcsolódnak
+ RSVY_34=teljes vizsgálat csatornaváltás után, innen:
++RWAN_1=WAN-portok
++RWAN_2=Mely portok viszik az internetkapcsolatot: egy port, vagy Dual WAN esetén kettő.
++RWAN_3=Internetport
++RWAN_4=Hová kerül az internetkábel
++RWAN_5=Az Auto megkeresi azt a portot, amelyen az internetszolgáltató válaszol. A router minden WAN-képes portját kipróbálja, kikapcsolt Dual WAN mellett is; keresés közben ezek a portok a helyi hálózathoz csatlakoznak, hogy a szolgáltató eszköze hallható legyen rajtuk.
++RWAN_6=A Reaper megtartja az Auto által talált portot, és soha többé nem kapcsolja a helyi hálózathoz: sem újraindítás után, sem amikor a kábel vagy a szolgáltató megszakítja a kapcsolatot. Ha tudja, melyik portban van a kábel, válassza inkább azt.
++RWAN_7=Az Auto által kipróbált portok
++RWAN_8=Használt internetport
++RWAN_9=Egy második kapcsolat, amely átveszi a forgalmat, ha az első kiesik (Fail Over), vagy megosztja vele (Load Balance). A Dual WAN kikapcsolása visszatér a fenti egyetlen porthoz.
++RWAN_10=Hogyan dönti el a router, hogy egy kapcsolat megszakadt: néhány másodpercenként felold egy nevet, pingel egy gazdagépet, vagy mindkettőt. Dual WAN esetén ez dönti el, mikor váltson kapcsolatot.
++RWAN_11=Load Balance esetén egy forrásból egy célba tartó forgalom egy kapcsolathoz köthető. Minden cím IP-cím, maszkkal megadott cím (192.168.50.0/24) vagy all.
++RWAN_12=Újrakeresés
++RWAN_13=Az Auto találta meg, a helyi hálózaton kívül tartva
++RWAN_14=Keresés: a jelölt portok a helyi hálózathoz csatlakoznak, amíg a szolgáltató nem válaszol
++RWAN_15=Rögzített port: Auto kikapcsolva
++RWAN_16=Újra megkeresi az internetportot? A Reaper elfelejti a talált portot, és a jelölt portok a helyi hálózathoz csatlakoznak, amíg a szolgáltató valamelyiken nem válaszol.
++RWAN_17=Az Auto nem érhető el, amíg %1$@ használatban van.
++RWAN_18=LAN-port
++RWAN_19=VLAN-címkézett WAN
++RWAN_20=Válassza ki a portot, amelyben az internetkábel van, vagy az Autót, hogy a router megtalálja.
++RWAN_21=több WAN-szolgáltatás
++RWAN_22=ez a kapcsolattípus
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index b057ef0caa..17052ea223 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scansione con cambio di canale
+ RSVY_32=Una radio 5 GHz sotto monitoraggio radar non può eseguire la scansione dal proprio canale. Questa scansione la sposta su un canale senza radar (36 o 149 a 80 MHz), scansiona tutta la banda e la riporta indietro. I suoi client si disconnettono durante la scansione, il ritorno su un canale radar attende il controllo radar (circa un minuto; una radio con controllo radar in background continua a servire nel frattempo, le altre restano in silenzio) e i nodi AiMesh seguono il cambio. Le altre radio scansionano sul posto.
+ RSVY_33=Conferma: i client di quella radio si disconnetteranno
+ RSVY_34=scansione completa dopo cambio di canale via
++RWAN_1=Porte WAN
++RWAN_2=Quali porte portano la connessione internet: una porta, o due con Dual WAN.
++RWAN_3=Porta internet
++RWAN_4=Dove va il cavo internet
++RWAN_5=Auto trova la porta su cui risponde il tuo provider internet. Prova ogni porta abilitata WAN di questo router, anche con Dual WAN disattivato; durante la ricerca quelle porte sono unite alla rete locale, così l’apparato del provider può essere ascoltato su di esse.
++RWAN_6=Reaper mantiene la porta trovata da Auto e non la unisce mai più alla rete locale: né dopo un riavvio, né quando il cavo o il provider perdono il collegamento. Se sai in quale porta si trova il cavo, scegli quella porta.
++RWAN_7=Porte provate da Auto
++RWAN_8=Porta internet in uso
++RWAN_9=Una seconda connessione che subentra quando la prima cade (Fail Over) o ne condivide il traffico (Load Balance). Disattivando Dual WAN si torna alla singola porta qui sopra.
++RWAN_10=Come il router decide che una connessione è caduta: ogni pochi secondi risolve un nome, esegue il ping di un host, o entrambi. Con Dual WAN questo decide quando cambiare connessione.
++RWAN_11=Con Load Balance il traffico da un’origine a una destinazione può essere vincolato a una connessione. Ogni indirizzo è un IP, un indirizzo con maschera (192.168.50.0/24) o all.
++RWAN_12=Rileva di nuovo
++RWAN_13=Trovata da Auto e tenuta fuori dalla rete locale
++RWAN_14=Ricerca: le porte candidate sono unite alla rete locale finché il provider non risponde
++RWAN_15=Porta fissa: Auto disattivato
++RWAN_16=Cercare di nuovo la porta internet? Reaper dimentica la porta trovata e le porte candidate si uniscono alla rete locale finché il provider non risponde su una di esse.
++RWAN_17=Auto non è disponibile finché è in uso %1$@.
++RWAN_18=Porta LAN
++RWAN_19=un WAN con tag VLAN
++RWAN_20=Scegli la porta in cui si trova il cavo internet, oppure Auto per farla trovare al router.
++RWAN_21=più di un servizio WAN
++RWAN_22=questo tipo di connessione
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 8b968c3677..0343bd1598 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=チャネル移動してスキャン
+ RSVY_32=レーダー監視中の 5 GHz 無線は、自身のチャネルからスキャンできません。このスキャンは無線を非レーダーチャネル（36 または 149、80 MHz）へ移動し、全帯域をスキャンしてから元に戻します。スキャン中はそのクライアントが切断され、レーダーチャネルへの復帰はレーダー検査（約 1 分。バックグラウンドのレーダー検査に対応した無線はその間も通信を続け、それ以外は無音になります）を待ち、AiMesh ノードも変更に追従します。他の無線はその場でスキャンします。
+ RSVY_33=確認：その無線のクライアントは切断されます
+ RSVY_34=チャネル移動後の完全スキャン、経由
++RWAN_1=WAN ポート
++RWAN_2=インターネット接続を担うポート：1 つ、または Dual WAN で 2 つ。
++RWAN_3=インターネットポート
++RWAN_4=インターネットケーブルの接続先
++RWAN_5=Auto は、インターネットプロバイダーが応答するポートを見つけます。Dual WAN がオフでも、このルーターの WAN 対応ポートをすべて試します。検索中はプロバイダー機器の応答を受け取れるよう、それらのポートがローカルネットワークに接続されます。
++RWAN_6=Reaper は Auto が見つけたポートを保持し、二度とローカルネットワークに接続しません。再起動後も、ケーブルやプロバイダーがリンクを切断したときも同様です。ケーブルの接続先ポートが分かっている場合は、そのポートを選択してください。
++RWAN_7=Auto が試すポート
++RWAN_8=使用中のインターネットポート
++RWAN_9=1 本目の接続が故障したときに引き継ぐ（Fail Over）、またはトラフィックを分担する（Load Balance）2 本目の接続です。Dual WAN をオフにすると上の単一ポートに戻ります。
++RWAN_10=ルーターが接続断を判断する方法：数秒ごとに名前を解決するか、ホストに Ping を送るか、その両方を行います。Dual WAN ではこれにより接続を切り替えるタイミングが決まります。
++RWAN_11=Load Balance では、送信元から宛先へのトラフィックを 1 本の接続に固定できます。各アドレスは IP アドレス、ネットマスク付きアドレス（192.168.50.0/24）、または all です。
++RWAN_12=再検出
++RWAN_13=Auto が検出、ローカルネットワークから分離済み
++RWAN_14=検索中：プロバイダーが応答するまで候補ポートはローカルネットワークに接続されます
++RWAN_15=固定ポート：Auto はオフ
++RWAN_16=インターネットポートを再検索しますか？Reaper は見つけたポートを忘れ、プロバイダーがいずれかで応答するまで候補ポートがローカルネットワークに接続されます。
++RWAN_17=%1$@ の使用中は Auto を利用できません。
++RWAN_18=LAN ポート
++RWAN_19=VLAN タグ付き WAN
++RWAN_20=インターネットケーブルを接続したポートを選ぶか、Auto を選んでルーターに見つけさせます。
++RWAN_21=複数の WAN サービス
++RWAN_22=この接続タイプ
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index d5c543e2bb..28987a7187 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=채널 이동 후 스캔
+ RSVY_32=레이더 감시 중인 5 GHz 무선은 자신의 채널에서 스캔할 수 없습니다. 이 스캔은 무선을 비레이더 채널(36 또는 149, 80 MHz)로 옮겨 전체 대역을 스캔한 뒤 되돌립니다. 스캔 중 해당 클라이언트는 끊기고, 레이더 채널로 돌아갈 때 레이더 검사(약 1분; 백그라운드 레이더 검사를 지원하는 무선은 그동안 계속 서비스하고, 그 외에는 조용해집니다)를 기다리며, AiMesh 노드도 변경을 따릅니다. 다른 무선은 제자리에서 스캔합니다.
+ RSVY_33=확인: 해당 무선의 클라이언트가 끊깁니다
+ RSVY_34=채널 이동 후 전체 스캔, 경유
++RWAN_1=WAN 포트
++RWAN_2=인터넷 연결을 전달하는 포트: 하나의 포트, 또는 Dual WAN 사용 시 두 개.
++RWAN_3=인터넷 포트
++RWAN_4=인터넷 케이블을 꽂는 곳
++RWAN_5=Auto는 인터넷 제공업체가 응답하는 포트를 찾습니다. Dual WAN이 꺼져 있어도 이 라우터의 모든 WAN 지원 포트를 시도하며, 검색하는 동안 제공업체 장비의 응답을 들을 수 있도록 해당 포트가 로컬 네트워크에 연결됩니다.
++RWAN_6=Reaper는 Auto가 찾은 포트를 유지하며 다시는 로컬 네트워크에 연결하지 않습니다. 재부팅 후에도, 케이블이나 제공업체가 링크를 끊을 때도 마찬가지입니다. 케이블이 꽂힌 포트를 알고 있다면 그 포트를 선택하세요.
++RWAN_7=Auto가 시도하는 포트
++RWAN_8=사용 중인 인터넷 포트
++RWAN_9=첫 번째 연결이 실패하면 이어받거나(Fail Over) 트래픽을 나누어 처리하는(Load Balance) 두 번째 연결입니다. Dual WAN을 끄면 위의 단일 포트로 돌아갑니다.
++RWAN_10=라우터가 연결 끊김을 판단하는 방법: 몇 초마다 이름을 조회하거나 호스트에 Ping을 보내거나 둘 다 합니다. Dual WAN에서는 이것으로 연결 전환 시점이 결정됩니다.
++RWAN_11=Load Balance에서는 출발지에서 목적지로 가는 트래픽을 한 연결에 고정할 수 있습니다. 각 주소는 IP 주소, 넷마스크가 있는 주소(192.168.50.0/24) 또는 all입니다.
++RWAN_12=다시 감지
++RWAN_13=Auto가 찾았으며 로컬 네트워크와 분리됨
++RWAN_14=검색 중: 제공업체가 응답할 때까지 후보 포트가 로컬 네트워크에 연결됩니다
++RWAN_15=고정 포트: Auto 꺼짐
++RWAN_16=인터넷 포트를 다시 찾으시겠습니까? Reaper는 찾은 포트를 잊고, 제공업체가 그중 하나에서 응답할 때까지 후보 포트가 로컬 네트워크에 연결됩니다.
++RWAN_17=%1$@ 사용 중에는 Auto를 사용할 수 없습니다.
++RWAN_18=LAN 포트
++RWAN_19=VLAN 태그 WAN
++RWAN_20=인터넷 케이블이 꽂힌 포트를 선택하거나, Auto를 선택해 라우터가 찾도록 하세요.
++RWAN_21=둘 이상의 WAN 서비스
++RWAN_22=이 연결 유형
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index c44303ec06..c7f98ad60d 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Imbas dengan tukar saluran
+ RSVY_32=Radio 5 GHz yang dipantau radar tidak boleh mengimbas dari salurannya. Imbasan ini memindahkannya ke saluran bukan radar (36 atau 149 pada 80 MHz), mengimbas seluruh jalur, kemudian memindahkannya kembali. Pelanggannya terputus semasa imbasan, kembali ke saluran radar menunggu semakan radar (kira-kira seminit; radio dengan semakan radar latar belakang terus berkhidmat sementara itu, yang lain senyap), dan nod AiMesh mengikut perubahan itu. Radio lain mengimbas di tempat.
+ RSVY_33=Sahkan: pelanggan pada radio itu akan terputus
+ RSVY_34=imbasan penuh selepas tukar saluran melalui
++RWAN_1=Port WAN
++RWAN_2=Port mana yang membawa sambungan internet anda: satu port, atau dua dengan Dual WAN.
++RWAN_3=Port internet
++RWAN_4=Di mana kabel internet dipasang
++RWAN_5=Auto mencari port tempat penyedia internet anda menjawab. Ia mencuba setiap port berkeupayaan WAN pada penghala ini, walaupun Dual WAN dimatikan; semasa mencari, port tersebut disambungkan ke rangkaian setempat anda supaya peralatan penyedia dapat didengar padanya.
++RWAN_6=Reaper mengekalkan port yang dijumpai Auto dan tidak lagi menyambungkannya ke rangkaian setempat anda: tidak selepas but semula, dan tidak apabila kabel atau penyedia memutuskan pautan. Jika anda tahu port mana kabel dipasang, pilih port itu.
++RWAN_7=Port yang dicuba Auto
++RWAN_8=Port internet yang digunakan
++RWAN_9=Sambungan kedua yang mengambil alih apabila yang pertama gagal (Fail Over), atau berkongsi trafik dengannya (Load Balance). Mematikan Dual WAN kembali kepada satu port di atas.
++RWAN_10=Cara penghala memutuskan sambungan terputus: setiap beberapa saat ia menyelesaikan nama, ping hos, atau kedua-duanya. Dengan Dual WAN ini menentukan bila sambungan ditukar.
++RWAN_11=Dengan Load Balance, trafik dari sumber ke destinasi boleh ditetapkan kepada satu sambungan. Setiap alamat ialah alamat IP, alamat dengan netmask (192.168.50.0/24) atau all.
++RWAN_12=Kesan semula
++RWAN_13=Dijumpai oleh Auto dan diasingkan daripada rangkaian setempat
++RWAN_14=Mencari: port calon disambungkan ke rangkaian setempat sehingga penyedia menjawab
++RWAN_15=Port tetap: Auto dimatikan
++RWAN_16=Cari port internet sekali lagi? Reaper melupakan port yang dijumpai, dan port calon disambungkan ke rangkaian setempat anda sehingga penyedia menjawab pada salah satunya.
++RWAN_17=Auto tidak tersedia semasa %1$@ digunakan.
++RWAN_18=Port LAN
++RWAN_19=WAN bertag VLAN
++RWAN_20=Pilih port tempat kabel internet anda dipasang, atau Auto untuk membiarkan penghala mencarinya.
++RWAN_21=lebih daripada satu perkhidmatan WAN
++RWAN_22=jenis sambungan ini
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 47d10d5b74..ce5c71b48b 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scan met kanaalwissel
+ RSVY_32=Een 5 GHz-radio onder radarbewaking kan niet vanaf zijn kanaal scannen. Deze scan verplaatst hem naar een kanaal zonder radar (36 of 149 op 80 MHz), scant de hele band en zet hem terug. Zijn clients vallen tijdens de scan weg, de terugkeer naar een radarkanaal wacht op de radarcontrole (ongeveer een minuut; een radio met radarcontrole op de achtergrond blijft intussen bedienen, andere zijn stil) en AiMesh-nodes volgen de wissel. Andere radios scannen ter plekke.
+ RSVY_33=Bevestig: clients op die radio vallen weg
+ RSVY_34=volledige scan na kanaalwissel via
++RWAN_1=WAN-poorten
++RWAN_2=Welke poorten uw internetverbinding dragen: één poort, of twee met Dual WAN.
++RWAN_3=Internetpoort
++RWAN_4=Waar de internetkabel in gaat
++RWAN_5=Auto zoekt de poort waarop uw internetprovider antwoordt. Het probeert elke WAN-geschikte poort van deze router, ook met Dual WAN uit; tijdens het zoeken zijn die poorten met uw lokale netwerk verbonden, zodat de apparatuur van de provider erop gehoord kan worden.
++RWAN_6=Reaper houdt de poort die Auto vindt en verbindt die nooit meer met uw lokale netwerk: niet na een herstart, en niet wanneer de kabel of de provider de verbinding verliest. Weet u in welke poort de kabel zit, kies dan die poort.
++RWAN_7=Poorten die Auto probeert
++RWAN_8=Gebruikte internetpoort
++RWAN_9=Een tweede verbinding die overneemt als de eerste uitvalt (Fail Over), of het verkeer ermee deelt (Load Balance). Dual WAN uitzetten keert terug naar de enkele poort hierboven.
++RWAN_10=Hoe de router bepaalt dat een verbinding weg is: om de paar seconden zoekt hij een naam op, pingt hij een host, of beide. Met Dual WAN bepaalt dit wanneer van verbinding wordt gewisseld.
++RWAN_11=Met Load Balance kan verkeer van een bron naar een bestemming aan één verbinding worden vastgezet. Elk adres is een IP-adres, een adres met netmasker (192.168.50.0/24) of all.
++RWAN_12=Opnieuw detecteren
++RWAN_13=Gevonden door Auto en buiten het lokale netwerk gehouden
++RWAN_14=Zoeken: de kandidaatpoorten zijn met het lokale netwerk verbonden tot de provider antwoordt
++RWAN_15=Vaste poort: Auto staat uit
++RWAN_16=Opnieuw naar de internetpoort zoeken? Reaper vergeet de gevonden poort en de kandidaatpoorten worden met uw lokale netwerk verbonden tot de provider op een ervan antwoordt.
++RWAN_17=Auto is niet beschikbaar zolang %1$@ in gebruik is.
++RWAN_18=LAN-poort
++RWAN_19=een VLAN-getagde WAN
++RWAN_20=Kies de poort waarin uw internetkabel zit, of Auto om de router hem te laten vinden.
++RWAN_21=meer dan één WAN-dienst
++RWAN_22=dit verbindingstype
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index c81a2e9f39..308a4c8181 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Skann med kanalbytte
+ RSVY_32=En 5 GHz-radio under radarovervåking kan ikke skanne fra kanalen sin. Denne skanningen flytter den til en kanal uten radar (36 eller 149 på 80 MHz), skanner hele båndet og flytter den tilbake. Klientene faller av under skanningen, tilbakeføringen til en radarkanal venter på radarsjekken (omtrent ett minutt; en radio med radarsjekk i bakgrunnen betjener fortsatt imens, andre er stille), og AiMesh-noder følger byttet. Andre radioer skanner på stedet.
+ RSVY_33=Bekreft: klienter på den radioen faller av
+ RSVY_34=full skanning etter kanalbytte via
++RWAN_1=WAN-porter
++RWAN_2=Hvilke porter som bærer internettforbindelsen: én port, eller to med Dual WAN.
++RWAN_3=Internettport
++RWAN_4=Hvor internettkabelen går
++RWAN_5=Auto finner porten internettleverandøren svarer på. Den prøver alle WAN-kompatible porter på ruteren, også med Dual WAN av; mens den søker, er disse portene koblet til det lokale nettverket slik at leverandørens utstyr kan høres på dem.
++RWAN_6=Reaper beholder porten Auto finner og kobler den aldri til det lokale nettverket igjen: verken etter en omstart eller når kabelen eller leverandøren mister forbindelsen. Vet du hvilken port kabelen står i, velg den porten.
++RWAN_7=Porter Auto prøver
++RWAN_8=Internettport i bruk
++RWAN_9=En andre forbindelse som tar over når den første svikter (Fail Over), eller deler trafikken med den (Load Balance). Slås Dual WAN av, går du tilbake til den ene porten over.
++RWAN_10=Slik avgjør ruteren at en forbindelse er nede: med noen sekunders mellomrom slår den opp et navn, pinger en vert eller begge deler. Med Dual WAN avgjør dette når forbindelsen byttes.
++RWAN_11=Med Load Balance kan trafikk fra en kilde til et mål låses til én forbindelse. Hver adresse er en IP-adresse, en adresse med nettmaske (192.168.50.0/24) eller all.
++RWAN_12=Finn på nytt
++RWAN_13=Funnet av Auto og holdt utenfor det lokale nettverket
++RWAN_14=Søker: kandidatportene er koblet til det lokale nettverket til leverandøren svarer
++RWAN_15=Fast port: Auto er av
++RWAN_16=Søke etter internettporten på nytt? Reaper glemmer porten den fant, og kandidatportene kobles til det lokale nettverket til leverandøren svarer på en av dem.
++RWAN_17=Auto er ikke tilgjengelig mens %1$@ er i bruk.
++RWAN_18=LAN-port
++RWAN_19=et VLAN-merket WAN
++RWAN_20=Velg porten internettkabelen står i, eller Auto for å la ruteren finne den.
++RWAN_21=mer enn én WAN-tjeneste
++RWAN_22=denne tilkoblingstypen
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 00866e5de5..25122a3a81 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Skanowanie ze zmianą kanału
+ RSVY_32=Radio 5 GHz pod nadzorem radarowym nie może skanować ze swojego kanału. To skanowanie przenosi je na kanał bez radaru (36 lub 149 przy 80 MHz), skanuje całe pasmo i przywraca je. Jego klienci odłączają się na czas skanowania, powrót na kanał radarowy czeka na kontrolę radaru (około minuty; radio z kontrolą radaru w tle w tym czasie nadal obsługuje klientów, pozostałe milczą), a węzły AiMesh podążają za zmianą. Pozostałe radia skanują w miejscu.
+ RSVY_33=Potwierdź: klienci tego radia zostaną odłączeni
+ RSVY_34=pełne skanowanie po zmianie kanału przez
++RWAN_1=Porty WAN
++RWAN_2=Które porty przenoszą połączenie z internetem: jeden port lub dwa z Dual WAN.
++RWAN_3=Port internetowy
++RWAN_4=Gdzie jest kabel internetowy
++RWAN_5=Auto znajduje port, na którym odpowiada dostawca internetu. Próbuje każdego portu tego routera obsługującego WAN, nawet przy wyłączonym Dual WAN; podczas szukania porty te są dołączone do sieci lokalnej, aby było na nich słychać sprzęt dostawcy.
++RWAN_6=Reaper zachowuje port znaleziony przez Auto i nigdy więcej nie dołącza go do sieci lokalnej: ani po restarcie, ani gdy kabel lub dostawca zerwie łącze. Jeśli wiesz, w którym porcie jest kabel, wybierz ten port.
++RWAN_7=Porty sprawdzane przez Auto
++RWAN_8=Używany port internetowy
++RWAN_9=Drugie połączenie, które przejmuje ruch, gdy pierwsze zawiedzie (Fail Over), lub dzieli z nim ruch (Load Balance). Wyłączenie Dual WAN przywraca pojedynczy port powyżej.
++RWAN_10=Jak router stwierdza, że połączenie nie działa: co kilka sekund rozwiązuje nazwę, pinguje hosta albo jedno i drugie. W Dual WAN decyduje to o przełączeniu połączenia.
++RWAN_11=W Load Balance ruch ze źródła do celu można przypiąć do jednego połączenia. Każdy adres to adres IP, adres z maską (192.168.50.0/24) lub all.
++RWAN_12=Wykryj ponownie
++RWAN_13=Znaleziony przez Auto i trzymany poza siecią lokalną
++RWAN_14=Wyszukiwanie: porty kandydujące są dołączone do sieci lokalnej, dopóki dostawca nie odpowie
++RWAN_15=Stały port: Auto wyłączone
++RWAN_16=Ponownie wyszukać port internetowy? Reaper zapomni znaleziony port, a porty kandydujące dołączą do sieci lokalnej, dopóki dostawca nie odpowie na jednym z nich.
++RWAN_17=Auto jest niedostępne, gdy używane jest %1$@.
++RWAN_18=Port LAN
++RWAN_19=WAN z tagiem VLAN
++RWAN_20=Wybierz port, w którym jest kabel internetowy, lub Auto, aby router sam go znalazł.
++RWAN_21=więcej niż jedna usługa WAN
++RWAN_22=ten typ połączenia
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index cecab265ec..f54005ac89 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Scanare cu schimbarea canalului
+ RSVY_32=Un radio de 5 GHz aflat sub monitorizare radar nu poate scana de pe canalul său. Această scanare îl mută pe un canal fără radar (36 sau 149 la 80 MHz), scanează întreaga bandă și îl readuce. Clienții săi se deconectează pe durata scanării, revenirea pe un canal radar așteaptă verificarea radar (circa un minut; un radio cu verificare radar în fundal continuă să deservească între timp, celelalte tac), iar nodurile AiMesh urmează schimbarea. Celelalte radiouri scanează pe loc.
+ RSVY_33=Confirmă: clienții acelui radio se vor deconecta
+ RSVY_34=scanare completă după schimbarea canalului prin
++RWAN_1=Porturi WAN
++RWAN_2=Ce porturi transportă conexiunea la internet: un port, sau două cu Dual WAN.
++RWAN_3=Port de internet
++RWAN_4=Unde se conectează cablul de internet
++RWAN_5=Auto găsește portul pe care răspunde furnizorul de internet. Încearcă fiecare port compatibil WAN al acestui router, chiar și cu Dual WAN oprit; în timpul căutării, acele porturi sunt conectate la rețeaua locală pentru ca echipamentul furnizorului să poată fi auzit pe ele.
++RWAN_6=Reaper păstrează portul găsit de Auto și nu îl mai conectează niciodată la rețeaua locală: nici după o repornire, nici când cablul sau furnizorul pierde legătura. Dacă știți în ce port este cablul, alegeți acel port.
++RWAN_7=Porturi încercate de Auto
++RWAN_8=Port de internet folosit
++RWAN_9=O a doua conexiune care preia când prima cade (Fail Over) sau împarte traficul cu ea (Load Balance). Oprirea Dual WAN revine la portul unic de mai sus.
++RWAN_10=Cum decide routerul că o conexiune a căzut: la câteva secunde rezolvă un nume, dă ping unei gazde sau ambele. Cu Dual WAN aceasta decide când se schimbă conexiunea.
++RWAN_11=Cu Load Balance, traficul de la o sursă către o destinație poate fi fixat pe o conexiune. Fiecare adresă este o adresă IP, o adresă cu mască (192.168.50.0/24) sau all.
++RWAN_12=Detectează din nou
++RWAN_13=Găsit de Auto și ținut în afara rețelei locale
++RWAN_14=Căutare: porturile candidate sunt conectate la rețeaua locală până răspunde furnizorul
++RWAN_15=Port fix: Auto este oprit
++RWAN_16=Căutați din nou portul de internet? Reaper uită portul găsit, iar porturile candidate se conectează la rețeaua locală până când furnizorul răspunde pe unul dintre ele.
++RWAN_17=Auto nu este disponibil cât timp se folosește %1$@.
++RWAN_18=Port LAN
++RWAN_19=un WAN etichetat VLAN
++RWAN_20=Alegeți portul în care este cablul de internet sau Auto pentru ca routerul să îl găsească.
++RWAN_21=mai mult de un serviciu WAN
++RWAN_22=acest tip de conexiune
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index acf8d646e5..cc1b0880ac 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Сканирование со сменой канала
+ RSVY_32=Радио 5 ГГц под радарным наблюдением не может сканировать со своего канала. Это сканирование переводит его на нерадарный канал (36 или 149 при 80 МГц), сканирует весь диапазон и возвращает обратно. Его клиенты отключаются на время сканирования, возврат на радарный канал ждёт проверки радара (около минуты; радио с фоновой проверкой радара всё это время продолжает обслуживать клиентов, остальные молчат), а узлы AiMesh следуют за изменением. Остальные радио сканируют на месте.
+ RSVY_33=Подтвердить: клиенты этого радио отключатся
+ RSVY_34=полное сканирование после смены канала через
++RWAN_1=Порты WAN
++RWAN_2=Какие порты несут ваше подключение к интернету: один порт или два с Dual WAN.
++RWAN_3=Порт интернета
++RWAN_4=Куда подключен кабель интернета
++RWAN_5=Auto находит порт, на котором отвечает ваш интернет-провайдер. Он пробует каждый порт этого роутера с поддержкой WAN, даже при выключенном Dual WAN; во время поиска эти порты подключены к вашей локальной сети, чтобы на них было слышно оборудование провайдера.
++RWAN_6=Reaper сохраняет порт, найденный Auto, и больше никогда не подключает его к вашей локальной сети: ни после перезагрузки, ни когда кабель или провайдер разрывают связь. Если вы знаете, в каком порту кабель, выберите этот порт.
++RWAN_7=Порты, которые пробует Auto
++RWAN_8=Используемый порт интернета
++RWAN_9=Второе подключение, которое берет на себя трафик при отказе первого (Fail Over) или делит с ним трафик (Load Balance). Выключение Dual WAN возвращает к одному порту выше.
++RWAN_10=Как роутер решает, что подключение пропало: каждые несколько секунд он разрешает имя, пингует узел или делает и то и другое. В Dual WAN это определяет, когда переключать подключение.
++RWAN_11=В режиме Load Balance трафик от источника к получателю можно закрепить за одним подключением. Каждый адрес: IP-адрес, адрес с маской (192.168.50.0/24) или all.
++RWAN_12=Определить заново
++RWAN_13=Найден Auto и изолирован от локальной сети
++RWAN_14=Поиск: порты-кандидаты подключены к локальной сети, пока провайдер не ответит
++RWAN_15=Фиксированный порт: Auto выключен
++RWAN_16=Искать порт интернета заново? Reaper забудет найденный порт, и порты-кандидаты подключатся к вашей локальной сети, пока провайдер не ответит на одном из них.
++RWAN_17=Auto недоступен, пока используется %1$@.
++RWAN_18=Порт LAN
++RWAN_19=WAN с тегом VLAN
++RWAN_20=Выберите порт, в который подключен кабель интернета, или Auto, чтобы роутер нашел его сам.
++RWAN_21=более одной службы WAN
++RWAN_22=этот тип подключения
+diff --git a/release/src/router/www/Reaper_WANPorts.asp b/release/src/router/www/Reaper_WANPorts.asp
+new file mode 100644
+index 0000000000..08915d2300
+--- /dev/null
++++ b/release/src/router/www/Reaper_WANPorts.asp
+@@ -0,0 +1,1349 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++     reaper v3.3.6 (owner, 2026-10-06): WAN > WAN Ports replaces the stock Dual WAN tab
++     (Advanced_WANPort_Content.asp, kept byte-pristine and redirected here). The stock tab
++     hid a single-WAN decision - which physical port is the internet port, and that "Auto"
++     probes several ports even with Dual WAN off - under a page named for two connections.
++     This page puts that decision first, says what Auto does (and that Reaper pins the port
++     it finds, rc/reaper_wanpin.c), then offers Dual WAN, connection monitoring and the
++     load-balance rules with every stock function.
++     THE APPLY IS THE STOCK ONE. buildPost() is a line-for-line port of the stock page's
++     applyRule() (plus initial()/form_show()/changeWANProto() for the defaults it relies on),
++     run over a plain state object instead of the stock DOM: the same nvram names, values,
++     confirmations and the same reboot. build-scripts/tests/test_wanports_parity drives the
++     stock page and this one through the same scenarios on the mock router and requires the
++     same nvram changes; keep the two in step if either moves. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RWAN_1#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418; --panel-3:#1a1a1f;
++  --line-soft:rgba(255,255,255,.07); --line-crimson:rgba(225,6,0,.34);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{color:var(--bone-dim);font-family:var(--body);font-size:13.5px;line-height:1.55;padding:22px 24px 60px;position:relative}
++body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
++  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E")}
++body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
++  background:radial-gradient(120% 90% at 50% 0%,transparent 55%,rgba(0,0,0,.5) 100%)}
++.page{position:relative;z-index:1;max-width:1180px;min-width:0}
++
++/* ---------- identity ---------- */
++.idrow{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
++.sig{width:52px;height:52px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
++  border:1px solid var(--line-crimson);border-radius:12px;background:
++  radial-gradient(80% 80% at 30% 20%,rgba(225,6,0,.16),transparent 70%),var(--panel)}
++.sig svg{width:34px;height:34px;fill:none;stroke:var(--bone);stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
++.sig .bl{stroke:var(--crimson)}
++.idtxt{min-width:0;flex:1 1 380px}
++.idtxt h1{font-family:var(--hdr);font-weight:700;font-size:26px;letter-spacing:.05em;color:var(--bone);text-transform:uppercase}
++.idtxt .sub{font-size:12.3px;color:var(--steel);margin-top:2px;max-width:78ch}
++.idchips{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;min-width:0}
++.chip{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
++  color:var(--bone-dim);border:1px solid var(--line-soft);border-radius:6px;padding:5px 10px;background:var(--panel);
++  white-space:nowrap;display:inline-flex;align-items:center;gap:7px;max-width:100%;min-width:0}
++.chip b{color:var(--bone);font-weight:600;overflow:hidden;text-overflow:ellipsis;max-width:24ch}
++.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--steel);flex:0 0 auto}
++.chip.ok .dot{background:var(--jade)} .chip.warn .dot{background:var(--amber)}
++.helpq{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
++  border:1px solid #4a4a4e;color:#8d897f;font:700 12px var(--body);text-decoration:none;vertical-align:2px;margin-left:10px}
++.helpq:hover{border-color:var(--crimson);color:var(--bone)}
++
++/* ---------- cards ---------- */
++.tier{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.16em;text-transform:uppercase;
++  color:var(--steel);display:flex;align-items:center;gap:12px;margin:24px 0 12px}
++.tier::after{content:"";flex:1;height:1px;background:var(--line-soft)}
++.card{position:relative;background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;
++  padding:18px 20px;display:flex;flex-direction:column;min-width:0}
++.card + .card{margin-top:14px}
++.card.hero{border-color:var(--line-crimson);
++  background:radial-gradient(90% 120% at 8% 0%,rgba(225,6,0,.10),transparent 55%),var(--panel)}
++.card.hero::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:3px;background:var(--crimson)}
++.chead{display:flex;align-items:center;gap:13px;margin-bottom:4px;flex-wrap:wrap}
++.cico{width:38px;height:38px;flex:0 0 auto;border-radius:10px;border:1px solid var(--line-soft);
++  background:var(--panel-2);display:flex;align-items:center;justify-content:center}
++.cico svg{width:20px;height:20px;stroke:var(--bone-dim);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
++.card.hero .cico{border-color:var(--line-crimson)} .card.hero .cico svg{stroke:var(--crimson)}
++.card h2{font-family:var(--hdr);font-weight:700;font-size:17px;letter-spacing:.04em;color:var(--bone);min-width:0}
++.chead .sw{margin-left:auto}
++.card p{font-size:12.3px;line-height:1.6;color:var(--bone-dim);margin:10px 0 0;max-width:80ch}
++.card p.dim{color:var(--steel)}
++.card p.warn{color:var(--amber)}
++
++/* port tiles */
++.ports{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,190px),1fr));gap:10px;margin-top:16px}
++.port{position:relative;display:flex;flex-direction:column;gap:4px;padding:12px 14px;border-radius:10px;cursor:pointer;
++  border:1px solid #2c2c31;background:var(--panel-2);min-width:0;transition:border-color .15s,background .15s}
++.port input{position:absolute;opacity:0;width:0;height:0}
++.port .pn{font-family:var(--hdr);font-weight:700;font-size:15px;letter-spacing:.04em;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.port .pd{font-size:11px;color:var(--steel);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.port:hover{border-color:#4a4a4e}
++.port.on{border-color:var(--crimson-deep);background:linear-gradient(180deg,rgba(225,6,0,.10),rgba(225,6,0,.02))}
++.port.on .pn{color:var(--bone)}
++.port.on::after{content:"";position:absolute;top:10px;right:10px;width:9px;height:9px;border-radius:50%;background:var(--crimson)}
++.port:focus-within{outline:2px solid var(--bone);outline-offset:2px}
++.port.auto .pn::before{content:"\2731 ";color:var(--crimson)}
++.subsel{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
++.subsel .l{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim)}
++
++/* auto explainer + pin line */
++.explain{margin-top:16px;padding:14px 16px;border-radius:10px;border:1px solid var(--line-soft);background:var(--panel-2)}
++.explain p{margin:0}
++.explain p + p{margin-top:8px}
++.explain .cands{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
++.explain .cands .k{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.tag{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.06em;color:var(--bone);border:1px solid #3a3a3e;border-radius:6px;padding:3px 9px;background:#0b0b0d}
++.pinline{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding:11px 14px;border-radius:10px;border:1px solid var(--line-soft);background:#0b0b0d}
++.pinline .k{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
++.pinline .v{color:var(--bone);font-size:12.5px;min-width:0;flex:1 1 260px}
++.pinline .v .st{color:var(--steel)}
++.pinline .v.pinned .st{color:var(--jade)}
++.pinline .v.search .st{color:var(--amber)}
++.pinline .btn{margin-left:auto}
++
++/* toggle switch: neutral grey, never crimson (rule 11) */
++.sw{position:relative;display:inline-flex;align-items:center;gap:10px;cursor:pointer;flex:0 0 auto;user-select:none}
++.sw input{position:absolute;opacity:0;width:0;height:0}
++.sw .tr{width:40px;height:22px;border-radius:22px;background:#26262b;border:1px solid #3a3a3e;position:relative;transition:background .15s,border-color .15s}
++.sw .tr::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8d897f;transition:left .15s,background .15s}
++.sw input:checked ~ .tr{background:#4a4f55;border-color:#71767b}
++.sw input:checked ~ .tr::after{left:20px;background:var(--bone)}
++.sw input:focus-visible ~ .tr{outline:2px solid var(--bone);outline-offset:2px}
++.sw input:disabled ~ .tr{opacity:.4}
++.sw .lb{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim)}
++
++/* fields */
++.fields{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;margin-top:16px}
++@media (max-width:820px){.fields{grid-template-columns:1fr}}
++.fld{display:block;min-width:0}
++.fld.wide{grid-column:1 / -1}
++.fld .l{display:block;font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
++.fld .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--bone-dim)}
++input.fx,select.fx{padding:8px 10px;background:#0b0b0d;border:1px solid #3a3a3e;border-radius:7px;color:var(--bone);
++  font:600 13px var(--body);letter-spacing:.02em;font-variant-numeric:tabular-nums;max-width:100%}
++input.fx:focus,select.fx:focus{outline:none;border-color:var(--crimson-deep)}
++input.fx:disabled,select.fx:disabled{opacity:.4}
++input.fx.n2{width:64px;text-align:center}
++input.fx.wide{width:100%}
++select.fx option{background:#0b0b0d;color:var(--bone)}
++.fld .note{display:block;font-size:11px;color:var(--steel);line-height:1.5;margin-top:6px;max-width:72ch}
++.seg{display:inline-flex;border:1px solid #3a3a3e;border-radius:8px;overflow:hidden;flex-wrap:wrap}
++.seg button{font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:8px 14px;
++  background:transparent;border:0;color:var(--bone-dim);cursor:pointer}
++.seg button + button{border-left:1px solid #3a3a3e}
++.seg button.on{background:#2a2a30;color:var(--bone)}
++.seg button:focus-visible{outline:2px solid var(--bone);outline-offset:-2px}
++.chk{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--bone-dim)}
++.chk input{accent-color:#8d897f}
++.hidden{display:none!important}
++.off{opacity:.38;pointer-events:none}
++
++/* ping target presets */
++.ptwrap{position:relative;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
++.ptlist{display:none;position:absolute;top:100%;left:0;z-index:20;margin-top:4px;min-width:260px;max-height:240px;overflow:auto;
++  background:#0f0f12;border:1px solid #3a3a3e;border-radius:8px;padding:4px 0}
++.ptlist.on{display:block}
++.ptlist button{display:block;width:100%;text-align:left;padding:7px 12px;background:transparent;border:0;color:var(--bone-dim);font:400 12.5px var(--body);cursor:pointer}
++.ptlist button:hover{background:#1a1a1f;color:var(--bone)}
++.ptlist b{color:var(--bone);font-weight:600}
++
++/* rules table */
++.rules{margin-top:14px;border:1px solid var(--line-soft);border-radius:10px;overflow:hidden}
++.rrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,150px) 92px;gap:10px;align-items:center;padding:9px 12px}
++.rrow + .rrow{border-top:1px solid var(--line-soft)}
++.rrow.h{background:var(--panel-2);font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
++.rrow .c{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bone);font-size:12.5px;font-variant-numeric:tabular-nums}
++.rrow.add{background:#0b0b0d}
++.rrow.add input.fx,.rrow.add select.fx{width:100%}
++@media (max-width:720px){.rrow{grid-template-columns:1fr 1fr}.rrow.h{display:none}}
++.empty{padding:12px;color:var(--steel);font-size:12px}
++
++/* apply bar */
++.bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:22px;padding:14px 16px;border:1px solid var(--line-soft);
++  border-radius:12px;background:var(--panel)}
++.bar .msg{font-size:12px;color:var(--steel);flex:1 1 300px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
++.bar .msg.err{color:var(--danger)}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:11.5px;
++  border-radius:8px;padding:9px 18px;cursor:pointer;border:1px solid rgba(255,255,255,.16);
++  background:transparent;color:var(--bone-dim);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
++.btn:hover{color:var(--bone);border-color:var(--crimson-deep)}
++.btn:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
++.btn.hot{background:var(--crimson-deep);border-color:var(--crimson-deep);color:var(--bone);margin-left:auto}
++.btn.hot:hover{background:var(--crimson);box-shadow:0 0 18px rgba(225,6,0,.25)}
++.btn.sm{padding:6px 12px;font-size:11px}
++.btn[disabled]{opacity:.4;cursor:not-allowed}
++
++/* overlay (rule 35 class) */
++.ovl{display:none;position:fixed;inset:0;z-index:1000;background:rgba(4,4,5,.88);align-items:center;justify-content:center;text-align:center}
++.ovl.on{display:flex}
++.ovl .box{max-width:520px;padding:28px 30px}
++.ovl .t{font-family:var(--hdr);font-weight:700;font-size:19px;color:var(--bone);margin-bottom:10px}
++.ovl .s{font-size:12.5px;color:var(--bone-dim);line-height:1.6}
++.ovl .beat{margin:16px auto 0;width:44px;height:4px;border-radius:3px;background:#1c1c21;overflow:hidden}
++.ovl .beat i{display:block;height:100%;width:40%;background:var(--crimson);animation:rb 1.1s infinite linear}
++@keyframes rb{0%{margin-left:-40%}100%{margin-left:100%}}
++@media (prefers-reduced-motion:reduce){.ovl .beat i{animation:none}}
++</style>
++</head>
++<body>
++<div class="page">
++
++<div class="idrow">
++  <div class="sig" aria-hidden="true">
++    <svg viewBox="0 0 64 64"><path d="M10 40h44v12H10z"/><path class="bl" d="M18 46h4M28 46h4"/><path d="M32 40V26"/><path class="bl" d="M20 18a17 17 0 0 1 24 0M25 23a9 9 0 0 1 14 0"/></svg>
++  </div>
++  <div class="idtxt">
++    <h1><#RWAN_1#><a class="helpq" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#419-wan-ports" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>">?</a></h1>
++    <div class="sub"><#RWAN_2#></div>
++  </div>
++  <div class="idchips">
++    <span class="chip" id="chip_port"><i class="dot"></i><b id="chip_port_v">&mdash;</b></span>
++    <span class="chip" id="chip_dual"><#dualwan#> <b id="chip_dual_v">&mdash;</b></span>
++  </div>
++</div>
++
++<!-- ===== the internet port ===== -->
++<div class="tier"><#RWAN_3#></div>
++<div class="card hero" id="c_primary">
++  <div class="chead">
++    <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 15h18v5H3z"/><path d="M7 17.5h2M11 17.5h2"/><path d="M12 15V9"/><path d="M8 7a6 6 0 0 1 8 0"/></svg></span>
++    <h2 id="primary_h"><#RWAN_4#></h2>
++  </div>
++  <p id="primary_p"><#RWAN_20#></p>
++  <div class="ports" id="ports_primary" role="radiogroup" aria-labelledby="primary_h"></div>
++  <div class="subsel hidden" id="lanport1_row"><span class="l"><#RWAN_18#></span><select class="fx" id="lanport1"></select></div>
++  <div class="explain hidden" id="auto_explain">
++    <p><#RWAN_5#></p>
++    <p><#RWAN_6#></p>
++    <div class="cands"><span class="k"><#RWAN_7#></span><span id="cand_tags"></span></div>
++  </div>
++  <p class="warn hidden" id="auto_blocked"></p>
++  <div class="pinline hidden" id="pinline">
++    <span class="k"><#RWAN_8#></span>
++    <span class="v" id="pin_v"></span>
++    <button class="btn sm" type="button" id="redetect"><#RWAN_12#></button>
++  </div>
++  <div class="fields hidden" id="usbbk_row">
++    <div class="fld wide">
++      <span class="l"><#dualwan_usb_backup#></span>
++      <span class="row" id="usbbk_set"><label class="sw"><input type="checkbox" id="usbbk"><span class="tr"></span></label></span>
++      <span class="note hidden" id="usbbk_hint"><#dualwan_usb_backup_hint#></span>
++    </div>
++  </div>
++</div>
++
++<!-- ===== dual WAN ===== -->
++<div class="tier"><#dualwan#></div>
++<div class="card" id="c_dual">
++  <div class="chead">
++    <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h11l3 3"/><path d="M4 17h11l3-3"/><path d="M18 10v4"/><circle cx="4" cy="7" r="1.5"/><circle cx="4" cy="17" r="1.5"/></svg></span>
++    <h2><#dualwan_enable#></h2>
++    <label class="sw"><input type="checkbox" id="dual"><span class="tr"></span></label>
++  </div>
++  <p><#RWAN_9#></p>
++  <p class="warn hidden" id="aggr_note"><#WANAggregation_goto_WAN#></p>
++  <div id="dual_body">
++    <div class="fld" style="margin-top:16px">
++      <span class="l"><#dualwan_secondary#></span>
++      <div class="ports" id="ports_second" role="radiogroup"></div>
++      <div class="subsel hidden" id="lanport2_row"><span class="l"><#RWAN_18#></span><select class="fx" id="lanport2"></select></div>
++    </div>
++    <div class="fields">
++      <div class="fld">
++        <span class="l"><#dualwan_mode#></span>
++        <span class="seg" id="mode_seg"><button type="button" data-m="fo"><#dualwan_mode_fo#></button><button type="button" data-m="lb"><#dualwan_mode_lb#></button></span>
++        <span class="note" id="mode_note_fo"><label class="chk"><input type="checkbox" id="failback"><#dualwan_failback_allow#></label></span>
++        <span class="note hidden" id="mode_note_lb"><#dualwan_lb_note#></span>
++      </div>
++      <div class="fld hidden" id="ratio_row">
++        <span class="l"><#dualwan_mode_lb_setting#></span>
++        <span class="row"><input class="fx n2" id="ratio0" maxlength="1" inputmode="numeric"> : <input class="fx n2" id="ratio1" maxlength="1" inputmode="numeric"><span class="note" style="margin:0">1&ndash;9</span></span>
++      </div>
++      <div class="fld hidden" id="standby_row">
++        <span class="l"><#Standby_str#></span>
++        <label class="sw"><input type="checkbox" id="standby"><span class="tr"></span></label>
++        <span class="note"><#Standby_hint1#></span>
++      </div>
++    </div>
++  </div>
++</div>
++
++<!-- ===== monitoring ===== -->
++<div class="tier" id="mon_tier"><#dualwan_pingtime_wd2#></div>
++<div class="card" id="c_mon">
++  <div class="chead">
++    <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 3 12 3-8 2 2h4"/></svg></span>
++    <h2 id="mon_h"><#Network_Monitoring#></h2>
++  </div>
++  <p><#RWAN_10#></p>
++  <div class="fields">
++    <div class="fld">
++      <span class="l"><#Retry_interval2#></span>
++      <span class="row" id="intv_row"></span>
++    </div>
++    <div class="fld">
++      <span class="l" id="maxfail_l"></span>
++      <span class="row" id="maxfail_row"></span>
++    </div>
++    <div class="fld wide hidden" id="fb_row">
++      <span class="l"><#dualwan_failback_trigger#></span>
++      <span class="row" id="fbcount_row"></span>
++    </div>
++    <div class="fld">
++      <label class="chk"><input type="checkbox" id="dnsprobe"><b class="l" style="margin:0"><#DNS_Query#></b></label>
++      <span class="l" style="margin-top:10px"><#Resolved_Target#></span>
++      <input class="fx wide" id="dnshost" maxlength="255" autocorrect="off" autocapitalize="off" spellcheck="false">
++    </div>
++    <div class="fld">
++      <label class="chk"><input type="checkbox" id="ping"><b class="l" style="margin:0"><#Ping#></b></label>
++      <span class="l" style="margin-top:10px"><#Ping_Target#></span>
++      <span class="ptwrap">
++        <input class="fx" id="pingtarget" maxlength="100" placeholder="ex: www.google.com" autocorrect="off" autocapitalize="off" spellcheck="false" style="flex:1 1 200px;min-width:0">
++        <button class="btn sm" type="button" id="ptpick" title="<#select_network_host#>">&#9662;</button>
++        <span class="ptlist" id="ptlist"></span>
++      </span>
++    </div>
++  </div>
++</div>
++
++<!-- ===== load balance rules ===== -->
++<div id="lb_block" class="hidden">
++<div class="tier"><#dualwan_routing_rule#></div>
++<div class="card">
++  <div class="chead">
++    <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h7l3 6-3 6H4"/><path d="M14 12h6"/><path d="M17 9l3 3-3 3"/></svg></span>
++    <h2><#dualwan_routing_rule_enable#></h2>
++    <label class="sw"><input type="checkbox" id="rtenable"><span class="tr"></span></label>
++  </div>
++  <p><#RWAN_11#></p>
++  <div class="rules" id="rules"></div>
++  <div class="fields">
++    <div class="fld wide">
++      <span class="l"><#dualwan_isp_rules#></span>
++      <span class="seg" id="isp_seg"><button type="button" data-u="0"><#wl_securitylevel_0#></button><button type="button" data-u="1"><#dualwan_primary#></button><button type="button" data-u="2"><#dualwan_secondary#></button></span>
++    </div>
++    <div class="fld" id="isp0_row">
++      <span class="l"><#dualwan_isp_primary#></span>
++      <span class="row"><select class="fx" id="isp0c"></select><select class="fx hidden" id="isp0l"></select></span>
++    </div>
++    <div class="fld" id="isp1_row">
++      <span class="l"><#dualwan_isp_secondary#></span>
++      <span class="row"><select class="fx" id="isp1c"></select><select class="fx hidden" id="isp1l"></select></span>
++    </div>
++  </div>
++</div>
++</div>
++
++<div class="bar">
++  <span class="msg" id="msg"></span>
++  <button class="btn hot" id="apply" type="button"><#CTL_apply#></button>
++</div>
++
++</div>
++<div class="ovl" id="ovl"><div class="box"><div class="t" id="ovl_t"></div><div class="s" id="ovl_s"></div><div class="beat"><i></i></div></div></div>
++<iframe name="wp_hidden" style="display:none" title="apply"></iframe>
++
++<script>
++/* ===================== router state (server-side, read once) ===================== */
++var UI = [<% get_ui_support(); %>][0];
++function sup(k){ return (UI && UI[k]) ? UI[k] : 0; }
++/* free text arrives URL-encoded (nvram_char_to_ascii): nvram_get passes ' and \ through raw, and either would
++   end the single-quoted literal and stop this whole script */
++function U(s){ try{ return decodeURIComponent(s); }catch(e){ return s; } }
++var NV = {
++  productid: '<% nvram_get("productid"); %>',
++  wans_cap: '<% nvram_get("wans_cap"); %>',
++  wans_dualwan: '<% nvram_get("wans_dualwan"); %>',
++  wans_mode: '<% nvram_get("wans_mode"); %>',
++  wans_mode_default: '<% nvram_default_get("wans_mode"); %>',
++  wans_lanport: '<% nvram_get("wans_lanport"); %>',
++  wans_extwan: '<% nvram_get("wans_extwan"); %>',
++  wans_lb_ratio: '<% nvram_get("wans_lb_ratio"); %>',
++  wans_standby: '<% nvram_get("wans_standby"); %>',
++  wans_usb_bk: '<% nvram_get("wans_usb_bk"); %>',
++  wans_usb_bk_act: '<% nvram_get("wans_usb_bk_act"); %>',
++  wans_routing_enable: '<% nvram_get("wans_routing_enable"); %>',
++  wan_unit: '<% nvram_get("wan_unit"); %>',
++  wan0_enable: '<% nvram_get("wan0_enable"); %>',
++  wan1_enable: '<% nvram_get("wan1_enable"); %>',
++  wan0_routing_isp_enable: '<% nvram_get("wan0_routing_isp_enable"); %>',
++  wan0_routing_isp: U('<% nvram_char_to_ascii("","wan0_routing_isp"); %>'),
++  wan1_routing_isp_enable: '<% nvram_get("wan1_routing_isp_enable"); %>',
++  wan1_routing_isp: U('<% nvram_char_to_ascii("","wan1_routing_isp"); %>'),
++  wandog_enable: '<% nvram_get("wandog_enable"); %>',
++  wandog_target: U('<% nvram_char_to_ascii("","wandog_target"); %>'),
++  wandog_interval: '<% nvram_get("wandog_interval"); %>',
++  wandog_maxfail: '<% nvram_get("wandog_maxfail"); %>',
++  wandog_fb_count: '<% nvram_get("wandog_fb_count"); %>',
++  dns_probe: '<% nvram_get("dns_probe"); %>',
++  dns_probe_host: U('<% nvram_char_to_ascii("","dns_probe_host"); %>'),
++  dns_probe_timeout: '<% nvram_get("dns_probe_timeout"); %>',
++  autowan_enable: '<% nvram_get("autowan_enable"); %>',
++  autowan_detected_ifname: '<% nvram_get("autowan_detected_ifname"); %>',
++  autowan_ifnames: '<% nvram_get("autowan_ifnames"); %>',
++  reaper_wanport: '<% nvram_get("reaper_wanport"); %>',
++  wan_ifname_x: '<% nvram_get("wan_ifname_x"); %>',
++  switch_wantag: '<% nvram_get("switch_wantag"); %>',
++  switch_stb_x: '<% nvram_get("switch_stb_x"); %>',
++  wan0_dot1q: '<% nvram_get("wan0_dot1q"); %>',
++  wan_proto: '<% nvram_get("wan_proto"); %>',
++  bond_wan: '<% nvram_get("bond_wan"); %>',
++  wanports_bond: '<% nvram_get("wanports_bond"); %>',
++  lacp_enabled: '<% nvram_get("lacp_enabled"); %>',
++  lacp_ifnames_x: '<% nvram_get("lacp_ifnames_x"); %>',
++  lan_trunk_type: '<% nvram_get("lan_trunk_type"); %>',
++  qos_enable: '<% nvram_get("qos_enable"); %>',
++  qos_type: '<% nvram_get("qos_type"); %>',
++  preferred_lang: '<% nvram_get("preferred_lang"); %>',
++  firmver: '<% nvram_get("firmver"); %>',
++  wl_ssid: U('<% nvram_char_to_ascii("","wl_ssid"); %>'),
++  territory_code: '<% nvram_get("territory_code"); %>',
++  lan_hwaddr: '<% nvram_get("lan_hwaddr"); %>',
++  sw_mode: '<% nvram_get("sw_mode"); %>',
++  extendno: '<% nvram_get("extendno"); %>',
++  reboot_time: '<% get_default_reboot_time(); %>'
++};
++var RULES_RAW = '<% nvram_char_to_ascii("","wans_routing_rulelist"); %>';
++/* ej_get_ethernet_wan_list ends its JSON with a newline, which a quoted string cannot hold - read it as a literal */
++var ETH_RAW = JSON.stringify([<% get_ethernet_wan_list(); %>][0] || {});
++var MS_RAW = '<% get_MS_WAN_Num_Pri(); %>';
++var DPI_RAW = JSON.stringify([<% bwdpi_engine_status(); %>][0] || null);
++
++var T = {
++  autoName: `<#WAN_auto_detected#>`, ethLan: 'Ethernet LAN', usb: 'USB', mobile: `<#Mobile_title#>`,
++  on: `<#CTL_Enabled#>`, off: `<#CTL_Disabled#>`, apply: `<#CTL_apply#>`, applying: `<#Reaper_c_applying#>`,
++  pinned: `<#RWAN_13#>`, searching: `<#RWAN_14#>`, fixed: `<#RWAN_15#>`, none: `<#wl_securitylevel_0#>`,
++  redetectQ: `<#RWAN_16#>`, autoBlocked: `<#RWAN_17#>`, lanPort: 'LAN Port ',
++  blank: `<#JS_fieldblank#>`, range: `<#JS_validrange#>`, badip: `<#JS_validip#>`, dup: `<#JS_duplicate#>`,
++  src: `<#FirewallConfig_LanWanSrcIP_itemname#>`, dst: `<#FirewallConfig_LanWanDstIP_itemname#>`, unit: `<#dualwan_unit#>`,
++  primary: `<#dualwan_primary#>`, secondary: `<#dualwan_secondary#>`, add: `<#CTL_add#>`, del: `<#CTL_del#>`,
++  ipHint: `<#FirewallConfig_LanWanIP_hint#>`, ruleList: `<#dualwan_routing_rule_list#>`,
++  everyN: `<#Every_N_Seconds#>`, foDesc: `<#dualwan_failover_desc#>`, foDisc: `<#dualwan_failover_disconnect#>`,
++  foTrig: `<#dualwan_failover_trigger#>`, diag: `<#NetworkTools_Diagnose#>`, fbDesc: `<#dualwan_failback_desc2#>`,
++  conflict: `<#conflict_function_hint#>`, portConflict: `<#PortConflict_DisableFunc_Check#>`, samePort: `<#PortConflict_SamePort_Hint#>`,
++  iptvConfirm: `<#dualwan_iptv_enable_confirm#>`, dualOffHint: `<#dualwan_disable_hint#>`, aggrConfirm: `<#WANAggregation_disable_WANAggregation#>`,
++  aggr: `<#WANAggregation#>`, lacp: `<#NAT_lacp#>`, dualwan: `<#dualwan#>`, wan: `<#menu5_3#>`, lbDpi: `<#dualwan_lb_dpi_conflict_new#>`,
++  aip: `<#AiProtection_title#>`, qosHint: `<#dualwan_qos_hint#>`, reboot: `<#AiMesh_Node_Reboot#>`, standbyQ: `<#Wans_standby_hint#>`,
++  stb1: `<#Standby_hint1#>`, stb2: `<#Standby_hint2#>`, sec: `<#Second#>`,
++  vlanTag: `<#RWAN_19#>`, multiSvc: `<#RWAN_21#>`, proto: `<#RWAN_22#>`
++};
++
++function $id(i){ return document.getElementById(i); }
++function words(s){ return String(s || '').split(' '); }
++function hasWord(s, w){ return words(s).indexOf(w) >= 0; }
++function parseJSON(s, dflt){ try{ var v = JSON.parse(s); return (v && typeof v === 'object') ? v : dflt; }catch(e){ return dflt; } }
++function isEmpty(o){ for(var k in o) return false; return true; }
++
++/* stock state.js globals, derived the same way */
++var based_modelid = NV.productid;
++var dualWAN_support = sup('dualwan') ? true : false;
++var dsl_support = sup('dsl');
++var gobi_support = sup('gobi');
++var noiptv_support = sup('noiptv');
++var wan_bonding_support = sup('wanbonding');
++var lacp_support = sup('lacp');
++var bwdpi_support = sup('bwdpi');
++var usb_bk_support = sup('usb_bk');
++var is_GTBE_series = /^(GT-BE98|GT-BE98_PRO|GT-BE96|GT-BE19000|GT-BE19000AI|GT-BE96_AI)$/.test(based_modelid);
++var is_CN = /^(CN|CT|GD|TC)/.test(NV.territory_code);
++var wans_dualwan_orig = NV.wans_dualwan;
++var usb_index = words(wans_dualwan_orig).indexOf('usb');
++var eth_wan_list = parseJSON(ETH_RAW, {});
++var wan_service_num = sup('multi_service_wan') ? (parseInt(MS_RAW, 10) || 0) : 0;
++var dpiOn = (function(){ var j = parseJSON(DPI_RAW, null); return !!(bwdpi_support && j && j.DpiEngine == 1); })();
++var min_detect_interval = 2, min_fo_detect_count = 5;
++var dns_probe_timeout_threshold = (parseInt(NV.dns_probe_timeout, 10) > 0) ? parseInt(NV.dns_probe_timeout, 10) + 2 : 3;
++var AUTOWAN_SUPPORTED_PROTOS = ['dhcp', 'pppoe', 'v6plus', 'ocnvc', 'dslite', 'v6opt'];
++var country = ['None', 'China'];
++var country_n_isp = [[''], ['edu', 'telecom', 'mobile', 'unicom']];
++
++function get_bonding_ports(){
++  if(!lacp_support) return [];
++  var p = based_modelid;
++  if(p === 'GT-AC5300') return [{val:'4', text:'LAN5'}, {val:'3', text:'LAN6'}];
++  if(p === 'RT-AC86U' || p === 'GT-AC2900') return [{val:'4', text:'LAN1'}, {val:'3', text:'LAN2'}];
++  if(p === 'XT8PRO' || p === 'BT12' || p === 'BM68') return [{val:'2', text:'LAN2'}, {val:'3', text:'LAN3'}];
++  if(p === 'BT10') return [{val:'1', text:'LAN2'}, {val:'2', text:'LAN3'}];
++  if(p === 'BQ16' || p === 'BQ16_PRO') return [{val:'3', text:'LAN4'}, {val:'4', text:'LAN5'}];
++  if(is_GTBE_series) return (NV.lacp_ifnames_x === 'eth0 eth3') ? [{val:'0', text:'10G WAN/LAN1'}, {val:'6', text:'10G LAN6'}] : [{val:'5', text:'1G LAN5'}, {val:'6', text:'10G LAN6'}];
++  return [{val:'1', text:'LAN1'}, {val:'2', text:'LAN2'}];
++}
++var bonding_port_settings = get_bonding_ports();
++
++function is_eth_wan(w){ return Object.prototype.hasOwnProperty.call(eth_wan_list, w); }
++function get_eth_wan_number(){ var n = 0, k; for(k in eth_wan_list) n++; return n; }
++function get_ethwan_setting(){
++  var k, k2;
++  for(k in eth_wan_list){
++    var o = eth_wan_list[k], ok = true;
++    if(o.extra_settings){ for(k2 in o.extra_settings){ if(nvGet(k2) !== o.extra_settings[k2]){ ok = false; break; } } }
++    if(ok) return k;
++  }
++  return '';
++}
++function is_special_lan(v){
++  var k;
++  for(k in eth_wan_list){
++    var o = eth_wan_list[k];
++    if(Object.prototype.hasOwnProperty.call(o, 'wans_lanport')){ if(o.wans_lanport == v) return k; }
++    else if(o.extra_settings && o.extra_settings.wan_ifname_x){ if(o.extra_settings.wan_ifname_x.substr(3, 1) == v) return k; }
++  }
++  return '';
++}
++function is_original_eth_lan(v){ return is_eth_wan(v) && Object.prototype.hasOwnProperty.call(eth_wan_list[v], 'wans_lanport'); }
++function is_default_wan_sfp(v){ return v === 'wan' || v === 'sfp'; }
++function get_default_wan(){ var k; for(k in eth_wan_list){ if(!Object.prototype.hasOwnProperty.call(eth_wan_list[k], 'wans_lanport')) return k; } return 'wan'; }
++/* the stock page reads extra_settings keys live (httpApi.nvramGet); every key any model
++   uses (web.c ej_get_ethernet_wan_list) is in NV */
++function nvGet(k){ return Object.prototype.hasOwnProperty.call(NV, k) ? NV[k] : ''; }
++
++/* ===================== page state ===================== */
++var wans_caps, wans_caps_primary, wans_caps_secondary;
++var wans_dualwan_array = words(wans_dualwan_orig);
++var wans_flag = (wans_dualwan_orig.search('none') != -1 || !dualWAN_support) ? 0 : 1;
++var curState = (wans_dualwan_array[1] != 'none') ? '1' : '0';
++var lanport_list = {text_arr: [], value_arr: []};
++var phymap = !!sup('NEW_PHYMAP');
++var S = {
++  primary: '', second: '', lanport1: NV.wans_lanport, lanport2: NV.wans_lanport,
++  primaryOpts: [], secondOpts: [], lanOpts: [],
++  mode: '', usb_bk: NV.wans_usb_bk === '1' ? '1' : '0', standby: NV.wans_standby, ratio0: '', ratio1: '',
++  ispUnit: 0, isp0c: 0, isp0l: 0, isp1c: 0, isp1l: 0,
++  routing: NV.wans_routing_enable === '1' ? '1' : '0', rules: [],
++  interval: NV.wandog_interval, maxfail: NV.wandog_maxfail, fbcount: NV.wandog_fb_count, fbExists: false,
++  dnsprobe: NV.dns_probe === '1', dnshost: NV.dns_probe_host, ping: NV.wandog_enable === '1', pingtarget: NV.wandog_target,
++  /* hidden fields the stock form carries, with their enabled state - buildPost() works on these */
++  H: null
++};
++function freshHidden(){
++  var H = {
++    current_page: {v: 'Advanced_WANPort_Content.asp'}, next_page: {v: 'Advanced_WANPort_Content.asp'}, modified: {v: '0'},
++    action_mode: {v: 'apply_new'}, action_wait: {v: NV.reboot_time}, action_script: {v: 'reboot'},
++    preferred_lang: {v: NV.preferred_lang}, firmver: {v: NV.firmver}, wl_ssid: {v: NV.wl_ssid},
++    wan_unit: {v: NV.wan_unit}, wans_extwan: {v: NV.wans_extwan}, wans_dualwan: {v: NV.wans_dualwan},
++    wans_lanport: {v: NV.wans_lanport}, wans_lb_ratio: {v: NV.wans_lb_ratio}, dns_probe: {v: NV.dns_probe},
++    dns_probe_content: {v: '*'}, wandog_enable: {v: NV.wandog_enable},
++    wan0_routing_isp_enable: {v: NV.wan0_routing_isp_enable}, wan0_routing_isp: {v: NV.wan0_routing_isp},
++    wan1_routing_isp_enable: {v: NV.wan0_routing_isp_enable}, /* stock seeds wan1 from wan0 (Advanced_WANPort_Content.asp:2047) */
++    wan1_routing_isp: {v: NV.wan1_routing_isp}, wans_routing_rulelist: {v: ''},
++    wan0_enable: {v: NV.wan0_enable}, wan1_enable: {v: NV.wan1_enable},
++    switch_wantag: {v: NV.switch_wantag, off: 1}, switch_stb_x: {v: NV.switch_stb_x, off: 1},
++    lacp_enabled: {v: NV.lacp_enabled, off: 1}, bond_wan: {v: NV.bond_wan, off: 1},
++    wans_usb_bk_act: {v: NV.wans_usb_bk_act, off: 1}
++  };
++  if(sup('autowan')) H.autowan_enable = {v: NV.autowan_enable};
++  return H;
++}
++S.H = freshHidden();
++function hset(k, v){ if(!S.H[k]) S.H[k] = {v: v}; else { S.H[k].v = String(v); delete S.H[k].off; } }
++function hval(k){ return S.H[k] ? S.H[k].v : ''; }
++
++/* ---- stock initial(): the WAN capability list ---- */
++function initCaps(){
++  wans_caps = NV.wans_cap;
++  if(wan_bonding_support && NV.bond_wan == 1 && (based_modelid == 'RT-AX89U' || based_modelid == 'GT-AXY16000')){
++    var a = words(wans_caps), i = a.indexOf('wan2');
++    if(i != -1 && words(NV.wanports_bond).indexOf('30') != -1){ a.splice(i, 1); wans_caps = a.join(' '); }
++  }
++  if(!isEmpty(eth_wan_list) && wans_caps.indexOf('wan') >= 0){
++    var arr = words(wans_caps), index = arr.indexOf('wan'), k;
++    arr.splice(index, 1);
++    for(k in eth_wan_list){ arr.splice(index, 0, k); index++; }
++    wans_caps = arr.join(' ');
++  }
++  wans_caps_primary = wans_caps;
++  wans_caps_secondary = wans_caps;
++}
++/* ---- stock addWANOption(): option list for one selector ---- */
++function wanOptions(which, capsStr){
++  var items = words(capsStr), out = [], i;
++  if(items.indexOf('wan') >= 0 && items.indexOf('wan2') == -1 && wans_dualwan_array[1] == 'none' && which === 'primary' && curState == '0'){
++    for(i = 0; i < items.length; i++){ if(items[i] == 'lan') items.splice(i, 1); }
++  }
++  for(i = 0; i < items.length; i++){
++    if(!items[i].length) continue;
++    var name = items[i].toUpperCase();
++    if(name == 'LAN') name = T.ethLan;
++    else if(name == 'USB' && based_modelid.substring(0, 3) == '4G-') name = T.mobile;
++    else if(name == 'LAN2') name = '2.5G WAN';
++    else if(is_eth_wan(items[i])) name = eth_wan_list[items[i]].wan_name;
++    if(based_modelid == 'GT-AXY16000' || based_modelid == 'RT-AX89U'){ if(name == 'WAN2') name = '10G base-T'; else if(name == 'SFP+') name = '10G SFP+'; }
++    else if(based_modelid == 'TUF-AX4200' || based_modelid == 'TUF-AX6000'){ if(name == 'WAN') name = '2.5G WAN'; }
++    out.push({v: items[i], t: name});
++  }
++  if(phymap && lanport_list.text_arr.length == 0) out = out.filter(function(o){ return o.v !== 'lan'; });
++  return out;
++}
++function optHas(list, v){ for(var i = 0; i < list.length; i++) if(list[i].v === v) return true; return false; }
++/* <select>.value = x is ignored when x is not an option; mirror that */
++function setSel(which, v){ var l = which === 'primary' ? S.primaryOpts : S.secondOpts; if(optHas(l, v)) S[which] = v; }
++function rebuildPrimary(){ S.primaryOpts = wanOptions('primary', wans_caps_primary); if(!optHas(S.primaryOpts, S.primary)) S.primary = S.primaryOpts.length ? S.primaryOpts[0].v : ''; }
++function capsHas(s){ return wans_caps.search(s) >= 0; }
++function capsIdx(s){ return wans_caps.indexOf(s) >= 0; }
++
++function autowanAllowed(){
++  return sup('autowan') && NV.switch_wantag == 'none' && NV.switch_stb_x == '0' && (!wan_bonding_support || NV.bond_wan == '0')
++    && (!lacp_support || NV.lacp_enabled == '0') && AUTOWAN_SUPPORTED_PROTOS.indexOf(NV.wan_proto) >= 0 && NV.wan0_dot1q != '1'
++    && !(sup('multi_service_wan') && wan_service_num > 1);
++}
++
++/* ---- stock form_show() ---- */
++function formShow(v, change_primary_wan){
++  var wan_value = (change_primary_wan !== undefined) ? change_primary_wan : get_ethwan_setting();
++  if(v == 0){
++    S.routing = '0';
++    if(wans_dualwan_array[0] == 'wan' && wan_value != '') setSel('primary', wan_value);
++    else if(wans_dualwan_array[0] == 'lan' && is_special_lan(NV.wans_lanport) != ''){
++      /* Reaper: a single-WAN "lan" on the combo port (an older way to save 1G WAN/LAN1) shows that
++         port. Stock lands on Auto here (the select loses its value, then Auto is inserted first),
++         so an untouched Apply would turn Auto on. */
++      setSel('primary', is_special_lan(NV.wans_lanport));
++    }
++    else setSel('primary', wans_dualwan_array[0]);
++    if(autowanAllowed() && !optHas(S.primaryOpts, 'auto')){
++      S.primaryOpts.unshift({v: 'auto', t: T.autoName, auto: 1});
++      if(NV.autowan_enable == '1') S.primary = 'auto';
++    }
++  }
++  else{
++    if(wans_dualwan_array[0] == 'wan' && wan_value != '') setSel('primary', wan_value);
++    else if(wans_dualwan_array[0] == 'lan'){ var sl = is_special_lan(hval('wans_lanport')); setSel('primary', sl != '' ? sl : 'lan'); }
++    else setSel('primary', wans_dualwan_array[0]);
++
++    if(wans_dualwan_array[1] == 'none'){
++      if(wans_dualwan_array[0] == 'dsl'){
++        if(capsHas('wan')) setSel('second', 'wan'); else if(capsHas('wan2')) setSel('second', 'wan2');
++        else if(capsIdx('sfp+')) setSel('second', 'sfp+'); else if(capsHas('usb')) setSel('second', 'usb'); else setSel('second', 'lan');
++      }
++      else if(wans_dualwan_array[0] == 'wan'){
++        if(capsHas('wan2')) setSel('second', 'wan2'); else if(capsIdx('sfp+')) setSel('second', 'sfp+'); else if(capsHas('usb')) setSel('second', 'usb');
++        else if(phymap && lanport_list.text_arr.length == 0){ var k; for(k in eth_wan_list){ if(k != S.primary){ setSel('second', k); break; } } }
++        else setSel('second', 'lan');
++      }
++      else if((wans_dualwan_array[0] == 'wan' && hval('wans_extwan') == '1') || (wans_dualwan_array[0] == 'lan' && hval('wans_lanport') == '5')){
++        if(capsHas('usb')) setSel('second', 'usb'); else setSel('second', 'lan');
++      }
++      else{ if(capsHas('wan')) setSel('second', 'wan'); }
++    }
++    else{
++      if(wans_dualwan_array[1] == 'wan' && wan_value != '') setSel('second', wan_value);
++      else if(wans_dualwan_array[1] == 'lan'){ var s2 = is_special_lan(hval('wans_lanport')); setSel('second', s2 != '' ? s2 : 'lan'); }
++      else setSel('second', wans_dualwan_array[1]);
++    }
++    S.fbExists = true;      /* the stock page materialises wandog_fb_count only in Dual WAN mode */
++    modeSelected(S.modeSel);
++  }
++}
++/* ---- stock appendModeOption() ---- */
++function modeSelected(v){
++  S.modeSel = v;
++  if(v == 'lb'){
++    var r = words(NV.wans_lb_ratio.replace(':', ' '));
++    S.ratio0 = r[0] || ''; S.ratio1 = r[1] || '';
++    if(NV.wan0_routing_isp_enable == 1 && NV.wan1_routing_isp_enable == 0) ispUnit(1);
++    else if(NV.wan0_routing_isp_enable == 0 && NV.wan1_routing_isp_enable == 1) ispUnit(2);
++    else ispUnit(0);
++    loadIspCountry();
++    S.routing = NV.wans_routing_enable == 1 ? '1' : '0';
++    S.mode = 'lb';
++  }
++  else{
++    S.mode = (S.mode == 'fb') ? 'fb' : 'fo';
++  }
++}
++function ispUnit(v){
++  S.ispUnit = parseInt(v, 10) || 0;
++  if(S.ispUnit == 1){ hset('wan0_routing_isp_enable', 1); hset('wan1_routing_isp_enable', 0); }
++  else if(S.ispUnit == 2){ hset('wan0_routing_isp_enable', 0); hset('wan1_routing_isp_enable', 1); }
++  else { hset('wan0_routing_isp_enable', 0); hset('wan1_routing_isp_enable', 0); }
++}
++function loadIspCountry(){
++  var c, i;
++  S.isp0c = 0; S.isp1c = 0; S.isp0l = 0; S.isp1l = 0;
++  for(c = 0; c < country.length; c++){
++    if(country[c].toLowerCase() == NV.wan0_routing_isp.split('_')[0]) S.isp0c = c;
++    if(country[c].toLowerCase() == NV.wan1_routing_isp.split('_')[0]) S.isp1c = c;
++  }
++  if(NV.wan0_routing_isp == '') S.isp0c = 0;
++  if(NV.wan1_routing_isp == '') S.isp1c = 0;
++  for(i = 0; i < country_n_isp[S.isp0c].length; i++) if(country_n_isp[S.isp0c][i] == NV.wan0_routing_isp.split('_')[1]) S.isp0l = i;
++  for(i = 0; i < country_n_isp[S.isp1c].length; i++) if(country_n_isp[S.isp1c][i] == NV.wan1_routing_isp.split('_')[1]) S.isp1l = i;
++}
++
++/* ---- stock changeWANProto(): keep primary != secondary ---- */
++function pickOther(which, v){
++  var o = which === 'primary' ? 'second' : 'primary';
++  if(wans_flag != 1 || S.primary != S.second) return;
++  if(which === 'primary'){
++    if(v == 'dsl'){ if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'wan' || is_eth_wan(v)){
++      if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb');
++      else if(phymap && lanport_list.text_arr.length == 0){ var k; for(k in eth_wan_list){ if(k != v){ setSel(o, k); break; } } }
++      else setSel(o, 'lan');
++    }
++    else if(v == 'wan2'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'sfp+'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'usb'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('lan')) setSel(o, 'lan'); }
++    else if(v == 'lan2'){ if(capsHas('usb')) setSel(o, 'usb'); }
++    else{ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb'); }
++  }
++  else{
++    if(v == 'dsl'){ if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'wan' || is_eth_wan(v)){
++      if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb');
++      else if(phymap && lanport_list.text_arr.length == 0){ var k2; for(k2 in eth_wan_list){ if(k2 != v){ setSel(o, k2); break; } } }
++      else setSel('second', 'lan');    /* stock writes the secondary here, not the primary (Advanced_WANPort_Content.asp:1447) */
++    }
++    else if(v == 'wan2'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'sfp+'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsHas('usb')) setSel(o, 'usb'); else setSel(o, 'lan'); }
++    else if(v == 'usb'){ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); else setSel(o, 'lan'); }
++    else if(v == 'lan2'){ S.secondOpts = wanOptions('second', wans_caps_secondary); setSel('second', 'lan2'); if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('usb')) setSel(o, 'usb'); }
++    else{ if(capsHas('dsl')) setSel(o, 'dsl'); else if(capsHas('wan')) setSel(o, 'wan'); else if(capsHas('wan2')) setSel(o, 'wan2'); else if(capsIdx('sfp+')) setSel(o, 'sfp+'); }
++  }
++}
++
++/* ---- the Dual WAN switch (stock iphoneSwitch handlers) ---- */
++function dualOn(){
++  if(wan_bonding_support && NV.bond_wan == '1'){
++    if(confirm(T.aggrConfirm)) hset('bond_wan', '0');
++    else return false;
++  }
++  curState = '1'; wans_flag = 1;
++  if(wans_caps.search('wan2') >= 0 && wans_caps.indexOf('sfp+') == -1) S.mode = 'lb';
++  else S.mode = NV.wans_mode_default;
++  if(sup('autowan')) hset('autowan_enable', '0');
++  rebuildPrimary();
++  formShow(wans_flag);      /* stock re-runs appendModeOption() with the mode selector's own value (S.modeSel) */
++  return true;
++}
++function dualOff(){
++  var default_wan = get_default_wan();
++  if(wans_caps_primary.indexOf('wan') >= 0 && wans_dualwan_array[0] == 'lan'){
++    var cur = wans_dualwan_array[0].toUpperCase() + ' Port ' + NV.wans_lanport;
++    var sl = is_special_lan(hval('wans_lanport'));
++    if(sl != '') cur = eth_wan_list[sl].wan_name;
++    var msg = T.dualOffHint.replace('%1$@', cur).split('%2$@').join(eth_wan_list[default_wan] ? eth_wan_list[default_wan].wan_name : default_wan);
++    if(!confirm(msg)) return false;
++    wans_dualwan_array[0] = 'wan';
++  }
++  curState = '0'; wans_flag = 0;
++  wans_dualwan_array[1] = 'none';
++  hset('wans_dualwan', wans_dualwan_array.join(' '));
++  S.mode = NV.wans_mode_default;
++  rebuildPrimary();
++  formShow(wans_flag, default_wan);
++  if(wan_bonding_support) hset('bond_wan', NV.bond_wan);
++  if(usb_bk_support){
++    if(NV.wans_usb_bk_act == '1') S.usb_bk = '0';
++    hset('wans_usb_bk_act', '0');
++  }
++  return true;
++}
++
++/* ===================== the apply: stock applyRule(), field for field ===================== */
++function rulesString(){
++  var out = '', i, j;
++  for(i = 0; i < S.rules.length; i++){
++    if(S.rules[i].length != 0){ out += '<'; for(j = 0; j < S.rules[i].length; j++){ out += S.rules[i][j]; if(j + 1 != S.rules[i].length) out += '>'; } }
++  }
++  return out;
++}
++function applyExtra(o){ var k; if(o && o.extra_settings) for(k in o.extra_settings) hset(k, o.extra_settings[k]); }
++function vlanPortList(){
++  /* stock get_vlan_portlist(): access ports of every enabled APG profile on this node + trunk ports */
++  return VLAN_PORTS;
++}
++var VLAN_PORTS = {access: [], trunk: []};
++function isValidHost(s){ return /^[A-Za-z0-9]([A-Za-z0-9.-]{0,252})$/.test(s) && s.indexOf('..') < 0; }
++
++/* returns {fields} or {stop: reason}. confirm()/alert() are called exactly where the stock page calls them. */
++function buildPost(){
++  var V = {primary: S.primary, second: S.second, lanport1: S.lanport1, lanport2: S.lanport2};
++  var primaryText = (function(){ var i; for(i = 0; i < S.primaryOpts.length; i++) if(S.primaryOpts[i].v === S.primary) return S.primaryOpts[i].t; return S.primary; })();
++  var routingOn = false, lbRatio = false, ispOn = false, rulelistOn = false;
++
++  if(based_modelid == 'RT-AC88Q' || based_modelid == 'BRT-AC828' || based_modelid == 'RT-AD7200'){
++    if(!noiptv_support && V.primary != 'lan' && NV.switch_wantag != 'none'){
++      if(confirm(T.iptvConfirm)){ hset('switch_wantag', 'none'); hset('switch_stb_x', '0'); }
++      else return {stop: 'iptv'};
++    }
++    if(wans_flag == 1 && (V.primary == 'lan' || V.second == 'lan') && NV.lan_trunk_type != '0'
++       && (V.primary == 'wan' || V.primary == 'wan2' || V.second == 'wan' || V.second == 'wan2')){
++      if(!confirm('LAN')) return {stop: 'trunk'};
++    }
++  }
++
++  if(wans_flag == 1){
++    if(NV.switch_stb_x != '0' || NV.switch_wantag != 'none'){
++      if(confirm(T.conflict.replace('%1$@', T.dualwan).replace('%2$@', 'IPTV'))){ hset('switch_wantag', 'none'); hset('switch_stb_x', '0'); }
++      else return {stop: 'iptv'};
++    }
++    hset('wans_extwan', '0');
++    if(V.primary == 'lan2'){
++      if(V.second == 'wan'){ hset('wans_dualwan', 'lan wan'); hset('wans_lanport', '5'); hset('wans_extwan', '0'); }
++      else { hset('wans_dualwan', 'wan ' + V.second); hset('wans_extwan', '1'); }
++    }
++    else if(V.second == 'lan2'){
++      if(V.primary == 'wan'){ hset('wans_dualwan', 'wan lan'); hset('wans_lanport', '5'); hset('wans_extwan', '0'); }
++      else { hset('wans_dualwan', V.primary + ' wan'); hset('wans_extwan', 1); }
++    }
++    else{
++      var pv = V.primary, sv = V.second, po = eth_wan_list[V.primary], so = eth_wan_list[V.second];
++      if(is_eth_wan(V.primary) && is_eth_wan(V.second)){
++        var pif = '', sif = '', pext = '', sext = '';
++        if(po.extra_settings){ pif = po.extra_settings.wan_ifname_x || ''; pext = po.extra_settings.wans_extwan || ''; }
++        if(so.extra_settings){ sif = so.extra_settings.wan_ifname_x || ''; sext = so.extra_settings.wans_extwan || ''; }
++        if(pext == '0'){
++          pv = 'wan'; sv = 'lan';
++          if(Object.prototype.hasOwnProperty.call(so, 'wans_lanport')) hset('wans_lanport', so.wans_lanport); else if(sif != '') hset('wans_lanport', sif.substr(3, 1));
++        }
++        else if(sext == '0'){
++          sv = 'wan'; pv = 'lan';
++          if(Object.prototype.hasOwnProperty.call(po, 'wans_lanport')) hset('wans_lanport', po.wans_lanport); else if(pif != '') hset('wans_lanport', pif.substr(3, 1));
++        }
++        else if(is_original_eth_lan(pv)){
++          pv = 'lan';
++          if(Object.prototype.hasOwnProperty.call(po, 'wans_lanport')) hset('wans_lanport', po.wans_lanport); else if(pif != '') hset('wans_lanport', pif.substr(3, 1));
++          sv = 'wan'; applyExtra(so);
++        }
++        else{
++          pv = 'wan'; applyExtra(po);
++          sv = 'lan';
++          if(Object.prototype.hasOwnProperty.call(so, 'wans_lanport')) hset('wans_lanport', so.wans_lanport); else if(sif != '') hset('wans_lanport', sif.substr(3, 1));
++        }
++      }
++      else if(is_eth_wan(V.primary)){ applyExtra(po); pv = 'wan'; }
++      else if(is_eth_wan(V.second)){ applyExtra(so); sv = 'wan'; }
++      hset('wans_dualwan', pv + ' ' + sv);
++    }
++
++    if(!dsl_support && based_modelid != 'BRT-AC828' && (hval('wans_dualwan') == 'usb lan' || hval('wans_dualwan') == 'lan usb') && get_eth_wan_number() <= 1){
++      alert('WAN port should be selected in Dual WAN.');
++      return {stop: 'usblan'};
++    }
++
++    hset('wan_unit', NV.wan_unit);
++    if(S.mode == 'lb'){
++      if(!rng(S.ratio0, 1, 9) || !rng(S.ratio1, 1, 9)) return {stop: 'ratio', bad: 'ratio'};
++      if(NV.wans_mode != 'lb' && dpiOn){
++        if(confirm(T.lbDpi.replace('%@', T.aip))) hset('action_script', 'dpi_disable;reboot;');
++        else return {stop: 'dpi'};
++      }
++      hset('wans_lb_ratio', S.ratio0 + ':' + S.ratio1); lbRatio = true;
++      hset('wan0_routing_isp', S.isp0c == 0 ? country[0] : country[S.isp0c].toLowerCase() + '_' + country_n_isp[S.isp0c][S.isp0l]);
++      hset('wan1_routing_isp', S.isp1c == 0 ? country[0] : country[S.isp1c].toLowerCase() + '_' + country_n_isp[S.isp1c][S.isp1l]);
++      ispOn = true;
++      hset('wans_routing_rulelist', rulesString()); rulelistOn = true;
++      routingOn = true;
++    }
++  }
++  else{
++    S.mode = 'fo';
++    if(!is_default_wan_sfp(V.primary) && (NV.switch_stb_x != '0' || NV.switch_wantag != 'none')){
++      var cs = T.portConflict.replace('%1$@', '"' + primaryText + '"').replace('%2$@', T.wan).replace('%3$@', 'IPTV');
++      if(confirm(cs)){ hset('switch_stb_x', '0'); hset('switch_wantag', 'none'); }
++      else return {stop: 'iptv'};
++    }
++    if(is_eth_wan(V.primary)){ applyExtra(eth_wan_list[V.primary]); hset('wans_dualwan', 'wan none'); }
++    else if(V.primary == 'lan2'){ hset('wans_dualwan', 'wan none'); hset('wans_extwan', '1'); }
++    else { hset('wans_dualwan', V.primary + ' none'); hset('wans_extwan', '0'); }
++    hset('wan_unit', 0);
++    hset('wandog_enable', '0');
++    if(sup('autowan')) hset('autowan_enable', V.primary != 'auto' ? '0' : '1');
++  }
++
++  if(sup('autowan')) hset('wans_dualwan', hval('wans_dualwan').replace('auto', 'wan'));
++
++  if(S.ping){
++    if(S.pingtarget == '' || S.pingtarget.trim().length == 0){ alert(T.blank); return {stop: 'ping', bad: 'pingtarget'}; }
++    if(!isValidHost(S.pingtarget)) return {stop: 'ping', bad: 'pingtarget'};
++    hset('wandog_enable', '1');
++  }
++  else hset('wandog_enable', '0');
++  hset('dns_probe', S.dnsprobe ? '1' : '0');
++  if(!rng(S.interval, dns_probe_timeout_threshold, 99)) return {stop: 'interval', bad: 'interval'};
++
++  var lanportOff = false;
++  if(V.primary == 'lan') hset('wans_lanport', V.lanport1);
++  else if(V.second == 'lan') hset('wans_lanport', V.lanport2);
++  else if(get_eth_wan_number() <= 1) lanportOff = true;
++
++  /* function conflict check (Auto vs aggregation / LACP / IPTV) */
++  var conflict_func = '', conflict_ports = '';
++  if(sup('autowan') && V.primary == 'auto'){
++    if(wan_bonding_support && NV.bond_wan == '1') conflict_func = T.aggr;
++    if(lacp_support && NV.lacp_enabled == '1') conflict_func = conflict_func.length ? conflict_func + ', ' + T.lacp : T.lacp;
++    if(NV.switch_stb_x != '0' || NV.switch_wantag != 'none') conflict_func = conflict_func.length ? conflict_func + ', IPTV' : 'IPTV';
++    if(conflict_func.length > 0){
++      if(confirm(T.conflict.replace('%1$@', T.autoName).replace('%2$@', conflict_func))){
++        if(wan_bonding_support) hset('bond_wan', '0');
++        if(lacp_support){ hset('lacp_enabled', '0'); if(is_GTBE_series) hset('lacp_ifnames_x', ''); }
++        hset('switch_wantag', 'none'); hset('switch_stb_x', '0');
++      }
++      else return {stop: 'autoconflict'};
++    }
++  }
++  if(lacp_support && NV.lacp_enabled == '1' && hval('wans_dualwan').indexOf('lan') != -1){
++    var lpn = hval('wans_lanport'), i;
++    conflict_ports = '';
++    for(i = 0; i < bonding_port_settings.length; i++){ if(lpn == bonding_port_settings[i].val){ conflict_func = T.lacp; conflict_ports = bonding_port_settings[i].text.toUpperCase(); } }
++  }
++  if(is_GTBE_series){
++    if(hval('wans_dualwan').indexOf('wan') != -1 && hval('wans_extwan') == '0'){
++      if(lacp_support && NV.lacp_enabled == '1' && NV.lacp_ifnames_x == 'eth0 eth3'){
++        if(conflict_func.length == 0) conflict_func = T.lacp; else if(conflict_func.indexOf(T.lacp) == -1) conflict_func += ', ' + T.lacp;
++        if(conflict_ports.length == 0) conflict_ports = '10G WAN/LAN1'; else if(conflict_ports.indexOf('10G WAN') == -1) conflict_ports = '10G WAN/LAN1, ' + conflict_ports;
++      }
++    }
++    if(hval('wans_dualwan').indexOf('wan') != -1 && hval('wans_extwan') == '1'){
++      if(NV.switch_stb_x != '0' || NV.switch_wantag != 'none'){
++        if(conflict_func.length == 0) conflict_func = 'IPTV'; else if(conflict_func.indexOf('IPTV') == -1) conflict_func += ', IPTV';
++        if(conflict_ports.length == 0) conflict_ports = '2.5G WAN/LAN1'; else if(conflict_ports.indexOf('2.5G WAN/LAN1') == -1) conflict_ports += ', 2.5G WAN/LAN1';
++      }
++    }
++  }
++  if(conflict_func != '' && conflict_ports != ''){
++    if(confirm(T.portConflict.replace('%1$@', conflict_ports).replace('%2$@', T.wan).replace('%3$@', conflict_func))){
++      if(conflict_func.indexOf(T.lacp) != -1){ hset('lacp_enabled', '0'); if(is_GTBE_series) hset('lacp_ifnames_x', ''); }
++      if(conflict_func.indexOf('IPTV') != -1){ hset('switch_stb_x', '0'); hset('switch_wantag', 'none'); }
++    }
++    else return {stop: 'portconflict'};
++  }
++
++  /* VLAN port check */
++  if(sup('mtlancfg') && hval('wans_dualwan').indexOf('lan') != -1){
++    var vp = vlanPortList(), lp = hval('wans_lanport'), hit = false, j;
++    for(j = 0; j < vp.access.length && !hit; j++) if(vp.access[j] == lp) hit = true;
++    for(j = 0; j < vp.trunk.length && !hit; j++) if(vp.trunk[j] == lp) hit = true;
++    if(hit){ alert(T.samePort.replace('%1$@', 'WAN').replace('%2$@', 'VLAN')); return {stop: 'vlan'}; }
++  }
++
++  var dw = words(hval('wans_dualwan'));
++  if(dw[1] == 'none') hset('wan_unit', 0);
++  if(dw.indexOf('usb') == 0 && hval('wan0_enable') == '0') hset('wan0_enable', '1');
++  if(dw.indexOf('usb') == 1 && hval('wan1_enable') == '0') hset('wan1_enable', '1');
++  if(wan_bonding_support && (based_modelid == 'RT-AX89U' || based_modelid == 'GT-AXY16000') && dw.indexOf('wan') == -1) hset('bond_wan', '0');
++
++  if(wans_dualwan_orig != hval('wans_dualwan') && NV.qos_enable == 1 && (NV.qos_type == 1 || NV.qos_type == 0 || NV.qos_type == 3)){
++    if(!confirm(T.qosHint)) return {stop: 'qos'};
++  }
++  hset('action_wait', parseInt(NV.reboot_time, 10) + (based_modelid == 'DSL-AC68U' ? 70 : 0));
++
++  /* the fields the stock form posts: its hidden inputs (minus the disabled ones), the
++     visible controls that carry an nvram name, and what applyRule() appended */
++  var F = {}, k;
++  for(k in S.H){ if(!S.H[k].off) F[k] = S.H[k].v; }
++  if(!lbRatio) delete F.wans_lb_ratio;
++  if(!ispOn){ delete F.wan0_routing_isp_enable; delete F.wan0_routing_isp; delete F.wan1_routing_isp_enable; delete F.wan1_routing_isp; }
++  if(!rulelistOn) delete F.wans_routing_rulelist;
++  if(lanportOff) delete F.wans_lanport;
++  F.wans_mode = S.mode;
++  F.wans_usb_bk = S.usb_bk;
++  if(gobi_support && wans_flag == 1 && S.mode != 'lb' && (V.primary == 'usb' || V.second == 'usb')) F.wans_standby = S.standby;
++  F.wandog_interval = S.interval;
++  F.wandog_maxfail = S.maxfail;
++  if(S.fbExists) F.wandog_fb_count = S.fbcount;
++  if(S.dnsprobe) F.dns_probe_host = S.dnshost;
++  if(S.ping) F.wandog_target = S.pingtarget;
++  if(routingOn) F.wans_routing_enable = S.routing;
++
++  /* hot standby turned on: the stock page asks for a short detection interval first */
++  if(F.wans_standby == '1' && F.wans_standby != NV.wans_standby){
++    if(confirm(T.stb1 + ' ' + T.stb2 + ' ' + (min_detect_interval * min_fo_detect_count) + ' ' + T.sec + '.')){
++      F.wandog_interval = String(min_detect_interval); F.wandog_maxfail = String(min_fo_detect_count);
++    }
++    return {fields: F};
++  }
++  if(F.action_script == 'reboot'){ if(!confirm(T.reboot)) return {stop: 'reboot'}; }
++  return {fields: F};
++}
++function rng(v, lo, hi){ var n = parseInt(v, 10); return /^\d+$/.test(String(v)) && n >= lo && n <= hi; }
++
++/* ===================== UI ===================== */
++function msg(t, err){ var m = $id('msg'); m.className = 'msg' + (err ? ' err' : ''); m.textContent = t || ''; m.title = (m.scrollWidth > m.clientWidth + 1) ? (t || '') : ''; }
++function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
++function portLabel(v){ var l = S.primaryOpts.concat(S.secondOpts), i; for(i = 0; i < l.length; i++) if(l[i].v === v) return l[i].t; return v; }
++function ifLabel(ifn){
++  var k;
++  for(k in eth_wan_list){ var o = eth_wan_list[k]; if(o.extra_settings && o.extra_settings.wan_ifname_x === ifn) return o.wan_name; if(o.ifname === ifn) return o.wan_name; }
++  return ifn;
++}
++function tiles(boxId, which){
++  var box = $id(boxId), list = which === 'primary' ? S.primaryOpts : S.secondOpts, h = '', i;
++  for(i = 0; i < list.length; i++){
++    var o = list[i], on = (S[which] === o.v), d = '';
++    if(o.v === 'auto') d = words(NV.autowan_ifnames).filter(function(x){ return x; }).join(' / ');
++    else if(o.v === 'usb') d = 'USB';
++    else if(o.v === 'lan') d = 'LAN';
++    else if(is_eth_wan(o.v)) d = ((eth_wan_list[o.v].extra_settings || {}).wan_ifname_x || eth_wan_list[o.v].ifname || '');
++    h += '<label class="port' + (on ? ' on' : '') + (o.v === 'auto' ? ' auto' : '') + '"><input type="radio" name="rw_' + which + '" value="' + esc(o.v) + '"' + (on ? ' checked' : '') + '><span class="pn" title="' + esc(o.t) + '">' + esc(o.t) + '</span><span class="pd">' + esc(d) + '</span></label>';
++  }
++  box.innerHTML = h;
++  var r = box.querySelectorAll('input'), j;
++  for(j = 0; j < r.length; j++) r[j].addEventListener('change', function(){ pick(which, this.value); });
++}
++function lanSelect(id, val){
++  var s = $id(id), h = '', i, opts = S.lanOpts;
++  for(i = 0; i < opts.length; i++) h += '<option value="' + esc(opts[i].v) + '"' + (opts[i].v == val ? ' selected' : '') + '>' + esc(opts[i].t) + '</option>';
++  s.innerHTML = h;
++}
++function pick(which, v){
++  S[which] = v;
++  pickOther(which, v);
++  render();
++}
++function splitAt(tok, ph){ var i = tok.indexOf(ph); return i < 0 ? [tok, ''] : [tok.substr(0, i), tok.substr(i + ph.length)]; }
++function numInput(id, val, max){ return '<input class="fx n2" id="' + id + '" maxlength="' + (max || 2) + '" inputmode="numeric" value="' + esc(val) + '">'; }
++function renderMonitor(){
++  var p = splitAt(T.everyN, '$INPUT_INTERVAL');
++  $id('intv_row').innerHTML = esc(p[0]) + numInput('m_interval', S.interval) + esc(p[1]);
++  var dual = (wans_flag && (S.mode == 'fo' || S.mode == 'fb'));
++  $id('maxfail_l').textContent = dual ? T.foTrig : T.diag;
++  var q = splitAt(dual ? T.foDesc : T.foDisc, '$WANDOG_MAXFAIL');
++  $id('maxfail_row').innerHTML = esc(q[0]) + numInput('m_maxfail', S.maxfail) + esc(q[1]);
++  var f = splitAt(T.fbDesc, '$WANDOG_FB_COUNT');
++  $id('fbcount_row').innerHTML = esc(f[0]) + numInput('m_fbcount', S.fbcount) + esc(f[1]);
++  $id('fb_row').classList.toggle('hidden', !(wans_flag && S.mode == 'fb'));
++  $id('m_interval').addEventListener('input', function(){ S.interval = this.value; });
++  $id('m_maxfail').addEventListener('input', function(){ S.maxfail = this.value; });
++  $id('m_fbcount').addEventListener('input', function(){ S.fbcount = this.value; });
++  $id('dnsprobe').checked = S.dnsprobe; $id('dnshost').value = S.dnshost; $id('dnshost').disabled = !S.dnsprobe;
++  $id('ping').checked = S.ping; $id('pingtarget').value = S.pingtarget; $id('pingtarget').disabled = !S.ping; $id('ptpick').disabled = !S.ping;
++}
++function renderRules(){
++  var h = '<div class="rrow h"><span>' + esc(T.src) + '</span><span>' + esc(T.dst) + '</span><span>' + esc(T.unit) + '</span><span></span></div>', i;
++  if(!S.rules.length) h += '<div class="empty">&mdash;</div>';
++  for(i = 0; i < S.rules.length; i++){
++    var r = S.rules[i];
++    h += '<div class="rrow"><span class="c">' + esc(r[0]) + '</span><span class="c">' + esc(r[1]) + '</span><span class="c">' + esc(r[2] == '1' ? T.secondary : T.primary) + '</span><span><button class="btn sm" type="button" data-del="' + i + '">' + esc(T.del) + '</button></span></div>';
++  }
++  if(S.rules.length < 64){
++    h += '<div class="rrow add"><input class="fx" id="r_src" maxlength="18" placeholder="all" title="' + esc(T.ipHint) + '"><input class="fx" id="r_dst" maxlength="18" placeholder="all" title="' + esc(T.ipHint) + '">'
++      + '<select class="fx" id="r_unit"><option value="0">' + esc(T.primary) + '</option><option value="1">' + esc(T.secondary) + '</option></select>'
++      + '<button class="btn sm" type="button" id="r_add">' + esc(T.add) + '</button></div>';
++  }
++  $id('rules').innerHTML = h;
++  var d = $id('rules').querySelectorAll('[data-del]'), j;
++  for(j = 0; j < d.length; j++) d[j].addEventListener('click', function(){ S.rules.splice(parseInt(this.getAttribute('data-del'), 10), 1); renderRules(); });
++  if($id('r_add')) $id('r_add').addEventListener('click', addRule);
++  $id('rules').classList.toggle('off', S.routing !== '1');
++}
++function ruleIp(s){
++  s = String(s || '').trim().toLowerCase();
++  if(s === 'all') return s;
++  var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/.exec(s);
++  if(!m) return null;
++  for(var i = 1; i <= 4; i++) if(parseInt(m[i], 10) > 255) return null;
++  if(m[6] !== undefined && parseInt(m[6], 10) > 32) return null;
++  return s;
++}
++function addRule(){
++  var a = ruleIp($id('r_src').value || 'all'), b = ruleIp($id('r_dst').value || 'all'), u = $id('r_unit').value, i;
++  if(a === null){ msg(T.ipHint, 1); $id('r_src').focus(); return; }
++  if(b === null){ msg(T.ipHint, 1); $id('r_dst').focus(); return; }
++  if(a === b){ msg(T.ipHint, 1); return; }
++  for(i = 0; i < S.rules.length; i++) if(S.rules[i][0] === a && S.rules[i][1] === b){ msg(T.dup, 1); return; }
++  S.rules.push([a, b, u]); msg(''); renderRules();
++}
++function renderIsp(){
++  var s = $id('isp_seg').querySelectorAll('button'), i;
++  for(i = 0; i < s.length; i++) s[i].classList.toggle('on', parseInt(s[i].getAttribute('data-u'), 10) === S.ispUnit);
++  function fill(cId, lId, c, l, enabled){
++    var ch = '', lh = '', k;
++    for(k = 0; k < country.length; k++) ch += '<option value="' + k + '"' + (k == c ? ' selected' : '') + '>' + esc(country[k]) + '</option>';
++    $id(cId).innerHTML = ch; $id(cId).disabled = !enabled;
++    for(k = 0; k < country_n_isp[c].length; k++) lh += '<option value="' + k + '"' + (k == l ? ' selected' : '') + '>' + esc(country_n_isp[c][k]) + '</option>';
++    $id(lId).innerHTML = lh; $id(lId).disabled = !enabled; $id(lId).classList.toggle('hidden', c == 0);
++  }
++  fill('isp0c', 'isp0l', S.isp0c, S.isp0l, S.ispUnit == 1);
++  fill('isp1c', 'isp1l', S.isp1c, S.isp1l, S.ispUnit == 2);
++}
++function pinState(){
++  var det = NV.autowan_detected_ifname, pin = NV.reaper_wanport;
++  if(S.primary !== 'auto') return {cls: '', txt: T.fixed};
++  if(NV.autowan_enable !== '1') return {cls: 'search', txt: T.searching};
++  if(pin !== '' && (det === '' || det === pin)) return {cls: 'pinned', port: ifLabel(pin) + ' (' + pin + ')', txt: T.pinned};
++  if(det !== '') return {cls: 'pinned', port: ifLabel(det) + ' (' + det + ')', txt: T.pinned};
++  return {cls: 'search', txt: T.searching};
++}
++function render(){
++  var dual = !!wans_flag;
++  /* primary tiles */
++  tiles('ports_primary', 'primary');
++  var showLan1 = (S.primary === 'lan' && optHas(S.primaryOpts, 'lan'));
++  $id('lanport1_row').classList.toggle('hidden', !showLan1);
++  if(showLan1) lanSelect('lanport1', S.lanport1);
++  /* Auto explainer + pin line */
++  var isAuto = (S.primary === 'auto');
++  $id('auto_explain').classList.toggle('hidden', !isAuto);
++  var cands = words(NV.autowan_ifnames).filter(function(x){ return x; }).map(function(x){ return '<span class="tag">' + esc(ifLabel(x)) + '</span>'; });
++  $id('cand_tags').innerHTML = cands.join(' ');
++  var why = [];
++  if(!dual && sup('autowan') && !autowanAllowed()){
++    if(NV.switch_wantag != 'none' || NV.switch_stb_x != '0') why.push('IPTV');
++    if(wan_bonding_support && NV.bond_wan != '0') why.push(T.aggr);
++    if(lacp_support && NV.lacp_enabled != '0') why.push(T.lacp);
++    if(NV.wan0_dot1q == '1') why.push(T.vlanTag);
++    if(sup('multi_service_wan') && wan_service_num > 1) why.push(T.multiSvc);
++    if(AUTOWAN_SUPPORTED_PROTOS.indexOf(NV.wan_proto) < 0) why.push(T.proto);
++  }
++  $id('auto_blocked').classList.toggle('hidden', !why.length);
++  $id('auto_blocked').textContent = why.length ? T.autoBlocked.replace('%1$@', why.join(', ')) : '';
++  var ps = pinState();
++  $id('pinline').classList.toggle('hidden', dual || !sup('autowan') || NV.sw_mode !== '1');
++  $id('pin_v').className = 'v ' + ps.cls;
++  $id('pin_v').innerHTML = (ps.port ? '<b>' + esc(ps.port) + '</b> &middot; ' : '') + '<span class="st">' + esc(ps.txt) + '</span>';
++  $id('redetect').classList.toggle('hidden', !(isAuto && NV.autowan_enable === '1' && ps.cls === 'pinned'));
++  /* USB tethering backup (single WAN only) */
++  $id('usbbk_row').classList.toggle('hidden', !(usb_bk_support && !dual));
++  $id('usbbk_set').classList.toggle('hidden', S.primary === 'usb');
++  $id('usbbk_hint').classList.toggle('hidden', S.primary !== 'usb');
++  $id('usbbk').checked = (S.usb_bk === '1');
++  /* dual WAN */
++  $id('dual').checked = dual;
++  $id('dual').disabled = !dualWAN_support;
++  $id('dual_body').classList.toggle('hidden', !dual);
++  $id('aggr_note').classList.toggle('hidden', !wan_bonding_support);
++  if(dual){
++    tiles('ports_second', 'second');
++    var showLan2 = (S.second === 'lan' && optHas(S.secondOpts, 'lan'));
++    $id('lanport2_row').classList.toggle('hidden', !showLan2);
++    if(showLan2) lanSelect('lanport2', S.lanport2);
++    var mb = $id('mode_seg').querySelectorAll('button'), i;
++    for(i = 0; i < mb.length; i++) mb[i].classList.toggle('on', (mb[i].getAttribute('data-m') === 'lb') === (S.mode === 'lb'));
++    $id('mode_note_fo').classList.toggle('hidden', S.mode === 'lb');
++    $id('mode_note_lb').classList.toggle('hidden', S.mode !== 'lb');
++    $id('failback').checked = (S.mode === 'fb');
++    $id('ratio_row').classList.toggle('hidden', S.mode !== 'lb');
++    $id('ratio0').value = S.ratio0; $id('ratio1').value = S.ratio1;
++    var stb = gobi_support && S.mode != 'lb' && (S.primary == 'usb' || S.second == 'usb');
++    $id('standby_row').classList.toggle('hidden', !stb);
++    $id('standby').checked = (S.standby === '1');
++  }
++  $id('primary_h').textContent = dual ? T.primary : `<#RWAN_4#>`;
++  $id('lb_block').classList.toggle('hidden', !(dual && S.mode === 'lb'));
++  if(dual && S.mode === 'lb'){ $id('rtenable').checked = (S.routing === '1'); renderRules(); renderIsp(); }
++  renderMonitor();
++  /* chips */
++  var cur = dual ? (portLabel(S.primary) + ' + ' + portLabel(S.second)) : (S.primary === 'auto' ? (ps.port || T.autoName) : portLabel(S.primary));
++  $id('chip_port_v').textContent = cur; $id('chip_port_v').title = cur;
++  $id('chip_port').className = 'chip ' + (S.primary === 'auto' && ps.cls === 'search' ? 'warn' : 'ok');
++  $id('chip_dual_v').textContent = dual ? T.on : T.off;
++}
++
++/* ---- ping target presets (stock create_DNSlist_view, bundled list, no CDN) ---- */
++function loadPingList(){
++  var x = new XMLHttpRequest(), done = 0;
++  function fin(){ if(done) return; done = 1; }
++  x.open('GET', '/ajax/DNS_List.json?v=' + encodeURIComponent(NV.extendno), true);
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    fin();
++    if(x.status !== 200) return;
++    var j = parseJSON(x.responseText, {}), k, h = '';
++    for(k in j){
++      var e = j[k];
++      if(!e || !e.ServiceIP1) continue;
++      if(is_CN ? e.ping_target !== 'CN' : e.ping_target !== 'Yes') continue;
++      h += '<button type="button" data-ip="' + esc(e.ServiceIP1) + '">' + esc(e.DNSService) + ' <b>(' + esc(e.ServiceIP1) + ')</b></button>';
++    }
++    $id('ptlist').innerHTML = h;
++    var b = $id('ptlist').querySelectorAll('button'), i;
++    for(i = 0; i < b.length; i++) b[i].addEventListener('click', function(){ S.pingtarget = this.getAttribute('data-ip'); $id('pingtarget').value = S.pingtarget; $id('ptlist').classList.remove('on'); });
++  };
++  x.onerror = x.ontimeout = x.onabort = fin;
++  x.send(null);
++}
++
++/* ---- LAN ports a LAN-as-WAN choice can use (stock get_lanport_list / the fixed 1-4 list) ---- */
++function lanPorts(cb){
++  if(!phymap){
++    S.lanOpts = [{v:'1', t:T.lanPort + '1'}, {v:'2', t:T.lanPort + '2'}, {v:'3', t:T.lanPort + '3'}, {v:'4', t:T.lanPort + '4'}];
++    cb(); return;
++  }
++  var x = new XMLHttpRequest(), done = 0;
++  function fin(){ if(done) return; done = 1; S.lanOpts = lanport_list.value_arr.map(function(v, i){ return {v: v, t: lanport_list.text_arr[i]}; }); cb(); }
++  x.open('GET', '/get_port_status.cgi?node_mac=' + encodeURIComponent(NV.lan_hwaddr), true);
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      var j = parseJSON(x.responseText, {}), pi = (j.port_info || {})[NV.lan_hwaddr] || {}, k;
++      for(k in pi){
++        var label = k.substr(0, 1), idx = k.substr(1, 1), p = pi[k], cap = parseInt(p.cap, 10) || 0;
++        if(label !== 'L') continue;
++        if(cap & (1 << 9)) continue;                       /* WANLAN: offered as its own WAN entry */
++        if((parseInt(p.flag, 10) & 2) == 2) continue;
++        var t;
++        if(p.ui_display && p.ui_display.length > 0) t = p.ui_display;
++        else if(p.max_rate == '2500') t = parseInt(idx, 10) > 0 ? '2.5G LAN' + idx : '2.5G LAN';
++        else if(p.max_rate == '10000') t = parseInt(idx, 10) > 0 ? '10G LAN' + idx : '10G LAN';
++        else t = 'LAN Port ' + idx;
++        lanport_list.text_arr.push(t); lanport_list.value_arr.push(idx);
++      }
++    }
++    fin();
++  };
++  x.onerror = x.ontimeout = x.onabort = fin;
++  x.timeout = 8000;
++  x.send(null);
++}
++
++/* ---- VLAN profiles that own a LAN port (stock get_vlan_portlist) ---- */
++function loadVlanPorts(cb){
++  if(!sup('mtlancfg')){ cb(); return; }
++  var max = (sup('MaxRule_SDN') == '0' || !sup('MaxRule_SDN')) ? 6 : parseInt(sup('MaxRule_SDN'), 10) - 1, i, q = [];
++  for(i = 0; i < max; i++) q.push('nvram_get(apg' + i + '_enable)');
++  q.push('nvram_get(label_mac)'); q.push('nvram_char_to_ascii(,vlan_trunk_rl)');
++  for(i = 0; i < max; i++) q.push('nvram_char_to_ascii(,apg' + i + '_dut_list)');
++  var x = new XMLHttpRequest(), done = 0;
++  function fin(){ if(done) return; done = 1; cb(); }
++  x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent(q.join(';')), true);
++  x.onreadystatechange = function(){
++    if(x.readyState !== 4) return;
++    if(x.status === 200){
++      var j = parseJSON(x.responseText, {}), mac = j.label_mac || '', n;
++      for(n = 0; n < max; n++){
++        if(j['apg' + n + '_enable'] !== '1') continue;
++        var dl = decodeURIComponent(j['apg' + n + '_dut_list'] || ''), rows = dl.split('<'), r;
++        for(r = 0; r < rows.length; r++){
++          if(!rows[r]) continue;
++          var f = rows[r].split('>');
++          if(f[0] === mac && f[2]){ var ports = f[2].split(','), p; for(p = 0; p < ports.length; p++) VLAN_PORTS.access.push(ports[p].substr(1, 1)); }
++        }
++      }
++      var tr = decodeURIComponent(j.vlan_trunk_rl || '').split('<'), t;
++      for(t = 0; t < tr.length; t++) if(tr[t]) VLAN_PORTS.trunk.push(tr[t].split('>')[0]);
++    }
++    fin();
++  };
++  x.onerror = x.ontimeout = x.onabort = fin;
++  x.send(null);
++}
++
++/* ---- post through the stock apply flow ---- */
++function post(fields, wait){
++  var f = document.createElement('form'), k;
++  f.method = 'POST'; f.action = '/start_apply.htm'; f.target = 'wp_hidden'; f.style.display = 'none';
++  for(k in fields){ var i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = fields[k]; f.appendChild(i); }
++  document.body.appendChild(f); f.submit();
++  return f;
++}
++var busy = 0;
++function apply(){
++  if(busy) return;
++  msg('');
++  /* S.H persists like the stock form's hidden inputs: what the Dual WAN switch or an earlier,
++     refused Apply wrote into them is still there */
++  var r = buildPost();
++  if(r.stop){
++    if(r.bad === 'ratio') msg(T.range + ' 1 - 9', 1);
++    else if(r.bad === 'interval') msg(T.range + ' ' + dns_probe_timeout_threshold + ' - 99', 1);
++    else if(r.bad === 'pingtarget') msg(T.blank, 1);
++    return;
++  }
++  busy = 1; $id('apply').disabled = true;
++  $id('ovl_t').textContent = T.apply; $id('ovl_s').textContent = T.applying; $id('ovl').className = 'ovl on';
++  post(r.fields);
++  setTimeout(function(){ location.reload(); }, Math.max(15, parseInt(r.fields.action_wait, 10) || 170) * 1000);
++}
++function redetect(){
++  if(!confirm(T.redetectQ)) return;
++  busy = 1;
++  $id('ovl_t').textContent = `<#RWAN_12#>`; $id('ovl_s').textContent = T.applying; $id('ovl').className = 'ovl on';
++  post({action_mode: 'apply', action_script: 'start_reaper_wanredetect', action_wait: '5', current_page: 'Reaper_WANPorts.asp'});
++  setTimeout(function(){ location.reload(); }, 45000);
++}
++
++(function init(){
++  initCaps();
++  S.primaryOpts = wanOptions('primary', wans_caps_primary);
++  S.secondOpts = wanOptions('second', wans_caps_secondary);
++  S.primary = S.primaryOpts.length ? S.primaryOpts[0].v : '';
++  S.second = S.secondOpts.length ? S.secondOpts[0].v : '';
++  S.mode = NV.wans_mode;
++  S.modeSel = (NV.wans_mode == 'lb') ? 'lb' : 'fo';      /* the stock mode <select> at load */
++  /* the stock rule list */
++  var raw = decodeURIComponent(RULES_RAW).split('<'), i;
++  for(i = 0; i < raw.length; i++) if(raw[i] !== '') S.rules.push(raw[i].split('>'));
++
++  $id('dual').addEventListener('change', function(){
++    var ok = this.checked ? dualOn() : dualOff();
++    if(!ok){ this.checked = !!wans_flag; return; }
++    render();
++  });
++  var mb = $id('mode_seg').querySelectorAll('button'), j;
++  for(j = 0; j < mb.length; j++) mb[j].addEventListener('click', function(){
++    /* stock appendModeOption(): Load Balance, or Fail Over keeping failback only if it was set */
++    var m = this.getAttribute('data-m');
++    if(m === 'lb') modeSelected('lb');
++    else { if(S.mode === 'lb') S.mode = 'fo'; modeSelected('fo'); }
++    render();
++  });
++  $id('failback').addEventListener('change', function(){ S.mode = this.checked ? 'fb' : 'fo'; render(); });
++  $id('ratio0').addEventListener('input', function(){ S.ratio0 = this.value; });
++  $id('ratio1').addEventListener('input', function(){ S.ratio1 = this.value; });
++  $id('standby').addEventListener('change', function(){
++    if(this.checked && gobi_support){
++      var me = (usb_index == 0) ? NV.wan0_enable : NV.wan1_enable;
++      if(me == '0' && confirm(T.standbyQ)){ if(usb_index == 0) hset('wan0_enable', '1'); else if(usb_index == 1) hset('wan1_enable', '1'); }
++    }
++    S.standby = this.checked ? '1' : '0';
++  });
++  $id('usbbk').addEventListener('change', function(){ S.usb_bk = this.checked ? '1' : '0'; });
++  $id('lanport1').addEventListener('change', function(){ S.lanport1 = this.value; });
++  $id('lanport2').addEventListener('change', function(){ S.lanport2 = this.value; });
++  $id('dnsprobe').addEventListener('change', function(){ S.dnsprobe = this.checked; renderMonitor(); });
++  $id('ping').addEventListener('change', function(){ S.ping = this.checked; renderMonitor(); });
++  $id('dnshost').addEventListener('input', function(){ S.dnshost = this.value; });
++  $id('pingtarget').addEventListener('input', function(){ S.pingtarget = this.value; });
++  $id('ptpick').addEventListener('click', function(){ $id('ptlist').classList.toggle('on'); });
++  $id('rtenable').addEventListener('change', function(){ S.routing = this.checked ? '1' : '0'; renderRules(); });
++  var is = $id('isp_seg').querySelectorAll('button');
++  for(j = 0; j < is.length; j++) is[j].addEventListener('click', function(){ ispUnit(this.getAttribute('data-u')); renderIsp(); });
++  $id('isp0c').addEventListener('change', function(){ S.isp0c = parseInt(this.value, 10) || 0; S.isp0l = 0; renderIsp(); });
++  $id('isp1c').addEventListener('change', function(){ S.isp1c = parseInt(this.value, 10) || 0; S.isp1l = 0; renderIsp(); });
++  $id('isp0l').addEventListener('change', function(){ S.isp0l = parseInt(this.value, 10) || 0; });
++  $id('isp1l').addEventListener('change', function(){ S.isp1l = parseInt(this.value, 10) || 0; });
++  $id('apply').addEventListener('click', apply);
++  $id('redetect').addEventListener('click', redetect);
++  window.addEventListener('resize', function(){ msg($id('msg').textContent, $id('msg').className.indexOf('err') >= 0); });
++
++  /* stock order: port list (async on the newer port map), then form_show(), then the saved mode */
++  lanPorts(function(){
++    /* stock initial(): both option lists are built once the port list is in (wanOptions() drops LAN
++       when it came back empty), and each selector starts on its first option */
++    S.primaryOpts = wanOptions('primary', wans_caps_primary);
++    S.secondOpts = wanOptions('second', wans_caps_secondary);
++    S.primary = S.primaryOpts.length ? S.primaryOpts[0].v : '';
++    S.second = S.secondOpts.length ? S.secondOpts[0].v : '';
++    if(!S.lanOpts.length) S.lanOpts = [{v: NV.wans_lanport, t: T.lanPort + NV.wans_lanport}];
++    if(!optHas(S.lanOpts, S.lanport1) && S.lanOpts.length) S.lanport1 = S.lanOpts[0].v;
++    if(!optHas(S.lanOpts, S.lanport2) && S.lanOpts.length) S.lanport2 = S.lanOpts[0].v;
++    S.mode = NV.wans_mode;
++    formShow(wans_flag);
++    if(!wans_flag) S.mode = NV.wans_mode;
++    render();
++    loadVlanPorts(function(){});
++    loadPingList();
++    window.__ready = 1;
++  });
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 01286458dc..cb0c986289 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Iskanje z zamenjavo kanala
+ RSVY_32=Radio 5 GHz pod radarskim nadzorom ne more iskati s svojega kanala. To iskanje ga premakne na kanal brez radarja (36 ali 149 pri 80 MHz), preišče celoten pas in ga vrne. Njegovi odjemalci med iskanjem odpadejo, vrnitev na radarski kanal počaka na radarski preizkus (približno minuta; radio z radarskim preizkusom v ozadju medtem še naprej streže, drugi utihnejo), vozlišča AiMesh pa sledijo spremembi. Drugi radii iščejo na mestu.
+ RSVY_33=Potrdi: odjemalci tega radia bodo odpadli
+ RSVY_34=polno iskanje po zamenjavi kanala prek
++RWAN_1=Vrata WAN
++RWAN_2=Katera vrata nosijo vašo internetno povezavo: ena vrata ali dvoje z Dual WAN.
++RWAN_3=Internetna vrata
++RWAN_4=Kam gre internetni kabel
++RWAN_5=Auto poišče vrata, na katerih odgovarja vaš ponudnik interneta. Preizkusi vsaka vrata tega usmerjevalnika, ki podpirajo WAN, tudi ko je Dual WAN izklopljen; med iskanjem so ta vrata povezana z vašim lokalnim omrežjem, da je na njih slišati opremo ponudnika.
++RWAN_6=Reaper obdrži vrata, ki jih najde Auto, in jih nikoli več ne poveže z vašim lokalnim omrežjem: ne po ponovnem zagonu in ne, ko kabel ali ponudnik prekine povezavo. Če veste, v katerih vratih je kabel, izberite ta vrata.
++RWAN_7=Vrata, ki jih preizkusi Auto
++RWAN_8=Internetna vrata v uporabi
++RWAN_9=Druga povezava, ki prevzame promet, ko prva odpove (Fail Over), ali si z njo deli promet (Load Balance). Izklop Dual WAN vrne na ena vrata zgoraj.
++RWAN_10=Kako usmerjevalnik ugotovi, da povezava ne deluje: vsakih nekaj sekund razreši ime, pošlje ping gostitelju ali oboje. Pri Dual WAN to odloča, kdaj preklopiti povezavo.
++RWAN_11=Pri Load Balance lahko promet od vira do cilja pripnete na eno povezavo. Vsak naslov je naslov IP, naslov z masko (192.168.50.0/24) ali all.
++RWAN_12=Ponovno zaznaj
++RWAN_13=Najdeno z Auto in ločeno od lokalnega omrežja
++RWAN_14=Iskanje: kandidatna vrata so povezana z lokalnim omrežjem, dokler ponudnik ne odgovori
++RWAN_15=Fiksna vrata: Auto je izklopljen
++RWAN_16=Ponovno poiskati internetna vrata? Reaper pozabi najdena vrata, kandidatna vrata pa se povežejo z vašim lokalnim omrežjem, dokler ponudnik ne odgovori na enih od njih.
++RWAN_17=Auto ni na voljo, dokler je v uporabi %1$@.
++RWAN_18=Vrata LAN
++RWAN_19=WAN z oznako VLAN
++RWAN_20=Izberite vrata, v katerih je internetni kabel, ali Auto, da jih usmerjevalnik poišče sam.
++RWAN_21=več kot ena storitev WAN
++RWAN_22=ta vrsta povezave
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 58db155835..05a22049e1 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Skanna med kanalbyte
+ RSVY_32=En 5 GHz-radio under radarövervakning kan inte skanna från sin kanal. Denna skanning flyttar den till en kanal utan radar (36 eller 149 vid 80 MHz), skannar hela bandet och flyttar tillbaka den. Dess klienter tappar anslutningen under skanningen, återgången till en radarkanal väntar på radarkontrollen (ungefär en minut; en radio med radarkontroll i bakgrunden fortsätter att betjäna under tiden, andra är tysta) och AiMesh-noder följer bytet. Övriga radior skannar på plats.
+ RSVY_33=Bekräfta: klienter på den radion kopplas bort
+ RSVY_34=full skanning efter kanalbyte via
++RWAN_1=WAN-portar
++RWAN_2=Vilka portar som bär din internetanslutning: en port, eller två med Dual WAN.
++RWAN_3=Internetport
++RWAN_4=Var internetkabeln sitter
++RWAN_5=Auto hittar porten där din internetleverantör svarar. Den provar varje WAN-kapabel port på routern, även med Dual WAN avstängt; medan den söker är de portarna anslutna till ditt lokala nätverk så att leverantörens utrustning kan höras på dem.
++RWAN_6=Reaper behåller porten som Auto hittar och ansluter den aldrig till ditt lokala nätverk igen: varken efter en omstart eller när kabeln eller leverantören tappar länken. Om du vet vilken port kabeln sitter i, välj den porten.
++RWAN_7=Portar som Auto provar
++RWAN_8=Internetport som används
++RWAN_9=En andra anslutning som tar över när den första faller bort (Fail Over), eller delar trafiken med den (Load Balance). Att stänga av Dual WAN återgår till den enda porten ovan.
++RWAN_10=Så avgör routern att en anslutning är nere: med några sekunders mellanrum slår den upp ett namn, pingar en värd eller båda. Med Dual WAN avgör detta när anslutningen byts.
++RWAN_11=Med Load Balance kan trafik från en källa till ett mål låsas till en anslutning. Varje adress är en IP-adress, en adress med nätmask (192.168.50.0/24) eller all.
++RWAN_12=Identifiera igen
++RWAN_13=Hittad av Auto och hållen utanför det lokala nätverket
++RWAN_14=Söker: kandidatportarna är anslutna till det lokala nätverket tills leverantören svarar
++RWAN_15=Fast port: Auto är av
++RWAN_16=Söka efter internetporten igen? Reaper glömmer porten den hittade, och kandidatportarna ansluts till ditt lokala nätverk tills leverantören svarar på någon av dem.
++RWAN_17=Auto är inte tillgänglig medan %1$@ används.
++RWAN_18=LAN-port
++RWAN_19=ett VLAN-taggat WAN
++RWAN_20=Välj porten där internetkabeln sitter, eller Auto för att låta routern hitta den.
++RWAN_21=mer än en WAN-tjänst
++RWAN_22=denna anslutningstyp
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 75b38db06b..708073570d 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=สแกนพร้อมย้ายช่อง
+ RSVY_32=วิทยุ 5 GHz ที่อยู่ภายใต้การเฝ้าระวังเรดาร์ไม่สามารถสแกนจากช่องของตัวเองได้ การสแกนนี้จะย้ายไปยังช่องที่ไม่ใช่เรดาร์ (36 หรือ 149 ที่ 80 MHz) สแกนทั้งย่านความถี่ แล้วย้ายกลับ ไคลเอนต์จะหลุดระหว่างสแกน การกลับสู่ช่องเรดาร์ต้องรอการตรวจเรดาร์ (ประมาณหนึ่งนาที วิทยุที่ตรวจเรดาร์เบื้องหลังได้จะยังให้บริการระหว่างนั้น วิทยุอื่นจะเงียบ) และโหนด AiMesh จะเปลี่ยนตาม วิทยุอื่นสแกนอยู่กับที่
+ RSVY_33=ยืนยัน: ไคลเอนต์บนวิทยุนั้นจะหลุด
+ RSVY_34=สแกนเต็มรูปแบบหลังย้ายช่อง ผ่าน
++RWAN_1=พอร์ต WAN
++RWAN_2=พอร์ตใดที่รับการเชื่อมต่ออินเทอร์เน็ตของคุณ: หนึ่งพอร์ต หรือสองพอร์ตเมื่อใช้ Dual WAN
++RWAN_3=พอร์ตอินเทอร์เน็ต
++RWAN_4=สายอินเทอร์เน็ตเสียบที่ใด
++RWAN_5=Auto จะค้นหาพอร์ตที่ผู้ให้บริการอินเทอร์เน็ตของคุณตอบกลับ โดยทดลองทุกพอร์ตที่รองรับ WAN บนเราเตอร์นี้ แม้ปิด Dual WAN อยู่ ระหว่างค้นหา พอร์ตเหล่านั้นจะเชื่อมกับเครือข่ายภายในของคุณ เพื่อให้รับสัญญาณจากอุปกรณ์ของผู้ให้บริการได้
++RWAN_6=Reaper จะเก็บพอร์ตที่ Auto พบไว้ และจะไม่เชื่อมพอร์ตนั้นกับเครือข่ายภายในของคุณอีก ทั้งหลังรีบูตและเมื่อสายหรือผู้ให้บริการทำให้ลิงก์หลุด หากคุณรู้ว่าสายเสียบอยู่ที่พอร์ตใด ให้เลือกพอร์ตนั้นแทน
++RWAN_7=พอร์ตที่ Auto ทดลอง
++RWAN_8=พอร์ตอินเทอร์เน็ตที่ใช้งานอยู่
++RWAN_9=การเชื่อมต่อที่สองที่จะรับช่วงเมื่อการเชื่อมต่อแรกล้มเหลว (Fail Over) หรือแบ่งทราฟฟิกร่วมกัน (Load Balance) การปิด Dual WAN จะกลับไปใช้พอร์ตเดียวด้านบน
++RWAN_10=วิธีที่เราเตอร์ตัดสินว่าการเชื่อมต่อขาด: ทุกไม่กี่วินาทีจะค้นหาชื่อ ส่ง Ping ไปยังโฮสต์ หรือทั้งสองอย่าง เมื่อใช้ Dual WAN สิ่งนี้จะกำหนดว่าจะสลับการเชื่อมต่อเมื่อใด
++RWAN_11=เมื่อใช้ Load Balance สามารถกำหนดให้ทราฟฟิกจากต้นทางไปยังปลายทางใช้การเชื่อมต่อเดียวได้ แต่ละที่อยู่เป็นที่อยู่ IP ที่อยู่พร้อมเน็ตมาสก์ (192.168.50.0/24) หรือ all
++RWAN_12=ตรวจหาอีกครั้ง
++RWAN_13=Auto พบแล้วและแยกออกจากเครือข่ายภายใน
++RWAN_14=กำลังค้นหา: พอร์ตที่เป็นตัวเลือกจะเชื่อมกับเครือข่ายภายในจนกว่าผู้ให้บริการจะตอบกลับ
++RWAN_15=พอร์ตคงที่: ปิด Auto
++RWAN_16=ค้นหาพอร์ตอินเทอร์เน็ตอีกครั้งหรือไม่ Reaper จะลืมพอร์ตที่พบ และพอร์ตตัวเลือกจะเชื่อมกับเครือข่ายภายในของคุณจนกว่าผู้ให้บริการจะตอบกลับบนพอร์ตใดพอร์ตหนึ่ง
++RWAN_17=ไม่สามารถใช้ Auto ขณะใช้ %1$@ อยู่
++RWAN_18=พอร์ต LAN
++RWAN_19=WAN ที่ติดแท็ก VLAN
++RWAN_20=เลือกพอร์ตที่เสียบสายอินเทอร์เน็ตไว้ หรือเลือก Auto เพื่อให้เราเตอร์ค้นหาเอง
++RWAN_21=บริการ WAN มากกว่าหนึ่งรายการ
++RWAN_22=ประเภทการเชื่อมต่อนี้
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 029721a6ce..3e21fef361 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Kanal değiştirerek tara
+ RSVY_32=Radar gözetimindeki bir 5 GHz radyo kendi kanalından tarama yapamaz. Bu tarama onu radar olmayan bir kanala (80 MHz ile 36 veya 149) taşır, tüm bandı tarar ve geri alır. Tarama sırasında istemcileri düşer, radar kanalına dönüş radar denetimini bekler (yaklaşık bir dakika; arka planda radar denetimi yapabilen radyo bu sürede hizmete devam eder, diğerleri sessiz kalır) ve AiMesh düğümleri değişikliği izler. Diğer radyolar yerinde tarar.
+ RSVY_33=Onayla: o radyodaki istemciler düşecek
+ RSVY_34=kanal değişikliğinden sonra tam tarama, üzerinden:
++RWAN_1=WAN Bağlantı Noktaları
++RWAN_2=İnternet bağlantınızı hangi bağlantı noktalarının taşıdığı: tek bağlantı noktası veya Dual WAN ile iki.
++RWAN_3=İnternet bağlantı noktası
++RWAN_4=İnternet kablosunun takıldığı yer
++RWAN_5=Auto, internet sağlayıcınızın yanıt verdiği bağlantı noktasını bulur. Dual WAN kapalıyken bile bu yönlendiricideki WAN destekli her bağlantı noktasını dener; arama sırasında sağlayıcının cihazı duyulabilsin diye bu bağlantı noktaları yerel ağınıza bağlanır.
++RWAN_6=Reaper, Auto’nun bulduğu bağlantı noktasını tutar ve onu bir daha asla yerel ağınıza bağlamaz: ne yeniden başlatmadan sonra ne de kablo veya sağlayıcı bağlantıyı kopardığında. Kablonun hangi bağlantı noktasında olduğunu biliyorsanız, onun yerine o bağlantı noktasını seçin.
++RWAN_7=Auto’nun denediği bağlantı noktaları
++RWAN_8=Kullanılan internet bağlantı noktası
++RWAN_9=Birinci bağlantı kesildiğinde devralan (Fail Over) veya trafiği onunla paylaşan (Load Balance) ikinci bir bağlantı. Dual WAN kapatılınca yukarıdaki tek bağlantı noktasına dönülür.
++RWAN_10=Yönlendirici bir bağlantının koptuğuna nasıl karar verir: birkaç saniyede bir bir adı çözümler, bir ana bilgisayara ping atar veya ikisini de yapar. Dual WAN ile bu, bağlantının ne zaman değiştirileceğini belirler.
++RWAN_11=Load Balance ile bir kaynaktan bir hedefe giden trafik tek bir bağlantıya sabitlenebilir. Her adres bir IP adresi, ağ maskeli bir adres (192.168.50.0/24) veya all olur.
++RWAN_12=Yeniden algıla
++RWAN_13=Auto tarafından bulundu ve yerel ağın dışında tutuluyor
++RWAN_14=Aranıyor: aday bağlantı noktaları sağlayıcı yanıt verene kadar yerel ağa bağlıdır
++RWAN_15=Sabit bağlantı noktası: Auto kapalı
++RWAN_16=İnternet bağlantı noktası yeniden aransın mı? Reaper bulduğu bağlantı noktasını unutur ve sağlayıcı bunlardan birinde yanıt verene kadar aday bağlantı noktaları yerel ağınıza bağlanır.
++RWAN_17=%1$@ kullanılırken Auto kullanılamaz.
++RWAN_18=LAN bağlantı noktası
++RWAN_19=VLAN etiketli WAN
++RWAN_20=İnternet kablosunun takılı olduğu bağlantı noktasını seçin veya yönlendiricinin bulması için Auto’yu seçin.
++RWAN_21=birden fazla WAN hizmeti
++RWAN_22=bu bağlantı türü
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4ff7611ecd..24a01d9cac 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=切換通道後掃描
+ RSVY_32=受雷達監測的 5 GHz 無線電無法在目前通道掃描。此掃描會將其切換到非雷達通道（36 或 149，80 MHz），掃描整個頻段後再切回。掃描期間其用戶端會斷線，切回雷達通道需等待雷達檢測（約一分鐘；支援背景雷達檢測的無線電期間繼續服務，其他無線電保持靜默），AiMesh 節點會跟隨變更。其他無線電原地掃描。
+ RSVY_33=確認：該無線電上的用戶端將斷線
+ RSVY_34=切換通道後的完整掃描，經由
++RWAN_1=WAN 連接埠
++RWAN_2=哪些連接埠承載您的網際網路連線：一個連接埠，或啟用 Dual WAN 時兩個。
++RWAN_3=網際網路連接埠
++RWAN_4=網際網路線接在哪裡
++RWAN_5=Auto 會找出網際網路服務商回應的連接埠。即使關閉 Dual WAN，它也會嘗試本路由器上每個支援 WAN 的連接埠；搜尋期間，這些連接埠會加入您的區域網路，以便偵聽服務商設備的回應。
++RWAN_6=Reaper 會保留 Auto 找到的連接埠，並且不再將它加入您的區域網路：重新開機後不會，線路或服務商中斷連線時也不會。若您知道線路接在哪個連接埠，請直接選擇該連接埠。
++RWAN_7=Auto 嘗試的連接埠
++RWAN_8=使用中的網際網路連接埠
++RWAN_9=第二條連線：在第一條連線故障時接手（Fail Over），或與其分擔流量（Load Balance）。關閉 Dual WAN 會回到上方的單一連接埠。
++RWAN_10=路由器如何判斷連線已中斷：每隔幾秒解析一個名稱、Ping 一台主機，或兩者都做。在 Dual WAN 中，這決定何時切換連線。
++RWAN_11=使用 Load Balance 時，可將來源到目的地的流量固定到一條連線。每個位址可為 IP 位址、含遮罩的位址（192.168.50.0/24）或 all。
++RWAN_12=重新偵測
++RWAN_13=由 Auto 找到，並已排除在區域網路之外
++RWAN_14=搜尋中：候選連接埠會加入區域網路，直到服務商回應
++RWAN_15=固定連接埠：Auto 已關閉
++RWAN_16=要重新搜尋網際網路連接埠嗎？Reaper 會忘記已找到的連接埠，候選連接埠將加入您的區域網路，直到服務商在其中之一回應。
++RWAN_17=使用 %1$@ 時無法使用 Auto。
++RWAN_18=LAN 連接埠
++RWAN_19=帶 VLAN 標記的 WAN
++RWAN_20=選擇網際網路線所接的連接埠，或選擇 Auto 讓路由器自行尋找。
++RWAN_21=多個 WAN 服務
++RWAN_22=此連線類型
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 7dce192e61..fa1298a172 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -7145,3 +7145,25 @@ RSVY_31=Сканування зі зміною каналу
+ RSVY_32=Радіо 5 ГГц під радарним наглядом не може сканувати зі свого каналу. Це сканування переводить його на нерадарний канал (36 або 149 при 80 МГц), сканує весь діапазон і повертає назад. Його клієнти відключаються на час сканування, повернення на радарний канал чекає перевірки радара (близько хвилини; радіо з фоновою перевіркою радара весь цей час продовжує обслуговувати клієнтів, інші мовчать), а вузли AiMesh слідують за зміною. Інші радіо сканують на місці.
+ RSVY_33=Підтвердити: клієнти цього радіо відключаться
+ RSVY_34=повне сканування після зміни каналу через
++RWAN_1=Порти WAN
++RWAN_2=Які порти несуть ваше підключення до інтернету: один порт або два з Dual WAN.
++RWAN_3=Порт інтернету
++RWAN_4=Куди підключено кабель інтернету
++RWAN_5=Auto знаходить порт, на якому відповідає ваш інтернет-провайдер. Він пробує кожен порт цього роутера з підтримкою WAN, навіть коли Dual WAN вимкнено; під час пошуку ці порти підключені до вашої локальної мережі, щоб на них було чути обладнання провайдера.
++RWAN_6=Reaper зберігає порт, знайдений Auto, і більше ніколи не підключає його до вашої локальної мережі: ні після перезавантаження, ні коли кабель чи провайдер розривають зв’язок. Якщо ви знаєте, у якому порту кабель, виберіть цей порт.
++RWAN_7=Порти, які пробує Auto
++RWAN_8=Порт інтернету, що використовується
++RWAN_9=Друге підключення, яке бере на себе трафік, коли перше відмовляє (Fail Over), або ділить з ним трафік (Load Balance). Вимкнення Dual WAN повертає до одного порту вище.
++RWAN_10=Як роутер вирішує, що підключення зникло: кожні кілька секунд він розпізнає ім’я, пінгує вузол або робить і те, і те. У Dual WAN це визначає, коли перемикати підключення.
++RWAN_11=У режимі Load Balance трафік від джерела до призначення можна закріпити за одним підключенням. Кожна адреса: IP-адреса, адреса з маскою (192.168.50.0/24) або all.
++RWAN_12=Визначити знову
++RWAN_13=Знайдено Auto й ізольовано від локальної мережі
++RWAN_14=Пошук: порти-кандидати підключені до локальної мережі, доки провайдер не відповість
++RWAN_15=Фіксований порт: Auto вимкнено
++RWAN_16=Шукати порт інтернету знову? Reaper забуде знайдений порт, і порти-кандидати підключаться до вашої локальної мережі, доки провайдер не відповість на одному з них.
++RWAN_17=Auto недоступний, поки використовується %1$@.
++RWAN_18=Порт LAN
++RWAN_19=WAN з тегом VLAN
++RWAN_20=Виберіть порт, у який підключено кабель інтернету, або Auto, щоб роутер знайшов його сам.
++RWAN_21=більше однієї служби WAN
++RWAN_22=цей тип підключення
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 5240401e18..5a107efdb6 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -320,7 +320,7 @@ define(function(){
+ 					{url: "Advanced_VDSL_Content.asp", tabName: "<#menu5_3_1#>"},
+ 					{url: "Advanced_Modem_Content.asp", tabName: "__INHERIT__"},
+ 					{url: "Advanced_MobileBroadband_Content.asp", tabName: "__INHERIT__"},
+-					{url: "Advanced_WANPort_Content.asp", tabName: "<#dualwan#>"},
++					{url: "Reaper_WANPorts.asp", tabName: "<#RWAN_1#>"},	/* reaper v3.3.6: WAN Ports - replaces the stock Dual WAN tab in place (stock page SUP-redirected) */
+ 					{url: "Advanced_PortTrigger_Content.asp", tabName: "<#menu5_3_3#>"},
+ 					{url: "Advanced_VirtualServer_Content.asp", tabName: "<#menu5_3_4#>"},
+ 					{url: "Advanced_Exposed_Content.asp", tabName: "<#menu5_3_5#>"},
+@@ -736,7 +736,7 @@ define(function(){
+ 				}
+ 
+ 				if(!dualWAN_support){
+-					retArray.push("Advanced_WANPort_Content.asp");
++					retArray.push("Reaper_WANPorts.asp");
+ 				}
+ 				else{
+ 					if(!dualwan_enabled && usb_index == 0){
+-- 
+2.25.1
+

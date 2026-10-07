@@ -324,6 +324,11 @@ int main(int argc, char **argv)
     check("filter rejects TCP, another source port, a later fragment and ARP",
           bpf(tcp) == 0 and bpf(other) == 0 and bpf(frag) == 0 and bpf(arp) == 0)
 
+    # audit 2026-10-06 (V2): the unbound packet socket hears the WAN port too, ahead of netfilter;
+    # the daemon must parse only frames whose ingress device is a LAN bridge
+    for want in ("rdm_lan_if(from.sll_ifindex", "recvfrom(sk, buf", "name[0] == 'b' && name[1] == 'r'"):
+        check("rdnsmapd.c parses LAN-bridge ingress only: %s" % want, want in src)
+
     # ---------------------------------------------------------------- wiring
     web = read("httpd/web.c")
     for want in ('#include "reaper_dnsmap.h"', 'rconn_names_table(', 'rdm_find(rdm, ra.s_addr, rdm_now)', 'rdm_touch(e, rdm_now)',

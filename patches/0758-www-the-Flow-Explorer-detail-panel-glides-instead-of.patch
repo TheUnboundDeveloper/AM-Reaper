@@ -1,0 +1,76 @@
+From 3b049e36dfc71df2d9477fb39bcad6c02fc3a9ee Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:50 -0400
+Subject: [PATCH] www: the Flow Explorer detail panel glides instead of jumping
+
+The panel that follows the reader measured and moved on every scroll event
+and every shell style write, several forced layouts per frame on a slow
+machine. It now takes at most one measurement per animation frame and eases
+to its target on a time base, snapping when it first appears and for readers
+who ask for reduced motion.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Conn.asp | 36 +++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index f553c46c1b..7173258e38 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -87,7 +87,7 @@ code{font-family:var(--mono)}
+ .mix i{display:block;height:100%}
+ .mix span{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-family:var(--mono);font-size:9px;color:var(--bone);text-shadow:0 1px 2px #000}
+ .qpill{font-family:var(--mono);font-size:11px;color:var(--bone);background:var(--raised);border:1px solid var(--line2);border-radius:5px;padding:1px 0;text-align:center;display:block}
+-.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:auto;position:relative}
++.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:auto;position:relative;will-change:transform}
+ .detail:empty{display:none}
+ .dhd{padding:13px 15px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(225,6,0,.08),transparent);display:flex;align-items:center;justify-content:space-between;gap:10px}
+ .dhd .k{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.12em;font-size:9.5px;color:var(--steel)}
+@@ -391,14 +391,38 @@ code{font-family:var(--mono)}
+      standalone, the window scrolls under the page's own top bar. One placement for both:
+      slide the panel inside its stretched grid cell to the top of what is visible, never past
+      the cell's end, and cap its height to the slice so a tall panel scrolls inside itself. */
+-  function placeDetail(){
+-    var d=document.getElementById("detail"), w=d&&d.parentNode; if(!d||!w||!d.firstChild) return;
++  /* v3.3.4 (owner, "a bit choppy"): the first version measured and moved the panel on every
++     scroll event and every shell style write - several forced layouts per frame on a slow
++     machine - and jumped straight to the target. Now: at most one measurement per animation
++     frame (placeDetail only schedules), and the panel glides to its target with a time-based
++     ease (the same feel at 30 or 144 frames a second). It snaps when it first appears and for
++     readers who ask the system for reduced motion. The glide loop runs only while moving. */
++  var dTgt=0, dPos=0, dMeas=0, dAnim=0, dLast=0, dShown=0, dMaxH="";
++  var dCalm=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)");
++  function placeDetail(){ if(!dMeas){ dMeas=1; requestAnimationFrame(measureDetail); } }
++  function moveDetail(d){ d.style.transform=dPos>0.5?"translate3d(0,"+dPos.toFixed(1)+"px,0)":""; }
++  function measureDetail(){
++    dMeas=0;
++    var d=document.getElementById("detail"), w=d&&d.parentNode;
++    if(!d||!w||!d.firstChild){ dShown=0; return; }
+     var cs=getComputedStyle(document.documentElement), rv=parseFloat(cs.getPropertyValue("--rv-top")), rh=parseFloat(cs.getPropertyValue("--rv-h"));
+     var hdr=document.querySelector(".stickytop"), hh=hdr?hdr.offsetHeight:0, sy=window.pageYOffset||0;
+     var vt=isNaN(rv)?sy+hh:rv, vh=isNaN(rh)?window.innerHeight-hh:rh;
+-    d.style.maxHeight=Math.max(160,vh-32)+"px";
+-    var wt=w.getBoundingClientRect().top+sy, off=Math.max(0,Math.min(vt+16-wt,w.offsetHeight-d.offsetHeight));
+-    d.style.transform=off>0?"translateY("+Math.round(off)+"px)":"";
++    var mh=Math.max(160,vh-32)+"px";
++    if(mh!==dMaxH){ dMaxH=mh; d.style.maxHeight=mh; }
++    var wt=w.getBoundingClientRect().top+sy;
++    dTgt=Math.max(0,Math.min(vt+16-wt,w.offsetHeight-d.offsetHeight));
++    if(!dShown||(dCalm&&dCalm.matches)){ dShown=1; dPos=dTgt; moveDetail(d); return; }
++    if(!dAnim){ dLast=0; dAnim=requestAnimationFrame(glideDetail); }
++  }
++  function glideDetail(t){
++    dAnim=0;
++    var d=document.getElementById("detail"); if(!d) return;
++    var dt=dLast?Math.min(64,t-dLast):16; dLast=t;
++    var gap=dTgt-dPos;
++    if(Math.abs(gap)<0.5) dPos=dTgt; else dPos+=gap*(1-Math.exp(-dt/70));
++    moveDetail(d);
++    if(dPos!==dTgt) dAnim=requestAnimationFrame(glideDetail);
+   }
+   try{ new MutationObserver(placeDetail).observe(document.documentElement,{attributes:true,attributeFilter:["style"]}); }catch(e){}
+   window.addEventListener("scroll",placeDetail,{passive:true}); window.addEventListener("resize",placeDetail);
+-- 
+2.25.1
+

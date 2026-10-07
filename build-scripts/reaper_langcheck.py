@@ -68,6 +68,11 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # an <option> text set from a backtick) - translations must stay free of
        # ` ${ and ".
        'Reaper_Survey.asp',
+       # Added 2026-10-06 with v3.3.6's WAN Ports page, which replaces the stock
+       # Dual WAN tab. RWAN_ tokens sit in HTML text and backtick JS templates
+       # (RWAN_17 carries the %1$@ placeholder) - translations must stay free of
+       # ` ${ " and '.
+       'Reaper_WANPorts.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

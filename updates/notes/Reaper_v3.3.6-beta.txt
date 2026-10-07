@@ -1,0 +1,82 @@
+Reaper v3.3.6 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+> Auto WAN port detection no longer bridges the internet port into the LAN at every boot and link
+
+drop (owner). Stock detection finds the port by adding every candidate to br0 and running a DHCP
+
+client on the bridge; the closed restore_auto_wanport() redid that at each boot and each WAN link
+
+loss, so the ISP port carried LAN traffic for ~35-45 s every time (only DHCP and RS/RA were
+
+filtered). Now the first port that carries the WAN is pinned (reaper_wanport): the restore calls
+
+are skipped, wanduck stops relaunching the search, and _eval refuses a brctl addif of that port
+
+while Auto is on and Dual WAN is off. A fixed port clears the pin; Detect again (or
+
+service start_reaper_wanredetect) runs one search. Dual WAN, AP mode, IPTV, bonding, static WAN and
+
+MAC clone are untouched (stock is_auto_wanport_enabled() gate); a new or reset router still
+
+starts on Auto. Host test test_wan_pin.py.
+
+> WAN > WAN Ports replaces the Dual WAN tab
+
+The only place to pick the WAN port was the Dual WAN
+
+tab, and nothing said Auto searches several ports even with Dual WAN off. The native page shows the
+
+ports (Auto with its explainer and the pinned port), Dual WAN, monitoring, Load Balance rules and the
+
+ISP profile; the stock page redirects to it and is unchanged. Its apply is a port of the stock
+
+applyRule(): a mock parity harness drives both pages through 28 scenarios (incl. three refusals)
+
+and finds the same nvram changes. One deliberate difference: a legacy single-WAN lan on the combo
+
+port shows that port instead of silently selecting Auto. RWAN_1..22 in all 25 packs.
+
+> Traffic Analyzer stays quiet on a busy conntrack table (field, RT-BE88U: rtrafd at about one core
+
+with ~10.7k entries from a LAN DHT crawler). The conntrack pass is paced by its own measured cost
+
+(near 3% of one core, 2 s floor, 30 s ceiling, one log line per change), every rate and staleness
+
+figure uses the measured interval, and the connection health probe counts inside the same pass
+
+instead of a second full read. Host test test_rtrafd_pacing.py.
+
+> Site Survey shows real security names (field: WPA2/WPA3 networks read "WEP")
+
+This platform's
+
+wl prints the privacy bit as WEP on every protected network and the RSN header as
+
+RSN (WPA2):; the parser matched only RSN:. Both forms are read now and the AKM suites fold into
+
+one name: WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal, WPA/WPA2-Personal, WPA2-Enterprise, OWE.
+
+An empty band (6 GHz with no network in range) reads as empty, not as a refused scan, and the list's
+
+heading row stays in view while it scrolls.
+
+> Audit 2026-10-06 fixes
+
+The stock download row for the WireGuard client configuration image
+
+(wgs_client.png) needs a login (it carried a client's private key); rdnsmapd accepts DNS replies
+
+from LAN bridges only, so nothing on the WAN side can plant Flow Explorer names; strongSwan carries
+
+the 6.0.6 security set. See REAPER-FIXES.md.
+
+> Flow Explorer:
+
+the Advanced detail panel glides to the reader with one measurement per frame
+
+instead of jumping on every scroll event.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

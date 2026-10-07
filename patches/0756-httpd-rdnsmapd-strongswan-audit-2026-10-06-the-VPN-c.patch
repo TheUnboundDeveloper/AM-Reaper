@@ -1,0 +1,625 @@
+From c0642c590f8a7a6b3a96bb2109f8b7929b40ad60 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 7 Oct 2026 06:03:48 -0400
+Subject: [PATCH] httpd, rdnsmapd, strongswan: audit 2026-10-06 - the VPN
+ client key row needs a login, the name map reads LAN bridges only, strongSwan
+ 6.0.6 set
+
+- httpd: the stock mime_handlers row that serves the WireGuard client
+  configuration image (wgs_client.png) was reachable without a login, so
+  anyone on the LAN could fetch a client's private key. The row now
+  requires the session like every other config download.
+- rdnsmapd: its AF_PACKET socket took DNS replies from every interface,
+  including the WAN, so an off-path sender could plant names in the Flow
+  Explorer map. Frames are now accepted only from a LAN bridge (br*).
+- strongSwan: the 6.0.6 security fixes (RADIUS, EAP-SIM/AKA, PKCS#5,
+  constraints, gmp RSA, PKCS#7, TLS server) carried onto the 6.0.x tree,
+  with the upstream test change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                |   2 +-
+ release/src/router/rdnsmapd/rdnsmapd.c        |  69 +++++++++++-
+ .../strongswan/src/libradius/radius_message.c |   5 +
+ .../strongswan/src/libsimaka/simaka_message.c |   5 +-
+ .../src/libstrongswan/crypto/pkcs5.c          |   5 +
+ .../constraints/constraints_validator.c       |  28 ++++-
+ .../plugins/gmp/gmp_rsa_private_key.c         |  54 ++++++---
+ .../plugins/pkcs7/pkcs7_enveloped_data.c      |  14 ++-
+ .../tests/suites/test_certnames.c             |  21 +++-
+ .../src/libstrongswan/utils/utils.h           |   1 +
+ .../libstrongswan/utils/utils/constant_time.h | 103 ++++++++++++++++++
+ .../router/strongswan/src/libtls/tls_server.c |  13 +--
+ 12 files changed, 272 insertions(+), 48 deletions(-)
+ create mode 100644 release/src/router/strongswan/src/libstrongswan/utils/utils/constant_time.h
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index a8c33fe924..4ce19a4364 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -36588,7 +36588,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "captcha.gif", "image/gif", no_cache_IE7, NULL, do_captcha_file, NULL },
+ #endif
+ #ifdef RTCONFIG_WIREGUARD
+-	{ "wgs_client.png", "image/png", no_cache_IE7, NULL, do_wgs_client_png, NULL },
++	{ "wgs_client.png", "image/png", no_cache_IE7, NULL, do_wgs_client_png, do_auth },
+ 	{ "wgs_client.conf", "application/octet-stream", NULL, NULL, do_wgs_client_conf, do_auth },
+ 	{ "upload_wgc_config.cgi*", "text/html", no_cache_IE7, do_upload_wgc_config_post, do_upload_wgc_config_cgi, do_auth },
+  #endif
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index 9ae527ec54..39402d7713 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -14,7 +14,11 @@
+  * Mechanism, sized for zero idle cost:
+  *   - one AF_PACKET socket, unbound (every interface, both directions), with a
+  *     classic BPF filter attached BEFORE bind so the kernel rejects everything
+- *     that is not a UDP datagram from port 53 before a byte is copied;
++ *     that is not a UDP datagram from port 53 before a byte is copied; a frame
++ *     whose ingress device is not a LAN bridge (br*) is dropped before parsing
++ *     (audit 2026-10-06 V2: AF_PACKET sits ahead of netfilter, so the WAN INPUT
++ *     policy never applied and an Internet host sending UDP from port 53 at the
++ *     WAN address reached the parser as root);
+  *   - a blocking recv: no tick, no timer, no sweep - asleep while the LAN is quiet;
+  *   - per reply: parse the ANSWER section and map every A record to the QNAME the
+  *     client asked for (every A record there belongs to the question's CNAME
+@@ -57,6 +61,7 @@
+ #include <linux/filter.h>
+ #include <linux/if_ether.h>
+ #include <linux/if_packet.h>
++#include <net/if.h>
+ #include <arpa/inet.h>
+ #include "reaper_dnsmap.h"
+ 
+@@ -70,6 +75,47 @@
+ #ifndef RDM_TEST
+ static volatile sig_atomic_t running = 1;
+ static void on_term(int sig) { (void)sig; running = 0; }
++
++/* audit 2026-10-06 (V2): is the frame's ingress device a LAN bridge? Every reply
++ * a LAN client receives crosses its bridge - the router's own dnsmasq replies
++ * leave through it, a reply forwarded from an external resolver is seen on it
++ * on the way out - so parsing bridge frames only loses nothing and drops the
++ * WAN port and the physical LAN ports (the latter were duplicate sightings).
++ * The verdict is cached per ifindex for 30 s: indexes are reused after a bridge
++ * is removed, so a cached name must not outlive a reconfiguration. */
++#define RDM_IFC 32
++struct rdm_ifc { int idx, lan; time_t at; };
++static struct rdm_ifc rdm_ifcache[RDM_IFC];
++
++static int rdm_lan_if(int idx, time_t now)
++{
++	char name[IF_NAMESIZE];
++	struct rdm_ifc *v = &rdm_ifcache[0];
++	int i;
++
++	if (idx <= 0)
++		return 0;
++	for (i = 0; i < RDM_IFC; i++) {
++		struct rdm_ifc *c = &rdm_ifcache[i];
++
++		if (c->idx == idx) {
++			if (now - c->at < 30)
++				return c->lan;
++			v = c;
++			break;
++		}
++		if (c->idx == 0) {
++			v = c;
++			break;
++		}
++		if (c->at < v->at)
++			v = c;
++	}
++	v->idx = idx;
++	v->at = now;
++	v->lan = if_indextoname((unsigned)idx, name) != NULL && name[0] == 'b' && name[1] == 'r';
++	return v->lan;
++}
+ #endif
+ 
+ /* tcpdump -dd 'udp src port 53' (EN10MB). IPv4 or IPv6 outer, UDP, source
+@@ -393,8 +439,14 @@ static void rdm_bf_drain(struct pollfd *pf, void *map, const uint32_t *tg, int n
+ 		left = ms - (int)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+ 		if (left <= 0 || poll(pf, 2, left) <= 0)
+ 			return;
+-		if ((pf[0].revents & POLLIN) && (n = (int)recv(pf[0].fd, rb, sizeof(rb), 0)) > 0)
+-			rdm_parse(rb, n, map, (uint32_t)time(NULL));
++		if (pf[0].revents & POLLIN) {
++			struct sockaddr_ll from;
++			socklen_t fl = sizeof(from);
++
++			n = (int)recvfrom(pf[0].fd, rb, sizeof(rb), 0, (struct sockaddr *)&from, &fl);
++			if (n > 0 && rdm_lan_if(from.sll_ifindex, time(NULL)))
++				rdm_parse(rb, n, map, (uint32_t)time(NULL));
++		}
+ 		if ((pf[1].revents & POLLIN) && (n = (int)recv(pf[1].fd, rb, sizeof(rb), 0)) > 0)
+ 			rdm_parse_ptr(rb, n, map, (uint32_t)time(NULL), tg, ntg);
+ 	}
+@@ -485,13 +537,20 @@ int main(void)
+ 		rdm_backfill(map, sk);
+ 
+ 	while (running) {
+-		n = (int)recv(sk, buf, sizeof(buf), 0);
++		struct sockaddr_ll from;
++		socklen_t fl = sizeof(from);
++		time_t now;
++
++		n = (int)recvfrom(sk, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
+ 		if (n < 0) {
+ 			if (errno == EINTR)
+ 				continue;
+ 			break;
+ 		}
+-		rdm_parse(buf, n, map, (uint32_t)time(NULL));
++		now = time(NULL);
++		if (!rdm_lan_if(from.sll_ifindex, now))
++			continue;			/* the WAN port or a physical LAN port: not ours (V2) */
++		rdm_parse(buf, n, map, (uint32_t)now);
+ 	}
+ 	close(sk);
+ 	munmap(map, RDM_SIZE);
+diff --git a/release/src/router/strongswan/src/libradius/radius_message.c b/release/src/router/strongswan/src/libradius/radius_message.c
+index 8e2db0ca2c..5679e47679 100644
+--- a/release/src/router/strongswan/src/libradius/radius_message.c
++++ b/release/src/router/strongswan/src/libradius/radius_message.c
+@@ -261,6 +261,11 @@ METHOD(enumerator_t, attribute_enumerate, bool,
+ 		DBG1(DBG_IKE, "RADIUS message truncated");
+ 		return FALSE;
+ 	}
++	if (this->next->length < sizeof(rattr_t))
++	{
++		DBG1(DBG_IKE, "RADIUS attribute has invalid length");
++		return FALSE;
++	}
+ 	*type = this->next->type;
+ 	data->ptr = this->next->value;
+ 	data->len = this->next->length - sizeof(rattr_t);
+diff --git a/release/src/router/strongswan/src/libsimaka/simaka_message.c b/release/src/router/strongswan/src/libsimaka/simaka_message.c
+index 670656811e..4862048da9 100644
+--- a/release/src/router/strongswan/src/libsimaka/simaka_message.c
++++ b/release/src/router/strongswan/src/libsimaka/simaka_message.c
+@@ -416,7 +416,7 @@ static bool parse_attributes(private_simaka_message_t *this, chunk_t in)
+ 			case AT_ENCR_DATA:
+ 			case AT_RAND:
+ 			{
+-				if (hdr->length * 4 > in.len || in.len < 4)
++				if (hdr->length == 0 || hdr->length * 4 > in.len || in.len < 4)
+ 				{
+ 					return invalid_length(hdr->type);
+ 				}
+@@ -439,7 +439,7 @@ static bool parse_attributes(private_simaka_message_t *this, chunk_t in)
+ 			case AT_PADDING:
+ 			default:
+ 			{
+-				if (hdr->length * 4 > in.len || in.len < 4)
++				if (hdr->length == 0 || hdr->length * 4 > in.len || in.len < 4)
+ 				{
+ 					return invalid_length(hdr->type);
+ 				}
+@@ -932,4 +932,3 @@ simaka_message_t *simaka_message_create(bool request, uint8_t identifier,
+ 	return simaka_message_create_data(chunk_create((char*)&hdr, sizeof(hdr)),
+ 									  crypto);
+ }
+-
+diff --git a/release/src/router/strongswan/src/libstrongswan/crypto/pkcs5.c b/release/src/router/strongswan/src/libstrongswan/crypto/pkcs5.c
+index 306c652a4d..d2e3f3927a 100644
+--- a/release/src/router/strongswan/src/libstrongswan/crypto/pkcs5.c
++++ b/release/src/router/strongswan/src/libstrongswan/crypto/pkcs5.c
+@@ -124,6 +124,11 @@ static bool verify_padding(crypter_t *crypter, chunk_t *blob)
+ {
+ 	uint8_t padding, count;
+ 
++	if (!blob->len)
++	{
++		return FALSE;
++	}
++
+ 	padding = count = blob->ptr[blob->len - 1];
+ 
+ 	if (padding > crypter->get_block_size(crypter))
+diff --git a/release/src/router/strongswan/src/libstrongswan/plugins/constraints/constraints_validator.c b/release/src/router/strongswan/src/libstrongswan/plugins/constraints/constraints_validator.c
+index 51c10576c1..1f55d115b5 100644
+--- a/release/src/router/strongswan/src/libstrongswan/plugins/constraints/constraints_validator.c
++++ b/release/src/router/strongswan/src/libstrongswan/plugins/constraints/constraints_validator.c
+@@ -55,6 +55,18 @@ static bool check_pathlen(x509_t *issuer, int pathlen)
+ 	return TRUE;
+ }
+ 
++/**
++ * Check if the constraint and ID strings match case-insensitively
++ */
++static bool string_matches(chunk_t constraint, chunk_t id)
++{
++	/* make sure the two strings have actually the same length */
++	return constraint.len == id.len &&
++		   memchr(constraint.ptr, 0, constraint.len) == NULL &&
++		   memchr(id.ptr, 0, id.len) == NULL &&
++		   strncasecmp(constraint.ptr, id.ptr, constraint.len) == 0;
++}
++
+ /**
+  * Check if a FQDN constraint matches
+  */
+@@ -70,7 +82,7 @@ static bool fqdn_matches(identification_t *constraint, identification_t *id)
+ 		return FALSE;
+ 	}
+ 	diff = chunk_create(i.ptr, i.len - c.len);
+-	if (!chunk_equals(c, chunk_skip(i, diff.len)))
++	if (!string_matches(c, chunk_skip(i, diff.len)))
+ 	{
+ 		return FALSE;
+ 	}
+@@ -101,10 +113,10 @@ static bool email_matches(identification_t *constraint, identification_t *id)
+ 	}
+ 	if (memchr(c.ptr, '@', c.len))
+ 	{	/* constraint is a full email address */
+-		return chunk_equals(c, i);
++		return string_matches(c, i);
+ 	}
+ 	diff = chunk_create(i.ptr, i.len - c.len);
+-	if (!chunk_equals(c, chunk_skip(i, diff.len)))
++	if (!string_matches(c, chunk_skip(i, diff.len)))
+ 	{
+ 		return FALSE;
+ 	}
+@@ -389,9 +401,17 @@ static bool collect_constraints(x509_t *x509, bool permitted, hashtable_t **out)
+ 		type = constraint->get_type(constraint);
+ 		switch (type)
+ 		{
++			case ID_DER_ASN1_DN:
++				if (!permitted)
++				{
++					DBG1(DBG_CFG, "excluded %N NameConstraint not supported",
++						 id_type_names, type);
++					success = FALSE;
++					break;
++				}
++				/* fall-through */
+ 			case ID_FQDN:
+ 			case ID_RFC822_ADDR:
+-			case ID_DER_ASN1_DN:
+ 			case ID_IPV4_ADDR_SUBNET:
+ 			case ID_IPV6_ADDR_SUBNET:
+ 				break;
+diff --git a/release/src/router/strongswan/src/libstrongswan/plugins/gmp/gmp_rsa_private_key.c b/release/src/router/strongswan/src/libstrongswan/plugins/gmp/gmp_rsa_private_key.c
+index 63e8f54cdd..64f730fdf7 100644
+--- a/release/src/router/strongswan/src/libstrongswan/plugins/gmp/gmp_rsa_private_key.c
++++ b/release/src/router/strongswan/src/libstrongswan/plugins/gmp/gmp_rsa_private_key.c
+@@ -495,8 +495,8 @@ METHOD(private_key_t, decrypt, bool,
+ 	private_gmp_rsa_private_key_t *this, encryption_scheme_t scheme,
+ 	void *params, chunk_t crypto, chunk_t *plain)
+ {
+-	chunk_t em, stripped;
+-	bool success = FALSE;
++	chunk_t em;
++	u_int valid, i, j, found_sep = 0, sep_index = 0, m_index;
+ 
+ 	if (scheme != ENCRYPT_RSA_PKCS1)
+ 	{
+@@ -505,33 +505,51 @@ METHOD(private_key_t, decrypt, bool,
+ 		return FALSE;
+ 	}
+ 	/* rsa decryption using PKCS#1 RSADP */
+-	stripped = em = rsadp(this, crypto);
++	em = rsadp(this, crypto);
++	if (em.len != this->k)
++	{
++		return FALSE;
++	}
+ 
+-	/* PKCS#1 v1.5 8.1 encryption-block formatting (EB = 00 || 02 || PS || 00 || D) */
++	/* PKCS#1 v1.5, RFC 8017, section 7.2.2 message structure:
++	 * EM = 00 || 02 || PS || 00 || M */
+ 
+ 	/* check for hex pattern 00 02 in decrypted message */
+-	if ((*stripped.ptr++ != 0x00) || (*(stripped.ptr++) != 0x02))
++	valid  = constant_time_eq(em.ptr[0], 0x00);
++	valid &= constant_time_eq(em.ptr[1], 0x02);
++
++	/* the plaintext data starts after first 0x00 byte */
++	for (i = 2; i < em.len; i++)
+ 	{
+-		DBG1(DBG_LIB, "incorrect padding - probably wrong rsa key");
+-		goto end;
++		u_int zero = constant_time_eq(em.ptr[i], 0x00);
++
++		sep_index = constant_time_select(i, sep_index, ~found_sep & zero);
++		found_sep |= zero;
+ 	}
+-	stripped.len -= 2;
+ 
+-	/* the plaintext data starts after first 0x00 byte */
+-	while (stripped.len-- > 0 && *stripped.ptr++ != 0x00)
++	/* make sure PS is at least eight bytes long (plus the initial bytes) */
++	valid &= constant_time_ge(sep_index, 10);
++
++	/* instead of copying the message directly, we try not to reveal the message
++	 * length i.e. where the 0x00 byte was. and since clearing a chunk is
++	 * relatively efficient, i.e. doesn't leak much, we always allocate and copy
++	 * a value and then clear it if the structure was invalid */
++	m_index = constant_time_select(sep_index + 1, 11, valid);
+ 
+-	if (stripped.len == 0)
++	*plain = chunk_alloc(this->k);
++	for (i = 0, j = 0; i < em.len; i++)
+ 	{
+-		DBG1(DBG_LIB, "no plaintext data");
+-		goto end;
++		plain->ptr[j] = em.ptr[i];
++		j += constant_time_ge(i, m_index);
+ 	}
++	plain->len = j;
+ 
+-	*plain = chunk_clone(stripped);
+-	success = TRUE;
+-
+-end:
++	if (!valid)
++	{
++		chunk_clear(plain);
++	}
+ 	chunk_clear(&em);
+-	return success;
++	return valid;
+ }
+ 
+ METHOD(private_key_t, get_keysize, int,
+diff --git a/release/src/router/strongswan/src/libstrongswan/plugins/pkcs7/pkcs7_enveloped_data.c b/release/src/router/strongswan/src/libstrongswan/plugins/pkcs7/pkcs7_enveloped_data.c
+index 8b26bad3ac..795d979fd4 100644
+--- a/release/src/router/strongswan/src/libstrongswan/plugins/pkcs7/pkcs7_enveloped_data.c
++++ b/release/src/router/strongswan/src/libstrongswan/plugins/pkcs7/pkcs7_enveloped_data.c
+@@ -182,9 +182,17 @@ static bool decrypt(private_key_t *private, chunk_t key, chunk_t iv, int oid,
+  */
+ static bool remove_padding(private_pkcs7_enveloped_data_t *this)
+ {
+-	u_char *pos = this->content.ptr + this->content.len - 1;
+-	u_char pattern = *pos;
+-	size_t padding = pattern;
++	u_char *pos, pattern;
++	size_t padding;
++
++	if (!this->content.len)
++	{
++		return FALSE;
++	}
++
++	pos = this->content.ptr + this->content.len - 1;
++	pattern = *pos;
++	padding = pattern;
+ 
+ 	if (padding > this->content.len)
+ 	{
+diff --git a/release/src/router/strongswan/src/libstrongswan/tests/suites/test_certnames.c b/release/src/router/strongswan/src/libstrongswan/tests/suites/test_certnames.c
+index 2549fb6e33..14570eedf7 100644
+--- a/release/src/router/strongswan/src/libstrongswan/tests/suites/test_certnames.c
++++ b/release/src/router/strongswan/src/libstrongswan/tests/suites/test_certnames.c
+@@ -207,8 +207,10 @@ static struct {
+ 	bool good;
+ } permitted_san[] = {
+ 	{ ".strongswan.org", "test.strongswan.org", TRUE },
++	{ ".strongswan.org", "test.strongSwan.org", TRUE },
+ 	{ "strongswan.org", "test.strongswan.org", TRUE },
+ 	{ "a.b.c.strongswan.org", "d.a.b.c.strongswan.org", TRUE },
++	{ "a.b.c.strongswan.org", "d.A.b.C.strongswan.org", TRUE },
+ 	{ "a.b.c.strongswan.org", "a.b.c.d.strongswan.org", FALSE },
+ 	{ "strongswan.org", "strongswan.org.com", FALSE },
+ 	{ ".strongswan.org", "strongswan.org", FALSE },
+@@ -216,8 +218,11 @@ static struct {
+ 	{ "strongswan.org", "swan.org", FALSE },
+ 	{ "strongswan.org", "swan.org", FALSE },
+ 	{ "tester@strongswan.org", "tester@strongswan.org", TRUE },
++	{ "tester@strongswan.org", "tester@strongSwan.org", TRUE },
++	{ "tester@strongswan.org", "TESTER@strongswan.org", TRUE },
+ 	{ "tester@strongswan.org", "atester@strongswan.org", FALSE },
+ 	{ "email:strongswan.org", "tester@strongswan.org", TRUE },
++	{ "email:strongswan.org", "tester@strongSwan.org", TRUE },
+ 	{ "email:strongswan.org", "tester@test.strongswan.org", FALSE },
+ 	{ "email:.strongswan.org", "tester@test.strongswan.org", TRUE },
+ 	{ "email:.strongswan.org", "tester@strongswan.org", FALSE },
+@@ -248,11 +253,11 @@ static struct {
+ 	char *subject;
+ 	bool good;
+ } excluded_dn[] = {
+-	{ "C=CH, O=another", "C=CH, O=strongSwan, CN=tester", TRUE },
+-	{ "C=CH, O=another", "C=CH, O=anot", TRUE },
+-	{ "C=CH, O=another", "C=CH, O=anot, CN=tester", TRUE },
++	{ "C=CH, O=another", "C=CH, O=strongSwan, CN=tester", FALSE },
++	{ "C=CH, O=another", "C=CH, O=anot", FALSE },
++	{ "C=CH, O=another", "C=CH, O=anot, CN=tester", FALSE },
+ 	{ "C=CH, O=another", "C=CH, O=another, CN=tester", FALSE },
+-	{ "C=CH, O=another", "C=CH, CN=tester, O=another", TRUE },
++	{ "C=CH, O=another", "C=CH, CN=tester, O=another", FALSE },
+ };
+ 
+ START_TEST(test_excluded_dn)
+@@ -281,7 +286,9 @@ static struct {
+ } excluded_san[] = {
+ 	{ ".strongswan.org", "test.strongswan.org", FALSE },
+ 	{ "strongswan.org", "test.strongswan.org", FALSE },
++	{ "strongswan.org", "test.strongSwan.org", FALSE },
+ 	{ "a.b.c.strongswan.org", "d.a.b.c.strongswan.org", FALSE },
++	{ "a.b.c.strongswan.org", "d.a.b.C.strongswan.org", FALSE },
+ 	{ "a.b.c.strongswan.org", "a.b.c.d.strongswan.org", TRUE },
+ 	{ "strongswan.org", "strongswan.org.com", TRUE },
+ 	{ ".strongswan.org", "strongswan.org", TRUE },
+@@ -289,8 +296,10 @@ static struct {
+ 	{ "strongswan.org", "swan.org", TRUE },
+ 	{ "strongswan.org", "swan.org", TRUE },
+ 	{ "tester@strongswan.org", "tester@strongswan.org", FALSE },
++	{ "tester@strongswan.org", "TESTER@strongswan.org", FALSE },
+ 	{ "tester@strongswan.org", "atester@strongswan.org", TRUE },
+ 	{ "email:strongswan.org", "tester@strongswan.org", FALSE },
++	{ "email:strongswan.org", "tester@strongSwan.org", FALSE },
+ 	{ "email:strongswan.org", "tester@test.strongswan.org", TRUE },
+ 	{ "email:.strongswan.org", "tester@test.strongswan.org", FALSE },
+ 	{ "email:.strongswan.org", "tester@strongswan.org", TRUE },
+@@ -418,9 +427,9 @@ static struct {
+ 	char *subject;
+ 	bool good;
+ } excluded_dn_levels[] = {
+-	{ "C=CH, O=strongSwan", "C=CH", "C=DE", TRUE },
++	{ "C=CH, O=strongSwan", "C=CH", "C=DE", FALSE },
+ 	{ "C=CH, O=strongSwan", "C=CH", "C=CH", FALSE },
+-	{ "C=CH, O=strongSwan", "C=DE", "C=CH", TRUE },
++	{ "C=CH, O=strongSwan", "C=DE", "C=CH", FALSE },
+ 	{ "C=CH, O=strongSwan", "C=DE", "C=DE", FALSE },
+ 	{ "C=CH, O=strongSwan", "C=DE", "C=CH, O=strongSwan", FALSE },
+ 	{ NULL, "C=CH", "C=CH, O=strongSwan", FALSE },
+diff --git a/release/src/router/strongswan/src/libstrongswan/utils/utils.h b/release/src/router/strongswan/src/libstrongswan/utils/utils.h
+index 42d01144a2..ab0be7206e 100644
+--- a/release/src/router/strongswan/src/libstrongswan/utils/utils.h
++++ b/release/src/router/strongswan/src/libstrongswan/utils/utils.h
+@@ -53,6 +53,7 @@
+ #include "utils/atomics.h"
+ #include "utils/align.h"
+ #include "utils/byteorder.h"
++#include "utils/constant_time.h"
+ #include "utils/string.h"
+ #include "utils/memory.h"
+ #include "utils/strerror.h"
+diff --git a/release/src/router/strongswan/src/libstrongswan/utils/utils/constant_time.h b/release/src/router/strongswan/src/libstrongswan/utils/utils/constant_time.h
+new file mode 100644
+index 0000000000..0c2c6a2e04
+--- /dev/null
++++ b/release/src/router/strongswan/src/libstrongswan/utils/utils/constant_time.h
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (C) 2026 Tobias Brunner
++ *
++ * Copyright (C) secunet Security Networks AG
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.  See <http://www.fsf.org/copyleft/gpl.txt>.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * for more details.
++ */
++
++/**
++ * @defgroup constant_time_i constant_time
++ * @{ @ingroup constant_time_i
++ */
++
++#ifndef CONSTANT_TIME_H_
++#define CONSTANT_TIME_H_
++
++#include <stdint.h>
++
++/**
++ * Check if the given values are not equal in constant time.
++ *
++ * @param x		first value to check
++ * @param y		second value to check
++ * @return		1 if values are not equal, 0 otherwise
++ */
++static inline u_int constant_time_neq(uint32_t x, uint32_t y)
++{
++	return ((x-y) | (y-x)) >> 31;
++}
++
++/**
++ * Check if the given values are equal in constant time.
++ *
++ * @param x		first value to check
++ * @param y		second value to check
++ * @return		1 if values are equal, 0 otherwise
++ */
++static inline u_int constant_time_eq(uint32_t x, uint32_t y)
++{
++	return 1 ^ constant_time_neq(x, y);
++}
++
++/**
++ * Compare the two values and return 1 if the first argument is lower than
++ * the second in constant time.
++ *
++ * @param x		first value to check
++ * @param y		second value to check
++ * @return		1 if first value is lower than second
++ */
++static inline u_int constant_time_lt(uint32_t x, uint32_t y)
++{
++	return (x ^ ((x^y) | ((x-y) ^ y))) >> 31;
++}
++
++/**
++ * Compare the two values and return 1 if the first argument greater or equal to
++ * the second in constant time.
++ *
++ * @param x		first value to check
++ * @param y		second value to check
++ * @return		1 if first value is greater or equal to the second
++ */
++static inline u_int constant_time_ge(uint32_t x, uint32_t y)
++{
++	return 1 ^ constant_time_lt(x, y);
++}
++
++/**
++ * Return a 32-bit all bit-set mask if the given value is not 0.
++ *
++ * @param x		value to check
++ * @return		0xffffffff if value is != 0, 0 otherwise
++ */
++static inline uint32_t constant_time_mask(uint32_t x)
++{
++	return -(uint32_t)constant_time_neq(x, 0);
++}
++
++/**
++ * Select one of two values depending on whether the condition is != 0 or not.
++ * Basically equivalent to 'c ? x : y'.
++ *
++ * @param x		first value to select
++ * @param y		second value to select
++ * @param c		condition
++ * @return		x if c is != 0, y otherwise
++ */
++static inline uint32_t constant_time_select(uint32_t x, uint32_t y, uint32_t c)
++{
++	uint32_t m = constant_time_mask(c);
++	return (x & m) | (y & ~m);
++}
++
++#endif /** CONSTANT_TIME_H_ @} */
+diff --git a/release/src/router/strongswan/src/libtls/tls_server.c b/release/src/router/strongswan/src/libtls/tls_server.c
+index f70f0504e5..786e7b64f8 100644
+--- a/release/src/router/strongswan/src/libtls/tls_server.c
++++ b/release/src/router/strongswan/src/libtls/tls_server.c
+@@ -471,15 +471,12 @@ static status_t process_client_hello(private_tls_server_t *this,
+ 		bio_reader_t *client_versions;
+ 
+ 		client_versions = bio_reader_create(versions);
+-		while (client_versions->remaining(client_versions))
++		while (client_versions->read_uint16(client_versions, &version))
+ 		{
+-			if (client_versions->read_uint16(client_versions, &version))
++			if (this->tls->set_version(this->tls, version, version))
+ 			{
+-				if (this->tls->set_version(this->tls, version, version))
+-				{
+-					this->client_version = version;
+-					break;
+-				}
++				this->client_version = version;
++				break;
+ 			}
+ 		}
+ 		client_versions->destroy(client_versions);
+@@ -860,7 +857,7 @@ static status_t process_key_exchange_dhe(private_tls_server_t *this,
+ 	group = this->dh->get_method(this->dh);
+ 	ec = key_exchange_is_ecdh(group);
+ 	if ((ec && !reader->read_data8(reader, &pub)) ||
+-		(!ec && (!reader->read_data16(reader, &pub) || pub.len == 0)))
++		(!ec && !reader->read_data16(reader, &pub)) || pub.len == 0)
+ 	{
+ 		DBG1(DBG_TLS, "received invalid Client Key Exchange");
+ 		this->alert->add(this->alert, TLS_FATAL, TLS_DECODE_ERROR);
+-- 
+2.25.1
+

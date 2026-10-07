@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.5** · 2026-10-06 <!--@stamp-->
+> **Doc status:** current as of **v3.3.6** · 2026-10-07 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.5** <!--@treever--> — `3006.102.8_Reaper_v3.3.5`. **A firmware update keeps the DTIM Interval you set.** v3.3.4 reset it to 1 on the first boot after an update; v3.3.5 is v3.3.4 with that removed and nothing else, and the v3.3.4 prereleases are withdrawn. Built and verified on an RT-BE96U MCP image; the release images come from the public CI build. The series stands at **754 patches** (0753–0754 for v3.3.5); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.6** <!--@treever--> — `3006.102.8_Reaper_v3.3.6`. **The WAN port stays out of the LAN; WAN Ports replaces the Dual WAN tab.** Auto detection pins the port it finds instead of bridging it into the LAN at every boot and link drop; a quieter Traffic Analyzer on busy conntrack tables; Site Survey security names; three audit fixes. Built and verified on an RT-BE96U MCP image (test rungs r1-r5 on metal); the release images come from the public CI build. The series stands at **761 patches** (0755–0761 for v3.3.6); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,30 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.6 — the WAN port stays out of the LAN, WAN Ports replaces the Dual WAN tab, a quieter Traffic Analyzer, real Site Survey security names
+
+**Your internet port stays out of your local network.** With the WAN port on Auto (the factory
+setting), the router used to find the internet port by joining the candidate ports to your local
+network - at every boot and every time the internet link dropped - for about half a minute each time.
+v3.3.6 remembers the port once it has found it and never joins it to the local network again. If you
+move the cable, pick the new port or press **Detect again**.
+
+**WAN > WAN Ports** replaces the Dual WAN tab. It shows which port carries your internet connection,
+says plainly that Auto searches several ports even with Dual WAN off, and holds everything the Dual WAN
+tab held. It saves exactly what the old tab saved.
+
+**Traffic Analyzer no longer loads the router on a busy network** (for example a device holding
+thousands of connections open): it reads the connection table at a pace set by how long the read takes.
+
+**Site Survey** names each network's security the way your phone does (WPA2-Personal,
+WPA2/WPA3-Personal, WPA2-Enterprise ...) instead of showing many as WEP, says "0 networks" for an empty
+band instead of a refused scan, and keeps its column headings in view while you scroll.
+
+Also: three fixes from the 2026-10-06 security audit (a WireGuard client file needs a login, the name
+map listens to your LAN only, strongSwan 6.0.6 security fixes) and a smoother Flow Explorer detail
+panel.
+
 
 ## What's new in v3.3.5 — an update keeps the DTIM Interval you set
 

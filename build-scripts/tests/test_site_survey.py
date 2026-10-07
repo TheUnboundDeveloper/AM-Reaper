@@ -53,7 +53,7 @@ def read(rel, binary=False):
 SAMPLE = (
     'SSID: "HomeNet"\n'
     'Mode: Managed\tRSSI: -45 dBm\tSNR: 50 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 36/80\n'
-    'BSSID: 00:11:22:33:44:55\tCapability: ESS RRM \n'
+    'BSSID: 00:11:22:33:44:55\tCapability: ESS WEP ShortSlot RRM \n'
     'Supported Rates: [ 6(b) 9 12(b) 18 24(b) 36 48 54 ]\n'
     'HT Capable:\n'
     '\tChanspec: 5GHz channel 42 80MHz (0xe02a)\n'
@@ -61,17 +61,17 @@ SAMPLE = (
     'VHT Capable:\n'
     'HE Capable:\n'
     'EHT Capable:\n'
-    'RSN:\n'
+    'RSN (WPA2 + WPA3-SAE):\n'
     '\tmulticast cipher: AES-CCMP\n'
     '\tunicast ciphers(1): AES-CCMP \n'
-    '\tAKM Suites(2): WPA2-PSK WPA3-SAE \n'
+    '\tAKM Suites(2): WPA2-PSK SAE \n'
     '\tCapabilities(0x00cc): 16 PTKSA replay counters MFPR MFPC \n'
     'SSID: "\\x00\\x00\\x00"\n'
     'Mode: Managed\tRSSI: -71 dBm\tSNR: 24 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 149/80\n'
-    'BSSID: AA:BB:CC:DD:EE:01\tCapability: ESS \n'
+    'BSSID: AA:BB:CC:DD:EE:01\tCapability: ESS WEP \n'
     'HT Capable:\n'
     'VHT Capable:\n'
-    'RSN:\n'
+    'RSN (WPA2):\n'
     '\tAKM Suites(1): WPA2-PSK \n'
     'SSID: "Shop "Guest" Net"\n'
     'Mode: Managed\tRSSI: -60 dBm\tSNR: 35 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 157l\n'
@@ -87,21 +87,42 @@ SAMPLE = (
     'HT Capable:\n'
     'SSID: "Six"\n'
     'Mode: Managed\tRSSI: -52 dBm\tSNR: 43 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 6g37/320-1\n'
-    'BSSID: aa:bb:cc:dd:ee:05\tCapability: ESS \n'
+    'BSSID: aa:bb:cc:dd:ee:05\tCapability: ESS WEP \n'
     'HE Capable:\n'
     'EHT Capable:\n'
-    'RSN:\n'
-    '\tAKM Suites(1): SAE \n'
+    'RSN (WPA3-SAE):\n'
+    '\tAKM Suites(2): SAE SAE-EXT \n'
     'SSID: "Broken"\n'
     'Mode: Managed\tRSSI: -50 dBm\tSNR: 40 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 44\n'
     'SSID: "Upper"\n'
     'Mode: Managed\tRSSI: -58 dBm\tSNR: 37 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 40u\n'
-    'BSSID: aa:bb:cc:dd:ee:06\tCapability: ESS \n'
+    'BSSID: aa:bb:cc:dd:ee:06\tCapability: ESS WEP \n'
     'HT Capable:\n'
     'WPA:\n'
     '\tAKM Suites(1): WPA-PSK \n'
-    'RSN:\n'
+    'RSN (WPA2):\n'
     '\tAKM Suites(1): WPA2-PSK \n'
+    # field 2026-10-06: wl names the privacy bit WEP on every protected network; these must not read WEP
+    'SSID: "Corp"\n'
+    'Mode: Managed\tRSSI: -61 dBm\tSNR: 34 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 44/80\n'
+    'BSSID: aa:bb:cc:dd:ee:07\tCapability: ESS WEP RRM \n'
+    'RSN (WPA2):\n'
+    '\tAKM Suites(2): WPA2 FT-802.1x \n'
+    'SSID: "Enhanced"\n'
+    'Mode: Managed\tRSSI: -63 dBm\tSNR: 32 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 6g5/160\n'
+    'BSSID: aa:bb:cc:dd:ee:08\tCapability: ESS WEP \n'
+    'RSN (WPA2):\n'
+    '\tAKM Suites(1): Unknown-00:0F:AC(#18)  \n'
+    'SSID: "NoAkm"\n'
+    'Mode: Managed\tRSSI: -70 dBm\tSNR: 25 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 1\n'
+    'BSSID: aa:bb:cc:dd:ee:09\tCapability: ESS WEP \n'
+    'RSN (WPA2):\n'
+    '\tmulticast cipher: AES-CCMP\n'
+    'SSID: "OldHeader"\n'
+    'Mode: Managed\tRSSI: -72 dBm\tSNR: 23 dB\tnoise: -95 dBm\tFlags: RSSI on-channel\tChannel: 11\n'
+    'BSSID: aa:bb:cc:dd:ee:0a\tCapability: ESS WEP \n'
+    'RSN:\n'
+    '\tAKM Suites(3): WPA2-PSK SAE None \n'
 )
 
 HOME_IN = "40/160\n36/80\n100/160\n149/80\n157l\n40u\n36\n6g5/320-1\n6g37/320-2\n6g37/160\n6g69/80\n9l\n6\nxyz\n"
@@ -198,9 +219,9 @@ finally:
 
 recs = [l for l in out.splitlines() if l.startswith("REC ")]
 count = int(re.search(r"COUNT (\d+)", out).group(1))
-if count != 7 or len(recs) != 7:
-    die("expected 7 records (the BSSID-less one dropped), got %d / %d\n%s" % (count, len(recs), out))
-ok("7 of 8 records delivered - the record without a BSSID is dropped")
+if count != 11 or len(recs) != 11:
+    die("expected 11 records (the BSSID-less one dropped), got %d / %d\n%s" % (count, len(recs), out))
+ok("11 of 12 records delivered - the record without a BSSID is dropped")
 for cs, want in HOME_EXPECT.items():
     m = re.search(r"^HOME " + re.escape(cs) + r" -> (\d+) \[([^\]]*)\]$", hout, re.M)
     if not m:
@@ -228,12 +249,12 @@ def rec(bssid):
 
 l = rec("00:11:22:33:44:55")
 for want in ('ssid="HomeNet"', "band=5", "chan=36", "width=80", "rssi=-45", "noise=-95", "snr=50", "phy=7",
-             "sec=[WPA2-PSK WPA3-SAE]", "hidden=0", "cs=36/80"):
+             "sec=[WPA2/WPA3-Personal]", "hidden=0", "cs=36/80"):
     if want not in l: die("HomeNet: missing %s in %s" % (want, l))
 ok("5 GHz 80 MHz WPA2+WPA3 EHT record parsed in full")
 
 l = rec("aa:bb:cc:dd:ee:01")
-for want in ('ssid=""', "hidden=1", "chan=149", "width=80", "phy=5", "sec=[WPA2-PSK]"):
+for want in ('ssid=""', "hidden=1", "chan=149", "width=80", "phy=5", "sec=[WPA2-Personal]"):
     if want not in l: die("hidden: missing %s in %s" % (want, l))
 ok("all-zero SSID flagged hidden, upper-case BSSID lower-cased")
 
@@ -253,14 +274,23 @@ for want in ('ssid="Café \\\\ bar"', "band=2", "chan=11"):
 ok("wl escapes undone: the hex pairs became UTF-8, the doubled backslash became one (then JSON-escaped)")
 
 l = rec("aa:bb:cc:dd:ee:05")
-for want in ("band=6", "chan=37", "width=320", "phy=7", "sec=[SAE]", "cs=6g37/320-1"):
+for want in ("band=6", "chan=37", "width=320", "phy=7", "sec=[WPA3-Personal]", "cs=6g37/320-1"):
     if want not in l: die("6 GHz: missing %s in %s" % (want, l))
 ok("6 GHz 320 MHz block parsed")
 
 l = rec("aa:bb:cc:dd:ee:06")
-for want in ("chan=40", "width=40", "sec=[WPA-PSK WPA2-PSK]"):
+for want in ("chan=40", "width=40", "sec=[WPA/WPA2-Personal]"):
     if want not in l: die("40u: missing %s in %s" % (want, l))
-ok("40u = 40 MHz; WPA and RSN AKMs merged without duplicates")
+ok("40u = 40 MHz; WPA and RSN AKMs folded into one label (WPA/WPA2-Personal)")
+
+# the field defect: the privacy bit is on every protected network; WEP only without an RSN/WPA block
+for b, want in (("aa:bb:cc:dd:ee:07", "sec=[WPA2-Enterprise]"), ("aa:bb:cc:dd:ee:08", "sec=[OWE]"),
+                ("aa:bb:cc:dd:ee:09", "sec=[WPA2]"), ("aa:bb:cc:dd:ee:0a", "sec=[WPA2/WPA3-Personal]")):
+    l = rec(b)
+    if want not in l: die("security: %s missing %s in %s" % (b, want, l))
+if sum(1 for l in recs if "sec=[WEP]" in l) != 1:
+    die("only the legacy WEP record may read WEP:" + chr(10) + out)
+ok("RSN (...) headers, wl AKM names and suite numbers labelled; privacy bit alone = WEP (one record)")
 
 # ---- wiring on the real source ----
 mk = read("httpd/Makefile")
@@ -285,6 +315,10 @@ for want in (' -t passive', ' -c %s', 'rsvy_home_chans(', 'rsvy_chans_nonradar(n
 if 'escanresults 2>/dev/null' in web:
     die("the survey worker must keep the wl utility's stderr, not discard it")
 ok("a silent radio is retried, listened to passively, then on its own channel block; the utility's error text reaches the page")
+# lab metal 2026-10-06: a clean, empty full-band scan (6 GHz with no network in range) is the answer, not a refusal
+if 'if (t >= 2 && rc == 0 && !r->msg[0])' not in web:
+    die("the survey worker must not narrow to the own block after a clean, empty full-band scan")
+ok("narrowing to the own block happens only after a rejected try; an empty band is reported as empty")
 # r12 metal (owner, 2026-10-05): `wl chanspec X` alone only changes the configured chanspec of a running radio, and the
 # worker inherited httpd's SIGCHLD reaper (every pclose -1). The move now goes the stock way and is verified.
 for want in ('signal(SIGCHLD, SIG_DFL);', 'wl_iovar_setint(ifname, "chanspec", (int)cs)', 'wl_iovar_setint(ifname, "acs_update", -1)',

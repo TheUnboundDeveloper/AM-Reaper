@@ -385,6 +385,31 @@ jobs:
           echo "expected $TOOLCHAIN_COMMIT"; echo "actual   $ACTUAL"
           [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ]
 
+      # One pull, retried, before anything runs the image. Docker Hub answers
+      # 401/500 transiently; on 2026-10-07 both RT-BE96U jobs lost the pull in
+      # the same second while the other 16 jobs got through. Fall back to the
+      # AWS ECR Public mirror of the Docker official images (same image and digest),
+      # retagged so the steps below run the local ubuntu:20.04 without pulling again.
+      - name: Pull the clean-room image
+        run: |
+          set -uo pipefail
+          IMG=ubuntu:20.04
+          MIRROR=public.ecr.aws/docker/library/ubuntu:20.04
+          for i in 1 2 3 4 5; do
+            docker pull -q "$IMG" && break
+            echo "::warning::docker pull $IMG failed (attempt $i/5)"
+            [ "$i" -lt 5 ] && sleep $((i * 15))
+          done
+          if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+            echo "::warning::Docker Hub unavailable; pulling $MIRROR"
+            for i in 1 2 3; do
+              docker pull -q "$MIRROR" && docker tag "$MIRROR" "$IMG" && break
+              [ "$i" -lt 3 ] && sleep $((i * 15))
+            done
+          fi
+          docker image inspect "$IMG" >/dev/null 2>&1 || { echo "::error::could not pull $IMG"; exit 1; }
+          echo "image: $(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG")"
+
       # Safety net only: the local WSL flow builds without emulation (Samba
       # cross-compiles via cross-answers). Registering ARM binfmt on the host
       # costs seconds and means a stray target-binary execution during compile
@@ -409,15 +434,14 @@ jobs:
           fi
           echo "qemu-arm binfmt registered:"
           sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
-          docker run --rm -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+          docker run --rm --pull never -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
             ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
 
       - name: Build in Ubuntu 20.04 clean room
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          docker pull -q ubuntu:20.04
-          docker run --rm \
+          docker run --rm --pull never \
             -e UPSTREAM_REPO="$UPSTREAM_REPO" \
             -e BASE_TAG="$BASE_TAG" \
             -e BASE_COMMIT="$BASE_COMMIT" \

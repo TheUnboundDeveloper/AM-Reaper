@@ -1,0 +1,3105 @@
+From 59edeb2eb5d7a6df20972daa6ea5801b67f391cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:26:08 -0400
+Subject: [PATCH] rc, rom: IPv6 coverage, dual-stack DNS health, cross-network
+ names, the DDNS firewall wipe, private /tmp, no app network installer
+
+- IPv6: Gatekeeper's captive check, Service Intercept, the watchdog, SNMP and
+  DHCPv6 names work over IPv6; per-network IPv6 switch respected.
+- DNS health check: both faces of a dual-stack LAN resolver are probed every
+  tick and moved independently; the intercept gate closes per address family;
+  nothing touches the IPv6 side while IPv6 is off.
+- Reverse DNS across networks (main LAN <-> each VLAN, never VLAN <-> VLAN,
+  never guest/portal) and IPv6 device names (rv6names: neighbour cache +
+  DHCPv4 names -> each network's addn-hosts file, one reload on change).
+- Stock stop_ddns() re-restored the whole filter table from an old snapshot,
+  silently deleting guest isolation, Gatekeeper, Warden and the rules engine on
+  every DDNS stop; it now deletes only its own rule.
+- The watchdog's rules-engine heal was refused by reaper_lockrun (script not
+  allowlisted); now listed. Tunnel-aware first-hop note.
+- /tmp hardening (audit F1/F2/V3): fs.protected_* on at boot, every Reaper
+  directory created root-only at boot and checked at use, Reaper's loose files
+  moved into /tmp/reaper, err_rules 0700, scripts run only when root-owned and
+  private (incl. PBR's runner and reaper_lockrun), chain names from chainsig
+  validated, the restore's staged settings created fresh, IPv6 names written
+  atomically.
+- rom: the app network installer is not shipped (audit V11: plain-HTTP packages
+  run as root; the vendor HTTPS host serves an incomplete chain) - nine scripts
+  dropped, rc refuses install/update/upgrade/switch/cancel; the USB chain, disk
+  check and removal of an installed app are kept. The firmware download is
+  created under umask 022 and must be a private root file before the flash; the
+  update check keeps its manifest and key in /tmp/reaper.
+- usb.c: bounded /proc/partitions scans; create_custom_passwd closes its file
+  and checks the group file open (stock hygiene, unreachable).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile                |   4 +-
+ release/src/router/rc/amaspark.c              |   2 +-
+ release/src/router/rc/firewall.c              |  29 +-
+ release/src/router/rc/gatekeeper.c            |  29 +-
+ release/src/router/rc/init.c                  |  13 +
+ release/src/router/rc/qos.c                   |   4 +-
+ release/src/router/rc/rc.c                    |   2 +
+ release/src/router/rc/rc.h                    |  21 +-
+ release/src/router/rc/rdnshc.c                | 227 ++++++++++----
+ release/src/router/rc/reaper_bwfloor.c        |   8 +-
+ release/src/router/rc/reaper_fw.c             | 283 ++++++++++++++----
+ release/src/router/rc/reaper_hook.c           |  11 +-
+ release/src/router/rc/reaper_hook.h           |   1 -
+ release/src/router/rc/reaper_pbr.c            |  23 +-
+ release/src/router/rc/reaper_punct.c          |  12 +-
+ release/src/router/rc/rexport.c               |  37 +--
+ release/src/router/rc/rv6names.c              | 267 +++++++++++++++++
+ release/src/router/rc/rwarden.c               |   6 +-
+ release/src/router/rc/rwatch.c                | 106 +++++--
+ release/src/router/rc/sdn.c                   | 219 ++++++++++++++
+ release/src/router/rc/sdn.h                   |   5 +
+ release/src/router/rc/services.c              | 155 ++++++++--
+ release/src/router/rc/snmpd.c                 |  11 +-
+ release/src/router/rc/usb.c                   |   9 +-
+ release/src/router/rom/Makefile               |  16 +-
+ .../src/router/rom/apps_scripts/asusrouter    |   4 +-
+ .../rom/webs_scripts/reaper_webs_update.sh    |  20 +-
+ .../rom/webs_scripts/reaper_webs_upgrade.sh   |  14 +
+ 28 files changed, 1271 insertions(+), 267 deletions(-)
+ create mode 100644 release/src/router/rc/rv6names.c
+ mode change 100755 => 100644 release/src/router/rom/apps_scripts/asusrouter
+ mode change 100755 => 100644 release/src/router/rom/webs_scripts/reaper_webs_update.sh
+ mode change 100755 => 100644 release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 9a2d700d10..2e989985c7 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -462,6 +462,8 @@ OBJS += reaper_usbmon.o
+ OBJS += reaper_wanpin.o
+ # reaper v3.1.1: LAN resolver health check (primary/standby for dnsmasq's upstream list)
+ OBJS += rdnshc.o
++# reaper 2026-10-08: IPv6 device names (neighbour cache + DHCPv4 names -> per-network dnsmasq addn-hosts files)
++OBJS += rv6names.o
+ # reaper v2.2.2: analytics exporter - push per-device health to Splunk/Datadog/etc.
+ OBJS += rexport.o
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+@@ -491,7 +493,6 @@ endif
+ 
+ ifeq ($(CONFIG_BCMWL5),y)
+ OBJS += init-broadcom.o wps-broadcom.o broadcom.o ate-broadcom.o
+-OBJS += $(if $(wildcard reaper_chanlist_shim.c),reaper_chanlist_shim.o)
+ ifeq ($(BUILD_NAME),$(filter $(BUILD_NAME),RP-AX56))
+ OBJS += rpmac.o
+ endif
+@@ -1807,6 +1808,7 @@ endif
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_bwfloor
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc reaper_usb_release
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc rdnshc
++	@cd $(INSTALLDIR)/sbin && ln -sf rc rv6names
+ 
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc free_caches
+ 	@cd $(INSTALLDIR)/sbin && ln -sf rc get_phy_status
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index 64791fc6a6..93d623f93a 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -66,7 +66,7 @@
+ #define AP_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
+ #define AP_OB_MAX	1200		/* s, a stuck non-idle cfg_obstatus is treated as closed */
+ #define AP_SETTLE	120		/* s, quiet period after a window closes before parking again */
+-#define AP_STATE	"/tmp/amaspark.state"
++#define AP_STATE	"/tmp/reaper/amaspark.state"
+ #define AP_MAXU		4		/* radios: the GT-BE98 family has four (2.4, 5-1, 5-2, 6); the band comes from wlN_nband, never the unit number */
+ 
+ static volatile sig_atomic_t g_stop;
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 1b43e5f701..75bf9e313f 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -4628,7 +4628,7 @@ static void _config_mtwan_mangle_rules(
+ #define REAPER_NF_MATCHES6 "/proc/net/ip6_tables_matches"
+ #define REAPER_NF_TARGETS6 "/proc/net/ip6_tables_targets"
+ #define REAPER_NF_PROBE_CHAIN "REAPER_PROBE"
+-#define REAPER_NF_PROBE_FILE "/tmp/reaper_nf_probe.rules"
++#define REAPER_NF_PROBE_FILE "/tmp/reaper/reaper_nf_probe.rules"
+ #define REAPER_NF_MAXNAMES 64
+ #define REAPER_NF_MAXSIGS 48
+ 
+@@ -5140,7 +5140,7 @@ static int reaper_restore_rules(const char *bin, const char *path, int caller_li
+ 	argv[1] = (char *)path;
+ 	argv[2] = NULL;
+ 	if (!check_if_dir_exist(REAPER_ERR_RULES))
+-		mkdir(REAPER_ERR_RULES, 0777);
++		reaper_secure_dir(REAPER_ERR_RULES, 0700);	/* 2026-10-09 audit F2/V3: was 0777 */
+ 	snprintf(errf, sizeof(errf), "%s/%s.err", REAPER_ERR_RULES, basename((char *)path));
+ 	snprintf(redir, sizeof(redir), ">%s", errf);
+ 	ret = reaper_restore_run(argv, redir, errf, msg, sizeof(msg), &tries);
+@@ -5241,8 +5241,8 @@ static int reaper_restore_rules(const char *bin, const char *path, int caller_li
+  * the restore fallback, registry then probe - so on a kernel that takes both
+  * the block passes through byte for byte, and elsewhere the router keeps every
+  * other rule instead of none. What is left out is logged once per boot. */
+-#define REAPER_EXTRA_TMP "/tmp/filter_extra.tmp"
+-#define REAPER_EXTRA_WARNED "/tmp/reaper_extra_filter.warned"
++#define REAPER_EXTRA_TMP "/tmp/reaper/filter_extra.tmp"
++#define REAPER_EXTRA_WARNED "/tmp/reaper/reaper_extra_filter.warned"
+ 
+ static void reaper_write_extra_filter(FILE *fp)
+ {
+@@ -6041,6 +6041,13 @@ TRACE_PT("writing Parental Control\n");
+ 		 * UDP/161 to every guest/IoT VLAN and VPN tunnel. */
+ 		if (nvram_match("snmpd_enable", "1") && nvram_match("snmpd_wan", "1"))
+ 			fprintf(fp, "-A INPUT -i %s -p udp --dport 161 -j %s\n", wan_if, logaccept);
++#ifdef RTCONFIG_IPV6
++		/* 2026-10-07 IPv6 (A9): the WAN-side twin, under the same gate as every other
++		 * IPv6 INPUT allow in this function; the agent binds udp6 (rc/snmpd.c) */
++		if (nvram_match("snmpd_enable", "1") && nvram_match("snmpd_wan", "1")
++		    && ipv6_enabled() && nvram_match("ipv6_fw_enable", "1") && *wan6face)
++			fprintf(fp_ipv6, "-A INPUT -i %s -p udp --dport 161 -j %s\n", wan6face, logaccept);
++#endif
+ 
+ #ifdef RTCONFIG_IPV6
+ 		switch (get_ipv6_service()) {
+@@ -10308,13 +10315,13 @@ leave:
+ 	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
+ 	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+-		system("sh /tmp/gk/apply.sh");
++		(void)(reaper_script_ok("/tmp/gk/apply.sh") && system("sh /tmp/gk/apply.sh"));
+ 
+ 	/* reaper v1.8.0 Warden: same story - a firewall rebuild flushes the
+ 	 * REAPER_WARDEN chain (RW_* sets); re-run the generated apply.sh so the
+ 	 * ipset drops survive restart_firewall and cold-boot LAN-not-ready deferral. */
+ 	if (nvram_match("rwarden_enable", "1") && f_exists("/tmp/rwarden/apply.sh"))
+-		system("sh /tmp/rwarden/apply.sh");
++		(void)(reaper_script_ok("/tmp/rwarden/apply.sh") && system("sh /tmp/rwarden/apply.sh"));
+ 
+ 	/* reaper v2.3.8 native firewall: the rules engine owns REAPER_FWI/FWF/FWO,
+ 	 * which this rebuild just unhooked. Re-run the generated script. If a change
+@@ -10324,9 +10331,9 @@ leave:
+ 	 * operator is still looking at the countdown for the new one. */
+ 	if (nvram_match("reaper_fw_enable", "1")) {
+ 		if (nvram_match("reaper_fw_armed", "1") && f_exists("/tmp/reaper_fw/candidate.sh"))
+-			system("sh /tmp/reaper_fw/candidate.sh");
++			(void)(reaper_script_ok("/tmp/reaper_fw/candidate.sh") && system("sh /tmp/reaper_fw/candidate.sh"));
+ 		else if (f_exists("/tmp/reaper_fw/apply.sh"))
+-			system("sh /tmp/reaper_fw/apply.sh");
++			(void)(reaper_script_ok("/tmp/reaper_fw/apply.sh") && system("sh /tmp/reaper_fw/apply.sh"));
+ 	}
+ 	file_unlock(llock);
+ 	}
+@@ -10343,9 +10350,9 @@ leave:
+ 		 * the lock for this run; the generated script never calls back into rc. */
+ 		int plock = file_lock("firewall");
+ 		if (nvram_match("reaper_pbr_armed", "1") && f_exists("/tmp/reaper_pbr/candidate.sh"))
+-			system("sh /tmp/reaper_pbr/candidate.sh");
++			(void)(reaper_script_ok("/tmp/reaper_pbr/candidate.sh") && system("sh /tmp/reaper_pbr/candidate.sh"));
+ 		else if (f_exists("/tmp/reaper_pbr/apply.sh"))
+-			system("sh /tmp/reaper_pbr/apply.sh");
++			(void)(reaper_script_ok("/tmp/reaper_pbr/apply.sh") && system("sh /tmp/reaper_pbr/apply.sh"));
+ 		file_unlock(plock);
+ 	}
+ 
+@@ -10399,7 +10406,7 @@ void rule_apply_checking(char *caller, int line, char *rule_path, int ret) {
+ 		char dst_file[64];
+ 		logmessage(caller, "apply rules error(%d)", line);
+ 		if (!check_if_dir_exist(ERR_RULES_PATH))
+-			mkdir(ERR_RULES_PATH, 0777);
++			reaper_secure_dir(ERR_RULES_PATH, 0700);	/* reaper 2026-10-09 audit F2/V3: stock 0777 */
+ 		snprintf(dst_file, sizeof(dst_file), "%s/%s_%u", ERR_RULES_PATH, basename(rule_path), (unsigned int)time(NULL));
+ 		eval("cp", rule_path, dst_file);
+ 	}
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index bdfb2f3604..1cf16a29b9 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -14,7 +14,7 @@
+  *     or blocked device may only reach DHCP, DNS and HTTP (the captive
+  *     "awaiting approval" page); everything else to the router is dropped,
+  *     which also fences the admin UI off from unapproved devices.
+- *   iptables nat PREROUTING     REAPER_GKN  - captive redirect. Unknown
++ *   iptables/ip6tables nat PREROUTING  REAPER_GKN  - captive redirect. Unknown
+  *     MACs get tcp/80 DNAT'd to httpd, whose pre-auth intercept serves the
+  *     waiting page (OS captive-portal probes are plain HTTP, so phones pop
+  *     the native sign-in sheet).
+@@ -186,7 +186,7 @@ static void gk_emit_mac(FILE *f, const char *mac, int state, int quarantine)
+ 	}
+ 	/* known MACs never hit the captive redirect */
+ 	if (quarantine)
+-		fprintf(f, "iptables -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN\n", mac);
++		fprintf(f, "for T in iptables ip6tables; do $T -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN; done\n", mac);
+ }
+ 
+ /* v2.6.2: charset gates for the GKNETS fields. Each value is spliced into
+@@ -305,7 +305,7 @@ static void gk_emit_relist(FILE *f)
+ 					"  $T -A REAPER_GKI -m mac --mac-source %s -j RETURN\n"
+ 					"  $T -A REAPER_GKF -m mac --mac-source %s -j RETURN\n"
+ 					"done\n"
+-					"iptables -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN\n"
++					"for T in iptables ip6tables; do $T -t nat -A REAPER_GKN -m mac --mac-source %s -j RETURN; done\n"
+ 					"ebtables -A REAPER_GK -s %s -j RETURN\n",
+ 					mac, mac, mac, mac);
+ 			}
+@@ -491,6 +491,7 @@ static void gk_gen_apply(void)
+ 		   "    while $T -D INPUT -i $I -j REAPER_GKI 2>/dev/null; do :; done\n"
+ 		   "  done\n"
+ 		   "  while iptables -t nat -D PREROUTING -i $I -j REAPER_GKN 2>/dev/null; do :; done\n"
++		   "  while ip6tables -t nat -D PREROUTING -i $I -j REAPER_GKN 2>/dev/null; do :; done\n"
+ 		   "  while ebtables -D FORWARD --logical-in $I -j REAPER_GK 2>/dev/null; do :; done\n"
+ 		   "done\n"
+ 		   /* every jump is gone before the chains are flushed and deleted */
+@@ -499,6 +500,7 @@ static void gk_gen_apply(void)
+ 		   "  $T -F REAPER_GKI 2>/dev/null; $T -X REAPER_GKI 2>/dev/null\n"
+ 		   "done\n"
+ 		   "iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null\n"
++		   "ip6tables -t nat -F REAPER_GKN 2>/dev/null; ip6tables -t nat -X REAPER_GKN 2>/dev/null\n"
+ 		   "ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null\n"
+ 		   /* v2.6.5: our one rule in ASUS's SDN_FI (captive on isolated SDNs) */
+ 		   "while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $LANIP -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done\n"
+@@ -516,6 +518,7 @@ static void gk_gen_apply(void)
+ 		   "  $T -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"
+ 		   "done\n"
+ 		   "iptables -t nat -N REAPER_GKN\n"
++		   "ip6tables -t nat -N REAPER_GKN\n"
+ 		   "ebtables -N REAPER_GK -P RETURN\n", gkifs, gknets);
+ 
+ #ifdef RTCONFIG_CFGSYNC
+@@ -571,8 +574,15 @@ static void gk_gen_apply(void)
+ 		 * (http_enable != 0, so the escape hatch survives), and the router IP is
+ 		 * known (else the DNAT target would be malformed). */
+ 		fprintf(f,
+-			"if [ \"$(_nv gk_captive)\" != \"0\" ] && [ \"$GKHTTPEN\" != \"0\" ] && [ -n \"$LANIP\" ]; then\n"
+-			"  iptables -t nat -A REAPER_GKN -p tcp --dport 80 -j DNAT --to-destination $LANIP:80\n"
++			"if [ \"$(_nv gk_captive)\" != \"0\" ] && [ \"$GKHTTPEN\" != \"0\" ]; then\n"
++			"  [ -n \"$LANIP\" ] && iptables -t nat -A REAPER_GKN -p tcp --dport 80 -j DNAT --to-destination $LANIP:80\n"
++			/* IPv6 (2026-10-07 IPv6 A4): a held device's IPv6 web probe used to be DROPPED by
++			 * GKF instead of answered, so an OS that resolved its captive-probe host to
++			 * IPv6 first saw a black hole until it retried over IPv4. REDIRECT lands the
++			 * connection on the router's own address on the arriving bridge - no LAN v6
++			 * literal to carry, httpd listens on [::] - and httpd's captive check resolves
++			 * the v6 peer through the neighbour cache (httpd.c gk_ip_to_mac). */
++			"  ip6tables -t nat -A REAPER_GKN -p tcp --dport 80 -j REDIRECT --to-ports 80\n"
+ 			"fi\n"
+ 			/* v2.6.5: the redirect target is the MAIN LAN address (httpd binds
+ 			 * lan_ifname only), and an SDN with Access Intranet OFF drops every
+@@ -593,6 +603,7 @@ static void gk_gen_apply(void)
+ 		   "printf '%%s' \"$GKIFS\" > " GK_IFS_FILE "\n"
+ 		   "for I in $GKIFS; do\n"
+ 		   "  iptables -t nat -I PREROUTING 1 -i $I -j REAPER_GKN\n"
++		   "  ip6tables -t nat -I PREROUTING 1 -i $I -j REAPER_GKN\n"
+ 		   "  ebtables -I FORWARD 1 --logical-in $I -j REAPER_GK\n"
+ 		   "done\n"
+ 		   REAPER_HOOK_RUN
+@@ -623,7 +634,7 @@ static void gk_gen_apply(void)
+ 		unlink(GK_APPLY ".tmp");
+ }
+ 
+-void gk_teardown_rules(void)
++static void gk_teardown_rules(void)
+ {
+ 	/* Fixed, state-free teardown (mirrors the apply.sh preamble).
+ 	 *
+@@ -647,12 +658,14 @@ void gk_teardown_rules(void)
+ 		"while $T -D FORWARD -i $I -j REAPER_GKF 2>/dev/null; do :; done; "
+ 		"while $T -D INPUT -i $I -j REAPER_GKI 2>/dev/null; do :; done; done; "
+ 		"while iptables -t nat -D PREROUTING -i $I -j REAPER_GKN 2>/dev/null; do :; done; "
++		"while ip6tables -t nat -D PREROUTING -i $I -j REAPER_GKN 2>/dev/null; do :; done; "
+ 		"while ebtables -D FORWARD --logical-in $I -j REAPER_GK 2>/dev/null; do :; done; done; "
+ 		/* every jump is gone before the chains are flushed and deleted */
+ 		"for T in iptables ip6tables; do "
+ 		"$T -F REAPER_GKF 2>/dev/null; $T -X REAPER_GKF 2>/dev/null; "
+ 		"$T -F REAPER_GKI 2>/dev/null; $T -X REAPER_GKI 2>/dev/null; done; "
+ 		"iptables -t nat -F REAPER_GKN 2>/dev/null; iptables -t nat -X REAPER_GKN 2>/dev/null; "
++		"ip6tables -t nat -F REAPER_GKN 2>/dev/null; ip6tables -t nat -X REAPER_GKN 2>/dev/null; "
+ 		"ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null; "
+ 		/* v2.6.5: our one rule in ASUS's SDN_FI */
+ 		"L=\"$(_nv lan_ipaddr)\"; case \"$L\" in ''|*[!0-9.]*) ;; *) while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $L -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done;; esac; "
+@@ -677,7 +690,7 @@ void stop_gk(void)
+ static int gk_apply_locked(void)
+ {
+ 	int lk = file_lock("firewall");
+-	int ret = system("sh " GK_APPLY);
++	int ret = reaper_script_ok(GK_APPLY) ? system("sh " GK_APPLY) : -1;
+ 
+ 	if (lk >= 0) file_unlock(lk);
+ 	return ret;
+@@ -705,7 +718,7 @@ void start_gk(void)
+ 		logmessage("gatekeeper", "settings restore pending - enforcement held OFF until the restore completes (finish it on the Administration backup page)");
+ 		return;
+ 	}
+-	mkdir(GK_DIR, 0700);
++	reaper_secure_dir(GK_DIR, 0700);
+ 	gk_rl_migrate();	/* v2.6.3: nvram gk_rl -> /jffs/gatekeeper/rl, once */
+ 	reaper_hook_gen();	/* v2.6.2 front chains */
+ 	gk_gen_apply();
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index f0eccbf42b..43cec60dfd 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -25620,6 +25620,19 @@ static void sysinit(void)
+ 	 * and /tmp is tmpfs so the sticky bit costs nothing. Stock ASUS/Merlin
+ 	 * ships 0777 here; this is a deliberate divergence. */
+ 	chmod("/tmp", 01777);
++	/* reaper 2026-10-09 (audit V3): the kernel half of the same promise. In a
++	 * sticky world-writable directory, root no longer follows a link another
++	 * user planted, opens another user's file or FIFO with O_CREAT, or sees a
++	 * hard link to a file the linker could not write. This covers every stock
++	 * /tmp writer too (filter_rules, nat_rules, linux.trx...) without touching
++	 * them. All four exist in this 4.19 kernel and default to 0. */
++	f_write_string("/proc/sys/fs/protected_symlinks", "1", 0, 0);
++	f_write_string("/proc/sys/fs/protected_hardlinks", "1", 0, 0);
++	f_write_string("/proc/sys/fs/protected_regular", "1", 0, 0);
++	f_write_string("/proc/sys/fs/protected_fifos", "1", 0, 0);
++	/* ...and every Reaper directory exists, root-owned, before any service
++	 * starts, so nothing can be planted in its place (shared/reaper_tmpsafe.h) */
++	reaper_tmp_mkdirs();
+ #ifdef RTCONFIG_USB
+ 	chmod(POOL_MOUNT_ROOT, 0777);
+ #endif
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index aa0a281f9a..3298d9a3f3 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3180,7 +3180,7 @@ int start_hwqos(void)
+ 		"WANIF='%s'\n"
+ 		"OBW='%u'\n"
+ 		"QID=0\n"
+-		"HWST=/tmp/qos_hw_state\n\n"
++		"HWST=/tmp/reaper/qos_hw_state\n\n"
+ 		"case \"$1\" in\n"
+ 		"start)\n"
+ 		/* Idempotence guard (2026-07-29 audit F2): start_iQos re-runs this on
+@@ -3297,7 +3297,7 @@ int start_hwqos_classful(void)
+ 		"#!/bin/sh\n"
+ 		"WANIF='%s'\n"
+ 		"SIG='%u'\n"
+-		"HWCST=/tmp/qos_hwc_state\n\n"
++		"HWCST=/tmp/reaper/qos_hwc_state\n\n"
+ 		/* P2-H6 HARDENING (field report 2026-08-21: "QoS on => IPv4 dead, IPv6
+ 		 * fine" on v2.5.7, fine on v2.5.3). The class-queue priority correction
+ 		 * is delete-then-recreate, and the original emission checked ONLY the
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index ecd09c0187..d24e02be88 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -3101,6 +3101,8 @@ static const applets_t applets[] = {
+ 	{ "amaspark",			amaspark_main				},
+ 	/* v3.1.1: LAN resolver health check - demote a silent upstream, restore it when it answers (rc/rdnshc.c) */
+ 	{ "rdnshc",			rdnshc_main				},
++	/* 2026-10-08: IPv6 device names - neighbour cache + DHCPv4 names -> dnsmasq hostsdir (rc/rv6names.c) */
++	{ "rv6names",			rv6names_main				},
+ 	/* v3.2.8: static preamble puncturing - wl eht dissubchan after every wireless start (rc/reaper_punct.c) */
+ 	{ "reaper_punct",		reaper_punct_main			},
+ 	/* v3.3.1: minimum channel width on Auto - lifts it after radar, re-arms it (rc/reaper_bwfloor.c) */
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 56e04498bb..2eddfbd396 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2638,6 +2638,9 @@ extern int write_etc_hosts();
+ void start_Tor_proxy(void);
+ void stop_Tor_proxy(void);
+ extern void write_static_leases(FILE *fp);
++#ifdef RTCONFIG_IPV6
++extern void write_static_leases6(FILE *fp);	/* IPv6 A3: DHCPv6 reservations */
++#endif
+ #ifdef RTCONFIG_DHCP_OVERRIDE
+ extern int restart_dnsmasq(int need_link_DownUp);
+ #endif
+@@ -2997,7 +3000,6 @@ extern void start_rpunctd(void);
+ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
+ extern void start_gk(void);
+ extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit */
+-extern void gk_teardown_rules(void);
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+@@ -3013,9 +3015,9 @@ extern void start_reaper_fw(void);
+  * while it is absent: the WAN-up start_firewall() deletes those chains and re-runs
+  * the same script anyway, so the boot-time run (~6 s of pid 1 on the path to
+  * start_wan, measured 2026-09-20) protected nothing. */
+-#define REAPER_FW_BUILT_MARK	"/tmp/.reaper_firewall_built"
+-#define REAPER_USBREL_FLAG	"/tmp/.reaper_usb_release"	/* v3.3.2: a flash is releasing the USB volumes; watchdog leaves dnsmasq alone */
+-#define REAPER_DNSMASQ_LOGDROP_FLAG	"/tmp/.reaper_dnsmasq_logdrop"	/* v3.3.3: start_dnsmasq dropped a log-facility/conf-file/conf-dir that was missing; one "<kind> <path>" line each; watchdog restarts dnsmasq once one exists */
++#define REAPER_FW_BUILT_MARK	"/tmp/reaper/.reaper_firewall_built"
++#define REAPER_USBREL_FLAG	"/tmp/reaper/.reaper_usb_release"	/* v3.3.2: a flash is releasing the USB volumes; watchdog leaves dnsmasq alone */
++#define REAPER_DNSMASQ_LOGDROP_FLAG	"/tmp/reaper/.reaper_dnsmasq_logdrop"	/* v3.3.3: start_dnsmasq dropped a log-facility/conf-file/conf-dir that was missing; one "<kind> <path>" line each; watchdog restarts dnsmasq once one exists */
+ extern int reaper_dnsmasq_dep_missing(char kind, const char *path);	/* rc/services.c */
+ /* v3.3.3: the soft-lockup panic (kernel BOOTPARAM_SOFTLOCKUP_PANIC=y) is held at 0 by
+  * rc/init.c through boot and by rc/usb.c around every USB mount - the storm that
+@@ -3023,14 +3025,14 @@ extern int reaper_dnsmasq_dep_missing(char kind, const char *path);	/* rc/servic
+  * with no trace. rc/watchdog.c arms it once the box has been up REAPER_SLP_FLOOR_SECS
+  * and no mount has been active for REAPER_SLP_GRACE_SECS. The stamp holds the uptime
+  * (seconds) of the last mount_partition entry or post-mount return. */
+-#define REAPER_USB_MOUNT_STAMP	"/tmp/.reaper_usb_mount_at"
++#define REAPER_USB_MOUNT_STAMP	"/tmp/reaper/.reaper_usb_mount_at"
+ #define REAPER_SLP_FLOOR_SECS	600
+ #define REAPER_SLP_GRACE_SECS	300
+ extern void reaper_usb_mount_stamp(void);	/* rc/usb.c */
+ /* v3.3.3: the USB mount watchdog (rc/reaper_usbmon.c): re-sends a lost mount event,
+  * gives the volumes back after an aborted flash, re-enumerates a disk-less bus once. */
+-#define REAPER_USB_MOUNTED_MARK	"/tmp/.reaper_usb_mounted_"	/* + partition: mounted at least once since boot - never retried (a GUI eject stays ejected) */
+-#define REAPER_USB_RETRY_MARK	"/tmp/.reaper_usb_retry_"	/* + partition: mount events re-sent so far */
++#define REAPER_USB_MOUNTED_MARK	"/tmp/reaper/.reaper_usb_mounted_"	/* + partition: mounted at least once since boot - never retried (a GUI eject stays ejected) */
++#define REAPER_USB_RETRY_MARK	"/tmp/reaper/.reaper_usb_retry_"	/* + partition: mount events re-sent so far */
+ #define REAPER_USB_RETRY_MAX	3
+ extern void reaper_usbmon_check(void);
+ extern void reaper_usb_mounted_mark(const char *part);
+@@ -3038,7 +3040,6 @@ extern int reaper_slp_should_arm(unsigned long up, unsigned long stamp, int have
+ /* v2.6.2 shared REAPER_HOOK front chains (rc/reaper_hook.c) */
+ extern void reaper_hook_gen(void);
+ extern void reaper_fwsim_kick(int delay);
+-extern void reaper_hook_rebuild(void);
+ extern void reaper_fw_apply(void);
+ extern void reaper_fw_confirm(void);
+ extern void reaper_fw_rollback(void);
+@@ -3066,7 +3067,6 @@ extern void reaper_pbr_rollback(void);
+  * apply.sh runs it first so a policy-routing rule never references a set
+  * that is not there yet - shared here so the two cannot drift. */
+ #define RFW_SETS "/tmp/reaper_fw/sets.sh"
+-extern void rw_teardown_rules(void);
+ extern void stop_rwatch(void);	/* reaper v1.8.8 watchdog: WAN/DNS/Warden/accelerator health probe (rc/rwatch.c) */
+ extern void start_rwatch(void);
+ extern int amaspark_main(int argc, char *argv[]);	/* v3.0.8: AiMesh backhaul parking daemon (rc/amaspark.c) */
+@@ -3084,6 +3084,9 @@ extern void stop_reaper_bwfloor(void);
+ extern int rdnshc_main(int argc, char *argv[]);	/* v3.1.1: LAN resolver health check daemon (rc/rdnshc.c) */
+ extern void start_rdnshc(void);
+ extern void stop_rdnshc(void);
++extern int rv6names_main(int argc, char *argv[]);	/* 2026-10-08: IPv6 device names (rc/rv6names.c) */
++extern void start_rv6names(void);
++extern void stop_rv6names(void);
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index d0bfda769a..735bc0c81a 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -36,6 +36,15 @@
+  * name THROUGH the router to decide whether the WAN counts as connected, and
+  * feeds nothing but WAN state and dual-WAN failover.
+  *
++ * Dual-stack review 2026-10-08: a server named by an IPv4 AND an IPv6 address
++ * (reaper_dnshc_target6) is probed over BOTH every tick. Its IPv6 line is kept
++ * directly behind its IPv4 line (the firmware writes the WAN IPv4 servers
++ * first, then the IPv6 ones, which put the server's own IPv6 face behind the
++ * off-site server), a face that stops answering is moved behind the others on
++ * its own while the live face keeps the server's place, and the intercept gate
++ * (rc/reaper_fw.c hcgate.sh) closes for that family alone through two marker
++ * files. The order itself is shared/reaper_resolv_order.c (host-tested).
++ *
+  * Runs as an rc applet (/sbin/rdnshc -> rc), started from start_services()
+  * in router mode; restart_rdnshc is the service the System page fires. The
+  * daemon keeps running while the feature is off (one nvram read every 30 s)
+@@ -56,7 +65,9 @@
+ 
+ #define HC_TAG		"rdnshc"
+ #define HC_POLL_OFF	30		/* s, feature disabled: only the switch is watched */
+-#define HC_STATE	"/tmp/rdnshc.state"	/* "<target>" while demoted, so a restart adopts it */
++#define HC_STATE	"/tmp/reaper/rdnshc.state"	/* "<target>" while demoted, so a restart adopts it */
++#define HC_DOWN4	"/tmp/reaper/rdnshc.down4"	/* 2026-10-08: the IPv4 face is not answering (gate + restart) */
++#define HC_DOWN6	"/tmp/reaper/rdnshc.down6"	/* 2026-10-08: the IPv6 face is not answering */
+ #define HC_DNSMASQ	"/tmp/resolv.dnsmasq"
+ #define HC_RESOLV	"/tmp/resolv.conf"
+ #define HC_MAXLINES	256
+@@ -69,6 +80,8 @@ struct hc_cfg {
+ 	char alt[INET6_ADDRSTRLEN];	/* v3.1.2: the same server's other address */
+ 	int alt_af;		/* AF_INET6 for reaper_dnshc_target6; 0 = none */
+ 	int v6_off;		/* IPv6 is the ONLY address we have and it cannot be used: idle */
++	int v6_on;		/* 2026-10-08: set per tick = the IPv6 face may be used at all (hc_v6_usable());
++				 * off, the server's IPv6 line is just another upstream and is never moved */
+ 	char name[128];
+ 	int interval;		/* s */
+ 	int timeout_ms;
+@@ -251,7 +264,8 @@ static int addr_matches(const char *addr, const char *want, int af)
+ 	return memcmp(bin, tbin, af == AF_INET6 ? 16 : 4) == 0;
+ }
+ 
+-static int line_is_target(const char *line, const char *prefix, const struct hc_cfg *c)
++/* 0 = not the watched server; RRO_FACE4 / RRO_FACE6 = the face the line names */
++static int line_face(const char *line, const char *prefix, const struct hc_cfg *c)
+ {
+ 	size_t pl = strlen(prefix), al;
+ 	char addr[INET6_ADDRSTRLEN + 8];
+@@ -266,17 +280,18 @@ static int line_is_target(const char *line, const char *prefix, const struct hc_
+ 	if (al == 0 || al >= sizeof(addr)) return 0;
+ 	memcpy(addr, p, al);
+ 	addr[al] = 0;
+-	/* v3.1.2: one server, up to two addresses. A line naming EITHER of them is
+-	 * this server's line, so a failover moves both and dnsmasq is not left
+-	 * hammering the surviving one while the server is down. inet_pton against
+-	 * the wrong family simply fails, which is the family filter. */
+-	if (c->af && addr_matches(addr, c->target, c->af)) return 1;
+-	if (c->alt_af && addr_matches(addr, c->alt, c->alt_af)) return 1;
++	/* v3.1.2: one server, up to two addresses; 2026-10-08: say WHICH face the
++	 * line names, so one face can be moved on its own. inet_pton against the
++	 * wrong family simply fails, which is the family filter. */
++	if (c->af == AF_INET && addr_matches(addr, c->target, AF_INET)) return RRO_FACE4;
++	if (!c->v6_on) return 0;	/* IPv6 unusable: its line is nobody's face, it stays where it is */
++	if (c->af == AF_INET6 && addr_matches(addr, c->target, AF_INET6)) return RRO_FACE6;
++	if (c->alt_af == AF_INET6 && addr_matches(addr, c->alt, AF_INET6)) return RRO_FACE6;
+ 	return 0;
+ }
+ 
+-/* A plain upstream of the same kind (used to decide whether the target is
+- * already last among them). */
++/* A plain upstream of the same kind (used to count the servers dnsmasq has
++ * and to classify the lines for the ordering). */
+ static int line_is_upstream(const char *line, const char *prefix)
+ {
+ 	size_t pl = strlen(prefix);
+@@ -284,40 +299,33 @@ static int line_is_upstream(const char *line, const char *prefix)
+ 	return line[pl] != '/';
+ }
+ 
+-/* Move the target's plain-upstream line(s) to the end of the file. Returns
+- * 1 if the file was rewritten, 0 if there was nothing to do (no such line,
+- * or it is already the last upstream), -1 on error. Caller holds the lock. */
+-static int demote_file(const char *path, const char *prefix, const struct hc_cfg *c, int *n_upstreams)
++/* Put one resolver file in the order that follows from the faces' state
++ * (shared/reaper_resolv_order.c): the live faces where the server's first
++ * line was, IPv4 before IPv6; a dead face behind everything else; no other
++ * line moves. Returns 1 if the file was rewritten, 0 if it was already in
++ * order, -1 on error. Caller holds the resolv lock. */
++static int order_file(const char *path, const char *prefix, const struct hc_cfg *c, int down4, int down6, int *n_upstreams)
+ {
+ 	static char lines[HC_MAXLINES][HC_LINE];
+-	int n = 0, i, last_other = -1, last_target = -1, first_target = -1, nup = 0;
++	static int cls[HC_MAXLINES], out[HC_MAXLINES];
++	int n = 0, i, nup = 0, f;
+ 	FILE *fp;
+ 
+ 	if (!(fp = fopen(path, "r"))) return -1;
+ 	while (n < HC_MAXLINES && fgets(lines[n], HC_LINE, fp)) {
+-		if (line_is_target(lines[n], prefix, c)) {
+-			if (first_target < 0) first_target = n;
+-			last_target = n;
+-			nup++;
+-		} else if (line_is_upstream(lines[n], prefix)) {
+-			last_other = n;
+-			nup++;
+-		}
++		f = line_face(lines[n], prefix, c);
++		if (f) { cls[n] = f; nup++; }
++		else if (line_is_upstream(lines[n], prefix)) { cls[n] = RRO_UPSTREAM; nup++; }
++		else cls[n] = RRO_OTHER;
+ 		n++;
+ 	}
+ 	fclose(fp);
+ 	if (n_upstreams) *n_upstreams = nup;
+-	if (first_target < 0) return 0;
+-	if (last_other < first_target) return 0;	/* already last among the upstreams */
++	if (!reaper_resolv_order(cls, n, down4, down6, out)) return 0;
+ 	if (!(fp = fopen(path, "w"))) return -1;
+ 	for (i = 0; i < n; i++)
+-		if (!line_is_target(lines[i], prefix, c))
+-			fputs(lines[i], fp);
+-	for (i = 0; i < n; i++)
+-		if (line_is_target(lines[i], prefix, c))
+-			fputs(lines[i], fp);
++		fputs(lines[out[i]], fp);
+ 	fclose(fp);
+-	(void)last_target;
+ 	return 1;
+ }
+ 
+@@ -330,45 +338,79 @@ static void hc_reload(void)
+ #endif
+ }
+ 
+-/* returns the number of plain upstreams dnsmasq has, so the log can say when
+- * there is nothing to fall back to */
+-static int demote(const struct hc_cfg *c, int *changed)
++/* Both files under the resolv lock. Returns the number of plain upstreams
++ * dnsmasq has (so the log can say when there is nothing to fall back to);
++ * *changed = 1 when either file moved; dnsmasq is reloaded when its file
++ * moved and `reload` is set (a caller that reloads anyway passes 0). */
++static int assert_order(const struct hc_cfg *c, int down4, int down6, int reload, int *changed)
+ {
+ 	int lock, a, b, nup = 0;
+ 	lock = file_lock("resolv");
+-	a = demote_file(HC_DNSMASQ, "server=", c, &nup);
+-	b = demote_file(HC_RESOLV, "nameserver ", c, NULL);
++	a = order_file(HC_DNSMASQ, "server=", c, down4, down6, &nup);
++	b = order_file(HC_RESOLV, "nameserver ", c, down4, down6, NULL);
+ 	file_unlock(lock);
+ 	if (changed) *changed = (a == 1 || b == 1);
+-	if (a == 1) hc_reload();
++	if (a == 1 && reload) hc_reload();
+ 	return nup;
+ }
+ 
+ /* 2026-09-17: the rules engine's resolver-health gate (rc/reaper_fw.c,
+  * RFW_HCGATE): an intercept aimed at the watched resolver is closed while it
+  * is demoted and reopened when it answers again, so redirected DNS fails OPEN
+- * to dnsmasq instead of into a dead host. The script reads HC_STATE itself
+- * and runs under the firewall lock like every other Reaper rule change. */
++ * to dnsmasq instead of into a dead host. The script reads HC_STATE (whole
++ * server) and, since 2026-10-08, HC_DOWN4 / HC_DOWN6 (one face) itself and
++ * runs under the firewall lock like every other Reaper rule change. */
+ static void hc_gate(void)
+ {
+ 	int lock;
+ 	if (!f_exists("/tmp/reaper_fw/hcgate.sh")) return;
+ 	lock = file_lock("firewall");
+-	system("sh /tmp/reaper_fw/hcgate.sh");
++	(void)(reaper_script_ok("/tmp/reaper_fw/hcgate.sh") && system("sh /tmp/reaper_fw/hcgate.sh"));
+ 	file_unlock(lock);
+ }
+ 
+-static void restore(void)
++/* Stock order from the firmware's own writer, the faces' order on top of it,
++ * one reload. */
++static void restore(const struct hc_cfg *c, int down4, int down6)
+ {
+ 	update_resolvconf();	/* takes the resolv lock itself; rebuilds both files in stock order */
++	assert_order(c, down4, down6, 0, NULL);
+ 	hc_reload();
+ }
+ 
++/* One marker per family for the intercept gate: hcgate.sh closes the IPv4
++ * DNAT while HC_DOWN4 exists and the IPv6 one while HC_DOWN6 does. Returns 1
++ * when a marker changed, so the caller runs the gate only then. */
++static int face_marks(int down4, int down6)
++{
++	int changed = 0;
++	if (!!down4 != !!f_exists(HC_DOWN4)) {
++		if (down4) f_write_string(HC_DOWN4, "4", 0, 0); else unlink(HC_DOWN4);
++		changed = 1;
++	}
++	if (!!down6 != !!f_exists(HC_DOWN6)) {
++		if (down6) f_write_string(HC_DOWN6, "6", 0, 0); else unlink(HC_DOWN6);
++		changed = 1;
++	}
++	return changed;
++}
++
++static const char *fam_name(int i) { return i ? "IPv6" : "IPv4"; }
++
++/* 2026-10-08 (owner: an IPv6 status line on the DNS Failover page): two more
++ * fields after <alive>, one per face - 1 answering, 0 not answering (moved
++ * behind the other servers), - no address of that family configured, x the
++ * IPv6 face is configured but the router has no usable IPv6 (not probed).
++ * Readers that know only the first three fields keep working. */
++static char g_f4 = '-', g_f6 = '-';
+ static void state_set(const char *what, long since, int alive)
+ {
+ 	char st[64];
+ 	if (!*what) { nvram_set("reaper_dnshc_state", ""); return; }
+-	snprintf(st, sizeof(st), "%s %ld %d", what, since > 0 ? now_s() - since : 0, alive);
++	if (strcmp(what, "off") == 0)
++		snprintf(st, sizeof(st), "%s %ld %d", what, since > 0 ? now_s() - since : 0, alive);
++	else
++		snprintf(st, sizeof(st), "%s %ld %d %c %c", what, since > 0 ? now_s() - since : 0, alive, g_f4, g_f6);
+ 	nvram_set("reaper_dnshc_state", st);
+ }
+ 
+@@ -378,7 +420,11 @@ int rdnshc_main(int argc, char *argv[])
+ 	char watched[INET6_ADDRSTRLEN] = "";
+ 	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1, v6_warned = 0;
+ 	int uplink_down = 0, held = 0;	/* v3.3.4: misses are not counted while the WAN is known down */
+-	int last_fam = 0, v6skip_warned = 0;
++	int v6skip_warned = 0;
++	/* 2026-10-08: each face counted on its own with the same thresholds, so one
++	 * dead face is moved behind the others while the live one keeps the
++	 * server's place. Index 0 = IPv4, 1 = IPv6; fseen = probed at least once. */
++	int fmiss[2] = { 0, 0 }, fhit[2] = { 0, 0 }, fdown[2] = { 0, 0 }, fseen[2] = { 0, 0 };
+ 	long since = 0;
+ 	(void)argc; (void)argv;
+ 
+@@ -401,11 +447,15 @@ int rdnshc_main(int argc, char *argv[])
+ 				since = now_s();
+ 			}
+ 		}
++		fdown[0] = down || f_exists(HC_DOWN4);
++		fdown[1] = down || f_exists(HC_DOWN6);
+ 	}
+ 	cfg_read(&c);
+ 
+ 	while (!g_stop) {
+ 		int enabled, poll;
++		int ok4 = -1, ok6 = -1;	/* this tick: 1 answered, 0 silent, -1 not probed */
++		int v6_ready = 0;	/* the IPv6 face may be used this tick (probe, order, marker) */
+ 		cfg_read(&c);
+ 		enabled = c.enable && *c.target && !c.v6_off;
+ 		if (c.enable && *c.target && c.v6_off) {
+@@ -425,11 +475,14 @@ int rdnshc_main(int argc, char *argv[])
+ 
+ 		/* the watched server changed (or the feature went off) while a
+ 		 * demotion is in place: give the old one its place back first */
+-		if (down && (!enabled || strcmp(watched, c.target) != 0)) {
+-			restore();
++		if ((down || fdown[0] || fdown[1]) && (!enabled || strcmp(watched, c.target) != 0)) {
++			update_resolvconf();	/* plain stock order: the old server is nobody's to arrange now */
++			hc_reload();
+ 			logmessage(HC_TAG, "DNS Health Check RESTORED %s to its stock place in the router's DNS list: %s", watched, enabled ? "a different server is being watched now" : "the check was switched off");
+ 			down = 0; misses = hits = 0; since = 0;
++			for (i = 0; i < 2; i++) { fmiss[i] = fhit[i] = fdown[i] = fseen[i] = 0; }
+ 			unlink(HC_STATE);
++			face_marks(0, 0);
+ 			hc_gate();
+ 		}
+ 
+@@ -440,16 +493,19 @@ int rdnshc_main(int argc, char *argv[])
+ 		}
+ 		strlcpy(watched, c.target, sizeof(watched));
+ 
+-		/* IPv6 first, then IPv4 - but only over a family that can actually
+-		 * carry a query. hc_v6_usable() is two local nvram reads, so a router
+-		 * with IPv6 off or nothing delegated skips v6 without a socket and
+-		 * without a wait; it never costs the timeout. A miss is counted only
+-		 * when EVERY family we could try failed: a broken v6 path must not
+-		 * fail over a server that is answering perfectly well on v4. */
++		/* Both faces, each only over a family that can actually carry a query.
++		 * hc_v6_usable() is two local nvram reads, so a router with IPv6 off or
++		 * nothing delegated skips v6 without a socket and without a wait; it
++		 * never costs the timeout. A miss is counted only when EVERY family we
++		 * could try failed: a broken v6 path must not fail over a server that is
++		 * answering perfectly well on v4. 2026-10-08: the IPv4 face is probed
++		 * even when the IPv6 one answered (one extra query), so a face that died
++		 * while the other still answers is known and moved on its own. */
+ 		{
+ 			const char *a6 = (c.af == AF_INET6) ? c.target : (c.alt_af == AF_INET6 ? c.alt : NULL);
+ 			const char *a4 = (c.af == AF_INET) ? c.target : NULL;
+-			int fam = 0, v6_ready = a6 && hc_v6_usable();
++			v6_ready = a6 && hc_v6_usable();
++			c.v6_on = v6_ready;
+ 
+ 			if (a6 && !v6_ready && a4 && !v6skip_warned) {
+ 				logmessage(HC_TAG, "DNS Health Check: skipping the IPv6 address %s - the router has no usable IPv6 right now (disabled, or no address from the ISP); watching %s over IPv4 instead", a6, a4);
+@@ -457,17 +513,14 @@ int rdnshc_main(int argc, char *argv[])
+ 			} else if (v6_ready)
+ 				v6skip_warned = 0;
+ 
+-			alive = 0;
+-			if (v6_ready && probe_addr(&c, a6, AF_INET6)) { alive = 1; fam = 6; }
+-			if (!alive && a4 && probe_addr(&c, a4, AF_INET)) { alive = 1; fam = 4; }
+-
+-			if (alive && fam != last_fam) {
+-				if (last_fam && a6 && a4)
+-					logmessage(HC_TAG, "DNS Health Check: %s is answering over IPv%d now", c.target, fam);
+-				last_fam = fam;
+-			} else if (!alive)
+-				last_fam = 0;
++			if (v6_ready) ok6 = probe_addr(&c, a6, AF_INET6);
++			if (a4) ok4 = probe_addr(&c, a4, AF_INET);
++			alive = (ok6 == 1 || ok4 == 1);
+ 		}
++		/* owner 2026-10-08: with IPv6 unusable the IPv6 face does not exist for this
++		 * tick - no counters, no demotion, no marker (a marker left from before IPv6
++		 * went off is cleared below through face_marks) */
++		if (!v6_ready) { fseen[1] = 0; fdown[1] = 0; fmiss[1] = fhit[1] = 0; }
+ 		/* v3.3.4: a probe that cannot leave the router says nothing about the
+ 		 * resolver. Owner 2026-10-04 19:45: an ~80 s WAN link loss failed the
+ 		 * AdGuard host on br55 (it answers a real query only through the
+@@ -482,6 +535,15 @@ int rdnshc_main(int argc, char *argv[])
+ 			(*nvram_safe_get("wan0_state_t") && nvram_get_int("wan0_state_t") != 2));
+ 		if (alive) { hits++; misses = 0; }
+ 		else if (!uplink_down) { misses++; hits = 0; }
++		{
++			int oks[2] = { ok4, ok6 };
++			for (i = 0; i < 2; i++) {
++				if (oks[i] < 0) continue;
++				fseen[i] = 1;
++				if (oks[i]) { fhit[i]++; fmiss[i] = 0; }
++				else if (!uplink_down) { fmiss[i]++; fhit[i] = 0; }
++			}
++		}
+ 		if (uplink_down && !held) {
+ 			logmessage(HC_TAG, "DNS Health Check HOLD: the uplink is down (link_wan=%s wan0_state_t=%s) - a probe cannot reach %s from here, so misses are not counted until it is back", nvram_safe_get("link_wan"), nvram_safe_get("wan0_state_t"), c.target);
+ 			held = 1;
+@@ -495,29 +557,62 @@ int rdnshc_main(int argc, char *argv[])
+ 		if (!down && misses >= c.fail) {
+ 			int changed = 0, nup;
+ 			down = 1; since = now_s(); hits = 0;
+-			nup = demote(&c, &changed);
++			fdown[0] = (c.af == AF_INET); fdown[1] = v6_ready;
++			nup = assert_order(&c, 1, 1, 1, &changed);
+ 			f_write_string(HC_STATE, c.target, 0, 0);
++			face_marks(fdown[0], fdown[1]);
+ 			hc_gate();
+ 			if (nup <= 1)
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) but it is the only upstream in the router's DNS list - nothing to fall back to, queries keep going to it", c.target, misses);
+ 			else
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER: %s is down (%d misses) - moved to the end of the router's DNS list (%d upstreams), dnsmasq reloaded; lookups go to the next server at once", c.target, misses, nup);
+ 		} else if (down && hits >= c.recover) {
++			const char *tail = "";
+ 			down = 0; misses = 0;
+-			restore();
++			/* a face that answered comes back with the server; one still silent
++			 * stays behind the others; one never probed has no line to hold back */
++			for (i = 0; i < 2; i++)
++				if (!fseen[i] || fhit[i] >= c.recover) fdown[i] = 0;
++			if (fdown[0] && !fdown[1]) tail = " - over IPv6 only for now; its IPv4 line stays behind the others until that address answers";
++			else if (fdown[1] && !fdown[0]) tail = " - over IPv4 only for now; its IPv6 line stays behind the others until that address answers";
++			restore(&c, fdown[0], fdown[1]);
+ 			unlink(HC_STATE);
++			face_marks(fdown[0], fdown[1]);
+ 			hc_gate();
+-			logmessage(HC_TAG, "DNS Health Check RESTORED: %s is answering again (%d hits) after %ld s down - back in its stock place in the router's DNS list, dnsmasq reloaded", c.target, hits, now_s() - since);
++			logmessage(HC_TAG, "DNS Health Check RESTORED: %s is answering again (%d hits) after %ld s down - back in its stock place in the router's DNS list, dnsmasq reloaded%s", c.target, hits, now_s() - since, tail);
+ 			since = now_s();
+ 		} else if (down) {
+ 			/* wan_up(), a VPN client or a DNS apply may have rewritten the
+ 			 * files in stock order meanwhile: re-assert, quietly when there
+ 			 * was nothing to do */
+ 			int changed = 0;
+-			demote(&c, &changed);
++			assert_order(&c, 1, 1, 1, &changed);
+ 			if (changed)
+ 				logmessage(HC_TAG, "DNS Health Check FAILOVER re-applied: the router's DNS list was rewritten in stock order while %s is still down - moved to the end again", c.target);
++		} else {
++			/* the server answers: one face may still have gone quiet, or come
++			 * back. The flip to "down" needs the OTHER face alive this tick (else
++			 * the whole-server path above owns it); the way back needs the same
++			 * number of hits a restore does. The order is re-asserted every tick
++			 * (the IPv6 line behind the IPv4 one, a demoted face behind the rest)
++			 * without a word, because wan_up() rewrites the files in stock order
++			 * whenever it feels like it. */
++			for (i = 0; i < 2; i++) {
++				if (!fseen[i]) continue;
++				if (!fdown[i] && fmiss[i] >= c.fail && alive) {
++					fdown[i] = 1;
++					logmessage(HC_TAG, "DNS Health Check: %s stopped answering over %s (%d misses) but still answers over %s - its %s line moved behind the other servers, the %s line takes its place", c.target, fam_name(i), fmiss[i], fam_name(1 - i), fam_name(i), fam_name(1 - i));
++				} else if (fdown[i] && fhit[i] >= c.recover) {
++					fdown[i] = 0;
++					logmessage(HC_TAG, "DNS Health Check: %s answers over %s again (%d hits) - its %s line is back in the server's place", c.target, fam_name(i), fhit[i], fam_name(i));
++				}
++			}
++			assert_order(&c, fdown[0], fdown[1], 1, NULL);
++			if (face_marks(fdown[0], fdown[1]))
++				hc_gate();
+ 		}
++		g_f4 = (c.af == AF_INET) ? (fdown[0] ? '0' : '1') : '-';
++		g_f6 = !(c.af == AF_INET6 || c.alt_af == AF_INET6) ? '-' : (!v6_ready ? 'x' : (fdown[1] ? '0' : '1'));
+ 		state_set(down ? "down" : "up", since ? since : (since = now_s()), alive);
+ 
+ 		poll = c.interval;
+diff --git a/release/src/router/rc/reaper_bwfloor.c b/release/src/router/rc/reaper_bwfloor.c
+index 909387d118..95c3f52b66 100644
+--- a/release/src/router/rc/reaper_bwfloor.c
++++ b/release/src/router/rc/reaper_bwfloor.c
+@@ -169,7 +169,7 @@ static void esc_save(const struct esc e[BF_MAXU])
+ 	FILE *f;
+ 	int u;
+ 
+-	mkdir(BF_DIR, 0755);
++	reaper_secure_dir(BF_DIR, 0700);
+ 	if ((f = fopen(BF_ESC ".tmp", "w")) == NULL)
+ 		return;
+ 	for (u = 0; u < BF_MAXU; u++)
+@@ -241,7 +241,7 @@ static void res_write(int u, const char *fmt, ...)
+ 	va_start(ap, fmt);
+ 	vsnprintf(buf, sizeof(buf), fmt, ap);
+ 	va_end(ap);
+-	mkdir(BF_DIR, 0755);
++	reaper_secure_dir(BF_DIR, 0700);
+ 	snprintf(path, sizeof(path), BF_DIR "/wl%d.res", u);
+ 	if ((f = fopen(path, "w")) != NULL) {
+ 		fprintf(f, "%s\n", buf);
+@@ -309,7 +309,7 @@ static void rec_write(int u, const char *added)
+ 			return;
+ 		unlink(tmp);
+ 	}
+-	mkdir(BF_DIR, 0755);
++	reaper_secure_dir(BF_DIR, 0700);
+ 	snprintf(path, sizeof(path), BF_DIR "/wl%d.added", u);
+ 	if ((f = fopen(path, "w")) != NULL) {
+ 		fprintf(f, "%s\n", added);
+@@ -548,7 +548,7 @@ int reaper_bwfloor_main(int argc, char *argv[])
+ 	signal(SIGHUP, SIG_IGN);
+ 	signal(SIGTERM, on_sig);
+ 	signal(SIGINT, on_sig);
+-	mkdir(BF_DIR, 0755);
++	reaper_secure_dir(BF_DIR, 0700);
+ 
+ 	while (!g_stop) {
+ 		char lines[BF_MAXU][200];
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 6b6ca13826..ca1c26ed8c 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -80,7 +80,8 @@
+  *   zpol:  <srczone>dstzone>action              action = accept|drop|reject
+  *   rule:  <en>dir>action>szone>sobj>dzone>dobj>svc>sched>rate>log>order>comment
+  *          en=0|1  dir=in|out|fwd  action=accept|drop|reject|log
+- *   nat:   <en>proto>eport>iip>iport>sobj>log>sched>mode>szone>exempt>snat
++ *   nat:   <en>proto>eport>iip>iport>sobj>log>sched>mode>szone>exempt>snat>iip6
++ *          iip6 = optional IPv6 target of an intercept (2026-10-07 IPv6 A5)
+  *          mode=forward|intercept|redirect   snat=auto|on|off
+  *          Fields 8-11 are APPEND-ONLY and optional: a record written before
+  *          Service Intercept existed has no field 8, rfw_field() returns false
+@@ -109,8 +110,10 @@
+ #define RFW_FAILCOUNT RFW_DIR "/failcount"    /* P2-H3: rules that did not load */
+ #define RFW_CAND     RFW_DIR "/candidate.sh"      /* the armed candidate (staged set) */
+ #define RFW_HCGATE   RFW_DIR "/hcgate.sh"         /* 2026-09-17: resolver-health gate on DNS intercepts (rc/rdnshc.c runs it) */
+-#define RFW_CHAIN_HC "REAPER_FWHC"                /* nat: intercepts aimed at the watched resolver, closed while /tmp/rdnshc.state exists */
+-#define RFW_HC_STATE "/tmp/rdnshc.state"          /* rc/rdnshc.c HC_STATE: present while the watched resolver is demoted */
++#define RFW_CHAIN_HC "REAPER_FWHC"                /* nat: intercepts aimed at the watched resolver, closed while /tmp/reaper/rdnshc.state exists */
++#define RFW_HC_STATE "/tmp/reaper/rdnshc.state"          /* rc/rdnshc.c HC_STATE: present while the watched resolver is demoted */
++#define RFW_HC_DOWN4 "/tmp/reaper/rdnshc.down4"          /* 2026-10-08 dual-stack: rc/rdnshc.c marks the face that is not answering */
++#define RFW_HC_DOWN6 "/tmp/reaper/rdnshc.down6"
+ /* RFW_SETS (object sets ONLY - policy routing with the firewall engine off) is
+  * defined in rc.h: reaper_pbr's apply.sh runs it too. */
+ #define RFW_CC       RFW_DIR "/cc_check.sh"       /* cru-run deadline checker */
+@@ -922,7 +925,7 @@ static void rfw_gen_dnsmasq(const rfw_cfg_t *c)
+ 	/* stop_reaper_fw() reaches here too, and it has no mkdir of its own; an
+ 	 * absent directory would mean silently leaving the live directives in
+ 	 * place, which is the one outcome this function exists to prevent. */
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", RFW_DNSMASQ_CONF);
+ 	if (!(f = fopen(tmp, "w"))) return;
+ 	fprintf(f, "# generated by reaper_fw - fqdn objects; edit the objects, not this\n");
+@@ -1122,7 +1125,7 @@ static void rfw_gen_resolve(const rfw_cfg_t *c)
+ 	fclose(f);
+ 	chmod(RFW_RESOLVE, 0700);
+ 	if (any) {
+-		system("sh " RFW_RESOLVE " 2>/dev/null &");
++		(void)(reaper_script_ok(RFW_RESOLVE) && system("sh " RFW_RESOLVE " 2>/dev/null &"));
+ 		eval("cru", "a", "reaper_fw_dns", "*/10 * * * * sh " RFW_RESOLVE);
+ 	} else {
+ 		eval("cru", "d", "reaper_fw_dns");
+@@ -1616,12 +1619,19 @@ static void rfw_emit_edef(FILE *f, const rfw_cfg_t *c, int v6)
+  * object, which resolves to Warden's country set - and scheduled.
+  *
+  * Record: enable > proto > extport > intip > intport > srcobj > log > sched
+- * (Service Intercept records append mode > szone > exempt > snat.)
++ * (Service Intercept records append mode > szone > exempt > snat > iip6.)
+  *
+- * IPv4 only, deliberately. DNAT is a v4 NAT construct; the v6 equivalent of
+- * "publish a service" is a filter ACCEPT to a global address, which this engine
+- * already expresses as an ordinary in/fwd rule. Emitting a v6 DNAT would be
+- * both unusual and, on a box whose v6 firewall is a separate toggle, misleading.
++ * Forwards are IPv4 only, deliberately: the v6 equivalent of "publish a
++ * service" is a filter ACCEPT to a global address, which this engine already
++ * expresses as an ordinary in/fwd rule. Intercepts and redirects are DUAL-STACK
++ * since 2026-10-07 IPv6 (A5): a LAN client that sent DNS over IPv6 to an outside
++ * resolver walked straight past a v4-only intercept. The function runs once per
++ * family (the v4 FORWARD pass, then the v6 one, so the companion ACCEPTs land
++ * in a chain that exists): a redirect needs no address and always gets its
++ * ip6tables twin; an intercept gets one only when the record carries an IPv6
++ * target (field 12, iip6), since a DNAT needs a concrete v6 host. Source and
++ * exemption objects resolve per family; one with no IPv6 form (a MAC, a v4
++ * literal) drops the twin and says so - it never widens the match.
+  *
+  * Two lines per forward: the DNAT in nat/PREROUTING, and a matching ACCEPT in
+  * our FORWARD chain. Without the second, a DNAT into a default-deny FORWARD
+@@ -1647,16 +1657,35 @@ static int rfw_hc_target(char *out, size_t n)
+ 	return 1;
+ }
+ 
+-static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
++/* 2026-10-07 IPv6 (A5): the watched resolver's IPv6 address, when the admin gave one
++ * (reaper_dnshc_target6, the same key rdnshc prefers) - an intercept aimed at
++ * it goes into the gated chain in ip6tables exactly as the v4 one does. */
++static int rfw_hc_target6(char *out, size_t n)
++{
++	struct in6_addr a;
++	const char *p;
++	if (nvram_get_int("reaper_dnshc_enable") != 1) return 0;
++	p = nvram_safe_get("reaper_dnshc_target6");
++	if (!*p || inet_pton(AF_INET6, p, &a) != 1) return 0;
++	if (!inet_ntop(AF_INET6, &a, out, n)) return 0;
++	return 1;
++}
++
++/* record-rejection logs fire once, on the v4 pass; the v6-only notes use RFW_V6LOG */
++#define RFW_NATLOG(...) do { if (!v6) logmessage("reaper_fw", __VA_ARGS__); } while (0)
++#define RFW_V6LOG(...)  logmessage("reaper_fw", __VA_ARGS__)
++static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c, int v6)
+ {
+ 	char *dup, *tok, *save = NULL;
+ 	int n = 0;
+-	char hct[INET_ADDRSTRLEN] = "";
+-	int hc, hcjump = 0;
++	char hct[INET_ADDRSTRLEN] = "", hct6[INET6_ADDRSTRLEN] = "";
++	int hc, hc6, hcjump = 0;
+ 
+-	rfw_hc_ports[0] = 0;
++	/* the v4 pass owns the per-port list hcgate.sh flushes; the v6 pass adds to it */
++	if (!v6) rfw_hc_ports[0] = 0;
+ 	if (!c->nat || !*c->nat) return;
+ 	hc = rfw_hc_target(hct, sizeof(hct));
++	hc6 = rfw_hc_target6(hct6, sizeof(hct6));
+ 	if (!(dup = strdup(c->nat))) return;
+ 
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+@@ -1674,20 +1703,24 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		int nif = 0, nex = 0, ifi, fwdmode, redir;
+ 		int gated = 0;
+ 		const char *natch = RFW_CHAIN_NAT;
++		/* 2026-10-07 IPv6 (A5): the IPv6 twin's own state */
++		char iip6[64] = "", exfrag6[512] = "", selffrag6[192] = "", srcfrag6[128] = "";
++		rfw_setname_t sets6[RFW_MAX_SETS], exsets6[RFW_MAX_SETS];
++		int ns6 = 0, nex6 = 0, v6ok = 0;
+ 
+ 		if (++n > RFW_MAX_NAT) {
+-			logmessage("reaper_fw", "more than %d forwards - the rest are IGNORED", RFW_MAX_NAT);
++			RFW_NATLOG("more than %d forwards - the rest are IGNORED", RFW_MAX_NAT);
+ 			break;
+ 		}
+ 		if (!rfw_field(tok, 0, en, sizeof(en)) || strcmp(en, "1") != 0) continue;
+-		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) { logmessage("reaper_fw", "forward: invalid protocol - DROPPED"); continue; }
+-		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) { logmessage("reaper_fw", "forward: invalid external port - DROPPED"); continue; }
++		if (!rfw_field(tok, 1, proto, sizeof(proto)) || !rfw_valid_proto(proto)) { RFW_NATLOG("forward: invalid protocol - DROPPED"); continue; }
++		if (!rfw_field(tok, 2, eport, sizeof(eport)) || !rfw_valid_ports(eport)) { RFW_NATLOG("forward: invalid external port - DROPPED"); continue; }
+ 		/* the external port is spliced into --dport with NO -m multiport, and a
+ 		 * DNAT needs a concrete target port, so it must be a single port or a
+ 		 * contiguous range. rfw_valid_ports() also passes empty and comma lists;
+ 		 * an empty value word-splits the rule apart and a comma list is rejected
+ 		 * by iptables at load - reject both here. */
+-		if (!*eport || strchr(eport, ',')) { logmessage("reaper_fw", "forward: external port must be a single port or range - DROPPED"); continue; }
++		if (!*eport || strchr(eport, ',')) { RFW_NATLOG("forward: external port must be a single port or range - DROPPED"); continue; }
+ 		/* A DNAT target must be a SINGLE v4 host. rfw_valid_ip() also accepts
+ 		 * a.b.c.d/n and any IPv6 literal, and the CGI only length- and
+ 		 * charset-checks this list, so an edited backup replayed through the
+@@ -1704,7 +1737,7 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		if (!rfw_field(tok, 8, mode, sizeof(mode)) || !*mode)
+ 			strlcpy(mode, "forward", sizeof(mode));
+ 		if (strcmp(mode, "forward") && strcmp(mode, "intercept") && strcmp(mode, "redirect")) {
+-			logmessage("reaper_fw", "nat: unknown mode '%s' - DROPPED", mode);
++			RFW_NATLOG("nat: unknown mode '%s' - DROPPED", mode);
+ 			continue;
+ 		}
+ 		fwdmode = !strcmp(mode, "forward");
+@@ -1715,27 +1748,27 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			 * address; a target here would be silently ignored, so refuse it
+ 			 * rather than let the record read as something it is not. */
+ 			if (rfw_field(tok, 3, iip, sizeof(iip)) && *iip) {
+-				logmessage("reaper_fw", "redirect %s: must not carry a target IP - DROPPED", eport);
++				RFW_NATLOG("redirect %s: must not carry a target IP - DROPPED", eport);
+ 				continue;
+ 			}
+ 			iip[0] = 0;
+ 		} else if (!rfw_field(tok, 3, iip, sizeof(iip)) || !rfw_valid_ip(iip) ||
+ 		           strchr(iip, '/') || strchr(iip, ':')) {
+-			logmessage("reaper_fw", "%s: internal IP must be a single IPv4 host - DROPPED", mode);
++			RFW_NATLOG("%s: internal IP must be a single IPv4 host - DROPPED", mode);
+ 			continue;
+ 		}
+-		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { logmessage("reaper_fw", "forward: invalid internal port - DROPPED"); continue; }
++		if (!rfw_field(tok, 4, iport, sizeof(iport)) || !rfw_valid_ports(iport)) { RFW_NATLOG("forward: invalid internal port - DROPPED"); continue; }
+ 		if (!rfw_field(tok, 5, sobj, sizeof(sobj))) sobj[0] = 0;
+ 		if (!rfw_field(tok, 6, logf, sizeof(logf))) logf[0] = 0;
+ 		if (!rfw_field(tok, 7, sched, sizeof(sched))) sched[0] = 0;
+ 		if (!rfw_valid_sched(sched)) {
+-			logmessage("reaper_fw", "forward %s: invalid schedule - DROPPED", eport);
++			RFW_NATLOG("forward %s: invalid schedule - DROPPED", eport);
+ 			continue;
+ 		}
+ 		/* an internal port must be a single port or a contiguous range - DNAT
+ 		 * cannot map a comma list (or an empty value) to a target */
+ 		if (!*iport || strchr(iport, ',')) {
+-			logmessage("reaper_fw", "%s %s: internal port must be a single port or range - DROPPED", mode, eport);
++			RFW_NATLOG("%s %s: internal port must be a single port or range - DROPPED", mode, eport);
+ 			continue;
+ 		}
+ 
+@@ -1744,9 +1777,18 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		if (!rfw_field(tok, 11, snat,   sizeof(snat)))   snat[0]   = 0;
+ 		if (!*snat) strlcpy(snat, "auto", sizeof(snat));
+ 		if (strcmp(snat, "auto") && strcmp(snat, "on") && strcmp(snat, "off")) {
+-			logmessage("reaper_fw", "%s %s: unknown return-path mode '%s' - DROPPED", mode, eport, snat);
++			RFW_NATLOG("%s %s: unknown return-path mode '%s' - DROPPED", mode, eport, snat);
++			continue;
++		}
++		/* 2026-10-07 IPv6 (A5): optional 13th field, a single IPv6 host. Only an intercept
++		 * uses it (a redirect has no target, a forward is v4-only); elsewhere it is
++		 * ignored rather than refused, so an edited record still applies. */
++		if (!rfw_field(tok, 12, iip6, sizeof(iip6))) iip6[0] = 0;
++		if (*iip6 && (strchr(iip6, '/') || !rfw_valid_cidr6(iip6))) {
++			RFW_NATLOG("%s %s: IPv6 target '%s' is not a single IPv6 address - DROPPED", mode, eport, iip6);
+ 			continue;
+ 		}
++		if (*iip6 && (fwdmode || redir)) iip6[0] = 0;
+ 
+ 		/* Which interfaces does this record match on? A classic forward is
+ 		 * WAN-inbound and resolves its interface at apply time from $WANIF; an
+@@ -1755,12 +1797,12 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		 * on the router - including the WAN. Fail closed. */
+ 		if (!fwdmode) {
+ 			if (!*szone) {
+-				logmessage("reaper_fw", "%s %s: a source zone is required - DROPPED", mode, eport);
++				RFW_NATLOG("%s %s: a source zone is required - DROPPED", mode, eport);
+ 				continue;
+ 			}
+ 			nif = rfw_zone_ifaces(c, szone, ifs, RFW_MAX_IFACE);
+ 			if (!nif) {
+-				logmessage("reaper_fw", "%s %s: source zone %s resolved to no interface - DROPPED",
++				RFW_NATLOG("%s %s: source zone %s resolved to no interface - DROPPED",
+ 				           mode, eport, szone);
+ 				continue;
+ 			}
+@@ -1781,7 +1823,7 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			int xi;
+ 			nex = rfw_resolve(c, exempt, 0, exsets, RFW_MAX_SETS);
+ 			if (!nex) {
+-				logmessage("reaper_fw", "%s %s: exemption %s did not resolve - DROPPED",
++				RFW_NATLOG("%s %s: exemption %s did not resolve - DROPPED",
+ 				           mode, eport, exempt);
+ 				continue;
+ 			}
+@@ -1794,6 +1836,28 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		}
+ 		if (!fwdmode && !redir && *iip)
+ 			snprintf(selffrag, sizeof(selffrag), " ! -s %s ! -d %s", iip, iip);
++		/* the IPv6 twin (2026-10-07 IPv6 A5), v6 pass only: a redirect always has one; an
++		 * intercept only when the record names an IPv6 target. Exemptions resolve
++		 * per family; one with no IPv6 form drops the twin and says so. */
++		if (v6) {
++			v6ok = !fwdmode && (redir || *iip6);
++			if (v6ok && *exempt) {
++				int xi;
++				nex6 = rfw_resolve(c, exempt, 1, exsets6, RFW_MAX_SETS);
++				if (!nex6) {
++					RFW_V6LOG("%s %s: exemption %s has no IPv6 form - the IPv6 twin is not emitted", mode, eport, exempt);
++					v6ok = 0;
++				}
++				for (xi = 0; xi < nex6; xi++) {
++					char one[128];
++					snprintf(one, sizeof(one), " -m set ! --match-set %s src", exsets6[xi].name);
++					if (strlen(exfrag6) + strlen(one) >= sizeof(exfrag6)) break;
++					strlcat(exfrag6, one, sizeof(exfrag6));
++				}
++			}
++			if (v6ok && *iip6)
++				snprintf(selffrag6, sizeof(selffrag6), " ! -s %s ! -d %s", iip6, iip6);
++		}
+ 		/* DNAT --to-destination wants a HYPHEN between the low and high port of a
+ 		 * range (ip:lo-hi), whereas iptables --dport takes the COLON form (lo:hi).
+ 		 * iport arrives colon-separated and comma-free (checked just above), so
+@@ -1805,35 +1869,45 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 			if ((cp = strchr(toport, ':')) != NULL) *cp = '-';
+ 		}
+ 		if (sobj[0]) {
+-			if (!rfw_valid_name(sobj)) { logmessage("reaper_fw", "forward: invalid source object - DROPPED"); continue; }
++			if (!rfw_valid_name(sobj)) { RFW_NATLOG("forward: invalid source object - DROPPED"); continue; }
+ 			if (rfw_ref_is_mac(c, sobj)) {
+ 				/* a MAC never survives a routed hop, so it can never match on
+ 				 * traffic arriving from the WAN */
+-				logmessage("reaper_fw", "forward %s: MAC source cannot match WAN traffic - DROPPED", eport);
++				RFW_NATLOG("forward %s: MAC source cannot match WAN traffic - DROPPED", eport);
+ 				continue;
+ 			}
+ 			ns = rfw_resolve(c, sobj, 0, sets, RFW_MAX_SETS);
+ 			if (!ns) {
+-				logmessage("reaper_fw", "forward %s: source object %s did not resolve - DROPPED", eport, sobj);
++				RFW_NATLOG("forward %s: source object %s did not resolve - DROPPED", eport, sobj);
+ 				continue;
+ 			}
++			if (v6 && v6ok) {
++				ns6 = rfw_resolve(c, sobj, 1, sets6, RFW_MAX_SETS);
++				if (!ns6) {
++					RFW_V6LOG("%s %s: source object %s has no IPv6 form - the IPv6 twin is not emitted", mode, eport, sobj);
++					v6ok = 0;
++				}
++			}
+ 		}
+ 		rfw_sched_frag(sched, schedfrag, sizeof(schedfrag));
+ 
+ 		/* 2026-09-17: an intercept aimed at the resolver rdnshc watches goes into
+ 		 * the gated chain (rfw_hc_target); the jump from REAPER_FWN sits where the
+ 		 * first such record sits, so the operator's order is kept. */
+-		gated = (!fwdmode && !redir && hc && strcmp(iip, hct) == 0);
++		if (!v6)
++			gated = (!fwdmode && !redir && hc && strcmp(iip, hct) == 0);
++		else	/* 2026-10-07 IPv6 (A5): an intercept whose IPv6 target is the watched resolver */
++			gated = (v6ok && *iip6 && hc6 && strcmp(iip6, hct6) == 0);
+ 		natch = gated ? RFW_CHAIN_HC : RFW_CHAIN_NAT;
+ 		if (gated) {
+ 			char pp[48];
+ 			if (!hcjump) {
+-				fprintf(f, "RFWR iptables -t nat -A " RFW_CHAIN_NAT " -j " RFW_CHAIN_HC "\n");
++				fprintf(f, "RFWR %s -t nat -A " RFW_CHAIN_NAT " -j " RFW_CHAIN_HC "\n", v6 ? "ip6tables" : "iptables");
+ 				hcjump = 1;
+ 			}
+ 			if (!strchr(eport, ':')) {	/* a single port: conntrack -D --dport takes no range */
+ 				snprintf(pp, sizeof(pp), " %s:%s", proto, eport);
+-				if (strlen(rfw_hc_ports) + strlen(pp) < sizeof(rfw_hc_ports))
++				if (!strstr(rfw_hc_ports, pp) && strlen(rfw_hc_ports) + strlen(pp) < sizeof(rfw_hc_ports))
+ 					strcat(rfw_hc_ports, pp);
+ 			}
+ 		}
+@@ -1841,6 +1915,50 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 		if (!strcmp(proto, "both")) { protos[0] = "tcp"; protos[1] = "udp"; nproto = 2; }
+ 		else                        { protos[0] = proto; }
+ 
++		if (v6) {
++			/* ---- the IPv6 twin (2026-10-07 IPv6 A5) ---- */
++			if (!v6ok) continue;
++			for (pv = 0; pv < nproto; pv++) {
++				for (ifi = 0; ifi < nif; ifi++) {
++					int si, lim = ns6 ? ns6 : 1;
++					for (si = 0; si < lim; si++) {
++						srcfrag6[0] = 0;
++						if (ns6)
++							snprintf(srcfrag6, sizeof(srcfrag6), " -m set --match-set %s src", sets6[si].name);
++						if (logf[0] == '1')
++							fprintf(f, "RFWR ip6tables -t nat -A %s -i %s -p %s --dport %s%s%s%s%s"
++							           " -j LOG --log-prefix \"REAPER-ICPT6 \" --log-level 6\n",
++							        natch, ifs[ifi], protos[pv], eport, selffrag6, exfrag6, srcfrag6, schedfrag);
++						if (redir)
++							fprintf(f, "RFWR ip6tables -t nat -A " RFW_CHAIN_NAT " -i %s -p %s --dport %s%s%s%s"
++							           " -j REDIRECT --to-ports %s\n",
++							        ifs[ifi], protos[pv], eport, exfrag6, srcfrag6, schedfrag, toport);
++						else {
++							fprintf(f, "RFWR ip6tables -t nat -A %s -i %s -p %s --dport %s%s%s%s%s"
++							           " -j DNAT --to-destination [%s]:%s\n",
++							        natch, ifs[ifi], protos[pv], eport, selffrag6, exfrag6, srcfrag6, schedfrag, iip6, toport);
++							/* the companion ACCEPT in the ip6tables FORWARD chain: this pass runs
++							 * inside the v6 FORWARD build, so the chain exists and is not flushed after */
++							fprintf(f, "RFWR ip6tables -A " RFW_CHAIN_FWD " -i %s -p %s -d %s --dport %s%s%s -j ACCEPT\n",
++							        ifs[ifi], protos[pv], iip6, iport, srcfrag6, schedfrag);
++						}
++					}
++					if (!redir && strcmp(snat, "off")) {
++						if (!strcmp(snat, "on"))
++							fprintf(f, "RFWR ip6tables -t nat -A " RFW_CHAIN_MASQ " -o %s -p %s -d %s --dport %s -j MASQUERADE\n",
++							        ifs[ifi], protos[pv], iip6, toport);
++						else
++							fprintf(f,
++							  "RFW_HP6=$(ip -6 route get %s 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -1)\n"
++							  "[ \"$RFW_HP6\" = \"%s\" ] && RFWR ip6tables -t nat -A " RFW_CHAIN_MASQ
++							  " -o %s -p %s -d %s --dport %s -j MASQUERADE\n",
++							  iip6, ifs[ifi], ifs[ifi], protos[pv], iip6, toport);
++					}
++				}
++			}
++			continue;
++		}
++
+ 		for (pv = 0; pv < nproto; pv++) {
+ 			int si, lim = ns ? ns : 1;
+ 			/* one pass per matching interface: the WAN for a forward (resolved
+@@ -1911,6 +2029,8 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c)
+ 	}
+ 	free(dup);
+ }
++#undef RFW_NATLOG
++#undef RFW_V6LOG
+ 
+ /* ---------------------------------------------------------------------------
+  * The generator.
+@@ -2051,19 +2171,27 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "done\n"
+ 	  /* Phase 3: nat is a DIFFERENT table - the filter loop above cannot reach
+ 	   * it, and a REAPER_FWN left behind would keep DNATing traffic after the
+-	   * engine was disabled or rolled back. v4 only, matching the emitter. */
++	   * engine was disabled or rolled back. Both families since 2026-10-07 IPv6 (A5). */
+ 	  "while iptables -t nat -D PREROUTING -j " RFW_CHAIN_NAT " 2>/dev/null; do :; done\n"
++	  "while ip6tables -t nat -D PREROUTING -j " RFW_CHAIN_NAT " 2>/dev/null; do :; done\n"
+ 	  "iptables -t nat -F " RFW_CHAIN_NAT " 2>/dev/null\n"
+ 	  "iptables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n"
++	  "ip6tables -t nat -F " RFW_CHAIN_NAT " 2>/dev/null\n"
++	  "ip6tables -t nat -X " RFW_CHAIN_NAT " 2>/dev/null\n"
+ 	  "iptables -t nat -F " RFW_CHAIN_HC " 2>/dev/null\n"
+ 	  "iptables -t nat -X " RFW_CHAIN_HC " 2>/dev/null\n"
++	  "ip6tables -t nat -F " RFW_CHAIN_HC " 2>/dev/null\n"
++	  "ip6tables -t nat -X " RFW_CHAIN_HC " 2>/dev/null\n"
+ 	  /* and the intercept return path, in POSTROUTING. This runs on the
+ 	   * teardown AND rollback paths: a MASQUERADE left behind after an
+ 	   * auto-revert would keep rewriting the source address of traffic to a
+ 	   * server whose intercept no longer exists. */
+ 	  "while iptables -t nat -D POSTROUTING -j " RFW_CHAIN_MASQ " 2>/dev/null; do :; done\n"
+ 	  "iptables -t nat -F " RFW_CHAIN_MASQ " 2>/dev/null\n"
+-	  "iptables -t nat -X " RFW_CHAIN_MASQ " 2>/dev/null\n");
++	  "iptables -t nat -X " RFW_CHAIN_MASQ " 2>/dev/null\n"
++	  "while ip6tables -t nat -D POSTROUTING -j " RFW_CHAIN_MASQ " 2>/dev/null; do :; done\n"
++	  "ip6tables -t nat -F " RFW_CHAIN_MASQ " 2>/dev/null\n"
++	  "ip6tables -t nat -X " RFW_CHAIN_MASQ " 2>/dev/null\n");
+ 
+ 	if (teardown_only || !c->enable || strcmp(c->enable, "1") != 0) {
+ 		/* disabled: teardown only. Leaves the base firewall untouched (S4). */
+@@ -2137,7 +2265,13 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 		           "RFWH iptables -t nat -F " RFW_CHAIN_NAT "\n"
+ 		           "iptables -t nat -N " RFW_CHAIN_HC " 2>/dev/null; RFWH iptables -t nat -F " RFW_CHAIN_HC "\n"
+ 		           "iptables -t nat -N " RFW_CHAIN_MASQ " 2>/dev/null; "
+-		           "RFWH iptables -t nat -F " RFW_CHAIN_MASQ "\n\n");
++		           "RFWH iptables -t nat -F " RFW_CHAIN_MASQ "\n"
++		           /* 2026-10-07 IPv6 (A5): the ip6tables twins */
++		           "ip6tables -t nat -N " RFW_CHAIN_NAT " 2>/dev/null; "
++		           "RFWH ip6tables -t nat -F " RFW_CHAIN_NAT "\n"
++		           "ip6tables -t nat -N " RFW_CHAIN_HC " 2>/dev/null; RFWH ip6tables -t nat -F " RFW_CHAIN_HC "\n"
++		           "ip6tables -t nat -N " RFW_CHAIN_MASQ " 2>/dev/null; "
++		           "RFWH ip6tables -t nat -F " RFW_CHAIN_MASQ "\n\n");
+ 
+ 	for (d = RFW_D_IN; d <= RFW_D_OUT; d++) {
+ 		int v6;
+@@ -2152,7 +2286,7 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 				 * default, then the broad zone policy. A device default must
+ 				 * lose to an explicit allow and beat the zone default. */
+ 				rfw_emit_edef(f, c, v6);
+-				if (!v6) rfw_emit_nat(f, c);   /* its companion FORWARD accepts */
++				rfw_emit_nat(f, c, v6);   /* v4: nat lines + companion FORWARD accepts; v6: the twins (2026-10-07 IPv6 A5) */
+ 				rfw_emit_zpol(f, c, v6);
+ 			}
+ 			/* No final default: the chain RETURNs and the base firewall still
+@@ -2169,15 +2303,22 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	 * PREROUTING jump never exists while the chain is half-built. */
+ 	if (c->nat && *c->nat)
+ 		fprintf(f, "RFWH iptables -t nat -I PREROUTING -j " RFW_CHAIN_NAT "\n"
++		           "RFWH ip6tables -t nat -I PREROUTING -j " RFW_CHAIN_NAT "\n"
+ 		           /* POSTROUTING is APPENDED, not inserted: the return-path
+ 		            * MASQUERADE must run after the stock WAN masquerade has had
+ 		            * its say, and it only matches traffic already aimed at an
+ 		            * intercept target, so it cannot shadow anything. */
+ 		           "RFWH iptables -t nat -A POSTROUTING -j " RFW_CHAIN_MASQ "\n"
++		           "RFWH ip6tables -t nat -A POSTROUTING -j " RFW_CHAIN_MASQ "\n"
+ 		           /* 2026-09-17: the gate. Closed (one RETURN at its head) while
+ 		            * rdnshc has the watched resolver demoted; hcgate.sh toggles it
+ 		            * on FAILOVER / RESTORED so the intercept fails OPEN. */
+-		           "[ -e " RFW_HC_STATE " ] && iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n\n");
++		           /* 2026-10-08 dual-stack (metal r18): a rebuild must keep a PER-FAMILY
++		            * closure too - rdnshc writes a face marker only when it changes, so a
++		            * ruleset apply that reopened the chain would leave that family's DNAT
++		            * aimed at the silent face until the next flip. */
++		           "{ [ -e " RFW_HC_STATE " ] || [ -e " RFW_HC_DOWN4 " ]; } && iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n"
++		           "{ [ -e " RFW_HC_STATE " ] || [ -e " RFW_HC_DOWN6 " ]; } && ip6tables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 && RFWR ip6tables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n\n");
+ 
+ 	/* ---- sweep sets belonging to objects that no longer exist ----
+ 	 * after the chains are rebuilt, so nothing still in use is destroyed. */
+@@ -2238,29 +2379,39 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	 * rebuilds the last-good chains); only the dry-run preview does not. No
+ 	 * gated record = no script. */
+ 	if (!teardown_only && strcmp(path, RFW_PREVIEW) != 0) {
++#ifdef RTCONFIG_IPV6
++		int hc_v6 = ipv6_enabled();	/* owner 2026-10-08: IPv6 off = the gate never touches ip6tables */
++#else
++		int hc_v6 = 0;
++#endif
+ 		if (!rfw_hc_ports[0])
+ 			unlink(RFW_HCGATE);
+ 		else if ((f = fopen(RFW_HCGATE ".tmp", "w")) != NULL) {
+ 			fprintf(f,
+ 			  "#!/bin/sh\n"
+-			  "# generated by reaper_fw - do not edit. Closes/opens the resolver-health gate on DNS intercepts (see rc/rdnshc.c).\n"
+-			  "iptables -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 || exit 0\n"
+-			  "if [ -e " RFW_HC_STATE " ]; then\n"
+-			  "  iptables -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null && exit 0\n"
+-			  "  iptables -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n"
+-			  "  logger -t reaper_fw \"intercept gate CLOSED: the watched resolver is down (rdnshc) - intercepted ports%s fall through to the router's own DNS until it answers again\"\n"
+-			  "else\n"
+-			  "  iptables -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null || exit 0\n"
+-			  "  while iptables -t nat -D " RFW_CHAIN_HC " -j RETURN 2>/dev/null; do :; done\n"
+-			  "  logger -t reaper_fw \"intercept gate OPEN: the watched resolver answers again (rdnshc) - intercepted ports%s are redirected once more\"\n"
+-			  "fi\n"
++			  "# generated by reaper_fw - do not edit. Closes/opens the resolver-health gate on DNS intercepts, per address family (see rc/rdnshc.c).\n"
+ 			  "CT=$(which conntrack 2>/dev/null)\n"
+-			  "[ -n \"$CT\" ] || exit 0\n"
+-			  "for pp in%s; do\n"
+-			  "  _pr=${pp%%%%:*}; _po=${pp#*:}\n"
+-			  "  case \"$_pr\" in both) $CT -D -p udp --dport \"$_po\" >/dev/null 2>&1; $CT -D -p tcp --dport \"$_po\" >/dev/null 2>&1;; *) $CT -D -p \"$_pr\" --dport \"$_po\" >/dev/null 2>&1;; esac\n"
++			  "flush() { [ -n \"$CT\" ] || return 0; for pp in%s; do _pr=${pp%%%%:*}; _po=${pp#*:}; case \"$_pr\" in both) $CT -f $1 -D -p udp --dport \"$_po\" >/dev/null 2>&1; $CT -f $1 -D -p tcp --dport \"$_po\" >/dev/null 2>&1;; *) $CT -f $1 -D -p \"$_pr\" --dport \"$_po\" >/dev/null 2>&1;; esac; done; }\n"
++			  /* 2026-10-07 IPv6 (A5): both families. 2026-10-08 dual-stack: one verdict per
++			   * family - rdnshc marks the face that is not answering (RFW_HC_DOWN4 / 6);
++			   * RFW_HC_STATE still means the whole server is down. A dead IPv4 face no
++			   * longer leaves the IPv4 DNAT pointing into a silent host just because the
++			   * IPv6 face answers, and the other way round. */
++			  "for T in %s; do\n"
++			  "  case $T in iptables) F=ipv4; M=" RFW_HC_DOWN4 ";; *) F=ipv6; M=" RFW_HC_DOWN6 ";; esac\n"
++			  "  $T -t nat -nL " RFW_CHAIN_HC " >/dev/null 2>&1 || continue\n"
++			  "  if [ -e " RFW_HC_STATE " ] || [ -e $M ]; then\n"
++			  "    $T -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null && continue\n"
++			  "    $T -t nat -I " RFW_CHAIN_HC " 1 -j RETURN\n"
++			  "    logger -t reaper_fw \"intercept gate CLOSED ($F): the watched resolver is not answering over $F (rdnshc) - intercepted ports%s fall through to the router's own DNS until it does\"\n"
++			  "  else\n"
++			  "    $T -t nat -C " RFW_CHAIN_HC " -j RETURN 2>/dev/null || continue\n"
++			  "    while $T -t nat -D " RFW_CHAIN_HC " -j RETURN 2>/dev/null; do :; done\n"
++			  "    logger -t reaper_fw \"intercept gate OPEN ($F): the watched resolver answers over $F again (rdnshc) - intercepted ports%s are redirected once more\"\n"
++			  "  fi\n"
++			  "  flush $F\n"
+ 			  "done\n"
+-			  "exit 0\n", rfw_hc_ports, rfw_hc_ports, rfw_hc_ports);
++			  "exit 0\n", rfw_hc_ports, hc_v6 ? "iptables ip6tables" : "iptables", rfw_hc_ports, rfw_hc_ports);
+ 			fclose(f);
+ 			chmod(RFW_HCGATE ".tmp", 0700);
+ 			if (rename(RFW_HCGATE ".tmp", RFW_HCGATE) != 0) unlink(RFW_HCGATE ".tmp");
+@@ -2290,7 +2441,7 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ static void rfw_write_admin(void)
+ {
+ 	FILE *f;
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 	if ((f = fopen(RFW_ADMIN, "w")) == NULL) return;
+ 	fputs(nvram_safe_get("login_ip_str"), f);
+ 	fclose(f);
+@@ -2559,7 +2710,7 @@ void stop_reaper_fw(void)
+ 		lock = file_lock("firewall");
+ 		if (rfw_gen_apply(RFW_APPLY, &c, 1)) {
+ 			chmod(RFW_APPLY, 0700);
+-			system("sh " RFW_APPLY " 2>/dev/null");
++			(void)(reaper_script_ok(RFW_APPLY) && system("sh " RFW_APPLY " 2>/dev/null"));
+ 		}
+ 		file_unlock(lock);
+ 		rfw_cfg_free(&c);
+@@ -2616,7 +2767,7 @@ void reaper_fw_sets_only(void)
+ 	 * its chains are live, the sets must follow the CONFIRMED config; the draft
+ 	 * is only authoritative when there are no rules keyed on these sets. */
+ 	if (!rfw_cfg_load(&c, nvram_match("reaper_fw_enable", "1") ? 1 : 0)) return;
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 	keep[0] = 0;
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", RFW_SETS);
+ 	if ((f = fopen(tmp, "w")) != NULL) {
+@@ -2633,7 +2784,7 @@ void reaper_fw_sets_only(void)
+ 		if (rename(tmp, RFW_SETS) == 0) {
+ 			lock = file_lock("firewall");
+ 			chmod(RFW_SETS, 0700);
+-			system("sh " RFW_SETS " 2>/dev/null");
++			(void)(reaper_script_ok(RFW_SETS) && system("sh " RFW_SETS " 2>/dev/null"));
+ 			file_unlock(lock);
+ 		} else
+ 			unlink(tmp);
+@@ -2812,7 +2963,7 @@ void start_reaper_fw(void)
+ 	}
+ 	if (!rfw_cfg_load(&c, from_good)) return;
+ 
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 	/* S1: /tmp is a tmpfs, so the admin anchor written at arm time does not
+ 	 * survive a reboot - and commit-confirm does NOT cover the boot path, since
+ 	 * what boots is a ruleset that was already confirmed. Re-seed the anchor
+@@ -2825,7 +2976,7 @@ void start_reaper_fw(void)
+ 	if (rfw_gen_apply(RFW_APPLY, &c, 0)) {
+ 		int rc, code;
+ 		chmod(RFW_APPLY, 0700);
+-		rc = system("sh " RFW_APPLY);
++		rc = reaper_script_ok(RFW_APPLY) ? system("sh " RFW_APPLY) : -1;
+ 		code = (rc == -1) ? -1 : WEXITSTATUS(rc);
+ 		if (code == 3) {
+ 			/* P2-H3: the chains were built, but some rules did not load. The
+@@ -2883,7 +3034,7 @@ void reaper_fw_apply(void)
+ 		return;
+ 	}
+ 	mkdir(RFW_CACHE, 0700);
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 
+ 	/* R5: single-arm compare-and-set. A second apply while one is pending is
+ 	 * refused rather than silently replacing the pending deadline. */
+@@ -2915,7 +3066,7 @@ void reaper_fw_apply(void)
+ 	if (rfw_gen_apply(RFW_CAND, &c, 0)) {
+ 		int rc, code;
+ 		chmod(RFW_CAND, 0700);
+-		rc = system("sh " RFW_CAND);
++		rc = reaper_script_ok(RFW_CAND) ? system("sh " RFW_CAND) : -1;
+ 		code = (rc == -1) ? -1 : WEXITSTATUS(rc);
+ 		/* P2-H3: exit 1 (or a spawn failure) means a STRUCTURAL step failed -
+ 		 * the chain is not correctly live - so treat it as a failed build and
+@@ -2927,7 +3078,7 @@ void reaper_fw_apply(void)
+ 			file_unlock(lock);
+ 			nvram_set("reaper_fw_err", "candidate ruleset failed to build - rolled back");
+ 			logmessage("reaper_fw", "candidate ruleset FAILED to build - rolling back now");
+-			system("sh " RFW_ROLLBACK " 2>/dev/null");
++			(void)(reaper_script_ok(RFW_ROLLBACK) && system("sh " RFW_ROLLBACK " 2>/dev/null"));
+ 	reaper_fwsim_kick(1);
+ 			rfw_cfg_free(&c);
+ 			return;
+@@ -2997,7 +3148,7 @@ void reaper_fw_rollback(void)
+ 		logmessage("reaper_fw", "rollback requested but no recovery script exists");
+ 		return;
+ 	}
+-	system("sh " RFW_ROLLBACK " 2>/dev/null");
++	(void)(reaper_script_ok(RFW_ROLLBACK) && system("sh " RFW_ROLLBACK " 2>/dev/null"));
+ 	reaper_fwsim_kick(1);
+ 	/* The rollback script is pre-generated at arm time and only rebuilds the
+ 	 * chains and sets. Everything OUTSIDE that script which the arm changed has
+@@ -3023,7 +3174,7 @@ void reaper_fw_dryrun(void)
+ 	rfw_cfg_t c;
+ 	unlink(RFW_PREVIEW);
+ 	if (!rfw_cfg_load(&c, 0)) return;
+-	mkdir(RFW_DIR, 0700);
++	reaper_secure_dir(RFW_DIR, 0700);
+ 	if (rfw_gen_apply(RFW_PREVIEW, &c, 0))
+ 		chmod(RFW_PREVIEW, 0600);           /* readable, deliberately NOT executable */
+ 	rfw_cfg_free(&c);
+diff --git a/release/src/router/rc/reaper_hook.c b/release/src/router/rc/reaper_hook.c
+index 64a3b0ff64..480eb6fa91 100644
+--- a/release/src/router/rc/reaper_hook.c
++++ b/release/src/router/rc/reaper_hook.c
+@@ -16,9 +16,10 @@ void reaper_hook_gen(void)
+ 	FILE *f;
+ 	struct stat st;
+ 
+-	if (stat(REAPER_HOOK_SH, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
++	/* lstat, not stat (2026-10-09 audit V3): a symlink is never "already there" */
++	if (lstat(REAPER_HOOK_SH, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0)
+ 		return;
+-	mkdir(REAPER_HOOK_DIR, 0700);
++	reaper_secure_dir(REAPER_HOOK_DIR, 0700);
+ 	f = fopen(REAPER_HOOK_SH ".tmp", "w");
+ 	if (!f) return;
+ 	fputs(
+@@ -120,12 +121,6 @@ void reaper_hook_gen(void)
+ 		unlink(REAPER_HOOK_SH ".tmp");
+ }
+ 
+-void reaper_hook_rebuild(void)
+-{
+-	reaper_hook_gen();
+-	system("sh " REAPER_HOOK_SH);
+-}
+-
+ /* v3.1.7: the firewall table walker. After every firewall apply the witnesses
+  * are walked through the LIVE tables and /tmp/reaper/fwstatus.json is rewritten
+  * (see reaper_fwsim/reaper_fwsim.c). Forked and never waited for: the walker
+diff --git a/release/src/router/rc/reaper_hook.h b/release/src/router/rc/reaper_hook.h
+index 91d2613bf9..22c438833c 100644
+--- a/release/src/router/rc/reaper_hook.h
++++ b/release/src/router/rc/reaper_hook.h
+@@ -99,7 +99,6 @@
+ #define REAPER_HOOK_RUN  "if [ -x " REAPER_HOOK_SH " ]; then sh " REAPER_HOOK_SH "; else logger -t reaper 'hook.sh missing - layer chain built but not hooked'; fi\n"
+ 
+ extern void reaper_hook_gen(void);      /* write hook.sh if absent (idempotent) */
+-extern void reaper_hook_rebuild(void);  /* gen + run */
+ extern void reaper_fwsim_kick(int delay);  /* v3.1.7: walk the witnesses after an apply (forked) */
+ 
+ #endif
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index 06ab76a486..bf2336ae26 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -1020,7 +1020,8 @@ static int ppbr_run(const char *path, int sets_done)
+ 	snprintf(cmd, sizeof(cmd), "%ssh %s 2>/dev/null", sets_done ? "PBR_SETS_DONE=1 " : "", path);
+ 	lock = file_lock("firewall");                   /* P4 */
+ 	chmod(path, 0700);
+-	rc = system(cmd);
++	/* 2026-10-09 (audit V3): a root-owned private regular file, or it does not run */
++	rc = reaper_script_ok(path) ? system(cmd) : -1;
+ 	file_unlock(lock);
+ 	return (rc == -1) ? -1 : WEXITSTATUS(rc);
+ }
+@@ -1033,7 +1034,7 @@ void stop_reaper_pbr(void)
+ {
+ 	ppbr_cfg_t empty;
+ 	memset(&empty, 0, sizeof(empty));
+-	mkdir(PPBR_DIR, 0700);
++	reaper_secure_dir(PPBR_DIR, 0700);
+ 	ppbr_disarm_files();
+ 	if (ppbr_gen(PPBR_APPLY, 1, &empty))
+ 		ppbr_run(PPBR_APPLY, 0);
+@@ -1063,9 +1064,9 @@ void reaper_pbr_reassert(void)
+ 	if (!nvram_match("reaper_pbr_enable", "1")) return;
+ 	lock = file_lock("firewall");
+ 	if (nvram_match("reaper_pbr_armed", "1") && f_exists("/tmp/reaper_pbr/candidate.sh"))
+-		system("sh /tmp/reaper_pbr/candidate.sh");
++		(void)(reaper_script_ok("/tmp/reaper_pbr/candidate.sh") && system("sh /tmp/reaper_pbr/candidate.sh"));
+ 	else if (f_exists("/tmp/reaper_pbr/apply.sh"))
+-		system("sh /tmp/reaper_pbr/apply.sh");
++		(void)(reaper_script_ok("/tmp/reaper_pbr/apply.sh") && system("sh /tmp/reaper_pbr/apply.sh"));
+ 	/* v3.1.7: re-walk the witnesses after either apply (marks are part of the promise);
+ 	 * v3.3.4: dedented - it always ran here, the old indentation only read as if it did not */
+ 	reaper_fwsim_kick(1);
+@@ -1110,7 +1111,7 @@ void reaper_pbr_regen(void)
+ 					logmessage("reaper_pbr", "VPN settings changed while a routing change awaits confirmation - the pending rules follow it (some rules failed to load)");
+ 				} else if (rc != 0) {
+ 					logmessage("reaper_pbr", "the pending candidate FAILED to re-run after a VPN settings change - rolling back now");
+-					system("sh " PPBR_ROLLBACK " 2>/dev/null");   /* takes the arm token */
++					(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));   /* takes the arm token */
+ 					nvram_set("reaper_pbr_err", "E_RUN");
+ 				} else
+ 					logmessage("reaper_pbr", "VPN settings changed while a routing change awaits confirmation - the pending rules follow it");
+@@ -1135,7 +1136,7 @@ void start_reaper_pbr(void)
+ 	int from_good;
+ 
+ 	if (!is_routing_enabled()) return;
+-	mkdir(PPBR_DIR, 0700);
++	reaper_secure_dir(PPBR_DIR, 0700);
+ 
+ 	/* a change still awaiting confirmation at reboot: the arm marker is tmpfs,
+ 	 * so flag-without-marker means "never confirmed" - clear the flag so the
+@@ -1229,7 +1230,7 @@ void reaper_pbr_apply(void)
+ 
+ 	if (!is_routing_enabled()) return;
+ 	mkdir(PPBR_CACHE, 0700);
+-	mkdir(PPBR_DIR, 0700);
++	reaper_secure_dir(PPBR_DIR, 0700);
+ 	if (!ppbr_lastgood_ok()) {
+ 		/* no confirmed snapshot yet (pre-v2.6.7 box that never rebooted on this
+ 		 * build): there is nothing to roll back TO, so this apply is not
+@@ -1272,7 +1273,7 @@ void reaper_pbr_apply(void)
+ 	if (!ppbr_gen(PPBR_CAND, !c.enable, &c)) {
+ 		file_unlock(plock);
+ 		logmessage("reaper_pbr", "candidate FAILED to build - rolling back now");
+-		system("sh " PPBR_ROLLBACK " 2>/dev/null");   /* takes the arm token, clears _err */
++		(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));   /* takes the arm token, clears _err */
+ 		nvram_set("reaper_pbr_err", "E_BUILD");
+ 		ppbr_cfg_free(&c);
+ 		return;
+@@ -1285,7 +1286,7 @@ void reaper_pbr_apply(void)
+ 		 * candidate - roll back now rather than arm a timer on nothing
+ 		 * (reaper_fw_apply does the same). */
+ 		logmessage("reaper_pbr", "candidate FAILED to run - rolling back now");
+-		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));
+ 		nvram_set("reaper_pbr_err", "E_RUN");
+ 		ppbr_cfg_free(&c);
+ 		return;
+@@ -1297,7 +1298,7 @@ void reaper_pbr_apply(void)
+ 	 * armed-forever state - so it is treated like a candidate that failed. */
+ 	if ((f = fopen(PPBR_DEADLINE, "w")) == NULL) {
+ 		logmessage("reaper_pbr", "could not write the deadline - rolling back now");
+-		system("sh " PPBR_ROLLBACK " 2>/dev/null");
++		(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));
+ 		nvram_set("reaper_pbr_err", "E_NORECOVERY");
+ 		ppbr_cfg_free(&c);
+ 		return;
+@@ -1369,5 +1370,5 @@ void reaper_pbr_rollback(void)
+ 		logmessage("reaper_pbr", "rollback requested but no recovery script exists");
+ 		return;
+ 	}
+-	system("sh " PPBR_ROLLBACK " 2>/dev/null");
++	(void)(reaper_script_ok(PPBR_ROLLBACK) && system("sh " PPBR_ROLLBACK " 2>/dev/null"));
+ }
+diff --git a/release/src/router/rc/reaper_punct.c b/release/src/router/rc/reaper_punct.c
+index 88463b73cb..445361d271 100644
+--- a/release/src/router/rc/reaper_punct.c
++++ b/release/src/router/rc/reaper_punct.c
+@@ -34,7 +34,7 @@
+  *                                     it survives acsd and DFS moves;
+  *   "dyn|..."                         DYNAMIC: the controller (rpunctd) picks
+  *                                     the bitmap and writes it to
+- *                                     /tmp/reaper_punct.dyn ("wlN 0x<bitmap>");
++ *                                     /tmp/reaper/reaper_punct.dyn ("wlN 0x<bitmap>");
+  *                                     this applier treats it as FOLLOW on the
+  *                                     live width. No line, or 0x0 = nothing
+  *                                     chosen: clear what we set, result dyn-idle.
+@@ -48,19 +48,19 @@
+  * wlN_punct empty and nothing of ours on the air, it issues no wl command at
+  * all. It only ever clears a pattern it set itself (the state file says which).
+  * rc logmessage() lines can be filtered by the syslog level on some boxes; the
+- * state file is the record: /tmp/reaper_punct.state, one line per radio.
++ * state file is the record: /tmp/reaper/reaper_punct.state, one line per radio.
+  *
+  * reaper v3.3.1: the same applet runs a second, independent pass for the
+  * receiver's interference mitigation (wlN_rmit, see mit_pass() below) on the
+- * same triggers, with its own state file /tmp/reaper_wlmit.state.
++ * same triggers, with its own state file /tmp/reaper/reaper_wlmit.state.
+  */
+ #include "rc.h"
+ #include <signal.h>
+ #include <sys/sysinfo.h>
+ 
+ #define PU_TAG		"reaper_punct"
+-#define PU_STATE	"/tmp/reaper_punct.state"
+-#define PU_DYN		"/tmp/reaper_punct.dyn"		/* rpunctd's choice, "wlN 0x<bitmap> ..." per line */
++#define PU_STATE	"/tmp/reaper/reaper_punct.state"
++#define PU_DYN		"/tmp/reaper/reaper_punct.dyn"		/* rpunctd's choice, "wlN 0x<bitmap> ..." per line */
+ #define PU_MAXU		4		/* radios: the GT-BE98 family has four; the band comes from wlN_nband */
+ #define PU_WAIT		60		/* s, bounded wait for a radio after a wireless restart */
+ 
+@@ -233,7 +233,7 @@ static int set_bitmap(const char *ifn, unsigned int b)
+  * result applied | driver (it already runs it) | refused | waiting | off |
+  * error-read | skipped-*.
+  */
+-#define MIT_STATE	"/tmp/reaper_wlmit.state"
++#define MIT_STATE	"/tmp/reaper/reaper_wlmit.state"
+ #define MIT_HWACI	16
+ 
+ /* the live mode: `wl interference` prints "Mode = <n>. ..." after a blank line */
+diff --git a/release/src/router/rc/rexport.c b/release/src/router/rc/rexport.c
+index 4fd69b572e..58e67fd503 100644
+--- a/release/src/router/rc/rexport.c
++++ b/release/src/router/rc/rexport.c
+@@ -37,15 +37,18 @@
+ #include <shared.h>
+ #include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling - v2.6.1 hard rule */
+ 
+-#define REXPORT_SH	"/tmp/rexport.sh"
++#define REXPORT_SH	"/tmp/reaper/rexport.sh"
+ 
+ /* The script is constant (it reads nvram itself at run time), so emit it with
+  * fputs - no printf-format escaping hazards. */
+ static void rexport_gen(void)
+ {
+-	FILE *f = fopen(REXPORT_SH, "w");
+-	if (f) fchmod(fileno(f), 0700);  /* Phase 3 F3: close the 0666-under-umask-0 window now, not at the end */
+-	if (!f)
++	FILE *f;
++	/* 2026-10-09 (audit V3): the script, its curl config (the token) and its sed
++	 * script live in Reaper's private directory, created fresh at 0700 */
++	if (reaper_secure_dir(REAPER_TMPDIR, 0700) != 0)
++		return;
++	if ((f = reaper_fopen_new(REXPORT_SH, 0700)) == NULL)
+ 		return;
+ 	fputs(
+ 	  /* v2.6.1 hard rule: a generated script must never call bare `nvram get`.
+@@ -84,28 +87,28 @@ static void rexport_gen(void)
+ 	  /* Belt-and-suspenders for the curl-config build far below. httpd rejects a
+ 	   * double quote in these fields (rexport_val_ok() in web.c), but nvram can
+ 	   * also be set from a root shell, and a quote here would close the quoted
+-	   * value in /tmp/rexport.cfg and let the rest be read by curl as extra
++	   * value in /tmp/reaper/rexport.cfg and let the rest be read by curl as extra
+ 	   * directives - `output = <path>` among them. Refuse the run instead. */
+ 	  "case \"$URL$TOKEN$IDX$SRC\" in *'\"'*) logger -t rexport \"illegal character in export settings - refusing\"; exit 0 ;; esac\n"
+ 	  "NOW=$(date +%s)\n"
+ 	  "HOST=\"$(_nv productid)\"\n"
+-	  "STAT=/tmp/rexport.status\n"
++	  "STAT=/tmp/reaper/rexport.status\n"
+ 	  "SRCF=\"$H\"\n"
+ 	  "\n"
+ 	  "# optional MAC-hash for privacy: replace each MAC with a short salted digest\n"
+ 	  "if [ \"$MASK\" = 1 ]; then\n"
+-	  "  cp \"$H\" /tmp/rexport.src 2>/dev/null || exit 0\n"
++	  "  cp \"$H\" /tmp/reaper/rexport.src 2>/dev/null || exit 0\n"
+ 	  /* v3.0.9 (code-review tail): one sed script applied once, not one whole-
+ 	   * file rewrite per MAC. The md5 forks stay (busybox awk has no hash). */
+-	  "  : > /tmp/rexport.sed\n"
+-	  "  for m in $(grep -o '\"mac\":\"[^\"]*\"' /tmp/rexport.src | sed 's/\"mac\":\"//;s/\"$//' | sort -u); do\n"
++	  "  : > /tmp/reaper/rexport.sed\n"
++	  "  for m in $(grep -o '\"mac\":\"[^\"]*\"' /tmp/reaper/rexport.src | sed 's/\"mac\":\"//;s/\"$//' | sort -u); do\n"
+ 	  "    [ -n \"$m\" ] || continue\n"
+ 	  "    hh=$(printf 'reaper:%s' \"$m\" | md5sum | cut -c1-12)\n"
+-	  "    echo \"s/$m/$hh/g\" >> /tmp/rexport.sed\n"
++	  "    echo \"s/$m/$hh/g\" >> /tmp/reaper/rexport.sed\n"
+ 	  "  done\n"
+-	  "  [ -s /tmp/rexport.sed ] && sed -i -f /tmp/rexport.sed /tmp/rexport.src 2>/dev/null\n"
+-	  "  rm -f /tmp/rexport.sed\n"
+-	  "  SRCF=/tmp/rexport.src\n"
++	  "  [ -s /tmp/reaper/rexport.sed ] && sed -i -f /tmp/reaper/rexport.sed /tmp/reaper/rexport.src 2>/dev/null\n"
++	  "  rm -f /tmp/reaper/rexport.sed\n"
++	  "  SRCF=/tmp/reaper/rexport.src\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "# ---- Syslog over TLS (RFC5424): no curl, best-effort openssl pipe ----\n"
+@@ -118,13 +121,13 @@ static void rexport_gen(void)
+ 	  "  else\n"
+ 	  "    echo \"$NOW syslog fail\" > \"$STAT\"; logger -t rexport \"syslog-tls export failed\"\n"
+ 	  "  fi\n"
+-	  "  [ \"$SRCF\" = /tmp/rexport.src ] && rm -f /tmp/rexport.src\n"
++	  "  [ \"$SRCF\" = /tmp/reaper/rexport.src ] && rm -f /tmp/reaper/rexport.src\n"
+ 	  "  exit 0\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "# ---- HTTP push engines (curl) ----\n"
+-	  "BODY=/tmp/rexport.body\n"
+-	  "CFG=/tmp/rexport.cfg\n"
++	  "BODY=/tmp/reaper/rexport.body\n"
++	  "CFG=/tmp/reaper/rexport.cfg\n"
+ 	  "CT='Content-Type: application/json'\n"
+ 	  "case \"$ENGINE\" in\n"
+ 	  "  splunk)\n"
+@@ -157,7 +160,7 @@ static void rexport_gen(void)
+ 	  "\n"
+ 	  "RESP=$(curl -K \"$CFG\" --data-binary @\"$BODY\" -o /dev/null -w '%{http_code}' 2>/dev/null)\n"
+ 	  "rm -f \"$CFG\" \"$BODY\"\n"
+-	  "[ \"$SRCF\" = /tmp/rexport.src ] && rm -f /tmp/rexport.src\n"
++	  "[ \"$SRCF\" = /tmp/reaper/rexport.src ] && rm -f /tmp/reaper/rexport.src\n"
+ 	  "echo \"$NOW $ENGINE $RESP\" > \"$STAT\"\n"
+ 	  "case \"$RESP\" in 2*) : ;; *) logger -t rexport \"export to $ENGINE failed (HTTP ${RESP:-none})\" ;; esac\n", f);
+ 	fclose(f);
+diff --git a/release/src/router/rc/rv6names.c b/release/src/router/rc/rv6names.c
+new file mode 100644
+index 0000000000..84e921b181
+--- /dev/null
++++ b/release/src/router/rc/rv6names.c
+@@ -0,0 +1,267 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ *
++ * reaper 2026-10-08: IPv6 device names (BACKLOG "IPv6 clients have no names in
++ * a LAN DNS filter"; plan bubbly-weaving-blanket, owner-approved).
++ *
++ * LAN devices send DNS over IPv6 from SLAAC / privacy addresses the router never
++ * handed out, and dnsmasq knows names only from DHCP leases, so a DNS filter that
++ * sees those devices (AdGuard, through the intercept) lists them as bare
++ * addresses. Every 60 s this daemon:
++ *   - dumps the bridge neighbour cache (shared/reaper_nd.c, the table httpd, gkd
++ *     and rtrafd already share),
++ *   - reads the dnsmasq lease files: a DHCPv4 lease gives MAC -> name, a DHCPv6
++ *     lease gives a name that must NOT also appear in a hosts file (dnsmasq would
++ *     then refuse that lease its name - cache.c "not giving name ..."),
++ *   - writes "<ipv6> <name>" for each global neighbour whose MAC has a usable name
++ *     into /tmp/rv6names/<bridge>/hosts - only when the content changed, through
++ *     a temp file and rename(), so dnsmasq never reads half a file, and send
++ *     ONE SIGHUP when anything changed (addn-hosts= is re-read on SIGHUP).
++ *     NOT hostsdir=: this dnsmasq is built -DNO_INOTIFY and refuses to start
++ *     with it - that took DNS, DHCP and RA down on r26.
++ * IPv6 lines only: dnsmasq compares a DHCPv4 lease's name with hosts entries of
++ * the same family, so nothing here can take an IPv4 name away. Owner decision:
++ * the plain DHCP name, so a forward lookup of that name also returns the
++ * device's current IPv6 addresses.
++ *
++ * Gate: reaper_dns_v6names == 1 (default 1) and IPv6 enabled, router mode. Off
++ * (or IPv6 off) empties every file once, so dnsmasq drops the names, then idles
++ * on one nvram read every 30 s. Syslog only on enable / disable, never per tick.
++ */
++#include "rc.h"
++#include <signal.h>
++#include <dirent.h>
++#include <sys/stat.h>
++#include <arpa/inet.h>
++
++#define V6N_TAG		"rv6names"
++#define V6N_DIR		"/tmp/rv6names"
++#define V6N_TICK	60
++#define V6N_IDLE	30
++#define V6N_ND_MAX	512
++#define V6N_LEASE_MAX	512
++#define V6N_LINES	256
++#define V6N_BUF		(V6N_LINES * (RV6N_ADDR_MAX + RV6N_NAME_MAX + 2) + 1)
++#define V6N_BR_MAX	24
++
++static volatile sig_atomic_t g_stop;
++static void on_sig(int s) { (void)s; g_stop = 1; }
++
++struct v4name { char mac[18]; char name[RV6N_NAME_MAX]; };
++
++static struct reaper_nd nd[V6N_ND_MAX];
++static struct v4name v4[V6N_LEASE_MAX];
++static char v6names[V6N_LEASE_MAX][RV6N_NAME_MAX];
++static struct rv6n_pair pairs[V6N_ND_MAX];
++static char outbuf[V6N_BUF], curbuf[V6N_BUF];
++
++static int v6n_on(void)
++{
++#ifdef RTCONFIG_IPV6
++	return nvram_get_int("reaper_dns_v6names") == 1 && ipv6_enabled() && is_routing_enabled();
++#else
++	return 0;
++#endif
++}
++
++/* every dnsmasq lease file: the main one and one per SDN instance */
++static void read_leases(int *n4, int *n6)
++{
++	DIR *d;
++	struct dirent *e;
++	char path[300], line[512], mac[18], name[RV6N_NAME_MAX];
++	FILE *f;
++
++	*n4 = *n6 = 0;
++	if ((d = opendir("/var/lib/misc")) == NULL)
++		return;
++	while ((e = readdir(d)) != NULL) {
++		size_t l = strlen(e->d_name);
++		if (strncmp(e->d_name, "dnsmasq", 7) != 0 || l < 7 || strcmp(e->d_name + l - 7, ".leases") != 0)
++			continue;
++		snprintf(path, sizeof(path), "/var/lib/misc/%s", e->d_name);
++		if ((f = fopen(path, "r")) == NULL)
++			continue;
++		while (fgets(line, sizeof(line), f)) {
++			int k = rv6n_lease_line(line, mac, sizeof(mac), name, sizeof(name));
++			if (k == 4 && *n4 < V6N_LEASE_MAX) {
++				strlcpy(v4[*n4].mac, mac, sizeof(v4[*n4].mac));
++				strlcpy(v4[*n4].name, name, sizeof(v4[*n4].name));
++				(*n4)++;
++			} else if (k == 6 && *n6 < V6N_LEASE_MAX)
++				strlcpy(v6names[(*n6)++], name, RV6N_NAME_MAX);
++		}
++		fclose(f);
++	}
++	closedir(d);
++}
++
++static const char *name_of(const char *mac, int n4)
++{
++	int i;
++	for (i = 0; i < n4; i++)
++		if (!strcasecmp(v4[i].mac, mac))
++			return v4[i].name;
++	return NULL;
++}
++
++static int is_v6lease_name(const char *name, int n6)
++{
++	int i;
++	for (i = 0; i < n6; i++)
++		if (!strcasecmp(v6names[i], name))
++			return 1;
++	return 0;
++}
++
++/* write dir/hosts only when it differs; returns 1 when rewritten */
++static int put_file(const char *br, const char *content)
++{
++	char dir[96], path[128];
++	FILE *f;
++	long n;
++
++	if (!br[0] || strchr(br, '/') || br[0] == '.')
++		return 0;
++	snprintf(dir, sizeof(dir), V6N_DIR "/%s", br);
++	reaper_secure_dir(V6N_DIR, 0755);
++	if (reaper_secure_dir(dir, 0755) != 0)	/* 2026-10-09 (audit V3): root-owned, dnsmasq (nobody) only reads */
++		return 0;
++	snprintf(path, sizeof(path), "%s/hosts", dir);
++	curbuf[0] = '\0';
++	if ((f = fopen(path, "r")) != NULL) {
++		n = (long)fread(curbuf, 1, sizeof(curbuf) - 1, f);
++		curbuf[n > 0 ? n : 0] = '\0';
++		fclose(f);
++		if (!strcmp(curbuf, content))
++			return 0;
++	} else if (!content[0]) {
++		/* no file and nothing to say: create it empty so the dir is never bare */
++	}
++	/* 2026-10-09 (audit V3): rc runs with umask 0, so the old fopen("w") temp
++	 * file was 0666 until the chmod - long enough for dnsmasq (nobody, which
++	 * reads this directory) to open it for writing and keep that handle past
++	 * the rename. The temp file is now created 0600 (mkstemp) and opened up to
++	 * 0644 only once it is complete; dnsmasq still reads it, never writes it. */
++	if (reaper_write_atomic(path, content, strlen(content), 0644) != 0)
++		return 0;
++	return 1;
++}
++
++/* every dnsmasq instance re-reads its addn-hosts file on SIGHUP */
++static void v6n_reload(void)
++{
++#ifdef RTCONFIG_MULTILAN_CFG
++	reload_dnsmasq(ALL_SDN);
++#else
++	reload_dnsmasq();
++#endif
++}
++
++/* empty every existing bridge file (switch off / IPv6 off) */
++static void clear_all(void)
++{
++	DIR *d;
++	struct dirent *e;
++	int changed = 0;
++
++	if ((d = opendir(V6N_DIR)) == NULL)
++		return;
++	while ((e = readdir(d)) != NULL)
++		if (e->d_name[0] != '.')
++			changed |= put_file(e->d_name, "");
++	closedir(d);
++	if (changed)
++		v6n_reload();
++}
++
++static void tick(void)
++{
++	char brs[V6N_BR_MAX][16];
++	int nbr = 0, nn, n4, n6, i, b, changed = 0;
++	DIR *d;
++	struct dirent *e;
++
++	nn = reaper_nd_load(nd, V6N_ND_MAX);
++	read_leases(&n4, &n6);
++
++	/* every bridge we must speak for: the ones with neighbours and the ones
++	 * whose directory exists (a dnsmasq instance reads it - keep it current) */
++	for (i = 0; i < nn && nbr < V6N_BR_MAX; i++) {
++		for (b = 0; b < nbr && strcmp(brs[b], nd[i].br); b++) ;
++		if (b == nbr && nd[i].br[0]) strlcpy(brs[nbr++], nd[i].br, sizeof(brs[0]));
++	}
++	if ((d = opendir(V6N_DIR)) != NULL) {
++		while ((e = readdir(d)) != NULL && nbr < V6N_BR_MAX) {
++			if (e->d_name[0] == '.') continue;
++			for (b = 0; b < nbr && strcmp(brs[b], e->d_name); b++) ;
++			if (b == nbr) strlcpy(brs[nbr++], e->d_name, sizeof(brs[0]));
++		}
++		closedir(d);
++	}
++
++	for (b = 0; b < nbr; b++) {
++		int np = 0;
++		for (i = 0; i < nn; i++) {
++			const char *nm;
++			if (strcmp(nd[i].br, brs[b]) || !reaper_nd_global(nd[i].ip))
++				continue;
++			if ((nm = name_of(nd[i].mac, n4)) == NULL || is_v6lease_name(nm, n6))
++				continue;
++			if (!inet_ntop(AF_INET6, nd[i].ip, pairs[np].addr, sizeof(pairs[np].addr)))
++				continue;
++			strlcpy(pairs[np].name, nm, sizeof(pairs[np].name));
++			np++;
++		}
++		if (rv6n_render(pairs, np, V6N_LINES, outbuf, sizeof(outbuf)) < 0)
++			outbuf[0] = '\0';
++		changed |= put_file(brs[b], outbuf);
++	}
++	if (changed)
++		v6n_reload();	/* one SIGHUP per tick, only when a file really changed */
++}
++
++int rv6names_main(int argc, char *argv[])
++{
++	int was = -1, on, i;
++	(void)argc; (void)argv;
++
++	signal(SIGTERM, on_sig);
++	signal(SIGINT, on_sig);
++	signal(SIGHUP, SIG_IGN);
++	if (daemon(1, 0) < 0)
++		return 1;
++
++	while (!g_stop) {
++		on = v6n_on();
++		if (on != was) {
++			if (on)
++				logmessage(V6N_TAG, "IPv6 device names on - LAN devices' IPv6 addresses are named after their DHCP leases, refreshed every %d s", V6N_TICK);
++			else if (was == 1)
++				logmessage(V6N_TAG, "IPv6 device names off - the names were withdrawn");
++			if (!on)
++				clear_all();
++			was = on;
++		}
++		if (on)
++			tick();
++		for (i = 0; i < (on ? V6N_TICK : V6N_IDLE) && !g_stop; i++)
++			sleep(1);
++	}
++	return 0;
++}
++
++void stop_rv6names(void)
++{
++	if (pids("rv6names"))
++		killall_tk("rv6names");
++}
++
++void start_rv6names(void)
++{
++	stop_rv6names();
++	if (!is_routing_enabled())
++		return;
++	xstart("rv6names");
++}
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 2769332e68..792f096ba8 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -394,7 +394,7 @@ static void rw_emit_ban_conntrack(FILE *f)
+ 	free(list);
+ }
+ 
+-void rw_teardown_rules(void)
++static void rw_teardown_rules(void)
+ {
+ 	/* Unhook the entry chains first (REAPER_WARDEN references RW_OUT and
+ 	 * RW_DROP; RW_SELF references RW_SDROP), then the referencing chains, then
+@@ -1671,7 +1671,7 @@ void start_rwarden(void)
+ 		return;
+ 	if (!nvram_match("rwarden_enable", "1"))
+ 		return;
+-	mkdir(RW_DIR, 0700);
++	reaper_secure_dir(RW_DIR, 0700);
+ 	reaper_hook_gen();	/* v2.6.2 front chains */
+ 	rw_gen_apply();
+ 	rw_gen_update();
+@@ -1701,7 +1701,7 @@ void start_rwarden(void)
+ 	/* apply.sh exits non-zero when the LAN is not up yet (cold boot): expected,
+ 	 * not an error - the firewall hook re-runs the same script and arms the
+ 	 * moment the LAN appears (the Gatekeeper cold-boot deferral pattern). */
+-	else if (system("sh " RW_APPLY) != 0)
++	else if (!reaper_script_ok(RW_APPLY) || system("sh " RW_APPLY) != 0)
+ 		logmessage("rwarden", "LAN not ready at boot - protection deferred, re-arms on firewall hook");
+ 	/* schedule feed refresh (default daily 04:30) unless user set rwarden_sched.
+ 	 * cru convention (rc/wireguard.c): schedule + command are ONE quoted arg. */
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index b993db752b..c5d5671737 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -2,7 +2,7 @@
+  * rc/rwatch.c - Reaper watchdog (v1.8.8, born from the 2026-07-29 incident).
+  *
+  * A cron'd health probe - no resident daemon. Every rwatch_iv minutes (default
+- * 5) /tmp/rwatch.sh checks, in order:
++ * 5) /tmp/reaper/rwatch.sh checks, in order:
+  *   1. first-hop WAN gateway reachability (by IP - no external hosts, so this
+  *      adds zero phone-home surface),
+  *   2. loopback DNS through dnsmasq (the exact path the 2026-07-29 Warden
+@@ -30,7 +30,7 @@
+  *      tick and skb_idx is not yet field-proven safe under sustained polling
+  *      (pre-release audit 2026-08-02, per the shelved wifi-accel reboot lesson).
+  *
+- * Results are a state machine in /tmp/rwatch.state: transitions (and every
++ * Results are a state machine in /tmp/reaper/rwatch.state: transitions (and every
+  * 3rd consecutive failing tick) go to syslog with tag "rwatch"; the FIRST
+  * failing tick also snapshots bounded diagnostics to /jffs/rwatch/inc-<epoch>
+  * (newest 3 kept) - route table, iptables/ipset state, GDX/FPM/fcache/BPM
+@@ -61,16 +61,19 @@
+  * Defined in reaper_hook.h alongside the front-chain names it belongs to. */
+ #include "reaper_hook.h"
+ 
+-#define RWATCH_SH    "/tmp/rwatch.sh"
+-#define RWATCH_STATE "/tmp/rwatch.state"
++#define RWATCH_SH    "/tmp/reaper/rwatch.sh"
++#define RWATCH_STATE "/tmp/reaper/rwatch.state"
+ 
+ /* The probe script is constant (it reads nvram itself at run time), so emit
+  * it with fputs - no printf-format escaping hazards. */
+ static void rwatch_gen(void)
+ {
+-	FILE *f = fopen(RWATCH_SH, "w");
+-	if (f) fchmod(fileno(f), 0700);  /* Phase 3 F3: close the 0666-under-umask-0 window now, not at the end */
+-	if (!f)
++	FILE *f;
++	/* 2026-10-09 (audit V3): the probe and every marker it keeps live in Reaper's
++	 * private directory; the script is created fresh at 0700 */
++	if (reaper_secure_dir(REAPER_TMPDIR, 0700) != 0)
++		return;
++	if ((f = reaper_fopen_new(RWATCH_SH, 0700)) == NULL)
+ 		return;
+ 	fputs(
+ 	  "#!/bin/sh\n"
+@@ -224,7 +227,7 @@ static void rwatch_gen(void)
+ 	  "#    ping fails AND the WAN is not connected. If the ping fails but the WAN is\n"
+ 	  "#    connected, the first hop is simply ICMP-filtering - log that once (so a\n"
+ 	  "#    user reading the log is not alarmed) and carry on. (field 2026-08-04)\n"
+-	  "ICMPMARK=/tmp/rwatch_gw_icmp_filtered\n"
++	  "ICMPMARK=/tmp/reaper/rwatch_gw_icmp_filtered\n"
+ 	  "if [ -n \"$GW\" ] && [ \"$GW\" != \"0.0.0.0\" ]; then\n"
+ 	  "  if ping -c1 -W3 \"$GW\" >/dev/null 2>&1 || ping -c1 -W3 \"$GW\" >/dev/null 2>&1; then\n"
+ 	  "    rm -f \"$ICMPMARK\"\n"
+@@ -241,6 +244,42 @@ static void rwatch_gen(void)
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
++	  "# 1b) IPv6 first hop (2026-10-07 IPv6 A7). Only when the router has IPv6 configured AND\n"
++	  "#     holds a global address (rdnshc's own gate), so a v4-only box spends nothing here.\n"
++	  "#     Same rule as 1): a silent first hop is a fault only when there is no default\n"
++	  "#     IPv6 route either; a hop that merely filters ICMPv6 is noted once.\n"
++	  "#     2026-10-08: NOT for a tunnel (6in4/6to4/6rd). There the first hop is the broker's\n"
++	  "#     server, which answers echo whenever the tunnel passes traffic, and the default route\n"
++	  "#     is a static one over v6tunN that exists whether or not the far end forwards - so a\n"
++	  "#     silent hop is the tunnel being down (on 2026-10-08 the broker still held an old\n"
++	  "#     client IPv4), not a filter. Say that, once; 1c carries the FAILURE.\n"
++	  "V6S=\"$(_nv ipv6_service)\"; V6R=\"$(_nv ipv6_rtr_addr)\"\n"
++	  "if [ -n \"$V6S\" ] && [ \"$V6S\" != disabled ] && [ -n \"$V6R\" ]; then\n"
++	  "  GW6=\"$(ip -6 route show default 2>/dev/null | sed -n 's/.* via \\([^ ]*\\).*/\\1/p' | head -1)\"\n"
++	  "  ICMP6MARK=/tmp/reaper/rwatch_gw6_icmp_filtered\n"
++	  "  case \"$V6S\" in 6in4|6to4|6rd) V6TUN=1;; *) V6TUN=0;; esac\n"
++	  "  if [ -z \"$GW6\" ]; then\n"
++	  "    FAIL=\"$FAIL wan6-gw\"\n"
++	  "  elif ping6 -c1 -W3 \"$GW6\" >/dev/null 2>&1 || ping6 -c1 -W3 \"$GW6\" >/dev/null 2>&1; then\n"
++	  "    rm -f \"$ICMP6MARK\"\n"
++	  "  elif [ \"$V6TUN\" = 1 ]; then\n"
++	  "    if [ ! -f \"$ICMP6MARK\" ]; then\n"
++	  "      logger -t rwatch \"IPv6 tunnel server $GW6 ($V6S) is not answering - the tunnel is not passing traffic. A broker forwards only to the client IPv4 it was last told; this router's WAN address is now $(_nv wan0_ipaddr) - check the tunnel's client IPv4 (or its DDNS update) before anything else\"\n"
++	  "      : > \"$ICMP6MARK\"\n"
++	  "    fi\n"
++	  "  elif [ ! -f \"$ICMP6MARK\" ]; then\n"
++	  "    logger -t rwatch \"note: IPv6 first hop $GW6 is not answering ICMPv6 echo, but a default IPv6 route exists - the first hop filters ICMP; this is normal, not a fault\"\n"
++	  "    : > \"$ICMP6MARK\"\n"
++	  "  fi\n"
++	  "# 1c) IPv6 internet: both public anycast resolvers unreachable over v6 = the v6 WAN is\n"
++	  "#     down while v4 may be fine (tunnel endpoint gone, RA stopped, prefix withdrawn).\n"
++	  "#     Reported, never bounced: the PPPoE re-dial below is a v4 session cure.\n"
++	  "  if ! ping6 -c1 -W3 2606:4700:4700::1111 >/dev/null 2>&1 && \\\n"
++	  "     ! ping6 -c1 -W3 2001:4860:4860::8888 >/dev/null 2>&1; then\n"
++	  "    FAIL=\"$FAIL wan6-internet\"\n"
++	  "  fi\n"
++	  "fi\n"
++	  "\n"
+ 	  "# 2) loopback DNS through dnsmasq (hosts-file name: no upstream dependency,\n"
+ 	  "#    no external query - tests exactly the path the 2026-07-29 lockout cut)\n"
+ 	  "nslookup localhost 127.0.0.1 >/dev/null 2>&1 || FAIL=\"$FAIL loopback-dns\"\n"
+@@ -264,9 +303,9 @@ static void rwatch_gen(void)
+ 	  "if iptables -nL RW_SELF >/dev/null 2>&1; then\n"
+ 	  "  SD=$( { iptables -nvxL RW_SDROP 2>/dev/null; ip6tables -nvxL RW_SDROP 2>/dev/null; } "
+ 	  "| awk '/ DROP /{s+=$1} END{print s+0}')\n"
+-	  "  SP=$(cat /tmp/rwatch_selfdrop 2>/dev/null); case \"$SP\" in ''|*[!0-9]*) SP=0;; esac\n"
++	  "  SP=$(cat /tmp/reaper/rwatch_selfdrop 2>/dev/null); case \"$SP\" in ''|*[!0-9]*) SP=0;; esac\n"
+ 	  "  [ \"$SD\" -gt \"$SP\" ] && FAIL=\"$FAIL warden-self-drop:$((SD-SP))\"\n"
+-	  "  echo \"$SD\" > /tmp/rwatch_selfdrop 2>/dev/null\n"
++	  "  echo \"$SD\" > /tmp/reaper/rwatch_selfdrop 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  /* v3.0.9 (backlog "Warden crash on the BE92U addon box", the held defensive
+@@ -295,12 +334,12 @@ static void rwatch_gen(void)
+ 	  /* v3.2.3: a box that never got a WAN has had no firewall build since boot, so
+ 	   * start_rwarden() deferred its apply (rc.h REAPER_FW_BUILT_MARK). Say so
+ 	   * instead of implying a fault; the heal below is what arms it. */
+-	  "      if [ -f /tmp/.reaper_firewall_built ]; then logger -t rwatch \"Warden chain REAPER_WARDEN is not present right now - an apply may be in progress; checking again next tick before acting\"; else logger -t rwatch \"Warden has not been armed since boot: no firewall build has run yet (no WAN?) - arming it next tick\"; fi\n"
++	  "      if [ -f /tmp/reaper/.reaper_firewall_built ]; then logger -t rwatch \"Warden chain REAPER_WARDEN is not present right now - an apply may be in progress; checking again next tick before acting\"; else logger -t rwatch \"Warden has not been armed since boot: no firewall build has run yet (no WAN?) - arming it next tick\"; fi\n"
+ 	  "    else\n"
+ 	  "      _wl=$(cat /tmp/rwarden/heal.at 2>/dev/null || echo 0); case \"$_wl\" in ''|*[!0-9]*) _wl=0;; esac\n"
+ 	  "      if [ $((UP - _wl)) -ge 600 ]; then\n"
+ 	  "        echo $UP > /tmp/rwarden/heal.at 2>/dev/null\n"
+-	  "        _wb=0; [ -f /tmp/.reaper_firewall_built ] || _wb=1\n"
++	  "        _wb=0; [ -f /tmp/reaper/.reaper_firewall_built ] || _wb=1\n"
+ 	  "        if [ -x /tmp/rwarden/heal.sh ]; then reaper_lockrun /tmp/rwarden/heal.sh >/dev/null 2>&1; else reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1; fi\n"
+ 	  "        if iptables -nL REAPER_WARDEN >/dev/null 2>&1; then\n"
+ 	  "          if [ \"$_wb\" = 1 ]; then logger -t rwatch \"Warden armed by the watchdog: no firewall build since boot (no WAN?) - protection is up\"; else logger -t rwatch \"Warden chain REAPER_WARDEN was missing on two ticks - re-applied under the firewall lock, protection is back\"; fi\n"
+@@ -495,6 +534,10 @@ static void rwatch_gen(void)
+ 	  "  while read _t _tb _c _sig; do\n"
+ 	  "    [ -n \"$_sig\" ] || continue\n"
+ 	  "    case \"$_t\" in iptables|ip6tables) ;; *) continue;; esac\n"
++	  /* 2026-10-09 (audit V3): the chain name comes from a file; only the
++	   * engine's own chains are ever signed, so take nothing else */
++	  "    case \"$_c\" in REAPER_FW*) ;; *) continue;; esac\n"
++	  "    case \"$_c\" in *[!A-Z0-9_]*) continue;; esac\n"
+ 	  "    case \"$_tb\" in nat) _tf=\"-t nat\";; *) _tf=\"\";; esac\n"
+ 	  "    _now=$($_t $_tf -S \"$_c\" 2>/dev/null | md5sum | cut -d' ' -f1)\n"
+ 	  "    [ \"$_now\" = \"$_sig\" ] && continue\n"
+@@ -569,9 +612,9 @@ static void rwatch_gen(void)
+ 	  "    *) WOKEY=off; WOMSG='not filtering outbound - Direction is inbound only' ;;\n"
+ 	  "  esac\n"
+ 	  "fi\n"
+-	  "if [ -n \"$WOKEY\" ] && [ \"$WOKEY\" != \"$(cat /tmp/rwatch_warden_out 2>/dev/null)\" ]; then\n"
++	  "if [ -n \"$WOKEY\" ] && [ \"$WOKEY\" != \"$(cat /tmp/reaper/rwatch_warden_out 2>/dev/null)\" ]; then\n"
+ 	  "  logger -t rwatch \"Warden outbound: $WOMSG\"\n"
+-	  "  echo \"$WOKEY\" > /tmp/rwatch_warden_out 2>/dev/null\n"
++	  "  echo \"$WOKEY\" > /tmp/reaper/rwatch_warden_out 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  /* 2026-09-13 (review R15 field data): an RT-BE88U ran for two weeks on
+@@ -590,13 +633,13 @@ static void rwatch_gen(void)
+ 	  "if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ \"$(_nv sw_mode)\" = 1 ] \\\n"
+ 	  "   && ! iptables -nL INPUT_ICMP >/dev/null 2>&1 && ! iptables -nL SECURITY >/dev/null 2>&1; then\n"
+ 	  "  FAIL=\"$FAIL filter-skeleton\"\n"
+-	  "  if [ ! -f /tmp/rwatch_skel ]; then\n"
++	  "  if [ ! -f /tmp/reaper/rwatch_skel ]; then\n"
+ 	  "    logger -t rwatch \"the firewall filter table is the boot-time default only (INPUT_ICMP and SECURITY chains absent): the full ruleset never loaded, so port forwards, VPN server chains and the DoS guard are NOT in force - see the firewall: lines in syslog and /tmp/err_rules; requesting one restart_firewall\"\n"
+-	  "    touch /tmp/rwatch_skel\n"
++	  "    touch /tmp/reaper/rwatch_skel\n"
+ 	  "    service restart_firewall >/dev/null 2>&1\n"
+ 	  "  fi\n"
+ 	  "else\n"
+-	  "  rm -f /tmp/rwatch_skel 2>/dev/null\n"
++	  "  rm -f /tmp/reaper/rwatch_skel 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  /* reaper v3.1.7: the firewall witnesses. reaper_fwsim walks each
+@@ -618,12 +661,12 @@ static void rwatch_gen(void)
+ 	  "  _wr=$(sed -n 's/.*\"summary\":{[^}]*\"red\":\\([0-9]*\\).*/\\1/p' /tmp/reaper/fwstatus.json 2>/dev/null | head -1)\n"
+ 	  "  if [ -n \"$_wr\" ] && [ \"$_wr\" -gt 0 ]; then\n"
+ 	  "    _wl=$(tr -d '\\n' < /tmp/reaper/fwstatus.json | sed 's/},{/}\\n{/g' | grep '\"state\":\"red\"' | sed 's/.*\"id\":\"\\([^\"]*\\)\".*\"rule\":\"\\([^\"]*\\)\".*/\\1 (\\2)/' | head -8 | tr '\\n' ';')\n"
+-	  "    if [ \"$_wl\" != \"$(cat /tmp/rwatch_witness 2>/dev/null)\" ]; then\n"
+-	  "      printf '%s' \"$_wl\" > /tmp/rwatch_witness\n"
++	  "    if [ \"$_wl\" != \"$(cat /tmp/reaper/rwatch_witness 2>/dev/null)\" ]; then\n"
++	  "      printf '%s' \"$_wl\" > /tmp/reaper/rwatch_witness\n"
+ 	  "      logger -t rwatch \"firewall witnesses (advisory) $_wr to review: $_wl - see the Rule Status tab on the Firewall page or reaper_diag 14g. Information only: no failure is declared and nothing is re-applied\"\n"
+ 	  "    fi\n"
+ 	  "  else\n"
+-	  "    rm -f /tmp/rwatch_witness 2>/dev/null\n"
++	  "    rm -f /tmp/reaper/rwatch_witness 2>/dev/null\n"
+ 	  "  fi\n"
+ 	  "fi\n"
+ 	  "\n"
+@@ -663,6 +706,7 @@ static void rwatch_gen(void)
+ 	  "  dmesg | tail -120 > \"$D/dmesg.txt\" 2>&1\n"
+ 	  "  tail -300 /tmp/syslog.log > \"$D/syslog-tail.txt\" 2>/dev/null\n"
+ 	  "  { ip route; ip -6 route; } > \"$D/route.txt\" 2>&1\n"
++	  "  { ip -6 addr; ip -6 neigh; } > \"$D/ipv6.txt\" 2>&1\n"
+ 	  "  iptables -nvxL > \"$D/iptables.txt\" 2>&1\n"
+ 	  "  ip6tables -nvxL > \"$D/ip6tables.txt\" 2>&1\n"
+ 	  "  ipset list -t > \"$D/ipset-headers.txt\" 2>&1\n"
+@@ -726,7 +770,7 @@ static void rwatch_gen(void)
+   "# state machine so a fault here cannot affect it. Uses its OWN real-internet\n"
+   "# probe (not the gateway ping above, which cannot tell a stale session from a\n"
+   "# first hop that merely ICMP-filters).\n"
+-  "BOUNCE_MARK=/tmp/reaper_wan_bounced\n"
++  "BOUNCE_MARK=/tmp/reaper/reaper_wan_bounced\n"
+   "if [ \"$(_nv reaper_wanbounce_enable)\" != 0 ] && [ ! -f \"$BOUNCE_MARK\" ]; then\n"
+   "  BU=\"$(_nv wan_primary)\"; case \"$BU\" in ''|*[!0-9]*) BU=0 ;; esac\n"
+   "  BPROTO=\"$(_nv wan${BU}_proto)\"; [ -n \"$BPROTO\" ] || BPROTO=\"$(_nv wan_proto)\"\n"
+@@ -755,7 +799,7 @@ static void rwatch_gen(void)
+   "# while every wlN_punct is empty and it set nothing earlier (rc/reaper_punct.c).\n"
+   "PU=\n"
+   "for _u in 0 1 2 3; do [ -n \"$(_nv wl${_u}_punct)$(_nv wl${_u}_rmit)\" ] && PU=1; done\n"
+-  "if [ -n \"$PU\" ] || [ -f /tmp/reaper_punct.state ] || [ -f /tmp/reaper_wlmit.state ]; then\n"
++  "if [ -n \"$PU\" ] || [ -f /tmp/reaper/reaper_punct.state ] || [ -f /tmp/reaper/reaper_wlmit.state ]; then\n"
+   "  pidof reaper_punct >/dev/null 2>&1 || (/sbin/reaper_punct >/dev/null 2>&1 &)\n"
+   "fi\n"
+   "# The dynamic controller (rpunctd) exits by itself when no radio is Dynamic;\n"
+@@ -791,7 +835,7 @@ static void rwatch_gen(void)
+ 	  "# 1) device presence deltas (join/leave of active LAN devices) -> capped ring\n"
+ 	  "case \"$DS\" in *,dev,*)\n"
+ 	  "  if [ \"$VOLATILE\" = 0 ]; then\n"
+-	  "    SNAP=/tmp/rhist.snap; CUR=/tmp/rhist.cur\n"
++	  "    SNAP=/tmp/reaper/rhist.snap; CUR=/tmp/reaper/rhist.cur\n"
+ 	  "    awk 'NR>1 && $3==\"0x2\" && $6 ~ /^br/ {print toupper($4)}' /proc/net/arp 2>/dev/null | sort -u > \"$CUR\"\n"
+ 	  "    if [ -s \"$SNAP\" ]; then\n"
+ 	  "      for m in $(grep -vxF -f \"$SNAP\" \"$CUR\" 2>/dev/null); do echo \"$NOWH J $m\" >> \"$BASE/devhist.log\"; done\n"
+@@ -823,14 +867,14 @@ static void rwatch_gen(void)
+ 	  "    SZ=$(wc -c < \"$BASE/syslog.mirror\" 2>/dev/null || echo 0)\n"
+ 	  "    [ \"$SZ\" -gt 8388608 ] && mv \"$BASE/syslog.mirror\" \"$BASE/syslog.mirror.1\" 2>/dev/null\n"
+ 	  "    CURN=$(wc -l < /tmp/syslog.log 2>/dev/null || echo 0)\n"
+-	  "    LASTN=$(cat /tmp/rhist.slogn 2>/dev/null || echo 0)\n"
++	  "    LASTN=$(cat /tmp/reaper/rhist.slogn 2>/dev/null || echo 0)\n"
+ 	  "    case \"$LASTN\" in ''|*[!0-9]*) LASTN=0;; esac\n"
+ 	  "    if [ \"$CURN\" -ge \"$LASTN\" ]; then\n"
+ 	  "      [ \"$CURN\" -gt \"$LASTN\" ] && tail -n +$((LASTN+1)) /tmp/syslog.log 2>/dev/null | head -n $((CURN-LASTN)) >> \"$BASE/syslog.mirror\" 2>/dev/null\n"
+ 	  "    else\n"
+ 	  "      cat /tmp/syslog.log >> \"$BASE/syslog.mirror\" 2>/dev/null\n"
+ 	  "    fi\n"
+-	  "    echo \"$CURN\" > /tmp/rhist.slogn\n"
++	  "    echo \"$CURN\" > /tmp/reaper/rhist.slogn\n"
+ 	  "  fi ;;\n"
+ 	  "esac\n"
+ 	  /* rwatch reports through syslog and the /tmp/reaper state files, never
+@@ -902,6 +946,15 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 		"/tmp/rwarden/heal.sh",	/* 2026-09-17: rwatch 3c's re-check-under-the-lock heal */
+ 		"/tmp/reaper_fw/hcgate.sh",	/* 2026-09-17: the resolver-health gate on DNS intercepts (rc/rdnshc.c runs it) */
+ 		"/tmp/reaper/hook.sh",	/* v3.1.2: the front-chain re-pin (rwatch 3d) */
++		/* 2026-10-08: rwatch 3f's rules-chain-drift heal. 3f shipped in v3.3.4
++		 * invoking `reaper_lockrun /tmp/reaper_fw/apply.sh` without listing the
++		 * script here, so the wrapper refused it (return 1, output discarded)
++		 * and every "re-applying the committed ruleset" line re-applied nothing -
++		 * observed live 2026-10-08 10:55-11:05 after an IPv6-page Apply left the
++		 * v4 REAPER_FW* chains gone for 20 min. apply.sh is the engine's own
++		 * idempotent teardown+build, runs hook.sh directly (no nested lock) and
++		 * is exactly what start_firewall()'s tail runs under the same lock. */
++		"/tmp/reaper_fw/apply.sh",
+ 		NULL
+ 	};
+ 	int i, lock, rv;
+@@ -914,6 +967,9 @@ int reaper_lockrun_main(int argc, char *argv[])
+ 			break;
+ 	if (!ok[i])
+ 		return 1;
++	/* 2026-10-09 (audit V3): listed AND a root-owned regular file nobody else can write */
++	if (!reaper_script_ok(argv[1]))
++		return 1;
+ 	lock = file_lock("firewall");
+ 	snprintf(cmd, sizeof(cmd), "sh %s", argv[1]);
+ 	rv = system(cmd);
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index d52598bc64..ba5a3b2878 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -6,6 +6,9 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <stdbool.h>
++#include <ifaddrs.h>	/* 2026-10-08: bridge IPv6 /64 for the reverse zones */
++#include <sys/stat.h>
++#include <arpa/inet.h>
+ 
+ #include <shared.h>
+ #ifdef RTCONFIG_VPN_FUSION
+@@ -570,6 +573,220 @@ static int _handle_sdn_stubby(const MTLAN_T *pmtl, const int action)
+ }
+ #endif
+ 
++/* ---------------------------------------------------------------------------
++ * 2026-10-08: reverse DNS across networks (owner request; plan bubbly-weaving-blanket).
++ *
++ * Each dnsmasq instance answers PTR lookups only for its own leases, and with
++ * bogus-priv on it answers NXDOMAIN for every other private range - so a resolver
++ * on a VLAN (the owner's AdGuard on VLAN 52) could not name a main-LAN device and
++ * the main LAN could not name a VLAN one. dnsmasq exempts a private zone from
++ * bogus-priv once a server is configured for it (rfc1035.c, lookup_domain
++ * F_DOMAINSRV), so a rev-server line per direction is the whole fix:
++ *   main instance   : rev-server=<vlan net>/<len>,<vlan gateway>  per eligible VLAN
++ *   VLAN instance   : rev-server=<lan net>/<len>,<lan_ipaddr>     when it is eligible
++ * Owner decisions: main LAN <-> each VLAN both ways, never VLAN <-> VLAN, Guest and
++ * Portal profiles (and any captive-portal network) excluded - a PTR sweep from a
++ * guest network would otherwise list the household's device names. Behind
++ * reaper_dns_revshare (default 1). Skipped with dns_fwd_local=1 (no bogus-priv:
++ * private reverse goes upstream by the operator's choice). No loop: no instance is
++ * ever given its own subnet, and the instance asked answers its own zone itself.
++ * Both call sites sit before the custom .add append, so an operator file still wins.
++ * ------------------------------------------------------------------------- */
++#define REVSHARE_SIG "/tmp/reaper/reaper_revzone.sig"
++#define V6NAMES_DIR  "/tmp/rv6names"	/* rc/rv6names.c writes <dir>/<bridge>/hosts */
++
++static int revshare_on(void)
++{
++	return nvram_get_int("reaper_dns_revshare") == 1 && nvram_get_int("dns_fwd_local") != 1;
++}
++
++static int revshare_eligible(const MTLAN_T *m)
++{
++	if (!m || !m->enable || m->nw_t.idx == 0)	/* off, or no dnsmasq of its own (IoT / main rows) */
++		return 0;
++	if (!m->nw_t.addr[0] || !strcmp(m->nw_t.addr, nvram_safe_get("lan_ipaddr")))
++		return 0;				/* the main LAN subnet itself */
++	if (!strcasecmp(m->name, "Guest") || !strcasecmp(m->name, "Portal"))
++		return 0;
++	if (m->sdn_t.cp_idx != 0)			/* any captive-portal network */
++		return 0;
++	return 1;
++}
++
++/* the main LAN instance: one line per eligible VLAN */
++void write_rev_servers_main(FILE *fp)
++{
++	MTLAN_T *pmtl;
++	size_t mtl_sz = 0, i;
++	char net[24];
++
++	if (!fp || !revshare_on())
++		return;
++	if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return;
++	get_mtlan(pmtl, &mtl_sz);
++	for (i = 0; i < mtl_sz; i++) {
++		if (!revshare_eligible(&pmtl[i]))
++			continue;
++		if (reaper_rev_net(pmtl[i].nw_t.addr, pmtl[i].nw_t.netmask, net, sizeof(net)) > 0)
++			fprintf(fp, "rev-server=%s,%s\n", net, pmtl[i].nw_t.addr);
++	}
++	FREE_MTLAN((void *)pmtl);
++}
++
++/* a VLAN instance: one line for the main LAN, when the VLAN is eligible */
++static void write_rev_servers_sdn(FILE *fp, const MTLAN_T *self)
++{
++	char net[24];
++	const char *lip = nvram_safe_get("lan_ipaddr");
++
++	if (!fp || !revshare_on() || !revshare_eligible(self))
++		return;
++	if (reaper_rev_net(lip, nvram_safe_get("lan_netmask"), net, sizeof(net)) > 0)
++		fprintf(fp, "rev-server=%s,%s\n", net, lip);
++}
++
++
++/* ---------------------------------------------------------------------------
++ * 2026-10-08: IPv6 device names (plan bubbly-weaving-blanket; rc/rv6names.c).
++ * Each instance reads ONLY its own bridge's names (addn-hosts=<dir>/hosts; the
++ * daemon sends one SIGHUP when a file changes - NOT hostsdir=: this dnsmasq is
++ * built -DNO_INOTIFY (top Makefile COPTS) and refuses to START with hostsdir,
++ * which took DNS, DHCP and RA down on r26; `dnsmasq --test` passes it) and answers its own /64's reverse zone
++ * locally (an address-less rev-server = local-only: these zones are global, so
++ * bogus-priv does not cover them, and an unknown address would otherwise be
++ * forwarded to the LAN filter, which treats the prefix as private and asks the
++ * gateway again - a loop). Across networks the r24 policy holds (main LAN <->
++ * each eligible VLAN, never VLAN <-> VLAN, guests never); those lines need the
++ * names feature too, so the far side always answers its own zone locally.
++ * Gate: reaper_dns_v6names == 1 and IPv6 enabled; IPv6 off = nothing written.
++ * ------------------------------------------------------------------------- */
++static int v6names_on(void)
++{
++	return nvram_get_int("reaper_dns_v6names") == 1 && ipv6_enabled();
++}
++
++/* the /64 of the first global address on ifname, "<net>/64"; 0 when none */
++static int br_v6_net(const char *ifname, char *out, size_t n)
++{
++	struct ifaddrs *ifa, *p;
++	char a6[INET6_ADDRSTRLEN];
++	int ok = 0;
++
++	if (!ifname || !*ifname || getifaddrs(&ifa) != 0)
++		return 0;
++	for (p = ifa; p && !ok; p = p->ifa_next) {
++		if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET6 || strcmp(p->ifa_name, ifname))
++			continue;
++		if (!inet_ntop(AF_INET6, &((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr, a6, sizeof(a6)))
++			continue;
++		ok = reaper_rev_net6(a6, out, n) > 0;
++	}
++	freeifaddrs(ifa);
++	return ok;
++}
++
++static void v6names_own(FILE *fp, const char *ifname)
++{
++	char dir[96], net[64];
++
++	snprintf(dir, sizeof(dir), V6NAMES_DIR "/%s", ifname);
++	reaper_secure_dir(V6NAMES_DIR, 0755);
++	reaper_secure_dir(dir, 0755);	/* 2026-10-09 audit V3: the per-bridge dir too */
++	{	/* the file exists before dnsmasq reads it (a missing addn-hosts file only logs, but never leave one) */
++		char hf[112];
++		int fd;
++		snprintf(hf, sizeof(hf), "%s/hosts", dir);
++		if ((fd = open(hf, O_WRONLY | O_CREAT | O_NOFOLLOW, 0644)) >= 0)
++			close(fd);
++		fprintf(fp, "addn-hosts=%s\n", hf);
++	}
++	if (br_v6_net(ifname, net, sizeof(net)))
++		fprintf(fp, "rev-server=%s\n", net);	/* local-only: answered here, never forwarded */
++}
++
++/* the main LAN instance */
++void write_v6names_main(FILE *fp)
++{
++	MTLAN_T *pmtl;
++	size_t mtl_sz = 0, i;
++	char net[64];
++
++	if (!fp || !v6names_on())
++		return;
++	v6names_own(fp, nvram_safe_get("lan_ifname"));
++	if (!revshare_on() || (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return;
++	get_mtlan(pmtl, &mtl_sz);
++	for (i = 0; i < mtl_sz; i++)
++		if (revshare_eligible(&pmtl[i]) && br_v6_net(pmtl[i].nw_t.ifname, net, sizeof(net)))
++			fprintf(fp, "rev-server=%s,%s\n", net, pmtl[i].nw_t.addr);
++	FREE_MTLAN((void *)pmtl);
++}
++
++/* a VLAN instance: its own names and zone; the main LAN's zone when eligible */
++static void write_v6names_sdn(FILE *fp, const MTLAN_T *self)
++{
++	char net[64];
++
++	if (!fp || !self || !v6names_on())
++		return;
++	v6names_own(fp, self->nw_t.ifname);
++	if (revshare_on() && revshare_eligible(self) && br_v6_net(nvram_safe_get("lan_ifname"), net, sizeof(net)))
++		fprintf(fp, "rev-server=%s,%s\n", net, nvram_safe_get("lan_ipaddr"));
++}
++
++/* what the lines above depend on: the switch, the main LAN and every eligible
++ * VLAN's sdn index + net + gateway, in get_mtlan order (stable for one config) */
++static void revshare_sig(char *buf, size_t n)
++{
++	MTLAN_T *pmtl;
++	size_t mtl_sz = 0, i, w;
++	char net[24];
++
++	{
++		char l6[64] = "";
++		if (v6names_on()) br_v6_net(nvram_safe_get("lan_ifname"), l6, sizeof(l6));
++		w = (size_t)snprintf(buf, n, "on=%d v6=%d lan=%s/%s %s", revshare_on(), v6names_on(), nvram_safe_get("lan_ipaddr"), nvram_safe_get("lan_netmask"), l6);
++	}
++	if (w >= n || (pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return;
++	get_mtlan(pmtl, &mtl_sz);
++	for (i = 0; i < mtl_sz && w < n; i++) {
++		if (!revshare_eligible(&pmtl[i]) || reaper_rev_net(pmtl[i].nw_t.addr, pmtl[i].nw_t.netmask, net, sizeof(net)) <= 0)
++			continue;
++		{
++			char v6n[64] = "";
++			if (v6names_on()) br_v6_net(pmtl[i].nw_t.ifname, v6n, sizeof(v6n));
++			w += (size_t)snprintf(buf + w, n - w, " %d:%s,%s,%s", pmtl[i].sdn_t.sdn_idx, net, pmtl[i].nw_t.addr, v6n);
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++}
++
++/* start_dnsmasq() records what the instances were written for ... */
++void revshare_sig_save(void)
++{
++	char s[1024];
++
++	revshare_sig(s, sizeof(s));
++	f_write_string(REVSHARE_SIG, s, 0, 0);
++}
++
++/* ... and restart_sdn / sdn_del ask whether that still holds. A network added,
++ * removed, readdressed, retyped or toggled changes the set every instance's
++ * rev-server lines were built from; restart_sdn <idx> regenerates only that one
++ * network, so the caller restarts dnsmasq once (all instances) when this is 1. */
++int revshare_sig_changed(void)
++{
++	char now[1024], was[1024] = "";
++
++	revshare_sig(now, sizeof(now));
++	if (f_read_string(REVSHARE_SIG, was, sizeof(was)) <= 0)
++		return 0;			/* nothing recorded yet: start_dnsmasq has not run */
++	return strcmp(now, was) != 0;
++}
++
+ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const size_t path_len)
+ {
+ 	FILE *fp;
+@@ -803,6 +1020,8 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 
+ 		// TODO: Set VPN server
+ 
++		write_rev_servers_sdn(fp, pmtl);	/* 2026-10-08: reverse DNS for the main LAN, before the .add */
++		write_v6names_sdn(fp, pmtl);	/* 2026-10-08: IPv6 device names + IPv6 reverse zones, before the .add */
+ 		snprintf(buf, sizeof(buf), "dnsmasq-%d.conf", pmtl->sdn_t.sdn_idx);
+ 		append_custom_config(buf, fp);
+ 		fclose(fp);
+diff --git a/release/src/router/rc/sdn.h b/release/src/router/rc/sdn.h
+index dc10573ce4..af1b356d34 100644
+--- a/release/src/router/rc/sdn.h
++++ b/release/src/router/rc/sdn.h
+@@ -41,6 +41,11 @@ int update_sdn_routing_table_by_wan(const int wan_idx);
+ int update_sdn_routing_rule_by_wan(const int wan_idx);
+ void set_sdn_ipv6_mtu(int wan_unit, int mtu);
+ void update_sdn_resolvconf();
++/* 2026-10-08: reverse DNS across networks (rc/sdn.c) */
++void write_rev_servers_main(FILE *fp);
++void write_v6names_main(FILE *fp);	/* 2026-10-08: IPv6 device names */
++void revshare_sig_save(void);
++int revshare_sig_changed(void);
+ #ifdef RTCONFIG_MULTIWAN_IF
+ int update_sdn_by_wan(const int wan_idx);
+ int write_sdnlan_resolv_dnsmasq(FILE* fp);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 6b1fe46ccc..c5fcfffd7a 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2446,6 +2446,11 @@ void start_dnsmasq(void)
+ 	if (nvram_match("dhcp_static_x","1")) {
+ 		write_static_leases(fp);
+ 	}
++#ifdef RTCONFIG_IPV6
++	/* reaper 2026-10-07 (IPv6 A3): DHCPv6 reservations (main LAN instance) */
++	if (ipv6_enabled())
++		write_static_leases6(fp);
++#endif
+ 
+ 	/* Don't log DHCP queries */
+ 	if (nvram_match("dhcpd_querylog","0")) {
+@@ -2553,10 +2558,17 @@ void start_dnsmasq(void)
+ 	}
+ 
+ 	/* close fp move to the last */
++#ifdef RTCONFIG_MULTILAN_CFG
++	write_rev_servers_main(fp);	/* 2026-10-08: reverse DNS for each eligible VLAN, before the .add */
++	write_v6names_main(fp);	/* 2026-10-08: IPv6 device names (hostsdir + IPv6 reverse zones), before the .add */
++#endif
+ 	append_custom_config("dnsmasq.conf",fp);
+ 	fclose(fp);
+ 
+ 	use_custom_config("dnsmasq.conf","/etc/dnsmasq.conf");
++#ifdef RTCONFIG_MULTILAN_CFG
++	revshare_sig_save();	/* 2026-10-08: what the instances' rev-server lines were built from */
++#endif
+ 	run_postconf("dnsmasq","/etc/dnsmasq.conf");
+ 	{
+ 		/* reaper v3.3.3: see reaper_dnsmasq_log_guard(). The flag carries the dropped
+@@ -2679,12 +2691,22 @@ int dnsmasq_script_main(int argc, char **argv)
+ 	/* reaper v3.1.1: keep the hostname the client ANNOUNCED (option 12). dnsmasq
+ 	 * exports it here as DNSMASQ_SUPPLIED_HOSTNAME untouched by its one-lease-per-
+ 	 * name rule; the lease file blanks the losers of a name clash (four iPhones all
+-	 * called "iPhone"), and Gatekeeper/Devices then read "Unknown device". IPv4
+-	 * events only - argv[2] is a MAC there, a DUID for DHCPv6 (rejected). */
++	 * called "iPhone"), and Gatekeeper/Devices then read "Unknown device".
++	 * 2026-10-07 IPv6 (A10): a DHCPv6 event carries the client's DUID in argv[2], not
++	 * a MAC; dnsmasq exports the hardware address it learned from the neighbour
++	 * table as DNSMASQ_MAC when it has one (helper.c), so the announced name is
++	 * filed under the device either way. DHCPv6 carries no vendor class. */
+ 	if (argc >= 4 && argv[1] && (!strcmp(argv[1], "add") || !strcmp(argv[1], "old"))) {
+ 		const char *sup = getenv("DNSMASQ_SUPPLIED_HOSTNAME");
+-		reaper_dhcpname_record(argv[2], (sup && *sup) ? sup : (argc >= 5 ? argv[4] : ""),
+-				       getenv("DNSMASQ_VENDOR_CLASS"));
++		const char *mac = argv[2];
++		int is6 = !isValidMacAddress(mac);
++		if (is6) {
++			const char *m6 = getenv("DNSMASQ_MAC");
++			mac = (m6 && isValidMacAddress(m6)) ? m6 : NULL;
++		}
++		if (mac)
++			reaper_dhcpname_record(mac, (sup && *sup) ? sup : (argc >= 5 ? argv[4] : ""),
++					       is6 ? NULL : getenv("DNSMASQ_VENDOR_CLASS"));
+ 	}
+ 	// TODO : call function directly
+ #if defined(RTCONFIG_TR069) && !defined(RTCONFIG_TR181)
+@@ -5118,6 +5140,28 @@ int stop_8021x(void)
+ }
+ #endif
+ 
++#ifdef RTCONFIG_IPV6
++static void rdhcp6_emit(const char *mac, const char *sfx, void *arg)
++{
++	fprintf((FILE *)arg, "dhcp-host=%s,[%s]\n", mac, sfx);
++}
++
++/* reaper 2026-10-07 (IPv6 A3): the Devices page's DHCPv6 reservations - a /jffs
++ * list (the nvram cap rule) of <MAC>::suffix records (shared/reaper_dhcp6.h).
++ * dnsmasq takes the network part from its own dhcp-range, so a delegated-prefix
++ * change needs no edit, and matches the client by the MAC it finds in the
++ * neighbour table (every directly connected LAN client). */
++void write_static_leases6(FILE *fp)
++{
++	int ex;
++	const char *v = rjf_get(REAPER_DHCP6_FILE, &ex);
++
++	if (!ex || !v || !*v)
++		return;
++	reaper_dhcp6_walk(v, rdhcp6_emit, fp);
++}
++#endif
++
+ /**
+  * Use "dhcp-host=INTERFACE,MAC,IP" to specify static IP list of each LAN/VLANs.
+  * @fp:	FILE pointer to /etc/dnsmasq.conf
+@@ -5380,6 +5424,53 @@ ddns_updated_main(int argc, char *argv[])
+ 	return 0;
+ }
+ 
++/* reaper 2026-10-08 (owner RT-BE96U, HE tunnelbroker DDNS, traced live at 12:27:48):
++ * the tunnelbroker.net provider needs HE's checker (66.220.2.74) to be able to ping
++ * the WAN. Stock inserted an ACCEPT at INPUT 1 for it in start_ddns() and, to take
++ * it out again in stop_ddns(), re-ran `iptables-restore /tmp/filter_rules` - the
++ * whole IPv4 filter table replaced by whatever filter_setting() wrote LAST, which
++ * deletes every chain added after that file was written (the SDN per-network rows,
++ * Gatekeeper, Warden, the rules engine) with nothing to put them back: no SDN
++ * re-add, no Reaper tail, the IPv6 table untouched. stop_ddns() runs on every
++ * DDNS restart - wan_up(), the DDNS page, the watchdog's retries - so from the
++ * moment that provider was selected every WAN event left the box half-built
++ * (20 minutes without SDN isolation, Warden or the rules engine on 2026-10-08,
++ * with nothing in the log). Remove the ONE rule instead. And put it where the
++ * stock 6in4 code already puts the same accept: INPUT_PING (present whenever WAN
++ * ping is off; when it is on, echo is answered anyway and no rule is needed),
++ * so the Reaper front chain is not displaced at every DDNS start. */
++static void ddns_tunbkr_rule(int add)
++{
++	int n;
++	char *del_ping[] = { "iptables", "-t", "filter", "-D", "INPUT_PING", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT", NULL };
++	char *del_input[] = { "iptables", "-t", "filter", "-D", "INPUT", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT", NULL };
++	/* a 6in4 WAN carries this very accept permanently: filter_setting() writes it into
++	 * INPUT_PING (rc/firewall.c, "accept ICMP requests from he.net checker"). It is the
++	 * same rule, so the DDNS path must neither duplicate it nor take it out - the r15
++	 * metal test showed stop_ddns() removing the builder's copy after a no-change
++	 * start_ddns() had returned before re-inserting. */
++	int builder_owns = (get_ipv6_service() == IPV6_6IN4) && !nvram_get_int("misc_ping_x");
++
++	if (!add) {
++		if (!builder_owns) {
++			for (n = 0; n < 8 && _eval(del_ping, NULL, 0, NULL) == 0; n++) ;
++			for (n = 0; n < 8 && _eval(del_input, NULL, 0, NULL) == 0; n++) ;
++		}
++		nvram_unset("ddns_tunbkrnet");
++		return;
++	}
++	if (!nvram_get_int("misc_ping_x")
++	 && eval("iptables", "-t", "filter", "-C", "INPUT_PING", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT") != 0
++	 && eval("iptables", "-t", "filter", "-C", "INPUT", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT") != 0) {
++		/* absent: INPUT_PING is hooked only while WAN ping is off (filter_setting) */
++		if (eval("iptables", "-t", "filter", "-C", "INPUT", "-p", "icmp", "--icmp-type", "8", "-j", "INPUT_PING") == 0)
++			eval("iptables", "-t", "filter", "-I", "INPUT_PING", "1", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
++		else
++			eval("iptables", "-t", "filter", "-I", "INPUT", "1", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
++	}
++	nvram_set("ddns_tunbkrnet", "1");
++}
++
+ // TODO: handle wan0 only now
+ int
+ start_ddns(char *caller, int isAidisk)
+@@ -5635,9 +5726,7 @@ start_ddns(char *caller, int isAidisk)
+ 		service = "dnsomatic";
+ 	else if (strcmp(server, "WWW.TUNNELBROKER.NET")==0) {
+ 		service = "heipv6tb";
+-		eval("iptables", "-t", "filter", "-D", "INPUT", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
+-		eval("iptables", "-t", "filter", "-I", "INPUT", "1", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
+-		nvram_set("ddns_tunbkrnet", "1");
++		ddns_tunbkr_rule(1);
+ 	}
+ 	else if (strcmp(server, "WWW.NO-IP.COM")==0)
+ 		service = "noip";
+@@ -5669,9 +5758,7 @@ start_ddns(char *caller, int isAidisk)
+ 		service = "default@dedyn.io";
+ 	else if (strcmp(server, "WWW.TUNNELBROKER.NET") == 0) {
+ 		service = "default@tunnelbroker.net";
+-		eval("iptables", "-t", "filter", "-D", "INPUT", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
+-		eval("iptables", "-t", "filter", "-I", "INPUT", "1", "-p", "icmp", "-s", "66.220.2.74", "-j", "ACCEPT");
+-		nvram_set("ddns_tunbkrnet", "1");
++		ddns_tunbkr_rule(1);
+ 	}
+ 	else if (strcmp(server, "WWW.NO-IP.COM") == 0)
+ 		service = "default@no-ip.com";
+@@ -5912,6 +5999,11 @@ start_ddns(char *caller, int isAidisk)
+ 
+ 			use_custom_config("inadyn.conf", "/etc/inadyn.conf");
+ 			run_postconf("inadyn", "/etc/inadyn.conf");
++			/* reaper 2026-10-08 (CVE-2026-16528 class): the file carries the provider
++			 * password and rc runs with umask 0, so fopen("w") left it 0666. inadyn runs
++			 * as root here; nothing else needs to read it. After the custom-config and
++			 * postconf steps, which may replace the file. */
++			chmod("/etc/inadyn.conf", 0600);
+ 
+ #if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+ 			if(is_account_bound() && nvram_match("ddns_replace_status", "1") &&
+@@ -5972,12 +6064,10 @@ stop_ddns(void)
+ #endif
+ 	if (pids("phddns"))
+ 		killall("phddns", SIGINT);
+-	if (nvram_match("ddns_tunbkrnet", "1")) {
+-		int evalRet = eval("iptables-restore", "/tmp/filter_rules");
+-		rule_apply_checking("services", __LINE__, "/tmp/filter_rules", evalRet);
+-		run_custom_script("firewall-start", 0, get_wan_ifname(wan_primary_ifunit()), NULL);
+-		nvram_unset("ddns_tunbkrnet");
+-	}
++	/* reaper 2026-10-08: was `iptables-restore /tmp/filter_rules` + firewall-start to drop
++	 * the HE checker's accept - see ddns_tunbkr_rule() for what that did to the box. */
++	if (nvram_match("ddns_tunbkrnet", "1"))
++		ddns_tunbkr_rule(0);
+ #ifdef RTCONFIG_OPENVPN
+ 	update_ovpn_profie_remote();
+ #endif
+@@ -6123,6 +6213,7 @@ _dprintf("%s: do ez-ipupdate to unregister! unit = %d wan_ifname = %s nserver =
+ 			if (1)
+ 				fprintf(fp, "secure-ssl = false\n");
+ 			fclose(fp);
++			chmod("/etc/inadyn.conf", 0600);	/* reaper 2026-10-08: see start_ddns() */
+ 
+ #if defined(RTCONFIG_TUNNEL) && defined(RTCONFIG_ACCOUNT_BINDING)
+ 			if(is_account_bound() && nvram_match("ddns_replace_status", "1") &&
+@@ -7440,6 +7531,7 @@ stop_misc(void)
+ 	stop_gk();	/* reaper v1.6.8 Gatekeeper */
+ 	stop_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (releases what it parked) */
+ 	stop_rdnshc();	/* reaper v3.1.1 LAN resolver health check */
++	stop_rv6names();	/* reaper 2026-10-08 IPv6 device names */
+ 	stop_rwarden();	/* reaper v1.8.0 Warden */
+ 	stop_reaper_fw();	/* reaper v2.3.8 native firewall rules engine */
+ 	stop_reaper_pbr();	/* reaper v2.5.x ipset policy routing */
+@@ -7722,7 +7814,7 @@ start_httpd(void)
+ 	 * from /dev/urandom. RAM only: a global nvram_commit may persist it, which
+ 	 * is harmless - the next boot replaces it. Pages read it at render time
+ 	 * (<% nvram_get("http_id") %>), so nothing else changes. */
+-	if (!f_exists("/tmp/.http_id_boot")) {
++	if (!f_exists("/tmp/reaper/.http_id_boot")) {
+ 		unsigned char rnd[12];
+ 		FILE *uf = fopen("/dev/urandom", "r");
+ 		if (uf && fread(rnd, 1, sizeof(rnd), uf) == sizeof(rnd)) {
+@@ -7731,7 +7823,7 @@ start_httpd(void)
+ 			strcpy(tid, "TID");
+ 			for (k = 0; k < (int)sizeof(rnd); k++) sprintf(tid + 3 + k * 2, "%02x", rnd[k]);
+ 			nvram_set("http_id", tid);
+-			f_write_string("/tmp/.http_id_boot", "1", 0, 0);
++			f_write_string("/tmp/reaper/.http_id_boot", "1", 0, 0);
+ 		} else {
+ 			/* Falling through here leaves the shipped defaults.c constant - the
+ 			 * SAME on every router - as this boot's CSRF token, and start_httpd
+@@ -14186,6 +14278,7 @@ start_services(void)
+ 	start_rpunctd();	/* reaper v3.2.8 dynamic puncturing controller (no-op unless a radio is set to Dynamic) */
+ 	start_reaper_bwfloor();	/* reaper v3.3.1 minimum channel width watcher (no-op while every wlN_bwfloor is off) */
+ 	start_rdnshc();	/* reaper v3.1.1 LAN resolver health check (router mode; idle unless reaper_dnshc_enable) */
++	start_rv6names();	/* reaper 2026-10-08 IPv6 device names (router mode; idle unless reaper_dns_v6names and IPv6) */
+ 	start_rwarden();	/* reaper v1.8.0 Warden (no-op unless rwarden_enable) */
+ 	start_reaper_fw();	/* reaper v2.3.8 native firewall (no-op unless reaper_fw_enable) */
+ 	start_reaper_pbr();	/* reaper v2.5.x ipset policy routing (no-op unless reaper_pbr_enable) */
+@@ -19931,6 +20024,15 @@ check_ddr_done:
+ 				strcpy(nvtmp, "/usr/sbin/app_cancel.sh");
+ 			else strcpy(nvtmp, "");
+ 
++			/* reaper 2026-10-09 (audit V11): the network installer (install, update,
++			 * upgrade, switch, cancel) is not shipped - say so once instead of starting
++			 * a script that is not there. stop/remove/enable still work for an app
++			 * that is already on a disk. */
++			if (nvtmp[0] && !f_exists(nvtmp)) {
++				logmessage("apps", "%s refused: the app network installer is not part of this firmware", script);
++				nvtmp[0] = '\0';
++			}
++
+ 			if(strlen(nvtmp) > 0) {
+ 				nvram_set("apps_state_autorun", "");
+ 				nvram_set("apps_state_install", "");
+@@ -20701,11 +20803,21 @@ check_ddr_done:
+ 		}
+ #endif
+ 		gk_refresh();	/* reaper v2.6.5: a new/edited SDN must be hooked now, not at the next restart_gk */
++		/* 2026-10-08: the network set the rev-server lines were built from changed
++		 * (added, readdressed, retyped, toggled) - every instance needs them again */
++		if ((action & RC_SERVICE_START) && revshare_sig_changed()) {
++			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
++			notify_rc("restart_dnsmasq");
++		}
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+ 	{
+ 		remove_sdn();
+ 		gk_refresh();	/* reaper v2.6.5 */
++		if (revshare_sig_changed()) {	/* 2026-10-08: a removed network leaves stale rev-server lines */
++			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
++			notify_rc("restart_dnsmasq");
++		}
+ 	}
+ 	else if(strcmp(script, "sdn_del") == 0)
+ 	{
+@@ -22465,6 +22577,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_amaspark();
+ 		if(action & RC_SERVICE_START) start_amaspark();
+ 	}
++	else if (strcmp(script, "rv6names") == 0)	/* reaper 2026-10-08: the DNS Failover page's IPv6 device names */
++	{
++		if(action & RC_SERVICE_STOP) stop_rv6names();
++		if(action & RC_SERVICE_START) start_rv6names();
++	}
+ 	else if (strcmp(script, "rdnshc") == 0)	/* reaper v3.1.1: the System page's resolver health check */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rdnshc();
+@@ -22496,7 +22613,7 @@ retry_wps_enr:
+ 		 * Apply, restart_wireless) waited. update.sh already self-serializes
+ 		 * with its own flock and needs nothing back from rc; the cron path
+ 		 * invokes it directly and was never affected. */
+-		if((action & RC_SERVICE_START) && f_exists("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh &");
++		if((action & RC_SERVICE_START) && reaper_script_ok("/tmp/rwarden/update.sh")) doSystem("sh /tmp/rwarden/update.sh &");
+ 	}
+ 	/* reaper v2.3.8 native firewall rules engine. The four verbs are separate
+ 	 * services rather than one with arguments so each is individually auditable
+diff --git a/release/src/router/rc/snmpd.c b/release/src/router/rc/snmpd.c
+index dc5511d267..efa59437a7 100644
+--- a/release/src/router/rc/snmpd.c
++++ b/release/src/router/rc/snmpd.c
+@@ -20,6 +20,7 @@
+  * $Id:
+  */
+ 
++#include <arpa/inet.h>	/* 2026-10-07 IPv6 A9: inet_pton for the udp6 agentAddress */
+ #include <rc.h>
+ #include <stdlib.h>
+ #include <bcmnvram.h>
+@@ -108,7 +109,15 @@ void start_snmpd(void)
+ 	 * starts rather than choke on a malformed agentAddress. */
+ 	{
+ 		const char *lan_ip = nvram_safe_get("lan_ipaddr");
+-		if (lan_ip[0])
++		/* 2026-10-07 IPv6 (A9): also the LAN's own global IPv6 address, so a v6 poller
++		 * reaches the agent (net-snmp is built with the udp6 transport). Only when
++		 * the router holds one - an address snmpd cannot bind would stop it. */
++		const char *lan_ip6 = nvram_safe_get(ipv6_nvname("ipv6_rtr_addr"));
++		struct in6_addr a6;
++		int have6 = ipv6_enabled() && lan_ip6[0] && inet_pton(AF_INET6, lan_ip6, &a6) == 1;
++		if (lan_ip[0] && have6)
++			fprintf(fp, "agentAddress udp:%s:161,udp6:[%s]:161\n", lan_ip, lan_ip6);
++		else if (lan_ip[0])
+ 			fprintf(fp, "agentAddress udp:%s:161\n", lan_ip);
+ 		else
+ 			fprintf(fp, "agentAddress udp:161\n");
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 98aaf98108..b072536723 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3395,6 +3395,7 @@ void create_custom_passwd(void)
+ 	result = get_account_list(&acc_num, &account_list);
+ 	if (result < 0) {
+ 		usb_dbg("Can't get the account list.\n");
++		fclose(fp);	/* reaper 2026-10-09: was leaked on this path (cppcheck 2026-10-02) */
+ 		free_2_dimension_list(&acc_num, &account_list);
+ 		return;
+ 	}
+@@ -3414,6 +3415,10 @@ void create_custom_passwd(void)
+ 
+ 	/* write /etc/group.custom  */
+ 	fp = fopen("/etc/group.custom", "w+");
++	if (!fp) {	/* reaper 2026-10-09: unchecked before (fprintf into NULL) */
++		free_2_dimension_list(&acc_num, &account_list);
++		return;
++	}
+ 	is_first = 1;
+ 	for (i=0, n=500; i<acc_num; i++, n++)
+ 	{
+@@ -4336,7 +4341,7 @@ int sd_partition_num()
+ 
+ 	if ((procpt = fopen("/proc/partitions", "r"))) {
+ 		while (fgets(line, sizeof(line), procpt)) {
+-			if (sscanf(line, " %d %d %d %[^\n ]", &ma, &mi, &sz, ptname) != 4)
++			if (sscanf(line, " %d %d %d %31[^\n ]", &ma, &mi, &sz, ptname) != 4)	/* reaper 2026-10-09: bounded (ptname[32]) */
+ 				continue;
+ 
+ 			if (!strncmp(ptname, "sd", 2))
+@@ -4884,7 +4889,7 @@ static void start_diskformat(char *port_path)
+ 				dbg("disk_format: check partitions of %s\n", di->device);
+ 				fseek(fp, SEEK_SET, 0);
+ 				while (fgets(line, sizeof(line), fp)) {
+-					if (sscanf(line, " %*d %*d %*d %[^\n ]", dev) != 1)
++					if (sscanf(line, " %*d %*d %*d %63[^\n ]", dev) != 1)	/* reaper 2026-10-09: bounded (dev[64]) */
+ 						continue;
+ 					if (strncmp(di->device, dev, len))
+ 						continue;
+diff --git a/release/src/router/rom/Makefile b/release/src/router/rom/Makefile
+index 9d95c91f6f..24268af5b8 100644
+--- a/release/src/router/rom/Makefile
++++ b/release/src/router/rom/Makefile
+@@ -147,7 +147,21 @@ endif
+ ifeq ($(RTCONFIG_USB),y)
+ ifneq ($(APP),none)
+ 	install -m 0755 apps_scripts/asusrouter $(INSTALLDIR)/rom/.asusrouter
+-	install -m 0755 apps_scripts/app_*.sh $(INSTALLDIR)/usr/sbin
++	# reaper 2026-10-09 (audit V11, owner): the ASUS app NETWORK INSTALLER is not shipped.
++	# It fetched packages over plain HTTP and ran them as root (the HTTPS host omits its
++	# certificate chain, so HTTPS cannot be forced). Dropped: app_install, app_update,
++	# app_upgrade, app_base_packages, app_base_library, app_move_to_pool, app_switch,
++	# app_check_pool, app_cancel. Kept: the disk check (app_fsck*) and everything rc's
++	# USB mount/unmount path calls, plus app_remove so an app already on a disk can go.
++	install -m 0755 apps_scripts/app_base_link.sh apps_scripts/app_check_folder.sh \
++		apps_scripts/app_fsck.sh apps_scripts/app_fsck_all.sh apps_scripts/app_get_field.sh \
++		apps_scripts/app_init_run.sh apps_scripts/app_remove.sh apps_scripts/app_set_enabled.sh \
++		apps_scripts/app_stop.sh $(INSTALLDIR)/usr/sbin
++	rm -f $(INSTALLDIR)/usr/sbin/app_install.sh $(INSTALLDIR)/usr/sbin/app_update.sh \
++		$(INSTALLDIR)/usr/sbin/app_upgrade.sh $(INSTALLDIR)/usr/sbin/app_base_packages.sh \
++		$(INSTALLDIR)/usr/sbin/app_base_library.sh $(INSTALLDIR)/usr/sbin/app_move_to_pool.sh \
++		$(INSTALLDIR)/usr/sbin/app_switch.sh $(INSTALLDIR)/usr/sbin/app_check_pool.sh \
++		$(INSTALLDIR)/usr/sbin/app_cancel.sh
+ 	install -m 0755 apps_scripts/check_spectrum.sh $(INSTALLDIR)/usr/sbin
+ ifeq ($(RTCONFIG_USB_SWAP),y)
+ 	install -m 0755 apps_scripts/usb_swap.sh $(INSTALLDIR)/usr/sbin
+diff --git a/release/src/router/rom/apps_scripts/asusrouter b/release/src/router/rom/apps_scripts/asusrouter
+old mode 100755
+new mode 100644
+index 0f866cb930..c57a55752e
+--- a/release/src/router/rom/apps_scripts/asusrouter
++++ b/release/src/router/rom/apps_scripts/asusrouter
+@@ -110,7 +110,9 @@ fi
+ 
+ nvram set apps_state_autorun=3 # EXECUTING
+ link_internet=`nvram get link_internet`
+-if [ "$link_internet" == "2" ]; then
++# reaper 2026-10-09 (audit V11): the list refresher belongs to the network installer,
++# which is not shipped - only call it where it exists
++if [ "$link_internet" == "2" ] && [ -x /usr/sbin/app_update.sh ]; then
+ 	/usr/sbin/app_update.sh &
+ fi
+ 
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+old mode 100755
+new mode 100644
+index 1873adfc39..f62848a84b
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -17,7 +17,7 @@
+ 
+ wget_options="-q -t 2 -T 30"
+ MANIFEST_URL="https://raw.githubusercontent.com/TheUnboundDeveloper/AM-Reaper/main/updates/manifest_3006.txt"
+-TMP=/tmp/reaper_update.txt
++TMP=/tmp/reaper/reaper_update.txt
+ LOG=/tmp/webs_upgrade.log
+ 
+ nvram set webs_state_update=0
+@@ -28,6 +28,18 @@ nvram set webs_state_sha256=""
+ nvram set webs_state_size=""
+ nvram set webs_state_channel=""
+ 
++# 2026-10-09 (audit V3): the manifest (and, when enforced, its signature and the
++# verifying key) live in Reaper's private directory, never bare in /tmp. rc
++# creates it at boot; refuse to run from anything but a root-owned directory -
++# AFTER the state reset above, and finishing the check the page waits on.
++rt_ls=$(ls -lnd /tmp/reaper 2>/dev/null)
++if [ "${rt_ls%% *}" != "drwx------" ] || [ "$(echo "$rt_ls" | awk '{print $3}')" != "0" ]; then
++	logger -t reaper-fw "update check: /tmp/reaper is not a private directory - not checking"
++	nvram set webs_state_error=1
++	nvram set webs_state_update=1
++	exit 0
++fi
++
+ echo "---- reaper update check $(date) ----" > "$LOG"
+ 
+ model=$(nvram get productid)
+@@ -74,9 +86,9 @@ fi
+ # build-scripts/signing.conf so the tooling and CI enforce the .sig again.
+ REAPER_SIG_ENFORCE=0
+ if [ "$REAPER_SIG_ENFORCE" = "1" ]; then
+-SIGB64=/tmp/reaper_update.sig.b64
+-SIGBIN=/tmp/reaper_update.sig.bin
+-PUBKEY=/tmp/reaper_manifest_pub.pem
++SIGB64=/tmp/reaper/reaper_update.sig.b64
++SIGBIN=/tmp/reaper/reaper_update.sig.bin
++PUBKEY=/tmp/reaper/reaper_manifest_pub.pem
+ cat > "$PUBKEY" <<'RPUBEOF'
+ -----BEGIN PUBLIC KEY-----
+ MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2580Rl/Emjw0vWK+zFn6
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+old mode 100755
+new mode 100644
+index 182a59ab1a..663ec1d23d
+--- a/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+@@ -32,6 +32,10 @@ fail() {
+ nvram set webs_state_upgrade=0
+ nvram set webs_state_error=0
+ echo "---- reaper webs upgrade $(date) ----" > "$LOG"
++# 2026-10-09 (audit V3): rc runs with umask 0, so without this wget would create
++# the image 0666 - writable by any process between the hash check and the flash.
++# 022 keeps it root-writable only (the private-file check below relies on it).
++umask 022
+ rm -f "$FW" "$WGET_LOG"
+ 
+ url=$(nvram get webs_state_url)
+@@ -96,6 +100,16 @@ if [ "$got" != "$sha" ]; then
+ fi
+ echo "---- sha256 verified ----" >> "$LOG"
+ logger -t REAPER_UPGRADE "sha256 verified"
++# 2026-10-09 (audit V3): /tmp/linux.trx is the stock flash path, in the shared
++# /tmp. It was removed above and written by this root shell, so it must still
++# be a root-owned regular file nobody else can write - the hash checked above
++# is then the content that gets flashed.
++fw_ls=$(ls -ln "$FW" 2>/dev/null)
++case "$fw_ls" in
++	-????-??-?\ *) ;;
++	*) fail "the downloaded image is not a private regular file - not flashing" 3 ;;
++esac
++[ "$(echo "$fw_ls" | awk '{print $3}')" = "0" ] || fail "the downloaded image is not owned by root - not flashing" 3
+ 
+ # platform image sanity check (stock applet; sets nvram firmware_check=1 on pass)
+ nvram set firmware_check=0
+-- 
+2.25.1
+

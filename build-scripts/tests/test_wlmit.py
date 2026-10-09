@@ -65,6 +65,7 @@ int _eval_stub(char *const argv[]);
 void logmessage(const char *tag, const char *fmt, ...);
 int f_exists(const char *p);
 int notify_rc(const char *s);
+int reaper_secure_dir(const char *path, unsigned int mode);	/* shared/reaper_tmpsafe.h (2026-10-09) */
 #define pids(x) 0
 #define killall_tk(x) ((void)0)
 #define xstart(...) ((void)0)
@@ -141,7 +142,8 @@ fails = []
 
 def build(name, mutate=None):
     d = os.path.join(tmp, name); os.makedirs(d)
-    src = open(punct, encoding="utf-8").read().replace('"/tmp/reaper_', '"' + d + '/reaper_')
+    # the state files live in /tmp/reaper/ since 2026-10-09 (audit V3); redirect both spellings
+    src = open(punct, encoding="utf-8").read().replace('"/tmp/reaper/reaper_', '"' + d + '/reaper_').replace('"/tmp/reaper_', '"' + d + '/reaper_')
     if mutate:
         new = mutate(src)
         if new == src:

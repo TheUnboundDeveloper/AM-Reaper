@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.6** · 2026-10-07 <!--@stamp-->
+> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.6** <!--@treever--> — `3006.102.8_Reaper_v3.3.6`. **The WAN port stays out of the LAN; WAN Ports replaces the Dual WAN tab.** Auto detection pins the port it finds instead of bridging it into the LAN at every boot and link drop; a quieter Traffic Analyzer on busy conntrack tables; Site Survey security names; three audit fixes. Built and verified on an RT-BE96U MCP image (test rungs r1-r5 on metal); the release images come from the public CI build. The series stands at **761 patches** (0755–0761 for v3.3.6); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.7** <!--@treever--> — `3006.102.8_Reaper_v3.3.7`. **IPv6 across the firmware, names across networks, a private /tmp.** IPv6 is handled on every Reaper surface (Dashboard, Devices, Connections, Traffic Analyzer, Gatekeeper, Service Intercept, the watchdog); reverse and IPv6 device names across the main LAN and VLANs; a dual-stack DNS health check; the stock DDNS stop no longer wipes the firewall; Hardware QoS shapes on PPPoE; Reaper's temporary files are private and the plain-HTTP app installer is removed. Built and verified on an RT-BE96U MCP image (test rungs r9-r33 on the maintainer's router); the release images come from the public CI build. The series stands at **771 patches** (0762–0771 for v3.3.7); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,39 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
+
+**IPv6 works throughout.** If your connection has IPv6 (native or a tunnel), the Dashboard, Devices,
+Connections, Traffic Analyzer, Gatekeeper, Service Intercept and the watchdog now see and handle it.
+The Dashboard's Internet card shows your IPv6 address as soon as it comes up, without a reload, and the
+client list shows each device's IPv6 address.
+
+**Device names across networks.** A DNS filter or log on one of your VLANs (AdGuard, Pi-hole) now sees
+main-LAN devices by name instead of by address, and the other way round - including devices that talk
+over IPv6. Guest networks are never included. Both are switches on the DNS Failover page, on by default.
+
+**DNS failover handles dual-stack resolvers.** A LAN DNS server with both an IPv4 and an IPv6 address
+is checked on both, and a face that stops answering is set aside on its own.
+
+**A firewall-wiping bug is gone.** Every time the dynamic DNS client stopped (each internet reconnect,
+each DDNS retry), a stock routine rebuilt the firewall from an old copy and silently dropped guest
+isolation, Gatekeeper, Warden and your rules. It no longer does.
+
+**Hardware QoS works on PPPoE.** On a PPPoE (or PPTP/L2TP) internet connection, Hardware QoS sorted
+traffic into its classes but never applied the upload limit, so nothing was actually prioritised. It
+now shapes the physical internet port. Set the upload speed a little below what your line delivers.
+
+**Security.** Your dynamic-DNS password no longer appears in the system log. The router's temporary
+files are now private to the router itself, so a compromised service cannot tamper with them. The ASUS
+app installer for USB add-ons (Download Master and similar) is removed: it downloaded over an
+unencrypted connection, and nothing else on the USB Application page changes. Site Survey exports open
+safely in a spreadsheet.
+
+Also: the Firewall page's Apply responds to the first click, the Devices page no longer cuts off its
+last column, Rule Status never uses a real device's address as a test address, and the diagnostics
+report covers all of the above.
+
 
 ## What's new in v3.3.6 — the WAN port stays out of the LAN, WAN Ports replaces the Dual WAN tab, a quieter Traffic Analyzer, real Site Survey security names
 

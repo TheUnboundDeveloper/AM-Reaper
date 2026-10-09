@@ -383,4 +383,10 @@ for want in ('id="svychan"', 'chcards', 'chcard t', '<#RSVY_28#>', '<#RSVY_29#>'
 if 'chrow' in page:
     die("Reaper_Survey.asp still carries the channel bars (chrow)")
 ok("channel occupancy is rendered as cards (channel, count, 0-1/2-3/4+ colour, this router marked)")
+# audit 2026-10-06 V10 (2026-10-09): an SSID that a spreadsheet would run as a formula is exported as text
+if "function svyCsvSafe(s)" not in page or "/^[-=+@]/.test(v)" not in page or "c===9" not in page or "c===13" not in page:
+    die("Reaper_Survey.asp lacks the CSV formula guard (svyCsvSafe: = + - @ tab CR)")
+if "function q(s){ s=svyCsvSafe(s);" not in page:
+    die("the CSV quoting q() does not pass values through svyCsvSafe")
+ok("CSV export: a value starting with = + - @ tab or CR is prefixed with ' (spreadsheet formula guard)")
 print("all checks passed")

@@ -1,0 +1,96 @@
+From e941f3546a61af1de7e2370298e4e779b9369caa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:45:39 -0400
+Subject: [PATCH] rc: hardware QoS shapes the physical WAN port on a PPPoE line
+
+Field (GT-BE98, PPPoE, Hardware QoS classful at 450 Mbps upload): the
+hardware shaper on eth0 read zero. Both hardware engines took their port
+from stock get_wan_ifname(), which returns ppp0 on PPPoE / PPTP / L2TP, and
+the Runner traffic manager has queues only on physical ports, so every
+tmctl call failed (rc=108) and nothing was shaped - classification marked
+packets and nothing acted on the marks.
+
+hwqos_tm_ifname() hands tmctl the port the session rides on (wanX_ifname);
+an 802.1Q VLAN device on it resolves to its parent through
+/proc/net/vlan/config, and one log line names the port when it differs
+from the WAN device. Classification is unchanged (it never matched on this
+interface); the applied-state signature includes the name, so the first
+start after the update re-applies once. The shaper now counts PPPoE's
+8-byte header: set the upload a little under the line. Host test
+test_hwqos_pppoe.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c | 45 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 3298d9a3f3..84a98d238e 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3142,11 +3142,52 @@ int start_cake(void)
+  * Ordering matters: setqdropalg rewrites the queue config and clears the
+  * shaper, so the drop algorithm MUST be programmed before the shaper.
+  */
++/* reaper 2026-10-09 (field, GT-BE98 on PPPoE): the Runner traffic manager has
++ * queues only on physical ports. get_wan_ifname() returns the PPP device (ppp0)
++ * for PPPoE / PPTP / L2TP, and every tmctl call on it failed (rc=108), so on a
++ * PPP line neither hardware engine shaped anything: classification marked the
++ * packets and nothing acted on the marks. tmctl now gets the port the session
++ * rides on (wanX_ifname), and an 802.1Q VLAN device on it resolves to its
++ * parent. The shaper then counts PPPoE's 8-byte header too - set the upload a
++ * little under the line, as for any shaper. */
++#ifndef HWQOS_VLAN_CFG
++#define HWQOS_VLAN_CFG "/proc/net/vlan/config"
++#endif
++static const char *hwqos_tm_ifname(int unit)
++{
++	static char buf[IFNAMSIZ + 1];
++	char prefix[16], tmp[64];
++	const char *name = get_wan_ifname(unit);
++	int proto;
++	FILE *f;
++
++	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
++	proto = get_wan_proto(prefix);
++	if (proto == WAN_PPPOE || proto == WAN_PPTP || proto == WAN_L2TP) {
++		const char *phys = nvram_safe_get(strlcat_r(prefix, "ifname", tmp, sizeof(tmp)));
++		if (*phys)
++			name = phys;
++	}
++	snprintf(buf, sizeof(buf), "%s", name ? name : "");
++	if ((f = fopen(HWQOS_VLAN_CFG, "r")) != NULL) {
++		char line[128], dev[IFNAMSIZ + 1], par[IFNAMSIZ + 1];
++		while (fgets(line, sizeof(line), f))
++			if (sscanf(line, " %16[^ |] | %*d | %16s", dev, par) == 2 && !strcmp(dev, buf)) {
++				snprintf(buf, sizeof(buf), "%s", par);
++				break;
++			}
++		fclose(f);
++	}
++	if (name && strcmp(buf, name))
++		logmessage("qos", "hardware QoS shapes %s, the port under %s", buf, get_wan_ifname(unit));
++	return buf;
++}
++
+ int start_hwqos(void)
+ {
+ 	FILE *f;
+ 	unsigned int obw;
+-	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *wan_ifname = hwqos_tm_ifname(wan_primary_ifunit());
+ 	const char *p;
+ 
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
+@@ -3257,7 +3298,7 @@ int start_hwqos_classful(void)
+ 	int i, qid, minrates;
+ 	int sched_w[5];		/* v4: per-class WRR weight, 0 = strict priority */
+ 	char *buf, *g, *p;
+-	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *wan_ifname = hwqos_tm_ifname(wan_primary_ifunit());	/* the physical port, never ppp0 */
+ 	const char *q;
+ 
+ 	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
+-- 
+2.25.1
+

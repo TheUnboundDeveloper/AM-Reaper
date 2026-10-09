@@ -1,0 +1,1460 @@
+From acc25b7b00d1f0389d6d078045cc916488663532 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:26:08 -0400
+Subject: [PATCH] gkd, rtrafd, rdnsmapd, rpunctd, rchqd, rmcpd, reaper_fwsim:
+ IPv6, private /tmp, walker stand-ins that are never a device
+
+- rtrafd: IPv6 labels and probes for dual-stack devices; skips IPv6 entries of
+  the accelerator flow table (they were parsed as IPv4 and showed as "2001").
+- rdnsmapd: IPv6 names (16-byte keys), maps only into a private /tmp/reaper and
+  never through a link.
+- rmcpd: an IPv6 listener on the router's own LAN address; .gitignore for its
+  build output.
+- gkd, rpunctd, rchqd: state in Reaper's private directories; scripts checked
+  before they run.
+- reaper_fwsim v1.10: the stand-in hosts (.123 / .124 per subnet) skip every
+  address a device holds (ARP, leases, reservations) so a stand-in is never a
+  real device; --used for the host suite; witness rows for the IPv6 tunnel face.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c                  |  13 +-
+ release/src/router/rchqd/rchqd.c              |   2 +-
+ release/src/router/rdnsmapd/rdnsmapd.c        | 178 ++++++++++---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 206 +++++++++++++--
+ .../src/router/reaper_fwsim/witness.static    |   9 +-
+ release/src/router/rmcpd/.gitignore           |   5 +
+ release/src/router/rmcpd/rmcpd.c              | 103 ++++++--
+ release/src/router/rpunctd/rpunctd.c          |  14 +-
+ release/src/router/rtrafd/rtrafd.c            | 244 +++++++++++-------
+ 9 files changed, 577 insertions(+), 197 deletions(-)
+ create mode 100644 release/src/router/rmcpd/.gitignore
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 603a0f7adf..39e9e08f58 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -422,7 +422,7 @@ static void expire_guests(void)
+ 	 * poll is harmless, revoking every guest simultaneously is not. */
+ 	if (!nvram_get_int("ntp_ready")) return;
+ 
+-	lf = open(GK_DIR "/rl.lock", O_CREAT | O_RDWR, 0600);
++	lf = open(GK_DIR "/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+ 	rl = strdup(gk_rl_get());
+ 	if (!rl) { if (lf >= 0) { flock(lf, LOCK_UN); close(lf); } return; }
+@@ -469,6 +469,7 @@ static int chains_armed(void)
+ 	return system("iptables -nL REAPER_GKF >/dev/null 2>&1 && "
+ 	              "iptables -nL REAPER_GKI >/dev/null 2>&1 && "
+ 	              "iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "
++	              "ip6tables -t nat -nL REAPER_GKN >/dev/null 2>&1 && "	/* 2026-10-07 IPv6 A4 */
+ 	              "ip6tables -nL REAPER_GKF >/dev/null 2>&1 && "
+ 	              "iptables -nL REAPER_HOOK_F 2>/dev/null | grep -q REAPER_GKF && "
+ 	              "ebtables -L FORWARD 2>/dev/null | grep -q REAPER_GK") == 0;
+@@ -573,13 +574,13 @@ static void heal_networks(void)
+ 			}
+ 		} else if (!strcmp(out, "SDNFI=missing")) {
+ 			if (!sdnfi_logged) { logmessage("gatekeeper", "captive admit rule missing from SDN_FI (SDN rules rebuilt) - re-inserting"); sdnfi_logged = 1; }
+-			run_locked("sh " GK_DIR "/sdnfi.sh 2>/dev/null", 0);
++			if (reaper_script_ok(GK_DIR "/sdnfi.sh")) run_locked("sh " GK_DIR "/sdnfi.sh 2>/dev/null", 0);
+ 		} else if (!strcmp(out, "SDNFI=ok")) {
+ 			sdnfi_logged = 0;
+ 		} else if (!strcmp(out, "V6=changed") && now - last_v6 >= 60) {
+ 			last_v6 = now;
+ 			logmessage("gatekeeper", "a network's IPv6 prefix changed - re-applying internet-only rules");
+-			run_locked("sh " APPLY_SH, 0);
++			if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 0);
+ 		}
+ 	}
+ 	pclose(p);
+@@ -614,7 +615,7 @@ static void heal_lost_rules(void)
+ 	last = now;
+ 	strikes++;
+ 	logmessage("gatekeeper", "%ld rule(s) failed to load in the last apply (a concurrent iptables writer) - re-applying (%d of 3)", n, strikes);
+-	run_locked("sh " APPLY_SH, 0);
++	if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 0);
+ }
+ 
+ static void self_heal(void)
+@@ -666,7 +667,7 @@ static void self_heal(void)
+ 	}
+ 	/* a firewall restart in progress holds the lock and re-runs apply.sh in
+ 	 * its tail: wait for it, then re-check instead of racing it */
+-	run_locked("sh " APPLY_SH, 1);
++	if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 1);
+ }
+ 
+ /* v2.7.3: AiMesh awareness (see rc/gatekeeper.c gk_emit_relist).
+@@ -766,7 +767,7 @@ int main(int argc, char **argv)
+ 	signal(SIGHUP, SIG_IGN);
+ 
+ 	if (daemon(1, 0) < 0) return 1;
+-	mkdir(GK_DIR, 0700);
++	reaper_secure_dir(GK_DIR, 0700);
+ 	load_seen();	/* I1: restore known devices so a self-restart doesn't re-log them */
+ 	logmessage("gatekeeper", "watcher started (%s mode)",
+ 		nvram_match("gk_default", "1") ? "alert-only" : "quarantine");
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+index 7a3cd1c7da..bc48b5f080 100644
+--- a/release/src/router/rchqd/rchqd.c
++++ b/release/src/router/rchqd/rchqd.c
+@@ -174,7 +174,7 @@ int main(int argc, char **argv)
+ 	openlog("rchqd", LOG_PID, LOG_DAEMON);
+ 	signal(SIGTERM, on_term);
+ 	signal(SIGINT, on_term);
+-	mkdir(RCHQ_DIR, 0700);
++	reaper_secure_dir(RCHQ_DIR, 0700);
+ 	syslog(LOG_NOTICE, "rchqd: started (passive channel-quality monitor)");
+ 
+ 	{
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index 39402d7713..fea8c10068 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -20,9 +20,11 @@
+  *     policy never applied and an Internet host sending UDP from port 53 at the
+  *     WAN address reached the parser as root);
+  *   - a blocking recv: no tick, no timer, no sweep - asleep while the LAN is quiet;
+- *   - per reply: parse the ANSWER section and map every A record to the QNAME the
+- *     client asked for (every A record there belongs to the question's CNAME
+- *     chain, so this IS the chain walked back, with no CNAME parsing);
++ *   - per reply: parse the ANSWER section and map every A and AAAA record to the
++ *     QNAME the client asked for (every address record there belongs to the
++ *     question's CNAME chain, so this IS the chain walked back, with no CNAME
++ *     parsing); the table keys are 16-byte addresses, IPv4 in its mapped form
++ *     (2026-10-07 IPv6 pass, shared/reaper_dnsmap.h);
+  *   - the table lives in /tmp/reaper/dnsmap, mmap'd MAP_SHARED by this daemon and
+  *     by httpd (shared/reaper_dnsmap.h): no publish step, nothing to parse.
+  * rc starts it in router mode while nvram rconn_names is not 0 and removes the
+@@ -32,7 +34,8 @@
+  * table, so switching it back on would show bare addresses until every client
+  * resolved its destinations again. When httpd has left RDM_BACKFILL (written
+  * only on the off -> on toggle, never at boot), the daemon reads the active
+- * remote addresses from conntrack once, sends one PTR query each to dnsmasq
++ * remote addresses from conntrack once (both families), sends one PTR query each
++ * (in-addr.arpa or ip6.arpa) to dnsmasq
+  * (127.0.0.1 - its cache answers what the LAN resolved, misses go upstream),
+  * paced at ~50 a second, and stores the answers as REVERSE names (ndist 0):
+  * what the address owner registered, not what a device asked for. The page
+@@ -68,6 +71,9 @@
+ #ifndef RDM_CT
+ #define RDM_CT "/proc/net/nf_conntrack"	/* the host test points this at a fixture */
+ #endif
++#ifndef RDM_IF6
++#define RDM_IF6 "/proc/net/if_inet6"	/* the router's own IPv6 addresses (same: a fixture in the test) */
++#endif
+ #define RDM_BF_MAX   512		/* addresses the backfill will ask about */
+ #define RDM_BF_PACE  20			/* ms between PTR queries: ~50 a second */
+ #define RDM_BF_WAIT  5000		/* ms to wait for the last answers */
+@@ -279,16 +285,24 @@ static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
+ 		off += 10;
+ 		if (off + rdl > n)
+ 			return;
+-		if (type == 1 && rdl == 4) {
+-			uint32_t ip;
+-
+-			memcpy(&ip, p + off, 4);		/* network order, as httpd's inet_aton gives it */
+-			if (ttl < RDM_TTL_MIN)
+-				ttl = RDM_TTL_MIN;
+-			if (ttl > RDM_TTL_MAX)
+-				ttl = RDM_TTL_MAX;
+-			rdm_put(t, ip, qn, (uint8_t)ql, now + ttl);
+-			h->upd++;
++		if ((type == 1 && rdl == 4) || (type == 28 && rdl == 16)) {
++			uint8_t key[16];
++
++			if (rdl == 4) {
++				uint32_t ip;
++
++				memcpy(&ip, p + off, 4);	/* network order, as httpd's inet_aton gives it */
++				rdm_key4(key, ip);
++			} else
++				memcpy(key, p + off, 16);
++			if (rdm_key_used(key)) {		/* an all-zero AAAA names nothing */
++				if (ttl < RDM_TTL_MIN)
++					ttl = RDM_TTL_MIN;
++				if (ttl > RDM_TTL_MAX)
++					ttl = RDM_TTL_MAX;
++				rdm_put(t, key, qn, (uint8_t)ql, now + ttl);
++				h->upd++;
++			}
+ 		}
+ 		off += rdl;
+ 	}
+@@ -310,62 +324,140 @@ static int rdm_remote(uint32_t ip)
+ 	return 1;
+ }
+ 
+-/* the active remote addresses from conntrack's original tuples, deduplicated,
+- * minus those the table already names (network order out) */
+-static int rdm_targets(uint32_t *out, int max, struct rdm_ent *t, uint32_t now)
++/* IPv6 (2026-10-07): the /64 prefixes of the router's own global addresses on
++ * LAN bridges. IPv6 is not translated, so a LAN client's address is as global
++ * as the remote end's; the prefix the router announces is what tells them apart. */
++#define RDM_LAN6_MAX 16
++static uint8_t rdm_lan6[RDM_LAN6_MAX][8];
++static int rdm_lan6_n;
++
++static void rdm_lan6_load(void)
++{
++	FILE *f = fopen(RDM_IF6, "r");
++	char ln[256], hex[40], ifn[32];
++	unsigned scope;
++
++	rdm_lan6_n = 0;
++	if (!f)
++		return;
++	/* <32 hex> <ifindex> <prefixlen> <scope> <flags> <ifname>; scope 0 = global */
++	while (rdm_lan6_n < RDM_LAN6_MAX && fgets(ln, sizeof(ln), f)) {
++		int i;
++
++		if (sscanf(ln, "%39s %*x %*x %x %*x %31s", hex, &scope, ifn) != 3)
++			continue;
++		if (strlen(hex) != 32 || scope != 0 || ifn[0] != 'b' || ifn[1] != 'r')
++			continue;
++		for (i = 0; i < 8; i++) {
++			unsigned b;
++
++			if (sscanf(hex + i * 2, "%2x", &b) != 1)
++				break;
++			rdm_lan6[rdm_lan6_n][i] = (uint8_t)b;
++		}
++		if (i == 8)
++			rdm_lan6_n++;
++	}
++	fclose(f);
++}
++
++/* a remote IPv6 end: globally routed (2000::/3 - which excludes loopback,
++ * link-local, ULA, multicast, mapped and unspecified) and not under one of the
++ * router's own LAN prefixes */
++static int rdm_remote6(const uint8_t *a)
++{
++	int i;
++
++	if ((a[0] & 0xe0) != 0x20)
++		return 0;
++	for (i = 0; i < rdm_lan6_n; i++)
++		if (memcmp(a, rdm_lan6[i], 8) == 0)
++			return 0;
++	return 1;
++}
++
++/* the active remote addresses from conntrack's original tuples, both families,
++ * deduplicated, minus those the table already names (16-byte keys out) */
++static int rdm_targets(uint8_t (*out)[16], int max, struct rdm_ent *t, uint32_t now)
+ {
+ 	FILE *f = fopen(RDM_CT, "r");
+-	char ln[1024], ip[24];
++	char ln[1024], ip[48];
+ 	int n = 0, i, j;
+ 
+ 	if (!f)
+ 		return 0;
++	rdm_lan6_load();
+ 	while (n < max && fgets(ln, sizeof(ln), f)) {
+ 		const char *k[2] = { "src=", "dst=" };
++		int v6;
+ 
+-		if (strncmp(ln, "ipv4", 4) != 0)
++		if (strncmp(ln, "ipv4", 4) == 0)
++			v6 = 0;
++		else if (strncmp(ln, "ipv6", 4) == 0)
++			v6 = 1;
++		else
+ 			continue;
+ 		for (i = 0; i < 2 && n < max; i++) {
+ 			const char *p = strstr(ln, k[i]);
+-			struct in_addr a;
++			uint8_t key[16];
++
++			if (!p || sscanf(p + 4, "%45[0-9a-fA-F.:]", ip) != 1)
++				continue;
++			if (!v6) {
++				struct in_addr a;
+ 
+-			if (!p || sscanf(p + 4, "%23[0-9.]", ip) != 1 || !inet_aton(ip, &a))
++				if (!inet_aton(ip, &a) || !rdm_remote(ntohl(a.s_addr)))
++					continue;
++				rdm_key4(key, a.s_addr);
++			} else if (inet_pton(AF_INET6, ip, key) != 1 || !rdm_remote6(key))
+ 				continue;
+-			if (!rdm_remote(ntohl(a.s_addr)) || rdm_find(t, a.s_addr, now))
++			if (rdm_find(t, key, now))
+ 				continue;
+ 			for (j = 0; j < n; j++)
+-				if (out[j] == a.s_addr)
++				if (memcmp(out[j], key, 16) == 0)
+ 					break;
+ 			if (j == n)
+-				out[n++] = a.s_addr;
++				memcpy(out[n++], key, 16);
+ 		}
+ 	}
+ 	fclose(f);
+ 	return n;
+ }
+ 
+-/* a PTR query for ip (network order): id, RD, "d.c.b.a.in-addr.arpa PTR IN" */
+-static int rdm_ptr_query(uint8_t *b, int blen, uint16_t id, uint32_t ip)
++/* a PTR query for a key: id, RD, "d.c.b.a.in-addr.arpa PTR IN" for a mapped
++ * IPv4 address, the 32 reversed nibbles under ip6.arpa for an IPv6 one */
++static int rdm_ptr_query(uint8_t *b, int blen, uint16_t id, const uint8_t *key)
+ {
+-	uint8_t o[4];
+ 	int i, n = 12;
+ 
+-	if (blen < 12 + 16 + 14 + 4)
++	if (blen < 12 + 64 + 10 + 4)			/* the ip6.arpa form is the long one */
+ 		return 0;
+-	memcpy(o, &ip, 4);
+ 	memset(b, 0, 12);
+ 	b[0] = id >> 8;
+ 	b[1] = id & 255;
+ 	b[2] = 0x01;				/* RD */
+ 	b[5] = 1;				/* QDCOUNT */
+-	for (i = 3; i >= 0; i--) {
+-		int l = snprintf((char *)b + n + 1, 4, "%u", o[i]);
++	if (rdm_key_is4(key)) {
++		for (i = 15; i >= 12; i--) {
++			int l = snprintf((char *)b + n + 1, 4, "%u", key[i]);
+ 
+-		b[n] = (uint8_t)l;
+-		n += 1 + l;
++			b[n] = (uint8_t)l;
++			n += 1 + l;
++		}
++		memcpy(b + n, "\x07in-addr\x04" "arpa", 14);	/* split: "\x04a" would read as one escape */
++		n += 14;
++	} else {
++		static const char hx[] = "0123456789abcdef";
++
++		for (i = 15; i >= 0; i--) {
++			b[n++] = 1;
++			b[n++] = (uint8_t)hx[key[i] & 15];
++			b[n++] = 1;
++			b[n++] = (uint8_t)hx[key[i] >> 4];
++		}
++		memcpy(b + n, "\x03ip6\x04" "arpa", 10);
++		n += 10;
+ 	}
+-	memcpy(b + n, "\x07in-addr\x04" "arpa", 14);	/* split: "\x04a" would read as one escape */
+-	n += 14;
+ 	b[n++] = 0;
+ 	b[n++] = 12;				/* PTR */
+ 	b[n++] = 0;
+@@ -376,7 +468,7 @@ static int rdm_ptr_query(uint8_t *b, int blen, uint16_t id, uint32_t ip)
+ /* a PTR answer (UDP payload): the id indexes the target list; the first PTR
+  * record becomes a REVERSE name (ndist 0) unless a forward reply named the
+  * address first - a learned name always wins */
+-static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, const uint32_t *tg, int ntg)
++static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, const uint8_t (*tg)[16], int ntg)
+ {
+ 	struct rdm_hdr *h = map;
+ 	struct rdm_ent *t = rdm_table(map), *e;
+@@ -427,7 +519,7 @@ static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, cons
+ #ifndef RDM_TEST
+ /* drain both sockets for ms milliseconds: forward replies keep being learned
+  * while the backfill runs, PTR answers land as reverse names */
+-static void rdm_bf_drain(struct pollfd *pf, void *map, const uint32_t *tg, int ntg, int ms)
++static void rdm_bf_drain(struct pollfd *pf, void *map, const uint8_t (*tg)[16], int ntg, int ms)
+ {
+ 	static uint8_t rb[4096];
+ 	struct timespec t0, t1;
+@@ -454,8 +546,8 @@ static void rdm_bf_drain(struct pollfd *pf, void *map, const uint32_t *tg, int n
+ 
+ static void rdm_backfill(void *map, int pk)
+ {
+-	static uint32_t tg[RDM_BF_MAX];
+-	uint8_t qb[64];
++	static uint8_t tg[RDM_BF_MAX][16];
++	uint8_t qb[128];
+ 	struct sockaddr_in rs;
+ 	struct pollfd pf[2];
+ 	int ntg, us, i, n;
+@@ -498,8 +590,14 @@ int main(void)
+ 	signal(SIGINT, on_term);
+ 	signal(SIGPIPE, SIG_IGN);
+ 
++	/* 2026-10-09 (audit V3): rc creates /tmp/reaper root-owned 0700 at boot
++	 * (shared/reaper_tmpsafe.h; this daemon does not link libshared). Map only
++	 * into that directory, and never through a link. */
+ 	mkdir("/tmp/reaper", 0700);
+-	if ((fd = open(RDM_PATH, O_RDWR | O_CREAT, 0600)) < 0)
++	if (lstat("/tmp/reaper", &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid() ||
++	    (st.st_mode & (S_IWGRP | S_IWOTH)))
++		return 1;
++	if ((fd = open(RDM_PATH, O_RDWR | O_CREAT | O_NOFOLLOW, 0600)) < 0)
+ 		return 1;
+ 	if (fstat(fd, &st) != 0 || (st.st_size < (off_t)RDM_SIZE && ftruncate(fd, RDM_SIZE) != 0)) {
+ 		close(fd);
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 5223327f70..8784b86f71 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -41,12 +41,13 @@
+ #include <arpa/inet.h>
+ 
+ #ifndef FWSIM_HOST
++#include <dirent.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.8"
++#define FWSIM_VER	"1.10"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -75,6 +76,7 @@ static const char *opt_rule4 = NULL, *opt_rule6 = NULL;
+ static const char *opt_lsntcp = NULL, *opt_lsnudp = NULL;
+ static const char *opt_dumpin = NULL;
+ static const char *opt_dump = NULL;
++static const char *opt_used = NULL;
+ static int opt_delay = 0;
+ 
+ static char *xstrdup(const char *s) { char *p = strdup(s ? s : ""); if (!p) { fprintf(stderr, "oom\n"); exit(2); } return p; }
+@@ -198,8 +200,17 @@ static int is_local_dst(const struct addr *d)
+ 
+ static const char *wan_ifname = "eth0";
+ static const char *lan_ifname = "br0";
+-
+-/* egress interface: longest prefix over the router's own subnets, else the WAN */
++/* v1.9 (2026-10-08): the IPv6 WAN face is not always the IPv4 one. A tunnel
++ * service (6in4/6to4/6rd) leaves through v6tun<unit>, and the stock FORWARD
++ * accept for LAN->WAN v6 is written against that device (`-i br0 -o v6tun0`).
++ * Modelling the v6 egress as eth0 walked A1v6 past it to the tail DROP and
++ * flagged a working tunnel red (owner's RT-BE96U, HE 6in4, 884 packets through
++ * the real rule). Derived in ifaces_from_nv() the way shared/rtstate.c's
++ * get_wan6_ifname() does it; defaults to the v4 face. */
++static const char *wan6_ifname = "eth0";
++
++/* egress interface: longest prefix over the router's own subnets, else the WAN
++ * of the packet's family */
+ static const char *egress_for(const struct addr *d)
+ {
+ 	int i, best = -1, bp = -1;
+@@ -207,7 +218,7 @@ static const char *egress_for(const struct addr *d)
+ 		if (own[i].a.fam != d->fam || own[i].scope_link) continue;
+ 		if (addr_in(&own[i].a, d) && own[i].a.plen > bp) { bp = own[i].a.plen; best = i; }
+ 	}
+-	return best >= 0 ? own[best].ifname : wan_ifname;
++	return best >= 0 ? own[best].ifname : (d->fam == 6 ? wan6_ifname : wan_ifname);
+ }
+ 
+ /* first (global) address of an interface, or NULL */
+@@ -1664,7 +1675,7 @@ static char lanhost_why[160];	/* the longest note is 80 + a %.40s */
+ static void lanhost_pick(const struct addr *lan4, char *out, size_t ol)
+ {
+ 	char dup[512], *tok, *save = NULL;
+-	lanhost_why[0] = 0;
++	/* off: keep whatever host_free() said about the stand-in (v1.10) */
+ 	if (!nv_is("enable_acc_restriction", "1")) return;
+ 	snprintf(dup, sizeof(dup), "%s", nv_get("restrict_rulelist"));
+ 	for (tok = strtok_r(dup, "<", &save); tok; tok = strtok_r(NULL, "<", &save)) {
+@@ -1686,6 +1697,103 @@ static void host_in_subnet(const struct addr *net, int host, char *out, size_t l
+ 	addr_str(&a, out, len);
+ }
+ 
++/* v1.10 (2026-10-09, owner report): the synthetic witness hosts were always
++ * .123 (source) and .124 (destination) in their subnet, and a DHCP pool that
++ * covers them hands those addresses to real devices - the Devices page listed
++ * a phone at the walker's stand-in 192.168.50.123 while Rule Status said the
++ * stand-ins are "not devices on your network". A rule or reservation aimed at
++ * that device would then be judged for the walker. A stand-in now skips every
++ * IPv4 address in use: the ARP table, the dnsmasq leases (every instance), the
++ * DHCP reservations (main + per SDN network), the router's own addresses, and
++ * a stand-in already handed out for another role in the same subnet. The scan
++ * starts at the old number, so an idle .123 stays .123. Host build: --used
++ * FILE (any text; every IPv4 address in it counts). IPv6 is unchanged: its
++ * stand-in ::23 sits in a /64 of SLAAC/privacy addresses. Common code. */
++#define USED_MAX 2048
++static unsigned used4[USED_MAX];
++static int nused4;
++
++static void used_scan(const char *s)
++{
++	const char *p = s;
++	while (*p) {
++		unsigned o[4]; int n = 0;
++		if (isdigit((unsigned char)*p) && (p == s || (!isdigit((unsigned char)p[-1]) && p[-1] != '.'))
++		    && sscanf(p, "%3u.%3u.%3u.%3u%n", &o[0], &o[1], &o[2], &o[3], &n) == 4 && n > 0
++		    && o[0] < 256 && o[1] < 256 && o[2] < 256 && o[3] < 256
++		    && !isdigit((unsigned char)p[n]) && p[n] != '.') {
++			if (nused4 < USED_MAX) used4[nused4++] = (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
++			p += n;
++			continue;
++		}
++		p++;
++	}
++}
++
++static void load_used(const char *path)
++{
++	FILE *f = fopen(path, "r"); char line[512];
++	if (!f) return;
++	while (fgets(line, sizeof(line), f)) used_scan(line);
++	fclose(f);
++}
++
++/* the reservations: the main list and one per SDN network (rc/sdn.c dhcpres%d_rl) */
++static void used_from_nv(void)
++{
++	int i; char k[24];
++	used_scan(nv_get("dhcp_staticlist"));
++	for (i = 1; i <= 32; i++) { snprintf(k, sizeof(k), "dhcpres%d_rl", i); used_scan(nv_get(k)); }
++}
++
++static int used_has(unsigned v)
++{
++	int i;
++	for (i = 0; i < nused4; i++) if (used4[i] == v) return 1;
++	return 0;
++}
++
++/* one stand-in per (subnet, role): asked twice, it answers the same address */
++struct spick { unsigned base; int plen, want; unsigned got; char out[48]; };
++static struct spick spk[64];
++static int nspk;
++
++/* returns 1 when the address moved off `want` */
++static int host_free(const struct addr *net, int want, char *out, size_t len)
++{
++	unsigned v, base, mask, hostmax, h, cand = 0; struct addr a; int i, k, tries, found = 0;
++	if (net->fam != 4 || net->plen < 8 || net->plen > 30) { host_in_subnet(net, want, out, len); return 0; }
++	memcpy(&v, net->a, 4); v = ntohl(v);
++	mask = 0xffffffffu << (32 - net->plen);
++	base = v & mask;
++	hostmax = ~mask - 1;				/* the last host before the broadcast */
++	for (i = 0; i < nspk; i++)
++		if (spk[i].base == base && spk[i].plen == net->plen && spk[i].want == want) {
++			snprintf(out, len, "%s", spk[i].out);
++			return spk[i].got != (base | (unsigned)want);
++		}
++	h = (want >= 1 && (unsigned)want <= hostmax) ? (unsigned)want : 1;
++	for (tries = 0; tries < 4096 && (unsigned)tries < hostmax; tries++, h = (h >= hostmax) ? 1 : h + 1) {
++		unsigned nb;
++		cand = base | h;
++		if (used_has(cand)) continue;
++		a = *net; nb = htonl(cand); memcpy(a.a, &nb, 4);
++		if (is_local_dst(&a)) continue;
++		for (k = 0; k < nspk; k++) if (spk[k].got == cand) break;
++		if (k < nspk) continue;
++		found = 1;
++		break;
++	}
++	if (found) addr_str(&a, out, len);
++	else { host_in_subnet(net, want, out, len); cand = base | (unsigned)want; }	/* every host taken: the classic stand-in */
++	if (nspk < (int)(sizeof(spk) / sizeof(spk[0]))) {
++		spk[nspk].base = base; spk[nspk].plen = net->plen; spk[nspk].want = want; spk[nspk].got = cand;
++		snprintf(spk[nspk].out, sizeof(spk[nspk].out), "%s", out);
++		nspk++;
++	}
++	return cand != (base | (unsigned)want);
++}
++
+ static void gen_witnesses(void)
+ {
+ 	char lanhost[48], rtr[48], wanip[48], buf[200], id[16], feat[80], lanmac[20];
+@@ -1695,14 +1803,24 @@ static void gen_witnesses(void)
+ 	int i, n;
+ 
+ 	/* placeholders for the static file */
+-	sub_set("LANIF", lan_ifname); sub_set("WANIF", wan_ifname);
++	sub_set("LANIF", lan_ifname); sub_set("WANIF", wan_ifname); sub_set("WAN6IF", wan6_ifname);
+ 	sub_set("WANSRC", wansrc); sub_set("WAN6SRC", wansrc_pick(6)); sub_set("WANDST", wandst);
+-	if (lan4) { addr_str(lan4, rtr, sizeof(rtr)); host_in_subnet(lan4, 123, lanhost, sizeof(lanhost)); lanhost_pick(lan4, lanhost, sizeof(lanhost)); sub_set("RTR", rtr); sub_set("LANHOST", lanhost); }
++	used_from_nv();
++	if (lan4) {
++		char was[48];
++		addr_str(lan4, rtr, sizeof(rtr));
++		if (host_free(lan4, 123, lanhost, sizeof(lanhost))) {
++			host_in_subnet(lan4, 123, was, sizeof(was));
++			snprintf(lanhost_why, sizeof(lanhost_why), "%.40s is in use on the LAN - LAN rows witness from %.40s", was, lanhost);
++		}
++		lanhost_pick(lan4, lanhost, sizeof(lanhost));
++		sub_set("RTR", rtr); sub_set("LANHOST", lanhost);
++	}
+ 	else { rtr[0] = lanhost[0] = 0; }
+ 	if (wan4) { addr_str(wan4, wanip, sizeof(wanip)); sub_set("WANIP", wanip); } else { const char *v = nv_get("wan0_ipaddr"); if (v[0] && strcmp(v, "0.0.0.0")) sub_set("WANIP", v); wanip[0] = 0; }
+ 	for (i = 0; i < nown; i++) if (own[i].a.fam == 6 && !own[i].scope_link && !strcmp(own[i].ifname, lan_ifname) && own[i].a.a[0] != 0xfe) { lan6 = &own[i].a; break; }
+ 	if (lan6) { char r6[48], h6[48]; addr_str(lan6, r6, sizeof(r6)); host_in_subnet(lan6, 0x23, h6, sizeof(h6)); sub_set("RTR6", r6); sub_set("LAN6HOST", h6); }
+-	{ const struct addr *w6 = NULL; for (i = 0; i < nown; i++) if (own[i].a.fam == 6 && !own[i].scope_link && !strcmp(own[i].ifname, wan_ifname) && own[i].a.a[0] != 0xfe) { w6 = &own[i].a; break; }
++	{ const struct addr *w6 = NULL; for (i = 0; i < nown; i++) if (own[i].a.fam == 6 && !own[i].scope_link && !strcmp(own[i].ifname, wan6_ifname) && own[i].a.a[0] != 0xfe) { w6 = &own[i].a; break; }
+ 	  if (w6) { char s[48]; addr_str(w6, s, sizeof(s)); sub_set("WAN6IP", s); } }
+ 	{ const struct addr *ll = NULL; for (i = 0; i < nown; i++) if (own[i].a.fam == 6 && own[i].scope_link && !strcmp(own[i].ifname, lan_ifname)) { ll = &own[i].a; break; }
+ 	  if (ll) { char s[48]; addr_str(ll, s, sizeof(s)); sub_set("RTR6LL", s); } }
+@@ -2126,7 +2244,7 @@ static void gen_witnesses(void)
+ 							snprintf(zrtr, sizeof(zrtr), "%s", wanip);
+ 						} else {
+ 							if ((za = own_first(zif, 4)) == NULL) continue;
+-							host_in_subnet(za, 123, zsrc, sizeof(zsrc));
++							host_free(za, 123, zsrc, sizeof(zsrc));
+ 							addr_str(za, zrtr, sizeof(zrtr));
+ 						}
+ 					}
+@@ -2137,7 +2255,7 @@ static void gen_witnesses(void)
+ 						if (!zone_iface(zones, dzone, dif, sizeof(dif))) continue;
+ 						if (strcmp(dif, wan_ifname)) {
+ 							if ((da = own_first(dif, 4)) == NULL) continue;
+-							host_in_subnet(da, 124, zdst, sizeof(zdst));
++							host_free(da, 124, zdst, sizeof(zdst));
+ 						}					/* WAN zone: wandst */
+ 					}
+ 					if (!strcmp(dir, "in")) {
+@@ -2191,8 +2309,8 @@ static void gen_witnesses(void)
+ 					if (!strcmp(sif, dif)) continue;	/* one segment: nothing to forward */
+ 					sa = own_first(sif, 4); da = own_first(dif, 4);
+ 					if (!sa || !da) continue;
+-					host_in_subnet(sa, 123, sh, sizeof(sh));
+-					host_in_subnet(da, 124, dh, sizeof(dh));
++					host_free(sa, 123, sh, sizeof(sh));
++					host_free(da, 124, dh, sizeof(dh));
+ 					nz++;
+ 					snprintf(id, sizeof(id), "F2.%d", nz);
+ 					snprintf(feat, sizeof(feat), "Zone policy: %.20s -> %.20s is %.8s", sz, dz, act);
+@@ -2241,7 +2359,7 @@ static void gen_witnesses(void)
+ 			char gh[48], gr[48];
+ 			if (own[i].a.fam != 4 || own[i].scope_link || strncmp(own[i].ifname, "br", 2) || !strcmp(own[i].ifname, lan_ifname)) continue;
+ 			k++;
+-			host_in_subnet(&own[i].a, 123, gh, sizeof(gh)); addr_str(&own[i].a, gr, sizeof(gr));
++			host_free(&own[i].a, 123, gh, sizeof(gh)); addr_str(&own[i].a, gr, sizeof(gr));
+ 			snprintf(id, sizeof(id), "G1.%d", k); snprintf(feat, sizeof(feat), "Guest network %s: isolated from the main LAN", own[i].ifname);
+ 			/* sdn_access_rl links networks BY INDEX and only the router build
+ 			 * can resolve an index to a bridge (G3, deferred). While any link
+@@ -2482,6 +2600,7 @@ static const char *dump_keys[] = {
+ 	"vts_enable_x", "vts_rulelist",
+ 	"gk_enable", "gk_default", "rwarden_enable", "rwarden_dir", "rwarden_geo",
+ 	"enable_acc_restriction", "restrict_rulelist",
++	"dhcp_staticlist",	/* v1.10: reservations keep stand-ins off devices */
+ 	"reaper_fw_enable", "reaper_pbr_enable",
+ 	"vpn_serverx_start", "vpn_server1_proto", "vpn_server1_port",
+ 	"vpn_server2_proto", "vpn_server2_port", "wgs_enable", "wgs_port",
+@@ -2606,6 +2725,25 @@ static int dump_inputs(const char *dir)
+ 		}
+ 		fclose(f);
+ 	}
++	/* v1.10: the addresses devices hold (replay: --used FILE). Only those
++	 * inside one of the router's own bridge subnets - the ISP's side of the
++	 * ARP table is not the walker's business and should not travel. */
++	used_from_nv();
++	snprintf(path, sizeof(path), "%s/used4", dir);
++	f = fopen(path, "w");
++	if (f) {
++		int u;
++		for (u = 0; u < nused4; u++) {
++			struct addr a; unsigned nb = htonl(used4[u]); char s[48];
++			a.fam = 4; a.plen = 32; memset(a.a, 0, sizeof(a.a)); memcpy(a.a, &nb, 4);
++			for (i = 0; i < nown; i++)
++				if (own[i].a.fam == 4 && !own[i].scope_link && !strncmp(own[i].ifname, "br", 2) && addr_in(&own[i].a, &a)) break;
++			if (i == nown) continue;
++			addr_str(&a, s, sizeof(s));
++			fprintf(f, "%s\n", s);
++		}
++		fclose(f);
++	}
+ 	fprintf(stderr, "fixture written to %s - review it before sharing\n", dir);
+ 	return 0;
+ }
+@@ -2700,13 +2838,27 @@ static void dump_witnesses(const char *path)
+ static int wan_forced, lan_forced;
+ static void ifaces_from_nv(void)
+ {
++	int u = nv_is("wan1_primary", "1") ? 1 : 0;
++	const char *proto = nv_get(u ? "wan1_proto" : "wan0_proto");
++	int ppp = !strcmp(proto, "pppoe") || !strcmp(proto, "pptp") || !strcmp(proto, "l2tp");
+ 	if (!wan_forced) {
+-		static char wbuf[20]; const char *proto, *ifn; int u = nv_is("wan1_primary", "1") ? 1 : 0;
+-		proto = nv_get(u ? "wan1_proto" : "wan0_proto");
+-		if (!strcmp(proto, "pppoe") || !strcmp(proto, "pptp") || !strcmp(proto, "l2tp")) ifn = nv_get(u ? "wan1_pppoe_ifname" : "wan0_pppoe_ifname");
++		static char wbuf[20]; const char *ifn;
++		if (ppp) ifn = nv_get(u ? "wan1_pppoe_ifname" : "wan0_pppoe_ifname");
+ 		else ifn = nv_get(u ? "wan1_ifname" : "wan0_ifname");
+ 		if (ifn && ifn[0]) { snprintf(wbuf, sizeof(wbuf), "%s", ifn); wan_ifname = wbuf; }
+ 	}
++	/* v1.9: the v6 face, after get_wan6_ifname(): a tunnel service rides
++	 * v6tun<unit>; native/static over PPP use the ppp device only when
++	 * ipv6_ifdev says so, else the ethernet WAN; anything else = the v4 face.
++	 * Derived even under --wan, because the harness and a lab run force the
++	 * v4 interface and still expect a 6in4 box to be walked over its tunnel. */
++	{
++		static char w6buf[20]; const char *svc = nv_get("ipv6_service"), *ifn6 = NULL;
++		if (!strcmp(svc, "6in4") || !strcmp(svc, "6to4") || !strcmp(svc, "6rd")) { snprintf(w6buf, sizeof(w6buf), "v6tun%d", u); ifn6 = w6buf; }
++		else if (ppp && svc[0] && strcmp(svc, "disabled") && !nv_is("ipv6_ifdev", "ppp")) ifn6 = nv_get(u ? "wan1_ifname" : "wan0_ifname");
++		if (ifn6 && ifn6[0]) { if (ifn6 != w6buf) { snprintf(w6buf, sizeof(w6buf), "%s", ifn6); } wan6_ifname = w6buf; }
++		else wan6_ifname = wan_ifname;
++	}
+ 	if (!lan_forced) { static char lbuf[20]; const char *l = nv_get("lan_ifname"); if (l && l[0]) { snprintf(lbuf, sizeof(lbuf), "%s", l); lan_ifname = lbuf; } }
+ }
+ 
+@@ -2725,7 +2877,7 @@ static void router_inputs(void)
+ {
+ 	char *a4[] = { "iptables-save", NULL }, *a6[] = { "ip6tables-save", NULL };
+ 	char *ad4[] = { "ip", "-4", "-o", "addr", NULL }, *ad6[] = { "ip", "-6", "-o", "addr", NULL };
+-	mkdir(FWSIM_DIR, 0755);
++	mkdir(FWSIM_DIR, 0700);	/* 2026-10-09 (F14): rc creates it 0700 at boot; never widen it */
+ 	if (opt_family & 1) { run_to(FWSIM_TMP4, a4); load_save(&fw4, FWSIM_TMP4, 4); unlink(FWSIM_TMP4); }
+ 	if (opt_family & 2) { run_to(FWSIM_TMP6, a6); load_save(&fw6, FWSIM_TMP6, 6); unlink(FWSIM_TMP6); }
+ 	run_to(FWSIM_TMPA, ad4); load_addrs(FWSIM_TMPA);
+@@ -2747,6 +2899,21 @@ static void router_inputs(void)
+ 	load_listeners("/proc/net/tcp6", 6);
+ 	load_listeners("/proc/net/udp", 17);
+ 	load_listeners("/proc/net/udp6", 17);
++	/* v1.10: the addresses devices hold, so no stand-in is one of them -
++	 * the neighbour table and every dnsmasq instance's leases (main +
++	 * dnsmasq-<sdn>.leases). The reservations come from nvram (used_from_nv). */
++	load_used("/proc/net/arp");
++	{
++		DIR *d = opendir("/var/lib/misc"); struct dirent *e; char p[300];
++		if (d) {
++			while ((e = readdir(d)) != NULL)
++				if (!strncmp(e->d_name, "dnsmasq", 7) && strstr(e->d_name, ".leases")) {
++					snprintf(p, sizeof(p), "/var/lib/misc/%s", e->d_name);
++					load_used(p);
++				}
++			closedir(d);
++		}
++	}
+ 	ifaces_from_nv();
+ }
+ #endif
+@@ -2766,6 +2933,7 @@ static void usage(void)
+ 		"  --dump-inputs DIR     collect a replayable fixture (WAN address masked)\n"
+ 		"  host mode: --save4 FILE --save6 FILE --addr FILE --members FILE --nv FILE\n"
+ 		"             --rule4 FILE --rule6 FILE --wan IF --lan IF\n"
++		"             --used FILE   (addresses devices hold: any text, every IPv4 in it)\n"
+ 		"             --lsn-tcp FILE --lsn-udp FILE   (/proc/net/tcp|udp format)\n", FWSIM_VER, FWSIM_JSON, FWSIM_JSON, FWSIM_STATIC);
+ }
+ 
+@@ -2792,6 +2960,7 @@ int main(int argc, char **argv)
+ 		else if (!strcmp(a, "--lsn-tcp") && v) { opt_lsntcp = v; i++; }
+ 		else if (!strcmp(a, "--lsn-udp") && v) { opt_lsnudp = v; i++; }
+ 		else if (!strcmp(a, "--dump-inputs") && v) { opt_dumpin = v; i++; }
++		else if (!strcmp(a, "--used") && v) { opt_used = v; i++; }
+ 		else if (!strcmp(a, "--wan") && v) { wan_ifname = v; wan_forced = 1; i++; }
+ 		else if (!strcmp(a, "--lan") && v) { lan_ifname = v; lan_forced = 1; i++; }
+ 		else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
+@@ -2810,6 +2979,7 @@ int main(int argc, char **argv)
+ 	if (opt_rule6) load_iprules(opt_rule6, 6);
+ 	if (opt_lsntcp) load_listeners(opt_lsntcp, 6);
+ 	if (opt_lsnudp) load_listeners(opt_lsnudp, 17);
++	if (opt_used) load_used(opt_used);
+ 	if (opt_dumpin) { fprintf(stderr, "--dump-inputs collects from a live router; the host build has nothing to collect\n"); return 2; }
+ 	if (!opt_save4 && !opt_save6) { usage(); return 2; }
+ 	(void)do_run;
+@@ -2823,7 +2993,7 @@ int main(int argc, char **argv)
+ 	/* the boot skeleton is reported before anything is walked */
+ 	if (fw4.loaded) { struct table *t = table_get(&fw4, "filter", 0); skeleton = t && !chain_get(t, "INPUT_ICMP", 0) && !chain_get(t, "SECURITY", 0) && nv_is("sw_mode", "1"); }
+ 
+-	if (opt_witness) { sub_set("LANIF", lan_ifname); sub_set("WANIF", wan_ifname); load_witness_file(opt_witness, 0); }
++	if (opt_witness) { sub_set("LANIF", lan_ifname); sub_set("WANIF", wan_ifname); sub_set("WAN6IF", wan6_ifname); load_witness_file(opt_witness, 0); }
+ 	else gen_witnesses();
+ 	eval_all();
+ 	if (opt_dump) dump_witnesses(opt_dump);
+diff --git a/release/src/router/reaper_fwsim/witness.static b/release/src/router/reaper_fwsim/witness.static
+index ffae588ba1..8d291d0945 100644
+--- a/release/src/router/reaper_fwsim/witness.static
++++ b/release/src/router/reaper_fwsim/witness.static
+@@ -32,11 +32,14 @@ H7|Invalid-state packets from the WAN are dropped|4|$WANIF|$WANSRC|$LANHOST|tcp|
+ H7b|Invalid-state packets to the router are dropped|4|$WANIF|$WANSRC|$WANIP|tcp|8443|INVALID|DROP
+ 
+ # ---- IPv6 (n/a while the router has no IPv6) ------------------------------
++# $WAN6IF is the IPv6 WAN face (walker v1.9, 2026-10-08): the same device as
++# $WANIF on a native box, v6tun<unit> on a 6in4/6to4/6rd one - stock writes its
++# v6 WAN rules against that device, so a WAN-side v6 witness must arrive on it.
+ A1v6|LAN host reaches the WAN over IPv6|6|$LANIF|$LAN6HOST|2606:4700:4700::1111|tcp|443|NEW|ACCEPT||$LANMAC
+ A3v6|LAN host resolves DNS at the router over IPv6|6|$LANIF|$LAN6HOST|$RTR6|udp|53|NEW|RESOLVED||$LANMAC
+-A4v6|Unsolicited WAN IPv6 traffic never reaches a LAN host|6|$WANIF|$WAN6SRC|$LAN6HOST|tcp|445|NEW|DROP
+-A6v6|WAN IPv6 management is closed|6|$WANIF|$WAN6SRC|$WAN6IP|tcp|80|NEW|DROP
+-A10a|Router advertisements from the WAN are accepted|6|$WANIF|fe80::1|ff02::1|icmpv6|134|NEW|ACCEPT|||$V6
++A4v6|Unsolicited WAN IPv6 traffic never reaches a LAN host|6|$WAN6IF|$WAN6SRC|$LAN6HOST|tcp|445|NEW|DROP
++A6v6|WAN IPv6 management is closed|6|$WAN6IF|$WAN6SRC|$WAN6IP|tcp|80|NEW|DROP
++A10a|Router advertisements from the WAN are accepted|6|$WAN6IF|fe80::1|ff02::1|icmpv6|134|NEW|ACCEPT|||$V6
+ A10b|Router solicitations from the LAN are accepted|6|$LANIF|fe80::2|ff02::2|icmpv6|133|NEW|ACCEPT||$LANMAC|$V6
+ A10c|Neighbour solicitations from the LAN are accepted|6|$LANIF|fe80::2|ff02::1:ff00:1|icmpv6|135|NEW|ACCEPT||$LANMAC|$V6
+ A10d|Neighbour advertisements from the LAN are accepted|6|$LANIF|$LAN6HOST|$RTR6|icmpv6|136|NEW|ACCEPT||$LANMAC|$V6
+diff --git a/release/src/router/rmcpd/.gitignore b/release/src/router/rmcpd/.gitignore
+new file mode 100644
+index 0000000000..319b484f7f
+--- /dev/null
++++ b/release/src/router/rmcpd/.gitignore
+@@ -0,0 +1,5 @@
++# build outputs (the rc/.gitignore pattern): never commit the binary or its objects
++*.o
++*.depend
++.rmcpd.depend
++rmcpd
+diff --git a/release/src/router/rmcpd/rmcpd.c b/release/src/router/rmcpd/rmcpd.c
+index bb52f42d61..a6dae9831c 100644
+--- a/release/src/router/rmcpd/rmcpd.c
++++ b/release/src/router/rmcpd/rmcpd.c
+@@ -11,7 +11,8 @@
+  *   - OFF BY DEFAULT and NEVER started from the boot path. It runs only after
+  *     an explicit, second-factor-gated ARM action in the GUI, which writes the
+  *     session file this daemon requires to start at all.
+- *   - LAN-ONLY. Binds lan_ipaddr (never 0.0.0.0 / WAN); an INPUT accept rule is
++ *   - LAN-ONLY. Binds lan_ipaddr (never 0.0.0.0 / WAN) and, since the 2026-10-07
++ *     IPv6 pass, the LAN's own IPv6 address (never [::]); an INPUT accept rule is
+  *     added on the LAN bridge at start and removed on every exit path.
+  *   - READ-ONLY. It exposes curated read tools only - no write/apply tool
+  *     exists, not even a disabled one. The user's own AI client (with the
+@@ -80,7 +81,8 @@
+ static volatile sig_atomic_t g_stop = 0;
+ static int   g_added_rule = 0;
+ static char  g_lan_ip[32] = "";
+-static char  g_client_ip[32] = "";	/* pin, or "" for any LAN host */
++static char  g_lan_ip6[48] = "";	/* IPv6 A8: the LAN IPv6 address the second listener binds, "" = none */
++static char  g_client_ip[48] = "";	/* pin (an IPv4 or IPv6 literal), or "" for any LAN host */
+ static int   g_port = DEF_PORT;
+ static char  g_token[80] = "";
+ static time_t g_expiry = 0;
+@@ -105,27 +107,42 @@ static const char *lan_ifname(void)
+ 	return lif;
+ }
+ 
+-/* Insert / remove the single LAN-only accept rule. We shell out to the same
++/* Insert / remove the LAN-only accept rule(s). We shell out to the same
+  * iptables the rest of rc uses; args are daemon-controlled (ifname/ip/port),
+- * never request-derived, and the port/ip are numeric-validated below. */
+-static int fence_rule(const char *op /* "-I" or "-D" */)
++ * never request-derived, and the port/ip are numeric-validated below.
++ * IPv6 A8 (2026-10-07): an ip6tables twin when the daemon also listens on the
++ * LAN's IPv6 address. A pinned client belongs to one family, so the other
++ * family's rule is not inserted at all (its peers would be refused by the
++ * daemon anyway). The IPv4 rule is the one arming requires; the IPv6 one is
++ * best effort and logged. */
++static int fence_one(const char *tool, const char *op, const char *src)
+ {
+-	char cmd[256];
++	char cmd[320];
+ 	int r;
+-	const char *src = (g_client_ip[0] ? g_client_ip : "");
+ 
+-	if (src[0])
+-		snprintf(cmd, sizeof(cmd),
+-			"iptables %s INPUT -i %s -s %s -p tcp --dport %d -j ACCEPT",
+-			op, lan_ifname(), src, g_port);
++	if (src && src[0])
++		snprintf(cmd, sizeof(cmd), "%s %s INPUT -i %s -s %s -p tcp --dport %d -j ACCEPT",
++			tool, op, lan_ifname(), src, g_port);
+ 	else
+-		snprintf(cmd, sizeof(cmd),
+-			"iptables %s INPUT -i %s -p tcp --dport %d -j ACCEPT",
+-			op, lan_ifname(), g_port);
++		snprintf(cmd, sizeof(cmd), "%s %s INPUT -i %s -p tcp --dport %d -j ACCEPT",
++			tool, op, lan_ifname(), g_port);
+ 	r = system(cmd);
+ 	return (r == -1) ? -1 : (WIFEXITED(r) && WEXITSTATUS(r) == 0 ? 0 : 1);
+ }
+ 
++static int fence_rule(const char *op /* "-I" or "-D" */)
++{
++	int pin6 = g_client_ip[0] && strchr(g_client_ip, ':') != NULL;
++	int rc = 0;
++
++	if (!pin6)
++		rc = fence_one("iptables", op, g_client_ip);
++	if (g_lan_ip6[0] && (!g_client_ip[0] || pin6) &&
++	    fence_one("ip6tables", op, pin6 ? g_client_ip : "") != 0)
++		syslog(LOG_WARNING, "rmcpd: ip6tables %s rule failed", op);
++	return rc;
++}
++
+ static void cleanup(void)
+ {
+ 	if (g_added_rule) {
+@@ -213,12 +230,15 @@ static int load_session(void)
+ 	return 0;
+ }
+ 
+-/* Accept only dotted-quad in the client pin, else drop the pin (defensive:
+- * the file is root-written, but never build a shell arg we didn't validate). */
++/* Accept only an address literal in the client pin - dotted quad or, since the
++ * IPv6 pass, an IPv6 literal - else drop the pin (defensive: the file is
++ * root-written, but never build a shell arg we didn't validate). */
+ static void sanitize_client_ip(void)
+ {
+ 	struct in_addr a;
+-	if (g_client_ip[0] && inet_aton(g_client_ip, &a) != 1)
++	struct in6_addr a6;
++	if (g_client_ip[0] && inet_aton(g_client_ip, &a) != 1 &&
++	    inet_pton(AF_INET6, g_client_ip, &a6) != 1)
+ 		g_client_ip[0] = 0;
+ }
+ 
+@@ -1511,7 +1531,7 @@ done:
+ 
+ int main(int argc, char **argv)
+ {
+-	int ls;
++	int ls, ls6 = -1;	/* IPv6 A8: the second listener, -1 = none */
+ 	struct sockaddr_in sa;
+ 	int one = 1;
+ 	char *pv;
+@@ -1593,6 +1613,33 @@ int main(int argc, char **argv)
+ 		return 1;
+ 	}
+ 
++	/* IPv6 A8 (2026-10-07): a second listener on the LAN's own IPv6 address
++	 * (never [::]), v6-only so the two sockets never overlap. Best effort: the
++	 * IPv4 listener above is the one the armed session requires. */
++	snprintf(g_lan_ip6, sizeof(g_lan_ip6), "%s",
++		 ipv6_enabled() ? nvram_safe_get(ipv6_nvname("ipv6_rtr_addr")) : "");
++	if (g_lan_ip6[0]) {
++		struct sockaddr_in6 sa6;
++
++		memset(&sa6, 0, sizeof(sa6));
++		sa6.sin6_family = AF_INET6;
++		sa6.sin6_port = htons(g_port);
++		if (inet_pton(AF_INET6, g_lan_ip6, &sa6.sin6_addr) != 1 ||
++		    (ls6 = socket(AF_INET6, SOCK_STREAM, 0)) < 0) {
++			ls6 = -1;
++			g_lan_ip6[0] = 0;
++		} else {
++			setsockopt(ls6, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
++			setsockopt(ls6, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
++			if (bind(ls6, (struct sockaddr *)&sa6, sizeof(sa6)) < 0 || listen(ls6, 4) < 0) {
++				syslog(LOG_WARNING, "rmcpd: IPv6 listener [%s]:%d: %m - IPv4 only", g_lan_ip6, g_port);
++				close(ls6);
++				ls6 = -1;
++				g_lan_ip6[0] = 0;
++			}
++		}
++	}
++
+ 	if (fence_rule("-I") != 0) {
+ 		syslog(LOG_ERR, "rmcpd: failed to install firewall ACCEPT rule - refusing to arm");
+ 		return 1;
+@@ -1603,6 +1650,8 @@ int main(int argc, char **argv)
+ 	syslog(LOG_NOTICE, "rmcpd: armed, %s advisor on %s://%s:%d, session ends in %ld min",
+ 		g_diag ? "read+diagnostics" : "read-only",
+ 		g_https ? "https" : "http", g_lan_ip, g_port, (long)((g_expiry - time(NULL)) / 60));
++	if (ls6 >= 0)
++		syslog(LOG_NOTICE, "rmcpd: also listening on %s://[%s]:%d", g_https ? "https" : "http", g_lan_ip6, g_port);
+ 
+ 	while (!g_stop) {
+ 		fd_set rf;
+@@ -1624,18 +1673,20 @@ int main(int argc, char **argv)
+ 		}
+ 		FD_ZERO(&rf);
+ 		FD_SET(ls, &rf);
++		if (ls6 >= 0) FD_SET(ls6, &rf);	/* IPv6 A8 */
+ 		tv.tv_sec = TICK_SECS;
+ 		tv.tv_usec = 0;
+-		r = select(ls + 1, &rf, NULL, NULL, &tv);
++		r = select((ls6 > ls ? ls6 : ls) + 1, &rf, NULL, NULL, &tv);
+ 		if (r < 0) {
+ 			if (errno == EINTR) continue;
+ 			break;
+ 		}
+ 		if (r == 0) continue;
+-		if (FD_ISSET(ls, &rf)) {
+-			struct sockaddr_in ca;
++		if (FD_ISSET(ls, &rf) || (ls6 >= 0 && FD_ISSET(ls6, &rf))) {
++			struct sockaddr_storage ca;
+ 			socklen_t cl = sizeof(ca);
+-			int cfd = accept(ls, (struct sockaddr *)&ca, &cl);
++			/* IPv6 A8: either listener; a tick serves one, the other stays readable */
++			int cfd = accept(FD_ISSET(ls, &rf) ? ls : ls6, (struct sockaddr *)&ca, &cl);
+ 			if (cfd < 0) continue;
+ 			/* Bound every read/write (and the TLS handshake, which reads on this
+ 			 * fd) so a slow/stalled client cannot wedge the single-threaded loop
+@@ -1650,8 +1701,11 @@ int main(int argc, char **argv)
+ 			}
+ 			/* defense in depth atop iptables: enforce client pin here too */
+ 			if (g_client_ip[0]) {
+-				char peer[32];
+-				snprintf(peer, sizeof(peer), "%s", inet_ntoa(ca.sin_addr));
++				char peer[INET6_ADDRSTRLEN] = "";
++				if (ca.ss_family == AF_INET6)	/* IPv6 A8: the pin is compared within its family */
++					inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&ca)->sin6_addr, peer, sizeof(peer));
++				else
++					inet_ntop(AF_INET, &((struct sockaddr_in *)&ca)->sin_addr, peer, sizeof(peer));
+ 				if (strcmp(peer, g_client_ip)) { close(cfd); continue; }
+ 			}
+ 			serve_conn(cfd);
+@@ -1659,6 +1713,7 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	close(ls);
++	if (ls6 >= 0) close(ls6);
+ 	cleanup();
+ 	syslog(LOG_NOTICE, "rmcpd: stopped");
+ 	closelog();
+diff --git a/release/src/router/rpunctd/rpunctd.c b/release/src/router/rpunctd/rpunctd.c
+index d2f669b4b1..7be08198d0 100644
+--- a/release/src/router/rpunctd/rpunctd.c
++++ b/release/src/router/rpunctd/rpunctd.c
+@@ -11,7 +11,7 @@
+  * averages, persistence holds, a minimum gain, a minimum interval between
+  * changes). A decision is executed through the ONE applier, rc/reaper_punct.c:
+  * this daemon never calls `wl eht dissubchan` itself. It writes its choice to
+- * /tmp/reaper_punct.dyn and runs /sbin/reaper_punct, which keeps the
++ * /tmp/reaper/reaper_punct.dyn and runs /sbin/reaper_punct, which keeps the
+  * readiness wait, the shape check, the state file and the "clear only what
+  * we set" rule; the rwatch tick and the wireless-start hook re-run that
+  * applier, so a wireless restart puts the daemon's current choice back.
+@@ -20,7 +20,7 @@
+  * this daemon believes is on the radio - never a bitmap the driver refused or
+  * an apply that did not happen (crawl 2026-09-26, F1: a refused bitmap left in
+  * the file was sent again by every rwatch tick). Each tick the applier's own
+- * record (/tmp/reaper_punct.state, "set=") is read back against that belief
++ * record (/tmp/reaper/reaper_punct.state, "set=") is read back against that belief
+  * and the two are reconciled; a bitmap that fell off the radio is forgotten, a
+  * bitmap the daemon did not choose is taken off.
+  *
+@@ -30,7 +30,7 @@
+  *
+  * It logs through syslog() directly (rc logmessage lines are dropped on boxes
+  * whose log level is "debug"), tag rpunctd, one line per decision that says
+- * why. /tmp/reaper_punct.dyn.json mirrors the state for the GUI.
++ * why. /tmp/reaper/reaper_punct.dyn.json mirrors the state for the GUI.
+  *
+  * Off by default: it runs only while some wlN_punct reads "dyn|...", exits by
+  * itself when none does, never restarts wireless, and holds the current
+@@ -68,10 +68,10 @@
+ #define RP_TICK		10		/* s between windows */
+ #define RP_WINDOW_MS	4000		/* the timed chanim window */
+ #define RP_MAXU		4
+-#define RP_DYN		"/tmp/reaper_punct.dyn"
+-#define RP_JSON		"/tmp/reaper_punct.dyn.json"
+-#define RP_DYNSTATE	"/tmp/reaper_punct.dyn.state"	/* one flat line per radio: the diag and httpd read this */
+-#define RP_STATE	"/tmp/reaper_punct.state"
++#define RP_DYN		"/tmp/reaper/reaper_punct.dyn"
++#define RP_JSON		"/tmp/reaper/reaper_punct.dyn.json"
++#define RP_DYNSTATE	"/tmp/reaper/reaper_punct.dyn.state"	/* one flat line per radio: the diag and httpd read this */
++#define RP_STATE	"/tmp/reaper/reaper_punct.state"
+ #define RP_APPLIER	"/sbin/reaper_punct"
+ #define RP_APPLIER_NAME	"reaper_punct"		/* its process name, for pids() */
+ #define RP_APPLIER_WAIT	70		/* s; the applier's own readiness wait is 60 */
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 775a25d5dd..1c6cbed45d 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -55,6 +55,7 @@
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
+ #include <netinet/ip_icmp.h>
++#include <netinet/icmp6.h>	/* IPv6 A6: ICMPv6 echo probe */
+ #include <sys/ioctl.h>
+ #include <net/if.h>
+ #include <linux/netlink.h>
+@@ -189,6 +190,7 @@ static ring_t *r_wan, *r_net[NNET], *r_cls[7], *r_cli[NCLI], *r_prb;
+ static char netname[NNET][16];
+ static int nnet = 0;
+ static cli_t cli[NCLI];
++static char cli6[NCLI][46];	/* IPv6 A6: runtime IPv6 label per row (not persisted) */
+ static int cli_hash[CLI_HASH];		/* v2.2.3: fnv(cli.key) -> slot; -1 = empty */
+ static flow_t *flows;			/* conntrack-fallback delta table */
+ static uint32_t flowgen = 0;
+@@ -813,81 +815,19 @@ static int arp_mac(const char *ip, char *mac, size_t maclen)
+ 
+ /* IPv6 neighbour cache (v2.4.4). /proc/net/arp has no IPv6 counterpart, so a
+  * netlink dump is the only fork-free way to turn a LAN IPv6 address into the
+- * MAC the device rows are keyed on. Addresses are held in BINARY and compared
+- * with memcmp: conntrack prints %pI6c and inet_ntop would agree today, but
+- * comparing the 16 bytes removes any dependence on textual form.
+- * Only neighbours on a BRIDGE are kept - a neighbour on ppp0/eth0 is the ISP's
+- * router, not a client, and giving it a device row would be wrong. NND is sized
+- * for NCLI devices holding several addresses each (SLAAC + privacy + link-local). */
++ * MAC the device rows are keyed on. Since the 2026-10-07 IPv6 pass the dump
++ * lives in shared/reaper_nd.c (this code, lifted out so httpd and gkd read the
++ * kernel the same way); only neighbours on a BRIDGE are kept, addresses are
++ * binary and compared with memcmp. NND is sized for NCLI devices holding
++ * several addresses each (SLAAC + privacy + link-local). Any failure leaves the
++ * table empty - v6 unattributed, never wrongly attributed. */
+ #define NND	768
+-static struct { unsigned char ip[16]; char mac[24]; char br[16]; } nd_tbl[NND];
++static struct reaper_nd nd_tbl[NND];
+ static int nd_n = 0;
+ 
+-/* Any failure here leaves the table empty. That degrades to the pre-v2.4.4
+- * behaviour - v6 simply unattributed - never to a wrong attribution. */
+ static void nd_refresh(void)
+ {
+-	struct { struct nlmsghdr nh; struct ndmsg nd; } req;
+-	struct timeval tv;
+-	char buf[16384];
+-	int fd, len;
+-
+-	nd_n = 0;
+-	if ((fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) < 0) return;
+-	tv.tv_sec = 1; tv.tv_usec = 0;
+-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+-
+-	memset(&req, 0, sizeof(req));
+-	req.nh.nlmsg_len   = NLMSG_LENGTH(sizeof(struct ndmsg));
+-	req.nh.nlmsg_type  = RTM_GETNEIGH;
+-	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+-	req.nh.nlmsg_seq   = 1;
+-	req.nd.ndm_family  = AF_INET6;
+-	if (send(fd, &req, req.nh.nlmsg_len, 0) < 0) { close(fd); return; }
+-
+-	while ((len = recv(fd, buf, sizeof(buf), 0)) > 0) {
+-		struct nlmsghdr *nh = (struct nlmsghdr *)buf;
+-		for (; NLMSG_OK(nh, (unsigned int)len); nh = NLMSG_NEXT(nh, len)) {
+-			struct ndmsg *ndm;
+-			struct rtattr *rta;
+-			const unsigned char *dst = NULL, *lla = NULL;
+-			char ifn[IF_NAMESIZE];
+-			int rlen, llalen = 0;
+-
+-			if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR)
+-				goto done;
+-			if (nh->nlmsg_type != RTM_NEWNEIGH) continue;
+-			ndm = (struct ndmsg *)NLMSG_DATA(nh);
+-			if (ndm->ndm_family != AF_INET6) continue;
+-			/* FAILED/INCOMPLETE carry no usable link address */
+-			if (!(ndm->ndm_state & (NUD_REACHABLE | NUD_STALE | NUD_DELAY |
+-						NUD_PROBE | NUD_PERMANENT)))
+-				continue;
+-			if (!if_indextoname(ndm->ndm_ifindex, ifn)) continue;
+-			if (strncmp(ifn, "br", 2) != 0) continue;	/* LAN side only */
+-
+-			rta  = (struct rtattr *)((char *)ndm + NLMSG_ALIGN(sizeof(*ndm)));
+-			rlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ndm));
+-			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
+-				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
+-					dst = RTA_DATA(rta);
+-				else if (rta->rta_type == NDA_LLADDR) {
+-					lla = RTA_DATA(rta);
+-					llalen = RTA_PAYLOAD(rta);
+-				}
+-			}
+-			if (!dst || !lla || llalen != 6) continue;
+-			if (nd_n >= NND) goto done;
+-			memcpy(nd_tbl[nd_n].ip, dst, 16);
+-			snprintf(nd_tbl[nd_n].mac, sizeof(nd_tbl[0].mac),
+-				 "%02x:%02x:%02x:%02x:%02x:%02x",
+-				 lla[0], lla[1], lla[2], lla[3], lla[4], lla[5]);
+-			strlcpy(nd_tbl[nd_n].br, ifn, sizeof(nd_tbl[0].br));
+-			nd_n++;
+-		}
+-	}
+-done:
+-	close(fd);
++	nd_n = reaper_nd_load(nd_tbl, NND);
+ }
+ 
+ /* v6 address -> MAC + the bridge it sits behind (linear scan, as arp_mac) */
+@@ -904,6 +844,23 @@ static int nd_lookup(const unsigned char *ip6, char *mac, size_t maclen,
+ 	return 0;
+ }
+ 
++/* IPv6 A6 (2026-10-07): each MAC-keyed row's first global IPv6 address, as a
++ * RUNTIME label only - cli_t.ip is the persisted IPv4 field (see cli_slot_keep)
++ * and the on-disk layout does not change. Refreshed with the neighbour cache. */
++static void cli6_refresh(void)
++{
++	int i;
++	for (i = 0; i < NCLI; i++) {
++		unsigned char a[16];
++		if (!cli[i].used || !strchr(cli[i].key, ':') || !reaper_nd_addr_of(nd_tbl, nd_n, cli[i].key, a)) {
++			cli6[i][0] = '\0';
++			continue;
++		}
++		if (!inet_ntop(AF_INET6, a, cli6[i], sizeof(cli6[i])))
++			cli6[i][0] = '\0';
++	}
++}
++
+ /* The router's own IPv6 addresses, so router-sourced v6 lands in the Router
+  * bucket instead of a client row - the v6 counterpart of the lan_ip test. */
+ #define NSELF6	32
+@@ -1200,6 +1157,7 @@ static void poll_conntrack(void);	/* fwd decl - fallback */
+  * (the chealth array they fill is declared further down) */
+ static void hp_count_begin(void);
+ static void hp_count_conn(const char *src, const char *line);
++static void hp_count_conn6(const char *src, const char *line);	/* IPv6 A6 */
+ static void hp_count_publish(void);
+ 
+ struct fcf {
+@@ -1212,7 +1170,7 @@ struct fcf {
+ 
+ /* reaper v2.0.6: resident first-seen table for the Connections page (true age).
+  * Keyed by the nf_conn pointer; records when each flow was first observed and
+- * writes /tmp/reaper_conn_seen for do_reaper_conn_cgi. A briefly-idle flow
++ * writes /tmp/reaper/reaper_conn_seen for do_reaper_conn_cgi. A briefly-idle flow
+  * (temporarily dropped from the delta list, which happens to any flow that is
+  * quiet for a sample - poll_fcache skips zero-delta flows) keeps its start
+  * time instead of resetting.
+@@ -1259,7 +1217,7 @@ static void connseen_update(struct fcf *fl, int nfl)
+ 	 * existing entry - so when nothing was added or evicted the on-disk content
+ 	 * is byte-identical and the ~40 KB rewrite is pure waste (v2.0.6 rewrote it
+ 	 * every poll regardless; the reader keys by nfc and never checks mtime). */
+-	if (dirty && (cf = fopen("/tmp/reaper_conn_seen", "w")) != NULL) {
++	if (dirty && (cf = fopen("/tmp/reaper/reaper_conn_seen", "w")) != NULL) {
+ 		for (i = 0; i < connseen_n; i++)
+ 			fprintf(cf, "%llx %ld\n",
+ 				(unsigned long long)connseen[i].nfc, (long)connseen[i].seen);
+@@ -1267,6 +1225,18 @@ static void connseen_update(struct fcf *fl, int nfl)
+ 	}
+ }
+ 
++/* 2026-10-08: a flow-cache tuple "<a.b.c.d:port>" has exactly one colon before its closing bracket. An IPv6
++ * tuple ("<2001:470:...:443>") matched "<%23[0-9.]:%d>" on its first group and became address "2001",
++ * port 470 (owner: Connections rows "2001" -> "2001:470"). IPv6 flows are read from conntrack instead. */
++static int fc_tuple_is_v4(const char *p)
++{
++	int colons = 0;
++	if (!p || *p != '<') return 0;
++	for (p++; *p && *p != '>'; p++)
++		if (*p == ':') colons++;
++	return *p == '>' && colons == 1;
++}
++
+ static void poll_fcache(void)
+ {
+ 	FILE *f = fopen("/proc/fcache/nflist", "r");
+@@ -1308,8 +1278,10 @@ static void poll_fcache(void)
+ 			continue;
+ 		/* src ip:port = 1st <...>, dst ip:port = 2nd <...> */
+ 		if ((p = strchr(line, '<')) == NULL) continue;
++		if (!fc_tuple_is_v4(p)) continue;	/* IPv6 flow: counted from conntrack */
+ 		if (sscanf(p, "<%23[0-9.]:%d>", sips, &sport) != 2) continue;
+ 		if ((q = strchr(p + 1, '<')) == NULL) continue;
++		if (!fc_tuple_is_v4(q)) continue;
+ 		if (sscanf(q, "<%23[0-9.]:%d>", dips, &dport) != 2) continue;
+ 		/* MAC SA = 3rd <...>; MAC DA = 4th; then RxDev TxDev nf_conn[0] */
+ 		macs[0] = rxdev[0] = txdev[0] = nfcs[0] = '\0';
+@@ -1447,6 +1419,7 @@ static void poll_conntrack(void)
+ 	arp_refresh();		/* load /proc/net/arp ONCE per poll, not per flow */
+ 	nd_refresh();		/* ...and the v6 neighbour cache, same deal */
+ 	self6_refresh();
++	cli6_refresh();		/* IPv6 A6: the rows' runtime IPv6 labels */
+ 	brsub_refresh();	/* bridges can appear when a guest network is created */
+ 	netlbl_refresh();	/* ...and their VLAN/SDN identity with them (cached 30 s) */
+ 	while (fgets(line, sizeof(line), f)) {
+@@ -1468,7 +1441,10 @@ static void poll_conntrack(void)
+ 		sscanf(p, "src=%63s", src);
+ 		/* v3.3.5: the health probe's count, from this same line - the probe used
+ 		 * to read the whole table a second time on its own */
+-		if (hcount && !v6 && strcmp(proto, "tcp") == 0) hp_count_conn(src, line);
++		if (hcount && strcmp(proto, "tcp") == 0) {
++			if (!v6) hp_count_conn(src, line);
++			else hp_count_conn6(src, line);	/* IPv6 A6 */
++		}
+ 		if ((p = strstr(p, "dst=")) == NULL) continue;
+ 		sscanf(p, "dst=%63s", dst);
+ 		if ((p = strstr(p, "sport=")) != NULL) sscanf(p, "sport=%d", &sport);
+@@ -1773,7 +1749,8 @@ static void write_hist(int which, const char *fn, int step)
+ 		int first = 1;
+ 		for (i = 0; i < NCLI; i++) {
+ 			if (!cli[i].used) continue;
+-			fprintf(o, "%s\"%s\":{\"ip\":\"%s\",\"d\":", first ? "" : ",", jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)));
++			fprintf(o, "%s\"%s\":{\"ip\":\"%s\",", first ? "" : ",", jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)));
++			fprintf(o, "\"ip6\":\"%s\",\"d\":", jesc(cli6[i], eb, sizeof(eb)));	/* IPv6 A6 */
+ 			json_ring(o, r_cli[i], which);
+ 			fputc('}', o);
+ 			first = 0;
+@@ -1828,8 +1805,9 @@ static void write_live(const char *store)
+ 		if (!cli[i].used || (lv_cli_rx[i] == 0 && lv_cli_tx[i] == 0)) continue;
+ 		/* key is the client MAC when the flow carried one (IP fallback
+ 		 * otherwise) - the page shows it only when it looks like a MAC */
+-		fprintf(o, "%s{\"ip\":\"%s\",\"mac\":\"%s\",\"dn\":%llu,\"up\":%llu}", first ? "" : ",",
+-			jesc(cli[i].ip, eb, sizeof(eb)), jesc(cli[i].key, eb2, sizeof(eb2)),
++		fprintf(o, "%s{\"ip\":\"%s\",\"mac\":\"%s\",", first ? "" : ",",
++			jesc(cli[i].ip, eb, sizeof(eb)), jesc(cli[i].key, eb2, sizeof(eb2)));
++		fprintf(o, "\"ip6\":\"%s\",\"dn\":%llu,\"up\":%llu}", jesc(cli6[i], eb, sizeof(eb)),	/* IPv6 A6 */
+ 			(unsigned long long)lv_cli_rx[i], (unsigned long long)lv_cli_tx[i]);
+ 		first = 0;
+ 	}
+@@ -1886,6 +1864,7 @@ static chealth_t chealth[NCLI];
+  * runs before this array is in scope, hence the forward declaration above. */
+ static void cli_health_reset(int slot) { memset(&chealth[slot], 0, sizeof(chealth[0])); }
+ static int hp_fd = -1;
++static int hp_fd6 = -1;	/* IPv6 A6: ICMPv6 echo socket, best effort */
+ static int hp_disabled = 0;
+ static uint16_t hp_id = 0;
+ static int hp_ip_hash[CLI_HASH];	/* v2.2.4: fnv(ip)->slot, rebuilt per scan for O(1) conn attribution */
+@@ -1926,6 +1905,18 @@ static int hp_open(void)
+ 	fl = fcntl(hp_fd, F_GETFL, 0);
+ 	fcntl(hp_fd, F_SETFL, fl | O_NONBLOCK);
+ 	fcntl(hp_fd, F_SETFD, FD_CLOEXEC);
++	/* IPv6 A6: a second raw socket for ICMPv6 echo (the kernel fills its checksum;
++	 * the filter passes echo replies only). Best effort: without it an IPv6-only
++	 * device keeps its TCP metrics, as before. */
++	if (hp_fd6 < 0 && (hp_fd6 = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6)) >= 0) {
++		struct icmp6_filter flt;
++		ICMP6_FILTER_SETBLOCKALL(&flt);
++		ICMP6_FILTER_SETPASS(ICMP6_ECHO_REPLY, &flt);
++		setsockopt(hp_fd6, IPPROTO_ICMPV6, ICMP6_FILTER, &flt, sizeof(flt));
++		fl = fcntl(hp_fd6, F_GETFL, 0);
++		fcntl(hp_fd6, F_SETFL, fl | O_NONBLOCK);
++		fcntl(hp_fd6, F_SETFD, FD_CLOEXEC);
++	}
+ 	hp_id = (uint16_t)(getpid() & 0xffff);
+ 	return 1;
+ }
+@@ -1988,7 +1979,26 @@ static int health_send_step(void)
+ 	for (; hp_send_cur < NCLI && sent < HSEND_PER_TICK; hp_send_cur++) {
+ 		int i = hp_send_cur;
+ 		if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
+-		if (!cli[i].ip[0] || inet_aton(cli[i].ip, &to.sin_addr) == 0) continue;
++		if (!cli[i].ip[0] || inet_aton(cli[i].ip, &to.sin_addr) == 0) {
++			/* IPv6 A6: an IPv6-only device is probed over ICMPv6, same id/seq scheme */
++			struct icmp6_hdr p6;
++			struct sockaddr_in6 to6;
++
++			if (hp_fd6 < 0 || !cli6[i][0]) continue;
++			memset(&to6, 0, sizeof(to6));
++			to6.sin6_family = AF_INET6;
++			if (inet_pton(AF_INET6, cli6[i], &to6.sin6_addr) != 1) continue;
++			memset(&p6, 0, sizeof(p6));
++			p6.icmp6_type = ICMP6_ECHO_REQUEST;
++			p6.icmp6_id = htons(hp_id);
++			p6.icmp6_seq = htons((uint16_t)i);
++			chealth[i].pending = 1;
++			chealth[i].probed = 1;
++			chealth[i].tsend = now;
++			sendto(hp_fd6, &p6, sizeof(p6), 0, (struct sockaddr *)&to6, sizeof(to6));
++			sent++;
++			continue;
++		}
+ 		memset(&pkt, 0, sizeof(pkt));
+ 		pkt.type = ICMP_ECHO;
+ 		pkt.un.echo.id = htons(hp_id);
+@@ -2004,6 +2014,23 @@ static int health_send_step(void)
+ 	return hp_send_cur < NCLI;
+ }
+ 
++/* a reply for slot landed at now: fold it into the slot's RTT / jitter EWMAs */
++static void hp_rtt_update(int slot, const struct timespec *now)
++{
++	float ms = (now->tv_sec - chealth[slot].tsend.tv_sec) * 1000.0f
++		 + (now->tv_nsec - chealth[slot].tsend.tv_nsec) / 1000000.0f;
++	if (ms < 0) ms = 0;
++	if (chealth[slot].rtt_ms <= 0) {
++		chealth[slot].rtt_ms = ms;
++	} else {
++		float d = ms - chealth[slot].rtt_ms;
++		if (d < 0) d = -d;
++		chealth[slot].jit_ms = chealth[slot].jit_ms * 0.75f + d * 0.25f;
++		chealth[slot].rtt_ms = chealth[slot].rtt_ms * 0.7f + ms * 0.3f;
++	}
++	chealth[slot].pending = 0;	/* received */
++}
++
+ /* non-blocking drain of any echo replies that have arrived (called each tick
+  * while a cycle is open); updates rtt/jitter EWMA and clears pending */
+ static void health_drain(void)
+@@ -2041,20 +2068,26 @@ static void health_drain(void)
+ 			if (!cli[slot].ip[0] || inet_aton(cli[slot].ip, &want) == 0) continue;
+ 			if (from.sin_addr.s_addr != want.s_addr) continue;
+ 		}
+-		{
+-			float ms = (now.tv_sec - chealth[slot].tsend.tv_sec) * 1000.0f
+-				 + (now.tv_nsec - chealth[slot].tsend.tv_nsec) / 1000000.0f;
+-			if (ms < 0) ms = 0;
+-			if (chealth[slot].rtt_ms <= 0) {
+-				chealth[slot].rtt_ms = ms;
+-			} else {
+-				float d = ms - chealth[slot].rtt_ms;
+-				if (d < 0) d = -d;
+-				chealth[slot].jit_ms = chealth[slot].jit_ms * 0.75f + d * 0.25f;
+-				chealth[slot].rtt_ms = chealth[slot].rtt_ms * 0.7f + ms * 0.3f;
+-			}
+-			chealth[slot].pending = 0;	/* received */
+-		}
++		hp_rtt_update(slot, &now);
++	}
++	/* IPv6 A6: the ICMPv6 replies (a v6 raw socket delivers no IP header). The
++	 * same guard as above: only the address this slot was probed at counts. */
++	while (hp_fd6 >= 0) {
++		struct sockaddr_in6 from6;
++		struct icmp6_hdr *i6;
++		struct in6_addr want;
++		int slot;
++		fl = sizeof(from6);
++		n = recvfrom(hp_fd6, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from6, &fl);
++		if (n <= 0) break;
++		if (n < (ssize_t)sizeof(struct icmp6_hdr)) continue;
++		i6 = (struct icmp6_hdr *)buf;
++		if (i6->icmp6_type != ICMP6_ECHO_REPLY || ntohs(i6->icmp6_id) != hp_id) continue;
++		slot = ntohs(i6->icmp6_seq);
++		if (slot < 0 || slot >= NCLI || !chealth[slot].pending) continue;
++		if (!cli6[slot][0] || inet_pton(AF_INET6, cli6[slot], &want) != 1) continue;
++		if (memcmp(&from6.sin6_addr, &want, 16) != 0) continue;
++		hp_rtt_update(slot, &now);
+ 	}
+ }
+ 
+@@ -2086,6 +2119,19 @@ static void hp_count_conn(const char *src, const char *line)
+ 	if (strstr(line, "ESTABLISHED")) chealth[slot].te_next++;
+ }
+ 
++/* IPv6 A6: the same count for an IPv6 TCP entry. The neighbour cache is the LAN
++ * test (there is no subnet to compare) and its MAC names the tracked row. */
++static void hp_count_conn6(const char *src, const char *line)
++{
++	unsigned char a[16];
++	char mac[20];
++	int slot;
++	if (inet_pton(AF_INET6, src, a) != 1 || !nd_lookup(a, mac, sizeof(mac), NULL)) return;
++	if ((slot = cli_index_get(mac)) < 0) return;
++	chealth[slot].tcp_next++;
++	if (strstr(line, "ESTABLISHED")) chealth[slot].te_next++;
++}
++
+ static void hp_count_publish(void)
+ {
+ 	int i;
+@@ -2098,18 +2144,18 @@ static void hp_count_publish(void)
+ static void write_health(void)
+ {
+ 	FILE *o = fopen("/tmp/rtraf/.health.json", "w");
+-	char eb[80], eb2[80];
++	char eb[80], eb2[80], eb3[80];
+ 	int i, first = 1;
+ 	time_t now = time(NULL);
+ 	if (!o) return;
+ 	fprintf(o, "{\"now\":%lld,\"iv\":%d,\"devices\":[", (long long)now, cfg_hint);
+ 	for (i = 0; i < NCLI; i++) {
+ 		if (!cli[i].used || strcmp(cli[i].key, RT_DEVKEY) == 0) continue;
+-		fprintf(o, "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"rtt_ms\":%.1f,\"jitter_ms\":%.1f,"
++		fprintf(o, "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"ip6\":\"%s\",\"rtt_ms\":%.1f,\"jitter_ms\":%.1f,"
+ 			   "\"loss_pct\":%.1f,\"tcp_estab\":%d,\"tcp_total\":%d,"
+ 			   "\"dn_bps\":%llu,\"up_bps\":%llu,\"online\":%d}",
+ 			first ? "" : ",",
+-			jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)),
++			jesc(cli[i].key, eb, sizeof(eb)), jesc(cli[i].ip, eb2, sizeof(eb2)), jesc(cli6[i], eb3, sizeof(eb3)),
+ 			chealth[i].probed ? chealth[i].rtt_ms : 0.0f,
+ 			chealth[i].probed ? chealth[i].jit_ms : 0.0f,
+ 			chealth[i].probed ? chealth[i].loss : 0.0f,
+@@ -2148,10 +2194,11 @@ static void write_health(void)
+ 						 * rtraf.db, which db_load NUL-terminates but does not
+ 						 * charset-check - a quote or newline there injects
+ 						 * label text into the OpenMetrics stream. */
+-						char eb[64], eb2[64];
++						char eb[64], eb2[64], eb3[64];
+ 						jesc(cli[i].key, eb, sizeof(eb));
+ 						jesc(cli[i].ip, eb2, sizeof(eb2));
+-						fprintf(m, "%s{mac=\"%s\",ip=\"%s\"} ", fam[k].name, eb, eb2);
++						jesc(cli6[i], eb3, sizeof(eb3));	/* IPv6 A6: empty = no label, same series as before */
++						fprintf(m, "%s{mac=\"%s\",ip=\"%s\",ip6=\"%s\"} ", fam[k].name, eb, eb2, eb3);
+ 					}
+ 					switch (k) {
+ 					case 0: fprintf(m, "%.1f\n", chealth[i].probed ? chealth[i].rtt_ms : 0.0f); break;
+@@ -2594,7 +2641,7 @@ int main(int argc, char **argv)
+ {
+ 	/* Phase 3 F5: rtrafd is xstart'd from rc, which runs umask(0), so every
+ 	 * fopen("w") here would create a WORLD-WRITABLE 0666 file - notably
+-	 * /tmp/reaper_conn_seen, whose contents httpd renders into the admin
++	 * /tmp/reaper/reaper_conn_seen, whose contents httpd renders into the admin
+ 	 * Connections feed. Drop it to owner-only for everything this daemon
+ 	 * writes. */
+ 	umask(077);
+@@ -2625,7 +2672,8 @@ int main(int argc, char **argv)
+ 		if (!ok) { syslog(LOG_ERR, "rtrafd: out of memory during init"); return 1; }
+ 	}
+ 
+-	mkdir("/tmp/rtraf", 0700);
++	reaper_secure_dir("/tmp/rtraf", 0700);
++	reaper_secure_dir(REAPER_TMPDIR, 0700);	/* reaper_conn_seen lives there (2026-10-09) */
+ 	f_write_string("/proc/sys/net/netfilter/nf_conntrack_acct", "1", 0, 0);
+ 
+ 	strlcpy(wanif, get_wan_ifname(wan_primary_ifunit()), sizeof(wanif));
+-- 
+2.25.1
+

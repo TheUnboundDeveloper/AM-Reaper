@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.3.6** · 2026-10-07 <!--@stamp-->
+> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.3.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -124,6 +124,7 @@ This guide is written for someone who will install and run the firmware: technic
    - 4.13 [Diagnostics](#413-diagnostics)
    - 4.14 [Firmware](#414-firmware)
    - 4.14a [Resolver health check](#414a-resolver-health-check-administration--dns-failover-v311)
+   - 4.14b [Device names across networks](#414b-device-names-across-networks-administration--dns-failover)
    - 4.15 [About](#415-about)
    - 4.16 [AI Advisor (MCP build only)](#416-ai-advisor-mcp-build-only)
    - 4.17 [Administration → Tweaks: the Reaper setting](#417-administration--tweaks-the-reaper-setting)
@@ -1264,6 +1265,15 @@ There is one master name store behind that, deliberately, because there used not
 
 **Widen pool** extends the DHCP range toward the usable subnet when the pool is tight.
 
+**IPv6.** The IP column also shows a device's IPv6 address (its first global one, learned from the router's
+neighbour table and from DHCPv6 leases), and a device that has only an IPv6 address is chipped *IPv6 only*
+rather than *No lease*. **Pin IPv6** reserves a DHCPv6 address the same way: you give only the host part
+(`::10`, or up to four hex groups), the router prepends whatever IPv6 prefix it currently holds, so the
+reservation survives a prefix change from your provider, and the device is matched by its hardware address.
+The reservation takes effect when the device next renews or reconnects; it rides along in a full backup.
+Devices that do not run a DHCPv6 client (most Android, some IoT) keep choosing their own addresses and cannot
+be pinned - that is the device, not the router.
+
 #### 4.8.3 The Network Ledger
 
 The ledger card flags things that will bite you later:
@@ -1286,7 +1296,7 @@ Wired versus wireless is read from the LAN bridge's forwarding table rather than
 
 Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Search matches name, address or hardware address.
 
-**Export list** saves the whole inventory as CSV, JSON or HTML.
+**Export list** saves the whole inventory as CSV, JSON or HTML, with an `ipv6` column beside the IPv4 one.
 
 > **The export is unsanitised.** It contains every device name, hardware address and IP address on your network. It is meant for your own records. Do not attach it to a forum post or a bug report — unlike the diagnostic bundle (4.13), nothing in it is redacted.
 
@@ -1313,6 +1323,14 @@ Switching **Names** off removes the table. Switching it back on runs a one-off r
 flight, through the router's own resolver, so the column fills at once; those names are shown in italics because they are
 what the address's owner registered rather than what the device asked for, and each is replaced the moment a real DNS
 reply for that address is seen. The lookup runs only on that switch, never at boot.
+
+**IPv6.** IPv6 connections are listed too, with addresses in brackets (`[2606:4700::6810:84e5]:443`) and
+named from the same DNS listener (AAAA replies are kept alongside A records). They come from the kernel's
+connection tracker rather than the flow accelerator, which does not report its IPv6 flows to the page, so an
+IPv6 row shows an *IPv6* badge instead of Runner/CPU and is left out of the accelerated-share cards and
+filters; rate, bytes, state and age behave as for IPv4. The device side of an IPv6 flow is recognised through
+the router's neighbour table, so a flow neither end of which is a LAN device (transit through a tunnel, for
+instance) is not shown.
 
 **When to use it.** To see what a device is talking to right now, to confirm that bulk traffic is hardware-accelerated, or to understand why a WireGuard Policy Routing rule cost acceleration (you will see the affected flows on the CPU path).
 
@@ -1533,7 +1551,12 @@ IPv6 server named while IPv6 is off is refused by the page, and a daemon that fi
 switched off later) idles and says so once in the system log. After the number
 of **misses** you set it moves that server to the **end of the router's upstream list** and reloads
 dnsmasq, so the first server asked is one that answers; after the number of **hits** you set it puts the
-server back first. You choose the interval, the reply timeout, the name queried, and whether any reply
+server back first. A server reachable over both families (its IPv6 address in the second field) is probed
+over both every time: its IPv6 line is kept directly behind its IPv4 line whatever order the firmware wrote,
+a face that stops answering is moved behind the other servers on its own while the live face keeps the
+server's place, and the DNS intercept's gate closes for that family alone; the log names the face that
+moved and the moment it is back. While IPv6 is disabled on the router the IPv6 address is left alone
+entirely. You choose the interval, the reply timeout, the name queried, and whether any reply
 counts as alive or only a real answer. The **Status** line shows the live state and how long it has held;
 every switch is written to the system log with the reason. The server has to be in the router's own DNS
 list (the WAN DNS servers, or a VPN client's) for the move to have any effect, and clients that talk to
@@ -1545,12 +1568,125 @@ them every 50 queries and settling on the fastest, which sends a share of every 
 Pair the two: strict order keeps the LAN resolver first while it is healthy, the health check supplies
 the memory of a dead one that strict order lacks.
 
+**Device names across networks**, the next switch on this tab, has its own section: 4.14b.
+
 One more switch sits beneath, for the layout where **clients are handed the router alone as their DNS**
 and the router forwards to the LAN filter, which makes the failover complete (no client ever retries)
 and catches devices with a hard-coded DNS when paired with the port-53 intercept.
 **Router DNS cache** off turns the router into a pure forwarder: a per-client decision is never served
 from the router's cache to a different client, and the filter sees every lookup, as it does when clients
 talk to it directly. The filter keeps its own cache.
+
+### 4.14b Device names across networks (Administration → DNS Failover)
+
+**What it does.** The router runs one resolver for the main LAN and one for each VLAN (each network you
+create in the Network editor). Each knows the names of only its own devices: the host name a device sent
+when it took its address over DHCP. Without help, a reverse lookup (address to name) for a device on
+another network fails. This switch connects them, in both directions:
+
+- the main LAN's resolver passes a lookup for a VLAN address to that VLAN's resolver;
+- each VLAN's resolver passes a lookup for a main-LAN address to the main LAN's resolver.
+
+The point is a DNS filter that lives on a VLAN. AdGuard Home on VLAN 52 asks its gateway who
+192.168.50.97 is and gets the PC's name back, so its query log and per-client view show names.
+
+**What is shared, and what never is.**
+
+| Network | Shares names with the main LAN |
+|---|---|
+| Main LAN | yes, with every eligible VLAN |
+| A VLAN you created (Customized, Kids, IoT, Employee, VPN, MLO profiles) | yes |
+| Guest or Portal profile, or any network with a captive portal | never, either way |
+| One VLAN with another VLAN | never |
+
+Anyone on a shared network can list the device names of the other side by asking for each address in
+turn. That is why guest-type networks are left out. Turn the switch off to keep every network's names to
+itself.
+
+**Turning it on or off.** Administration → DNS Failover → **Device names across networks**. It is on by
+default. Changing it restarts the router's resolvers, a pause of about a second. Adding, removing,
+readdressing or retyping a network restarts them once by itself, so the new network is covered without a
+reboot. The system log says `networks changed - restarting the resolvers so each one can name the others'
+devices` when that happens. The switch does nothing when **Forward local domain queries to upstream DNS**
+(WAN → Internet Connection → WAN DNS Setting) is on, because the router then sends private reverse lookups upstream by your choice.
+
+**Using it with a DNS filter on a VLAN.** Point the filter's reverse lookups at its own gateway, the
+VLAN's router address. The router does the rest.
+
+- *AdGuard Home:* Settings → DNS settings → **Private reverse DNS servers** = the VLAN gateway, for example
+  `10.20.0.1`. Tick **Use private reverse DNS resolvers**. One address is enough; do not list the main
+  LAN's router address, because AdGuard on a VLAN cannot reach that resolver directly.
+- *Pi-hole:* Settings → DNS → **Conditional forwarding**: local network in CIDR = the network you want
+  names for (for example `192.168.50.0/24`), router IP = the VLAN gateway (`10.20.0.1`).
+
+Devices on the main LAN need nothing: they ask the router as always.
+
+**Checking it.** From a computer on either network:
+
+```
+nslookup 192.168.50.97 10.20.0.1      # a main-LAN address, asked of the VLAN gateway
+nslookup 10.20.0.98 192.168.50.1      # a VLAN address, asked of the main router address
+```
+
+Both should return a name. On the router (SSH), the lines the firmware wrote:
+
+```
+grep rev-server /etc/dnsmasq.conf /etc/dnsmasq-*.conf
+```
+
+The main file lists each eligible VLAN, each VLAN file lists the main LAN, and no file lists its own
+network.
+
+**What stays on the router, and what does not.** A reverse lookup for a private IPv4 address never
+leaves the router. The lines the firmware writes name only the router's own addresses, so the question
+goes from one resolver to the other inside the router. Any private range that is not one of your networks
+is answered "no such name" on the spot (dnsmasq's `bogus-priv`). A filter such as AdGuard Home sends
+private reverse lookups only to its private reverse server, the VLAN gateway, never upstream. Two cases
+differ:
+
+- **Forward local domain queries to upstream DNS** (WAN → Internet Connection → WAN DNS Setting) turns
+  `bogus-priv` off and sends private reverse lookups to your upstream DNS, as stock firmware does. This
+  feature then stands aside. Leave that setting off to keep these lookups at home.
+- **IPv6 addresses from a public prefix are not private.** A tunnel broker or ISP prefix (for example
+  `2001:470:xxxx::/48`) is public address space, so a reverse lookup for one of your IPv6 devices goes
+  through your filter to the internet and on to the prefix owner. It carries the address, not a device
+  name. To keep those lookups in, tell the filter the prefix is local. In AdGuard Home, add it to
+  `dns.private_networks` in `AdGuardHome.yaml` (stop AdGuard first). Setting that list replaces
+  AdGuard's built-in private ranges, so list them too:
+
+  ```yaml
+  dns:
+    private_networks:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - fd00::/8
+      - 2001:470:xxxx::/48
+  ```
+
+  Then the reverse lookups for that prefix go to AdGuard's private reverse server instead. The router
+  has no IPv6 names to give back, so they end as "no such name" without leaving your network.
+
+**IPv6 device names** (the next switch, on by default) covers IPv6. Devices pick their own IPv6
+addresses (SLAAC and privacy addresses), so the router never hands them out and has no name for them. Once
+a minute the router matches each IPv6 address it sees on a network to the device using it and gives the
+address that device's IPv4 (DHCP) name. A reverse lookup of the address, and a forward lookup of the name,
+then answer with it: `DESKTOP-OIED9E5` also returns its current IPv6 addresses. Each network's own IPv6
+reverse zone is answered by the router and never sent upstream; between networks the same main LAN / VLAN
+rule applies as for IPv4. A device that has no DHCP name gets none for IPv6 either. The switch does nothing
+while IPv6 is off on the router. For AdGuard on a VLAN, mark your IPv6 prefix as private (see above) so its
+IPv6 reverse lookups come to the router.
+
+**If you set this up by hand before.** A `rev-server=` line you added to `/jffs/configs/dnsmasq.conf.add`
+or `/jffs/configs/dnsmasq-<n>.conf.add` keeps working and wins over the firmware's line. It is no longer
+needed. Delete the file, or just that line, then run `service restart_dnsmasq` or toggle the switch.
+
+**Limits.**
+
+- IPv6 names come from the **IPv6 device names** switch below, not from this one.
+- A device gets a name only if it took its address from the router by DHCP and sent a host name. A device
+  with a fixed address configured on the device itself has no name to share.
+- The name is the device's own DHCP host name, not the friendly name you set on the Devices page.
 
 ### 4.15 About
 
@@ -1568,6 +1704,12 @@ Its fences: **off by default** and never started at boot; **LAN only** (it binds
 2. Set the **LAN port**, **Session timeout** and optional client-IP pin; **Save settings**.
 3. When you want a session: enter the code, optionally tick **Allow network diagnostics** (bounded, read-only ping / traceroute / DNS / netstat — off by default, per session, never persisted), and press **Arm**. The page shows the endpoint, a bearer token (shown once) and a **Claude Desktop config snippet** to copy.
 4. Point your AI client at the endpoint. **Disable now** ends the session early.
+
+**IPv6.** When the router holds an IPv6 address on the LAN, the Advisor also listens on it and the page shows
+a second line, **Endpoint (IPv6)** (`https://[2001:db8::1]:port/mcp`). The same fences apply: it binds the
+LAN's own address only, never every address, and the matching firewall rule is opened for the session.
+A client-IP pin may be an IPv4 or an IPv6 literal; a pinned session answers only on the family it was
+pinned on.
 
 **Limits.** Repeated wrong codes lock arming temporarily. The diagnostics tier refuses loopback, link-local, ULA and private targets that are not on this router's own LAN, so it cannot be turned into an internal scanner; every probe is logged. If the key is lost, only a factory reset clears the USB factor.
 
@@ -1709,6 +1851,8 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
 | Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
+| A DNS filter on a VLAN (AdGuard, Pi-hole) shows main-LAN devices as bare addresses | Administration → DNS Failover: **Device names across networks**; the filter's private reverse setting | Turn the switch on and point the filter's private reverse server at the VLAN's gateway, not the main router address (4.14b). Guest and Portal networks are never shared. |
+| A reverse lookup between networks returns NXDOMAIN with the switch on | `grep rev-server /etc/dnsmasq*.conf`; WAN → Internet Connection | Check the network is not a Guest or Portal profile and has no captive portal; check **Forward local domain queries** is off; a device with a fixed address has no DHCP name to return (4.14b). |
 | Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on, and 80 MHz or wider: a fixed width, or Auto bandwidth with Minimum width on Auto. |
 | Dynamic puncturing never switches anything off | Wireless Quality › Dynamic puncturing card; log `rpunctd` | Usually correct: the channel is clean, the busy slice is short-lived, or the gain is below the minimum. At 320 MHz Passive telemetry can act only on the secondary 80 MHz; a busy far half logs "needs a confirmation scan" - choose a scan source if you want it resolved. |
 | Dynamic puncturing is set but the card shows no radio | Diag section 7 "dynamic puncturing: daemon=" | The controller is not running; the rwatch tick restarts it within five minutes and says so in the log. If it stays down, report it with a diagnostics report. |

@@ -1,0 +1,1213 @@
+From 2ff9864886bb28cae458faee37907e48f9f7144a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:26:06 -0400
+Subject: [PATCH] shared: IPv6 neighbour cache, DHCPv6 reservations, resolver
+ order, reverse zones, IPv6 names, private /tmp helper
+
+New helpers in libshared, each with a host suite:
+- reaper_nd: the LAN IPv6 neighbour cache (one netlink dump, bridges only),
+  shared by httpd, gkd and rtrafd - IPv6 address to MAC and back.
+- reaper_dhcp6: the DHCPv6 reservation list (MAC + host suffix).
+- reaper_resolv_order: keeps a dual-stack LAN resolver's IPv6 line directly
+  behind its IPv4 line, and moves a face that stops answering on its own.
+- reaper_revzone: the rev-server lines that let the main LAN and each VLAN
+  answer reverse lookups for each other.
+- reaper_v6names: the per-network IPv6 device-name lists.
+- reaper_tmpsafe: Reaper's /tmp directories (created root-only at boot from one
+  table, checked at each use), fresh files that never follow a link, atomic
+  writes, and the check that a script is root-owned and private before it runs.
+defaults.c gains reaper_dns_revshare and reaper_dns_v6names (both on);
+reaper_dnsmap.h moves to 16-byte keys for IPv6 names.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/shared/Makefile            |   6 +
+ release/src/router/shared/defaults.c          |   2 +
+ release/src/router/shared/reaper_dhcp6.c      |  85 +++++++++
+ release/src/router/shared/reaper_dhcp6.h      |  29 ++++
+ release/src/router/shared/reaper_dnsmap.h     |  87 +++++++---
+ release/src/router/shared/reaper_nd.c         | 162 ++++++++++++++++++
+ release/src/router/shared/reaper_nd.h         |  49 ++++++
+ .../src/router/shared/reaper_resolv_order.c   |  45 +++++
+ .../src/router/shared/reaper_resolv_order.h   |  41 +++++
+ release/src/router/shared/reaper_revzone.c    |  64 +++++++
+ release/src/router/shared/reaper_revzone.h    |  30 ++++
+ release/src/router/shared/reaper_tmpsafe.c    | 131 ++++++++++++++
+ release/src/router/shared/reaper_tmpsafe.h    |  71 ++++++++
+ release/src/router/shared/reaper_v6names.c    | 100 +++++++++++
+ release/src/router/shared/reaper_v6names.h    |  49 ++++++
+ release/src/router/shared/shared.h            |   8 +
+ 16 files changed, 935 insertions(+), 24 deletions(-)
+ create mode 100644 release/src/router/shared/reaper_dhcp6.c
+ create mode 100644 release/src/router/shared/reaper_dhcp6.h
+ create mode 100644 release/src/router/shared/reaper_nd.c
+ create mode 100644 release/src/router/shared/reaper_nd.h
+ create mode 100644 release/src/router/shared/reaper_resolv_order.c
+ create mode 100644 release/src/router/shared/reaper_resolv_order.h
+ create mode 100644 release/src/router/shared/reaper_revzone.c
+ create mode 100644 release/src/router/shared/reaper_revzone.h
+ create mode 100644 release/src/router/shared/reaper_tmpsafe.c
+ create mode 100644 release/src/router/shared/reaper_tmpsafe.h
+ create mode 100644 release/src/router/shared/reaper_v6names.c
+ create mode 100644 release/src/router/shared/reaper_v6names.h
+
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index ee9692659d..7f91f99473 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -225,6 +225,12 @@ OBJS += scripts.o
+ OBJS += gk_rl.o	# reaper v2.6.3: Gatekeeper device list store (/jffs, not nvram)
+ OBJS += reaper_dhcpname.o	# reaper v3.1.1: announced DHCP hostnames, kept apart from the lease file
+ OBJS += reaper_jfile.o	# reaper v2.6.7: generic /jffs text store + Policy Routing rule list
++OBJS += reaper_nd.o	# reaper 2026-10-07 IPv6 (0c): LAN IPv6 neighbour cache shared by httpd, gkd and rtrafd
++OBJS += reaper_tmpsafe.o	# reaper 2026-10-09 audit V3: private /tmp directories, fresh files, script checks
++OBJS += reaper_dhcp6.o	# reaper 2026-10-07 IPv6 (A3): DHCPv6 reservation list, shared by httpd and rc
++OBJS += reaper_resolv_order.o	# reaper 2026-10-08 dual-stack: order of a two-faced resolver in the DNS list (rc/rdnshc.c)
++OBJS += reaper_revzone.o	# reaper 2026-10-08: reverse DNS across networks, <net>/<len> for rev-server (rc/sdn.c)
++OBJS += reaper_v6names.o	# reaper 2026-10-08: IPv6 device names - lease parser + hosts renderer (rc/rv6names.c)
+ OBJS += llist.o
+ ifeq ($(RTCONFIG_HNS),y)
+ OBJS += hns_utils.o
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 3ae542ca42..c234e145f1 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3187,6 +3187,8 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_dnshc_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = only NOERROR with a record counts as alive */
+ 	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
+ 	{ "reaper_dns_nocache", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq cache-size=0 */
++	{ "reaper_dns_revshare", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: main LAN <-> VLAN reverse DNS (rev-server), owner: default on */
++	{ "reaper_dns_v6names", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: IPv6 device names (rc/rv6names.c), owner: default on */
+ 	{ "reaper_dot_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* stubby round_robin_upstreams: 0 (sequential DoT failover) */
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+diff --git a/release/src/router/shared/reaper_dhcp6.c b/release/src/router/shared/reaper_dhcp6.c
+new file mode 100644
+index 0000000000..5a24f28f2f
+--- /dev/null
++++ b/release/src/router/shared/reaper_dhcp6.c
+@@ -0,0 +1,85 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_dhcp6.c - DHCPv6 reservation list parser. Contract in reaper_dhcp6.h.
++ */
++#include <stdio.h>
++#include <string.h>
++#include <ctype.h>
++#include "reaper_dhcp6.h"
++
++int reaper_dhcp6_sfx_valid(const char *s)
++{
++	int groups = 0, digits = 0;
++
++	if (!s || s[0] != ':' || s[1] != ':' || !s[2])
++		return 0;
++	for (s += 2; *s; s++) {
++		if (*s == ':') {
++			if (!digits || ++groups > 3)
++				return 0;
++			digits = 0;
++		} else if (isxdigit((unsigned char)*s)) {
++			if (++digits > 4)
++				return 0;
++		} else
++			return 0;
++	}
++	return digits > 0;
++}
++
++/* "AA:BB:CC:DD:EE:FF" in any case -> upper-case copy; 0 when it is not a MAC */
++static int mac_canon(const char *s, size_t len, char *out)
++{
++	size_t i;
++
++	if (len != 17)
++		return 0;
++	for (i = 0; i < 17; i++) {
++		if ((i % 3) == 2) {
++			if (s[i] != ':')
++				return 0;
++			out[i] = ':';
++		} else {
++			if (!isxdigit((unsigned char)s[i]))
++				return 0;
++			out[i] = (char)toupper((unsigned char)s[i]);
++		}
++	}
++	out[17] = 0;
++	return strcmp(out, "00:00:00:00:00:00") != 0 && strcmp(out, "FF:FF:FF:FF:FF:FF") != 0;
++}
++
++int reaper_dhcp6_walk(const char *list, void (*cb)(const char *mac, const char *sfx, void *arg), void *arg)
++{
++	const char *p = list;
++	int n = 0;
++
++	if (!list || !cb)
++		return 0;
++	while ((p = strchr(p, '<')) != NULL) {
++		const char *gt, *end;
++		char mac[18], sfx[REAPER_DHCP6_SFX_MAX + 1];
++		size_t l, i;
++
++		p++;
++		gt = strchr(p, '>');
++		end = strchr(p, '<');
++		if (!gt || (end && gt > end))
++			continue;			/* no '>' in this record */
++		if (!mac_canon(p, (size_t)(gt - p), mac))
++			continue;
++		l = end ? (size_t)(end - gt - 1) : strlen(gt + 1);
++		if (l == 0 || l > REAPER_DHCP6_SFX_MAX)
++			continue;
++		for (i = 0; i < l; i++)
++			sfx[i] = (char)tolower((unsigned char)gt[1 + i]);
++		sfx[l] = 0;
++		if (!reaper_dhcp6_sfx_valid(sfx))
++			continue;
++		cb(mac, sfx, arg);
++		n++;
++	}
++	return n;
++}
+diff --git a/release/src/router/shared/reaper_dhcp6.h b/release/src/router/shared/reaper_dhcp6.h
+new file mode 100644
+index 0000000000..45d1a5e111
+--- /dev/null
++++ b/release/src/router/shared/reaper_dhcp6.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_dhcp6.h - DHCPv6 reservations (IPv6 remediation 2026-10-07, A3 step 2).
++ *
++ * The Devices page pins an IPv6 address to a device the way it pins an IPv4
++ * one, but only the HOST part is stored: "<MAC>::suffix" records in a /jffs
++ * list (the nvram cap rule forbids another nvram list). dnsmasq takes the
++ * network part from its own dhcp-range ("dhcp-host=<MAC>,[::suffix]"), so a
++ * delegated-prefix change needs no edit, and it matches the client by the MAC
++ * it finds in the neighbour table - which is every directly connected LAN
++ * client. Shared by httpd (the page's RMW, the backup import) and rc (the
++ * dnsmasq emitter) so both walk the list with one parser. */
++#ifndef REAPER_DHCP6_H
++#define REAPER_DHCP6_H
++
++#define REAPER_DHCP6_FILE "/jffs/reaper/dhcp6_static"
++#define REAPER_DHCP6_SFX_MAX 23		/* "::ffff:ffff:ffff:ffff" + NUL fits */
++
++/* a reservation suffix: "::" then one to four hex groups of one to four digits */
++int reaper_dhcp6_sfx_valid(const char *s);
++
++/* walk "<MAC>sfx<MAC>sfx...": cb(mac, sfx, arg) once per well-formed record,
++ * MAC upper-case colon form, suffix lower-case; malformed records are skipped.
++ * Returns the number of records delivered. */
++int reaper_dhcp6_walk(const char *list, void (*cb)(const char *mac, const char *sfx, void *arg), void *arg);
++
++#endif /* REAPER_DHCP6_H */
+diff --git a/release/src/router/shared/reaper_dnsmap.h b/release/src/router/shared/reaper_dnsmap.h
+index 9a52ab1299..0152cbb4fa 100644
+--- a/release/src/router/shared/reaper_dnsmap.h
++++ b/release/src/router/shared/reaper_dnsmap.h
+@@ -6,7 +6,13 @@
+  * behind reaper_conn.cgi). The table is a fixed open-addressing hash in a tmpfs
+  * file that both sides mmap MAP_SHARED: the daemon's in-memory table IS the file,
+  * so there is no publish step and nothing to parse - httpd probes it in place.
+- * IPv4 only: the Flow Explorer feed (/proc/fcache/nflist) is IPv4 only.
++ *
++ * Keys (v2, 2026-10-07 IPv6 pass): every entry is keyed by a 16-byte address.
++ * An IPv4 address is stored in its IPv4-mapped form (::ffff:a.b.c.d, rdm_key4),
++ * so A and AAAA records share one table and one probe. The layout changed with
++ * it ("RDM2", 80-byte entries): the daemon resets a file of the old layout when
++ * it starts and httpd declines a file that is too small, so the two sides never
++ * read each other's bytes with the wrong struct.
+  *
+  * Lifetime of an entry: written with now + clamp(record TTL, RDM_TTL_MIN,
+  * RDM_TTL_MAX); the reader extends it (rdm_touch) while a flow to that address
+@@ -19,11 +25,11 @@
+  * registered, not what a device asked for); the first forward reply for that
+  * address raises it to 1 and takes the name over.
+  *
+- * Concurrency (one writer, one reader, no lock): the writer clears ip, writes
+- * the body, then stores ip behind a barrier; the reader walks the whole probe
+- * window (a slot being refilled never ends the probe early) and trusts a name
+- * only when nlen and its NUL agree. The worst case is one missed label for one
+- * page poll. */
++ * Concurrency (one writer, one reader, no lock): the writer clears the key,
++ * writes the body, then stores the key behind a barrier; the reader walks the
++ * whole probe window (a slot being refilled never ends the probe early) and
++ * trusts a name only when nlen and its NUL agree. The worst case is one missed
++ * label for one page poll. */
+ #ifndef REAPER_DNSMAP_H
+ #define REAPER_DNSMAP_H
+ 
+@@ -32,13 +38,14 @@
+ 
+ #define RDM_PATH     "/tmp/reaper/dnsmap"
+ #define RDM_BACKFILL RDM_PATH ".backfill"	/* one-shot flag: httpd writes it on off -> on, the daemon consumes it */
+-#define RDM_MAGIC    0x314d4452u	/* "RDM1" read as a little-endian u32 */
+-#define RDM_SLOTS    2048u		/* power of two: 2048 x 64 B = 128 KB */
++#define RDM_MAGIC    0x324d4452u	/* "RDM2" read as a little-endian u32 */
++#define RDM_SLOTS    2048u		/* power of two: 2048 x 80 B = 160 KB */
+ #define RDM_PROBES   8			/* linear probe window, always walked in full */
+ #define RDM_NAME     52			/* name bytes kept; name[RDM_NAME] is the NUL */
+ #define RDM_TTL_MIN  3600u		/* a 20 s CDN TTL is useless to someone watching a flow */
+ #define RDM_TTL_MAX  86400u
+-#define RDM_SIZE     (64u + RDM_SLOTS * 64u)
++#define RDM_ESIZE    80u
++#define RDM_SIZE     (64u + RDM_SLOTS * RDM_ESIZE)
+ 
+ struct rdm_hdr {			/* 64 bytes */
+ 	uint32_t magic, slots, esize, gen;	/* gen: how many times a writer started */
+@@ -46,20 +53,51 @@ struct rdm_hdr {			/* 64 bytes */
+ 	uint32_t pad[10];
+ };
+ 
+-struct rdm_ent {			/* 64 bytes: 4 + 4 + 2 + 1 + 53 */
+-	uint32_t ip;			/* network byte order; 0 = never used */
++struct rdm_ent {			/* 80 bytes: 16 + 4 + 2 + 1 + 1 + 53 + 3 */
++	uint8_t  ip[16];		/* the address; IPv4 as ::ffff:a.b.c.d; all zero = never used */
+ 	uint32_t exp;			/* epoch after which the entry is stale */
+ 	uint16_t ndist;			/* name changes seen; 0 = reverse (backfill) name */
+ 	uint8_t  nlen;
++	uint8_t  fam;			/* 4 or 6 (diag) */
+ 	char     name[RDM_NAME + 1];
++	uint8_t  pad[3];
+ };
+ 
+ typedef char rdm_assert_hdr_[(sizeof(struct rdm_hdr) == 64) ? 1 : -1];
+-typedef char rdm_assert_ent_[(sizeof(struct rdm_ent) == 64) ? 1 : -1];
++typedef char rdm_assert_ent_[(sizeof(struct rdm_ent) == RDM_ESIZE) ? 1 : -1];
++
++/* an IPv4 address (network order, as inet_aton gives it) as its 16-byte key */
++static inline void rdm_key4(uint8_t *k, uint32_t ip)
++{
++	memset(k, 0, 10);
++	k[10] = 0xff;
++	k[11] = 0xff;
++	memcpy(k + 12, &ip, 4);
++}
+ 
+-static inline uint32_t rdm_hash(uint32_t ip)
++static inline int rdm_key_is4(const uint8_t *k)
+ {
+-	return (ip * 0x9E3779B1u) >> 21;	/* top 11 bits -> 0..2047 */
++	static const uint8_t pfx[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
++
++	return memcmp(k, pfx, 12) == 0;
++}
++
++static inline int rdm_key_used(const uint8_t *k)
++{
++	static const uint8_t z[16];
++
++	return memcmp(k, z, 16) != 0;
++}
++
++/* the four 32-bit words folded, then the v1 multiplier; an IPv4 key hashes as
++ * ((ip ^ 0xffff0000) * 0x9E3779B1) >> 21 on this little-endian platform (the
++ * host test replicates exactly that) */
++static inline uint32_t rdm_hash(const uint8_t *k)
++{
++	uint32_t w[4];
++
++	memcpy(w, k, 16);
++	return ((w[0] ^ w[1] ^ w[2] ^ w[3]) * 0x9E3779B1u) >> 21;	/* top 11 bits -> 0..2047 */
+ }
+ 
+ static inline struct rdm_ent *rdm_table(void *map)
+@@ -67,16 +105,16 @@ static inline struct rdm_ent *rdm_table(void *map)
+ 	return (struct rdm_ent *)((char *)map + sizeof(struct rdm_hdr));
+ }
+ 
+-/* reader: the live entry for ip, or NULL */
+-static inline struct rdm_ent *rdm_find(struct rdm_ent *t, uint32_t ip, uint32_t now)
++/* reader: the live entry for the key, or NULL */
++static inline struct rdm_ent *rdm_find(struct rdm_ent *t, const uint8_t *k, uint32_t now)
+ {
+-	uint32_t h = rdm_hash(ip);
++	uint32_t h = rdm_hash(k);
+ 	int i;
+ 
+ 	for (i = 0; i < RDM_PROBES; i++) {
+ 		struct rdm_ent *e = &t[(h + i) & (RDM_SLOTS - 1)];
+ 
+-		if (e->ip == ip)
++		if (memcmp(e->ip, k, 16) == 0)
+ 			return (e->exp > now && e->nlen && e->nlen <= RDM_NAME &&
+ 				e->name[e->nlen] == 0) ? e : NULL;
+ 	}
+@@ -93,16 +131,16 @@ static inline void rdm_touch(struct rdm_ent *e, uint32_t now)
+ /* writer (forward replies): refresh in place; else the first never-used slot in
+  * the window; else the earliest-expiring one (stale entries go first by
+  * construction). A reverse name (ndist 0) is confirmed or replaced either way. */
+-static inline void rdm_put(struct rdm_ent *t, uint32_t ip, const char *name, uint8_t nlen, uint32_t exp)
++static inline void rdm_put(struct rdm_ent *t, const uint8_t *k, const char *name, uint8_t nlen, uint32_t exp)
+ {
+-	uint32_t h = rdm_hash(ip), vexp = ~0u;
++	uint32_t h = rdm_hash(k), vexp = ~0u;
+ 	struct rdm_ent *v = NULL;
+ 	int i;
+ 
+ 	for (i = 0; i < RDM_PROBES; i++) {
+ 		struct rdm_ent *e = &t[(h + i) & (RDM_SLOTS - 1)];
+ 
+-		if (e->ip == ip) {
++		if (memcmp(e->ip, k, 16) == 0) {
+ 			if (e->nlen != nlen || memcmp(e->name, name, nlen) != 0) {
+ 				memcpy(e->name, name, nlen);
+ 				e->name[nlen] = 0;
+@@ -115,7 +153,7 @@ static inline void rdm_put(struct rdm_ent *t, uint32_t ip, const char *name, uin
+ 				e->exp = exp;
+ 			return;
+ 		}
+-		if (e->ip == 0) {
++		if (!rdm_key_used(e->ip)) {
+ 			v = e;
+ 			break;
+ 		}
+@@ -124,15 +162,16 @@ static inline void rdm_put(struct rdm_ent *t, uint32_t ip, const char *name, uin
+ 			v = e;
+ 		}
+ 	}
+-	v->ip = 0;
++	memset(v->ip, 0, 16);
+ 	__sync_synchronize();
+ 	memcpy(v->name, name, nlen);
+ 	v->name[nlen] = 0;
+ 	v->nlen = nlen;
+ 	v->ndist = 1;
+ 	v->exp = exp;
++	v->fam = rdm_key_is4(k) ? 4 : 6;
+ 	__sync_synchronize();
+-	v->ip = ip;
++	memcpy(v->ip, k, 16);
+ }
+ 
+ #endif /* REAPER_DNSMAP_H */
+diff --git a/release/src/router/shared/reaper_nd.c b/release/src/router/shared/reaper_nd.c
+new file mode 100644
+index 0000000000..dab2a3d32f
+--- /dev/null
++++ b/release/src/router/shared/reaper_nd.c
+@@ -0,0 +1,162 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_nd.c - LAN IPv6 neighbour cache. Contract in reaper_nd.h.
++ * Lifted from rtrafd's nd_refresh()/nd_lookup() (v2.4.4) so every consumer
++ * reads the kernel the same way.
++ */
++#include <stdio.h>
++#include <string.h>
++#include <strings.h>
++#include <unistd.h>
++#include <sys/socket.h>
++#include <sys/time.h>
++#include <net/if.h>
++#include <arpa/inet.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include <linux/neighbour.h>
++#include "reaper_nd.h"
++
++int reaper_nd_global(const unsigned char *ip6)
++{
++	static const unsigned char zero[16];
++	static const unsigned char mapped[12] = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff };
++
++	if (!ip6)
++		return 0;
++	if (ip6[0] == 0xff)					/* multicast */
++		return 0;
++	if (ip6[0] == 0xfe && (ip6[1] & 0xc0) == 0x80)		/* link-local fe80::/10 */
++		return 0;
++	if (memcmp(ip6, zero, 15) == 0 && (ip6[15] == 0 || ip6[15] == 1))	/* :: and ::1 */
++		return 0;
++	if (memcmp(ip6, mapped, 12) == 0)			/* ::ffff:a.b.c.d */
++		return 0;
++	return 1;
++}
++
++int reaper_nd_load(struct reaper_nd *tbl, int max)
++{
++	struct { struct nlmsghdr nh; struct ndmsg nd; } req;
++	struct timeval tv;
++	char buf[16384];
++	int fd, len, n = 0;
++
++	if (!tbl || max <= 0)
++		return 0;
++	if ((fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) < 0)
++		return 0;
++	tv.tv_sec = 1; tv.tv_usec = 0;
++	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++
++	memset(&req, 0, sizeof(req));
++	req.nh.nlmsg_len   = NLMSG_LENGTH(sizeof(struct ndmsg));
++	req.nh.nlmsg_type  = RTM_GETNEIGH;
++	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
++	req.nh.nlmsg_seq   = 1;
++	req.nd.ndm_family  = AF_INET6;
++	if (send(fd, &req, req.nh.nlmsg_len, 0) < 0) {
++		close(fd);
++		return 0;
++	}
++
++	while ((len = recv(fd, buf, sizeof(buf), 0)) > 0) {
++		struct nlmsghdr *nh = (struct nlmsghdr *)buf;
++		for (; NLMSG_OK(nh, (unsigned int)len); nh = NLMSG_NEXT(nh, len)) {
++			struct ndmsg *ndm;
++			struct rtattr *rta;
++			const unsigned char *dst = NULL, *lla = NULL;
++			char ifn[IF_NAMESIZE];
++			int rlen, llalen = 0;
++
++			if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR)
++				goto done;
++			if (nh->nlmsg_type != RTM_NEWNEIGH)
++				continue;
++			ndm = (struct ndmsg *)NLMSG_DATA(nh);
++			if (ndm->ndm_family != AF_INET6)
++				continue;
++			/* FAILED/INCOMPLETE carry no usable link address */
++			if (!(ndm->ndm_state & (NUD_REACHABLE | NUD_STALE | NUD_DELAY |
++						NUD_PROBE | NUD_PERMANENT)))
++				continue;
++			if (!if_indextoname(ndm->ndm_ifindex, ifn))
++				continue;
++			if (strncmp(ifn, "br", 2) != 0)			/* LAN side only */
++				continue;
++
++			rta  = (struct rtattr *)((char *)ndm + NLMSG_ALIGN(sizeof(*ndm)));
++			rlen = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*ndm));
++			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
++				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
++					dst = RTA_DATA(rta);
++				else if (rta->rta_type == NDA_LLADDR) {
++					lla = RTA_DATA(rta);
++					llalen = RTA_PAYLOAD(rta);
++				}
++			}
++			if (!dst || !lla || llalen != 6)
++				continue;
++			if (n >= max)
++				goto done;
++			memcpy(tbl[n].ip, dst, 16);
++			snprintf(tbl[n].mac, sizeof(tbl[n].mac), "%02x:%02x:%02x:%02x:%02x:%02x",
++				 lla[0], lla[1], lla[2], lla[3], lla[4], lla[5]);
++			snprintf(tbl[n].br, sizeof(tbl[n].br), "%s", ifn);
++			n++;
++		}
++	}
++done:
++	close(fd);
++	return n;
++}
++
++int reaper_nd_mac_of(const struct reaper_nd *tbl, int n, const unsigned char *ip6,
++		     char *mac, size_t maclen, char *br, size_t brlen)
++{
++	int i;
++
++	if (!tbl || !ip6)
++		return 0;
++	for (i = 0; i < n; i++) {
++		if (memcmp(tbl[i].ip, ip6, 16) != 0)
++			continue;
++		if (mac && maclen)
++			snprintf(mac, maclen, "%s", tbl[i].mac);
++		if (br && brlen)
++			snprintf(br, brlen, "%s", tbl[i].br);
++		return 1;
++	}
++	return 0;
++}
++
++int reaper_nd_mac_of_str(const struct reaper_nd *tbl, int n, const char *ip6,
++			 char *mac, size_t maclen, char *br, size_t brlen)
++{
++	unsigned char b[16];
++
++	if (!ip6 || !strchr(ip6, ':') || inet_pton(AF_INET6, ip6, b) != 1)
++		return 0;
++	return reaper_nd_mac_of(tbl, n, b, mac, maclen, br, brlen);
++}
++
++int reaper_nd_addr_of(const struct reaper_nd *tbl, int n, const char *mac,
++		      unsigned char *ip6)
++{
++	int i;
++
++	if (!tbl || !mac || !*mac)
++		return 0;
++	for (i = 0; i < n; i++) {
++		if (strcasecmp(tbl[i].mac, mac) != 0)
++			continue;
++		if (!reaper_nd_global(tbl[i].ip))
++			continue;
++		if (ip6)
++			memcpy(ip6, tbl[i].ip, 16);
++		return 1;
++	}
++	return 0;
++}
+diff --git a/release/src/router/shared/reaper_nd.h b/release/src/router/shared/reaper_nd.h
+new file mode 100644
+index 0000000000..44e93b2e37
+--- /dev/null
++++ b/release/src/router/shared/reaper_nd.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_nd.h - the LAN IPv6 neighbour cache, shared (IPv6 remediation 2026-10-07, step 0c).
++ *
++ * /proc/net/arp has no IPv6 counterpart. The only fork-free way to turn a LAN
++ * IPv6 address into the MAC the device rows are keyed on - or a MAC into the
++ * address a device is using - is a netlink RTM_GETNEIGH dump. rtrafd carried a
++ * private copy since v2.4.4; httpd (Flow Explorer, Devices, the Gatekeeper
++ * captive check), gkd and rtrafd now share this one.
++ *
++ * Only neighbours on a BRIDGE are kept: a neighbour on ppp0/eth0 is the ISP's
++ * router, not a client. Addresses are held in binary (16 bytes) and compared
++ * with memcmp; MACs are lower-case colon form, as /proc/net/arp prints them.
++ * The table is the caller's: each consumer chooses its own refresh cadence.
++ * Any failure leaves the table empty, which degrades to "v6 unattributed",
++ * never to a wrong attribution. */
++#ifndef REAPER_ND_H
++#define REAPER_ND_H
++
++#include <stddef.h>
++
++struct reaper_nd {
++	unsigned char ip[16];	/* network byte order */
++	char mac[18];		/* "aa:bb:cc:dd:ee:ff" */
++	char br[16];		/* the bridge the neighbour sits behind */
++};
++
++/* fill tbl from the kernel; returns the number of entries (0 on any failure) */
++int reaper_nd_load(struct reaper_nd *tbl, int max);
++
++/* 1 = global unicast or ULA (something a device row can be keyed on);
++ * 0 = link-local, multicast, loopback, unspecified or v4-mapped */
++int reaper_nd_global(const unsigned char *ip6);
++
++/* address -> MAC (+ bridge). 1 on hit, 0 otherwise; br/brlen may be NULL/0 */
++int reaper_nd_mac_of(const struct reaper_nd *tbl, int n, const unsigned char *ip6,
++		     char *mac, size_t maclen, char *br, size_t brlen);
++/* same, from the printed form (inet_pton); a non-IPv6 string is a miss */
++int reaper_nd_mac_of_str(const struct reaper_nd *tbl, int n, const char *ip6,
++			 char *mac, size_t maclen, char *br, size_t brlen);
++
++/* MAC -> the first GLOBAL address held by that MAC (case-insensitive MAC
++ * compare). 1 on hit with ip6 filled, 0 when the MAC has no global address */
++int reaper_nd_addr_of(const struct reaper_nd *tbl, int n, const char *mac,
++		      unsigned char *ip6);
++
++#endif /* REAPER_ND_H */
+diff --git a/release/src/router/shared/reaper_resolv_order.c b/release/src/router/shared/reaper_resolv_order.c
+new file mode 100644
+index 0000000000..990a6d42cd
+--- /dev/null
++++ b/release/src/router/shared/reaper_resolv_order.c
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_resolv_order.c - see reaper_resolv_order.h. No libc beyond the
++ * header's integers, so the host test compiles it as it is. */
++#include "reaper_resolv_order.h"
++
++static int is_face(int c)
++{
++	return c == RRO_FACE4 || c == RRO_FACE6;
++}
++
++int reaper_resolv_order(const int *cls, int n, int down4, int down6, int *out)
++{
++	int i, k = 0, anchor = -1, changed = 0;
++
++	if (n <= 0 || !cls || !out) return 0;
++	for (i = 0; i < n; i++)
++		if (is_face(cls[i])) { anchor = i; break; }
++	if (anchor < 0) {
++		for (i = 0; i < n; i++) out[i] = i;
++		return 0;
++	}
++	for (i = 0; i < n; i++) {
++		if (i == anchor) {
++			/* the live faces take the server's place: IPv4 first, then IPv6 */
++			int j;
++			if (!down4)
++				for (j = 0; j < n; j++) if (cls[j] == RRO_FACE4) out[k++] = j;
++			if (!down6)
++				for (j = 0; j < n; j++) if (cls[j] == RRO_FACE6) out[k++] = j;
++		}
++		if (is_face(cls[i])) continue;
++		out[k++] = i;
++	}
++	/* the dead faces go behind everything, IPv4 first, then IPv6 */
++	if (down4)
++		for (i = 0; i < n; i++) if (cls[i] == RRO_FACE4) out[k++] = i;
++	if (down6)
++		for (i = 0; i < n; i++) if (cls[i] == RRO_FACE6) out[k++] = i;
++	for (i = 0; i < n; i++)
++		if (out[i] != i) { changed = 1; break; }
++	return changed;
++}
+diff --git a/release/src/router/shared/reaper_resolv_order.h b/release/src/router/shared/reaper_resolv_order.h
+new file mode 100644
+index 0000000000..c3b1bce3a9
+--- /dev/null
++++ b/release/src/router/shared/reaper_resolv_order.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_resolv_order.h - where a dual-stack LAN resolver's lines go in the
++ * router's DNS list (resolver health check, dual-stack review 2026-10-08).
++ *
++ * The firmware writes /tmp/resolv.dnsmasq (dnsmasq's servers-file) and
++ * /tmp/resolv.conf (the router's own libc resolver) in a fixed order: the WAN
++ * IPv4 servers, then the IPv6 servers. A LAN resolver reachable over both
++ * families therefore lands as "its IPv4, <off-site IPv4>, its IPv6": with
++ * strict-order the IPv6 face is never tried before the off-site server, and
++ * when only the IPv4 face dies every fresh query stalls on it until the client
++ * retransmits. rc/rdnshc.c probes both faces and asks this helper for the
++ * order that follows from what answers:
++ *
++ *   - the watched server keeps the position of its FIRST line; its live faces
++ *     sit there, IPv4 line(s) first, then IPv6;
++ *   - a dead face moves behind every other line (the old whole-server
++ *     demotion is the case where both faces are dead);
++ *   - every other line keeps its relative order.
++ *
++ * Pure integer logic over a per-line classification so it can be tested on
++ * the host; the caller classifies the lines and rewrites the file in the
++ * returned order. */
++#ifndef REAPER_RESOLV_ORDER_H
++#define REAPER_RESOLV_ORDER_H
++
++#define RRO_OTHER     0	/* not a plain upstream line: options, comments, domain routes */
++#define RRO_UPSTREAM  1	/* a plain upstream that is not the watched server */
++#define RRO_FACE4     4	/* the watched server's IPv4 line */
++#define RRO_FACE6     6	/* the watched server's IPv6 line */
++
++/* cls[n]: the classification of each line (RRO_*). down4/down6: 1 = that face
++ * is not answering. out[n] receives the new order as indices into the input.
++ * Returns 1 when the order differs from the input order, 0 when the file is
++ * already as it should be (nothing to rewrite). n <= 0 or no face line at all
++ * is the identity. */
++int reaper_resolv_order(const int *cls, int n, int down4, int down6, int *out);
++
++#endif /* REAPER_RESOLV_ORDER_H */
+diff --git a/release/src/router/shared/reaper_revzone.c b/release/src/router/shared/reaper_revzone.c
+new file mode 100644
+index 0000000000..f6e813aa85
+--- /dev/null
++++ b/release/src/router/shared/reaper_revzone.c
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_revzone.c - see reaper_revzone.h. */
++#include <stdio.h>
++#include <stdint.h>
++#include <string.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include "reaper_revzone.h"
++
++int reaper_rev_net(const char *addr, const char *mask, char *out, size_t n)
++{
++	struct in_addr a, m, net;
++	uint32_t hm, inv;
++	int len = 0;
++
++	if (!addr || !mask || !out || n == 0)
++		return -1;
++	if (inet_pton(AF_INET, addr, &a) != 1 || inet_pton(AF_INET, mask, &m) != 1)
++		return -1;
++	hm = ntohl(m.s_addr);
++	if (hm == 0)
++		return -1;			/* a /0 would claim every private reverse zone */
++	inv = ~hm;
++	if ((inv & (inv + 1)) != 0)
++		return -1;			/* not contiguous: ones must be followed only by zeros */
++	while (hm & 0x80000000u) { len++; hm <<= 1; }
++	net.s_addr = a.s_addr & m.s_addr;
++	{
++		char nb[INET_ADDRSTRLEN];
++		int w;
++
++		if (!inet_ntop(AF_INET, &net, nb, sizeof(nb)))
++			return -1;
++		w = snprintf(out, n, "%s/%d", nb, len);
++		if (w < 0 || (size_t)w >= n)
++			return -1;
++	}
++	return len;
++}
++
++int reaper_rev_net6(const char *addr6, char *out, size_t n)
++{
++	struct in6_addr a;
++	char nb[INET6_ADDRSTRLEN];
++	int w;
++
++	if (!addr6 || !out || n == 0)
++		return -1;
++	if (inet_pton(AF_INET6, addr6, &a) != 1)
++		return -1;
++	if (IN6_IS_ADDR_LINKLOCAL(&a) || IN6_IS_ADDR_MULTICAST(&a) || IN6_IS_ADDR_LOOPBACK(&a)
++	    || IN6_IS_ADDR_UNSPECIFIED(&a) || IN6_IS_ADDR_V4MAPPED(&a))
++		return -1;
++	memset(&a.s6_addr[8], 0, 8);		/* keep the /64 network part */
++	if (!inet_ntop(AF_INET6, &a, nb, sizeof(nb)))
++		return -1;
++	w = snprintf(out, n, "%s/64", nb);
++	if (w < 0 || (size_t)w >= n)
++		return -1;
++	return 64;
++}
+diff --git a/release/src/router/shared/reaper_revzone.h b/release/src/router/shared/reaper_revzone.h
+new file mode 100644
+index 0000000000..3acbe41de5
+--- /dev/null
++++ b/release/src/router/shared/reaper_revzone.h
+@@ -0,0 +1,30 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_revzone.h - reverse DNS across networks (2026-10-08).
++ *
++ * Each dnsmasq instance answers PTR lookups only for its own leases, and with
++ * bogus-priv on it answers NXDOMAIN for any other private range. rc/sdn.c gives
++ * the main LAN instance one "rev-server=<net>/<len>,<gateway>" line per eligible
++ * VLAN and each eligible VLAN instance one line for the main LAN, so a resolver
++ * on either side (an AdGuard box on a VLAN, say) can name devices on the other.
++ * This helper turns a gateway address and netmask into the "<net>/<len>" form;
++ * pure string work so the host test can prove it. */
++#ifndef REAPER_REVZONE_H
++#define REAPER_REVZONE_H
++
++#include <stddef.h>
++
++/* "10.20.0.1" + "255.255.255.0" -> "10.20.0.0/24" in out (n bytes).
++ * Returns the prefix length (1..32), or -1 for a bad address, a bad or
++ * non-contiguous mask, a /0, or an out buffer that is too small. */
++int reaper_rev_net(const char *addr, const char *mask, char *out, size_t n);
++
++/* 2026-10-08 (IPv6 device names): an IPv6 address -> its /64 network in
++ * "2001:470:8cd0:100::/64" form, the prefix every LAN here advertises by SLAAC.
++ * Returns 64, or -1 for a bad address, a link-local / multicast / loopback /
++ * unspecified / v4-mapped address, or an out buffer that is too small. */
++int reaper_rev_net6(const char *addr6, char *out, size_t n);
++
++#endif /* REAPER_REVZONE_H */
+diff --git a/release/src/router/shared/reaper_tmpsafe.c b/release/src/router/shared/reaper_tmpsafe.c
+new file mode 100644
+index 0000000000..0f2fd43fc2
+--- /dev/null
++++ b/release/src/router/shared/reaper_tmpsafe.c
+@@ -0,0 +1,131 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_tmpsafe.c - contract in reaper_tmpsafe.h.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <syslog.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include "reaper_tmpsafe.h"
++
++static int tmpsafe_dir_ok(const char *path, const struct stat *st)
++{
++	(void)path;
++	return S_ISDIR(st->st_mode) && st->st_uid == geteuid() && !(st->st_mode & (S_IWGRP | S_IWOTH));
++}
++
++int reaper_secure_dir(const char *path, mode_t mode)
++{
++	struct stat st;
++	int tries;
++
++	if (!path || !*path)
++		return -1;
++	for (tries = 0; tries < 2; tries++) {
++		if (mkdir(path, mode) != 0 && errno != EEXIST)
++			return -1;
++		if (lstat(path, &st) != 0)
++			return -1;
++		if (tmpsafe_dir_ok(path, &st)) {
++			/* lstat said a real directory we own: chmod cannot be
++			 * redirected (nobody else can replace our entry in a
++			 * sticky /tmp, or anything inside a directory we own) */
++			if ((st.st_mode & 07777) != (mode & 07777) && chmod(path, mode) != 0)
++				return -1;
++			return 0;
++		}
++		/* something else holds the name: move it aside, then retry once */
++		{
++			char aside[256];
++			snprintf(aside, sizeof(aside), "%s.bad.%d", path, (int)getpid());
++			syslog(LOG_WARNING, "reaper: %s was not a private directory (%s, uid %d, mode %o) - moved aside to %s",
++			       path, S_ISLNK(st.st_mode) ? "symlink" : S_ISDIR(st.st_mode) ? "directory" : "file",
++			       (int)st.st_uid, (unsigned)(st.st_mode & 07777), aside);
++			if (rename(path, aside) != 0)
++				return -1;
++		}
++	}
++	return -1;
++}
++
++void reaper_tmp_mkdirs(void)
++{
++	static const struct { const char *p; mode_t m; } t[] = REAPER_TMP_DIRS;
++	int i;
++	for (i = 0; t[i].p; i++)
++		reaper_secure_dir(t[i].p, t[i].m);
++}
++
++int reaper_write_atomic(const char *path, const void *data, size_t len, mode_t mode)
++{
++	char tmp[256];
++	const char *p = data;
++	int fd;
++
++	if (!path || snprintf(tmp, sizeof(tmp), "%s.XXXXXX", path) >= (int)sizeof(tmp))
++		return -1;
++	if ((fd = mkstemp(tmp)) < 0)		/* O_CREAT|O_EXCL: never through a symlink */
++		return -1;
++	if (fchmod(fd, mode) != 0)
++		goto fail;
++	while (len > 0) {
++		ssize_t n = write(fd, p, len);
++		if (n < 0) {
++			if (errno == EINTR) continue;
++			goto fail;
++		}
++		p += n;
++		len -= (size_t)n;
++	}
++	if (close(fd) != 0) {
++		fd = -1;
++		goto fail;
++	}
++	if (rename(tmp, path) != 0) {
++		unlink(tmp);
++		return -1;
++	}
++	return 0;
++fail:
++	if (fd >= 0) close(fd);
++	unlink(tmp);
++	return -1;
++}
++
++FILE *reaper_fopen_new(const char *path, mode_t mode)
++{
++	FILE *f;
++	int fd;
++
++	if (!path)
++		return NULL;
++	unlink(path);
++	if ((fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode)) < 0) {
++		syslog(LOG_WARNING, "reaper: could not create %s fresh (%s) - not written", path, strerror(errno));
++		return NULL;
++	}
++	if ((f = fdopen(fd, "w")) == NULL)
++		close(fd);
++	return f;
++}
++
++int reaper_script_ok(const char *path)
++{
++	struct stat st;
++
++	if (!path || lstat(path, &st) != 0)
++		return 0;
++	if (S_ISREG(st.st_mode) && st.st_uid == geteuid() && !(st.st_mode & (S_IWGRP | S_IWOTH)))
++		return 1;
++	syslog(LOG_WARNING, "reaper: refusing to run %s (%s, uid %d, mode %o)", path,
++	       S_ISLNK(st.st_mode) ? "symlink" : S_ISREG(st.st_mode) ? "file" : "not a file",
++	       (int)st.st_uid, (unsigned)(st.st_mode & 07777));
++	return 0;
++}
+diff --git a/release/src/router/shared/reaper_tmpsafe.h b/release/src/router/shared/reaper_tmpsafe.h
+new file mode 100644
+index 0000000000..5dc2a5cbba
+--- /dev/null
++++ b/release/src/router/shared/reaper_tmpsafe.h
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_tmpsafe.h - root's working files in /tmp, kept out of reach of a
++ * non-root process (audit 2026-10-03 F1 / 2026-10-06 V3, remediated 2026-10-09).
++ *
++ * /tmp is sticky and world-writable, and dnsmasq (every instance) runs as
++ * nobody. A process with that foothold could pre-create a directory root
++ * writes scripts into, or plant a file or symlink where root writes and then
++ * reads back. The kernel's protected_* sysctls (rc/init.c) close the symlink
++ * and foreign-file cases in /tmp itself; this file closes the rest:
++ *  - every Reaper directory is created at boot, root-owned, from REAPER_TMP_DIRS,
++ *    and checked again (reaper_secure_dir) wherever a module uses it;
++ *  - Reaper's own loose files live in REAPER_TMPDIR (0700), never bare in /tmp;
++ *  - a file that must sit at a stock path is written with O_EXCL|O_NOFOLLOW;
++ *  - a script is run only when it is a root-owned regular file nobody else
++ *    can write (reaper_script_ok).
++ * Plain C (stdio, POSIX); no nvram, so the host suite compiles it as is.
++ */
++#ifndef REAPER_TMPSAFE_H
++#define REAPER_TMPSAFE_H
++
++#include <stdio.h>
++#include <stddef.h>
++#include <sys/types.h>
++
++/* Reaper's loose working files: state, flags, generated scripts, staging */
++#define REAPER_TMPDIR	"/tmp/reaper"
++
++/* Every Reaper directory under /tmp and its mode. 0755 only where a non-root
++ * reader exists: dnsmasq (nobody) reads the IPv6 names under rv6names. */
++#define REAPER_TMP_DIRS { \
++	{ REAPER_TMPDIR,		0700 }, \
++	{ "/tmp/reaper_fw",		0700 }, \
++	{ "/tmp/reaper_pbr",		0700 }, \
++	{ "/tmp/rwarden",		0700 }, \
++	{ "/tmp/gk",			0700 }, \
++	{ "/tmp/reaper_wifi",		0700 }, \
++	{ "/tmp/rtraf",			0700 }, \
++	{ "/tmp/reaper_chq",		0700 }, \
++	{ "/tmp/reaper_mcp",		0700 }, \
++	{ "/tmp/reaper_bwfloor",	0700 }, \
++	{ "/tmp/err_rules",		0700 }, \
++	{ "/tmp/rv6names",		0755 }, \
++	{ NULL,				0 } }
++
++/* mkdir, then insist on: a real directory (not a symlink), owned by this
++ * process's user, not writable by group or other. An intruder is renamed
++ * aside to <path>.bad.<pid> (one syslog line) and the directory recreated.
++ * The mode is then set to `mode`. 0 = safe to use, -1 = do not use. */
++int reaper_secure_dir(const char *path, mode_t mode);
++
++/* create every REAPER_TMP_DIRS entry (rc/init.c, before any service) */
++void reaper_tmp_mkdirs(void);
++
++/* write `len` bytes to a fresh <path>.XXXXXX beside it (O_EXCL, never
++ * through a symlink), chmod `mode`, rename over `path`. 0 / -1. */
++int reaper_write_atomic(const char *path, const void *data, size_t len, mode_t mode);
++
++/* unlink, then open O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW at `mode`: for a file
++ * that must sit at a fixed (often stock) path and is streamed with fprintf.
++ * NULL when something won the race to the name. */
++FILE *reaper_fopen_new(const char *path, mode_t mode);
++
++/* 1 when `path` is a regular file (lstat: not a symlink), owned by this
++ * process's user and not writable by group or other - the precondition for
++ * running it with sh as root. 0 otherwise, with one syslog line. */
++int reaper_script_ok(const char *path);
++
++#endif /* REAPER_TMPSAFE_H */
+diff --git a/release/src/router/shared/reaper_v6names.c b/release/src/router/shared/reaper_v6names.c
+new file mode 100644
+index 0000000000..572dacf154
+--- /dev/null
++++ b/release/src/router/shared/reaper_v6names.c
+@@ -0,0 +1,100 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_v6names.c - see reaper_v6names.h. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <ctype.h>
++#include <arpa/inet.h>
++#include "reaper_v6names.h"
++
++int rv6n_name_ok(const char *s)
++{
++	size_t i, n;
++
++	if (!s || !*s)
++		return 0;
++	n = strlen(s);
++	if (n >= RV6N_NAME_MAX || s[0] == '-' || s[n - 1] == '-')
++		return 0;
++	for (i = 0; i < n; i++)
++		if (!(isalnum((unsigned char)s[i]) || s[i] == '-'))
++			return 0;
++	return 1;
++}
++
++int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size_t namelen)
++{
++	char f[5][128];
++	int k;
++	struct in_addr a4;
++	struct in6_addr a6;
++
++	if (!line || !mac || !name || maclen < 18 || namelen < RV6N_NAME_MAX)
++		return 0;
++	mac[0] = name[0] = '\0';
++	k = sscanf(line, "%127s %127s %127s %127s %127s", f[0], f[1], f[2], f[3], f[4]);
++	if (k < 4 || !strcmp(f[0], "duid"))
++		return 0;
++	if (!rv6n_name_ok(f[3]))
++		return 0;
++	if (inet_pton(AF_INET6, f[2], &a6) == 1) {	/* "<expiry> <iaid> <ipv6> <name> <duid>" */
++		snprintf(name, namelen, "%s", f[3]);
++		return 6;
++	}
++	if (inet_pton(AF_INET, f[2], &a4) == 1) {	/* "<expiry> <mac> <ipv4> <name> <client-id>" */
++		size_t i;
++		if (strlen(f[1]) != 17)
++			return 0;
++		for (i = 0; i < 17; i++) {
++			char c = f[1][i];
++			if ((i % 3) == 2 ? c != ':' : !isxdigit((unsigned char)c))
++				return 0;
++			mac[i] = (char)tolower((unsigned char)c);
++		}
++		mac[17] = '\0';
++		snprintf(name, namelen, "%s", f[3]);
++		return 4;
++	}
++	return 0;
++}
++
++static int pair_cmp(const void *a, const void *b)
++{
++	const struct rv6n_pair *x = a, *y = b;
++	int r = strcmp(x->name, y->name);
++	return r ? r : strcmp(x->addr, y->addr);
++}
++
++int rv6n_render(struct rv6n_pair *pairs, int n, int cap, char *out, size_t outlen)
++{
++	int i, lines = 0;
++	size_t w = 0;
++	struct in6_addr a6;
++	const struct rv6n_pair *prev = NULL;
++
++	if (!out || outlen == 0)
++		return -1;
++	out[0] = '\0';
++	if (!pairs || n <= 0)
++		return 0;
++	qsort(pairs, (size_t)n, sizeof(*pairs), pair_cmp);
++	for (i = 0; i < n && lines < cap; i++) {
++		int r;
++		if (inet_pton(AF_INET6, pairs[i].addr, &a6) != 1 || !rv6n_name_ok(pairs[i].name))
++			continue;
++		if (prev && !strcmp(prev->name, pairs[i].name) && !strcmp(prev->addr, pairs[i].addr))
++			continue;
++		r = snprintf(out + w, outlen - w, "%s %s\n", pairs[i].addr, pairs[i].name);
++		if (r < 0 || (size_t)r >= outlen - w) {
++			out[0] = '\0';
++			return -1;
++		}
++		w += (size_t)r;
++		lines++;
++		prev = &pairs[i];
++	}
++	return lines;
++}
+diff --git a/release/src/router/shared/reaper_v6names.h b/release/src/router/shared/reaper_v6names.h
+new file mode 100644
+index 0000000000..ef1939404a
+--- /dev/null
++++ b/release/src/router/shared/reaper_v6names.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_v6names.h - IPv6 device names (2026-10-08, BACKLOG "IPv6 clients have no
++ * names in a LAN DNS filter").
++ *
++ * LAN devices reach DNS over IPv6 from SLAAC / privacy addresses the router never
++ * handed out, so dnsmasq has no name for them and a DNS filter (AdGuard) lists them
++ * as bare addresses. rc/rv6names.c maps each LAN neighbour's IPv6 address to the
++ * name its DHCPv4 lease carries and writes "<ipv6> <name>" lines into a hosts file
++ * per bridge, which that bridge's dnsmasq reads through hostsdir= (inotify, no
++ * restart). These helpers are the pure part, proved on the host:
++ *   - which names may be written (a DHCP name dnsmasq would itself accept);
++ *   - parsing one dnsmasq lease line (DHCPv4 -> MAC + name; DHCPv6 -> name only,
++ *     because an IPv6 hosts entry under a DHCPv6 lease's name would make dnsmasq
++ *     refuse that lease its name: cache.c "not giving name ...");
++ *   - rendering the hosts file: IPv6 only (an IPv4 line could take a DHCPv4 lease's
++ *     name), sorted, capped, so an unchanged set produces byte-identical output. */
++#ifndef REAPER_V6NAMES_H
++#define REAPER_V6NAMES_H
++
++#include <stddef.h>
++
++#define RV6N_NAME_MAX	64	/* 63 characters + NUL (one DNS label) */
++#define RV6N_ADDR_MAX	46	/* INET6_ADDRSTRLEN */
++
++struct rv6n_pair {
++	char addr[RV6N_ADDR_MAX];	/* printed IPv6 address */
++	char name[RV6N_NAME_MAX];
++};
++
++/* 1 when s is a single DNS label of [A-Za-z0-9-], 1..63 chars, not starting or
++ * ending with '-'; 0 otherwise (empty, "*", dots, spaces, too long ...) */
++int rv6n_name_ok(const char *s);
++
++/* One line of a dnsmasq lease file.
++ *   returns 4: a DHCPv4 lease  - mac (lower-case) and name filled
++ *   returns 6: a DHCPv6 lease  - name filled, mac empty
++ *   returns 0: anything else (the "duid" line, a lease without a usable name, garbage) */
++int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size_t namelen);
++
++/* Render pairs into out as "<addr> <name>\n" lines: only entries whose address
++ * parses as IPv6 and whose name passes rv6n_name_ok, sorted by name then address,
++ * duplicates dropped, at most cap lines. pairs is sorted in place. Returns the
++ * number of lines written, or -1 when out is too small (out is then empty). */
++int rv6n_render(struct rv6n_pair *pairs, int n, int cap, char *out, size_t outlen);
++
++#endif /* REAPER_V6NAMES_H */
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 68d7d45988..b98b70acd4 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3608,6 +3608,14 @@ extern void gk_rl_migrate(void);	/* one-shot nvram -> file (start_gk) */
+  * lease-change script; gkd and httpd read it as the name fallback. */
+ extern int reaper_dhcpname_record(const char *mac, const char *host, const char *vendor);	/* 0 ok, -1 not a MAC / not saved */
+ extern int reaper_dhcpname_get(const char *mac, char *out, size_t n);	/* 1 + name, or 0 + "" */
++/* reaper 2026-10-07 IPv6 (0c): the LAN IPv6 neighbour cache (shared/reaper_nd.c) - the
++ * IPv6 counterpart of /proc/net/arp for httpd, gkd and rtrafd. */
++#include "reaper_nd.h"
++#include "reaper_dhcp6.h"	/* IPv6 A3: DHCPv6 reservation list */
++#include "reaper_resolv_order.h"	/* dual-stack review 2026-10-08: the watched resolver's lines, per face */
++#include "reaper_revzone.h"	/* 2026-10-08: reverse DNS across networks (rev-server lines) */
++#include "reaper_v6names.h"	/* 2026-10-08: IPv6 device names (rc/rv6names.c) */
++#include "reaper_tmpsafe.h"	/* 2026-10-09 audit V3: Reaper's /tmp directories, files and scripts */
+ /* reaper v2.6.7: generic durable text-value store for lists that must not live
+  * in nvram (shared/reaper_jfile.c) + the Policy Routing rule-list resolver. */
+ extern char *rjf_get(const char *path, int *exists);	/* "" when absent/empty; buffer valid until the next call */
+-- 
+2.25.1
+

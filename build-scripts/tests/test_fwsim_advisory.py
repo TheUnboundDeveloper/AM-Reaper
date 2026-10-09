@@ -35,7 +35,7 @@ def rd(*p):
 
 rw = rd(router, "rc", "rwatch.c")
 check("rwatch 3g: witness-red is never appended to FAIL", "witness-red" not in rw)
-check("rwatch 3g: logs one advisory line per change", 'firewall witnesses (advisory)' in rw and "/tmp/rwatch_witness" in rw)
+check("rwatch 3g: logs one advisory line per change", 'firewall witnesses (advisory)' in rw and "/tmp/reaper/rwatch_witness" in rw)
 check("rwatch 3g: still re-walks (the report stays fresh with nobody looking)", "/usr/bin/reaper_fwsim --run" in rw)
 
 dg = rd(router, "others", "reaper_diag")

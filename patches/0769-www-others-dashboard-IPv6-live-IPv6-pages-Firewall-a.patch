@@ -1,0 +1,1628 @@
+From 983fd7616f3c523db5892eef9d19b130a0c5d5b5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:26:10 -0400
+Subject: [PATCH] www, others: dashboard IPv6 live, IPv6 pages, Firewall apply
+ that answers the first click, Survey CSV guard, diag v1.3.33
+
+- Dashboard: the Internet card's IPv6 half is re-read on every poll (it was
+  painted once at load), polls fast while IPv6 is configured but not yet up.
+- Connections, Devices, Traffic, DNS Failover (IPv6 status line, reverse DNS and
+  IPv6-name switches), Advisor (IPv6 endpoint), Warden (IPv4-only chip): IPv6.
+- Firewall: Apply/Keep/Revert dim at once and poll until the router reports the
+  state, so the first click is not refused as a double apply.
+- Devices: the table card sizes to its rows instead of clipping its last column.
+- Network editor: the per-network IPv6 switch stays on screen for wired-only
+  VLANs.
+- Site Survey CSV: a value starting with = + - @ tab or CR is exported as text
+  (audit V10).
+- www/Makefile: the dangling /www/fb_data.tgz.gz* links into /tmp are gone
+  (audit V5); ASUS's app-installer test form is not shipped (V11).
+- Hard-coded English replaced by dictionary tokens on three pages.
+- reaper_diag v1.3.32-v1.3.33: per-network IPv6, the health check per family,
+  the tunnel, reverse DNS and IPv6 names; the /tmp hardening; the dynamic
+  puncturing gain and interval actually applied; scratch files private, report
+  created fresh.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag         | 196 ++++++++++++++++--
+ .../router/www/Advanced_Wireless_Content.asp  |   2 +-
+ release/src/router/www/Main_ReaperDash.asp    |  74 ++++---
+ release/src/router/www/Makefile               |  12 +-
+ release/src/router/www/Reaper_Advisor.asp     |   6 +-
+ release/src/router/www/Reaper_Conn.asp        |  56 +++--
+ release/src/router/www/Reaper_Devices.asp     | 102 +++++++--
+ release/src/router/www/Reaper_Diag.asp        |   2 +-
+ release/src/router/www/Reaper_Failover.asp    |  80 ++++++-
+ release/src/router/www/Reaper_Firewall.asp    |  76 +++++--
+ release/src/router/www/Reaper_SecBanner.asp   |   2 +-
+ release/src/router/www/Reaper_Survey.asp      |  10 +-
+ release/src/router/www/Reaper_Traffic.asp     |   4 +-
+ release/src/router/www/Reaper_WANPorts.asp    |  97 +++++----
+ release/src/router/www/Reaper_Warden.asp      |   7 +-
+ release/src/router/www/Reaper_WiFiSetup.asp   |   4 +-
+ release/src/router/www/Reaper_Wireless.asp    |   2 +-
+ release/src/router/www/js/faq.js              |   2 +-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js |  22 +-
+ 19 files changed, 579 insertions(+), 177 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 7094733e55..cfb50dec64 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.29 (2026-10-05) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.33 (2026-10-09) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -49,6 +49,29 @@
+ #  rotated copy is named when the live mirror is between rotation and the next
+ #  tick.
+ #
++#  v1.3.30 (IPv6 pass, 2026-10-07): the Warden and Gatekeeper sections print the
++#  ip6tables chain and its counters beside the iptables ones; the connection
++#  section counts conntrack by family.
++#
++#  v1.3.31 (IPv6 tunnel day, 2026-10-08): section 4b gives every network its IPv6
++#  switch, bridge address presence, RA/DHCPv6 DNS option and dnsmasq .conf.add; section
++#  5 adds the resolver health check (targets by kind, state, per-face markers and the
++#  upstream order by role, never by address); section 6 adds the IPv6 DNS servers by
++#  kind, the 6in4/6to4/6rd tunnel (device, default route, first hop) and the
++#  tunnelbroker DDNS rule; section 14c reads the DNS intercept gate per family and
++#  flags a gate that disagrees with the health check.
++#
++#  v1.3.32 (same day): section 5 adds reverse DNS across networks (switch, rev-server
++#  lines per instance) and IPv6 device names (switch, daemon, names per bridge, names file
++#  per instance) - counts only, never a name or an address.
++#
++#  v1.3.33 (2026-10-09, audit V3): section 3 reports the /tmp hardening - the four
++#  fs.protected_* values and the owner/mode of each Reaper directory, with findings for a
++#  value that is not 1, a directory that is absent or not private, and anything rc moved
++#  aside. Scratch files moved into /tmp/reaper; the report is created fresh under noclobber.
++#  Section 7 prints the dynamic-puncturing gain and interval rpunctd actually applies (a stored
++#  0 means the preset's value, and used to print as a raw 0).
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -63,20 +86,24 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.29"
++VER="REAPER-DIAG v1.3.33"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+ STAMP="$(date +%Y%m%d_%H%M%S)"
+-RAW="/tmp/.rdiag_raw.$$"
+-SLIST="/tmp/.rdiag_secrets.$$"
+-AWKP="/tmp/.rdiag_awk.$$"
+-BODY="/tmp/.rdiag_body.$$"
+-LEDG="/tmp/.rdiag_ledger.$$"
+-FIND="/tmp/.rdiag_find.$$"
+-RAW2="/tmp/.rdiag_raw2.$$"
+-SNAP="/tmp/.rdiag_syslog.$$"
+-CTS="/tmp/.rdiag_ct.$$"
++# 2026-10-09 (audit V3): scratch files live in Reaper's private directory (rc
++# creates /tmp/reaper root-owned 0700 at boot), never as guessable names in /tmp
++SCR=/tmp/reaper
++{ [ -d "$SCR" ] && [ ! -L "$SCR" ]; } || SCR=/tmp
++RAW="$SCR/.rdiag_raw.$$"
++SLIST="$SCR/.rdiag_secrets.$$"
++AWKP="$SCR/.rdiag_awk.$$"
++BODY="$SCR/.rdiag_body.$$"
++LEDG="$SCR/.rdiag_ledger.$$"
++FIND="$SCR/.rdiag_find.$$"
++RAW2="$SCR/.rdiag_raw2.$$"
++SNAP="$SCR/.rdiag_syslog.$$"
++CTS="$SCR/.rdiag_ct.$$"
+ OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
+ umask 077
+ trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $BODY $LEDG $FIND $SNAP $CTS' EXIT
+@@ -394,6 +421,28 @@ else
+   if ! ( : > /jffs/.reaper_diag_w 2>/dev/null && rm -f /jffs/.reaper_diag_w ); then finding WARN "/jffs write test FAILED - Reaper lists cannot persist"; fi
+ fi
+ echo "  -- top (snapshot) --"; top -bn1 2>/dev/null | head -12 | sed 's/^/  /'
++# v1.3.33 (2026-10-09, audit V3): the /tmp hardening - the four kernel link protections
++# rc sets at boot, and Reaper's private directories (fixed names; owner and mode only).
++echo "  -- /tmp hardening --"
++TPS=""
++for k in symlinks hardlinks regular fifos; do
++  v="$(cat /proc/sys/fs/protected_$k 2>/dev/null)"; TPS="$TPS $k=${v:-?}"
++  [ "$v" = 1 ] || finding WARN "kernel protection fs.protected_$k is ${v:-unreadable}, not 1 - root can be steered through links or files another user planted in /tmp (see 3)"
++done
++echo "  protected_*       :$TPS"
++for d in /tmp/reaper:drwx------ /tmp/reaper_fw:drwx------ /tmp/reaper_pbr:drwx------ /tmp/rwarden:drwx------ \
++         /tmp/gk:drwx------ /tmp/reaper_wifi:drwx------ /tmp/rtraf:drwx------ /tmp/reaper_chq:drwx------ \
++         /tmp/reaper_mcp:drwx------ /tmp/reaper_bwfloor:drwx------ /tmp/err_rules:drwx------ /tmp/rv6names:drwxr-xr-x; do
++  p=${d%%:*}; want=${d#*:}
++  l="$(ls -lnd "$p" 2>/dev/null)"
++  if [ -z "$l" ]; then echo "  $p : absent"; finding WARN "$p is absent - rc creates it at boot; the module that uses it cannot keep its state private (see 3)"; continue; fi
++  m=${l%% *}; u="$(echo "$l" | awk '{print $3}')"
++  echo "  $p : $m uid $u"
++  { [ "$u" = 0 ] && [ "$m" = "$want" ]; } || finding WARN "$p is $m uid $u, expected $want uid 0 - a directory root keeps scripts or state in is not private (see 3)"
++done
++TAS="$(ls -d /tmp/*.bad.* 2>/dev/null | wc -l)"
++echo "  moved aside       : $TAS"
++[ "$TAS" -gt 0 ] && finding WARN "$TAS item(s) named *.bad.* in /tmp: something non-root held a Reaper directory name and rc moved it aside - check syslog for 'was not a private directory' (see 3)"
+ 
+ sec "3b. NVRAM HYGIENE (names and sizes only - values never printed)"
+ # The HND kernel nvram store rejects any name+value tuple over 1024 bytes and
+@@ -445,6 +494,23 @@ for C in /etc/dnsmasq.conf /etc/dnsmasq-*.conf; do
+   I="$(grep -E '^interface=' "$C" 2>/dev/null | head -1 | cut -d= -f2)"
+   echo "  $(basename $C)  if=${I:-?}  dns=${D:-(router)}"
+ done
++# v1.3.31: per-network IPv6. subnet_rl field 14 is the network's IPv6 switch (stock
++# tagged it a Wi-Fi setting, so it was unreachable on wired-only VLANs until r14); the
++# RA/DHCPv6 DNS option is printed by kind only, never by address.
++echo "  -- IPv6 per network (subnet_rl v6 switch, bridge address, advertised IPv6 DNS) --"
++nvram get subnet_rl 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF>13 {print $2, $14}' | while read BR V6E; do
++  G6="$(ip -6 addr show dev "$BR" scope global 2>/dev/null | grep -c inet6)"
++  echo "  $BR  v6_enable=${V6E:-?}  global-v6=$( [ "${G6:-0}" -gt 0 ] && echo "PRESENT x$G6" || echo none)"
++  [ "$V6E" = 1 ] && [ "${G6:-0}" -eq 0 ] && [ "$(nvram get ipv6_service 2>/dev/null)" != disabled ] && finding WARN "network $BR has IPv6 switched on but its bridge has no global IPv6 address (see 4b)"
++done
++for C in /etc/dnsmasq.conf /etc/dnsmasq-*.conf; do
++  [ -f "$C" ] || continue
++  O6="$(sed -n 's/^dhcp-option=[^,]*,option6:23,//p' "$C" 2>/dev/null | head -1)"
++  PF6="$(nvram get ipv6_prefix 2>/dev/null | sed 's/::$//')"
++  K6=""; for a in $(echo "$O6" | tr ',' ' '); do case "$a" in "[::]") K6="$K6 router";; 2606:4700:*) K6="$K6 cloudflare";; 2001:4860:*) K6="$K6 google";; fd*|fc*) K6="$K6 ula";; *) if [ -n "$PF6" ] && [ "${a#$PF6}" != "$a" ]; then K6="$K6 own-prefix(lan)"; else K6="$K6 other"; fi;; esac; done
++  AD="/jffs/configs/$(basename "$C").add"
++  echo "  $(basename $C)  ipv6-dns:${K6:- (none advertised)}  .conf.add=$([ -f "$AD" ] && echo "present ($(grep -c . "$AD") lines)" || echo none)"
++done
+ echo "  -- SDN firewall chains present --"
+ for CH in SDN_FI SDN_FF SDN_IA; do printf "  %-7s %s\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l) rules"; done
+ 
+@@ -508,6 +574,40 @@ else
+   echo "  upstream resolvers: NONE in /tmp/resolv.dnsmasq (wan0_dns=$(nvram get wan0_dns 2>/dev/null)) - dnsmasq is forwarding nowhere; the syslog 'using nameserver' lines in 19 are the truth"
+   [ "$(nvram get wan0_state_t 2>/dev/null)" = 2 ] && finding INFO "dnsmasq has no upstream resolver in its servers-file while the WAN is up (see 5)"
+ fi
++# v1.3.31: the resolver health check (rc/rdnshc.c). Targets by kind, the state, the
++# per-face markers (r18) and the upstream order by ROLE - the watched server's two
++# faces against everything else - so a list that puts an off-site server ahead of the
++# on-site one is visible without printing a single address.
++HCT="$(nvram get reaper_dnshc_target 2>/dev/null)"; HCT6="$(nvram get reaper_dnshc_target6 2>/dev/null)"
++hck() { case "$1" in "") echo none;; 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) echo lan-v4;; *:*) echo v6;; *) echo external;; esac; }
++echo "  health check      : enable=$(nvram get reaper_dnshc_enable 2>/dev/null) target=$(hck "$HCT") target6=$(hck "$HCT6") state='$(nvram get reaper_dnshc_state 2>/dev/null)' strict-order=$(nvram get reaper_dns_strict 2>/dev/null)"
++echo "  health markers    : demoted=$([ -e /tmp/reaper/rdnshc.state ] && echo yes || echo no) ipv4-face-down=$([ -e /tmp/reaper/rdnshc.down4 ] && echo yes || echo no) ipv6-face-down=$([ -e /tmp/reaper/rdnshc.down6 ] && echo yes || echo no)"
++HCO=""
++for u in $(sed -n 's/^server=\([^/][^# ]*\).*/\1/p' /tmp/resolv.dnsmasq 2>/dev/null); do
++  if [ -n "$HCT" ] && [ "$u" = "$HCT" ]; then HCO="$HCO watched-v4"
++  elif [ -n "$HCT6" ] && [ "$u" = "$HCT6" ]; then HCO="$HCO watched-v6"
++  else case "$u" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|fd*|fc*) HCO="$HCO lan";; *:*) HCO="$HCO ext-v6";; *) HCO="$HCO ext-v4";; esac; fi
++done
++echo "  upstream order    :${HCO:- (empty)}"
++if [ "$(nvram get reaper_dnshc_enable 2>/dev/null)" = 1 ] && [ -n "$HCT" ]; then
++  case "$(nvram get reaper_dnshc_state 2>/dev/null)" in
++    down*) finding WARN "DNS health check: the watched resolver is DOWN - LAN lookups are going to the off-site servers (see 5)";;
++    up*) case "$HCO" in " watched-v4"*|" watched-v6"*) ;; *) [ -e /tmp/reaper/rdnshc.down4 ] || finding WARN "DNS health check says the watched resolver is up, but it is not first in the router's DNS list (order:$HCO) (see 5)";; esac;;
++  esac
++  [ -e /tmp/reaper/rdnshc.down4 ] && finding INFO "DNS health check: the watched resolver answers over IPv6 only - its IPv4 face is held behind the other servers (see 5)"
++  [ -e /tmp/reaper/rdnshc.down6 ] && finding INFO "DNS health check: the watched resolver answers over IPv4 only - its IPv6 face is held behind the other servers (see 5)"
++fi
++# v1.3.32: reverse DNS across networks (r24) and IPv6 device names (rc/rv6names.c). Counts only.
++echo "  device names      : across-networks=$(nvram get reaper_dns_revshare 2>/dev/null) ipv6-names=$(nvram get reaper_dns_v6names 2>/dev/null) rv6names-running=$(ps w 2>/dev/null | grep -c '[r]v6names')"
++for C in /etc/dnsmasq.conf /etc/dnsmasq-*.conf; do
++  [ -f "$C" ] || continue
++  HF="$(grep -o '^addn-hosts=/tmp/rv6names/.*' "$C" | head -1 | cut -d= -f2)"
++  NL=0; [ -n "$HF" ] && [ -f "$HF" ] && NL="$(grep -c . "$HF" 2>/dev/null)"
++  echo "  $(basename $C)  rev-server lines=$(grep -c '^rev-server=' "$C")  ipv6-names file=$([ -n "$HF" ] && echo yes || echo no)  ipv6 names=$NL"
++done
++if [ "$(nvram get reaper_dns_v6names 2>/dev/null)" = 1 ] && S6="$(nvram get ipv6_service 2>/dev/null)" && [ -n "$S6" ] && [ "$S6" != disabled ] && [ "$(ps w 2>/dev/null | grep -c '[r]v6names')" = 0 ]; then
++  finding WARN "IPv6 device names is on but its daemon (rv6names) is not running - LAN devices' IPv6 addresses get no names (see 5)"
++fi
+ echo "  dns-over-tls      : dnspriv_enable=$(nvram get dnspriv_enable 2>/dev/null)"
+ echo "  wanduck           : link_internet=$(nvram get link_internet 2>/dev/null) wandog=$(nvram get wandog_enable 2>/dev/null)"
+ # v1.3.22: the log level decides whether rc and wanduck lines exist at all. syslogd -l N keeps
+@@ -565,6 +665,27 @@ if [ -n "$V6S" ] && [ "$V6S" != disabled ]; then
+   case "$V6M" in *"no SLAAC"*) finding INFO "LAN IPv6 is DHCPv6-only (no SLAAC) - devices without a DHCPv6 client (Android, most IoT) get no IPv6 address; IPv6 > Auto Configuration Setting > Stateless fixes it (see 6)";; esac
+ fi
+ 
++# v1.3.31: the IPv6 DNS servers (by kind), the tunnel services, and the tunnelbroker
++# DDNS rule (stock stop_ddns() used to re-restore the whole IPv4 filter table to drop
++# it - fixed r15/r16; one accept must remain while the provider is chosen).
++K6=""; for i in 1 2 3; do a="$(nvram get ipv6_dns$i 2>/dev/null)"; case "$a" in "") ;; 2606:4700:*) K6="$K6 cloudflare";; 2001:4860:*) K6="$K6 google";; fd*|fc*) K6="$K6 ula";; *) case "$a" in "$(nvram get ipv6_prefix 2>/dev/null | sed 's/::$//')"*) K6="$K6 own-prefix(lan)";; *) K6="$K6 other";; esac;; esac; done
++echo "  ipv6 dns          : dnsenable=$(nvram get ipv6_dnsenable 2>/dev/null) servers:${K6:- (from ISP / none)}"
++case "$V6S" in 6in4|6to4|6rd)
++  TD="$(ls /sys/class/net 2>/dev/null | grep '^v6tun' | tr '\n' ' ')"
++  DR6="$(ip -6 route show default 2>/dev/null | head -1)"
++  GW6="$(echo "$DR6" | sed -n 's/.*via \([0-9a-fA-F:]*\).*/\1/p')"
++  FH="n/a"; [ -n "$GW6" ] && { ping6 -c 1 -W 2 "$GW6" >/dev/null 2>&1 && FH=answers || FH=SILENT; }
++  echo "  tunnel            : service=$V6S devices=${TD:-NONE} mtu=$(nvram get ipv6_tun_mtu 2>/dev/null) ttl=$(nvram get ipv6_tun_ttl 2>/dev/null) default-route-dev=$(echo "$DR6" | sed -n 's/.* dev \([^ ]*\).*/\1/p') first-hop=$FH"
++  [ -z "$TD" ] && finding WARN "IPv6 service is $V6S but no tunnel device exists (see 6)"
++  [ "$FH" = SILENT ] && finding WARN "IPv6 tunnel server is not answering - the tunnel is not passing traffic; a broker forwards only to the client IPv4 it was last told, so check the tunnel's client IPv4 / DDNS update first (see 6)"
++  ;;
++esac
++if [ "$(nvram get ddns_server_x 2>/dev/null)" = "WWW.TUNNELBROKER.NET" ] && [ "$(nvram get ddns_enable_x 2>/dev/null)" = 1 ]; then
++  HEA="$(iptables -S 2>/dev/null | grep -c -- '-s 66.220.2.74/32 .*-j ACCEPT')"
++  echo "  tunnelbroker ddns : checker accepts=$HEA (expect 1 unless WAN ping is open)  inadyn.conf mode=$(ls -l /etc/inadyn.conf 2>/dev/null | cut -c1-10)"
++  [ "$(nvram get misc_ping_x 2>/dev/null)" != 1 ] && [ "${HEA:-0}" = 0 ] && finding WARN "tunnelbroker DDNS is on but the broker's ICMP checker is not admitted - its update check can fail (see 6)"
++fi
++
+ sec "7. WIRELESS (radios discovered at runtime)"
+ # v1.3.24: the settings that explain overnight client drops (RT-BE88U field diag
+ # 2026-09-27 could neither confirm nor rule them out). roamast's [EXAP] deauth is
+@@ -598,7 +719,7 @@ u=0; while [ $u -le 3 ]; do
+   # events and an in-driver channel change are live (6 GHz) - an unexplained channel move can be it.
+   MMD="$(wl -i $IFN interference 2>/dev/null | sed -n 's/^Mode = \([0-9-]*\).*/\1/p' | head -1)"
+   MNV="$(nvram get wl${u}_rmit 2>/dev/null)"
+-  MST="$(grep "^wl$u " /tmp/reaper_wlmit.state 2>/dev/null | sed 's/.* result=//')"
++  MST="$(grep "^wl$u " /tmp/reaper/reaper_wlmit.state 2>/dev/null | sed 's/.* result=//')"
+   echo "     interference: mode=${MMD:-?}  setting=${MNV:-driver-default}  applier=${MST:--}  edcrs=$(wl -i $IFN edcrs_hi_event_mode 2>/dev/null)/$(wl -i $IFN edcrs_hi_event_status 2>/dev/null)  sr=$(wl -i $IFN sr_config options 2>/dev/null | awk '{print $2}')"
+   [ -n "$MNV" ] && case "$MST" in refused|waiting|skipped*|error*) finding INFO "interference mitigation is set on $IFN but not active (applier: $MST) - see 7";; esac
+   # v1.3.20: static preamble puncturing (rc/reaper_punct.c) - the saved setting, what the
+@@ -606,14 +727,25 @@ u=0; while [ $u -le 3 ]; do
+   if [ "$NB" = 1 ] || [ "$NB" = 4 ]; then
+     PNV="$(nvram get wl${u}_punct 2>/dev/null)"
+     PLV="$(wl -i $IFN eht dissubchan 2>/dev/null | head -1 | awk '{print $3}')"
+-    PST="$(grep "^wl$u " /tmp/reaper_punct.state 2>/dev/null | sed 's/.* result=//')"
++    PST="$(grep "^wl$u " /tmp/reaper/reaper_punct.state 2>/dev/null | sed 's/.* result=//')"
+     echo "     puncturing: setting=${PNV:-off}  live=${PLV:-?}  applier=${PST:--}"
+     case "$PST" in refused|stale|waiting|skipped*|error*)
+       [ -n "$PNV" ] && finding INFO "puncturing is set on $IFN but not active (applier: $PST) - see 7";; esac
+     # v1.3.21: dynamic puncturing (rpunctd) - the controller's flat state line for this radio
+     # and whether the daemon is alive; it exits by itself only when no radio is Dynamic.
+     case "$PNV" in dyn*)
+-      DL="$(grep "^wl$u " /tmp/reaper_punct.dyn.state 2>/dev/null | cut -c1-400)"
++      # v1.3.33: the setting stores 0 for "the preset's value", and a raw 0 read as "puncture
++      # on any gain". Print what rpunctd actually applies (rpunctd/punct_core.c presets[]:
++      # min gain C/B/A = 20/15/10 %, min interval 300/180/60 s; a non-zero field overrides).
++      PNP=$(echo "$PNV" | cut -d'|' -f2); PNS=$(echo "$PNV" | cut -d'|' -f3)
++      PNG=$(echo "$PNV" | cut -d'|' -f4); PNH=$(echo "$PNV" | cut -d'|' -f5)
++      case "$PNP" in b) PPN=Balanced; PDG=15; PDH=180;; a) PPN=Aggressive; PDG=10; PDH=60;; *) PPN=Conservative; PDG=20; PDH=300;; esac
++      case "$PNS" in i) PSN=idle-scan;; a) PSN=active-scan;; *) PSN=passive;; esac
++      case "$PNG" in ''|*[!0-9]*) PNG=0;; esac; case "$PNH" in ''|*[!0-9]*) PNH=0;; esac
++      { [ "$PNG" -gt 0 ] && [ "$PNG" -le 100 ]; } && PEG="$PNG % (set)" || PEG="$PDG % (preset)"
++      { [ "$PNH" -gt 0 ] && [ "$PNH" -le 86400 ]; } && PEH="$PNH s (set)" || PEH="$PDH s (preset)"
++      echo "     dynamic settings: preset=$PPN  source=$PSN  min gain=$PEG  min interval=$PEH"
++      DL="$(grep "^wl$u " /tmp/reaper/reaper_punct.dyn.state 2>/dev/null | cut -c1-400)"
+       if pidof rpunctd >/dev/null 2>&1; then DR=running; else DR=NOT-running; fi
+       echo "     dynamic puncturing: daemon=$DR  ${DL:-no state yet}"
+       [ "$DR" = running ] || finding WARN "dynamic puncturing is set on $IFN but rpunctd is not running (rwatch restarts it within its tick) - see 7";;
+@@ -819,6 +951,7 @@ if [ -r $CT ]; then
+   CTN="$(wc -l < "$CTS")"; CTMAX="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+   echo "  entries           : $CTN / ${CTMAX:-?}   (one snapshot; every figure below derives from it)"
+   echo "  by protocol       : $(awk '{c[$3]++} END {for (k in c) printf "%s=%d ", k, c[k]}' "$CTS")"
++  echo "  by family         : ipv4=$(grep -c '^ipv4' "$CTS") ipv6=$(grep -c '^ipv6' "$CTS")"
+   echo "  unreplied         : $(grep -c 'UNREPLIED' "$CTS")   syn_sent: $(grep -c 'SYN_SENT' "$CTS")   hw-accelerated: $(grep -c 'hwaccel=[1-9]' "$CTS")"
+   echo "  lan sources       : $(awk '{for(i=1;i<=NF;i++) if ($i ~ /^src=/) {print substr($i,5); break}}' "$CTS" | sort -u | wc -l) distinct"
+   [ -n "$CTMAX" ] && [ "$CTMAX" -gt 0 ] && [ $((CTN * 100 / CTMAX)) -ge 80 ] && finding WARN "conntrack table ${CTN}/${CTMAX} (>=80% full)"
+@@ -912,7 +1045,7 @@ _mr="$(pidof rmcpd 2>/dev/null | wc -w)"
+ printf "  %-8s %-22s running=%s  session=%s (arm-gated: idle=0 is normal)\n" rmcpd "rmcp_port=$(nvram get rmcp_port 2>/dev/null)" "$_mr" "$_ms"
+ [ "$_ms" = ARMED ] && [ "$_mr" = 0 ] && finding WARN "an Advisor session is armed (/tmp/reaper_mcp/session) but rmcpd is not running - the daemon exited uncleanly; re-arm from the Advisor page (see 12c)"
+ echo "  rwatch            : rwatch_enable=$(nvram get rwatch_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -c '#rwatch#')"
+-echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -cE '#rwarden')  chain=$(iptables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)"
++echo "  warden            : rwarden_enable=$(nvram get rwarden_enable 2>/dev/null)  cron=$(cru l 2>/dev/null | grep -cE '#rwarden')  chain=$(iptables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)  chain6=$(ip6tables -nL REAPER_WARDEN >/dev/null 2>&1 && echo present || echo absent)"
+ echo "  rules engine      : reaper_fw_enable=$(nvram get reaper_fw_enable 2>/dev/null) active=$(nvram get reaper_fw_active 2>/dev/null) armed=$(nvram get reaper_fw_armed 2>/dev/null)"
+ echo "  policy routing    : reaper_pbr_enable=$(nvram get reaper_pbr_enable 2>/dev/null) active=$(nvram get reaper_pbr_active 2>/dev/null)"
+ echo "  exporter          : reaper_export_mode=$(nvram get reaper_export_mode 2>/dev/null)"
+@@ -954,6 +1087,14 @@ for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP RW_SDROP; do
+     echo "  [$C] absent"
+   fi
+ done
++# 2026-10-07 IPv6 review (A12): the ip6tables flavour of each chain beside the v4 one
++for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP RW_SDROP; do
++  if ip6tables -nvxL "$C" >/dev/null 2>&1; then
++    echo "  [$C v6]"; ip6tables -nvxL "$C" 2>/dev/null | sed 's/^/     /'
++  else
++    echo "  [$C v6] absent"
++  fi
++done
+ echo "  -- top-level chains (policy + totals) --"
+ for C in INPUT FORWARD OUTPUT; do
+   iptables -nvxL "$C" 2>/dev/null | head -2 | sed 's/^/     /'
+@@ -996,7 +1137,8 @@ for st in 0 1 2 3; do n=0; [ -f "$GK_RL" ] && n=$(tr '<' '
+ ' < "$GK_RL" | grep -c ">$st>" 2>/dev/null); echo "  state $st           : $n"; done | sed 's/state 0  /state 0 (blocked)/; s/state 1  /state 1 (full)   /; s/state 2  /state 2 (inet)   /; s/state 3  /state 3 (guest)  /'
+ echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.tsv || echo 0 ) rows"
+ echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
+-echo "  front-chain jumps : $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
++echo "  front-chain jumps : v4 $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) / v6 $(ip6tables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
++echo "  captive redirect  : v4 $(iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && echo present || echo absent) / v6 $(ip6tables -t nat -nL REAPER_GKN >/dev/null 2>&1 && echo present || echo absent) (REAPER_GKN in nat)"
+ # v2.7.3: AiMesh infrastructure exemptions (cfg_relist MACs, sanitized as counts)
+ echo "  aimesh registry   : $(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l) record MAC(s) in cfg_relist; exempt input rules: $( [ -f /tmp/gk/relist.n ] && cat /tmp/gk/relist.n || echo 0 )"
+ echo "  onboarding window : status=$(nvram get cfg_obstatus 2>/dev/null) gate=$(iptables -C REAPER_GKI -j RETURN 2>/dev/null && echo OPEN || echo closed)"
+@@ -1029,6 +1171,19 @@ for k in obj grp svc zone zpol rules edef nat; do [ -n "$(nvram get reaper_fw_$k
+ for CH in REAPER_FWI REAPER_FWF REAPER_FWO; do printf "  %-11s v4=%s rules  v6=%s rules\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l)" "$(ip6tables -nL $CH 2>/dev/null | tail -n +3 | wc -l)"; done
+ echo "  nat REAPER_FWN    : $(iptables -t nat -nL REAPER_FWN 2>/dev/null | tail -n +3 | wc -l) rules"
+ echo "  rwfw_* sets       : $(ipset list -n 2>/dev/null | grep -c '^rwfw') (sizes: $(for S in $(ipset list -n 2>/dev/null | grep '^rwfw' | head -12); do printf "%s=%s " "$S" "$(ipset -t list $S 2>/dev/null | sed -n 's/.*Number of entries: //p')"; done))"
++# v1.3.31: the DNS intercept gate per family (rc/reaper_fw.c hcgate.sh; r18/r19). A RETURN
++# at the head of REAPER_FWHC = that family's intercept is parked. It must agree with the
++# health check: closed exactly while the server is demoted or that face is marked down.
++for T in iptables ip6tables; do
++  case $T in iptables) F=ipv4; M=/tmp/reaper/rdnshc.down4;; *) F=ipv6; M=/tmp/reaper/rdnshc.down6;; esac
++  $T -t nat -nL REAPER_FWHC >/dev/null 2>&1 || { echo "  intercept gate $F : no chain"; continue; }
++  GC=open; $T -t nat -C REAPER_FWHC -j RETURN 2>/dev/null && GC=CLOSED
++  ND="$($T -t nat -S REAPER_FWHC 2>/dev/null | grep -c -- '-j DNAT')"
++  NP="$($T -t nat -nvxL REAPER_FWHC 2>/dev/null | awk '$3=="DNAT"{s+=$1} END{print s+0}')"
++  WANT=open; { [ -e /tmp/reaper/rdnshc.state ] || [ -e $M ]; } && WANT=CLOSED
++  echo "  intercept gate $F : $GC  dnat-rules=$ND  redirected-pkts=$NP"
++  [ "$ND" -gt 0 ] && [ "$GC" != "$WANT" ] && finding WARN "DNS intercept gate ($F) is $GC while the health check says it should be $WANT - redirected lookups $( [ "$GC" = open ] && echo "go to a silent resolver" || echo "skip the filter") (see 14c)"
++done
+ [ -f /tmp/reaper_fw/failcount ] && echo "  last apply        : $(cat /tmp/reaper_fw/failcount) rule(s) failed to load"
+ [ -f /tmp/reaper_fw/deadline ] && echo "  commit-confirm    : ARMED, deadline $(cat /tmp/reaper_fw/deadline) (epoch), now $(date +%s)"
+ [ "$(nvram get reaper_fw_enable 2>/dev/null)" = 1 ] && [ "$(cat /tmp/reaper_fw/failcount 2>/dev/null || echo 0)" != 0 ] && finding WARN "rules engine: $(cat /tmp/reaper_fw/failcount) rule(s) failed to load on the last apply (see 14c)"
+@@ -1235,7 +1390,7 @@ echo "  datastore opt-ins : $(nvram get reaper_store_ds 2>/dev/null)"
+ # whether it had armed, already fired, or been opted out of.
+ RWB="$(nvram get reaper_wanbounce_enable 2>/dev/null)"
+ [ -n "$RWB" ] || RWB="<unset = enabled>"
+-if [ -f /tmp/reaper_wan_bounced ]; then RWL="PRESENT - already re-dialled once this boot"; else RWL="absent - not fired this boot"; fi
++if [ -f /tmp/reaper/reaper_wan_bounced ]; then RWL="PRESENT - already re-dialled once this boot"; else RWL="absent - not fired this boot"; fi
+ echo "  pppoe wan bounce  : reaper_wanbounce_enable=$RWB"
+ echo "  bounce latch      : $RWL"
+ if [ -s "$RS_BASE/syslog.mirror" ]; then
+@@ -1475,6 +1630,10 @@ else
+   VERDICT="REVIEW BEFORE SHARING - residue detected, see counts above"
+ fi
+ 
++# the report's path is fixed (the download CGI accepts /tmp/reaper_diag_*): make
++# it fresh, and never write into a file someone else created there (noclobber)
++rm -f "$OUT"
++set -C
+ {
+   echo "==================== $MODEL Reaper sanitized diag ===================="
+   echo " $VER | firmware: $EXTNO | generated: $(date)"
+@@ -1499,7 +1658,8 @@ fi
+   echo "  means look upstream. Start with FINDINGS, then 19b (history)."
+   cat "$BODY"
+   echo "==================== end diag $(date) ===================="
+-} > "$OUT"
++} > "$OUT" || { set +C; echo "could not create $OUT" >&2; exit 1; }
++set +C
+ 
+ chmod 600 "$OUT"
+ echo ""
+diff --git a/release/src/router/www/Advanced_Wireless_Content.asp b/release/src/router/www/Advanced_Wireless_Content.asp
+index ffeda4c2be..2a035f483b 100644
+--- a/release/src/router/www/Advanced_Wireless_Content.asp
++++ b/release/src/router/www/Advanced_Wireless_Content.asp
+@@ -2268,7 +2268,7 @@
+                     <tr id="${prefix}_outdoor_status_field" style="display:${displayFlag}">
+                         <th><#Outdoor_status#></th>
+                         <td>
+-                            <div id="${prefix}_outdoor_status">${od_mode === "1" ? "<#Outdoor_active#>" : "<#Status_Inactive#>"}</div>
++                            <div id="${prefix}_outdoor_status">${od_mode === "1" ? "<#Status_Active#>" : "<#Status_Inactive#>"}</div>
+                             <div id="${prefix}_outdoor_status_hint" style="color:#fc0;display:${od_mode === "1" ? "" : "none"};"><#Outdoor_status_hint#></div>
+                         </td>
+                     </tr>
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 30b97dcb3a..42057187e3 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -596,7 +596,7 @@ main{min-width:0}
+ 
+         <!-- STORAGE -->
+         <section class="card col4">
+-          <div class="head"><h3><#AiMesh_NodeLocation21#></h3>
++          <div class="head"><h3><#RSYS_05#></h3>
+             <select class="stgsel" id="st_sel" style="display:none" title="<#RDSH_89#>"></select>
+           </div>
+           <div class="stg">
+@@ -893,6 +893,36 @@ function v6Up(){
+   var gw=String((WAN6.IPv6_Gateway)||'');
+   return !!(a || gw);
+ }
++/* The IPv6 half of the Internet card, painted from WAN6/V6RTR. The render used
++   to paint it once from SSI and the live poll re-read IPv4 only, so a v6 that
++   came up after the page loaded (a 6in4 tunnel, a late DHCP-PD) never appeared
++   until a reload. The poll now refreshes WAN6/V6RTR and calls this too, so it
++   is idempotent: everything it can show it can also hide again. v4 = the IPv4
++   up-state of the same paint. WAN-face global first, else the br0 global
++   (V6RTR); never the fe80:: link-local, which reads as a broken v6 config. */
++function paintV6(v4){
++  var up=v6Up(), only=up && !v4;
++  var addr=String((WAN6 && WAN6.IPv6_Address) || V6RTR || '').split('/')[0];
++  var c6=$id('chip6'); if(c6){ c6.className='chip '+(up?'up':'off'); c6.textContent = up?'IPv6':`<#RDSH_29#>`; }
++  var vl=$id('i_v6line'); if(vl) vl.style.display=(up && v4)?'flex':'none';
++  if(up && v4) setTxt('i_wan6', addr);
++  /* IPv6-only: v6 takes the hero slot and the v4 gateway/DNS cells go */
++  var hero=$id('i_wanip');
++  if(hero){
++    hero.className='big wanip mono'+(only?' v6only':'');
++    if(only && addr) hero.textContent=addr;
++    else if(hero._v6 && !v4) hero.textContent='\u2014';
++    hero._v6=only;
++  }
++  var g4m=$id('i_gw_m'), d4m=$id('i_dns_m');
++  if(g4m) g4m.style.display=only?'none':'';
++  if(d4m) d4m.style.display=only?'none':'';
++  var vm=$id('i_v6meta'); if(vm) vm.style.display=up?'flex':'none';
++  if(up){
++    var g6=$id('i_gw6'); if(g6) g6.textContent=String(WAN6.IPv6_Gateway||'')||'\u2014';
++    var d6=$id('i_dns6'); if(d6) d6.textContent=String(WAN6.DNS_Servers||'').split(' ')[0]||'\u2014';
++  }
++}
+ /* ---- Security posture: painted from SSI, and RE-paintable -------------
+    Every row in this card is a snapshot of nvram taken when the page was
+    rendered. That is fine on a settled router and wrong on a booting one:
+@@ -1008,10 +1038,6 @@ function paintPosture(){
+                    SSI.wan_unit, SSI.wans_mode==='lb');
+     SSI.wan_state=pw.st; SSI.wanip=pw.ip; SSI.gw=pw.gw; SSI.dns=pw.dns;
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+-    /* WAN-face global first, else the br0 global (V6RTR). Never show the
+-       fe80:: gateway/link-local as the WAN address - the gateway has its own
+-       cell (i_gw6) and a link-local here reads as a broken v6 config. */
+-    var v6addr = String((WAN6 && WAN6.IPv6_Address) || V6RTR || '').split('/')[0];
+     var v6up = v6Up();
+     var anyUp = wanUp || v6up;
+     if(!ROUTING){
+@@ -1026,27 +1052,12 @@ function paintPosture(){
+         if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
+       }
+     }
+-    var c4=$id('chip4'), c6=$id('chip6');
++    var c4=$id('chip4');
+     if(c4){ c4.className='chip '+(wanUp?'up':'off'); c4.textContent = wanUp?'IPv4':`<#RDSH_28#>`; }
+-    if(c6){ c6.className='chip '+(v6up?'up':'off'); c6.textContent = v6up?'IPv6':`<#RDSH_29#>`; }
+     if(wanUp) setTxt('i_wanip', SSI.wanip);
+     if(SSI.gw && SSI.gw!=='0.0.0.0')  setTxt('i_gw', SSI.gw);
+     if(SSI.dns) setTxt('i_dns', String(SSI.dns).split(' ')[0]);
+-    if(v6up){
+-      if(wanUp){
+-        var vl=$id('i_v6line'); if(vl) vl.style.display='flex';
+-        setTxt('i_wan6', v6addr);
+-      } else {
+-        /* IPv6-only: promote v6 to the hero slot, drop the v4 gateway/DNS cells */
+-        var hero=$id('i_wanip'); if(hero){ hero.className='big wanip mono v6only'; hero.textContent=v6addr; }
+-        var g4m=$id('i_gw_m'), d4m=$id('i_dns_m');
+-        if(g4m) g4m.style.display='none';
+-        if(d4m) d4m.style.display='none';
+-      }
+-      var vm=$id('i_v6meta'); if(vm) vm.style.display='flex';
+-      setTxt('i_gw6', String(WAN6.IPv6_Gateway||''));
+-      setTxt('i_dns6', String(WAN6.DNS_Servers||'').split(' ')[0]);
+-    }
++    paintV6(wanUp);
+     var dd = (SSI.ddns_en==='1' && SSI.ddns_host) ? SSI.ddns_host : `<#Reaper_c_not_active#>`;
+     var de = $id('i_ddns'); if(de){ de.textContent = dd; de.style.color = (dd===`<#Reaper_c_not_active#>`)?'var(--steel)':'var(--bone)'; }
+ 
+@@ -1106,6 +1117,7 @@ function paintPosture(){
+       else { d.style.background='var(--danger)'; d.style.boxShadow='none'; } });
+     var c4=$id('chip4'); if(c4){ c4.className='chip '+(v4?'up':'off'); c4.textContent=v4?'IPv4':`<#RDSH_28#>`; }
+     if(v4) setTxt('i_wanip', ip);
++    paintV6(v4);
+     return any;
+   }
+   /* also read the primary unit's enable flag, so the header switch stays honest if
+@@ -1113,9 +1125,15 @@ function paintPosture(){
+   var ENK='wan'+((SSI.wan_unit==='1')?'1':'0')+'_enable';
+   /* v3.2.8: both units plus wan_primary, so a fail-over (or fail-back) while the
+      page is open moves the card and the header switch to the live line. */
+-  var HK=['wan_primary','wan0_enable','wan1_enable'];
++  var HK=['wan_primary','wan0_enable','wan1_enable','ipv6_rtr_addr'];
+   [0,1].forEach(function(u){ ['state_t','ipaddr','gateway','dns'].forEach(function(k){ HK.push('wan'+u+'_'+k); }); });
+-  var HOOK='/appGet.cgi?hook='+HK.map(function(k){ return 'nvram_get('+k+')'; }).join('%3b');
++  /* 2026-10-09: wan_ipv6_network() rides the same request (appGet emits it as a
++     JSON object), so the IPv6 half of the card is as live as the IPv4 half */
++  var HOOK='/appGet.cgi?hook='+HK.map(function(k){ return 'nvram_get('+k+')'; }).join('%3b')+'%3bwan_ipv6_network()';
++  /* v4 up but v6 configured and still coming (a 6in4 tunnel or DHCP-PD routinely
++     lands after the IPv4 lease): keep the fast cadence for ~3 min so the v6 line
++     appears promptly, then fall back to the slow one. */
++  var V6WAIT=45, v6wait=0;
+   var timer=null;
+   function schedule(ms){ if(timer) clearTimeout(timer); timer=setTimeout(tick, ms); }
+   function tick(){
+@@ -1132,6 +1150,8 @@ function paintPosture(){
+       if(ok){
+         try{
+           var j=JSON.parse(x.responseText);
++          if(j.wan_ipv6_network && typeof j.wan_ipv6_network==='object') WAN6=j.wan_ipv6_network;
++          if(typeof j.ipv6_rtr_addr==='string') V6RTR=j.ipv6_rtr_addr;
+           var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:SSI.wan_unit;
+           var p=wanPick(j, pu, SSI.wans_mode==='lb');
+           up=apply(p.st, p.ip, p.gw, p.dns);
+@@ -1139,7 +1159,9 @@ function paintPosture(){
+           if(window.wanSetEnable) window.wanSetEnable(j[ENK]);
+         }catch(e){}
+       }
+-      schedule(up?SLOW:FAST);
++      var v6pend = up && WAN6 && WAN6.status==='1' && !v6Up() && v6wait<V6WAIT;
++      if(v6pend) v6wait++;
++      schedule((up && !v6pend)?SLOW:FAST);
+     }
+     x.open('GET', HOOK+'&_='+(new Date()).getTime(), true);
+     x.timeout=8000;
+@@ -1472,7 +1494,7 @@ function pollClientsDev(){
+         if(!d.online || d.mlo_link || d.node) continue;
+         var k=(d.band==='2.4')?'24':(d.band==='5')?'5':(d.band==='6')?'6':'eth';
+         var nm=(d.name&&String(d.name).length)?d.name:((d.host&&String(d.host).length)?d.host:d.mac);
+-        b[k].push({n:nm, ip:(d.ip&&String(d.ip).length)?d.ip:'\u2014', ip6:'', m:d.mac});
++        b[k].push({n:nm, ip:(d.ip&&String(d.ip).length)?d.ip:'\u2014', ip6:d.ip6?String(d.ip6):'', m:d.mac});
+       }
+       paintClients(b);
+     }catch(e){}
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 4ac3967cef..f87eda8b25 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -944,11 +944,13 @@ ifneq ($(BUILD_NAME),$(filter $(BUILD_NAME), BRT-AC828))
+ 	rm -rf $(INSTALLDIR)/www/images/New_ui/networkmap/icon_Guset_bg.png
+ endif
+ 
+-	ln -sf /tmp/fb_data.tgz.gz $(INSTALLDIR)/www/fb_data.tgz.gz
+-	ln -sf /tmp/fb_data.tgz.gz.part.a $(INSTALLDIR)/www/fb_data.tgz.gz.part.a
+-	ln -sf /tmp/fb_data.tgz.gz.part.b $(INSTALLDIR)/www/fb_data.tgz.gz.part.b
+-	ln -sf /tmp/fb_data.tgz.gz.part.c $(INSTALLDIR)/www/fb_data.tgz.gz.part.c
+-	ln -sf /tmp/fb_data.tgz.gz.part.d $(INSTALLDIR)/www/fb_data.tgz.gz.part.d
++	# reaper 2026-10-09 (audit V5): the five /www/fb_data.tgz.gz* -> /tmp links are gone.
++	# Their only producer is the DSL feedback object (dsl_fb.o), not linked on this
++	# model, so they only ever dangled - and pointed web requests into /tmp.
++	rm -f $(INSTALLDIR)/www/fb_data.tgz.gz*
++	# reaper 2026-10-09 (audit V11): ASUS's developer test form for the app installer
++	# (install/update/upgrade by name). The installer is not shipped; neither is this.
++	rm -f $(INSTALLDIR)/www/apps_test.asp
+ 
+ ifneq ($(RTCONFIG_AMAS), y)
+ 	rm -rf $(INSTALLDIR)/www/device-map/amesh.asp
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index c51d4afe64..25071a8eb2 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -79,7 +79,7 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+ <div class="pagehead">
+   <div class="eyebrow">Reaper</div>
+   <h1><#Reaper_c_ai_advisor#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#416-ai-advisor-mcp-build-only" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span id="statePill" class="pill"><span class="dot"></span><span id="stateTxt"><#Configuration_dark_mode#></span></span>
++  <span id="statePill" class="pill"><span class="dot"></span><span id="stateTxt"><#RADV_77#></span></span>
+   <button class="btn ghost" onclick="loadStatus()"><#CTL_refresh#></button>
+   <div class="spacer"></div>
+ </div>
+@@ -168,6 +168,7 @@ pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px
+   <div id="armedBox" class="creds hide">
+     <div class="k"><#RADV_33#></div><div class="v"><span id="countdown" class="count">&mdash;</span></div>
+     <div class="k"><#RADV_34#></div><div class="v" id="epUrl">&mdash;</div>
++    <div class="k"><#RADV_76#></div><div class="v" id="epUrl6">&mdash;</div>
+     <div class="k"><#RADV_35#></div><div class="v" id="epTok">&mdash;</div>
+     <hr class="hr">
+     <div class="k"><#RADV_36#></div>
+@@ -200,7 +201,7 @@ function loadStatus(){
+   post('status').then(function(d){
+     var pill=document.getElementById('statePill'), txt=document.getElementById('stateTxt');
+     if(d.armed){ pill.className='pill armed'; txt.textContent=`<#RADV_42#>`; endExpiry=d.expiry; startTicker(); document.getElementById('armedBox').classList.remove('hide'); }
+-    else { pill.className='pill'; txt.textContent=`<#Configuration_dark_mode#>`; document.getElementById('armedBox').classList.add('hide'); stopTicker(); }
++    else { pill.className='pill'; txt.textContent=`<#RADV_77#>`; document.getElementById('armedBox').classList.add('hide'); stopTicker(); }
+     document.getElementById('provState').innerHTML = d.provisioned
+       ? `<span style="color:var(--jade)"><#RADV_43#></span> <#RADV_44#>`
+       : `<span style="color:var(--amber)"><#RADV_45#></span> <#RADV_46#>`;
+@@ -309,6 +310,7 @@ function arm(){
+     setMsg('armMsg',`<#RADV_70#>`,'ok');
+     endExpiry=d.expiry;
+     document.getElementById('epUrl').textContent=d.url;
++    document.getElementById('epUrl6').textContent=d.url6||'-';   /* IPv6 A8: present when the LAN holds an IPv6 address */
+     document.getElementById('epTok').textContent=d.token;
+     document.getElementById('snip').textContent=buildSnip(d.url,d.token);
+     document.getElementById('armedBox').classList.remove('hide');
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index 7173258e38..2cd0a69b1d 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -126,6 +126,7 @@ code{font-family:var(--mono)}
+ .st{font-family:var(--mono);font-size:10.5px;color:var(--bone-dim)}
+ .st.est{color:var(--jade)}.st.wait{color:var(--steel)}.st.new{color:var(--amber)}
+ .qsum{font-size:12px;color:var(--steel);margin:0 2px 10px;font-family:var(--mono)}
++.pathbadge.v6{color:var(--ice);border-color:rgba(126,166,201,.4)}
+ </style>
+ </head>
+ <body>
+@@ -209,6 +210,8 @@ code{font-family:var(--mono)}
+   function fmtAge(sec){ if(sec<0)return `<#RCON_17#>`; if(sec>=3600)return Math.floor(sec/3600)+"h "+Math.floor(sec%3600/60)+"m"; if(sec>=60)return Math.floor(sec/60)+"m "+(sec%60)+"s"; return sec+"s"; }
+   
+   function protoName(p){ return ({6:"TCP",17:"UDP",1:"ICMP",58:"ICMPv6"})[p]||("IP"+p); }
++  /* IPv6 A1 (2026-10-07): an endpoint prints as [addr]:port when the address has colons */
++  function epStr(a,p){ a=String(a==null?"":a); return (a.indexOf(":")>=0?"["+a+"]":a)+(p?(":"+p):""); }
+   function dscpName(d){ return d===46?" (EF)":d===34?" (AF41)":d===26?" (AF31)":""; }
+   /* v3.1.0 (backlog): the scheduler is strict priority on every port since the
+      classful WRR path was removed (v2.5.4, B-1); a weight on the class does
+@@ -229,13 +232,19 @@ code{font-family:var(--mono)}
+     ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ if(view==="quick") render(); });
+   }
+   function devName(ip){ return ReaperNames.byIp(ip,""); }
++  /* owner 2026-10-08: the client's name - by MAC on an IPv6 row (its address is
++     not in the IPv4 name map), by address otherwise */
++  function cliName(c){ return (c.cmac&&ReaperNames.byMac(c.cmac,""))||devName(c.cli); }
++  /* inside = the far end is on the LAN or is the router: RFC 1918 for IPv4, the
++     feed's flag for IPv6 (a LAN IPv6 address is a global one) */
++  function isInside(c){ return c.fam===6 ? !!c.slan : isPrivate(c.srv); }
+   /* the destination's name: a LAN address by device name (the router's own addresses
+      as "This router"), an external one from the DNS map */
+-  function destName(c){ if(isPrivate(c.srv)) return rtr.indexOf(c.srv)>=0 ? `<#RSYS_02#>` : devName(c.srv); return c.srvn||""; }
+-  function destCell(c){ var dn=destName(c), ap=esc(c.srv+(c.spt?(":"+c.spt):""));
++  function destName(c){ if(isInside(c)) return rtr.indexOf(c.srv)>=0 ? `<#RSYS_02#>` : ((c.smac&&ReaperNames.byMac(c.smac,""))||devName(c.srv)); return c.srvn||""; }
++  function destCell(c){ var dn=destName(c), ap=esc(epStr(c.srv,c.spt));
+     if(!dn) return '<div class="qip">'+ap+'</div>';
+     /* srvx 0 = a reverse name from the one-shot backfill (what the address owner registered); muted until a forward reply takes over */
+-    var rev=(c.srvx===0&&!isPrivate(c.srv));
++    var rev=(c.srvx===0&&!isInside(c));
+     return '<div class="qdev"><div class="qn'+(rev?' rev':'')+'"'+(rev?' title="'+`<#RCON_46#>`+'"':'')+'>'+esc(dn)+(c.srvx>1?'<span class="qx">+'+Math.min(c.srvx-1,9)+'</span>':"")+'</div><div class="qip">'+ap+'</div></div>'; }
+ 
+   function fetchOnce(){
+@@ -252,12 +261,15 @@ code{font-family:var(--mono)}
+     var g={}, order=[], seen=j.seen||{}, now=j.now||0;
+     (j.flows||[]).forEach(function(r){
+       var c=g[r.nfc];
+-      if(!c){ c=g[r.nfc]={nfc:r.nfc,proto:r.proto,dscp:0,q:0,bytes:0,tot:0,sw:0,hw:0,cli:"",cp:0,srv:"",spt:0,st:"",haveC:0}; order.push(r.nfc); }
++      if(!c){ c=g[r.nfc]={nfc:r.nfc,proto:r.proto,dscp:0,q:0,bytes:0,tot:0,sw:0,hw:0,cli:"",cp:0,srv:"",spt:0,st:"",haveC:0,fam:4}; order.push(r.nfc); }
+       c.bytes+=r.bytes; c.tot+=r.tot; c.sw+=r.sw; c.hw+=r.hw; c.proto=r.proto;
+       if(r.dscp) c.dscp=r.dscp; if(r.q) c.q=r.q; if(r.st) c.st=r.st;
+       if(r.srvn){ c.srvn=r.srvn; c.srvx=(r.srvx!=null)?+r.srvx:1; }
++      if(r.fam) c.fam=r.fam;   /* 6 = a conntrack row: no accelerator figures */
+       if(r.lan){ c.cli=r.sip; c.cp=r.sp; c.srv=r.dip; c.spt=r.dp; c.haveC=1; }
+       else if(!c.haveC){ c.cli=r.dip; c.cp=r.dp; c.srv=r.sip; c.spt=r.sp; }
++      /* owner 2026-10-08: IPv6 rows say which ends are LAN and carry their MACs */
++      if(r.fam===6){ var cl=r.lan?1:0; c.cmac=cl?r.smac:r.dmac; c.smac=cl?r.dmac:r.smac; c.slan=cl?r.dlan:r.slan; }
+     });
+     var tnow=Date.now(), conns=[];
+     order.forEach(function(nfc){
+@@ -297,9 +309,9 @@ code{font-family:var(--mono)}
+     var conns=state.conns.slice().sort(function(a,b){ return b.rate-a.rate; });
+     var qv=document.getElementById("quickView");
+     if(!conns.length){ qv.innerHTML=emptyBox(); return; }
+-    var ext=conns.filter(function(c){return !isPrivate(c.srv);}).length;
++    var ext=conns.filter(function(c){return !isInside(c);}).length;
+     var rows=conns.map(function(c){
+-      var nm=devName(c.cli), inside=isPrivate(c.srv);
++      var nm=cliName(c), inside=isInside(c);
+       var dev=nm ? '<div class="qn">'+esc(nm)+'</div><div class="qip">'+esc(c.cli||"-")+'</div>'
+                  : '<div class="qn qip" style="font-weight:600;color:var(--bone)">'+esc(c.cli||"-")+'</div>';
+       var st=c.st?('<span class="st '+stateClass(c.st)+'">'+esc(c.st)+'</span>'):'<span class="st" style="color:var(--steel)">&mdash;</span>';
+@@ -320,16 +332,18 @@ code{font-family:var(--mono)}
+   /* -------- Advanced: the live flow explorer (unchanged) -------- */
+   function renderAdv(){
+     var conns=state.conns;
+-    var shown=conns.filter(function(c){ return filter==="all"||(filter==="acc"&&c.hwPct>=50)||(filter==="cpu"&&c.hwPct<50); })
++    var shown=conns.filter(function(c){ return filter==="all"||(c.fam!==6&&((filter==="acc"&&c.hwPct>=50)||(filter==="cpu"&&c.hwPct<50))); })
+                    .sort(function(a,b){ return b.rate-a.rate; });
+-    var accN=conns.filter(function(c){return c.hwPct>=50;}).length;
+-    var totRate=conns.reduce(function(a,c){return a+c.rate;},0);
+-    var hwR=conns.reduce(function(a,c){return a+c.rate*c.hwPct/100;},0);
++    /* IPv6 A1: the accelerator figures come from the fcache feed, which is IPv4; the v6 rows carry none */
++    var v4=conns.filter(function(c){return c.fam!==6;});
++    var accN=v4.filter(function(c){return c.hwPct>=50;}).length;
++    var totRate=v4.reduce(function(a,c){return a+c.rate;},0);
++    var hwR=v4.reduce(function(a,c){return a+c.rate*c.hwPct/100;},0);
+     var hwPct=totRate>0?hwR/totRate*100:100;
+ 
+     document.getElementById("cards").innerHTML=
+       card(`<#RCON_05#>`,conns.length,`<#RCON_18#>`,"")+
+-      card(`<#RCON_19#>`,accN+" <small>/ "+conns.length+"</small>",`<#RCON_20#>`,"",conns.length?Math.round(accN/conns.length*100):0)+
++      card(`<#RCON_19#>`,accN+" <small>/ "+v4.length+"</small>",`<#RCON_20#>`,"",v4.length?Math.round(accN/v4.length*100):0)+
+       card(`<#RCON_21#>`,fmtRate(totRate),`<#RCON_22#>`,"")+
+       cardSplit(`<#RCON_23#>`,hwPct);
+ 
+@@ -341,15 +355,15 @@ code{font-family:var(--mono)}
+       var hw=Math.round(c.hwPct*10)/10, cpu=Math.round((100-c.hwPct)*10)/10, acc=c.hwPct>=50;
+       return '<div class="frow'+(c.nfc===state.sel?" sel":"")+'" data-n="'+esc(c.nfc)+'">'+
+         '<div class="fid">'+esc(c.nfc.slice(-6))+'</div>'+
+-        '<div class="flow5"><div class="ep">'+esc(c.cli+':'+c.cp)+'<span class="ar">&rarr;</span>'+esc(c.srv+':'+c.spt)+(destName(c)?' <span class="num dim'+(c.srvx===0&&!isPrivate(c.srv)?' rev':'')+'">'+esc(destName(c))+'</span>':"")+'</div></div>'+
++        '<div class="flow5"><div class="ep">'+esc(epStr(c.cli,c.cp))+'<span class="ar">&rarr;</span>'+esc(epStr(c.srv,c.spt))+(destName(c)?' <span class="num dim'+(c.srvx===0&&!isInside(c)?' rev':'')+'">'+esc(destName(c))+'</span>':"")+'</div></div>'+
+         '<div><span class="proto '+esc(protoName(c.proto).toLowerCase())+'">'+esc(protoName(c.proto))+'</span></div>'+
+-        '<div>'+(acc?'<span class="pathbadge acc"><span class="ck">&#10003;</span>Runner</span>':'<span class="pathbadge slow">CPU</span>')+'</div>'+
++        '<div>'+(c.fam===6?'<span class="pathbadge v6" title="'+`<#RCON_47#>`+'">IPv6</span>':acc?'<span class="pathbadge acc"><span class="ck">&#10003;</span>Runner</span>':'<span class="pathbadge slow">CPU</span>')+'</div>'+
+         '<div><span class="qpill">'+c.q+'</span></div>'+
+         '<div class="r num'+(c.dscp?"":" dim")+'">'+c.dscp+'</div>'+
+         '<div class="r num">'+(c.rate/1e6).toFixed(0)+'<span class="num dim"> M</span></div>'+
+         '<div class="r num">'+fmtBytes(c.bytes)+'</div>'+
+         '<div class="r num dim">'+fmtAge(c.age)+'</div>'+
+-        '<div class="mix"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i><span>'+hw.toFixed(0)+'% HW</span></div>'+
++        (c.fam===6?'<div class="num dim">&mdash;</div>':'<div class="mix"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i><span>'+hw.toFixed(0)+'% HW</span></div>')+
+         '</div>';
+     }).join("");
+     document.getElementById("fbody").innerHTML='<div class="ftable"><div class="fhead"><div>'+`<#RCON_26#>`+'</div><div>'+`<#AiProtection_event_Source#>`+' &rarr; '+`<#AiProtection_event_Destination#>`+'</div><div>'+`<#RCON_27#>`+'</div><div>'+`<#RCON_28#>`+'</div><div class="r">'+`<#RCON_35#>`+'</div><div class="r">DSCP</div><div class="r">'+`<#RTRF_25#>`+'</div><div class="r">'+`<#RCON_29#>`+'</div><div class="r">'+`<#RCON_30#>`+'</div><div>HW / CPU</div></div>'+rows+'</div>';
+@@ -363,16 +377,16 @@ code{font-family:var(--mono)}
+     var c=state.conns.filter(function(x){return x.nfc===state.sel;})[0];
+     if(!c){ document.getElementById("detail").innerHTML=""; return; }
+     var hw=c.hwPct, cpu=100-hw, acc=hw>=50;
+-    var nm=devName(c.cli);
++    var nm=cliName(c);
+     document.getElementById("detail").innerHTML=
+       '<div class="dhd"><div><div class="k">'+`<#RCON_26#>`+' '+esc(c.nfc.slice(-6))+'</div><div class="n">'+esc(destName(c)||c.srv)+'</div></div>'+
+-        (acc?'<span class="chip acc">&#10003; '+`<#RCON_07#>`+'</span>':'<span class="chip" style="color:var(--amber);border-color:rgba(224,169,59,.4)">'+`<#RCON_08#>`+'</span>')+'</div>'+
++        (c.fam===6?'<span class="chip" title="'+`<#RCON_47#>`+'">IPv6</span>':acc?'<span class="chip acc">&#10003; '+`<#RCON_07#>`+'</span>':'<span class="chip" style="color:var(--amber);border-color:rgba(224,169,59,.4)">'+`<#RCON_08#>`+'</span>')+'</div>'+
+       '<div class="drows">'+
+         (nm?drow(`<#RCON_26#>`,esc(nm)):"")+
+-        drow(`<#AiProtection_event_Source#>`,esc(c.cli+':'+c.cp))+
+-        drow(`<#AiProtection_event_Destination#>`,esc(c.srv+':'+c.spt)+(destName(c)?' &middot; '+esc(destName(c)):""))+
++        drow(`<#AiProtection_event_Source#>`,esc(epStr(c.cli,c.cp)))+
++        drow(`<#AiProtection_event_Destination#>`,esc(epStr(c.srv,c.spt))+(destName(c)?' &middot; '+esc(destName(c)):""))+
+         drow(`<#IPConnection_VServerProto_itemname#>`,esc(protoName(c.proto))+(c.st?(' &middot; '+esc(c.st)):""))+
+-        drow(`<#RCON_19#>`,(acc?'<span style="color:var(--jade)">&#10003; Runner</span>':'<span style="color:var(--amber)">'+`<#RCON_32#>`+'</span>'))+
++        drow(`<#RCON_19#>`,(c.fam===6?'&mdash;':acc?'<span style="color:var(--jade)">&#10003; Runner</span>':'<span style="color:var(--amber)">'+`<#RCON_32#>`+'</span>'))+
+         drow(`<#RQOS_22#>`,c.q)+
+         drow(`<#RCON_33#>`,schedFor(c))+
+         drow("DSCP",c.dscp+dscpName(c.dscp))+
+@@ -380,8 +394,8 @@ code{font-family:var(--mono)}
+         drow(`<#RCON_29#>`,fmtBytes(c.bytes))+
+         drow(`<#RWIF_28#>`,fmtAge(c.age))+
+       '</div>'+
+-      '<div class="dsplit"><div class="row2"><span class="hwt">'+`<#RCON_10#>`+' '+hw.toFixed(1)+'%</span><span class="cput">CPU '+cpu.toFixed(1)+'%</span></div>'+
+-        '<div class="mix" style="height:16px"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i></div></div>';
++      (c.fam===6?'':'<div class="dsplit"><div class="row2"><span class="hwt">'+`<#RCON_10#>`+' '+hw.toFixed(1)+'%</span><span class="cput">CPU '+cpu.toFixed(1)+'%</span></div>'+
++        '<div class="mix" style="height:16px"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i></div></div>');
+     placeDetail();
+   }
+   function drow(k,v){ return '<div class="drow"><span class="dk">'+k+'</span><span class="dv">'+v+'</span></div>'; }
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index d867cf6447..bcdbb1b33d 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -29,14 +29,14 @@
+ html,body{background:var(--bg)}
+ body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
+ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:min(var(--pagew,1120px),100%)}
+ .pagehead h1{font-size:24px;font-weight:700}
+ .statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+ .statuspill.warn{color:var(--amber);border-color:rgba(217,164,65,.35)}
+ .statuspill.danger{color:var(--danger);border-color:rgba(255,59,48,.4)}
+ .lede{max-width:74ch;margin:6px 0 14px}
+ .lede b{color:var(--bone);font-weight:600}
+-.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin:0 0 14px;max-width:1120px}
++.gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin:0 0 14px;max-width:min(var(--pagew,1120px),100%)}
+ .gauge{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
+ .gauge h3{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);margin-bottom:8px}
+ .gauge h3 b{color:var(--bone);font-variant-numeric:tabular-nums}
+@@ -51,13 +51,26 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .gauge .legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:baseline}
+ .gauge .legend .warntx{color:var(--amber)}
+ .gauge .legend .dangertx{color:var(--danger)}
+-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:0 0 16px;max-width:min(var(--pagew,1120px),100%)}
+ .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px;cursor:pointer}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:26px;color:var(--bone);font-variant-numeric:tabular-nums}
+ .stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
+ .stat.attn{border-color:var(--line)}
+ .stat.attn .n{color:var(--crimson)}
+-.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:min(var(--pagew,1120px),100%)}
++/* reaper 2026-10-08: the device table sets the page width. The table card fits its rows (nowrap cells), never
++   narrower than the 1120px the other blocks use (or the frame when that is smaller), never wider than the frame;
++   past the frame .tblwrap scrolls. fitPage() mirrors the measured card width into --pagew so the head, gauges,
++   stats and footer stay flush with it instead of stopping at a fixed 1120px while the table runs on. */
++.card.tbl{width:-moz-fit-content;width:fit-content;min-width:min(1120px,100%);max-width:100%}
++/* narrower frames: the source tag and the chips drop under the device name / under the address before the table
++   has to scroll. The markup has no whitespace between those spans, so as plain inlines they formed one unbreakable
++   run; an atomic inline (inline-block) always carries a break opportunity before and after it. Names, addresses
++   and the tags themselves still never break mid-word; line-height 1.2 keeps the tag box the height it was. */
++.dcell>span{white-space:normal}
++.dname,.src,.chip{white-space:nowrap}
++.src,.chip{display:inline-block;line-height:1.2}
++td.ip{white-space:normal}
+ .card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card.hot{border-color:rgba(217,164,65,.4)}
+ .card.hot>h2{color:var(--amber);border-bottom-color:rgba(217,164,65,.25)}
+@@ -101,12 +114,14 @@ tr:last-child td{border-bottom:none}
+ .chip.pindead{color:var(--danger);border-color:rgba(255,59,48,.45)}
+ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--steel)}
+ td.ip{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--bone-dim)}
++td.ip .ip6{display:block;font-size:10.5px;color:var(--steel);word-break:break-all;margin-top:2px}
++.chip.v6{color:#7EA6C9;border-color:rgba(126,166,201,.4)}
+ .conn{font-size:10.5px;font-weight:600;letter-spacing:.06em;border-radius:5px;padding:2px 8px;border:1px solid var(--line-soft);color:var(--bone-dim)}
+ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone-dim);font-family:var(--body);font-size:11.5px;padding:4px 8px}
+ .tlink{color:var(--bone-dim);text-decoration:none;font-size:11.5px;border:1px solid var(--line-soft);border-radius:6px;padding:3px 9px}
+ .tlink:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
+ .lastseen{color:var(--steel);font-size:11.5px}
+-.foot{font-size:12px;color:var(--steel);max-width:1120px}
++.foot{font-size:12px;color:var(--steel);max-width:min(var(--pagew,1120px),100%)}
+ .foot b{color:var(--bone-dim)}
+ .rtip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .ovl{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center}
+@@ -153,7 +168,7 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+   <div id="issues"></div>
+ </div>
+ 
+-<div class="card">
++<div class="card tbl" id="tblcard">
+   <h2><#RDEV_19#></h2>
+   <div class="tblbar" id="chips"></div>
+   <div class="tblwrap">
+@@ -193,7 +208,7 @@ var DERR = {
+   RDEVE_1:`<#RDEVE_1#>`, RDEVE_2:`<#RDEVE_2#>`, RDEVE_3:`<#RDEVE_3#>`, RDEVE_4:`<#RDEVE_4#>`,
+   RDEVE_5:`<#RDEVE_5#>`, RDEVE_6:`<#RDEVE_6#>`, RDEVE_7:`<#RDEVE_7#>`, RDEVE_8:`<#RDEVE_8#>`,
+   RDEVE_9:`<#RDEVE_9#>`, RDEVE_10:`<#RDEVE_10#>`, RDEVE_11:`<#RDEVE_11#>`, RDEVE_12:`<#RDEVE_12#>`,
+-  RDEVE_13:`<#RDEVE_13#>`
++  RDEVE_13:`<#RDEVE_13#>`, RDEVE_14:`<#RDEVE_14#>`, RDEVE_15:`<#RDEVE_15#>`
+ };
+ function errText(j){ return (j && j.ek && DERR[j.ek]) || (j && j.error) || `<#RDEV_92#>`; }
+ 
+@@ -230,7 +245,7 @@ function expRows(){
+              : d.dup    ? 'duplicate'
+              : d.resv_in_pool ? 'reserved' : 'reserved-out-of-pool';
+     }
+-    return { name: (d.name || d.host || ''), mac: (d.mac || ''), ip: (d.ip || ''),
++    return { name: (d.name || d.host || ''), mac: (d.mac || ''), ip: (d.ip || ''), ip6: (d.ip6 || ''),
+              reserved_ip: (d.resv ? (d.resv_ip || '') : ''), state: rstate };
+   });
+ }
+@@ -246,9 +261,9 @@ function csvCell(s){
+ function expBuild(fmt, rows, stamp){
+   var i, out;
+   if (fmt === 'csv') {
+-    out = 'name,mac,ip,reserved_ip,state\r\n';
++    out = 'name,mac,ip,ipv6,reserved_ip,state\r\n';
+     for (i = 0; i < rows.length; i++)
+-      out += csvCell(rows[i].name) + ',' + csvCell(rows[i].mac) + ',' + csvCell(rows[i].ip) + ',' +
++      out += csvCell(rows[i].name) + ',' + csvCell(rows[i].mac) + ',' + csvCell(rows[i].ip) + ',' + csvCell(rows[i].ip6) + ',' +
+              csvCell(rows[i].reserved_ip) + ',' + csvCell(rows[i].state) + '\r\n';
+     return { text: out, mime: 'text/csv', ext: 'csv' };
+   }
+@@ -265,10 +280,10 @@ function expBuild(fmt, rows, stamp){
+         'th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#B7B1A4}' +
+         'td.m{font-family:ui-monospace,Consolas,monospace;font-size:11.5px}</style>' +
+         '<h1>' + esc(PRODID) + '</h1><p>' + esc(stamp) + ' &middot; ' + rows.length + '</p>' +
+-        '<table><thead><tr><th>' + esc(`<#RDEV_23#>`) + '</th><th>MAC</th><th>IP</th><th>' + esc(`<#RDEV_94#>`) + '</th><th>' + esc(`<#RDEV_95#>`) + '</th></tr></thead><tbody>';
++        '<table><thead><tr><th>' + esc(`<#RDEV_23#>`) + '</th><th>MAC</th><th>IP</th><th>IPv6</th><th>' + esc(`<#RDEV_94#>`) + '</th><th>' + esc(`<#RDEV_95#>`) + '</th></tr></thead><tbody>';
+   for (i = 0; i < rows.length; i++)
+     out += '<tr><td>' + esc(rows[i].name) + '</td><td class="m">' + esc(rows[i].mac) +
+-           '</td><td class="m">' + esc(rows[i].ip) + '</td><td class="m">' + esc(rows[i].reserved_ip) +
++           '</td><td class="m">' + esc(rows[i].ip) + '</td><td class="m">' + esc(rows[i].ip6) + '</td><td class="m">' + esc(rows[i].reserved_ip) +
+            '</td><td>' + esc(rows[i].state) + '</td></tr>';
+   return { text: out + '</tbody></table>', mime: 'text/html', ext: 'html' };
+ }
+@@ -304,6 +319,8 @@ var L = {
+   RDEV_73:`<#RDEV_73#>`, RDEV_74:`<#RDEV_74#>`, RDEV_75:`<#RDEV_75#>`, RDEV_76:`<#RDEV_76#>`,
+   RDEV_77:`<#RDEV_77#>`, RDEV_78:`<#RDEV_78#>`, RDEV_79:`<#RDEV_79#>`, RDEV_80:`<#RDEV_80#>`,
+   RDEV_81:`<#RDEV_81#>`, RDEV_82:`<#RDEV_82#>`, RDEV_83:`<#RDEV_83#>`, RDEV_84:`<#RDEV_84#>`,
++  RDEV_97:`<#RDEV_97#>`, RDEV_98:`<#RDEV_98#>`, RDEV_99:`<#RDEV_99#>`, RDEV_100:`<#RDEV_100#>`,
++  RDEV_101:`<#RDEV_101#>`, RDEV_102:`<#RDEV_102#>`, RDEV_103:`<#RDEV_103#>`,
+   RDEV_85:`<#RDEV_85#>`, RDEV_86:`<#RDEV_86#>`, RDEV_62:`<#RDEV_62#>`, RDEV_63:`<#RDEV_63#>`,
+   RDEV_64:`<#RDEV_64#>`, RDEV_87:`<#RDEV_87#>`, AiMesh_Node:`<#AiMesh_Node#>`
+ };
+@@ -510,6 +527,9 @@ function renderRows(){
+       else if(d.dup) ipHtml += '<span class="chip pindead" title="' + esc(T('RDEV_73')) + '">' + esc(T('RDEV_41')) + '</span>';
+       else ipHtml += '<span class="chip ' + (d.resv_in_pool ? 'pin' : 'pinout') + '" title="' + esc(d.resv_in_pool ? T('RDEV_74') : T('RDEV_75')) + '">' + esc(d.resv_in_pool ? T('RDEV_38') : T('RDEV_39')) + '</span>';
+     }
++    /* IPv6 A3 (2026-10-07): the IPv6 address under the IPv4 one; a DHCPv6 reservation and an IPv6-only client are chipped */
++    if(d.resv6) ipHtml += '<span class="chip v6" title="' + esc(T('RDEV_102')) + '">' + esc(d.resv6) + '</span>';
++    if(d.ip6) ipHtml += '<span class="ip6">' + esc(d.ip6) + (d.v6only ? ' <span class="chip v6" title="' + esc(T('RDEV_98')) + '">' + esc(T('RDEV_97')) + '</span>' : '') + '</span>';
+     /* built as HTML (NOT esc'd) so the em-dash renders; the offline/unknown case
+        used to pass '&mdash;' through esc() and printed the literal entity text */
+     var connHtml = (d.mlo && d.bands) ? ('MLO &middot; ' + esc(d.bands) + ' GHz')
+@@ -546,6 +566,8 @@ function renderRows(){
+       '<td>' + (d.resv
+           ? '<button class="btng btnsm" data-unpin="' + i + '">' + esc(T('RDEV_35')) + '</button>'
+           : (d.ip ? '<button class="btng btnsm"' + (D.store.used/D.store.cap > .95 ? ' disabled title="' + esc(T('RDEV_13')) + '"' : '') + ' data-pin="' + i + '">' + esc(T('RDEV_34')) + '</button>' : '')) +
++        (d.resv6 ? ' <button class="btng btnsm" data-unpin6="' + i + '">' + esc(T('RDEV_101')) + '</button>'
++                 : (d.ip6 ? ' <button class="btng btnsm" data-pin6="' + i + '">' + esc(T('RDEV_99')) + '</button>' : '')) +
+       '</td></tr>';
+   });
+   document.getElementById('rows').innerHTML = el || '<tr><td colspan="8" style="color:var(--steel)">' + esc(T('RDEV_76')) + '</td></tr>';
+@@ -566,6 +588,12 @@ function wireRows(){
+   Array.prototype.forEach.call(document.querySelectorAll('#rows [data-unpin]'), function(n){
+     n.onclick = function(){ unpin(+n.getAttribute('data-unpin')); };
+   });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-pin6]'), function(n){
++    n.onclick = function(){ pin6Ask(+n.getAttribute('data-pin6')); };
++  });
++  Array.prototype.forEach.call(document.querySelectorAll('#rows [data-unpin6]'), function(n){
++    n.onclick = function(){ unpin6(+n.getAttribute('data-unpin6')); };
++  });
+   Array.prototype.forEach.call(document.querySelectorAll('#rows [data-traf]'), function(n){
+     n.onclick = function(){ return trafGo(); };
+   });
+@@ -628,6 +656,39 @@ function pinDo(i, inPool){
+ }
+ function pinClose(){ document.getElementById('pin_ovl').className = 'ovl'; }
+ 
++/* IPv6 A3 (2026-10-07): a DHCPv6 reservation is the HOST part of the address; dnsmasq
++   prepends the router's prefix, so it survives a prefix change. The field is seeded
++   with the device's current last group so a short, memorable suffix is one edit away. */
++function sfx6Of(ip6){
++  var s = String(ip6 || '').toLowerCase(), g;
++  if(!s) return '::';
++  g = s.split('::'); g = (g.length > 1 ? g[1] : s).split(':');
++  return '::' + (g.length && g[g.length - 1] ? g[g.length - 1] : '');
++}
++function pin6Ask(i){
++  var d = D.devices[i], m = document.getElementById('pin_modal');
++  m.innerHTML = '<h3>' + esc(T('RDEV_99')) + ' ' + esc(d.name || d.host || d.mac) + '</h3>' +
++    '<p>' + esc(T('RDEV_80')) + ' <span class="mono">' + esc(d.mac) + '</span>' + (d.ip6 ? ' &middot; <span class="mono">' + esc(d.ip6) + '</span>' : '') + '</p>' +
++    '<p>' + esc(T('RDEV_100')) + '</p>' +
++    '<p><input id="pin6_sfx" class="mono" style="width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;color:var(--bone);padding:6px 8px" maxlength="22" value="' + esc(sfx6Of(d.ip6)) + '"></p>' +
++    '<div class="mclose"><button class="btng" id="pin6_ok">' + esc(T('RDEV_103')) + '</button> <button class="btng" id="pin_cancel">' + esc(T('RDEV_85')) + '</button></div>';
++  document.getElementById('pin6_ok').onclick = function(){ pin6Do(i, document.getElementById('pin6_sfx').value.trim()); };
++  document.getElementById('pin_cancel').onclick = pinClose;
++  document.getElementById('pin_ovl').className = 'ovl show';
++}
++function pin6Do(i, sfx){
++  var d = D.devices[i];
++  if(!/^::[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){0,3}$/.test(sfx)){ alert(errText({ek:'RDEVE_14'})); return; }
++  pinClose();
++  xAct('/reaper_dev.cgi?action=set_reserve6&mac=' + encodeURIComponent(d.mac) + '&suffix=' + encodeURIComponent(sfx), function(j){
++    if(j && j.ok === 0 && j.error) alert(errText(j));
++    loadAll();
++  });
++}
++function unpin6(i){
++  xAct('/reaper_dev.cgi?action=unpin6&mac=' + encodeURIComponent(D.devices[i].mac), function(){ loadAll(); });
++}
++
+ function fixIssue(iss, act){
+   if(act === 'widen'){
+     if(!confirm(T('RDEV_86'))) return;
+@@ -646,9 +707,26 @@ function fixIssue(iss, act){
+   });
+ }
+ 
++/* reaper 2026-10-08: the table card (.card.tbl) sizes itself to its rows in CSS; mirror its measured width
++   into --pagew so the blocks above and below it stay flush. Content-driven: a ResizeObserver fires on
++   every row render and on every frame resize (fallback: window resize). No loop: --pagew only feeds the
++   OTHER blocks; the card's own width depends on its rows and the frame. */
++function fitPage(){
++  var c = document.getElementById('tblcard');
++  if(!c) return;
++  var sync = function(){
++    var w = Math.round(c.getBoundingClientRect().width);
++    if(w > 0) document.documentElement.style.setProperty('--pagew', w + 'px');
++  };
++  if(window.ResizeObserver) new ResizeObserver(sync).observe(c);
++  else window.addEventListener('resize', sync);
++  sync();
++}
++
+ function devBoot(){
+   var b = document.getElementById('exp_go');
+   if (b) b.onclick = expGo;
++  fitPage();
+   loadAll();
+ }
+ if(document.readyState !== 'loading') devBoot();
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index cb21478da4..dfe8143426 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.29</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.33</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+diff --git a/release/src/router/www/Reaper_Failover.asp b/release/src/router/www/Reaper_Failover.asp
+index 3926925b34..031084936a 100644
+--- a/release/src/router/www/Reaper_Failover.asp
++++ b/release/src/router/www/Reaper_Failover.asp
+@@ -51,7 +51,9 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+ .idtxt{min-width:0;flex:1 1 380px}
+ .idtxt h1{font-family:var(--hdr);font-weight:700;font-size:26px;letter-spacing:.05em;color:var(--bone);text-transform:uppercase}
+ .idtxt .sub{font-size:12.3px;color:var(--steel);margin-top:2px;max-width:78ch}
+-.idchips{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
++/* owner 2026-10-08: two rows - IPv4 state + server, then IPv6 state + server */
++.idchips{margin-left:auto;display:grid;grid-template-columns:auto auto;gap:8px;align-content:start;justify-items:stretch}
++.chip.dim{opacity:.55}
+ .chip{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+   color:var(--bone-dim);border:1px solid var(--line-soft);border-radius:6px;padding:5px 10px;background:var(--panel);
+   font-variant-numeric:tabular-nums;white-space:nowrap;display:inline-flex;align-items:center;gap:7px;max-width:100%}
+@@ -137,6 +139,8 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+ .stline .k{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
+ .stline .v{color:var(--bone);font-size:12.5px}
+ .stline .v.down{color:var(--crimson)}
++.stline.st6{margin-top:6px}
++.stline .v.dim{color:var(--steel)}
+ .stline .held{margin-left:auto;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);font-variant-numeric:tabular-nums}
+ 
+ /* apply bar */
+@@ -179,6 +183,8 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+   <div class="idchips">
+     <span class="chip" id="chip_state"><i class="dot"></i><b id="chip_state_v">&mdash;</b></span>
+     <span class="chip" id="chip_target">DNS <b id="chip_target_v">&mdash;</b></span>
++    <span class="chip" id="chip_state6"><i class="dot"></i><b id="chip_state6_v">&mdash;</b></span>
++    <span class="chip" id="chip_target6">DNS <b id="chip_target6_v">&mdash;</b></span>
+   </div>
+ </div>
+ 
+@@ -243,10 +249,15 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     </label>
+   </div>
+   <div class="stline">
+-    <span class="k"><#RDHC_12#></span>
++    <span class="k"><#RDHC_46#></span>
+     <span class="v" id="st_v">&mdash;</span>
+     <span class="held" id="st_held"></span>
+   </div>
++  <!-- owner 2026-10-08: the IPv6 face, just under the IPv4 one (rdnshc state fields 4/5) -->
++  <div class="stline st6">
++    <span class="k"><#RDHC_47#></span>
++    <span class="v" id="st6_v">&mdash;</span>
++  </div>
+ </div>
+ 
+ <div class="tier">dnsmasq</div>
+@@ -270,6 +281,27 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <p><#RDHC_25#></p>
+     <p id="dnssec_note" style="display:none;color:var(--amber)"><#RDHC_26#></p>
+   </div>
++  <!-- 2026-10-08: reverse DNS across networks (rc/sdn.c write_rev_servers_*) -->
++  <div class="card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="6" rx="1"/><rect x="14" y="14" width="7" height="6" rx="1"/><path d="M6.5 10v4h11"/><path d="M17.5 14v-4h-11"/></svg></span>
++      <h2><#RDHC_53#></h2>
++      <label class="sw"><input type="checkbox" id="revshare" <% nvram_match("reaper_dns_revshare", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_54#></b></p>
++    <p><#RDHC_55#></p>
++  </div>
++  <!-- 2026-10-08: IPv6 device names (rc/rv6names.c) -->
++  <div class="card" id="v6names_card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="11" rx="1.5"/><path d="M8 20h8M12 16v4"/><path d="M7 10.5h3M13 10.5h4"/></svg></span>
++      <h2><#RDHC_56#></h2>
++      <label class="sw"><input type="checkbox" id="v6names" <% nvram_match("reaper_dns_v6names", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_57#></b></p>
++    <p><#RDHC_58#></p>
++    <p id="v6names_off" style="display:none;color:var(--amber)"><#RDHC_48#></p>
++  </div>
+   <div class="card">
+     <div class="chead">
+       <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10M4 12h7M4 17h13"/><path d="M17 4v9"/><path d="M14 10l3 3 3-3"/></svg></span>
+@@ -307,6 +339,8 @@ var ORIG = {
+   strict: '<% nvram_get("reaper_dnshc_strict"); %>',
+   dnsstrict: '<% nvram_get("reaper_dns_strict"); %>',
+   nocache: '<% nvram_get("reaper_dns_nocache"); %>',
++  revshare: '<% nvram_get("reaper_dns_revshare"); %>',
++  v6names: '<% nvram_get("reaper_dns_v6names"); %>',
+   dotstrict: '<% nvram_get("reaper_dot_strict"); %>',
+   target6: '<% nvram_get("reaper_dnshc_target6"); %>',
+   state: '<% nvram_get("reaper_dnshc_state"); %>'
+@@ -315,7 +349,9 @@ var T = {
+   off: `<#RDHC_37#>`, up: `<#RDHC_38#>`, down: `<#RDHC_39#>`,
+   notRunning: `<#RDHC_13#>`, answering: `<#RDHC_14#>`, notAnswering: `<#RDHC_15#>`,
+   badIp: `<#JS_validip#>`, v6off: `<#RDHC_27#>`, blank: `<#JS_fieldblank#>`,
+-  applying: `<#RDHC_36#>`, apply: `<#CTL_apply#>`
++  applying: `<#RDHC_36#>`, apply: `<#CTL_apply#>`,
++  v6disabled: `<#RDHC_48#>`, v6none: `<#RDHC_49#>`, v6answering: `<#RDHC_50#>`,
++  faceDown: `<#RDHC_51#>`, v6unusable: `<#RDHC_52#>`, disabled: `<#CTL_Disabled#>`
+ };
+ var V6ON = (IPV6 !== '' && IPV6 !== 'disabled');
+ var busy = 0, pollT = null;
+@@ -346,11 +382,38 @@ function render(state, enable){
+     v.className = 'v down'; v.textContent = T.notAnswering; h.textContent = held(st[1]);
+   } else {
+     chip.className = 'chip up'; $id('chip_state_v').textContent = T.up;
+-    v.className = 'v'; v.textContent = T.answering; h.textContent = held(st[1]);
++    /* field 4: the IPv4 face alone can be held back while IPv6 answers */
++    var down4 = (st[3] === '0');
++    v.className = 'v' + (down4 ? ' down' : ''); v.textContent = down4 ? T.faceDown : T.answering; h.textContent = held(st[1]);
+   }
++  render6(st, running, mode);
+   var tg = ORIG.target || '\u2014';
+   $id('chip_target_v').textContent = tg; $id('chip_target_v').title = tg;
+ }
++/* owner 2026-10-08: the IPv6 line. IPv6 off on the router = Disabled, always (no
++   probe runs, nothing moves); otherwise it follows field 5 of the daemon's state. */
++function render6(st, running, mode){
++  var v = $id('st6_v'); if(!v) return;
++  var f6 = st[4], txt, cls = 'v';
++  if(!V6ON){ txt = T.v6disabled; cls = 'v dim'; }
++  else if(!ORIG.target6){ txt = T.v6none; cls = 'v dim'; }
++  else if(!running){ txt = T.notRunning; cls = 'v dim'; }
++  else if(f6 === 'x'){ txt = T.v6unusable; cls = 'v dim'; }
++  else if(mode === 'down' || f6 === '0'){ txt = T.faceDown; cls = 'v down'; }
++  else if(f6 === '1'){ txt = T.v6answering; }
++  else { txt = '\u2014'; cls = 'v dim'; }
++  v.className = cls; v.textContent = txt;
++  /* owner 2026-10-08: the header pair, same as the IPv4 one; Disabled while IPv6 is off */
++  var c6 = $id('chip_state6'), c6v = $id('chip_state6_v'), a6 = $id('chip_target6_v');
++  if(c6){
++    if(!V6ON){ c6.className = 'chip dim'; c6v.textContent = T.disabled; }
++    else if(!ORIG.target6 || !running || f6 === 'x' || (f6 !== '0' && f6 !== '1' && mode !== 'down')){ c6.className = 'chip'; c6v.textContent = T.off; }
++    else if(mode === 'down' || f6 === '0'){ c6.className = 'chip down'; c6v.textContent = T.down; }
++    else { c6.className = 'chip up'; c6v.textContent = T.up; }
++    var t6 = ORIG.target6 || '\u2014';
++    a6.textContent = t6; a6.title = t6; $id('chip_target6').className = 'chip' + (V6ON ? '' : ' dim');
++  }
++}
+ function poll(){
+   var x = new XMLHttpRequest(), done = 0;
+   function fin(){ if(done) return; done = 1; pollT = setTimeout(poll, 5000); }
+@@ -420,7 +483,8 @@ function apply(){
+     reaper_dnshc_target6: $id('target6').value,
+     reaper_dnshc_interval: $id('interval').value, reaper_dnshc_timeout: $id('timeout').value,
+     reaper_dnshc_fail: $id('fail').value, reaper_dnshc_recover: $id('recover').value, reaper_dnshc_strict: on('strict'),
+-    reaper_dns_strict: on('dstrict'), reaper_dns_nocache: on('nocache'),
++    reaper_dns_strict: on('dstrict'), reaper_dns_nocache: on('nocache'), reaper_dns_revshare: on('revshare'),
++    reaper_dns_v6names: on('v6names'),
+     reaper_dot_strict: on('dotstrict')
+   };
+   var svc = '';
+@@ -428,7 +492,9 @@ function apply(){
+      || v.reaper_dnshc_interval !== ORIG.interval || v.reaper_dnshc_timeout !== ORIG.timeout || v.reaper_dnshc_fail !== ORIG.fail
+      || v.reaper_dnshc_recover !== ORIG.recover || v.reaper_dnshc_strict !== ORIG.strict
+      || v.reaper_dnshc_target6 !== ORIG.target6) svc += 'restart_rdnshc;';
+-  if(v.reaper_dns_strict !== ORIG.dnsstrict || v.reaper_dns_nocache !== ORIG.nocache) svc += 'restart_dnsmasq;';
++  if(v.reaper_dns_strict !== ORIG.dnsstrict || v.reaper_dns_nocache !== ORIG.nocache
++     || v.reaper_dns_revshare !== ORIG.revshare || v.reaper_dns_v6names !== ORIG.v6names) svc += 'restart_dnsmasq;';
++  if(v.reaper_dns_v6names !== ORIG.v6names) svc += 'restart_rv6names;';
+   /* start_stubby rewrites stubby.yml and returns immediately while DNS Privacy
+      is off, so firing it costs nothing when the switch cannot take effect. */
+   if(v.reaper_dot_strict !== ORIG.dotstrict) svc += 'start_stubby;';
+@@ -447,6 +513,8 @@ function apply(){
+   var ids = ['target','qname','interval','timeout','fail','recover'], i;
+   for(i = 0; i < ids.length; i++) $id(ids[i]).addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); } });
+   $id('v6note').style.display = V6ON ? '' : 'none';
++  /* 2026-10-08: IPv6 device names do nothing while IPv6 is off - say so, keep the switch */
++  if(!V6ON){ $id('v6names_off').style.display = ''; $id('v6names_card').className = 'card off'; }
+   if(DNSSEC !== '' && DNSSEC !== '0') $id('dnssec_note').style.display = '';
+   if(DOTON !== '1') $id('dot_off_note').style.display = '';
+   syncEnable();
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index cde1dd7070..8620b13694 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -519,6 +519,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         <select class="fld s" id="ic_proto"><option value="udp">UDP</option><option value="tcp">TCP</option><option value="both">TCP+UDP</option></select></div>
+       <div class="fg"><span class="fl"><#RFW_264#></span><input class="fld s" id="ic_port" maxlength="24" placeholder="123"></div>
+       <div class="fg" id="ic_ipwrap"><span class="fl"><#RFW_265#></span><input class="fld s" id="ic_ip" maxlength="40" placeholder="192.168.50.10"></div>
++      <div class="fg" id="ic_ip6wrap"><span class="fl"><#RFW_326#></span><input class="fld s" id="ic_ip6" maxlength="40" placeholder="2001:db8::10"></div>
+       <div class="fg"><span class="fl"><#RFW_266#></span><input class="fld s" id="ic_ipt" maxlength="24" placeholder="123"></div>
+       <div class="fg"><span class="fl"><#RFW_267#></span><select class="fld s" id="ic_ex"></select></div>
+       <div class="fg"><span class="fl"><#RFW_268#></span>
+@@ -930,6 +931,7 @@ function kwrender(){
+    is needed to give immediate feedback. */
+ var RFW={obj:[],grp:[],svc:[],zone:[],zpol:[],rules:[],edef:[],nat:[],armed:0,left:0,warden:0,wgeo:''};
+ var rfwTimer=null;
++var rfwBusy=false;	/* owner 2026-10-08: an Apply / Keep / Revert is settling (rfwSettle) */
+ 
+ function rfwSplit(s){var o=[],a=String(s||'').split('<'),i;for(i=0;i<a.length;i++)if(a[i]!=='')o.push(a[i].split('>'));return o;}
+ /* Mirrors rfw_valid_sched() in rc/reaper_fw.c: DAYS|HH:MM|HH:MM, days optional
+@@ -1041,12 +1043,12 @@ function rfwRenderIcpt(){
+          (It is right in the Forwards Source column, which is where it came
+          from.) RFW_100 "None" already exists in all 25 dicts. Note the target
+          itself is ALWAYS exempt regardless of this field. */
+-      (m==='redirect'?`<#RFW_262#>`:(r[3]||'')), (r[10]?r[10]:`<#RFW_100#>`),
++      (m==='redirect'?`<#RFW_262#>`:((r[3]||'')+(r[12]?' / '+r[12]:''))), (r[10]?r[10]:`<#RFW_100#>`),
+       (r[11]==='on'?`<#RFW_270#>`:(r[11]==='off'?`<#RFW_271#>`:`<#RFW_269#>`))
+     ],function(){
+       if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
+       function(){ $('ic_mode').value=m; $('ic_from').value=r[9]||''; $('ic_proto').value=r[1]||'';
+-                  $('ic_port').value=r[2]||''; $('ic_ip').value=r[3]||''; $('ic_ipt').value=r[4]||'';
++                  $('ic_port').value=r[2]||''; $('ic_ip').value=r[3]||''; $('ic_ipt').value=r[4]||''; $('ic_ip6').value=r[12]||'';
+                   $('ic_ex').value=r[10]||''; $('ic_snat').value=r[11]||'auto'; $('ic_sched').value=r[7]||'';
+                   editMode('nat',i); rfwIcptSync(); rfwRenderIcpt(); });
+     if(EDIT.nat===i)tr.className='editing';
+@@ -1058,6 +1060,7 @@ function rfwRenderIcpt(){
+ function rfwIcptSync(){
+   var red=$('ic_mode')&&$('ic_mode').value==='redirect';
+   var w=$('ic_ipwrap'); if(w)w.style.display=red?'none':'';
++  var w6=$('ic_ip6wrap'); if(w6)w6.style.display=red?'none':'';
+   var s=$('ic_snat');   if(s)s.disabled=red;
+ }
+ function rfwRenderObj(){
+@@ -1228,6 +1231,8 @@ function stWit(){
+ function rfwArmUI(){
+   var card=$('rf_armcard');
+   card.style.display=RFW.armed?'':'none';
++  /* owner 2026-10-08: rc refuses a second apply while one awaits confirmation */
++  var ab=$('rf_apply'); if(ab&&!rfwBusy)ab.disabled=!!RFW.armed;
+   $('rf_left').textContent=RFW.armed?RFW.left:'\u2014';
+   rfwPendingUI();
+   if(RFW.armed)rfwWitPreview(); else{var _w=$('rf_wit');if(_w)_w.textContent='';}
+@@ -1235,6 +1240,7 @@ function rfwArmUI(){
+   if(RFW.armed)rfwTimer=setTimeout(rfwPoll,2000);
+ }
+ function rfwPoll(){
++  if(rfwBusy)return;
+   fwcgi('action=cfg',function(j){
+     if(j&&j.ok){RFW.armed=j.armed?1:0;RFW.left=j.left||0;RFW.dirty=j.dirty?1:0;}
+     else{RFW.armed=0;}
+@@ -1741,9 +1747,12 @@ function initRfw(){
+     $('ic_add').onclick=function(){
+       var md=$('ic_mode').value, fz=$('ic_from').value, p=$('ic_proto').value,
+           ep=$('ic_port').value.trim(), ip=$('ic_ip').value.trim(), ipt=$('ic_ipt').value.trim(),
+-          ex=$('ic_ex').value, sn=$('ic_snat').value, sc=$('ic_sched').value.trim();
++          ex=$('ic_ex').value, sn=$('ic_snat').value, sc=$('ic_sched').value.trim(),
++          ip6=$('ic_ip6').value.trim();
+       var red=(md==='redirect');
+-      if(red){ ip=''; sn='off'; }
++      if(red){ ip=''; ip6=''; sn='off'; }
++      /* IPv6 target (optional): a single IPv6 host, as the engine demands (rfw_valid_cidr6 without a prefix) */
++      if(ip6&&!(/^[0-9a-fA-F:]{2,39}$/.test(ip6)&&(ip6.match(/:/g)||[]).length>=2))return bad(`<#RFW_327#>`);
+       if(rfwSchedBad(sc))return bad(`<#RFW_253#>`);
+       if(!fz)return bad(`<#RFW_66#>`);
+       if(!ep||!ipt||(!red&&!ip))return bad(`<#RFW_66#>`);
+@@ -1753,13 +1762,14 @@ function initRfw(){
+       if(ep.indexOf(',')>=0||ipt.indexOf(',')>=0)return bad(`<#RFW_67#>`);
+       if(!/^[0-9:-]+$/.test(ep)||!/^[0-9:-]+$/.test(ipt))return bad(`<#RFW_67#>`);
+       var ni=EDIT.nat, nen=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][0]:'1', nlog=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][6]:'0';
+-      if(!editCommit('nat',[nen,p,ep,ip,ipt,'',nlog,sc.replace(/[<>]/g,''),md,fz,ex,sn],
++      var rec=[nen,p,ep,ip,ipt,'',nlog,sc.replace(/[<>]/g,''),md,fz,ex,sn]; if(ip6)rec.push(ip6);
++      if(!editCommit('nat',rec,
+                      function(r){return rfwIcptMode(r)!=='forward'&&r[1]===p&&r[2]===ep&&r[9]===fz;}))return bad(`<#RFW_65#>`);
+-      $('ic_port').value='';$('ic_ip').value='';$('ic_ipt').value='';$('ic_sched').value='';
++      $('ic_port').value='';$('ic_ip').value='';$('ic_ip6').value='';$('ic_ipt').value='';$('ic_sched').value='';
+       rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,S);
+     };
+     $('ic_cancel').onclick=function(){ editCancel('nat');
+-      $('ic_port').value='';$('ic_ip').value='';$('ic_ipt').value='';$('ic_sched').value='';
++      $('ic_port').value='';$('ic_ip').value='';$('ic_ip6').value='';$('ic_ipt').value='';$('ic_sched').value='';
+       rfwIcptSync(); rfwRenderIcpt(); };
+   }
+   /* ---- backup / restore ----
+@@ -1884,22 +1894,52 @@ function initRfw(){
+       })();
+     });
+   };
+-  $('rf_apply').onclick=function(){
+-    fwcgi('action=apply',function(){
+-      showSaved(S,true,`<#RFW_154#>`);
+-      setTimeout(function(){rfwLoad();},1500);
++  /* owner 2026-10-08: Apply / Keep / Revert looked dead on the first click.
++     The CGI only signals rc and answers at once; rc arms the countdown 1-3 s
++     later (sets rebuilt, recovery script generated, candidate loaded), and
++     confirm / rollback land a second or two after their reply too. The page
++     re-read the state ONCE after a fixed 1.5 s / 0.8 s, usually before rc was
++     done: no countdown appeared, the operator clicked again, and the second
++     Apply was refused ("already awaiting confirmation" - every apply round in
++     the owner's log shows the pair). Now the button dims the moment it is
++     pressed and the page polls the router until the state it asked for is
++     real (armed for Apply, not armed for Keep / Revert) or rc reports an
++     error, the same settle loop Reaper_VPNRouting.asp uses (v3.0.5 F6). */
++  function rfwSettle(verb,want,okMsg,failMsg){
++    var ids=['rf_apply','rf_keep','rf_revert'],btn=$(verb==='apply'?'rf_apply':(verb==='confirm'?'rf_keep':'rf_revert'));
++    if(rfwBusy)return;
++    rfwBusy=true;
++    var label=btn.textContent;
++    ids.forEach(function(i){var b=$(i);if(b)b.disabled=true;});
++    btn.textContent=`<#Main_alert_processing#>`;
++    if(rfwTimer){clearTimeout(rfwTimer);rfwTimer=null;}
++    function done(ok,msg){
++      rfwBusy=false;btn.textContent=label;
++      ids.forEach(function(i){var b=$(i);if(b)b.disabled=false;});
++      rfwLoad(function(){ if(msg)showSaved(S,ok,msg); });
++    }
++    fwcgi('action='+verb,function(j){
++      if(!j||!j.ok){done(false,(j&&j.error)||failMsg);return;}
++      var t0=Date.now(),budget=Math.max(15,($('rf_confirm').value|0))*1000;
++      (function poll(){
++        fwcgi('action=cfg',function(c){
++          if(c&&c.ok){
++            if(c.err&&verb==='apply'){done(false,c.err);return;}
++            if((c.armed?1:0)===want){done(true,okMsg);return;}
++          }
++          if(Date.now()-t0<budget){setTimeout(poll,700);return;}
++          done(false,verb==='apply'?`<#RFW_280#>`:failMsg);
++        });
++      })();
+     });
+-  };
++  }
++  $('rf_apply').onclick=function(){ rfwSettle('apply',1,'',`<#RFW_155#>`); };
+   /* the banner is page-level but Apply / Keep / Revert all live on Rules */
+   if($('rf_pending_go'))$('rf_pending_go').onclick=function(){ showTab('rules'); };
+   /* v3.0.5 (F7): Keep / Revert acknowledge their response instead of assuming
+      the request landed (same gap the Policy Routing page had). */
+-  $('rf_keep').onclick=function(){
+-    fwcgi('action=confirm',function(j){if(!j||!j.ok){showSaved($('rf_saved'),false,(j&&j.error)||`<#RFW_278#>`);return;}setTimeout(function(){rfwLoad();},800);});
+-  };
+-  $('rf_revert').onclick=function(){
+-    fwcgi('action=rollback',function(j){if(!j||!j.ok){showSaved($('rf_saved'),false,(j&&j.error)||`<#RFW_279#>`);return;}setTimeout(function(){rfwLoad();},1500);});
+-  };
++  $('rf_keep').onclick=function(){ rfwSettle('confirm',0,`<#RFW_154#>`,`<#RFW_278#>`); };
++  $('rf_revert').onclick=function(){ rfwSettle('rollback',0,'',`<#RFW_279#>`); };
+ }
+ 
+ function boot(){
+diff --git a/release/src/router/www/Reaper_SecBanner.asp b/release/src/router/www/Reaper_SecBanner.asp
+index 4f5df10deb..1107e8706c 100644
+--- a/release/src/router/www/Reaper_SecBanner.asp
++++ b/release/src/router/www/Reaper_SecBanner.asp
+@@ -6,7 +6,7 @@
+ 	<body> on every top-level admin surface.
+ 
+ 	WHY A FRAGMENT AND NOT MARKUP IN EACH PAGE
+-	  do_ej resolves <#TOKEN#> server-side against the language in preferred_lang
++	  do_ej resolves dictionary tokens server-side against the language in preferred_lang
+ 	  (httpd/ej.c:108 kw_mark1/kw_mark2, load_dictionary at :275), so everything
+ 	  below arrives already translated. One definition, so the banner cannot drift
+ 	  between the dashboard, the shell and the stock pages.
+diff --git a/release/src/router/www/Reaper_Survey.asp b/release/src/router/www/Reaper_Survey.asp
+index 0bf9f3cac8..cb1fd3a114 100644
+--- a/release/src/router/www/Reaper_Survey.asp
++++ b/release/src/router/www/Reaper_Survey.asp
+@@ -436,10 +436,18 @@ function svyRender(){
+   chan.innerHTML=ch||`<div class="empty"><#RSVY_6#></div>`;
+ }
+ 
++/* audit 2026-10-06 V10: an SSID is chosen by whoever runs the network, and a
++   spreadsheet runs a cell that starts with = + - @ (or a tab / CR) as a
++   formula. Prefix such a value with ' so it opens as text. Numeric columns
++   (RSSI, noise, SNR) do not pass through here, so negative numbers stay numbers. */
++function svyCsvSafe(s){
++  var v=String(s==null?"":s), c=v.charCodeAt(0);
++  return (/^[-=+@]/.test(v) || c===9 || c===13) ? "'"+v : v;
++}
+ function svyExport(){
+   if(!DATA||!DATA.aps||!DATA.aps.length) return;
+   var i,a,csv="ssid,bssid,band,channel,width_mhz,chanspec,rssi_dbm,noise_dbm,snr_db,security,generation,heard_by\n";
+-  function q(s){ return "\""+String(s==null?"":s).replace(/"/g,"\"\"")+"\""; }
++  function q(s){ s=svyCsvSafe(s); return"\""+String(s==null?"":s).replace(/"/g,"\"\"")+"\""; }
+   for(i=0;i<DATA.aps.length;i++){
+     a=DATA.aps[i];
+     csv+=[q(a.ssid),q(a.bssid),q(BANDNAME[a.band]||""),a.ch||"",a.w||"",q(a.cs),a.rssi||"",a.noise||"",a.snr||"",q(a.sec),q(genLabel(a).replace(/<[^>]*>/g,"")),q(ifnameOf(a.unit))].join(",")+"\n";
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 3d96409381..64248cf889 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -680,7 +680,7 @@ function renderLive(d){
+   if(devs.length) dmax=Math.max(1,devs[0].dn+devs[0].up);
+   var dh='';
+   devs.slice(0,15).forEach(function(r){ var tot=r.dn+r.up;
+-    dh+='<tr><td>'+devCell(r.ip,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
++    dh+='<tr><td>'+devCell(r.ip||r.ip6,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
+   document.getElementById('clitbody').innerHTML = dh || `<tr><td colspan="3" style="color:var(--steel)"><#RTRF_66#></td></tr>`;
+   }
+ 
+@@ -744,7 +744,7 @@ function renderHist(d){
+      resolve to the same MAC into one before ranking. */
+   var cli=d.clients||{}, rows=[], agg={};
+   for(var k in cli){ if(!cli.hasOwnProperty(k))continue; var dn=0,up=0; var cd=Array.isArray(cli[k].d)?cli[k].d:[]; cd.forEach(function(p){dn+=p[0];up+=p[1];});
+-    var kl=String(k).toLowerCase(), ip=cli[k].ip||'';
++    var kl=String(k).toLowerCase(), ip=cli[k].ip||cli[k].ip6||'';   /* IPv6 A6: v6-only rows carry ip6 */
+     var id=kl.indexOf(':')>=0 ? kl : String(ReaperNames.macForIp(ip||k)||kl).toLowerCase();
+     var a=agg[id];
+     if(!a){ a={name:k,ip:ip,dn:0,up:0}; agg[id]=a; rows.push(a); }
+diff --git a/release/src/router/www/Reaper_WANPorts.asp b/release/src/router/www/Reaper_WANPorts.asp
+index 08915d2300..0927248db0 100644
+--- a/release/src/router/www/Reaper_WANPorts.asp
++++ b/release/src/router/www/Reaper_WANPorts.asp
+@@ -314,7 +314,7 @@ select.fx option{background:#0b0b0d;color:var(--bone)}
+       <label class="chk"><input type="checkbox" id="ping"><b class="l" style="margin:0"><#Ping#></b></label>
+       <span class="l" style="margin-top:10px"><#Ping_Target#></span>
+       <span class="ptwrap">
+-        <input class="fx" id="pingtarget" maxlength="100" placeholder="ex: www.google.com" autocorrect="off" autocapitalize="off" spellcheck="false" style="flex:1 1 200px;min-width:0">
++        <input class="fx" id="pingtarget" maxlength="100" placeholder="www.google.com" autocorrect="off" autocapitalize="off" spellcheck="false" style="flex:1 1 200px;min-width:0">
+         <button class="btn sm" type="button" id="ptpick" title="<#select_network_host#>">&#9662;</button>
+         <span class="ptlist" id="ptlist"></span>
+       </span>
+@@ -363,60 +363,60 @@ select.fx option{background:#0b0b0d;color:var(--bone)}
+ /* ===================== router state (server-side, read once) ===================== */
+ var UI = [<% get_ui_support(); %>][0];
+ function sup(k){ return (UI && UI[k]) ? UI[k] : 0; }
+-/* free text arrives URL-encoded (nvram_char_to_ascii): nvram_get passes ' and \ through raw, and either would
+-   end the single-quoted literal and stop this whole script */
++/* every value arrives URL-encoded (nvram_char_to_ascii): nvram_get passes ' and \ through raw, and either would
++   end the single-quoted literal and stop this whole script (audit 2026-10-07 G6: all keys, not only the free-text ones) */
+ function U(s){ try{ return decodeURIComponent(s); }catch(e){ return s; } }
+ var NV = {
+-  productid: '<% nvram_get("productid"); %>',
+-  wans_cap: '<% nvram_get("wans_cap"); %>',
+-  wans_dualwan: '<% nvram_get("wans_dualwan"); %>',
+-  wans_mode: '<% nvram_get("wans_mode"); %>',
++  productid: U('<% nvram_char_to_ascii("","productid"); %>'),
++  wans_cap: U('<% nvram_char_to_ascii("","wans_cap"); %>'),
++  wans_dualwan: U('<% nvram_char_to_ascii("","wans_dualwan"); %>'),
++  wans_mode: U('<% nvram_char_to_ascii("","wans_mode"); %>'),
+   wans_mode_default: '<% nvram_default_get("wans_mode"); %>',
+-  wans_lanport: '<% nvram_get("wans_lanport"); %>',
+-  wans_extwan: '<% nvram_get("wans_extwan"); %>',
+-  wans_lb_ratio: '<% nvram_get("wans_lb_ratio"); %>',
+-  wans_standby: '<% nvram_get("wans_standby"); %>',
+-  wans_usb_bk: '<% nvram_get("wans_usb_bk"); %>',
+-  wans_usb_bk_act: '<% nvram_get("wans_usb_bk_act"); %>',
+-  wans_routing_enable: '<% nvram_get("wans_routing_enable"); %>',
+-  wan_unit: '<% nvram_get("wan_unit"); %>',
+-  wan0_enable: '<% nvram_get("wan0_enable"); %>',
+-  wan1_enable: '<% nvram_get("wan1_enable"); %>',
+-  wan0_routing_isp_enable: '<% nvram_get("wan0_routing_isp_enable"); %>',
++  wans_lanport: U('<% nvram_char_to_ascii("","wans_lanport"); %>'),
++  wans_extwan: U('<% nvram_char_to_ascii("","wans_extwan"); %>'),
++  wans_lb_ratio: U('<% nvram_char_to_ascii("","wans_lb_ratio"); %>'),
++  wans_standby: U('<% nvram_char_to_ascii("","wans_standby"); %>'),
++  wans_usb_bk: U('<% nvram_char_to_ascii("","wans_usb_bk"); %>'),
++  wans_usb_bk_act: U('<% nvram_char_to_ascii("","wans_usb_bk_act"); %>'),
++  wans_routing_enable: U('<% nvram_char_to_ascii("","wans_routing_enable"); %>'),
++  wan_unit: U('<% nvram_char_to_ascii("","wan_unit"); %>'),
++  wan0_enable: U('<% nvram_char_to_ascii("","wan0_enable"); %>'),
++  wan1_enable: U('<% nvram_char_to_ascii("","wan1_enable"); %>'),
++  wan0_routing_isp_enable: U('<% nvram_char_to_ascii("","wan0_routing_isp_enable"); %>'),
+   wan0_routing_isp: U('<% nvram_char_to_ascii("","wan0_routing_isp"); %>'),
+-  wan1_routing_isp_enable: '<% nvram_get("wan1_routing_isp_enable"); %>',
++  wan1_routing_isp_enable: U('<% nvram_char_to_ascii("","wan1_routing_isp_enable"); %>'),
+   wan1_routing_isp: U('<% nvram_char_to_ascii("","wan1_routing_isp"); %>'),
+-  wandog_enable: '<% nvram_get("wandog_enable"); %>',
++  wandog_enable: U('<% nvram_char_to_ascii("","wandog_enable"); %>'),
+   wandog_target: U('<% nvram_char_to_ascii("","wandog_target"); %>'),
+-  wandog_interval: '<% nvram_get("wandog_interval"); %>',
+-  wandog_maxfail: '<% nvram_get("wandog_maxfail"); %>',
+-  wandog_fb_count: '<% nvram_get("wandog_fb_count"); %>',
+-  dns_probe: '<% nvram_get("dns_probe"); %>',
++  wandog_interval: U('<% nvram_char_to_ascii("","wandog_interval"); %>'),
++  wandog_maxfail: U('<% nvram_char_to_ascii("","wandog_maxfail"); %>'),
++  wandog_fb_count: U('<% nvram_char_to_ascii("","wandog_fb_count"); %>'),
++  dns_probe: U('<% nvram_char_to_ascii("","dns_probe"); %>'),
+   dns_probe_host: U('<% nvram_char_to_ascii("","dns_probe_host"); %>'),
+-  dns_probe_timeout: '<% nvram_get("dns_probe_timeout"); %>',
+-  autowan_enable: '<% nvram_get("autowan_enable"); %>',
+-  autowan_detected_ifname: '<% nvram_get("autowan_detected_ifname"); %>',
+-  autowan_ifnames: '<% nvram_get("autowan_ifnames"); %>',
+-  reaper_wanport: '<% nvram_get("reaper_wanport"); %>',
+-  wan_ifname_x: '<% nvram_get("wan_ifname_x"); %>',
+-  switch_wantag: '<% nvram_get("switch_wantag"); %>',
+-  switch_stb_x: '<% nvram_get("switch_stb_x"); %>',
+-  wan0_dot1q: '<% nvram_get("wan0_dot1q"); %>',
+-  wan_proto: '<% nvram_get("wan_proto"); %>',
+-  bond_wan: '<% nvram_get("bond_wan"); %>',
+-  wanports_bond: '<% nvram_get("wanports_bond"); %>',
+-  lacp_enabled: '<% nvram_get("lacp_enabled"); %>',
+-  lacp_ifnames_x: '<% nvram_get("lacp_ifnames_x"); %>',
+-  lan_trunk_type: '<% nvram_get("lan_trunk_type"); %>',
+-  qos_enable: '<% nvram_get("qos_enable"); %>',
+-  qos_type: '<% nvram_get("qos_type"); %>',
+-  preferred_lang: '<% nvram_get("preferred_lang"); %>',
+-  firmver: '<% nvram_get("firmver"); %>',
++  dns_probe_timeout: U('<% nvram_char_to_ascii("","dns_probe_timeout"); %>'),
++  autowan_enable: U('<% nvram_char_to_ascii("","autowan_enable"); %>'),
++  autowan_detected_ifname: U('<% nvram_char_to_ascii("","autowan_detected_ifname"); %>'),
++  autowan_ifnames: U('<% nvram_char_to_ascii("","autowan_ifnames"); %>'),
++  reaper_wanport: U('<% nvram_char_to_ascii("","reaper_wanport"); %>'),
++  wan_ifname_x: U('<% nvram_char_to_ascii("","wan_ifname_x"); %>'),
++  switch_wantag: U('<% nvram_char_to_ascii("","switch_wantag"); %>'),
++  switch_stb_x: U('<% nvram_char_to_ascii("","switch_stb_x"); %>'),
++  wan0_dot1q: U('<% nvram_char_to_ascii("","wan0_dot1q"); %>'),
++  wan_proto: U('<% nvram_char_to_ascii("","wan_proto"); %>'),
++  bond_wan: U('<% nvram_char_to_ascii("","bond_wan"); %>'),
++  wanports_bond: U('<% nvram_char_to_ascii("","wanports_bond"); %>'),
++  lacp_enabled: U('<% nvram_char_to_ascii("","lacp_enabled"); %>'),
++  lacp_ifnames_x: U('<% nvram_char_to_ascii("","lacp_ifnames_x"); %>'),
++  lan_trunk_type: U('<% nvram_char_to_ascii("","lan_trunk_type"); %>'),
++  qos_enable: U('<% nvram_char_to_ascii("","qos_enable"); %>'),
++  qos_type: U('<% nvram_char_to_ascii("","qos_type"); %>'),
++  preferred_lang: U('<% nvram_char_to_ascii("","preferred_lang"); %>'),
++  firmver: U('<% nvram_char_to_ascii("","firmver"); %>'),
+   wl_ssid: U('<% nvram_char_to_ascii("","wl_ssid"); %>'),
+-  territory_code: '<% nvram_get("territory_code"); %>',
+-  lan_hwaddr: '<% nvram_get("lan_hwaddr"); %>',
+-  sw_mode: '<% nvram_get("sw_mode"); %>',
+-  extendno: '<% nvram_get("extendno"); %>',
++  territory_code: U('<% nvram_char_to_ascii("","territory_code"); %>'),
++  lan_hwaddr: U('<% nvram_char_to_ascii("","lan_hwaddr"); %>'),
++  sw_mode: U('<% nvram_char_to_ascii("","sw_mode"); %>'),
++  extendno: U('<% nvram_char_to_ascii("","extendno"); %>'),
+   reboot_time: '<% get_default_reboot_time(); %>'
+ };
+ var RULES_RAW = '<% nvram_char_to_ascii("","wans_routing_rulelist"); %>';
+@@ -446,7 +446,6 @@ var T = {
+ 
+ function $id(i){ return document.getElementById(i); }
+ function words(s){ return String(s || '').split(' '); }
+-function hasWord(s, w){ return words(s).indexOf(w) >= 0; }
+ function parseJSON(s, dflt){ try{ var v = JSON.parse(s); return (v && typeof v === 'object') ? v : dflt; }catch(e){ return dflt; } }
+ function isEmpty(o){ for(var k in o) return false; return true; }
+ 
+@@ -834,7 +833,7 @@ function buildPost(){
+     }
+ 
+     if(!dsl_support && based_modelid != 'BRT-AC828' && (hval('wans_dualwan') == 'usb lan' || hval('wans_dualwan') == 'lan usb') && get_eth_wan_number() <= 1){
+-      alert('WAN port should be selected in Dual WAN.');
++      alert(`<#RWAN_23#>`);
+       return {stop: 'usblan'};
+     }
+ 
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 6bb3f6cede..9e6494dc54 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -38,6 +38,7 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
+ .tg.on{background:#33333a}
+ .tg.on::after{left:21px;background:var(--bone)}
++.feedrow .v4only{font-family:var(--hdr);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);border:1px solid rgba(255,255,255,.14);border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
+ .offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
+ .offbanner b{color:var(--bone)}
+ .warnbanner{display:flex;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
+@@ -169,10 +170,10 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <div class="card">
+     <h2><#RWDN_08#></h2>
+     <div class="desc"><#RWDN_09#></div>
+-    <div class="feedrow"><span class="fl"><#RWDN_31#></span><label class="ck"><input type="checkbox" id="f_firehol1"><span class="box"></span></label></div>
+-    <div class="feedrow"><span class="fl"><#RWDN_32#></span><label class="ck"><input type="checkbox" id="f_feodo"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_31#> <span class="v4only"><#RWDN_109#></span></span><label class="ck"><input type="checkbox" id="f_firehol1"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_32#> <span class="v4only"><#RWDN_109#></span></span><label class="ck"><input type="checkbox" id="f_feodo"><span class="box"></span></label></div>
+     <div class="feedrow"><span class="fl"><#RWDN_33#></span><label class="ck"><input type="checkbox" id="f_spamhaus"><span class="box"></span></label></div>
+-    <div class="feedrow"><span class="fl"><#RWDN_34#></span><label class="ck"><input type="checkbox" id="f_dshield"><span class="box"></span></label></div>
++    <div class="feedrow"><span class="fl"><#RWDN_34#> <span class="v4only"><#RWDN_109#></span></span><label class="ck"><input type="checkbox" id="f_dshield"><span class="box"></span></label></div>
+     <div class="desc" style="margin-top:10px"><#RWDN_55#></div>
+   </div>
+   <div class="card">
+diff --git a/release/src/router/www/Reaper_WiFiSetup.asp b/release/src/router/www/Reaper_WiFiSetup.asp
+index cb2f690093..386f2aadc0 100644
+--- a/release/src/router/www/Reaper_WiFiSetup.asp
++++ b/release/src/router/www/Reaper_WiFiSetup.asp
+@@ -599,7 +599,7 @@ var validator = {
+ 		var string_length = obj.value.length;
+ 		if(!/[A-Za-z]/.test(obj.value) || !/[0-9]/.test(obj.value) || string_length < 10
+ 				|| !/[\!\"\#\$\%\&\'\(\)\*\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\_\`\{\|\}\~]/.test(obj.value)){
+-			showError("Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.");
++			showError(`<#RWFS_14#>`);
+ 			obj.focus(); obj.select();
+ 			return false;
+ 		}
+@@ -679,7 +679,7 @@ function showError(str){
+ 					<input type="password" autocapitalize="off" autocomplete="new-password" value="" name="http_passwd_x" id="http_passwd_x" tabindex="4" class="form_input" maxlength="33" placeholder="<#RWFS_5#>">
+ 				</div>
+ 				<div class="hint"><#RWFS_6#></div>
+-				<div id="KRHint" class="hint" style="display:none">Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.</div>
++				<div id="KRHint" class="hint" style="display:none"><#RWFS_14#></div>
+ 				<div class="show_row"><label><input type="checkbox" id="show_pw" onchange="toggleShow()" style="vertical-align:middle;margin-right:8px"><#RWFS_7#></label></div>
+ 				</form>
+ 
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 49ed769963..eebd51d212 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -820,7 +820,7 @@ function buildReportHTML(){
+     `<div class="legend"><span><i class="sw" style="background:#1a7f4b"></i><#RWIF_76#></span>`+
+       `<span><i class="sw" style="background:#d4a017"></i><#RWIF_77#></span>`+
+       `<span><i class="sw" style="background:#c1121f"></i><#RWIF_78#></span></div>`+
+-    `<table><thead><tr><th>#</th><th><#Channel#></th><th><#diskUtility_frenqucy#></th><th>nopkt</th><th>txop</th><th>glitch</th><th><#RWIF_79#></th><th><#RWIF_36#></th></tr></thead><tbody>`+
++    `<table><thead><tr><th>#</th><th><#Channel#></th><th><#RWIF_118#></th><th>nopkt</th><th>txop</th><th>glitch</th><th><#RWIF_79#></th><th><#RWIF_36#></th></tr></thead><tbody>`+
+     rows+'</tbody></table>'+
+     `<footer>Reaper <#Reaper_c_firmware#> &middot; <#RWIF_80#></footer>`+
+     '</body></html>';
+diff --git a/release/src/router/www/js/faq.js b/release/src/router/www/js/faq.js
+index 0ba42e2fc7..6e0622dc7a 100644
+--- a/release/src/router/www/js/faq.js
++++ b/release/src/router/www/js/faq.js
+@@ -81,7 +81,7 @@ var faq_data = {
+ 	},
+ 	"bandwidthLimiter": {
+ 		"index": "bandwidthLimiter",
+-		"name": "<#Bandwidth_Limite#>",
++		"name": "<#Bandwidth_Limiter#>",
+ 		"link": "QoS_EZQoS.asp",
+ 		"menu": "<#Game_acceleration#>",
+ 		"mode": ["RT"],
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 1ede34f4e5..a111b722b5 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -7413,8 +7413,16 @@ function Get_Component_Full_Setting(view_mode){
+ 			Get_Component_Switch(ap_iso_parm).attr({"data-group":"wifi_settings"}).appendTo($net_mode_container);
+ 
+ 			if(isSupport("ipv6")){
++				/* reaper 2026-10-08: the IPv6 controls are network settings, not Wi-Fi ones. Stock tagged
++				   them data-group "wifi_settings", and that whole group is hidden whenever the profile's
++				   WiFi Interface is Off - so a wired-only VLAN (the owner's VLAN 52: band 0, one LAN port)
++				   could never reach the switch and never got a prefix, an RA or DHCPv6 although the
++				   backend (set_ip6_sdnaddr, write_dnsmasq_conf_sdn_ra_dhcp6_range) only reads
++				   subnet_rl.v6_enable. Their own group keeps them on screen for every profile; the
++				   ipv6-group show/hide stays on the switch itself and on the profile load, and the
++				   save path reads them by id. */
+ 				const ipv6_enable_parm = {"title":`IPv6`, "type":"switch", "id":"ipv6_enable"};
+-				Get_Component_Switch(ipv6_enable_parm).attr({"data-group":"wifi_settings"}).appendTo($net_mode_container).find("#" + ipv6_enable_parm.id + "").click(function(e){
++				Get_Component_Switch(ipv6_enable_parm).attr({"data-group":"ipv6_settings"}).appendTo($net_mode_container).find("#" + ipv6_enable_parm.id + "").click(function(e){
+ 					e = e || event;
+ 					e.stopPropagation();
+ 					const $control_container = $(this).closest(".profile_setting").find("[ipv6-group='true']");
+@@ -7429,17 +7437,17 @@ function Get_Component_Full_Setting(view_mode){
+ 				});
+ 				const ipv6_autoconf_options = [{"text":`<#Auto#>`,"value":"0"}, {"text":`Stateful`,"value":"1"}];
+ 				const ipv6_autoconf_parm = {"title": `<#ipv6_auto_config#>`, "id": "ipv6_autoconf", "options": ipv6_autoconf_options, "set_value": "0"};
+-				Get_Component_Custom_Select(ipv6_autoconf_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Custom_Select(ipv6_autoconf_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 				const ipv6_dhcp_start_parm = {"title":`<#LANHostConfig_MinAddress_itemname#>`, "type":"text", "id":"ipv6_dhcp_start", "need_check":true, "maxlength":4};
+-				Get_Component_Input(ipv6_dhcp_start_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Input(ipv6_dhcp_start_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 				const ipv6_dhcp_end_parm = {"title":`<#LANHostConfig_MaxAddress_itemname#>`, "type":"text", "id":"ipv6_dhcp_end", "need_check":true, "maxlength":4};
+-				Get_Component_Input(ipv6_dhcp_end_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Input(ipv6_dhcp_end_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 				const ipv6_dns1_parm = {"title":`<#ipv6_dns_serv#> 1`, "type":"text", "id":"ipv6_dns1", "maxlength":39};
+-				Get_Component_Input(ipv6_dns1_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Input(ipv6_dns1_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 				const ipv6_dns2_parm = {"title":`<#ipv6_dns_serv#> 2`, "type":"text", "id":"ipv6_dns2", "maxlength":39};
+-				Get_Component_Input(ipv6_dns2_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Input(ipv6_dns2_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 				const ipv6_dns3_parm = {"title":`<#ipv6_dns_serv#> 3`, "type":"text", "id":"ipv6_dns3", "maxlength":39};
+-				Get_Component_Input(ipv6_dns3_parm).attr({"data-group":"wifi_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
++				Get_Component_Input(ipv6_dns3_parm).attr({"data-group":"ipv6_settings", "ipv6-group":"true"}).appendTo($net_mode_container);
+ 			}
+ 		}
+ 
+-- 
+2.25.1
+

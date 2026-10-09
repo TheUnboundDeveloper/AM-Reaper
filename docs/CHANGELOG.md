@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.3.4** · 2026-10-06 <!--@stamp-->
+> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,70 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
+
+- **IPv6 coverage review (2026-10-07) and remediation.** Twelve Reaper surfaces that were IPv4-only now
+  handle IPv6: Gatekeeper's captive check, Service Intercept (redirects for both families, a DNAT twin
+  with an IPv6 target), the watchdog (`wan6-gw` / `wan6-internet`), SNMP (`udp6` agent address), DHCPv6
+  names, Flow Explorer (every IPv6 conntrack entry is a row, LAN ends named through the neighbour cache),
+  the passive name map (16-byte keys, AAAA records), Devices (IPv6 addresses, DHCPv6 leases bridged to
+  their devices, DHCPv6 reservations kept as host suffixes), the Traffic Analyzer (IPv6 labels and
+  ICMPv6 probes), the Advisor (a listener on the router's own LAN IPv6 address), Warden (an "IPv4 only"
+  chip) and the diag. Shared helpers: `reaper_nd` (neighbour cache), `reaper_dhcp6`. Host tests
+  `test_reaper_nd.py`, `test_devices_ipv6.py`, `test_ipv6_twins.py`, `test_ipv6_daemons.py`.
+- **A 6in4 tunnel day on the maintainer's box (2026-10-08) found five defects, all fixed.** Stock
+  `stop_ddns()` re-restored the whole IPv4 filter table from a snapshot taken before the guest rows,
+  Gatekeeper, Warden and the rules engine were added, so every DDNS stop deleted them; it now deletes only
+  its own rule (`test_filter_restore_sites.py`). The watchdog's rules-engine heal was refused by
+  `reaper_lockrun` (not allowlisted) - now listed (`test_lockrun_allowlist.py`). Rule Status modelled the
+  IPv6 egress as the IPv4 WAN device - walker v1.9 follows the tunnel. The watchdog's tunnel note names
+  the cause. The Network editor's IPv6 switch stays on screen for wired-only VLANs.
+- **DNS health check, dual-stack.** Both faces of a LAN resolver named by an IPv4 and an IPv6 address
+  are probed every tick; the IPv6 line sits directly behind the IPv4 line; a face that stops answering
+  is moved behind the other servers on its own; the intercept gate closes per address family; nothing
+  touches the IPv6 side while IPv6 is off (`reaper_resolv_order`, `test_rdnshc_order.py`). DNS Failover
+  shows an IPv6 status line.
+- **Names across networks.** The main LAN's resolver forwards each VLAN's reverse zone to that VLAN's
+  resolver and back (`rev-server`), never VLAN to VLAN, never guest or portal networks
+  (`test_rev_server.py`). **IPv6 device names:** `rv6names` maps each LAN device's current IPv6 addresses
+  to its DHCPv4 name every minute and gives each network's resolver its own addn-hosts file, reloaded
+  once on change (`test_rv6names.py`; `test_dnsmasq_start.py` starts the shipped dnsmasq with every
+  directive Reaper writes, after a `hostsdir=` build stopped dnsmasq). Both are switches on DNS Failover,
+  on by default.
+- **Dashboard and client lists show IPv6 without a reload.** The Internet card's IPv6 half is re-read
+  on every poll (it was painted once at load) and polls fast while IPv6 is configured but not yet up;
+  `get_clientlist` fills a missing global IPv6 address of an online client from the neighbour cache.
+- **Connections:** IPv6 endpoints in canonical form, each LAN end named by MAC, Internal/External from
+  the LAN flag; IPv6 entries of the accelerator flow table are skipped (they were parsed as IPv4 and
+  showed as "2001").
+- **Security.** DDNS request logs redact the provider credential and the client config is owner-only
+  (CVE-2026-16528 class). Review 2026-10-07: two pre-login rows for a removed cloud feature compiled out,
+  stock proxy rows and links removed, archive wildcards and three retired-flow pages behind a login, the
+  offline page's WAN poll trimmed, dead code removed. **/tmp hardening (audit F1/V3):** the four
+  `fs.protected_*` protections on at boot, every Reaper directory created root-only at boot and checked
+  at each use, about 45 loose Reaper files moved into `/tmp/reaper`, fixed-path files created fresh and
+  never through a link, a script run only when it is a root-owned private file, the firmware download
+  created under `umask 022` and checked before the flash (`test_tmp_hardening.py`). **The app network
+  installer is removed (V11):** it ran plain-HTTP packages as root and the vendor host's HTTPS serves an
+  incomplete certificate chain; the USB Application page, the USB mount chain and the disk check stay.
+  Site Survey CSV export guards against spreadsheet formulas (V10); five dangling `/tmp` links gone (V5).
+- **Hardware QoS shapes on a PPPoE line (field, GT-BE98).** Both hardware engines took their port from
+  stock `get_wan_ifname()`, which returns `ppp0` on PPPoE / PPTP / L2TP; the Runner traffic manager has
+  queues only on physical ports, so every `tmctl` call failed (rc=108) and nothing was shaped -
+  classification marked packets and nothing acted on the marks. The engines now program the port the
+  session rides on (`wanX_ifname`, an 802.1Q VLAN resolved to its parent) and log which port they shape.
+  The shaper then counts PPPoE's 8-byte header, so set the upload a little under the line. Host test
+  `test_hwqos_pppoe.py`.
+- **Rule Status walker v1.10:** a stand-in host is never an address a device holds (ARP, leases,
+  reservations).
+- **Firewall page:** Apply, Keep and Revert dim at once and poll until the router reports the state, so
+  the first click is no longer refused as a double apply.
+- **Devices page:** the table card sizes to its rows instead of clipping the last column.
+- **Diagnostics v1.3.31-v1.3.33:** per-network IPv6, the health check per family, the tunnel, reverse
+  DNS and IPv6 names, the /tmp hardening, and the dynamic-puncturing gain and interval actually applied.
+- **Language packs:** a full-firmware sweep of cross-pack copies, homoglyphs and borrowed tokens; new
+  tokens in all 25 packs.
 
 ## v3.3.6 — the WAN port stays out of the LAN, WAN Ports replaces the Dual WAN tab, a quieter Traffic Analyzer, real Site Survey security names
 

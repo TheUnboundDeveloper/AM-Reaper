@@ -194,7 +194,7 @@ def w(name, text):
     return p
 
 def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT, tag="x", rule4=None, rule6=None,
-        lsntcp=None, lsnudp=None, wan="eth0"):
+        lsntcp=None, lsnudp=None, wan="eth0", used=None):
     # wan=None omits --wan so the walker derives the WAN interface from the nv
     # file exactly as the router does (dual WAN: the primary unit)
     args = [exe, "--save4", w(tag + ".v4", save4), "--addr", w(tag + ".addr", addr), "--members", w(tag + ".members", members),
@@ -211,6 +211,9 @@ def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT
     # /proc/net format the router parses, so this exercises the real parser.
     if lsntcp is not None: args += ["--lsn-tcp", w(tag + ".ltcp", lsntcp)]
     if lsnudp is not None: args += ["--lsn-udp", w(tag + ".ludp", lsnudp)]
+    # v1.10: the addresses devices hold (ARP / leases on the router); any text,
+    # every IPv4 in it counts - so the real /proc/net/arp and lease shapes go in as-is
+    if used is not None: args += ["--used", w(tag + ".used", used)]
     p = subprocess.run(args, capture_output=True, text=True)
     try:
         with open(os.path.join(td, tag + ".json")) as f: j = json.load(f)
@@ -305,6 +308,21 @@ try:
     x = wit(j, "A6a"); check("gen: WAN web management closed", x and x["expect"] == "DROP" and x["state"] == "green", x)
     x = wit(j, "A6c"); check("gen: WAN SSH closed (sshd_wan=0)", x and x["expect"] == "DROP" and x["state"] == "green" and x["witness"].endswith("tcp:22 NEW"), x)
     x = wit(j, "A1v6"); check("gen: IPv6 rows resolved from the br0 prefix", x and x["state"] == "green" and "2001:db8:50::23" in x["witness"], x)
+    # 2026-10-08 (walker v1.9): a 6in4/6to4/6rd box leaves over v6tun<unit>, and stock writes its
+    # LAN->WAN v6 accept against that device (`-i br0 -o v6tun0`). Modelled as the v4 face, A1v6
+    # walked past that rule to the tail DROP and showed a working tunnel red (owner's RT-BE96U, HE
+    # 6in4, 884 packets through the real rule). The v6 egress now follows ipv6_service the way
+    # shared/rtstate.c get_wan6_ifname() does; the v4 face is unchanged, and so is every box
+    # without a tunnel (second check: the same table is honestly red without the service).
+    save6_tun = SAVE6.replace("-A FORWARD -i br0 -j ACCEPT", "-A FORWARD -i br0 -o v6tun0 -j ACCEPT\n-A FORWARD -j DROP")
+    addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
+    j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
+    x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
+    check("v1.9 6in4: the walker reports itself as 1.10 (v1.10 = free stand-ins)", j6.get("ver") == "1.10", j6.get("ver"))
+    j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
+    x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
+    j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
+    x = wit(j6c, "A1"); check("v1.9 6in4: the v4 rows still leave over eth0", x and x["state"] == "green" and x["witness"].startswith("br0 ") and "eth0" in x["rule"], x)
     x = wit(j, "A10c"); check("gen: neighbour solicitation row present with V6 up", x and x["state"] == "green", x)
     check("gen: Warden rows present (E4a-c, E5, E8a, E9)", all(i in ids for i in ("E4a", "E4b", "E4c", "E5", "E8a", "E9")), ids)
     x = wit(j, "E9"); check("gen: E9 red when REAPER_WARDEN is absent while enabled (this table calls it WARDEN)", x and x["state"] == "red" and x["verdict"] == "missing", x)
@@ -669,7 +687,37 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.8", j.get("ver") == "1.8", j.get("ver"))
+    check("pass2: walker is v1.10", j.get("ver") == "1.10", j.get("ver"))
+
+    # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
+    # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,
+    # which a pool of .2-.254 hands out like any other address.
+    j, out, rc = run(witness=None, tag="su0")
+    check("stand-in: an idle .123 stays .123 and the JSON says nothing", j.get("lanhost") == "192.168.50.123" and j.get("lanhost_note", "") == "", (j.get("lanhost"), j.get("lanhost_note")))
+    ARP = ("IP address       HW type     Flags       HW address            Mask     Device\n"
+           "192.168.50.123   0x1         0x2         ee:c5:4e:d2:eb:4f     *        br0\n"
+           "203.0.113.1      0x1         0x2         00:11:22:33:44:55     *        eth0\n")
+    j, out, rc = run(witness=None, used=ARP, tag="su1")
+    check("stand-in: a device on .123 (ARP) moves the LAN host to .124 and the JSON says why",
+          j.get("lanhost") == "192.168.50.124" and "192.168.50.123 is in use" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+    x = wit(j, "A1"); check("stand-in: A1 is witnessed from the free address", x and x["witness"].startswith("br0 192.168.50.124 "), x and x["witness"])
+    LEASES = ("1760000000 ee:c5:4e:d2:eb:4f 192.168.50.123 phone 01:ee:c5:4e:d2:eb:4f\n"
+              "1760000000 aa:bb:cc:dd:ee:01 192.168.50.124 tablet *\n")
+    j, out, rc = run(witness=None, used=LEASES, nv=NV + "dhcp_staticlist=<AA:BB:CC:00:00:01>192.168.50.125>>printer<\n", tag="su2")
+    check("stand-in: leases AND a reservation are skipped (.123/.124 leased, .125 reserved -> .126)", j.get("lanhost") == "192.168.50.126", j.get("lanhost"))
+    j, out, rc = run(witness=None, used="192.168.50.123\n", nv=NV + "dhcpres3_rl=<AA:BB:CC:00:00:02>192.168.50.124>>cam<\n", tag="su3")
+    check("stand-in: an SDN network's reservation list (dhcpresN_rl) is read too", j.get("lanhost") == "192.168.50.125", j.get("lanhost"))
+    j, out, rc = run(witness=None, used="192.168.50.123\n",
+                     addr=ADDR.replace("inet 192.168.50.1/24 brd", "inet 192.168.50.124/24 brd"), tag="su4")
+    check("stand-in: the router's own address is never a stand-in", j.get("lanhost") == "192.168.50.125", j.get("lanhost"))
+    G55 = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
+    j, out, rc = run(witness=None, addr=G55, used="10.20.0.123\n", tag="su5")
+    x = wit(j, "G2.1"); check("stand-in: a guest bridge's .123 in use moves that network's witness too", x and x["witness"].startswith("br55 10.20.0.124 "), x and x["witness"])
+    j, out, rc = run(witness=None, used=ARP, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", tag="su6")
+    check("stand-in: the admin allowlist still decides the LAN host (a real allowed client is the point there)",
+          j.get("lanhost") == "192.168.50.77" and "allowed client" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+    j, out, rc = run(witness=None, used="192.168.50.123 192.168.50.1234 10.1.2.3.4\n", tag="su7")
+    check("stand-in: the scanner takes whole dotted quads only (1234 and a 5-part token are not addresses)", j.get("lanhost") == "192.168.50.124", j.get("lanhost"))
 
     # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
     j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")

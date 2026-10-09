@@ -1,0 +1,1154 @@
+From 75394f4d4bf92b9261c7b29d3b1c8bbc5630edaa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 13:26:09 -0400
+Subject: [PATCH] httpd: IPv6 everywhere a device is named, pre-login rows
+ tightened, client IPv6 for the dashboard, private /tmp
+
+- Connections: IPv6 rows in canonical form with each LAN end named by MAC;
+  Internal/External from the LAN flag; accelerator IPv6 entries skipped.
+- Devices: IPv6 addresses, DHCPv6 leases bridged to their devices, DHCPv6
+  reservations as host suffixes; client IP -> MAC resolves IPv6 peers too.
+- get_clientlist fills a missing global IPv6 address of an online client from
+  the neighbour cache (never over networkmap's value), so the dashboard and the
+  stock client list show it without a reload.
+- Review 2026-10-07: two pre-login rows for a removed cloud feature compiled out,
+  stock proxy rows removed, archive wildcards and three retired-flow pages behind
+  a login.
+- Site Survey move/back files, the name map and the lock files under the /tmp
+  rules of this rung; the restore's staged settings created fresh.
+- basic.c removed: never compiled (the active MIME table is in web.c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/basic.c |  45 ---
+ release/src/router/httpd/httpd.c |  23 +-
+ release/src/router/httpd/web.c   | 527 +++++++++++++++++++++++++++----
+ 3 files changed, 489 insertions(+), 106 deletions(-)
+ delete mode 100644 release/src/router/httpd/basic.c
+
+diff --git a/release/src/router/httpd/basic.c b/release/src/router/httpd/basic.c
+deleted file mode 100644
+index 6187fbc5c2..0000000000
+--- a/release/src/router/httpd/basic.c
++++ /dev/null
+@@ -1,45 +0,0 @@
+-/*
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of
+- * the License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+- * MA 02111-1307 USA
+- *
+- * Basic skin (shtml)
+- */
+-
+-#include <stdio.h>
+-#include <httpd.h>
+-
+-struct mime_handler mime_handlers[] = {
+-	{ "**.htm", "text/html", NULL, NULL, do_file, NULL },
+-	{ "**.html", "text/html", NULL, NULL, do_file, NULL },
+-	{ "**.gif", "image/gif", NULL, NULL, do_file, NULL },
+-	{ "**.jpg", "image/jpeg", NULL, NULL, do_file, NULL },
+-	{ "**.jpeg", "image/gif", NULL, NULL, do_file, NULL },
+-	{ "**.png", "image/png", NULL, NULL, do_file, NULL },
+-	{ "**.css", "text/css", NULL, NULL, do_file, NULL },
+-	{ "**.au", "audio/basic", NULL, NULL, do_file, NULL },
+-	{ "**.wav", "audio/wav", NULL, NULL, do_file, NULL },
+-	{ "**.avi", "video/x-msvideo", NULL, NULL, do_file, NULL },
+-	{ "**.mov", "video/quicktime", NULL, NULL, do_file, NULL },
+-	{ "**.mpeg", "video/mpeg", NULL, NULL, do_file, NULL },
+-	{ "**.vrml", "model/vrml", NULL, NULL, do_file, NULL },
+-	{ "**.midi", "audio/midi", NULL, NULL, do_file, NULL },
+-	{ "**.mp3", "audio/mpeg", NULL, NULL, do_file, NULL },
+-	{ "**.pac", "application/x-ns-proxy-autoconfig", NULL, NULL, do_file, NULL },
+-	{ NULL, NULL, NULL, NULL, NULL, NULL }
+-};
+-
+-struct ej_handler ej_handlers[] = {
+-	{ NULL, NULL }
+-};
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index efbe79b4eb..4fe97581c5 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1237,7 +1237,8 @@ int append_etag_header(char *file, char *extra_header, char *if_none_match, char
+ 
+ /* ---- reaper v1.6.8 Gatekeeper captive support ------------------------- */
+ 
+-/* IPv4 client IP -> MAC via /proc/net/arp; tiny 2s single-entry cache since
++/* client IP -> MAC: IPv4 via /proc/net/arp, IPv6 via the shared neighbour cache
++ * (2026-10-07 IPv6 A4, shared/reaper_nd.c); tiny 2s single-entry cache since
+  * a quarantined phone hammers captive probes. Returns 1 on hit. */
+ static int
+ gk_ip_to_mac(const char *ip, char *mac, size_t maclen)
+@@ -1258,6 +1259,22 @@ gk_ip_to_mac(const char *ip, char *mac, size_t maclen)
+ 	c_mac[0] = 0;
+ 	c_at = now;
+ 
++	/* an IPv6 peer: ARP cannot resolve it, the neighbour table can. The table is
++	 * re-read at most every 2 s, the same cadence as the entry cache above. */
++	if (strchr(ip, ':')) {
++		static struct reaper_nd ndt[256];
++		static int ndn = 0;
++		static time_t nd_at = 0;
++		if (!nd_at || now - nd_at > 2) {
++			ndn = reaper_nd_load(ndt, 256);
++			nd_at = now;
++		}
++		if (!reaper_nd_mac_of_str(ndt, ndn, ip, c_mac, sizeof(c_mac), NULL, 0))
++			return 0;
++		snprintf(mac, maclen, "%s", c_mac);
++		return 1;
++	}
++
+ 	f = fopen("/proc/net/arp", "r");
+ 	if (!f) return 0;
+ 	if (fgets(line, sizeof(line), f)) { /* header */ }
+@@ -1343,8 +1360,8 @@ reaper_gk_captive_check(const char *client_ip)
+ 		return 0;
+ 	if (!client_ip || !client_ip[0] || !strcmp(client_ip, "127.0.0.1"))
+ 		return 0;
+-	if (strchr(client_ip, ':'))		/* v6 peer: ARP can't resolve - let it through */
+-		return 0;
++	/* 2026-10-07 IPv6 A4: an IPv6 peer resolves through the neighbour cache inside
++	 * gk_ip_to_mac(); it used to be waved through here with no MAC at all. */
+ 	if (!gk_ip_to_mac(client_ip, mac, sizeof(mac)))
+ 		return 0;				/* unresolvable - fail open, chains still enforce */
+ 	return gk_mac_known(mac) ? 0 : 1;
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 018a71c66b..8da6421e78 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -39,6 +39,7 @@
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <ifaddrs.h>	/* IPv6 A1: the bridges' own IPv6 addresses */
+ #include <fcntl.h>
+ #include <signal.h>
+ #include <time.h>
+@@ -72,9 +73,7 @@
+ #include <timezone.h>
+ #include <nvram_config.h>
+ 
+-#ifdef RTCONFIG_FANCTRL
+-#include <wlutils.h>
+-#endif
++#include <wlutils.h>	/* reaper (audit 2026-10-07 S1): unconditional - rsvy_cs_apply() calls wl_iovar_setint() */
+ 
+ #ifdef RTCONFIG_NOTIFICATION_CENTER
+ #include <libnt.h>
+@@ -10417,6 +10416,35 @@ static struct json_object* client_mlo_links_to_json(const CLIENT_DETAIL_INFO_TAB
+ }
+ #endif
+ 
++#ifdef RTCONFIG_IPV6
++/* reaper 2026-10-09 (BACKLOG "Internet Card on the Dashboard does not refresh for
++ * IPv6"): networkmap fills a client's global IPv6 address on its own schedule
++ * (ip6_prefix - the stock pages label it the IPv6 address; ip6 is the link-local),
++ * so the Dashboard and Network Map lists showed dual-stack devices with no IPv6
++ * until something prodded networkmap. Fill an EMPTY ip6_prefix of an online client
++ * from the kernel neighbour cache (shared/reaper_nd.h: bridges only, live states
++ * only); never override what networkmap reports. get_clientlist() is polled by the
++ * Dashboard every 10 s, so the dump is taken at most once per 5 s. */
++#define RCLI_ND 512
++static struct reaper_nd rcli_ndt[RCLI_ND];
++static int rcli_ndn;
++static time_t rcli_nd_at;
++
++static int rcli_nd_fill(const char *mac, char *out, size_t outlen)
++{
++	unsigned char a[16];
++	time_t now = time(NULL);
++
++	if (!rcli_nd_at || now < rcli_nd_at || now - rcli_nd_at >= 5) {
++		rcli_ndn = ipv6_enabled() ? reaper_nd_load(rcli_ndt, RCLI_ND) : 0;
++		rcli_nd_at = now;
++	}
++	if (!reaper_nd_addr_of(rcli_ndt, rcli_ndn, mac, a))
++		return 0;
++	return inet_ntop(AF_INET6, a, out, outlen) != NULL;
++}
++#endif
++
+ //2016.09 Rawny add for new networkmap
+ //static int get_client_detail_info(int eid, webs_t wp, int argc, char_t **argv, key_t shmkey, char *maclist_buf){
+ static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey){
+@@ -10573,6 +10601,11 @@ static int get_client_detail_info(struct json_object *clients, struct json_objec
+ 			p_client_info_tab->mac_addr[i][2],p_client_info_tab->mac_addr[i][3],
+ 			p_client_info_tab->mac_addr[i][4],p_client_info_tab->mac_addr[i][5]
+ 			);
++#ifdef RTCONFIG_IPV6
++			/* reaper: networkmap's global IPv6 first; see rcli_nd_fill() */
++			if (!ip6_prefix[0] && p_client_info_tab->online[i])
++				rcli_nd_fill(mac_buf, ip6_prefix, sizeof(ip6_prefix));
++#endif
+ 
+ #ifdef RTCONFIG_AMAS
+ 			if(is_amas_support()) {
+@@ -21944,8 +21977,8 @@ do_reaper_wifisetup_cgi(char *url, FILE *stream)
+  * writes its verdict to a state file; the page asks action=start, polls
+  * action=status every 2 s and fetches action=get. The CSRF gate, the lock and
+  * the /tmp/reaper_diag_ path contract are unchanged. */
+-#define RDIAG_LOCK	"/tmp/.reaper_diag_busy"
+-#define RDIAG_STATE	"/tmp/.reaper_diag_state"
++#define RDIAG_LOCK	"/tmp/reaper/.reaper_diag_busy"
++#define RDIAG_STATE	"/tmp/reaper/.reaper_diag_state"
+ #define RDIAG_RECLAIM	180	/* s: a lock older than this is a dead worker's - start may reclaim it */
+ #define RDIAG_RUNMAX	300	/* s: status stops answering RUNNING for a lock older than this */
+ 
+@@ -22291,7 +22324,7 @@ static struct rdm_ent *rconn_names_table(time_t now)
+ 				rdm_ino = 0;
+ 			}
+ 		} else if (!rdm_map || st.st_ino != rdm_ino) {
+-			int fd = open(RDM_PATH, O_RDWR);
++			int fd = open(RDM_PATH, O_RDWR | O_NOFOLLOW);	/* 2026-10-09 audit V3 */
+ 
+ 			if (rdm_map)
+ 				munmap(rdm_map, RDM_SIZE);
+@@ -22308,6 +22341,115 @@ static struct rdm_ent *rconn_names_table(time_t now)
+ 	return rdm_table(rdm_map);
+ }
+ 
++/* 2026-10-07 (IPv6 A1): the fcache feed (/proc/fcache/nflist) is IPv4. IPv6 flows
++ * come from the conntrack table the CGI already reads for the TCP state, one row
++ * each, keyed by a hash of the tuple ("6" + 16 hex) that is stable across polls
++ * so the page's grouping and rate work unchanged. They carry no accelerator
++ * figures (hw 0, sw = bytes, "fam":6 so the page says so). IPv6 is not
++ * translated, so a subnet test cannot tell the LAN end: the neighbour cache
++ * (shared/reaper_nd.h, refreshed at most every 2 s) and the bridges' own
++ * addresses are the LAN side; a flow with neither end there is transit. */
++#define RCONN_V6_MAX 1024	/* rows kept per poll: bounded RAM on a busy dual-stack LAN */
++#define RCONN_ND     512
++struct rconn_v6 { char s[46], d[46]; int proto, sp, dp; unsigned long long pk, by; char st[16]; };
++static struct reaper_nd rconn_ndt[RCONN_ND];
++static int rconn_ndn;
++static time_t rconn_nd_at;
++
++static uint64_t rconn_fnv64(const char *s)
++{
++	uint64_t h = 0xcbf29ce484222325ULL;
++
++	for (; *s; s++) {
++		h ^= (unsigned char)*s;
++		h *= 0x100000001b3ULL;
++	}
++	return h;
++}
++
++/* 2026-10-08: a flow-cache tuple "<a.b.c.d:port>" has exactly one colon before its closing bracket. An IPv6
++ * tuple ("<2001:470:...:443>") matched "<%23[0-9.]:%d>" on its first group and became address "2001",
++ * port 470 (owner: Connections rows "2001" -> "2001:470"). IPv6 flows are read from conntrack instead. */
++static int fc_tuple_is_v4(const char *p)
++{
++	int colons = 0;
++	if (!p || *p != '<') return 0;
++	for (p++; *p && *p != '>'; p++)
++		if (*p == ':') colons++;
++	return *p == '>' && colons == 1;
++}
++
++/* one "ipv6 ..." conntrack line -> a row (original tuple; both directions' counters) */
++static void rconn_v6_row(const char *ctl, struct rconn_v6 **v, int *n, int *cap)
++{
++	struct rconn_v6 r;
++	const char *p, *sv, *b, *e;
++	char pname[16];
++	unsigned long long pk2 = 0, by2 = 0;
++	int stl;
++
++	if (*n >= RCONN_V6_MAX)
++		return;
++	memset(&r, 0, sizeof(r));
++	if (sscanf(ctl, "%*s %*d %15s %d", pname, &r.proto) != 2)
++		return;
++	if ((sv = strstr(ctl, "src=")) == NULL)
++		return;
++	if (strcmp(pname, "tcp") == 0) {		/* the state word sits right before the first src= */
++		e = sv; while (e > ctl && e[-1] == ' ') e--;
++		b = e;  while (b > ctl && b[-1] != ' ') b--;
++		stl = (int)(e - b);
++		if (stl > 0 && stl < (int)sizeof(r.st)) { memcpy(r.st, b, (size_t)stl); r.st[stl] = '\0'; }
++	}
++	if (sscanf(sv, "src=%45[0-9a-fA-F:] dst=%45[0-9a-fA-F:]", r.s, r.d) != 2)
++		return;
++	if ((p = strstr(sv, "sport=")) != NULL) sscanf(p, "sport=%d dport=%d", &r.sp, &r.dp);
++	if ((p = strstr(sv, "packets=")) != NULL) sscanf(p, "packets=%llu bytes=%llu", &r.pk, &r.by);
++	if (p && (p = strstr(p + 8, "packets=")) != NULL && sscanf(p, "packets=%llu bytes=%llu", &pk2, &by2) == 2) {
++		r.pk += pk2;
++		r.by += by2;
++	}
++	if (*n == *cap) {
++		int nc = *cap ? *cap * 2 : 64;
++		struct rconn_v6 *nv = realloc(*v, (size_t)nc * sizeof(**v));
++
++		if (nv == NULL) return;
++		*v = nv; *cap = nc;
++	}
++	(*v)[(*n)++] = r;
++}
++
++/* the LAN bridges' own IPv6 addresses (not link-local): the router's ends */
++static int rconn_rtr6_load(struct in6_addr *out, int max)
++{
++	struct ifaddrs *ifa, *p;
++	int n = 0;
++
++	if (getifaddrs(&ifa) != 0)
++		return 0;
++	for (p = ifa; p && n < max; p = p->ifa_next) {
++		const struct in6_addr *a;
++
++		if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET6 || strncmp(p->ifa_name, "br", 2) != 0)
++			continue;
++		a = &((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr;
++		if (IN6_IS_ADDR_LINKLOCAL(a))
++			continue;
++		out[n++] = *a;
++	}
++	freeifaddrs(ifa);
++	return n;
++}
++
++static int rconn_is_rtr6(const struct in6_addr *rt, int n, const struct in6_addr *a)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		if (memcmp(&rt[i], a, 16) == 0) return 1;
++	return 0;
++}
++
+ /* reaper v2.0.6: Connections / Flow Explorer feed for Reaper_Conn.asp. Read-only;
+  * no request input is parsed. Streams every Runner flow-cache entry from
+  * /proc/fcache/nflist as JSON rows (the page groups them by nf_conn and computes
+@@ -22330,6 +22472,11 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	struct rdm_ent *rdm = NULL;	/* v3.3.4: the passive DNS name map, when the switch is on */
+ 	uint32_t rdm_now = (uint32_t)time(NULL);
+ 	char *v;
++	/* IPv6 A1: the conntrack v6 rows and the router's own v6 addresses */
++	struct rconn_v6 *v6v = NULL;
++	int v6n = 0, v6cap = 0;
++	struct in6_addr rtr6[RCONN_NBR];
++	int nrtr6 = 0;
+ 
+ 	/* A1-SEC-002: every other Reaper reader is token-gated because these
+ 	 * handlers are subprocess/scan amplifiers a cross-site GET can drive. This
+@@ -22355,7 +22502,7 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 		 * daemon for its one-shot reverse backfill of the addresses already in
+ 		 * flight. Only here - a boot never sets the flag, so it stays passive. */
+ 		if (on && !nvram_get_int("rconn_names")) {
+-			mkdir("/tmp/reaper", 0700);
++			reaper_secure_dir(REAPER_TMPDIR, 0700);
+ 			f_write_string(RDM_BACKFILL, "1\n", 0, 0);
+ 		}
+ 		nvram_set_int("rconn_names", on);
+@@ -22380,6 +22527,11 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 		brs[0].addr = lan_ip;
+ 		nbrs = 1;
+ 	}
++	/* IPv6 A1: the neighbour cache is the LAN test for v6 rows */
++	if ((time_t)rdm_now - rconn_nd_at >= 2) {
++		rconn_ndn = reaper_nd_load(rconn_ndt, RCONN_ND);
++		rconn_nd_at = (time_t)rdm_now;
++	}
+ 
+ 	/* v3.3.4: names = the switch; rtr = every bridge's own address, so the page
+ 	 * can label the router's VLAN gateways as well as br0 */
+@@ -22394,12 +22546,20 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 			ra.s_addr = htonl(brs[k].addr);
+ 			websWrite(stream, "%s\"%s\"", k ? "," : "", inet_ntoa(ra));
+ 		}
++		/* IPv6 A1: the bridges' own IPv6 addresses, so the page labels them too */
++		nrtr6 = rconn_rtr6_load(rtr6, RCONN_NBR);
++		for (k = 0; k < nrtr6; k++) {
++			char a6[INET6_ADDRSTRLEN];
++
++			if (inet_ntop(AF_INET6, &rtr6[k], a6, sizeof(a6)))
++				websWrite(stream, "%s\"%s\"", (nbrs + k) ? "," : "", a6);
++		}
+ 	}
+ 	websWrite(stream, "],\"seen\":{");
+ 
+ 	/* resident first-seen table: lines "<nfc-hex> <epoch>" written by rtrafd */
+ 	first = 1;
+-	if ((f = fopen("/tmp/reaper_conn_seen", "r")) != NULL) {
++	if ((f = fopen("/tmp/reaper/reaper_conn_seen", "r")) != NULL) {
+ 		char nfc[40]; long ep;
+ 		while (fgets(line, sizeof(line), f)) {
+ 			if (sscanf(line, "%39s %ld", nfc, &ep) == 2) {
+@@ -22423,6 +22583,10 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 				unsigned csp = 0, cdp = 0;
+ 				struct in_addr a;
+ 				int stl;
++				if (strncmp(ctl, "ipv6", 4) == 0) {	/* IPv6 A1: a row of its own */
++					rconn_v6_row(ctl, &v6v, &v6n, &v6cap);
++					continue;
++				}
+ 				if (strstr(ctl, " tcp ") == NULL) continue;
+ 				if ((sv = strstr(ctl, "src=")) == NULL) continue;
+ 				e = sv; while (e > ctl && e[-1] == ' ') e--;
+@@ -22454,7 +22618,7 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	 * non-blocking lock caps it to one in-flight reader across httpd children; a
+ 	 * contended tick just emits an empty flows[] and retries on the next poll. */
+ 	first = 1;
+-	cf = open("/tmp/reaper_conn.lock", O_CREAT | O_RDWR, 0600);
++	cf = open("/tmp/reaper/reaper_conn.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+ 	if (cf >= 0 && flock(cf, LOCK_EX | LOCK_NB) != 0) {
+ 		close(cf);
+ 		cf = -1;
+@@ -22481,8 +22645,10 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 			sw = strtoull(swstr, NULL, 10);		/* strips the trailing ':' */
+ 
+ 			if ((p = strchr(line, '<')) == NULL) continue;
++			if (!fc_tuple_is_v4(p)) continue;	/* IPv6 flow: its row comes from conntrack */
+ 			if (sscanf(p, "<%23[0-9.]:%d>", sip, &sp) != 2) continue;
+ 			if ((q = strchr(p + 1, '<')) == NULL) continue;
++			if (!fc_tuple_is_v4(q)) continue;
+ 			if (sscanf(q, "<%23[0-9.]:%d>", dip, &dp) != 2) continue;
+ 
+ 			/* after the dst <..>: Vlan0 Vlan1 tag# ToS IqPrio ... */
+@@ -22526,8 +22692,13 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 					uint32_t dipn = inet_aton(dip, &ra) ? ntohl(ra.s_addr) : 0;
+ 					const char *rem = lan_s ? dip : (rconn_is_lan(brs, nbrs, dipn) ? sip : dip);
+ 
+-					if (inet_aton(rem, &ra) && (e = rdm_find(rdm, ra.s_addr, rdm_now)) != NULL)
+-						rdm_touch(e, rdm_now);
++					uint8_t rk[16];
++
++					if (inet_aton(rem, &ra)) {
++						rdm_key4(rk, ra.s_addr);	/* v2 table: 16-byte keys, IPv4 mapped */
++						if ((e = rdm_find(rdm, rk, rdm_now)) != NULL)
++							rdm_touch(e, rdm_now);
++					}
+ 				}
+ 				websWrite(stream,
+ 					"%s{\"nfc\":\"%s\",\"lan\":%d,\"sip\":\"%s\",\"sp\":%d,\"dip\":\"%s\",\"dp\":%d,"
+@@ -22542,6 +22713,56 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 		}
+ 		fclose(f);
+ 	}
++	/* IPv6 A1: the conntrack rows (see rconn_v6_row). Skipped: link-local ends
++	 * and multicast destinations (neighbour discovery, mDNS, router advertisements)
++	 * and flows with neither end on a LAN bridge or the router itself. */
++	{
++		int k;
++
++		for (k = 0; k < v6n; k++) {
++			struct rconn_v6 *r = &v6v[k];
++			struct in6_addr s6, d6;
++			char kb[160], nfc6[24], macs[18] = "", macd[18] = "";
++			char as[INET6_ADDRSTRLEN], ad[INET6_ADDRSTRLEN];
++			struct rdm_ent *e = NULL;
++			int lan_s, lan_d;
++
++			if (inet_pton(AF_INET6, r->s, &s6) != 1 || inet_pton(AF_INET6, r->d, &d6) != 1) continue;
++			if (IN6_IS_ADDR_LINKLOCAL(&s6) || IN6_IS_ADDR_LINKLOCAL(&d6) || IN6_IS_ADDR_MULTICAST(&d6)) continue;
++			if (!reaper_nd_mac_of(rconn_ndt, rconn_ndn, s6.s6_addr, macs, sizeof(macs), NULL, 0)) macs[0] = '\0';
++			if (!reaper_nd_mac_of(rconn_ndt, rconn_ndn, d6.s6_addr, macd, sizeof(macd), NULL, 0)) macd[0] = '\0';
++			lan_s = macs[0] || rconn_is_rtr6(rtr6, nrtr6, &s6);
++			lan_d = macd[0] || rconn_is_rtr6(rtr6, nrtr6, &d6);
++			if (!lan_s && !lan_d) continue;
++			/* owner 2026-10-08: the kernel prints every group zero-padded
++			 * ("2001:0470:8cd0:0000:..."); the page compares and names addresses in
++			 * the canonical form (the rtr[] list, the device-name map), so print that */
++			if (!inet_ntop(AF_INET6, &s6, as, sizeof(as)) || !inet_ntop(AF_INET6, &d6, ad, sizeof(ad))) continue;
++			snprintf(kb, sizeof(kb), "%d/%s/%s/%d/%d", r->proto, r->s, r->d, r->sp, r->dp);
++			snprintf(nfc6, sizeof(nfc6), "6%016llx", (unsigned long long)rconn_fnv64(kb));
++			if (rdm) {
++				const struct in6_addr *rem = lan_s ? &d6 : &s6;
++
++				if ((e = rdm_find(rdm, rem->s6_addr, rdm_now)) != NULL)
++					rdm_touch(e, rdm_now);
++			}
++			websWrite(stream,
++				"%s{\"nfc\":\"%s\",\"lan\":%d,\"sip\":\"%s\",\"sp\":%d,\"dip\":\"%s\",\"dp\":%d,"
++				"\"proto\":%d,\"dscp\":0,\"q\":0,\"bytes\":%llu,\"tot\":%llu,\"sw\":%llu,\"hw\":0,\"st\":\"%s\",\"fam\":6,"
++				/* owner 2026-10-08: an IPv6 LAN address is a global one, so the page cannot
++				 * tell "inside" by its prefix the way it does for RFC 1918 - say which ends
++				 * are on the LAN, and give their MACs so a dual-stack device is named on its
++				 * IPv6 rows exactly as on its IPv4 ones */
++				"\"slan\":%d,\"dlan\":%d,\"smac\":\"%s\",\"dmac\":\"%s\"",
++				first ? "" : ",", nfc6, lan_s, as, r->sp, ad, r->dp, r->proto, r->by, r->pk, r->by, r->st,
++				lan_s, lan_d, macs, macd);
++			if (e)
++				websWrite(stream, ",\"srvn\":\"%s\",\"srvx\":%u", e->name, (unsigned)e->ndist);
++			websWrite(stream, "}");
++			first = 0;
++		}
++	}
++	free(v6v);
+ 	free(ctv);
+ 	if (cf >= 0) { flock(cf, LOCK_UN); close(cf); }
+ 	websWrite(stream, "]}");
+@@ -23689,7 +23910,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"err\":\"params\"}");
+ 			return;
+ 		}
+-		mkdir(RWIFI_DIR, 0700);
++		reaper_secure_dir(RWIFI_DIR, 0700);
+ 		/* a live token younger than the longest duration means a worker is
+ 		 * still sampling; a stale one is leftover from a crash - reclaim it */
+ 		if (rwifi_token_live(RWIFI_RUN, 400)) {
+@@ -23756,7 +23977,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"err\":\"params\"}");
+ 			return;
+ 		}
+-		mkdir(RWIFI_DIR, 0700);
++		reaper_secure_dir(RWIFI_DIR, 0700);
+ 		/* refuse if a capture or another scan is still live - distinct errors
+ 		 * so the page can name the real blocker instead of always "capture" */
+ 		if (rwifi_token_live(RWIFI_RUN, 400)) {
+@@ -23844,7 +24065,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 		}
+ 		mp = get_cgi("move");
+ 		move = (mp != NULL && strcmp(mp, "1") == 0);
+-		mkdir(RWIFI_DIR, 0700);
++		reaper_secure_dir(RWIFI_DIR, 0700);
+ 		if (rwifi_token_live(RWIFI_RUN, 400)) {
+ 			websWrite(stream, "{\"err\":\"busycap\"}");
+ 			return;
+@@ -23903,7 +24124,7 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 
+ 	/* reaper v3.2.8: the dynamic puncturing controller's snapshot (read-only, rpunctd writes it) */
+ 	if (strcmp(act, "punct") == 0) {
+-		if ((f = fopen("/tmp/reaper_punct.dyn.json", "r")) == NULL) {
++		if ((f = fopen("/tmp/reaper/reaper_punct.dyn.json", "r")) == NULL) {
+ 			websWrite(stream, "{\"radios\":[]}");
+ 			return;
+ 		}
+@@ -23990,7 +24211,7 @@ gk_rl_update(const char *mac, int state, long expiry)
+ 	 * (reaper v1.7.1, audit M2). The lock is held only across the tiny RMW
+ 	 * below - the fresh nvram read must happen INSIDE it. If /tmp/gk is not
+ 	 * yet present the lock is skipped (degrades to pre-1.7.1 behaviour). */
+-	int lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
++	int lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+ 	rl = gk_rl_get();
+ 	cap = strlen(rl) + 64;
+@@ -24335,7 +24556,7 @@ gk_baseline_snapshot(void)
+ 	/* serialize the gk_rl RMW against gkd/gk_rl_update via the same /tmp/gk/rl.lock
+ 	 * (pre-release audit 2026-08-02): the fresh read at enable time must happen
+ 	 * inside the lock. Skipped if /tmp/gk is absent (degrades to pre-lock behaviour). */
+-	lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR, 0600);
++	lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+ 	if (lf >= 0) flock(lf, LOCK_EX);
+ 	rl = gk_rl_get();
+ 	/* A1-SEC-003: if gk_rl is too large to load into the fixed baseline buffer,
+@@ -24774,7 +24995,7 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 	}
+ 
+ 	if (f_exists("/tmp/rwarden/stats.sh") &&
+-	    (p = popen("sh /tmp/rwarden/stats.sh 2>/dev/null", "r")) != NULL) {
++	    reaper_script_ok("/tmp/rwarden/stats.sh") && (p = popen("sh /tmp/rwarden/stats.sh 2>/dev/null", "r")) != NULL) {
+ 		while (fgets(buf, sizeof(buf), p) != NULL) {
+ 			websWrite(stream, "%s", buf);
+ 			got = 1;
+@@ -25127,7 +25348,7 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		int running = 0, c;
+ 		if (run && *run == '1' && f_exists("/usr/bin/reaper_fwsim")) {
+ 			time_t now = time(NULL);
+-			mkdir("/tmp/reaper", 0700);
++			reaper_secure_dir(REAPER_TMPDIR, 0700);
+ 			if (stat("/tmp/reaper/fwsim.run", &wst) == 0 && now - wst.st_mtime < 15) {
+ 				running = 1;		/* a walk is in flight: join it, never start a second */
+ 			} else if (stat("/tmp/reaper/fwsim.stamp", &wst) != 0 || now - wst.st_mtime >= 5) {
+@@ -25600,6 +25821,33 @@ static const char *rcfg_rw_list(const char *nv)
+ 	return NULL;
+ }
+ 
++/* IPv6 A3: the DHCPv6 reservation list rides the backup as a flag; only its
++ * well-formed records are written back (reaper_dhcp6_walk canonicalises), and
++ * dnsmasq is restarted so the import is live */
++struct rdev6_imp { char *buf; size_t cap; };
++static void rdev6_imp_cb(const char *mac, const char *sfx, void *arg)
++{
++	struct rdev6_imp *w = arg;
++	size_t l = strlen(w->buf);
++
++	snprintf(w->buf + l, w->cap - l, "<%s>%s", mac, sfx);
++}
++static int rdev_dhcp6_import(const char *v)
++{
++	struct rdev6_imp w;
++	int r;
++
++	w.cap = strlen(v) + 64;
++	w.buf = calloc(1, w.cap);
++	if (!w.buf) return -1;
++	reaper_dhcp6_walk(v, rdev6_imp_cb, &w);
++	mkdir("/jffs/reaper", 0700);
++	r = rjf_set(REAPER_DHCP6_FILE, w.buf, "reaper_dev");
++	free(w.buf);
++	if (r == 0) notify_rc("restart_dnsmasq");
++	return r;
++}
++
+ static int rcfg_ok(const char *v, size_t max)
+ {
+ 	const char *p;
+@@ -25628,6 +25876,8 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "warden", "rwarden_ban",      8192 }, { "warden", "rwarden_allow", 8192 },
+ 	{ "warden", "rwarden_log",      2   }, { "warden", "rwarden_sched",  64  },
+ 	{ "warden", "rwarden_stats_save", 2 },
++	/* IPv6 A3 (2026-10-07): the DHCPv6 reservation list (/jffs, shared/reaper_dhcp6.h) */
++	{ "dev",    "rdev_dhcp6",      8192 },
+ };
+ #define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
+ static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
+@@ -25656,7 +25906,7 @@ typedef struct {
+ static int rbk_seal_begin(rbk_seal_t *sl, FILE *out, const char *pass, const char *kind, long plain_len);
+ static void rbk_seal_write(rbk_seal_t *sl, const void *p, size_t n);
+ static int rbk_seal_end(rbk_seal_t *sl);
+-#define RCFG_EXPORT_TMP_CFG	"/tmp/reaper_cfgexp.cfg"
++#define RCFG_EXPORT_TMP_CFG	"/tmp/reaper/reaper_cfgexp.cfg"
+ /* reaper v3.0.6: with_cfg embeds the stock Settings .CFG - the same file the
+  * .rbk carries, produced by the same rbk_make_cfg() - as one base64 string
+  * under "cfg_b64", so the settings file is complete on its own (owner
+@@ -25690,6 +25940,11 @@ static void rcfg_export_json(FILE *stream, int with_cfg)
+ 				char *lv = rw_list_get(ln);
+ 				gk_json_esc(stream, lv ? lv : "");
+ 				free(lv);
++			} else if (!strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {	/* IPv6 A3: a /jffs list */
++				int ex;
++				const char *jv = rjf_get(REAPER_DHCP6_FILE, &ex);
++
++				gk_json_esc(stream, (ex && jv) ? jv : "");
+ 			} else
+ 				gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
+ 		}
+@@ -25766,7 +26021,7 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 			 * each structurally (rw_valid_cidr / rw_valid_feedurl), so the gate
+ 			 * here is "printable ASCII, bounded" for those. */
+ 			if (!strcmp(rcfg_flags[i].nv, "rwarden_ban") || !strcmp(rcfg_flags[i].nv, "rwarden_allow") ||
+-			    !strcmp(rcfg_flags[i].nv, "rwarden_cfeeds")) {
++			    !strcmp(rcfg_flags[i].nv, "rwarden_cfeeds") || !strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {
+ 				if (!rcfg_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+ 			} else if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+ 			if (!strcmp(rcfg_flags[i].sect, "fw") && fw_armed) { rejected++; continue; }	/* F2 */
+@@ -25774,6 +26029,8 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 				const char *ln = rcfg_rw_list(rcfg_flags[i].nv);
+ 				if (ln) {
+ 					if (rw_list_set(ln, v) != 0) { rejected++; continue; }
++				} else if (!strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {	/* IPv6 A3 */
++					if (rdev_dhcp6_import(v) != 0) { rejected++; continue; }
+ 				} else
+ 					nvram_set(rcfg_flags[i].nv, v);
+ 			}
+@@ -26008,14 +26265,14 @@ do_reaper_cfg_cgi(char *url, FILE *stream)
+  * changes nothing.
+  * =================================================================== */
+ #define RBK_MAGIC	"REAPER-BACKUP 1\n"
+-#define RBK_TMP_CFG	"/tmp/reaper_full.cfg"
++#define RBK_TMP_CFG	"/tmp/reaper/reaper_full.cfg"
+ #define RBK_UPLOAD	"/tmp/reaper_restore.rbk"
+ #define RBK_SETDIR	"/jffs/reaper_fw/sets"	/* = rc's RFW_SETCACHE */
+ #define RBK_CFG_MAX	(8 * 1024 * 1024)
+ #define RBK_FQDN_MAX	(512 * 1024)
+ #define RBK_SET_MAX	(64 * 1024)
+ #define RBK_META_MAX	512
+-#define RBK_TMP_JFFS	"/tmp/reaper_full_jffs.tgz"	/* the download's /jffs part */
++#define RBK_TMP_JFFS	"/tmp/reaper/reaper_full_jffs.tgz"	/* the download's /jffs part */
+ #define RBK_UPLOAD_JFFS	"/tmp/reaper_restore_jffs.tgz"	/* the restore's carved-out copy */
+ #define RBK_JFFS_MAX	(96L * 1024 * 1024)
+ 
+@@ -27128,7 +27385,7 @@ do_reaper_restore_cgi(char *url, FILE *stream)
+ 	/* 3. the stock CFG, staged where the stock restore path expects it */
+ 	if (fseek(in, rbk_up.base, SEEK_SET) != 0) RBK_FAIL("file", "cfgseek");
+ 	{
+-		FILE *cf = fopen("/tmp/settings_u.prf", "w");
++		FILE *cf = reaper_fopen_new("/tmp/settings_u.prf", 0600);	/* 2026-10-09 audit V3: the stock restore path, created fresh */
+ 		if (!cf) RBK_FAIL("file", "cfgtmp");
+ 		left = rbk_up.cfg;
+ 		while (left > 0 && (n = fread(buf, 1, MIN(left, (long)sizeof(buf)), in)) > 0) {
+@@ -27231,6 +27488,7 @@ done:
+  * =================================================================== */
+ 
+ #define RDEV_MAX 512	/* v2.6.3: was 320 - matches gkd MAX_DEV */
++#define RDEV_ND  512	/* IPv6 A3: neighbour-cache rows read per collect */
+ 
+ struct rdev {
+ 	char mac[18];		/* uppercase colon form (the merge key) */
+@@ -27243,6 +27501,8 @@ struct rdev {
+ 	long last;
+ 	int  resv;		/* has a dhcp_staticlist entry */
+ 	char resv_ip[46];
++	char ip6[46];		/* IPv6 A3 (2026-10-07): first global address (neighbour cache / DHCPv6 lease) */
++	char resv6[24];		/* DHCPv6 reservation suffix ("::10"), "" = none */
+ 	int  gk_state;		/* -1 = not in gk_rl */
+ 	long gk_expiry;
+ 	int  mlo;		/* Wi-Fi 7 MLD: an affiliated link folded into this MLD MAC */
+@@ -28041,7 +28301,7 @@ static const char *rdev_store_base(char *buf, size_t len)
+ 		}
+ 		if (d) closedir(d);
+ 	}
+-	mkdir("/tmp/reaper", 0700);
++	reaper_secure_dir(REAPER_TMPDIR, 0700);
+ 	strlcpy(buf, "/tmp/reaper", len);
+ 	return "ram";
+ }
+@@ -28104,6 +28364,17 @@ static struct rdev rdev_tab[RDEV_MAX];
+ static int rdev_tab_n = 0, rdev_tab_mlo = 0;
+ static time_t rdev_tab_t = 0;
+ 
++/* IPv6 A3: a DHCPv6 reservation record -> its device row */
++struct rdev_walk { struct rdev *dev; int *n; };
++static void rdev_resv6_cb(const char *mac, const char *sfx, void *arg)
++{
++	struct rdev_walk *w = arg;
++	int idx = rdev_find(w->dev, w->n, mac);
++
++	if (idx >= 0)
++		snprintf(w->dev[idx].resv6, sizeof(w->dev[0].resv6), "%s", sfx);
++}
++
+ static void rdev_collect(void)
+ {
+ 	struct rdev *dev = rdev_tab;
+@@ -28112,6 +28383,10 @@ static void rdev_collect(void)
+ 	char line[512];
+ 	FILE *f;
+ 	char *buf, *tok, *sp = NULL;
++	/* IPv6 A3: the neighbour cache - the v6 counterpart of ARP, and the bridge from a
++	 * DHCPv6 lease line (which names the address, not the MAC) to its device */
++	static struct reaper_nd ndt[RDEV_ND];
++	int ndn;
+ 
+ 	/* MLO fronthaul active? mld_enable is the master switch (same flag the
+ 	 * stock Wireless page reads); a non-empty mld{0,1,2}_ifnames means a
+@@ -28122,6 +28397,8 @@ static void rdev_collect(void)
+ 	          (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
+ 	           *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
+ 
++	ndn = reaper_nd_load(ndt, RDEV_ND);
++
+ 	/* 1. DHCP leases: known devices (ip + self-reported host) */
+ 	f = fopen("/var/lib/misc/dnsmasq.leases", "r");
+ 	if (f) {
+@@ -28130,6 +28407,19 @@ static void rdev_collect(void)
+ 			int idx;
+ 			/* fmt: <expiry> <mac> <ip> <host> <clientid> */
+ 			if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
++			if (strchr(ip, ':')) {
++				/* IPv6 A3: a DHCPv6 lease - "<expiry> <iaid> <addr> <host> <duid>" - names
++				 * no MAC; the neighbour cache turns the address into one */
++				char mac6[18];
++
++				if (!reaper_nd_mac_of_str(ndt, ndn, ip, mac6, sizeof(mac6), NULL, 0)) continue;
++				idx = rdev_find(dev, &n, mac6);
++				if (idx < 0) continue;
++				if (!dev[idx].ip6[0]) snprintf(dev[idx].ip6, sizeof(dev[0].ip6), "%s", ip);
++				if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
++					snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
++				continue;
++			}
+ 			idx = rdev_find(dev, &n, mac);
+ 			if (idx < 0) continue;
+ 			if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
+@@ -28158,6 +28448,19 @@ static void rdev_collect(void)
+ 		fclose(f);
+ 	}
+ 
++	/* 2b. IPv6 A3: the neighbour cache - a device talking IPv6 is online, and its
++	 * first global address is shown (a GUA replaces a ULA when it holds both) */
++	for (i = 0; i < ndn; i++) {
++		int idx;
++
++		if (!reaper_nd_global(ndt[i].ip)) continue;
++		idx = rdev_find(dev, &n, ndt[i].mac);
++		if (idx < 0) continue;
++		dev[idx].online = 1;
++		if (!dev[idx].ip6[0] || (dev[idx].ip6[0] == 'f' && (ndt[i].ip[0] & 0xe0) == 0x20))
++			inet_ntop(AF_INET6, ndt[i].ip, dev[idx].ip6, sizeof(dev[0].ip6));
++	}
++
+ 	/* 3. wireless assoclists (band + wifi + online) */
+ 	rdev_scan_wl(dev, &n, mlo_on);
+ 	/* bridge FDB is authoritative for wired/wireless + band (assoclist omits
+@@ -28207,6 +28510,16 @@ static void rdev_collect(void)
+ 		free(buf);
+ 	}
+ 
++	/* 4b. IPv6 A3: DHCPv6 reservations (the /jffs list write_static_leases6 emits) */
++	{
++		struct rdev_walk w = { dev, &n };
++		int ex;
++		const char *v = rjf_get(REAPER_DHCP6_FILE, &ex);
++
++		if (ex && v && *v)
++			reaper_dhcp6_walk(v, rdev_resv6_cb, &w);
++	}
++
+ 	/* 5. gk_rl access states (also surfaces offline gk-listed devices) */
+ 	buf = strdup(gk_rl_get());
+ 	sp = NULL;
+@@ -28486,11 +28799,11 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 			unsigned int rip = rdev_ip2u(d->resv_ip);
+ 			int rin = (d->resv && rip && dstart && rip >= dstart && rip <= dend) ? 1 : 0;
+ 			int orphan = (d->resv && rip && lan_mask && (rip & lan_mask) != lan_net) ? 1 : 0;
+-			int nolease = (d->wifi && !d->ip[0]) ? 1 : 0;
++			int nolease = (d->wifi && !d->ip[0] && !d->ip6[0]) ? 1 : 0;	/* IPv6 A3: an IPv6-only client has its address */
+ 			/* affiliated MLO link: a Wi-Fi-associated, locally-administered,
+ 			 * lease-less, un-reserved station while MLO is active = one radio
+ 			 * link of a multi-link device, not a device in its own right. */
+-			int mlo_link = (mlo_on && d->wifi && !d->ip[0] && !d->resv && rdev_is_rand(d->mac) && !d->mlo) ? 1 : 0;
++			int mlo_link = (mlo_on && d->wifi && !d->ip[0] && !d->ip6[0] && !d->resv && rdev_is_rand(d->mac) && !d->mlo) ? 1 : 0;
+ 			int dup = 0, j;
+ 			const char *src;
+ 
+@@ -28525,6 +28838,11 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				d->gk_state, d->gk_expiry, d->resv ? 1 : 0, rin);
+ 			websWrite(stream, "\"resv_ip\":");
+ 			gk_json_esc(stream, d->resv_ip);
++			/* IPv6 A3 */
++			websWrite(stream, ",\"ip6\":");
++			gk_json_esc(stream, d->ip6);
++			websWrite(stream, ",\"v6only\":%d,\"resv6\":", (!d->ip[0] && d->ip6[0]) ? 1 : 0);
++			gk_json_esc(stream, d->resv6);
+ 			{
+ 				char bands[16] = "";
+ 				if (d->bandmask & 1) strlcat(bands, "2.4", sizeof(bands));
+@@ -28624,7 +28942,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		char umac[18], *sl, *out, *tok, *sp = NULL, keephost[64] = "";
+ 		size_t cap;
+ 		int i;
+-		unsigned int lan_net, lan_mask, u;
++		unsigned int lan_net, lan_mask, u = 0;
+ 
+ 		if (!gk_valid_mac(mac)) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\",\"ek\":\"RDEVE_2\"}");
+@@ -28701,6 +29019,77 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* ---------------- IPv6 A3 (2026-10-07): DHCPv6 reservations ---------------- */
++	/* A /jffs list (the nvram cap rule) of <MAC>::suffix records; dnsmasq gets
++	 * dhcp-host=<MAC>,[::suffix] (rc write_static_leases6). The suffix is the
++	 * host part only, so a reservation survives a delegated-prefix change. */
++	if (!strcmp(action, "set_reserve6") || !strcmp(action, "unpin6")) {
++		char *mac = get_cgi("mac");
++		char *sfx = get_cgi("suffix");
++		int pin = !strcmp(action, "set_reserve6");
++		char umac[18], lsfx[REAPER_DHCP6_SFX_MAX + 1], add[64], *out, *b, *tok, *sp = NULL;
++		const char *cur;
++		size_t cap;
++		int i, ex;
++
++		if (!gk_valid_mac(mac)) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad mac\",\"ek\":\"RDEVE_2\"}");
++			return;
++		}
++		for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
++		umac[17] = 0;
++		lsfx[0] = 0;
++		if (pin) {
++			if (!reaper_dhcp6_sfx_valid(sfx)) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"bad IPv6 suffix\",\"ek\":\"RDEVE_14\"}");
++				return;
++			}
++			for (i = 0; sfx[i] && i < (int)sizeof(lsfx) - 1; i++) lsfx[i] = tolower((unsigned char)sfx[i]);
++			lsfx[i] = 0;
++		}
++		cur = rjf_get(REAPER_DHCP6_FILE, &ex);
++		b = strdup((ex && cur) ? cur : "");
++		cap = (b ? strlen(b) : 0) + 96;
++		out = calloc(1, cap);
++		if (!out || !b) {
++			free(out); free(b);
++			websWrite(stream, "{\"ok\":0,\"error\":\"oom\",\"ek\":\"RDEVE_3\"}");
++			return;
++		}
++		for (tok = strtok_r(b, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++			char em[18] = ""; char *g = strchr(tok, '>');
++			if (g) { size_t l = g - tok; if (l < sizeof(em)) { memcpy(em, tok, l); em[l] = 0; } }
++			if (g && !strcasecmp(em, umac)) continue;	/* drop the old record; re-added below if pinning */
++			if (pin && g && !strcasecmp(g + 1, lsfx)) {	/* the same suffix pinned to another device */
++				free(out); free(b);
++				websWrite(stream, "{\"ok\":0,\"error\":\"address already reserved by another device\",\"ek\":\"RDEVE_6\"}");
++				return;
++			}
++			strlcat(out, "<", cap); strlcat(out, tok, cap);
++		}
++		free(b);
++		if (pin) {
++			snprintf(add, sizeof(add), "<%s>%s", umac, lsfx);
++			if (strlen(out) + strlen(add) + 1 >= cap) {
++				free(out);
++				websWrite(stream, "{\"ok\":0,\"error\":\"reservation store full\",\"ek\":\"RDEVE_7\"}");
++				return;
++			}
++			strlcat(out, add, cap);
++		}
++		mkdir("/jffs/reaper", 0700);
++		if (rjf_set(REAPER_DHCP6_FILE, out, "reaper_dev") != 0) {
++			free(out);
++			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write /jffs\",\"ek\":\"RDEVE_15\"}");
++			return;
++		}
++		free(out);
++		notify_rc("restart_dnsmasq");
++		rdev_audit(pin ? "pin6" : "unpin6", umac, pin ? lsfx : "");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
+ 	/* ---------------- SET_STATE: delegate to the GK backend ---------------- */
+ 	if (!strcmp(action, "set_state")) {
+ 		char *mac = get_cgi("mac");
+@@ -28963,7 +29352,7 @@ static void gen_scrape_token(char *out, size_t n)
+ 	}
+ }
+ 
+-/* reaper: the free-text export settings below are consumed by /tmp/rexport.sh.
++/* reaper: the free-text export settings below are consumed by /tmp/reaper/rexport.sh.
+  * The SHELL side is clean - rexport_gen() fputs a CONSTANT script and every
+  * nvram value is read at run time into a double-quoted assignment, so there is
+  * no shell command injection (this is what the [P3] backlog item asked us to
+@@ -29022,7 +29411,7 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		char last[8] = "", sbuf[160] = "";
+ 		FILE *sf;
+ 		if (tlen >= 4) strlcpy(last, tok + tlen - 4, sizeof(last));
+-		if ((sf = fopen("/tmp/rexport.status", "r")) != NULL) {
++		if ((sf = fopen("/tmp/reaper/rexport.status", "r")) != NULL) {
+ 			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
+ 			fclose(sf);
+ 		}
+@@ -29060,7 +29449,8 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		if ((v = get_cgi("tlsv")))     nvram_set("reaper_export_tlsverify", strcmp(v, "0") ? "1" : "0");
+ 		if ((v = get_cgi("interval"))) {
+ 			int n = atoi(v); char b[12];
+-			if (n < 10) n = 10; if (n > 3600) n = 3600;
++			if (n < 10) n = 10;
++			if (n > 3600) n = 3600;
+ 			snprintf(b, sizeof(b), "%d", n); nvram_set("reaper_export_interval", b);
+ 		}
+ 		if ((v = get_cgi("metrics")) && rexport_val_ok(v))  nvram_set("reaper_export_metrics", v);
+@@ -29085,7 +29475,7 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 	if (!strcmp(action, "test")) {
+ 		char sbuf[160] = "";
+ 		FILE *sf;
+-		if (!f_exists("/tmp/rexport.sh")) {
++		if (!f_exists("/tmp/reaper/rexport.sh")) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"save the configuration first\"}");
+ 			return;
+ 		}
+@@ -29097,16 +29487,16 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 		 * case still completes inside the wait, so the page contract is
+ 		 * unchanged; a hang now degrades to "still running" and the existing
+ 		 * status poll picks the answer up later. */
+-		unlink("/tmp/rexport.status");
+-		doSystem("sh /tmp/rexport.sh test >/dev/null 2>&1 &");
++		unlink("/tmp/reaper/rexport.status");
++		if (reaper_script_ok("/tmp/reaper/rexport.sh")) doSystem("sh /tmp/reaper/rexport.sh test >/dev/null 2>&1 &");
+ 		{
+ 			int waited = 0;
+-			while (waited < 8000 && !f_exists("/tmp/rexport.status")) {
++			while (waited < 8000 && !f_exists("/tmp/reaper/rexport.status")) {
+ 				usleep(200 * 1000);
+ 				waited += 200;
+ 			}
+ 		}
+-		if ((sf = fopen("/tmp/rexport.status", "r")) != NULL) {
++		if ((sf = fopen("/tmp/reaper/rexport.status", "r")) != NULL) {
+ 			if (fgets(sbuf, sizeof(sbuf), sf)) { char *nl = strchr(sbuf, '\n'); if (nl) *nl = '\0'; }
+ 			fclose(sf);
+ 		}
+@@ -29611,7 +30001,7 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		timeout = atoi(nvram_safe_get("rmcp_timeout"));
+ 		if (timeout < 15 || timeout > 240) timeout = 60;
+ 
+-		mkdir(RMCP_STATE_DIR, 0700);
++		reaper_secure_dir(RMCP_STATE_DIR, 0700);
+ 		sf = fopen(RMCP_SESSION, "w");
+ 		if (!sf) {
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"cannot write session\",\"ek\":\"RADVE_18\"}");
+@@ -29621,15 +30011,15 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		{
+ 			/* Defense-in-depth: rmcp_client is written verbatim into the
+ 			 * newline-delimited session file that rmcpd and the boot sweep parse
+-			 * line-by-line. Strip any CR/LF and keep only dotted-quad characters
+-			 * (the value is always a LAN IPv4 literal) so a crafted nvram value
++			 * line-by-line. Strip any CR/LF and keep only address characters
++			 * (the value is a LAN IPv4 or, since the IPv6 pass, IPv6 literal) so a crafted nvram value
+ 			 * cannot inject extra key=value session lines. */
+ 			char clbuf[64];
+ 			char *c;
+ 			strlcpy(clbuf, nvram_safe_get("rmcp_client"), sizeof(clbuf));
+ 			clbuf[strcspn(clbuf, "\r\n")] = '\0';
+ 			for (c = clbuf; *c; c++)
+-				if (!((*c >= '0' && *c <= '9') || *c == '.')) { clbuf[0] = '\0'; break; }
++				if (!(isxdigit((unsigned char)*c) || *c == '.' || *c == ':')) { clbuf[0] = '\0'; break; }
+ 			fprintf(sf, "token=%s\nexpiry=%ld\nclient=%s\n%s%s",
+ 				tokhex, (long)(now + timeout * 60), clbuf,
+ 				usbkey_line, diag_line);
+@@ -29645,10 +30035,21 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		{
+ 			const char *scheme = (f_exists(HTTPD_CERT) && f_exists(HTTPD_KEY)) ? "https" : "http";
+ 			websWrite(stream, "{\"ok\":1,\"token\":\"%s\",\"lan_ip\":\"%s\",\"port\":%d,"
+-				"\"expiry\":%ld,\"tls\":%d,\"url\":\"%s://%s:%s/mcp\"}",
++				"\"expiry\":%ld,\"tls\":%d,\"url\":\"%s://%s:%s/mcp\"",
+ 				tokhex, nvram_safe_get("lan_ipaddr"), atoi(nvram_safe_get("rmcp_port")),
+ 				(long)(now + timeout * 60), (scheme[4] == 's') ? 1 : 0,
+ 				scheme, nvram_safe_get("lan_ipaddr"), nvram_safe_get("rmcp_port"));
++#ifdef RTCONFIG_IPV6
++			/* IPv6 A8 (2026-10-07): the daemon also listens on the LAN's IPv6 address when it holds one */
++			{
++				struct in6_addr t6;
++				const char *r6 = nvram_safe_get(ipv6_nvname("ipv6_rtr_addr"));
++
++				if (ipv6_enabled() && inet_pton(AF_INET6, r6, &t6) == 1)
++					websWrite(stream, ",\"url6\":\"%s://[%s]:%s/mcp\"", scheme, r6, nvram_safe_get("rmcp_port"));
++			}
++#endif
++			websWrite(stream, "}");
+ 		}
+ 		return;
+ 	}
+@@ -36604,9 +37005,9 @@ struct mime_handler mime_handlers[] =
+ #ifdef RTCONFIG_WIFI_SON
+ 	{ "message.htm", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
+ #endif
+-	{ "gotoHomePage.htm", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
+-	{ "ure_success.htm", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
+-	{ "ureip.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
++	{ "gotoHomePage.htm", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },	/* reaper (audit 2026-10-06 V4): retired QIS/repeater flow, was pre-auth */
++	{ "ure_success.htm", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },	/* reaper (audit 2026-10-06 V4): retired QIS/repeater flow, was pre-auth */
++	{ "ureip.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },	/* reaper (audit 2026-10-06 V4): retired QIS/repeater flow, was pre-auth */
+ 	//{ "remote.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
+ 	{ "md5.js", "text/javascript", cache_object, NULL, do_file, NULL },
+ 	{ "js/jquery.js", "text/javascript", cache_object, NULL, do_file, NULL },
+@@ -36714,11 +37115,11 @@ struct mime_handler mime_handlers[] =
+ #ifdef RTCONFIG_DSL_TCLINUX
+ 	{ "TCC.log.*", "application/octet-stream", NULL, NULL, do_diag_log_file, do_auth },
+ #endif
+-	{ "**.part.*", "application/octet-stream", NULL, NULL, do_file, NULL },
+-	{ "**.gz", "application/octet-stream", NULL, NULL, do_file, NULL },
+-	{ "**.tgz", "application/octet-stream", NULL, NULL, do_file, NULL },
+-	{ "**.zip", "application/octet-stream", NULL, NULL, do_file, NULL },
+-	{ "**.ipk", "application/octet-stream", NULL, NULL, do_file, NULL },
++	{ "**.part.*", "application/octet-stream", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 V5/G3): was pre-auth */
++	{ "**.gz", "application/octet-stream", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 V5/G3): was pre-auth */
++	{ "**.tgz", "application/octet-stream", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 V5/G3): was pre-auth */
++	{ "**.zip", "application/octet-stream", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 V5/G3): was pre-auth */
++	{ "**.ipk", "application/octet-stream", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 V5/G3): was pre-auth */
+ 	{ "RWD_UI/rwd_component.css", "text/css", cache_object, do_html_post_and_get, do_file, NULL },
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	{ "SDN/sdn.css", "text/css", cache_object, do_html_post_and_get, do_file, NULL },
+@@ -36744,8 +37145,8 @@ struct mime_handler mime_handlers[] =
+ 	{ "**.svg", "image/svg+xml", cache_object, NULL, do_file, NULL },
+ #endif
+ 	{ "**.webp", "image/webp", cache_object, NULL, do_file, NULL },
+-	{ "**.swf", "application/x-shockwave-flash", NULL, NULL, do_file, NULL  },
+-	{ "**.htc", "text/x-component", NULL, NULL, do_file, NULL  },
++	{ "**.swf", "application/x-shockwave-flash", NULL, NULL, do_file, do_auth },	/* reaper (audit 2026-10-07 G3): was pre-auth */
++	{ "**.htc", "text/x-component", NULL, NULL, do_file, do_auth },
+ 	{ "js/asus_policy.js", "text/javascript", no_cache, do_html_post_and_get, do_ej, do_auth },
+ 	{ "state.js", "text/javascript", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },
+ 	{ "require/modules/menuTree.js", "text/javascript", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },
+@@ -36879,8 +37280,11 @@ struct mime_handler mime_handlers[] =
+ 	{ "update.cgi*", "text/javascript", no_cache_IE7, do_html_post_and_get, do_update_cgi, do_auth }, // jerry5
+ 	{ "bwm/*.gz", NULL, no_cache, do_html_post_and_get, wo_bwmbackup, do_auth }, /* jerry5 */
+ 	// end Viz  ^^^^^^^^
++#if 0	/* reaper (audit 2026-10-07 G3): pre-auth WPAD rows over a /tmp symlink target (/www/ext -> /tmp/var/wwwext);
++	 * nothing produces proxy.pac, and anything that did would proxy every LAN browser without a login */
+ 	{ "**.pac", "application/x-ns-proxy-autoconfig", NULL, NULL, do_file, NULL },
+ 	{ "wpad.dat", "application/x-ns-proxy-autoconfig", NULL, NULL, do_file, NULL },
++#endif
+ #ifdef TRANSLATE_ON_FLY
+ 	{ "change_lang.cgi*", "text/html", no_cache_IE7, do_lang_post, do_lang_cgi, do_auth },
+ 	{ "change_location.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_change_location_cgi, do_auth },
+@@ -36928,9 +37332,13 @@ struct mime_handler mime_handlers[] =
+ 	{ "get_ig_guest_config.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ig_guest_config_cgi, do_auth },
+ 	{ "set_ig_guest_config.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_ig_guest_config_cgi, do_auth },
+ 	{ "get_ig_sharelink.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ig_sharelink_cgi, do_auth },
++#if 0	/* reaper (audit 2026-10-07 G1): the Instant Guard app flow needs the removed ASUS AAE tunnel and its
++	 * page is hidden (menuTree.js); this was the only compiled pre-auth row that writes configuration,
++	 * and its ticket check lives in the closed web_hook.o. The authenticated IG rows above stay. */
+ 	{ "enable_ig_guest.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_enable_ig_guest_cgi, NULL },
+ #endif
+ #endif
++#endif
+ #ifdef RTCONFIG_IG_SITE2SITE
+ 	{ "get_ig_s2s_sharelink.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_ig_s2s_sharelink_cgi, do_auth },
+ 	{ "enable_ig_s2s_client.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_enable_ig_s2s_client_cgi, do_auth },
+@@ -37081,7 +37489,9 @@ struct mime_handler mime_handlers[] =
+ #endif
+ 	{ "reaper_wifisetup.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_wifisetup_cgi, do_auth },
+ 	{ "chpass.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_chpass_cgi, do_auth },
++#if 0	/* reaper (audit 2026-10-07 G1): pre-auth China-market CTA endpoint in the closed web_hook.o; no page uses it */
+ 	{ "get_cta_info.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_get_cta_info_cgi, NULL },
++#endif
+ 	{ "upload_config_sync.cgi*", "text/html", no_cache_IE7, do_upload_config_sync_post, do_upload_config_sync_cgi, do_auth },
+ 	{ "upload_blacklist_config.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_upload_blacklist_config_cgi, do_auth },
+ 	{ "start_config_sync.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_start_config_sync_cgi, do_auth },
+@@ -37177,7 +37587,7 @@ struct except_mime_handler except_mime_handlers[] = {
+ #if defined(RTCONFIG_IFTTT) || defined(RTCONFIG_ALEXA) || defined(RTCONFIG_GOOGLE_ASST)
+ 	{ "get_IFTTTtoken.cgi", MIME_EXCEPTION_NOPASS},
+ #endif
+-#ifdef RTCONFIG_INSTANT_GUARD
++#if 0	/* reaper (audit 2026-10-07 G1): row compiled out above */
+ 	{ "enable_ig_guest.cgi", MIME_EXCEPTION_NOPASS},
+ #endif
+ #ifdef RTCONFIG_IG_SITE2SITE
+@@ -42309,7 +42719,8 @@ ej_wl_nband_info(int eid, webs_t wp, int argc, char_t **argv)
+ 	return ret;
+ }
+ 
+-/* reaper 2026-08-12: one-shot wireless-nvram snapshot for Reaper_WiFiPro.asp.
++/* reaper 2026-08-12: one-shot wireless-nvram snapshot, first for the retired Reaper_WiFiPro.asp,
++ * now read by Reaper_WiFiSettings.asp.
+  *
+  * That page embedded 116 separate <% nvram_get() %> evaluations - 29 fields
+  * across a HARDCODED wl0..wl3 - so a tri-band model paid 29 reads for a wl3
+@@ -42359,7 +42770,7 @@ static const char *wlpro_nv_fields[] = {
+ 	"wpa_gtk_rekey", NULL
+ };
+ 
+-/* one field ("result=", "cs=") of a /tmp/reaper_punct.state line, [0-9a-z/-] only */
++/* one field ("result=", "cs=") of a /tmp/reaper/reaper_punct.state line, [0-9a-z/-] only */
+ static void wlpro_punct_field(const char *line, const char *tag, char *out, size_t len)
+ {
+ 	const char *p = strstr(line, tag);
+@@ -42398,7 +42809,7 @@ ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
+ 
+ 	/* reaper v3.2.8: what the puncturing applier last did, per radio */
+ 	{
+-		FILE *f = fopen("/tmp/reaper_punct.state", "r");
++		FILE *f = fopen("/tmp/reaper/reaper_punct.state", "r");
+ 		char line[256], val[48];
+ 		int u;
+ 
+@@ -42420,7 +42831,7 @@ ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
+ 	 * (rpunctd writes "wlN state=<s> bitmap=0x<b> channels=<c1,c2> ... reason=<text>"):
+ 	 * handed to the page as "<state>|0x<bitmap>|<channels>|<reason>" */
+ 	{
+-		FILE *f = fopen("/tmp/reaper_punct.dyn.state", "r");
++		FILE *f = fopen("/tmp/reaper/reaper_punct.dyn.state", "r");
+ 		char line[512], st[24], bm[24], ch[96], val[512];
+ 		const char *rs;
+ 		int u;
+@@ -42465,9 +42876,9 @@ ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
+ 	}
+ 
+ 	/* reaper v3.3.1: the interference-mitigation pass of the puncturing applier
+-	 * (/tmp/reaper_wlmit.state "wlN ... result=<r>"), handed to the page as wlN_rmit_st */
++	 * (/tmp/reaper/reaper_wlmit.state "wlN ... result=<r>"), handed to the page as wlN_rmit_st */
+ 	{
+-		FILE *f = fopen("/tmp/reaper_wlmit.state", "r");
++		FILE *f = fopen("/tmp/reaper/reaper_wlmit.state", "r");
+ 		char line[256], val[48];
+ 		int u;
+ 
+-- 
+2.25.1
+

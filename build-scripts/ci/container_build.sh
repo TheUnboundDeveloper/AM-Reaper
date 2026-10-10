@@ -410,6 +410,34 @@ else
   echo "::error::overlays/wlcsm-42015-blobs.tar.gz is missing -- the WLCSM fix would not reach $MODEL"; exit 1
 fi
 
+# --- networkmap prebuilt: one client-table layout for every model --------------
+# networkmap is closed. ASUS's 3006.102.8 build of it ships byte-identical on
+# RT-BE96U/86U/88U, GT-BE98/Pro and BQ16/Pro, and httpd (built from source at
+# that level) reads its shared-memory CLIENT_DETAIL_INFO_TABLE. A model whose
+# platform archive carries an OLDER networkmap (GT-BE19000: the GPL 39274 build,
+# whose table predates mlo_links/is_re) makes httpd read a garbage entry count -
+# an empty client list on every page but Devices (the GT-BE98 v1.5.9 defect,
+# fixed there by the same swap on its branch). The overlay cannot carry the swap
+# (an add vs canon conflicts with the unpacked archive), so copy canon's
+# reference binary over the model's dir here and prove it by hash. The reference
+# is pinned: a canon change to that blob must update NMP_REF_SHA on purpose.
+_ph networkmap-prebuilt
+NMP_REF_SHA=6f29cad042db203f6b414f5caa1942af17e27c9fa2e00421c036f34f2e922197
+NMP_REF="release/src/router/networkmap/prebuild/RT-BE96U/networkmap"
+NMP_DST="release/src/router/networkmap/prebuild/${MODEL}/networkmap"
+hr; echo " networkmap prebuilt for $MODEL = the reference build (one client-table layout)"; hr
+[ -f "$NMP_REF" ] || { echo "::error::reference networkmap $NMP_REF is missing from the tree"; exit 1; }
+_got=$(sha256sum "$NMP_REF" | cut -d' ' -f1)
+[ "$_got" = "$NMP_REF_SHA" ] || { echo "::error::reference networkmap sha256 is $_got, not the pinned $NMP_REF_SHA - update NMP_REF_SHA deliberately"; exit 1; }
+[ -f "$NMP_DST" ] || { echo "::error::$MODEL has no $NMP_DST (platform tree missing?)"; exit 1; }
+if cmp -s "$NMP_REF" "$NMP_DST"; then
+  echo "   [MATCH] $NMP_DST is already the reference build"
+else
+  echo "   $NMP_DST <- reference (was $(sha256sum "$NMP_DST" | cut -c1-16))"
+  cp -f "$NMP_REF" "$NMP_DST"; chmod 0755 "$NMP_DST"
+  cmp -s "$NMP_REF" "$NMP_DST" || { echo "::error::$NMP_DST is not the reference build after the copy"; exit 1; }
+fi
+
 # --- radio firmware identity, BEFORE the build --------------------------------
 # Every rtecdc.bin the build will install for this model must name this model.
 # Broadcom stamps the model into each blob; the wrong one (a sibling's, or the

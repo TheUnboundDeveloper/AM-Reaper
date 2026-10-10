@@ -37,7 +37,7 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.3.8 is the newest rung (cut 2026-10-09); earlier releases are in
+The ordered short list. *v3.3.9 is the newest rung (cut 2026-10-10); earlier releases are in
 [`CHANGELOG.md`](CHANGELOG.md). v3.3.7 has no fleet images (four siblings failed to link rc, every noMCP failed
 verify), so items tagged v3.3.7 reach testers in v3.3.8.*
 
@@ -47,19 +47,17 @@ verify), so items tagged v3.3.7 reach testers in v3.3.8.*
    **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 3. **[P2] GT-BE98 on v3.0.0 boots with an empty crontab** — every cru job dead on that box.
    **[needs data]** ↳ notes: `gt-be98-empty-crontab.md`
-4. **[P2] GT-BE98 LAN5 (1G) links but gets no DHCP** (field, v3.3.3) — no Reaper path touches the port; diag gap owed.
-   **[needs data]** ↳ notes: `gt-be98-lan5-no-dhcp.md`
-5. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built.
+4. **[P2] Warden chain missing after an add-on update** (amtm + Diversion) — defensive half built.
    **[needs data]** ↳ notes: `warden-crash-addon-update.md`
-6. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1).
+5. **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1).
    **[owed: repro]** ↳ notes: `firewall-hosts-paste-blanks-gui.md`
-7. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]** ↳ notes: `channel-marker.md`
-8. **[P3] Local sibling images** — four siblings are source-only locally; CI unaffected.
+6. **[P3] Build one `stable` image** — the stable channel path has never run. **[owed]** ↳ notes: `channel-marker.md`
+7. **[P3] Local sibling images** — four siblings are source-only locally; CI unaffected.
    **[hygiene]** ↳ notes: `local-sibling-images.md`
-9. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport needs the soak.
+8. **[P3] CVE check 2026-08-30 residue** — kernel one-hunk set; CVE-2026-90110 backport needs the soak.
    **[owed]** ↳ notes: `cve-check-2026-08-30.md`
-10. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]** ↳ notes: `code-review-tail.md`
-11. **[P2] ZenWiFi BQ16 (BE25000)** — CI-built since v3.3.3, prerelease-only until a unit boots one.
+9. **[P3] Code-review tail, batch B** — two owner-deferred items. **[deferred]** ↳ notes: `code-review-tail.md`
+10. **[P2] ZenWiFi BQ16 (BE25000)** — CI-built since v3.3.3; a five-node BQ16 mesh runs v3.3.8 (its empty client list is C10, fixed in v3.3.9).
     **[owed: a tester]** ↳ notes: `bq16-onboarding.md`
 12. **[P2] ZenWiFi BQ16 Pro onboarding** — MCP + noMCP built, in v3.3.4.
     **[owed: the CI run, a tester, Pro banner art]** ↳ notes: `bq16-pro-onboarding.md`
@@ -78,7 +76,13 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] rc ran with umask 0: files it created without a mode were world-writable** (field, GT-BE98) — ASUS's own
   `umask(022)` switched on after the boot directories. **[in v3.3.8; owed: 24 h add-on soak, reporter's two files]** ↳ notes: `rc-umask-zero.md`
 - **[P2] Hardware QoS shaped nothing on a PPPoE line** (field, GT-BE98) — both engines programmed `ppp0`, which has no
-  traffic-manager queues (rc=108); they now shape the physical port. **[in v3.3.7; reporter to confirm]** ↳ notes: `hwqos-pppoe-shaping.md`
+  traffic-manager queues (rc=108); they now shape the physical port - and never a port that also carries the LAN (v3.3.9). **[in v3.3.7/v3.3.9; reporter to confirm]** ↳ notes: `hwqos-pppoe-shaping.md`
+- **[P1] GT-BE98 / GT-BE98 Pro main router unusable on v3.3.8** (field, three units) — the v3.3.7 parent resolution shaped the
+  eth1 switch trunk when the WAN is the 2.5G WAN/LAN-1 jack (vlan4094); a LAN-member parent is never shaped now. **[in v3.3.9; confirmed on the test images, owed: the CI image]** ↳ notes: `be98-hwqos-lan-trunk.md`
+- **[P2] BQ16 / BQ16 Pro client list empty on every page but Devices** (field) — httpd read networkmap's client table with
+  a member missing (`subunit`, gated on Captive Portal); the member is pinned unconditional. **[in v3.3.9; tester to confirm counts + lists]** ↳ notes: `bq16-topology-zero-clients.md`
+- **[P3] GT-BE19000 shipped the GPL 39274 networkmap** — the clean room now copies the reference build over it, hash-pinned.
+  **[in v3.3.9 CI; owed: a router-mode tester]** ↳ notes: `gt-be19000-networkmap-prebuilt.md`
 - **[P3] Audit 2026-10-06 remainder, released part** — `/tmp` hardening (F1/V3/V5), Survey CSV guard (V10), app installer
   removed (V11). **[in v3.3.7, metal owed]** ↳ notes: `audit-2026-10-06-remainder-plan.md`
 - **[P3] IPv6 clients had no names in a LAN DNS filter** (owner) — `rv6names` maps each device's current IPv6 addresses to its
@@ -189,8 +193,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
-- **[P3] BQ16 AiMesh topology shows 0 clients on every node** — RT-BE96U networkmap blob vs BQ16 39256 cfg_server.
-  **[needs data: console clientList dump + cfg_mnt client lists]** ↳ notes: `bq16-topology-zero-clients.md`
 
 ---
 
@@ -198,6 +200,7 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 - **[P3] Loading/Restarting overlay: native redesign remainder** — 24 stock `confirm()` dialogs on 9 pages.
   **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Navigation menu icons are different depending on menu selected** - Review all menus and unify the icons used
 
 ---
 

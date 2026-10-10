@@ -46,6 +46,32 @@ node, not only on the primary router.
 
 ---
 
+## v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
+
+- **GT-BE98 / GT-BE98 Pro main routers were unusable on v3.3.8 (field, three GT-BE98 Pro units).** v3.3.7 made
+  hardware QoS resolve an 802.1Q WAN device to its parent port so a PPPoE line is shaped on its physical port. On
+  the boards with the external 2.5G switch (GT-BE98, GT-BE98 Pro, GT-BE96, GT-BE19000) the "2.5G WAN/LAN-1" jack is
+  `vlan4094` on `eth1`, and `eth1` is also LAN-2..4 and a wired AiMesh backhaul - so the whole shaper (queues
+  rebuilt, PI2, the port shaper at the upload rate) landed on the LAN trunk: load 17, `ksoftirqd` and `bcmsw_rx`
+  burning, 45 of 2400 flows accelerated, eight daemons stuck on `rtnl_lock`, a wired node unable to rejoin. v3.3.6
+  had pointed `tmctl` at `vlan4094` itself, which it refuses, so hardware QoS on that jack was silently inert. A
+  resolved parent that is a bridge member or in `lan_ifnames` is now never shaped: both engines refuse to arm with
+  one syslog line, and the QoS page says so next to the engine choice. A PPPoE session over an ISP VLAN on a
+  dedicated WAN port still shapes its parent. Confirmed by the reporter on test images. Host tests
+  `test_hwqos_lan_trunk.py`, `test_hwqos_pppoe.py`.
+- **ZenWiFi BQ16 / BQ16 Pro: the client list was empty from the first build.** Every page fed by
+  `get_clientlist()` - the Dashboard counts, the stock client list, the AiMesh topology's per-node counts - read
+  networkmap's shared-memory client table through a struct with one member gated on `RTCONFIG_CAPTIVE_PORTAL`.
+  The prebuilt networkmap (the same ASUS build on every BCM4916 model) writes that member; the BQ16 and BQ16 Pro
+  are the only models built without Captive Portal, so their httpd read the entry counters 256 bytes early: a
+  zero count. The member is now unconditional (an ABI pin, like the bwdpi block next to it). Host test
+  `test_networkmap_abi_pin.py` compiles the table under both flag sets and requires one size.
+- **GT-BE19000: the clean room ships the same networkmap build as every other model.** Its platform archive
+  carried the GPL 39274 networkmap, whose client table predates `mlo_links`/`is_re` - the defect that emptied the
+  GT-BE98 list at v1.5.9. `ci/container_build.sh` now copies canon's hash-pinned reference binary over the model's
+  prebuild dir after the archive is unpacked and proves it by hash (`test_networkmap_prebuilt_parity.py`). Not yet
+  seen on hardware; the model has no router-mode tester.
+
 ## v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
 
 - **First image with the v3.3.7 changes.** v3.3.7 produced no fleet images: v3.3.7 removed the `rc/Makefile`

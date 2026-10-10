@@ -761,3 +761,17 @@ Reaper directory is root's at the planned mode, and a 24-hour soak with add-ons 
 from `/tmp` writers.
 
 C7 and C8 (v3.3.8): `test_rc_umask.py` and `test_kernel_tcp6_mapped_race.py` fail on the previous source and pass on this one; 41 host suites pass (one needs root and skips).
+
+## Field pass 2026-10-10 (v3.3.9)
+
+| # | Sev | Item | Decision | What landed |
+|---|---|---|---|---|
+| C9 | Medium (availability) | Hardware QoS resolved an 802.1Q WAN device to its parent port (v3.3.7). On the GT-BE98 family the 2.5G WAN/LAN-1 jack is `vlan4094` on `eth1`, the switch trunk that also carries LAN-2..4 and a wired AiMesh backhaul, so the whole classful program (queues rebuilt, PI2, port shaper at the upload rate, optional policer) was applied to the LAN trunk: load 17, `ksoftirqd`/`bcmsw_rx` burning, 45 of 2400 flows accelerated, eight daemons in D-state on `rtnl_lock`, a wired node unable to rejoin (field, three GT-BE98 Pro units on v3.3.8; v3.3.6 pointed `tmctl` at `vlan4094`, which it refuses, so the jack was silently unshaped) | **Fixed.** A resolved parent that is a bridge member (`/sys/class/net/<if>/brport`) or listed in `lan_ifnames` is never shaped: no port, both engines refuse to arm and log why once, the QoS page shows RQOS_125 when `wan0_ifname` is a `vlanNNNN` device. A PPPoE VLAN on a dedicated WAN port still resolves to its parent. Reporter-confirmed on test images | `rc/qos.c`, `www/Reaper_QoS.asp`, 25 packs, `test_hwqos_lan_trunk.py`, `test_hwqos_pppoe.py` |
+| C10 | Low | The closed networkmap daemon writes one `CLIENT_DETAIL_INFO_TABLE` layout into shared memory, but httpd's copy of the struct gated `subunit[MAX_NR_CLIENT_LIST]` on `RTCONFIG_FBWIFI \|\| RTCONFIG_CAPTIVE_PORTAL`; the ZenWiFi BQ16 and BQ16 Pro are the only roster models built without Captive Portal, so their httpd read the entry counters 256 bytes early (383816 vs 384072 bytes) - an empty client list on every page but Devices, from the first build (field, BQ16) | **Fixed.** The member is unconditional with an ABI-pin comment, as the bwdpi block already was; its only reader is `#if defined(BRTAC828)` | `networkmap/networkmap.h`, `test_networkmap_abi_pin.py` |
+| C11 | Low | The GT-BE19000 platform archive carried the GPL 39274 networkmap, whose client table predates `mlo_links`/`is_re`; httpd reads a garbage entry count (the GT-BE98 v1.5.9 defect). Unreported - no router-mode tester | **Fixed in the clean room.** `container_build.sh` copies canon's hash-pinned reference binary over the model's prebuild dir after the platform archive and proves it by `cmp`; the branch carries the same swap | `build-scripts/ci/container_build.sh`, `test_networkmap_prebuilt_parity.py` |
+
+Checks: `test_hwqos_lan_trunk.py` and `test_networkmap_abi_pin.py` fail on the previous source and pass on this one; 44 host suites
+pass (one needs root and skips). The GT-BE98_PRO v3.3.6 and v3.3.8 published images were decomposed and diffed first: every
+kernel module, device tree, dongle firmware and vendor prebuilt is byte-identical and the kernel config unchanged, so the
+platform base was ruled out before the shared code was. Owed: C10 on a BQ16 (counts and lists populate), C11 on a GT-BE19000
+in router mode.

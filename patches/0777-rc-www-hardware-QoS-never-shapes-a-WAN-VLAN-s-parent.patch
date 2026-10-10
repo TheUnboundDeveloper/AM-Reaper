@@ -1,0 +1,408 @@
+From 70fbfbb388daa9ac4d044e1b974d6d0c2a6b8cd4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 10 Oct 2026 11:22:42 -0400
+Subject: [PATCH] rc, www: hardware QoS never shapes a WAN VLAN's parent that
+ also carries the LAN (field, GT-BE98 family)
+
+v3.3.7 made hwqos_tm_ifname() resolve an 802.1Q WAN device to its parent so a
+PPPoE line is shaped on its physical port. On the boards with the external 2.5G
+switch (GT-BE98, GT-BE98 Pro, GT-BE96, GT-BE19000) the "2.5G WAN/LAN-1" jack is
+vlan4094 on eth1, and eth1 is also LAN-2..4 and a wired AiMesh backhaul. With
+hardware QoS on, the whole classful program (queues deleted and recreated, PI2,
+the shapers, the port shaper at the upload rate, the policer) landed on the LAN
+trunk: the wired LAN and the backhaul throttled to the upload rate, the main
+router at load 17 with ksoftirqd and bcmsw_rx burning, 45 of 2400 flows
+accelerated, eight daemons stuck on rtnl_lock, a wired node unable to rejoin.
+Three GT-BE98 Pro units on v3.3.8, diag v1.3.33 (WAN vlan4094, qos_type 11,
+eth1 in br0). v3.3.6 pointed tmctl at vlan4094 itself, which it refuses
+(rc=108), so hardware QoS on that jack was inert and nobody noticed.
+
+A resolved parent that is a bridge member (/sys/class/net/<if>/brport) or is
+listed in lan_ifnames is never shaped: hwqos_tm_ifname() returns no port, both
+engines refuse to arm and log why, and the QoS page shows RQOS_125 next to the
+engine choice when wan0_ifname is a vlanNNNN device. A PPPoE VLAN on a dedicated
+WAN port still resolves to its parent (v3.3.7 kept). Host tests
+test_hwqos_lan_trunk.py, test_hwqos_pppoe.py (harness extended); markers pin
+the staged rc and page.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/qos.c           | 57 ++++++++++++++++++++++++++-
+ release/src/router/www/BR.dict        |  1 +
+ release/src/router/www/CN.dict        |  1 +
+ release/src/router/www/CZ.dict        |  1 +
+ release/src/router/www/DA.dict        |  1 +
+ release/src/router/www/DE.dict        |  1 +
+ release/src/router/www/EN.dict        |  1 +
+ release/src/router/www/ES.dict        |  1 +
+ release/src/router/www/FI.dict        |  1 +
+ release/src/router/www/FR.dict        |  1 +
+ release/src/router/www/HU.dict        |  1 +
+ release/src/router/www/IT.dict        |  1 +
+ release/src/router/www/JP.dict        |  1 +
+ release/src/router/www/KR.dict        |  1 +
+ release/src/router/www/MS.dict        |  1 +
+ release/src/router/www/NL.dict        |  1 +
+ release/src/router/www/NO.dict        |  1 +
+ release/src/router/www/PL.dict        |  1 +
+ release/src/router/www/RO.dict        |  1 +
+ release/src/router/www/RU.dict        |  1 +
+ release/src/router/www/Reaper_QoS.asp |  8 ++++
+ release/src/router/www/SL.dict        |  1 +
+ release/src/router/www/SV.dict        |  1 +
+ release/src/router/www/TH.dict        |  1 +
+ release/src/router/www/TR.dict        |  1 +
+ release/src/router/www/TW.dict        |  1 +
+ release/src/router/www/UK.dict        |  1 +
+ 27 files changed, 88 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 84a98d238e..e9aed92929 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3153,6 +3153,38 @@ int start_cake(void)
+ #ifndef HWQOS_VLAN_CFG
+ #define HWQOS_VLAN_CFG "/proc/net/vlan/config"
+ #endif
++/* reaper 2026-10-10 (field, GT-BE98 family on v3.3.8): on the boards with the
++ * external 2.5G switch (GT-BE98, GT-BE98 Pro, GT-BE96, GT-BE19000) the "2.5G
++ * WAN/LAN-1" jack is vlan4094 on eth1, and eth1 is also LAN-2..4 and a wired
++ * AiMesh backhaul. The parent lookup below therefore handed the LAN trunk to
++ * tmctl, and the whole classful program (queues deleted and recreated, PI2,
++ * the queue shapers, the port shaper at the upload rate, the policer) landed
++ * on it: every wired LAN port and the backhaul were throttled to the upload
++ * rate and the box looked dead. Before v3.3.7 tmctl was pointed at vlan4094
++ * itself, which it refuses (rc=108, as ppp0), so hardware QoS on that jack
++ * was inert and nobody noticed. A port that also carries the LAN is never
++ * shaped: the lookup returns no port, both engines refuse to arm, and the
++ * reason is logged once per start. The QoS page says the same (RQOS_125). */
++#ifndef HWQOS_SYSNET
++#define HWQOS_SYSNET "/sys/class/net"
++#endif
++static int hwqos_lan_port(const char *ifname)
++{
++	char path[128], word[IFNAMSIZ + 1], *next, *list;
++
++	if (!ifname || !*ifname)
++		return 0;
++	/* the kernel's view: a bridge member right now */
++	snprintf(path, sizeof(path), HWQOS_SYSNET "/%s/brport", ifname);
++	if (d_exists(path))
++		return 1;
++	/* the model's LAN port set */
++	list = nvram_safe_get("lan_ifnames");
++	foreach(word, list, next)
++		if (!strcmp(word, ifname))
++			return 1;
++	return 0;
++}
+ static const char *hwqos_tm_ifname(int unit)
+ {
+ 	static char buf[IFNAMSIZ + 1];
+@@ -3178,8 +3210,15 @@ static const char *hwqos_tm_ifname(int unit)
+ 			}
+ 		fclose(f);
+ 	}
+-	if (name && strcmp(buf, name))
+-		logmessage("qos", "hardware QoS shapes %s, the port under %s", buf, get_wan_ifname(unit));
++	if (name && strcmp(buf, name)) {
++		if (hwqos_lan_port(buf)) {
++			logmessage("qos", "hardware QoS not applied: WAN %s rides %s, which also carries the LAN ports - "
++					  "shaping it would throttle the wired LAN and a wired backhaul. "
++					  "Use the 10G WAN port for hardware QoS, or a software engine on this jack.", name, buf);
++			buf[0] = '\0';
++		} else
++			logmessage("qos", "hardware QoS shapes %s, the port under %s", buf, get_wan_ifname(unit));
++	}
+ 	return buf;
+ }
+ 
+@@ -3214,6 +3253,13 @@ int start_hwqos(void)
+ 		}
+ 	}
+ 
++	/* reaper 2026-10-10: no port to shape (the WAN rides a LAN trunk, or the
++	 * name was not a plain interface name) - do not arm; the reason was logged. */
++	if (!*wan_ifname) {
++		logmessage("qos", "hardware QoS not started: no port to shape");
++		return -1;
++	}
++
+ 	if ((f = fopen(qosfn, "w")) == NULL) return -2;
+ 
+ 	fprintf(f,
+@@ -3332,6 +3378,13 @@ int start_hwqos_classful(void)
+ 		}
+ 	}
+ 
++	/* reaper 2026-10-10: no port to shape (the WAN rides a LAN trunk, or the
++	 * name was not a plain interface name) - do not arm; the reason was logged. */
++	if (!*wan_ifname) {
++		logmessage("qos", "hardware QoS not started: no port to shape");
++		return -1;
++	}
++
+ 	if ((f = fopen(qosfn, "w")) == NULL) return -2;
+ 
+ 	fprintf(f,
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 1d3bc87717..bd20242c09 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Não ativado
+ RWIF_118=Frequência
+ RWAN_23=A porta WAN deve ser selecionada no Dual WAN.
+ RWFS_14=A senha deve ter pelo menos 10 caracteres, incluindo 1 letra, 1 caractere especial e 1 número.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index aa90089f41..4495794c96 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -7198,3 +7198,4 @@ RADV_77=未启用
+ RWIF_118=频率
+ RWAN_23=必须在 Dual WAN 中选择 WAN 端口。
+ RWFS_14=密码长度至少为 10 个字符，且须包含 1 个字母、1 个特殊字符和 1 个数字。
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 8f2960f8d1..2595d706fa 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Neaktivováno
+ RWIF_118=Frekvence
+ RWAN_23=V režimu Dual WAN musí být vybrán port WAN.
+ RWFS_14=Heslo musí mít alespoň 10 znaků a obsahovat 1 písmeno, 1 speciální znak a 1 číslici.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 29925ffc29..8c570143ec 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Ikke aktiveret
+ RWIF_118=Frekvens
+ RWAN_23=WAN-porten skal vælges i Dual WAN.
+ RWFS_14=Adgangskoden skal være på mindst 10 tegn og indeholde 1 bogstav, 1 specialtegn og 1 tal.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index c6c89e13b4..e6482e54c4 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Nicht scharfgeschaltet
+ RWIF_118=Frequenz
+ RWAN_23=In Dual WAN muss der WAN-Port ausgewählt sein.
+ RWFS_14=Das Passwort muss mindestens 10 Zeichen lang sein und 1 Buchstaben, 1 Sonderzeichen und 1 Ziffer enthalten.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 7e0f43448d..f511527a9a 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Not armed
+ RWIF_118=Frequency
+ RWAN_23=WAN port should be selected in Dual WAN.
+ RWFS_14=Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 19711221a9..59764599ba 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -7198,3 +7198,4 @@ RADV_77=No activado
+ RWIF_118=Frecuencia
+ RWAN_23=Debe seleccionarse el puerto WAN en Dual WAN.
+ RWFS_14=La contraseña debe tener al menos 10 caracteres e incluir 1 letra, 1 carácter especial y 1 número.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 6d4ac33517..831dc00c72 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Ei aktivoitu
+ RWIF_118=Taajuus
+ RWAN_23=WAN-portti on valittava Dual WAN -asetuksissa.
+ RWFS_14=Salasanan on oltava vähintään 10 merkkiä pitkä ja sisällettävä 1 kirjain, 1 erikoismerkki ja 1 numero.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index fcd42fa260..8b9a9c0512 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Non armé
+ RWIF_118=Fréquence
+ RWAN_23=Le port WAN doit être sélectionné dans Dual WAN.
+ RWFS_14=Le mot de passe doit comporter au moins 10 caractères, dont 1 lettre, 1 caractère spécial et 1 chiffre.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 30a8c1efc9..a5f3ba8bb7 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Nincs élesítve
+ RWIF_118=Frekvencia
+ RWAN_23=A Dual WAN beállításban ki kell választani a WAN portot.
+ RWFS_14=A jelszónak legalább 10 karakter hosszúnak kell lennie, és tartalmaznia kell 1 betűt, 1 speciális karaktert és 1 számjegyet.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 781bd35537..67666f5e0f 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Non attivato
+ RWIF_118=Frequenza
+ RWAN_23=La porta WAN deve essere selezionata in Dual WAN.
+ RWFS_14=La password deve contenere almeno 10 caratteri, inclusi 1 lettera, 1 carattere speciale e 1 numero.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 7d9f6007d6..ad976e20e0 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -7198,3 +7198,4 @@ RADV_77=未有効化
+ RWIF_118=周波数
+ RWAN_23=Dual WAN では WAN ポートを選択する必要があります。
+ RWFS_14=パスワードは 10 文字以上で、英字 1 文字、特殊文字 1 文字、数字 1 文字以上を含める必要があります。
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 0b48a74eac..eea5cb97c8 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -7198,3 +7198,4 @@ RADV_77=활성화되지 않음
+ RWIF_118=주파수
+ RWAN_23=Dual WAN에서 WAN 포트를 선택해야 합니다.
+ RWFS_14=비밀번호는 10자 이상이어야 하며 문자 1개, 특수 문자 1개, 숫자 1개를 포함해야 합니다.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 0280bfa8e6..3b3bf3de62 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Tidak diaktifkan
+ RWIF_118=Frekuensi
+ RWAN_23=Port WAN mesti dipilih dalam Dual WAN.
+ RWFS_14=Kata laluan mesti sekurang-kurangnya 10 aksara, termasuk 1 huruf, 1 aksara khas dan 1 nombor.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 900ee12228..e855a81551 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Uitgeschakeld
+ RWIF_118=Frequentie
+ RWAN_23=De WAN-poort moet worden geselecteerd in Dual WAN.
+ RWFS_14=Het wachtwoord moet minimaal 10 tekens lang zijn en 1 letter, 1 speciaal teken en 1 cijfer bevatten.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index ada2f36074..a066622ee1 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Ikke aktivert
+ RWIF_118=Frekvens
+ RWAN_23=WAN-porten må velges i Dual WAN.
+ RWFS_14=Passordet må være minst 10 tegn langt og inneholde 1 bokstav, 1 spesialtegn og 1 tall.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 9eb8ab85ee..3a300a176a 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Nieuzbrojony
+ RWIF_118=Częstotliwość
+ RWAN_23=W Dual WAN należy wybrać port WAN.
+ RWFS_14=Hasło musi mieć co najmniej 10 znaków i zawierać 1 literę, 1 znak specjalny oraz 1 cyfrę.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index e30e38d32e..dbeaf89237 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Nearmat
+ RWIF_118=Frecvență
+ RWAN_23=Portul WAN trebuie selectat în Dual WAN.
+ RWFS_14=Parola trebuie să aibă cel puțin 10 caractere, inclusiv 1 literă, 1 caracter special și 1 cifră.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index b4046a21f9..97715a5205 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Неактивно
+ RWIF_118=Частота
+ RWAN_23=В режиме Dual WAN необходимо выбрать порт WAN.
+ RWFS_14=Пароль должен содержать не менее 10 символов, включая 1 букву, 1 специальный символ и 1 цифру.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 6ea83b5c47..37b281c926 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -184,6 +184,10 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <h2><#DSL_Mode#></h2>
+   <div class="sub"><#RQOS_03#></div>
+   <div class="modes" id="modes"></div>
++  <!-- 2026-10-10: on the external-switch boards (GT-BE98 family) the 2.5G WAN/LAN-1 jack is a
++       VLAN on the LAN trunk; rc/qos.c refuses to shape that trunk, so say so where the engine
++       is chosen. Shown by the bootstrap below when wan0_ifname is a vlanNNNN device. -->
++  <div class="hint" id="rqos_trunknote" style="margin-top:8px;display:none;color:var(--amber)"><#RQOS_125#></div>
+ </div>
+ 
+ <div class="panel" id="bwpanel">
+@@ -381,6 +385,7 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+ var NV = {
+   enable:  '<% nvram_get("qos_enable"); %>',
+   type:    '<% nvram_get("qos_type"); %>',
++  wanif:   '<% nvram_get("wan0_ifname"); %>',
+   obw:     '<% nvram_get("qos_obw"); %>',
+   ibw:     '<% nvram_get("qos_ibw"); %>',
+   orates:  decodeURIComponent('<% nvram_char_to_ascii("", "qos_orates"); %>'),
+@@ -393,6 +398,9 @@ var NV = {
+   bwrule:  '<% nvram_get("qos_bw_rulelist"); %>',
+   rules:   decodeURIComponent('<% nvram_char_to_ascii("", "qos_rulelist"); %>')
+ };
++/* 2026-10-10: a vlanNNNN WAN device = the external-switch jack whose trunk also carries the LAN
++ * (GT-BE98 family); rc/qos.c does not shape it - show the note next to the engine choice. */
++if (/^vlan[0-9]+$/.test(NV.wanif)) { var _tn = document.getElementById('rqos_trunknote'); if (_tn) _tn.style.display = ''; }
+ 
+ /* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
+ var MODES = [
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index cb6a11562c..5c0deefe29 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Ni aktivirano
+ RWIF_118=Frekvenca
+ RWAN_23=V Dual WAN morate izbrati vrata WAN.
+ RWFS_14=Geslo mora imeti vsaj 10 znakov, vključno z 1 črko, 1 posebnim znakom in 1 številko.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 3fa2760fd3..5e71cc4c7d 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Inte aktiverad
+ RWIF_118=Frekvens
+ RWAN_23=WAN-porten måste väljas i Dual WAN.
+ RWFS_14=Lösenordet måste vara minst 10 tecken långt och innehålla 1 bokstav, 1 specialtecken och 1 siffra.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 7d61d0b18c..fc34cd9c11 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -7198,3 +7198,4 @@ RADV_77=ยังไม่เปิดใช้งาน
+ RWIF_118=ความถี่
+ RWAN_23=ต้องเลือกพอร์ต WAN ใน Dual WAN
+ RWFS_14=รหัสผ่านต้องมีความยาวอย่างน้อย 10 อักขระ ซึ่งประกอบด้วยตัวอักษร 1 ตัว อักขระพิเศษ 1 ตัว และตัวเลข 1 ตัว
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 5f3ec7d142..1c2128b35b 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Etkin değil
+ RWIF_118=Frekans
+ RWAN_23=Dual WAN içinde WAN bağlantı noktası seçilmelidir.
+ RWFS_14=Parola en az 10 karakter uzunluğunda olmalı ve 1 harf, 1 özel karakter ve 1 rakam içermelidir.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index b0d7f0b719..18cac78a2c 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -7198,3 +7198,4 @@ RADV_77=未啟用
+ RWIF_118=頻率
+ RWAN_23=必須在 Dual WAN 中選擇 WAN 連接埠。
+ RWFS_14=密碼長度至少需 10 個字元，並包含 1 個字母、1 個特殊字元與 1 個數字。
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 425734fc7f..553cc18fb4 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -7198,3 +7198,4 @@ RADV_77=Не активовано
+ RWIF_118=Частота
+ RWAN_23=У режимі Dual WAN потрібно вибрати порт WAN.
+ RWFS_14=Пароль має містити щонайменше 10 символів, зокрема 1 літеру, 1 спеціальний символ і 1 цифру.
++RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
+-- 
+2.25.1
+

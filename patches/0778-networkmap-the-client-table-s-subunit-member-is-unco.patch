@@ -1,0 +1,52 @@
+From a978cf9df5ee8e1fa1e018eb9273c72c14b28aa7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 10 Oct 2026 12:48:37 -0400
+Subject: [PATCH] networkmap: the client table's subunit member is
+ unconditional - the prebuilt writes it on every model (field, ZenWiFi BQ16)
+
+Every page fed by get_clientlist() - the Dashboard counts, the stock client
+list, the AiMesh topology's per-node counts - was empty on the ZenWiFi BQ16
+from its first Reaper build, while the Devices page (its own stores) was full.
+networkmap is a closed prebuilt; the one ASUS binary (6f29cad0...) ships on
+every BCM4916 model and writes CLIENT_DETAIL_INFO_TABLE into shared memory
+key 1001. httpd reads it through networkmap.h, where subunit[MAX_NR_CLIENT_LIST]
+was gated on RTCONFIG_FBWIFI || RTCONFIG_CAPTIVE_PORTAL. The BQ16 and BQ16 Pro
+are the only roster models built without Captive Portal, so their httpd's
+table was 256 bytes shorter (383816 vs 384072) and ip_mac_num/detail_info_num,
+which sit after that member, were read from inside bwdpi_device[]: a zero
+count, no clients. The bwdpi block right below already carries the same pin
+for the same reason; subunit now has it too. The only reader of the member is
+#if defined(BRTAC828) (unchanged). Host test test_networkmap_abi_pin.py
+compiles the struct under both flag sets and requires one size.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/networkmap/networkmap.h | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/networkmap/networkmap.h b/release/src/router/networkmap/networkmap.h
+index 9cc5ec25c2..01e06f70b7 100644
+--- a/release/src/router/networkmap/networkmap.h
++++ b/release/src/router/networkmap/networkmap.h
+@@ -315,9 +315,16 @@ typedef struct {
+ 	int 		rssi[MAX_NR_CLIENT_LIST];
+ 	char 		conn_time[MAX_NR_CLIENT_LIST][12];
+ 	char 		wireless_auth[MAX_NR_CLIENT_LIST][32];
+-#if defined(RTCONFIG_FBWIFI) || defined(RTCONFIG_CAPTIVE_PORTAL)
++	/* ABI PIN (reaper 2026-10-10, field: ZenWiFi BQ16 - an empty client list on
++	 * every page fed by get_clientlist(), from the first boot). The prebuilt
++	 * networkmap shipped on every BCM4916 model is ASUS's build WITH
++	 * RTCONFIG_CAPTIVE_PORTAL, so it writes this member. The BQ16 and BQ16 Pro
++	 * are built without Captive Portal, and gating the member on that flag put
++	 * ip_mac_num/detail_info_num MAX_NR_CLIENT_LIST bytes earlier in httpd's
++	 * view than where networkmap writes them - a zero count, no clients. Same
++	 * pin as the bwdpi block below: keep it unconditional so every reader's
++	 * layout matches the blob. test_networkmap_abi_pin.py */
+ 	char		subunit[MAX_NR_CLIENT_LIST];
+-#endif
+ 	/* ABI PIN (reaper): the closed prebuilt networkmap is compiled with
+ 	 * RTCONFIG_BWDPI and writes these 4 fields into the shared-memory
+ 	 * CLIENT_DETAIL_INFO_TABLE. bwdpi is compiled out of this build, but httpd
+-- 
+2.25.1
+

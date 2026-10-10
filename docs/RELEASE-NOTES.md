@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.3.9** · 2026-10-10 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.8** <!--@treever--> — `3006.102.8_Reaper_v3.3.8`. **A kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again.** The first image carrying the v3.3.7 changes (IPv6 across the firmware, names across networks, a private /tmp): v3.3.7's fleet build failed to link rc on GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro and failed verification on every noMCP image, both fixed here. Kernel CVE-2026-43198 (a v6-mapped TCP child is finished before it is hashed); rc runs with umask 022; Top Devices / Top Talkers show 10-50 rows. Built and verified on an RT-BE96U MCP image; the release images come from the public CI build. The series stands at **776 patches** (0772–0776 for v3.3.8); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.9** <!--@treever--> — `3006.102.8_Reaper_v3.3.9`. **Hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model.** Fixes the GT-BE98 / GT-BE98 Pro main-router outage on v3.3.8 (reporter-confirmed), the empty BQ16 / BQ16 Pro client list, and the GT-BE19000's older networkmap in the clean room. Everything in v3.3.8 and v3.3.7 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,22 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
+
+**GT-BE98 and GT-BE98 Pro owners: v3.3.8 could make your main router unusable; v3.3.9 fixes it.** If your
+internet cable is in the 2.5G WAN/LAN-1 jack and Hardware QoS is on, v3.3.8 applied the upload shaper to the
+switch that also carries LAN ports 2-4 and a wired AiMesh node: very high CPU, a crawling GUI, no internet, a
+node that would not rejoin. Reverting to v3.3.6 cured it, and so does v3.3.9: hardware QoS never shapes a port
+that also carries your LAN. On that jack it stays off (the QoS page says so); move the cable to the 10G WAN
+port to use hardware QoS, or use a software engine. Confirmed by the reporter on test images.
+
+**ZenWiFi BQ16 / BQ16 Pro: the client list works.** The Dashboard client counts, the stock client list and the
+AiMesh topology's per-node counts were empty on these two models since their first build (the Devices page
+was always right). The router read the client tracker's table with the wrong layout; it now matches.
+
+**GT-BE19000:** the clean room now builds it with the same client-tracker binary as every other model, so its
+client list will populate once a unit runs in router mode.
 
 ## What's new in v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
 

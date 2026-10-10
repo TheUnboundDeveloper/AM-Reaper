@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,29 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
+
+- **First image with the v3.3.7 changes.** v3.3.7 produced no fleet images: v3.3.7 removed the `rc/Makefile`
+  line that compiles `reaper_chanlist_shim.c`, so the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro failed to link `rc`
+  (their closed rc objects lack `wl_scb`, `backup_eth_ob_log` and `is_wan_port_ext_switch`, which the shim stubs).
+  Separately, every noMCP image failed `reaper_verify` on markers for MCP-only files. The line is restored;
+  `verify_markers.txt` takes an optional variant field (`|MCP` / `|noMCP`). Host tests
+  `test_sibling_rc_units.py`, `test_verify_markers_variant.py`.
+- **Kernel: CVE-2026-43198 (audit V8).** An IPv4 client connecting to a dual-stack listener gets a v6-mapped
+  child socket, which was published in the established hash while its `pinet6` still pointed at the listener's
+  `ipv6_pinfo`; another CPU could use it in that window. Port of upstream 858d2a4f67ff (5.10.y aef4a9ae):
+  `__tcp_v4_syn_recv_sock()` runs a child-init hook before the child is hashed. The exported
+  `tcp_v4_syn_recv_sock()` and the af_ops signature are unchanged. Host test `test_kernel_tcp6_mapped_race.py`.
+- **rc runs with umask 022 (field, GT-BE98).** rc ran with umask 0, so a file any rc-started process created
+  without an explicit mode was 0666 - writable by the non-root services (dnsmasq and tftpd as `nobody`,
+  Entware daemons). ASUS's own commented-out `umask(022)` is switched on after sysinit's directory block, so the
+  directories ASUS creates 0777 keep their mode; vsftpd, Samba and tftpd set their own. **Behaviour change:** such
+  files are now 0644; an add-on that wrote into one as a non-root user must set its own mode. Host test
+  `test_rc_umask.py`.
+- **Traffic Analyzer: Top Devices and Top Talkers show 10, 20, 30 or 50 rows.** A selector per table (remembered
+  in the browser), fixed column layout and padded rows so the table does not jump; `rtrafd` keeps 64 top-talker
+  slots (was 20).
 
 ## v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
 

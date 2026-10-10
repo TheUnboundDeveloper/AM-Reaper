@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -750,6 +750,8 @@ page shows its last column whole.
 | C4 | Info | Five web links pointed into `/tmp` at a feedback archive this model never produces (audit V5) | **Removed.** | `www/Makefile` |
 | C6 | Low | The stock app network installer (Download Master and other ASUS USB apps) fetched packages over plain HTTP and ran them as root, so anyone on the network path during an install could substitute code. HTTPS cannot be forced: ASUS's package host serves an incomplete certificate chain (audit V11) | **Removed** (maintainer decision). The nine installer scripts are no longer shipped and the router refuses install, update, upgrade, switch and cancel requests with one log line; the developer test form for the installer is gone. The USB Application page stays, and so does everything the USB mount and disk check use; an app already on a disk can still be stopped or removed. Entware/amtm are unaffected (they use their own installer) | `rom/Makefile`, `rc/services.c`, `rom/apps_scripts/asusrouter`, `www/Makefile`, `test_tmp_hardening.py` |
 | C5 | Info | The Site Survey CSV export wrote network names as they were heard; a name starting with `=`, `+`, `-` or `@` runs as a formula when the file is opened in a spreadsheet (audit V10) | **Fixed.** Such a value is prefixed with `'` so it opens as text; numeric columns are unchanged | `www/Reaper_Survey.asp`, `test_site_survey.py` |
+| C7 | Low | Every process rc starts ran with umask 0, so a file created without an explicit mode (`fopen` "w", a shell `>`) was 0666 and writable by the non-root services (dnsmasq and tftpd as `nobody`, Entware daemons) before root read it back (field report, GT-BE98) | **Fixed.** ASUS's own commented-out `umask(022)` is switched on after sysinit's directory block, so every directory ASUS creates 0777 keeps its mode; vsftpd, Samba and tftpd set their own, and explicit `chmod()` calls are unaffected | `rc/init.c`, `test_rc_umask.py` |
+| C8 (CVE-2026-43198) | Low | An IPv4 client connecting to a dual-stack TCP listener gets a v6-mapped child socket, which the kernel published in its established hash while the child's IPv6 state still pointed at the listener's; another CPU could use it in that window (audit 2026-10-06 V8) | **Fixed.** Upstream 858d2a4f67ff as taken into 5.10.y: the child is finished by a hook that runs before it is hashed. The exported function and the protocol ops keep their signatures, so no closed-source module sees a change; the Broadcom MPTCP variant (enabled on no Reaper model) is left as shipped | `net/ipv4/tcp_ipv4.c`, `net/ipv6/tcp_ipv6.c`, `include/net/tcp.h` (kernel 4.19), `test_kernel_tcp6_mapped_race.py` |
 
 Checks: the walker suites pass (host, advisory, and the kernel trace tier as root); the Dashboard scripts parse
 and its IPv6 painter passes a transition harness; C1 is in test image r30. All 36 host suites pass, the new
@@ -757,3 +759,5 @@ and its IPv6 painter passes a transition harness; C1 is in test image r30. All 3
 Status shows a free stand-in while a device holds .123; for C3, the four `protected_*` values read 1, every
 Reaper directory is root's at the planned mode, and a 24-hour soak with add-ons shows no `Permission denied`
 from `/tmp` writers.
+
+C7 and C8 (v3.3.8): `test_rc_umask.py` and `test_kernel_tcp6_mapped_race.py` fail on the previous source and pass on this one; 41 host suites pass (one needs root and skips).

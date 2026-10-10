@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.7** <!--@treever--> — `3006.102.8_Reaper_v3.3.7`. **IPv6 across the firmware, names across networks, a private /tmp.** IPv6 is handled on every Reaper surface (Dashboard, Devices, Connections, Traffic Analyzer, Gatekeeper, Service Intercept, the watchdog); reverse and IPv6 device names across the main LAN and VLANs; a dual-stack DNS health check; the stock DDNS stop no longer wipes the firewall; Hardware QoS shapes on PPPoE; Reaper's temporary files are private and the plain-HTTP app installer is removed. Built and verified on an RT-BE96U MCP image (test rungs r9-r33 on the maintainer's router); the release images come from the public CI build. The series stands at **771 patches** (0762–0771 for v3.3.7); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
+| **Current rung** | **v3.3.8** <!--@treever--> — `3006.102.8_Reaper_v3.3.8`. **A kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again.** The first image carrying the v3.3.7 changes (IPv6 across the firmware, names across networks, a private /tmp): v3.3.7's fleet build failed to link rc on GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro and failed verification on every noMCP image, both fixed here. Kernel CVE-2026-43198 (a v6-mapped TCP child is finished before it is hashed); rc runs with umask 022; Top Devices / Top Talkers show 10-50 rows. Built and verified on an RT-BE96U MCP image; the release images come from the public CI build. The series stands at **776 patches** (0772–0776 for v3.3.8); the OpenSSL 3.5 source, the vendor blob pair and the GT-BE98 / GT-BE19000 / BQ16 / BQ16 Pro platform trees ship beside it as hash-pinned archives. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,23 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
+
+**This is the first image with the v3.3.7 changes.** The v3.3.7 build failed on four models and on every
+image without the AI Advisor, so there are no v3.3.7 images; everything listed under v3.3.7 below arrives
+with v3.3.8.
+
+**A kernel security fix (CVE-2026-43198).** A race when an IPv4 device connects to a router service that
+listens on both IPv4 and IPv6 could let the kernel use a connection before it was fully set up.
+
+**Files the router's services create are no longer writable by every user.** Until now they were, which let
+a non-root service change a file before the router read it back. If you run an add-on that writes into such a
+file as a non-root user, it now has to set its own permissions.
+
+**Traffic Analyzer.** Top Devices and Top Talkers each have a 10 / 20 / 30 / 50 rows selector, remembered in
+your browser, and the tables keep their layout as rows come and go.
+
 
 ## What's new in v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
 

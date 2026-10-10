@@ -1,0 +1,47 @@
+From ecccc3ff49a5199f75f978ae21517e09ef764d3a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 20:27:00 -0400
+Subject: [PATCH] rc: run with umask 022 (ASUS's own commented-out line,
+ switched on)
+
+Every process rc starts inherits rc's umask, and with 0 a file created
+without an explicit mode (fopen "w", a shell ">") was 0666 - writable by the
+non-root services (dnsmasq and tftpd as nobody, Entware daemons) before root
+read it back. Field report, GT-BE98.
+
+The umask is set after sysinit's directory block, so every directory ASUS
+creates 0777 on purpose keeps its stock mode. Services that must create files
+as another user set their own (vsftpd local_umask, Samba force create mode,
+tftpd -U, mkdir_if_none's -m 0777); chmod() ignores the umask, so every
+explicit chmod is unchanged. test_rc_umask.py
+---
+ release/src/router/rc/init.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 43cec60dfd..7dd54a0aee 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -25640,7 +25640,18 @@ static void sysinit(void)
+ 	f_write("/etc/fstab", NULL, 0, 0, 0644);			// !!TB - blank
+ 	f_write("/tmp/settings", NULL, 0, 0, 0644);
+ 
+-	//umask(022);
++	/* reaper 2026-10-09 (field report, GT-BE98): ASUS's own line, switched on.
++	 * Every process rc starts inherits rc's umask, and with 0 any file created
++	 * without an explicit mode (fopen "w", a shell ">") was 0666 - writable by
++	 * the non-root services (dnsmasq and tftpd as nobody, Entware daemons)
++	 * before root read it back. Placed here, after the directory block above,
++	 * so each directory ASUS made 0777 on purpose (/var/lock, /var/state,
++	 * /var/tmp/dhcp; /tmp is 01777) keeps exactly its stock mode. The services
++	 * that must create files as another user set their own: vsftpd
++	 * local_umask=000, Samba force create/directory mode 0777, tftpd's -U
++	 * default, mkdir_if_none's "mkdir -m 0777". chmod() ignores the umask, so
++	 * every explicit chmod in rc is unchanged. test_rc_umask.py */
++	umask(022);
+ 
+ 	if ((d = opendir("/rom/etc")) != NULL) {
+ 		while ((de = readdir(d)) != NULL) {
+-- 
+2.25.1
+

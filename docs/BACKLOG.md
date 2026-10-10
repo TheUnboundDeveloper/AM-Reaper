@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.3.7** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be
 done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
@@ -37,8 +37,9 @@ internal quality, or deferred by decision.
 
 ## Work next
 
-The ordered short list. *v3.3.6 is the newest rung (cut 2026-10-07); earlier releases are in
-[`CHANGELOG.md`](CHANGELOG.md).*
+The ordered short list. *v3.3.8 is the newest rung (cut 2026-10-09); earlier releases are in
+[`CHANGELOG.md`](CHANGELOG.md). v3.3.7 has no fleet images (four siblings failed to link rc, every noMCP failed
+verify), so items tagged v3.3.7 reach testers in v3.3.8.*
 
 1. **[P1] Audit 2026-10-06 remediation** — VPN credential download row behind login, rdnsmapd LAN-only, strongSwan 6.0.6.
    **[in v3.3.6, metal owed]** ↳ notes: `audit-2026-10-06-remediation.md`
@@ -62,6 +63,8 @@ The ordered short list. *v3.3.6 is the newest rung (cut 2026-10-07); earlier rel
     **[owed: a tester]** ↳ notes: `bq16-onboarding.md`
 12. **[P2] ZenWiFi BQ16 Pro onboarding** — MCP + noMCP built, in v3.3.4.
     **[owed: the CI run, a tester, Pro banner art]** ↳ notes: `bq16-pro-onboarding.md`
+13. **[P3] Mimic — hardware port mirror to an external IDS** (WAN Ports page, every wired port, dual-WAN aware) — Phase 0
+    mostly proven. **[owed: accelerated-flow + restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 
 ---
 
@@ -70,24 +73,42 @@ The ordered short list. *v3.3.6 is the newest rung (cut 2026-10-07); earlier rel
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
-- **[P3] Connections showed IPv6 flows as "2001" rows** (owner, r28) — the accelerator-table reader cut IPv6 addresses at the first colon;
-  both readers now skip IPv6 entries (conntrack lists them). **[in v3.3.6 r29, metal owed]** ↳ notes: `HISTORY.md`
+- **[P3] Kernel CVE-2026-43198: a v6-mapped TCP child was used before its IPv6 state was set** (audit V8) — upstream fix ported
+  to 4.19 with the exported API unchanged. **[in v3.3.8, metal owed: TCP to the router's listeners, SYN flood, 24 h soak]** ↳ notes: `audit-2026-10-06-remainder-plan.md`
+- **[P3] rc ran with umask 0: files it created without a mode were world-writable** (field, GT-BE98) — ASUS's own
+  `umask(022)` switched on after the boot directories. **[in v3.3.8; owed: 24 h add-on soak, reporter's two files]** ↳ notes: `rc-umask-zero.md`
+- **[P2] Hardware QoS shaped nothing on a PPPoE line** (field, GT-BE98) — both engines programmed `ppp0`, which has no
+  traffic-manager queues (rc=108); they now shape the physical port. **[in v3.3.7; reporter to confirm]** ↳ notes: `hwqos-pppoe-shaping.md`
+- **[P3] Audit 2026-10-06 remainder, released part** — `/tmp` hardening (F1/V3/V5), Survey CSV guard (V10), app installer
+  removed (V11). **[in v3.3.7, metal owed]** ↳ notes: `audit-2026-10-06-remainder-plan.md`
+- **[P3] IPv6 clients had no names in a LAN DNS filter** (owner) — `rv6names` maps each device's current IPv6 addresses to its
+  DHCPv4 name for every network's resolver. **[in v3.3.7; 10 names seen on the owner's box (r28), owner to confirm in the filter]** ↳ notes: `ipv6-device-names.md`
+- **[P3] Internet Card on the Dashboard did not refresh for IPv6** — v6 painted once at load; client v6 waited on networkmap.
+  **[in v3.3.7, metal owed]** ↳ notes: `dashboard-ipv6-refresh.md`
+- **[P3] Rule Status walker showed up in the Devices list** (owner) — a stand-in host held a real device's address;
+  walker v1.10 picks only free ones. **[in v3.3.7; owner to confirm]** ↳ notes: `walker-standin-device-collision.md`
+- **[P3] reaper_diag printed the stored puncturing gain (0) instead of the effective one (15%).**
+  **[in v3.3.7 (diag v1.3.33), metal owed]** ↳ notes: `diag-punct-gain-display.md`
+- **[P3] Two stock hygiene items from the 2026-10-02 cppcheck of `rc/usb.c`** — unbounded `%[^\n ]`, leaked `FILE *`;
+  not reachable. **[in v3.3.7; nothing field-visible]** ↳ notes: `usb-boot-mount-chain.md`
+- **[P3] Connections showed IPv6 flows as "2001" rows** (owner) — the accelerator-table reader cut IPv6 addresses at the first colon;
+  both readers now skip IPv6 entries (conntrack lists them). **[in v3.3.7, metal owed]** ↳ notes: `HISTORY.md`
 - **[P2] Code review 2026-10-07 remediation** — pre-auth IG/CTA/WPAD rows out, archive rows behind login, dead code, S1.
-  **[in v3.3.6 r25, metal owed]** ↳ notes: `audit-2026-10-07-remediation.md`
+  **[in v3.3.7, metal owed]** ↳ notes: `audit-2026-10-07-remediation.md`
 - **[P2] IPv6 remediation, phase 1** — GK captive, Service Intercept, rwatch, SNMP, DHCPv6 names, diag, feed markers dual-stack.
-  **[in v3.3.6 r25; Service Intercept IPv6 and rwatch IPv6 seen working on the owner's 6in4 box, the rest metal owed]** ↳ notes: `ipv6-remediation.md`
+  **[in v3.3.7; Service Intercept IPv6 and rwatch IPv6 seen working on the owner's 6in4 box, the rest metal owed]** ↳ notes: `ipv6-remediation.md`
 - **[P2] IPv6 remediation, phases 2-5** — Flow Explorer + names, Devices + DHCPv6 reservations, rtrafd probe/labels, Advisor listener.
-  **[in v3.3.6 r25; rtrafd IPv6 labels seen live (11 devices), Flow Explorer rows refixed r20; the rest metal owed]** ↳ notes: `ipv6-remediation.md`
+  **[in v3.3.7; rtrafd IPv6 labels seen live (11 devices); the rest metal owed]** ↳ notes: `ipv6-remediation.md`
 - **[P2] Firewall page: Apply / Keep / Revert looked dead on the first click** (owner) — the page re-read the state once
-  before rc had armed; now it dims the button and polls until the state is real. **[r25 metal 20:20: one Apply, Keep 2 s later, no refused second Apply; owner to confirm the feel]** ↳ notes: `firewall-apply-confirm-clicks.md`
+  before rc had armed; now it dims the button and polls until the state is real. **[in v3.3.7; r25 metal: no refused second Apply; owner to confirm the feel]** ↳ notes: `firewall-apply-confirm-clicks.md`
 - **[P3] Diagnostics did not cover the 2026-10-08 work** — v1.3.31 adds per-network IPv6, the health check and order, the
-  tunnel, the tunnelbroker rule and the per-family intercept gate. **[in v3.3.6 r25, metal owed]** ↳ notes: `diag-coverage-2026-10-08.md`
+  tunnel, the tunnelbroker rule and the per-family intercept gate. **[in v3.3.7, metal owed]** ↳ notes: `diag-coverage-2026-10-08.md`
 - **[P3] Connections tab mangled IPv6 endpoints** (owner) — zero-padded addresses, IPv6 rows of a named device shown
-  unnamed, LAN IPv6 labelled External. **[in v3.3.6 r20, metal owed]** ↳ notes: `HISTORY.md`
-- **[P3] Devices page clipped its last column at the right edge** (owner, v3.3.6 r16) — every block capped at 1120 px under
-  an unwrapped table; the table card now sets the page width and rows wrap before they scroll. **[in v3.3.6 r17, metal owed]** ↳ notes: `HISTORY.md`
+  unnamed, LAN IPv6 labelled External. **[in v3.3.7, metal owed]** ↳ notes: `HISTORY.md`
+- **[P3] Devices page clipped its last column at the right edge** (owner) — every block capped at 1120 px under
+  an unwrapped table; the table card now sets the page width and rows wrap before they scroll. **[in v3.3.7, metal owed]** ↳ notes: `HISTORY.md`
 - **[P3] rwatch called a silent 6in4 server "normal" while the tunnel was down** (owner) — tunnel-aware note.
-  **[in v3.3.6 r13, metal owed]** ↳ notes: `firewall-tail-loss-2026-10-08.md`
+  **[in v3.3.7, metal owed]** ↳ notes: `firewall-tail-loss-2026-10-08.md`
 - **[P1] Stock auto-WAN-port bridged the ISP port into the LAN** (owner) — WAN port pinned once known; WAN Ports page
   replaces the Dual WAN tab. **[in v3.3.6; owner: Auto across boots + a cable pull]** ↳ notes: `autowan-wan-pin.md`
 - **[P1] rtrafd busy-loops on v3.3.4** (field, RT-BE88U) — a ~10.7k-entry conntrack table; pass now paced by its cost.
@@ -165,10 +186,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] The dashboard says Connected while LAN clients have no name resolution** — the probe uses the router's resolver.
   **[proposed, owner call]** ↳ notes: `dashboard-connected-lan-dns.md`
 - **[P2] MLO ON kills the AiMesh backhaul.** **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P3] Audit 2026-10-06 remainder** — `/tmp` hardening, Survey CSV guard and the app installer removal done; kernel left.
-  **[Rung B: kernel CVE-2026-43198]** ↳ notes: `audit-2026-10-06-remainder-plan.md`
-- **[P3] rc runs with umask 0 (stock): files it creates without a mode are world-writable** (field, GT-BE98) — a
-  non-root service (dnsmasq, tftpd, Entware) could edit what root later reads. **[owed: audit + soak, v3.3.8]** ↳ notes: `rc-umask-zero.md`
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
@@ -181,20 +198,14 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 - **[P3] Loading/Restarting overlay: native redesign remainder** — 24 stock `confirm()` dialogs on 9 pages.
   **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Internet Card on the Dashboard does not refresh for IPv6** — v6 painted once at load; client v6 waited on networkmap.
-  **[in v3.3.6 r30 (and r32), metal owed]**
 
 ---
 
 ## Potential Features to add
 
-- **[P3] IPv6 clients have no names in a LAN DNS filter** (owner) — LAN devices send DNS over IPv6 from SLAAC/privacy addresses the
-  router has no names for; idea: answer PTR for LAN IPv6 addresses from the neighbour cache MAC -> DHCPv4 name. **[proposed]** ↳ notes: `reverse-dns-across-networks.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict.** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Attainder — control by names** (resolver-step domain blocker). **[project]** ↳ notes: `attainder-name-control.md`
-- **[P3] Mimic — copy of the flows** (hardware port mirror to an external IDS) — mock built; bandwidth mismatch open.
-  **[paused - owner thinking]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
 - **[P3] North star — replace stock GUI pages with Reaper-native ones.** **[ongoing]** ↳ notes: `native-page-migration.md`
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes: `staged-batch-changes.md`
@@ -217,8 +228,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[owed — before a fourth enforcement surface]** ↳ notes: `aimesh-exempt-helper.md`
 - **[P2] Network page: Delete does nothing on a main-network card** — development-based, not firmware-wide.
   ↳ notes: `sdn-mainfh-delete-dead.md`
-- **[P3] reaper_diag prints the stored puncturing gain (0) instead of the effective one (15%).**
-  **[fixed in canon (diag v1.3.33), unbuilt]** ↳ notes: `diag-punct-gain-display.md`
 - **[P3] Second review of the v3.1.0–v3.1.5 code** — seven slices, reachability before any finding.
   **[planned — not started]** ↳ notes: `review-carry-forward-queue.md` §4
 - **[P3] Sibling port misses adds, renames and deletes** — local sibling builds break; CI immune.
@@ -231,8 +240,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Theme-token vocabulary consolidation (remainder of D4).** **[owed — to the page migration]**
   ↳ notes: `theme-token-consolidation.md`
 - **[P3] Inherited httpd core: two pre-auth robustness gaps.** **[inherited; deferred]** ↳ notes: `httpd-inherited-preauth-gaps.md`
-- **[P3] Two stock hygiene items from the 2026-10-02 cppcheck of `rc/usb.c`** — unbounded `%[^\n ]`, leaked `FILE *`;
-  not reachable. **[fixed in canon, unbuilt]** ↳ notes: `usb-boot-mount-chain.md`
 - **[P3] avahi CVE-2024-52615 / -52616 (wide-area)** — nothing on the box makes a wide-area lookup.
   **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
 - **[P3] avahi CVE-2021-3468 / CVE-2025-59529 (local socket)** — reachable only by root processes on the router.

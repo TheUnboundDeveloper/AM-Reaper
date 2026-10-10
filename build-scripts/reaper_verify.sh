@@ -296,12 +296,19 @@ else warn "shared-parity" "_port_protect.sh not deployed -- parity unchecked"; f
 
 # ---- 10. rung-critical patch markers in the STAGED image -------------------
 # verify_markers.txt lines: <staged-path>|<literal>|<min>  or  <staged-path>|!<literal>
+# with an optional 4th field naming the only variant the line applies to
+# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design.
 # One line per field-critical fix -> every model/variant image PROVES it ships.
 MARKF=/home/reaper/reaper_build/verify_markers.txt
 if [ -f "$MARKF" ]; then
   mfail=0; mnum=0
-  while IFS='|' read -r mpath mpat mmin; do
+  while IFS='|' read -r mpath mpat mmin mvar; do
     case "$mpath" in ''|'#'*) continue;; esac
+    case "$mvar" in
+      ''|"$VARIANT") ;;
+      MCP|noMCP) continue;;
+      *) fail "patch-marker" "$mpath: unknown variant field '$mvar'"; mfail=1; continue;;
+    esac
     mnum=$((mnum+1))
     tgt="$FS/$mpath"
     if [ ! -f "$tgt" ]; then fail "patch-marker" "$mpath MISSING from staged fs"; mfail=1; continue; fi

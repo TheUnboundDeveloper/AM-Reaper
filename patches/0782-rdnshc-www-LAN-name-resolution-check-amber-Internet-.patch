@@ -1,0 +1,1541 @@
+From 743531aea9ed287f0c64a77ac683f30fd43fd307 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 11 Oct 2026 12:03:36 -0400
+Subject: [PATCH] rdnshc, www: LAN name resolution check - amber Internet
+ state, tooltip, DNS Failover switch
+
+The dashboard said "Connected" whenever the WAN held an address, so a box
+whose LAN devices could not resolve a single name still read green.
+rc/rdnshc.c now asks the path LAN devices use once a minute (the first
+check 15 s after start) whether or not the health check is on: the
+router's DNS for "localhost" on lan_ipaddr:53 and for a random label under
+reaper_landns_domain (dns_probe_host, then a fixed name, when the setting
+is empty or invalid), or the servers DHCP hands out when the admin set
+any; held while the primary WAN is down; two bad checks in a row turn it
+bad, one good one clears; a failing fresh name asks each upstream directly
+to name the silent ones. Published as nvram reaper_landns_state
+"<state> <s> <silent|->", cleared when the daemon stops; one syslog line
+when it turns bad, one when it recovers. Status only: the DNS list,
+dnsmasq and link_internet are never touched. dns_ask() is probe_addr()'s
+core, lifted out (same verdict).
+
+defaults.c: reaper_landns_enable=1 (a missing key = on), reaper_landns_domain
+empty. Main_ReaperDash.asp: the WAN pill and the Internet card keep the word
+"Connected"; the dot and the word turn amber while the check fails, and one
+page-level tooltip on both explains the state (text nodes only; hover for a
+mouse, focus or tap opens, a click pins, Esc / elsewhere / scroll / resize
+close; none in AP / repeater / bridge mode). Reaper_Failover.asp: the switch,
+the domain (validated as the daemon does) and the live state, posted with
+restart_rdnshc. 25 language packs: RDSH_91-103, RDHC_59-64, and RFW_328 for
+the list-save pre-check of the next commit (the packs move in lockstep).
+Lean: tests/test_landns_check.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c             | 319 +++++++++++++++++++--
+ release/src/router/shared/defaults.c       |   3 +
+ release/src/router/www/BR.dict             |  20 ++
+ release/src/router/www/CN.dict             |  20 ++
+ release/src/router/www/CZ.dict             |  20 ++
+ release/src/router/www/DA.dict             |  20 ++
+ release/src/router/www/DE.dict             |  20 ++
+ release/src/router/www/EN.dict             |  20 ++
+ release/src/router/www/ES.dict             |  20 ++
+ release/src/router/www/FI.dict             |  20 ++
+ release/src/router/www/FR.dict             |  20 ++
+ release/src/router/www/HU.dict             |  20 ++
+ release/src/router/www/IT.dict             |  20 ++
+ release/src/router/www/JP.dict             |  20 ++
+ release/src/router/www/KR.dict             |  20 ++
+ release/src/router/www/MS.dict             |  20 ++
+ release/src/router/www/Main_ReaperDash.asp | 140 ++++++++-
+ release/src/router/www/NL.dict             |  20 ++
+ release/src/router/www/NO.dict             |  20 ++
+ release/src/router/www/PL.dict             |  20 ++
+ release/src/router/www/RO.dict             |  20 ++
+ release/src/router/www/RU.dict             |  20 ++
+ release/src/router/www/Reaper_Failover.asp |  62 +++-
+ release/src/router/www/SL.dict             |  20 ++
+ release/src/router/www/SV.dict             |  20 ++
+ release/src/router/www/TH.dict             |  20 ++
+ release/src/router/www/TR.dict             |  20 ++
+ release/src/router/www/TW.dict             |  20 ++
+ release/src/router/www/UK.dict             |  20 ++
+ 29 files changed, 992 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index 735bc0c81a..6687694a47 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -49,6 +49,10 @@
+  * in router mode; restart_rdnshc is the service the System page fires. The
+  * daemon keeps running while the feature is off (one nvram read every 30 s)
+  * so a disable restores the stock order through the same path as a recovery.
++ *
++ * 2026-10-10: it also carries the dashboard's LAN name resolution check
++ * (landns_*, below rdnshc's own state) - a status-only probe of the path LAN
++ * devices resolve through, independent of this check's switch.
+  */
+ #include "rc.h"
+ #include <signal.h>
+@@ -173,10 +177,12 @@ static void cfg_read(struct hc_cfg *c)
+ 	c->strict = nvram_get_int("reaper_dnshc_strict");
+ }
+ 
+-/* One UDP query for <name> A IN, sent straight to target:53 (never through
+- * dnsmasq). 1 = a reply with our id came back (strict: NOERROR + >=1 record),
+- * 0 = silence, an error, or a reply that does not qualify. */
+-static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
++/* One UDP query for <name> A IN, sent straight to addr:port. Returns the
++ * reply's RCODE (0-15) when a reply with our id came back, -1 for silence, an
++ * error or a name that cannot be encoded; *ancount (may be NULL) gets the
++ * answer count. 2026-10-10: lifted out of probe_addr() so the LAN name
++ * resolution check below can ask dnsmasq and its upstreams the same way. */
++static int dns_ask(const char *addr, int af, int port, const char *name, int timeout_ms, int *ancount)
+ {
+ 	unsigned char pkt[512];
+ 	unsigned char *q;
+@@ -186,19 +192,20 @@ static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
+ 	struct timeval tv;
+ 	fd_set rf;
+ 	unsigned short id;
+-	int fd, len, r, n, ok = 0;
++	int fd, len, r, n, rc = -1;
+ 
++	if (ancount) *ancount = 0;
+ 	id = (unsigned short)((getpid() << 4) ^ (unsigned)now_s() ^ (unsigned)rand());
+ 	memset(pkt, 0, sizeof(pkt));
+ 	pkt[0] = id >> 8; pkt[1] = id & 0xff;
+ 	pkt[2] = 0x01;				/* RD */
+ 	pkt[5] = 1;				/* QDCOUNT */
+ 	q = pkt + 12;
+-	lab = c->name;
++	lab = name;
+ 	while (*lab) {
+ 		dot = strchr(lab, '.');
+ 		n = dot ? (int)(dot - lab) : (int)strlen(lab);
+-		if (n <= 0 || n > 63 || (q - pkt) + n + 1 > (int)sizeof(pkt) - 8) return 0;
++		if (n <= 0 || n > 63 || (q - pkt) + n + 1 > (int)sizeof(pkt) - 8) return -1;
+ 		*q++ = (unsigned char)n;
+ 		memcpy(q, lab, n);
+ 		q += n;
+@@ -213,43 +220,49 @@ static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
+ 	if (af == AF_INET6) {
+ 		struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+ 		s6->sin6_family = AF_INET6;
+-		s6->sin6_port = htons(53);
+-		if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) return 0;
++		s6->sin6_port = htons(port);
++		if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) return -1;
+ 		slen = sizeof(*s6);
+ 	} else {
+ 		struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+ 		s4->sin_family = AF_INET;
+-		s4->sin_port = htons(53);
+-		if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) return 0;
++		s4->sin_port = htons(port);
++		if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) return -1;
+ 		slen = sizeof(*s4);
+ 	}
+ 
+-	if ((fd = socket(af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0)) < 0) return 0;
++	if ((fd = socket(af == AF_INET6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0)) < 0) return -1;
+ 	if (connect(fd, (struct sockaddr *)&ss, slen) < 0 || send(fd, pkt, len, 0) != len) {
+ 		close(fd);
+-		return 0;
++		return -1;
+ 	}
+ 	FD_ZERO(&rf);
+ 	FD_SET(fd, &rf);
+-	tv.tv_sec = c->timeout_ms / 1000;
+-	tv.tv_usec = (c->timeout_ms % 1000) * 1000;
++	tv.tv_sec = timeout_ms / 1000;
++	tv.tv_usec = (timeout_ms % 1000) * 1000;
+ 	do {
+ 		r = select(fd + 1, &rf, NULL, NULL, &tv);
+ 	} while (r < 0 && errno == EINTR && !g_stop);
+ 	if (r > 0) {
+ 		r = recv(fd, pkt, sizeof(pkt), 0);
+ 		if (r >= 12 && pkt[0] == (id >> 8) && pkt[1] == (id & 0xff) && (pkt[2] & 0x80)) {
+-			if (!c->strict)
+-				ok = 1;
+-			else {
+-				int rcode = pkt[3] & 0x0f;
+-				int ancount = (pkt[6] << 8) | pkt[7];
+-				ok = (rcode == 0 && ancount > 0);
+-			}
++			rc = pkt[3] & 0x0f;
++			if (ancount) *ancount = (pkt[6] << 8) | pkt[7];
+ 		}
+ 	}
+ 	close(fd);
+-	return ok;
++	return rc;
++}
++
++/* The health check's probe: <name> A IN straight to target:53 (never through
++ * dnsmasq). 1 = a reply with our id came back (strict: NOERROR + >=1 record),
++ * 0 = silence, an error, or a reply that does not qualify. */
++static int probe_addr(const struct hc_cfg *c, const char *addr, int af)
++{
++	int an = 0, rc = dns_ask(addr, af, 53, c->name, c->timeout_ms, &an);
++	if (rc < 0) return 0;
++	if (!c->strict) return 1;
++	return (rc == 0 && an > 0);
+ }
+ 
+ /* Does this line name the target as a plain upstream? For the servers-file
+@@ -414,6 +427,260 @@ static void state_set(const char *what, long since, int alive)
+ 	nvram_set("reaper_dnshc_state", st);
+ }
+ 
++/* ======================================================================
++ * 2026-10-10: LAN name resolution check (BACKLOG "The dashboard says
++ * Connected while LAN clients have no name resolution").
++ *
++ * The dashboard's Internet status only says the WAN holds an address. LAN
++ * devices resolve through dnsmasq on lan_ipaddr:53 (or through the servers
++ * DHCP hands out, when dhcp_dns1_x/dhcp_dns2_x are set), and that path can be
++ * dead while the WAN is fine: dnsmasq not running, or every upstream silent
++ * for names it has not cached (RT-BE86U 2026-10-04: unbound up, its
++ * WireGuard upstream down). Once a minute, while the WAN is up, this asks the
++ * router's DNS for "localhost" (answered from /etc/hosts, nothing leaves the
++ * box) and for a random name under reaper_landns_domain (or dns_probe_host);
++ * the random label is what gets past dnsmasq's and unbound's caches. When the
++ * fresh name fails it asks up to four upstreams directly, to name the silent
++ * ones. Two bad checks in a row turn the state bad, one good one clears it.
++ *
++ * Status only: nothing is moved, nothing is reloaded, link_internet (WAN LEDs,
++ * Dual WAN fail-over) is never touched. Published as nvram
++ * reaper_landns_state "<state> <seconds in state> <silent servers|->";
++ * Main_ReaperDash.asp paints the Internet status amber and explains it in a
++ * tooltip. Independent of the health check's switch; reaper_landns_enable=0
++ * (DNS Failover page) turns it off. Syslog: one line when it turns bad, one
++ * when it recovers - nothing per check.
++ * ====================================================================== */
++#define LDNS_EVERY	60	/* s between checks */
++#define LDNS_FIRST	15	/* s after start (or a switch-on) before the first */
++#define LDNS_LOCAL_MS	1500	/* the router's own name: any reply = dnsmasq is listening */
++#define LDNS_FRESH_MS	2000	/* a fresh name through the path LAN devices use */
++#define LDNS_UP_MS	1500	/* each upstream, asked directly */
++#define LDNS_UP_MAX	4
++
++/* LANDNS-PURE-BEGIN (host-tested by test_landns_check.py; no firmware calls in here) */
++#define LDNS_UNK	0	/* not judged yet */
++#define LDNS_OK		1
++#define LDNS_FAIL	2	/* the router's DNS answers, but no upstream resolves a new name */
++#define LDNS_SVC	3	/* the router's DNS does not answer at all */
++#define LDNS_DFAIL	4	/* the DNS servers DHCP hands out do not resolve a new name */
++#define LDNS_HELD	5	/* the WAN is down: not judged (the status is red already) */
++#define LDNS_OFF	6	/* switched off */
++#define LDNS_BAD_AFTER	2	/* consecutive bad checks before the state turns bad */
++
++/* A reply that proves the path resolves: NOERROR, or NXDOMAIN (a random name
++ * normally does not exist). SERVFAIL, REFUSED, anything else, or silence (-1)
++ * does not. */
++static int landns_rcode_ok(int rcode)
++{
++	return rcode == 0 || rcode == 3;
++}
++
++static int landns_is_bad(int st)
++{
++	return st == LDNS_FAIL || st == LDNS_SVC || st == LDNS_DFAIL;
++}
++
++/* One check's result r (LDNS_OK / _FAIL / _SVC / _DFAIL, or LDNS_HELD) ->
++ * the published state. *bad counts consecutive bad checks. A good check clears
++ * at once; a bad one needs LDNS_BAD_AFTER in a row; until then a judged state
++ * stands and an unjudged one stays unknown. */
++static int landns_step(int cur, int r, int *bad)
++{
++	if (r == LDNS_HELD) { *bad = 0; return LDNS_HELD; }
++	if (r == LDNS_OK) { *bad = 0; return LDNS_OK; }
++	if (*bad < 100) (*bad)++;
++	if (*bad >= LDNS_BAD_AFTER) return r;
++	return (cur == LDNS_HELD || cur == LDNS_OFF) ? LDNS_UNK : cur;
++}
++
++/* A domain the random label can go under: letters, digits and hyphens in
++ * dot-separated labels of 1-63, at least two labels, 3-100 characters. */
++static int landns_domain_ok(const char *d)
++{
++	int len = 0, lab = 0, dots = 0;
++	if (!d) return 0;
++	for (; d[len]; len++) {
++		char ch = d[len];
++		if (ch == '.') {
++			if (lab == 0) return 0;
++			lab = 0; dots++;
++		} else if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-') {
++			if (++lab > 63) return 0;
++		} else
++			return 0;
++	}
++	return len >= 3 && len <= 100 && lab > 0 && dots > 0;
++}
++/* LANDNS-PURE-END */
++
++static const char *landns_name(int st)
++{
++	static const char *n[] = { "unk", "ok", "fail", "svc", "dfail", "wan", "off" };
++	return (st >= 0 && st <= LDNS_OFF) ? n[st] : "unk";
++}
++
++struct landns {
++	int st, bad;
++	long since, next;
++	char silent[96];		/* "a,b#53535" - the servers that did not answer, for the tooltip */
++};
++
++static void landns_publish(const struct landns *ld, long t)
++{
++	char v[128];
++	snprintf(v, sizeof(v), "%s %ld %s", landns_name(ld->st), t - ld->since, *ld->silent ? ld->silent : "-");
++	nvram_set("reaper_landns_state", v);
++}
++
++/* The same test the health check's HOLD uses, on the PRIMARY unit (Dual WAN). */
++static int landns_uplink_down(void)
++{
++	char k[24];
++	const char *s;
++	if (nvram_match("link_wan", "0")) return 1;
++	snprintf(k, sizeof(k), "wan%d_state_t", wan_primary_ifunit());
++	s = nvram_safe_get(k);
++	return *s && atoi(s) != 2;
++}
++
++static void landns_append(char *out, size_t len, const char *what)
++{
++	size_t used = strlen(out);
++	if (used + strlen(what) + 2 > len) return;	/* full: the first ones are the useful ones */
++	if (used) strlcat(out, ",", len);
++	strlcat(out, what, len);
++}
++
++/* The servers LAN devices are handed by DHCP, when the admin set any;
++ * 0 = devices are given the router. */
++static int landns_dhcp_targets(char t[2][INET_ADDRSTRLEN])
++{
++	static const char *keys[2] = { "dhcp_dns1_x", "dhcp_dns2_x" };
++	struct in_addr a;
++	const char *p;
++	int i, n = 0;
++	if (!nvram_match("dhcp_enable_x", "1")) return 0;
++	for (i = 0; i < 2; i++) {
++		p = nvram_safe_get(keys[i]);
++		if (*p && inet_pton(AF_INET, p, &a) == 1 && a.s_addr)
++			strlcpy(t[n++], p, INET_ADDRSTRLEN);
++	}
++	return n;
++}
++
++/* Ask up to LDNS_UP_MAX plain upstreams of dnsmasq directly; list the ones
++ * that do not resolve qname. The file is read under the resolv lock (the
++ * health check rewrites it under the same lock), the probes run after. */
++static void landns_silent_upstreams(const char *qname, char *out, size_t len)
++{
++	char addr[LDNS_UP_MAX][INET6_ADDRSTRLEN], line[HC_LINE];
++	int port[LDNS_UP_MAX], fam[LDNS_UP_MAX], n = 0, i, lock;
++	unsigned char bin[16];
++	FILE *fp;
++
++	*out = 0;
++	lock = file_lock("resolv");
++	if ((fp = fopen(HC_DNSMASQ, "r")) != NULL) {
++		while (n < LDNS_UP_MAX && fgets(line, sizeof(line), fp)) {
++			const char *p = line + 7;	/* strlen("server=") */
++			size_t al;
++			if (!line_is_upstream(line, "server=")) continue;
++			al = strcspn(p, "#@% \t\r\n");
++			if (al == 0 || al >= INET6_ADDRSTRLEN) continue;
++			memcpy(addr[n], p, al);
++			addr[n][al] = 0;
++			port[n] = 53;
++			if (p[al] == '#') {
++				int pt = atoi(p + al + 1);
++				if (pt > 0 && pt < 65536) port[n] = pt;
++			}
++			if (inet_pton(AF_INET, addr[n], bin) == 1) fam[n] = AF_INET;
++			else if (inet_pton(AF_INET6, addr[n], bin) == 1 && hc_v6_usable()) fam[n] = AF_INET6;
++			else continue;
++			n++;
++		}
++		fclose(fp);
++	}
++	file_unlock(lock);
++	for (i = 0; i < n && !g_stop; i++) {
++		char nm[INET6_ADDRSTRLEN + 8];
++		if (landns_rcode_ok(dns_ask(addr[i], fam[i], port[i], qname, LDNS_UP_MS, NULL))) continue;
++		if (port[i] != 53) snprintf(nm, sizeof(nm), "%s#%d", addr[i], port[i]);
++		else strlcpy(nm, addr[i], sizeof(nm));
++		landns_append(out, len, nm);
++	}
++}
++
++/* Called once per loop pass; does nothing until a check is due. */
++static void landns_tick(struct landns *ld)
++{
++	char tg[2][INET_ADDRSTRLEN], q[128], lan[INET_ADDRSTRLEN] = "", silent[sizeof(ld->silent)] = "";
++	const char *d;
++	long t = now_s(), prev_since = ld->since;
++	int r, nt, i, prev = ld->st;
++	struct in_addr a;
++
++	if (nvram_match("reaper_landns_enable", "0")) {
++		if (ld->st != LDNS_OFF) {
++			ld->st = LDNS_OFF; ld->bad = 0; ld->since = t; *ld->silent = 0;
++			landns_publish(ld, t);
++		}
++		return;
++	}
++	if (ld->st == LDNS_OFF) {
++		ld->st = LDNS_UNK; ld->bad = 0; ld->since = t; ld->next = t + LDNS_FIRST; *ld->silent = 0;
++		landns_publish(ld, t);
++	}
++	if (t < ld->next) return;
++	ld->next = t + LDNS_EVERY;
++
++	if (landns_uplink_down())
++		r = LDNS_HELD;
++	else {
++		d = nvram_safe_get("reaper_landns_domain");
++		if (!landns_domain_ok(d)) d = nvram_safe_get("dns_probe_host");
++		if (!landns_domain_ok(d)) d = "dns.msftncsi.com";
++		snprintf(q, sizeof(q), "rq%08x.%s", (unsigned)rand(), d);
++		if ((nt = landns_dhcp_targets(tg)) > 0) {
++			r = LDNS_DFAIL;
++			for (i = 0; i < nt && r != LDNS_OK; i++)
++				if (landns_rcode_ok(dns_ask(tg[i], AF_INET, 53, q, LDNS_FRESH_MS, NULL))) r = LDNS_OK;
++			if (r != LDNS_OK)
++				for (i = 0; i < nt; i++) landns_append(silent, sizeof(silent), tg[i]);
++		} else {
++			strlcpy(lan, nvram_safe_get("lan_ipaddr"), sizeof(lan));
++			if (inet_pton(AF_INET, lan, &a) != 1) strlcpy(lan, "127.0.0.1", sizeof(lan));
++			if (dns_ask(lan, AF_INET, 53, "localhost", LDNS_LOCAL_MS, NULL) < 0)
++				r = LDNS_SVC;
++			else if (landns_rcode_ok(dns_ask(lan, AF_INET, 53, q, LDNS_FRESH_MS, NULL)))
++				r = LDNS_OK;
++			else {
++				r = LDNS_FAIL;
++				landns_silent_upstreams(q, silent, sizeof(silent));
++			}
++		}
++	}
++
++	ld->st = landns_step(ld->st, r, &ld->bad);
++	if (ld->st != prev) ld->since = t;
++	if (ld->st == r && landns_is_bad(r)) strlcpy(ld->silent, silent, sizeof(ld->silent));
++	else if (!landns_is_bad(ld->st)) *ld->silent = 0;
++
++	if (landns_is_bad(ld->st) && ld->st != prev) {
++		if (ld->st == LDNS_SVC)
++			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS service is not answering on %s:53 (%d checks) - LAN devices cannot look up any name", lan, ld->bad);
++		else if (ld->st == LDNS_DFAIL)
++			logmessage(HC_TAG, "LAN name resolution FAILING: the DNS servers LAN devices are handed by DHCP (%s) do not resolve new names (%d checks)", ld->silent, ld->bad);
++		else if (*ld->silent)
++			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS answers, but no upstream resolves new names (%d checks) - not answering: %s", ld->bad, ld->silent);
++		else
++			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS answers, but does not resolve new names (%d checks) - every upstream answered when asked directly", ld->bad);
++	} else if (landns_is_bad(prev) && ld->st == LDNS_OK)
++		logmessage(HC_TAG, "LAN name resolution restored after %ld s", t - prev_since);
++	landns_publish(ld, t);
++}
++
+ int rdnshc_main(int argc, char *argv[])
+ {
+ 	struct hc_cfg c;
+@@ -426,6 +693,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	 * server's place. Index 0 = IPv4, 1 = IPv6; fseen = probed at least once. */
+ 	int fmiss[2] = { 0, 0 }, fhit[2] = { 0, 0 }, fdown[2] = { 0, 0 }, fseen[2] = { 0, 0 };
+ 	long since = 0;
++	struct landns ld = { LDNS_OFF, 0, 0, 0, "" };	/* 2026-10-10: the LAN name resolution check */
+ 	(void)argc; (void)argv;
+ 
+ 	signal(SIGTERM, on_sig);
+@@ -486,6 +754,10 @@ int rdnshc_main(int argc, char *argv[])
+ 			hc_gate();
+ 		}
+ 
++		/* 2026-10-10: runs whether or not the health check is switched on; it
++		 * paces itself (LDNS_EVERY) and only reads, never moves anything */
++		landns_tick(&ld);
++
+ 		if (!enabled) {
+ 			state_set("off", 0, -1);
+ 			for (i = 0; i < HC_POLL_OFF && !g_stop; i++) sleep(1);
+@@ -625,6 +897,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	 * feature is handled by the loop above before we get here. Silent: the
+ 	 * next instance logs "Enabled" and says it kept the failover. */
+ 	state_set("", 0, -1);
++	nvram_set("reaper_landns_state", "");	/* nobody is checking: the dashboard shows no verdict */
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index c234e145f1..47e243afa1 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3185,6 +3185,9 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_dnshc_fail", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive misses -> demoted */
+ 	{ "reaper_dnshc_recover", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive hits -> restored */
+ 	{ "reaper_dnshc_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = only NOERROR with a record counts as alive */
++	/* 2026-10-10: the dashboard's LAN name resolution check (rc/rdnshc.c landns_*): status only, on by default, switch on the DNS Failover page */
++	{ "reaper_landns_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "reaper_landns_domain", "", CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* the random label goes under this; empty = dns_probe_host */
+ 	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
+ 	{ "reaper_dns_nocache", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq cache-size=0 */
+ 	{ "reaper_dns_revshare", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: main LAN <-> VLAN reverse DNS (rev-server), owner: default on */
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index bd20242c09..eb30a5b828 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frequência
+ RWAN_23=A porta WAN deve ser selecionada no Dual WAN.
+ RWFS_14=A senha deve ter pelo menos 10 caracteres, incluindo 1 letra, 1 caractere especial e 1 número.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 4495794c96..dd095ced08 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=频率
+ RWAN_23=必须在 Dual WAN 中选择 WAN 端口。
+ RWFS_14=密码长度至少为 10 个字符，且须包含 1 个字母、1 个特殊字符和 1 个数字。
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 2595d706fa..9496e38c24 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvence
+ RWAN_23=V režimu Dual WAN musí být vybrán port WAN.
+ RWFS_14=Heslo musí mít alespoň 10 znaků a obsahovat 1 písmeno, 1 speciální znak a 1 číslici.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 8c570143ec..bccab6a600 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvens
+ RWAN_23=WAN-porten skal vælges i Dual WAN.
+ RWFS_14=Adgangskoden skal være på mindst 10 tegn og indeholde 1 bogstav, 1 specialtegn og 1 tal.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index e6482e54c4..3cb4651c18 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frequenz
+ RWAN_23=In Dual WAN muss der WAN-Port ausgewählt sein.
+ RWFS_14=Das Passwort muss mindestens 10 Zeichen lang sein und 1 Buchstaben, 1 Sonderzeichen und 1 Ziffer enthalten.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f511527a9a..b1aa51b984 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frequency
+ RWAN_23=WAN port should be selected in Dual WAN.
+ RWFS_14=Password must contain at least 10 characters in length, including 1 letter, 1 special character, and 1 numeric character.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 59764599ba..a011ded199 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frecuencia
+ RWAN_23=Debe seleccionarse el puerto WAN en Dual WAN.
+ RWFS_14=La contraseña debe tener al menos 10 caracteres e incluir 1 letra, 1 carácter especial y 1 número.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 831dc00c72..0d2badc90e 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Taajuus
+ RWAN_23=WAN-portti on valittava Dual WAN -asetuksissa.
+ RWFS_14=Salasanan on oltava vähintään 10 merkkiä pitkä ja sisällettävä 1 kirjain, 1 erikoismerkki ja 1 numero.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 8b9a9c0512..1d55f1de72 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Fréquence
+ RWAN_23=Le port WAN doit être sélectionné dans Dual WAN.
+ RWFS_14=Le mot de passe doit comporter au moins 10 caractères, dont 1 lettre, 1 caractère spécial et 1 chiffre.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index a5f3ba8bb7..e504fef492 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvencia
+ RWAN_23=A Dual WAN beállításban ki kell választani a WAN portot.
+ RWFS_14=A jelszónak legalább 10 karakter hosszúnak kell lennie, és tartalmaznia kell 1 betűt, 1 speciális karaktert és 1 számjegyet.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 67666f5e0f..8d31bcbf1e 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frequenza
+ RWAN_23=La porta WAN deve essere selezionata in Dual WAN.
+ RWFS_14=La password deve contenere almeno 10 caratteri, inclusi 1 lettera, 1 carattere speciale e 1 numero.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index ad976e20e0..0d2198ef2c 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=周波数
+ RWAN_23=Dual WAN では WAN ポートを選択する必要があります。
+ RWFS_14=パスワードは 10 文字以上で、英字 1 文字、特殊文字 1 文字、数字 1 文字以上を含める必要があります。
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index eea5cb97c8..47a83ce992 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=주파수
+ RWAN_23=Dual WAN에서 WAN 포트를 선택해야 합니다.
+ RWFS_14=비밀번호는 10자 이상이어야 하며 문자 1개, 특수 문자 1개, 숫자 1개를 포함해야 합니다.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 3b3bf3de62..bd7fefb107 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekuensi
+ RWAN_23=Port WAN mesti dipilih dalam Dual WAN.
+ RWFS_14=Kata laluan mesti sekurang-kurangnya 10 aksara, termasuk 1 huruf, 1 aksara khas dan 1 nombor.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 42057187e3..c15d5543df 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -166,6 +166,22 @@ main{min-width:0}
+    - it comes straight from EXTENDNO, which the build stamps - so this adds
+    no new source of truth; it just makes the fact impossible to skim past. */
+ .pill .btag{color:var(--amber);border:1px solid currentColor;border-radius:4px;padding:0 5px;font-family:var(--hdr);font-weight:700;letter-spacing:.06em;font-size:10px;text-transform:uppercase}
++/* 2026-10-10: the Internet status tooltip (WAN pill + Internet card). ONE box at
++   page level: the pill strip is overflow:hidden, so a box inside the pill would be
++   clipped. This page is top-level (never framed), so position:fixed measures
++   against the screen (rule 35 does not apply). Width capped so no translation can
++   push it off a phone screen; long server lists wrap. */
++.tipa{cursor:help}
++.tipa:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
++.ntip{position:fixed;z-index:50;left:16px;top:60px;max-width:min(320px,calc(100vw - 32px));padding:10px 12px;
++  border:1px solid var(--line-soft);border-radius:10px;background:var(--panel);color:var(--bone-dim);
++  font-size:12px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.55);overflow-wrap:anywhere;white-space:normal}
++.ntip[hidden]{display:none}
++.ntip .r{display:block}
++.ntip .r + .r{margin-top:4px}
++.ntip b{color:var(--bone);font-weight:600}
++.ntip .ok b{color:var(--jade)} .ntip .warn b{color:var(--amber)} .ntip .bad b{color:var(--danger)}
++.ntip .dim{color:var(--steel)}
+ /* firmware-update banner: lives in the content column, NOT in the pill strip.
+    The strip is a nowrap flex row and its intrinsic width floors the 1fr grid
+    track, so a 7th pill widened the whole document past the right edge of the
+@@ -508,7 +524,7 @@ main{min-width:0}
+     <header class="top">
+       <a class="brand" href="#" title="REAPER"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
+       <div class="pills">
+-        <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
++        <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+         <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+         <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+         <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
+@@ -557,7 +573,7 @@ main{min-width:0}
+             </div>
+           </div>
+           <div>
+-            <div class="state"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">&mdash;</span></div>
++            <div class="state tipa" id="i_state_box" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="i_dot"></span><span class="lbl" id="i_state">&mdash;</span></div>
+             <div class="big wanip mono" id="i_wanip">&mdash;</div>
+             <div class="v6line" id="i_v6line"><span class="k">IPv6</span><span class="v mono" id="i_wan6"></span></div>
+             <div class="meta">
+@@ -724,6 +740,8 @@ main{min-width:0}
+   <input type="hidden" name="wan_unit" value="<% get_wan_unit(); %>">
+   <input type="hidden" name="wan_enable" value="">
+ </form>
++<!-- 2026-10-10: the Internet status tooltip (see .ntip) -->
++<div id="ntip" class="ntip" role="tooltip" hidden></div>
+ <div id="wan_overlay" style="display:none;position:fixed;inset:0;z-index:99;background:rgba(4,4,5,.92);backdrop-filter:blur(3px)">
+   <div class="ask" role="dialog" aria-modal="true" aria-labelledby="wan_ask_t">
+     <div class="t" id="wan_ask_t"><#RDSH_87#></div>
+@@ -780,6 +798,8 @@ var SSI = {
+   dns1:     decodeURIComponent('<% nvram_char_to_ascii("", "wan1_dns"); %>'),
+   wan_state1:'<% nvram_get("wan1_state_t"); %>',
+   wans_mode:'<% nvram_get("wans_mode"); %>',
++  /* 2026-10-10: rc/rdnshc.c's LAN name resolution check, "<state> <s> <silent|->" */
++  landns:   '<% nvram_get("reaper_landns_state"); %>',
+   ddns_en:  '<% nvram_get("ddns_enable_x"); %>',
+   ddns_host:decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+   fw4:      '<% nvram_get("fw_enable_x"); %>',
+@@ -893,6 +913,113 @@ function v6Up(){
+   var gw=String((WAN6.IPv6_Gateway)||'');
+   return !!(a || gw);
+ }
++/* ---- 2026-10-10: LAN name resolution in the Internet status ----
++   rc/rdnshc.c checks once a minute whether LAN devices can resolve names
++   (nvram reaper_landns_state "<state> <seconds in state> <silent servers|->").
++   The WAN pill and the Internet card keep their word ("Connected" stays true:
++   the WAN is up); a failing check turns the dot and the word amber, and a
++   tooltip on both says what is going on. One box at page level (the pill strip
++   clips), opened by hover, keyboard focus or a tap; Esc, a tap elsewhere, a
++   scroll or a resize closes it. Every value goes in as text, never as HTML. */
++var NET={v4:false, v6:false, ip:'', lan:''};
++var NT={
++  inet:`<#Internet#>`, conn:`<#Connected#>`, disc:`<#Disconnected#>`,
++  lan:`<#RDSH_91#>`, working:`<#RDSH_92#>`, failing:`<#RDSH_93#>`, unk:`<#RDSH_94#>`,
++  off:`<#RDSH_95#>`, held:`<#RDSH_96#>`, svc:`<#RDSH_97#>`, fail:`<#RDSH_98#>`,
++  silent:`<#RDSH_99#>`, dfail:`<#RDSH_100#>`, every:`<#RDSH_101#>`, noaddr:`<#RDSH_102#>`,
++  upall:`<#RDSH_103#>`
++};
++var TIP={el:null, open:null, pinned:false};
++function landnsGet(){
++  var p=String(NET.lan||'').split(' ');
++  return {st:p[0]||'', s:parseInt(p[1],10)||0, silent:(p[2] && p[2]!=='-') ? p[2] : ''};
++}
++function landnsBad(st){ return st==='fail' || st==='svc' || st==='dfail'; }
++function durTxt(s){
++  if(s<60) return s+' s';
++  if(s<3600) return Math.floor(s/60)+' min';
++  if(s<86400) return Math.floor(s/3600)+' h '+Math.floor((s%3600)/60)+' min';
++  return Math.floor(s/86400)+' d '+Math.floor((s%86400)/3600)+' h';
++}
++/* Runs right after either Internet paint (first render, live poll). Amber only
++   while the WAN is up; otherwise it hands the inline colours back to the CSS so
++   a cleared warning does not linger. A WAN that is down was painted red by the
++   caller and is left alone. */
++function netPaint(){
++  var any=NET.v4 || NET.v6, amber=any && landnsBad(landnsGet().st);
++  if(any){
++    ['p_wan_dot','i_dot'].forEach(function(id){ var e=$id(id); if(!e) return;
++      e.style.background = amber ? 'var(--amber)' : ''; e.style.boxShadow = amber ? '0 0 0 3px rgba(224,169,59,.18)' : ''; });
++    ['p_wan','i_state'].forEach(function(id){ var e=$id(id); if(e) e.style.color = amber ? 'var(--amber)' : ''; });
++  }
++  if(TIP.open) tipFill();
++}
++function tipRow(cls, parts){
++  var r=document.createElement('span'); r.className='r'+(cls ? ' '+cls : '');
++  parts.forEach(function(p){ if(p===null || p===undefined || p==='') return; r.appendChild(typeof p==='string' ? document.createTextNode(p) : p); });
++  return r;
++}
++function tipB(t){ var b=document.createElement('b'); b.textContent=t; return b; }
++function tipFill(){
++  var t=TIP.el; if(!t) return;
++  while(t.firstChild) t.removeChild(t.firstChild);
++  var any=NET.v4 || NET.v6, d=landnsGet(), st=d.st, line, cls='', why='';
++  t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(any ? NT.conn : NT.disc),
++    any ? ((NET.v4 && NET.ip) ? ' ('+NET.ip+')' : (NET.v6 ? ' (IPv6)' : '')) : '']));
++  if(!any){ t.appendChild(tipRow('dim', [NT.noaddr])); return; }
++  if(landnsBad(st)){
++    line=NT.failing+' ('+durTxt(d.s)+')'; cls='warn';
++    why = (st==='svc') ? NT.svc : ((st==='dfail') ? NT.dfail : (d.silent ? NT.fail : NT.upall));
++  } else if(st==='ok'){ line=NT.working; cls='ok'; }
++  else if(st==='off') line=NT.off;
++  else if(st==='wan') line=NT.held;
++  else line=NT.unk;
++  t.appendChild(tipRow(cls, [NT.lan+': ', tipB(line)]));
++  if(why) t.appendChild(tipRow('', [why]));
++  if(landnsBad(st) && d.silent) t.appendChild(tipRow('', [NT.silent+' ', tipB(d.silent.split(',').join(', '))]));
++  if(st!=='off') t.appendChild(tipRow('dim', [NT.every]));
++}
++function tipPlace(a){
++  var t=TIP.el, r=a.getBoundingClientRect(), w=t.offsetWidth, h=t.offsetHeight;
++  var vw=window.innerWidth, vh=window.innerHeight;
++  var left=Math.min(Math.max(16, r.left), Math.max(16, vw-16-w));
++  var top=r.bottom+8;
++  if(top+h > vh-8 && r.top-8-h >= 8) top=r.top-8-h;
++  t.style.left=left+'px'; t.style.top=top+'px';
++}
++function tipShow(a){ if(!TIP.el) return; tipFill(); TIP.el.hidden=false; TIP.open=a; tipPlace(a); }
++function tipHide(){ if(!TIP.el) return; TIP.el.hidden=true; TIP.open=null; TIP.pinned=false; }
++/* hover opens for a mouse only (a tap also fires pointerenter); focus opens for
++   the keyboard and for a tap; a click or tap pins it open, a second one closes */
++function tipBind(id){
++  var a=$id(id); if(!a) return;
++  a.addEventListener('pointerenter', function(e){ if(e.pointerType==='mouse' && TIP.open!==a) tipShow(a); });
++  a.addEventListener('pointerleave', function(e){ if(e.pointerType==='mouse' && TIP.open===a && !TIP.pinned) tipHide(); });
++  a.addEventListener('focus', function(){ if(TIP.open!==a) tipShow(a); });
++  a.addEventListener('blur', function(){ if(TIP.open===a && !TIP.pinned) tipHide(); });
++  a.addEventListener('click', function(e){
++    e.stopPropagation();
++    if(TIP.open===a && TIP.pinned){ tipHide(); return; }
++    if(TIP.open!==a) tipShow(a);
++    TIP.pinned=true;
++  });
++  a.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); a.click(); } });
++}
++(function(){
++  TIP.el=$id('ntip');
++  var ids=['p_wan_pill','i_state_box'];
++  if(!ROUTING || !TIP.el){
++    /* no WAN to describe (AP / repeater / bridge): the two spots are plain text again */
++    ids.forEach(function(id){ var a=$id(id); if(!a) return;
++      a.removeAttribute('tabindex'); a.removeAttribute('role'); a.removeAttribute('aria-describedby'); a.classList.remove('tipa'); });
++    return;
++  }
++  ids.forEach(tipBind);
++  document.addEventListener('click', function(e){ if(TIP.open && !TIP.el.contains(e.target)) tipHide(); });
++  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && TIP.open) tipHide(); });
++  window.addEventListener('scroll', function(){ if(TIP.open) tipHide(); }, true);
++  window.addEventListener('resize', function(){ if(TIP.open) tipHide(); });
++})();
+ /* The IPv6 half of the Internet card, painted from WAN6/V6RTR. The render used
+    to paint it once from SSI and the live poll re-read IPv4 only, so a v6 that
+    came up after the page loaded (a 6in4 tunnel, a late DHCP-PD) never appeared
+@@ -1051,6 +1178,9 @@ function paintPosture(){
+         if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
+         if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
+       }
++      /* 2026-10-10: LAN name resolution (amber + tooltip), see netPaint() */
++      NET.v4=wanUp; NET.v6=v6up; NET.ip=wanUp ? SSI.wanip : ''; NET.lan=SSI.landns;
++      netPaint();
+     }
+     var c4=$id('chip4');
+     if(c4){ c4.className='chip '+(wanUp?'up':'off'); c4.textContent = wanUp?'IPv4':`<#RDSH_28#>`; }
+@@ -1118,6 +1248,9 @@ function paintPosture(){
+     var c4=$id('chip4'); if(c4){ c4.className='chip '+(v4?'up':'off'); c4.textContent=v4?'IPv4':`<#RDSH_28#>`; }
+     if(v4) setTxt('i_wanip', ip);
+     paintV6(v4);
++    /* 2026-10-10: after the colours above, so amber wins while the check fails */
++    NET.v4=v4; NET.v6=v6Up(); NET.ip=v4 ? ip : '';
++    netPaint();
+     return any;
+   }
+   /* also read the primary unit's enable flag, so the header switch stays honest if
+@@ -1125,7 +1258,7 @@ function paintPosture(){
+   var ENK='wan'+((SSI.wan_unit==='1')?'1':'0')+'_enable';
+   /* v3.2.8: both units plus wan_primary, so a fail-over (or fail-back) while the
+      page is open moves the card and the header switch to the live line. */
+-  var HK=['wan_primary','wan0_enable','wan1_enable','ipv6_rtr_addr'];
++  var HK=['wan_primary','wan0_enable','wan1_enable','ipv6_rtr_addr','reaper_landns_state'];
+   [0,1].forEach(function(u){ ['state_t','ipaddr','gateway','dns'].forEach(function(k){ HK.push('wan'+u+'_'+k); }); });
+   /* 2026-10-09: wan_ipv6_network() rides the same request (appGet emits it as a
+      JSON object), so the IPv6 half of the card is as live as the IPv4 half */
+@@ -1152,6 +1285,7 @@ function paintPosture(){
+           var j=JSON.parse(x.responseText);
+           if(j.wan_ipv6_network && typeof j.wan_ipv6_network==='object') WAN6=j.wan_ipv6_network;
+           if(typeof j.ipv6_rtr_addr==='string') V6RTR=j.ipv6_rtr_addr;
++          if(typeof j.reaper_landns_state==='string') NET.lan=j.reaper_landns_state;
+           var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:SSI.wan_unit;
+           var p=wanPick(j, pu, SSI.wans_mode==='lb');
+           up=apply(p.st, p.ip, p.gw, p.dns);
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index e855a81551..4985155988 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frequentie
+ RWAN_23=De WAN-poort moet worden geselecteerd in Dual WAN.
+ RWFS_14=Het wachtwoord moet minimaal 10 tekens lang zijn en 1 letter, 1 speciaal teken en 1 cijfer bevatten.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index a066622ee1..15e3231a50 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvens
+ RWAN_23=WAN-porten må velges i Dual WAN.
+ RWFS_14=Passordet må være minst 10 tegn langt og inneholde 1 bokstav, 1 spesialtegn og 1 tall.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 3a300a176a..ebb80098b2 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Częstotliwość
+ RWAN_23=W Dual WAN należy wybrać port WAN.
+ RWFS_14=Hasło musi mieć co najmniej 10 znaków i zawierać 1 literę, 1 znak specjalny oraz 1 cyfrę.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index dbeaf89237..b71fc3a747 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frecvență
+ RWAN_23=Portul WAN trebuie selectat în Dual WAN.
+ RWFS_14=Parola trebuie să aibă cel puțin 10 caractere, inclusiv 1 literă, 1 caracter special și 1 cifră.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 97715a5205..5499079423 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Частота
+ RWAN_23=В режиме Dual WAN необходимо выбрать порт WAN.
+ RWFS_14=Пароль должен содержать не менее 10 символов, включая 1 букву, 1 специальный символ и 1 цифру.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/Reaper_Failover.asp b/release/src/router/www/Reaper_Failover.asp
+index 031084936a..977a42c7e5 100644
+--- a/release/src/router/www/Reaper_Failover.asp
++++ b/release/src/router/www/Reaper_Failover.asp
+@@ -312,6 +312,27 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+     <p><#RDHC_42#></p>
+     <p id="dot_off_note" style="display:none;color:var(--amber)"><#RDHC_43#></p>
+   </div>
++  <!-- 2026-10-10: the dashboard's LAN name resolution check (rc/rdnshc.c landns_*) -->
++  <div class="card" id="landns_card">
++    <div class="chead">
++      <span class="cico" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/><path d="M8 10l2.5 2.5L16 7"/></svg></span>
++      <h2><#RDHC_59#></h2>
++      <label class="sw"><input type="checkbox" id="landns" <% nvram_match("reaper_landns_enable", "1", "checked"); %>><span class="tr"></span></label>
++    </div>
++    <p><b style="color:var(--bone);font-weight:600"><#RDHC_60#></b></p>
++    <p><#RDHC_61#></p>
++    <div class="fields" style="grid-template-columns:1fr;margin-top:12px">
++      <label class="fld">
++        <span class="l"><#RDHC_62#></span>
++        <input type="text" id="landns_dom" maxlength="100" value="<% nvram_get("reaper_landns_domain"); %>" placeholder="<% nvram_get("dns_probe_host"); %>" autocorrect="off" autocapitalize="off" spellcheck="false">
++        <span class="note"><#RDHC_63#></span>
++      </label>
++    </div>
++    <div class="stline">
++      <span class="k"><#RDHC_12#></span>
++      <span class="v" id="ld_v">&mdash;</span>
++    </div>
++  </div>
+ </div>
+ 
+ <div class="bar">
+@@ -343,7 +364,10 @@ var ORIG = {
+   v6names: '<% nvram_get("reaper_dns_v6names"); %>',
+   dotstrict: '<% nvram_get("reaper_dot_strict"); %>',
+   target6: '<% nvram_get("reaper_dnshc_target6"); %>',
+-  state: '<% nvram_get("reaper_dnshc_state"); %>'
++  state: '<% nvram_get("reaper_dnshc_state"); %>',
++  landns: '<% nvram_get("reaper_landns_enable"); %>',
++  landnsdom: '<% nvram_get("reaper_landns_domain"); %>',
++  landnsstate: '<% nvram_get("reaper_landns_state"); %>'
+ };
+ var T = {
+   off: `<#RDHC_37#>`, up: `<#RDHC_38#>`, down: `<#RDHC_39#>`,
+@@ -351,7 +375,10 @@ var T = {
+   badIp: `<#JS_validip#>`, v6off: `<#RDHC_27#>`, blank: `<#JS_fieldblank#>`,
+   applying: `<#RDHC_36#>`, apply: `<#CTL_apply#>`,
+   v6disabled: `<#RDHC_48#>`, v6none: `<#RDHC_49#>`, v6answering: `<#RDHC_50#>`,
+-  faceDown: `<#RDHC_51#>`, v6unusable: `<#RDHC_52#>`, disabled: `<#CTL_Disabled#>`
++  faceDown: `<#RDHC_51#>`, v6unusable: `<#RDHC_52#>`, disabled: `<#CTL_Disabled#>`,
++  /* 2026-10-10: the LAN name resolution check's status (same words as the dashboard tooltip) */
++  ldWorking: `<#RDSH_92#>`, ldFailing: `<#RDSH_93#>`, ldUnk: `<#RDSH_94#>`, ldHeld: `<#RDSH_96#>`,
++  ldSilent: `<#RDSH_99#>`, badDomain: `<#RDHC_64#>`
+ };
+ var V6ON = (IPV6 !== '' && IPV6 !== 'disabled');
+ var busy = 0, pollT = null;
+@@ -414,14 +441,28 @@ function render6(st, running, mode){
+     a6.textContent = t6; a6.title = t6; $id('chip_target6').className = 'chip' + (V6ON ? '' : ' dim');
+   }
+ }
++/* 2026-10-10: the LAN name resolution check, "<state> <s> <silent|->" (rc/rdnshc.c landns_*) */
++function renderLd(state){
++  var v = $id('ld_v'); if(!v) return;
++  var p = String(state || '').split(' '), st = p[0], silent = (p[2] && p[2] !== '-') ? p[2].split(',').join(', ') : '';
++  var txt, cls = 'v';
++  if(ORIG.landns !== '1' || st === 'off' || st === ''){ txt = T.notRunning; cls = 'v dim'; }
++  else if(st === 'fail' || st === 'svc' || st === 'dfail'){ txt = T.ldFailing + ' (' + held(p[1]) + ')' + (silent ? ' - ' + T.ldSilent + ' ' + silent : ''); cls = 'v down'; }
++  else if(st === 'ok') txt = T.ldWorking;
++  else if(st === 'wan'){ txt = T.ldHeld; cls = 'v dim'; }
++  else { txt = T.ldUnk; cls = 'v dim'; }
++  v.className = cls; v.textContent = txt;
++}
++function syncLandns(){ $id('landns_card').className = 'card' + ($id('landns').checked ? '' : ' off'); }
+ function poll(){
+   var x = new XMLHttpRequest(), done = 0;
+   function fin(){ if(done) return; done = 1; pollT = setTimeout(poll, 5000); }
+-  x.open('GET', '/appGet.cgi?hook=nvram_get(reaper_dnshc_state)&_=' + Date.now(), true);
++  x.open('GET', '/appGet.cgi?hook=nvram_get(reaper_dnshc_state)%3bnvram_get(reaper_landns_state)&_=' + Date.now(), true);
+   x.onreadystatechange = function(){
+     if(x.readyState !== 4) return;
+     if(x.status === 200){
+       try{ var j = JSON.parse(x.responseText); if(j && typeof j.reaper_dnshc_state === 'string') render(j.reaper_dnshc_state, ORIG.enable); }catch(e){}
++      try{ var k = JSON.parse(x.responseText); if(k && typeof k.reaper_landns_state === 'string') renderLd(k.reaper_landns_state); }catch(e){}
+     }
+     fin();
+   };
+@@ -447,6 +488,10 @@ function isV6(s){
+ function inRange(id, lo, hi){ var n = $id(id), v = parseInt(n.value, 10); if(!/^\d+$/.test(n.value) || v < lo || v > hi){ n.focus(); return false; } return true; }
+ function msg(t, err){ var m = $id('msg'); m.className = 'msg' + (err ? ' err' : ''); m.textContent = t; }
+ function valid(){
++  /* 2026-10-10: the made-up name's domain - empty, or labels of 1-63 letters/digits/hyphens */
++  var ld = $id('landns_dom'), ls = ld.value.replace(/\s+/g, '');
++  ld.value = ls;
++  if(ls !== '' && (ls.length < 3 || ls.length > 100 || !/^([A-Za-z0-9-]{1,63}\.)+[A-Za-z0-9-]{1,63}$/.test(ls))){ msg(T.badDomain, 1); ld.focus(); return false; }
+   if(!$id('en').checked) return true;
+   var t = $id('target'), s = t.value.replace(/\s+/g, '');
+   t.value = s;
+@@ -485,13 +530,15 @@ function apply(){
+     reaper_dnshc_fail: $id('fail').value, reaper_dnshc_recover: $id('recover').value, reaper_dnshc_strict: on('strict'),
+     reaper_dns_strict: on('dstrict'), reaper_dns_nocache: on('nocache'), reaper_dns_revshare: on('revshare'),
+     reaper_dns_v6names: on('v6names'),
+-    reaper_dot_strict: on('dotstrict')
++    reaper_dot_strict: on('dotstrict'),
++    reaper_landns_enable: on('landns'), reaper_landns_domain: $id('landns_dom').value
+   };
+   var svc = '';
+   if(v.reaper_dnshc_enable !== ORIG.enable || v.reaper_dnshc_target !== ORIG.target || v.reaper_dnshc_name !== ORIG.name
+      || v.reaper_dnshc_interval !== ORIG.interval || v.reaper_dnshc_timeout !== ORIG.timeout || v.reaper_dnshc_fail !== ORIG.fail
+      || v.reaper_dnshc_recover !== ORIG.recover || v.reaper_dnshc_strict !== ORIG.strict
+-     || v.reaper_dnshc_target6 !== ORIG.target6) svc += 'restart_rdnshc;';
++     || v.reaper_dnshc_target6 !== ORIG.target6
++     || v.reaper_landns_enable !== ORIG.landns || v.reaper_landns_domain !== ORIG.landnsdom) svc += 'restart_rdnshc;';
+   if(v.reaper_dns_strict !== ORIG.dnsstrict || v.reaper_dns_nocache !== ORIG.nocache
+      || v.reaper_dns_revshare !== ORIG.revshare || v.reaper_dns_v6names !== ORIG.v6names) svc += 'restart_dnsmasq;';
+   if(v.reaper_dns_v6names !== ORIG.v6names) svc += 'restart_rv6names;';
+@@ -510,7 +557,8 @@ function apply(){
+ (function init(){
+   $id('en').addEventListener('change', syncEnable);
+   $id('apply').addEventListener('click', apply);
+-  var ids = ['target','qname','interval','timeout','fail','recover'], i;
++  $id('landns').addEventListener('change', syncLandns);
++  var ids = ['target','qname','interval','timeout','fail','recover','landns_dom'], i;
+   for(i = 0; i < ids.length; i++) $id(ids[i]).addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); apply(); } });
+   $id('v6note').style.display = V6ON ? '' : 'none';
+   /* 2026-10-08: IPv6 device names do nothing while IPv6 is off - say so, keep the switch */
+@@ -518,7 +566,9 @@ function apply(){
+   if(DNSSEC !== '' && DNSSEC !== '0') $id('dnssec_note').style.display = '';
+   if(DOTON !== '1') $id('dot_off_note').style.display = '';
+   syncEnable();
++  syncLandns();
+   render(ORIG.state, ORIG.enable);
++  renderLd(ORIG.landnsstate);
+   poll();
+ })();
+ </script>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 5c0deefe29..0df07d5ca1 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvenca
+ RWAN_23=V Dual WAN morate izbrati vrata WAN.
+ RWFS_14=Geslo mora imeti vsaj 10 znakov, vključno z 1 črko, 1 posebnim znakom in 1 številko.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 5e71cc4c7d..d85a2b91da 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekvens
+ RWAN_23=WAN-porten måste väljas i Dual WAN.
+ RWFS_14=Lösenordet måste vara minst 10 tecken långt och innehålla 1 bokstav, 1 specialtecken och 1 siffra.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index fc34cd9c11..2fceb4d312 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=ความถี่
+ RWAN_23=ต้องเลือกพอร์ต WAN ใน Dual WAN
+ RWFS_14=รหัสผ่านต้องมีความยาวอย่างน้อย 10 อักขระ ซึ่งประกอบด้วยตัวอักษร 1 ตัว อักขระพิเศษ 1 ตัว และตัวเลข 1 ตัว
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 1c2128b35b..c2be95c358 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Frekans
+ RWAN_23=Dual WAN içinde WAN bağlantı noktası seçilmelidir.
+ RWFS_14=Parola en az 10 karakter uzunluğunda olmalı ve 1 harf, 1 özel karakter ve 1 rakam içermelidir.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 18cac78a2c..91da877e64 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=頻率
+ RWAN_23=必須在 Dual WAN 中選擇 WAN 連接埠。
+ RWFS_14=密碼長度至少需 10 個字元，並包含 1 個字母、1 個特殊字元與 1 個數字。
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 553cc18fb4..355b9ca096 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -7199,3 +7199,23 @@ RWIF_118=Частота
+ RWAN_23=У режимі Dual WAN потрібно вибрати порт WAN.
+ RWFS_14=Пароль має містити щонайменше 10 символів, зокрема 1 літеру, 1 спеціальний символ і 1 цифру.
+ RQOS_125=This WAN jack is a VLAN on a port that also carries the wired LAN (the 2.5G WAN/LAN jack on the GT-BE98 family). Hardware QoS is not applied here: shaping that port would throttle every wired LAN port and a wired AiMesh backhaul. Use the 10G WAN port for hardware QoS, or a software engine on this jack.
++RDSH_91=LAN name resolution
++RDSH_92=working
++RDSH_93=FAILING
++RDSH_94=not checked yet
++RDSH_95=check switched off (DNS Failover page)
++RDSH_96=not checked while the WAN is down
++RDSH_97=The router's DNS service is not answering, so LAN devices cannot look up any name.
++RDSH_98=The router's DNS answers, but no upstream DNS server resolves new names.
++RDSH_99=Not answering:
++RDSH_100=The DNS servers LAN devices are given by DHCP do not resolve new names.
++RDSH_101=Checked by the router once a minute. Details: System Log.
++RDSH_102=The WAN has no address.
++RDSH_103=The router's DNS answers but does not resolve new names, although each of its upstream servers answers when asked directly.
++RDHC_59=LAN name resolution check
++RDHC_60=Shows on the dashboard when LAN devices cannot resolve names
++RDHC_61=Once a minute, while the WAN is up, the router asks its own DNS service for its own name and for a made-up name under the domain below, the way a LAN device would. When that fails twice in a row, the dashboard's Internet status turns amber and its tooltip says why, and the System Log names the DNS servers that did not answer. It only reports: nothing is moved or restarted.
++RDHC_62=Domain for the made-up name
++RDHC_63=Leave empty to use the router's network-monitoring name. Each check asks for a new random name under this domain so no cache can answer it; the domain's own DNS servers see these lookups.
++RDHC_64=Enter a domain name such as example.com, or leave the field empty.
++RFW_328=All objects together are too long for the router's object list (8191 characters at most). Shorten or remove an object first.
+-- 
+2.25.1
+

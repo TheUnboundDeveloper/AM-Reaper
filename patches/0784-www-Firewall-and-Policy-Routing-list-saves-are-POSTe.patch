@@ -1,0 +1,197 @@
+From c12d96a3c93c34c11df8621855c70eb82f00cca6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 11 Oct 2026 12:03:38 -0400
+Subject: [PATCH] www: Firewall and Policy Routing list saves are POSTed
+
+List saves travelled as GET queries carrying the whole URL-encoded list. A
+hosts list the CGI accepts (8191 bytes) became a 10,732-byte request line
+for CIDRs against httpd's 10000-byte line buffer: a 400, and the page kept
+a row the router never stored (field: RT-BE88U, a paste that "blanked the
+GUI"). Reaper_Firewall.asp fwpost() and Reaper_VPNRouting.asp pbrcgi() /
+fwcgi() carry the list in the request body; a failed save resyncs the page
+from the router; the whole list is pre-checked before the save and refused
+with RFW_328 when it would not fit. Lean: tests/test_fw_list_post.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firewall.asp   | 44 ++++++++++++++++++--
+ release/src/router/www/Reaper_VPNRouting.asp | 36 ++++++++++------
+ 2 files changed, 65 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 8620b13694..067cf7ce97 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -742,6 +742,33 @@ function xhr(url,cb){
+   x.send();
+ }
+ function fwcgi(q,cb){xhr('/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(REAPER_HTTPID),cb||function(){});}
++/* 2026-10-10 (BACKLOG "hosts-list paste"): list saves carry their data in a POST
++   body. As a GET query a full object list - up to 8191 characters, which the CGI
++   accepts - grows 1.2-3x when URL-encoded and overruns httpd's 10000-byte request
++   line (httpd.c handle_request): httpd answers 400, the handler never runs, and the
++   page kept a row the router never stored. The body has no such limit (post_buf is
++   64 KB, the encoded worst case ~25 KB) and is url-encoded, so it carries no literal
++   newline for do_html_post_and_get's fgets to stop at. The token stays in the URL
++   like every other call (the CGI merges query and body). Same one-shot completion
++   as xhr() (rule 34). */
++function fwpost(q,body,cb){
++  var x=new XMLHttpRequest(),done=false;
++  cb=cb||function(){};
++  function fin(j){if(done)return;done=true;cb(j);}
++  x.open('POST','/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(REAPER_HTTPID)+'&_='+Date.now(),true);
++  x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
++  x.timeout=30000;
++  x.onreadystatechange=function(){
++    if(x.readyState!==4)return;
++    var j=null;
++    if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}}
++    fin(j);
++  };
++  x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
++  x.send(body);
++}
++/* the CGI's cap for one list (web.c RFW_LIST_MAX): the joined string must stay below it */
++var RFW_LIST_MAX=8192;
+ function tgSet(el,on){el.classList.toggle('on',!!on);}
+ function tgGet(el){return el.classList.contains('on')?'1':'0';}
+ function showSaved(el,ok,msg){el.className='saved'+(ok?'':' err');el.textContent=msg;el.classList.remove('hidden');if(el.scrollWidth>el.clientWidth+1)el.title=msg;else el.removeAttribute('title');setTimeout(function(){el.classList.add('hidden');},4000);}
+@@ -980,11 +1007,15 @@ function rfwLoad(cb){
+ }
+ /* each list saves independently so one bad edit cannot take the others with it */
+ function rfwSave(key,rows,el){
+-  fwcgi('action=save&k='+key+'&v='+encodeURIComponent(rfwJoin(rows)),function(j){
++  fwpost('action=save&k='+key,'v='+encodeURIComponent(rfwJoin(rows)),function(j){
+     if(el)showSaved(el,!!(j&&j.ok),(j&&j.ok)?`<#RFW_154#>`:((j&&j.error)||`<#RFW_155#>`));
+     /* a save writes the DRAFT, so the page is now pending - surface it at once
+        rather than only after the next action=cfg */
+     if(j&&j.ok){RFW.dirty=1;rfwPendingUI();}
++    /* 2026-10-10: the table was edited before the save; when the router did not
++       take it, show what the router actually holds again instead of a row that
++       exists only in this page (the message above stays up) */
++    else rfwLoad();
+   });
+ }
+ 
+@@ -1660,6 +1691,12 @@ function initRfw(){
+     if(v.length>1900)return bad(`<#RFW_255#>`);
+     var oi=EDIT.obj;
+     if(RFW.obj.some(function(r,k){return k!==oi&&r[0]===n;})||RFW.grp.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
++    /* 2026-10-10: all objects together share one list the router caps at 8191
++       characters; say so BEFORE the table changes, with the pasted text still in
++       the form, instead of after a save the router refuses */
++    var cand=RFW.obj.slice(), rec=[n,t,v,c.replace(/[<>]/g,'')];
++    if(oi>=0&&oi<cand.length)cand[oi]=rec; else cand.push(rec);
++    if(rfwJoin(cand).length>=RFW_LIST_MAX)return bad(`<#RFW_328#>`);
+     /* a geo object is only meaningful when Warden already carries that country
+        set - the engine refuses to emit a match against a set it did not create */
+     if(t==='geo'){
+@@ -1793,10 +1830,11 @@ function initRfw(){
+     var keys=['obj','grp','svc','zone','zpol','rules','edef','nat'],pending=keys.length,bad_=0;
+     keys.forEach(function(k){
+       var v=(typeof o[k]==='string')?o[k]:'';
+-      fwcgi('action=save&k='+k+'&v='+encodeURIComponent(v),function(j){
++      fwpost('action=save&k='+k,'v='+encodeURIComponent(v),function(j){
+         if(!j||!j.ok)bad_++;
+         if(--pending===0){
+-          if(bad_)showSaved($('io_saved'),false,`<#RFW_155#>`);
++          /* 2026-10-10: some lists may have landed - show the router's draft as it is */
++          if(bad_){ showSaved($('io_saved'),false,`<#RFW_155#>`); rfwLoad(); }
+           else{ showSaved($('io_saved'),true,`<#RFW_222#>`); rfwLoad(); }
+         }
+       });
+diff --git a/release/src/router/www/Reaper_VPNRouting.asp b/release/src/router/www/Reaper_VPNRouting.asp
+index 5e3288440b..56be9480af 100644
+--- a/release/src/router/www/Reaper_VPNRouting.asp
++++ b/release/src/router/www/Reaper_VPNRouting.asp
+@@ -411,14 +411,20 @@ function errText(c){ return ERRT[c]||c; }
+    8 s XHR timeout used to leave the timer running with the operator
+    believing they had confirmed. */
+ function pbrAck(j,fallback){ if(j&&j.ok)return true; showErr((j&&j.error)?errText(j.error):fallback); return false; }
+-function pbrcgi(q,cb){
+-  var x=new XMLHttpRequest();
+-  x.open('GET','/reaper_pbr.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++/* 2026-10-10 (BACKLOG "hosts-list paste"): a call that carries a list passes it as
++   `body` and goes as a POST. As a GET query an 8191-character list (the CGI's cap)
++   grows 1.2-3x when URL-encoded and overruns httpd's 10000-byte request line:
++   httpd answers 400 and the handler never runs. The body (64 KB post_buf) has no
++   such limit; the token stays in the URL, the CGI merges query and body. */
++function pbrcgi(q,cb,body){
++  var x=new XMLHttpRequest(), post=(body!==undefined);
++  x.open(post?'POST':'GET','/reaper_pbr.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++  if(post) x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+   x.timeout=8000;
+   var done=false; function fin(j){ if(done)return; done=true; cb(j); }
+   x.onreadystatechange=function(){ if(x.readyState!==4)return; var j=null; if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}} fin(j); };
+   x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
+-  x.send();
++  x.send(post?body:null);
+ }
+ /* v3.0.5: a long translation must not reflow the card. The banner is ONE
+    line, clipped with an ellipsis (.errnote), and carries the full text as a
+@@ -446,7 +452,7 @@ function armPoll(){
+    apply CGI returned, i.e. during exactly the seconds the rules take to go
+    live, so the page looked dead until the Keep / Revert bar appeared. */
+ function applyPBR(){
+-  var q='action=apply&enable='+(masterOn?'1':'0')+'&rulelist='+encodeURIComponent(serialize());
++  var q='action=apply&enable='+(masterOn?'1':'0'), qb='rulelist='+encodeURIComponent(serialize());
+   var btn=document.getElementById('applybtn'), ov=document.getElementById('applying');
+   showErr('');
+   btn.disabled=true; btn.textContent=`<#Main_alert_processing#>`;
+@@ -473,7 +479,7 @@ function applyPBR(){
+         settle(false); showErr(`<#RFW_280#>`);
+       });
+     })();
+-  });
++  }, qb);   /* 2026-10-10: the rule list rides in the POST body (see pbrcgi) */
+ }
+ 
+ /* ---- objects: the Firewall engine's object list (rwfw_<name> sets) ----
+@@ -485,14 +491,16 @@ function applyPBR(){
+    stay selectable in the dropdown. */
+ var HTTPID='<% nvram_get("http_id"); %>';
+ var OBJ=[], GRP=[], EDIT_OBJ=-1;    /* OBJ: [name,type,value,comment] rows */
+-function fwcgi(q,cb){
+-  var x=new XMLHttpRequest();
+-  x.open('GET','/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++/* same rule as pbrcgi: a call with a list passes it as `body` and goes as a POST */
++function fwcgi(q,cb,body){
++  var x=new XMLHttpRequest(), post=(body!==undefined);
++  x.open(post?'POST':'GET','/reaper_fw.cgi?'+q+'&http_id='+encodeURIComponent(HTTPID),true);
++  if(post) x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+   x.timeout=8000;
+   var done=false; function fin(j){ if(done)return; done=true; cb(j); }
+   x.onreadystatechange=function(){ if(x.readyState!==4)return; var j=null; if(x.status===200){try{j=JSON.parse(x.responseText);}catch(e){j=null;}} fin(j); };
+   x.onerror=x.ontimeout=x.onabort=function(){fin(null);};
+-  x.send();
++  x.send(post?body:null);
+ }
+ function splitList(s){var o=[],a=String(s||'').split('<'),i;for(i=0;i<a.length;i++)if(a[i]!=='')o.push(a[i].split('>'));return o;}
+ function joinList(rows){return rows.map(function(r){return '<'+r.join('>');}).join('');}
+@@ -564,10 +572,10 @@ function objEditCancel(){
+   renderObjects();
+ }
+ function objStore(){
+-  fwcgi('action=save&k=obj&v='+encodeURIComponent(joinList(OBJ)),function(j){
++  fwcgi('action=save&k=obj',function(j){
+     if(j&&j.ok){ objMsg(true, `<#RVR_47#>`); }
+     else { objMsg(false, (j&&j.error)||`<#RVR_48#>`); loadObjects(); }
+-  });
++  }, 'v='+encodeURIComponent(joinList(OBJ)));
+ }
+ function objSave(){
+   var n=document.getElementById('o_name').value.trim(), c=document.getElementById('o_cmt').value.trim().replace(/[<>]/g,'');
+@@ -580,6 +588,10 @@ function objSave(){
+   for(i=0;i<OBJ.length;i++) if(i!==EDIT_OBJ && OBJ[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
+   for(i=0;i<GRP.length;i++) if(GRP[i][0]===n){ objMsg(false, `<#RFW_65#>`); return; }
+   var rec=[n,'fqdn',v,c];
++  /* 2026-10-10: every object shares one router list capped at 8191 characters;
++     refuse here, with the domains still in the form, not after the save fails */
++  var cand=OBJ.slice(); if(EDIT_OBJ>=0 && EDIT_OBJ<cand.length) cand[EDIT_OBJ]=rec; else cand.push(rec);
++  if(joinList(cand).length>=8192){ objMsg(false, `<#RFW_328#>`); return; }
+   if(EDIT_OBJ>=0 && OBJ[EDIT_OBJ]){
+     var old=OBJ[EDIT_OBJ][0]; OBJ[EDIT_OBJ]=rec;
+     if(old!==n) for(i=0;i<ROWS.length;i++) if((ROWS[i].seltype==='ipset'||ROWS[i].seltype==='domain')&&ROWS[i].selval===old) ROWS[i].selval=n;  /* rename follows */
+-- 
+2.25.1
+

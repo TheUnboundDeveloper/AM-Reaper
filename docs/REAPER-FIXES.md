@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -775,3 +775,17 @@ pass (one needs root and skips). The GT-BE98_PRO v3.3.6 and v3.3.8 published ima
 kernel module, device tree, dongle firmware and vendor prebuilt is byte-identical and the kernel config unchanged, so the
 platform base was ruled out before the shared code was. Owed: C10 on a BQ16 (counts and lists populate), C11 on a GT-BE19000
 in router mode.
+
+## Field pass 2026-10-11 (v3.4.0)
+
+| # | Sev | Item | Decision | What landed |
+|---|---|---|---|---|
+| C12 | Medium (availability) | `start_samba()` (rc/usb.c) enrolled `nobody` and the `acc_list` accounts with `smbpasswd` before the v2.0.1 block that creates `/var/lib/samba/private`. Samba 4.15.13 `smbpasswd`, as root, calls `secrets_init()` before `process_root()`; it opens `<private dir>/secrets.tdb` and `main()` returns 1 with no message when the directory is missing (logging is `DEBUG_STDERR`, discarded under pid-1 `system()`). `/var` is tmpfs, so the first Samba start of every boot left an empty passdb: every SMB login refused until a later restart (field, RT-BE96U; the smbd line "startsmbfilepwent_internal: file /etc/samba/smbpasswd did not exist. File successfully created." after the enrollment is the tell) | **Fixed.** The five `mkdir_if_none` precede the enrollment under `RTCONFIG_SAMBA4`; both SAMBA4 enrollment `system()` calls are checked and log the failure by account name, never the password. Proved on the box: the exact rc command returns 1 "Failed to open .../secrets.tdb" against a missing private dir and 0 "Added user nobody." with it | `rc/usb.c`, `build-scripts/tests/test_samba_enroll_dirs.py` |
+| C13 | Low | The five kernel CVEs left open by the 2026-08-30 check (CVE-2023-52881, CVE-2024-47684, CVE-2024-50154, CVE-2023-6932, CVE-2024-50299); three are reboot-class under `PANIC_ON_OOPS` | **Fixed.** The 4.19.y stable hunks only; no exported API or ABI change | `kernel/linux-4.19` (tcp.h, tcp_input.c, inet_connection_sock.c, igmp.c, sm_statefuns.c), `test_kernel_cve_onehunk_set.py` |
+| C14 | Low | Firewall and Policy Routing list saves rode a GET query carrying the whole URL-encoded list; a hosts list the CGI accepts (8191 bytes) became a 10,732-byte request line for CIDRs against httpd's 10000-byte buffer - a 400, and the page kept rows the router never stored (field, RT-BE88U, "a paste blanks the GUI") | **Fixed.** `Reaper_Firewall.asp` `fwpost()` and `Reaper_VPNRouting.asp` `pbrcgi()` / `fwcgi()` POST the list in the body; a failed save resyncs the page; the whole list is pre-checked before the save (RFW_328) | `www/Reaper_Firewall.asp`, `www/Reaper_VPNRouting.asp`, `test_fw_list_post.py` |
+| C15 | Low | `cru` names the crontab after `http_username`; busybox crond skips a file whose name is not in `/etc/passwd`; rc's `chpass` rebuilds `/etc/passwd` under a new login name without a reboot, so every boot-registered job (rwatch, Warden, the PBR deadline watcher) sat in a file crond ignored (field, GT-BE98 v3.0.0) | **Fixed.** `adopt()` under cru's lock folds such an orphan into the current crontab on add, delete and list - only with a readable passwd that lists the current login, never a file named for an existing user, `#id#` precedence, one log line with the count | `others/cru`, `test_cru_adopt.py` |
+
+Checks: `test_samba_enroll_dirs.py`, `test_kernel_cve_onehunk_set.py`, `test_fw_list_post.py` and `test_cru_adopt.py` fail on
+the previous source and pass on this one; 50 host suites pass (one needs root, one needs node, both skip). C12 was
+reproduced and relieved live on the reporting box before the fix was built. Owed: C12 on a fresh boot with Samba on,
+C15 by a login rename without a reboot.

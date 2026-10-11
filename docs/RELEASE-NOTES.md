@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.3.9** · 2026-10-10 <!--@stamp-->
+> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.3.9** <!--@treever--> — `3006.102.8_Reaper_v3.3.9`. **Hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model.** Fixes the GT-BE98 / GT-BE98 Pro main-router outage on v3.3.8 (reporter-confirmed), the empty BQ16 / BQ16 Pro client list, and the GT-BE19000's older networkmap in the clean room. Everything in v3.3.8 and v3.3.7 is included. |
+| **Current rung** | **v3.4.0** <!--@treever--> — `3006.102.8_Reaper_v3.4.0`. **SMB login works on the first Samba start, the LAN name check, the header tooltip on every page, five kernel CVE fixes.** Also: Firewall and Policy Routing list saves POSTed, cru adopts a renamed login's crontab, the navigation icons unified, Diagnostics v1.3.34. Everything in v3.3.9 and v3.3.8 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,31 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.0 — SMB login works on the first start, the LAN name check, the header tooltip on every page, five kernel CVE fixes
+
+**Shared folders: logging in works the first time.** On every boot - or the moment you switched the file server
+on - the router's SMB password list was created empty, so Windows and every other client was refused until
+something restarted Samba. Fixed: the accounts are enrolled before the server starts. If you had been working
+around it with a restart, there is nothing to undo.
+
+**The Internet status tells you when your devices cannot resolve names.** The router now checks, once a minute,
+whether a device on your LAN can look up a name the way your devices do. While that fails, the Internet dot and
+word on the Dashboard turn amber and a tooltip explains why (which servers went silent, for how long). Hover,
+tap or focus the WAN pill or the Internet card. The check is on by default; the switch and the probe domain are
+on the DNS Failover page, and the Diagnostics bundle reports it.
+
+**That tooltip is on every page now, not just the Dashboard.** The header on every other page shows the same box,
+the same readings and the same colours; an AP, repeater or bridge shows its mode there instead of a false
+"Disconnected".
+
+**Five kernel security fixes** (CVE-2023-52881, CVE-2024-47684, CVE-2024-50154, CVE-2023-6932, CVE-2024-50299),
+all low severity on this platform.
+
+**Also:** large host-list pastes on the Firewall and Policy Routing pages save correctly (they used to overflow
+the request and silently keep rows the router never stored); renaming the router login no longer stops the
+scheduled jobs until the next reboot; the navigation icons match between the Dashboard and the other pages;
+Diagnostics v1.3.34.
 
 ## What's new in v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
 

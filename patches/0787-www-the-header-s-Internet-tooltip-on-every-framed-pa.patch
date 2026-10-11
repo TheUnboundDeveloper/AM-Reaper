@@ -1,0 +1,284 @@
+From 6feaa4c042409b6f883a1ef9e4107ff468257083 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 11 Oct 2026 12:03:41 -0400
+Subject: [PATCH] www: the header's Internet tooltip on every framed page
+
+The amber LAN-names state and its tooltip lived on Main_ReaperDash.asp
+only; every other page is framed in reaper_shell.asp, whose header had the
+WAN pill but not the tooltip, the amber state or the landns data in its
+poll. The shell now carries the dashboard's box (z-index 310, above its
+sticky header), the WAN pill as the anchor, and the tooltip functions
+verbatim; one painter for the first render and the poll (Connected if v4
+or v6, jade / danger - the dashboard's colours, then netPaint() for the
+amber state; without a WAN of its own the pill names the mode in steel and
+nothing is bound); the poll adds reaper_landns_state and
+wan_ipv6_network() to its request; focus leaving for the framed page
+closes a pinned box, because a click inside the iframe never reaches the
+shell document. Lean: tests/test_landns_check.py (shell wiring + a
+verbatim diff of the shared functions), tests/test_shell_nettip.py (the
+topbar code run under node for five states).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/reaper_shell.asp | 199 +++++++++++++++++++++---
+ 1 file changed, 179 insertions(+), 20 deletions(-)
+
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index eea8f5a048..730b4b0d1b 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -68,6 +68,24 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ /* verbatim from Main_ReaperDash.asp so the tag is the same object on every page */
+ .pill .btag{color:var(--amber);border:1px solid currentColor;border-radius:4px;padding:0 5px;font-family:var(--hdr);font-weight:700;letter-spacing:.06em;font-size:10px;text-transform:uppercase}
++/* 2026-10-11: the Internet status tooltip, carried from Main_ReaperDash.asp so the
++   header reads the same on every framed page as on the dashboard. ONE box at page
++   level: the pill strip is overflow:hidden, so a box inside the pill would be
++   clipped. The shell is top-level (it frames the pages, it is never framed), so
++   position:fixed measures against the screen. z-index 310: above the sticky
++   header (300) and the rail (290), below the modal overlays - the dashboard's 50
++   would sit under this header. Everything else verbatim. */
++.tipa{cursor:help}
++.tipa:focus-visible{outline:2px solid var(--bone);outline-offset:2px}
++.ntip{position:fixed;z-index:310;left:16px;top:60px;max-width:min(320px,calc(100vw - 32px));padding:10px 12px;
++  border:1px solid var(--line-soft);border-radius:10px;background:var(--panel);color:var(--bone-dim);
++  font-size:12px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.55);overflow-wrap:anywhere;white-space:normal}
++.ntip[hidden]{display:none}
++.ntip .r{display:block}
++.ntip .r + .r{margin-top:4px}
++.ntip b{color:var(--bone);font-weight:600}
++.ntip .ok b{color:var(--jade)} .ntip .warn b{color:var(--amber)} .ntip .bad b{color:var(--danger)}
++.ntip .dim{color:var(--steel)}
+ /* Rail badge: the count of firewall promises that are NOT holding, carried on
+    the Firewall item so it is visible from every page rather than only from the
+    one page a user would have to already be on to learn it. Hidden entirely at
+@@ -285,7 +303,7 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+   <header class="top">
+     <a class="brand" href="/Main_ReaperDash.asp" title="REAPER <#Reaper_c_dashboard#>"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
+     <div class="pills">
+-      <div class="pill"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
++      <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+       <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+       <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+       <!-- the BETA tag is the dashboard's (Main_ReaperDash.asp), and until now it
+@@ -325,6 +343,9 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+   </main>
+ </div>
+ 
++<!-- 2026-10-11: the Internet status tooltip (see .ntip) - the dashboard's box, on every page -->
++<div id="ntip" class="ntip" role="tooltip" hidden></div>
++
+ <iframe name="hidden_frame" id="hidden_frame" style="display:none" title="hidden"></iframe>
+ <form method="post" name="rebootForm" action="apply.cgi" target="hidden_frame">
+   <input type="hidden" name="action_mode" value="reboot">
+@@ -1029,27 +1050,164 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+      load-balance either line being up means online. `v` carries
+      wanN_state_t / wanN_ipaddr for both units. */
+   var WANS_LB=('<% nvram_get("wans_mode"); %>'==='lb');
+-  function wanUpPick(v, prim){
++  /* 2026-10-11: the picked unit's address too, for the tooltip's Internet line */
++  function wanPickIp(v, prim){
+     function ok(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
+     var u=(String(prim)==='1')?1:0;
+-    return ok(u) || (WANS_LB && ok(1-u));
++    if(!ok(u) && WANS_LB && ok(1-u)) u=1-u;
++    return {up:ok(u), ip:ok(u) ? v['wan'+u+'_ipaddr'] : ''};
++  }
++  function wanUpPick(v, prim){ return wanPickIp(v, prim).up; }
++  /* ---- 2026-10-11: the Internet status tooltip, carried from Main_ReaperDash.asp ----
++     The amber LAN-names state (rc/rdnshc.c, nvram reaper_landns_state) and the tooltip
++     that explains it lived on the dashboard only; every other page is framed in this
++     shell, whose header had the pill but not the tooltip. Same box, same readings,
++     same colours, same open/close rules (hover for a mouse, focus or tap opens, a
++     click pins, Esc / tap elsewhere / scroll / resize close); the one addition is
++     that focus leaving for the framed page closes a pinned box, because a click
++     inside the iframe never reaches this document. Keep in step with the dashboard:
++     test_landns_check.py compares the shared functions verbatim. */
++  var OPNAMES={rt:`<#Reaper_c_opmode_rt#>`,ap:`<#Device_type_03_AP#>`,rp:`<#Clientlist_Repeater#>`,mb:`<#OP_MB_item#>`,ew2:`<#Reaper_c_opmode_ew#>`,ew5:`<#Reaper_c_opmode_ew#>`,hs:`<#Reaper_c_opmode_hs#>`,wisp:`<#Reaper_c_opmode_wisp#>`};
++  var OPMODE=[<% get_operation_mode(); %>][0];
++  var OPNAME=OPNAMES[OPMODE] || String(OPMODE||'').toUpperCase();
++  var ROUTING=!(OPMODE==='ap'||OPMODE==='rp'||OPMODE==='mb'||OPMODE==='ew2'||OPMODE==='ew5');
++  var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
++  var NET={v4:false, v6:false, ip:'', lan:'<% nvram_get("reaper_landns_state"); %>'};
++  var NT={
++    inet:`<#Internet#>`, conn:`<#Connected#>`, disc:`<#Disconnected#>`,
++    lan:`<#RDSH_91#>`, working:`<#RDSH_92#>`, failing:`<#RDSH_93#>`, unk:`<#RDSH_94#>`,
++    off:`<#RDSH_95#>`, held:`<#RDSH_96#>`, svc:`<#RDSH_97#>`, fail:`<#RDSH_98#>`,
++    silent:`<#RDSH_99#>`, dfail:`<#RDSH_100#>`, every:`<#RDSH_101#>`, noaddr:`<#RDSH_102#>`,
++    upall:`<#RDSH_103#>`
++  };
++  var TIP={el:null, open:null, pinned:false};
++  function v6Up(){
++    if(!(WAN6 && WAN6.status==='1')) return false;
++    var a=String((WAN6.IPv6_Address)||'').split('/')[0];
++    var gw=String((WAN6.IPv6_Gateway)||'');
++    return !!(a || gw);
++  }
++  function landnsGet(){
++    var p=String(NET.lan||'').split(' ');
++    return {st:p[0]||'', s:parseInt(p[1],10)||0, silent:(p[2] && p[2]!=='-') ? p[2] : ''};
++  }
++  function landnsBad(st){ return st==='fail' || st==='svc' || st==='dfail'; }
++  function durTxt(s){
++    if(s<60) return s+' s';
++    if(s<3600) return Math.floor(s/60)+' min';
++    if(s<86400) return Math.floor(s/3600)+' h '+Math.floor((s%3600)/60)+' min';
++    return Math.floor(s/86400)+' d '+Math.floor((s%86400)/3600)+' h';
++  }
++  /* Runs right after either WAN paint (first render, live poll). Amber only while
++     the WAN is up; otherwise it hands the inline colours back to the CSS so a
++     cleared warning does not linger. A WAN that is down was painted red by the
++     caller and is left alone. */
++  function netPaint(){
++    var any=NET.v4 || NET.v6, amber=any && landnsBad(landnsGet().st);
++    if(any){
++      ['p_wan_dot'].forEach(function(id){ var e=$id(id); if(!e) return;
++        e.style.background = amber ? 'var(--amber)' : ''; e.style.boxShadow = amber ? '0 0 0 3px rgba(224,169,59,.18)' : ''; });
++      ['p_wan'].forEach(function(id){ var e=$id(id); if(e) e.style.color = amber ? 'var(--amber)' : ''; });
++    }
++    if(TIP.open) tipFill();
++  }
++  function tipRow(cls, parts){
++    var r=document.createElement('span'); r.className='r'+(cls ? ' '+cls : '');
++    parts.forEach(function(p){ if(p===null || p===undefined || p==='') return; r.appendChild(typeof p==='string' ? document.createTextNode(p) : p); });
++    return r;
++  }
++  function tipB(t){ var b=document.createElement('b'); b.textContent=t; return b; }
++  function tipFill(){
++    var t=TIP.el; if(!t) return;
++    while(t.firstChild) t.removeChild(t.firstChild);
++    var any=NET.v4 || NET.v6, d=landnsGet(), st=d.st, line, cls='', why='';
++    t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(any ? NT.conn : NT.disc),
++      any ? ((NET.v4 && NET.ip) ? ' ('+NET.ip+')' : (NET.v6 ? ' (IPv6)' : '')) : '']));
++    if(!any){ t.appendChild(tipRow('dim', [NT.noaddr])); return; }
++    if(landnsBad(st)){
++      line=NT.failing+' ('+durTxt(d.s)+')'; cls='warn';
++      why = (st==='svc') ? NT.svc : ((st==='dfail') ? NT.dfail : (d.silent ? NT.fail : NT.upall));
++    } else if(st==='ok'){ line=NT.working; cls='ok'; }
++    else if(st==='off') line=NT.off;
++    else if(st==='wan') line=NT.held;
++    else line=NT.unk;
++    t.appendChild(tipRow(cls, [NT.lan+': ', tipB(line)]));
++    if(why) t.appendChild(tipRow('', [why]));
++    if(landnsBad(st) && d.silent) t.appendChild(tipRow('', [NT.silent+' ', tipB(d.silent.split(',').join(', '))]));
++    if(st!=='off') t.appendChild(tipRow('dim', [NT.every]));
+   }
+-  var up=wanUpPick({wan0_state_t:'<% nvram_get("wan0_state_t"); %>', wan0_ipaddr:'<% nvram_get("wan0_ipaddr"); %>',
+-                    wan1_state_t:'<% nvram_get("wan1_state_t"); %>', wan1_ipaddr:'<% nvram_get("wan1_ipaddr"); %>'},
+-                   '<% get_wan_unit(); %>');
+-  $t('p_wan', up?`<#Connected#>`:`<#Disconnected#>`);
+-  var dot=$id('p_wan_dot'); if(dot && !up){ dot.style.background='#E10600'; dot.style.boxShadow='0 0 0 3px rgba(225,6,0,.15)'; }
++  function tipPlace(a){
++    var t=TIP.el, r=a.getBoundingClientRect(), w=t.offsetWidth, h=t.offsetHeight;
++    var vw=window.innerWidth, vh=window.innerHeight;
++    var left=Math.min(Math.max(16, r.left), Math.max(16, vw-16-w));
++    var top=r.bottom+8;
++    if(top+h > vh-8 && r.top-8-h >= 8) top=r.top-8-h;
++    t.style.left=left+'px'; t.style.top=top+'px';
++  }
++  function tipShow(a){ if(!TIP.el) return; tipFill(); TIP.el.hidden=false; TIP.open=a; tipPlace(a); }
++  function tipHide(){ if(!TIP.el) return; TIP.el.hidden=true; TIP.open=null; TIP.pinned=false; }
++  /* hover opens for a mouse only (a tap also fires pointerenter); focus opens for
++     the keyboard and for a tap; a click or tap pins it open, a second one closes */
++  function tipBind(id){
++    var a=$id(id); if(!a) return;
++    a.addEventListener('pointerenter', function(e){ if(e.pointerType==='mouse' && TIP.open!==a) tipShow(a); });
++    a.addEventListener('pointerleave', function(e){ if(e.pointerType==='mouse' && TIP.open===a && !TIP.pinned) tipHide(); });
++    a.addEventListener('focus', function(){ if(TIP.open!==a) tipShow(a); });
++    a.addEventListener('blur', function(){ if(TIP.open===a && !TIP.pinned) tipHide(); });
++    a.addEventListener('click', function(e){
++      e.stopPropagation();
++      if(TIP.open===a && TIP.pinned){ tipHide(); return; }
++      if(TIP.open!==a) tipShow(a);
++      TIP.pinned=true;
++    });
++    a.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); a.click(); } });
++  }
++  (function(){
++    TIP.el=$id('ntip');
++    var ids=['p_wan_pill'];
++    if(!ROUTING || !TIP.el){
++      /* no WAN to describe (AP / repeater / bridge): the pill is plain text again */
++      ids.forEach(function(id){ var a=$id(id); if(!a) return;
++        a.removeAttribute('tabindex'); a.removeAttribute('role'); a.removeAttribute('aria-describedby'); a.classList.remove('tipa'); });
++      return;
++    }
++    ids.forEach(tipBind);
++    document.addEventListener('click', function(e){ if(TIP.open && !TIP.el.contains(e.target)) tipHide(); });
++    document.addEventListener('keydown', function(e){ if(e.key==='Escape' && TIP.open) tipHide(); });
++    window.addEventListener('scroll', function(){ if(TIP.open) tipHide(); }, true);
++    window.addEventListener('resize', function(){ if(TIP.open) tipHide(); });
++    /* focus moving into the framed page: the top window blurs, the box closes */
++    window.addEventListener('blur', function(){ if(TIP.open) tipHide(); });
++  })();
++  /* One painter for the first render and the live poll: the word, the dot (jade
++     up / danger down - the dashboard's colours) and then netPaint() for the amber
++     state and the tooltip readings. Without a WAN of its own (AP / repeater /
++     bridge) the pill names the mode in a neutral colour, as the dashboard does,
++     instead of a structural "Disconnected" (wan0_state_t is 0 in those modes). */
++  function paintWan(p){
++    if(!ROUTING){
++      $t('p_wan', OPNAME);
++      var n=$id('p_wan_dot'); if(n){ n.style.background='var(--steel)'; n.style.boxShadow='none'; }
++      return true;
++    }
++    var v6=v6Up(), any=p.up||v6;
++    $t('p_wan', any?`<#Connected#>`:`<#Disconnected#>`);
++    var d=$id('p_wan_dot');
++    if(d){ if(any){ d.style.background=''; d.style.boxShadow=''; } else { d.style.background='var(--danger)'; d.style.boxShadow='none'; } }
++    NET.v4=p.up; NET.v6=v6; NET.ip=p.up ? p.ip : '';
++    netPaint();
++    return any;
++  }
++  paintWan(wanPickIp({wan0_state_t:'<% nvram_get("wan0_state_t"); %>', wan0_ipaddr:'<% nvram_get("wan0_ipaddr"); %>',
++                      wan1_state_t:'<% nvram_get("wan1_state_t"); %>', wan1_ipaddr:'<% nvram_get("wan1_ipaddr"); %>'},
++                     '<% get_wan_unit(); %>'));
+   /* live WAN poll: on a boot the WAN comes up after the header renders, so keep
+      re-checking until connected instead of leaving a stale "Disconnected".
+      Fast while down, slow once up (mirrors the dashboard's poll). */
+   (function(){
+     var FAST=4000, SLOW=30000;
+-    function apply(u){
+-      $t('p_wan', u?`<#Connected#>`:`<#Disconnected#>`);
+-      var d=$id('p_wan_dot');
+-      if(d){ if(u){ d.style.background=''; d.style.boxShadow=''; } else { d.style.background='#E10600'; d.style.boxShadow='0 0 0 3px rgba(225,6,0,.15)'; } }
+-      return u;
+-    }
++    /* 2026-10-11: the poll paints through paintWan() too (one painter, see above) */
++    function apply(p){ return paintWan(p); }
+     var timer=null;
+     function schedule(ms){ if(timer) clearTimeout(timer); timer=setTimeout(tick, ms); }
+     function tick(){
+@@ -1074,11 +1232,14 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+                /* wan_primary each poll, so a fail-over or fail-back while the
+                   shell is open moves the pill to the live line */
+                var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:'<% get_wan_unit(); %>';
+-               up=apply(wanUpPick(j, pu)); }catch(e){}
++               /* 2026-10-11: the tooltip's inputs ride the same request */
++               if(j.wan_ipv6_network && typeof j.wan_ipv6_network==='object') WAN6=j.wan_ipv6_network;
++               if(typeof j.reaper_landns_state==='string') NET.lan=j.reaper_landns_state;
++               up=apply(wanPickIp(j, pu)); }catch(e){}
+         }
+         schedule(up?SLOW:FAST);
+       }
+-      x.open('GET','/appGet.cgi?hook=nvram_get(wan_primary)%3bnvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan1_state_t)%3bnvram_get(wan1_ipaddr)&_='+(new Date()).getTime(),true);
++      x.open('GET','/appGet.cgi?hook=nvram_get(wan_primary)%3bnvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan1_state_t)%3bnvram_get(wan1_ipaddr)%3bnvram_get(reaper_landns_state)%3bwan_ipv6_network()&_='+(new Date()).getTime(),true);
+       x.timeout=8000;
+       x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
+       x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
+@@ -1086,10 +1247,8 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+     }
+     schedule(FAST);
+   })();
+-  /* operation mode */
+-  var opNames={rt:`<#Reaper_c_opmode_rt#>`,ap:`<#Device_type_03_AP#>`,rp:`<#Clientlist_Repeater#>`,mb:`<#OP_MB_item#>`,ew2:`<#Reaper_c_opmode_ew#>`,ew5:`<#Reaper_c_opmode_ew#>`,hs:`<#Reaper_c_opmode_hs#>`,wisp:`<#Reaper_c_opmode_wisp#>`};
+-  var op=[<% get_operation_mode(); %>][0];
+-  $t('i_opmode', opNames[op]||String(op||'').toUpperCase());
++  /* operation mode (OPNAME is derived above, with the tooltip block) */
++  $t('i_opmode', OPNAME);
+   /* uptime (client-side ticked) - robust parser mirrors Main_ReaperDash so a
+      sub-24h or word-form sysuptime string still populates instead of showing "-" */
+   function relSec(s){ var b=0; var dm=s.match(/(\d+)\s*d/i); if(dm)b+=(+dm[1])*86400; var cm=s.match(/(\d+):(\d{2})(?::(\d{2}))?/); if(cm){ b+=(+cm[1])*3600+(+cm[2])*60+(+(cm[3]||0)); return b; } function g(re){var m=s.match(re);return m?+m[1]:0;} return b+g(/(\d+)\s*h/i)*3600+g(/(\d+)\s*m(?!o)/i)*60+g(/(\d+)\s*s/i); }
+-- 
+2.25.1
+

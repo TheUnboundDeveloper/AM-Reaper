@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.3.8** · 2026-10-09 <!--@stamp-->
+> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,41 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.4.0 — SMB login works on the first start, the LAN name check, the header tooltip on every page, five kernel CVE fixes
+
+- **SMB login was refused after the first Samba start of a boot (field, RT-BE96U).** `start_samba()` enrolled the
+  accounts with `smbpasswd` before the block that creates `/var/lib/samba/private`. Samba 4.15's `smbpasswd`, run
+  as root, opens `secrets.tdb` there before it touches the password file and exits 1 without a message when the
+  directory is missing; `/var` is tmpfs, so the first Samba start of every boot left `/etc/samba/smbpasswd` empty
+  (smbd logs "did not exist. File successfully created.") and every login was refused until something restarted
+  Samba. Reaper defaults Samba off, so for most users the first start is the GUI switch-on. The directories are
+  created first now, and an enrollment that fails is logged by account name. Host test `test_samba_enroll_dirs.py`.
+- **LAN name resolution is checked, and the Dashboard says so.** The Internet status read "Connected" whenever the
+  WAN held an address, even when LAN devices could not resolve a single name. `rdnshc` now asks the path LAN
+  devices use once a minute - the router's DNS for `localhost` and for a random name under a configurable domain,
+  or the servers DHCP hands out - and publishes `reaper_landns_state`. While it fails the Dashboard's Internet dot
+  and word turn amber and a tooltip on the WAN pill and the Internet card names the state, how long, and the
+  silent servers. Status only: nothing is moved or reloaded. Switch, domain and live state on the DNS Failover
+  page (`reaper_landns_enable=1`); Diagnostics v1.3.34 reports it. Host test `test_landns_check.py`.
+- **The header's Internet tooltip on every page.** It lived on the Dashboard only; every other page is framed in the
+  shell, whose header had the pill but not the tooltip. The shell carries the same box, readings and colours, and
+  its pill now matches the Dashboard: Connected if IPv4 or IPv6 is up, the danger colour when down, the mode name
+  in AP / repeater / bridge mode. Host tests `test_landns_check.py` (the shared functions diffed verbatim),
+  `test_shell_nettip.py` (the header code run under node for five states).
+- **Five kernel one-hunk CVE fixes** from the 2026-08-30 check: CVE-2023-52881, CVE-2024-47684, CVE-2024-50154,
+  CVE-2023-6932, CVE-2024-50299 - the 4.19.y stable hunks, no ABI change; all LOW on this platform, three of
+  them reboot-class under `PANIC_ON_OOPS`. Host test `test_kernel_cve_onehunk_set.py`.
+- **Firewall and Policy Routing list saves are POSTed.** A hosts list the CGI accepts became a 10.7 KB GET line for
+  CIDRs against httpd's 10 KB request-line buffer: a 400, and the page kept rows the router never stored (field,
+  RT-BE88U). The list travels in the request body, a failed save resyncs the page, and the whole list is
+  pre-checked before the save. Host test `test_fw_list_post.py`.
+- **cru adopts a crontab orphaned by a login rename.** crond ignores a crontab whose name is not in `/etc/passwd`,
+  and a login rename without a reboot rebuilds the file under the new name - every boot-registered job (rwatch,
+  Warden, the PBR deadline watcher) was dead until the next reboot (field, GT-BE98 v3.0.0). Host test
+  `test_cru_adopt.py`.
+- **Navigation rail icons unified** between the Dashboard and the shell: the Reaper menus (Gatekeeper, Warden,
+  Advisor, System Info, IPv6) no longer fall to the default glyph on framed pages. Host test `test_nav_icons.py`.
 
 ## v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
 

@@ -1125,6 +1125,153 @@ def check_warden_outbound_log(router):
                   "tells all three apart", [])
 
 
+# -- 14. qis-no-entry: the stock QIS wizard is reachable from AiMesh only -------
+# 2026-10-12. ASUS's QIS_V3 wizard ships because the AiMesh add-node flow runs
+# inside it, and that is the ONLY flow Reaper keeps. Every other path into it was
+# closed: QIS_default.cgi lands on "/", wanduck runs no first-use captive portal,
+# the LAN-subnet-change landing goes to "/", the Instant Guard site-to-site flow
+# stays compiled out, the dead menu entry is gone, the ASUS "dashboard" bundle is
+# stripped at install, and the Reaper palette is appended to the wizard's own
+# stylesheet. A GPL merge, a sibling port or a new page can re-open any of them
+# with a green build; this check is the tripwire. The allow-list names every file
+# that may still carry the wizard's name today (dead references behind the retired
+# Network Map, the wizard's own install lines, comments); anything new fails.
+QIS_ALLOWED_FILES = {
+    "aimesh/aimesh_topology.html",          # THE AiMesh add-node entry
+    "Advanced_OperationMode_Content.asp",   # AiMesh node mode (+ the mode jumps until rung B)
+    "Makefile",                             # the wizard's own install lines
+    "reaper_qis.css",                       # the theme sheet's comment
+    "state.js", "start_apply.htm", "start_apply2.htm", "detect.js", "help.js",
+    "popup.js", "index.asp", "Restarting.asp", "Main_Password.asp",
+    "js/asus_policy.js", "js/https_redirect/https_redirect.js",
+    "require/modules/menuTree.js", "require/menuTrees/menuTree.js",
+    "require/menuTrees/menuTree_v4.js", "require/menuTrees/menuTree_GS.js",
+    "require/menuTrees/menuTree_BUSINESS.js", "require/menuTrees/menuTree_ROG.js",
+    "require/menuTrees/menuTree_TUF.js",
+    "device-map/router.asp", "device-map/internet.asp",
+}
+QIS_ALLOWED_DIRS = ("dashboard/", "sysdep/")
+QIS_SCAN_EXT = (".asp", ".htm", ".html", ".js", ".css")
+
+
+def _strip_c_comments(s):
+    """Drop /* */ and // comments: the reaper comments at the closed sites QUOTE
+    the removed stock code, and a literal grep would read them as the code."""
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
+    return "\n".join(l for l in s.splitlines() if not l.lstrip().startswith("//"))
+
+
+def check_qis_entries(router):
+    www = os.path.join(router, "www")
+    bad = []
+
+    def rd(rel, code=False):
+        p = os.path.join(router, rel)
+        if not os.path.isfile(p):
+            bad.append("%s missing" % rel)
+            return ""
+        s = open(p, "r", encoding="utf-8", errors="replace").read()
+        return _strip_c_comments(s) if code else s
+
+    # -- 1. the LAN-subnet-change landing goes to "/" ------------------------
+    for rel in ("www/error_page.htm", "www/updateSubnet.htm"):
+        s = rd(rel)
+        if not s:
+            continue
+        if "QIS_wizard.htm" in s or "QIS_default.cgi" in s:
+            bad.append("%s: still sends the browser into the wizard after a "
+                       "LAN-subnet change" % rel)
+        if 'new_lan_ip)+"/";' not in s:
+            bad.append("%s: detect_router() does not land on the new address's /"
+                       % rel)
+
+    # -- 2. wanduck: no first-use captive, no first-use direct-rule hold ------
+    wd = rd("rc/wanduck.c", code=True)
+    if wd:
+        if "if(0 && isFirstUse){" not in wd:
+            bad.append("rc/wanduck.c: the first-use captive redirect branch is live "
+                       "again (every HTTP request on a factory box -> the stock wizard)")
+        if re.search(r"cross_state == CONNED && isFirstUse\)\s*\{", wd):
+            bad.append("rc/wanduck.c: the CONNED first-use direct-rule arm is back")
+        if "cross_state == DISCONN || isFirstUse" in wd:
+            bad.append("rc/wanduck.c: the load-balance first-use hold is back")
+        if "reaper: no first-use captive" not in wd:
+            bad.append("rc/wanduck.c: the init-site marker string is missing")
+
+    # -- 3. QIS_default.cgi lands on "/" ---------------------------------------
+    web = rd("httpd/web.c", code=True)
+    if web:
+        m = re.search(r"\ndo_qis_default\(char \*url, FILE \*stream\)\n\{(.*?)\n\}\n",
+                      web, re.S)
+        if not m:
+            bad.append("httpd/web.c: do_qis_default() not found")
+        else:
+            body = m.group(1)
+            if "QIS_wizard.htm" in body:
+                bad.append("httpd/web.c: do_qis_default() redirects into the wizard")
+            if 'websRedirect(stream, "/")' not in body:
+                bad.append("httpd/web.c: do_qis_default() does not land on /")
+        if '{ "QIS_default.cgi", "text/html"' not in web:
+            bad.append("httpd/web.c: the QIS_default.cgi row is gone (the wizard's "
+                       "keep-alive POST needs a 200 path)")
+
+    # -- 4. the Instant Guard site-to-site flow stays compiled out -------------
+    cfg_p = os.path.join(router, ".config")
+    if os.path.isfile(cfg_p):
+        cfg = open(cfg_p, "r", encoding="utf-8", errors="replace").read()
+        if re.search(r"^RTCONFIG_IG_SITE2SITE=y", cfg, re.M):
+            bad.append(".config: RTCONFIG_IG_SITE2SITE=y compiles ig_s2s_link.cgi, "
+                       "which meta-refreshes into QIS_wizard.htm?flag=site2site "
+                       "(an ASUS cloud ticket flow)")
+
+    # -- 5. no new www file names the wizard ----------------------------------
+    if os.path.isdir(www):
+        for dp, dns, fns in os.walk(www):
+            rel_dir = os.path.relpath(dp, www).replace(os.sep, "/")
+            rel_dir = "" if rel_dir == "." else rel_dir + "/"
+            if rel_dir.startswith(QIS_ALLOWED_DIRS):
+                dns[:] = []
+                continue
+            for fn in fns:
+                if not (fn.endswith(QIS_SCAN_EXT) or fn == "Makefile"):
+                    continue
+                rel = rel_dir + fn
+                try:
+                    data = open(os.path.join(dp, fn), "rb").read()
+                except OSError:
+                    continue
+                if b"QIS_wizard.htm" in data and rel not in QIS_ALLOWED_FILES:
+                    bad.append("www/%s names QIS_wizard.htm and is not on the "
+                               "allow-list (a new way into the stock wizard?)" % rel)
+        mt = rd("www/require/menuTrees/menuTree.js")
+        if mt and re.search(r'index:\s*"menu_QIS"', mt):
+            bad.append("www/require/menuTrees/menuTree.js: the menu_QIS entry is back")
+
+    # -- 6. install hooks: dashboard bundle stripped, theme sheet appended -----
+    mk = rd("www/Makefile")
+    if mk:
+        if "rm -rf $(INSTALLDIR)/www/dashboard" not in mk:
+            bad.append("www/Makefile: the ASUS dashboard bundle is no longer stripped")
+        if ('echo "" | cat - $(TOP)/www/reaper_qis.css >> '
+                '$(INSTALLDIR)/www/mobile/css/qis.css') not in mk:
+            bad.append("www/Makefile: reaper_qis.css is not appended to the wizard's qis.css")
+    sheet_p = os.path.join(www, "reaper_qis.css")
+    if not os.path.isfile(sheet_p):
+        bad.append("www/reaper_qis.css missing (the AiMesh wizard renders ASUS-blue)")
+    else:
+        raw = open(sheet_p, "rb").read()
+        if any(b >= 0x80 for b in raw):
+            bad.append("www/reaper_qis.css is not ASCII-only")
+        if b"007aff" in raw.lower():
+            bad.append("www/reaper_qis.css names the ASUS blue it exists to replace")
+
+    if bad:
+        return (False, "%d way(s) into the stock wizard outside AiMesh" % len(bad), bad)
+    return (True, "wizard reachable from AiMesh add-node only; QIS_default.cgi -> /, "
+                  "no first-use captive, subnet landing -> /, site2site off, "
+                  "dashboard stripped, theme sheet appended", [])
+
+
 # ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
@@ -1157,6 +1304,7 @@ def main(argv):
         ("fw-beta-channel",    check_fw_beta_channel(router)),
         ("wg-blog-proc",       check_wg_blog_proc(router)),
         ("warden-outbound-log", check_warden_outbound_log(router)),
+        ("qis-no-entry",       check_qis_entries(router)),
     ]
 
     npass = 0

@@ -1,0 +1,59 @@
+From b3e5492ddfd03116f26db72384df917524d68a2a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:49 -0400
+Subject: [PATCH] www: the setup page writes the DST rule for the chosen zone;
+ Apply waits for the zone table
+
+Since the stock wizard was retired (v3.1.2) nothing replaced the stock
+default time_zone_dstoff M3.2.0/2,M10.2.0/2, which matches no zone: a US
+box ran an hour behind from the second Sunday of October (field). The setup
+page now does the wizard's lookup for a zone with DST - the zone's
+tz_db.json rule, else the US rule, as the System page does - and leaves the
+value alone when the table cannot be read. Apply is held until the reply, a
+failed fetch, or 8 s, whichever comes first, so a submit cannot beat the
+fetch and send no rule. Lean: tests/test_firstboot_dstoff.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_Password.asp | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/release/src/router/www/Main_Password.asp b/release/src/router/www/Main_Password.asp
+index 98067b9d1c..8356f9da5e 100644
+--- a/release/src/router/www/Main_Password.asp
++++ b/release/src/router/www/Main_Password.asp
+@@ -333,6 +333,23 @@ function initial(){
+ 			document.form.time_zone_dst.value = (timeZoneObj.hasDst) ? 1 : 0;
+ 			document.form.time_zone_dst.disabled = !timeZoneObj.hasDst;
+ 			document.form.action_script.value = "restart_time";
++			/* reaper: the DST rule as well, with the retired setup wizard's lookup (QIS
++			   getTimeZoneOffset: the zone's tz_db.json rule, else the US rule, as the System
++			   page does too). Without it time_zone_dstoff kept the stock default
++			   M3.2.0/2,M10.2.0/2, which matches no zone (US clocks an hour behind from the
++			   second Sunday of October). Left untouched if the table cannot be read. */
++			if(timeZoneObj.hasDst){
++				/* reaper 2026-10-13: Apply waits for the table - a submit that beat the
++				   fetch sent no rule and kept the stock default. Released by the reply,
++				   a failed fetch, or 8 s, whichever comes first. */
++				var dstBtn = $("#btn_modify input"), dstT = setTimeout(function(){ dstBtn.prop("disabled", false); }, 8000);
++				dstBtn.prop("disabled", true);
++				$.getJSON("/ajax/tz_db.json", function(tz_db){
++					var rule = tz_db[timeZoneObj.time_zone];
++					document.form.time_zone_dstoff.value = rule ? rule : "M3.2.0/2,M11.1.0/2";
++					document.form.time_zone_dstoff.disabled = false;
++				}).always(function(){ clearTimeout(dstT); dstBtn.prop("disabled", false); });
++			}
+ 		});
+ 	}
+ }
+@@ -706,6 +723,7 @@ function showError(str){
+ <input name="foilautofill" style="display: none;" type="password">
+ <input type="hidden" name="time_zone" value="" disabled>
+ <input type="hidden" name="time_zone_dst" value="" disabled>
++<input type="hidden" name="time_zone_dstoff" value="" disabled>
+ <input type="hidden" name="cfg_pause" value="0">
+ <table id="loginTable" align="center" cellpadding="0" cellspacing="0" style="display:none">
+ 	<tr>
+-- 
+2.25.1
+

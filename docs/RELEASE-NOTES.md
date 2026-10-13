@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
+> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.0** <!--@treever--> — `3006.102.8_Reaper_v3.4.0`. **SMB login works on the first Samba start, the LAN name check, the header tooltip on every page, five kernel CVE fixes.** Also: Firewall and Policy Routing list saves POSTed, cru adopts a renamed login's crontab, the navigation icons unified, Diagnostics v1.3.34. Everything in v3.3.9 and v3.3.8 is included. |
+| **Current rung** | **v3.4.2** <!--@treever--> — `3006.102.8_Reaper_v3.4.2`. **The v3.4.0 hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes.** Also: three DNS switches off at factory, the DST rule on a first boot, IPv6 device names no longer flush the DNS cache, Diagnostics v1.3.37. Replaces the withdrawn v3.4.0 beta; everything in v3.4.0 and v3.3.9 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,36 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.2 — the TCP-load hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes
+
+This rung replaces the withdrawn v3.4.0 beta and includes everything in it.
+
+**The hang is fixed.** v3.4.0 could freeze or reboot under heavy TCP load because one of its kernel security
+fixes could deadlock on its own timer. That path now carries the guard the upstream kernel has.
+
+**Your WAN port stays yours.** A new or factory-reset router used to find its internet port by briefly joining
+every port to the LAN. The factory default is now the port labelled WAN, so the ISP port never becomes a LAN
+port; Auto-detect is still there on the WAN Ports page if you want it. An upgrade keeps whatever you chose.
+
+**Quieter DNS defaults.** Device names across networks, IPv6 device names and the LAN name resolution check
+now start switched off, like the rest of the DNS Failover page. Each is one click to turn on; an upgrade keeps
+your settings.
+
+**No more stock setup wizard.** Every remaining way into ASUS's first-run wizard is closed; a factory-fresh
+router goes straight to the login and the Dashboard. The one window Reaper keeps - adding an AiMesh node - now
+looks like the rest of Reaper and reads clearly in all 25 languages.
+
+**The clock is right from the first boot.** In a zone with daylight saving, the setup page now writes the
+correct DST rule for the zone you pick; before, a fresh router could run an hour behind from October.
+
+**Security fixes:** lldpd (the daemon AiMesh uses for wired topology) could be crashed by a crafted frame from
+the LAN (CVE-2026-46433); OpenVPN carries the 2.7.8 fixes (CVE-2026-88964, CVE-2026-84790); Samba's private
+directory is no longer world-writable.
+
+**Also:** IPv6 device names no longer flush the DNS cache every few minutes; Diagnostics v1.3.37 redacts IPv6
+prefixes, client names and domains more thoroughly; a boot without internet can write its incident bundle
+before the clock syncs; the LAN name check no longer slows its own cadence while an upstream is silent.
 
 ## What's new in v3.4.0 — SMB login works on the first start, the LAN name check, the header tooltip on every page, five kernel CVE fixes
 

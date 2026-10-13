@@ -145,6 +145,11 @@ check("no check while the primary WAN is down (state 'wan')", "if (landns_uplink
 check("a failing fresh name asks each upstream directly to name the silent ones (port kept, under the resolv lock)",
       "landns_silent_upstreams(q, silent, sizeof(silent));" in tick and 'lock = file_lock("resolv");' in rd
       and 'snprintf(nm, sizeof(nm), "%s#%d", addr[i], port[i]);' in rd)
+check("the silent-upstream pass asks every upstream at once: one wait within LDNS_UP_MS, not one per server (2026-10-13)",
+      "static void dns_ask_many(int n, char addr[][INET6_ADDRSTRLEN], const int *fam, const int *port," in rd
+      and "dns_ask_many(n, addr, fam, port, qname, LDNS_UP_MS, ok);" in rd and "gettimeofday(&t0, NULL);" in rd
+      and "dns_build(pkt, sizeof(pkt), name, &id[i])" in rd
+      and not re.search(r"for \(i = 0; i < n && !g_stop; i\+\+\) \{\s*char nm\[[^\n]*\n\s*if \(landns_rcode_ok\(dns_ask\(", rd))
 check("published as reaper_landns_state '<state> <s> <silent|->', cleared when the daemon stops",
       'snprintf(v, sizeof(v), "%s %ld %s", landns_name(ld->st), t - ld->since, *ld->silent ? ld->silent : "-");' in rd
       and 'nvram_set("reaper_landns_state", v);' in rd and 'nvram_set("reaper_landns_state", "");' in rd)
@@ -154,12 +159,12 @@ check("syslog: one line when it turns bad, one when it recovers (no line per che
 check("status only: the check never moves the DNS list, reloads dnsmasq, or writes link_internet",
       "assert_order" not in tick and "hc_reload" not in tick and "update_resolvconf" not in tick
       and not re.search(r'nvram_set(_int)?\(\s*"link_internet"', rd))
-check("switched off with reaper_landns_enable=0 (missing key = on, matching the default)",
+check("switched off with reaper_landns_enable=0 (a missing key counts as on; the defaults table always fills the key)",
       'if (nvram_match("reaper_landns_enable", "0"))' in tick)
 
 df = read("shared/defaults.c")
-check("defaults: reaper_landns_enable=1 and reaper_landns_domain empty",
-      '{ "reaper_landns_enable", "1", CKN_STR1,' in df and '{ "reaper_landns_domain", "", CKN_STR128,' in df)
+check("defaults: reaper_landns_enable=0 (off at factory, owner 2026-10-12) and reaper_landns_domain empty",
+      '{ "reaper_landns_enable", "0", CKN_STR1,' in df and '{ "reaper_landns_domain", "", CKN_STR128,' in df)
 
 # ---------------------------------------------------------------- wiring: the dashboard
 db = read("www/Main_ReaperDash.asp")

@@ -77,6 +77,30 @@ int main(int argc, char **argv)
 		printf("cap|%d\n", rv6n_render(p, n, 1, out, sizeof(out)));
 		printf("small|%d\n", rv6n_render(p, n, 10, out, 8));
 	}
+	{	/* 2026-10-13: the hold table (15 min) and the reload pacing (5 min) */
+		struct rv6n_held t[3], f[4];
+		int n = 0, i;
+		char row[256];
+		memset(t, 0, sizeof(t)); memset(f, 0, sizeof(f));
+#define F(k, a, nm, s) do { strcpy(f[k].br, "br0"); strcpy(f[k].addr, a); strcpy(f[k].name, nm); f[k].seen = s; } while (0)
+#define ROW() do { row[0] = 0; for (i = 0; i < n; i++) { strcat(row, t[i].addr); strcat(row, "="); strcat(row, t[i].name); strcat(row, ","); } } while (0)
+		F(0, "2001:db8::1", "alpha", 100); F(1, "2001:db8::2", "beta", 100);
+		n = rv6n_hold_merge(t, n, 3, f, 2, 100, 900); ROW(); printf("hold|start|%d|%s\n", n, row);
+		n = rv6n_hold_merge(t, n, 3, f, 1, 400, 900); ROW(); printf("hold|gone300|%d|%s\n", n, row);
+		n = rv6n_hold_merge(t, n, 3, f, 1, 999, 900); ROW(); printf("hold|gone899|%d|%s\n", n, row);
+		n = rv6n_hold_merge(t, n, 3, f, 1, 1000, 900); ROW(); printf("hold|gone900|%d|%s\n", n, row);
+		F(0, "2001:db8::1", "gamma", 1060);
+		n = rv6n_hold_merge(t, n, 3, f, 1, 1060, 900); ROW(); printf("hold|rename|%d|%s\n", n, row);
+		F(0, "2001:db8::1", "gamma", 1120); F(1, "2001:db8::3", "c", 1120); F(2, "2001:db8::4", "d", 1120);
+		n = rv6n_hold_merge(t, n, 3, f, 3, 1120, 900); ROW(); printf("hold|full|%d|%s\n", n, row);
+		F(0, "2001:db8::5", "e", 1180);
+		n = rv6n_hold_merge(t, n, 3, f, 1, 1180, 900); ROW(); printf("hold|evict|%d|%s\n", n, row);
+		F(0, "2001:db8::6", "f", 1240); F(1, "2001:db8::7", "g", 1240); F(2, "2001:db8::8", "h", 1240); F(3, "2001:db8::9", "i", 1240);
+		n = rv6n_hold_merge(t, n, 3, f, 4, 1240, 900); ROW(); printf("hold|sametick|%d|%s\n", n, row);
+		printf("hup|%d|%d|%d|%d|%d|%d\n", rv6n_hup_due(0, 0, 100, 300), rv6n_hup_due(1, 0, 100, 300),
+		       rv6n_hup_due(1, 100, 220, 300), rv6n_hup_due(1, 100, 399, 300), rv6n_hup_due(1, 100, 400, 300),
+		       rv6n_hup_due(1, 500, 100, 300));
+	}
 	return 0;
 }
 '''
@@ -121,6 +145,22 @@ try:
           lines[0] == "3" and lines[1:4] == ["2001:db8:8cd0::10 alpha", "2001:db8:8cd0::9 alpha", "2001:db8:8cd0::20 zeta"], lines[:5])
     tail = dict(l.split("|") for l in out.splitlines() if l.startswith(("cap|", "small|")))
     check("render: the cap holds and a too-small buffer yields nothing (-1), never half a file", tail.get("cap") == "1" and tail.get("small") == "-1", tail)
+    # 2026-10-13: hold table + reload pacing (dnsmasq's SIGHUP empties its whole cache)
+    hold = {l.split("|")[1]: l.split("|")[2:] for l in out.splitlines() if l.startswith("hold|")}
+    check("hold: a departed address keeps its name under 900 s (seen 300 s and 899 s ago)",
+          hold.get("gone300") == ["2", "2001:db8::1=alpha,2001:db8::2=beta,"] and hold.get("gone899", ["0"])[0] == "2", hold)
+    check("hold: at 900 s it leaves", hold.get("gone900") == ["1", "2001:db8::1=alpha,"], hold.get("gone900"))
+    check("hold: an address that now carries another name takes it at once", hold.get("rename") == ["1", "2001:db8::1=gamma,"], hold.get("rename"))
+    ev = hold.get("evict", ["", ""])
+    check("hold: the table never exceeds its cap; a newcomer replaces the entry seen longest ago",
+          hold.get("full", ["0"])[0] == "3" and ev[0] == "3" and "2001:db8::5=e" in ev[1] and "2001:db8::1=gamma" not in ev[1],
+          (hold.get("full"), ev))
+    check("hold: a table full of pairs seen this tick drops the extra newcomer, not a live pair",
+          hold.get("sametick", ["0", ""])[0] == "3"
+          and sorted(hold.get("sametick", ["0", ""])[1].strip(",").split(",")) == ["2001:db8::6=f", "2001:db8::7=g", "2001:db8::8=h"], hold.get("sametick"))
+    hup = [l.split("|")[1:] for l in out.splitlines() if l.startswith("hup|")]
+    check("pacing: nothing pending -> no signal; first change -> at once; +120 s and +299 s -> wait; +300 s -> signal; clock back -> signal",
+          hup == [["0", "1", "0", "0", "1", "1"]], hup)
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
@@ -131,7 +171,7 @@ check("daemon: gate = switch AND IPv6 AND router mode; idles otherwise",
 check("daemon: reads the shared neighbour cache and every dnsmasq lease file",
       "reaper_nd_load(nd, V6N_ND_MAX)" in d and 'opendir("/var/lib/misc")' in d and "rv6n_lease_line(" in d)
 check("daemon: skips non-global neighbours and DHCPv6-lease names",
-      "!reaper_nd_global(nd[i].ip)" in d and "is_v6lease_name(nm, n6)" in d)
+      "!reaper_nd_global(nd[i].ip)" in d and "is_v6lease_name(held[i].name, n6)" in d)
 check("daemon: writes only on change, atomically - temp created 0600, opened to 0644 only when complete (2026-10-09 audit V3)",
       "if (!strcmp(curbuf, content))" in d and "reaper_write_atomic(path, content, strlen(content), 0644)" in d and 'fopen(tmp, "w")' not in d)
 check("daemon: switch off or IPv6 off empties every file", "if (!on)\n\t\t\t\tclear_all();" in d)
@@ -150,7 +190,7 @@ check("cross-network IPv6 lines: eligible networks only, both switches, never VL
 check("IPv6 off writes nothing", 'return nvram_get_int("reaper_dns_v6names") == 1 && ipv6_enabled();' in sdn
       and sdn.count("!v6names_on()") >= 2)
 check("the /64s join the r24 signature (a prefix change restarts the resolvers)", '"on=%d v6=%d lan=%s/%s %s"' in sdn)
-check("default on in defaults.c", '{ "reaper_dns_v6names", "1", CKN_STR1' in read("shared/defaults.c"))
+check("off at factory in defaults.c (owner 2026-10-12; was on)", '{ "reaper_dns_v6names", "0", CKN_STR1' in read("shared/defaults.c"))
 # r26 outage guard: options this dnsmasq build refuses at START (not at --test)
 top = read("Makefile")
 noinot = "-DNO_INOTIFY" in top
@@ -158,8 +198,20 @@ emit = read("rc/sdn.c") + read("rc/services.c") + d
 check("dnsmasq is built -DNO_INOTIFY here, and no Reaper config writer emits hostsdir= / dhcp-hostsdir= / dhcp-optsdir=",
       (not noinot) or not any(('"%s=' % o) in emit or ('\n%s=' % o) in emit for o in ("hostsdir", "dhcp-hostsdir", "dhcp-optsdir")),
       "NO_INOTIFY=%s" % noinot)
-check("the daemon reloads dnsmasq once per tick, only when a file changed",
-      "changed |= put_file(brs[b], outbuf);" in d and "if (changed)\n\t\tv6n_reload();" in d and "reload_dnsmasq(ALL_SDN);" in d)
+# 2026-10-13: dnsmasq's SIGHUP empties its whole DNS cache, so the old "every instance on any change"
+# (reload_dnsmasq(ALL_SDN), once per tick) emptied every cache every 1-3 minutes (owner's _r7 syslog)
+check("reload: only the instance whose file changed - LAN_IN_SDN_IDX for lan_ifname, the SDN index for its bridge, never ALL_SDN",
+      "ALL_SDN" not in d and "reload_dnsmasq(LAN_IN_SDN_IDX);" in d and 'if (!strcmp(br, nvram_safe_get("lan_ifname")))' in d
+      and "if (!strcmp(pmtl[i].nw_t.ifname, br)) {\n\t\t\t\treload_dnsmasq(pmtl[i].sdn_t.sdn_idx);" in d)
+check("reload: a rewritten file marks its bridge pending; signals are paced (300 s, on uptime); the hold is 900 s",
+      "#define V6N_HOLD\t900" in d and "#define V6N_MIN_HUP\t300" in d and "bst[k].pending = 1;" in d
+      and "rv6n_hup_due(bst[k].pending, bst[k].last, now, V6N_MIN_HUP)" in d and "long now = up_s();" in d
+      and "sysinfo(&si)" in d and "time(NULL)" not in d)
+check("reload: the file is built from the hold table, folded every tick",
+      "nheld = rv6n_hold_merge(held, nheld, V6N_ND_MAX, fresh, nf, now, V6N_HOLD);" in d)
+check("reload: switch-off withdraws names at once and resets the pacing",
+      "if (e->d_name[0] != '.' && put_file(e->d_name, \"\"))\n\t\t\tv6n_reload_br(e->d_name);" in d
+      and "nheld = 0;" in d and "bst[i].last = 0;" in d)
 pg = read("www/Reaper_Failover.asp")
 check("DNS Failover page: the switch, saved, restarting rv6names + dnsmasq, a note while IPv6 is off",
       'id="v6names"' in pg and "reaper_dns_v6names: on('v6names')" in pg and "svc += 'restart_rv6names;'" in pg

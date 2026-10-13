@@ -1,0 +1,92 @@
+From b803b9a4d3e0cb644cb25df82785398376156767 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:55 -0400
+Subject: [PATCH] rwatch: a pre-NTP clock no longer suppresses the incident
+ dump or inflates the outage
+
+On a no-WAN boot the box runs at the pre-NTP clock (2023-12-31) while .last
+on the durable store holds a real-clock time, so NOWD-LAST went negative
+and every pre-NTP failure read "incident dump suppressed" - no bundle for
+the one boot that needed it; and the recovery line said "1463770 min
+outage" for a ~730 min outage because T0 was stamped on the pre-NTP clock
+and NOW read after the NTP step (metal, 2026-10-13). A .last ahead of the
+clock throttles nothing, the outage timer runs on uptime, and the FAILURE
+line follows the dump and says what it did. Lean: tests/test_rwatch_clockstep.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index c5d5671737..479ee1904f 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -683,17 +683,23 @@ static void rwatch_gen(void)
+ 	  "fi\n"
+ 	  "\n"
+ 	  "rw_dump() {\n"
++	  "  RWD=\"no incident dump written\"\n"
+ 	  /* A3-REL-008: dumps already fire only on the TRANSITION into failure and
+ 	   * retention is capped at 3 dirs, but a flapping condition
+ 	   * (fail/recover/fail) still writes a full dump per flap onto /jffs. Rate-
+ 	   * limit to one dump per RWDUMP_MIN_S. The syslog FAILURE line still fires
+-	   * every time, so nothing is hidden -- only the flash write is suppressed. */
++	   * every time, so nothing is hidden -- only the flash write is suppressed.
++	   * 2026-10-13 (metal, no-WAN boot): the box starts at the pre-NTP clock
++	   * (2023-12-31) while .last on the durable store holds a real-clock time, so
++	   * NOWD-LAST went negative and every pre-NTP failure was "suppressed" - no
++	   * bundle for the boot that needed one. A .last ahead of the clock throttles
++	   * nothing. */
+ 	  "  RWDUMP_MIN_S=1800\n"
+ 	  "  NOWD=$(date +%s)\n"
+ 	  "  LAST=\"$(cat $DUMPROOT/.last 2>/dev/null)\"\n"
+ 	  "  case \"$LAST\" in ''|*[!0-9]*) LAST=0 ;; esac\n"
+-	  "  if [ $((NOWD - LAST)) -lt $RWDUMP_MIN_S ]; then\n"
+-	  "    logger -t rwatch \"incident dump suppressed ($(( (NOWD-LAST)/60 )) min since the last one)\"\n"
++	  "  if [ \"$LAST\" -le \"$NOWD\" ] && [ $((NOWD - LAST)) -lt $RWDUMP_MIN_S ]; then\n"
++	  "    RWD=\"incident dump suppressed ($(( (NOWD-LAST)/60 )) min since the last one)\"\n"
+ 	  "    return\n"
+ 	  "  fi\n"
+ 	  "  D=\"$DUMPROOT/inc-$NOWD\"\n"
+@@ -718,9 +724,12 @@ static void rwatch_gen(void)
+ 	  "  WANIF=\"$(_nv wan0_ifname)\"\n"
+ 	  "  [ -n \"$WANIF\" ] && tmctl getqstats --devtype 0 --if \"$WANIF\" --qid 0 > \"$D/tmctl-q0.txt\" 2>&1\n"
+ 	  "  ls -1dt \"$DUMPROOT\"/inc-* 2>/dev/null | tail -n +4 | while read d; do rm -rf \"$d\"; done\n"
++	  "  RWD=\"diagnostics dumped to $D\"\n"
+ 	  "}\n"
+ 	  "\n"
+-	  "NOW=$(date +%s)\n"
++	  /* uptime, not the wall clock: a no-WAN boot steps the clock by years at
++	   * the first NTP sync ("recovered (1463770 min outage)" for ~730 min). */
++	  "NOW=$UP\n"
+ 	  "PREV=\"$(cat $STATE 2>/dev/null)\"\n"
+ 	  "\n"
+ 	  "# CRITICAL: with the fixed chain order this can no longer lock anyone out,\n"
+@@ -736,13 +745,14 @@ static void rwatch_gen(void)
+ 	  "  case \"$PREV\" in\n"
+ 	  "  FAIL*)\n"
+ 	  "    T0=$(echo \"$PREV\" | cut -d' ' -f2); N=$(echo \"$PREV\" | cut -d' ' -f3)\n"
++	  "    [ \"$T0\" -le \"$NOW\" ] 2>/dev/null || T0=$NOW\n"
+ 	  "    N=$((N+1))\n"
+ 	  "    [ $((N % 3)) -eq 0 ] && logger -t rwatch \"still failing:$FAIL$CRIT ($(( (NOW-T0)/60 )) min)\"\n"
+ 	  "    echo \"FAIL $T0 $N\" > $STATE\n"
+ 	  "    ;;\n"
+ 	  "  *)\n"
+-	  "    logger -t rwatch \"FAILURE detected:$FAIL$CRIT - diagnostics dumped to $DUMPROOT\"\n"
+ 	  "    rw_dump \"$FAIL$CRIT\"\n"
++	  "    logger -t rwatch \"FAILURE detected:$FAIL$CRIT - $RWD\"\n"
+ 	  "    echo \"FAIL $NOW 1\" > $STATE\n"
+ 	  "    ;;\n"
+ 	  "  esac\n"
+@@ -750,6 +760,7 @@ static void rwatch_gen(void)
+ 	  "  case \"$PREV\" in\n"
+ 	  "  FAIL*)\n"
+ 	  "    T0=$(echo \"$PREV\" | cut -d' ' -f2)\n"
++	  "    [ \"$T0\" -le \"$NOW\" ] 2>/dev/null || T0=$NOW\n"
+ 	  "    logger -t rwatch \"recovered ($(( (NOW-T0)/60 )) min outage)\"\n"
+ 	  "    ;;\n"
+ 	  "  esac\n"
+-- 
+2.25.1
+

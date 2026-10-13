@@ -10,8 +10,11 @@ each is carried here as the 4.19.y stable hunk:
                   (upstream 3d501dd326fb, 4.19.302)
   CVE-2024-47684  tcp_rto_delta_us(): a NULL rtx-queue head is warned about and returns 0
                   instead of being dereferenced (upstream c8770db2d544, 4.19.323)
-  CVE-2024-50154  reqsk_queue_unlink(): del_timer_sync() alone, since timer_pending() reads
-                  false while the handler is running (upstream e8c526f2bdf1, 4.19.324)
+  CVE-2024-50154  reqsk_queue_unlink(): del_timer_sync() without timer_pending(), since that
+                  reads false while the handler is running - EXCEPT when called from
+                  reqsk_timer_handler() itself (from_timer): del_timer_sync() on the running
+                  timer never returns, a CPU spins in softirq and the soft-lockup panic
+                  reboots the box (v3.4.0 field, 2026-10-11) (upstream e8c526f2bdf1, 4.19.324)
   CVE-2023-6932   igmp_start_timer(): the reference is taken with refcount_inc_not_zero()
                   before the timer is armed (upstream e2b706c69190, 4.19.302)
   CVE-2024-50299  sctp_sf_ootb(): the chunk walk stops while a whole chunk header fits
@@ -94,8 +97,26 @@ fn = extract(S["icsk"], "static bool reqsk_queue_unlink(struct request_sock_queu
 check("inet_connection_sock.c: reqsk_queue_unlink() found", fn is not None)
 if fn:
     n = norm(fn)
-    check("50154: del_timer_sync() is called unconditionally", "if (del_timer_sync(&req->rsk_timer)) reqsk_put(req);" in n)
+    check("50154: reqsk_queue_unlink() takes from_timer", "struct request_sock *req, bool from_timer)" in n)
+    check("50154: del_timer_sync() is skipped only for the timer's own call",
+          "if (!from_timer && del_timer_sync(&req->rsk_timer)) reqsk_put(req);" in n)
     check("50154: timer_pending() no longer gates it", "timer_pending(" not in n)
+    check("50154: no unguarded del_timer_sync() left (it self-deadlocks from the handler)",
+          n.count("del_timer_sync(") == 1)
+fn = extract(S["icsk"], "static bool __inet_csk_reqsk_queue_drop(struct sock *sk,")
+check("50154: __inet_csk_reqsk_queue_drop() carries from_timer to the unlink",
+      fn is not None and "reqsk_queue_unlink(&inet_csk(sk)->icsk_accept_queue, req, from_timer);" in norm(fn))
+fn = extract(S["icsk"], "bool inet_csk_reqsk_queue_drop(struct sock *sk, struct request_sock *req)")
+check("50154: the exported drop is the non-timer form",
+      fn is not None and "return __inet_csk_reqsk_queue_drop(sk, req, false);" in norm(fn))
+fn = extract(S["icsk"], "static void reqsk_timer_handler(struct timer_list *t)")
+check("inet_connection_sock.c: reqsk_timer_handler() found", fn is not None)
+if fn:
+    n = norm(fn)
+    check("50154: the timer handler drops with from_timer and puts its own reference",
+          "drop: __inet_csk_reqsk_queue_drop(sk_listener, req, true); reqsk_put(req); }" in n)
+    check("50154: the timer handler never reaches a drop that waits on its own timer",
+          "inet_csk_reqsk_queue_drop_and_put(" not in n and "inet_csk_reqsk_queue_drop(" not in n.replace("__inet_csk_reqsk_queue_drop(", ""))
 
 # CVE-2023-6932
 fn = extract(S["igmp"], "static void igmp_start_timer(struct ip_mc_list *im, int max_delay)")

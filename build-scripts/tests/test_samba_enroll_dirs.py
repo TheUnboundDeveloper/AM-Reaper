@@ -64,6 +64,9 @@ check("usb.c: /var/lib/samba/private is made before the first smbpasswd call",
       dirs_precede_enrollment(body))
 for d in ("/var/run/samba", "/var/log/samba", "/var/lib/samba", "/var/cache/samba"):
     check("usb.c: %s is made before the first smbpasswd call" % d, dirs_precede_enrollment(body, d))
+pm = body.find('chmod("/var/lib/samba/private", 0700);')
+check("usb.c: the private dir goes back to 0700 after the 0777 mkdirs, before the first smbpasswd call (2026-10-13)",
+      pm > body.find('mkdir_if_none("/var/lib/samba/private")') > -1 and 0 < pm < first_enrollment(body))
 check("usb.c: the directory block is guarded for SAMBA4 and sits inside start_samba()",
       "#if defined(RTCONFIG_SAMBA4)\n\t/* reaper: the Samba 4 runtime dirs must exist BEFORE" in body)
 check("usb.c: guest enrollment result is checked and logged",

@@ -117,7 +117,15 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.34|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.37|1
+# v1.3.35 (2026-10-12): the sanitizer redacts a prefix that ends in "::", IPv6 reverse zones
+# and a DHCPv6 DUID; the tripwire counts IPv6 residue (test_diag_sanitizer.py runs the awk)
+usr/sbin/reaper_diag|[IP6-ARPA-|1
+usr/sbin/reaper_diag|residual IPv6 shapes|1
+# v1.3.36: the sanitizer is a pipeline of targeted stages; the client-names stage masks names and
+# domains clients write into DHCP/gatekeeper log lines, and the tripwire counts what it missed
+usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1
+usr/sbin/reaper_diag|residual client names|1
 usr/sbin/reaper_diag|/proc/nvram/boardid|1
 # v3.1.7 -- the firewall table walker: binary + static witness rows + the
 # rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
@@ -738,6 +746,9 @@ bin/rtrafd|to stay near|1
 # ISP port into br0 at every boot and link loss (owner, 2026-10-06); rc pins it, _eval refuses it.
 sbin/rc|pinned: it stays out of the LAN bridge|1
 usr/lib/libshared.so|refused to bridge the pinned WAN port|1
+# v3.4.2 -- the factory default is a fixed WAN port (Auto opt-in); on that path lldpd never binds a
+# WAN interface (owner, 2026-10-12). The default itself is pinned by test_factory_defaults_off.py.
+sbin/rc|skip binding the fixed WAN|1
 www/Reaper_Survey.asp|r.dfsl|1
 www/Reaper_WANPorts.asp|start_reaper_wanredetect|1
 www/Reaper_WANPorts.asp|is_special_lan(NV.wans_lanport)|1
@@ -810,7 +821,7 @@ usr/bin/reaper_fwsim|is in use on the LAN - LAN rows witness from|1
 usr/bin/reaper_fwsim|/var/lib/misc|1
 # 2026-10-09 audit V3: /tmp hardening - the kernel protections set at boot, the shared
 # helper (private directories, fresh files, script check), the private-directory guard
-# of the update check, and the diag's report on all of it (diag pins: v1.3.34 above)
+# of the update check, and the diag's report on all of it (diag pins: v1.3.37 above)
 sbin/rc|/proc/sys/fs/protected_regular|1
 sbin/rc|/proc/sys/fs/protected_symlinks|1
 usr/lib/libshared.so|was not a private directory|1
@@ -862,3 +873,30 @@ sbin/rc|account enrollment failed for %s (smbpasswd returned an error)|1
 www/reaper_shell.asp|reaper_landns_state|2
 www/reaper_shell.asp|function tipFill(){|1
 www/reaper_shell.asp|function paintWan(p){|1
+# v3.4.1 -- first boot writes the DST rule (time_zone_dstoff) from tz_db.json; the stock
+# default M3.2.0/2,M10.2.0/2 matches no zone (field 2026-10-11, US clock an hour behind).
+www/Main_Password.asp|/ajax/tz_db.json|1
+www/Main_Password.asp|tz_db[timeZoneObj.time_zone]|1
+# 2026-10-12 -- QIS for AiMesh only. QIS_default.cgi lands on "/" (never the stock wizard); wanduck
+# runs no first-use captive portal (x_Setting==0 stays only for AiMesh node discovery); the Reaper
+# palette is appended to the wizard's own stylesheet; the LAN-subnet landing goes to "/".
+# Guards: tests/test_qis_default_retired.py, test_wanduck_firstuse.py, test_qis_theme_append.py,
+# reaper_static_checks.py qis-no-entry.
+usr/sbin/httpd|QIS_default.cgi retired|1
+sbin/rc|reaper: no first-use captive|1
+www/mobile/css/qis.css|reaper_qis|1
+www/error_page.htm|new_lan_ip)+"/"|1
+www/updateSubnet.htm|new_lan_ip)+"/"|1
+www/error_page.htm|!QIS_wizard.htm
+www/updateSubnet.htm|!QIS_wizard.htm
+# 2026-10-12 (owner review of the themed add-node window): the search page carries its own progressive
+# wording (RAMS_1/2) and the prerequisites box (RAMS_3..9), 9 keys x 25 packs; the title column is centred.
+www/mobile/pages/amassearch_page.html|rqs_box|1
+www/mobile/pages/amassearch_page.html|rqs_list|1
+www/mobile/css/qis.css|.rqs_box{|1
+# 2026-10-13 -- the Bandwidth tab (Cloudflare's speed test, test rungs r9-r12 only) was removed the same day;
+# nothing of it ships: no page, no tab, no reaper_bw.cgi, no RBW_ strings, no reaper_bwtest / reaper_bwprobe.
+usr/sbin/httpd|!reaper_bw.cgi
+usr/sbin/httpd|!/usr/sbin/reaper_bwprobe
+www/require/modules/menuTree.js|!Reaper_Bandwidth.asp
+www/EN.dict|!Router vs client device

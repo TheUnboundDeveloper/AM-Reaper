@@ -113,7 +113,7 @@ check("start_dnsmasq records the signature after writing the main config",
 n_restart = svc.count('if ((action & RC_SERVICE_START) && revshare_sig_changed()) {') + svc.count('if (revshare_sig_changed()) {')
 check("restart_sdn and sdn_del restart dnsmasq once when the network set changed",
       n_restart == 2 and svc.count('notify_rc("restart_dnsmasq");') >= 2)
-check("default on in defaults.c", '{ "reaper_dns_revshare", "1", CKN_STR1' in read("shared/defaults.c"))
+check("off at factory in defaults.c (owner 2026-10-12; was on)", '{ "reaper_dns_revshare", "0", CKN_STR1' in read("shared/defaults.c"))
 pg = read("www/Reaper_Failover.asp")
 check("DNS Failover page has the switch, saves it, and restarts dnsmasq when it changes",
       'id="revshare"' in pg and 'nvram_match("reaper_dns_revshare", "1", "checked")' in pg

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
+> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -42,29 +42,73 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 - **[P2] The dashboard says Connected while LAN clients have no name resolution** — rdnshc now
   checks the LAN path; amber status + tooltip.
-  **[in v3.4.0; owner to confirm the amber state]** ↳ notes: `dashboard-connected-lan-dns.md`
+  **[in v3.4.2; owner to confirm the amber state]** ↳ notes:
+  `dashboard-connected-lan-dns.md`
 - **[P2] Hosts-list paste blanks the GUI until httpd restarts** (BE88U, v2.7.1) — no hang path
   today; large list saves overran httpd's request line - now POSTed.
-  **[in v3.4.0; reporter to confirm a large paste]** ↳ notes: `firewall-hosts-paste-blanks-gui.md`
+  **[in v3.4.2; reporter to confirm a large paste]** ↳ notes:
+  `firewall-hosts-paste-blanks-gui.md`
 - **[P3] Renaming the login name stopped every cron job until a reboot** (was "GT-BE98 v3.0.0 empty
   crontab") — cru now adopts the orphaned crontab.
-  **[in v3.4.0; owner to confirm: rename the login, cru l]** ↳ notes: `gt-be98-empty-crontab.md`
+  **[in v3.4.2; owner to confirm: rename the login, cru l]** ↳ notes:
+  `gt-be98-empty-crontab.md`
 - **[P3] The header's Internet tooltip showed on the dashboard only** (owner) — the shell framing
   every other page had the pill but not the tooltip, the amber state or the landns data; it now
   carries the dashboard's box, readings and colours, with the shared functions kept verbatim.
-  **[in v3.4.0; owner to confirm: hover the Internet pill on any framed page]** ↳ notes:
-  `shell-header-internet-tooltip.md`
+  **[in v3.4.2; owner to confirm: hover the Internet pill on any
+  framed page]** ↳ notes: `shell-header-internet-tooltip.md`
 - **[P1] SMB login refused after the first Samba start of a boot** — accounts were enrolled before
   `/var/lib/samba/private` existed; smbpasswd exits 1 silently without it, so the passdb stayed
   empty. The directories now precede enrollment; a failed enrollment is logged by account name.
-  **[in v3.4.0; owner to confirm: reboot with Samba on, first-start login]** ↳ notes:
-  `smb-login-refused-first-start.md`
+  **[in v3.4.2; owner to confirm: reboot with Samba on, first-start
+  login]** ↳ notes: `smb-login-refused-first-start.md`
 - **[P3] Five kernel one-hunk CVEs from the 2026-08-30 check** (2023-52881, 2024-47684, 2024-50154,
-  2023-6932, 2024-50299) — the 4.19.y hunks ported; all LOW, three reboot-class.
-  **[in v3.4.0; soak on the owner's box owed]** ↳ notes: `cve-check-2026-08-30.md`
+  2023-6932, 2024-50299) — the 4.19.y hunks ported; all LOW, three reboot-class. The 2024-50154 hunk
+  needed the from_timer guard below before it could ship.
+  **[in v3.4.2; soak on the owner's box owed]** ↳ notes:
+  `cve-check-2026-08-30.md`
 - **[P3] Navigation rail icons differed between the dashboard and the shell** (owner) — Reaper menus
   fell to the circle-dot; one glyph per menu now, the same on both rails.
-  **[in v3.4.0; owner to confirm on the shell rail]** ↳ notes: `nav-rail-icons.md`
+  **[in v3.4.2; owner to confirm on the shell rail]** ↳ notes:
+  `nav-rail-icons.md`
+- **[P1] v3.4.0 hung or rebooted under TCP load** (field, two boxes) — the CVE-2024-50154 hunk ran
+  `del_timer_sync` from inside its own timer; a `from_timer` guard removes the self-deadlock. The
+  v3.4.0 beta was withdrawn for this.
+  **[in v3.4.2; owed: SYN-flood soak on the owner's box, the RT-BE88U reporters]**
+  ↳ notes: `kernel-reqsk-timer-deadlock.md`
+- **[P3] A first boot in a DST zone kept the stock DST rule** (field, US clock an hour off) — the
+  setup page now writes `time_zone_dstoff` from the bundled zone table, as the retired wizard did.
+  **[in v3.4.2; owed: a factory-reset first boot in a DST zone]** ↳ notes:
+  `firstboot-dst-rule.md`
+- **[P2] The stock setup wizard was still reachable outside AiMesh** — the default CGI, wanduck's
+  first-use captive redirect, the LAN-subnet landing and a dead menu entry all led into it; every
+  path is closed and the kept AiMesh window carries the Reaper palette.
+  **[in v3.4.2; owner confirmed the window on _r2/_r3; owed: factory-reset captive
+  test once a WAN exists, subnet landing on a tester]** ↳ notes: `qis-aimesh-only.md`
+- **[P3] AiMesh add-node window: centred title, progressive wording, prerequisites box, all 25
+  languages, long words clipped** (owner review) — the search page got its own dictionary keys; a
+  gate proves every key the AiMesh pages use exists in every pack.
+  **[in v3.4.2; owner confirmed on _r3; owed: a non-English pass on a phone]** ↳ notes:
+  `qis-aimesh-only.md`
+- **[P2] A new or factory-reset router still joined its WAN port to the LAN once** (owner) — stock
+  Auto-detect was the factory default and can only find the WAN by bridging; the factory default is
+  now the port labelled WAN with Auto off, and on that path lldpd no longer binds a WAN interface.
+  An upgrade keeps the stored choice.
+  **[in v3.4.2; owed: a factory-reset first boot with the cable in the WAN port, then in the 2.5G
+  port]** ↳ notes: `autowan-wan-pin.md`
+- **[P3] Three DNS Failover switches started on at factory** (owner) — Device names across networks,
+  IPv6 device names and the LAN name resolution check now start off, like the other three on that
+  row. An upgrade keeps the stored values.
+  **[in v3.4.2; owed: a factory-reset first boot shows all six off]** ↳ notes:
+  `defaults-optional-off-rule.md`
+- **[P2] A diag marked CLEAN carried the owner's IPv6 prefix** (owner's report, 2026-10-12) — the
+  sanitizer wanted a tail after `::`, so a routed prefix in a Warden or ip6tables line passed; the
+  reverse-zone names spelled the same prefix as nibbles; a DHCPv6 DUID kept the router MAC's last
+  four bytes. All three shapes are redacted now and the tripwire counts IPv6 residue (diag v1.3.35);
+  the _r5 report then printed a device's own DHCP domain raw, so the sanitizer is a pipeline of
+  targeted stages with a client-names stage, and the tripwire counts unmasked names (v1.3.36).
+  **[in v3.4.2; confirmed on the owner's box: v1.3.35 (_r5), v1.3.36 (_r6: the domain
+  reads [CLIENT-DOMAIN-1], residual client names 0, CLEAN)]** ↳ notes: `reaper-diag-counters.md`
 - **[P3] Kernel CVE-2026-43198: a v6-mapped TCP child was used before its IPv6 state was set**
   (audit V8) — upstream fix ported to 4.19 with the exported API unchanged.
   **[in v3.3.8, metal owed: TCP to the router's listeners, SYN flood, 24 h soak]** ↳ notes:
@@ -159,6 +203,41 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Advanced Connections window smoothing** — one measurement per frame, eased glide.
   **[in v3.3.6, metal owed]** ↳ notes: `conn-detail-panel-follow.md`
 
+- **[P3] rwatch could not write an incident bundle before the clock synced** (owner's diag) — a cold
+  boot without NTP starts in 2023, so the dump throttle read the last bundle as recent and the
+  outage timer ran on the wall clock; a `.last` ahead of the clock throttles nothing, the outage
+  timer runs on uptime, the FAILURE line follows the dump and says what it did.
+  **[in v3.4.2; owed: a no-WAN boot on metal]** ↳ notes: `chain-signature-watchdog.md`
+- **[P3] lldpd read four bytes past a VLAN-tagged frame of MTU size (CVE-2026-46433)** —
+  `lldpd_decode` moved `s-12` bytes from offset 16; any L2-adjacent host could crash the AiMesh
+  wired-topology daemon. Fixed in both vendored trees.
+  **[in v3.4.2; owed: a tagged LLDP frame of MTU size on metal]** ↳ notes:
+  `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] Samba's private directory was world-writable** — `mkdir_if_none` makes 0777; it is 0700
+  after the mkdirs now.
+  **[in v3.4.2; owed: `ls -ld /var/lib/samba/private` after a Samba start]** ↳ notes:
+  `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] OpenVPN 2.7.8 security fixes backported** (CVE-2026-88964, CVE-2026-84790 and two hardening
+  commits) onto the 2.7.7 tree; the full 2.7.8 import stays for the next component rung.
+  **[in v3.4.2; owed: an OpenVPN client and server session on metal]** ↳ notes:
+  `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] The LAN name check's silent-upstream pass asks every upstream at once** — it was one wait
+  per server inside rdnshc's loop (up to 6 s a minute while failing, slipping the health check's
+  cadence).
+  **[in v3.4.2; owed: a failing-upstream run with the silent list showing]** ↳ notes:
+  `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] Diagnostics v1.3.37: a generic device/OS word used as a client name is masked at its
+  template position only** — it used to blank that word across the whole report (`uname`, `ps`).
+  **[in v3.4.2; owed: a diag on metal]** ↳ notes: `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] First-boot DST rule: Apply waits for tz_db.json** — a submit that beat the fetch sent no
+  rule; the setup page holds the button until the reply, a failed fetch, or 8 s.
+  **[in v3.4.2; owed: a factory-reset first boot]** ↳ notes: `CODE-AUDIT-2026-10-13-v3.4.2.md`
+- **[P3] IPv6 device names emptied the DNS cache every few minutes** — `rv6names` signalled every
+  dnsmasq on any change and dnsmasq's SIGHUP flushes its cache; one instance per names file, a 15
+  min hold and 5 min pacing now.
+  **[in v3.4.2; owed: an hour of syslog: `rv6names/br0/hosts` reads a few per hour, br55 only on its
+  own changes, `killall -USR1 dnsmasq` cache counts not reset]** ↳ notes: `dhcp-hostname-store.md`
+
 ---
 
 ## Open bugs / under investigation
@@ -170,9 +249,19 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
   = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
   (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
-  **[direction set; plan owed]** ↳ notes: `advisor-arming-code-admin-reset.md`
+  **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
+- **[P2] "skb->nr_frags N exceed max_sg_array 4" is a dropped packet, not noise** (field, GT-BE98)
+  — DNS-over-TLS with two or more upstreams interleaves small writes on one page; the Runner refuses
+  the resulting >4-fragment packet and that connection wedges. Fix point: the kernel's default
+  features hook, one branch per packet.
+  **[root-caused on desk; owed: the reporter's counter check, then the hook]** ↳ notes:
+  `runner-sg-frag-cap.md`
+- **[P3] Operation Mode changes and the MLO "Get started" button still hand off to the stock
+  wizard** — rung B is a native mode step page (AP, Media Bridge, Router first; Repeater after),
+  rung C points the MLO button at the Wireless console.
+  **[plan approved 2026-10-12; mock next]** ↳ notes: `qis-aimesh-only.md`
 
 ---
 
@@ -196,10 +285,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes:
   `staged-batch-changes.md`
 - **[P3] Mimic — hardware port mirror to an external IDS** (WAN Ports page, every wired port,
-  dual-WAN aware) — Phase 0 mostly proven. **[owed: accelerated-flow + restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
+  dual-WAN aware) — Phase 0 mostly proven.
+  **[owed: accelerated-flow + restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]** ↳ notes:
   `pbr-warden-country-sets.md`
-
 ---
 
 ## Documentation
@@ -210,6 +299,12 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 ---
 
 ## Code quality / deferred (with reason)
+- **[P3] Bandwidth tab — Cloudflare's speed test in the firmware** — built and metal-tested as
+  v3.4.2 test rungs r9-r12, then removed: Cloudflare serves its 100 MB+ downloads only to a browser
+  request, so the router's run had to work around that and froze the UI for its whole length; the
+  device-side run alone adds nothing over speed.cloudflare.com in a browser. Internet Speed (Ookla)
+  stays.
+  **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
 
 - **[P3] Code review 2026-10-07: plain-HTTP login default (G2), factory posture (G5)** — owner
   accepted, no change. **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
@@ -251,6 +346,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **ASUS CVE-2026-14157 (VPN-file format string) and CVE-2026-13313 (Telnet debug function) do not
+  apply** — Merlin's `vpnupload.cgi` → libovpn import path has no format-string sink; telnetd is not
+  built. The 2026-10-07 batch was assessed the same week.
+  **[closed 2026-10-13]** ↳ notes: `CODE-AUDIT-2026-10-13-v3.4.2.md`
 - **Dual-WAN: both NextDNS profiles receive DNS logs** — stubby round-robins every DoT endpoint.
   ↳ notes: `wad-dual-wan-nextdns.md`
 - **Investigated, not a bug (do not re-raise).**

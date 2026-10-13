@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.4.0** · 2026-10-11 <!--@stamp-->
+> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000. This guide describes the feature set as of the v3.4.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.4.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -136,11 +136,13 @@ This guide is written for someone who will install and run the firmware: technic
 8. [Factory defaults, and what Reaper changes](#8-factory-defaults-and-what-reaper-changes)
    - 8.1 [Stock settings whose default Reaper changes](#81-stock-settings-whose-default-reaper-changes)
    - 8.2 [Reaper's own settings and their defaults](#82-reapers-own-settings-and-their-defaults)
-   - 8.3 [What a factory reset actually restores](#83-what-a-factory-reset-actually-restores)
+   - 8.3 [Every feature and function at factory](#83-every-feature-and-function-at-factory)
+   - 8.4 [What a factory reset actually restores](#84-what-a-factory-reset-actually-restores)
 9. [Present but inactive](#9-present-but-inactive)
    - 9.1 [The stock firmware-update page](#91-the-stock-firmware-update-page)
    - 9.2 [The AiProtection pages](#92-the-aiprotection-pages)
-   - 9.3 [Why they were not simply deleted](#93-why-they-were-not-simply-deleted)
+   - 9.3 [The setup wizard pages](#93-the-setup-wizard-pages)
+   - 9.4 [Why they were not simply deleted](#94-why-they-were-not-simply-deleted)
 
 ---
 
@@ -158,8 +160,10 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.2 What it removes
 
-- **The first-boot QIS wizard's EULA and privacy-consent screens** and the Advanced privacy page. The AiMesh add-node wizard is kept.
-- **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound check the firmware makes on its own is the opt-in firmware check, and that goes to the Reaper GitHub release channel.
+- **The first-boot QIS setup wizard**, with its EULA and privacy-consent screens, and the Advanced privacy page. From v3.4.2 every route into the wizard is closed (the default setup address, the first-use redirect while the WAN is down, the landing after a LAN subnet change, a dead menu entry); the one part kept is the **AiMesh add-node** window, which carries the Reaper look (9.3).
+- **Quagga** (the `zebra` and `ripd` routing daemons, v3.3.4): it shipped inert with a default management password.
+- **The USB application network installer** (v3.3.7): it installed plain-HTTP packages as root. The USB Application page, the mount chain and the disk check stay.
+- **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound checks the firmware makes on its own are the opt-in firmware check, which goes to the Reaper GitHub release channel, and — with the LAN name resolution check switched on (4.14a, off at factory) — one DNS query a minute for a random name under the domain you set there, or the stock network-monitoring name, which that domain's DNS servers see.
 - **Adaptive QoS / Trend Micro DPI.** AiProtection, DPI-based Adaptive QoS and the web-history feature are gone with the engine that powered them. Reaper's own hardware QoS and Traffic Analyzer take their place.
 - **Alexa / Google Assistant** integration, the Download Master advert, the stock Network Map page (its device list and per-device detail now live on the dashboard and the Devices page), the Open NAT menu entry (it was port forwarding, which is still there), and the legacy SNMPv1/v2c protocols (SNMPv3 with SHA + AES is the only option).
 - **No packet-capture page is bundled.** If you want `tcpdump`, install it through Entware on a USB stick.
@@ -168,7 +172,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
-Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, Telnet, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off (8.1, 8.2). Reaper also adds an idle auto-logout of 15 minutes on the admin session.
+Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off; no Telnet server ships at all. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off. From v3.4.2 the internet port is the port labelled WAN with automatic port detection off, so the provider's port is never bridged into the LAN, and every switch on the DNS Failover page starts off. Section 8 lists every factory default. The admin session logs out after 30 idle minutes (Administration → System → *Logout after*; 0 turns it off), on Reaper's own pages as on the stock ones.
 
 ### 1.4 The two builds: Standard (noMCP) and AI Advisor (MCP)
 
@@ -201,6 +205,7 @@ This section is the one to read before you flash and again after you have been r
 - **RT-BE96U** — primary model; every release is built and validated on this hardware.
 - **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
 - **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
+- **ZenWiFi BQ16** (BE25000, quad-band 2.4/5/5/6 GHz, v3.3.2) and **ZenWiFi BQ16 Pro** (BE30000, quad-band 2.4/5/6/6 GHz, v3.3.4) — built from the ASUS 102_39256 GPL drop with radio firmware taken from the matching stock image, and published as **prereleases** on the same terms as the GT-BE19000. The BQ16 Pro carries the BQ16's header art until its own is drawn.
 
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 
@@ -242,10 +247,16 @@ The project's install guide ([`INSTALL-AND-ROLLBACK.md`](INSTALL-AND-ROLLBACK.md
 
 There is no setup wizard and nothing blocks a page. A factory-fresh or factory-reset router boots usable on `admin` / `admin`, with its Wi-Fi **open** on the factory network name (`ASUS_xx…`), so it can be reached for setup over Wi-Fi without running a cable. Until both the router login and the Wi-Fi have left their factory values, every top-level admin page carries a banner that cannot be dismissed. Since v3.1.0 it has one button:
 
-- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — and fires the same wireless restart, then changes the login through the same committed path as the password page. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
+- **Set up this router** (both still factory) opens Reaper's setup box: **network name**, **Wi-Fi password** and **router login password** in one step. The box writes exactly what the stock Wireless apply writes on every band — one name, WPA2/WPA3 on 2.4 and 5 GHz, WPA3 on 6 GHz, Smart Connect on — changes the login through the same committed path as the password page, marks setup complete and reboots (**Apply & Reboot**, v3.3.1–v3.3.2). The page shows the same reboot countdown as the GUI's Reboot and then returns to the login page; the reboot is what creates the main network's all-band card. Nothing is prefilled, and the login name is lowercase only. A Wi-Fi key must be 8–63 characters (or a 64-digit hex key); a shorter key is refused in the page and in the router, because the access-point daemon silently drops a short key and would come up with no Wi-Fi at all. A network name is 1–32 printable characters.
 - If only the login is still factory, the button goes to the password page; if only the Wi-Fi is, it opens the box (which asks for all three fields).
 
 Why a Reaper box rather than the stock Wireless page: on this build the stock page edits each radio's primary network, which AiMesh turns into its hidden backhaul; the network your devices join lives on the virtual networks the mesh daemon rebuilds after every wireless apply. The box writes to the right place. The stock Wireless page is untouched for engineers.
+
+**Time zone.** The first password change also sets the router's time zone from the browser's. From v3.4.2 it writes the daylight-saving rule for that zone too (`time_zone_dstoff`, from the bundled zone table, the US rule when the zone has none), as the retired wizard did. Before v3.4.2 a router in a daylight-saving zone kept the stock rule, which matches no real zone, and could run an hour off around the October changeover; check Administration → System on an older install.
+
+**The internet cable.** Plug the provider's cable into the port labelled **WAN**. From v3.4.2 that port is the factory internet port and automatic port detection is off; a cable in the other WAN-capable port gets no internet until that port is chosen on **WAN → WAN Ports** (4.19).
+
+Every factory value is listed in section 8.
 
 The banner only ever appears on a genuinely unconfigured router — an upgrade of a configured router never sees it. The forced first-boot page and its six gates were removed in v2.9.1 after they produced the login loops of the v2.1.x line; there is nothing to release over SSH any more, and no page is ever withheld.
 
@@ -271,7 +282,7 @@ An existing list is migrated once, automatically, at the first boot on a firmwar
 
 - `/jffs` is **always mounted**. The "Enable JFFS custom scripts and configs" switch on the Administration page controls only whether `/jffs/scripts` and `/jffs/configs` are honoured; it does not control whether Reaper can use the partition.
 - Reaper uses **well under 4 MB** of it. The diagnostics report (v1.3.4) prints the partition's size, free space, read-only state, a write test and the space Reaper's stores use, and raises a FINDING if the partition is unmounted, read-only, nearly full or unwritable — the cases in which Reaper changes would stop persisting. Warden also shows a banner on its page if `/jffs` is off or read-only.
-- **A factory reset with *clear all content and data logs* ticked, and "Format JFFS partition at next boot", erase all of these lists.** That option is ticked by default in the factory-reset box on Backup & Restore; a reset with it unticked keeps `/jffs` (8.3). For Gatekeeper that is the correct default-deny outcome (nothing is approved after a reset); for the rest it means your rules are gone. **Export first** — see 2.5.
+- **A factory reset with *clear all content and data logs* ticked, and "Format JFFS partition at next boot", erase all of these lists.** That option is ticked by default in the factory-reset box on Backup & Restore; a reset with it unticked keeps `/jffs` (8.4). For Gatekeeper that is the correct default-deny outcome (nothing is approved after a reset); for the rest it means your rules are gone. **Export first** — see 2.5.
 - **The stock settings backup does not contain them** (it is an nvram export). Again: export first.
 - Approving or removing a Gatekeeper device no longer forces a full nvram commit per click, so those actions are quicker than they were.
 - The v2.6.x/v2.7.0 migrations are recent. The expected evidence after upgrading is one migration line per feature in the system log, and a list that is still there after a reboot; anything still open about them is in [`BACKLOG.md`](BACKLOG.md).
@@ -314,6 +325,8 @@ The ext4/ext3/ext2 options arrived in v2.6.8 and are also pending a round trip o
 
 **Timing.** USB drives mount roughly 40–50 seconds into boot. The Traffic collector waits for the store to appear (retrying for up to 15 minutes), restores the saved history, and never overwrites a database it did not first load; it also parks itself if the store vanishes during a firmware flash and re-attaches when it returns. The dashboard re-polls USB status for the first 90 seconds after load so the tiles fill in on their own.
 
+**Flashes, reboots and late disks (v3.3.2–v3.3.3).** A firmware flash, a reboot and a factory reset first stop the services you started from `services-stop` (Entware and the like), then any process still holding a file on the disk, and release every swap file on it, before the disk is unmounted, so the volume comes back clean. A dnsmasq whose configuration points at a USB path that is not mounted yet drops that one line and is restarted once the path appears, instead of leaving the LAN without DNS and DHCP. A mount watchdog re-sends a lost mount event for a partition that never mounted (three tries in 30 minutes). The kernel's soft-lockup panic is held off through boot and while a disk mounts, and re-armed after 600 s of uptime with no mount activity (the system log says `soft-lockup panic armed`).
+
 One field report (Traffic Analyzer "1 year" totals sticking for IPv6 devices) looked like a USB-store issue that cleared when the reporter moved the store to JFFS; it is being watched.
 
 ### 2.7 Apply and Keep: commit-confirm and the auto-revert timer
@@ -352,18 +365,23 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 
 So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (1.5); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
+**Chain signatures (v3.3.4).** Each firewall apply records a checksum of every Reaper filter and nat chain. `rwatch` recomputes it on each tick; two ticks in a row that disagree re-apply the confirmed rules under the firewall lock, at most twice and 600 s apart, and never while a change is waiting for Keep. A script that edits a Reaper chain in place is therefore undone within about ten minutes.
+
+**File modes (v3.3.8).** `rc` and everything it starts now run with umask 022, so a file created without an explicit mode is 0644, not world-writable 0666. An add-on that writes into such a file as a non-root user must set the mode itself.
+
 The diagnostics report lists "an old direct firewall hook left over or the shared front chain missing" as a FINDING, which will catch most script conflicts.
 
 ### 2.10 The diagnostics report and how to share it safely
 
-**Administration → Diagnostics** has one button: **Download Report**. It gathers in one pass what a network engineer would collect by hand — model and firmware identity, uptime and memory, each radio's channel, width, signal health and client counts, wired port link states and speeds, hardware-acceleration and QoS readings, DHCP lease count, running services and open ports, recent kernel and system log excerpts — and, since v1.3.0 of the report, a **FINDINGS** block at the top, syslog history over the live log *and* the `rwatch` mirror (days, not hours), process health, the state of every Reaper layer, the data plane, nvram hygiene, a network inventory, and `/jffs` health. It takes roughly 20–30 seconds; the web server is blocked while it runs, so do not navigate away. The same collector is available over SSH as `reaper_diag`.
+**Administration → Diagnostics** has one button: **Download Report**. It gathers in one pass what a network engineer would collect by hand — model and firmware identity, uptime and memory, each radio's channel, width, signal health and client counts, wired port link states and speeds, hardware-acceleration and QoS readings, DHCP lease count, running services and open ports, recent kernel and system log excerpts — and, since v1.3.0 of the report, a **FINDINGS** block at the top, syslog history over the live log *and* the `rwatch` mirror (days, not hours), process health, the state of every Reaper layer, the data plane, nvram hygiene, a network inventory, and `/jffs` health. It takes roughly 20–30 seconds. Since v3.3.3 the collector runs as a separate background job, so the rest of the web interface stays usable; the page checks on it every 2 seconds and downloads the file when it is ready (it gives up after 5 minutes). The same collector is available over SSH as `reaper_diag`.
 
 **Recent additions to the report.** The syslog history section reads the *rotated* log file ahead of the live one, so on a
 busy router the boot is in the report even when the live file starts twenty minutes later (and a finding says so); the WAN
 section prints the NTP state with a warning when the clock never synchronised, since every service that waits for the
 first sync sits behind it; the connectivity section warns when every probe from the router itself failed; and the
 conntrack section prints the destination-name table's counters (how many DNS replies were read, how many names kept -
-counts only, never a name).
+counts only, never a name). Report v1.3.34 (v3.4.0) adds the LAN name resolution check to the WAN section: switch, state,
+how long, and which servers stayed silent, by role.
 
 **What the report masks.** The whole document passes through a redaction engine before a byte is written:
 
@@ -371,9 +389,11 @@ counts only, never a name).
 - Every **MAC address** becomes a consistent pseudonym (`MAC-3` and so on), including MACs written without colons.
 - **Usernames, device names, hostnames** (including guest-network lease hostnames) and **Wi-Fi network names** become tokens.
 - **Your public IPv4 address and all IPv6 addresses** are masked. **E-mail addresses** are redacted wherever they appear (from v2.4.6).
+- From report **v1.3.35** (v3.4.2) three IPv6 shapes that earlier reports printed are masked too: a **routed prefix that ends in `::`** (a tunnel broker's `2001:db8:abcd::/48` in a Warden or IPv6 firewall line), a **reverse zone** (`…ip6.arpa`, the same prefix written backwards in dnsmasq's log, now `[IP6-ARPA-n]`), and a **DHCPv6 DUID**, which embeds the router's MAC (its lease-file line is no longer printed). The bare well-known prefixes `fe80::`, `fc00::`, `fd00::`, `ff02::1`-style multicast and `2001:db8::` stay readable, because they identify nothing. **A report from an older image that shows a `2001:` or `2a0x:` prefix, an `ip6.arpa` name or a `MAC-n:xx:xx…` tail has leaked; do not post it.**
+- From report **v1.3.36** the redaction runs as a **pipeline of targeted stages**, one per kind of data, each with its own ledger lines: values the router knows to be private (passwords, usernames, network and host names), then **names and domains your devices wrote into the log themselves**, then e-mail, MAC, IPv6 and IPv4 addresses. The client-names stage reads the DHCP and Gatekeeper log lines where a device supplies its own name (`Ignoring domain … for DHCP host name …`, the name on a DHCP acknowledgement, `not giving name …`, a Gatekeeper `host (…)`), masks each name as `[CLIENT-NAME-n]` and each domain as `[CLIENT-DOMAIN-n]` everywhere in the report, and keeps generic domains such as `lan` and `local` readable. Before v1.3.36 a device's own domain, which can name its owner's employer, was printed as it was, and a short device name in older log lines could slip through. A stage that fails stops the report: no partly redacted file is ever written.
 - **Local-only addresses** (192.168.x.x) are kept — they identify nothing outside your own network.
 - Pseudonyms stay consistent inside one report, so a device can be followed across sections without revealing which device it is; a new report gets a new set.
-- The report opens with a **ledger** counting exactly what was withheld, and the finished file is **re-scanned** for anything that still looks like a public address, a hardware address or an e-mail, and marked either clean or "review before sharing" (counts only — printing what it found would put the leak into the file).
+- The report opens with a **ledger** counting exactly what was withheld, and the finished file is **re-scanned** for anything that still looks like a public IPv4 address, an IPv6 address or reverse zone (from v1.3.35), a hardware address, an e-mail, or an unmasked device-supplied name in those log lines (from v1.3.36), and marked either clean or "review before sharing" (counts only — printing what it found would put the leak into the file).
 - WireGuard appears as **peer counts only**.
 
 It is plain text. **Open it and read it before you share it.** The router never transmits it anywhere; the file downloads to your browser. It is the right thing to attach to a bug report. The Devices page's **Export list** is the opposite — deliberately unsanitised, with real names, MACs and IPs — and is not safe to post anywhere.
@@ -390,7 +410,7 @@ It is plain text. **Open it and read it before you share it.** The router never 
 
 Read it on the **System Log** page, or over SSH as the file `/tmp/syslog.log`. **`logread` returns nothing on this platform** (the log is written to a file, not the in-memory buffer). If you have a USB or JFFS store with the syslog mirror enabled, the mirror holds days of history; the diagnostics report reads both.
 
-Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `reaper_survey` (a Site Survey channel move and its return), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver; also an interference-mitigation mode set, restored or refused), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why), `reaper_bwfloor` (the minimum channel width: a floor lifted after radar, re-armed, a channel-picker restart deferred or run, or not applied). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
+Reaper's own tags in the log: `reaper_fw` (firewall engine), `reaper_pbr` (Policy Routing), `reaper_survey` (a Site Survey channel move and its return), `gatekeeper` / `gkd`, `rwarden` and `REAPER-WARDEN` / `REAPER-WARDEN-SELF` (Warden and its drop lines), `rwatch` (the health watchdog), `reaper_cfg` (settings import/export), `reaper-nv` (a killed hung nvram reader), `hwqos` (QoS queue programming), `disk_format` (USB formatting; its log is also at `/tmp/disk_format/<dev>.log`), `aimesh:` (node-search drop reasons), `IGD desc` (UPnP description served to each client), `reaper_punct` (the preamble puncturing applier: a slice switched off or cleared, or refused by the driver; also an interference-mitigation mode set, restored or refused), `rpunctd` (the dynamic puncturing controller: one line per decision, saying why), `reaper_bwfloor` (the minimum channel width: a floor lifted after radar, re-armed, a channel-picker restart deferred or run, or not applied), `rdnshc` (the resolver health check and the LAN name resolution check: a failover, a restore, a LAN name failure and its silent servers), `amaspark` (AiMesh backhaul parking), `reaper` (general Reaper events: the WAN port pin, a pin cleared or a detection restarted, the soft-lockup panic armed). Turning a Reaper feature on or off, or changing its settings, writes a structured audit entry too.
 
 ### 2.13 Keep management off the WAN
 
@@ -411,7 +431,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 **Dashboard cards**
 
-- **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN.
+- **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local; the IPv6 half is re-read on every poll since v3.3.7), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN. With the **LAN name resolution check** on (4.14a, v3.4.0), the Internet dot and word turn **amber** while LAN devices cannot resolve names even though the WAN is up, and the tooltip on the card and on the header's WAN pill names the state, how long it has lasted and the servers that did not answer. Since v3.4.0 that tooltip is on the header of every page, not only the dashboard; the pill reads Connected when IPv4 or IPv6 is up and shows the mode name in Access Point, repeater and bridge modes.
 - **Clients** — the connected-device list grouped by band; **View List** opens the full Devices page.
 - **Security Posture** — fifteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden** and **Rule Status** (the cached result of 4.1.1a; it never starts a walk). Every row is clickable and takes you to the page (and tab) that owns the setting.
 - **Radio tiles** for each band, showing the SSID in its real case, and **USB tiles** per physical port (a hub shows as connected with a device count). A disk selector appears on the Storage card once two or more disks are attached.
@@ -422,7 +442,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 - The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
-- Every page lands scrolled to the top. The admin session logs itself out after **15 minutes** of inactivity.
+- Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Logout after* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
 - **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
@@ -493,7 +513,7 @@ Finally there is one row that is always **Not applicable** on purpose, named *Ou
 
 **What it is.** The base Asuswrt firewall: the master on/off switch, DoS protection, whether the router answers pings from the internet, which packets get logged, an allow-list of addresses permitted to reach the router's own services from the WAN, and the separate IPv6 firewall.
 
-**How to use it.** Leave the master switch and DoS protection on. Leave "respond to ping from WAN" off unless you have a specific reason — answering it confirms the address is live to anyone scanning. Remember that the IPv6 firewall is genuinely separate: IPv6 traffic is not translated, so every device on your LAN has a globally routable address and only this switch stands in front of it.
+**How to use it.** Leave the master switch on (it is on at factory). DoS protection is off at factory; turn it on unless a service of yours needs bursts of new connections from the internet. Leave "respond to ping from WAN" off unless you have a specific reason — answering it confirms the address is live to anyone scanning. Remember that the IPv6 firewall is genuinely separate: IPv6 traffic is not translated, so every device on your LAN has a globally routable address and only this switch stands in front of it.
 
 **Example.** To let only your office reach the router's web interface from outside, turn on the WAN access allow-list and add a single entry — source `203.0.113.10`, port `8443`, TCP. Every other source is refused, whatever the port forwards say.
 
@@ -624,9 +644,12 @@ trade (clocks drift slowly), but decide it deliberately. The one exception (v3.1
 aimed at the DNS server the resolver health check watches (4.14a) is closed while that server is
 down and reopened when it answers.
 
-**Limits.** IPv4 only. On a dual-stack network a device can still reach a public server over
-IPv6; if that matters, add a Rules-tab block for the service on IPv6, which works today. It also
-matches on a port, so it cannot catch a device that fetches the same thing over HTTPS.
+**IPv6 (v3.3.7).** **Send to the router** works on both IPv4 and IPv6. **Send to a server** needs a
+concrete IPv6 host to redirect to, so it covers IPv6 only when you give the server's IPv6 address in
+the optional IPv6 field; without one, a device on a dual-stack network can still reach a public
+server over IPv6, and a Rules-tab block for the service on IPv6 closes that path.
+
+**Limits.** It matches on a port, so it cannot catch a device that fetches the same thing over HTTPS.
 
 **Not for DNS.** Reaper already ships **DNS Director** for exactly this job on DNS, and it is the
 better tool: per-client policy, a choice of upstream resolvers, and it blocks DNS-over-TLS on port
@@ -1104,7 +1127,7 @@ Why not 100%? Because the shaper only controls a queue it owns. If your figure m
 2. Select **HW QoS Classful** and let the router reboot.
 3. The classes ship as a measured profile — **Web/VoIP**, **Gaming**, **Streaming**, **Downloads**, **Default** — with starter rules for conferencing, SIP, game consoles, Steam, BitTorrent and web traffic.
 4. Leave the **Aggregate cap (port shaper)** on.
-5. Optionally enable **Guaranteed minimums** and **Trust DSCP marking**.
+5. **Guaranteed minimums** is on at factory; turn on **Trust DSCP marking** only as below.
 6. **Apply.**
 
 **Trust DSCP marking is off by default, deliberately.** DSCP is a claim the sending device makes about its own traffic, and any device on your LAN can mark its packets however it likes. Turn it on only if you control what is on your network and something on it marks correctly.
@@ -1165,6 +1188,8 @@ Saturate your upload with a large backup or file send, and watch the live column
 - **802.1p and 802.1Q are not required** and are not read by this engine. Classification is internal to the router's forwarding path. WAN VLAN tagging is only for ISPs that mandate a tag for link-up; 802.1p priority is not honoured across the ISP boundary anyway.
 - Classes were served in **inverted priority order** until v2.5.4. The fix is confirmed at the queue-configuration level on the RT-BE96U; drain behaviour under sustained classified load is still owed a test.
 - On a **GT-BE98**, the v2.5.4 queue rebuild could be rejected by the traffic manager, taking all IPv4 off the air while IPv6 still worked. v2.6.0 made the rebuild transactional: on rejection the queues are restored to the stock layout and a log line says the priority correction was not applied. Worst case is now the old priority order, never no internet. Pending reporter confirmation.
+- **PPPoE, PPTP and L2TP lines (v3.3.7).** Both hardware engines shape the physical port the session rides on (an ISP VLAN is resolved to its parent port), not the `ppp0` interface, which has no hardware queues; earlier images shaped nothing on these lines. The shaper then counts PPPoE's 8-byte header, so set the upload a little under the line rate. The system log names the port each engine shapes.
+- **A port that also carries the LAN is never shaped (v3.3.9).** On the GT-BE98 family the 2.5G WAN/LAN-1 jack is a VLAN on the switch trunk that also carries LAN 2–4 and a wired AiMesh backhaul; shaping that trunk at the upload rate made the router unusable on v3.3.8. When the resolved port is a bridge member or a LAN port, both hardware engines refuse to arm with one log line, and the QoS page says so beside the engine choice. Use Cake on that layout, or move the WAN to a dedicated WAN port.
 - **Leftover settings from a previous mode stay in place, inert.** Switching from classful to type 10 leaves the classful keys set. They do nothing, but they can make a perfectly healthy type-10 configuration look like a broken classful one when you go looking.
 - Cake mode filters redundant upload acknowledgements and targets a 50 ms base round-trip time.
 
@@ -1243,6 +1268,8 @@ Other details worth knowing:
 - A device-name mis-attribution is possible when a DHCP lease is reused by an offline device's address, and a negligible byte undercount when a duplicate row is folded away. Both are accepted trade-offs.
 - A store that attaches before the clock is set used to have the current month or day wiped — the "Month tab resets after a firmware update" symptom. Slot ageing is now driven by absolute time and nothing is aged while the clock is still unset.
 - IPv6 per-device attribution and the one-year totals for IPv6 devices on a USB store are pending field confirmation.
+- **Top Devices and Top Talkers show 10, 20, 30 or 50 rows** (v3.3.8), chosen per table and remembered in the browser; the collector keeps 64 top-talker slots.
+- **A busy connection table does not cost a CPU core (v3.3.6).** The collector paces its pass over the connection table by its own measured cost (about 3 % of one core, every 2 to 30 seconds) and logs a line when the pace changes; every rate uses the measured interval.
 - In Access Point, repeater or media-bridge mode the collector is deliberately idle: it accounts from the connection tracking table, which a bridging box never populates. Since v3.2.0 the page says so and names the mode instead of staying blank.
 
 ### 4.8 Devices
@@ -1364,8 +1391,8 @@ A Wi-Fi 7 radio can switch off one **slice** of a wide channel - a 20, 40 or 80 
 
 | Part | What it is | When it runs |
 |---|---|---|
-| **Applier** `/sbin/reaper_punct` | The only program that writes a pattern. Waits up to 60 s for the radio (radio up and one of its networks up), checks the shape, applies, reads back, records the result in `/tmp/reaper_punct.state`, and clears only a pattern it set itself. A second pass applies interference mitigation (4.10.10), recorded in `/tmp/reaper_wlmit.state`. | Boot, every wireless start, an Apply of the puncturing or mitigation rows, the rwatch tick (every 5 min) and on request from the controller. One run at a time. With every radio Off and nothing of ours on the air it issues no `wl` command. |
-| **Controller** `rpunctd` | Dynamic mode's decision-maker: measures, decides, writes its choice to `/tmp/reaper_punct.dyn` and runs the applier. Never calls `wl eht dissubchan` itself. | Only while some radio is set to Dynamic; exits by itself when none is. Paused for the whole of a wireless restart and while the applier runs. Restarted by rwatch if it dies. |
+| **Applier** `/sbin/reaper_punct` | The only program that writes a pattern. Waits up to 60 s for the radio (radio up and one of its networks up), checks the shape, applies, reads back, records the result in `/tmp/reaper/reaper_punct.state`, and clears only a pattern it set itself. A second pass applies interference mitigation (4.10.10), recorded in `/tmp/reaper/reaper_wlmit.state`. | Boot, every wireless start, an Apply of the puncturing or mitigation rows, the rwatch tick (every 5 min) and on request from the controller. One run at a time. With every radio Off and nothing of ours on the air it issues no `wl` command. |
+| **Controller** `rpunctd` | Dynamic mode's decision-maker: measures, decides, writes its choice to `/tmp/reaper/reaper_punct.dyn` and runs the applier. Never calls `wl eht dissubchan` itself. | Only while some radio is set to Dynamic; exits by itself when none is. Paused for the whole of a wireless restart and while the applier runs. Restarted by rwatch if it dies. |
 | **Minimum width** `reaper_bwfloor` | Keeps the channel picker at 80 MHz or wider on Auto bandwidth, so puncturing stays possible (4.10.9). | While a radio has the floor set; a 15 s watcher. |
 | **rwatch** | Backstop: re-runs the applier every 5 minutes (which also moves a Follow pattern after a channel change, since acsd2 has no change hook) and restarts a dead controller. | Every 5 min, only when puncturing or mitigation is set. |
 
@@ -1470,7 +1497,7 @@ How it is applied: the applier's second pass (4.10.2) reads the driver's mode, r
 - **Wireless › Wireless Quality** - the Dynamic puncturing card: busy per slice, the current candidate and how long it has been bad, the last change and why, the last scan's channels and the networks heard.
 - **System log** - `rpunctd` (one line per decision, saying why; scans with their clients-before/after; PHY impairment edges with the raw figures; client evidence after a change), `reaper_punct` (a slice or mitigation mode set, cleared or refused), `reaper_bwfloor` (lifts, re-arms, a pending picker restart).
 - **Diagnostics report, section 7** per radio: `interference: mode= setting= applier= edcrs= sr=`, `puncturing: setting= live= applier=`, `dynamic puncturing:` (the controller's state line) and `min width:`.
-- **State files** - `/tmp/reaper_punct.state`, `/tmp/reaper_wlmit.state`, `/tmp/reaper_punct.dyn.state` and `.json`, `/tmp/reaper_bwfloor/state`.
+- **State files** - `/tmp/reaper/reaper_punct.state`, `/tmp/reaper/reaper_wlmit.state`, `/tmp/reaper/reaper_punct.dyn.state` and `.json`, `/tmp/reaper_bwfloor/state`.
 
 A wireless restart clears the driver's pattern and mode; the router re-applies both. The controller then resumes with its slice if the channel is the one it chose it on, and forgets it after a channel move. Every ten seconds it checks the applier's record against its own: a slice that fell off the radio is forgotten, and one it did not choose is taken off.
 
@@ -1520,7 +1547,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 
 ### 4.13 Diagnostics
 
-**Administration → Diagnostics**: the sanitized report described in 2.10. The page lists what is collected and what is removed or masked, shows what the top of the report (the ledger) looks like, and has one **Download Report** button. Stay on the page for the 20–30 seconds it takes. The FINDINGS block at the top is the first thing to read when something is wrong (5, item 9).
+**Administration → Diagnostics**: the sanitized report described in 2.10. The page lists what is collected and what is removed or masked, shows what the top of the report (the ledger) looks like, and has one **Download Report** button. The report takes 20–30 seconds and downloads by itself; since v3.3.3 the rest of the interface stays usable meanwhile. The FINDINGS block at the top is the first thing to read when something is wrong (5, item 9).
 
 ### 4.14 Firmware
 
@@ -1531,7 +1558,7 @@ The first tab of **USB Application**: each attached disk with its partitions, us
 - **Manual Upload** — with a real progress bar; it warns if the file does not look like an image for this model or variant. The page gives a good image up to ~5 minutes to be verified before calling it rejected.
 - **Mesh Nodes** (at the bottom) — every AiMesh node with name, address, reported firmware version and online state; **Update** opens that node's own firmware page in a new tab where you flash it natively (the image is never relayed through this router), and **Update all nodes** pushes the current firmware the way the stock AiMesh upgrade does. Update one node at a time and let it come back.
 
-The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat. While an image you chose is still uploading, a **Cancel** button stops the upload; nothing can be dismissed during a download from the update server or during the flash itself, because neither can be stopped from the page; a **Close** button appears on any error. After the flash the page waits for the router and returns you to sign-in.
+The flashing overlay shows download, upload and flash phases with an elapsed-time heartbeat. It has no Cancel button: neither an upload nor a download from the update server can be stopped cleanly once it has started, and a button that did nothing was removed in v3.3.4. A **Close** button appears on any error. After the flash the page waits for the router and returns you to sign-in.
 
 <a id="414a-resolver-health-check-administration--failover-v311"></a>
 ### 4.14a Resolver health check (Administration → DNS Failover, v3.1.1)
@@ -1541,8 +1568,9 @@ tries the first server again for every new name and only a client's retransmissi
 next one, so an outage of a LAN resolver such as AdGuard or Pi-hole costs a client timeout per uncached
 name, and a client that lists the router as its second DNS server can need three attempts before the
 router's own second server answers. The **Reaper resolver health check** lives on the **DNS Failover** tab
-of the Administration group (between System and Firmware Upgrade) together with the three dnsmasq
-switches below, and watches **one DNS server you name** with a real query every few seconds; the tab's
+of the Administration group (between System and Firmware Upgrade) together with the six switches of the
+**DNSMASQ** row below, and watches **one DNS server you name** with a real query every 10 seconds by
+default (off at factory); the tab's
 state strip shows Watch / Fail over / Restore and lights the middle step while the server is down.
 The server can
 be an IPv4 address or, while IPv6 is enabled on the router, an IPv6 address: the probe goes out over the
@@ -1577,6 +1605,32 @@ and catches devices with a hard-coded DNS when paired with the port-53 intercept
 from the router's cache to a different client, and the filter sees every lookup, as it does when clients
 talk to it directly. The filter keeps its own cache.
 
+**The DNSMASQ row at a glance.** Every switch on it is off at factory from v3.4.2; an upgrade keeps the
+values a router already has.
+
+| Switch | On means | Key |
+|---|---|---|
+| Upstream order | dnsmasq strict order (above) | `reaper_dns_strict` |
+| Router DNS cache | the switch reads *Do not cache*: on = no cache (above) | `reaper_dns_nocache` |
+| Device names across networks | reverse lookups between the main LAN and each VLAN (4.14b) | `reaper_dns_revshare` |
+| IPv6 device names | IPv6 addresses named from the DHCPv4 name (4.14b) | `reaper_dns_v6names` |
+| DNS-over-TLS order | DNS Privacy servers used in the listed order (below) | `reaper_dot_strict` |
+| LAN name resolution check | the dashboard reports when LAN devices cannot resolve (below) | `reaper_landns_enable` |
+
+**DNS-over-TLS order.** With DNS Privacy (DNS-over-TLS) on, the router normally rotates between its
+DoT servers so they share the traffic. This switch uses them in the listed order instead and keeps the
+rest in reserve, so a filtering DoT server you put first sees every query while it answers. It does
+nothing while DNS Privacy is off, and the page says so.
+
+**LAN name resolution check (v3.4.0).** The WAN can hold an address while LAN devices cannot resolve a
+single name (a dead LAN filter, a broken upstream list). With this switch on (off at factory from v3.4.2), once a minute while the WAN
+is up the router asks its own DNS service, the way a LAN device would, for its own name and for a fresh
+random name under the domain you set (empty = the router's network-monitoring name, so no cache can
+answer it; that domain's own DNS servers see these lookups). Two failures in a row turn the dashboard's
+Internet status **amber**, and the tooltip on the card and the header's WAN pill says why, for how long
+and which servers stayed silent; the system log names them under `rdnshc`. It only reports: nothing is
+moved, reloaded or restarted. The diagnostics report shows it in section 5.
+
 ### 4.14b Device names across networks (Administration → DNS Failover)
 
 **What it does.** The router runs one resolver for the main LAN and one for each VLAN (each network you
@@ -1603,8 +1657,8 @@ Anyone on a shared network can list the device names of the other side by asking
 turn. That is why guest-type networks are left out. Turn the switch off to keep every network's names to
 itself.
 
-**Turning it on or off.** Administration → DNS Failover → **Device names across networks**. It is on by
-default. Changing it restarts the router's resolvers, a pause of about a second. Adding, removing,
+**Turning it on or off.** Administration → DNS Failover → **Device names across networks**. It is off at
+factory from v3.4.2 (earlier builds turned it on by default; an upgrade keeps the stored value). Changing it restarts the router's resolvers, a pause of about a second. Adding, removing,
 readdressing or retyping a network restarts them once by itself, so the new network is covered without a
 reboot. The system log says `networks changed - restarting the resolvers so each one can name the others'
 devices` when that happens. The switch does nothing when **Forward local domain queries to upstream DNS**
@@ -1667,13 +1721,14 @@ differ:
   Then the reverse lookups for that prefix go to AdGuard's private reverse server instead. The router
   has no IPv6 names to give back, so they end as "no such name" without leaving your network.
 
-**IPv6 device names** (the next switch, on by default) covers IPv6. Devices pick their own IPv6
+**IPv6 device names** (the next switch; off at factory from v3.4.2, on by default in earlier builds, and an
+upgrade keeps the stored value) covers IPv6. Devices pick their own IPv6
 addresses (SLAAC and privacy addresses), so the router never hands them out and has no name for them. Once
 a minute the router matches each IPv6 address it sees on a network to the device using it and gives the
 address that device's IPv4 (DHCP) name. A reverse lookup of the address, and a forward lookup of the name,
 then answer with it: `DESKTOP-EXAMPL1` also returns its current IPv6 addresses. Each network's own IPv6
 reverse zone is answered by the router and never sent upstream; between networks the same main LAN / VLAN
-rule applies as for IPv4. A device that has no DHCP name gets none for IPv6 either. The switch does nothing
+rule applies as for IPv4. A new address gets its name within about five minutes, and an address the device stops using keeps its name for 15 minutes: each network's resolver is told about changes at most once every five minutes, because telling it empties its whole DNS cache. A device that has no DHCP name gets none for IPv6 either. The switch does nothing
 while IPv6 is off on the router. For AdGuard on a VLAN, mark your IPv6 prefix as private (see above) so its
 IPv6 reverse lookups come to the router.
 
@@ -1776,7 +1831,9 @@ running on the Wireless Quality page, and those refuse while a survey runs.
 firmware). It saves the same settings the stock page saves, so a configuration made on either page reads back
 the same on the other.
 
-- **Internet port** — the port the internet cable is in, or **Auto**. Auto works only by trying: every
+- **Internet port** — the port the internet cable is in, or **Auto**. The factory default is the port
+  labelled WAN (from v3.4.2; earlier builds defaulted to Auto, and an upgrade keeps whatever is set). If
+  the cable is in the other WAN-capable port, choose that port here. Auto works only by trying: every
   WAN-capable port is joined to the LAN bridge and the router asks for an address on the bridge until the
   provider answers on one of them. That happens even with Dual WAN off. Once a port has carried the WAN,
   Reaper keeps it (`reaper_wanport`) and never joins it to the LAN again, not at boot and not when the
@@ -1853,13 +1910,16 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | `logread` shows nothing | — | Expected on this platform. Use the System Log page or `/tmp/syslog.log`. |
 | A DNS filter on a VLAN (AdGuard, Pi-hole) shows main-LAN devices as bare addresses | Administration → DNS Failover: **Device names across networks**; the filter's private reverse setting | Turn the switch on and point the filter's private reverse server at the VLAN's gateway, not the main router address (4.14b). Guest and Portal networks are never shared. |
 | A reverse lookup between networks returns NXDOMAIN with the switch on | `grep rev-server /etc/dnsmasq*.conf`; WAN → Internet Connection | Check the network is not a Guest or Portal profile and has no captive portal; check **Forward local domain queries** is off; a device with a fixed address has no DHCP name to return (4.14b). |
-| Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on, and 80 MHz or wider: a fixed width, or Auto bandwidth with Minimum width on Auto. |
+| Puncturing set but the Settings cell says "Not applied" | Settings cell status; `/tmp/reaper/reaper_punct.state`; diag section 7 | *Refused*: the driver rejected that slice (it touches the primary 80, or the shape is not legal at this width) - choose another. *Different channel or width*: a Fixed pattern belongs to another channel; use Follow channel or re-pick. Needs Wi-Fi 7 on the band, the radio on, and 80 MHz or wider: a fixed width, or Auto bandwidth with Minimum width on Auto. |
 | Dynamic puncturing never switches anything off | Wireless Quality › Dynamic puncturing card; log `rpunctd` | Usually correct: the channel is clean, the busy slice is short-lived, or the gain is below the minimum. At 320 MHz Passive telemetry can act only on the secondary 80 MHz; a busy far half logs "needs a confirmation scan" - choose a scan source if you want it resolved. |
 | Dynamic puncturing is set but the card shows no radio | Diag section 7 "dynamic puncturing: daemon=" | The controller is not running; the rwatch tick restarts it within five minutes and says so in the log. If it stays down, report it with a diagnostics report. |
 | Clients slower on a band after choosing Add hardware ACI mitigation | Settings cell; diag section 7 `interference:` line; client speed | Expected on some setups: the receiver limits its gain, which can cost rate and range (4.10.10). Set the row back to Driver default; the router restores the radio's own mode at once. |
-| Interference mitigation set but the cell says refused or waiting | Settings cell; `/tmp/reaper_wlmit.state`; log `reaper_punct` | *Refused*: the driver did not accept the mode on that radio. *Waiting*: the radio was not up within 60 s; the rwatch tick retries within five minutes. |
+| Interference mitigation set but the cell says refused or waiting | Settings cell; `/tmp/reaper/reaper_wlmit.state`; log `reaper_punct` | *Refused*: the driver did not accept the mode on that radio. *Waiting*: the radio was not up within 60 s; the rwatch tick retries within five minutes. |
 | Dynamic puncturing with the Active source never scans | Wireless Quality card; log `rpunctd` "WAIT: own airtime ... above the scan ceiling" | By design: no confirmation scan while your own airtime is above 30 % (4.10.5). It scans when traffic eases. |
 | Minimum width set but the Settings cell says Lifted or Not applied | Settings cell status; `/tmp/reaper_bwfloor/state`; log `reaper_bwfloor`; diag section 7 "min width:" | *Lifted*: the radio could not hold 80 MHz or wider (radar, or no wide channel free); the floor is off for 30 minutes and re-arms by itself. *Not applied*: no channel at 80 MHz or wider is left after the existing exclusions (DFS channels off?), so nothing was excluded. *Not active*: needs Auto channel and Auto bandwidth. |
+| No internet on a new or factory-reset router; the WAN light is on | **WAN → WAN Ports**: which port is the internet port; the cable's port | From v3.4.2 the factory internet port is the one labelled WAN and automatic detection is off. With the cable in the other WAN-capable port, choose that port on WAN Ports, or move the cable (4.19). |
+| Dashboard Internet status is amber though the WAN is up | Tooltip on the Internet card or the header's WAN pill; log `rdnshc` "LAN name resolution FAILING"; diag section 5 "LAN name check" | The LAN name resolution check found that LAN devices cannot resolve names (4.14a). The tooltip and the log name the silent servers: check the LAN filter (AdGuard, Pi-hole) or the upstream list. The check only reports; turn it off on DNS Failover if you do not want it. |
+| A diagnostics report shows a `2001:`/`2a0x:` prefix, an `ip6.arpa` name, or a domain after "Ignoring domain" | The report's version line | Reports older than v1.3.35 printed routed IPv6 prefixes and reverse zones; older than v1.3.36, a device's own DHCP domain. Do not post such a report; on v3.4.2 those are masked (2.10). |
 | An add-on (Skynet and others) installed but has no tab | `grep -n user /www/require/modules/menuTree.js`; the add-on's own log | From v3.2.8 the stock menu lines add-on installers anchor on are kept as hidden entries, so the tab lands in the Addons section. On an older image, or if the add-on's own startup never reached its web-page step, it has no tab. |
 
 ---
@@ -1889,6 +1949,10 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 - **Pseudonym (`MAC-3`)** — a consistent stand-in for a real MAC inside one diagnostics report.
 - **Preamble puncturing** — a Wi-Fi 7 radio excluding one slice of a wide channel from transmission and keeping the rest; Off, Fixed channel, Follow channel or Dynamic per radio (4.10).
 - **rchqd** — the opt-in passive channel-quality monitor.
+- **rdnshc** — the resolver health check and the LAN name resolution check (4.14a); its log tag too.
+- **rdnsmapd** — the listener that learns the Connections page's destination names from DNS replies passing the router (4.9); controlled by the page's **Names** switch.
+- **rv6names** — the daemon behind **IPv6 device names**: once a minute it names each LAN device's IPv6 addresses from its DHCPv4 name (4.14b).
+- **WAN port pin (`reaper_wanport`)** — the port Auto detection last found the WAN on; Reaper keeps it out of the LAN bridge from then on (4.19). Unused while a fixed internet port is chosen, the factory state from v3.4.2.
 - **rpunctd** — the dynamic puncturing controller; runs only while a radio is set to Dynamic.
 - **Interference mitigation** — the radio receiver's own defences against nearby interference (`wl interference`, mode 75 by default); the Settings row can add hardware ACI mitigation (4.10.10).
 - **Scan ceiling** — the own-airtime level above which dynamic puncturing never runs a confirmation scan: 10 % on the idle source, 30 % on Active (4.10.5).
@@ -1908,12 +1972,25 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 clean NVRAM. Every setting below can be changed afterwards from the GUI. This section exists so you
 can tell *what the firmware chose for you* from *what you chose*, and put anything back.
 
+**Where the values come from.** The firmware's defaults table (`shared/defaults.c`), resolved for the
+RT-BE96U build. A reset writes every entry in table order, so where the table lists a key twice the
+later entry wins; the values here follow that rule. After the table, the model's own start-up code sets
+a few hardware-specific keys (the interface lists, the factory network name `ASUS_xx…`, transmit power
+calibration, the MLO capability), some of it in closed vendor code; those are described rather than
+given a number. The sibling models share the table, so their values are the same unless a row says
+otherwise.
+
+**An upgrade never applies these values to a setting you already have.** On a normal boot the
+firmware fills in only keys that are missing. A router upgraded from an older Reaper therefore keeps,
+for example, Auto WAN detection or the DNS switches it had; to take the new defaults, change the
+setting by hand or reset.
+
 To read the live value of any key over SSH: `nvram get <key>`.
 
 ### 8.1 Stock settings whose default Reaper changes
 
-Seventeen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
-not an accident, and each is reversible from the GUI.
+Eighteen ASUS/Merlin defaults ship with a different value under Reaper. Each is a deliberate choice,
+and each is reversible from the GUI.
 
 | Setting | Stock | Reaper | Why |
 |---|---|---|---|
@@ -1921,83 +1998,259 @@ not an accident, and each is reversible from the GUI.
 | `upnp_enable` | `1` | **`0`** | UPnP lets any LAN device open a hole in your firewall without asking. Enable it per WAN if you need console or game-server port mapping. |
 | `upnp_min_port_ext` | `1` | **`1024`** | When UPnP is on, it may no longer map privileged ports. A compromised LAN device cannot claim port 22, 53 or 443. |
 | `upnp_ssdp_interval` | `60` | **`900`** | SSDP announcements every 15 minutes instead of every minute. Far less multicast chatter, which is noticeable on Wi-Fi. |
-| `firmware_check_enable` | `1` | **`0`** | The stock automatic update check phones ASUS. Reaper checks its own GitHub release manifest instead — see 4.14 and 9.1. |
+| `autowan_enable` | `1` | **`0`** (v3.4.2) | The internet port is the one labelled WAN (`wan_ifname_x` = `eth0` on every model). Stock Auto detection can only find the WAN by bridging every candidate port into the LAN and asking for an address on the bridge, which puts the provider's network on your LAN for the length of the search (4.19). Auto stays a choice on WAN Ports. |
+| `wl_crypto` | `tkip+aes` | **`aes`** | WPA encryption is AES only on every radio once a password is set. TKIP is deprecated and caps a client at legacy rates. The factory Wi-Fi is open until the setup box secures it (2.3). |
+| `firmware_check_enable` | `1` | **`0`** | The stock automatic update check phones ASUS. Reaper checks its own GitHub release manifest instead, and only when you turn the check on (4.14, 9.1). |
 | `ASUS_EULA`, `ASUS_NEW_EULA` | `0` | **`1`** | Pre-accepted, because the setup wizard that would have presented them was removed. Nothing is transmitted; this only stops the firmware blocking on a dialog that no longer exists. |
 | `qos_default` | `3` | **`4`** | The catch-all class for unmatched traffic. Stock pointed at class 3, named "Downloads", so unclassified traffic — including game traffic, which is unmarked UDP — queued alongside bulk transfers. It now points at the class actually named "Default". |
 | `qos_orates` | `80-100,10-100,…` | **`15-100,15-90,20-90,5-95,25-95,…`** | Per-class minimum and maximum rates. The stock profile committed effectively the whole link to class 1. Reaper's leaves headroom and keeps the committed total under 85% of your configured upload. |
-| `qos_rulelist` | Web / HTTPS / File Transfer | **Conferencing, SIP, Game Console, Steam, BitTorrent, Web** | The starting classification rules. The stock set predates modern traffic; Reaper's recognises conferencing and game traffic, which is what people actually want prioritised. |
-| `psc6g` | `0` | **`1`** | Advertise the 6 GHz Preferred Scanning Channel, so 6 GHz clients find the band quickly instead of scanning the whole range. |
+| `qos_rulelist` | Web / HTTPS / File Transfer | **Conferencing, SIP, Game Console, Steam, BitTorrent, Web** | The starting classification rules. The stock set predates modern traffic and classified by transferred bytes, which accelerated flows never match (4.5.5). |
 | `enable_samba`, `smbd_enable` | `1` | **`0`** | SMB file sharing is off until you turn it on (USB Application → Network Place). Stock started an SMB server on the LAN the moment a disk was plugged in. |
 | `smbd_simpler_naming` | `0` | **`1`** | USB shares are named after the volume rather than a generated string. |
 | `v3_auth_type` | *(empty)* | **`SHA`** | SNMPv3 authentication defaults to SHA rather than nothing chosen. |
 | `v3_priv_type` | *(empty)* | **`AES`** | SNMPv3 privacy defaults to AES. Both matter only if you enable SNMP at all. |
 
-Reaper also **adds 72** NVRAM keys of its own (8.2) and **removes 23** belonging to features it
-strips out — AiCloud and WebDAV (`enable_webdav`, `acc_webdavproxy`, `st_webdav_mode`), cloud sync
-(`cloud_sync`, `enable_cloudsync`), and the share-link plumbing.
+Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning channel) as changed from
+`0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
+second, conflicting entry applies only to two unrelated ASUS models.
+
+Reaper also **adds 93** entries of its own (8.2) and **removes 18** that belong to features it strips
+out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
+`webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
+`enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
+`webdav_last_login_info`), cloud sync (`enable_cloudsync`, `cloud_sync`) and the share-link plumbing
+(`share_link_param`, `share_link_result`, `share_link_host`).
 
 ### 8.2 Reaper's own settings and their defaults
 
-Sixty keys, grouped by the feature that owns them. **Every optional feature ships off.** No Reaper
-feature enforces anything until you turn it on. The exceptions are the self-monitor
-(`rwatch_enable`), which only acts on features you have enabled, and its PPPoE re-dial
-(`reaper_wanbounce_enable`).
+Grouped by the feature that owns them. **Every optional feature ships off**, and no Reaper feature
+enforces anything until you turn it on. Three exceptions are on at factory, each because it only
+watches or only names: the self-monitor (`rwatch_enable`), which acts only on features you have
+enabled; its PPPoE re-dial (`reaper_wanbounce_enable`); and the Connections page's destination names
+(`rconn_names`), which keeps a name table in RAM and sends nothing. Keys marked *per radio* are written
+for every radio as `wl0_…`, `wl1_…` and so on.
 
 **Firewall engine** (4.1) — `reaper_fw_enable` `0`, `reaper_fw_active` `0`, `reaper_fw_armed` `0`,
-`reaper_fw_confirm` `60`. The rule-store keys (`reaper_fw_rules`, `_obj`, `_grp`, `_svc`, `_zone`,
-`_zpol`, `_nat`, `_edef`, `_err`) all start empty. `reaper_fw_confirm` is the safety timer: after
-you apply a ruleset, the firewall reverts unless you confirm within 60 seconds, so a rule that locks
-you out undoes itself.
+`reaper_fw_confirm` `60`. `reaper_fw_confirm` is the auto-revert timer in seconds (15–3600): after you
+apply a ruleset, the firewall reverts unless you press Keep in time (2.7). The list keys
+(`reaper_fw_rules`, `reaper_fw_obj`, `reaper_fw_grp`, `reaper_fw_svc`, `reaper_fw_zone`,
+`reaper_fw_zpol`, `reaper_fw_nat`, `reaper_fw_edef`) and `reaper_fw_err` start empty; the confirmed
+lists themselves live on `/jffs` (2.4).
 
-**Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_reset` `off`,
-`rwarden_log` `0`, `rwarden_self` `0`, `rwarden_stats_save` `1`. The list keys (`rwarden_feeds`,
-`rwarden_geo`, `rwarden_allow`, `rwarden_ban`, `rwarden_cfeeds`, `rwarden_sched`) start empty, so a
-freshly enabled Warden blocks nothing until you choose feeds or countries.
+**Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_self` `0` (the
+router's own connections are not filtered), `rwarden_log` `0`, `rwarden_stats_save` `1` (block counts
+are saved to flash), `rwarden_reset` `off` (the counters are never zeroed on a schedule; `24h`, `7d`,
+`30d` and `90d` are the choices). The list keys (`rwarden_feeds`, `rwarden_cfeeds`, `rwarden_geo`,
+`rwarden_allow`, `rwarden_ban`) and `rwarden_sched` (feed schedule; empty = 04:30 daily) start empty,
+so a freshly enabled Warden blocks nothing until you choose feeds or countries. `rwarden_lastupd` is
+the time of the last feed update, empty until the first.
 
 **Gatekeeper** (4.2) — `gk_enable` `0`, `gk_default` `0`, `gk_captive` `1`, `gk_notify` `1`,
-`gk_guest_hours` `24`, `gk_rl` empty. `gk_default` `0` means a device Gatekeeper has never seen is
-**blocked**, not allowed. That is deliberate, and it is why enabling Gatekeeper before populating
-the device list will cut off new arrivals.
+`gk_guest_hours` `24`, `gk_rl` empty (the device list lives on `/jffs`). `gk_default` `0` means a
+device Gatekeeper has never seen is **held at the gate** (quarantined), not allowed; enabling it
+approves every device already present first (4.2.2). `gk_captive` shows held devices the waiting-room
+page, `gk_notify` notifies on a new device, and a Guest pass lasts 24 hours unless you pick another
+length.
 
-**Policy routing** (4.4) — `reaper_pbr_enable` `0`, `reaper_pbr_rulelist` empty.
+**Policy routing** (4.4) — `reaper_pbr_enable` `0`, `reaper_pbr_rulelist` empty, `reaper_pbr_armed`
+`0`, `reaper_pbr_active` `0`, `reaper_pbr_err` empty.
+
+**DNS Failover** (4.14a, 4.14b) — the resolver health check: `reaper_dnshc_enable` `0`,
+`reaper_dnshc_target` and `reaper_dnshc_target6` empty (the server to watch), `reaper_dnshc_name`
+`localhost` (the name queried), `reaper_dnshc_interval` `10` seconds, `reaper_dnshc_timeout` `1000`
+milliseconds, `reaper_dnshc_fail` `3` misses before failing over, `reaper_dnshc_recover` `3` answers
+before restoring, `reaper_dnshc_strict` `0` (any reply counts as alive). The DNSMASQ row, every switch
+off from v3.4.2: `reaper_dns_strict` `0`, `reaper_dns_nocache` `0`, `reaper_dns_revshare` `0`
+(was `1`), `reaper_dns_v6names` `0` (was `1`), `reaper_dot_strict` `0`, `reaper_landns_enable` `0`
+(was `1` in v3.4.0), `reaper_landns_domain` empty (the router's network-monitoring name is used).
+
+**QoS, classful engine** (4.5) — `qos_class_names` `Web/VoIP,Gaming,Streaming,Downloads,Default`,
+`qos_pshaper` `1` (aggregate cap on), `qos_minrates` `1` (guaranteed minimums on), `qos_dscp_trust`
+`0` (DSCP marks are not trusted), `qos_ipolicer` `0` (download policer off), `qos_cake_rtt` `50`
+milliseconds (Cake's base round-trip time). `qos_sched` `p,p,w20,w5,w15` keeps stock's format; the
+weights are not used, because every class runs strict priority on this hardware (4.5.9). QoS itself is
+off at factory (8.3).
 
 **Traffic Analyzer** (4.7) — `rtraf_enable` `0` (turn it on from the page's toggle), `rtraf_cap_gb`
-`0` (no cap), `rtraf_path` and `rtraf_probe` empty.
+`0` (no data cap), `rtraf_path` and `rtraf_probe` empty (no latency probe is sent).
 
-**Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds`
-`dev,traf,watch`. On `ram`, history is lost at reboot; point it at USB to keep it. The exporter is
-entirely off: `reaper_export_mode` empty, `reaper_export_interval` `300`,
-`reaper_export_tlsverify` `1`, `reaper_export_maskmac` `0`, and all URL, token and metric keys
-empty.
+**Connections** (4.9) — `rconn_names` `1`: the destination-name listener runs. The page's **Names**
+switch turns it off and deletes its table.
 
-**Self-monitor** (4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes,
+**Channel quality** (4.10) — `rchq_enable` `0` (the passive channel monitor is off).
+
+**Per radio** (4.10) — `wl_punct` empty (preamble puncturing off), `wl_bwfloor` `0` (no minimum width
+on Auto), `wl_rmit` empty (interference mitigation: driver default). While every radio's keys are at
+these values no `wl` command is issued and no watcher runs. `amas_bh_park` `0`: AiMesh backhaul
+parking is off (4.10.13).
+
+**Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds` `dev,traf,watch`.
+On `ram`, history is lost at reboot; point it at JFFS or USB to keep it. The exporter is entirely off:
+`reaper_export_mode` empty, `reaper_export_interval` `300` seconds, `reaper_export_tlsverify` `1`,
+`reaper_export_maskmac` `0`, and `reaper_export_engine`, `reaper_export_url`, `reaper_export_token`,
+`reaper_export_index`, `reaper_export_source`, `reaper_export_metrics` and
+`reaper_export_scrape_token` empty.
+
+**Self-monitor** (2.9, 4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes,
 `reaper_wanbounce_enable` **`1`**. The WAN bounce fires only on a PPPoE link that has failed all
 three reachability probes after the boot grace period.
 
-**Connections and QoS diagnostics** — `rchq_enable` `0`.
+**UPnP guard** — `upnp_protect_svc` `1`: when UPnP is on, it may not map a port the router itself
+listens on for VPN or SSH, so a LAN device cannot steal the WireGuard or OpenVPN port.
 
-**Minimum width on Auto** (4.10.9) — `wlN_bwfloor` `0` on every radio. Nothing is added to a radio's
-channel-exclusion list and no watcher runs while every radio's key is `0`.
-
-**Preamble puncturing** (4.10.3) — `wlN_punct` empty (off) on every radio. The one key carries every
-mode: `<chanspec>|0x<bitmap>` (Fixed channel), `w<width>|0x<bitmap>` (Follow channel) or
-`dyn|<c|b|a>|<p|i|a>|<gain %>|<hold s>` (Dynamic: sensitivity Conservative/Balanced/Aggressive,
-source Passive/idle scan/active scan, and the two overrides, 0 = the preset's value). Nothing runs
-and no `wl` command is issued while every radio's key is empty.
-
-**Interference mitigation** (4.10.10) — `wlN_rmit` empty (Driver default) on every radio; `hwaci` adds
-hardware ACI mitigation to the driver's own mode. While every radio's key is empty no `wl` command is
-issued and the radio runs its own mode (75 on the RT-BE96U).
+**Firmware update** (2.11, 4.14) — `reaper_fwbeta` `0` (the update check ignores the beta channel),
+`firmware_check_hour` empty (the scheduled check runs at a random minute overnight), and
+`reaper_fwsig_override` `0` (a one-shot override for manifest signature checking; signing is built but
+inert on current images, so the key has no effect, see `SECURITY.md`).
 
 **AI Advisor, MCP build only** (4.16) — `rmcp_port` `5199`, `rmcp_timeout` `60` minutes,
-`rmcp_client` empty. There is deliberately **no enable key**: the Advisor is armed by a session file
-in `/tmp`, so every reboot comes up dark.
+`rmcp_client` empty (no client pin). There is deliberately **no enable key**: the Advisor is armed by
+a session file in `/tmp`, so every reboot comes up dark.
 
-**Miscellaneous** — `reaper_fwbeta` `0` (the update check ignores the beta channel),
-`reaper_fwsig_override` `0` (a one-shot override for manifest signature checking; signing is built
-but inert on current images, so the key has no effect, see `SECURITY.md`).
+**Keys with no factory value.** These are absent after a reset, and absent means the behaviour shown:
 
-### 8.3 What a factory reset actually restores
+| Key | Absent means |
+|---|---|
+| `reaper_inject` | The Reaper theme is on. Never set it: `0` turns the theme off, and Reaper's own pages need it. |
+| `reaper_wanport` | No WAN port pinned. Written only when Auto detection finds the WAN (4.19). |
+| `rwatch_gdx` | The accelerator probe in `rwatch` is off (5, item 11). |
+| `rmcp_code_hash`, `rmcp_code_salt` | No Advisor arming code is set (4.16). |
+| `rmcp_usb_enable`, `rmcp_usb_hash` | No Advisor USB key is enrolled. |
+| `rmcp_fails`, `rmcp_lock_until` | No wrong-code lockout is running. |
+| `rtraf_hint`, `rtraf_hprobe` | Internal Traffic Analyzer markers, written by the collector. |
+| `reaper_dnshc_state`, `reaper_landns_state`, `amas_bh_state` | Live state written by the daemons, not settings. |
+
+### 8.3 Every feature and function at factory
+
+What a factory-reset RT-BE96U looks like, area by area. "Off" means the feature does nothing until you
+turn it on. The key column is what to read with `nvram get` when you want to check.
+
+**Administration and access**
+
+| Feature | At factory | Key |
+|---|---|---|
+| Router login | `admin` / `admin`; the setup banner stays until it and the Wi-Fi are changed (2.3) | `http_username`, `http_passwd` |
+| Web interface on the LAN | HTTP and HTTPS, HTTP on port 80, HTTPS on 8443 | `http_enable` `2`, `http_lanport` `80`, `https_lanport` `8443` |
+| Web interface from the WAN | Off (ports 8080 / 8443 when turned on) | `misc_http_x` `0` |
+| Only allow specified IP addresses | Off | `http_client` `0` |
+| Idle logout | 30 minutes | `http_autologout` `30` |
+| SSH | Off; port 22 and password login when turned on | `sshd_enable` `0`, `sshd_port` `22`, `sshd_pass` `1` |
+| Telnet | No Telnet server ships in the image | — |
+| Custom scripts and configs on `/jffs` | Off (`/jffs` itself is always mounted, 2.4) | `jffs2_scripts` `0` |
+| Time zone and DST | `GMT0`, no DST; both set from the browser at the first password change (2.3) | `time_zone`, `time_zone_dst`, `time_zone_dstoff` |
+| Time servers | `pool.ntp.org`; the router's own NTP server for the LAN is off | `ntp_server0`, `ntpd_enable` `0` |
+| Scheduled reboot | Off | `reboot_schedule_enable` `0` |
+| LEDs | On | `AllLED` `1` |
+| Remote syslog | Off (port 514 when set) | `log_ipaddr` empty, `log_port` `514` |
+| System log levels | Log level 7, message level 5 (2.12) | `log_level`, `message_loglevel` |
+| Firmware update check | Off; beta channel off (8.1, 8.2) | `firmware_check_enable` `0` |
+| SNMP | Off; SNMPv3 with SHA and AES when turned on | `snmpd_enable` `0` |
+| Operation mode | Wireless router | `sw_mode` `1` |
+| Setup state | Not set up: the banner shows until login and Wi-Fi leave their factory values | `x_Setting` `0`, `w_Setting` `0` |
+
+**LAN**
+
+| Feature | At factory | Key |
+|---|---|---|
+| Router address | `192.168.50.1/24` | `lan_ipaddr`, `lan_netmask` |
+| DHCP server | On, pool `192.168.50.2`–`192.168.50.254`, lease 24 hours, the router advertised as DNS | `dhcp_enable_x` `1`, `dhcp_start`, `dhcp_end`, `dhcp_lease` `86400`, `dhcpd_dns_router` `1` |
+| Jumbo frames | Off | `jumbo_frame_enable` `0` |
+| Spanning tree on the LAN bridge | On | `lan_stp` `1` |
+| IGMP snooping | Off on the wired bridge, on for wireless | `emf_enable` `0`, `wl_igs` `1` |
+
+**WAN and internet**
+
+| Feature | At factory | Key |
+|---|---|---|
+| Connection type | Automatic IP (DHCP), NAT on, DNS from the provider, MTU 1500 | `wan_proto` `dhcp`, `wan_nat_x` `1`, `wan_dnsenable_x` `1`, `wan_mtu` `1500` |
+| Internet port | The port labelled WAN; automatic port detection off (v3.4.2) | `wan_ifname_x` `eth0`, `autowan_enable` `0` |
+| Dual WAN | Off (Fail Over with failback once turned on); network monitoring off | `wans_dualwan` `wan none`, `wans_mode` `fb`, `wandog_enable` `0` |
+| IPTV / VLAN tagging | None | `switch_wantag` `none` |
+| UPnP | Off; when on: secure mode, external ports 1024 and up, IPv6 pinholes off, announcements every 900 s, the router's VPN and SSH ports protected | `upnp_enable` `0`, `upnp_secure` `1`, `upnp_min_port_ext` `1024`, `upnp_pinhole_enable` `0`, `upnp_ssdp_interval` `900`, `upnp_protect_svc` `1` |
+| Port forwarding, port triggering, DMZ | Off, off, none | `vts_enable_x` `0`, `autofw_enable_x` `0`, `dmz_ip` empty |
+| NAT passthrough | PPTP, L2TP and IPsec on; RTSP, H.323, SIP and PPPoE relay off | `fw_pt_pptp`, `fw_pt_l2tp`, `fw_pt_ipsec` `1`; `fw_pt_rtsp`, `fw_pt_h323`, `fw_pt_sip`, `fw_pt_pppoerelay` `0` |
+| NAT loopback | On | `nat_redirect_enable` `1` |
+| DDNS | Off | `ddns_enable_x` `0` |
+| DNS rebind protection | Off | `dns_norebind` `0` |
+| DNSSEC | Off (when on, unsigned replies are checked) | `dnssec_enable` `0`, `dnssec_check_unsigned_x` `1` |
+| DNS Privacy (DNS-over-TLS) | Off | `dnspriv_enable` `0` |
+| DNS Director | Off | `dnsfilter_enable_x` `0` |
+| Forward local domain queries upstream | Off | `dns_fwd_local` `0` |
+| DNS Failover page | Health check off, every DNSMASQ switch off (8.2) | `reaper_dnshc_enable`, `reaper_dns_*`, `reaper_dot_strict`, `reaper_landns_enable` |
+| IPv6 | Disabled; when turned on: IPv6 firewall on, stateless autoconfiguration, router advertisements on, prefix delegation on | `ipv6_service` `disabled`, `ipv6_fw_enable` `1`, `ipv6_autoconf_type` `0`, `ipv6_radvd` `1`, `ipv6_dhcp_pd` `1` |
+
+**Firewall**
+
+| Feature | At factory | Key |
+|---|---|---|
+| Base firewall (SPI) | On | `fw_enable_x` `1` |
+| DoS protection | Off | `fw_dos_x` `0` |
+| Respond to ping from the WAN | Off | `misc_ping_x` `0` |
+| Firewall logging | None | `fw_log_x` `none` |
+| URL filter, keyword filter, network services filter | Off | `url_enable_x` `0`, `keyword_enable_x` `0`, `fw_lw_enable_x` `0` |
+| Reaper rules engine, Warden, Gatekeeper, Policy Routing | Off (8.2) | `reaper_fw_enable`, `rwarden_enable`, `gk_enable`, `reaper_pbr_enable` |
+| Parental controls | Off | `MULTIFILTER_ALL` `0` |
+
+**Wireless** (every radio unless a row says otherwise)
+
+| Feature | At factory | Key |
+|---|---|---|
+| Network name | The model's factory name, `ASUS_xx…`, broadcast | `wl_ssid` (set per model at reset), `wl_closed` `0` |
+| Security | **Open** until the setup box secures it (2.3); AES once a password is set | `wl_auth_mode_x` `open`, `wl_crypto` `aes`, `wl_wpa_psk` empty |
+| Protected management frames | Off | `wl_mfp` `0` |
+| Radios | On | `wl_radio` `1` |
+| Wireless mode | Auto, Wi-Fi 6 and Wi-Fi 7 on | `wl_nmode_x` `0`, `wl_11ax` `1`, `wl_11be` `1` |
+| Channel and bandwidth | Auto and Auto; auto channel may use DFS channels | `wl_chanspec` `0`, `wl_bw` `0`, `acs_dfs` `1`, `acs_band3` `0` |
+| DTIM interval, beacon interval | 1, 100 ms | `wl_dtim` `1`, `wl_bcn` `100` |
+| Transmit power | 100 % (calibrated per model at start-up) | `wl_txpower` `100` |
+| WMM, frame bursting | On, on | `wl_wme` `on`, `wl_frameburst` `on` |
+| MU-MIMO, OFDMA, beamforming | MU-MIMO on; OFDMA down- and uplink with MU-MIMO; explicit beamforming on, implicit off | `wl_mumimo` `1`, `wl_ofdma` `3`, `wl_txbf` `1`, `wl_itxbf` `0` |
+| Roaming assistant | -70 dBm | `wl_user_rssi` `-70` |
+| AP isolation, MAC filter, wireless scheduler | Off, off, off | `wl_ap_isolate` `0`, `wl_macmode` `disabled`, `wl_timesched` `0` |
+| Smart Connect | Off; the setup box turns it on | `smart_connect_x` `0` |
+| MLO | Off (2.8) | `mld_enable` `0` |
+| WPS | Off | `wps_enable` `0` |
+| 6 GHz preferred scanning channel | On | `psc6g` `1` |
+| Preamble puncturing, minimum width on Auto, interference mitigation | Off, off, driver default (8.2) | `wl_punct`, `wl_bwfloor`, `wl_rmit` |
+| AiMesh backhaul parking | Off | `amas_bh_park` `0` |
+| Guest networks / VLAN profiles | None | — |
+
+**USB and file sharing**
+
+| Feature | At factory | Key |
+|---|---|---|
+| SMB file sharing (Network Place) | Off; SMB2 and SMB3 when turned on; shares named after the volume | `enable_samba` `0`, `smbd_enable` `0`, `smbd_protocol` `2`, `smbd_simpler_naming` `1` |
+| FTP | Off; FTP over TLS on when turned on | `enable_ftp` `0`, `ftp_tls` `1` |
+| Media server (DLNA), iTunes server | Off, off | `dms_enable` `0`, `daapd_enable` `0` |
+| Time Machine | Off | `timemachine_enable` `0` |
+| Long-term store | RAM (8.2) | `reaper_store` `ram` |
+
+**VPN**
+
+| Feature | At factory | Key |
+|---|---|---|
+| OpenVPN servers | Off | `VPNServer_enable` `0`, `vpn_serverx_start` empty |
+| OpenVPN clients | None start at boot | `vpn_clientx_eas` empty |
+| WireGuard server, clients | Off, none enabled | `wgs_enable` `0`, `wgc_enable` `0` |
+| IPsec server | Off | `ipsec_server_enable` `0` |
+| PPTP server | Off | `pptpd_enable` `0` |
+| VPN Director, Policy Routing | No rules; Policy Routing off | `reaper_pbr_enable` `0` |
+
+**Traffic Manager and monitoring**
+
+| Feature | At factory | Key |
+|---|---|---|
+| QoS | Off; no bandwidth figures entered | `qos_enable` `0`, `qos_obw`, `qos_ibw` empty |
+| QoS classes and rules when turned on | Reaper's five-class profile and starter rules (8.1, 8.2) | `qos_class_names`, `qos_orates`, `qos_rulelist` |
+| Traffic Analyzer | Off | `rtraf_enable` `0` |
+| Stock traffic statistics | On (the stock collector behind the Traffic Monitor pages; it has no switch) | `rstats_enable` `1` |
+| Connections destination names | On | `rconn_names` `1` |
+| Passive channel monitor | Off | `rchq_enable` `0` |
+| Data export, health probe | Off | `reaper_export_mode` empty |
+| Self-monitor and PPPoE re-dial | On, every 5 minutes | `rwatch_enable` `1`, `rwatch_iv` `5`, `reaper_wanbounce_enable` `1` |
+| AI Advisor (MCP build) | Never armed; no arming code | `rmcp_port` `5199` |
+
+### 8.4 What a factory reset actually restores
 
 A factory reset clears NVRAM, so everything above returns to the value in the tables above. Whether
 it also erases `/jffs`, where the firewall, Warden, Gatekeeper and policy-routing rule stores live,
@@ -2008,6 +2261,9 @@ depends on one checkbox in the factory-reset box on **Administration → Backup 
   gone; take a full backup first (2.5).
 - **Unticked**: only NVRAM is cleared and `/jffs` survives. If you are resetting to clear a bad
   *setting*, this keeps your rules and you do not have to rebuild them.
+
+Every reset comes up the same way on every model: `admin` / `admin` and the open factory Wi-Fi,
+whatever key is printed on the unit's label (v3.3.1); secure it with the setup box (2.3).
 
 **What the page shows (v3.1.0).** A reset started from Backup & Restore puts up a veil that says how to
 get back: the router returns on its **open factory network** (`ASUS_xx…`) at its default address, with a
@@ -2062,7 +2318,15 @@ What replaces them, and what does not:
   that specific capability is what you need, Reaper is not the firmware for you. That is an honest
   trade, not an oversight.
 
-### 9.3 Why they were not simply deleted
+### 9.3 The setup wizard pages
+
+The stock Quick Internet Setup pages (`QIS_wizard.htm` and its parts) remain in the image. From v3.4.2
+nothing leads into them: the default setup address sends you to the dashboard, the first-use redirect
+while the WAN is down is gone, the landing after a LAN subnet change goes to the dashboard, and the menu
+entry is removed. The one part still used is the **AiMesh add-node** window (Network Map → AiMesh →
+Add node), which shares those files; it carries the Reaper look and its own wording in all 25 languages.
+
+### 9.4 Why they were not simply deleted
 
 Removing a page means removing every reference to it: menu entries, help mappings, redirect targets,
 and any shared NVRAM. Each removal is a chance to break something that still works, for no benefit a

@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.2** <!--@treever--> — `3006.102.8_Reaper_v3.4.2`. **The v3.4.0 hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes.** Also: three DNS switches off at factory, the DST rule on a first boot, IPv6 device names no longer flush the DNS cache, Diagnostics v1.3.37. Replaces the withdrawn v3.4.0 beta; everything in v3.4.0 and v3.3.9 is included. |
+| **Current rung** | **v3.4.3** <!--@treever--> — `3006.102.8_Reaper_v3.4.3`. **Dropped packets on IPv6 DNS-over-TLS fixed; 5 GHz and 6 GHz radios no longer lost on a network restart.** Also: Diagnostics v1.3.38. Everything in v3.4.2 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,21 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.3 — dropped packets on IPv6 DNS-over-TLS fixed, radios no longer lost on a network restart
+
+**Dropped packets with IPv6 DNS-over-TLS.** If you used DNS-over-TLS with an IPv6 server through a 6in4
+tunnel, the router's network hardware dropped some of those packets and the log filled with
+`exceed max_sg_array 4` lines. The kernel now reshapes those packets before the hardware sees them. If you
+added the `max_skb_frags` workaround to `services-start`, remove it after this upgrade.
+
+**5 GHz and 6 GHz stay up through a network restart.** With Dynamic preamble puncturing on, changing an IPv6
+or LAN setting could crash the 5 GHz and 6 GHz radios: they looked enabled but broadcast nothing, every device
+fell back to 2.4 GHz, and only a power cycle brought them back. Reaper now pauses its radio monitors before any
+network restart, so the radios survive it.
+
+**Diagnostics v1.3.38** shows both: the hardware cap and its counters, DNS-over-TLS servers by family, a radio
+whose firmware is down, and any radio crash with the restart that preceded it.
 
 ## What's new in v3.4.2 — the TCP-load hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes
 

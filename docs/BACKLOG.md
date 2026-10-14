@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,6 +40,19 @@ internal quality, or deferred by decision.
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
+- **[P2] "skb->nr_frags N exceed max_sg_array 4" is a dropped packet, not noise** (field, GT-BE98)
+  — stubby's interleaved DoT writes build >4-fragment non-GSO skbs once the upstream RTT is long
+  (IPv6 DoT through a 6in4 tunnel); the Runner drops each one (1:1 with eth1 `tx_dropped`). Fix:
+  `netif_skb_features()` linearizes them, `net.core.reaper_tx_sg_max` (0 = stock).
+  **[in v3.4.3; the GT-BE98 reporter to confirm on the beta: IPv6 DoT kept, refused packets 0, the
+  cap's fired count climbing]** ↳ notes: `runner-sg-frag-cap.md`
+- **[P1] 5 GHz and 6 GHz radios dead after a network restart with Dynamic puncturing on** (owner
+  RT-BE96U, twice) — `restart_net` (an IPv6 or LAN change) tore the radios down without stopping
+  rpunctd / reaper_bwfloor / rchqd and never dropped `wlready`; the wl1 + wl2 dongle firmware
+  trapped 7 s in and stayed down until a power cycle. The readers now stop beside `stop_acsd()` in
+  every teardown branch, an armed window is waited out, and they key on `rc_service` themselves.
+  **[in v3.4.3; owner-confirmed 2026-10-14 on the test rung (two `restart_net`, radios survived);
+  the GT-BE98 tester to confirm on the beta]** ↳ notes: `wl-readers-quiesce.md`
 - **[P2] The dashboard says Connected while LAN clients have no name resolution** — rdnshc now
   checks the LAN path; amber status + tooltip.
   **[in v3.4.2; owner to confirm the amber state]** ↳ notes:
@@ -252,12 +265,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
-- **[P2] "skb->nr_frags N exceed max_sg_array 4" is a dropped packet, not noise** (field, GT-BE98)
-  — DNS-over-TLS with two or more upstreams interleaves small writes on one page; the Runner refuses
-  the resulting >4-fragment packet and that connection wedges. Fix point: the kernel's default
-  features hook, one branch per packet.
-  **[root-caused on desk; owed: the reporter's counter check, then the hook]** ↳ notes:
-  `runner-sg-frag-cap.md`
 - **[P3] Operation Mode changes and the MLO "Get started" button still hand off to the stock
   wizard** — rung B is a native mode step page (AP, Media Bridge, Router first; Repeater after),
   rung C points the MLO button at the Wireless console.

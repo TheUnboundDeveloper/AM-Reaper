@@ -117,7 +117,7 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.37|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.38|1
 # v1.3.35 (2026-10-12): the sanitizer redacts a prefix that ends in "::", IPv6 reverse zones
 # and a DHCPv6 DUID; the tripwire counts IPv6 residue (test_diag_sanitizer.py runs the awk)
 usr/sbin/reaper_diag|[IP6-ARPA-|1
@@ -126,6 +126,10 @@ usr/sbin/reaper_diag|residual IPv6 shapes|1
 # domains clients write into DHCP/gatekeeper log lines, and the tripwire counts what it missed
 usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1
 usr/sbin/reaper_diag|residual client names|1
+# v1.3.38: section 15 reports the Runner 4-frag cap (the kernel half is gated by reaper_verify
+# section 28 on vmlinux) and the refused-packet lines; section 5 counts DoT upstreams by family
+usr/sbin/reaper_diag|reaper_tx_sg_max|1
+usr/sbin/reaper_diag|dot upstreams|1
 usr/sbin/reaper_diag|/proc/nvram/boardid|1
 # v3.1.7 -- the firewall table walker: binary + static witness rows + the
 # rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
@@ -821,7 +825,7 @@ usr/bin/reaper_fwsim|is in use on the LAN - LAN rows witness from|1
 usr/bin/reaper_fwsim|/var/lib/misc|1
 # 2026-10-09 audit V3: /tmp hardening - the kernel protections set at boot, the shared
 # helper (private directories, fresh files, script check), the private-directory guard
-# of the update check, and the diag's report on all of it (diag pins: v1.3.37 above)
+# of the update check, and the diag's report on all of it (diag pins: v1.3.38 above)
 sbin/rc|/proc/sys/fs/protected_regular|1
 sbin/rc|/proc/sys/fs/protected_symlinks|1
 usr/lib/libshared.so|was not a private directory|1
@@ -900,3 +904,14 @@ usr/sbin/httpd|!reaper_bw.cgi
 usr/sbin/httpd|!/usr/sbin/reaper_bwprobe
 www/require/modules/menuTree.js|!Reaper_Bandwidth.asp
 www/EN.dict|!Router vs client device
+# 2026-10-14 -- the radio readers (rpunctd, reaper_bwfloor, rchqd) are stopped before every rc
+# path that tears the radios down (net / allnet / net_and_phy / wps_enr, restart_wireless) and
+# started once wlready is 1; an armed chanim window is waited out. Owner RT-BE96U: restart_net
+# with them running trapped the wl1 + wl2 dongle firmware twice (two images), dead until a power
+# cycle. The predicate they share lives in libshared; each reader links it.
+sbin/rc|radio readers stopped for a wireless teardown|1
+usr/lib/libshared.so|reaper_wl_tearing_down|1
+bin/rpunctd|reaper_wl_quiet|1
+# the diag names a dead dongle (7) and counts the traps (19b)
+usr/sbin/reaper_diag|driver has no adapter|1
+usr/sbin/reaper_diag|dongle traps      :|1

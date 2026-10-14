@@ -258,6 +258,10 @@ d = os.path.join(tmp, "floor"); os.makedirs(d)
 for fn, body in (("rc.h", STUB_RC), ("wlutils.h", STUB_WLUTILS)):
     open(os.path.join(d, fn), "w", encoding="utf-8").write(body)
 shutil.copy(floor, os.path.join(d, "reaper_bwfloor.c"))
+# 2026-10-14: the tick keys on the shared radio-quiet predicate; the real header, prototypes only
+wlq_h = os.path.join(src_root, "shared", "reaper_wlquiet.h")
+if os.path.isfile(wlq_h):
+    shutil.copy(wlq_h, os.path.join(d, "reaper_wlquiet.h"))
 r = subprocess.run([CC, "-std=gnu99", "-fsyntax-only", "-Wall", "-Wextra", "-Wno-unused-parameter",
                     "-Werror=implicit-function-declaration", "-I" + d, os.path.join(d, "reaper_bwfloor.c")],
                    capture_output=True, text=True)

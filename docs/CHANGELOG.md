@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.4.2** · 2026-10-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,34 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.4.3 — packets dropped at the Runner on IPv6 DNS-over-TLS, radios lost on a network restart
+
+- **A packet with more than four fragments was dropped at the Runner (field, GT-BE98).** The Runner's CPU
+  transmit path takes at most four page fragments per non-GSO packet (`RUNNER_MAX_SG_FRAGS`); the closed
+  `bdmf` refuses the rest and the prebuilt `enet` driver drops the packet, logging `skb->nr_frags N exceed
+  max_sg_array 4`, and the retransmit carries the same fragments and is dropped again. stubby writes small TLS
+  records to several upstreams from one thread, so once the upstream round trip is long - IPv6 DNS-over-TLS
+  through a 6in4 tunnel, any broker - a packet collects 5-10 fragments. The kernel now linearizes a non-GSO
+  packet with more than `net.core.reaper_tx_sg_max` (4; 0 = stock) fragments before the driver sees it;
+  `net.core.reaper_tx_sg_linearized` counts how often. On an older image `net.core.max_skb_frags=4` is a
+  no-build workaround. Host test `test_kernel_runner_sg_cap.py`; `reaper_verify` section 28 checks the kernel
+  that was built.
+- **5 GHz and 6 GHz radios dead after a network restart with Dynamic puncturing on.**
+  `restart_net` (an IPv6 or LAN change), `allnet`, `net_and_phy` and `wps_enr` tore the radios down without
+  stopping the radio readers - rpunctd arms a 4 s measurement window on every Dynamic radio each tick,
+  reaper_bwfloor and rchqd read every 15 s and 10 s - and never dropped `wlready`, so rpunctd's own guard was
+  blind; the wl1 and wl2 dongle firmware trapped seven seconds in and stayed down until a power cycle while
+  every client sat on 2.4 GHz. The readers now stop beside `stop_acsd()` in every teardown branch and in
+  `restart_wireless`, an armed window is waited out, and each reader also pauses on its own while `rc_service`
+  names a radio-stopping service. Confirmed on the owner box: two `restart_net`, radios up, no trap. A trapped
+  dongle cannot be revived from userspace (`dhd devreset` re-downloads the firmware and it traps again), so
+  prevention is the whole fix. Host test `test_wl_readers_quiesce.py`.
+- **Diagnostics v1.3.38.** Section 15 reports the Runner cap, `max_skb_frags`, the refused-packet lines (the
+  syslog count anchored on the kernel's own line) and `tx_dropped` per port; section 5 counts DNS-over-TLS
+  upstreams by family; section 7 names a radio that is on but whose driver has no adapter; 19b counts dongle
+  traps, lists the crash dumps by name and prints the restart that preceded each; the dmesg summary no longer
+  masks "exceed" as "N". Host test `test_diag_sanitizer.py`.
 
 ## v3.4.2 — the TCP-load hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes
 

@@ -589,6 +589,24 @@ else
   fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
 fi
 
+# ---- 28. the Runner 4-frag transmit cap is in the kernel that was built ----
+# 2026-10-14: the Runner's CPU-TX path drops a non-GSO skb with more than 4 page
+# frags (closed bdmf; GT-BE98 field 2026-10-14, IPv6 DoT through a 6in4 tunnel,
+# "skb->nr_frags N exceed max_sg_array 4" 1:1 with eth1 tx_dropped). The fix is
+# a kernel hunk in netif_skb_features() with its sysctl net.core.reaper_tx_sg_max;
+# the kernel is not in the staged rootfs, so verify_markers.txt cannot see it.
+# The sysctl name is a literal in vmlinux, built in the same pass as the image.
+_vml="$P/kernel/linux-4.19/vmlinux"
+if [ -f "$P/kernel/linux-4.19/.config" ] && ! grep -q '^CONFIG_BCM_XRDP=y' "$P/kernel/linux-4.19/.config"; then
+  pass "kernel-sg-cap" "n/a -- this kernel is not a Runner (XRDP) build; the cap is compiled out"
+elif [ ! -f "$_vml" ]; then
+  warn "kernel-sg-cap" "no vmlinux at $_vml -- the Runner 4-frag cap could not be checked"
+elif grep -qa 'reaper_tx_sg_max' "$_vml" && grep -qa 'reaper_tx_sg_linearized' "$_vml"; then
+  pass "kernel-sg-cap" "vmlinux carries net.core.reaper_tx_sg_max + reaper_tx_sg_linearized"
+else
+  fail "kernel-sg-cap" "vmlinux has no reaper_tx_sg_max/reaper_tx_sg_linearized -- the image ships without the Runner 4-frag cap (packets with >4 frags are dropped on Runner ports)"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

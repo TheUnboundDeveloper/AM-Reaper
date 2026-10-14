@@ -233,12 +233,65 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.37", 'VER="REAPER-DIAG v1.3.37"' in src)
+check("VER is v1.3.38", 'VER="REAPER-DIAG v1.3.38"' in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.37|1" in mkr and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.38|1" in mkr and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
-      and "usr/sbin/reaper_diag|residual client names|1" in mkr)
+      and "usr/sbin/reaper_diag|residual client names|1" in mkr
+      and "usr/sbin/reaper_diag|reaper_tx_sg_max|1" in mkr and "usr/sbin/reaper_diag|dot upstreams|1" in mkr)
+
+# ------------------------------------------------------------------ v1.3.38 Runner 4-frag cap
+check("15 reads the kernel cap, its counter and TCP's max_skb_frags",
+      "/proc/sys/net/core/reaper_tx_sg_max" in src and "/proc/sys/net/core/reaper_tx_sg_linearized" in src
+      and "/proc/sys/net/core/max_skb_frags" in src)
+check("15 counts the refused-packet lines in dmesg and syslog and reads tx_dropped",
+      "dmesg 2>/dev/null | grep -c 'exceed max_sg_array'" in src and "statistics/tx_dropped" in src and "/proc/net/vlan/config" in src)
+check("15's syslog count takes only the kernel's own line (an echoed command is not a refused packet)",
+      "grep -c 'exceed max_sg_array' \"$F\"" not in src)
+m = re.search(r"SGS \+ \$\(grep -c '([^']+)' \"\$F\"", src)
+check("15: the syslog pattern can be cut out", m is not None)
+if m and shutil.which("busybox"):
+    sample = "\n".join([
+        "Oct 14 11:05:41 kernel: bdmf_sysb_data_to_sgdesc: ERROR: skb->nr_frags 5 exceed max_sg_array 4",
+        "Oct  4 09:01:02 kernel: bdmf_sysb_data_to_sgdesc: ERROR: skb->nr_frags 10 exceed max_sg_array 4",
+        "Oct 14 07:16:02 rmcpd-lab: rmcpd-lab: exec: dmesg | grep -c 'exceed max_sg_array'",
+        "Oct 14 07:20:00 rmcpd-lab: exec: grep -c '" + m.group(1) + "' f",
+    ]) + "\n"
+    r = subprocess.run(["busybox", "grep", "-c", m.group(1)], input=sample, capture_output=True, text=True)
+    check("15: the syslog pattern counts the two kernel lines and neither echoed command (busybox grep)",
+          r.stdout.strip() == "2", r.stdout + r.stderr)
+check("a FINDING fires on any refused-packet line",
+      'if [ "${SGN:-0}" -gt 0 ] 2>/dev/null; then' in src and "with more than 4 fragments" in src)
+check("5 counts DoT upstreams by family and never prints the list",
+      "dot upstreams     : ipv4=$DOT4 ipv6=$DOT6" in src and 'echo "$(nvram get dnspriv_rulelist' not in src)
+# v1.3.38: a dead dongle is named in 7 and a trap counted in 19b (owner RT-BE96U 2026-10-14)
+check("7: a radio on in nvram whose driver has no adapter is a FINDING",
+      'if [ "$(nvram get wl${u}_radio 2>/dev/null)" = 1 ] && [ -z "$(wl -i $IFN isup 2>/dev/null)" ]; then' in src
+      and "is enabled but its driver has no adapter" in src and "dongle: NOT ANSWERING" in src)
+check("19b: dongle traps are counted on the kernel's own line and the crash dumps listed by name only",
+      "kernel: TRAP type 0x' \"$SNAP\"" in src and 'debug-*_DHD.tgz' in src and "dongle traps      :" in src
+      and "dongle trap(s) in the log" in src)
+m = re.search(r"grep -iE 'error\|fail\|warn\|oops\|BUG\|timeout\|leak\|denied' \| awk '(.*?)' \| sort", src)
+check("19b: the dmesg summary masks through an awk program the test can cut out", m is not None)
+if m:
+    SUMIN = "\n".join([
+        "bdmf_sysb_data_to_sgdesc: ERROR: skb->nr_frags 5 exceed max_sg_array 4",
+        "SBF: hdr [0xffffff801a207000] bfwtbl [0xffffff801a207010] error",
+        "CFG80211-ERROR) wl_cfg80211_add_virtual_iface :",
+        "failed to set WLC_E_CAC_STATE_CHANGE bit",
+    ]) + "\n"
+    for a in awks:
+        tag = "[%s] " % " ".join(a)
+        r = subprocess.run(a + [m.group(1)], input=SUMIN, capture_output=True, text=True)
+        L = r.stdout.split("\n")
+        check(tag + "19b: the summary program runs", r.returncode == 0 and len(L) >= 4, r.stderr)
+        if len(L) < 4: continue
+        check(tag + "19b: 'exceed' and the frag counts stay readable",
+              L[0] == "bdmf_sysb_data_to_sgdesc: ERROR: skb->nr_frags 5 exceed max_sg_array 4", L[0])
+        check(tag + "19b: kernel addresses collapse to N", L[1] == "SBF: hdr [N] bfwtbl [N] error", L[1])
+        check(tag + "19b: driver names with short digit runs stay as they are",
+              L[2] == "CFG80211-ERROR) wl_cfg80211_add_virtual_iface :" and L[3].startswith("failed to set WLC_E_CAC"), (L[2], L[3]))
 
 if fails:
     print("\n%d FAILED:" % len(fails))

@@ -1,0 +1,128 @@
+Reaper v3.4.2 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+Replaces the withdrawn v3.4.0 beta; everything in v3.4.0 and v3.3.9 is included.
+
+> v3.4.0 hung or rebooted under TCP load (field, two boxes)
+
+The v3.4.0 hunk for CVE-2024-50154 dropped
+
+timer_pending() from reqsk_queue_unlink() without upstream's from_timer guard, so the request-socket
+
+timer's drop path called del_timer_sync() on the timer it was running from: a self-deadlock, a hang or a
+
+reboot under PANIC_ON_OOPS. __inet_csk_reqsk_queue_drop() carries the guard now, as 4.19.y does; the
+
+exported API is unchanged. Host test test_kernel_cve_onehunk_set.py.
+
+> A fixed WAN port is the factory default
+
+Stock Auto-detect (autowan_enable=1) can only find the WAN by
+
+bridging every candidate port into the LAN, so a new or factory-reset router joined its ISP port to the LAN
+
+once. The factory default is now the port labelled WAN with Auto off; Auto stays a choice on the WAN Ports
+
+page, and on the fixed-port path lldpd no longer binds a WAN interface. An upgrade keeps the stored choice.
+
+Host test test_factory_defaults_off.py.
+
+> Three DNS Failover switches start off at factory
+
+Device names across networks, IPv6 device names and
+
+the LAN name resolution check start off, like the other three switches on that row; each is a click away,
+
+and an upgrade keeps the stored values. Host tests test_factory_defaults_off.py, test_rev_server.py.
+
+> The stock setup wizard is reachable from AiMesh add-node only
+
+Four live paths still led into it on a
+
+box that has no wizard: the default CGI, wanduck's first-use captive redirect (and the first-use "direct
+
+rule" that held a connected box's NAT), the LAN-subnet landing pages and a dead menu entry. All closed; a
+
+factory box is usable at once and stays discoverable as an AiMesh node. The one wizard flow Reaper keeps -
+
+AiMesh add-node / node mode - runs in the Reaper palette, with a centred title, progressive wording and a
+
+prerequisites box in all 25 languages. Host tests test_qis_default_retired.py, test_wanduck_firstuse.py,
+
+test_qis_theme_append.py, test_amas_pages_i18n.py.
+
+> A first boot in a DST zone kept the stock DST rule (field, US clock an hour behind)
+
+Nothing had replaced
+
+the stock default time_zone_dstoff since the wizard was retired. The setup page writes the chosen zone's
+
+rule from the bundled zone table, and Apply waits for the table (the reply, a failed fetch, or 8 s). Host
+
+test test_firstboot_dstoff.py.
+
+> lldpd CVE-2026-46433
+
+The VLAN tag strip moved s - 12 bytes from offset 16, four past the receive
+
+buffer: a heap over-read any L2-adjacent host triggers with a tagged frame of MTU size. Both vendored trees
+
+carry upstream's fix. Host test test_lldpd_vlan_strip.py.
+
+> OpenVPN 2.7.8 security fixes backported
+
+onto the 2.7.7 tree: CVE-2026-88964 (unsigned underflow when a
+
+pushed domain_search_list is cleared), CVE-2026-84790 (certificate subjects with embedded NUL bytes
+
+accepted) and two hardening commits. The reported version stays 2.7.7; the full 2.7.8 import is for the
+
+next component rung.
+
+> Samba's private directory is 0700
+
+The runtime directories created before enrollment (v3.4.0) came from
+
+mkdir_if_none, which makes them 0777; /var/lib/samba/private (secrets.tdb, the messaging sockets) is
+
+0700 on every start. Host test test_samba_enroll_dirs.py.
+
+> IPv6 device names no longer empty the DNS cache
+
+rv6names signalled every dnsmasq instance whenever any
+
+names file changed, and dnsmasq's SIGHUP drops every cached answer; one instance per names file now, a
+
+15 min hold on a changed set and 5 min pacing. Host test test_rv6names.py.
+
+> Diagnostics v1.3.37
+
+The sanitizer runs as a pipeline of targeted stages, each with its own ledger line
+
+and no report when a stage fails; a routed IPv6 prefix, reverse-zone nibbles and a DHCPv6 DUID are redacted;
+
+a client's DHCP domain and name are masked wherever dnsmasq or Gatekeeper prints them; a generic device/OS
+
+word used as a client name is masked at its template position only. Host test test_diag_sanitizer.py.
+
+> rwatch on a pre-NTP boot
+
+A no-WAN boot runs at the 2023 clock while the last bundle's stamp holds real
+
+time, so the incident dump was "suppressed" for the one boot that needed it, and the recovery line counted
+
+years of outage. A stamp ahead of the clock throttles nothing, the outage timer runs on uptime, and the
+
+FAILURE line follows the dump. Host test test_rwatch_clockstep.py.
+
+> Also:
+
+the LAN name check asks every upstream at once instead of one wait per server (host test
+
+test_landns_check.py); the DNS Failover status poll parses its reply once. Docs: the guide gained a full
+
+factory-defaults section (8) and a review of every feature page.
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

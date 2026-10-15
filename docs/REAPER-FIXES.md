@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
+> **Doc status:** current as of **v3.4.4** · 2026-10-15 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,

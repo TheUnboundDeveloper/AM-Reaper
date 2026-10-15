@@ -1,0 +1,366 @@
+From 280e87545272432c435446135bc76bbd145f2da7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 15 Oct 2026 14:07:30 -0400
+Subject: [PATCH] diag: v1.3.39 - DNS Director per network, the port hardware
+ QoS shapes, every gateway
+
+GT-BE98 field ("my CCTV VLAN still asks 8.8.4.4"), and two things the same
+report's diag misread. New section 4c reads DNS Director: the switch, the
+global mode by name, the custom servers by kind, the per-client rules
+counted by mode, and for every SDN network its own choice next to the nat
+rule that matches its bridge and that rule's packet count, plus the DoT
+block chains per family; a FINDING names the networks the global mode does
+not reach (rc/dnsfilter.c gives each enabled SDN network its own rule).
+Section 10 resolves the port tmctl programs the way hwqos_tm_ifname() does
+(an 802.1Q WAN -> its parent; a parent that carries the LAN ports -> QoS
+is not applied) and reads tmctl there, instead of rc=108 on the VLAN
+device. Section 16 reads every "via" of the default route (a dual-WAN
+multipath route printed NONE) and probes each. Section 5 names resolvers
+by kind (NextDNS and ControlD added). Lean: test_diag_sanitizer.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 226 ++++++++++++++++++++++---
+ release/src/router/www/Reaper_Diag.asp |   2 +-
+ 2 files changed, 204 insertions(+), 24 deletions(-)
+ mode change 100644 => 100755 release/src/router/others/reaper_diag
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+old mode 100644
+new mode 100755
+index fc3bbaf098..cfedbbeb24
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.38 (2026-10-14) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.39 (2026-10-14) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -118,6 +118,24 @@
+ #  run of six hex-looking letters, which turned "exceed" into "N"; it now masks only
+ #  tokens that carry a digit.
+ #
++#  v1.3.39 (2026-10-14, GT-BE98 field: "my CCTV VLAN still asks 8.8.4.4", and the same
++#  report's own misreadings): a new section 4c reads DNS Director - the switch, the global
++#  mode and the custom servers BY NAME AND KIND, the per-client rules counted by mode, and
++#  for every SDN network its own choice (sdn_rl dnsf_idx) next to the nat rule that
++#  matches its bridge and that rule's packet count, plus the DoT (853) block chains per
++#  family. rc/dnsfilter.c gives every enabled SDN network its own rule - RETURN for No
++#  Redirection - ahead of the global default, so the global mode reaches only the main
++#  LAN and VPN clients; a FINDING says which networks the global mode does not reach.
++#  Section 10 resolves the port tmctl programs the way rc/qos.c hwqos_tm_ifname() does
++#  (an 802.1Q WAN -> its parent; a parent that carries the LAN ports -> hardware QoS
++#  refuses to arm), reads tmctl against that port instead of the VLAN device (rc=108 on
++#  every such box before), and the "QoS caps the WAN" finding becomes "QoS is enabled but
++#  NOT applied" when there is no port to shape. Section 16 reads the default route's
++#  gateway(s) from every "via" (a dual-WAN multipath route printed "NONE in routing
++#  table" and a PPPoE route has no gateway address at all), and probes each one.
++#  Section 5 names resolvers by kind through one helper (NextDNS and ControlD added);
++#  the address was never useful there - the sanitizer rewrote it to [EXT-IP-n].
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -132,7 +150,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.38"
++VER="REAPER-DIAG v1.3.39"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -150,9 +168,10 @@ FIND="$SCR/.rdiag_find.$$"
+ RAW2="$SCR/.rdiag_raw2.$$"
+ SNAP="$SCR/.rdiag_syslog.$$"
+ CTS="$SCR/.rdiag_ct.$$"
++DFS="$SCR/.rdiag_dnsf.$$"
+ OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
+ umask 077
+-trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $AWKP.* $BODY $BODY.* $LEDG $FIND $SNAP $CTS' EXIT
++trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $AWKP.* $BODY $BODY.* $LEDG $FIND $SNAP $CTS $DFS' EXIT
+ : > "$FIND"
+ 
+ sec() { echo ""; echo "#### $1 ####"; }
+@@ -195,6 +214,54 @@ probe() {
+ # host named in a finding gets the same pseudonym it has in the sections.
+ finding() { echo "  [$1] $2" >> "$FIND"; }
+ 
++# v1.3.39: a resolver address -> its KIND, never the address (rule 2 above: a public
++# address would come out as [EXT-IP-n] and the line would stop meaning anything). A
++# LAN address is kept - it is private and it is the diagnostic payload.
++dnskind() {
++  case "$1" in
++    "") echo none;;
++    1.1.1.*|1.0.0.*|2606:4700:*) echo Cloudflare;;
++    8.8.8.8|8.8.4.4|2001:4860:*) echo Google;;
++    9.9.9.*|149.112.112.*|2620:fe::*) echo Quad9;;
++    208.67.2*|2620:119:*) echo OpenDNS;;
++    94.140.14.*|94.140.15.*|2a10:50c0:*) echo AdGuard;;
++    45.90.28.*|45.90.30.*|2a07:a8c0:*|2a07:a8c1:*) echo NextDNS;;
++    76.76.2.*|76.76.10.*|2606:1a40:*) echo ControlD;;
++    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|127.*) echo "lan-local($1)";;
++    fd*|fc*|::1) echo lan-local-v6;;
++    *:*) echo other-external-v6;;
++    *) echo other-external;;
++  esac
++}
++
++# v1.3.39: a DNS Director mode number -> its name (rc/dnsfilter.h enum; 19/20 were AdGuard,
++# removed in v2.7.6 and rewritten to 0 at boot by dnsfilter_migrate_removed()).
++dnsfname() {
++  case "$1" in
++    0) echo no-redirection;; 1) echo OpenDNS;; 2|3|4) echo "Norton(discontinued)";;
++    5) echo Yandex-Secure;; 6) echo Yandex-Family;; 7) echo OpenDNS-Family;;
++    8) echo Custom-1;; 9) echo Custom-2;; 10) echo Custom-3;; 11) echo Router;;
++    12) echo Comodo;; 13) echo Quad9;; 14) echo CleanBrowsing-Security;;
++    15) echo CleanBrowsing-Adult;; 16) echo CleanBrowsing-Family;;
++    19|20) echo "AdGuard(removed=no-redirection)";;
++    ""|*[!0-9]*) echo "?";; *) echo "mode-$1";;
++  esac
++}
++
++# v1.3.39: every enabled SDN network's DNS Director choice. $1 = sdn_rl, $2 = subnet_rl.
++# sdn_rl is '<'-separated records of '>'-separated fields in the order shared/mtlan_utils.c
++# vstrsep()s them: idx name enable vlan_idx subnet_idx apg_idx vpnc_idx vpns_idx dnsf_idx
++# urlf_idx nwf_idx cp_idx ...; subnet_rl field 1 is the subnet index and field 2 its bridge.
++# rc/dnsfilter.c emits one rule per record that is enabled with a subnet, main LAN (idx 0)
++# excluded - the same gate here. Prints "<bridge> <sdn_idx> <dnsf_idx> <cp_idx>" per network;
++# the network's NAME is user text and is never printed.
++sdn_dnsf() {
++  { echo "$2" | tr '<' '\n' | sed 's/^/S>/'; echo "$1" | tr '<' '\n' | sed 's/^/N>/'; } | \
++    awk -F'>' '$1=="S" && NF>=3 && $2!="" { br[$2]=$3; next }
++               $1=="N" && NF>=10 && $2!="" && $2!="0" && $4=="1" && $6!="" && $6!="0" {
++                 print (($6 in br) ? br[$6] : "subnet" $6), $2, ($10=="" ? 0 : $10), (NF>=13 && $13!="" ? $13 : 0) }'
++}
++
+ # syslog history: the live file plus the rwatch mirror when the durable store
+ # has one (days of history instead of hours). Read-only; bounded by file size.
+ slog_files() {
+@@ -728,6 +795,91 @@ done
+ echo "  -- SDN firewall chains present --"
+ for CH in SDN_FI SDN_FF SDN_IA; do printf "  %-7s %s\n" "$CH" "$(iptables -nL $CH 2>/dev/null | tail -n +3 | wc -l) rules"; done
+ 
++sec "4c. DNS DIRECTOR (modes by name, servers by kind, redirect counters - no MACs, no addresses)"
++# v1.3.39 (GT-BE98 2026-10-14, "my CCTV VLAN still asks 8.8.4.4"): nothing in the report said
++# what DNS Director was told to do per network, or whether its redirect ever matched a packet.
++# rc/dnsfilter.c builds ONE nat chain, DNSFILTER, hooked from PREROUTING for -i br+ (and each VPN
++# server device). Inside, in order: the per-client MAC rules, then one rule per enabled SDN
++# network (-i brN: RETURN for No Redirection, DNAT to the network's own address for Router, DNAT
++# to the service otherwise), then the global default for whatever is left. So the global mode
++# reaches only the main LAN and VPN clients: a network left at No Redirection keeps its RETURN,
++# and a device there may use any port-53 server it likes. Port 53 only - DoT (853) is REJECTed
++# per network/client in filter DNSFILTER_DOT unless the chosen service speaks DoT; DoH (443) is
++# never seen. The flow view can still show the address a device ASKED for after a redirect
++# (conntrack keeps the original destination) - the rule's packet count here is the proof.
++DFE="$(nvram get dnsfilter_enable_x 2>/dev/null)"; DFM="$(nvram get dnsfilter_mode 2>/dev/null)"
++echo "  dnsfilter_enable_x = ${DFE:-?}   global mode = ${DFM:-?} ($(dnsfname "$DFM"))"
++for n in 1 2 3; do
++  C4="$(nvram get dnsfilter_custom$n 2>/dev/null)"; C6="$(nvram get dnsfilter_custom6$n 2>/dev/null)"
++  [ -n "$C4$C6" ] && echo "  custom $n          : ipv4=$(dnskind "$C4") ipv6=$(dnskind "$C6")"
++done
++# per-client records (<name>mac>mode) counted by mode - never a MAC or a name
++CL=""; CN=0
++for p in $(nvram get dnsfilter_rulelist 2>/dev/null | tr '<' '\n' | awk -F'>' 'NF>=3 && $2!="" {c[$3]++} END {for (m in c) printf "%s:%d ", m, c[m]}'); do
++  CL="$CL $(dnsfname "${p%%:*}")=${p##*:}"; CN=$((CN + ${p##*:}))
++done
++echo "  per-client rules  : $CN${CL:+ (${CL# })}"
++SDNL="$(sdn_dnsf "$(nvram get sdn_rl 2>/dev/null)" "$(nvram get subnet_rl 2>/dev/null)")"
++if iptables -t nat -nL DNSFILTER >/dev/null 2>&1; then
++  iptables -t nat -nvxL DNSFILTER 2>/dev/null | tail -n +3 > "$DFS"
++  HK="$(iptables -t nat -S PREROUTING 2>/dev/null | awk '/-j DNSFILTER$/ {h=""; for(i=1;i<=NF;i++) if ($i=="-i") h=$(i+1); else if ($i=="-s") h="src-range"; if (h!="") print h}' | sort -u | tr '\n' ' ')"
++  echo "  nat chain DNSFILTER: present  hooked from PREROUTING for:${HK:- nothing}  rules=$(wc -l < "$DFS")  redirected-pkts(total)=$(awk '$3!="RETURN" {p+=$1} END {print p+0}' "$DFS")"
++  awk '$6=="*" && /MAC/ {n++; p+=$1} END {printf "  per-client (MAC)  : %d rule(s)  pkts=%d\n", n+0, p+0}' "$DFS"
++  awk '$6=="*" && !/MAC/ {t=$3; p=$1; d=""; for(i=7;i<=NF;i++) if ($i ~ /^to:/) d=substr($i,4)} END {print (t==""?"none":t), p+0, d}' "$DFS" | { read -r T P D
++    case "$T" in
++      none)     echo "  default rule      : none (global mode is No Redirection - main-LAN clients may use any server)";;
++      REDIRECT) echo "  default rule      : REDIRECT to the router  pkts=$P";;
++      DNAT)     echo "  default rule      : DNAT to $(dnskind "$D")  pkts=$P";;
++      *)        echo "  default rule      : $T  pkts=$P";;
++    esac; }
++  echo "  -- per network (its own DNS Director choice -> the rule that matches its bridge) --"
++  if [ -n "$SDNL" ]; then
++    echo "$SDNL" | while read -r BR SI DI CP; do
++      awk -v b="$BR" '$6==b {t=$3; p+=$1; for(i=7;i<=NF;i++) if ($i ~ /^to:/) d=substr($i,4)} END {print (t==""?"none":t), p+0, d}' "$DFS" | { read -r T P D
++        case "$T" in
++          RETURN)   W="RETURN (no redirection)";;
++          REDIRECT) W="REDIRECT to the router";;
++          DNAT)     case "$D" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) W="DNAT to the router at $D";; *) W="DNAT to $(dnskind "$D")";; esac;;
++          none)     W="NO RULE";;
++          *)        W="$T";;
++        esac
++        DOT="$(iptables -nvxL DNSFILTER_DOT 2>/dev/null | awk -v b="$BR" '$6==b {t=$3; p+=$1} END {print (t==""?"none":t) " pkts=" p+0}')"
++        CPW=""; [ "${CP:-0}" != 0 ] && CPW="  captive-portal=yes (clients enter on a tun device, not on the bridge the rule names)"
++        echo "  $BR  sdn=$SI  dns-director=$(dnsfname "$DI")  rule=$W pkts=$P  dot-853=$DOT$CPW"; }
++    done
++  else
++    echo "  (no SDN network with a subnet is enabled)"
++  fi
++  # the two things the field question needed: which networks the global mode does not reach,
++  # and a network whose choice never became a rule
++  if [ "$DFE" = 1 ] && [ -n "$DFM" ] && [ "$DFM" != 0 ]; then
++    UNF="$(echo "$SDNL" | awk '$3=="0" {printf "%s ", $1}')"
++    [ -n "$UNF" ] && finding INFO "DNS Director: network(s) ${UNF}are at No Redirection, so the global mode ($(dnsfname "$DFM")) does not reach them - a device there may use any port-53 server (see 4c)"
++  fi
++  MISS=""
++  for BR in $(echo "$SDNL" | awk '$3!="0" {print $1}'); do awk -v b="$BR" '$6==b {f=1} END {exit !f}' "$DFS" || MISS="$MISS $BR"; done
++  [ "$DFE" = 1 ] && [ -n "$MISS" ] && finding WARN "DNS Director: network(s)$MISS have a DNS Director choice but no rule in the nat chain - their clients are not redirected (see 4c)"
++else
++  echo "  nat chain DNSFILTER: ABSENT"
++  [ "$DFE" = 1 ] && finding WARN "DNS Director is enabled but its nat chain DNSFILTER is absent - no client DNS is being redirected (see 4c)"
++  [ -n "$SDNL" ] && echo "$SDNL" | while read -r BR SI DI CP; do echo "  $BR  sdn=$SI  dns-director=$(dnsfname "$DI")"; done
++fi
++# the bypass blocks: DoT per family (REJECT = a device tried port 853 to a server other than the
++# chosen one) and the IPv6 filter chains (DROP = an IPv6 server other than the chosen one)
++for T in iptables ip6tables; do
++  case $T in iptables) F=ipv4;; *) F=ipv6;; esac
++  if $T -nL DNSFILTER_DOT >/dev/null 2>&1; then
++    $T -nvxL DNSFILTER_DOT 2>/dev/null | tail -n +3 | awk -v f="$F" '{n++; if ($3=="REJECT"||$3=="DROP") r+=$1} END {printf "  dot-853 block %s : rules=%d rejected-pkts=%d\n", f, n+0, r+0}'
++  else
++    echo "  dot-853 block $F : no chain"
++  fi
++done
++if ip6tables -nL DNSFILTERF >/dev/null 2>&1; then
++  ip6tables -nvxL DNSFILTERF 2>/dev/null | tail -n +3 | awk '{n++; if ($3=="DROP") d+=$1; else if ($3=="ACCEPT") a+=$1} END {printf "  ipv6 filter FORWARD: rules=%d accepted-pkts=%d dropped-pkts=%d (no DNAT over IPv6 - other servers are dropped, not redirected)\n", n+0, a+0, d+0}'
++else
++  echo "  ipv6 filter FORWARD: no chain"
++fi
++
+ sec "5. WAN"
+ for k in wans_dualwan wan0_proto wan0_state_t wan0_sbstate_t wan0_auxstate_t link_wan switch_wantag; do
+   echo "  $k = $(nvram get $k 2>/dev/null)"
+@@ -744,18 +896,9 @@ esac
+ echo "  ntp               : ntp_ready=$(nvram get ntp_ready 2>/dev/null) server=$(nvram get ntp_server0 2>/dev/null) dns_local_cache=$(nvram get dns_local_cache 2>/dev/null) initial-set=$(cat /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | grep -c 'Initial clock set')"
+ _upn="$(cut -d. -f1 /proc/uptime 2>/dev/null)"; case "$_upn" in ''|*[!0-9]*) _upn=0;; esac
+ [ "$(nvram get ntp_ready 2>/dev/null)" != 1 ] && [ "$_upn" -gt 300 ] && finding WARN "ntp_ready is not 1 after $((_upn/60)) min of uptime - every service that waits for the first clock sync (WireGuard, OpenVPN, ddns, diskmon, add-on cron jobs) is still waiting; see the ntp line in 5 and the boot in 19b"
+-echo "  -- DNS in use --"
++echo "  -- DNS in use (wan0_dns, wan0_xdns, /etc/resolv.conf - by kind) --"
+ for d in $(nvram get wan0_dns 2>/dev/null) $(nvram get wan0_xdns 2>/dev/null) $(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null); do
+-  case "$d" in
+-    1.1.1.*|1.0.0.*) echo "  resolver: Cloudflare family ($d)";;
+-    8.8.8.8|8.8.4.4) echo "  resolver: Google";;
+-    9.9.9.*|149.112.112.*) echo "  resolver: Quad9";;
+-    94.140.14.*|94.140.15.*) echo "  resolver: AdGuard";;
+-    208.67.2*) echo "  resolver: OpenDNS";;
+-    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|127.*) echo "  resolver: LAN-local ($d)";;
+-    "") ;;
+-    *) echo "  resolver: other-external (redacted)";;
+-  esac
++  [ -n "$d" ] && echo "  resolver: $(dnskind "$d")"
+ done
+ echo "  -- routes --"; ip route 2>/dev/null | sed 's/^/  /'
+ 
+@@ -1082,7 +1225,26 @@ done
+ WANIF="$(nvram get wan0_ifname 2>/dev/null)"; [ -z "$WANIF" ] && WANIF=eth0
+ QT="$(nvram get qos_type 2>/dev/null)"
+ QE="$(nvram get qos_enable 2>/dev/null)"
+-if have tmctl; then
++# v1.3.39: the port tmctl programs, resolved the way rc/qos.c hwqos_tm_ifname() does: an 802.1Q
++# WAN device -> its parent (/proc/net/vlan/config); a parent that is a bridge member or in
++# lan_ifnames is the LAN trunk (GT-BE98 2.5G WAN/LAN-1 = vlan4094 on eth1) and both hardware
++# engines refuse to arm since v3.3.9 ("no port to shape"). Reading tmctl against the VLAN
++# device itself returned rc=108 on every such box and said nothing about what was programmed.
++QPORT="$WANIF"; QREF=""
++QPAR="$(awk -F'|' -v d="$WANIF" 'NR>2 { gsub(/ /,"",$1); gsub(/ /,"",$3); if ($1==d) print $3 }' /proc/net/vlan/config 2>/dev/null)"
++if [ -n "$QPAR" ] && [ "$QPAR" != "$WANIF" ]; then
++  QPORT="$QPAR"
++  if [ -d "/sys/class/net/$QPAR/brport" ] || echo " $(nvram get lan_ifnames 2>/dev/null) " | grep -q " $QPAR "; then QREF=yes; fi
++fi
++QLOG="$(cat /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | grep -c 'qos: hardware QoS not \(applied\|started\)')"
++if [ -n "$QREF" ]; then
++  echo "  shaped port       : NONE - WAN $WANIF rides $QPAR, which also carries the LAN ports; hardware QoS refuses to arm  (refusals logged: $QLOG)"
++else
++  echo "  shaped port       : $QPORT$( [ "$QPORT" != "$WANIF" ] && echo " (the port under $WANIF)")  (refusals logged: $QLOG)"
++fi
++if have tmctl && [ -n "$QREF" ] && { [ "$QT" = 10 ] || [ "$QT" = 11 ]; }; then
++  echo "  -- tmctl readbacks skipped: no port is programmed on this jack --"
++elif have tmctl; then
+   # QOSDIAG-1: the port shaper is a type-11 (classful) mechanism ONLY. type 10
+   # shapes qid0 and sets no port shaper BY DESIGN, so reading it unconditionally
+   # made a healthy type-10 box report (0,0,0) and look uncapped -- which is
+@@ -1090,15 +1252,15 @@ if have tmctl; then
+   # engine is running and read the shaper that engine actually uses.
+   if [ "$QE" = "1" ] && [ "$QT" = "10" ]; then
+     echo "  -- engine: HW QoS (type 10) - shapes qid0, NO port shaper by design --"
+-    echo "  -- qid0 shaper ($WANIF) --"; tmctl getqcfg --devtype 0 --if $WANIF --qid 0 2>/dev/null | sed 's/^/     /'
++    echo "  -- qid0 shaper ($QPORT) --"; tmctl getqcfg --devtype 0 --if $QPORT --qid 0 2>/dev/null | sed 's/^/     /'
+   elif [ "$QE" = "1" ] && [ "$QT" = "11" ]; then
+     echo "  -- engine: HW QoS classful (type 11) - port shaper applies --"
+-    echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++    echo "  -- tmctl portshaper ($QPORT) --"; tmctl getportshaper --devtype 0 --if $QPORT 2>/dev/null | sed 's/^/     /'
+   else
+     echo "  -- engine: not hardware QoS (qos_enable=$QE qos_type=$QT); shaper readbacks below are informational --"
+-    echo "  -- tmctl portshaper ($WANIF) --"; tmctl getportshaper --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++    echo "  -- tmctl portshaper ($QPORT) --"; tmctl getportshaper --devtype 0 --if $QPORT 2>/dev/null | sed 's/^/     /'
+   fi
+-  echo "  -- tmctl portrxrate ($WANIF) --"; tmctl getportrxrate --devtype 0 --if $WANIF 2>/dev/null | sed 's/^/     /'
++  echo "  -- tmctl portrxrate ($QPORT) --"; tmctl getportrxrate --devtype 0 --if $QPORT 2>/dev/null | sed 's/^/     /'
+   # QOSDIAG-2 (v1.3.8): `head -3` kept qid/priority/qsize and CUT weight/
+   # minBufs/schedMode/shaper plus the "ret code" status line. Those three
+   # survivors are programmed by setqcfg UNCONDITIONALLY -- every rate element
+@@ -1110,7 +1272,7 @@ if have tmctl; then
+   # shows every field AND is shorter than the old form (7 lines vs 21).
+   echo "  -- per-queue config (prio/qsize/sched/weight/shaper) --"
+   q=0; while [ $q -le 6 ]; do
+-    tmctl getqcfg --devtype 0 --if $WANIF --qid $q 2>/dev/null | awk -v q=$q '
++    tmctl getqcfg --devtype 0 --if $QPORT --qid $q 2>/dev/null | awk -v q=$q '
+       /priority/{p=$3} /qsize/{s=$3} /weight/{w=$3} /schedMode/{m=$2} /shaper/{sh=$3$4$5}
+       /ret code/{printf "     qid%s prio=%s qsize=%s sched=%s wt=%s shaper=%s%s\n", q,p,s,m,w,sh,($0~/= 0/?"":"  [TMCTL-ERR]")}'
+     q=$((q+1))
+@@ -1123,7 +1285,10 @@ fi
+ # every test and no socket-buffer work could move it. Name the ceiling up front.
+ _qo="$(nvram get qos_obw 2>/dev/null)"; case "$_qo" in ''|*[!0-9]*) _qo=0;; esac
+ _qi="$(nvram get qos_ibw 2>/dev/null)"; case "$_qi" in ''|*[!0-9]*) _qi=0;; esac
+-if [ "$QE" = 1 ] && [ "$_qo" -gt 0 ]; then
++if [ "$QE" = 1 ] && [ -n "$QREF" ] && { [ "$QT" = 10 ] || [ "$QT" = 11 ]; }; then
++  # v1.3.39: no port to shape - the WAN runs unshaped, and the old "caps the WAN at" line was wrong
++  finding INFO "QoS (type $QT) is enabled but NOT applied: the WAN ($WANIF) rides $QPAR, which also carries the LAN ports, so hardware QoS has no port to shape and the WAN runs unshaped - use the dedicated WAN port for hardware QoS, or a software engine on this jack (see 10)"
++elif [ "$QE" = 1 ] && [ "$_qo" -gt 0 ]; then
+   _ls="$(cat /sys/class/net/$WANIF/speed 2>/dev/null)"; case "$_ls" in ''|*[!0-9]*) _ls=0;; esac
+   _qp=""; if [ "$QT" = 9 ] || { [ "$QT" = 11 ] && [ "$(nvram get qos_ipolicer 2>/dev/null)" != 0 ]; }; then _qp=" (policed at 90%)"; fi
+   _qd=""; [ "$_qi" -gt 0 ] && [ "$QT" != 10 ] && _qd=" / $((_qi/1000)) Mbit/s down$_qp"
+@@ -1663,8 +1828,23 @@ sec "16. CONNECTIVITY PROBES (targets named, addresses never printed)"
+ # RW_SELF and CAN be dropped by Warden itself. That is deliberate: a probe
+ # showing 100% loss next to a section-14 "IN SET" hit for the same target is
+ # the diagnosis, not a broken probe.
+-GW="$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')"
+-if [ -n "$GW" ]; then probe "default gateway   " "$GW"; else echo "  default gateway   : NONE in routing table"; fi
++# v1.3.39: the gateway is every "via" on the default route, not word 3 of its first line - a
++# dual-WAN multipath route is "default" alone with one "nexthop via X dev Y" line per WAN (the
++# GT-BE98 report read "NONE in routing table" with two gateways up), and a PPPoE route is
++# "default dev ppp0" with no gateway address at all (word 3 was "dev", and that got pinged).
++DRT="$(ip route show default 2>/dev/null)"
++GWS="$(echo "$DRT" | sed -n 's/.*via \([0-9][0-9.]*\).*/\1/p' | awk '!s[$0]++')"
++if [ -n "$GWS" ]; then
++  _gn=0
++  for g in $GWS; do
++    _gn=$((_gn+1))
++    if [ "$_gn" = 1 ]; then probe "default gateway   " "$g"; else probe "default gateway #$_gn" "$g"; fi
++  done
++elif [ -n "$DRT" ]; then
++  echo "  default gateway   : point-to-point on $(echo "$DRT" | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -1) - no gateway address to probe"
++else
++  echo "  default gateway   : NONE in routing table"
++fi
+ probe "Cloudflare-DNS-v4 " 1.1.1.1
+ probe "Google-DNS-v4     " 8.8.8.8
+ # v1.3.28 (RT-BE86U 2026-10-04): the box had no connectivity at all while the dashboard said
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 5764c16818..6b58e85677 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.38</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.39</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

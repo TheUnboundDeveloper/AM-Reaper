@@ -138,7 +138,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.4.3'
+    ${{ inputs.version == '' && 'Reaper_v3.4.4'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -434,14 +434,25 @@ jobs:
           fi
           echo "qemu-arm binfmt registered:"
           sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
-          docker run --rm --pull never -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+          docker run --rm --pull never --network host \
+            -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
             ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
 
+      # --network host: the container resolves names through the runner's own
+      # resolver instead of the one Docker synthesises for a bridged container.
+      # 2026-10-14 (run 38578920955): 17 of 18 build jobs passed; on the BQ16 MCP
+      # runner the host installed qemu-user-static at 14:22:50, then 9 s into this
+      # step every apt fetch in the container died with "Could not resolve
+      # 'archive.ubuntu.com'". Nothing in the build listens on a port, so the
+      # container needs no network namespace of its own; sharing the host's
+      # makes "the container resolves what the runner resolves" true by
+      # construction. container_build.sh keeps a bounded resolver probe as the
+      # fallback that names the cause instead of six "Unable to locate package".
       - name: Build in Ubuntu 20.04 clean room
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          docker run --rm --pull never \
+          docker run --rm --pull never --network host \
             -e UPSTREAM_REPO="$UPSTREAM_REPO" \
             -e BASE_TAG="$BASE_TAG" \
             -e BASE_COMMIT="$BASE_COMMIT" \

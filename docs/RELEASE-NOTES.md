@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
+> **Doc status:** current as of **v3.4.4** · 2026-10-15 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.3** <!--@treever--> — `3006.102.8_Reaper_v3.4.3`. **Dropped packets on IPv6 DNS-over-TLS fixed; 5 GHz and 6 GHz radios no longer lost on a network restart.** Also: Diagnostics v1.3.38. Everything in v3.4.2 is included. |
+| **Current rung** | **v3.4.4** <!--@treever--> — `3006.102.8_Reaper_v3.4.4`. **AiMesh works with a Reaper main router again; the Wi-Fi "-30" errors and the RADIUS log lines are gone.** Also: USB and Samba restart less, QoS cards and a tooltip corrected, Diagnostics v1.3.39. Everything in v3.4.3 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,25 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.4 — AiMesh with a Reaper main router, cleaner Wi-Fi logs
+
+**AiMesh with a Reaper main router.** Upgrading the mesh from a Reaper main router could flash and reboot
+the main router before the nodes had their image, and nodes showed a garbled version. The router now
+follows AiMesh's own upgrade steps, nodes report the version correctly, and the firmware page can check
+and upgrade nodes again. On a router that has not finished setup, the AiMesh page explains that AiMesh
+starts once setup is done and links to it.
+
+**Cleaner Wi-Fi logs.** Two kinds of log lines were noise: `WLC_SCB_DEAUTHORIZE error (-30)` after a
+device left, and `RADIUS: starting accounting session` on every connection although RADIUS is not used.
+Neither meant anything was wrong, and both are gone.
+
+**Fewer restarts.** A USB disk with several partitions no longer restarts file sharing and the media
+server once per partition, and file sharing no longer restarts (dropping open files) every time the
+internet connection is renewed.
+
+**Smaller fixes.** The QoS page's engine cards describe each engine correctly, the header tooltip says
+what the System Log really holds, and Diagnostics v1.3.39 reports DNS Director per network.
 
 ## What's new in v3.4.3 — dropped packets on IPv6 DNS-over-TLS fixed, radios no longer lost on a network restart
 

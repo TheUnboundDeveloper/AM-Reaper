@@ -233,10 +233,11 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.38", 'VER="REAPER-DIAG v1.3.38"' in src)
+check("VER is v1.3.39", 'VER="REAPER-DIAG v1.3.39"' in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.38|1" in mkr and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.39|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
+      and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
       and "usr/sbin/reaper_diag|residual client names|1" in mkr
       and "usr/sbin/reaper_diag|reaper_tx_sg_max|1" in mkr and "usr/sbin/reaper_diag|dot upstreams|1" in mkr)
@@ -292,6 +293,60 @@ if m:
         check(tag + "19b: kernel addresses collapse to N", L[1] == "SBF: hdr [N] bfwtbl [N] error", L[1])
         check(tag + "19b: driver names with short digit runs stay as they are",
               L[2] == "CFG80211-ERROR) wl_cfg80211_add_virtual_iface :" and L[3].startswith("failed to set WLC_E_CAC"), (L[2], L[3]))
+
+# ------------------------------------------------------------------ v1.3.39 DNS Director, QoS port, gateway
+# GT-BE98 2026-10-14: the report could not say what DNS Director was told per network, read
+# tmctl against a VLAN device (rc=108) and claimed a QoS cap on a jack hardware QoS refuses,
+# and printed "default gateway: NONE" on a dual-WAN multipath route.
+check("4c exists and reads the nat chain with counters, never a MAC or an address",
+      'sec "4c. DNS DIRECTOR' in src and "iptables -t nat -nvxL DNSFILTER 2>/dev/null | tail -n +3 > \"$DFS\"" in src
+      and "$DFS" in src.split("trap 'rm -f")[1].split("\n")[0]
+      and 'echo "$(nvram get dnsfilter_rulelist' not in src and 'echo "$(nvram get dnsfilter_custom' not in src)
+check("4c: a network at No Redirection under a global mode is a FINDING, a choice without a rule is a WARN",
+      "does not reach them - a device there may use any port-53 server" in src
+      and "have a DNS Director choice but no rule in the nat chain" in src)
+check("4c: the DoT block and the IPv6 filter chain are read per family",
+      "DNSFILTER_DOT" in src and "ip6tables -nvxL DNSFILTERF" in src)
+check("5: resolvers are named by kind through dnskind()", "dnskind() {" in src and 'echo "  resolver: $(dnskind "$d")"' in src
+      and "Cloudflare family ($d)" not in src)
+check("10: the shaped port is resolved like hwqos_tm_ifname() and a LAN-trunk parent refuses",
+      "/proc/net/vlan/config" in src.split('sec "10. QOS')[1].split('sec "10b.')[0]
+      and '/sys/class/net/$QPAR/brport' in src and "is enabled but NOT applied" in src
+      and "tmctl getqcfg --devtype 0 --if $QPORT --qid $q" in src and "tmctl getqcfg --devtype 0 --if $WANIF" not in src)
+check("16: the gateway comes from every 'via' of the default route, point-to-point is named",
+      'DRT="$(ip route show default 2>/dev/null)"' in src and "sed -n 's/.*via \\([0-9][0-9.]*\\).*/\\1/p'" in src
+      and "point-to-point on" in src and "awk '/^default/{print $3; exit}'" not in src)
+# the SDN parser is executed: sdn_rl field 9 is dnsf_idx, subnet_rl field 2 the bridge, main LAN and
+# disabled networks are skipped, cp_idx (field 12) rides along
+msd = re.search(r"^sdn_dnsf\(\) \{\n(.*?)\n\}\n", src, re.S | re.M)
+check("4c: sdn_dnsf() can be cut out", msd is not None)
+shs = []
+if shutil.which("busybox"):
+    shs.append(["busybox", "sh"])
+if shutil.which("sh"):
+    shs.append(["sh"])
+if msd and shs:
+    SDN = ("<0>DEFAULT>1>0>0>0>0>0>0>0>0>0>0>0>0>0>0>0>0>WEB>0>0>0"
+           "<1>CCTV>1>1>1>1>0>0>0>0>0>0>0>0>0>0>0>0>0>WEB>0>0>0"
+           "<2>IoT>1>2>2>2>0>0>11>0>0>0>0>0>0>0>0>0>0>WEB>0>0>0"
+           "<3>Guest>1>3>3>3>0>0>8>0>0>1>0>0>0>0>0>0>0>WEB>0>0>0"
+           "<4>Off>0>4>4>4>0>0>11>0>0>0>0>0>0>0>0>0>0>WEB>0>0>0"
+           "<5>NoSubnet>1>5>0>5>0>0>13>0>0>0>0>0>0>0>0>0>0>WEB>0>0>0")
+    SUB = ("<1>br55>10.1.50.1>255.255.255.128>1>10.1.50.2>10.1.50.126>86400>>>>>>0"
+           "<2>br56>10.1.65.1>255.255.255.240>1>10.1.65.2>10.1.65.14>86400>>>>>>0"
+           "<3>br57>10.1.60.1>255.255.255.240>1>10.1.60.2>10.1.60.14>86400>>>>>>0"
+           "<4>br58>10.1.70.1>255.255.255.240>1>10.1.70.2>10.1.70.14>86400>>>>>>0")
+    prog = "sdn_dnsf() {\n" + msd.group(1) + "\n}\nsdn_dnsf \"$1\" \"$2\"\n"
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:
+        fh.write(prog); tp = fh.name
+    try:
+        for s in shs:
+            tag = "[%s] " % " ".join(s)
+            r = subprocess.run(s + [tp, SDN, SUB], capture_output=True, text=True)
+            check(tag + "4c: sdn_dnsf prints bridge, sdn index, dnsf_idx and cp_idx for the enabled networks with a subnet only",
+                  r.returncode == 0 and r.stdout.split("\n")[:-1] == ["br55 1 0 0", "br56 2 11 0", "br57 3 8 1"], r.stdout + r.stderr)
+    finally:
+        os.unlink(tp)
 
 if fails:
     print("\n%d FAILED:" % len(fails))

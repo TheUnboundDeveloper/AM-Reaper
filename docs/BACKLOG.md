@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.3** · 2026-10-14 <!--@stamp-->
+> **Doc status:** current as of **v3.4.4** · 2026-10-15 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,6 +40,18 @@ internal quality, or deferred by decision.
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
+- **[P2] AiMesh with a Reaper main router: the upgrade contract, the node version string, the
+  setup notice** — mesh upgrade = download and verify only; `webs_state_info` in the Merlin shape;
+  the firmware page's mesh path re-enabled; AiMesh.asp names the x_Setting gate.
+  **[in v3.4.4; owed: a mesh - node sees the update and the right version, upgrade completes]**
+  ↳ notes: `aimesh-node-firmware-refused.md`
+- **[P3] USB: `restart_nasapps` ran once per mounted partition** — hotplug now restarts once per
+  mount wave (3 s settle). **[in v3.4.4; owed: a 2-partition disk = one `restart_nasapps`]**
+  ↳ notes: `nasapps-restart-per-mount.md`
+- **[P3] Samba restarted on every WAN up (twice with the WireGuard server on)** — now only when SMB
+  over the WAN is on or br0's IPv6 addresses changed.
+  **[in v3.4.4; owed: an SMB session survives a PPPoE reconnect; an IPv6 prefix change restarts
+  it once]** ↳ notes: `samba-restart-every-wan-up.md`
 - **[P2] "skb->nr_frags N exceed max_sg_array 4" is a dropped packet, not noise** (field, GT-BE98)
   — stubby's interleaved DoT writes build >4-fragment non-GSO skbs once the upstream RTT is long
   (IPv6 DoT through a 6in4 tunnel); the Runner drops each one (1:1 with eth1 `tx_dropped`). Fix:
@@ -257,8 +269,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P2] MLO ON kills the AiMesh backhaul.**
-  **[owed: needs a mesh]** ↳ notes: `mlo-kills-aimesh-backhaul.md`
+- **[P2] MLO ON kills the AiMesh backhaul.** No Reaper code is on the MLO path; the lead is the
+  warm-reboot MLO fabric (no station associates until a power cycle).
+  **[investigated 2026-10-15; owed: the power-cycle test, owner box then the reporter]**
+  ↳ notes: `mlo-kills-aimesh-backhaul.md`
 - **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
   = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
   (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
@@ -267,8 +281,8 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 - **[P3] Operation Mode changes and the MLO "Get started" button still hand off to the stock
   wizard** — rung B is a native mode step page (AP, Media Bridge, Router first; Repeater after),
-  rung C points the MLO button at the Wireless console.
-  **[plan approved 2026-10-12; mock next]** ↳ notes: `qis-aimesh-only.md`
+  rung C points the MLO button at the Wireless console. **[plan approved 2026-10-12; mock next]** 
+  ↳ notes: `qis-aimesh-only.md`
 
 ---
 
@@ -310,9 +324,7 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   v3.4.2 test rungs r9-r12, then removed: Cloudflare serves its 100 MB+ downloads only to a browser
   request, so the router's run had to work around that and froze the UI for its whole length; the
   device-side run alone adds nothing over speed.cloudflare.com in a browser. Internet Speed (Ookla)
-  stays.
-  **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
-
+  stays. **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
 - **[P3] Code review 2026-10-07: plain-HTTP login default (G2), factory posture (G5)** — owner
   accepted, no change. **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
 - **[P2] The code-review MEDIUM/LOW tail, batch B.** **[owed: the two deferred items]** ↳ notes:
@@ -346,6 +358,9 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] avahi CVE-2021-3468 / CVE-2025-59529 (local socket)** — reachable only by root processes on
   the router. **[not reachable — benign]** ↳ notes: `avahi-residual-cves.md`
 - **[P3] OSPF + BGP dynamic routing.** **[Not Needed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
+- **[P3] WireGuard server starts before NTP sync** — the clients wait for `ntp_ready` and retry from
+  cron; the server does not. Investigate gating it the same way. **[working as intended]** 
+  ↳ notes: `wgs-start-before-ntp.md`
 
 ---
 
@@ -418,8 +433,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 - **B-1. Classful QoS WRR is non-functional on eth ports.**
   ↳ notes: `blocked-b1-classful-wrr.md`
-- **B-2. [P3] Unused onboarding/backhaul BSS → RADIUS log spam.**
-  **[blocked — blob; risk-accepted]** ↳ notes: `blocked-b2-onboarding-bss.md`
 - **B-3. [P3] Guest Network Pro breaks the 2.5G-1 LAN port with a manual WAN VLAN** (GT-BE98).
   **[blocked — blob; risk-accepted]** ↳ notes: `blocked-b3-guestpro-vlan-port.md`
 - **B-3b. [P2] Diag section 5 reports the wrong link for a LAN-port WAN** (GT-BE98).

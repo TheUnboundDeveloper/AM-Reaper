@@ -148,6 +148,24 @@ if [ "$(id -u)" = 0 ]; then
   # Bulk install first; on failure fall back to one-by-one so a single
   # unavailable package reports itself instead of killing a 3-hour job.
   _ph apt-install
+  # apt resolves through the CONTAINER's resolver, which is not the runner's.
+  # 2026-10-14 (run 38578920955, BQ16 MCP, 1 job of 18): the runner had just
+  # installed qemu-user-static, then every fetch here died with "Could not
+  # resolve 'archive.ubuntu.com'" and a 1.5 h slot was gone in 9 s. The
+  # workflow now runs this container with --network host (the runner's own
+  # resolver); this probe is the bounded fallback for any other way the
+  # container can come up without a working resolver: retry briefly, then
+  # fail naming the cause instead of six "Unable to locate package" lines.
+  for i in 1 2 3 4 5 6; do
+    getent hosts archive.ubuntu.com >/dev/null 2>&1 && break
+    if [ "$i" -eq 6 ]; then
+      echo "::error::the build container cannot resolve archive.ubuntu.com after 6 tries; its /etc/resolv.conf follows"
+      sed 's/^/   /' /etc/resolv.conf 2>/dev/null || echo "   (no /etc/resolv.conf)"
+      exit 3
+    fi
+    echo "   resolver not ready ($i/6); retrying in $((i * 10)) s"
+    sleep $((i * 10))
+  done
   apt-get update -qq
   apt-get install -y -qq software-properties-common ca-certificates \
                          git curl wget sudo >/dev/null

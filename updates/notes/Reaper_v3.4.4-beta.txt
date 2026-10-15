@@ -1,0 +1,102 @@
+Reaper v3.4.4 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+Everything in v3.4.3 is included.
+
+> AiMesh: a Reaper main router could not upgrade its nodes, and nodes misreported the version
+
+Reaper's firmware scripts now follow the stock ones in the GPL tree. Stock ssl_webs_upgrade.sh treats
+
+start_webs_upgrade 1 as "download and verify only" - the step AiMesh runs on every unit before it
+
+flashes them; reaper_webs_upgrade.sh ignored the argument and flashed and rebooted the main router
+
+mid-upgrade. It now downloads, verifies and waits for AiMesh's flash step. webs_state_info uses the
+
+stock firmware-version layout (3006_102_8_Reaper_v<ver>) that the update notice reads; nodes showed
+
+3.0.0.6.Reaper_v.... The firmware page takes the mesh path whenever nodes are registered (it was
+
+forced off). The AiMesh page says AiMesh starts once the router setup is done and links the setup box.
+
+The aimesh: onboarding log lines are throttled. Host test test_aimesh_interop.py.
+
+> WLC_SCB_DEAUTHORIZE error (-30) after a client left
+
+The kernel log showed this pair after Wi-Fi
+
+clients disconnected, most often when the router itself disconnected one (a Roaming Assistant kick,
+
+for example). -30 is Broadcom's "not found": hostapd was asking the driver to de-authorize a client the
+
+driver had already removed. When the driver reports a disconnect, hostapd no longer sends that request,
+
+at the three places in hostapd that did; Broadcom's hostapd already skipped removing the station in
+
+that case. Owner box: 9 such errors per boot window down to 1; a disconnected client reconnects with a
+
+fresh key handshake and no error. Host test test_hostapd_driver_ind.py.
+
+> "RADIUS: starting accounting session" on every connection, with no RADIUS configured
+
+hostapd logged
+
+it before checking for an accounting server; nothing was ever sent. It is logged only when an accounting
+
+server exists. Host test test_hostapd_accounting_log.py.
+
+> USB: every NAS app restarted once per partition
+
+A disk with two mountable partitions, or two disks
+
+at boot, stopped and started Samba, FTP, the media server and UPnP twice. Each mount or unmount now
+
+starts a 3 s settle window and only the last one restarts the apps. Host test test_nasapps_settle.py.
+
+> Samba restarted on every WAN event - twice with the WireGuard server on
+
+Open SMB sessions dropped
+
+on each lease change or PPPoE reconnect. Samba now restarts only when SMB over the WAN is on or br0's
+
+IPv6 addresses changed; the WireGuard hook, which regenerated an identical config, no longer restarts
+
+it. Host test test_samba_wan_restart.py.
+
+> QoS page: the engine cards
+
+Plain chips are readable instead of looking switched off; every card
+
+names the accelerator first (the Bandwidth Limiter turns it off and now says so); Classful shows its
+
+optional download cap; Traditional shows that it shapes both directions with classes. Host test
+
+test_qos_card_chips.py.
+
+> Header tooltip: "Details: System Log"
+
+pointed at a log that holds nothing while the LAN name check
+
+works; it now says failures and recoveries are recorded there, translated in all 25 languages (it was
+
+English everywhere). Host test test_landns_tooltip_text.py.
+
+> Diagnostics v1.3.39
+
+Section 4c reads DNS Director per network and says which networks the global
+
+mode does not reach; section 10 reads hardware QoS on the port it really shapes (and says when there is
+
+none); section 16 probes every gateway of a multipath route; section 5 names resolvers by kind. Host
+
+test test_diag_sanitizer.py.
+
+> CI:
+
+the build container shares the runner's network, so it resolves names the way the runner does
+
+(one job of 18 lost its DNS and failed in seconds).
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

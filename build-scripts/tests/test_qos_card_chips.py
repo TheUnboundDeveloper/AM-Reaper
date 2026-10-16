@@ -14,9 +14,10 @@ cards had drifted:
     (imq0, start_tqos()) and has per-class minimums and ceilings like Classful;
   - "No control" (Off) was plain while "Not bufferbloat" (Limiter) was amber - the same cost.
 
-THE SCHEME. green (good) = a strength, amber (warn) = a real cost, plain = a fact about scope,
-drawn readable (bone-dim), not steel. Every card names the accelerator first; one token keeps
-one colour on every card.
+THE SCHEME (owner, 2026-10-15, second pass). Two colours only: green (good) = something the
+engine does, amber (warn) = something it lacks or costs. No plain chips - a plain "Upload only"
+on HW QoS read as if the limit did not apply. Every card names the accelerator first; one token
+keeps one colour on every card.
 
 WHAT IT DOES. Parses the MODES table and the .tag CSS, derives the accelerator state per
 engine from init-broadcom.c, and checks the rules above plus the new RQOS_126 token in all 25
@@ -79,17 +80,20 @@ for key, tags in M.items():
             clash.append("%s: %s vs %s" % (tok, colour[tok], cls))
         colour.setdefault(tok, cls)
 check("one token = one colour on every card", not clash, clash)
-check("Classful: no 'Upload only' (it has the opt-in download cap) - RQOS_126 instead",
-      ("RQOS_73", "") not in M.get("11", []) and ("RQOS_126", "") in M.get("11", []))
-check("HW QoS (10) keeps 'Upload only' + 'No classes' (no download path at all)",
-      ("RQOS_73", "") in M.get("10", []) and ("RQOS_77", "") in M.get("10", []))
+plain = ["%s %s" % (key, tok) for key, tags in M.items() for tok, cls in tags if cls not in ("good", "warn")]
+check("every chip is green or amber - no plain chips", not plain, plain)
+check("Classful: no 'Upload only' (it has the opt-in download cap) - RQOS_126, green",
+      not any(tok == "RQOS_73" for tok, _ in M.get("11", [])) and ("RQOS_126", "good") in M.get("11", []))
+check("HW QoS (10): 'Upload only' + 'No classes' are amber (no download path, one queue)",
+      ("RQOS_73", "warn") in M.get("10", []) and ("RQOS_77", "warn") in M.get("10", []))
+check("Limiter: 'Per-device caps' is green (what it does)", ("RQOS_84", "good") in M.get("2", []))
 check("Traditional: Up + Down and Classes + guarantees, like Cake / Classful",
       ("RQOS_80", "good") in M.get("0", []) and ("RQOS_74", "good") in M.get("0", []))
 check("Off: 'No control' is a cost, like the Limiter's 'Not bufferbloat'",
       ("RQOS_70", "warn") in M.get("off", []) and ("RQOS_85", "warn") in M.get("2", []))
 
 css = re.search(r"\n\.tag\{([^}]*)\}", page)
-check("a plain chip is drawn readable (bone-dim), not steel",
+check("the plain .tag fallback is drawn readable (bone-dim), not steel",
       css is not None and "color:var(--bone-dim)" in css.group(1) and "--steel" not in css.group(1),
       css.group(1) if css else "")
 

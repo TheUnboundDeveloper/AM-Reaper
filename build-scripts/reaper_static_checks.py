@@ -1138,7 +1138,7 @@ def check_warden_outbound_log(router):
 # Network Map, the wizard's own install lines, comments); anything new fails.
 QIS_ALLOWED_FILES = {
     "aimesh/aimesh_topology.html",          # THE AiMesh add-node entry
-    "Advanced_OperationMode_Content.asp",   # AiMesh node mode (+ the mode jumps until rung B)
+    "Advanced_OperationMode_Content.asp",   # AiMesh node + Repeater only (sub-check 7 pins the flags)
     "Makefile",                             # the wizard's own install lines
     "reaper_qis.css",                       # the theme sheet's comment
     "state.js", "start_apply.htm", "start_apply2.htm", "detect.js", "help.js",
@@ -1246,6 +1246,30 @@ def check_qis_entries(router):
         mt = rd("www/require/menuTrees/menuTree.js")
         if mt and re.search(r'index:\s*"menu_QIS"', mt):
             bad.append("www/require/menuTrees/menuTree.js: the menu_QIS entry is back")
+
+    # -- 7. rung B/C (2026-10-15): AP, Media Bridge and Router go to the native
+    # step page; the chooser may name the wizard only for Repeater and AiMesh
+    # Node; the MLO page's "Get started" goes to the Wireless console. mlo.js
+    # sits under sysdep/ (skipped by sub-check 5), so it is read here by name.
+    om = rd("www/Advanced_OperationMode_Content.asp", code=True)
+    if om:
+        for fl in sorted(set(re.findall(r"QIS_wizard\.htm\?flag=([A-Za-z0-9_]+)", om))):
+            if fl not in ("amasnode_page", "sitesurvey_rep", "sitesurvey_exp2", "sitesurvey_exp5"):
+                bad.append("www/Advanced_OperationMode_Content.asp: flag=%s goes to the stock "
+                           "wizard again (Reaper_ModeSetup.asp owns AP / Media Bridge / Router)" % fl)
+        for m in ("ap", "mb", "rt"):
+            if "/Reaper_ModeSetup.asp?mode=%s'" % m not in om:
+                bad.append("www/Advanced_OperationMode_Content.asp: no jump to "
+                           "Reaper_ModeSetup.asp?mode=%s" % m)
+    mlo = rd("www/sysdep/FUNCTION/SDN/SDN/mlo.js", code=True)
+    if mlo and "QIS_wizard.htm" in mlo:
+        bad.append("www/sysdep/FUNCTION/SDN/SDN/mlo.js: the MLO button goes to the stock wizard again")
+    if not os.path.isfile(os.path.join(www, "Reaper_ModeSetup.asp")):
+        bad.append("www/Reaper_ModeSetup.asp missing")
+    inj = rd("httpd/reaper_inject.c", code=True)
+    if inj and '"Reaper_ModeSetup.asp",' not in inj:
+        bad.append("httpd/reaper_inject.c: Reaper_ModeSetup.asp is not skip-listed "
+                   "(it would be bounced into the shell)")
 
     # -- 6. install hooks: dashboard bundle stripped, theme sheet appended -----
     mk = rd("www/Makefile")

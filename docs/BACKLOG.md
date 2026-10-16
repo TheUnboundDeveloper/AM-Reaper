@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.4** · 2026-10-15 <!--@stamp-->
+> **Doc status:** current as of **v3.4.5** · 2026-10-16 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,6 +40,16 @@ internal quality, or deferred by decision.
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
+- **[P2] A factory Reaper router could not be added as an AiMesh node** (field, a BQ16 under an
+  MLO GT-BE98) — Reaper ships WPS off and the join's WPS arm sat inside that setting; a join now
+  gets WPS on its onboarding band only, the setting untouched.
+  **[in v3.4.5; owed: a Reaper-to-Reaper join with MLO on, the node logging the WPS line]**
+  ↳ notes: `aimesh-factory-node-wps.md`
+- **[P3] Operation Mode changes and the MLO "Get started" button handed off to the stock wizard**
+  — AP, Media Bridge and Router run Reaper's step page; the MLO button opens the Wireless console;
+  Repeater (rung B2) still uses the wizard.
+  **[in v3.4.5; owed: AP dhcp/static, MB 5G + 6G WPA3, back to Router, a wrong MB password]**
+  ↳ notes: `qis-aimesh-only.md`
 - **[P2] AiMesh with a Reaper main router: the upgrade contract, the node version string, the
   setup notice** — mesh upgrade = download and verify only; `webs_state_info` in the Merlin shape;
   the firmware page's mesh path re-enabled; AiMesh.asp names the x_Setting gate.
@@ -270,19 +280,19 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 *Not fixed yet — work still to start or finish.*
 
 - **[P2] MLO ON kills the AiMesh backhaul.** No Reaper code is on the MLO path; the lead is the
-  warm-reboot MLO fabric (no station associates until a power cycle).
+  warm-reboot MLO fabric (no station associates until a power cycle). A Reaper node failing under an
+  MLO main router was a separate defect, fixed in v3.4.5 (Waiting).
   **[investigated 2026-10-15; owed: the power-cycle test, owner box then the reporter]**
   ↳ notes: `mlo-kills-aimesh-backhaul.md`
+- **[P2] Traffic Analyzer non-functional on BQ16 firmware** — buttons, graphs and most of the page
+  were missing in a user's screenshot; cause to investigate.
+  **[needs data]** ↳ notes: `traffic-analyzer-bq16.md`
 - **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
   = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
   (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
   **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
-- **[P3] Operation Mode changes and the MLO "Get started" button still hand off to the stock
-  wizard** — rung B is a native mode step page (AP, Media Bridge, Router first; Repeater after),
-  rung C points the MLO button at the Wireless console. **[plan approved 2026-10-12; mock next]** 
-  ↳ notes: `qis-aimesh-only.md`
 
 ---
 

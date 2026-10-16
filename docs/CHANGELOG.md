@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.4.4** · 2026-10-15 <!--@stamp-->
+> **Doc status:** current as of **v3.4.5** · 2026-10-16 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -46,6 +46,27 @@ node, not only on the primary router.
 
 ---
 
+## v3.4.5 — a factory Reaper router joins AiMesh as a node, mode changes stay in Reaper
+
+Everything in v3.4.4 is included.
+
+- **AiMesh: a factory-fresh Reaper router could not be added as a node** (field: a ZenWiFi BQ16 under a
+  GT-BE98 main router with MLO on stopped at "Unable to add" near 24%; the same unit on stock firmware
+  joined). Reaper ships the WPS setting off, and the rule that turns WPS on for a radio kept the AiMesh
+  join inside that setting, so the box came up with WPS disabled on the band the join uses. On a box that
+  has never been set up, while it joins a mesh, that band now gets WPS for the join only; the WPS setting
+  itself is never changed, and the reboot that ends the join closes the window. Logged as
+  `aimesh: wlN: WPS on for the AiMesh join of this factory box`. Host test `test_aimesh_wps_enrollee.py`.
+- **Operation mode: Access Point, Media Bridge and the return to Router stay in Reaper.** They used to
+  leave the shell for ASUS's setup wizard. A Reaper step page writes the same settings the wizard writes
+  (checked against the wizard's own source), picks the Media Bridge parent from the Site Survey scan and
+  restarts the router. The MLO page's "Get started" opens the Wireless console. Repeater and AiMesh Node
+  still use the stock wizard. 85 new strings in all 25 languages. Host test `test_mode_setup.py`.
+- **QoS page: two colours only.** Every chip on the engine cards is green (something the engine does) or
+  amber (something it lacks or costs); Hardware QoS's "Upload only" and "No classes" are amber.
+- **Build gate:** a release marker quoted a dictionary token, which the web install turns into a number,
+  so it could never match; markers now pin token-free text.
+
 ## v3.4.4 — AiMesh with a Reaper main router, the hostapd "-30" errors, quieter logs
 
 Everything in v3.4.3 is included.
@@ -78,8 +99,7 @@ Everything in v3.4.3 is included.
   it. Host test `test_samba_wan_restart.py`.
 - **QoS page: the engine cards.** Plain chips are readable instead of looking switched off; every card
   names the accelerator first (the Bandwidth Limiter turns it off and now says so); Classful shows its
-  optional download cap; Traditional shows that it shapes both directions with classes. Host test
-  `test_qos_card_chips.py`.
+  optional download cap; Traditional shows that it shapes both directions with classes. Colors will be updated in v3.4.5 to communicate functionality better. Host test `test_qos_card_chips.py`.
 - **Header tooltip: "Details: System Log"** pointed at a log that holds nothing while the LAN name check
   works; it now says failures and recoveries are recorded there, translated in all 25 languages (it was
   English everywhere). Host test `test_landns_tooltip_text.py`.

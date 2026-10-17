@@ -41,6 +41,7 @@ and publish as prereleases. Every image is built in both **MCP** and **noMCP** v
 | `reaper_dongle_id.sh`   | **Radio-firmware identity, one table, three call sites.** `reaper_dongle_id.sh <MODEL> <rtecdc.bin>...` checks that every Broadcom dongle blob names the model it is being installed into (the name is stamped into each blob; GT-BE98 Pro's read `GT-BE98 PRO`). Called BEFORE the build by `_reaper_build_lib.sh` (local) and `ci/container_build.sh` (clean room) on `sysdeps/<MODEL>/`, so a wrong tree never gets a make, and AFTER it by `reaper_verify` 8d on every blob staged in the image. Added 2026-09-12 after the GT-BE19000AI tree's blob was staged for the non-AI board and passed every gate then in place: the wrong radio firmware does not degrade a radio, it locks the router out (ASUS recovery tool or manual reflash). |
 | `_port_protect.sh`      | **Single source of truth** for the shared-vs-per-model classification, sourced by BOTH `port_sibling_v2.sh` (what to sync) and `reaper_verify.sh` (what must never lag) so they can never disagree. `PP_SYNC_ANYWAY_RE` force-syncs `www/sysdep/FUNCTION/` (flag-keyed shared VPN/MSWAN/SDN/theme code); protects per-model art/blobs/dicts/version/target.mak and the model-unique **`*_REAPER_Header.{png,mp4}`** (banner + animated login/logout/set-password header, each copied per-model from `reaper-mockups` and re-pointed in the `PP_BANNER_REFS` pages); provides `pp_parity_check`. Added after the 2026-08-05 MSWAN `/sysdep/` gap shipped siblings without the PPPoE-1500 fix. **Watch-item:** `pp_parity_check` skips protected (cls 0) files — it catches "should've synced but didn't", not a shared file *wrongly* protected. Today the only shared zone under a protected path is `www/sysdep/FUNCTION/` (force-synced); if shared code is ever added under `sysdep/` *outside* `FUNCTION/`, or under the non-www `router/sysdep/`, add a matching `PP_SYNC_ANYWAY_RE` clause or it will silently not reach the siblings. |
 | `reaper_hiddencheck.py` | **Hidden-character scan** of new code: parses `.patch` files and checks only their ADDED lines (a plain file or directory is scanned whole). Fatal: bidirectional overrides, zero-width/format characters, control bytes, invalid UTF-8, look-alike letters inside identifiers in code files. Warnings: odd spaces, `eval`/`atob`/escape-run shapes in JS, lines over 2000 chars. Allowlist `.github/hidden-allowlist.txt` (vendored paths downgrade; `!` hard-allows generated autotools files). Runs in `cut_rung.sh` step 3b before the patches are installed, in `cut_fleet.sh` on the regenerated overlays, and in `repo-hygiene.yml` over the whole series. Stdlib only, Python 3.8+. |
+| `reaper_piicheck.py`    | **Personal-data scan** of everything the repo publishes (see "Personal data never enters this repo" below). Generic detectors on whole files and on the ADDED lines of Reaper-owned files in a patch; a private deny-list (`--denylist FILE` / `PII_DENYLIST`, never committed) on every line, matches reported without the value. Allowlist `.github/pii-allowlist.txt`. Runs in `repo-hygiene.yml` (deny-list required on pushes and same-repo PRs); host test `tests/test_piicheck.py`. Stdlib only, Python 3.8+. |
 
 ## Maintainer-only tooling (not in this repo)
 
@@ -133,10 +134,30 @@ resolves `<user>` generically and exports `WIN_ASUS_ROOT`; every launcher and
 Resolution order: an explicit `WINUSER` env var is honored as-is; otherwise it
 auto-detects the profile **folder** — the basename of `%USERPROFILE%` (validated
 against the ASUS mirror), then a scan of `/mnt/c/Users/*` for the mirror, then
-`builder` (the original build box) as last resort. It deliberately resolves the
+the unvalidated `%USERPROFILE%` guess as last resort. It deliberately resolves the
 profile *folder*, not `%USERNAME%`: the two can differ (e.g. login "Builder" but
 folder `C:\Users\builder`). Override on a different box with
-`WINUSER=<name> build_<model>.sh …`.
+`WINUSER=<name> build_<model>.sh …`. No developer's folder name is built into any
+script; `jscheck.py` and the private-fixture tier of `tests/test_fwsim.py` glob
+`/mnt/c/Users/*` the same way.
+
+## Personal data never enters this repo
+
+Tests, docs, examples and source comments use documentation values only: IPv4
+192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737); IPv6 2001:db8::/32
+(RFC 3849) or 3fff::/20 (RFC 9637); MAC 00:00:5e:00:53:xx (RFC 7042;
+02:00:5e:00:53:xx when a locally administered one is needed); host names under
+example.com/org/net. Never paste a value read off a real network - an address, a
+MAC, a host name, an account, a path with a profile name in it.
+
+`reaper_piicheck.py` enforces it in `repo-hygiene.yml` on every push and pull
+request: generic detectors (real-looking MACs, global IPv4/IPv6, OS-default host
+names, personal mailboxes, home paths, decodable credentials) plus a private
+deny-list of the maintainer's own identifiers, fed from the `PII_DENYLIST`
+repository secret and never stored here. `.github/pii-allowlist.txt` accepts
+public infrastructure and vendored upstream files only. Run it locally before a
+push with the private list: `python3 build-scripts/reaper_piicheck.py
+--denylist <private file> --require-denylist .`
 
 ## Key traps (see the project `build-sop` memory for the full ledger)
 

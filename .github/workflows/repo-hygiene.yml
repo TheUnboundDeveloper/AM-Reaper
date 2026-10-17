@@ -39,42 +39,45 @@ jobs:
           # Identity rule: Reaper-authored patches use reaper <theunbounddeveloper@outlook.com>;
           # upstream carry-forward patches (Asuswrt-Merlin cherry-picks, e.g. the 3006.102.8
           # update in v2.1.2) intentionally KEEP their original upstream authorship for honest
-          # GPL provenance. So we don't require a single identity - we hard-block only the two
-          # bad states we've actually hit: the owner's personal gmail, and the reaper@localhost
-          # default that a From:-normalization miss leaves behind.
+          # GPL provenance. So we don't require a single identity - we hard-block the
+          # reaper@localhost default that a From:-normalization miss leaves behind
+          # (a personal address in a From: line is caught by the PII scan below).
           # @local(host)? — the bare-hostname defaults a From:-normalization miss
           # leaves behind. Both spellings have shipped: reaper@localhost in the
           # v1.8.x regen batch, reaper@local in 0354-0356 (v2.2.5/v2.2.6 rung).
-          badid=$(grep -m1 -H '^From: ' *.patch | grep -Ei 'ownermail|@local(host)?>' || true)
+          badid=$(grep -m1 -H '^From: ' *.patch | grep -Ei '@local(host)?>' || true)
           if [ -n "$badid" ]; then
-            echo "::error::patches with a disallowed From: identity (owner gmail or @local/@localhost):"
+            echo "::error::patches with a disallowed From: identity (@local/@localhost):"
             echo "$badid"
             exit 1
           fi
           reaper=$(grep -lE '^From: [0-9a-f]+ reaper <theunbounddeveloper@outlook\.com>$|^From: reaper <theunbounddeveloper@outlook\.com>$' *.patch | wc -l)
           echo "OK: $count patches, gapless numbering; $reaper Reaper-authored, $((count-reaper)) upstream carry-forward"
 
-      - name: PII scan
+      - name: PII scan (private deny-list + generic detectors)
+        env:
+          # One exact string per line (the maintainer's own identifiers). Kept ONLY in this
+          # repository secret - never in a file here, or the list would publish itself.
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+          SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           set -euo pipefail
-          # Patterns are assembled from fragments so this workflow file never
-          # matches itself. New hits must be added to .github/pii-allowlist.txt
-          # deliberately (only third-party upstream context belongs there).
-          p1='[A-Za-z0-9._%+-]+@gm''ail\.com'
-          p2='/home/na'"than"
-          allow='.github/pii-allowlist.txt'
-          hits=$(git grep -I -l -E "$p1|$p2" -- . || true)
-          new=''
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            grep -qxF "$f" "$allow" || new="$new$f"$'\n'
-          done <<< "$hits"
-          if [ -n "$new" ]; then
-            echo "::error::PII-pattern hits outside the allowlist:"
-            printf '%s' "$new"
-            exit 1
+          # Keep every deny-list line out of the log, whatever prints it.
+          if [ -n "${PII_DENYLIST:-}" ]; then
+            while IFS= read -r l; do
+              l="${l%%$'\r'}"; [ -n "$l" ] && [ "${l:0:1}" != "#" ] && echo "::add-mask::$l"
+            done <<< "$PII_DENYLIST"
           fi
-          echo "OK: no PII-pattern hits outside the allowlist"
+          # A push or a same-repository PR must have the deny-list; a fork PR cannot see
+          # secrets, so it runs the generic detectors only and says so.
+          req=""
+          if [ "$SAME_REPO" = "true" ]; then req="--require-denylist"
+          else echo "::notice::fork pull request: deny-list unavailable, generic detectors only"; fi
+          # Everything this repo publishes. Generic detectors read only the ADDED lines of
+          # Reaper-owned files in a patch; the deny-list reads every line of every file.
+          # .github/pii-allowlist.txt: paths (vendored upstream context) and rule:value
+          # entries (public infrastructure, documented examples) - never a personal value.
+          python3 build-scripts/reaper_piicheck.py --root . $req --max-details 25 .
 
       - name: Hidden-character scan
         run: |

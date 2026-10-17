@@ -78,40 +78,40 @@ class Box:
 OLD = "*/5 * * * * sh /tmp/rwatch.sh #rwatch#\n15 3 * * * /usr/sbin/rwarden update #rwarden#\n"
 
 # 1. the field case: renamed login, an add -> both old jobs + the new one, orphan gone, crond told
-b = Box("alice", ["alice", "nobody"], {"admin": OLD})
+b = Box("user1", ["user1", "nobody"], {"admin": OLD})
 r = b.run("a", "fw", "*/1 * * * * true")
-f = b.read("alice") or ""
+f = b.read("user1") or ""
 check("rename then add: the old jobs and the new one end up in the current crontab",
       r.returncode == 0 and "#rwatch#" in f and "#rwarden#" in f and f.rstrip().endswith("#fw#"), f)
 check("rename then add: the orphan is removed and crond is told (cron.update)",
-      b.files() == ["cron.update", "alice"] and "alice" in (b.read("cron.update") or ""), b.files())
+      b.files() == ["cron.update", "user1"] and "user1" in (b.read("cron.update") or ""), b.files())
 check("rename then add: one log line with the count and no login name",
-      "moved 2 cron job(s)" in b.log() and "admin" not in b.log() and "alice" not in b.log(), b.log())
+      "moved 2 cron job(s)" in b.log() and "admin" not in b.log() and "user1" not in b.log(), b.log())
 b.done()
 
 # 2. cru l adopts too, and lists the truth
-b = Box("alice", ["alice"], {"admin": OLD})
+b = Box("user1", ["user1"], {"admin": OLD})
 r = b.run("l")
-check("rename then list: cru l shows the adopted jobs", r.stdout == OLD and b.files() == ["cron.update", "alice"], (r.stdout, b.files()))
+check("rename then list: cru l shows the adopted jobs", r.stdout == OLD and b.files() == ["cron.update", "user1"], (r.stdout, b.files()))
 b.done()
 
 # 3. an #id# already in the current crontab wins
-b = Box("alice", ["alice"], {"admin": OLD, "alice": "*/7 * * * * sh /tmp/rwatch.sh #rwatch#\n"})
+b = Box("user1", ["user1"], {"admin": OLD, "user1": "*/7 * * * * sh /tmp/rwatch.sh #rwatch#\n"})
 b.run("l")
-f = b.read("alice") or ""
+f = b.read("user1") or ""
 check("an #id# already in the current crontab wins; the other old job is added once",
       f.count("#rwatch#") == 1 and "*/7 " in f and f.count("#rwarden#") == 1 and "moved 1 cron job(s)" in b.log(), f)
 b.done()
 
 # 4. a crontab named for a user that still exists is left alone
-b = Box("alice", ["alice", "nobody"], {"nobody": "0 * * * * true #n#\n"})
+b = Box("user1", ["user1", "nobody"], {"nobody": "0 * * * * true #n#\n"})
 b.run("a", "x", "0 0 * * * true")
-check("a real user's crontab is never moved", b.read("nobody") == "0 * * * * true #n#\n" and "#n#" not in (b.read("alice") or ""))
+check("a real user's crontab is never moved", b.read("nobody") == "0 * * * * true #n#\n" and "#n#" not in (b.read("user1") or ""))
 b.done()
 
 # 5. passwd unreadable, or not listing the current login: nothing moves
 for label, users in (("missing /etc/passwd", None), ("passwd without the current login", ["admin"])):
-    b = Box("alice", users, {"admin": OLD})
+    b = Box("user1", users, {"admin": OLD})
     b.run("l")
     check("%s: the old crontab is left where it is" % label, b.read("admin") == OLD and not b.log(), (b.files(), b.log()))
     b.done()

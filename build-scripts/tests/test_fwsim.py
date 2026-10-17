@@ -28,7 +28,7 @@ drives it two ways.
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass release/src/router as
 argv[1] or REAPER_ROUTER_SRC).
 """
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 
 def skip(msg):
     print("SKIP: " + msg); sys.exit(77)
@@ -1067,7 +1067,8 @@ try:
     # ---------------- tier 2: the private fixtures ----------------
     fx = os.environ.get("REAPER_FW_FIXTURES", "")
     if not fx:
-        for cand in ("/mnt/c/Users/builder/AppData/Roaming/VSC/ASUS/audits/firewall-fixtures", os.path.expanduser("~/firewall-fixtures")):
+        import glob
+        for cand in sorted(glob.glob("/mnt/c/Users/*/AppData/Roaming/VSC/ASUS/audits/firewall-fixtures")) + [os.path.expanduser("~/firewall-fixtures")]:
             if os.path.isdir(cand): fx = cand; break
     f4 = os.path.join(fx, "rt-be96u-Reaper_v3.1.5_BETA-2026-09-13.iptables-save") if fx else ""
     if not fx or not os.path.isfile(f4):
@@ -1087,7 +1088,7 @@ try:
         # na is 8 rows that need IPv6 the box does not have, plus H6, which is
         # n/a by construction (it states what a table walk cannot answer)
         check("fixture: at least 70 green, IPv6 rows n/a (no IPv6 on that box)", j["summary"]["green"] >= 70 and j["summary"]["na"] == 9, j["summary"])
-        x = wit(j, "A1"); check("fixture: A1 decided by SDN_FF#8 with the first allowed MAC", x and x["rule"] == "filter/SDN_FF#8 -i br0 -o eth0 -j ACCEPT" and "mac 00:00:5E:00:53:C0" in x["witness"], x)
+        x = wit(j, "A1"); check("fixture: A1 decided by SDN_FF#8 with the first allowed MAC", x and x["rule"] == "filter/SDN_FF#8 -i br0 -o eth0 -j ACCEPT" and re.search(r"\bmac [0-9A-F]{2}(?::[0-9A-F]{2}){5}\b", x["witness"]) is not None, x)  # the fixture's own MAC is private; only its presence is pinned
         x = wit(j, "A3"); check("fixture: A3 resolved through the DNS intercept to the off-segment filter", x and x["state"] == "green" and x["verdict"] == "DNAT 10.20.0.98:53 ACCEPT" and "REAPER_DNSV#1" in x["rule"], x)
         x = wit(j, "A4"); check("fixture: A4 dropped by the FORWARD tail", x and x["state"] == "green" and "filter/FORWARD#25 -j DROP" == x["rule"], x)
         x = wit(j, "A5"); check("fixture: A5 identity DNAT of port 80 is still a plain ACCEPT", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)

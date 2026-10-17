@@ -16,14 +16,16 @@ starts and comments contain apostrophes. A brace counter cannot read JavaScript.
 Usage:  jscheck.py <page.asp> [more.asp ...]
 Exit:   0 = every page parses, 1 = at least one does not, 77 = no JS engine.
 """
-import io, os, re, shutil, subprocess, sys, tempfile
+import glob, io, os, re, shutil, subprocess, sys, tempfile
 
 NODE = os.environ.get("REAPER_NODE") or shutil.which("node")
 if not NODE:
-    for c in ("/mnt/c/Users/builder/AppData/Roaming/VSC/node-v24.18.0-win-x64/node.exe",
-              "C:/Users/builder/AppData/Roaming/VSC/node-v24.18.0-win-x64/node.exe"):
-        if os.path.exists(c):
-            NODE = c
+    # a portable Windows node next to the project, under whichever profile folder holds it
+    for pat in ("/mnt/c/Users/*/AppData/Roaming/VSC/node-v*-win-x64/node.exe",
+                "C:/Users/*/AppData/Roaming/VSC/node-v*-win-x64/node.exe"):
+        found = sorted(glob.glob(pat))
+        if found:
+            NODE = found[-1]
             break
 if not NODE:
     print("jscheck: no node on PATH (set REAPER_NODE) - skipped")

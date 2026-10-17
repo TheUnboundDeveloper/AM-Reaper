@@ -607,6 +607,26 @@ else
   fail "kernel-sg-cap" "vmlinux has no reaper_tx_sg_max/reaper_tx_sg_linearized -- the image ships without the Runner 4-frag cap (packets with >4 frags are dropped on Runner ports)"
 fi
 
+# ---- 29. no private key may ship in the image (check_no_private_keys.py) ---
+# 2026-10-17: vendored source trees carry key files, and a model profile can copy
+# one into /rom, where every unit of that model then shares it. No Reaper image
+# carries one (the keys a box uses are generated on the box); this asserts it on
+# every build and every port, over the whole staged rootfs. A binary that only
+# quotes the PEM header (a key converter, a PEM parser) has no body and passes.
+# key-allowlist.txt names the PUBLIC self-test vectors some libraries compile in
+# (GnuTLS), by exact block hash and path; anything else is a FAIL.
+NOKEYS="$_SDIR/check_no_private_keys.py"
+[ -f "$NOKEYS" ] || NOKEYS=/home/reaper/reaper_build/check_no_private_keys.py
+KEYALLOW="$(dirname "$NOKEYS")/key-allowlist.txt"
+if [ ! -f "$NOKEYS" ]; then
+  warn "no-private-keys" "check_no_private_keys.py not found - check skipped"
+elif out=$(python3 "$NOKEYS" ${KEYALLOW:+--allowlist "$KEYALLOW"} "$FS" 2>&1); then
+  pass "no-private-keys" "$(echo "$out" | tail -1)"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "no-private-keys" "private-key material in the staged rootfs (see above) -- a key baked into the image is shared by every unit"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips

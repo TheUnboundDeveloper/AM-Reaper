@@ -18,6 +18,10 @@ TWO KINDS OF RULE.
 - generic detectors: shapes that are almost never legitimate in Reaper-authored text.
   Applied to whole files, but only to the ADDED lines (and message header) of a
   .patch, so vendored upstream content being deleted does not trip them.
+- private-key material (rule 'pemkey'): a line that IS a PEM private-key header, in any
+  file and on any ADDED line of any patch, vendored or not. Upstream test fixtures are
+  the usual source; they do not belong in the series (drop the test tree from the
+  vendored package). Only the header text is reported.
 
 Use documentation values in tests and docs: IPv4 192.0.2.0/24, 198.51.100.0/24,
 203.0.113.0/24 (RFC 5737); IPv6 2001:db8::/32 (RFC 3849) or 3fff::/20 (RFC 9637);
@@ -73,6 +77,8 @@ PUBLIC_INFRA = [ipaddress.ip_network(n) for n in (
     '2620:74:1b::/48', '2620:74:1c::/48', '2620:10a:80bb::/48', '2620:10a:80bc::/48',
     '2606:1a40::/32', '2a00:5884::/32')]
 RX_SVG = re.compile(r'<path\b|\bd="M|viewBox=')
+# a line that is a PEM private-key header (a quoted header inside source code is not)
+RX_PEM = re.compile(r'^\+?-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----\s*$')
 
 
 def placeholder_mac(v):
@@ -233,8 +239,12 @@ def scan(paths, deny, allow_paths, allow_values, root, max_details, generic_patc
                     m = re.search(r' b/(\S+)', line)
                     own = bool(m and RX_OWN.search(m.group(1)))
                     continue
+                if not in_header and line.startswith('+') and RX_PEM.match(line):
+                    findings.append(('pemkey', rel, i, line[1:].strip()))
                 if not in_header and (not own or not (line.startswith('+') and not line.startswith('+++'))):
                     continue
+            elif RX_PEM.match(line):
+                findings.append(('pemkey', rel, i, line.strip()))
             for rule, v in generic(line, allow_values):
                 findings.append((rule, rel, i, v if show_values else mask(v)))
     return nfiles, findings

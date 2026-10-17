@@ -85,6 +85,20 @@ check("deny-list value never appears in the output", secret not in out and secre
 rc, out = run({'a.txt': 'nothing here\n'}, env_deny='', extra=['--require-denylist'])
 check("--require-denylist fails when the list is empty", rc == 2, out)
 
+# 5. private-key material: any added line of any patch (vendored too), and any plain file;
+#    the header is assembled here so this test file never holds one itself
+pem = '-----BEGIN ' + 'RSA PRIVATE KEY-----'
+vend = 'diff --git a/release/src/router/pkg/tests/k.pem b/release/src/router/pkg/tests/k.pem\n'
+rc, out = run({'0004-x.patch': patch + vend + '+' + pem + '\n+MIIEowIBAAKCAQEA\n'})
+check("patch: a private key added under a vendored path trips 'pemkey'", rc == 1 and 'pemkey:' in out, out)
+rc, out = run({'0005-x.patch': patch + vend + '-' + pem + '\n-MIIEowIBAAKCAQEA\n'})
+check("patch: a private key being removed does not", rc == 0, out)
+rc, out = run({'0006-x.patch': patch + 'diff --git a/release/src/router/d/k.c b/release/src/router/d/k.c\n'
+                                '+\tif (!strcmp(buffer, "' + pem + '\\n"))\n'})
+check("patch: source that merely quotes the header does not", rc == 0, out)
+rc, out = run({'k.txt': pem + '\nMIIEowIBAAKCAQEA\n'})
+check("a plain file holding a private key trips 'pemkey'", rc == 1 and 'pemkey:' in out, out)
+
 if fails:
     print("\n%d FAILED:" % len(fails))
     for x in fails:

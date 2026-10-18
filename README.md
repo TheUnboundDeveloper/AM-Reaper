@@ -91,7 +91,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Legal
 
 - **GPL:** the GPL portions are under GPL v2 ([`LICENSE`](LICENSE)); the Reaper modifications are likewise GPL v2, with a Reaper-specific notice in [`LICENSE.reaper`](LICENSE.reaper). Publish your changes if you redistribute the GPL code.
-- **Proprietary components** (ASUS / Broadcom / Trend Micro / Tuxera) are **licensed for genuine ASUS hardware only** ([`docs/README.proprietary`](docs/README.proprietary)) and are intentionally **not** included here. This fork targets the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 / ZenWiFi BQ16, all BCM4916).
+- **Proprietary components** (ASUS / Broadcom / Trend Micro / Tuxera) are **licensed for genuine ASUS hardware only** ([`docs/README.proprietary`](docs/README.proprietary)) and are intentionally **not** included here. This fork targets the ASUS RT-BE Series (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 / ZenWiFi BQ16 / ZenWiFi BQ16 Pro, all BCM4916).
 - **No warranty:** provided as-is; keep a recovery path ready when flashing. See the Disclaimer above for redistribution and support terms.
 
 Security reports: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

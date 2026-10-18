@@ -33,6 +33,16 @@ line; v3.1.0+ reads it only when the admin opted in, and offers it only to a box
 already on the newest stable and only when the beta number is higher than the
 stable's. The manifest enforces the second half too: a beta line is dropped
 when the stable line reaches (or passes) its number, and never written below it.
+
+FLOOR LINE (2026-10-18). The router reports "check failed" when its
+MODEL#VARIANT# stable line is missing, and it stops there before it reads any
+beta line, whatever the Beta Channel switch says. A model ported after the
+newest stable publish (BQ16 and BQ16_PRO joined at v3.3.x, the stable was
+v3.2.3) therefore had only beta lines and every check on it failed. Whenever a
+beta line has no stable line beside it, this script writes a floor stable line
+MODEL#VARIANT#0.0.0#<releases page>: no build is numbered at or below 0.0.0, so
+it is never offered, the beta-on box falls through to the beta line and the
+beta-off box reports up to date. The model's first real stable replaces it.
 """
 import os
 import re
@@ -167,6 +177,15 @@ def write_manifest(new_lines):
         if key not in merged:
             order.append(key)
         merged[key] = line
+    # a beta with no stable line beside it is unreachable (see FLOOR LINE above)
+    for prod, variant in list(order):
+        floor_key = (prod, variant[:-5])
+        if variant.endswith("-beta") and floor_key not in merged:
+            merged[floor_key] = "%s#%s#0.0.0#https://github.com/%s/releases" % (
+                prod, floor_key[1], REPO)
+            order.append(floor_key)
+            print("floor stable line written for %s#%s: no stable release yet"
+                  % floor_key)
     # stable lines first, then the beta lines: firmware before v3.1.0 takes the
     # first line whose prefix matches, and its prefix never matches "-beta#",
     # but the order keeps the file readable and the diffs small.

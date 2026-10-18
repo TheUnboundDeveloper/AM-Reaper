@@ -84,6 +84,7 @@ int reaper_secure_dir(const char *path, unsigned int mode);	/* shared/reaper_tmp
 '''
 STUB_WLUTILS = r'''
 int wl_iovar_getint(char *ifname, char *iovar, int *val);
+int wl_iovar_setint(char *ifname, char *iovar, int val);	/* 2026-10-16: the node fit's direct move (reaper_bwfloor.c move_to) */
 '''
 STUBS_C = r'''
 #include "rc.h"
@@ -262,6 +263,10 @@ shutil.copy(floor, os.path.join(d, "reaper_bwfloor.c"))
 wlq_h = os.path.join(src_root, "shared", "reaper_wlquiet.h")
 if os.path.isfile(wlq_h):
     shutil.copy(wlq_h, os.path.join(d, "reaper_wlquiet.h"))
+# 2026-10-16: the node fit (rc/reaper_meshchan.c) rides the daemon; the real header, prototypes only
+mc_h = os.path.join(src_root, "rc", "reaper_meshchan.h")
+if os.path.isfile(mc_h):
+    shutil.copy(mc_h, os.path.join(d, "reaper_meshchan.h"))
 r = subprocess.run([CC, "-std=gnu99", "-fsyntax-only", "-Wall", "-Wextra", "-Wno-unused-parameter",
                     "-Werror=implicit-function-declaration", "-I" + d, os.path.join(d, "reaper_bwfloor.c")],
                    capture_output=True, text=True)

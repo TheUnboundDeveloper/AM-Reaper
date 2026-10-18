@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.4.5** · 2026-10-16 <!--@stamp-->
+> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -794,3 +794,22 @@ Checks: `test_samba_enroll_dirs.py`, `test_kernel_cve_onehunk_set.py`, `test_fw_
 the previous source and pass on this one; 50 host suites pass (one needs root, one needs node, both skip). C12 was
 reproduced and relieved live on the reporting box before the fix was built. Owed: C12 on a fresh boot with Samba on,
 C15 by a login rename without a reboot. C16-C19 (2026-10-13): `test_kernel_cve_onehunk_set.py`, `test_lldpd_vlan_strip.py` and `test_samba_enroll_dirs.py` fail on the previous source and pass on this one; the OpenVPN backports are proven by the build. Owed: a build, then C16 by the deliberate SYN-without-ACK and restart-with-pending-handshake triggers past the 600 s arm, C17 by a tagged LLDP frame of MTU size, C18 by `ls -ld /var/lib/samba/private` after a Samba start, C19 by an OpenVPN client and server session.
+## Asuswrt-Merlin 3006.102.10 hardening carried (2026-10-17, v3.4.6)
+
+Read against the Reaper tree and taken from Eric "Merlin" Sauvageau's 3006.102.10 alpha 2 (GPL merge
+`0c5d53820c`); commit `20ddaafb42`. Each was checked for reachability before it was carried.
+
+| Area | Defect | Fix |
+|---|---|---|
+| `rc/services.c wl_wpsPincheck()` | a PIN such as `0;reboot` parsed as 0 with a valid checksum and reached the `hostapd_cli` command line | digits only, else refused (ASUS GPL 102_40585) |
+| `httpd/web.c` upload handlers (8) | `value = strstr(p, "\r\n\r\n") + 4` walked past a missing header boundary | the walk happens only when `strstr()` found it |
+| `httpd/web.c nvram_check()`, `validate_apply()` | NULL dereferences on malformed input | guarded |
+| `httpd/web.c Main_AdmStatus` | a SystemCmd route for a page Reaper does not ship | route removed (`system_cmd_test` stays an extern in the prebuilt `web_hook.o`) |
+| `rc/wanduck.c` | `FD_CLR` missing before a close, `Host:` parsed at the colon, resolver errors unnamed, NULL target | upstream fixes; the `switch_wan_line` refinement NOT taken (it would reopen the GT-BE98 fail-back loop) |
+| `rc/firewall.c` | `IPSEC_DROP_SUBNET_ICMP` assumed a /24 | uses `lan_netmask` |
+| `wsdd2/llmnr.c` | unbounded loop entry | bounded |
+| `rc/common.c check_mountpoint()` | fixed buffer overflowed by `\040`-escaped mount labels; `fclose` leak | `getline()`, handle closed |
+| `rc/timemachine.c`, `libdisk`, `minidlna` | upstream fixes (sscanf/newline, folder-name sanitising, SOAP/DFF parsing) | verbatim |
+
+Not carried, by design: httpd `no_cache` max-age (drops `no-store`), the VUPNP/FUPNP re-add, unconditional
+core dumps, the Instant Guard `-I INPUT 1`, the WireGuard kill-switch rework, forced pause on ethernet ports.

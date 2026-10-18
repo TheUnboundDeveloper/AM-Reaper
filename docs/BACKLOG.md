@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.5** · 2026-10-16 <!--@stamp-->
+> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,6 +40,18 @@ internal quality, or deferred by decision.
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
+- **[P2] AiMesh: the 5 GHz picker parked on a channel the node could not follow** (owner, RT-AX92U node,
+  MLO on) — the main router fits the picker to the nodes' channel lists, re-allows the stock Auto-width
+  exclusions every node can use when nothing else is left, and moves a radio found outside the plan.
+  **[in v3.4.6; owed: a second mesh (BQ16 node under a GT-BE98) and a node joining mid-plan]**
+  ↳ notes: `aimesh-node-channel-fit.md`
+- **[P2] Guest portal passcodes of 16+ characters never matched** (field) — the field stops at 15 and a
+  longer stored value shows a hint. **[in v3.4.6; owed: the reporter signs in with a 15-character passcode]**
+  ↳ notes: `captive-passcode-16-cap.md`
+- **[P2] Steady packet loss behind a Nokia 10G ONT** (forum) — the WAN port is power-cycled at switch init on
+  every model so the link renegotiates before EEE goes off (ASUS GPL 102_40585 via Merlin 3006.102.10).
+  **[in v3.4.6; owed: the reporter's ONT stays clean through a reboot without `ethctl eth0 eee off`]**
+  ↳ notes: `wan-eee-phy-reset.md`
 - **[P2] A factory Reaper router could not be added as an AiMesh node** (field, a BQ16 under an
   MLO GT-BE98) — Reaper ships WPS off and the join's WPS arm sat inside that setting; a join now
   gets WPS on its onboarding band only, the setting untouched.
@@ -85,15 +97,19 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] MLO ON kills the AiMesh backhaul.** No Reaper code is on the MLO path; the lead is the
   warm-reboot MLO fabric (no station associates until a power cycle). A Reaper node failing under an
   MLO main router was a separate defect, fixed in v3.4.5 (Waiting).
-  **[investigated 2026-10-15; owed: the power-cycle test, owner box then the reporter]**
+  **[investigated 2026-10-15; solved: the power-cycle test, owner box then the reporter]**
   ↳ notes: `mlo-kills-aimesh-backhaul.md`
 - **[P2] Traffic Analyzer non-functional on BQ16 firmware** — buttons, graphs and most of the page
-  were missing in a user's screenshot; cause to investigate.
-  **[needs data]** ↳ notes: `traffic-analyzer-bq16.md`
+  were missing in a user's screenshot; cause to investigate. The traffic analyzer only functions with 
+  bandwidth limits populated in the fields. **[owned]** ↳ notes: `traffic-analyzer-bq16.md`
 - **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
   = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
   (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
   **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
+- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or 
+  monitored on the connections tab by connection.
+- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from 
+  a PIN build.
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 

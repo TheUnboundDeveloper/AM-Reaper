@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.5** · 2026-10-16 <!--@stamp-->
+> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.5** <!--@treever--> — `3006.102.8_Reaper_v3.4.5`. **A factory-fresh Reaper router can be added as an AiMesh node again; changing to Access Point or Media Bridge stays in Reaper.** Also: two-colour QoS cards. Everything in v3.4.4 is included. |
+| **Current rung** | **v3.4.6** <!--@treever--> — `3006.102.8_Reaper_v3.4.6`. **The 5 GHz channel picker stays on channels every AiMesh node can use; guest-portal passcodes longer than 15 characters are refused instead of failing silently; the WAN link renegotiates at boot for 10G ONTs that mishandle EEE.** Also: hardening carried from Asuswrt-Merlin 3006.102.10 (Eric "Merlin" Sauvageau). Everything in v3.4.5 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |

@@ -85,15 +85,18 @@ def lifted_script(csrc, needle, macros):
     end = csrc.find(", f);", at)
     if start < 0 or end < 0: die("could not frame the fputs() around %r" % needle)
     body = csrc[start + 6:end]
-    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)          # C comments between the pieces
+    # 2026-10-19: strings, block comments and identifiers consumed IN ORDER. Stripping
+    # comments first mistook a `/*` inside a string literal (a shell glob) for a comment
+    # start and ate every literal up to the next `*/` - rwatch.c's review block vanished.
     text = ""
-    for s, ident in re.findall(r'"((?:[^"\\]|\\.)*)"|([A-Za-z_][A-Za-z0-9_]*)', body):
-        if ident:
+    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"|(/\*.*?\*/)|([A-Za-z_][A-Za-z0-9_]*)', body, re.S):
+        if m.group(1) is not None:
+            text += c_unescape(m.group(1))
+        elif m.group(3) is not None:
             # a macro from another header (REAPER_NV_HELPER, the _nv shell helper from
-            # rc/reaper_nv.h) is outside the units lifted here; it drops out as empty
-            text += macros.get(ident, "")
-        else:
-            text += c_unescape(s)
+            # rc/reaper_nv.h) is outside the units lifted here; it drops out as empty.
+            # macro values are kept as written in C (escapes raw), so unescape here
+            text += c_unescape(macros.get(m.group(3), ""))
     return text
 
 macros = macros_of(read(hook_h))
@@ -150,9 +153,11 @@ def hook_pos(chain, hook, fixtures, fex=""):
     script = FAKE + 'FEX="%s"\n' % fex + hook_fc + "\n" + front_pos + '\n_front_pos iptables %s %s\n' % (chain, hook)
     return run_sh(script, fixtures).strip()
 
+fc_rule = between(rwatch_sh, "_fc_rule() {", "\n}\n", "rwatch _fc_rule")
+
 def rwatch_verdict(fixtures, fex=""):
-    script = (FAKE + 'T=iptables; FEX="%s"; CHDRIFT=""; FCTOL=""; UP=99999; HEALGRACE=0\n' % fex
-              + hook_fc + "\n" + rw_loop + '\necho "DRIFT=$CHDRIFT"\necho "TOL=$FCTOL"\n')
+    script = (FAKE + 'T=iptables; FEX="%s"; CHDRIFT=""; FCTOL=""; UP=99999; HEALGRACE=0; CHRULES=""; CHRN=0\n' % fex
+              + hook_fc + "\n" + fc_rule + "\n" + rw_loop + '\necho "DRIFT=$CHDRIFT"\necho "TOL=$FCTOL"\n')
     out = run_sh(script, fixtures)
     d = re.search(r"^DRIFT=(.*)$", out, re.M); t = re.search(r"^TOL=(.*)$", out, re.M)
     return (d.group(1).strip() if d else "?", t.group(1).strip() if t else "?")
@@ -210,5 +215,46 @@ for name, chain, hook, listing, extra, fex, want_pos, want_drift in cases:
 # a fresh table (no jump of ours yet) pins at 1
 ok(hook_pos("FORWARD", "REAPER_HOOK_F", fx(FORWARD="-P FORWARD ACCEPT\n-A FORWARD -j Skynet", Skynet=SKYNET)) == "1",
    "no jump of ours in the table must answer position 1")
+
+# ---- 2026-10-19 (field, RT-BE88U Tailscale helper): front_exempt takes USER chains only
+for k in ("REAPER_FEX_BUILTIN", "REAPER_FEX_FILTER"):
+    ok(k in macros, "reaper_hook.h no longer defines %s" % k)
+hook_fx = between(hook_sh, 'FEXDROP=""', 'FEX="$_fx"\n', "hook.sh FEX filter")
+rw_fx = between(rwatch_sh, 'FEXDROP=""', 'FEX="$_fx"\n', "rwatch FEX filter")
+ok(hook_fx == rw_fx, "the front_exempt filter differs between hook.sh and rwatch 3d")
+ok(hook_sh.index(hook_fx) > hook_sh.index(macros["REAPER_FRONT_EXEMPT"]),
+   "hook.sh must filter front_exempt after reading it")
+out = run_sh('FEX=" ACCEPT Wide RETURN my-chain.v2 DROP"\n' + hook_fx + 'echo "FEX=[$(echo $FEX)] DROP=[$(echo $FEXDROP)]"\n', {}).strip()
+ok(out == "FEX=[Wide my-chain.v2] DROP=[ACCEPT RETURN DROP]", "front_exempt filter: built-ins dropped, user chains kept (got %r)" % out)
+out = run_sh('FEX=""\n' + hook_fx + 'echo "FEX=[$(echo $FEX)] DROP=[$(echo $FEXDROP)]"\n', {}).strip()
+ok(out == "FEX=[] DROP=[]", "front_exempt filter: an empty file stays empty (got %r)" % out)
+# the field rule with ACCEPT "declared": before the filter it would have been tolerated
+TS = "-A FORWARD -i tailscale0 -j ACCEPT\n-A FORWARD -o tailscale0 -j ACCEPT\n-A FORWARD -j REAPER_HOOK_F"
+f = fx(); f["FX_FORWARD"] = "-P FORWARD ACCEPT\n" + TS
+ok(hook_pos("FORWARD", "REAPER_HOOK_F", f, "ACCEPT") == "3", "self-test: unfiltered, a declared ACCEPT tolerates the tailscale rules")
+fex_after = run_sh('FEX="ACCEPT"\n' + hook_fx + 'echo $FEX\n', {}).strip()
+ok(hook_pos("FORWARD", "REAPER_HOOK_F", f, fex_after) == "1", "hook.sh: ACCEPT in front_exempt no longer keeps the tailscale rules ahead")
+drift, tol = rwatch_verdict(f, fex_after)
+ok("FORWARD" in drift, "rwatch 3d: ACCEPT in front_exempt no longer hides the tailscale rules (DRIFT=%r)" % drift)
+
+# ---- the drift line names the rules (field suggestion 1)
+script = (FAKE + 'T=iptables; FEX=""; CHDRIFT=""; FCTOL=""; UP=99999; HEALGRACE=0; CHRULES=""; CHRN=0\n'
+          + hook_fc + "\n" + fc_rule + "\n" + rw_loop + '\necho "R=$CHRULES"\n')
+out = run_sh(script, f)
+m = re.search(r"^R=(.*)$", out, re.M)
+ok(m and m.group(1) == "iptables -A FORWARD -i tailscale0 -j ACCEPT | iptables -A FORWARD -o tailscale0 -j ACCEPT",
+   "rwatch 3d: the offending rules are named (got %r)" % (m.group(1) if m else out))
+f3 = fx(); f3["FX_FORWARD"] = "-P FORWARD ACCEPT\n-A FORWARD -i a0 -j ACCEPT\n-A FORWARD -i b0 -j ACCEPT\n-A FORWARD -i c0 -j ACCEPT\n-A FORWARD -j REAPER_HOOK_F"
+out = run_sh(script, f3)
+m = re.search(r"^R=(.*)$", out, re.M)
+ok(m and m.group(1).count(" | ") == 1 and "c0" not in m.group(1), "rwatch 3d: at most two rules are named (got %r)" % (m.group(1) if m else out))
+ok("rule(s) ahead of the Reaper hook that can pass traffic unchecked: $CHRULES" in rwatch_sh
+   and 'printf \'%s\\n\' "$CHRULES" > /tmp/reaper/front.bad' in rwatch_sh
+   and "rm -f /tmp/reaper/hook.n /tmp/reaper/front.bad" in rwatch_sh,
+   "rwatch 3d: the rule-naming line is logged once per change and cleared on recovery")
+ok("ignoring built-in target(s)$FEXDROP" in rwatch_sh and "/tmp/reaper/fex.drop" in rwatch_sh,
+   "rwatch 3d: an ignored built-in in front_exempt is said once")
+ok("put its chain name in" not in rwatch_sh and "built-in targets such as ACCEPT are ignored there" in rwatch_sh,
+   "rwatch 3d: the give-up line no longer tells the operator to list a bare rule's target")
 
 print("PASS: %d checks" % passed)

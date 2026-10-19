@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
+> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.4.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.4.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -361,11 +361,36 @@ Merlin's user scripts (`firewall-start`, `nat-start`, `services-start` and the r
 
 - Since v2.6.2, every Reaper firewall layer registers into **one shared front chain per base chain** (`REAPER_HOOK_*`, at position 1 of INPUT/FORWARD/OUTPUT), in a **fixed order: Warden → Gatekeeper → rules engine** — every deny-only layer before the one that can accept. A single script rebuilds that order after any layer applies, so it converges whichever service restarted.
 - Gatekeeper and Warden **self-heal**: Gatekeeper repairs a lost hook within about 30 seconds and re-applies when a bridge appears without one; Warden re-arms after any firewall restart; the `rwatch` watchdog re-applies Policy Routing mark rules if the live chain is short of what it meant to load.
-- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic is tolerated and logged once — in INPUT and OUTPUT that means a port or a destination; in FORWARD, since v3.2.8, a destination only, because a port-only or interface-only accept there would pass every device to every host on that port past all three layers (a negated match narrows nothing). A chain you jump to is judged by its own accepts; its returns do not count, since a return simply resumes the base chain where Reaper's jump comes next. So is any chain you list, one name per line, in **`/jffs/reaper/front_exempt`**. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so, names that file, and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
+- Since v3.1.2 `rwatch` also checks **chain integrity** every tick, which is what catches another script quietly disarming a layer. Two things: each of Warden's block chains must still *end* in the block itself with nothing inserted ahead of it that would let traffic through, and nothing that can let traffic past unchecked may sit in front of Reaper's chains in INPUT/FORWARD/OUTPUT. A chain found disarmed is reported as critical. **Since v3.1.3 the second check looks at *what* is in front rather than insisting on position 1**, because a narrow carve-out ahead of Reaper is sometimes deliberate and occasionally required — a DNS rule that has to beat Gatekeeper so restricted devices keep resolving, for instance. A rule that can only affect a narrowed class of traffic is tolerated and logged once — in INPUT and OUTPUT that means a port or a destination; in FORWARD, since v3.2.8, a destination only, because a port-only or interface-only accept there would pass every device to every host on that port past all three layers (a negated match narrows nothing). A chain you jump to is judged by its own accepts; its returns do not count, since a return simply resumes the base chain where Reaper's jump comes next. So is any **user chain** you list, one name per line, in **`/jffs/reaper/front_exempt`** — chain names only: built-in targets such as `ACCEPT`, `RETURN` or `DROP` are ignored there (and logged once), because listing `ACCEPT` would exempt every blanket accept. A rule that could wave anything through is still re-pinned and the displacement logged — but if the repair is undone twice, `rwatch` says so and stops re-pinning rather than trading places with whatever keeps inserting itself. Note the Gatekeeper and rules-engine chains are deliberately **not** checked the first way — they interleave allow and deny by design, so "ends in a block" is not a property they have.
 
-So a script that inserts its own rules at the top of INPUT or FORWARD, or flushes those chains, will either be undone within seconds or will change the layer order — and an `ACCEPT` placed above Reaper's hook lets traffic past Warden and Gatekeeper entirely, which is exactly the defect v2.6.2 fixed inside Reaper. Put script rules *after* Reaper's hook, or use the Firewall page's Rules tab, which was built for this. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (1.5); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
+**What happens to a script that inserts at position 1.** An `ACCEPT` placed above Reaper's hook lets traffic past Warden, Gatekeeper and the rules engine entirely — the defect v2.6.2 fixed inside Reaper. Your rule is not removed. After the 5-minute boot grace, the next `rwatch` tick (every 5 minutes) moves Reaper's hook back above it, logs `FAILURE detected: front-chain-drift` with an incident dump in `/jffs/rwatch`, and names the rule (`rule(s) ahead of the Reaper hook ...`); it repeats at most twice, 600 s apart, then stops and says so. Your script runs again on the next firewall rebuild, so the pattern repeats every boot: drift logged about 8 minutes after each start. VPN helpers (Tailscale, WireGuard, OpenVPN) commonly do this with an interface rule such as `iptables -I FORWARD 1 -i tailscale0 -j ACCEPT`.
+
+**Insert after Reaper's hook instead.** In `firewall-start` (or `nat-start`), find the hook and insert right behind it. `-A` (append) does not work: the stock FORWARD chain ends in drop rules, so an appended accept is never reached.
+
+```sh
+# position just after Reaper's jump in a base chain (1 if Reaper's hook is absent)
+after_hook() {
+  n=$(iptables -S "$1" | grep -n -- "-j $2\$" | head -1 | cut -d: -f1)
+  [ -n "$n" ] && echo "$n" || echo 1
+}
+P=$(after_hook INPUT REAPER_HOOK)
+iptables -I INPUT "$P" -i tailscale0 -j ACCEPT
+P=$(after_hook FORWARD REAPER_HOOK_F)
+iptables -I FORWARD "$P" -i tailscale0 -j ACCEPT
+iptables -I FORWARD "$((P+1))" -o tailscale0 -j ACCEPT
+```
+
+`iptables -S` prints the policy line first, so the hook's line number is its rule position plus one — which is exactly the position just behind it. Do the same with `ip6tables` for IPv6 rules. A rule that genuinely has to sit ahead of Reaper should be **narrow** (a destination in FORWARD; a port or destination in INPUT/OUTPUT) or live in a chain of its own listed in `front_exempt` — knowing that a listed chain's accepts bypass all three layers. Or use the Firewall page's Rules tab, which was built for this.
+
+Flushing INPUT or FORWARD in a script changes the layer order too; Reaper's layers re-apply, but do not rely on it. Scripts that loop calling bare `nvram get` should also be avoided: the closed nvram library can hang a reader forever (1.5); Reaper's own generated scripts read through a five-second guard and `rwatch` reaps any `nvram` process older than two minutes, but a hung reader in your script still holds whatever lock your script took. Scripts that read kernel accelerator files on a timer are another thing to avoid; the project shelved its own accelerator probe after it caused reboot loops in the field.
 
 **Chain signatures (v3.3.4).** Each firewall apply records a checksum of every Reaper filter and nat chain. `rwatch` recomputes it on each tick; two ticks in a row that disagree re-apply the confirmed rules under the firewall lock, at most twice and 600 s apart, and never while a change is waiting for Keep. A script that edits a Reaper chain in place is therefore undone within about ten minutes.
+
+**Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own, and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync). Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check — the grace plus the next five-minute tick, up to 10 minutes.
+
+The same card lists **failed-login bursts**: ten or more failed SSH or web-interface logins from one source inside one check (5 minutes) become a notice — source, count, time — plus one log line per source per hour (`rwatch: security review: N failed ssh logins from …`); **Accept** clears them. The self-monitor reads the system log from where it left off, so a rotated log loses nothing. It only reports: the IPv4 brute-force lock-out is the stock one, and the web interface's own lock (five failures, five minutes) is per LAN or WAN side, not per source.
+
+**SSH over IPv6 from the internet (2026-10-19).** The stock brute-force guard covers IPv4 only; the IPv6 rule for a WAN-open SSH port was a plain accept. Now, when SSH is open to the WAN (`sshd_enable` **1**) and the IPv6 firewall is on, the sixth new connection from one /64 network within 60 seconds is dropped and a continuing flood keeps the block fresh. LAN SSH is untouched, and there is no switch: it hardens an exposure you chose, and five new SSH sessions a minute from one network is not a use anyone has.
 
 **File modes (v3.3.8).** `rc` and everything it starts now run with umask 022, so a file created without an explicit mode is 0644, not world-writable 0666. An add-on that writes into such a file as a non-root user must set the mode itself.
 
@@ -433,7 +458,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 - **Internet** — WAN state (it updates itself during boot without a refresh), your real WAN IPv6 address (never a `fe80::` link-local; the IPv6 half is re-read on every poll since v3.3.7), gateway and DNS, and an **internet on/off switch**. The switch is persistent across a reboot and asks before turning the internet off; the router's web interface stays reachable over the LAN. With the **LAN name resolution check** on (4.14a, v3.4.0), the Internet dot and word turn **amber** while LAN devices cannot resolve names even though the WAN is up, and the tooltip on the card and on the header's WAN pill names the state, how long it has lasted and the servers that did not answer. Since v3.4.0 that tooltip is on the header of every page, not only the dashboard; the pill reads Connected when IPv4 or IPv6 is up and shows the mode name in Access Point, repeater and bridge modes.
 - **Clients** — the connected-device list grouped by band; **View List** opens the full Devices page.
-- **Security Posture** — fifteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden** and **Rule Status** (the cached result of 4.1.1a; it never starts a walk). Every row is clickable and takes you to the page (and tab) that owns the setting.
+- **Security Posture** — sixteen rows: firewall (SPI), DDoS protection, remote/cloud access, admin login (HTTPS only / HTTP + HTTPS, LAN-only / WAN reachable), SSH access, JFFS partition and custom scripts, DNS rebind + DNSSEC, Wi-Fi encryption, MLO, WPS, UPnP, QoS engine, **Gatekeeper**, **Warden**, **Rule Status** (the cached result of 4.1.1a; it never starts a walk) and **Security Review** (2.9): amber *Disabled* or *No baseline*, green *Baseline* with the last check time, red *Review* with the number of changes and login notices waiting — the same report the amber bar reads. After a boot the row shows *Baseline* in amber until the first check, which can take up to 10 minutes. Every row is clickable and takes you to the page (and tab) that owns the setting.
 - **Radio tiles** for each band, showing the SSID in its real case, and **USB tiles** per physical port (a hub shows as connected with a device count). A disk selector appears on the Storage card once two or more disks are attached.
 - **System** — CPU load, memory, temperature, uptime, and the **firmware-update banner** at the top of the page when the check has found a release.
 - **Mesh Nodes** and **AiMesh** cards where applicable.
@@ -868,7 +893,11 @@ Feeds are cached to the router's internal flash, so a router that boots with no 
 
 #### 4.3.4 Countries
 
-Country lists come from ipdeny and refresh with the feeds.
+Country lists come from ipdeny (`www.ipdeny.com`, `51.15.12.186`) and refresh with the feeds.
+
+**The ipdeny address is in your whitelist.** It is added once, the first time Warden starts on a release that carries it. ipdeny is hosted in France, so with France selected and **Also filter the router itself** on (4.3.6), the router would block its own country-list downloads: every fetch times out, the 15-minute country budget runs out, and any country added after that never loads. You can delete the entry; it is never put back. If you do, keep France unselected or the router-traffic filter off.
+
+After each update the system log names every selected country that is enforcing nothing (`geo: selected but NO data loaded, NOT blocked: ...`), and a failed fetch says whether the country still has its previous list or has none at all.
 
 **Review the list before you enable it.** Blocking a country you actually depend on — a VPN exit, a CDN edge, a game server region, a mail provider — will cut off services in a way that is hard to attribute later, because the failure looks like the remote service being down.
 
@@ -891,7 +920,7 @@ Both boxes take one IPv4 or IPv6 address or CIDR per line.
 
 **Also filter the router itself** (off by default) applies the same blocking to connections the router *starts*.
 
-It cannot lock you out. Management traffic is inbound to the router and its replies carry a LAN destination, both of which are exempt, so the web interface and SSH stay reachable and the toggle stays revocable. DNS resolvers and time servers are exempted automatically — a router with a dead clock fails TLS everywhere, which would look like a total outage.
+It cannot lock you out. Management traffic is inbound to the router and its replies carry a LAN destination, both of which are exempt, so the web interface and SSH stay reachable and the toggle stays revocable. DNS resolvers and time servers are exempted automatically — a router with a dead clock fails TLS everywhere, which would look like a total outage. List download hosts are **not** exempted automatically; the country-list host is covered by its whitelist entry (4.3.4). A threat feed or custom feed hosted in a country you block needs its own whitelist entry, or its update fails and the previous copy stays in use.
 
 It *can* stop the router reaching a feed source, DDNS or a VPN peer if a list happens to cover them. That failure is to stale data, and it is logged.
 
@@ -949,11 +978,28 @@ enabled. Blocked outbound entries appear in the system log with the
 #### 4.3.9 Limits and gotchas
 
 - **A whitelist entry covering your LAN is not needed** and never was — the LAN exemption at step 7 already covers it. Historically the page said the opposite in one place and the guidance in another; the exemption is in the chain and you can see it.
-- Threat and country sets are created with a cap of 524,288 entries. The count against that cap is not yet shown in the interface.
+- Threat and country sets are created with a cap of 524,288 entries. The count against that cap is shown in the blocked-hits breakdown on the page.
+- The feed hosts are **not** exempted from the router-self filter (4.3.6): abuse.ch (Feodo, and the threat-domain lists in 4.3.10) and the country-list host are reached over the router's own traffic, so a country that hosts one of them must be whitelisted — the country-list host is added for you (4.3.4).
 - Eight custom feeds at the default timeouts can add roughly 16 minutes to an update window. A per-feed timeout is still owed.
 - North Korea publishes no IPv6 zone; the nightly update no longer logs a failed fetch for it (v2.6.1).
 - The country cache is replayed per set, members only, and **an empty live set never overwrites a good cache entry** (v2.5.9). That fixed country lists coming up empty after a reboot. Pending reporter confirmation on the first boot after upgrading from an older cache.
 - The self-monitor watches for your LAN address or `127.0.0.1` appearing in any block set, and if it finds one it logs a critical line and re-applies the rules. It is a backstop against exactly the class of failure described in 4.3.3, not something you should ever see fire.
+
+#### 4.3.10 Threat domains
+
+Everything above blocks by **address**. Threat domains block by **name**, at the resolver: the host names abuse.ch publishes as malware-distribution sites (URLhaus) and botnet command and payload hosts (ThreatFox) are handed to dnsmasq as `address=/host/` lines, so a lookup of the name — or any name under it — is answered NXDOMAIN. Off by default; the card is on the Warden page under the IP feeds, with one switch, a tick box per list and a box of names that must never be blocked.
+
+How it runs: the lists download with the nightly feed update (and with **Update now**, which a change to the domain settings triggers by itself), from abuse.ch's public hostfile paths — no account or key. Each list keeps its previous download if a fetch fails, so one feed's outage never shrinks the list. The names are normalised (lower case, one host per line, nothing without a dot), capped at 100,000, filtered, and written to `/tmp/rwarden/dns.conf`, with a copy in `/jffs/rwarden/dns.cache` that a reboot replays before the first update. Every dnsmasq instance — the main one and each guest or VLAN network's own — includes that file. dnsmasq reads `address=` lines only at start, so **a changed list restarts dnsmasq once**, at the end of the update; an unchanged list does nothing, and the self-monitor's loopback-DNS check tolerates that one restart.
+
+Never blocked, each with its subdomains: the feed and list hosts themselves (`abuse.ch`, `ipdeny.com`, GitHub, Spamhaus — or the next update could not run), `asus.com` and `asuscomm.com`, the NTP pool and your NTP servers, your DDNS name, your DNS-over-TLS servers, your LAN domain, `.local`, `.arpa`, `.lan`, and whatever you put in **Never block these names**.
+
+Limits, stated plainly:
+
+- Only devices that use **this router** for DNS are covered. DNS-over-HTTPS in a browser, a device with its own DNS server, or a VPN that carries DNS all bypass it — unless DNS Director is set to force the router. A filtering upstream such as AdGuard or Pi-hole sees nothing of this list; put it there too if that is where your clients resolve.
+- It is a name block, not an address block: a connection to a bare IP address is Warden's IP layer's job (4.3.3), not this one's.
+- There is no per-name hit count. That would need query logging, which this firmware does not turn on; the card shows how many names are loaded and when, and whether the running dnsmasq was started with the list.
+- abuse.ch lists are time-boxed (an entry expires after months), so the list shrinks as well as grows.
+- The lists are reached over the router's own traffic: with the router-self filter on (4.3.6) and a country selected that hosts abuse.ch, the fetch is dropped and the previous list stays in use — whitelist the host, as 4.3.4 does for the country-list host.
 
 ### 4.4 Policy Routing
 
@@ -1883,6 +1929,10 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | Whole LAN lost the internet right after a Warden feed update | Log `rwarden`, `rwatch` canary CRITICAL | Fixed since v1.8.8 (private ranges are stripped); `rwatch` re-applies rules and logs if your LAN IP ever matches a block set. Check custom feeds for private ranges; they are stripped too. |
 | Warden blocks total is large but the country table is near zero | Warden count bar (Countries / Threat feeds / Manual / Unclassified) | Not a fault: before v2.5.0 feeds were credited first. Now countries are evaluated first; expect a kink in history at that version. |
 | Warden country tile is amber "N country list(s) empty" after a reboot | Warden; log `rwarden: cache restore for set …`; `ipset -t list rw_g_<cc>` | Press **Update feeds now**. v2.5.9 fixed the per-set cache replay; pending confirmation on the first boot after upgrading an old cache. |
+| Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (2.9). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
+| Security Review row is amber *Baseline* after a reboot; the review card says *no report yet* | Dashboard; Firewall › Status, the Security review card | Not a fault: the report lives in RAM, and the first check after a boot waits out the 5-minute boot grace and the next five-minute tick — up to 10 minutes. The row turns green (or red) on its own. |
+| `rwatch: security review: N failed ssh logins from <address>` and a notice on the review card | Firewall › Status, the Security review card; `/jffs/security_recored.log`; the dropbear lines in the system log | A password-guessing run. Over IPv4 the stock guard locks the source after its own threshold; over IPv6 from the internet the router now allows 5 new SSH connections a minute per /64 (2.9). If you do not need SSH from the internet, set SSH to LAN only on the Administration page — the notice is information, nothing has been undone. |
+| `rwatch: FAILURE detected: front-chain-drift` about 8 minutes after every boot, with an incident dump each time | Log `rwatch` line `rule(s) ahead of the Reaper hook ...` (names the rule); `iptables -S FORWARD` | A `firewall-start` / `nat-start` script or an add-on inserts a broad `ACCEPT` at position 1 — typically a VPN helper's interface rule. Make it insert after `REAPER_HOOK` / `REAPER_HOOK_F` (2.9). Listing `ACCEPT` in `front_exempt` does nothing. |
 | Router itself cannot reach feeds / DDNS / a VPN peer with Warden's self filter on | Log `REAPER-WARDEN-SELF`; `rwatch: FAILURE detected: warden-self-drop` | That is the feature reporting. The log names the destination; whitelist it or turn the self filter off. |
 | Policy Routing dropdown is empty / a domain rule matches nothing | Log `reaper_pbr`; `ipset list rwfw_<list>` | Fixed in v2.5.9 (token and shared object layer). Check the list has resolved; lists fill from the router's own resolver, so a client on its own DNS or DoH does not feed them. |
 | Some routing mark rules missing after a reboot | Log `rwatch: policy routing: N of M mark rule(s) live — re-applying` | Self-heals within two minutes (v2.6.9); no action needed unless the line repeats forever. |
@@ -1960,6 +2010,7 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 - **RFC 4638 / baby jumbo** — the PPPoE extension that allows a 1500-byte MTU by widening the WAN port to 1508; requires provider support and both MTU and MRU above 1492.
 - **rtrafd** — the Traffic Analyzer collector.
 - **rwatch** — the health watchdog (every 5 minutes): WAN first-hop ping, loopback DNS, the Warden self-lockout canary, Policy Routing self-heal, hung-nvram reaping, the optional accelerator probe, the PPPoE stale-session re-dial; writes incident dumps on first failure.
+- **Security review** — the self-monitor's advisory drift check (2.9): `/jffs` scripts, configs and SSH keys, add-on files, cron entries and the exposure settings, compared against a baseline you accepted on the Firewall page's Status tab; amber dashboard bar and one log line per change set, nothing undone.
 - **SDN / Guest Network Pro** — ASUS's per-network profiles (guest, IoT, VLAN). Gatekeeper enforces on every one; the Traffic Analyzer labels each by name and VLAN.
 - **Warden** — the threat-feed, country and manual IP blocking layer.
 - **Zone policy** — the default action between two zones; the weakest statement in the firewall engine, overridden by Egress defaults and explicit rules.
@@ -2040,7 +2091,8 @@ lists themselves live on `/jffs` (2.4).
 **Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_self` `0` (the
 router's own connections are not filtered), `rwarden_log` `0`, `rwarden_stats_save` `1` (block counts
 are saved to flash), `rwarden_reset` `off` (the counters are never zeroed on a schedule; `24h`, `7d`,
-`30d` and `90d` are the choices). The list keys (`rwarden_feeds`, `rwarden_cfeeds`, `rwarden_geo`,
+`30d` and `90d` are the choices), `rwarden_dns` `0` (threat domains, 4.3.10: off until you switch it
+on) and `rwarden_dns_feeds` `urlhaus threatfox` (both lists selected once it is on). The list keys (`rwarden_feeds`, `rwarden_cfeeds`, `rwarden_geo`,
 `rwarden_allow`, `rwarden_ban`) and `rwarden_sched` (feed schedule; empty = 04:30 daily) start empty,
 so a freshly enabled Warden blocks nothing until you choose feeds or countries. `rwarden_lastupd` is
 the time of the last feed update, empty until the first.
@@ -2084,14 +2136,17 @@ on Auto), `wl_rmit` empty (interference mitigation: driver default). While every
 these values no `wl` command is issued and no watcher runs. `amas_bh_park` `0`: AiMesh backhaul
 parking is off (4.10.13).
 
-**Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds` `dev,traf,watch`.
+**Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds` `dev,traf,watch`,
+`reaper_store_vid` `` and `reaper_store_vname` `` (both empty until you pin a USB volume on the
+Long-Term Storage page; the id is the volume's own `.reaper/store.id`, the name is its label).
 On `ram`, history is lost at reboot; point it at JFFS or USB to keep it. The exporter is entirely off:
 `reaper_export_mode` empty, `reaper_export_interval` `300` seconds, `reaper_export_tlsverify` `1`,
 `reaper_export_maskmac` `0`, and `reaper_export_engine`, `reaper_export_url`, `reaper_export_token`,
 `reaper_export_index`, `reaper_export_source`, `reaper_export_metrics` and
 `reaper_export_scrape_token` empty.
 
-**Self-monitor** (2.9, 4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes,
+**Self-monitor** (2.9, 4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes, `rwatch_review` `0` (the
+security review, Firewall › Status: off until you switch it on),
 `reaper_wanbounce_enable` **`1`**. The WAN bounce fires only on a PPPoE link that has failed all
 three reachability probes after the boot grace period.
 

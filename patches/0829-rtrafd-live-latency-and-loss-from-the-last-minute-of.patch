@@ -1,0 +1,600 @@
+From 9325fd6aac64edb74f122bb704cc74d567315971 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:49 -0400
+Subject: [PATCH] rtrafd: live latency and loss from the last minute of probes;
+ the Traffic page says when the collector is off
+
+Owner (RT-BE96U): the Latency and Loss tiles vanished until the probe target
+was re-applied. The live figure was the running average of the open 5-minute
+bucket, falling back to a slot hist_tick had just zeroed, so it read 0 right
+after every boundary and for as long as the target was unreachable - and the
+page dropped both tiles on a 0. The live value now comes from a 12-probe
+window (the last 60 s) kept apart from the history bucket, with the probe
+state (configured, consecutive start failures) reported alongside.
+
+Traffic page: with the collector off nothing on the page has data, so it says
+that once, with the switch, instead of drawing empty charts under a green
+Live pill (field, BQ16). Status chips in the two standing colours; a button
+chip opens the setting it names. rtrafd resolves its store through the
+pinned volume (reaper_store.h).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c        | 165 ++++++++++++++------
+ release/src/router/www/Reaper_Traffic.asp | 180 ++++++++++++++++------
+ 2 files changed, 250 insertions(+), 95 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 5e0a54e9b9..2edc10ba13 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -66,6 +66,7 @@
+ #include <shutils.h>
+ #include <shared.h>
+ #include <mtlan_utils.h>	/* SDN/VLAN identity behind each LAN bridge */
++#include <reaper_store.h>	/* 2026-10-18: the pinned USB store volume */
+ 
+ /* Dual cadence: a fast 100 ms base tick drives the live view (WAN rate +
+  * live.json write) so the page's "Live" refresh mode gets true 100 ms samples
+@@ -383,6 +384,18 @@ static const char *ip_bridge(uint32_t ip)
+ static uint64_t prb_rtt_sum = 0;
+ static uint32_t prb_n = 0, prb_lost = 0;
+ 
++/* Live latency/loss: the last PRB_WIN probe results, kept apart from the 5-min
++ * history bucket. 2026-10-17 (owner): the live figure used to be the running
++ * average of the open bucket, falling back to a slot hist_tick had just zeroed,
++ * so it read 0 whenever the bucket held no reply - right after every boundary,
++ * and for as long as the target stayed unreachable - and the page dropped both
++ * tiles on a 0. */
++#define PRB_WIN	12			/* 12 x PROBE_EVERY = the last 60 s */
++static int32_t prbw[PRB_WIN];		/* RTT in us, or -1 for no reply */
++static int prbw_len = 0, prbw_pos = 0;
++static int prb_set = 0;			/* a valid probe target is configured */
++static uint32_t prb_err = 0;		/* consecutive pings that could not be started */
++
+ /* quota syslog once-flags */
+ static int warned80 = 0, warned100 = 0, warn_month = -1;
+ 
+@@ -1620,32 +1633,76 @@ static void poll_conntrack(void)
+ 	if (hcount) { hp_count_publish(); hp_ct_want = 0; hp_ct_ready = 1; }
+ }
+ 
++static void prbw_push(int32_t rtt_us)
++{
++	prbw[prbw_pos] = rtt_us;
++	prbw_pos = (prbw_pos + 1) % PRB_WIN;
++	if (prbw_len < PRB_WIN) prbw_len++;
++}
++
++/* the live window: attempts, replies, mean RTT of the replies, loss % of the
++ * attempts. Order does not matter, and until the ring fills the results sit in
++ * prbw[0..len-1]. */
++static void prbw_stats(int *n, int *ok, uint64_t *rtt_us, uint64_t *loss)
++{
++	int i, k = 0;
++	uint64_t sum = 0;
++	for (i = 0; i < prbw_len; i++)
++		if (prbw[i] >= 0) { sum += (uint64_t)prbw[i]; k++; }
++	*n = prbw_len;
++	*ok = k;
++	*rtt_us = k ? sum / (uint64_t)k : 0;
++	*loss = prbw_len ? (uint64_t)(prbw_len - k) * 100 / (uint64_t)prbw_len : 0;
++}
++
+ static void poll_probe(void)
+ {
++	static time_t err_logged = 0;
+ 	char tgt[64], out[2048], *l, *nl;
+ 	int got = 0;
++	uint64_t us = 0;
+ 	ssize_t r;
+ 	strlcpy(tgt, nvram_safe_get("rtraf_probe"), sizeof(tgt));
+-	if (!host_ok(tgt)) return;
++	prb_set = host_ok(tgt);
++	if (!prb_set) { prbw_len = prbw_pos = 0; prb_err = 0; return; }
+ 	{
+ 		/* 2026-10-03: no shell - host_ok() already bounds the characters */
+ 		char *av[] = { "ping", "-c", "1", "-W", "2", tgt, NULL };
+ 		r = rt_exec_bounded(av, out, sizeof(out), 6);
+ 	}
+-	if (r < 0) return;
++	if (r < 0) {
++		/* the ping never ran (pipe or fork failed): not a loss at the target,
++		 * so it stays out of the loss figure, but it must not pass silently -
++		 * it used to return here uncounted and unlogged, and the page read
++		 * the resulting zeros as "no probe". Empty the window so the page
++		 * shows no figure rather than a frozen one. */
++		int e = errno;
++		prb_err++;
++		prbw_len = prbw_pos = 0;
++		if (prb_err == 1 && (err_logged == 0 || mono_secs() - err_logged >= 600)) {
++			syslog(LOG_WARNING, "rtrafd: latency probe could not start ping (%s)", strerror(e));
++			err_logged = mono_secs();
++		}
++		return;
++	}
++	prb_err = 0;
+ 	for (l = out; l != NULL && *l != '\0'; l = nl) {
+ 		char *t;
+ 		nl = strchr(l, '\n');
+ 		if (nl != NULL) *nl++ = '\0';
+ 		t = strstr(l, "time=");
+-		if (t) {
++		if (t && !got) {	/* first reply only - a DUP! line must not double the sum */
+ 			double ms = atof(t + 5);
+-			prb_rtt_sum += (uint64_t)(ms * 1000.0);
++			if (ms < 0) ms = 0;
++			if (ms > 60000.0) ms = 60000.0;
++			us = (uint64_t)(ms * 1000.0);
+ 			got = 1;
+ 		}
+ 	}
+ 	prb_n++;
+-	if (!got) prb_lost++;
++	if (got) prb_rtt_sum += us;
++	else     prb_lost++;
++	prbw_push(got ? (int32_t)us : -1);
+ }
+ 
+ static void probe_close_bucket(void)
+@@ -1815,16 +1872,17 @@ static void write_live(const char *store)
+ 	fprintf(o, ",\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
+ 		(unsigned long long)(r_wan->bm[imcur].rx + r_wan->bm[imcur].tx),
+ 		(unsigned long long)cap_gb);
+-	/* live probe = running average since the current 5-min bucket opened;
+-	 * the ring slot is only stamped at bucket close, so reading it directly
+-	 * showed 0 for most of each window. Fall back to the last closed slot
+-	 * until the first sample of a new bucket lands. */
++	/* live probe = the last PRB_WIN results (see prbw). set: a target is
++	 * configured; n: attempts in the window; ok: replies; err: consecutive
++	 * pings that could not be started. The page keys the tiles on `set` and
++	 * the figures on n/ok - an RTT of 0 no longer means "no probe". */
+ 	{
+-		uint64_t live_rtt = (prb_n > prb_lost) ? prb_rtt_sum / (prb_n - prb_lost)
+-						       : r_prb->b5[i5cur].rx;
+-		uint64_t live_loss = prb_n ? (prb_lost * 100) / prb_n : r_prb->b5[i5cur].tx;
+-		fprintf(o, ",\"probe\":{\"rtt_us\":%llu,\"loss\":%llu}",
+-			(unsigned long long)live_rtt, (unsigned long long)live_loss);
++		int pn, pok;
++		uint64_t prtt, ploss;
++		prbw_stats(&pn, &pok, &prtt, &ploss);
++		fprintf(o, ",\"probe\":{\"set\":%d,\"n\":%d,\"ok\":%d,\"rtt_us\":%llu,\"loss\":%llu,\"err\":%u}",
++			prb_set, pn, pok, (unsigned long long)prtt, (unsigned long long)ploss,
++			(unsigned)prb_err);
+ 	}
+ 	fprintf(o, ",\"top\":[");
+ 	for (i = 0; i < ntop; i++) {
+@@ -2355,41 +2413,23 @@ static const char *resolve_store(char *buf, size_t len)
+ 			return "jffs";
+ 		}
+ 	} else if (strcmp(mode, "usb") == 0) {
+-		/* v2.1.7 (field: "USB history reset by a firmware flash"): the upgrade
+-		 * flow runs `ejusb -1` BEFORE services stop, which can leave the bare
+-		 * /tmp/mnt/<label> mountpoint DIRECTORY behind on tmpfs. The old scan
+-		 * then recreated reaper/ inside it and the final save wrote the whole
+-		 * history into RAM - "saved" successfully, gone at reboot. A real USB
+-		 * mount has a different st_dev from tmpfs /tmp/mnt, so skip any entry
+-		 * that is not actually a mounted filesystem. Also scan in two passes,
+-		 * preferring the partition that already holds reaper/rtraf.db, so a
+-		 * box with several USB partitions keeps saving to the one that has
+-		 * the history instead of whichever readdir happens to list first. */
+-		struct stat mroot, ms;
+-		DIR *d;
+-		struct dirent *e;
+-		int pass;
+-		if (stat("/tmp/mnt", &mroot) != 0) { buf[0] = '\0'; return "ram"; }
+-		for (pass = 0; pass < 2; pass++) {
+-			if ((d = opendir("/tmp/mnt")) == NULL) break;
+-			while ((e = readdir(d)) != NULL) {
+-				char p[144], db[160];
+-				if (e->d_name[0] == '.') continue;
+-				snprintf(p, sizeof(p), "/tmp/mnt/%s", e->d_name);
+-				if (stat(p, &ms) != 0 || ms.st_dev == mroot.st_dev)
+-					continue;	/* bare dir on tmpfs, not a mount */
+-				snprintf(p, sizeof(p), "/tmp/mnt/%s/reaper", e->d_name);
+-				snprintf(db, sizeof(db), "%s/rtraf.db", p);
+-				if (pass == 0 && access(db, F_OK) != 0)
+-					continue;	/* pass 0 wants an existing db */
+-				mkdir(p, 0700);
+-				if (dir_ok(p) && access(p, W_OK) == 0) {
+-					strlcpy(buf, db, len);
+-					closedir(d);
+-					return "usb";
+-				}
+-			}
+-			closedir(d);
++		/* 2026-10-18 (field: one SSD, two partitions, the history split between
++		 * them): USB is the PINNED volume only - the one whose .reaper/store.id
++		 * matches nvram reaper_store_vid (shared/reaper_store.h). Never "the
++		 * first mounted entry" (readdir order = mount order = a race), never a
++		 * folder created here. Pin absent = RAM, and the late-attach window in
++		 * main() waits for it. The v2.1.7 guards are kept by construction: the id
++		 * file lives on the real mount (a bare tmpfs mountpoint has none), and
++		 * with one candidate there is no "prefer the volume with a db" pass. The
++		 * db moves from the pre-pin reaper/ folder into .reaper/ on first use. */
++		char vid[24], vol[64], base[128], vdir[96];
++		strlcpy(vid, nvram_safe_get("reaper_store_vid"), sizeof(vid));
++		if (rstore_find(RSTORE_MNT, 1, vid, vol, sizeof(vol), base, sizeof(base))) {
++			snprintf(vdir, sizeof(vdir), RSTORE_MNT "/%s", vol);
++			if (rstore_migrate_rtraf(vdir))
++				syslog(LOG_NOTICE, "rtrafd: moved the traffic history on %s into " RSTORE_DIR "/", vol);
++			snprintf(buf, len, "%s/rtraf.db", base);
++			return "usb";
+ 		}
+ 	}
+ 	buf[0] = '\0';
+@@ -2650,6 +2690,11 @@ int main(int argc, char **argv)
+ 	time_t last_save, boot_m;	/* v3.3.3: monotonic, see mono_secs() */
+ 	int db_attached = 0;	/* requested store reachable + old db (if any) loaded */
+ 	int db_gave_up = 0;	/* retry window expired without the medium appearing */
++	/* 2026-10-18: where this run attached, and whether it was asked for a store
++	 * at all - the final save goes back there, never into a store that a
++	 * store_set change named while we were running (see the exit path) */
++	char att_path[160] = "";
++	int want_store = nvram_safe_get("rtraf_path")[0] ? 1 : 0;
+ 	int i;
+ 
+ 	if (daemon(0, 0) < 0) return 1;
+@@ -2714,6 +2759,7 @@ int main(int argc, char **argv)
+ 		else if (lr > 0)
+ 			db_align();
+ 		db_attached = 1;
++		strlcpy(att_path, dbpath, sizeof(att_path));
+ 	} else if (nvram_safe_get("rtraf_path")[0]) {
+ 		syslog(LOG_NOTICE,
+ 		       "rtrafd: store '%s' not mounted yet - holding history in RAM and retrying for %d s",
+@@ -2901,6 +2947,7 @@ int main(int argc, char **argv)
+ 						else if (lr > 0)
+ 							db_align();
+ 						db_attached = 1;
++						strlcpy(att_path, dbpath, sizeof(att_path));
+ 						syslog(LOG_NOTICE, "rtrafd: store came up late - attached %s", dbpath);
+ 					}
+ 				} else {
+@@ -2931,6 +2978,7 @@ int main(int argc, char **argv)
+ 				} else
+ 					db_park_prev(dbpath);
+ 				db_attached = 1;
++				strlcpy(att_path, dbpath, sizeof(att_path));
+ 			}
+ 			db_save(dbpath);
+ 			health_flush_spool();	/* v2.2.4: flush spooled health history here, off the hot loop */
+@@ -2956,6 +3004,25 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	store = resolve_store(dbpath, sizeof(dbpath));
++	/* 2026-10-18: store_set restarts us with nvram ALREADY naming the new
++	 * store. Re-resolving here wrote this run's history over the new store's
++	 * own (a volume move) or parked it as .prev (RAM -> a store that has
++	 * history). Reaper_Storage.asp promises the old store keeps its history
++	 * and the new one continues from its own, so: a run that attached saves
++	 * back where it attached while that directory is still there (ejected =
++	 * the last periodic save stands), and a run that was never asked for a
++	 * store writes none on the way out. */
++	if (!want_store)
++		dbpath[0] = '\0';
++	else if (db_attached && att_path[0] && strcmp(att_path, dbpath)) {
++		char ad[160], *sl;
++		strlcpy(ad, att_path, sizeof(ad));
++		if ((sl = strrchr(ad, '/')) != NULL) *sl = '\0';
++		if (dir_ok(ad) && access(ad, W_OK) == 0)
++			strlcpy(dbpath, att_path, sizeof(dbpath));
++		else
++			dbpath[0] = '\0';
++	}
+ 	set_store_dir(dbpath);
+ 	if (dbpath[0] && !db_attached)
+ 		db_park_prev(dbpath);
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 3f88ad77b1..2780d969a1 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -47,6 +47,7 @@ a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+   padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
+ .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--jade)}
+ .pill.stall .dot{background:var(--amber)}
++.pill.off .dot{background:var(--steel)}
+ .btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
+   font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;padding:9px 16px;cursor:pointer;text-transform:uppercase}
+ .btn:hover{border-color:var(--line)}
+@@ -65,6 +66,22 @@ a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+ .opnote{border:1px solid var(--line-soft);border-left:3px solid var(--amber);background:var(--panel);
+   color:var(--bone-dim);border-radius:10px;padding:12px 15px;margin-bottom:16px;font-size:12.5px;line-height:1.55}
+ .panel.span{grid-column:1/-1}
++/* 2026-10-18: status chips are two colours (standing rule 56) - green when the thing applies,
++   amber when it is missing or a limit. A button chip opens the setting it names. */
++.chip{display:inline-block;font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.06em;
++  text-transform:none;border:1px solid;border-radius:6px;padding:2px 8px;margin-left:9px;vertical-align:2px;background:transparent}
++.chip.good{color:var(--jade);border-color:rgba(79,178,134,.45)}
++.chip.warn{color:var(--amber);border-color:rgba(224,169,59,.45)}
++button.chip{cursor:pointer} button.chip:hover{color:var(--bone)}
++span.chip[title]{cursor:help}
++.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++/* 2026-10-18: with the collector off nothing on this page has data, so the page says that,
++   once, with the switch, instead of drawing empty charts under a green Live pill. */
++.offcard{text-align:center;padding:42px 28px 38px;border-color:var(--line)}
++.panel.offcard h2{font-size:21px;letter-spacing:.06em;text-transform:none;margin-bottom:12px}  /* beats .panel h2, which comes later */
++.offcard p{max-width:620px;margin:0 auto 10px;font-size:13.5px;line-height:1.65;color:var(--bone-dim)}
++.offcard p.fine{font-size:12px;color:var(--steel);margin-bottom:22px}
++.offcard .btn{font-size:14px;padding:11px 22px}
+ .panel h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:2px}
+ .panel .sub{font-size:12px;color:var(--steel);margin:2px 0 12px;line-height:1.5}
+ .legend{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0 4px;font-size:12px}
+@@ -150,6 +167,17 @@ table.ta.tfix .c-src{width:40%}
+ .fld .u{margin-left:7px;color:var(--steel);font-size:12px}
+ .storenote{font-size:12px;color:var(--steel);line-height:1.55;margin-top:6px}
+ .storenote b{color:var(--bone-dim)}
++/* settings drawer: one block per option, each saying which part of the page it feeds */
++.sset{padding:14px 0 16px;border-top:1px solid var(--line-soft)}
++.sset:first-of-type{border-top:none}
++.sset h3{font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin:0 0 8px}
++.sset .togglerow{border-top:none;padding:0}
++.sset .feeds{font-size:12px;color:var(--bone-dim);line-height:1.55;margin-top:10px;padding:8px 10px;
++  border-radius:8px;background:rgba(255,255,255,.03)}
++.sset .feeds b{display:block;font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.12em;
++  text-transform:uppercase;color:var(--steel);margin-bottom:2px}
++.sintro{font-size:12px;color:var(--steel);line-height:1.55;padding:12px 0 4px}
++.sapply{margin:16px 0 4px;width:100%}
+ 
+ .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+ .scrim.open{opacity:1;pointer-events:auto}
+@@ -185,13 +213,22 @@ table.ta.tfix .c-src{width:40%}
+     <option value="10000"><#RTRF_05#></option>
+     <option value="30000"><#RTRF_06#></option>
+   </select>
+-  <button type="button" class="btn ghost" onclick="exportJSON()"><#btn_Export#></button>
++  <button type="button" class="btn ghost" id="exportbtn" onclick="exportJSON()"><#btn_Export#></button>
+   <button type="button" class="btn ghost" onclick="faqOpen()"><#RTRF_07#></button>
+-  <button type="button" class="btn ghost" onclick="gotoSettings()"><#Settings#></button>
++  <button type="button" class="btn ghost" onclick="setOpen()"><#Settings#></button>
+ </div>
+ 
+ <div class="opnote" id="opnote" style="display:none"></div>
++<div class="opnote" id="nodatanote" style="display:none"><#RTRF_96#></div>
+ 
++<div class="panel span offcard" id="offcard" style="display:none">
++  <h2><#RTRF_82#></h2>
++  <p><#RTRF_83#></p>
++  <p class="fine"><#RTRF_84#></p>
++  <button type="button" class="btn primary" onclick="turnOn()"><#RTRF_85#></button>
++</div>
++
++<div id="databody">
+ <div class="tiles" id="tiles"></div>
+ 
+ <div class="wins" id="wins">
+@@ -203,7 +240,7 @@ table.ta.tfix .c-src{width:40%}
+ </div>
+ 
+ <div class="panel span">
+-  <h2><#RTRF_12#></h2>
++  <h2><#RTRF_12#> <button type="button" class="chip" id="probechip" onclick="setOpen('set_probe')"></button></h2>
+   <div class="sub"><#RTRF_13#> <span id="probe_note"></span></div>
+   <div class="legend">
+     <span><i style="background:var(--jade)"></i><#RTRF_78#></span>
+@@ -215,7 +252,7 @@ table.ta.tfix .c-src{width:40%}
+ 
+ <div class="grid">
+   <div class="panel">
+-    <h2><#RTRF_15#> <span class="badge updonly" title="<#RTRF_76#>"><#RTRF_75#></span></h2>
++    <h2><#RTRF_15#> <span class="chip warn" title="<#RTRF_76#>"><#RTRF_75#></span><span class="chip warn" id="clschip" style="display:none"><#RTRF_90#></span></h2>
+     <div class="sub"><#RTRF_16#></div>
+     <div id="clsgate" style="display:none;padding:22px 4px;font-size:13px;color:var(--amber);line-height:1.6"></div>
+     <div id="clsbody">
+@@ -251,38 +288,55 @@ table.ta.tfix .c-src{width:40%}
+   <div style="font-size:12.5px" id="quotatxt"></div>
+ </div>
+ 
+-<div class="panel span" id="settingspanel">
+-  <h2><#Settings#></h2>
+-  <div class="sub"><#RTRF_28#></div>
+-  <div class="togglerow">
+-    <label class="tswitch"><input type="checkbox" id="tg_enable"><span class="track"></span></label>
+-    <div class="tmeta"><div class="tname2"><#RTRF_29#></div><div class="tdesc"><#RTRF_30#></div></div>
+-  </div>
+-  <div class="fld">
+-    <label><#RTRF_31#></label>
+-    <div id="set_path_ro" style="color:var(--bone);font-weight:600">&mdash;</div>
+-    <div class="storenote">
+-      <#RDST_40#>
+-      <a href="#Reaper_Storage.asp" onclick="top.location.href='/reaper_shell.asp#Reaper_Storage.asp';return false" style="color:var(--crimson);text-decoration:none"><#RDST_00#> &rarr;</a>
++</div><!-- /databody -->
++
++<div class="scrim" id="scrim" onclick="faqClose();setClose()"></div>
++<!-- 2026-10-18: Settings is a drawer (the shell anchors every .flyout to the visible slice).
++     Each block says which part of the page it feeds, so "why is X empty" answers itself. -->
++<aside class="flyout" id="setfly">
++  <div class="fhead"><h2><#Settings#></h2><span class="fclose" onclick="setClose()">&times;</span></div>
++  <div class="fbody">
++    <div class="sintro"><#RTRF_28#></div>
++    <div class="sset">
++      <div class="togglerow">
++        <label class="tswitch"><input type="checkbox" id="tg_enable"><span class="track"></span></label>
++        <div class="tmeta"><div class="tname2"><#RTRF_29#></div><div class="tdesc"><#RTRF_30#></div></div>
++      </div>
+     </div>
++    <div class="sset">
++      <h3><#RTRF_31#></h3>
++      <div id="set_path_ro" style="color:var(--bone);font-weight:600">&mdash;</div>
++      <div class="storenote">
++        <#RDST_40#>
++        <a href="#Reaper_Storage.asp" onclick="top.location.href='/reaper_shell.asp#Reaper_Storage.asp';return false" style="color:var(--crimson);text-decoration:none"><#RDST_00#> &rarr;</a>
++      </div>
++      <div class="feeds"><b><#RTRF_86#></b><#RTRF_87#></div>
++    </div>
++    <div class="sset fld">
++      <h3><#RTRF_36#></h3>
++      <input type="text" id="set_probe" maxlength="63" placeholder="<#RTRF_37#>" style="width:230px">
++      <div class="storenote"><#RTRF_38#></div>
++      <div class="feeds"><b><#RTRF_86#></b><#RTRF_88#></div>
++    </div>
++    <div class="sset fld">
++      <h3><#RTRF_26#></h3>
++      <input type="text" id="set_cap" maxlength="7" style="width:120px"><span class="u"><#RTRF_39#></span>
++      <div class="feeds"><b><#RTRF_86#></b><#RTRF_89#></div>
++    </div>
++    <div class="sset">
++      <h3><#RTRF_15#><span class="chip" id="setclschip"></span></h3>
++      <div class="storenote"><#RTRF_91#>
++        <a href="#Reaper_QoS.asp" onclick="top.location.href='/reaper_shell.asp#Reaper_QoS.asp';return false" style="color:var(--crimson);text-decoration:none"><#Menu_TrafficManager#> &rarr;</a>
++      </div>
++    </div>
++    <button type="button" class="btn primary sapply" onclick="applySettings()"><#RTRF_40#></button>
+   </div>
+-  <div class="fld">
+-    <label><#RTRF_36#></label>
+-    <input type="text" id="set_probe" maxlength="63" placeholder="<#RTRF_37#>" style="width:230px">
+-    <div class="storenote"><#RTRF_38#></div>
+-  </div>
+-  <div class="fld">
+-    <label><#RTRF_26#></label>
+-    <input type="text" id="set_cap" maxlength="7" style="width:120px"><span class="u"><#RTRF_39#></span>
+-  </div>
+-  <button type="button" class="btn" style="background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff" onclick="applySettings()"><#RTRF_40#></button>
+-</div>
+-
+-<div class="scrim" id="scrim" onclick="faqClose()"></div>
++</aside>
+ <aside class="flyout" id="flyout">
+   <div class="fhead"><h2><#RTRF_41#></h2><span class="fclose" onclick="faqClose()">&times;</span></div>
+   <div class="fbody">
+-    <details open><summary><#RTRF_42#></summary><div class="fc"><#RTRF_43#></div></details>
++    <details open><summary><#RTRF_94#></summary><div class="fc"><#RTRF_95#></div></details>
++    <details><summary><#RTRF_42#></summary><div class="fc"><#RTRF_43#></div></details>
+     <details><summary><#RTRF_44#></summary><div class="fc"><#RTRF_45#></div></details>
+     <details><summary><#RTRF_46#></summary><div class="fc"><#RTRF_47#></div></details>
+     <details><summary><#RTRF_48#></summary><div class="fc"><#RTRF_49#></div></details>
+@@ -322,11 +376,14 @@ function classGate(){
+   var on = (NV.qos_en==='1' && NV.qos_ty==='11');
+   document.getElementById('clsgate').style.display = on?'none':'';
+   document.getElementById('clsbody').style.display = on?'':'none';
++  document.getElementById('clschip').style.display = on?'none':'';
++  var sc=document.getElementById('setclschip');
++  sc.className='chip '+(on?'good':'warn'); sc.innerHTML = on?QOSMODES['11']:`<#RTRF_90#>`;
+   if(!on){
+     var msg = (NV.qos_en!=='1')
+       ? `<#RTRF_57#>`
+       : `<#RTRF_58#>`+(QOSMODES[NV.qos_ty]||(`<#Type#> `+NV.qos_ty))+`<#RTRF_59#>`;
+-    document.getElementById('clsgate').innerHTML = msg;
++    document.getElementById('clsgate').innerHTML = msg+' <a href="#Reaper_QoS.asp" onclick="top.location.href=\'/reaper_shell.asp#Reaper_QoS.asp\';return false" style="color:var(--crimson);text-decoration:none">'+`<#Menu_TrafficManager#>`+' &rarr;</a>';
+   }
+   return on;
+ }
+@@ -389,11 +446,33 @@ var curWin = 'live', liveTimer = null, pollMs = 1000, curStore = 'RAM';
+ /* reading pill mirrors the SELECTED window label + the store location (was hardcoded 'Live');
+    it also carries the no-response marker when polls stop answering, so a dead
+    collector/session reads as stalled instead of silently rendering nothing new */
+-var stalled=false;
+-function setPill(){ var on=document.querySelector('#wins .win.on');
+-  document.getElementById('statuspill_t').textContent=(on?on.textContent.trim():`<#RTRF_02#>`)+' - '+curStore+(stalled?` - <#RTRF_72#>`:''); }
+-function setStalled(s){ if(s===stalled)return; stalled=s;
+-  document.getElementById('statuspill').className='pill'+(s?' stall':''); setPill(); }
++var stalled=false, nodata=false, gated=false;
++function setPill(){ var on=document.querySelector('#wins .win.on'), p=document.getElementById('statuspill');
++  if(gated){ p.className='pill off'; document.getElementById('statuspill_t').textContent=`<#RTRF_80#>`; return; }
++  p.className='pill'+((stalled||nodata)?' stall':'');
++  document.getElementById('statuspill_t').textContent = nodata ? `<#RTRF_81#>` :
++    (on?on.textContent.trim():`<#RTRF_02#>`)+' - '+curStore+(stalled?` - <#RTRF_72#>`:''); }
++function setStalled(s){ if(s===stalled)return; stalled=s; setPill(); }
++/* 2026-10-18: a reply without a wan object is the CGI's "{}" - there is no live.json, so the
++   collector has published nothing. That used to render as zeros under a green pill. */
++function setNoData(s){ if(s===nodata)return; nodata=s;
++  document.getElementById('nodatanote').style.display=s?'':'none'; setPill(); }
++
++/* 2026-10-18 (field, BQ16): rtraf_enable ships 0 (optional features default off) and every
++   tile, chart and table here is fed by rtrafd - Live included - so a box on defaults showed
++   an empty page that looked broken. Off = one card that says so, with the switch; no polling. */
++function collectorGate(){
++  var off=(NV.enable==='0');
++  document.getElementById('offcard').style.display = off?'':'none';
++  return !off;
++}
++function applyGate(open){
++  gated=!open;
++  document.getElementById('databody').style.display = open?'':'none';
++  document.getElementById('pollrate').style.display = open?'':'none';
++  document.getElementById('exportbtn').style.display = open?'':'none';
++  setPill();
++}
+ 
+ /* ---- formatting ---- */
+ function fmtBps(b){ return ReaperFmt.bps(b); }        /* D3: shared decimal-SI formatters (reaper_util.js) */
+@@ -691,7 +770,10 @@ function renderLive(d){
+   var wan=d.wan||{rx_bps:0,tx_bps:0};
+   /* tiles + top talkers update in any window */
+   var tiles=[[`<#RTRF_78#>`,fmtBps(wan.rx_bps),'dn'],[`<#RTRF_79#>`,fmtBps(wan.tx_bps),'up']];
+-  if(d.probe&&d.probe.rtt_us){ tiles.push([`<#RTRF_60#>`,(d.probe.rtt_us/1000).toFixed(1)+' <small>ms</small>','']); tiles.push([`<#RTRF_61#>`,d.probe.loss+' <small>%</small>','']); }
++  /* 2026-10-17: the tiles follow the configured target (probe.set), not a non-zero RTT - a 0 used to
++     drop both, so 100% loss showed nothing. No reply in the last 60 s = a dash; no attempt yet = a dash. */
++  var pr=d.probe||{};
++  if(pr.set){ tiles.push([`<#RTRF_60#>`,pr.ok>0?(pr.rtt_us/1000).toFixed(1)+' <small>ms</small>':'&mdash;','']); tiles.push([`<#RTRF_61#>`,pr.n>0?pr.loss+' <small>%</small>':'&mdash;','']); }
+   var q=d.quota||{}; if(q.cap_gb>0){ tiles.push([`<#RTRF_62#>`,fmtBytes(q.used)+' <small>/ '+q.cap_gb+' GB</small>','']); }
+   var th=''; for(var i=0;i<tiles.length;i++) th+='<div class="tile"><div class="k">'+tiles[i][0]+'</div><div class="v '+tiles[i][2]+'">'+tiles[i][1]+'</div></div>';
+   document.getElementById('tiles').innerHTML=th;
+@@ -829,6 +911,7 @@ function renderHist(d){
+ function loadWin(){
+   if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+   stopLive();
++  if(gated) return;   /* collector off or not a routing mode: nothing to fetch */
+   if(curWin==='live'){
+     /* the sample rings are NOT cleared here any more: they are time-keyed, so
+        anything stale simply falls outside the visible span (and pushSamp breaks
+@@ -847,14 +930,14 @@ function loadWin(){
+         inflight=null;
+       }
+       inflightAt=Date.now();
+-      inflight=getJSON('live', function(d,ok){ inflight=null; setStalled(!ok); if(ok) renderLive(d); });
++      inflight=getJSON('live', function(d,ok){ inflight=null; setStalled(!ok); if(ok){ setNoData(!d.wan); if(d.wan) renderLive(d); } });
+     };
+     tick(); liveTimer=setInterval(tick, pollMs);   /* data cadence (user-selectable) */
+     startLive();                                   /* draw cadence: display refresh, independent */
+   } else {
+     var histTick=function(){
+       getJSON(curWin, function(d,ok){ if(ok) renderHist(d); });
+-      getJSON('live', function(d,ok){ setStalled(!ok); if(ok){ renderLive(d); renderQuota(d.quota); } });   /* tiles + top talkers + quota (one live fetch/cycle) */
++      getJSON('live', function(d,ok){ setStalled(!ok); if(ok){ setNoData(!d.wan); if(d.wan){ renderLive(d); renderQuota(d.quota); } } });   /* tiles + top talkers + quota (one live fetch/cycle) */
+     };
+     histTick();
+     liveTimer=setInterval(histTick, 30000);   /* history windows refresh too (were one-shot -> went stale) */
+@@ -872,9 +955,6 @@ function setPollRate(){
+   try{ localStorage.setItem('rtraf_pollms', pollMs); }catch(e){}
+   if(curWin==='live') loadWin();   /* restart the timer at the new rate */
+ }
+-/* the page runs inside the reaper shell iframe (auto-grown to content, so the
+-   inner window doesn't scroll) - scrollIntoView bubbles to the parent frame */
+-function gotoSettings(){ document.getElementById('settingspanel').scrollIntoView({behavior:'smooth',block:'start'}); }
+ (function(){ var ws=document.querySelectorAll('#wins .win'); for(var i=0;i<ws.length;i++) ws[i].onclick=function(){
+   document.querySelectorAll('#wins .win').forEach(function(x){x.className='win';}); this.className='win on';
+   curWin=this.getAttribute('data-w'); setPill(); loadWin(); }; })();
+@@ -898,9 +978,14 @@ function exportJSON(){
+   var win = curWin==='live'?'m5':curWin;
+   window.open('/reaper_traffic.cgi?f='+win, '_blank');
+ }
+-function faqOpen(){ document.getElementById('flyout').className='flyout open'; document.getElementById('scrim').className='scrim open'; }
++function faqOpen(){ setClose(); document.getElementById('flyout').className='flyout open'; document.getElementById('scrim').className='scrim open'; }
+ function faqClose(){ document.getElementById('flyout').className='flyout'; document.getElementById('scrim').className='scrim'; }
+-document.addEventListener('keydown',function(e){ if(e.key==='Escape')faqClose(); });
++/* Settings drawer; focusId puts the cursor in the field a chip named (the probe chip) */
++function setOpen(focusId){ faqClose(); document.getElementById('setfly').className='flyout open'; document.getElementById('scrim').className='scrim open';
++  if(focusId) setTimeout(function(){ var e=document.getElementById(focusId); if(e) e.focus(); }, 250); }
++function setClose(){ document.getElementById('setfly').className='flyout'; document.getElementById('scrim').className='scrim'; }
++function turnOn(){ document.getElementById('tg_enable').checked=true; applySettings(); }
++document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ faqClose(); setClose(); } });
+ 
+ /* ---- init ---- */
+ try{ var pm=localStorage.getItem('rtraf_pollms'); if(pm){ pollMs=parseInt(pm,10)||1000; if(pollMs===200) pollMs=100; /* v1.5.3: Live option tightened 200->100ms */ } }catch(e){}
+@@ -912,7 +997,10 @@ document.getElementById('tg_enable').checked = (NV.enable!=='0');
+   document.getElementById('set_path_ro').textContent = LOC[NV.path||''] || LOC['']; })();
+ document.getElementById('set_probe').value = NV.probe||'';
+ document.getElementById('set_cap').value = NV.cap||'0';
+-opmodeGate();
++(function(){ var c=document.getElementById('probechip'), on=!!NV.probe;
++  c.className='chip '+(on?'good':'warn'); c.innerHTML=on?`<#RTRF_93#>`:`<#RTRF_92#>`; })();
++classGate();
++applyGate(opmodeGate() && collectorGate());
+ loadWin();
+ </script>
+ </body>
+-- 
+2.25.1
+

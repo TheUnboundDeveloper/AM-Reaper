@@ -20,6 +20,10 @@ WHAT IT DOES.
      bands the node has no radio on are unconstrained; DFS flags come from the router's own entry;
      a dual-5 GHz node counts its upper radio; two nodes intersect; a hole inside a block is seen
      (a control-channel-only rule would not see it); a mutated decoder fails the label check.
+     2026-10-18: a node that does the width needs the WHOLE channel (the owner's 160 MHz node lost
+     116-128 to radar lock-outs and could not hold 100/160); flag 4 = a cleared DFS channel; a
+     channel a node stops listing is held out for the hold, refreshed while it repeats, lapses,
+     and nothing is recorded on an unset clock (the `nop` harness mode).
   C. Static: the rule never writes nvram, reads under the controller's file lock, keeps DFS; the
      minimum-width module calls it, holds during a join and re-picks one radio; the switch, the
      page row, the httpd field, the markers and the diag lines exist.
@@ -165,7 +169,7 @@ int main(int argc, char **argv) {
 		if (mc_parse_json(slurp(argv[2]), &nds) < 0) { printf("PARSE-ERROR\n"); return 1; }
 		strcpy(cur, argv[4]); lifted[0] = 0;
 		for (i = 5; i < argc && n < 512; i++) { int d = -1, f = mc_compat(&nds, strtoul(argv[i], NULL, 16), &d);
-			off[n] = (unsigned short)strtoul(argv[i], NULL, 16); fit[n] = f == 1; dfs[n] = d == 1; n++; }
+			off[n] = (unsigned short)strtoul(argv[i], NULL, 16); fit[n] = f == 1; dfs[n] = mc_dfs_flag(d); n++; }
 		k = mc_lift(off, fit, dfs, n, fl, cur, lifted, sizeof(lifted));
 		printf("%d %s\n%s\n", k, lifted[0] ? lifted : "-", cur); return 0;
 	}
@@ -174,6 +178,21 @@ int main(int argc, char **argv) {
 		strcpy(cur, argv[2]); lifted[0] = 0;
 		i = mc_relift(argv[3], cur, lifted, sizeof(lifted));
 		printf("%d %s\n%s\n", i, lifted[0] ? lifted : "-", cur); return 0;
+	}
+	if (!strcmp(argv[1], "nop")) {	/* nop <prev.json|-> <cur.json> <record|-> <now> <hold> [hex...] -> "<new> <fresh>" / record (';' = newline) / "<held> <lapsed-before>" / per hex "<hex> <fit> <dfs>" */
+		static struct mc_nodes prev, cur; static char rec[MC_NOP_MAX], fresh[512]; char *q; int per[MC_NB], nnew, xb, held;
+		long now = atol(argv[5]), hold = atol(argv[6]); int hasprev = strcmp(argv[2], "-") != 0;
+		if (hasprev && mc_parse_json(slurp(argv[2]), &prev) < 0) { printf("PARSE-ERROR\n"); return 1; }
+		if (mc_parse_json(slurp(argv[3]), &cur) < 0) { printf("PARSE-ERROR\n"); return 1; }
+		rec[0] = 0; if (strcmp(argv[4], "-")) { snprintf(rec, sizeof(rec), "%s", argv[4]); for (q = rec; *q; q++) if (*q == ';') *q = '\n'; }
+		xb = mc_nop_expired(rec, now); fresh[0] = 0;
+		nnew = mc_nop_update(rec, sizeof(rec), hasprev ? &prev : NULL, &cur, now, hold, fresh, sizeof(fresh));
+		held = mc_nop_apply(&cur, rec, now, per);
+		printf("%d %s\n", nnew, fresh[0] ? fresh : "-");
+		for (q = rec; *q; q++) if (*q == '\n') *q = ';';
+		printf("%s\n%d %d\n", rec[0] ? rec : "-", held, xb);
+		for (i = 7; i < argc; i++) { int d = -1, f = mc_compat(&cur, strtoul(argv[i], NULL, 16), &d); printf("%s %d %d\n", argv[i], f, d); }
+		return 0;
 	}
 	if (!strcmp(argv[1], "nodes") || !strcmp(argv[1], "compat")) {
 		static struct mc_nodes nds; if (mc_parse_json(slurp(argv[2]), &nds) < 0) { printf("PARSE-ERROR\n"); return 1; }
@@ -241,11 +260,23 @@ try:
     res = {l.split()[0]: (int(l.split()[1]), int(l.split()[2])) for l in run(exe, "compat", jo, *wl1)}
     compat = {h for h, (f, _) in res.items() if f == 1}
     noncompat = set(wl1) - compat
-    check("5 GHz: 41 of %d chanspecs fit the node" % len(wl1), len(compat) == 41, len(compat))
-    check("5 GHz: the chanspecs that do not fit = the controller's own 49 exclusions minus 165/20 (stock excludes it anyway)",
-          noncompat == CFG_EXCL_WL1 - {"0xd0a5"}, sorted(noncompat ^ (CFG_EXCL_WL1 - {"0xd0a5"})))
-    check("5 GHz: 100/160 with the control on 100-112 fits (the node's 80 MHz sub-block is usable), on 116-128 it does not",
-          all(res[h][0] == 1 for h in ("0xe872", "0xe972", "0xea72", "0xeb72")) and all(res[h][0] == 0 for h in ("0xec72", "0xed72", "0xee72", "0xef72")))
+    C160 = {"0xe872", "0xe972", "0xea72", "0xeb72"}
+    check("5 GHz: 37 of %d chanspecs fit the node (2026-10-18: the four 100/160 placements no longer do)" % len(wl1), len(compat) == 37, len(compat))
+    check("5 GHz: the chanspecs that do not fit = the controller's own 49 exclusions minus 165/20 (stock excludes it anyway) plus 100/160, which a 160 MHz node without 116-128 cannot mirror",
+          noncompat == (CFG_EXCL_WL1 - {"0xd0a5"}) | C160, sorted(noncompat ^ ((CFG_EXCL_WL1 - {"0xd0a5"}) | C160)))
+    check("5 GHz: no 100/160 placement fits a 160 MHz node that lacks 116-128 (it mirrors the whole channel); 100/80 and 132/80 still do",
+          all(res[h][0] == 0 for h in C160 | {"0xec72", "0xed72", "0xee72", "0xef72"}) and res["0xe06a"][0] == 1 and res["0xe08a"][0] == 1)
+    # the same node with an 80 MHz radio associates on the sub-block around the control channel: 100/160 on 100-112 fits it
+    j80 = wjson("owner80.json", JSON_OWNER.replace('"5G1":{"bandwidth":15', '"5G1":{"bandwidth":7'))
+    r80 = {l.split()[0]: int(l.split()[1]) for l in run(exe, "compat", j80, *wl1)}
+    check("5 GHz: an 80 MHz node keeps the sub-block rule - 100/160 with the control on 100-112 fits it, on 116-128 not",
+          all(r80[h] == 1 for h in C160) and all(r80[h] == 0 for h in ("0xec72", "0xed72", "0xee72", "0xef72")))
+    # flag 4 (the main router on 100/160 with its check cleared lists 100-128 so, 2026-10-18): usable, and DFS
+    j4 = wjson("flag4.json", '{"CAP":{"5G":{"bandwidth":15,"channel":"1 00004100 00004104 00004108 00004112 00004116 00004120 00004124 00004128 00001149 "},"is_re":0},'
+                            '"NODE":{"5G":{"bandwidth":15,"channel":"1 00002100 00002104 00002108 00002112 00002116 00002120 00002124 00002128 00001149 "},"is_re":1}}')
+    r4 = {l.split()[0]: (int(l.split()[1]), int(l.split()[2])) for l in run(exe, "compat", j4, "0xe872", "0xe06a", "0xd095")}
+    check("flag 4 on the router's own entry: 100/160 and 100/80 are usable AND DFS (not non-DFS as before), 149/20 non-DFS",
+          r4["0xe872"] == (1, 1) and r4["0xe06a"] == (1, 1) and r4["0xd095"] == (1, 0), r4)
     check("5 GHz: DFS from the router's own entry - 100/80 DFS, 149/80 and 36/80 not",
           res["0xe06a"][1] == 1 and res["0xe09b"][1] == 0 and res["0xe02a"][1] == 0)
     for r_ in ("wl0", "wl2"):
@@ -292,6 +323,33 @@ try:
     out = run(exe, "lift", jo, "80", EXCL56.replace("0xe29b,", ""), *wl1)
     check("lift @80 with 157/80 already allowed: nothing is lifted", out[0] == "0 -")
 
+    # ---- unknown DFS counts as DFS (2026-10-19): the router's own entry missing from the lists
+    nocap = JSON_OWNER[:JSON_OWNER.index('"00:00:5E:00:53:F0')].rstrip(",") + "}"
+    jn = wjson("nocap.json", nocap)
+    rr = run(exe, "nodes", jn)
+    check("no-cap fixture: the node alone, no router entry (cap = -1)", rr and rr[0].split()[2] == "-1", rr[0] if rr else "")
+    rr = run(exe, "compat", jn, "0xe09b")
+    check("no-cap: 149/80 fits the node but its DFS status is unknown (-1)", rr and rr[0].split()[1:] == ["1", "-1"], rr[0] if rr else "")
+    out = run(exe, "lift", jn, "80", EXCL56, *wl1)
+    check("no-cap lift @80: nothing is allowed again (unknown DFS is never a radar-free landing)",
+          out[0] == "0 -" and out[1] == EXCL56, out[0])
+    # every chanspec excluded: with the router's flags only the radar-free 149-161 may come back;
+    # without them nothing may - and the old reading (unknown = non-DFS) brought back DFS 100/80
+    EXCL_ALL = ",".join(wl1)
+    out = run(exe, "lift", jo, "80", EXCL_ALL, *wl1)
+    got = set(out[0].split(" ", 1)[1].split(",")) if out and out[0] != "0 -" else set()
+    check("all excluded, router flags present: only the non-DFS 149-161/80 come back", got == {"0xe09b", "0xe19b", "0xe29b", "0xe39b"}, out[0] if out else "")
+    out = run(exe, "lift", jn, "80", EXCL_ALL, *wl1)
+    check("all excluded, router flags missing: nothing comes back", out and out[0] == "0 -", out[0] if out else "")
+    mut = PURE.replace("return d != 0;", "return d == 1;")
+    check("self-test: the unknown-as-non-DFS mutation applies", mut != PURE)
+    mexe = build(mut, "m_dfs")
+    if isinstance(mexe, str) and mexe:
+        mo = run(mexe, "lift", jn, "80", EXCL_ALL, *wl1)
+        ml = set(mo[0].split(" ", 1)[1].split(",")) if mo and mo[0] != "0 -" else set()
+        check("negative control: read as non-DFS, the same plan WOULD re-allow DFS 100/80 (0xe06a) - the check above is live",
+              "0xe06a" in ml, mo[0] if mo else "")
+
     # ---- the held plan keeps its lift (audit 2026-10-16 B1): the recorded entries come out of the list again
     FOUR = {"0xe09b", "0xe19b", "0xe29b", "0xe39b"}
     out = run(exe, "relift", EXCL56, "0xe09b,0xe19b,0xe29b,0xe39b")
@@ -302,6 +360,39 @@ try:
     check("relift: an entry already allowed is not counted, the other still comes out", out[0] == "1 0xe19b", out[0])
     out = run(exe, "relift", EXCL56, "")
     check("relift: nothing recorded, nothing changes", out[0] == "0 -" and out[1] == EXCL56)
+
+    # ---- dropped channels held out (field 2026-10-18): the owner's node as it reports with and without 116-128
+    NODE_W = ('"00:00:5E:00:53:10":{"5G1":{"bandwidth":15,"channel":"1 00002100 00002104 00002108 00002112 00002116 00002120 00002124 00002128 00002132 00002136 00002140 00002144 00001149 00001153 00001157 00001161 00001165 "},"is_re":1},')
+    NODE_WO = NODE_W.replace("00002116 00002120 00002124 00002128 ", "")
+    CAP = JSON_OWNER[JSON_OWNER.index('"00:00:5E:00:53:F0'):]
+    jw, jwo = wjson("with.json", "{" + NODE_W + CAP), wjson("without.json", "{" + NODE_WO + CAP)
+    T0, HOLD = 1792336800, 21600
+    MACS = "00:00:5E:00:53:10"
+    def nop(prev, cur, rec, now, *hexes):
+        out = run(exe, "nop", prev, cur, rec, str(now), str(HOLD), *hexes)
+        fit = {l.split()[0]: int(l.split()[1]) for l in out[3:]}
+        return out[0], out[1], out[2], fit
+    first, rec_a, hx, fit = nop(jw, jwo, "-", T0, "0xe872", "0xe06a", "0xe07a")
+    check("drop: 116-128 go from the node's list -> 4 new entries, named for the log", first == "4 %s 5 GHz 116,120,124,128" % MACS, first)
+    ents = [e for e in rec_a.split(";") if e]
+    check("drop: the record holds the four, band 1, expiry now + hold", ents == ["%s 1 %d %d" % (MACS, c, T0 + HOLD) for c in (116, 120, 124, 128)], rec_a)
+    check("drop: 4 held; 100/160 no longer fits, 100/80 does, 116/80 does not", hx == "4 0" and fit == {"0xe872": 0, "0xe06a": 1, "0xe07a": 0}, (hx, fit))
+    first, rec_b, hx, _ = nop(jw, jwo, rec_a, T0 + 1800)
+    check("repeat 30 min later: nothing new, the four refreshed to the later expiry", first == "0 -" and all(e.endswith(" %d" % (T0 + 1800 + HOLD)) for e in rec_b.split(";") if e) and hx == "4 0", (first, rec_b))
+    first, rec_c, hx, fit = nop(jwo, jw, rec_a, T0 + 1800, "0xe872", "0xd074")
+    check("sticky: the channels come back on the node, the hold still applies - 100/160 and 116/20 stay out", first == "0 -" and rec_c == rec_a and hx == "4 0" and fit == {"0xe872": 0, "0xd074": 0}, (first, hx, fit))
+    first, rec_d, hx, fit = nop("-", jw, rec_a, T0 + HOLD + 1, "0xe872")
+    check("lapse: past the hold the record is pruned to nothing, nothing held, 100/160 fits again; the lapse was flagged beforehand",
+          first == "0 -" and rec_d == "-" and hx == "0 1" and fit == {"0xe872": 1}, (first, rec_d, hx, fit))
+    first, rec_e, hx, _ = nop(jw, jwo, "-", 1000)
+    check("unset clock: a drop is not recorded (no meaningful expiry)", first == "0 -" and rec_e == "-" and hx == "0 0", (first, rec_e, hx))
+    first, rec_f, hx, fit = nop("-", jw, rec_a, 1000, "0xe872")
+    check("unset clock: an existing record is neither pruned nor ignored - the hold applies", rec_f == rec_a and hx == "4 0" and fit["0xe872"] == 0, (rec_f, hx))
+    jo2 = wjson("other.json", "{" + NODE_W.replace("53:10", "53:11") + CAP)
+    first, rec_g, _, _ = nop(jo2, jwo, "-", T0)
+    check("a different node in the kept lists constrains nothing (no MAC match, no drop)", first == "0 -" and rec_g == "-", (first, rec_g))
+    first, rec_h, hx, _ = nop("-", jw, "garbage line;%s 1 116 %d;%s 9 116 %d" % (MACS, T0 + 100, MACS, T0 + 100), T0)
+    check("malformed and out-of-range lines are skipped and dropped on the rewrite; the good one holds", rec_h == "%s 1 116 %d;" % (MACS, T0 + 100) and hx == "1 0", (rec_h, hx))
 
     # ---- negative control: a decoder with the 40 MHz sideband flipped must fail the label check
     mut = PURE.replace("*width = 40; *ctl = sb ? c + 2 : c - 2;", "*width = 40; *ctl = sb ? c - 2 : c + 2;")
@@ -319,6 +410,10 @@ finally:
 
 # ---- C. static
 check("meshchan: never writes nvram (knowledge only; the minimum-width module owns the list)", "nvram_set(" not in MC)
+check("meshchan: the plan maps DFS through mc_dfs_flag (unknown = DFS), never d == 1 (2026-10-19)",
+      "dfs[i] = mc_dfs_flag(d);" in MC and "dfs[i] = d == 1;" not in MC)
+check("meshchan: an unknown-DFS plan logs its own reason, not 'every channel is a DFS channel'",
+      'if (loaded && !nondfs && dfsunk && !mc_said(u, "dfsunk", st.sig))' in MC and 'else if (loaded && !nondfs && !mc_said(u, "nondfs", st.sig))' in MC)
 check("meshchan: reads the controller's file under its own lock", 'file_lock("chanspec")' in MC and '/tmp/chanspec_all.json' in MC)
 check("meshchan: the result is held in /jffs and mirrored to /tmp/reaper", '"/jffs/reaper_meshchan"' in MC and '"/tmp/reaper/meshchan"' in MC)
 check("meshchan: the nodes' lists are kept in /jffs (RAM-only on the router) and used at boot, less nodes that left the registry",
@@ -327,7 +422,16 @@ check("meshchan: DFS channels are kept (flag 2 = code 3 counts as usable)", "f >
 check("meshchan: the held plan re-applies its recorded lift, and only a plan built from lists speaks the lift line (audit 2026-10-16 B1)",
       "nlifted = mc_relift(old, cur, lifted, sizeof(lifted));" in MC and 'if (nlifted && loaded && !mc_said(u, "lifted", st.sig))' in MC)
 check("meshchan: the kept copy of the node lists is rewritten only when the bytes differ (audit 2026-10-16 C2)",
-      "if (!mc_snap_same(buf, n))" in MC and "return m == n && memcmp(have, buf, n) == 0;" in MC)
+      "int changed = (m != n || memcmp(have, buf, n) != 0);" in MC and "if (changed) {" in MC and "reaper_write_atomic(MC_NODES_SNAP, buf, n, 0600)" in MC)
+check("meshchan: a node that does the width needs the whole channel - no 80 MHz cap on the node-facing block (field 2026-10-18)",
+      "if (subw > 80) subw = 80;" not in PURE and "if (mc_nmax(b->bwmask) < subw) subw = mc_nmax(b->bwmask);" in PURE)
+check("meshchan: flag 4 (a DFS channel the unit cleared and runs) reads as usable DFS", re.search(r"if \(f == 4\)\s*f = 2;", PURE) is not None)
+check("meshchan: dropped channels are recorded in /jffs against the kept lists, applied to the plan, and a lapse rebuilds it",
+      'MC_REC "/nop.txt"' in MC and "mc_nop_update(rec, sizeof(rec), pp, nds, now, MC_NOP_HOLD, fresh, sizeof(fresh))" in MC
+      and MC.count("mc_nop_apply(nds, rec, now, held);") == 2 and "mc_nop_expired(rec, (long)time(NULL))" in MC and "#define MC_NOP_HOLD\t(6 * 3600L)" in PURE)
+check("meshchan: nothing is recorded while the clock is unset, and the record is written only when it changed",
+      re.search(r"if \(now < MC_CLOCK_SANE\)\s*return 0;", PURE) is not None and "mc_nop_write(rec, was);" in MC and "if (!strcmp(rec, was))" in MC)
+check("meshchan: the plan file and the state line carry the held count", "how=%s held=%d" in MC and 'live=%s held=%d"' in MC)
 check("meshchan: a dual-5 GHz node counts its upper radio", "band_min(&b5[1]) > band_min(&b5[0])" in MC)
 check("meshchan: ASCII only", all(ord(ch) < 128 for ch in MC))
 BF = rd("rc/reaper_bwfloor.c")
@@ -358,7 +462,7 @@ check("page: the switch row (global key), GNV entry and status renderer", 'key:"
 check("page: the floor status shows when puncturing implies it", "RWFP_136" in PG)
 check("page: a nolanding hold shows the DFS-only note, not the join note", 'f[5]==="nolanding"' in PG)
 DG = rd("others/reaper_diag")
-check("diag: v1.3.40 reports the node fit", 'VER="REAPER-DIAG v1.3.40"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.40</span>" in rd("www/Reaper_Diag.asp"))
+check("diag: v1.3.41 reports the node fit", 'VER="REAPER-DIAG v1.3.41"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.41</span>" in rd("www/Reaper_Diag.asp"))
 packs = [f for f in os.listdir(os.path.join(SRC, "www")) if f.endswith(".dict") and f != "temp.dict"]
 missing = []
 for p in sorted(packs):

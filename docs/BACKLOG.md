@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
+> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,18 +40,75 @@ internal quality, or deferred by decision.
 *Fixed (in the named image or earlier) and waiting on the reporting tester to confirm. No new work
 is planned; a "still broken" answer moves the item back to Open bugs. Each note says what to ask for.*
 
-- **[P2] AiMesh: the 5 GHz picker parked on a channel the node could not follow** (owner, RT-AX92U node,
-  MLO on) — the main router fits the picker to the nodes' channel lists, re-allows the stock Auto-width
-  exclusions every node can use when nothing else is left, and moves a radio found outside the plan.
-  **[in v3.4.6; owed: a second mesh (BQ16 node under a GT-BE98) and a node joining mid-plan]**
-  ↳ notes: `aimesh-node-channel-fit.md`
-- **[P2] Guest portal passcodes of 16+ characters never matched** (field) — the field stops at 15 and a
-  longer stored value shows a hint. **[in v3.4.6; owed: the reporter signs in with a 15-character passcode]**
+- **[P2] Security review: drift of /jffs scripts, cron entries and exposure settings** (owner, from
+  the IOCMON assessment) — new, off by default; rwatch 3h inventories and diffs against an accepted
+  baseline, card on Firewall › Status, amber dashboard bar and posture row, one log line per change
+  set, nothing undone.
+  **[in v3.4.7; owner-confirmed 2026-10-19 on the r12 test build (34-item baseline accepted from
+  the card, three injected changes listed first and logged once, the bar and the Review link seen,
+  the revert cleared it without an Accept); owed: the posture row's four states on a tester's box]**
+  ↳ notes: `security-review.md`
+- **[P2] Warden threat domains** (owner, from the IOCMON assessment) — URLhaus + ThreatFox host
+  names as `address=/host/` NXDOMAIN lines included by every dnsmasq instance; per-feed keep-last-
+  good, never-block set + exemptions, restart only on change, /jffs replay at boot.
+  **[in v3.4.7; owner metal test owed: switch on → Update now → a LAN client on the router's DNS
+  gets NXDOMAIN for a listed name, `grep conf-file /etc/dnsmasq.conf`, the SDN instance conf as
+  well, dnssec on]** ↳ notes: `security-review.md`
+- **[P2] Login watch + IPv6 SSH guard** (owner, from the IOCMON assessment) — failed SSH/web
+  logins per source from a syslog cursor into the review card (rwatch 3h); `ip6tables -m recent`
+  per /64 ahead of the WAN SSH accept at both firewall.c sites, no switch.
+  **[in v3.4.7; owner test owed: 10+ wrong SSH passwords from one LAN host → notice + log line
+  within one tick, Accept clears. Before the publish: `ip6tables-restore --test` of the two rules
+  on any box (works with IPv6 off). The limiter itself cannot run on the owner's box (IPv6 off,
+  SSH LAN-only): owed to a tester with WAN SSH over IPv6, or `ip6tables -S INPUT` on such a box]**
+  ↳ notes: `security-review.md`
+- **[P2] Traffic Analyzer non-functional on BQ16 firmware** (field) — the collector ships off and
+  the page hid that; it now says so once, with the switch.
+  **[in v3.4.7; owner-confirmed on the r2 test build; owed: the reporter sees the guided page]**
+  ↳ notes: `traffic-analyzer-bq16.md`
+- **[P3] Traffic Analyzer Latency/Loss tiles vanish** (owner) — both hid while the live RTT read 0;
+  the live figure now comes from the last 60 s of probes.
+  **[in v3.4.7; owed: both tiles stay across a 5-minute boundary and an unreachable target]**
+  ↳ notes: `traffic-latency-tiles.md`
+- **[P3] Firmware page: every mesh node badged "Different version"** (field, BQ16 nodes) — the
+  node's version string was compared with the router's display form; version keys now.
+  **[in v3.4.7; owed: the reporter's nodes on the same build read as such]**
+  ↳ notes: `firmware-node-version-badge.md`
+- **[P3] Device Menu out of sync** (owner) — the page fetched once and never again, and stale
+  neighbour entries counted as presence; 15 s refresh, live L2 evidence only, node clients
+  labelled by their backhaul.
+  **[in v3.4.7; owner-confirmed 2026-10-19 (an iPhone in airplane mode read offline within 10 s,
+  labelled Wi-Fi via the node); owed: a reporter on a wired-backhaul mesh]**
+  ↳ notes: `devices-presence-refresh.md`
+- **[P2] Long-term storage split across USB partitions** (field, RT-BE86U) — with two volumes
+  mounted, history landed on whichever mounted first; the store is now one pinned volume, adopted
+  on the upgrade path.
+  **[in v3.4.7; owed: the reporter's disk adopts the volume with the history and keeps it there
+  across a reboot; the Storage page shows the pin]** ↳ notes: `usb-store-volume-pin.md`
+
+- **[P2] AiMesh node fit: the AX92U's 5 GHz backhaul stayed off on v3.4.6** (owner) — the node
+  drops 116-128 on a 30 min radar lock-out cycle and, being 160 MHz, cannot hold 100/160 then; the
+  fit rated 100/160 usable (80 MHz cap) and read the router's cleared DFS block as non-DFS. Fix: a
+  node that does the width needs the whole channel, flag 4 = DFS, a 6 h hold on channels a node
+  stops listing; an unknown DFS status now counts as DFS.
+  **[in v3.4.7; owner-confirmed 2026-10-18 on the r4 test build (37 fits, 100/160 excluded, the
+  node's 5 GHz backhaul up on 149/80); owed: the first radar drop exercises the 6 h hold, then a
+  second mesh and a node joining mid-plan]** ↳ notes: `aimesh-node-channel-fit.md`
+- **[P1] BQ16 / BQ16 Pro: "Update check failed" on every check** (field) — the manifest held
+  only beta lines for both models, and the router stops at a missing stable line. Fixed on the
+  server: a never-offered 0.0.0 floor line per model; the publish tooling now writes one for any
+  beta-only model.
+  **[live 2026-10-18, no firmware change; owed: a BQ16 check offers v3.4.6 or reads up to date]**
+  ↳ notes: `update-check-beta-only-model.md`
+- **[P2] Guest portal passcodes of 16+ characters never matched** (field) — the field stops at 15
+  and a longer stored value shows a hint.
+  **[in v3.4.6; owed: the reporter signs in with a 15-character passcode]**
   ↳ notes: `captive-passcode-16-cap.md`
-- **[P2] Steady packet loss behind a Nokia 10G ONT** (forum) — the WAN port is power-cycled at switch init on
-  every model so the link renegotiates before EEE goes off (ASUS GPL 102_40585 via Merlin 3006.102.10).
-  **[in v3.4.6; owed: the reporter's ONT stays clean through a reboot without `ethctl eth0 eee off`]**
-  ↳ notes: `wan-eee-phy-reset.md`
+- **[P2] Steady packet loss behind a Nokia 10G ONT** (forum) — the WAN port is power-cycled at
+  switch init on every model so the link renegotiates before EEE goes off (ASUS GPL 102_40585 via
+  Merlin 3006.102.10).
+  **[in v3.4.6; owed: the reporter's ONT stays clean through a reboot without
+  `ethctl eth0 eee off`]** ↳ notes: `wan-eee-phy-reset.md`
 - **[P2] A factory Reaper router could not be added as an AiMesh node** (field, a BQ16 under an
   MLO GT-BE98) — Reaper ships WPS off and the join's WPS arm sat inside that setting; a join now
   gets WPS on its onboarding band only, the setting untouched.
@@ -62,31 +119,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   Repeater (rung B2) still uses the wizard.
   **[in v3.4.5; owed: AP dhcp/static, MB 5G + 6G WPA3, back to Router, a wrong MB password]**
   ↳ notes: `qis-aimesh-only.md`
-- **[P2] AiMesh with a Reaper main router: the upgrade contract, the node version string, the
-  setup notice** — mesh upgrade = download and verify only; `webs_state_info` in the Merlin shape;
-  the firmware page's mesh path re-enabled; AiMesh.asp names the x_Setting gate.
-  **[in v3.4.4; owed: a mesh - node sees the update and the right version, upgrade completes]**
-  ↳ notes: `aimesh-node-firmware-refused.md`
-- **[P3] USB: `restart_nasapps` ran once per mounted partition** — hotplug now restarts once per
-  mount wave (3 s settle). **[in v3.4.4; owed: a 2-partition disk = one `restart_nasapps`]**
-  ↳ notes: `nasapps-restart-per-mount.md`
-- **[P3] Samba restarted on every WAN up (twice with the WireGuard server on)** — now only when SMB
-  over the WAN is on or br0's IPv6 addresses changed.
-  **[in v3.4.4; owed: an SMB session survives a PPPoE reconnect; an IPv6 prefix change restarts
-  it once]** ↳ notes: `samba-restart-every-wan-up.md`
-- **[P2] "skb->nr_frags N exceed max_sg_array 4" is a dropped packet, not noise** (field, GT-BE98)
-  — stubby's interleaved DoT writes build >4-fragment non-GSO skbs once the upstream RTT is long
-  (IPv6 DoT through a 6in4 tunnel); the Runner drops each one (1:1 with eth1 `tx_dropped`). Fix:
-  `netif_skb_features()` linearizes them, `net.core.reaper_tx_sg_max` (0 = stock).
-  **[in v3.4.3; the GT-BE98 reporter to confirm on the beta: IPv6 DoT kept, refused packets 0, the
-  cap's fired count climbing]** ↳ notes: `runner-sg-frag-cap.md`
-- **[P1] 5 GHz and 6 GHz radios dead after a network restart with Dynamic puncturing on** (owner
-  RT-BE96U, twice) — `restart_net` (an IPv6 or LAN change) tore the radios down without stopping
-  rpunctd / reaper_bwfloor / rchqd and never dropped `wlready`; the wl1 + wl2 dongle firmware
-  trapped 7 s in and stayed down until a power cycle. The readers now stop beside `stop_acsd()` in
-  every teardown branch, an armed window is waited out, and they key on `rc_service` themselves.
-  **[in v3.4.3; owner-confirmed 2026-10-14 on the test rung (two `restart_net`, radios survived);
-  the GT-BE98 tester to confirm on the beta]** ↳ notes: `wl-readers-quiesce.md`
 
 ---
 
@@ -99,17 +131,17 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   MLO main router was a separate defect, fixed in v3.4.5 (Waiting).
   **[investigated 2026-10-15; solved: the power-cycle test, owner box then the reporter]**
   ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] Traffic Analyzer non-functional on BQ16 firmware** — buttons, graphs and most of the page
-  were missing in a user's screenshot; cause to investigate. The traffic analyzer only functions with 
-  bandwidth limits populated in the fields. **[owned]** ↳ notes: `traffic-analyzer-bq16.md`
 - **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
   = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
   (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
   **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
-- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or 
-  monitored on the connections tab by connection.
-- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from 
+- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
+  monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
+  flows); feasible only as an on-demand measure for the selected connection, TCP only.
+  **[researched 2026-10-18; not scheduled]** ↳ notes: `conn-packet-loss.md`
+- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
   a PIN build.
+  **[options written 2026-10-18; owner decision]** ↳ notes: `pin-strategy.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -139,6 +171,14 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[owed: accelerated-flow + restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]** ↳ notes:
   `pbr-warden-country-sets.md`
+- **[P2] Security review: harden the baseline against tampering** — anyone with an admin session
+  or root can accept a new baseline. Options: Accept logs what it folded in; the tick flags a
+  baseline rewritten outside Accept; Accept asks for the admin password.
+  **[offered 2026-10-19; owner call]** ↳ notes: `security-review.md`
+- **[P2] Two-tier admin credential** — a second, rarely typed secret (the unused `shell_username`
+  account) required for root-equivalent actions; SSH only through that account. A phished GUI
+  password could then run the router but not own it.
+  **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
 ---
 
 ## Documentation
@@ -149,6 +189,11 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 ---
 
 ## Code quality / deferred (with reason)
+
+- **[P3] Web-interface login lock is per LAN/WAN side, not per source** (stock httpd: five failures
+  lock the whole side for five minutes). Per-source would need a table httpd does not keep; the
+  review card's login notices name the source instead, and management off the WAN removes the
+  exposure. **[deferred]** ↳ notes: `security-review.md`
 - **[P3] Bandwidth tab — Cloudflare's speed test in the firmware** — built and metal-tested as
   v3.4.2 test rungs r9-r12, then removed: Cloudflare serves its 100 MB+ downloads only to a browser
   request, so the router's run had to work around that and froze the UI for its whole length; the
@@ -158,6 +203,9 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   accepted, no change. **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
 - **[P2] The code-review MEDIUM/LOW tail, batch B.** **[owed: the two deferred items]** ↳ notes:
   `code-review-tail.md`
+- **[P3] Cut hygiene reports every `rule:value` PII-allowlist line as a missing path** — the
+  check predates value entries; cosmetic, the cut continues.
+  **[cause known, fix not applied]** ↳ notes: `cut-hygiene-allowlist-values.md`
 - **[P2] Only Gatekeeper knows AiMesh exists** — wants one shared `reaper_aimesh_exempt()`.
   **[owed — before a fourth enforcement surface]** ↳ notes: `aimesh-exempt-helper.md`
 - **[P2] Network page: Delete does nothing on a main-network card** — development-based, not
@@ -197,6 +245,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **Guest network VPN not applied, OpenVPN Killswitch blocked the LAN** (forum, BQ16) — the
+  guest network had "Use main subnet" on, so it shared br0. User configuration, not Reaper code:
+  the reporter turned it off and is working (owner, 2026-10-18).
+  **[closed 2026-10-18]** ↳ notes: `sdn-vpn-main-subnet-killswitch.md`
 - **ASUS CVE-2026-14157 (VPN-file format string) and CVE-2026-13313 (Telnet debug function) do not
   apply** — Merlin's `vpnupload.cgi` → libovpn import path has no format-string sink; telnetd is not
   built. The 2026-10-07 batch was assessed the same week.
@@ -272,3 +324,8 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[blocked — development]** ↳ notes: `speedtest-10g-links.md`
 - **B-6. [P2] Internet speed test may stop on 2026-10-01** — ASUS retires the Ookla setup Reaper
   uses. **[blocked — GPL]** ↳ notes: `speedtest-embed-key-retired.md`
+- **B-7. [P3] Source to ask the vendors for** — ranked: ASUS-owned first (AiMesh, the httpd login
+  check, networkmap); Broadcom's under NDA (ask for errata and docs); nine GPL-labelled modules
+  shipped as prebuilt objects are the one licence-based ask.
+  **[list written 2026-10-19; owner call on the ASUS-facing page]**
+  ↳ notes: `blob-source-wishlist-2026-10-19.md`

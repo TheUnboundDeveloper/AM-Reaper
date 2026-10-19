@@ -374,7 +374,9 @@ if "SW_MODE_ROUTER" not in gate or "SW_MODE_HOTSPOT" not in gate:
     die("rdev_nonrouting() is not the routing-modes gate the tiles and the topology overlay use")
 status = web_src[web_src.index("static void do_reaper_dev_cgi(char *url, FILE *stream)"):]
 status = status[:status.index('/* ---------------- SET_NAME')]
-if "rdev_snapshot(0);" not in status:
+# 2026-10-18: a user's request still takes a fresh pass; only the Devices page's
+# background refresh (poll=1) may share a snapshot up to RDEV_TTL old
+if 'rdev_snapshot(get_cgi("poll") ? RDEV_TTL : 0);' not in status:
     die("the status action no longer takes a fresh pass")
 if '\\"sdn\\":%d,\\"node\\":%d,\\"via\\":\\"%s\\"}' not in status:
     die("the status JSON does not emit the device's network")

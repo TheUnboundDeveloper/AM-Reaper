@@ -53,6 +53,9 @@ def read(rel):
         return f.read()
 
 mon = read("rc/reaper_usbmon.c")
+# 2026-10-18: the file also carries the pinned-store check (its own lock wait;
+# test_usb_store_pin.py covers it) - count the mount watchdog's gates without it
+mon_watch = mon.split("/* ---- 2026-10-18: the pinned long-term store")[0]
 usb = read("rc/usb.c")
 watchdog = read("rc/watchdog.c")
 rc_h = read("rc/rc.h")
@@ -224,7 +227,7 @@ checks = [
     (mon, "if (f_exists(REAPER_USBREL_FLAG))\n\t\treturn;", 1, "usbmon: nothing while a flash is releasing the volumes"),
     (mon, 'nvram_get_int("usb_automount")', 1, "usbmon: honours usb_automount"),
     (mon, "if (check_action() != ACT_IDLE)\n\t\treturn;", 1, "usbmon: nothing while the box is busy (flash, restore)"),
-    (mon, 'reaper_usbmon_lock_busy("/var/lock/usb.lock")', 1, "usbmon: a mount in progress is left to finish"),
+    (mon_watch, 'reaper_usbmon_lock_busy("/var/lock/usb.lock")', 1, "usbmon: a mount in progress is left to finish"),
     (mon, ">= REAPER_USB_RETRY_MAX", 1, "usbmon: bounded tries"),
     (mon, '"/sbin/hotplug", "block"', 1, "usbmon: the re-sent event goes to the stock handler"),
     (mon, "_eval(argv, NULL, 0, &pid);", 1, "usbmon: the re-send is backgrounded"),

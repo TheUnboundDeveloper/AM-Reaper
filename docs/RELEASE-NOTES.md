@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
+> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.6** <!--@treever--> — `3006.102.8_Reaper_v3.4.6`. **The 5 GHz channel picker stays on channels every AiMesh node can use; guest-portal passcodes longer than 15 characters are refused instead of failing silently; the WAN link renegotiates at boot for 10G ONTs that mishandle EEE.** Also: hardening carried from Asuswrt-Merlin 3006.102.10 (Eric "Merlin" Sauvageau). Everything in v3.4.5 is included. |
+| **Current rung** | **v3.4.7** <!--@treever--> — `3006.102.8_Reaper_v3.4.7`. **A security review that reports changes to scripts, cron entries, SSH keys and exposure settings against a baseline you accept; Warden can answer threat domains with NXDOMAIN; failed-login bursts are surfaced and SSH over IPv6 from the internet is rate-limited.** Also: long-term storage on one pinned USB volume, device presence behind a mesh node, the Traffic Analyzer tiles, the Firmware page's node badge, the AiMesh channel fit's DFS handling. Everything in v3.4.6 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,52 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.7 — security review, threat domains, login watch
+
+**Security review (off by default).** On Firewall › Status you can switch on a review that watches the
+things router malware changes to survive: scripts and configuration files under `/jffs`, SSH keys, add-on
+files, cron entries, and the settings that expose the router to the internet. Press **Accept current state
+as baseline** once; from then on anything added, changed or removed is listed on that card, logged once, and
+shown on the dashboard (an amber bar and the Security Review row on the Security Posture card) until you
+accept the new state. Nothing is undone and no failure is declared — most changes are your own. After a
+reboot the first check can take up to 10 minutes. The same card lists bursts of failed SSH or web logins
+(ten or more from one source in five minutes). This is detection, not a wall: anyone with your admin login
+can accept a baseline, and every acceptance is logged.
+
+**Warden threat domains (off by default).** Warden can now block by name as well as by address: the
+URLhaus and ThreatFox lists from abuse.ch become names that every network on the router answers with
+"no such domain". Lists refresh with the nightly update, keep the previous download if a fetch fails, never
+block the feed hosts, your NTP, DDNS or DNS-over-TLS names, and you can list exemptions. Only devices that
+resolve through the router are covered.
+
+**SSH over IPv6 from the internet is rate-limited.** The stock brute-force guard only ever covered IPv4;
+with SSH open to the internet and IPv6 on, a sixth new connection from one /64 inside a minute is now
+dropped. No setting; LAN access is never limited.
+
+**Long-term storage on one USB volume.** A disk with two partitions could end up with history on both.
+The Storage page now shows which volume holds Reaper's history and keeps it there; a box upgraded with
+history already on a disk adopts the right volume by itself.
+
+**Smaller fixes.** Devices behind an AiMesh node show the right connection and go offline promptly, and the
+Devices page refreshes on its own; the Traffic Analyzer's latency and loss tiles stay put and the page says
+when the collector is off; the Firmware page no longer badges every mesh node "Different version"; the
+AiMesh channel fit treats an unknown DFS status as DFS and keeps a 160 MHz node's backhaul on a channel it
+can hold; Warden's country-list host is whitelisted once so the router's own downloads are never blocked;
+the front-chain watchdog names the rule it found; Diagnostics v1.3.41.
+
+## What's new in v3.4.6 — the channel picker follows the AiMesh nodes, portal passcodes, WAN link reset
+
+**AiMesh channel fit.** The 5 GHz channel picker stays on channels every mesh node can use; a radio found
+outside the plan is moved back, and the controller holds still while a node joins. On by default, inert
+without a node; switch on the Wireless page.
+
+**Guest portal passcodes.** A passcode of 16 or more characters could never match; the field now stops at
+15 and a longer stored value shows a hint.
+
+**10G fibre ONTs.** The WAN port is power-cycled at switch init so the link renegotiates before
+Energy-Efficient Ethernet goes off (ASUS's fix, via Asuswrt-Merlin 3006.102.10), plus the other hardening
+carried from that release.
 
 ## What's new in v3.4.5 — Reaper routers as AiMesh nodes, mode changes in Reaper
 

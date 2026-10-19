@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.4.6** · 2026-10-17 <!--@stamp-->
+> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -813,3 +813,20 @@ Read against the Reaper tree and taken from Eric "Merlin" Sauvageau's 3006.102.1
 
 Not carried, by design: httpd `no_cache` max-age (drops `no-store`), the VUPNP/FUPNP re-add, unconditional
 core dumps, the Instant Guard `-I INPUT 1`, the WireGuard kill-switch rework, forced pause on ethernet ports.
+
+## v3.4.7 — security review, login watch, IPv6 SSH limiter, threat domains (2026-10-19)
+
+Reaper-authored. Three of the four only report; the IPv6 limiter is the one enforcement, and it hardens an
+exposure the user opted into (`sshd_enable=1` with the IPv6 firewall on).
+
+| Area | Change | Where |
+|---|---|---|
+| `rc/firewall.c` | SSH over IPv6 from the internet had no brute-force guard (the stock one is IPv4-only; the v6 rule was a plain accept at two sites): two `-m recent` rules per /64 ahead of the WAN accept at both, the sixth new connection inside 60 s dropped | `reaper_ssh6_guard()`, `test_ssh6_guard.py` |
+| `rc/rwatch.c` 3h, `httpd/web.c` | drift of `/jffs/scripts`, `/jffs/configs`, SSH keys, add-on files, cron entries and the exposure settings against a baseline the operator accepts; failed-login bursts per source read from the system log; advisory, logged once per change set | `_rv_*`, `reaper_watch.cgi` (behind `reaper_gate`, `rjf_set` baseline, detached re-run), `test_rwatch_review.py` |
+| `rc/rwarden.c`, `services.c`, `sdn.c` | URLhaus / ThreatFox host names answered NXDOMAIN by every dnsmasq instance (off by default); include emitted only when the file exists, a missing include being fatal to dnsmasq | `test_warden_dns.py`, `test_dnsmasq_start.py` |
+| `rc/rwarden.c` | the country-list host whitelisted once so the router-self filter cannot starve Warden's own updates (FR selected + self filter dropped them) | `RW_GEO_HOST_IP` |
+
+Trust model, stated in the guide: the review is detection, not a wall. An admin session or root can accept
+or rewrite the baseline; every acceptance is logged (`reaper-audit: review baseline accepted`), which is
+only useful off the box (remote syslog). Hardening offered and not yet decided: Accept logs what it folded
+in; the tick detects a baseline rewritten outside Accept; Accept asks for the admin password.

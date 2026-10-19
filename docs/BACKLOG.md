@@ -217,8 +217,9 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   **[owed]** ↳ notes: `sibling-port-add-rename-delete.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent.**
   **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
-- **[P3] GitHub release retention — the prune is the owner's to run.**
-  **[owner action]** ↳ notes: `release-retention-prune.md`
+- **[P3] GitHub release retention — betas 5+ versions behind are pruned.** First run 2026-10-19
+  (152 removed, tags kept, manifest-advertised releases kept); repeat at each publish.
+  **[recurring, owner call]** ↳ notes: `release-retention-prune.md`
 - **[P3] Sibling worktrees carry build detritus.**
   **[hygiene]** ↳ notes: `sibling-worktree-detritus.md`
 - **[P3] Local sibling images** — four siblings are source-only locally; CI unaffected.

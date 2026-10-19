@@ -58,9 +58,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   logins per source from a syslog cursor into the review card (rwatch 3h); `ip6tables -m recent`
   per /64 ahead of the WAN SSH accept at both firewall.c sites, no switch.
   **[in v3.4.7; owner test owed: 10+ wrong SSH passwords from one LAN host → notice + log line
-  within one tick, Accept clears. Before the publish: `ip6tables-restore --test` of the two rules
-  on any box (works with IPv6 off). The limiter itself cannot run on the owner's box (IPv6 off,
-  SSH LAN-only): owed to a tester with WAN SSH over IPv6, or `ip6tables -S INPUT` on such a box]**
+  within one tick, Accept clears. The two rules parse on metal (`ip6tables-restore --test`, owner
+  box 2026-10-19, a misspelt option rejected as the control). The limiter itself cannot run on the
+  owner's box (IPv6 off, SSH LAN-only): owed to a tester with WAN SSH over IPv6, or
+  `ip6tables -S INPUT` on such a box]**
   ↳ notes: `security-review.md`
 - **[P2] Traffic Analyzer non-functional on BQ16 firmware** (field) — the collector ships off and
   the page hid that; it now says so once, with the switch.

@@ -1,0 +1,194 @@
+Reaper v3.4.7 - BETA (Dev branch)
+
+A beta release from the Dev branch: it has had less testing than a
+stable release. The previous firmware stays in the standby partition.
+
+Everything in v3.4.6 is included.
+
+> Security review (new, off by default)
+
+The self-monitor can now watch for drift: /jffs/scripts,
+
+/jffs/configs and authorized_keys by content hash, the other /jffs/.ssh files and /jffs/addons
+
+by size/date, every cron entry that is not Reaper's own, and the exposure settings (NAT, forwards, DMZ,
+
+UPnP, remote web, SSH, Telnet, custom scripts, WAN DNS, remote syslog, cloud sync). Nothing is reported
+
+until Accept current state as baseline on Firewall › Status; afterwards each change set is listed on
+
+that card, logged once (rwatch: security review:) and shown as an amber dashboard bar until accepted.
+
+Advisory end to end: nothing is undone and no failure is declared. Baseline at
+
+/jffs/reaper/review/baseline (carried by the full backup); switch rwatch_review; report served by
+
+reaper_watch.cgi. Section 2.9 of the guide.
+
+> Security Review on the Security Posture card
+
+A sixteenth posture row, paired with Warden:
+
+amber Disabled, amber No baseline while the switch is on but nothing has been accepted, green
+
+Baseline (accepted, nothing unreviewed, last check time), red Review with the counts of changes
+
+and login notices. Painted from the same cached report the dashboard bar reads; the row opens the
+
+Status tab. After a boot, while no report exists yet, the row shows Baseline in amber and both
+
+pages say that the first check can take up to 10 minutes (the boot grace plus the next tick). The diagnostics report (v1.3.41) gains the review's state and the threat-domain list
+
+state in section 12 and 14, with a finding when changes or login bursts are unreviewed or a list is
+
+switched on but not loaded (counts only, never the sources). Backups: the switches and the exemption
+
+list ride the settings export; the accepted baseline and the domain cache ride the full backup.
+
+> Security review: failed-login notices
+
+Ten or more failed SSH (dropbear) or web-interface
+
+(httpd) logins from one source inside one 5-minute check become a notice on the review card and
+
+one log line per source per hour; Accept clears them. The self-monitor reads the system log from a
+
+byte cursor and reads the rotated file's tail first when the log shrinks. Advisory only.
+
+> SSH over IPv6 from the internet is rate-limited
+
+The stock brute-force guard is IPv4-only and
+
+the IPv6 rule for a WAN-open SSH port was a plain accept, at two sites in rc/firewall.c. One
+
+helper now writes two -m recent rules ahead of that accept at both: the sixth new connection
+
+from one /64 inside 60 s is dropped (--update, so a flood keeps its own block fresh). xt_recent
+
+is built into this kernel. WAN only (sshd_enable 1 with the IPv6 firewall on); no switch.
+
+> Warden threat domains (new, off by default)
+
+URLhaus and ThreatFox host names, from abuse.ch's
+
+public hostfiles, become address=/host/ lines in /tmp/rwarden/dns.conf, included by every dnsmasq
+
+instance (main and each guest/VLAN network) — a lookup of a listed name or anything under it is
+
+answered NXDOMAIN. Downloads with the nightly feed update (or Update now), keeps each list's previous
+
+download on a failed fetch, caps at 100,000 names, never blocks the feed hosts, your NTP, DDNS and
+
+DNS-over-TLS names, the LAN domain or the names you list; restarts dnsmasq once only when the list
+
+changed; /jffs/rwarden/dns.cache replays at boot. Only devices resolving through the router are
+
+covered (DoH, own-DNS and VPN clients are not). Keys rwarden_dns, rwarden_dns_feeds; list
+
+dnsallow. Guide 4.3.10. Also: the country-list fetch is now redirect-pinned to https like the
+
+threat feeds, and the self-monitor's loopback-DNS check retries once before declaring a failure.
+
+> Warden: the country-list host is whitelisted once
+
+www.ipdeny.com (51.15.12.186) is hosted in
+
+France; with FR selected and the router-self filter on, Warden dropped its own list downloads, the
+
+15-minute update budget ran out and countries added after that never loaded (27 of 79 on the reporting
+
+box, shown as blocked). The address is added to the whitelist once, visibly and removably; the update
+
+now logs a country that has no data as NOT blocked and names every such country in one closing line.
+
+> Devices page: presence behind an AiMesh node
+
+A client the node left out of its client list read
+
+Wired and stayed connected for the bridge's 5-minute ageing after it left. A radio-port or backhaul
+
+sighting older than 90 s is no longer presence; an unlisted client behind a wireless backhaul reads
+
+Wi-Fi via that node. Cabled devices on the router's own ports keep the full ageing. The page also
+
+refreshes on its own now, every 15 seconds while it is visible and never under an open dialog or a rename
+
+in progress; it used to fetch once.
+
+> AiMesh channel fit: the node's backhaul stayed off; unknown DFS status counts as DFS
+
+Owner (RT-AX92U
+
+node, v3.4.6): the node drops channels 116–128 on its 30-minute radar lock-out and, being 160 MHz wide,
+
+cannot hold 100/160 then; the fit rated 100/160 usable under the 80 MHz cap and read the router's own
+
+cleared DFS block as non-DFS. A node that does the width now needs the whole channel, flag 4 in the
+
+controller's list is DFS, and a channel a node stops listing is held for six hours (confirmed on the
+
+owner's mesh: the 5 GHz backhaul up on 149/80 from boot). Region-neutral: when the router's own entry is
+
+missing from the mesh channel lists an undetermined channel is no longer treated as radar-free, so the fit
+
+cannot re-allow or move onto a DFS channel on a guess; it holds and says why.
+
+> Front-chain watchdog names the rule
+
+A front-chain-drift now logs the offending rule text (for
+
+example -A FORWARD -i tailscale0 -j ACCEPT) and the fix; built-in targets listed in
+
+/jffs/reaper/front_exempt are ignored and logged (listing ACCEPT there exempted every blanket accept).
+
+Guide 2.9 shows how a script inserts after Reaper's hook instead of at position 1.
+
+> Long-term storage: one pinned USB volume
+
+Field (RT-BE86U, one SSD with two partitions): both
+
+partitions grew Reaper's history folders and the traffic history was split between them, because each
+
+writer took "the first mounted volume" and the mount order changes from boot to boot. The store is now a
+
+pinned volume: a box already set to USB adopts the volume that holds its history (the most recently
+
+written one when both do) once it has settled after boot; the Storage page lists the mounted volumes and
+
+the pin with its state; a missing pinned volume is waited for (history stays in RAM meanwhile), never
+
+replaced by another. Keys reaper_store_vid, reaper_store_vname.
+
+> Traffic Analyzer: the Latency and Loss tiles no longer vanish
+
+The live figure was the running average
+
+of the open 5-minute bucket, so it read 0 right after every boundary and for as long as the target was
+
+unreachable, and the page dropped both tiles on a 0; it now comes from the last 60 seconds of probes. With
+
+the collector switched off the page says so once, with the switch, instead of drawing empty charts under
+
+a green Live pill (field, BQ16); its status chips use the two standing colours.
+
+> Firmware page: mesh nodes are no longer all badged "Different version"
+
+The node's version string was
+
+compared with the display form of the router's own, which can never match; version keys are compared now
+
+(the MCP/noMCP variant and a test build's suffix are not differences; a stock node still reads different).
+
+> Traffic Manager: the Guaranteed-minimums alert and its help now say 85%,
+
+the engine's intended budget,
+
+instead of 100%.
+
+> Dictionaries
+
+104 tokens added and 5 reworded in all 25 packs, translated (lockstep 7432).
+
+---
+
+Full changelog: https://github.com/TheUnboundDeveloper/AM-Reaper/blob/Dev/docs/CHANGELOG.md

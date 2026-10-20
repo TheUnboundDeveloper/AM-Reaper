@@ -308,7 +308,7 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 838 <!--@patchcount--> patches, `0563` = v3.4.7 <!--@treever-->,
+**Patch-series regeneration recipe (the series is now at 839 <!--@patchcount--> patches, `0563` = v3.4.7 <!--@treever-->,
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 `a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec

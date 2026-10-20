@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.4.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.4.8 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -70,6 +70,7 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.3.7a ["I never see any outbound blocks"](#437a-i-never-see-any-outbound-blocks)
      - 4.3.8 [Examples](#438-examples)
      - 4.3.9 [Limits and gotchas](#439-limits-and-gotchas)
+     - 4.3.10 [Dreadwatch](#4310-dreadwatch)
    - 4.4 [Policy Routing](#44-policy-routing)
      - 4.4.1 [How it works](#441-how-it-works)
      - 4.4.2 [The page](#442-the-page)
@@ -388,6 +389,10 @@ Flushing INPUT or FORWARD in a script changes the layer order too; Reaper's laye
 
 **Security review (2026-10-19).** Off by default; the switch is on the Firewall page's Status tab. Once on, every self-monitor tick inventories `/jffs/scripts`, `/jffs/configs` and `/jffs/.ssh/authorized_keys` (content hashes and modes), the other files in `/jffs/.ssh` (size, date and mode — a private key is never hashed), `/jffs/addons` (name, size and date), every cron entry that is not one of Reaper's own, and the settings that expose the router to the internet (NAT, port forwards, DMZ, UPnP, remote web access, SSH, Telnet, custom scripts, the WAN DNS servers, remote syslog, the firewall master switch, cloud sync). Nothing is reported until you press **Accept current state as baseline**; after that, anything added, changed or removed is listed on the card, announced once in the system log (`rwatch: security review: N change(s) …`) and shown as an amber bar on the dashboard until you accept the new state. It is advisory end to end: nothing is undone, no failure is declared and no incident dump is written, because the changes it sees are most often your own — a new script, a port forward, an add-on update. What it is for: persistence and exposure are how router malware survives a reboot, and a change you did not make is the signal. A baseline you accept is written to `/jffs/reaper/review/baseline`; the full backup carries it. The check waits for the 5-minute boot grace and skips a tick while a Firewall rules change is waiting for Keep. The report itself is not kept across a reboot, so after a boot the card says *no report yet* and the posture row shows **Baseline** in amber until the first check — the grace plus the next five-minute tick, up to 10 minutes.
 
+**Watch rules (v3.4.8).** `/jffs` has expected churn — an add-on rewriting its stats file every hour — so the card takes rules, one per line, in the **Watch rules** box under the list: a mode and a pattern. `hash` reports any change of content, `meta` a change of size, date or mode, `exist` only a file appearing or disappearing, `ignore` stops watching. A pattern is a full path with `*` and `?` wildcards (`/jffs/addons/diversion/*`), `cron:` and a cron-line pattern, or `nvram:` and a setting name. The first matching rule wins, and anything no rule matches keeps its default: `hash` for `/jffs/scripts`, `/jffs/configs` and `authorized_keys`, `meta` for the rest of `/jffs/.ssh` and for `/jffs/addons`. A private SSH key is never hashed, whatever a rule says. At most 100 rules; quotes, backslashes and backticks are refused. The rules live in `/jffs/reaper/review/rules`, so they survive firmware updates, and they travel with the settings export. An ignored path disappears from the report without being reported as removed. When a rule changes how an item is watched, its row turns grey with the status *rule changed*: that is not a change to the file, it is not counted as unreviewed, and **Accept** records the new mode.
+
+**Accepting.** Each row has its own buttons: **Accept** takes just that item into the baseline, **Existence only** and **Ignore** write a rule for that exact path, and **Ignore folder** writes one for its directory (`dir/*`). **Accept current state as baseline** still takes everything at once. Every acceptance and every rules save is written three ways: a `reaper-audit: review …` line in the system log naming what was taken in (counts by status and up to 20 items), the router's audit trail, and the **Acceptance log** on the card — time, the address that did it, the action and what it covered. The card shows the newest 10; `/jffs/reaper/review/accept.log` keeps 200.
+
 The same card lists **failed-login bursts**: ten or more failed SSH or web-interface logins from one source inside one check (5 minutes) become a notice — source, count, time — plus one log line per source per hour (`rwatch: security review: N failed ssh logins from …`); **Accept** clears them. The self-monitor reads the system log from where it left off, so a rotated log loses nothing. It only reports: the IPv4 brute-force lock-out is the stock one, and the web interface's own lock (five failures, five minutes) is per LAN or WAN side, not per source.
 
 **SSH over IPv6 from the internet (2026-10-19).** The stock brute-force guard covers IPv4 only; the IPv6 rule for a WAN-open SSH port was a plain accept. Now, when SSH is open to the WAN (`sshd_enable` **1**) and the IPv6 firewall is on, the sixth new connection from one /64 network within 60 seconds is dropped and a continuing flood keeps the block fresh. LAN SSH is untouched, and there is no switch: it hardens an exposure you chose, and five new SSH sessions a minute from one network is not a use anyone has.
@@ -406,7 +411,9 @@ section prints the NTP state with a warning when the clock never synchronised, s
 first sync sits behind it; the connectivity section warns when every probe from the router itself failed; and the
 conntrack section prints the destination-name table's counters (how many DNS replies were read, how many names kept -
 counts only, never a name). Report v1.3.34 (v3.4.0) adds the LAN name resolution check to the WAN section: switch, state,
-how long, and which servers stayed silent, by role.
+how long, and which servers stayed silent, by role. Report v1.3.42 (v3.4.8) adds the Gatekeeper sinkhole to section 14b, and v1.3.43 a Dreadwatch line to section 14:
+blocked lookups in total and per feed, how many were not recorded, how many devices tried, the hits waiting for the
+next collection and each feed's last result - counts only, never a name or a device address.
 
 **What the report masks.** The whole document passes through a redaction engine before a byte is written:
 
@@ -466,7 +473,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 **Navigation**
 
 - The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
-- **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
+- **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch under Warden; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Logout after* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
 - **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
@@ -819,6 +826,11 @@ The page shows one of four states, and it is designed never to claim it is prote
 
 A held device that opens a web page sees a themed **"Awaiting approval"** notice, shown automatically through the sign-in popup on phones and laptops, rather than a dead connection. That page is generated by the web server and stays in English.
 
+While a device is held, the router answers its name lookups itself: every name resolves to the router's own
+address, which is what lets the sign-in sheet appear, and nothing is looked up on the device's behalf - a held
+device cannot reach, or tunnel through, the outside resolvers. The only other router service it can reach is
+the sign-in page on the admin port, which keeps its usual login lock (see the limits below).
+
 #### 4.2.7 Examples
 
 **Seal the IoT.** Enable Gatekeeper, let everything grandfather in, then walk the Devices list and set every camera, TV, speaker and plug to **Internet only**. Nothing of yours changes; those devices lose the ability to reach your computers and storage. If your DNS is a LAN host, make sure it is set to **Approved** first (4.2.4).
@@ -837,10 +849,14 @@ A held device that opens a web page sees a themed **"Awaiting approval"** notice
 - The grandfathering step refuses to overwrite its list if that list is ever too large to load, and logs instead of failing quietly.
 - Before v2.5.0, Block and quarantine were enforced only on the main LAN. That is fixed, and a quarantined device on a guest network now also gets the waiting page.
 - A device's state is keyed on its hardware address, so it follows the device across address changes — but not across a deliberate address change by the device.
+- **A held device can still reach the admin sign-in page.** That is the lockout escape hatch: a computer that
+  was asleep when Gatekeeper was enabled must be able to log in and turn it off. The page keeps the usual
+  five-attempts lock. Everything else from a held device - your LAN, the internet, name lookups beyond the
+  sign-in sheet - is closed.
 
 ### 4.3 Warden
 
-**What it is.** An opt-in **threat and geo firewall**. It drops traffic to and from known-malicious IP ranges (public reputation feeds), countries you select, and addresses you specify — enforced in-kernel with `ipset` across IPv4 and IPv6, at near-zero cost per packet. **Off by default.**
+**What it is.** An opt-in **threat and geo firewall**. It drops traffic to and from known-malicious IP ranges (public reputation feeds), countries you select, and addresses you specify — enforced in-kernel with `ipset` across IPv4 and IPv6, at near-zero cost per packet. **Off by default.** Blocking by host name at the resolver is Dreadwatch, on the second tab (4.3.10).
 
 **When to use it.** Any router with a public WAN address that you would like to stop answering the constant background scanning; a household that wants to refuse whole countries it never talks to; anyone who keeps their own blocklist.
 
@@ -912,6 +928,8 @@ Both boxes take one IPv4 or IPv6 address or CIDR per line.
 - **Whitelist** — checked before everything except the built-in exemptions. Use it for anything you must never lose: a remote management address, a monitoring host, a VPN peer, a business partner in an otherwise blocked country.
 - **Manual blocks** — checked before the LAN exemption, so this is the sharpest tool on the page. It will block a LAN device if you tell it to.
 
+**Entries the router adds for you.** Two sets of addresses are put into the whitelist once, the first time Warden starts on a release that carries them, so no feed, country or manual block can cut the router off from its own lists: the country-list host `51.15.12.186` (4.3.4), and from v3.4.8 the four addresses abuse.ch's feed hosts answer from — `151.101.2.49`, `151.101.66.49`, `151.101.130.49` and `151.101.194.49`. `urlhaus.abuse.ch`, `threatfox.abuse.ch` and `feodotracker.abuse.ch` are all served by the Fastly CDN, which hands out one of those four depending on where the lookup comes from, and Fastly's range sits in the United States country list. They are shared CDN addresses, so the entries exempt whatever else Fastly serves from them too; a feed listing one of them would have been a false positive that took out a large part of the web. Each address is added only if it is missing (bare or as `/32`); nothing you entered is changed or reordered, and the system log names what was added. Delete any of them and it is never put back — the one-time marker is kept in `/jffs/rwarden`, so it survives reboots and firmware updates. Only erasing `/jffs`, which also clears your lists, starts it over.
+
 **Invalid entries are refused on save**, with a message naming them. The whole save is rejected rather than silently accepting what it could parse. An earlier version stripped offending characters instead — which turned `192.168.1.*` into `192.168.1.` and left people believing a subnet was whitelisted when nothing was. If a save is refused, fix the named line; do not assume the rest went in.
 
 #### 4.3.6 Direction, and filtering the router itself
@@ -920,7 +938,7 @@ Both boxes take one IPv4 or IPv6 address or CIDR per line.
 
 **Also filter the router itself** (off by default) applies the same blocking to connections the router *starts*.
 
-It cannot lock you out. Management traffic is inbound to the router and its replies carry a LAN destination, both of which are exempt, so the web interface and SSH stay reachable and the toggle stays revocable. DNS resolvers and time servers are exempted automatically — a router with a dead clock fails TLS everywhere, which would look like a total outage. List download hosts are **not** exempted automatically; the country-list host is covered by its whitelist entry (4.3.4). A threat feed or custom feed hosted in a country you block needs its own whitelist entry, or its update fails and the previous copy stays in use.
+It cannot lock you out. Management traffic is inbound to the router and its replies carry a LAN destination, both of which are exempt, so the web interface and SSH stay reachable and the toggle stays revocable. DNS resolvers and time servers are exempted automatically — a router with a dead clock fails TLS everywhere, which would look like a total outage. List download hosts are **not** exempted automatically; the country-list host and the abuse.ch feed hosts are covered by the whitelist entries the router adds (4.3.5). Any other threat feed or custom feed hosted in a country you block needs its own whitelist entry, or its update fails and the previous copy stays in use.
 
 It *can* stop the router reaching a feed source, DDNS or a VPN peer if a list happens to cover them. That failure is to stale data, and it is logged.
 
@@ -979,27 +997,46 @@ enabled. Blocked outbound entries appear in the system log with the
 
 - **A whitelist entry covering your LAN is not needed** and never was — the LAN exemption at step 7 already covers it. Historically the page said the opposite in one place and the guidance in another; the exemption is in the chain and you can see it.
 - Threat and country sets are created with a cap of 524,288 entries. The count against that cap is shown in the blocked-hits breakdown on the page.
-- The feed hosts are **not** exempted from the router-self filter (4.3.6): abuse.ch (Feodo, and the threat-domain lists in 4.3.10) and the country-list host are reached over the router's own traffic, so a country that hosts one of them must be whitelisted — the country-list host is added for you (4.3.4).
+- The feed hosts are **not** exempted from the router-self filter (4.3.6) by any built-in rule: abuse.ch (Feodo, and the Dreadwatch lists in 4.3.10) and the country-list host are reached over the router's own traffic. Their addresses are put in your whitelist instead (4.3.5); if you delete those entries, keep their countries unblocked or the router-traffic filter off. GitHub (FireHOL, DShield) and Spamhaus are not added — whitelist them if you block the country they are served from.
 - Eight custom feeds at the default timeouts can add roughly 16 minutes to an update window. A per-feed timeout is still owed.
 - North Korea publishes no IPv6 zone; the nightly update no longer logs a failed fetch for it (v2.6.1).
 - The country cache is replayed per set, members only, and **an empty live set never overwrites a good cache entry** (v2.5.9). That fixed country lists coming up empty after a reboot. Pending reporter confirmation on the first boot after upgrading from an older cache.
 - The self-monitor watches for your LAN address or `127.0.0.1` appearing in any block set, and if it finds one it logs a critical line and re-applies the rules. It is a backstop against exactly the class of failure described in 4.3.3, not something you should ever see fire.
 
-#### 4.3.10 Threat domains
+#### 4.3.10 Dreadwatch
 
-Everything above blocks by **address**. Threat domains block by **name**, at the resolver: the host names abuse.ch publishes as malware-distribution sites (URLhaus) and botnet command and payload hosts (ThreatFox) are handed to dnsmasq as `address=/host/` lines, so a lookup of the name — or any name under it — is answered NXDOMAIN. Off by default; the card is on the Warden page under the IP feeds, with one switch, a tick box per list and a box of names that must never be blocked.
+**What it is.** DNS threat blocking, on its own tab next to Warden (**Warden › Dreadwatch**, v3.4.8; before that a card on the Warden page called *Threat domains*). Everything above blocks by **address**, with `ipset` drops; Dreadwatch blocks by **name**, at the router's resolver: the host names abuse.ch publishes as malware-distribution sites (URLhaus) and botnet command and payload hosts (ThreatFox) are answered NXDOMAIN, together with every name under them. Two enforcement points, so two pages, each with its own feeds, status and counters. **Off by default.**
 
-How it runs: the lists download with the nightly feed update (and with **Update now**, which a change to the domain settings triggers by itself), from abuse.ch's public hostfile paths — no account or key. Each list keeps its previous download if a fetch fails, so one feed's outage never shrinks the list. The names are normalised (lower case, one host per line, nothing without a dot), capped at 100,000, filtered, and written to `/tmp/rwarden/dns.conf`, with a copy in `/jffs/rwarden/dns.cache` that a reboot replays before the first update. Every dnsmasq instance — the main one and each guest or VLAN network's own — includes that file. dnsmasq reads `address=` lines only at start, so **a changed list restarts dnsmasq once**, at the end of the update; an unchanged list does nothing, and the self-monitor's loopback-DNS check tolerates that one restart.
+**Warden must be on.** Dreadwatch runs on Warden's list updater, so with Warden off nothing is blocked and the page says so at the top, with a link. Warden's own address feeds and countries can stay empty: turn Warden on, leave its feeds unticked, and only the name blocking is active.
 
-Never blocked, each with its subdomains: the feed and list hosts themselves (`abuse.ch`, `ipdeny.com`, GitHub, Spamhaus — or the next update could not run), `asus.com` and `asuscomm.com`, the NTP pool and your NTP servers, your DDNS name, your DNS-over-TLS servers, your LAN domain, `.local`, `.arpa`, `.lan`, and whatever you put in **Never block these names**.
+**Setting it up.** Switch on **Block threat domains**, tick the feeds you want in the **Feeds** table (both are ticked once it is on), add anything that must never be blocked to **Never block these names**, then **Save & Apply**. The first save fetches the lists by itself; **Update feeds now** fetches again at any time, and afterwards they refresh with Warden's feeds (default 04:30 daily).
+
+**How it runs.** The lists come from abuse.ch's public hostfile paths — no account or key. Each feed keeps its previous download if a fetch fails, so one feed's outage never shrinks the list. The names are normalised (lower case, one host per line, nothing without a dot), capped at 100,000, filtered through the never-block names, and written to `/tmp/rwarden/dns.conf` as `reaper-nx=/name/` lines — answered exactly like an `address=/name/` with no address, but marked as Dreadwatch's — with a copy in `/jffs/rwarden/dns.nx` that a reboot replays before the first update. Every dnsmasq instance — the main one and each guest or VLAN network's own — includes that file. dnsmasq reads the list only at start, so **a changed list restarts dnsmasq once**, at the end of the update; an unchanged list does nothing, and the self-monitor's loopback-DNS check tolerates that one restart.
+
+**What is counted.** The resolver itself records every NXDOMAIN it answers from the list: the time, the address of the device that asked, and the list entry that matched (a lookup of `a.b.bad.example` is recorded as `bad.example`). Only blocked lookups are recorded, never ordinary ones, and nothing goes to the system log per lookup. Records are collected every 15 minutes and each time the page refreshes, into counters kept in `/jffs/rwarden/dns.counters`, so they survive reboots and upgrades. To keep a flood from costing anything, the resolver keeps at most 50 records a second and at most 256 KB between collections; anything beyond that is counted as **Not recorded** rather than lost silently.
+
+**Reading the page.**
+
+- **Tiles** — *Blocked lookups* since the counters were last reset, *Names on the list*, *Devices that tried*, *List updated*, and *Not recorded* when there are any.
+- **Feeds** — per feed: on or off, how many of its names are on the list after the never-block exemptions, how many lookups it blocked, the last good download and its state (*ok*, or *failed, previous download kept*). A name both feeds list counts for both, so the feed figures can add up to more than the total.
+- **Most-blocked names** and **Devices that looked up blocked names** — the top 100 of each, with when each was last seen and, for a name, its feed; a device is shown by its name on the Devices page where the router knows one.
+- **Recent blocked lookups** — the newest 100 of up to 500 kept in memory (cleared at reboot).
+- **Test now** asks the router's resolver for a name on the list and reports whether the answer was NXDOMAIN. The test lookup is counted too, as *this router (self-test)*.
+- **Reset counters** clears the counters and the recent list. Turning Dreadwatch or Warden off clears them as well.
+- **Coverage** — whether DNS Director sends every LAN device's lookups to this router, and whether Firefox's DNS-over-HTTPS is switched off on this network (the canary domain answers NXDOMAIN).
+
+If the page says *Counting is not active yet*, the resolver is still running a list built by v3.4.7, before counting existed. Blocking works; counting starts with the next list update (**Update feeds now** does it at once).
+
+Never blocked, each with its subdomains: the feed and list hosts themselves (`abuse.ch`, `ipdeny.com`, GitHub, Spamhaus — or the next update could not run), `asus.com` and `asuscomm.com`, the NTP pool and your NTP servers, your DDNS name, your DNS-over-TLS servers, your LAN domain, `.local`, `.arpa`, `.lan`, and whatever you put in **Never block these names**. Blocking applies to the name a device asks for, not to the names an answer points on to, so a CDN name such as `p2.shared.global.fastly.net` never needs an entry.
 
 Limits, stated plainly:
 
-- Only devices that use **this router** for DNS are covered. DNS-over-HTTPS in a browser, a device with its own DNS server, or a VPN that carries DNS all bypass it — unless DNS Director is set to force the router. A filtering upstream such as AdGuard or Pi-hole sees nothing of this list; put it there too if that is where your clients resolve.
+- Only devices that use **this router** for DNS are covered. DNS-over-HTTPS in a browser or app, a device with its own DNS server, or a VPN that carries DNS all bypass it — unless DNS Director is set to force the router; the Coverage card shows which applies. A filtering upstream such as AdGuard or Pi-hole sees nothing of this list; put it there too if that is where your clients resolve.
+- The device counted is the address that asked **this router**. A LAN resolver that forwards to the router (a Pi-hole, for example) is counted as one device for all of its clients. A lookup over IPv6 is counted under the device's IPv6 address.
 - It is a name block, not an address block: a connection to a bare IP address is Warden's IP layer's job (4.3.3), not this one's.
-- There is no per-name hit count. That would need query logging, which this firmware does not turn on; the card shows how many names are loaded and when, and whether the running dnsmasq was started with the list.
 - abuse.ch lists are time-boxed (an entry expires after months), so the list shrinks as well as grows.
-- The lists are reached over the router's own traffic: with the router-self filter on (4.3.6) and a country selected that hosts abuse.ch, the fetch is dropped and the previous list stays in use — whitelist the host, as 4.3.4 does for the country-list host.
+- The lists are reached over the router's own traffic; with the router-self filter on (4.3.6) the abuse.ch addresses in your whitelist (4.3.5) keep the fetch working.
+- A firmware downgrade to v3.4.7 does not inherit the v3.4.8 list: that release rebuilds its own at its first feed update.
 
 ### 4.4 Policy Routing
 
@@ -1249,7 +1286,7 @@ Saturate your upload with a large backup or file send, and watch the live column
 
 ### 4.7 Traffic Analyzer
 
-**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput with an optional latency trace, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap. **Off by default:** switch it on with the page's toggle; nothing is recorded before that.
+**What it is.** A native bandwidth and usage page driven by the `rtrafd` collector: live WAN throughput, an optional latency and loss chart, per-QoS-class upload, per-network totals, top devices, live top talkers by destination-port bucket, and a monthly data cap. **Off by default:** switch it on with the page's toggle; nothing is recorded before that.
 
 **When to use it.** To see who is using the line and when, to confirm QoS classes are actually receiving traffic, and to keep an eye on a metered connection.
 
@@ -1263,7 +1300,7 @@ Saturate your upload with a large backup or file send, and watch the live column
 
 > **The storage choice is the one that matters.** The default is **RAM**, and on RAM every number you see is lost at the next reboot. If you want history that outlives a restart — and the 14-day, monthly and yearly views only mean anything if it does — set the store to JFFS or USB *before* you start collecting. USB is the right answer if you have a stick in the router: it is larger and it spares the internal flash the write cycles.
 
-The **latency probe** sends one ping per sample to the target you name. **Leave it blank and nothing is sent at all.**
+The **latency probe** sends one ping every 5 seconds to the target you name. **Leave it blank and nothing is sent at all.** With a target set, the **Latency & loss** chart under WAN throughput draws the round-trip time on the left axis (ms) and the share of probes lost over the last minute on the right axis (%), on every window: live, it moves with the throughput chart (the last reply is held until the next probe arrives, so the line is continuous rather than a dot every 5 seconds); on the history windows, a period with no reply leaves a gap rather than a zero. The **Latency** and **Loss** tiles show the one-minute figures. With the probe off the chart says so and points to Settings.
 
 The **data cap** is informational: a warning is logged at 80% and again at 100%. Nothing is cut off, and nothing is throttled.
 
@@ -1788,6 +1825,9 @@ needed. Delete the file, or just that line, then run `service restart_dnsmasq` o
 - A device gets a name only if it took its address from the router by DHCP and sent a host name. A device
   with a fixed address configured on the device itself has no name to share.
 - The name is the device's own DHCP host name, not the friendly name you set on the Devices page.
+- A device cannot take a name the router already answers for: the router's own name, another device's
+  static-lease name, or a name in the hosts file. The DNS server already refuses such a DHCP name for
+  IPv4; the IPv6 side refuses it too, and the system log names the device once (`rv6names`).
 
 ### 4.15 About
 
@@ -1929,6 +1969,8 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | Whole LAN lost the internet right after a Warden feed update | Log `rwarden`, `rwatch` canary CRITICAL | Fixed since v1.8.8 (private ranges are stripped); `rwatch` re-applies rules and logs if your LAN IP ever matches a block set. Check custom feeds for private ranges; they are stripped too. |
 | Warden blocks total is large but the country table is near zero | Warden count bar (Countries / Threat feeds / Manual / Unclassified) | Not a fault: before v2.5.0 feeds were credited first. Now countries are evaluated first; expect a kink in history at that version. |
 | Warden country tile is amber "N country list(s) empty" after a reboot | Warden; log `rwarden: cache restore for set …`; `ipset -t list rw_g_<cc>` | Press **Update feeds now**. v2.5.9 fixed the per-set cache replay; pending confirmation on the first boot after upgrading an old cache. |
+| Dreadwatch is on but shows no blocked lookups | Warden › Dreadwatch: **Test now**, the Coverage card; log `rwarden: threat domains:` | Press **Test now**. *Blocked* means the list works and no device has looked up a listed name through this router — or they resolve elsewhere (Coverage). *Not blocked* means the list is not loaded yet: **Update feeds now**. *Counting is not active yet*: the next list update starts it (4.3.10). |
+| Dreadwatch shows a *Not recorded* tile | Warden › Dreadwatch | More than 50 blocked lookups a second, typically one device retrying a blocked name in a loop. Blocking is unaffected; the records beyond the limit are counted, not kept. The *Devices* card shows which device. |
 | Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (2.9). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
 | Security Review row is amber *Baseline* after a reboot; the review card says *no report yet* | Dashboard; Firewall › Status, the Security review card | Not a fault: the report lives in RAM, and the first check after a boot waits out the 5-minute boot grace and the next five-minute tick — up to 10 minutes. The row turns green (or red) on its own. |
 | `rwatch: security review: N failed ssh logins from <address>` and a notice on the review card | Firewall › Status, the Security review card; `/jffs/security_recored.log`; the dropbear lines in the system log | A password-guessing run. Over IPv4 the stock guard locks the source after its own threshold; over IPv6 from the internet the router now allows 5 new SSH connections a minute per /64 (2.9). If you do not need SSH from the internet, set SSH to LAN only on the Administration page — the notice is information, nothing has been undone. |
@@ -2010,9 +2052,10 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 - **RFC 4638 / baby jumbo** — the PPPoE extension that allows a 1500-byte MTU by widening the WAN port to 1508; requires provider support and both MTU and MRU above 1492.
 - **rtrafd** — the Traffic Analyzer collector.
 - **rwatch** — the health watchdog (every 5 minutes): WAN first-hop ping, loopback DNS, the Warden self-lockout canary, Policy Routing self-heal, hung-nvram reaping, the optional accelerator probe, the PPPoE stale-session re-dial; writes incident dumps on first failure.
-- **Security review** — the self-monitor's advisory drift check (2.9): `/jffs` scripts, configs and SSH keys, add-on files, cron entries and the exposure settings, compared against a baseline you accepted on the Firewall page's Status tab; amber dashboard bar and one log line per change set, nothing undone.
+- **Security review** — the self-monitor's advisory drift check (2.9): `/jffs` scripts, configs and SSH keys, add-on files, cron entries and the exposure settings, compared against a baseline you accepted on the Firewall page's Status tab; amber dashboard bar and one log line per change set, nothing undone. Watch rules set what is hashed, checked for existence only or ignored; every acceptance is logged.
 - **SDN / Guest Network Pro** — ASUS's per-network profiles (guest, IoT, VLAN). Gatekeeper enforces on every one; the Traffic Analyzer labels each by name and VLAN.
 - **Warden** — the threat-feed, country and manual IP blocking layer.
+- **Dreadwatch** — Warden's DNS counterpart (4.3.10): threat host names answered NXDOMAIN at the router's resolver, with per-feed, per-name and per-device counts of what it blocked.
 - **Zone policy** — the default action between two zones; the weakest statement in the firewall engine, overridden by Egress defaults and explicit rules.
 
 ---
@@ -2091,10 +2134,11 @@ lists themselves live on `/jffs` (2.4).
 **Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_self` `0` (the
 router's own connections are not filtered), `rwarden_log` `0`, `rwarden_stats_save` `1` (block counts
 are saved to flash), `rwarden_reset` `off` (the counters are never zeroed on a schedule; `24h`, `7d`,
-`30d` and `90d` are the choices), `rwarden_dns` `0` (threat domains, 4.3.10: off until you switch it
+`30d` and `90d` are the choices), `rwarden_dns` `0` (Dreadwatch, 4.3.10: off until you switch it
 on) and `rwarden_dns_feeds` `urlhaus threatfox` (both lists selected once it is on). The list keys (`rwarden_feeds`, `rwarden_cfeeds`, `rwarden_geo`,
-`rwarden_allow`, `rwarden_ban`) and `rwarden_sched` (feed schedule; empty = 04:30 daily) start empty,
-so a freshly enabled Warden blocks nothing until you choose feeds or countries. `rwarden_lastupd` is
+`rwarden_ban`) and `rwarden_sched` (feed schedule; empty = 04:30 daily) start empty, and the whitelist
+(`rwarden_allow`) holds only the five list-host addresses the router adds once (4.3.5), so a freshly
+enabled Warden blocks nothing until you choose feeds or countries. `rwarden_lastupd` is
 the time of the last feed update, empty until the first.
 
 **Gatekeeper** (4.2) — `gk_enable` `0`, `gk_default` `0`, `gk_captive` `1`, `gk_notify` `1`,
@@ -2146,7 +2190,8 @@ On `ram`, history is lost at reboot; point it at JFFS or USB to keep it. The exp
 `reaper_export_scrape_token` empty.
 
 **Self-monitor** (2.9, 4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes, `rwatch_review` `0` (the
-security review, Firewall › Status: off until you switch it on),
+security review, Firewall › Status: off until you switch it on; its watch rules file starts empty, so
+the built-in defaults apply),
 `reaper_wanbounce_enable` **`1`**. The WAN bounce fires only on a PPPoE link that has failed all
 three reachability probes after the boot grace period.
 
@@ -2244,6 +2289,8 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | Firewall logging | None | `fw_log_x` `none` |
 | URL filter, keyword filter, network services filter | Off | `url_enable_x` `0`, `keyword_enable_x` `0`, `fw_lw_enable_x` `0` |
 | Reaper rules engine, Warden, Gatekeeper, Policy Routing | Off (8.2) | `reaper_fw_enable`, `rwarden_enable`, `gk_enable`, `reaper_pbr_enable` |
+| Dreadwatch (DNS threat blocking; needs Warden on) | Off | `rwarden_dns` `0` |
+| Security review | Off | `rwatch_review` `0` |
 | Parental controls | Off | `MULTIFILTER_ALL` `0` |
 
 **Wireless** (every radio unless a row says otherwise)
@@ -2298,6 +2345,7 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | QoS | Off; no bandwidth figures entered | `qos_enable` `0`, `qos_obw`, `qos_ibw` empty |
 | QoS classes and rules when turned on | Reaper's five-class profile and starter rules (8.1, 8.2) | `qos_class_names`, `qos_orates`, `qos_rulelist` |
 | Traffic Analyzer | Off | `rtraf_enable` `0` |
+| Traffic latency probe (and the latency & loss chart) | Off; no target, nothing sent | `rtraf_probe` empty |
 | Stock traffic statistics | On (the stock collector behind the Traffic Monitor pages; it has no switch) | `rstats_enable` `1` |
 | Connections destination names | On | `rconn_names` `1` |
 | Passive channel monitor | Off | `rchq_enable` `0` |
@@ -2365,7 +2413,9 @@ nothing left to talk to.
 What replaces them, and what does not:
 
 - **Malicious-site and threat blocking** — Warden (4.3), using public IP threat feeds and country
-  blocks. It works on addresses rather than on inspected content, and it needs no cloud service.
+  blocks, and Dreadwatch (4.3.10), which answers known malware and botnet host names with NXDOMAIN at
+  the router's resolver and counts what it blocked. Both work on addresses and names rather than on
+  inspected content, and neither needs a cloud service.
 - **Per-device access control** — Gatekeeper (4.2).
 - **Content and keyword filtering** — the firewall's URL Filter and Keyword Filter tabs (4.1).
 - **Deep packet inspection, and signature-based intrusion prevention** — **nothing replaces this.**

@@ -1,0 +1,519 @@
+From 302bb0a490fc0fef5532e16a3dd6e30807a3605f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:43 -0400
+Subject: [PATCH] rv6names: a lease name the DNS server protects is never
+ published over IPv6
+
+Security review 2026-10-20, F-1 (opt-in reaper_dns_v6names). dnsmasq refuses
+a DHCPv4 lease its host name when a hosts source or a dhcp-host line holds
+that name with another address, but keeps the name in the lease file, which
+is rv6names' only source - so a LAN device sending the router's name or a
+static lease's name had its IPv6 address served for that name over AAAA.
+Each tick now loads the names dnsmasq protects (/etc/hosts and every
+addn-hosts file but our own, the dhcp-host= and host-record= lines of every
+instance's conf, lan_hostname) and publishes a lease name only when no
+source holds it or the source names this very device (the dhcp-host MAC, a
+hosts entry's IPv4). A refused name is logged once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rv6names.c           | 117 ++++++++++-
+ release/src/router/shared/reaper_v6names.c | 226 ++++++++++++++++++++-
+ release/src/router/shared/reaper_v6names.h |  49 +++++
+ 3 files changed, 384 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/rc/rv6names.c b/release/src/router/rc/rv6names.c
+index 788355cedc..ce7b34de4a 100644
+--- a/release/src/router/rc/rv6names.c
++++ b/release/src/router/rc/rv6names.c
+@@ -35,6 +35,18 @@
+  * Gate: reaper_dns_v6names == 1 (off at factory from v3.4.2; was on) and IPv6 enabled, router mode. Off
+  * (or IPv6 off) empties every file once, so dnsmasq drops the names, then idles
+  * on one nvram read every 30 s. Syslog only on enable / disable, never per tick.
++ * 2026-10-20 (security review F-1): PROTECTED NAMES. dnsmasq refuses a DHCPv4 lease
++ * its name when a hosts source or a dhcp-host line holds that name with another
++ * address (cache.c cache_add_dhcp_entry, F_HOSTS | F_CONFIG) - the router's own
++ * name, a static lease's name, a hosts-file entry - but it keeps the name in the
++ * lease file, which was this daemon's only name source. A LAN device that sent
++ * option 12 = "<lan_hostname>" therefore got its IPv6 address served for the
++ * router's name over AAAA (A stayed correct), unauthenticated. Every tick now
++ * loads the names dnsmasq itself protects - /etc/hosts and every addn-hosts file
++ * except our own, dhcp-host= and host-record= lines of every instance's conf,
++ * lan_hostname - and a lease name is published only when no source holds it or
++ * the source names this very device (shared/reaper_v6names.c rv6n_prot_*). A
++ * refused name is logged once per daemon lifetime, never per tick.
+  */
+ #include "rc.h"
+ #include <signal.h>
+@@ -58,7 +70,7 @@
+ static volatile sig_atomic_t g_stop;
+ static void on_sig(int s) { (void)s; g_stop = 1; }
+ 
+-struct v4name { char mac[18]; char name[RV6N_NAME_MAX]; };
++struct v4name { char mac[18]; char ip4[16]; char name[RV6N_NAME_MAX]; };
+ 
+ static struct reaper_nd nd[V6N_ND_MAX];
+ static struct v4name v4[V6N_LEASE_MAX];
+@@ -67,6 +79,12 @@ static struct rv6n_pair pairs[V6N_ND_MAX];
+ static char outbuf[V6N_BUF], curbuf[V6N_BUF];
+ static struct rv6n_held held[V6N_ND_MAX], fresh[V6N_ND_MAX];
+ static int nheld;
++/* 2026-10-20: the names dnsmasq protects (see the header comment), reloaded every tick */
++static struct rv6n_prot prot[RV6N_PROT_MAX];
++static int nprot;
++#define V6N_WARN_MAX	32
++static char warned[V6N_WARN_MAX][RV6N_NAME_MAX];
++static int nwarned;
+ 
+ /* per bridge: a rewritten file not yet signalled, and when this bridge was last signalled */
+ static struct { char br[16]; int pending; long last; } bst[V6N_BR_MAX];
+@@ -120,9 +138,11 @@ static void read_leases(int *n4, int *n6)
+ 		if ((f = fopen(path, "r")) == NULL)
+ 			continue;
+ 		while (fgets(line, sizeof(line), f)) {
+-			int k = rv6n_lease_line(line, mac, sizeof(mac), name, sizeof(name));
++			char ip4[16];
++			int k = rv6n_lease_line4(line, mac, sizeof(mac), ip4, sizeof(ip4), name, sizeof(name));
+ 			if (k == 4 && *n4 < V6N_LEASE_MAX) {
+ 				strlcpy(v4[*n4].mac, mac, sizeof(v4[*n4].mac));
++				strlcpy(v4[*n4].ip4, ip4, sizeof(v4[*n4].ip4));
+ 				strlcpy(v4[*n4].name, name, sizeof(v4[*n4].name));
+ 				(*n4)++;
+ 			} else if (k == 6 && *n6 < V6N_LEASE_MAX)
+@@ -133,13 +153,89 @@ static void read_leases(int *n4, int *n6)
+ 	closedir(d);
+ }
+ 
+-static const char *name_of(const char *mac, int n4)
++/* the DHCPv4 lease of this MAC, or -1 */
++static int lease_of(const char *mac, int n4)
+ {
+ 	int i;
+ 	for (i = 0; i < n4; i++)
+ 		if (!strcasecmp(v4[i].mac, mac))
+-			return v4[i].name;
+-	return NULL;
++			return i;
++	return -1;
++}
++
++/* 2026-10-20 (security review F-1): the names dnsmasq would refuse a lease - read
++ * from the very sources each instance reads. hosts: /etc/hosts and every
++ * addn-hosts= file an instance's conf names, except this daemon's own files
++ * (V6N_DIR). conf: dhcp-host= / host-record= lines of /etc/dnsmasq.conf and
++ * every /etc/dnsmasq-<idx>.conf (the SDN instances; sdn.c). Plus lan_hostname
++ * itself, in case a custom hosts file dropped it. Bounded: 512 names, 512-byte
++ * lines; the files are root-written. */
++static void prot_hosts_file(const char *path)
++{
++	FILE *f;
++	char line[512];
++
++	if (strncmp(path, V6N_DIR "/", sizeof(V6N_DIR)) == 0)
++		return;					/* our own output is not a source */
++	if ((f = fopen(path, "r")) == NULL)
++		return;
++	while (fgets(line, sizeof(line), f))
++		nprot = rv6n_prot_hosts_line(line, prot, nprot, RV6N_PROT_MAX);
++	fclose(f);
++}
++
++static void prot_conf_file(const char *path)
++{
++	FILE *f;
++	char line[512];
++
++	if ((f = fopen(path, "r")) == NULL)
++		return;
++	while (fgets(line, sizeof(line), f)) {
++		nprot = rv6n_prot_conf_line(line, prot, nprot, RV6N_PROT_MAX);
++		if (!strncmp(line, "addn-hosts=", 11)) {
++			char hp[256];
++			snprintf(hp, sizeof(hp), "%s", line + 11);
++			hp[strcspn(hp, " \t\r\n#")] = '\0';
++			if (hp[0] == '/' && strcmp(hp, "/etc/hosts"))	/* /etc/hosts is read once below */
++				prot_hosts_file(hp);
++		}
++	}
++	fclose(f);
++}
++
++static void load_protected(void)
++{
++	DIR *d;
++	struct dirent *e;
++
++	nprot = 0;
++	nprot = rv6n_prot_add(prot, nprot, RV6N_PROT_MAX, nvram_safe_get("lan_hostname"), NULL, nvram_safe_get("lan_ipaddr"));
++	prot_hosts_file("/etc/hosts");
++	prot_conf_file("/etc/dnsmasq.conf");
++	if ((d = opendir("/etc")) != NULL) {
++		while ((e = readdir(d)) != NULL) {
++			size_t l = strlen(e->d_name);
++			char p[280];
++			if (strncmp(e->d_name, "dnsmasq-", 8) != 0 || l < 13 || strcmp(e->d_name + l - 5, ".conf") != 0)
++				continue;
++			snprintf(p, sizeof(p), "/etc/%s", e->d_name);
++			prot_conf_file(p);
++		}
++		closedir(d);
++	}
++}
++
++/* one syslog line per refused name per daemon lifetime - never per tick */
++static void warn_protected(const char *name, const char *mac)
++{
++	int i;
++	for (i = 0; i < nwarned; i++)
++		if (!strcasecmp(warned[i], name))
++			return;
++	if (nwarned < V6N_WARN_MAX)
++		strlcpy(warned[nwarned++], name, RV6N_NAME_MAX);
++	logmessage(V6N_TAG, "the DHCP name '%s' sent by %s is a protected name (the router's own, a static lease's or a hosts entry of another device) - not published for IPv6", name, mac);
+ }
+ 
+ static int is_v6lease_name(const char *name, int n6)
+@@ -245,14 +341,23 @@ static void tick(void)
+ 
+ 	nn = reaper_nd_load(nd, V6N_ND_MAX);
+ 	read_leases(&n4, &n6);
++	load_protected();	/* 2026-10-20: the names dnsmasq itself would refuse a lease */
+ 
+ 	/* this tick's pairs, folded into the hold table */
+ 	for (i = 0; i < nn && nf < V6N_ND_MAX; i++) {
+ 		const char *nm;
++		int li;
+ 		if (!nd[i].br[0] || !reaper_nd_global(nd[i].ip))
+ 			continue;
+-		if ((nm = name_of(nd[i].mac, n4)) == NULL)
++		if ((li = lease_of(nd[i].mac, n4)) < 0)
+ 			continue;
++		nm = v4[li].name;
++		/* 2026-10-20 (F-1): a name a hosts source or a dhcp-host line holds for
++		 * another device is dnsmasq's to refuse, and ours to leave alone */
++		if (!rv6n_prot_ok(prot, nprot, nm, v4[li].mac, v4[li].ip4)) {
++			warn_protected(nm, v4[li].mac);
++			continue;
++		}
+ 		if (!inet_ntop(AF_INET6, nd[i].ip, fresh[nf].addr, sizeof(fresh[nf].addr)))
+ 			continue;
+ 		strlcpy(fresh[nf].br, nd[i].br, sizeof(fresh[nf].br));
+diff --git a/release/src/router/shared/reaper_v6names.c b/release/src/router/shared/reaper_v6names.c
+index a7295a5e70..c9e28a863e 100644
+--- a/release/src/router/shared/reaper_v6names.c
++++ b/release/src/router/shared/reaper_v6names.c
+@@ -25,16 +25,19 @@ int rv6n_name_ok(const char *s)
+ 	return 1;
+ }
+ 
+-int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size_t namelen)
++int rv6n_lease_line4(const char *line, char *mac, size_t maclen, char *ip4, size_t ip4len,
++		     char *name, size_t namelen)
+ {
+ 	char f[5][128];
+ 	int k;
+ 	struct in_addr a4;
+ 	struct in6_addr a6;
+ 
+-	if (!line || !mac || !name || maclen < 18 || namelen < RV6N_NAME_MAX)
++	if (!line || !mac || !name || maclen < 18 || namelen < RV6N_NAME_MAX || (ip4 && ip4len < 16))
+ 		return 0;
+ 	mac[0] = name[0] = '\0';
++	if (ip4)
++		ip4[0] = '\0';
+ 	k = sscanf(line, "%127s %127s %127s %127s %127s", f[0], f[1], f[2], f[3], f[4]);
+ 	if (k < 4 || !strcmp(f[0], "duid"))
+ 		return 0;
+@@ -55,12 +58,231 @@ int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size
+ 			mac[i] = (char)tolower((unsigned char)c);
+ 		}
+ 		mac[17] = '\0';
++		if (ip4)
++			snprintf(ip4, ip4len, "%s", f[2]);
+ 		snprintf(name, namelen, "%s", f[3]);
+ 		return 4;
+ 	}
+ 	return 0;
+ }
+ 
++int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size_t namelen)
++{
++	return rv6n_lease_line4(line, mac, maclen, NULL, 0, name, namelen);
++}
++
++/* ---- protected names (2026-10-20, security review F-1) ---------------------- */
++
++/* a 17-character xx:xx:xx:xx:xx:xx; out (18 bytes) gets it lower-case */
++static int prot_mac(const char *s, char *out)
++{
++	size_t i;
++	if (!s || strlen(s) != 17)
++		return 0;
++	for (i = 0; i < 17; i++) {
++		char c = s[i];
++		if ((i % 3) == 2 ? c != ':' : !isxdigit((unsigned char)c))
++			return 0;
++		out[i] = (char)tolower((unsigned char)c);
++	}
++	out[17] = '\0';
++	return 1;
++}
++
++static int prot_ip4(const char *s)
++{
++	struct in_addr a4;
++	return s && strlen(s) < 16 && inet_pton(AF_INET, s, &a4) == 1;
++}
++
++static int prot_ip6(const char *s)
++{
++	struct in6_addr a6;
++	char t[RV6N_ADDR_MAX];
++	size_t l;
++	if (!s)
++		return 0;
++	l = strlen(s);
++	if (l >= 2 && s[0] == '[' && s[l - 1] == ']') {	/* dhcp-host writes IPv6 as [addr] */
++		if (l - 2 >= sizeof(t))
++			return 0;
++		memcpy(t, s + 1, l - 2);
++		t[l - 2] = '\0';
++		s = t;
++	}
++	return inet_pton(AF_INET6, s, &a6) == 1;
++}
++
++/* a dnsmasq lease time: digits, optionally followed by one of s m h d w */
++static int prot_leasetime(const char *s)
++{
++	size_t i, l;
++	if (!s || !*s)
++		return 0;
++	l = strlen(s);
++	for (i = 0; i < l; i++) {
++		if (isdigit((unsigned char)s[i]))
++			continue;
++		return i > 0 && i == l - 1 && strchr("smhdw", s[i]) != NULL;
++	}
++	return 1;
++}
++
++int rv6n_prot_add(struct rv6n_prot *tbl, int n, int cap, const char *name, const char *mac, const char *ip4)
++{
++	char label[RV6N_NAME_MAX], m[18];
++	size_t i, l;
++	int j;
++
++	if (!tbl || n < 0 || n >= cap || !name || !*name)
++		return n;
++	l = strcspn(name, ".");			/* the first label of a dotted token */
++	if (l == 0 || l >= sizeof(label))
++		return n;
++	for (i = 0; i < l; i++)
++		label[i] = (char)tolower((unsigned char)name[i]);
++	label[l] = '\0';
++	if (!rv6n_name_ok(label))		/* a lease could never carry it */
++		return n;
++	m[0] = '\0';
++	if (mac && *mac && !prot_mac(mac, m))
++		return n;
++	if (ip4 && *ip4 && !prot_ip4(ip4))
++		ip4 = "";
++	for (j = 0; j < n; j++)
++		if (!strcmp(tbl[j].name, label) && !strcmp(tbl[j].mac, m) && !strcmp(tbl[j].ip4, ip4 ? ip4 : ""))
++			return n;
++	snprintf(tbl[n].name, sizeof(tbl[n].name), "%s", label);
++	snprintf(tbl[n].mac, sizeof(tbl[n].mac), "%s", m);
++	snprintf(tbl[n].ip4, sizeof(tbl[n].ip4), "%s", ip4 ? ip4 : "");
++	return n + 1;
++}
++
++/* next whitespace-separated token of a line, in place; "" at the end or at '#' */
++static const char *prot_tok(const char **p, char *out, size_t outlen)
++{
++	const char *s = *p;
++	size_t l;
++	while (*s == ' ' || *s == '\t')
++		s++;
++	l = strcspn(s, " \t\r\n");
++	if (l == 0 || *s == '#') {
++		out[0] = '\0';
++		*p = s;
++		return out;
++	}
++	if (l >= outlen)
++		l = outlen - 1;
++	memcpy(out, s, l);
++	out[l] = '\0';
++	*p = s + strcspn(s, " \t\r\n");
++	return out;
++}
++
++int rv6n_prot_hosts_line(const char *line, struct rv6n_prot *tbl, int n, int cap)
++{
++	const char *p = line;
++	char addr[RV6N_ADDR_MAX + 4], tok[256];
++	const char *ip4 = NULL;
++
++	if (!line || !tbl)
++		return n;
++	prot_tok(&p, addr, sizeof(addr));
++	if (!addr[0])
++		return n;
++	if (prot_ip4(addr))
++		ip4 = addr;
++	else if (!prot_ip6(addr))
++		return n;				/* not a hosts line */
++	for (;;) {
++		prot_tok(&p, tok, sizeof(tok));
++		if (!tok[0])
++			break;
++		n = rv6n_prot_add(tbl, n, cap, tok, NULL, ip4);
++	}
++	return n;
++}
++
++int rv6n_prot_conf_line(const char *line, struct rv6n_prot *tbl, int n, int cap)
++{
++	char buf[512], *s, *f, *save;
++	char mac[18], ip4[16], names[8][RV6N_NAME_MAX];
++	int nn = 0, i, host_record;
++
++	if (!line || !tbl)
++		return n;
++	while (*line == ' ' || *line == '\t')
++		line++;
++	if (!strncmp(line, "dhcp-host=", 10))
++		host_record = 0;
++	else if (!strncmp(line, "host-record=", 12))
++		host_record = 1;
++	else
++		return n;
++	snprintf(buf, sizeof(buf), "%s", line + (host_record ? 12 : 10));
++	buf[strcspn(buf, "\r\n#")] = '\0';
++	mac[0] = ip4[0] = '\0';
++	for (s = buf, f = strtok_r(s, ",", &save); f; f = strtok_r(NULL, ",", &save)) {
++		while (*f == ' ' || *f == '\t')
++			f++;
++		if (!*f)
++			continue;
++		if (host_record) {
++			if (prot_ip4(f)) {
++				if (!ip4[0]) snprintf(ip4, sizeof(ip4), "%s", f);
++				continue;
++			}
++			if (prot_ip6(f) || !strncmp(f, "ttl=", 4))
++				continue;
++			if (nn < 8)
++				snprintf(names[nn++], RV6N_NAME_MAX, "%s", f);
++			continue;
++		}
++		if (prot_mac(f, mac))
++			continue;
++		if (!strncmp(f, "set:", 4) || !strncmp(f, "tag:", 4) || !strncmp(f, "id:", 3) || !strncmp(f, "net:", 4)
++		    || !strcmp(f, "ignore") || !strcmp(f, "infinite") || prot_leasetime(f) || prot_ip6(f))
++			continue;
++		if (prot_ip4(f)) {
++			if (!ip4[0]) snprintf(ip4, sizeof(ip4), "%s", f);
++			continue;
++		}
++		if (nn == 0)
++			snprintf(names[nn++], RV6N_NAME_MAX, "%s", f);	/* the first free field is the name */
++	}
++	for (i = 0; i < nn; i++)
++		n = rv6n_prot_add(tbl, n, cap, names[i], host_record ? NULL : mac, ip4);
++	return n;
++}
++
++int rv6n_prot_ok(const struct rv6n_prot *tbl, int n, const char *name, const char *mac, const char *ip4)
++{
++	char m[18];
++	int i, held = 0;
++
++	if (!name || !*name)
++		return 0;
++	if (!tbl || n <= 0)
++		return 1;
++	m[0] = '\0';
++	if (mac && *mac && !prot_mac(mac, m))
++		m[0] = '\0';
++	for (i = 0; i < n; i++) {
++		if (strcasecmp(tbl[i].name, name))
++			continue;
++		held = 1;
++		if (tbl[i].mac[0]) {			/* a dhcp-host line: the MAC decides */
++			if (m[0] && !strcmp(tbl[i].mac, m))
++				return 1;
++			continue;
++		}
++		if (tbl[i].ip4[0] && ip4 && !strcmp(tbl[i].ip4, ip4))	/* a hosts line: the IPv4 decides */
++			return 1;
++		/* an IPv6 hosts line: the admin pinned the AAAA - never ours to add to */
++	}
++	return held ? 0 : 1;
++}
++
+ static int pair_cmp(const void *a, const void *b)
+ {
+ 	const struct rv6n_pair *x = a, *y = b;
+diff --git a/release/src/router/shared/reaper_v6names.h b/release/src/router/shared/reaper_v6names.h
+index 205822913e..23a312e28c 100644
+--- a/release/src/router/shared/reaper_v6names.h
++++ b/release/src/router/shared/reaper_v6names.h
+@@ -73,4 +73,53 @@ int rv6n_hold_merge(struct rv6n_held *tbl, int n, int cap, const struct rv6n_hel
+  * signal, or the clock went backwards. 0 otherwise. now and last are uptime. */
+ int rv6n_hup_due(int pending, long last, long now, long min_gap);
+ 
++/* 2026-10-20 (security review F-1): PROTECTED NAMES. dnsmasq refuses a DHCP lease
++ * its name when a hosts source or a dhcp-host line already holds that name with
++ * another address (cache.c cache_add_dhcp_entry: F_HOSTS | F_CONFIG) - but it
++ * keeps the name in the lease file, and the lease file was this feature's only
++ * name source. So a LAN device claiming the router's own name, a static lease's
++ * name or a hosts-file name got its IPv6 address served for that name over AAAA
++ * while dnsmasq correctly refused the A record. The daemon now loads the same
++ * sources dnsmasq reads (/etc/hosts and every addn-hosts file, dhcp-host and
++ * host-record lines of every instance's conf) and publishes a lease name only
++ * when no source holds it, or the source holding it names this very device
++ * (the dhcp-host line's MAC, or a hosts entry's IPv4 equal to the lease's). */
++#define RV6N_PROT_MAX	512
++
++struct rv6n_prot {
++	char name[RV6N_NAME_MAX];	/* one label, lower-case (the first label of a dotted token) */
++	char mac[18];			/* lower-case, from a dhcp-host line; "" otherwise */
++	char ip4[16];			/* dotted IPv4 the source names; "" otherwise (an IPv6 hosts entry) */
++};
++
++/* rv6n_lease_line plus the lease's IPv4 (ip4, at least 16 bytes; "" for a DHCPv6
++ * lease). ip4 may be NULL. Same return values. */
++int rv6n_lease_line4(const char *line, char *mac, size_t maclen, char *ip4, size_t ip4len,
++		     char *name, size_t namelen);
++
++/* Add one protected name. name may be a dotted token (its first label is kept),
++ * mac/ip4 may be NULL or "". A label that is not a legal lease name is ignored
++ * (a lease could never carry it). Duplicates (same label, mac and ip4) are
++ * folded. Returns the new entry count (unchanged when full or nothing to add). */
++int rv6n_prot_add(struct rv6n_prot *tbl, int n, int cap, const char *name, const char *mac, const char *ip4);
++
++/* One line of a hosts file: "<addr> name [name ...] [# comment]". Every name is
++ * added with the address when it is IPv4, with no address when it is IPv6 (an
++ * admin-pinned AAAA: never ours to add to). Comments, blanks and lines whose
++ * first token is not an address are skipped. Returns the new entry count. */
++int rv6n_prot_hosts_line(const char *line, struct rv6n_prot *tbl, int n, int cap);
++
++/* One line of a dnsmasq configuration file: "dhcp-host=" (the first field that is
++ * not a MAC, a set:/tag:/id:/net: tag, an address, ignore, infinite or a lease
++ * time is the name; the MAC and the IPv4, when present, go with it) and
++ * "host-record=" (every name before the first address, with the IPv4 when
++ * present). Other lines are skipped. Returns the new entry count. */
++int rv6n_prot_conf_line(const char *line, struct rv6n_prot *tbl, int n, int cap);
++
++/* 1 when the lease name may be published for the device mac/ip4: no entry holds
++ * the name, or an entry naming it has this MAC (dhcp-host), or - for an entry
++ * without a MAC - this IPv4 (hosts). An entry with neither (an IPv6 hosts line)
++ * never matches. Names compare case-insensitively. 0 otherwise. */
++int rv6n_prot_ok(const struct rv6n_prot *tbl, int n, const char *name, const char *mac, const char *ip4);
++
+ #endif /* REAPER_V6NAMES_H */
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -166,7 +166,10 @@ apply to the canon tree, so no five-branch clone is needed.
 pinned upstream base genuinely does not carry. It is vendored here as
 `overlays/GT-BE98-platform.tar.gz` — 1,321 files, ~48 MB, SHA-256 pinned in
 `overlays/GT-BE98-platform.sha256`, built from a clean worktree of the `gt-be98`
-branch. **GT-BE98 is the only model that consumes it.**
+branch. The GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, which joined later from
+their own ASUS GPL releases, carry the same kind of archive
+(`overlays/<MODEL>-platform.tar.gz`, each with its `.sha256`); the other models get
+their platform tree from the pinned base.
 
 The originally proposed source (`github.com/ExtremeFiretop/AM-Reaper/releases`)
 was **not** used — it returned HTTP 404, so it could not be inspected or hashed.
@@ -305,7 +308,8 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0839` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| GitHub Actions | every `uses:` is pinned to a full commit SHA with a `# vN.N.N` comment (`actions/checkout`, `actions/cache`, `actions/cache/restore`, `actions/upload-artifact`); `build-scripts/tests/test_workflow_pins.py` fails the hygiene run on a tag pin, and `.github/dependabot.yml` proposes bumps as pull requests. A major tag is a moving pointer that runs new code in the build job unseen - security review 2026-10-20, F-5. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0852` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

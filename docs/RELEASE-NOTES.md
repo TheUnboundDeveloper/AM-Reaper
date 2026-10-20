@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.7** <!--@treever--> — `3006.102.8_Reaper_v3.4.7`. **A security review that reports changes to scripts, cron entries, SSH keys and exposure settings against a baseline you accept; Warden can answer threat domains with NXDOMAIN; failed-login bursts are surfaced and SSH over IPv6 from the internet is rate-limited.** Also: long-term storage on one pinned USB volume, device presence behind a mesh node, the Traffic Analyzer tiles, the Firmware page's node badge, the AiMesh channel fit's DFS handling. Everything in v3.4.6 is included. |
+| **Current rung** | **v3.4.8** <!--@treever--> — `3006.102.8_Reaper_v3.4.8`. **Dreadwatch puts threat domains on their own page and counts what it blocks, per feed, name and device; the Security Review takes watch rules, per-item accepts and keeps an acceptance log; latency and loss get their own chart.** Also: the 2026-10-20 security review's medium and five low findings fixed (IPv6 device names, the Connections name table's source check, SameSite on the session cookie, pinned build actions, a held Gatekeeper device's DNS answered by a sinkhole), the abuse.ch feed hosts whitelisted once, Diagnostics v1.3.44. Everything in v3.4.7 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -19,6 +19,32 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.8 — Dreadwatch, Security Review watch rules, the latency and loss chart
+
+**Dreadwatch (off by default).** Warden's threat-domain blocking has its own page, **Warden › Dreadwatch**,
+and now shows what it did: how many lookups it blocked, per feed, which names and which devices, and the
+most recent blocked lookups. The router's resolver records only the lookups it blocks — never ordinary ones —
+and the counts survive reboots. A **Test now** button proves the list is in force, and a coverage card says
+whether devices with their own DNS or Firefox's DNS-over-HTTPS can get around it. Warden must be on; its
+address feeds and countries can stay empty.
+
+**Security Review you can tune.** Watch rules decide what is hashed, what is only checked for existence and
+what is ignored, so files an add-on rewrites every hour stop filling the list. Each row can be accepted on its
+own, or turned into a rule with one click. Every acceptance and rules change is logged — on the card, in the
+system log and in `/jffs` — with who did it and what it covered. The rules survive firmware updates and travel
+with a settings backup.
+
+**Latency and loss chart.** With the latency probe on, the Traffic Analyzer draws latency and packet loss in
+their own chart under WAN throughput, on the live view as well as the history windows, each on its own axis.
+
+**Security fixes.** A full review of v3.4.7 found no unauthenticated way in at factory defaults; the one medium
+finding (in the opt-in IPv6 device names) and five low ones are fixed. A device held by Gatekeeper can no
+longer look names up through the router — every name points at the router, so the sign-in sheet still appears.
+Detail in [`REAPER-FIXES.md`](REAPER-FIXES.md).
+
+**Smaller changes.** The abuse.ch feed hosts' addresses are added to Warden's whitelist once (removable), so a
+country block can never stop the router fetching its own lists; Diagnostics v1.3.43.
 
 ## What's new in v3.4.7 — security review, threat domains, login watch
 

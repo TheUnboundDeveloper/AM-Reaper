@@ -1,6 +1,6 @@
 # Release Process — from source rung to published firmware
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 End-to-end path for a Reaper release, and what each workflow checks along the
 way. **Read "Cutting a rung" first** — every release problem we have actually
@@ -80,8 +80,8 @@ One command does all five, plus the sibling fan-out:
 marked claims against the repo and aborts on a mismatch — milliseconds, and it
 runs before anything is exported, so a stale doc is a five-second fix rather than
 something noticed after the rung is pinned. It then runs `cut_rung.sh` (the five
-artifacts above), then ports the rung onto the five sibling branches (RT-BE86U,
-RT-BE88U, GT-BE98, GT-BE98 Pro and GT-BE19000), then handles the
+artifacts above), then ports the rung onto the seven sibling branches (RT-BE86U,
+RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16 and BQ16 Pro), then handles the
 overlays — **in that order.** Regenerating an overlay before the port produces a
 patch that *reverts* the rung on every sibling, and it applies cleanly, so
 nothing downstream catches it. That is the 2026-08-10 regression, and the order
@@ -140,14 +140,14 @@ the rung is not shippable.
 2. PROSE              provenance summary + models_note, CHANGELOG section
                       (release notes are extracted from the changelog)
 
-3. COMMIT + HUB       commit the lean repo; push canon AND the four ported
-                      branches to the bare hub -- skipping the hub push blocks
-                      the NEXT rung on cut_fleet's ancestry check
+3. COMMIT + HUB       commit the lean repo; push canon AND the seven ported
+                      branches to the bare hub -- skipped, the next cut keeps
+                      the unpushed local tips (with a NOTE) and the hub lags
 
 4. PUSH               PR into main (runs patch-apply-check + verify-provenance)
                       or straight to main (runs repo-hygiene ONLY)
 
-5. BUILD              Actions → Public build → Run workflow
+5. BUILD              Actions → Build firmware from source → Run workflow
                       model=all, both variants, version BLANK, publish UNTICKED
                       (the overlay identity gate runs first and gates the matrix)
 
@@ -177,30 +177,30 @@ the rung is not shippable.
                       rotation = ship firmware with the new public key first.
 ```
 
-Publishing is gated **twice**: `github.ref == 'refs/heads/main'` *and* the
-`publish` input, which defaults to off. A dispatch on main with the box clear
-builds and verifies without shipping.
+Publishing is gated **twice**: the branch must be `main` or `Dev`
+(`github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev'`) *and* the
+`publish` input must be ticked; it defaults to off. A dispatch with the box clear
+builds and verifies without shipping, on either branch.
 
-### Nothing is automatic on a push to `Dev`
+### What a push to `Dev` runs
 
-Worth being blunt about, because it is the natural assumption and it is wrong:
-**pushing to `Dev` fires no workflow at all.** `repo-hygiene` is filtered to
-`main` on both its push and pull_request triggers; `patch-apply-check` and
-`verify-provenance` have **no push trigger whatsoever** — they are
-`pull_request`-only, path-filtered on `patches/**` (plus
-`provenance/manifest.json` for provenance). `public-build.yml` is
-`workflow_dispatch`-only and never fires by itself.
+Only `repo-hygiene`: it runs on a push to `main` or `Dev` and on a PR targeting
+either. `patch-apply-check` and `verify-provenance` have **no push trigger** —
+they are `pull_request`-only, path-filtered on `patches/**` (plus
+`provenance/manifest.json` and the OpenSSL overlay for provenance).
+`public-build.yml` is `workflow_dispatch`-only and never fires by itself.
 
-So the checks come from **opening a PR from `Dev` into `main`**, not from the
-push. That is the whole reason the checklist prefers the PR route for any rung
-touching `patches/`: pushing straight to `main` skips both of them silently.
+So the two series checks come from **opening a PR from `Dev` into `main`**, not
+from the push. That is the whole reason the checklist prefers the PR route for
+any rung touching `patches/`: pushing straight to `main` skips both of them
+silently.
 
 Nothing promotes `Dev` to `main`, and nothing builds on merge. The build is
-always a deliberate dispatch. A dispatch **from `Dev`** is the safe dry run —
-`overlays`, `toolchain` and `build` all run, while `tag`, `release` and
-`refresh_manifest` are branch-gated off, so it cannot publish even with
-`publish` ticked. (With `publish` ticked, a Dev dispatch IS the beta channel:
-`-beta` tags, pre-releases, and the manifest's beta line - see Notes.)
+always a deliberate dispatch. A dispatch **from `Dev`** with `publish` unticked
+is the safe dry run — `overlays`, `toolchain` and `build` run and nothing is
+published. With `publish` ticked, a Dev dispatch IS the beta channel: `-beta`
+tags, pre-releases, and the manifest's beta line (see Notes); only the stable
+update-manifest line stays main-only.
 
 Releases are **per-model** so models can version independently (e.g. RT-BE96U at
 v2.4.1 while the siblings catch up on the fan-out).
@@ -226,7 +226,7 @@ v2.4.1 while the siblings catch up on the fan-out).
 | `public-build.yml` | manual dispatch | Clean-room build, model × variant matrix. Applies `patches/`, asserts `EXPECTED_VERSION`, compares the series tree against `provenance/manifest.json`, runs the packaging gate, uploads artifacts, optionally hands off to `release.yml` |
 | ↳ `overlays` job | first, gates the matrix | Asserts each `overlays/<MODEL>.patch` carries **identity only** — in the seven banner-referencing files every changed line must be a banner swap, the banner must be that model's, and no `.dict` may appear. Seconds, no base clone. `git apply` cannot catch a stale overlay: one that reverts shared code still applies cleanly, which is how a fixed first-boot login loop was silently reintroduced in Aug 2026 |
 | `release.yml` | per-model tag `v*-*`, dispatch, or called | Parses `v<version>-<MODEL>`, verifies checksums, extracts CHANGELOG notes, creates/updates the per-model Release. Accepts a `run_id` to publish an existing green build with no rebuild |
-| `repo-hygiene.yml` | push **to `main`**, or a PR **targeting `main`** | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; hidden-character scan of patches, overlays and scripts against `.github/hidden-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
+| `repo-hygiene.yml` | push to `main` or `Dev`, a PR targeting either, or dispatch | Series gapless; no disallowed `From:` identity; PII scan against `.github/pii-allowlist.txt`; hidden-character scan of patches, overlays and scripts against `.github/hidden-allowlist.txt`; no file at GitHub's 100 MB limit; staged checksums verify |
 | `verify-provenance.yml` | dispatch, or PR touching `patches/`/manifest | Lints the manifest and reproduces `verifiable` entries from the pinned base |
 | `patch-apply-check.yml` | manual, or PR touching `patches/` | Applies the whole series with `git am --keep-cr` — mechanical proof the corresponding source is complete |
 

@@ -1,0 +1,426 @@
+From 5bebc4445720e7c16415def34b46ca5f967498af Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:44 -0400
+Subject: [PATCH] rdnsmapd: believe DNS replies only from the router or a known
+ resolver; the backfill checks its question
+
+Security review 2026-10-20, F-2/F-3. Every UDP source-port-53 frame on a
+bridge was believed, so a LAN host forging replies could name, rename or
+evict Connections-page entries. A reply is ignored when its source is a LAN
+address (the bridge subnets; the router's IPv6 prefixes, ULA, link-local)
+that is neither the router nor a known resolver: one a dnsmasq instance
+advertises by DHCP, or one the router itself forwards to (each instance's
+servers-file and server= lines - on the owner's box an AdGuard on a VLAN,
+reached through the router, was otherwise logged as forged). Ignored replies
+are counted, one log line per ten minutes. The one-shot PTR backfill socket
+is connected, and an answer must carry the question that was asked.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rdnsmapd/rdnsmapd.c | 313 ++++++++++++++++++++++++-
+ 1 file changed, 306 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index fea8c10068..3106a5dde2 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -66,6 +66,9 @@
+ #include <linux/if_packet.h>
+ #include <net/if.h>
+ #include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <dirent.h>
++#include <syslog.h>
+ #include "reaper_dnsmap.h"
+ 
+ #ifndef RDM_CT
+@@ -225,6 +228,200 @@ static int rdm_fit(char *name)
+ 	return (int)len;
+ }
+ 
++/* ---- 2026-10-20 (security review F-2): which sources a reply may come from ----
++ * Every UDP src-port-53 frame on a bridge used to be believed, so a LAN host
++ * forging replies (source port 53, any source address) could name, rename or
++ * evict the Flow Explorer's entries at will. A reply is now ignored when its IP
++ * source lies inside a LAN bridge subnet (IPv4: the br* subnets; IPv6: the
++ * router's own /64 prefixes, ULA, link-local) and is neither the router itself
++ * nor a known resolver: one a dnsmasq instance advertises by DHCP, or one the
++ * router itself forwards to (every instance's servers-file). The second kind
++ * was missing on the first r3 metal report (2026-10-20): the owner's AdGuard
++ * sits on its own VLAN, the router advertises ITSELF as the DNS server and
++ * forwards to AdGuard, so every AdGuard reply arrived from a LAN subnet, matched
++ * nothing, and was logged as forged - 400 to 1,300 per ten minutes. A LAN
++ * resolver now keeps naming whether devices ask it directly or through the
++ * router. A public source a client talks to directly is still believed (owner
++ * decision: those names matter more than the residual, a WAN host reaching a
++ * LAN host through an existing UDP flow or a port-forward on 53). The table is
++ * pure data: the host test fills it by hand and the daemon from getifaddrs()
++ * and the dnsmasq confs (rdm_src_load, every 30 s). */
++#define RDM_SRC_MAX 32
++struct rdm_src {
++	uint32_t rtr4[RDM_SRC_MAX]; int nrtr4;			/* the router's IPv4 addresses on br* (network order) */
++	uint32_t net4[RDM_SRC_MAX], msk4[RDM_SRC_MAX]; int nnet4;	/* the br* subnets */
++	uint8_t rtr6[RDM_SRC_MAX][16]; int nrtr6;		/* the router's IPv6 addresses on br* */
++	uint32_t res4[RDM_SRC_MAX]; int nres4;			/* DHCP-advertised resolvers (dhcp-option 6) */
++	uint8_t res6[RDM_SRC_MAX][16]; int nres6;		/* (dhcp-option option6:23) */
++};
++static struct rdm_src rdm_src;
++static unsigned rdm_src_drop;				/* replies ignored by the policy, for the once-per-10-min log line */
++#define RDM_LAN6_MAX 16
++static uint8_t rdm_lan6[RDM_LAN6_MAX][8];		/* the router's /64 prefixes (rdm_lan6_load, below) */
++static int rdm_lan6_n;
++
++static int rdm_src_has4(const uint32_t *arr, int n, uint32_t v)
++{
++	int i;
++	for (i = 0; i < n; i++)
++		if (arr[i] == v)
++			return 1;
++	return 0;
++}
++
++static int rdm_src_has6(const uint8_t (*arr)[16], int n, const uint8_t *v)
++{
++	int i;
++	for (i = 0; i < n; i++)
++		if (memcmp(arr[i], v, 16) == 0)
++			return 1;
++	return 0;
++}
++
++static void rdm_src_add4(uint32_t *arr, int *n, uint32_t v)
++{
++	if (*n < RDM_SRC_MAX && !rdm_src_has4(arr, *n, v))
++		arr[(*n)++] = v;
++}
++
++static void rdm_src_add6(uint8_t (*arr)[16], int *n, const uint8_t *v)
++{
++	if (*n < RDM_SRC_MAX && !rdm_src_has6(arr, *n, v))
++		memcpy(arr[(*n)++], v, 16);
++}
++
++/* the address in one server= value: "<ip>", "<ip>#port", "<ip>@source" or "/dom/.../<ip>" (the
++ * text after the last '/'); a bare "#" (dnsmasq's "use the default servers") or an empty tail
++ * ("/dom/" = answer NXDOMAIN locally) names no server */
++static void rdm_src_server_value(const char *v, struct rdm_src *s)
++{
++	char buf[128];
++	const char *p;
++	struct in_addr a4;
++	uint8_t a6[16];
++
++	while (*v == ' ' || *v == '\t')
++		v++;
++	if (*v == '/' && (p = strrchr(v, '/')) != NULL)
++		v = p + 1;
++	snprintf(buf, sizeof(buf), "%s", v);
++	buf[strcspn(buf, "#@ \t\r\n")] = 0;
++	if (inet_pton(AF_INET, buf, &a4) == 1)
++		rdm_src_add4(s->res4, &s->nres4, a4.s_addr);
++	else if (inet_pton(AF_INET6, buf, a6) == 1)
++		rdm_src_add6(s->res6, &s->nres6, a6);
++}
++
++/* dnsmasq's servers-file (rc writes /tmp/resolv.dnsmasq for the main instance and one per
++ * SDN network; memory resolv-dnsmasq-format: server= lines, never nameserver): the upstreams
++ * the router itself forwards to. server= lines only - a nested servers-file is not followed */
++static void rdm_src_servers_file(const char *v, struct rdm_src *s)
++{
++	char path[256], ln[512];
++	FILE *f;
++	size_t l;
++
++	while (*v == ' ' || *v == '\t')
++		v++;
++	snprintf(path, sizeof(path), "%s", v);
++	path[strcspn(path, "\r\n")] = 0;
++	l = strlen(path);
++	while (l && (path[l - 1] == ' ' || path[l - 1] == '\t'))
++		path[--l] = 0;
++	if (path[0] != '/' || (f = fopen(path, "r")) == NULL)
++		return;
++	while (fgets(ln, sizeof(ln), f)) {
++		const char *p = ln;
++
++		while (*p == ' ' || *p == '\t')
++			p++;
++		if (strncmp(p, "server=", 7) == 0)
++			rdm_src_server_value(p + 7, s);
++	}
++	fclose(f);
++}
++
++/* one line of a dnsmasq conf: the known resolvers. "dhcp-option=[tag:x,|lan,]6,<ip>[,<ip>]"
++ * (services.c write_static_leases / sdn.c shapes) and "...,option6:23,<ip6>[,<ip6>]" with or
++ * without brackets, the run of addresses after the option number (anything else ends it);
++ * "server=<value>" (an upstream named in the conf itself); "servers-file=<path>" (the file
++ * holding the rest of the upstreams - the WAN's, a VPN's, the owner's own) */
++static void rdm_src_conf_line(const char *line, struct rdm_src *s)
++{
++	char buf[512], *f, *save;
++	int mode = 0;					/* 4 after "6", 6 after "option6:23" */
++
++	while (*line == ' ' || *line == '\t')
++		line++;
++	if (strncmp(line, "server=", 7) == 0) {
++		rdm_src_server_value(line + 7, s);
++		return;
++	}
++	if (strncmp(line, "servers-file=", 13) == 0) {
++		rdm_src_servers_file(line + 13, s);
++		return;
++	}
++	if (strncmp(line, "dhcp-option=", 12) != 0)
++		return;
++	snprintf(buf, sizeof(buf), "%s", line + 12);
++	buf[strcspn(buf, "\r\n#")] = 0;
++	for (f = strtok_r(buf, ",", &save); f; f = strtok_r(NULL, ",", &save)) {
++		struct in_addr a4;
++		uint8_t a6[16];
++		size_t l;
++
++		while (*f == ' ' || *f == '\t')
++			f++;
++		l = strlen(f);
++		while (l && (f[l - 1] == ' ' || f[l - 1] == '\t'))
++			f[--l] = 0;
++		if (!strcmp(f, "6") || !strcmp(f, "option:dns-server")) { mode = 4; continue; }
++		if (!strcmp(f, "option6:23") || !strcmp(f, "option6:dns-server")) { mode = 6; continue; }
++		if (mode == 4) {
++			if (inet_pton(AF_INET, f, &a4) == 1)
++				rdm_src_add4(s->res4, &s->nres4, a4.s_addr);
++			else
++				mode = 0;
++		} else if (mode == 6) {
++			if (l >= 2 && f[0] == '[' && f[l - 1] == ']') {
++				f[l - 1] = 0;
++				f++;
++			}
++			if (inet_pton(AF_INET6, f, a6) == 1)
++				rdm_src_add6(s->res6, &s->nres6, a6);
++			else
++				mode = 0;
++		}
++	}
++}
++
++/* 1 = parse the reply; 0 = its source is a LAN address that is neither the
++ * router nor a known resolver, i.e. a LAN host speaking from port 53 */
++static int rdm_src_ok(const struct rdm_src *s, int v6, const uint8_t *src)
++{
++	int i;
++
++	if (!v6) {
++		uint32_t ip;
++
++		memcpy(&ip, src, 4);
++		if (rdm_src_has4(s->rtr4, s->nrtr4, ip) || rdm_src_has4(s->res4, s->nres4, ip))
++			return 1;
++		for (i = 0; i < s->nnet4; i++)
++			if ((ip & s->msk4[i]) == s->net4[i])
++				return 0;
++		return 1;
++	}
++	if (rdm_src_has6(s->rtr6, s->nrtr6, src) || rdm_src_has6(s->res6, s->nres6, src))
++		return 1;
++	if ((src[0] & 0xfe) == 0xfc || (src[0] == 0xfe && (src[1] & 0xc0) == 0x80))
++		return 0;				/* ULA, link-local: LAN by definition */
++	for (i = 0; i < rdm_lan6_n; i++)
++		if (memcmp(src, rdm_lan6[i], 8) == 0)
++			return 0;
++	return 1;
++}
++
+ /* one captured frame: Ethernet, IPv4/IPv6, UDP from port 53, a DNS response */
+ static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
+ {
+@@ -232,7 +429,7 @@ static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
+ 	struct rdm_ent *t = rdm_table(map);
+ 	const uint8_t *q;
+ 	char qn[256];
+-	int l4, dns, off, i, an, ql, ul;
++	int l4, dns, off, i, an, ql, ul, v6;
+ 
+ 	if (n < 14 + 20 + 8 + 12)
+ 		return;
+@@ -242,12 +439,19 @@ static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
+ 		if (ihl < 20 || p[23] != 17 || (((p[20] << 8) | p[21]) & 0x1fff) != 0)
+ 			return;
+ 		l4 = 14 + ihl;
++		v6 = 0;
+ 	} else if (p[12] == 0x86 && p[13] == 0xdd) {
+ 		if (p[20] != 17)
+ 			return;
+ 		l4 = 54;
++		v6 = 1;
+ 	} else
+ 		return;
++	/* F-2: the IP source (offset 12 of the IPv4 header, 8 of the IPv6 one) decides first */
++	if (!rdm_src_ok(&rdm_src, v6, p + (v6 ? 22 : 26))) {
++		rdm_src_drop++;
++		return;
++	}
+ 	dns = l4 + 8;
+ 	if (dns + 12 > n || ((p[l4] << 8) | p[l4 + 1]) != 53)
+ 		return;
+@@ -326,11 +530,8 @@ static int rdm_remote(uint32_t ip)
+ 
+ /* IPv6 (2026-10-07): the /64 prefixes of the router's own global addresses on
+  * LAN bridges. IPv6 is not translated, so a LAN client's address is as global
+- * as the remote end's; the prefix the router announces is what tells them apart. */
+-#define RDM_LAN6_MAX 16
+-static uint8_t rdm_lan6[RDM_LAN6_MAX][8];
+-static int rdm_lan6_n;
+-
++ * as the remote end's; the prefix the router announces is what tells them apart.
++ * (rdm_lan6[] is declared with the source policy above, which reads it too.) */
+ static void rdm_lan6_load(void)
+ {
+ 	FILE *f = fopen(RDM_IF6, "r");
+@@ -483,6 +684,16 @@ static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, cons
+ 	an = (q[6] << 8) | q[7];
+ 	if (!an)
+ 		return;
++	/* 2026-10-20 (security review F-3): the id alone is 0..ntg-1 and guessable;
++	 * the answer must also carry the very question this target was asked with */
++	{
++		uint8_t want[128];
++		char wn[256], gn[256];
++		int wl = rdm_ptr_query(want, sizeof(want), (uint16_t)id, tg[id]);
++
++		if (wl <= 12 || rdm_readname(want, wl, 12, wn) < 0 || rdm_readname(q, n, 12, gn) < 0 || strcmp(wn, gn))
++			return;
++	}
+ 	off = rdm_skipname(q, n, 12);
+ 	if (off < 0 || off + 4 > n)
+ 		return;
+@@ -517,6 +728,83 @@ static void rdm_parse_ptr(const uint8_t *q, int n, void *map, uint32_t now, cons
+ }
+ 
+ #ifndef RDM_TEST
++/* 2026-10-20 (F-2): the policy table from the box itself - the br* addresses and
++ * subnets (getifaddrs), the advertised resolvers (every instance's dnsmasq conf:
++ * /etc/dnsmasq.conf and /etc/dnsmasq-<idx>.conf, as sdn.c names them) and the
++ * router's /64 prefixes. Rebuilt at most every 30 s, the rdm_lan_if cadence. */
++static void rdm_src_conf_file(const char *path, struct rdm_src *s)
++{
++	FILE *f = fopen(path, "r");
++	char ln[512];
++
++	if (!f)
++		return;
++	while (fgets(ln, sizeof(ln), f))
++		rdm_src_conf_line(ln, s);
++	fclose(f);
++}
++
++static void rdm_src_load(time_t now)
++{
++	static time_t at;
++	struct ifaddrs *ifa, *p;
++	struct rdm_src s;
++	DIR *d;
++	struct dirent *e;
++
++	if (at && now - at < 30)
++		return;
++	at = now;
++	memset(&s, 0, sizeof(s));
++	if (getifaddrs(&ifa) == 0) {
++		for (p = ifa; p; p = p->ifa_next) {
++			if (!p->ifa_addr || !p->ifa_name || p->ifa_name[0] != 'b' || p->ifa_name[1] != 'r')
++				continue;
++			if (p->ifa_addr->sa_family == AF_INET) {
++				uint32_t a = ((struct sockaddr_in *)p->ifa_addr)->sin_addr.s_addr;
++				uint32_t m = p->ifa_netmask ? ((struct sockaddr_in *)p->ifa_netmask)->sin_addr.s_addr : 0xffffffffu;
++
++				rdm_src_add4(s.rtr4, &s.nrtr4, a);
++				if (s.nnet4 < RDM_SRC_MAX) {
++					s.net4[s.nnet4] = a & m;
++					s.msk4[s.nnet4] = m;
++					s.nnet4++;
++				}
++			} else if (p->ifa_addr->sa_family == AF_INET6)
++				rdm_src_add6(s.rtr6, &s.nrtr6, ((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr.s6_addr);
++		}
++		freeifaddrs(ifa);
++	}
++	rdm_src_conf_file("/etc/dnsmasq.conf", &s);
++	if ((d = opendir("/etc")) != NULL) {
++		while ((e = readdir(d)) != NULL) {
++			size_t l = strlen(e->d_name);
++			char cp[280];
++
++			if (strncmp(e->d_name, "dnsmasq-", 8) != 0 || l < 13 || strcmp(e->d_name + l - 5, ".conf") != 0)
++				continue;
++			snprintf(cp, sizeof(cp), "/etc/%s", e->d_name);
++			rdm_src_conf_file(cp, &s);
++		}
++		closedir(d);
++	}
++	rdm_lan6_load();
++	rdm_src = s;
++}
++
++/* one syslog line at most every ten minutes, never per frame */
++static void rdm_src_report(time_t now)
++{
++	static unsigned said;
++	static time_t at;
++
++	if (rdm_src_drop == said || (at && now - at < 600))
++		return;
++	syslog(LOG_INFO, "%u DNS replies ignored: a LAN source that is neither the router nor a known resolver (DHCP-advertised or upstream)", rdm_src_drop - said);
++	said = rdm_src_drop;
++	at = now;
++}
++
+ /* drain both sockets for ms milliseconds: forward replies keep being learned
+  * while the backfill runs, PTR answers land as reverse names */
+ static void rdm_bf_drain(struct pollfd *pf, void *map, const uint8_t (*tg)[16], int ntg, int ms)
+@@ -561,6 +849,13 @@ static void rdm_backfill(void *map, int pk)
+ 	rs.sin_family = AF_INET;
+ 	rs.sin_port = htons(53);
+ 	rs.sin_addr.s_addr = htonl(0x7f000001);	/* dnsmasq: its cache first, upstream on a miss */
++	/* 2026-10-20 (security review F-3): a connected socket - the kernel then
++	 * discards a datagram from any other peer, so a LAN host spraying the
++	 * ephemeral ports during the backfill window can no longer plant names */
++	if (connect(us, (struct sockaddr *)&rs, sizeof(rs)) != 0) {
++		close(us);
++		return;
++	}
+ 	pf[0].fd = pk;
+ 	pf[0].events = POLLIN;
+ 	pf[1].fd = us;
+@@ -568,7 +863,7 @@ static void rdm_backfill(void *map, int pk)
+ 	for (i = 0; i < ntg; i++) {
+ 		n = rdm_ptr_query(qb, sizeof(qb), (uint16_t)i, tg[i]);
+ 		if (n > 0)
+-			sendto(us, qb, n, 0, (struct sockaddr *)&rs, sizeof(rs));
++			send(us, qb, n, 0);
+ 		rdm_bf_drain(pf, map, tg, ntg, RDM_BF_PACE);
+ 	}
+ 	for (i = 0; i < RDM_BF_WAIT; i += 100)
+@@ -589,6 +884,8 @@ int main(void)
+ 	signal(SIGTERM, on_term);
+ 	signal(SIGINT, on_term);
+ 	signal(SIGPIPE, SIG_IGN);
++	openlog("rdnsmapd", LOG_PID, LOG_DAEMON);
++	rdm_src_load(time(NULL));			/* F-2: the policy before the first frame */
+ 
+ 	/* 2026-10-09 (audit V3): rc creates /tmp/reaper root-owned 0700 at boot
+ 	 * (shared/reaper_tmpsafe.h; this daemon does not link libshared). Map only
+@@ -648,7 +945,9 @@ int main(void)
+ 		now = time(NULL);
+ 		if (!rdm_lan_if(from.sll_ifindex, now))
+ 			continue;			/* the WAN port or a physical LAN port: not ours (V2) */
++		rdm_src_load(now);			/* F-2: refreshed every 30 s, on traffic only */
+ 		rdm_parse(buf, n, map, (uint32_t)now);
++		rdm_src_report(now);
+ 	}
+ 	close(sk);
+ 	munmap(map, RDM_SIZE);
+-- 
+2.25.1
+

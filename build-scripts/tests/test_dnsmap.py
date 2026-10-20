@@ -26,6 +26,14 @@ entries, then asserts:
     downgraded, and the conntrack scan takes original-tuple remote ends of both families,
     deduplicated, skipping LAN (RFC1918 / the router's own IPv6 prefixes), CGNAT, link-local,
     multicast and already-named addresses;
+  - the source policy (security review 2026-10-20, F-2): a reply whose IP source is a LAN host
+    that is neither the router nor a known resolver is ignored and counted (IPv4: the bridge
+    subnets; IPv6: the router's /64s, ULA, link-local), while the router, an advertised resolver
+    on another VLAN, an upstream the router forwards to on a VLAN (r3 metal: the owner's AdGuard,
+    reached through the router, was logged as forged) and a public resolver are believed; the
+    conf-line parser takes the addresses of dhcp-option 6 / option6:23 lines, server= lines and
+    the server= lines of the servers-file; (F-3) a backfill PTR answer must carry
+    the question that was asked, and the backfill socket is connected (no sendto);
   - the sock_filter array, extracted from the source, accepts the sample replies and rejects a
     TCP segment, a UDP datagram from another port, a later IP fragment and an ARP frame;
   - the wiring: web.c, services.c, rc.h, defaults.c, the root Makefile, the page, the markers,
@@ -33,7 +41,7 @@ entries, then asserts:
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass the tree's
 release/src/router as argv[1] or REAPER_ROUTER_SRC).
 """
-import glob, os, re, shutil, struct, subprocess, sys, tempfile, time
+import glob, os, re, shutil, socket, struct, subprocess, sys, tempfile, time
 
 def skip(msg):
     print("SKIP: " + msg); sys.exit(77)
@@ -82,21 +90,22 @@ def eth(payload, ethertype):
 def udp(payload, sport=53, dport=40000):
     return struct.pack(">HHHH", sport, dport, 8 + len(payload), 0) + payload
 
-def ipv4(payload, proto=17, frag=0):
+def ipv4(payload, proto=17, frag=0, src=bytes([10, 1, 1, 1])):
     tot = 20 + len(payload)
     hdr = struct.pack(">BBHHHBBH4s4s", 0x45, 0, tot, 0x4242, frag, 64, proto, 0,
-                      bytes([10, 1, 1, 1]), bytes([10, 1, 1, 50]))
+                      src, bytes([10, 1, 1, 50]))
     return hdr + payload
 
-def ipv6(payload, nh=17):
-    hdr = struct.pack(">IHBB", 0x60000000, len(payload), nh, 64) + bytes(16) + bytes(16)
+def ipv6(payload, nh=17, src=bytes(16)):
+    hdr = struct.pack(">IHBB", 0x60000000, len(payload), nh, 64) + src + bytes(16)
     return hdr + payload
 
-def frame4(dns, sport=53):
-    return eth(ipv4(udp(dns, sport)), 0x0800)
+# the IP source is the router (10.1.1.1 / ::) unless a case says otherwise (F-2 policy cases)
+def frame4(dns, sport=53, src="10.1.1.1"):
+    return eth(ipv4(udp(dns, sport), src=socket.inet_aton(src)), 0x0800)
 
-def frame6(dns):
-    return eth(ipv6(udp(dns)), 0x86dd)
+def frame6(dns, src="::"):
+    return eth(ipv6(udp(dns), src=socket.inet_pton(socket.AF_INET6, src)), 0x86dd)
 
 A1 = bytes([93, 184, 216, 34])
 A6 = bytes.fromhex("260647000000000000000000681084e5")      # 2606:4700::6810:84e5
@@ -121,6 +130,8 @@ PTRS = {
     "ptr":   dns_reply("34.216.184.93.in-addr.arpa", [(PTR_Q, 12, 3600, dns_name("ptr.example.net"))], qtype=12, ident=0),
     "ptr2":  dns_reply("34.216.184.93.in-addr.arpa", [(PTR_Q, 12, 3600, dns_name("example.com"))], qtype=12, ident=0),
     "ptr6":  dns_reply(IP6ARPA, [(PTR_Q, 12, 3600, dns_name("v6ptr.example.net"))], qtype=12, ident=0),
+    # F-3: a planted answer with the right (guessable) id but another question
+    "ptrbad": dns_reply("1.1.1.1.in-addr.arpa", [(PTR_Q, 12, 3600, dns_name("planted.example"))], qtype=12, ident=0),
 }
 # the router's own addresses (/proc/net/if_inet6 form): 2001:db8::/64 is the LAN prefix on br0,
 # the fe80 line is link-local (scope 20), the eth0 line is the WAN and must not count
@@ -212,10 +223,32 @@ int main(int argc, char **argv)
 			a += 2;
 			continue;
 		}
+		if (!strcmp(argv[a], "--src") && a + 2 < argc) {	/* F-2 policy table: rtr4|net4|res4|rtr6|res6 <addr[/len]> */
+			struct in_addr a4; uint8_t a6[16]; char ab[64], *sl; int len = 32;
+			snprintf(ab, sizeof(ab), "%s", argv[a + 2]);
+			if ((sl = strchr(ab, '/')) != NULL) { *sl = 0; len = atoi(sl + 1); }
+			if (!strcmp(argv[a + 1], "rtr4") && inet_aton(ab, &a4)) rdm_src_add4(rdm_src.rtr4, &rdm_src.nrtr4, a4.s_addr);
+			else if (!strcmp(argv[a + 1], "res4") && inet_aton(ab, &a4)) rdm_src_add4(rdm_src.res4, &rdm_src.nres4, a4.s_addr);
+			else if (!strcmp(argv[a + 1], "net4") && inet_aton(ab, &a4) && len > 0 && len <= 32) {
+				uint32_t m = htonl(0xffffffffu << (32 - len));
+				rdm_src.net4[rdm_src.nnet4] = a4.s_addr & m; rdm_src.msk4[rdm_src.nnet4] = m; rdm_src.nnet4++;
+			} else if (!strcmp(argv[a + 1], "rtr6") && inet_pton(AF_INET6, ab, a6) == 1) rdm_src_add6(rdm_src.rtr6, &rdm_src.nrtr6, a6);
+			else if (!strcmp(argv[a + 1], "res6") && inet_pton(AF_INET6, ab, a6) == 1) rdm_src_add6(rdm_src.res6, &rdm_src.nres6, a6);
+			else return 4;
+			a += 2;
+			continue;
+		}
+		if (!strcmp(argv[a], "--conf") && a + 1 < argc) { rdm_src_conf_line(argv[a + 1], &rdm_src); a += 1; continue; }
+		if (!strcmp(argv[a], "--lan6")) { rdm_lan6_load(); continue; }
 		if (!(f = fopen(argv[a], "rb"))) return 2;
 		n = (int)fread(fb, 1, sizeof(fb), f); fclose(f);
 		rdm_parse(fb, n, map, now);
 	}
+	printf("drops %u\n", rdm_src_drop);
+	printf("srcres");
+	for (i = 0; i < (uint32_t)rdm_src.nres4; i++) { struct in_addr ia; ia.s_addr = rdm_src.res4[i]; printf(" %s", inet_ntoa(ia)); }
+	for (i = 0; i < (uint32_t)rdm_src.nres6; i++) { char a6s[INET6_ADDRSTRLEN]; printf(" %s", inet_ntop(AF_INET6, rdm_src.res6[i], a6s, sizeof(a6s))); }
+	printf("\n");
 	printf("seen %u upd %u\n", h->seen, h->upd);
 	for (i = 0; i < RDM_SLOTS; i++)
 		if (rdm_key_used(t[i].ip))
@@ -244,13 +277,17 @@ int main(int argc, char **argv)
     extra = {}
     def run(items):
         """items: a replies[] key or raw frame bytes (a captured frame), ("--ptr", ip, payload) (a PTR
-        answer for that target), "--targets" (list conntrack targets now), "--ptrq:<ip>" (encode a query)"""
+        answer for that target), "--targets" (list conntrack targets now), "--ptrq:<ip>" (encode a query),
+        ("--src", kind, addr) (an F-2 policy entry), ("--conf", line) (a dnsmasq conf line), "--lan6"
+        (load the router's /64s from the fixture)"""
         args = []
         for i, it in enumerate(items):
             fp = os.path.join(td, "f%02d.bin" % i)
-            if isinstance(it, tuple):
+            if isinstance(it, tuple) and it[0] == "--ptr":
                 with open(fp, "wb") as f: f.write(it[2])
                 args += [it[0], it[1], fp]
+            elif isinstance(it, tuple):
+                args += list(it)
             elif isinstance(it, str) and it.startswith("--ptrq:"):
                 args += ["--ptrq", it[7:]]
             elif isinstance(it, str) and it.startswith("--"):
@@ -270,6 +307,8 @@ int main(int argc, char **argv)
             elif w[0] == "target": extra["targets"].append(w[1])
             elif w[0] == "targets": extra["ntargets"] = int(w[1])
             elif w[0] == "ptrq": extra["ptrq"] = (w[1], int(w[2]), int(w[3]))
+            elif w[0] == "drops": extra["drops"] = int(w[1])
+            elif w[0] == "srcres": extra["res"] = w[1:]
             elif w[0] != "bpf": ents[w[0]] = (w[1], int(w[2]), int(w[3]))
         return ents, seen, upd
 
@@ -332,6 +371,59 @@ int main(int argc, char **argv)
     e, seen, upd = run([("--ptr", A6S, PTRS["ptr6"])])
     check("a PTR answer for an IPv6 target stores a REVERSE name under the IPv6 key",
           e.get(A6S) == ("v6ptr.example.net", 3600, 0) and upd == 1, (e, upd))
+    # F-3 (2026-10-20): the id is 0..ntg-1 and guessable; the answer must carry the question that was asked
+    e, seen, upd = run([("--ptr", "93.184.216.34", PTRS["ptrbad"])])
+    check("F-3: a PTR answer whose question is not this target's reverse name is ignored", e == {} and upd == 0, (e, upd))
+
+    # ---------------------------------------------------------------- the source policy (security review 2026-10-20, F-2)
+    # the box: the router 10.1.1.1 on br0 (10.1.1.0/24); an IoT VLAN 192.168.50.0/24 whose DHCP advertises
+    # an AdGuard at 192.168.50.5; the router's 2001:db8::1 (its /64 comes from the if_inet6 fixture);
+    # a ULA resolver fd00::53 advertised by option6:23
+    LAN = [("--src", "rtr4", "10.1.1.1"), ("--src", "net4", "10.1.1.0/24"), ("--src", "net4", "192.168.50.0/24"),
+           ("--src", "res4", "192.168.50.5"), ("--src", "rtr6", "2001:db8::1"), ("--src", "res6", "fd00::53")]
+    def rep4(name, last, src):
+        return frame4(dns_reply(name, [(PTR_Q, 1, 60, bytes([198, 51, 100, last]))]), src=src)
+    def rep6(name, last, src):
+        return frame6(dns_reply(name, [(PTR_Q, 1, 60, bytes([198, 51, 100, last]))]), src=src)
+    e, seen, upd = run(LAN + [rep4("forged.example", 20, "10.1.1.77")])
+    check("F-2: a reply from a LAN host that is neither the router nor a resolver is ignored before parsing, and counted",
+          e == {} and seen == 0 and extra.get("drops") == 1, (e, seen, extra.get("drops")))
+    e, seen, upd = run([rep4("forged.example", 20, "10.1.1.77")])
+    check("F-2: an empty policy table (the daemon before its first load) believes every source",
+          e.get("198.51.100.20", ("",))[0] == "forged.example" and extra.get("drops") == 0, e)
+    e, seen, upd = run(LAN + ["chain", rep4("vlan.example", 21, "192.168.50.5"), rep4("pub.example", 22, "9.9.9.9"),
+                              rep4("nei.example", 23, "192.168.50.9")])
+    check("F-2: the router, the advertised resolver on another VLAN and a public resolver are believed; another VLAN host is not",
+          e.get("93.184.216.34", ("",))[0] == "example.com" and e.get("198.51.100.21", ("",))[0] == "vlan.example"
+          and e.get("198.51.100.22", ("",))[0] == "pub.example" and "198.51.100.23" not in e and extra.get("drops") == 1,
+          (e, extra.get("drops")))
+    e, seen, upd = run(LAN + ["--lan6", rep6("v6f.example", 24, "2001:db8::77"), rep6("v6r.example", 25, "2001:db8::1"),
+                              rep6("ula.example", 26, "fd12::9"), rep6("ll.example", 27, "fe80::9"),
+                              rep6("res6.example", 28, "fd00::53"), rep6("g6.example", 29, "2606:4700::1111")])
+    check("F-2 IPv6: a source under the router's own /64, a ULA and a link-local source are ignored; the router, the advertised ULA resolver and a global source are believed",
+          all("198.51.100.%d" % k not in e for k in (24, 26, 27)) and e.get("198.51.100.25", ("",))[0] == "v6r.example"
+          and e.get("198.51.100.28", ("",))[0] == "res6.example" and e.get("198.51.100.29", ("",))[0] == "g6.example"
+          and extra.get("drops") == 3, (e, extra.get("drops")))
+    e, seen, upd = run([("--conf", "dhcp-option=lan,6,192.168.50.1,192.168.50.5"), ("--conf", "dhcp-option=tag:br52,option6:23,[fd00::53]"),
+                        ("--conf", "dhcp-option=lan,3,192.168.50.1"), ("--conf", "dhcp-option=6,9.9.9.9 # the comment ends it"),
+                        ("--conf", "server=1.1.1.1"), ("--conf", "  dhcp-option=option6:dns-server,fd00::54,fd00::55"),
+                        ("--conf", "dhcp-option=6,not-an-address,9.9.9.10")])
+    check("F-2: the conf-line parser takes the addresses after dhcp-option 6 / option6:23 (tags, brackets, comments), stops at anything else, and takes a server= upstream",
+          extra.get("res") == ["192.168.50.1", "192.168.50.5", "9.9.9.9", "1.1.1.1", "fd00::53", "fd00::54", "fd00::55"], extra.get("res"))
+    # r3 metal 2026-10-20: the router advertises ITSELF by DHCP and forwards to an AdGuard on a VLAN
+    # (/tmp/resolv.dnsmasq, dnsmasq's servers-file - server= lines, never nameserver); every AdGuard
+    # reply came from a LAN subnet, matched no advertised resolver and was logged as forged
+    sf = os.path.join(td, "resolv.dnsmasq")
+    with open(sf, "w") as f:
+        f.write("server=10.20.0.98\nserver=/corp.example/10.20.0.99#5353\n  server=2606:4700::1111@eth0\n"
+                "server=/mask.icloud.com/\nserver=/x/#\n# server=9.9.9.9\nservers-file=/etc/hosts\nnameserver 8.8.8.8\n")
+    e, seen, upd = run([("--conf", "servers-file=" + sf), ("--conf", "server=1.0.0.1#53")])
+    check("F-2: the servers-file parser takes the upstream of every server= line (bare, domain-scoped, #port, @source, IPv6) and nothing else - no local-answer entry, no default marker, no comment, no nested servers-file, no nameserver line",
+          extra.get("res") == ["10.20.0.98", "10.20.0.99", "1.0.0.1", "2606:4700::1111"], extra.get("res"))
+    e, seen, upd = run(LAN + [("--src", "net4", "10.20.0.0/24"), ("--conf", "servers-file=" + sf),
+                              rep4("adg.example", 30, "10.20.0.98"), rep4("vlanhost.example", 31, "10.20.0.9")])
+    check("F-2 (r3 metal): an upstream resolver on a LAN VLAN that the router forwards to is believed; another host on that VLAN is not",
+          e.get("198.51.100.30", ("",))[0] == "adg.example" and "198.51.100.31" not in e and extra.get("drops") == 1, (e, extra.get("drops")))
 
     # ---------------------------------------------------------------- the kernel filter, interpreted
     src = read("rdnsmapd/rdnsmapd.c")
@@ -376,6 +468,20 @@ int main(int argc, char **argv)
     for want in ("h->magic != RDM_MAGIC || h->slots != RDM_SLOTS || h->esize != sizeof(struct rdm_ent)",
                  "(type == 28 && rdl == 16)", "RDM_IF6", "rdm_remote6("):
         check("rdnsmapd.c v2: %s" % want, want in src)
+    # security review 2026-10-20 F-2/F-3: the policy sits before the parse, the table is rebuilt from the
+    # box every 30 s and reported once per ten minutes, the backfill socket is connected and send()s,
+    # and a PTR answer is matched against the question that was asked
+    for want in ("if (!rdm_src_ok(&rdm_src, v6, p + (v6 ? 22 : 26))) {", "rdm_src_drop++;", "rdm_src_load(now);", "rdm_src_report(now);",
+                 "getifaddrs(&ifa)", 'rdm_src_conf_file("/etc/dnsmasq.conf", &s);', 'strncmp(e->d_name, "dnsmasq-", 8)',
+                 "now - at < 30", "now - at < 600", "DNS replies ignored: a LAN source",
+                 "known resolver (DHCP-advertised or upstream)", 'strncmp(line, "servers-file=", 13) == 0', 'strncmp(line, "server=", 7) == 0',
+                 "static void rdm_src_servers_file(const char *v, struct rdm_src *s)", 'strncmp(p, "server=", 7) == 0',
+                 "if (connect(us, (struct sockaddr *)&rs, sizeof(rs)) != 0) {", "send(us, qb, n, 0);", "strcmp(wn, gn))"):
+        check("rdnsmapd.c F-2/F-3: %s" % want, want in src)
+    check("rdnsmapd.c F-3: no unconnected sendto remains", "sendto(" not in src)
+    check("rdnsmapd.c F-2 (r3 metal): the log line no longer calls an unknown resolver's reply forged", "(forged)" not in src)
+    check("rdnsmapd.c F-2: the source check precedes the DNS header parse",
+          src.index("if (!rdm_src_ok(&rdm_src, v6, p + (v6 ? 22 : 26))) {") < src.index("dns = l4 + 8;"))
     hdr = read("shared/reaper_dnsmap.h")
     check("reaper_dnsmap.h is the v2 layout (RDM2, 80-byte entries, 16-byte keys)",
           "0x324d4452u" in hdr and "RDM_ESIZE    80u" in hdr and "uint8_t  ip[16];" in hdr, "")
@@ -455,7 +561,8 @@ int main(int argc, char **argv)
     check("markers pin the daemon, the httpd path, the page field and the rc start",
           all(w in mk for w in ("bin/rdnsmapd|RDM2|1", "usr/sbin/httpd|/tmp/reaper/dnsmap|1", "www/Reaper_Conn.asp|srvn|1", "sbin/rc|rdnsmapd|1",
                                 "bin/rdnsmapd|in-addr|1", "usr/sbin/httpd|dnsmap.backfill|1", "www/Reaper_Conn.asp|dside|1",
-                                "bin/rdnsmapd|/proc/net/if_inet6|1", 'usr/sbin/httpd|"fam":6|1', "www/Reaper_Conn.asp|epStr|1")))
+                                "bin/rdnsmapd|/proc/net/if_inet6|1", 'usr/sbin/httpd|"fam":6|1', "www/Reaper_Conn.asp|epStr|1",
+                                "bin/rdnsmapd|DNS replies ignored: a LAN source|1")))
 
     if fails:
         print("\n%d check(s) failed:\n  " % len(fails) + "\n  ".join(fails)); sys.exit(1)

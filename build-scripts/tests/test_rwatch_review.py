@@ -268,6 +268,63 @@ try:
         j, logs = run(shell)
         ok(j is None and not os.path.exists(os.path.join(tmpd, "review.inv")), "[%s] switch off: the report and the inventory are removed" % tag)
 
+        # ---- rules (2026-10-20, reviewer: expected /jffs churn flagged every run): per-path modes,
+        # exclusions, first match wins, a mode change is not a change, ignored paths never "removed"
+        for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
+        shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True)
+        if os.path.exists(logf): os.unlink(logf)
+        setnv("rwatch_review", "1")
+        rules = os.path.join(work, "rules")
+        if os.path.exists(rules): os.unlink(rules)
+        if not os.path.exists(rm): open(rm, "w").write("exit 0\n")   # the drift section above removed it
+        RX = "RV_RULES=%s" % rules
+        run(shell, RX); accept()                                   # baseline under the defaults
+        j, logs = run(shell, RX)
+        ok(j["armed"] == 1 and j["unreviewed"] == 0 and logs == [], "[%s] rules: no rules file = the defaults, clean against their own baseline" % tag)
+        open(rules, "w").write("# comment line\n\n"
+                               "hash /jffs/addons/secaudit/run.sh\n"          # first match wins over the next line
+                               "exist /jffs/addons/*\n"
+                               "ignore /jffs/addons/secaudit/sub dir/*\n"     # never reached: exist above matches first
+                               "exist /jffs/scripts/firewall-start\n"
+                               "hash /jffs/.ssh/dropbear_ed25519_host_key\n"  # a private key: downgraded to meta
+                               "ignore cron:*#backup#\n"
+                               "ignore nvram:sshd_port\n"
+                               "bogus /jffs/scripts/*\n"                      # unknown mode: skipped
+                               "ignore\n")                                    # no pattern: skipped
+        j, logs = run(shell, RX)
+        it = {it["k"]: it for it in j["items"]}
+        fs = os.path.join(jffs, "scripts", "firewall-start")
+        ra = os.path.join(jffs, "addons", "secaudit") + "/run.sh"
+        md = os.path.join(jffs, "addons", "secaudit", "sub dir") + "/mod.sh"
+        hk = os.path.join(jffs, ".ssh", "dropbear_ed25519_host_key")
+        ok(it.get(fs, {}).get("t") == "E" and it[fs]["v"] == "-" and it[fs]["st"] == "rule",
+           "[%s] rules: 'exist' lists a file by existence only, and the switch from hash is status rule (%s)" % (tag, it.get(fs)))
+        ok(it.get(ra, {}).get("t") == "S" and it[ra]["st"] == "rule", "[%s] rules: first match wins (hash run.sh ahead of exist addons/*)" % tag)
+        ok(it.get(md, {}).get("t") == "E", "[%s] rules: a later ignore never overrides an earlier match" % tag)
+        ok(it.get(hk, {}).get("t") == "K" and not re.search(r"\b[0-9a-f]{32}\b", it[hk]["v"]), "[%s] rules: a hash rule on a private key is downgraded - keys are never hashed" % tag)
+        ok(not any(k.startswith("0 3 * * *") for k in it) and "sshd_port" not in it,
+           "[%s] rules: cron:<glob> and nvram:<key> ignore drop those items - and they are not reported removed" % tag)
+        ok(j["unreviewed"] == 0 and logs == [], "[%s] rules: mode changes are not changes - nothing unreviewed, nothing logged (got %d, %s)" % (tag, j["unreviewed"], logs))
+        accept()
+        open(fs, "a").write("# edited\n")                             # content change under 'exist'
+        os.utime(os.path.join(jffs, "addons", "secaudit", "sub dir", "mod.sh"), (1, 1))   # size/date change under 'exist'
+        j, logs = run(shell, RX)
+        ok(j["unreviewed"] == 0 and logs == [], "[%s] rules: under 'exist' a content or date change is not reported" % tag)
+        os.unlink(md)
+        j, logs = run(shell, RX)
+        ok(j["unreviewed"] == 1 and [x["st"] for x in j["items"] if x["k"] == md] == ["removed"] and len(logs) == 1,
+           "[%s] rules: under 'exist' a deletion IS reported (and logged once)" % tag)
+        open(md, "w").write("echo hi\n")
+        open(rules, "a").write("ignore /jffs/addons/secaudit/link.sh\n")
+        prev = open(rules).read()
+        open(rules, "w").write("ignore /jffs/addons/*\n" + prev)
+        os.unlink(ra)
+        j, logs = run(shell, RX)
+        ok(not any(x["k"] in (ra, md) for x in j["items"]) and j["unreviewed"] == 0,
+           "[%s] rules: an ignored path is neither listed nor reported removed, even when the baseline has it and it is gone" % tag)
+        open(ra, "w").write("exit 0\n")
+        os.unlink(rules)
+
         # ---- login watch (Rung 3, 2026-10-19): failed logins per source from the syslog cursor
         for f in os.listdir(tmpd): os.unlink(os.path.join(tmpd, f))
         shutil.rmtree(os.path.join(jffs, "reaper"), ignore_errors=True)
@@ -344,7 +401,7 @@ for needle, what in (
     ("td.textContent=v;", "page: rows are rendered with textContent, never innerHTML"),
     ("items=items.filter(function(it){return it.st!=='baseline';});", "page: an armed card lists only the changes"),
     ("reaperConfirm(`<#RFW_353#>`", "page: Accept asks first"),
-    ("if(t==='status'){loadStatus();rvLoad();startAuto();}", "page: entering the Status tab loads the review"),
+    ("if(t==='status'){loadStatus();rvLoad();rvLoadRules();rvLoadLog();startAuto();}", "page: entering the Status tab loads the review, its watch rules and the acceptance log"),
     ('<span class="tg" id="rv_tg"', "page: the switch is on the card"),
 ):
     ok(needle in page, what)
@@ -373,8 +430,8 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.41"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
-   "diag v1.3.41: the review and threat-domain state lines")
+ok('VER="REAPER-DIAG v1.3.44"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+   "diag v1.3.44: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
 ok("review.auth" not in between(diag, 'echo "  security review   : rwatch_review=', "\n\n", "diag 12 review block").replace("login_notices", ""), "diag: section 12 prints counts, never the notice sources")

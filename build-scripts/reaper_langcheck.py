@@ -73,6 +73,11 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # (RWAN_17 carries the %1$@ placeholder) - translations must stay free of
        # ` ${ " and '.
        'Reaper_WANPorts.asp',
+       # Added 2026-10-20 with the Dreadwatch page (threat domains, the Warden menu's
+       # second tab). RDWT_ and RWDN_ tokens sit in HTML text, one double-quoted title
+       # attribute and backtick JS templates (RDWT_25/26/27/30 carry %1/%2) -
+       # translations must stay free of ` ${ and ".
+       'Reaper_Dreadwatch.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.3.3** · 2026-10-04 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -8,10 +8,10 @@ once when skipped.
 `RELEASE-PROCESS.md` explains *why* each step exists; this file is the running
 order. Replace `vX.Y.Z` throughout with the version you are cutting.
 
-**The split to keep in your head:** everything in phases 1–5 needs the firmware
-source, so it can only happen locally. Everything from phase 6 needs only the
+**The split to keep in your head:** everything in phases 1–6 needs the firmware
+source, so it can only happen locally. Everything from phase 8 needs only the
 published inputs (`patches/` + `overlays/`), which is why CI can do it. The
-sibling port sits firmly in the first group — it needs canon *and* the five
+sibling port sits firmly in the first group — it needs canon *and* the seven
 sibling branches at once, and neither is on GitHub.
 
 ---
@@ -22,8 +22,9 @@ sibling branches at once, and neither is on GitHub.
       `git -C /home/reaper/asuswrt-be96u status --short --untracked-files=no`
 - [ ] The rung is **already committed on canon**, including the `version.conf`
       bump — `EXTENDNO=Reaper_vX.Y.Z`. `cut_fleet.sh` refuses to run otherwise.
-- [ ] The previous rung's sibling commits are **in the hub** (phase 5 of last
-      time). If they are not, phase 2 aborts on the ancestry check.
+- [ ] The previous rung's sibling commits are **in the hub** (phase 6 of last
+      time). If they are not, phase 2 keeps the local tip and prints a NOTE; it
+      aborts only if local and hub have diverged.
 - [ ] **Documentation claims agree with the repo** —
       `build-scripts/reaper_docs.py --check` (or let `cut_fleet.sh` preflight run
       it). A stale claim aborts the cut before anything is exported; `--fix`
@@ -52,8 +53,8 @@ wsl -d Ubuntu-20.04 -u reaper -- \
   --version vX.Y.Z
 ```
 
-This runs, in the only safe order: `cut_rung.sh` → port the five siblings
-(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000) → **then** the overlays. Order is not negotiable — regenerating overlays before
+This runs, in the only safe order: `cut_rung.sh` → port the seven siblings
+(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16, BQ16 Pro) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -61,7 +62,7 @@ applies cleanly, so nothing downstream would catch it.
       is **gapless**
 - [ ] The full-series **replay passed** — `EXTENDNO` matches and the only diff
       vs canon HEAD is `*.md`
-- [ ] All five ports report **`post-commit parity: 0 unsynced shared files`**
+- [ ] All seven ports report **`post-commit parity: 0 unsynced shared files`**
 - [ ] Dicts committed per model and **lockstep** (one line count across all 25)
 - [ ] The **overlay identity gate passes** at the end
 
@@ -114,16 +115,17 @@ the overlay.
 
 ```bash
 git -C /home/reaper/asuswrt-be96u push hub \
-  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000
+  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000 bq16 bq16-pro
 ```
 
-- [ ] Canon **and all five ported branches** are in the bare hub
+- [ ] Canon **and all seven ported branches** are in the bare hub
 
-> Not optional any more. `cut_fleet.sh` force-moves each local sibling ref onto
-> `hub/<branch>` after proving the local is an ancestor. If this rung's sibling
-> commits never reach the hub, next time local is *ahead* of hub, the ancestry
-> check fails, and the script stops with "resolve by hand". It fails safe rather
-> than losing work — but it will block the next rung.
+> Do not skip it. `cut_fleet.sh` moves each local sibling ref onto `hub/<branch>`
+> when the local is behind. If this rung's sibling commits never reach the hub,
+> next time the local is *ahead*: the script keeps the local tip and prints a
+> NOTE, so nothing is lost, but the hub is no longer the source of truth. If the
+> two have *diverged* (neither contains the other) it stops with "resolve by
+> hand".
 
 ---
 
@@ -144,10 +146,10 @@ Choose one:
 
 ## Phase 8 — Build (remote)
 
-**Actions → Public build → Run workflow**
+**Actions → Build firmware from source → Run workflow**
 
 - [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 16 <!--@fleetjobs--> jobs,
-      ~1.5 h each — seven models)
+      ~1.5 h each — eight models)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.
@@ -166,7 +168,7 @@ disagrees with its tag's channel, so a mislabelled asset cannot reach users.
 Watch for:
 
 - [ ] **Overlay identity gate** passes (seconds, before the matrix — it gates the
-      build, so a bad overlay costs seconds instead of 12 × 1.5 h)
+      build, so a bad overlay costs seconds instead of 16 × 1.5 h)
 - [ ] `EXPECTED_VERSION` assertion passes after the series applies
 - [ ] Series tree matches `provenance/manifest.json`
 - [ ] Packaging/verify gate passes for every model × variant — including the
@@ -224,7 +226,8 @@ Watch for:
 | Symptom | Cause / fix |
 |---|---|
 | Overlay gate fails naming a `www` file | Canon moved, sibling did not. Re-run the port, then re-run `cut_fleet.sh`. Never hand-edit the overlay. |
-| Phase 1 aborts "not an ancestor" | Phase 5 was skipped last time — push the branches to the hub, or reconcile by hand. |
+| Phase 2 prints "AHEAD of hub … keeping the local tip" | Phase 6 was skipped last time. Harmless, but push the branches to the hub. |
+| Phase 2 aborts "have DIVERGED" | Local and hub each hold commits the other lacks — reconcile that branch by hand. |
 | Build aborts on the version assertion | The pin and the series disagree. The series sets `EXTENDNO`; fix the pin, not the series. |
 | `repo-hygiene` PII hit inside `patches/` | Fix the **source commit message** and re-export. Do not add the path to the allowlist. |
 | `tag` job fails: *refusing to allow a GitHub App to create or update workflow …* | A `.github/workflows/**` file changed on main after the run was dispatched, so the tag's tree disagrees with main in that directory. The Actions token can never push a workflow change. **Do not re-run** — the SHA is baked in. Either create the tag yourself (`git tag -a vX.Y.Z-<MODEL> <main-sha> -m …; git push origin <tag>`, one per model) and then dispatch `release.yml` with the green run's `run_id` to publish without rebuilding, or re-dispatch `public-build.yml` from current main and pay for the rebuild. Prevent it with the phase-1 precondition. |

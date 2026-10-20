@@ -18,8 +18,8 @@ input's provenance and license status. Companion to
 | Reaper patch series | `patches/0001`–`0535` (v1.0 → v2.7.6; `0535` = v2.7.6) — the newest published release is v2.7.3, so the series leads the published fleet; regenerated at publish time | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
 
 Applying the series to the pinned commit with `git am --keep-cr`, then unpacking
-`overlays/openssl-3.5-source.tar.gz` (SHA-256 in the sidecar; the OpenSSL 3.5.8 source
-tree, 5,767 files, too large to carry as a patch), reproduces the
+`overlays/openssl-3.5-source.tar.gz` (SHA-256 in the sidecar; the OpenSSL 3.5.9 source
+tree, 5,779 files, too large to carry as a patch), reproduces the
 Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).
 
 ## Toolchain

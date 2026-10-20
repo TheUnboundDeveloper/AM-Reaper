@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -48,8 +48,14 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   the card, three injected changes listed first and logged once, the bar and the Review link seen,
   the revert cleared it without an Accept); owed: the posture row's four states on a tester's box]**
   ↳ notes: `security-review.md`
-- **[P2] Warden threat domains** (owner, from the IOCMON assessment) — URLhaus + ThreatFox host
-  names as `address=/host/` NXDOMAIN lines included by every dnsmasq instance; per-feed keep-last-
+- **[P2] Reviewer feedback: Dreadwatch, Security Review rules, latency & loss chart** (senior
+  engineer via the owner) — threat domains on their own counted page (dnsmasq hit hook), review
+  watch rules + per-row accept + acceptance log, latency/loss on their own chart with a right axis.
+  **[in v3.4.8; r3 ran on the owner's box (diag 2026-10-20): all three work; three rung faults
+  found and fixed for r4 (see the note); owed: r4 flash, Test now, the 14:40 rwatch incident]**
+  ↳ notes: `reviewer-feedback-2026-10-20.md`
+- **[P2] Warden threat domains** (owner, from the IOCMON assessment; Dreadwatch from v3.4.8) —
+  URLhaus + ThreatFox host names answered NXDOMAIN by every dnsmasq instance; per-feed keep-last-
   good, never-block set + exemptions, restart only on change, /jffs replay at boot.
   **[in v3.4.7; owner metal test owed: switch on → Update now → a LAN client on the router's DNS
   gets NXDOMAIN for a listed name, `grep conf-file /etc/dnsmasq.conf`, the SDN instance conf as
@@ -110,19 +116,6 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   Merlin 3006.102.10).
   **[in v3.4.6; owed: the reporter's ONT stays clean through a reboot without
   `ethctl eth0 eee off`]** ↳ notes: `wan-eee-phy-reset.md`
-- **[P2] A factory Reaper router could not be added as an AiMesh node** (field, a BQ16 under an
-  MLO GT-BE98) — Reaper ships WPS off and the join's WPS arm sat inside that setting; a join now
-  gets WPS on its onboarding band only, the setting untouched.
-  **[in v3.4.5; owed: a Reaper-to-Reaper join with MLO on, the node logging the WPS line]**
-  ↳ notes: `aimesh-factory-node-wps.md`
-- **[P3] Operation Mode changes and the MLO "Get started" button handed off to the stock wizard**
-  — AP, Media Bridge and Router run Reaper's step page; the MLO button opens the Wireless console;
-  Repeater (rung B2) still uses the wizard.
-  **[in v3.4.5; owed: AP dhcp/static, MB 5G + 6G WPA3, back to Router, a wrong MB password]**
-  ↳ notes: `qis-aimesh-only.md`
-
----
-
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
@@ -132,10 +125,11 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   MLO main router was a separate defect, fixed in v3.4.5 (Waiting).
   **[investigated 2026-10-15; solved: the power-cycle test, owner box then the reporter]**
   ↳ notes: `mlo-kills-aimesh-backhaul.md`
-- **[P2] AI Advisor arming code resets from an admin shell** — `nvram unset rmcp_code_hash` + reboot
-  = first-setup path. Direction: a missing or altered record locks the Advisor until a factory reset
-  (log line + Dashboard warning); hash + salt move from nvram to a sealed root-only `/jffs` file.
-  **[plan written; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
+- **[P2] AI Advisor arming code resets from an admin session** — a factory reset, an old backup
+  restore or `nvram unset rmcp_code_hash` reopens first setup. Direction: an owner-held Ed25519 key
+  signs the code record; key, record and lockout move to reset-proof `/data/reaper/advisor/`.
+  **[plan written 2026-10-19, replaces the WPS-button plan; not scheduled]**
+  ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
   monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
   flows); feasible only as an on-demand measure for the selected connection, TCP only.
@@ -173,9 +167,12 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P3] Policy Routing on Warden's country sets.** **[feature, owner call]** ↳ notes:
   `pbr-warden-country-sets.md`
 - **[P2] Security review: harden the baseline against tampering** — anyone with an admin session
-  or root can accept a new baseline. Options: Accept logs what it folded in; the tick flags a
-  baseline rewritten outside Accept; Accept asks for the admin password.
+  or root can accept a new baseline. Accept logging what it folded in is done (v3.4.8); open: the
+  tick flags a baseline rewritten outside Accept; Accept asks for the admin password.
   **[offered 2026-10-19; owner call]** ↳ notes: `security-review.md`
+- **[P3] Dreadwatch: its own switch, independent of Warden** — today it rides Warden's list
+  updater, fold job and start/stop, so Warden must be on. Needs its own update job and include gate.
+  **[offered 2026-10-20; owner call]** ↳ notes: `reviewer-feedback-2026-10-20.md`
 - **[P2] Two-tier admin credential** — a second, rarely typed secret (the unused `shell_username`
   account) required for root-equivalent actions; SSH only through that account. A phished GUI
   password could then run the router but not own it.

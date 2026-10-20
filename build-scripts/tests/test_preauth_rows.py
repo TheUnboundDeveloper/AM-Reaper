@@ -122,4 +122,18 @@ if exc_start >= 0:
     if '"enable_ig_guest.cgi"' in exc:
         die("except_mime_handlers[] still lists enable_ig_guest.cgi as MIME_EXCEPTION_NOPASS")
     ok("no NOPASS exception for enable_ig_guest.cgi")
+
+# security review 2026-10-20 (F-4): the session cookie carries SameSite=Lax. The cookie text comes
+# from the closed gen_asus_token_cookie() and ends in ';'; the two OPEN emitters - send_token_headers()
+# in httpd.c and login_cgi() in web.c - append the attribute. Nothing else may emit a Set-Cookie, and
+# the stock referer whitelist (closed, mime_referers[]) does not cover Reaper CGIs, so this and the
+# per-boot http_id are the whole cross-site defence.
+hc = open(os.path.join(SRC, "httpd", "httpd.c"), encoding="utf-8", errors="replace").read()
+emitters = re.findall(r'"Set-Cookie: [^"]*"', hc) + re.findall(r'"Set-Cookie: [^"]*"', src)
+if len(emitters) != 2 or any(e != '"Set-Cookie: %s%s\\r\\n"' for e in emitters):
+    die("expected exactly two Set-Cookie emitters of the form \"Set-Cookie: %%s%%s\\r\\n\", found %r" % emitters)
+if hc.count('token_cookie[0] ? " SameSite=Lax" : ""') != 1 or src.count('token_cookie[0] ? " SameSite=Lax" : ""') != 1:
+    die("SameSite=Lax is not appended by both emitters (httpd.c %d, web.c %d)"
+        % (hc.count('" SameSite=Lax"'), src.count('" SameSite=Lax"')))
+ok("the session cookie is emitted with SameSite=Lax by both open emitters and by nothing else")
 print("PASS test_preauth_rows")

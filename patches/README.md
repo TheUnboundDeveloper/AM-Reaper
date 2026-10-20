@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**839 <!--@patchcount--> patches, v1.0 → v3.4.7 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**852 <!--@patchcount--> patches, v1.0 → v3.4.8 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -13,8 +13,8 @@ git checkout 3006.102.8-beta2
 #  - --keep-cr: several third-party files (e.g. lltdc) have CRLF line endings, so
 #    the patch context carries CR. Without --keep-cr, git strips it and the patch
 #    fails to apply (at lltdc/src/qospktio.c).
-#  - git am (not plain `patch`): 4 patches carry git binary payloads (fonts, logo,
-#    USB ring sprite) that `patch` cannot apply.
+#  - git am (not plain `patch`): 18 patches carry git binary payloads (fonts, logos,
+#    banners, sprites) that `patch` cannot apply.
 git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 # The OpenSSL 3.5 source (release/src/router/openssl-3.5, 5,767 files) is not in the series - it is
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
@@ -28,10 +28,11 @@ tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from th
 
 Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout plus the `overlays/openssl-3.5-source.tar.gz` archive (from the rung that moved to OpenSSL 3.5) reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
-## What the series contains (535 patches, v1.0 → v2.7.6)
+## What the series contains
 
-> The per-rung descriptions in this file run through v2.4.3; for the rungs after that
-> (v2.4.4 → v2.7.6), the authoritative per-version narrative is [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
+> The series holds 852 <!--@patchcount--> patches. The per-rung descriptions in this file run
+> through v2.4.3; for every rung after that (v2.4.4 onward), the authoritative per-version
+> narrative is [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 
@@ -475,7 +476,7 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 > (v2.1.2); see [`../docs/BUILD-PROVENANCE.md`](../docs/BUILD-PROVENANCE.md).
 
 > **Model scope:** this published series is the **RT-BE96U** line throughout. The siblings
-> (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000) build from the
+> (RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 / BQ16 / BQ16 Pro) build from the
 > same shared source via `port_sibling_v2` (full-diff shared sync + per-model identity overlay + a
 > dict lockstep sync). The newest **published** release is **v3.1.0** <!--@pubver-->; many rungs (for
 > example v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5) exist in the series without a full
@@ -511,7 +512,7 @@ et al.) rather than the Reaper identity — they are upstream work, carried forw
 - **Why the gap landed there.** `v1.8.6` was the fleet fan-out where an automated port copied the RT-BE96U canon files verbatim onto the four sibling branches, overwriting each sibling's own identity (banner, `BUILD_NAME`, headers) — effectively turning every sibling into a BE96U. It took three corrective iterations to unwind (`v1.8.6a`, `b`, `c`), plus a fourth (`v1.8.6d`) for GT-BE98, whose different base GPL drop needed its own fix. The per-rung `git format-patch` appends across that churn are where the three commits were dropped. The clobber itself never reached the published series — this file is the **RT-BE96U** line, and the guarded `port_sibling_v2.sh` + `reaper_verify.sh` banner/`BUILD_NAME`/shared-parity checks exist precisely to make that failure un-shippable now.
 - **Numbering note.** Restoring those three commits shifted everything from the old `0246` onward: old `0246`–`0249` → `0248`–`0251`, and old `0250`+ → `+3`. The bullets above this one use the pre-repair numbering they were written with. Recorded `patch_count` values in [`../provenance/manifest.json`](../provenance/manifest.json) were shifted to match.
 - **Verified (2026-08-09).** All **374** patches apply with `git am --keep-cr` onto a fresh `a7ebfa133a` worktree; the result carries `EXTENDNO=Reaper_v2.3.1`, `release/src-rt` matches the build commit `eb0234214f` **exactly**, and `release/src/router` differs only by the three vendored `openssh-sftp` documentation files (`README.md`, `SECURITY.md`, `.github/ci-status.md`) that the `*.md` doc-hunk exclusion strips — **no source or code file differs**. Both trees are recorded per release in the manifest: `source_tree` (the build commit) and `source_tree_from_series` (what the published patches yield, which is what CI checks). **Series is contiguous, no gaps (0001–0374).**
-- **Extended v2.3.2 → v2.3.7: patches `0375`–`0406`** — cut rung by rung between 2026-08-09 and 2026-08-13 by [`../build-scripts/cut_rung.sh`](../build-scripts/cut_rung.sh), which replays and provenance-records every cut. **No per-rung note was written here for any of them**, which is why this log appears to jump from v2.3.1 to v2.4.1; the omission is recorded rather than back-filled from memory. What each rung contains is in the sections above and in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md), and each one's replay is attested by its `source_tree_from_series` entry in [`../provenance/manifest.json`](../provenance/manifest.json).
+- **Extended v2.3.2 → v2.3.7: patches `0375`–`0406`** — cut rung by rung between 2026-08-09 and 2026-08-13 by `cut_rung.sh` (maintainer tooling since 2026-09-19, no longer in this repo), which replays and provenance-records every cut. **No per-rung note was written here for any of them**, which is why this log appears to jump from v2.3.1 to v2.4.1; the omission is recorded rather than back-filled from memory. What each rung contains is in the sections above and in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md), and each one's replay is attested by its `source_tree_from_series` entry in [`../provenance/manifest.json`](../provenance/manifest.json).
 - **Extended through v2.4.1 (2026-08-13): patches `0407`–`0424`**, exported by `cut_rung.sh` from the v2.3.7 tip (`638de5e47e` == `0406`) through the v2.4.1 bump (`da542db44d`), same author normalization and doc-hunk exclusion. **This one rung spans four version bumps** — v2.3.8, v2.3.9, v2.4.0 and v2.4.1 — because the native firewall was built across all four and none of the first three published an image; cutting them together keeps the series aligned with the published *releases* rather than with every intermediate bump. **Replay-verified as part of the cut:** the full `0001`–`0424` series applies with `git am --keep-cr` onto the pinned `a7ebfa133a` base, yields `EXTENDNO=Reaper_v2.4.1`, and the resulting tree differs from the build commit only in vendored `*.md` files the doc-hunk exclusion strips — no source file differs. Both hashes are recorded in the manifest as `source_tree` (build commit) and `source_tree_from_series` (what these patches yield, which is what CI checks). **Series is contiguous, no gaps (0001–0424).**
 - **Extended through v2.4.2 (2026-08-14): patches `0425`–`0426`** — Warden's `out`/`both` directions made to actually block (the whitelist was tested before the destination rules and every outbound packet carries a LAN host as its source, so any whitelist entry covering that host returned out of the chain before a single destination rule ran); the opt-in `RW_SELF` chain that filters what the router itself originates; the block-total/country-table reconciliation; FQDN objects populated from dnsmasq's `ipset=` directive; per-tab explainers and help links across the firewall page; and two field fixes — SDN/VLAN labels beside bridge names in the Traffic view, and AiMesh-attached Wi-Fi clients no longer reported as Wired. Replay-verified, `0001`–`0426`, gapless.
 - **Extended through v2.4.3 (2026-08-14): patches `0427`–`0428`** — remediation of a security audit run against the v2.4.2 rung *before* it published. Six defects, all in code v2.4.2 had just added: a missing top-level type guard in the httpd mesh-client walk that let a valid-but-non-object JSON document dereference NULL in a root process; a reader/producer buffer mismatch on the generated dnsmasq fragment that could truncate a directive and stop dnsmasq starting, taking LAN DNS and DHCP with it; three shared scratch paths in the generated Warden scripts that let concurrent runs truncate each other and bank zeros; an object cap applied in one emitter and not its pair; a world-writable config fragment (`rc` runs `umask(0)`); and a duplicate JSON key when two SDNs share one bridge. Two hardening items rode along, the notable one a value gate on resolver addresses — `nameserver 0.0.0.0/0` would otherwise be *accepted* as a RETURN at the head of `RW_SELF` and silently neuter the whole self-filter. **Replay-verified as part of the cut:** `0001`–`0428` applies with `git am --keep-cr` onto the pinned `a7ebfa133a`, yields `EXTENDNO=Reaper_v2.4.3`, and differs from the build commit only in the three vendored `*.md` files the doc-hunk exclusion strips. **Series is contiguous, no gaps (0001–0428).**

@@ -11,7 +11,10 @@ START with it, while `dnsmasq --test` passes it - so the build flags are read fr
 What must never happen: an IPv4 line (it could take a DHCPv4 lease's name - dnsmasq compares names
 per family), a name that also holds a DHCPv6 lease (dnsmasq would refuse that lease its name), an
 unsafe name, or a reverse zone that is forwarded (the LAN filter treats the prefix as private and
-asks the gateway again - a loop).
+asks the gateway again - a loop). 2026-10-20 (security review F-1): nor a name dnsmasq itself would
+refuse the lease - the router's own, a static lease's, a hosts entry's - unless the lease belongs to the
+device that source names; dnsmasq keeps such a refused name in the lease file, so the lease file alone
+let any LAN device claim the router's name over AAAA.
 
 WHAT IT DOES. Compiles shared/reaper_v6names.c and shared/reaper_revzone.c on the host and proves
 the name filter, the lease-line parser, the renderer and the /64 helper; then pins the wiring:
@@ -60,6 +63,10 @@ int main(int argc, char **argv)
 		} else if (!strncmp(s, "net6=", 5)) {
 			char o[64]; int r = reaper_rev_net6(s + 5, o, sizeof(o));
 			printf("net6|%s|%d|%s\n", s + 5, r, r > 0 ? o : "-");
+		} else if (!strncmp(s, "lease4=", 7)) {	/* 2026-10-20: the lease's IPv4 as well */
+			char mac[18], ip4[16], nm[RV6N_NAME_MAX];
+			int k = rv6n_lease_line4(s + 7, mac, sizeof(mac), ip4, sizeof(ip4), nm, sizeof(nm));
+			printf("lease4|%d|%s|%s|%s\n", k, mac, ip4, nm);
 		}
 	}
 	{
@@ -101,6 +108,40 @@ int main(int argc, char **argv)
 		       rv6n_hup_due(1, 100, 220, 300), rv6n_hup_due(1, 100, 399, 300), rv6n_hup_due(1, 100, 400, 300),
 		       rv6n_hup_due(1, 500, 100, 300));
 	}
+	{	/* 2026-10-20 (security review F-1): the names dnsmasq protects, read from its own sources */
+		struct rv6n_prot pr[16];
+		int n = 0, i;
+		n = rv6n_prot_hosts_line("192.168.50.1 RT-BE96U-1234.lan RT-BE96U-1234 # the router", pr, n, 16);
+		n = rv6n_prot_hosts_line("# comment only", pr, n, 16);
+		n = rv6n_prot_hosts_line("", pr, n, 16);
+		n = rv6n_prot_hosts_line("2001:db8::10 printer6", pr, n, 16);
+		n = rv6n_prot_hosts_line("192.168.50.40 camera CAMERA", pr, n, 16);
+		n = rv6n_prot_hosts_line("not-an-address foo", pr, n, 16);
+		n = rv6n_prot_conf_line("dhcp-host=00:00:5E:00:53:01,set:00:00:5E:00:53:01,nas,192.168.50.10", pr, n, 16);
+		n = rv6n_prot_conf_line("dhcp-host=00:00:5e:00:53:02,set:00:00:5e:00:53:02,192.168.50.11", pr, n, 16);
+		n = rv6n_prot_conf_line("dhcp-host=00:00:5e:00:53:03,id:*,tag:x,[2001:db8::3],12h,ignore", pr, n, 16);
+		n = rv6n_prot_conf_line("host-record=media,media.lan,192.168.50.12,2001:db8::12", pr, n, 16);
+		n = rv6n_prot_conf_line("address=/ads.example/", pr, n, 16);
+		n = rv6n_prot_conf_line("addn-hosts=/etc/hosts", pr, n, 16);
+		printf("prot|n|%d\n", n);
+		printf("prot|ok|%d%d%d%d%d%d%d%d%d%d%d\n",
+		       rv6n_prot_ok(pr, n, "laptop", "00:00:5e:00:53:99", "192.168.50.200"),        /* 1 no source holds it */
+		       rv6n_prot_ok(pr, n, "RT-BE96U-1234", "00:00:5e:00:53:99", "192.168.50.200"), /* 0 the router's name */
+		       rv6n_prot_ok(pr, n, "rt-be96u-1234", "00:00:5e:00:53:99", "192.168.50.201"), /* 0 case-insensitive */
+		       rv6n_prot_ok(pr, n, "nas", "00:00:5e:00:53:01", "192.168.50.10"),            /* 1 the static lease's own device */
+		       rv6n_prot_ok(pr, n, "NAS", "00:00:5E:00:53:01", "192.168.50.77"),            /* 1 by MAC, any case */
+		       rv6n_prot_ok(pr, n, "nas", "00:00:5e:00:53:99", "192.168.50.10"),            /* 0 another MAC, even on that IPv4 */
+		       rv6n_prot_ok(pr, n, "camera", "00:00:5e:00:53:40", "192.168.50.40"),         /* 1 the hosts entry's own IPv4 */
+		       rv6n_prot_ok(pr, n, "camera", "00:00:5e:00:53:41", "192.168.50.41"),         /* 0 another device */
+		       rv6n_prot_ok(pr, n, "printer6", "00:00:5e:00:53:06", "192.168.50.6"),        /* 0 an admin-pinned AAAA */
+		       rv6n_prot_ok(pr, n, "media", "00:00:5e:00:53:12", "192.168.50.12"),          /* 1 host-record's own IPv4 */
+		       rv6n_prot_ok(pr, n, "media", "00:00:5e:00:53:13", "192.168.50.13"));         /* 0 */
+		printf("prot|names|");
+		for (i = 0; i < n; i++) printf("%s:%s:%s,", pr[i].name, pr[i].mac, pr[i].ip4);
+		printf("\n");
+		printf("prot|empty|%d%d\n", rv6n_prot_ok(pr, 0, "anything", "00:00:5e:00:53:01", "192.168.50.1"),
+		       rv6n_prot_ok(pr, n, "", "00:00:5e:00:53:01", "192.168.50.1"));                /* 1 no table; 0 no name */
+	}
 	return 0;
 }
 '''
@@ -122,7 +163,9 @@ try:
             "lease=86400 zz:5a:11:22:33:44 192.168.50.5 Bad 01",
             "lease=garbage",
             "net6=2001:db8:8cd0:100::4", "net6=2001:db8:8cd0::1", "net6=fe80::1", "net6=ff02::1", "net6=::1",
-            "net6=192.168.50.1", "net6=fd12:3456:789a:1::9"]
+            "net6=192.168.50.1", "net6=fd12:3456:789a:1::9",
+            "lease4=86043 00:00:5E:00:53:AE 10.20.0.98 PIHOST1 ff:5d:cb",
+            "lease4=86400 12345 2001:db8:8cd0::50 Laptop 00:01:00:01"]
     out = subprocess.run([exe] + args, capture_output=True, text=True).stdout
     names = {l.split("|")[1]: l.split("|")[2] for l in out.splitlines() if l.startswith("name|")}
     good = ["DESKTOP-EXAMPL1", "PIHOST1", "a", "x" * 63]
@@ -161,6 +204,19 @@ try:
     hup = [l.split("|")[1:] for l in out.splitlines() if l.startswith("hup|")]
     check("pacing: nothing pending -> no signal; first change -> at once; +120 s and +299 s -> wait; +300 s -> signal; clock back -> signal",
           hup == [["0", "1", "0", "0", "1", "1"]], hup)
+    # 2026-10-20 (security review F-1): dnsmasq refuses a lease its name when a hosts source or a dhcp-host
+    # line holds it with another address (cache.c cache_add_dhcp_entry, F_HOSTS | F_CONFIG) but keeps the
+    # name in the lease file - the daemon's only name source - so a LAN device claiming the router's name
+    # had its IPv6 address served for it over AAAA. The helper reads the same sources dnsmasq does.
+    l4 = [l.split("|")[1:] for l in out.splitlines() if l.startswith("lease4|")]
+    check("lease4: a DHCPv4 lease yields MAC, IPv4 and name; a DHCPv6 lease yields the name only",
+          l4 == [["4", "00:00:5e:00:53:ae", "10.20.0.98", "PIHOST1"], ["6", "", "", "Laptop"]], l4)
+    prot = {l.split("|")[1]: l.split("|")[2:] for l in out.splitlines() if l.startswith("prot|")}
+    check("protected names: hosts tokens as lower-case first labels with their IPv4 (none for an IPv6 line), duplicates folded; dhcp-host name with MAC + IPv4; host-record names with IPv4; comments, non-address lines, nameless and other directives add nothing",
+          prot.get("n") == ["5"] and prot.get("names") == ["rt-be96u-1234::192.168.50.1,printer6::,camera::192.168.50.40,nas:00:00:5e:00:53:01:192.168.50.10,media::192.168.50.12,"], prot)
+    check("protected names: an unheld name passes; the router's name never (any case); a static lease's name only from its MAC; a hosts name only from its IPv4; an IPv6 hosts name never; host-record by IPv4",
+          prot.get("ok") == ["10011010010"], prot.get("ok"))
+    check("protected names: an empty table allows everything; an empty name is refused", prot.get("empty") == ["10"], prot.get("empty"))
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
@@ -168,8 +224,15 @@ finally:
 d = read("rc/rv6names.c"); sdn = read("rc/sdn.c"); svc = read("rc/services.c")
 check("daemon: gate = switch AND IPv6 AND router mode; idles otherwise",
       'nvram_get_int("reaper_dns_v6names") == 1 && ipv6_enabled() && is_routing_enabled()' in d)
-check("daemon: reads the shared neighbour cache and every dnsmasq lease file",
-      "reaper_nd_load(nd, V6N_ND_MAX)" in d and 'opendir("/var/lib/misc")' in d and "rv6n_lease_line(" in d)
+check("daemon: reads the shared neighbour cache and every dnsmasq lease file (with the lease's IPv4)",
+      "reaper_nd_load(nd, V6N_ND_MAX)" in d and 'opendir("/var/lib/misc")' in d
+      and "rv6n_lease_line4(line, mac, sizeof(mac), ip4, sizeof(ip4), name, sizeof(name))" in d)
+# 2026-10-20 (security review F-1): the protected-name gate in the daemon
+check("daemon: every tick loads the names dnsmasq protects - /etc/hosts, every instance conf (main + dnsmasq-<idx>) with their addn-hosts files but never its own, lan_hostname - and publishes a lease name only when rv6n_prot_ok allows, logging a refusal once",
+      "load_protected();" in d and 'prot_hosts_file("/etc/hosts");' in d and 'prot_conf_file("/etc/dnsmasq.conf");' in d
+      and 'strncmp(e->d_name, "dnsmasq-", 8)' in d and 'strncmp(path, V6N_DIR "/", sizeof(V6N_DIR)) == 0' in d
+      and 'nvram_safe_get("lan_hostname")' in d and "rv6n_prot_ok(prot, nprot, nm, v4[li].mac, v4[li].ip4)" in d
+      and "warn_protected(nm, v4[li].mac);" in d and d.count("logmessage(V6N_TAG") == 3)
 check("daemon: skips non-global neighbours and DHCPv6-lease names",
       "!reaper_nd_global(nd[i].ip)" in d and "is_v6lease_name(held[i].name, n6)" in d)
 check("daemon: writes only on change, atomically - temp created 0600, opened to 0644 only when complete (2026-10-09 audit V3)",
@@ -230,4 +293,4 @@ if fails:
     print("\n%d check(s) failed:" % len(fails))
     for f in fails: print("  - " + f)
     sys.exit(1)
-print("all checks passed: IPv6 device names - IPv6 lines only, no DHCPv6 name clash, atomic writes, local zones, gated")
+print("all checks passed: IPv6 device names - IPv6 lines only, no DHCPv6 name clash, protected names kept (F-1), atomic writes, local zones, gated")

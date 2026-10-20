@@ -22,8 +22,9 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # Five models are selectable, all BCM4916, all with a completed green
-      # clean-room build as of 2026-08-10.
+      # Eight models are selectable, all BCM4916. The first five had a completed
+      # green clean-room build as of 2026-08-10; the GT-BE19000, BQ16 and BQ16_PRO
+      # joined later (see the model options below).
       #
       # RT-BE92U (BCM6765) was wired into this pipeline at v2.7.6 and RETIRED
       # from the roster after v3.1.2 (owner, 2026-09-10): upstream Merlin has
@@ -40,8 +41,8 @@ on:
       #
       # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
-      # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
-      # upstream carries router-sysdep for every other model but not that one.
+      # plus overlays/<MODEL>-platform.tar.gz for the models whose router-sysdep
+      # the pinned upstream does not carry (GT-BE98, GT-BE19000, BQ16, BQ16_PRO).
       #
       # The overlays are generated from the per-model branch tips. An earlier
       # generation read those branches from the WRONG place and silently carried
@@ -62,14 +63,14 @@ on:
       # repeat silently.
       #
       # 'all' fans out to every model on the roster. Combined with variant=both
-      # that is 10 concurrent jobs of ~1.5 h each -- within the 20-job limit for
+      # that is 16 concurrent jobs of ~1.5 h each -- within the 20-job limit for
       # public repos, and fail-fast is off below so one model dying does not
-      # cancel the other four.
+      # cancel the others.
       model:
         description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        # `all` is the six BCM4916 models x two variants = 12 jobs.
+        # `all` is the eight BCM4916 models x two variants = 16 jobs.
         # RT-BE92U is retired from the roster (see the note above) and is
         # deliberately not selectable here.
         # GT-BE19000 joined the roster 2026-09-12, once the three things a CI job
@@ -138,7 +139,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.4.7'
+    ${{ inputs.version == '' && 'Reaper_v3.4.8'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -173,7 +174,7 @@ jobs:
       # the build job's checkout for why every checkout here needs one.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -184,7 +185,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -209,7 +210,7 @@ jobs:
     steps:
       - name: Restore toolchain cache
         id: cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -302,7 +303,7 @@ jobs:
       - name: Checkout patch series and build scripts
         id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -320,7 +321,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -372,7 +373,7 @@ jobs:
           exit $rc
 
       - name: Restore pinned toolchains
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -484,7 +485,7 @@ jobs:
 
       - name: Upload firmware
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firmware-${{ matrix.model }}-${{ matrix.variant }}
           path: out/*.pkgtb
@@ -494,7 +495,7 @@ jobs:
 
       - name: Upload build evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evidence-${{ matrix.model }}-${{ matrix.variant }}
           path: |
@@ -654,8 +655,8 @@ jobs:
   # still advertised the previous one and the router reported "up to date".
   # This job closes that gap by regenerating the discovery files from the
   # releases just published. It is a SINGLE writer on purpose: the release job
-  # is a per-model matrix, so refreshing inside it would race five commits to
-  # main. The concurrency group serializes it across overlapping runs too.
+  # is a per-model matrix, so refreshing inside it would race one commit per
+  # model to main. The concurrency group serializes it across overlapping runs too.
   #
   # ALWAYS WRITES TO MAIN, whichever branch was dispatched: the manifest lives
   # on main because that is the URL baked into every fielded router. A main
@@ -682,7 +683,7 @@ jobs:
       # job exists to close.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -698,7 +699,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0

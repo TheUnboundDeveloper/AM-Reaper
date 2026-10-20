@@ -117,7 +117,7 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.41|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.44|1
 # v1.3.39 (2026-10-14): section 4c reads DNS Director per network (sdn_rl dnsf_idx against the nat
 # chain's rule for its bridge, counters only); section 10 resolves the shaped port like
 # hwqos_tm_ifname(); section 16 probes every gateway of a multipath default route
@@ -1012,7 +1012,8 @@ sbin/rc|rw_dexempt() {|1
 sbin/rc|threat domains: $DL loaded|1
 sbin/rc|service restart_dnsmasq|1
 usr/sbin/httpd|rwarden_dnsallow|1
-www/Reaper_Warden.asp|fd_urlhaus|1
+www/Reaper_Dreadwatch.asp|fd_urlhaus|1
+www/Reaper_Warden.asp|!fd_urlhaus
 # 2026-10-19 login watch (rwatch 3h) + IPv6 SSH guard (rc/firewall.c): failed-login bursts per source from the
 # syslog cursor into the review card and the dashboard bar; the WAN-SSH IPv6 accept is preceded at both sites
 # by an xt_recent per-/64 limiter (5 new connections per 60 s, --update keeps a flood blocked).
@@ -1022,8 +1023,47 @@ sbin/rc|--name rw_ssh6 --mask ffff:ffff:ffff:ffff:: --update --seconds 60 --hitc
 www/Reaper_Firewall.asp|rv_nlist|1
 www/Main_ReaperDash.asp|notices_n|1
 # 2026-10-19 Security Review posture row (Main_ReaperDash.asp paintReview: Disabled / No baseline amber, Baseline
-# green, Review red, from the cached report) + diag v1.3.41 review/threat-domain state lines and findings.
+# green, Review red, from the cached report) + diag v1.3.43 review/threat-domain state lines and findings.
 www/Main_ReaperDash.asp|s_rv_tag|1
 www/Main_ReaperDash.asp|function paintReview(){|1
 usr/sbin/reaper_diag|security review   :|2
 usr/sbin/reaper_diag|threat domains    :|1
+# 2026-10-20 security review remediation: the session cookie carries SameSite=Lax from both
+# open emitters (httpd.c send_token_headers, web.c login_cgi); rdnsmapd ignores LAN-forged
+# replies (and says so once per ten minutes); Gatekeeper's quarantine sends a held device's
+# DNS to the sinkhole instance on port 5300, started by apply.sh from /tmp/gk/sink.conf.
+usr/sbin/httpd|SameSite=Lax|1
+bin/rdnsmapd|DNS replies ignored: a LAN source|1
+sbin/rc|/tmp/gk/sink.conf|1
+sbin/rc|--to-ports 5300|1
+sbin/rc|address=/#/|1
+bin/gkd|the DNS sinkhole for held devices is not running|1
+# 2026-10-20 reviewer feedback. Dreadwatch: dnsmasq knows reaper-nx= / reaper-hitlog=, rc generates the
+# counted list and the hit collector, httpd serves dns_status / dns_test, the page exists. Security
+# Review: the rules engine in the watchdog script, the accept log and per-item accept in httpd, the
+# card's per-row actions. WAN chart: rtrafd publishes each probe result, the page has a right axis.
+usr/sbin/dnsmasq|reaper-hitlog|1
+usr/sbin/dnsmasq|bad --reaper-nx: /domain/ only|1
+sbin/rc|reaper-nx=/|1
+sbin/rc|Dreadwatch hit collector|1
+sbin/rc|/tmp/dreadwatch/dns.hits|1
+usr/sbin/httpd|sh /tmp/rwarden/dns.sh stats|1
+www/Reaper_Dreadwatch.asp|dwStats|1
+sbin/rc|RV_RULES=/jffs/reaper/review/rules|1
+usr/sbin/httpd|/jffs/reaper/review/accept.log|1
+www/Reaper_Firewall.asp|rvAckOne|1
+bin/rtrafd|last_us|1
+www/Reaper_Traffic.asp|raxis|1
+www/Reaper_Traffic.asp|latchart|1
+# 2026-10-20 the abuse.ch feed hosts (Fastly anycast, inside the USA country list) are seeded once into
+# the Warden whitelist beside www.ipdeny.com, so no feed, country or ban blocks the router's own lists.
+sbin/rc|151.101.2.49 151.101.66.49 151.101.130.49 151.101.194.49|1
+sbin/rc|/jffs/rwarden/.seed_abusech|1
+# 2026-10-20 r3 metal (the first diag of the reviewer-feedback build). The Gatekeeper sinkhole runs as
+# /tmp/gk/gksink, a symlink exec'd by that name, so rc's name-based dnsmasq restart no longer kills it;
+# rdnsmapd trusts the router's own upstream resolvers (the servers-file) - the owner's AdGuard on a VLAN,
+# reached through the router, was logged as forged; reaper_diag v1.3.44 guards the Dreadwatch pending count.
+sbin/rc|/tmp/gk/gksink|1
+bin/gkd|/tmp/gk/gksink|1
+bin/rdnsmapd|servers-file=|1
+bin/rdnsmapd|!(forged)

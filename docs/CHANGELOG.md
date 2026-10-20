@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.4.7** · 2026-10-19 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -46,6 +46,63 @@ node, not only on the primary router.
 
 ---
 
+## v3.4.8 — Dreadwatch, Security Review watch rules, the latency and loss chart, security-review fixes
+
+Everything in v3.4.7 is included.
+
+- **Dreadwatch: threat domains on their own page, with counts.** Reviewer feedback: name blocking
+  (dnsmasq NXDOMAIN) and address blocking (`ipset` drops) are different enforcement points, and a block
+  whose effect cannot be measured cannot be trusted. The v3.4.7 card left the Warden page for a new tab,
+  **Warden › Dreadwatch**, with its own feeds table, status and counters. dnsmasq gained two Reaper
+  options: `reaper-nx=/name/` (answered like an answer-less `address=`, but flagged as Dreadwatch's)
+  and `reaper-hitlog=PATH`, which records each NXDOMAIN answered from the list as time, asking client
+  and the listed name — at most 50 records a second and 256 KB between collections, the excess counted
+  as *Not recorded*; ordinary lookups are never recorded and nothing goes to syslog per lookup. Warden's
+  15-minute job (and each page refresh) folds the records into `/jffs/rwarden/dns.counters`: total since
+  reset, per feed, the top 100 names and devices; the newest 500 lookups stay in RAM. The page adds a
+  self-test (one query to the router's resolver, NXDOMAIN expected), a reset, and a coverage card (DNS
+  Director forcing, the Firefox DoH canary). **Needs Warden on**, as before. **Behaviour change:** the
+  list's `/jffs` copy is now `dns.nx`; the v3.4.7 `dns.cache` is replayed only when no `dns.nx` exists
+  and is removed once one is written, so a downgrade rebuilds its list at its first update. Guide 4.3.10.
+- **Security Review: watch rules, per-item accept, an acceptance log.** Reviewer feedback: expected
+  `/jffs` churn turned every run into the same list. Rules in `/jffs/reaper/review/rules` (`hash`,
+  `meta`, `exist`, `ignore` and a glob, or `cron:` / `nvram:` patterns; first match wins, 100 at most)
+  are applied by one awk engine to both the live inventory and the baseline, so an ignored path is
+  never reported as removed and a changed mode is a grey *rule changed* row, not a change. Each row
+  gets Accept, Existence only, Ignore and Ignore folder; Accept all stays. Every acceptance and rules
+  save is audited, logged with counts and up to 20 items (`reaper-audit: review …`) and appended to
+  `/jffs/reaper/review/accept.log` (200 kept; the card shows 10). The rules survive updates and ride
+  the settings export (`rwatch_rules`, validated on import). Guide 2.9.
+- **Traffic Analyzer: latency and loss get their own chart, with a real right axis.** Reviewer
+  feedback: latency showed only on the history windows, under a *Latency (right axis)* legend with no
+  right axis. A **Latency & loss** card under WAN throughput now draws round-trip time (left, ms) and
+  the one-minute loss (right, %) on every window; live it samples on each poll and holds the last reply
+  until the next 5-second probe, so the line is continuous, and on history a period with no reply is a
+  gap. `rtrafd` publishes each probe's sequence number and result (`seq`, `last_us`) for this. The WAN
+  throughput chart is back to its two traces. Guide 4.7.1.
+- **Warden: the abuse.ch feed hosts are whitelisted once.** `urlhaus`, `threatfox` and
+  `feodotracker.abuse.ch` are Fastly anycast names answered from `151.101.2.49`, `.66.49`, `.130.49`
+  and `.194.49`, inside the United States country list — the v3.4.7 ipdeny failure with US in place of
+  FR. The four addresses are added like the ipdeny entry: only those missing (bare or `/32`), appended,
+  logged, under their own one-time marker, so a deleted entry is never put back. Guide 4.3.5.
+- **Security review 2026-10-20: one medium and five low findings fixed.** IPv6 device names now honour
+  dnsmasq's hosts-clash rule, so a LAN device can no longer have its IPv6 address served for the
+  router's or another device's name (F-1; it was opt-in). The Connections page's name table ignores
+  DNS replies from LAN hosts that are not a resolver the router knows (DHCP-advertised, or one it
+  forwards to), and its backfill only accepts the answer to the question it asked (F-2, F-3). The
+  session cookie carries `SameSite=Lax` (F-4). The public-build workflows pin every GitHub Action to
+  a commit SHA (F-5). **Behaviour change:** a device held by Gatekeeper now gets every name answered
+  with the router's own address by a resolver of its own on port 5300 (run under its own name, so a
+  dnsmasq restart leaves it alone), so the sign-in sheet still appears but nothing can be looked up
+  or tunnelled (F-6). Detail in REAPER-FIXES; guide 4.2.6, 4.2.8, 4.14b.
+- **Diagnostics report v1.3.42 to v1.3.44.** Section 14b gains the Gatekeeper sinkhole (pid, port,
+  redirect rule counts); section 14 a Dreadwatch line: blocked lookups in total and per feed, not
+  recorded, devices, pending hits and each feed's last result — counts only. A finding notes a list
+  that predates counting. v1.3.44 reads a missing hits file as 0 instead of printing a shell error.
+- **Dictionaries.** 68 tokens added and 2 reworded in all 25 packs, translated (lockstep 7500).
+
+---
+
 ## v3.4.7 — security review and threat domains, login watch, the pinned USB store, device presence
 
 Everything in v3.4.6 is included.
@@ -64,7 +121,8 @@ Everything in v3.4.6 is included.
   *Baseline* (accepted, nothing unreviewed, last check time), red *Review* with the counts of changes
   and login notices. Painted from the same cached report the dashboard bar reads; the row opens the
   Status tab. After a boot, while no report exists yet, the row shows *Baseline* in amber and both
-  pages say that the first check can take up to 10 minutes (the boot grace plus the next tick). The diagnostics report (v1.3.41) gains the review's state and the threat-domain list
+  pages say that the first check can take up to 10 minutes (the boot grace plus the next tick).
+  The diagnostics report (v1.3.41) gains the review's state and the threat-domain list
   state in section 12 and 14, with a finding when changes or login bursts are unreviewed or a list is
   switched on but not loaded (counts only, never the sources). Backups: the switches and the exemption
   list ride the settings export; the accepted baseline and the domain cache ride the full backup.

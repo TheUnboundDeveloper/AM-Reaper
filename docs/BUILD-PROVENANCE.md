@@ -125,7 +125,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0852` <!--@patchcount--> (v3.4.8 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+to `0856` <!--@patchcount--> (v3.4.8 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
 v3.1.0 <!--@pubver-->. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (published since v2.7.6) and, from v3.1.4,
 the GT-BE19000's are produced by

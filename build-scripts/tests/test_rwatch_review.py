@@ -365,7 +365,8 @@ finally:
     shutil.rmtree(work, ignore_errors=True)
 ok('"RV_AUTH_N=10\\n"' in rw and "_rv_auth() {" in rw and "grep -v 'rmcpd-lab' $_win" in rw and "tail -n 50 $RV_TMP/review.auth" in rw,
    "rwatch.c: the login watch has its threshold, ignores the lab daemon's echo and caps the notices file")
-ok('\\\\\\"notices_n\\\\\\":%d}' in rw, "rwatch.c: the report carries notices_n for the dashboard bar")
+ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
+   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20)")
 
 # ---- 3. pins in source
 i_heal = rw.index('"HEALGRACE=300\\n"'); i_entry = rw.index('"[ \\"$1\\" = review ] && { _rv_run; exit 0; }\\n"')
@@ -430,8 +431,8 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.44"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
-   "diag v1.3.44: the review and threat-domain state lines")
+ok('VER="REAPER-DIAG v1.3.45"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+   "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
 ok("review.auth" not in between(diag, 'echo "  security review   : rwatch_review=', "\n\n", "diag 12 review block").replace("login_notices", ""), "diag: section 12 prints counts, never the notice sources")

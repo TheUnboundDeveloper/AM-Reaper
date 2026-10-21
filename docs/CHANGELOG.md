@@ -95,11 +95,23 @@ Everything in v3.4.7 is included.
   with the router's own address by a resolver of its own on port 5300 (run under its own name, so a
   dnsmasq restart leaves it alone), so the sign-in sheet still appears but nothing can be looked up
   or tunnelled (F-6). Detail in REAPER-FIXES; guide 4.2.6, 4.2.8, 4.14b.
-- **Diagnostics report v1.3.42 to v1.3.44.** Section 14b gains the Gatekeeper sinkhole (pid, port,
+- **No file or folder under /jffs stays writable by every user.** Field (RT-BE88U): the v3.3.8
+  umask fix only shaped new files; anything created earlier kept 0666 through every rewrite, and a
+  full-backup restore brings old modes back - 250+ entries on the reporting box, among them
+  `/jffs/nvram/sshd_authkeys` (dropbear's authorized keys), the VPN and HTTPS private keys, the ACME
+  account and the rule lists. dnsmasq, avahi and lldpd run as `nobody`, so one compromised daemon
+  could plant an SSH key and become root. At every boot, right after /jffs is mounted and before
+  anything runs from it, the "other" write bit is removed from every regular file and folder on it
+  (symlinks never followed, FIFOs and sticky shared folders left alone, one log line with the count;
+  `reaper_jffs_perm_sweep`, `rc/ubifs.c` / `jffs2.c`). The Security Review lists any entry that has
+  it again (the card and the dashboard, one log line per change of the count). **Behaviour change:**
+  an add-on that relied on a world-writable file or folder under /jffs needs its own owner instead.
+- **Diagnostics report v1.3.42 to v1.3.45.** Section 14b gains the Gatekeeper sinkhole (pid, port,
   redirect rule counts); section 14 a Dreadwatch line: blocked lookups in total and per feed, not
   recorded, devices, pending hits and each feed's last result — counts only. A finding notes a list
-  that predates counting. v1.3.44 reads a missing hits file as 0 instead of printing a shell error.
-- **Dictionaries.** 68 tokens added and 2 reworded in all 25 packs, translated (lockstep 7500).
+  that predates counting. v1.3.44 reads a missing hits file as 0 instead of printing a shell error;
+  v1.3.45 counts files and folders under /jffs any user can write (section 3, a finding when not 0).
+- **Dictionaries.** 71 tokens added and 2 reworded in all 25 packs, translated (lockstep 7503).
 
 ---
 

@@ -116,6 +116,13 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   Merlin 3006.102.10).
   **[in v3.4.6; owed: the reporter's ONT stays clean through a reboot without
   `ethctl eth0 eee off`]** ↳ notes: `wan-eee-phy-reset.md`
+- **[P2] Files under /jffs left writable by every user** (field, RT-BE88U) — files written before
+  v3.3.8 kept mode 0666 through every rewrite and a backup restore, the SSH authorized keys and VPN
+  keys among them. Every boot now removes write-for-everyone under /jffs before anything runs from
+  it; the Security Review card and the diagnostics count any that come back.
+  **[in v3.4.8; owed: on the reporter's box the first boot logs the files it fixed and their check
+  lists none]** ↳ notes: `jffs-world-writable.md`
+
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
@@ -154,7 +161,7 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 - **[P2] Code signing: manifest + images, with a pre-upload verdict.** **[scheduled]** ↳ notes:
   `manifest-signing-shelved.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Attainder — control by names** (resolver-step domain blocker). **[project]** ↳ notes:
+- **[P3] Dreadwatch — control by names** (resolver-step domain blocker). **[project]** ↳ notes:
   `attainder-name-control.md`
 - **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
 - **[P3] North star — replace stock GUI pages with Reaper-native ones.** **[ongoing]** ↳ notes:

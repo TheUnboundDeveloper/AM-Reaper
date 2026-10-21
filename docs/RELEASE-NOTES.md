@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Current rung** | **v3.4.8** <!--@treever--> — `3006.102.8_Reaper_v3.4.8`. **Dreadwatch puts threat domains on their own page and counts what it blocks, per feed, name and device; the Security Review takes watch rules, per-item accepts and keeps an acceptance log; latency and loss get their own chart.** Also: the 2026-10-20 security review's medium and five low findings fixed (IPv6 device names, the Connections name table's source check, SameSite on the session cookie, pinned build actions, a held Gatekeeper device's DNS answered by a sinkhole), the abuse.ch feed hosts whitelisted once, Diagnostics v1.3.44. Everything in v3.4.7 is included. |
+| **Current rung** | **v3.4.8** <!--@treever--> — `3006.102.8_Reaper_v3.4.8`. **Dreadwatch puts threat domains on their own page and counts what it blocks, per feed, name and device; the Security Review takes watch rules, per-item accepts and keeps an acceptance log; latency and loss get their own chart.** Also: the 2026-10-20 security review's medium and five low findings fixed (IPv6 device names, the Connections name table's source check, SameSite on the session cookie, pinned build actions, a held Gatekeeper device's DNS answered by a sinkhole), files older firmware left writable by every user under `/jffs` fixed at every boot, the abuse.ch feed hosts whitelisted once, Diagnostics v1.3.45. Everything in v3.4.7 is included. |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -41,10 +41,12 @@ their own chart under WAN throughput, on the live view as well as the history wi
 **Security fixes.** A full review of v3.4.7 found no unauthenticated way in at factory defaults; the one medium
 finding (in the opt-in IPv6 device names) and five low ones are fixed. A device held by Gatekeeper can no
 longer look names up through the router — every name points at the router, so the sign-in sheet still appears.
-Detail in [`REAPER-FIXES.md`](REAPER-FIXES.md).
+Files that older firmware left writable by every user under `/jffs` (among them the SSH authorized keys and the
+VPN keys) lose that permission at every boot, and the Security Review lists any that gets it back. Detail in
+[`REAPER-FIXES.md`](REAPER-FIXES.md).
 
 **Smaller changes.** The abuse.ch feed hosts' addresses are added to Warden's whitelist once (removable), so a
-country block can never stop the router fetching its own lists; Diagnostics v1.3.43.
+country block can never stop the router fetching its own lists; Diagnostics v1.3.45.
 
 ## What's new in v3.4.7 — security review, threat domains, login watch
 

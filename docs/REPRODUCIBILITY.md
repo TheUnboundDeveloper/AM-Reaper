@@ -81,7 +81,7 @@ tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from th
 # overlays/wlcsm-42015-blobs.tar.gz; the series carries the swap for the RT-BE96U tree, a sibling
 # takes the two files over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 852 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 856 <!--@patchcount--> patches (through v2.8.8).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

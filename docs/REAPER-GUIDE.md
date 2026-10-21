@@ -399,6 +399,8 @@ The same card lists **failed-login bursts**: ten or more failed SSH or web-inter
 
 **File modes (v3.3.8).** `rc` and everything it starts now run with umask 022, so a file created without an explicit mode is 0644, not world-writable 0666. An add-on that writes into such a file as a non-root user must set the mode itself.
 
+**Files from before that (v3.4.8).** The umask only shapes new files: a file created earlier kept 0666 through every later rewrite, and restoring a full backup brings old modes back. Among them were the SSH authorized keys (`/jffs/nvram/sshd_authkeys`), the VPN and HTTPS private keys and the rule lists, which a compromised service running as another user (dnsmasq, avahi, lldpd) could have changed. At every boot, right after `/jffs` is mounted and before anything runs from it, the router removes write access for other users from every file and folder on `/jffs` and logs how many it changed (`reaper: jffs: write access for all users removed from N file(s) and folder(s)`). Symlinks are never followed, and FIFOs and sticky shared folders keep their modes. With the Security Review on, a file or folder that has the permission again is listed on the review card and the dashboard; the diagnostics report counts them in section 3. An add-on that relied on a world-writable file or folder under `/jffs` should give it its own owner instead (`chown` it to the user that writes it).
+
 The diagnostics report lists "an old direct firewall hook left over or the shared front chain missing" as a FINDING, which will catch most script conflicts.
 
 ### 2.10 The diagnostics report and how to share it safely
@@ -413,7 +415,8 @@ conntrack section prints the destination-name table's counters (how many DNS rep
 counts only, never a name). Report v1.3.34 (v3.4.0) adds the LAN name resolution check to the WAN section: switch, state,
 how long, and which servers stayed silent, by role. Report v1.3.42 (v3.4.8) adds the Gatekeeper sinkhole to section 14b, and v1.3.43 a Dreadwatch line to section 14:
 blocked lookups in total and per feed, how many were not recorded, how many devices tried, the hits waiting for the
-next collection and each feed's last result - counts only, never a name or a device address.
+next collection and each feed's last result - counts only, never a name or a device address. Report v1.3.45 counts the
+files and folders under `/jffs` that any user can write (section 3), with a finding when there are any.
 
 **What the report masks.** The whole document passes through a redaction engine before a byte is written:
 

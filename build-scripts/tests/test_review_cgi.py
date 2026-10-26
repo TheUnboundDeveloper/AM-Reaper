@@ -75,6 +75,22 @@ check("the settings export/import carries the rules: exported from the /jffs fil
       and 'if (!v || rview_rules_ok(v) != 0) { rejected++; continue; }' in web
       and 'rview_alog("rules", "imported from a settings file");' in web)
 
+# 2026-10-23 (owner): Reset baseline - removes ONLY the baseline (and the cached report), keeps the
+# rules and the accept log, is audited + logged, and sits behind the same gate as every action
+rs = cgi[cgi.find('if (!strcmp(action, "reset")) {'):]
+rs = rs[:rs.find("\n\t}\n")]
+check("the review CGI has a reset action behind reaper_gate()",
+      bool(rs) and cgi.find("reaper_gate()") < cgi.find('if (!strcmp(action, "reset")) {'))
+check("reset removes the baseline and the cached report, never the rules or the accept log",
+      "unlink(RVIEW_BASE)" in rs and "unlink(RVIEW_JSON);" in rs and "RVIEW_RULES" not in rs and "RVIEW_ALOG" not in rs)
+check("reset is audited and written to the accept log",
+      'reaper_audit("review", "baseline-reset", "");' in rs and 'rview_alog("reset",' in rs)
+fw = open(os.path.join(SRC, "www", "Reaper_Firewall.asp"), encoding="utf-8", errors="replace").read()
+check("the page's Accept-all honours Cancel (reaperConfirm calls back with false)",
+      re.search(r"function rvAck\(\)\{\s*reaperConfirm\([^;]*?function\(ok\)\{\s*if\(!ok\)return;", fw) is not None)
+check("the page's Reset baseline confirms as a danger action and honours Cancel",
+      re.search(r"function rvReset\(\)\{\s*reaperConfirm\(`<#RFW_386#>`,\{okLabel:`<#RFW_385#>`,danger:true\},function\(ok\)\{\s*if\(!ok\)return;\s*rvpost\('action=reset'", fw) is not None)
+
 harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -170,6 +186,108 @@ last = ents[-1].split("\t") if ents else []
 check("accept log keeps the newest 200 entries", len(ents) == 200 and ents[0].split("\t")[3] == "n6", (len(ents), ents[:1]))
 check("accept log: time, client, action, detail - a tab or newline in the detail is flattened",
       len(last) == 4 and last[0].isdigit() and last[1] == "192.168.50.20" and last[2] == "accept-one" and last[3] == "S /jffs/scripts/a b c", last)
+
+# ---- 2026-10-25 (owner: select several rows, act once): action=ack_many, the REAL branch lifted out of the CGI
+check("the review CGI handles action=ack_many behind reaper_gate(), one audit record + one accept-log line",
+      '!strcmp(action, "ack_many")' in cgi and cgi.find("reaper_gate()") < cgi.find('!strcmp(action, "ack_many")')
+      and 'reaper_audit("review", "accepted-many", d);' in cgi and 'rview_alog("accept-many", d);' in cgi)
+check("page: a checkbox per row + select-all, one bar of actions valid for every selected row, disabled ones say why",
+      'id="rv_all"' in fw and 'id="rv_bulk"' in fw and "function rvBulkSync(){" in fw and "b.title=ok?'':why;" in fw
+      and "`<#RFW_391#>`" in fw and "`<#RFW_392#>`" in fw and "`<#RFW_393#>`" in fw)
+check("page: Accept selected posts ONE ack_many; Existence only / Ignore / Ignore folder save the rules ONCE (caps checked first)",
+      "body='action=ack_many&items='+encodeURIComponent(s.map(rvKey).join('\\n'));" in fw and "rvSaveRules(text,true);" in fw
+      and "if(n>100||text.length>8192){$('rv_state').textContent=`<#RFW_395#>`;return;}" in fw)
+check("page: the status colour follows the status cell (4th since the checkbox column)",
+      ".rv-added td:nth-child(4)" in fw and "nth-child(3)" not in fw[fw.find("security review rows"):fw.find(".rvh{")])
+m0 = cgi.find('\tif (!strcmp(action, "ack_many")) {')
+m1 = cgi.find("\n\t}\n", m0)
+many = cgi[m0 + len('\tif (!strcmp(action, "ack_many")) {'):m1] if m0 > 0 and m1 > m0 else ""
+check("ack_many: the branch is found", bool(many))
+if many:
+    h2 = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+static char reaper_client_ip[128] = "192.168.50.20";
+static char RVIEW_DIFF[512], RVIEW_ALOG[512], RVIEW_BASE[512], RVIEW_INV[512], RVIEW_LAST[512], *ITEMS;
+static int audits;
+#define RVIEW_RULES_MAX   100
+#define RVIEW_RULES_BYTES 8192
+#define RVIEW_ALOG_LINES  200
+#define RVIEW_INV_MAX     (200 * 1024)
+#define RVIEW_MANY_MAX    100
+#define RVIEW_MANY_BYTES  16384
+static int rjf_set(const char *path, const char *v, const char *tag)
+{ FILE *f = fopen(path, "w"); (void)tag; if (!f) return -1; fputs(v, f); fclose(f); return 0; }
+static char *get_cgi(const char *n) { return strcmp(n, "items") ? NULL : ITEMS; }
+static int nvram_match(const char *k, const char *v) { (void)k; (void)v; return 1; }
+static void reaper_audit(const char *f, const char *a, const char *d) { audits++; fprintf(stderr, "AUDIT %s %s %s\n", f, a, d); }
+static void rview_kick(void) {}
+#define websWrite fprintf
+''' + helpers + r'''
+static void ack_many(FILE *stream)
+{''' + many + r'''
+}
+static void put(const char *p, const char *s) { FILE *f = fopen(p, "w"); fputs(s, f); fclose(f); }
+static void run(const char *tag, const char *items)
+{
+	char b[4096] = ""; FILE *f;
+	ITEMS = (char *)items; audits = 0;
+	printf("%s: ", tag); ack_many(stdout);
+	if ((f = fopen(RVIEW_BASE, "r")) != NULL) { size_t n = fread(b, 1, sizeof(b) - 1, f); b[n] = 0; fclose(f); }
+	for (char *p = b; *p; p++) if (*p == '\n') *p = '|'; else if (*p == '\t') *p = '>';
+	printf(" audits=%d base=[%s]\n", audits, b);
+}
+int main(int argc, char **argv)
+{
+	static char many101[4096], huge[20000]; int i;
+	(void)argc;
+	snprintf(RVIEW_DIFF, sizeof(RVIEW_DIFF), "%s/diff", argv[1]); snprintf(RVIEW_ALOG, sizeof(RVIEW_ALOG), "%s/accept.log", argv[1]);
+	snprintf(RVIEW_BASE, sizeof(RVIEW_BASE), "%s/baseline", argv[1]); snprintf(RVIEW_INV, sizeof(RVIEW_INV), "%s/inv", argv[1]);
+	snprintf(RVIEW_LAST, sizeof(RVIEW_LAST), "%s/last", argv[1]);
+	put(RVIEW_INV, "S\t/jffs/a\tNEW\nN\tk\tv2\nA\t/jffs/n\t1\nC\tx\t-\n");
+	put(RVIEW_BASE, "S\t/jffs/a\tOLD\nN\tk\tv\nC\tx\t-\nE\t/jffs/gone\t-\n");
+	run("two", "S\t/jffs/a\nA\t/jffs/n\r\nE\t/jffs/gone\n");
+	run("unknown", "N\tk\nS\t/jffs/zz\n");
+	run("malformed", "Sjffs\n");
+	run("badtype", "X\t/jffs/a\n");
+	for (i = 0; i < 101; i++) strcat(many101, "N\tk\n");
+	run("101", many101);
+	memset(huge, 'a', sizeof(huge) - 1); huge[0] = 'N'; huge[1] = '\t';
+	run("huge", huge);
+	run("empty", "");
+	return 0;
+}
+'''
+    with tempfile.TemporaryDirectory() as td:
+        c = os.path.join(td, "m.c"); exe = os.path.join(td, "m")
+        open(c, "w").write(h2)
+        r = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-o", exe, c], capture_output=True, text=True)
+        check("ack_many: the lifted branch compiles cleanly on the host (-Wall -Wextra -Werror)", r.returncode == 0, r.stderr[-600:])
+        if r.returncode == 0:
+            p2 = subprocess.run([exe, td], capture_output=True, text=True)
+            o2, e2 = p2.stdout, p2.stderr
+            alog2 = [l for l in open(os.path.join(td, "accept.log")).read().split("\n") if l] if os.path.exists(os.path.join(td, "accept.log")) else []
+            print(o2, end="")
+            ln = {l.split(":", 1)[0]: l for l in o2.splitlines() if not l.startswith("AUDIT")}
+            check("ack_many: folds exactly the listed items (a changed file, an added file, a removed file; CRLF taken) in one write",
+                  '"ok":1,"running":1,"n":3}' in ln.get("two", "") and
+                  "base=[N>k>v|C>x>-|S>/jffs/a>NEW|A>/jffs/n>1|]" in ln.get("two", "") and " audits=1 " in ln.get("two", ""), ln.get("two"))
+            check("ack_many: ONE audit record and ONE accept-log line naming the count and the items",
+                  e2.strip() == "AUDIT review accepted-many 3 item(s): S /jffs/a, A /jffs/n, E /jffs/gone" and len(alog2) == 1
+                  and alog2[0].split("\t")[2:] == ["accept-many", "3 item(s): S /jffs/a, A /jffs/n, E /jffs/gone"], alog2)
+            same = "base=[N>k>v|C>x>-|S>/jffs/a>NEW|A>/jffs/n>1|]"
+            check("ack_many: an unknown item refuses the WHOLE list - nothing written, nothing audited",
+                  '"error":"no such item"' in ln.get("unknown", "") and " audits=0 " in ln.get("unknown", "") and same in ln.get("unknown", ""), ln.get("unknown"))
+            check("ack_many: a line without its tab or with an unknown type is refused",
+                  '"error":"bad item"' in ln.get("malformed", "") and '"error":"bad item"' in ln.get("badtype", ""))
+            check("ack_many: more than 100 items or more than 16 KB is refused with its reason (RFW_394); an empty list too",
+                  '"ek":"RFW_394"' in ln.get("101", "") and '"ek":"RFW_394"' in ln.get("huge", "") and '"ok":0' in ln.get("empty", "")
+                  and " audits=0 " in ln.get("101", ""))
 
 if fails:
     print("\n%d FAILED:" % len(fails))

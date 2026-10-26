@@ -537,7 +537,7 @@ int main(int argc, char **argv)
                  # IPv6 A1: [addr]:port endpoints, the v6 rows kept out of the accelerator figures
                  'function epStr(', 'epStr(c.cli,c.cp)', 'epStr(c.srv,c.spt)', 'c.fam===6', '<#RCON_47#>', 'pathbadge v6',
                  # the detail panel follows the reader: stretched cell, placement from the shell's visible slice
-                 'class="dside"', '.dside{align-self:stretch}', 'function placeDetail()', '"--rv-top"', '"--rv-h"',
+                 'class="dside"', '.dside{align-self:stretch;min-width:0}', 'function placeDetail()', '"--rv-top"', '"--rv-h"',
                  'new MutationObserver(placeDetail)', 'addEventListener("scroll",placeDetail', '    placeDetail();\n  }'):
         if want not in page:
             die("Reaper_Conn.asp lacks %s" % want)

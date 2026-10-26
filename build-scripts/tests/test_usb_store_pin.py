@@ -298,7 +298,7 @@ for k in ("RDEVE_16", "RDEVE_17", "RDEVE_18"):
     must(page, "%s:`<#%s#>`" % (k, k), 1, "page: maps error key %s" % k)
 
 NEW = ["RDST_%d" % n for n in range(79, 99)] + ["RDEVE_16", "RDEVE_17", "RDEVE_18"]
-used = set(re.findall(r"<#(RDST_(?:79|8\d|9\d)|RDEVE_1[678])#>", page))
+used = set(re.findall(r"<#(RDST_(?:79|8\d|9[0-8])|RDEVE_1[678])#>", page))	# 99+ = the 2026-10-21 rows
 if used != set(NEW):
     die("page: new keys used %s != added %s" % (sorted(used), sorted(NEW)))
 ok("page: uses exactly the 23 new keys")
@@ -314,4 +314,162 @@ for lg in LANGS:
 if len(orders) != 1 or len(lines) != 1:
     die("dicts are not in lockstep (%d key orders, line counts %s)" % (len(orders), sorted(lines)))
 ok("all 25 dicts carry the 23 keys, same order, lockstep %d lines" % lines.pop())
+
+# ------------------------------------------- 4. the published location (2026-10-21)
+# Long-Term Storage rows for Wallguard / Dreadwatch / Encrypted DNS. wallguard.sh and the Dreadwatch
+# collector read no nvram, so the watchdog publishes the base + opted-in datasets (rstore_pub_text)
+# and both carry the shell reader rstore_dir (RSTORE_SH_DIR). The rwatch tick writes the Encrypted
+# DNS activity line itself.
+PUB_DRIVER = r'''
+#include "reaper_store.h"
+int main(int c, char **v) { char out[256]; int r; (void)c;
+  r = rstore_pub_text(v[1], v[2], v[3], v[4], 0, v[5], out, sizeof(out));
+  fputs(r ? out : "-\n", stdout); return 0; }
+'''
+MACRO_DRIVER = '#include <stdio.h>\n#include "reaper_store.h"\nint main(void){fputs(RSTORE_SH_DIR, stdout);return 0;}\n'
+wallguard_sh = read("wallguard/wallguard.sh")
+rwarden = read("rc/rwarden.c")
+wallguard_c = read("rc/wallguard.c")
+work = tempfile.mkdtemp(prefix="rstore4_")
+try:
+    def build(name, text):
+        p = os.path.join(work, name); open(p + ".c", "w").write(text)
+        r = subprocess.run([GCC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-I", os.path.join(SRC, "shared"),
+                            "-o", p, p + ".c"], capture_output=True, text=True)
+        if r.returncode:
+            die("driver %s does not compile: %s" % (name, r.stderr[-800:]))
+        return p
+    pub = build("pub", PUB_DRIVER)
+    mnt, jf = os.path.join(work, "mnt"), os.path.join(work, "jffs"); os.makedirs(jf)
+    for v, i in (("A", "fedcba9876543210"), ("B", "0123456789abcdef")):
+        os.makedirs(os.path.join(mnt, v, ".reaper")); open(os.path.join(mnt, v, ".reaper", "store.id"), "w").write(i)
+    def P(*a): return subprocess.run([pub] + list(a), capture_output=True, text=True).stdout
+    base = os.path.join(mnt, "B", ".reaper")
+    if P("usb", "0123456789abcdef", "dev,shl", mnt, jf) != "%s\n,dev,shl,\n" % base:
+        die("publish: the pinned volume B with its datasets expected, got %r" % P("usb", "0123456789abcdef", "dev,shl", mnt, jf))
+    if P("usb", "1111111111111111", "dev", mnt, jf) != "-\n" or P("ram", "", "dev", mnt, jf) != "-\n":
+        die("publish: a pin that matches nothing, or RAM, must publish nothing")
+    if P("jffs", "", "shh,dw", mnt, jf) != "%s\n,shh,dw,\n" % jf:
+        die("publish: the JFFS base expected")
+    if P("usb", "0123456789abcdef", "dev;rm -rf /,$(x)", mnt, jf) != "%s\n,devrmrf,x,\n" % base:
+        die("publish: the dataset list must keep only [a-z0-9,]")
+    ok("publish: pinned volume only, nothing for RAM / no match, JFFS base, dataset list reduced to [a-z0-9,]")
+
+    mac = subprocess.run([build("mac", MACRO_DRIVER)], capture_output=True, text=True).stdout
+    a, b = wallguard_sh.find("# rstore_dir: begin"), wallguard_sh.find("# rstore_dir: end\n")
+    if a < 0 or b < 0 or wallguard_sh[a:b + len("# rstore_dir: end\n")] != mac:
+        die("wallguard/wallguard.sh: its rstore_dir block differs from RSTORE_SH_DIR in shared/reaper_store.h")
+    ok("wallguard.sh carries RSTORE_SH_DIR byte for byte")
+    pf, mts = os.path.join(work, "store.base"), os.path.join(work, "mounts")
+    open(mts, "w").write("/dev/sda1 %s/B ext4 rw 0 0\n" % mnt)
+    def RD(ds, text, link=False):
+        for p in (pf, pf + ".real"):
+            if os.path.lexists(p): os.remove(p)
+        if link:
+            open(pf + ".real", "w").write(text); os.symlink(pf + ".real", pf)
+        else:
+            open(pf, "w").write(text)
+        env = dict(os.environ, RSTORE_PUB_F=pf, RSTORE_MNT_D=mnt, RSTORE_MOUNTS=mts, RSTORE_JFFS_D=jf)
+        return subprocess.run([SH, "-c", mac + 'rstore_dir "$1"', "x", ds], capture_output=True, text=True, env=env).stdout.strip()
+    t = "%s\n,dev,shl,\n" % base
+    if RD("shl", t) != base or RD("shh", t) != "" or RD("shl", t, link=True) != "":
+        die("rstore_dir: an opted-in dataset resolves; one not ticked, or a symlinked store.base, does not")
+    if RD("dw", "%s\n,dw,\n" % jf) != jf or RD("dw", "/etc\n,dw,\n") != "":
+        die("rstore_dir: the JFFS base resolves; any other path is refused")
+    open(mts, "w").write("")
+    if RD("shl", t) != "":
+        die("rstore_dir: an unmounted USB base must not resolve")
+    ok("rstore_dir: ticked dataset only, never a symlinked file, only the JFFS base or a mounted pinned volume")
+
+    m = re.search(r'(\t  "# 2b\) Encrypted DNS activity.*?)\t  "# 3\) syslog mirror', rwatch, re.S)
+    if not m:
+        die("rc/rwatch.c: the Encrypted DNS activity block is missing")
+    body = []
+    for ln in m.group(1).splitlines():
+        s = re.match(r'\t  "(.*)\\n"$', ln)
+        if not s:
+            die("rc/rwatch.c: unexpected line in the Encrypted DNS block: " + ln)
+        body.append(re.sub(r'\\(.)', lambda x: x.group(1), s.group(1)))
+    body = "\n".join(body) + "\n"
+    stj = os.path.join(work, "status.json")
+    open(stj, "w").write('{"state":"running","pid":1,"up":5,"listen":[{"a":"192.168.50.1","p":853,"wan":0,"ok":1}],'
+                         '"conns":2,"conns_total":9,"queries":40,"refused_peer":1,"refused_policy":2,"refused_busy":0,'
+                         '"hs_fail":0,"servfail":0,"cert":{"x":1}}\n')
+    fb = os.path.join(work, "bin"); os.makedirs(fb)
+    for name, out in (("iptables", "Chain REAPER_EDNS (1 references)\n    pkts bytes target prot opt in out source destination\n"
+                                    "       5   300 REJECT tcp -- * * 0.0.0.0/0 0.0.0.0/0 tcp dpt:853 reject-with tcp-reset\n"
+                                    "       2   120 REJECT udp -- * * 0.0.0.0/0 0.0.0.0/0 udp dpt:853 reject-with icmp-port-unreachable\n"
+                                    "       7   420 REJECT tcp -- * * 0.0.0.0/0 0.0.0.0/0 tcp dpt:443 match-set redns_doh dst reject-with tcp-reset\n"),
+                      ("ip6tables", "       1    80 REJECT tcp -- * * ::/0 ::/0 tcp dpt:443 match-set redns_doh6 dst reject-with tcp-reset\n"),
+                      ("ipset", "Name: x\nNumber of entries: 10\n")):
+        open(os.path.join(fb, name), "w").write("#!/bin/sh\ncat <<'EOF'\n%sEOF\n" % out); os.chmod(os.path.join(fb, name), 0o755)
+    hb = os.path.join(work, "base"); os.makedirs(hb)
+    rsx = os.path.join(work, "rstore")
+    rb = subprocess.run([GCC, "-std=gnu99", "-I", os.path.join(SRC, "shared"), '-DRSTORE_TRUST_MNT="%s"' % mnt,
+                         '-DRSTORE_TRUST_JFFS="%s"' % hb, "-DRSTORE_NEED_MOUNT=0", "-o", rsx, os.path.join(SRC, "wallguard", "rstore.c")],
+                        capture_output=True, text=True)
+    if rb.returncode:
+        die("rstore does not build on the host: " + rb.stderr[-400:])
+    def edns(dot):
+        sc = ('_nv() { case "$1" in reaper_dot_srv) echo %s;; *) echo 0;; esac; }\nDS=",edns,"; VOLATILE=0; BASE=%s; NOWH=1792800000\n'
+              % (dot, hb)) + body.replace("/tmp/rednsd/run/status.json", stj).replace("/usr/sbin/rstore", rsx)
+        return subprocess.run([SH, "-c", sc], capture_output=True, text=True, env=dict(os.environ, PATH=fb + ":" + os.environ["PATH"]))
+    r = edns(1)
+    got = open(os.path.join(hb, "ednshist.log")).read() if os.path.exists(os.path.join(hb, "ednshist.log")) else ""
+    if got != "1792800000 conn=2 ans=40 ref=3 dot_refused=7 doh_refused=8 doh_ips=20\n":
+        die("rwatch: Encrypted DNS activity line wrong: %r %s" % (got, r.stderr[-300:]))
+    edns(0)
+    if open(os.path.join(hb, "ednshist.log")).read() != got:
+        die("rwatch: with Encrypted DNS and the block both off, no line may be written")
+    ok("rwatch: one Encrypted DNS activity line per tick (rednsd counters, 853 / 443 refusals v4+v6, list size), none while both are off")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+
+must(usbmon, "rstore_publish();", 1, "rc: the watchdog check publishes the location")
+must(usbmon, "wallguard_store_attached();", 1, "rc: a USB base that appears wakes Wallguard")
+must(rc_h, "extern void wallguard_store_attached(void);", 1, "rc/rc.h: prototype")
+must(wallguard_c, 'sh_run_bg("restore");', 1, "rc/wallguard.c: the attach hook runs restore")
+must(rwarden, "\t  RSTORE_SH_DIR\n", 1, "rc/rwarden.c: the Dreadwatch collector carries the reader")
+must(rwatch, "for _ds in dev traf watch chq slog shl shh dw edns; do", 1, "rwatch: collecting-since for the new rows")
+must(rwatch, '/usr/sbin/rstore stamp \\"$BASE\\" \\"$_ds.since\\" \\"$NOWH\\"', 1, "rwatch: the since stamps never follow a link (rstore stamp)")
+must(rwatch, '[ -f \\"$BASE/$_ds.since\\" ] || /usr/sbin/rstore stamp', 1, "rwatch: a stamp that exists is not re-offered every tick (review 2026-10-24 Q-A-7)")
+must_not(rwatch, '> \\"$BASE/ednshist.log', "rwatch: the Encrypted DNS line is never written by path")
+# owner "fix them" (2026-10-21): the OLDER store writers go through rstore too (guest shares map to uid 0
+# on the volume, so a planted link redirected root's writes by path)
+must_not(rwatch, '>> \\"$BASE/devhist.log', "rwatch: device history is never appended by path")
+must(rwatch, 'rstore ring \\"$BASE\\" - devhist.log 5000', 1, "rwatch: device history = rstore ring, the last 5000 lines")
+must(rwatch, 'rstore ring \\"$BASE\\" - chqhist.log 20000', 1, "rwatch: channel-quality history = rstore ring, the last 20000 lines")
+must_not(rwatch, '>> \\"$BASE/syslog.mirror', "rwatch: the syslog mirror is never appended by path")
+must(rwatch, 'rstore append \\"$BASE\\" - syslog.mirror 8388608', 2, "rwatch: the syslog mirror = rstore append with the 8 MB rotation (both branches)")
+must(rwatch, 'rstore put \\"$BASE\\" \\"rwatch/inc-$NOWD\\"', 1, "rwatch: an incident dump onto the store is assembled in RAM and put file by file")
+must(rwatch, 'rstore rmtree \\"$BASE\\" rwatch', 1, "rwatch: old dumps on the store are removed with rstore rmtree")
+must(rwatch, "DUMPROOT=/jffs/rwatch; DUMPST=0", 1, "rwatch: /jffs/rwatch (root's alone) keeps the direct path")
+must(web, 'rstore_append_buf(base, "-", "audit.log", 512 * 1024, line, (size_t)n);', 1, "httpd: the audit ring is appended without following a link")
+must_not(web, 'snprintf(path, sizeof(path), "%s/audit.log", base);\n\tif ((f = fopen(path, "a")) == NULL) return;', "httpd: the audit log is no longer fopen(path, \"a\")")
+must(web, 'rstore_stamp(base, "dev.since", line);', 1, "httpd: the devices collecting-since stamp is created once, never through a link")
+must_not(web, 'snprintf(since, sizeof(since), "%s/dev.since", base);', "httpd: the since stamp is no longer fopen by path (the build break of 2026-10-21 22:01)")
+must(rtrafd, 'rstore_append(g_store_dir, "-", "healthhist.log", HLOG_MAX, in);', 1, "rtrafd: the health history append is relative to the no-follow store folder")
+must(rtrafd, "static int db_dir(const char *path)", 1, "rtrafd: the db folder is opened with no link followed at any level")
+must(rtrafd, 'openat(dfd, DB_LEAF ".new", O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0600);', 1, "rtrafd: the db temp is created in that folder, O_EXCL")
+must(rtrafd, 'renameat(dfd, DB_LEAF ".new", dfd, DB_LEAF);', 1, "rtrafd: the db is published with renameat in that folder")
+must(rtrafd, 'fd = openat(dfd, DB_LEAF, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);', 1, "rtrafd: the db is loaded relative to the folder; a FIFO is refused")
+must_not(rtrafd, 'fd = open(path, O_RDONLY | O_NOFOLLOW);', "rtrafd: the old path-based db open is gone")
+must(rwatch, "sh /usr/sbin/wallguard.sh restore", 1, "rwatch: Wallguard's no-table heal restores from the volume first")
+must(web, '"slog", "shl", "shh", "dw", "edns", NULL', 2, "httpd: store_status since + store_set accept the new rows")
+must(web, '\\"edoh_bytes\\"', 2, "httpd: the locked Encrypted DNS list row reports its facts")
+for k in ("shl", "shh", "dw", "edns", "edoh"):
+    must(page, "{k:'%s'," % k, 1, "page: row %s" % k)
+NEW2 = ["RDST_%d" % n for n in range(99, 113)] + ["RSHD_131", "RSHD_132", "RDWT_52", "RDWT_53"]
+orders, ref = set(), None
+for lg in ["EN"] + LANGS:
+    t = read("www/%s.dict" % lg)
+    keys = [ln.split("=", 1)[0] for ln in t.splitlines() if "=" in ln]
+    pos = [k for k in keys if k in NEW2]	# three groups, each after its family's last key
+    ref = ref or pos
+    if sorted(pos) != sorted(NEW2) or pos != ref:
+        die("www/%s.dict: the 2026-10-21 keys missing or out of order" % lg)
+    orders.add(tuple(keys))
+if len(orders) != 1:
+    die("dicts are not in lockstep after the 2026-10-21 keys")
+ok("all 25 dicts carry the 18 Long-Term Storage keys in lockstep")
 print("PASS")

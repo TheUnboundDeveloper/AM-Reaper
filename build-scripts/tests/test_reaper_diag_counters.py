@@ -93,14 +93,15 @@ def p_snapshot_is_used(s):
 
 
 def p_panic_anchored(s):
-    m = re.search(r"panic/oops/oom[^\n]*", s)
+    # v1.3.48 (review 2026-10-24, Q-B-8): the 19b counters are ONE awk pass over $SNAP; the panic/oops/oom
+    # counter is its `/Kernel panic|Oops:|.../` clause (a case-insensitive test reads the lower-cased copy `l ~`)
+    m = re.search(r"(grep -[a-z]*i[a-z]*E '|l ~ |tolower\(\$0\) ~ )?/?([^/'\n]*[Kk]ernel panic[^/'\n]*)", s)
     if not m:
-        return "the panic/oops/oom line is gone"
-    line = m.group(0)
-    if re.search(r"grep -[a-z]*i[a-z]*E", line):
-        return ("the panic/oops/oom grep is case-insensitive again - the word "
+        return "the panic/oops/oom counter is gone"
+    if m.group(1):
+        return ("the panic/oops/oom test is case-insensitive again - the word "
                 "'oops' in any prose line matches")
-    if "Oops:" not in line:
+    if "Oops:" not in m.group(2):
         return ("the panic pattern no longer anchors on 'Oops:' - a bare "
                 "'Oops' matches prose")
     return None
@@ -229,9 +230,12 @@ SCENARIOS = [
      "| grep -v 'rmcpd-lab: exec:' ", "", "rmcpd-lab"),
     ("SLF is not repointed at the snapshot",
      "\n  SLF=\"$SNAP\"", "", "SLF is not repointed"),
-    ("the panic grep goes case-insensitive again",
-     "grep -cE 'Kernel panic|Oops:|oom-killer",
-     "grep -ciE 'kernel panic|Oops|oom-killer", "case-insensitive"),
+    ("the panic test goes case-insensitive again",
+     "/Kernel panic|Oops:|oom-killer|Out of memory/ { c[20]++ }",
+     "l ~ /kernel panic|oops|oom-killer|out of memory/ { c[20]++ }", "case-insensitive"),
+    ("the panic pattern loses its 'Oops:' anchor",
+     "/Kernel panic|Oops:|oom-killer|Out of memory/ { c[20]++ }",
+     "/Kernel panic|Oops|oom-killer|Out of memory/ { c[20]++ }", "anchors on 'Oops:'"),
     ("'boots in span' is reintroduced",
      "  echo \"  syslogd starts    :",
      "  echo \"  boots in span     :", "boots in span"),
@@ -288,8 +292,11 @@ SRCTXT = code_only(read(DIAG))
 LINES = SRCTXT.split("\n")
 
 PIPE = [ln.strip() for ln in LINES if '> "$SNAP"' in ln and "awk" in ln][0]
-PANIC = [ln.strip() for ln in LINES
-         if "panic/oops/oom" in ln and "grep -cE" in ln][0]
+# v1.3.48: the counters are one awk pass (CNTS) consumed by `set -- $CNTS; shift 18` and the echo line
+_c0 = next(i for i, l in enumerate(LINES) if l.strip().startswith('CNTS="$(awk'))
+_c1 = next(i for i in range(_c0, len(LINES)) if '"$SNAP" 2>/dev/null)"' in LINES[i])
+PANIC = "\n".join(LINES[_c0:_c1 + 1] + [l for l in LINES if l.strip().startswith("set -- $CNTS; shift 18")]
+                  + [l for l in LINES if "panic/oops/oom    :" in l])
 
 tmp = tempfile.mkdtemp(prefix="diagfix_")
 try:

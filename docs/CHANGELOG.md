@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.4.9** · 2026-10-25 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -43,6 +43,201 @@ node, not only on the primary router.
 > shipping as an overlays/ archive)`. Note that `patch_count.sh --verify <dir>` compares the
 > **tree** count against `patches/`, so on a post-v3.1.0 tree it reports a mismatch by
 > design; compare `--exported` instead.
+
+---
+
+## v3.4.9 — Wallguard ad blocker, Encrypted DNS for devices, Reaper-native settings pages, Dreadwatch on free lists
+
+Everything in v3.4.8 is included.
+
+- **Wallguard: an ad and tracker blocker in the router's resolver (Warden › Wallguard).** Block lists
+  (HaGeZi, OISD and up to 8 of your own; hosts, plain-domain and `||name^` formats) compile with
+  `wallguardc` into one table every dnsmasq instance maps and shares - a million names in about 12 MB
+  once, swapped in place without a DNS restart. A listed name, and its subdomains where the list says
+  so, is answered `0.0.0.0`/`::` or NXDOMAIN; every name of an answer's CNAME chain is checked, so a
+  tracker hidden behind a site's own name is caught. **Profiles** per device (by MAC) or per guest/VLAN
+  network: *Bypass*, stricter lists, **blocked services** (about 45, by name), **schedules** for them
+  and **safe search** (Google, Bing, DuckDuckGo, YouTube Restricted Mode). *My rules*, **Unbreak** (the
+  names a device was refused in the last 15 minutes, allowed for 24 hours or always), **Why?**, **Pause**
+  and an opt-in live view of all lookups (RAM only, off by itself after an hour). Only blocked lookups
+  are recorded, under the list entry that matched. The router's own answers (local names, `address=`,
+  Dreadwatch) win. Off by default. Guide 4.3.11.
+- **Encrypted DNS for devices (Warden › Encrypted DNS).** `rednsd`, a DNS-over-TLS server on port 853
+  of the LAN networks with the router's certificate, so a device encrypts its lookups to the router and
+  Dreadwatch, Wallguard and DNS Director still apply: Android Private DNS, an Apple configuration profile
+  limited to your Wi-Fi names, systemd-resolved. Each device is judged by its real address. **Block
+  encrypted DNS that goes around the router** (a second switch) rejects DNS-over-TLS and DNS-over-QUIC
+  (TCP and UDP 853) to any other server and HTTPS to the known public DoH resolvers (a shipped seed plus a
+  maintained list, refreshed nightly), and answers their names NXDOMAIN; browsers on automatic DNS fall
+  back to the router. A device set to one named outside provider has no DNS while the block is on (the
+  page says so). Both off by default. Guide 4.3.12.
+- **Reaper-native settings pages: System, LAN, WAN, VPN, Parental Controls, the logs and tools.** Pages
+  on Reaper's component kit (`www/reaper/rp.js`, `rp.css`, one menu model in `menu.js`) replace the stock
+  ones for System (with SNMP and Tweaks), the System Log group (log, wireless log, leases, routes, port
+  forwards, IPv6, analysis, netstat, wake on LAN), LAN (DHCP, switch), WAN (Internet, NAT, DDNS, IPv6
+  setup, IPTV, DNS, Smart Connect), VPN (status, VPN Director, server, client, Tor) and Parental Controls
+  time scheduling. Each was compared field by field with the page it replaces (posted names and values,
+  the stock validations); a stored password, key or pre-shared key is never placed in the page source -
+  it shows as `********` and posts only when retyped. **Behaviour change:** the 66 stock pages these
+  replace no longer ship; their URLs (bookmarks, add-ons) bounce to the Reaper page.
+- **Dreadwatch: free lists after abuse.ch closed its keyless feeds (HTTP 410).** Reaper's Basics (one
+  built-in row: the URLhaus mirror, phishing and C2 lists plus a frozen snapshot of the last keyless
+  ThreatFox list, 21 October 2026) and optional crypto-mining, ransomware, CERT Polska and Threatview
+  lists. The name limit is filled in priority order, Basics first, up to 1,000,000 names with a
+  free-memory guard; each list is checked by dnsmasq before it is installed, over-long and
+  parent-covered names are dropped, and the page names any list left out. The built-in never-block
+  names are now one-time entries in the *Never block* box that you can remove. Guide 4.3.10.
+- **Dreadwatch: the list is held once, however many networks the router runs.** Every dnsmasq instance
+  (the main one and each guest or VLAN network's own) loaded the threat list for itself, about 54 bytes
+  a name in each plus the 21 MB text include in RAM; on an RT-BE96U with four instances that was the
+  largest user-space consumer, and the RT-BE88U has 1 GB. The list is now compiled with Wallguard's
+  compiler (`wallguardc build --subtree`, one list per feed) into one table, `/tmp/reaper_nx/threat.db`,
+  12 bytes a name, which every instance maps read-only from the same file (`dnsmasq --reaper-nx-db`);
+  the include shrinks to two lines. The answers are unchanged: NXDOMAIN for a listed name and its
+  subdomains, the router's own `address=` or `local=` entry winning where it covers a longer name,
+  Dreadwatch ahead of Wallguard. Each hit record now names the feed, so the per-feed counters no longer
+  read the text list. The compiler checks each new table before it is installed; a missing or damaged
+  table blocks nothing and is logged once. The `/jffs` copy is `dns.k.gz`, rebuilt into the table at
+  boot; `dns.nx.gz` is still written so a downgrade keeps blocking. Guide 4.3.10.
+- **Port Trigger and the URL filter work again; Port Trigger on no longer costs the LAN its internet.**
+  The `TRIGGER` and `webstr` iptables extensions had been dropped from the build in 2026-07 while the
+  kernel and rc kept using them. With Port Trigger on, rc's `-j TRIGGER` line made the whole nat restore
+  fail, so after a reboot there was no masquerading; the URL filter's `-m webstr` rules failed the same
+  way. Both extensions are back.
+- **ASUS DDNS (asuscomm.com) is removed.** **Behaviour change:** a saved ASUS DDNS setting is switched
+  off once at boot, with a log line; the DDNS page offers the other providers. Separately, with Warden's
+  router-traffic filter on and the United States blocked, the DDNS and Let's Encrypt hosts (both US) were
+  dropped, so the certificate stayed *Unknown or processing*; they are now whitelisted once while a DDNS
+  certificate is in use.
+- **Security Review: Reaper's own protections are watched.** Besides the exposure settings, the
+  review now lists Warden (switch, feeds, country list, self-filter, direction), Dreadwatch (switch,
+  feeds), Gatekeeper (switch, default, captive page), Wallguard, the rules engine, policy routing and the
+  Encrypted DNS server — a protection turned off is a change like any other. A setting that an accepted
+  baseline predates (this update, or a later one that widens the list) is adopted into the baseline as
+  it stands, with one log line naming it, and a setting the firmware stops watching (renamed or dropped)
+  is retired from it the same way, so an upgrade never alarms by itself. A file or cron entry that
+  disappears is still a change. Guide 2.9.
+- **Security Review: select several rows and act once.** Owner request: a checkbox on every row and a
+  select-all, with one bar of actions for the selection - Accept, Existence only, Ignore and Ignore
+  folder, each offered only when it fits every selected row (a greyed one says why on hover). Accepting
+  a selection is one request, one audit record and one accept-log line naming the items, instead of one
+  of each per row; an item that is no longer listed refuses the whole selection and nothing is written.
+  The rules for Existence only / Ignore are saved once, ahead of the existing rules, without duplicates,
+  and a save that would pass 100 rules or 8 KB is refused before it is sent. At most 100 rows at a time.
+- **Long-Term Storage: new rows, and every write on the USB volume through one no-follow writer.** Rows
+  for Wallguard's lists (USB only: kept on the volume and rebuilt from it after a reboot, no download),
+  Wallguard's and Dreadwatch's blocked lookups and Encrypted DNS activity. A USB store is a volume other
+  people can write (guest shares map to the admin account), so a root write by path could follow a
+  planted link: device, channel and syslog history, incident dumps, the audit log and the traffic
+  database now go through `rstore` / `reaper_store_io` (each level opened without following links,
+  temp file and rename), same rings and rotation.
+- **Field and owner fixes.**
+  - **Test images that could not be flashed said nothing.** Stray backup files in `www/` grew the
+    RT-BE96U rootfs past its flash slot; the flasher refused the image and the router rebooted on the
+    old firmware while the Firmware page reported success. The build now fails on stray `www/` files and
+    on an oversized rootfs, and httpd and the Firmware page report a refused upload.
+  - **Roaming Assistant could not be switched off** (GT-BE98): *Disabled* hid the input carrying the 0
+    and Apply skips hidden inputs. A Time Scheduling edit could also drop out of Apply; both fixed.
+  - **Warden threat domains on/off took effect only at the next dnsmasq restart** - the restart was
+    requested from inside the running service and dropped; dnsmasq is now restarted directly.
+  - **IPsec:** `/jffs/ca_files` and strongSwan's `private/` are root's alone (0700), enforced at boot and
+    every IPsec start; the scripts there were rewritten world-writable and run as root on every start.
+  - **Parental Controls:** a device with no time window listed after an *Internet only inside* device was
+    blocked all day (a rule type carried over between devices).
+  - **VPN:** `bcrelay` no longer starts for the default PPTP broadcast setting; the PPTP/L2TP client with
+    MPPE-128 refuses PAP, CHAP and MS-CHAPv1; a WireGuard server peer switched off loses its policy rule
+    at once instead of at reboot.
+  - **DNS Director's DNS-over-TLS block covers UDP 853** (DNS-over-QUIC went around it).
+  - **UPnP:** a port-mapping description a LAN client writes is escaped for the page's script, so a
+    `</script>` in it can no longer end the element.
+  - **Samba:** no `use spnego` / `auth methods` lines (removed in Samba 4), no quota lookups
+    (`sys_path_to_bdev() failed`), no "smbpasswd did not exist" line at each start.
+  - **Devices and Gatekeeper lists sort** by any column (a second click reverses; remembered per
+    browser), one sorter in the kit. **Gatekeeper's connection type** comes from the Devices page's data,
+    in its order (MLO, wired, band).
+  - **Connections:** the flow detail panel keeps its width on long names (title and destination cut with
+    an ellipsis, shown whole on hover; the ACCELERATED badge always fits).
+  - **USB Applications:** USB Application is the first tab and USB Disks the last; a page opened from the
+    application list highlights its tab.
+  - **AiMesh:** the "feedback" link after a failed node join opens the Diagnostics page (it pointed at a
+    stock page Merlin's build removes).
+- **Wireless Scheduler with AiMesh backhaul parking: networks come back on schedule.** Field report
+  (RT-BE88U): the scheduler turned the networks back on at the end of their off window and logged it,
+  but no SSID was broadcast until a reboot. Backhaul parking (off by default) keeps each radio's
+  backhaul carrier down while no node is paired, and the scheduler's turn-on was never proven to work
+  under a parked carrier. Parking now holds every carrier up while a network that is switched on in the
+  settings is down on the air - a schedule's off window - so the turn-on runs as on stock firmware, and
+  parks again a minute after every network is back. One log line each way (`amaspark`).
+- **Review 2026-10-24: one high and three medium findings fixed.** An adversarial review of every
+  pending line (resolver, daemons, rc, httpd, build, the new pages). (1) **An apply is a POST.** The apply
+  pages (`start_apply.htm` and its kin) and `apply.cgi` refuse `action_mode=apply` on a GET; the form
+  pages had read a GET's query the same as a posted form, and the Reaper shell framed any `.htm` page with
+  any query same-origin, so one link opened by a logged-in admin could write the configuration. The shell
+  now frames `.asp` pages only, a query allowed for Reaper pages alone; the firmware check and upgrade
+  GETs and the ASUS app are untouched. (2) **Wallguard records the list entry, not the name asked.** A
+  blocked-lookup record carries the entry that matched (`doubleclick.net`, not `x7f3.doubleclick.net`),
+  and the 15-minute fold keeps the 200 busiest names and devices, so a device inventing names can no
+  longer grow `/jffs/wallguard/counters` without bound. *Most-blocked names* and Unbreak show the entries
+  that block, and Allow in Unbreak allows that entry; the Live view still shows names as asked. (3) **The
+  cross-site guard over plain HTTP.** Browsers send neither Referer nor Sec-Fetch-Site on a cross-site
+  navigation to a private address over plain HTTP, which the shipped default serves beside HTTPS; a
+  header-less browser request on the HTTP listener is now cross-site (curl and scripts still pass, HTTPS
+  unchanged). (4) The guard's AiMesh onboarding exception reads its query decoded the way the CGI parser
+  does, so an encoded key name no longer slips past it. Guide 4.3.11.
+- **Review 2026-10-24: the thirteen low findings, five correctness slips and the performance items.**
+  The Encrypted DNS server asks for an oversized answer over TCP without stalling other devices, counts
+  its per-device connection cap by the device rather than by address, makes room for a new connection
+  when its table is full, and stops rather than keep root if the unprivileged account were missing. The
+  DoH address list is validated the way the kernel reads it, and one rejected entry no longer stops the
+  rest from loading. The Security Review reports a cron line hidden under a Reaper job name (it compares
+  the command, not just the name). Wallguard's fold, the Dreadwatch collector and the watchdog refuse a
+  directory, link or pipe planted where they read. The Wallguard save checks read each line whole, the
+  Encrypted DNS status can no longer be overridden by its own status file, a 253-character Network Tools
+  target runs whole, the Wallguard page keeps the Pause and Assign targets across its refresh, and a Save
+  on the Encrypted DNS page that changes nothing no longer restarts the server. Performance: the nightly
+  threat-list update does its parsing, filtering and counting in one pass each and no longer sorts the
+  whole list or re-parses the bundled ThreatFox snapshot every night; the threat table is rebuilt at
+  boot in the background, so DNS comes up 15 to 20 seconds earlier and the list takes effect once the
+  table lands; a history ring is trimmed once per tenth of its length rather than rewritten on every
+  append (about 2 GB a day of flash or USB writes less); the Security Review reads its settings in one
+  call instead of 37; the settings shell no longer loads jQuery and the stock state script (about 320 KB
+  per visit); and the Wallguard, Encrypted DNS, Log, VPN, IPv6 and Internet pages poll less often, only
+  the open tab, and not at all while the tab is hidden.
+- **Review 2026-10-24: the remaining quality items; a smaller image.** The image no longer carries
+  Reaper's script and style comments (a build step strips them from the staged pages only; about 300 KB,
+  40% of the settings shell), and 82 dictionary entries nothing used are gone from every pack. Helpers
+  that up to 20 pages each carried byte for byte now live once in the kit script, and 33 style rules
+  repeated across 3 to 26 pages once in the kit stylesheet (about 38 KB of page source, served once and
+  cached). Files no supported model uses leave the image after the build (ADSL and unused PHY firmware,
+  headers, kmod's binary indexes, unlinked libraries; about 2 MB - the RT-BE96U rootfs had come within
+  1 MB of its flash slot). Dead code, unused styles and a second support-table request on the dashboard
+  are gone; Wallguard and Encrypted DNS leave an unchanged config file alone; httpd keeps one page table
+  for removed and superseded pages. Every page was compared before and after in a browser engine with
+  the router's own settings: same document, same posted fields, same styles.
+- **Wallguard and Encrypted DNS: hardened before release.** A failure-mode review of both features:
+  - **Lists after a reboot.** When every list download failed (a router that boots before its
+    internet connection is up), Wallguard built a table holding My rules alone, and every retry only
+    looked for a missing table, so nothing on the lists was blocked until the 05:15 update. Such an
+    update now leaves a mark, and the lists are fetched again when the WAN comes up and every
+    10 minutes until they arrive.
+  - **Memory.** The lists held in RAM stay under 96 MB together, and none is downloaded while less
+    than 160 MB of memory is available. A list that would pass either limit is not taken, the copy
+    already held stays, and the log says why. Long-Term Storage can keep the lists on USB instead.
+  - **Hung USB disk.** The page's statistics no longer wait on the USB volume: blocked-lookup history
+    is queued and written by one background writer, so a slow or hung disk cannot freeze the web
+    interface. Two folds of the counters can no longer run at once and lose records.
+  - **Encrypted DNS address list.** Every entry becomes an HTTPS refusal for the whole network, so a
+    range wider than IPv4 /24 or IPv6 /48 is refused, and the IPv6 part stops at its set's size, so a
+    long list cannot slow a firewall restart.
+- **Diagnostics report v1.3.46 to v1.3.49.** v1.3.46 reads Dreadwatch's compiled table: the name count,
+  the gzip copies, the table's size and how many dnsmasq instances map it, with a finding when names are
+  counted but the table is missing; v1.3.47 reads that copy's time with `date -r` (this busybox has no
+  `stat`); v1.3.48 reads the settings once instead of seven times and counts the log in one pass (about
+  15 s instead of 17 to 18 s); v1.3.49 says in section 5 when `/jffs/configs/dnsmasq.conf` replaces the
+  generated DNS and DHCP config (an add-on removed without its cleanup leaves one, and it survives every
+  flash) and when a local upstream in the live config has nothing listening, each with a finding.
+- **Dictionaries.** Against v3.4.8: 1,425 tokens added and 2 reworded in all 25 packs, translated, and
+  78 removed (lockstep 8850).
 
 ---
 

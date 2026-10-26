@@ -185,6 +185,27 @@ check("every Reaper-owned key in the table is named in section 8 (%d keys)" % le
 m = re.search(r"adds (\d+)\*\* entries of its own", sec)
 check("section 8 states how many entries Reaper adds", m is not None)
 
+# 2026-10-23: the "adds N / removes M" figures had gone stale (93 stated, 104 real) because nothing
+# recomputed them. They are key-set differences between this tree's defaults.c and the stock tree's
+# (every { "key", ...} entry, comments stripped, no #if evaluation - the method that reproduces the
+# 93 / 18 written at v3.4.2). Checked when a stock tree is available: REAPER_STOCK_SRC, or the
+# stock-base checkout beside this repository's clone (.../stock-base/release/src/router).
+stock = os.environ.get("REAPER_STOCK_SRC") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(SRC))))),
+    "stock-base", "release", "src", "router")
+sdef = os.path.join(stock, "shared", "defaults.c")
+mr = re.search(r"removes (\d+)\*\*", sec)
+if not os.path.isfile(sdef):
+    print("note: no stock tree (REAPER_STOCK_SRC) - the adds/removes figures are not recomputed")
+else:
+    KEY = re.compile(r'^\s*\{\s*"([A-Za-z0-9_.:\-]+)"\s*,', re.M)
+    ours, theirs = set(KEY.findall(strip_comments(rd(DEF)))), set(KEY.findall(strip_comments(rd(sdef))))
+    added, removed = len(ours - theirs), len(theirs - ours)
+    check("section 8's \"adds N\" is the real count of keys Reaper adds over stock (%d)" % added,
+          m is not None and int(m.group(1)) == added, m.group(1) if m else None)
+    check("section 8's \"removes M\" is the real count of stock keys Reaper drops (%d)" % removed,
+          mr is not None and int(mr.group(1)) == removed, mr.group(1) if mr else None)
+
 if fails:
     print("\n%d FAILED:" % len(fails))
     for f in fails:

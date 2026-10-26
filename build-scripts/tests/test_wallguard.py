@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Wallguard (2026-10-21): Reaper's ad & tracker blocker - the compiler and the dnsmasq engine.
+
+WHY THIS EXISTS. Wallguard blocks names at the router's resolver from one compiled table every dnsmasq
+instance maps (release/src/router/wallguard/wallguardc.c builds it; dnsmasq/src/wallguard.c reads it). The parts
+that matter - the list formats, the table, the per-device verdict, the answer it gives, CNAME uncloaking,
+the swap without a restart - are invisible until a router is running it. This drives all of them on the
+host.
+
+WHAT IT DOES.
+  1. Builds wallguardc and the patched dnsmasq for the host (temporary copies).
+  2. wallguardc: every list format (hosts, plain, *.wildcard, ||name^, @@||name^, dnsmasq address=/x/),
+     unsupported and invalid lines counted not guessed, dedupe across lists, the cap keeps the earlier
+     sources, explain output, check, a damaged table refused.
+  3. dnsmasq with --wallguard-dir against a fake upstream: null answers (0.0.0.0 / :: / NODATA) with EDE 15,
+     NXDOMAIN mode, exact vs subtree, allow wins, per-network profiles (two client addresses), the
+     client named by Encrypted DNS (option 65400), pause and its expiry, a name cached BEFORE it was
+     listed is still blocked, a new table picked up without a restart (same pid), a damaged table
+     passes everything, CNAME-cloaked trackers blocked and never cached, hit records, the live view.
+  4. A 1M-name benchmark: compile time, table size, lookups per second through dnsmasq.
+  5. Pins: both copies of wallguard_db.h identical; the option, hooks and wiring.
+Exit 0 pass, 1 fail, 77 skipped.
+"""
+import json, os, random, re, shutil, socket, string, struct, subprocess, sys, tempfile, threading, time
+
+def skip(msg):
+    print("SKIP: " + msg); sys.exit(77)
+
+fails = []
+def check(name, cond, detail=""):
+    print(("ok   " if cond else "FAIL ") + name)
+    if not cond:
+        fails.append(name + (" - " + str(detail)[:500] if detail else ""))
+
+SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC", "")
+if not SRC or not os.path.isfile(os.path.join(SRC, "wallguard", "wallguardc.c")):
+    skip("no router source tree with wallguard/ (argv[1] or REAPER_ROUTER_SRC = .../release/src/router)")
+CC = shutil.which("gcc") or shutil.which("cc")
+if not CC:
+    skip("no host compiler")
+
+def read(rel):
+    with open(os.path.join(SRC, rel), encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+work = tempfile.mkdtemp(prefix="wallguard_")
+procs, stop = [], threading.Event()
+try:
+    SC = os.path.join(work, "wallguardc")
+    b = subprocess.run([CC, "-O2", "-Wall", "-Wextra", "-o", SC, os.path.join(SRC, "wallguard", "wallguardc.c")], capture_output=True, text=True)
+    check("wallguardc builds for the host without warnings", b.returncode == 0 and not b.stderr.strip(), b.stderr[-600:])
+    db = os.path.join(work, "dnsmasq")
+    shutil.copytree(os.path.join(SRC, "dnsmasq"), db, symlinks=True, ignore=shutil.ignore_patterns("*.o", "dnsmasq"))
+    # HAVE_BROKEN_RTC as on the router ("no-RTC"): dnsmasq's own clock is then uptime, which the
+    # engine must never compare with a date (metal finding on _r5, 2026-10-21)
+    b = subprocess.run(["make", "-C", db, "COPTS=-DNO_DBUS -DNO_INOTIFY -DHAVE_BROKEN_RTC", "CC=" + CC, "-j4"], capture_output=True, text=True, timeout=900)
+    DB = os.path.join(db, "src", "dnsmasq")
+    check("the patched dnsmasq builds for the host", b.returncode == 0 and os.path.exists(DB), (b.stdout + b.stderr)[-600:])
+    warn = [l for l in (b.stdout + b.stderr).splitlines() if "warning" in l and re.search(r"(wallguard|forward|rfc1035|option)\.c|dnsmasq\.h", l)]
+    check("...without warnings from wallguard.c or the patched files", not warn, warn[:5])
+    if fails:
+        raise SystemExit
+
+    # ---- 2. wallguardc
+    L = os.path.join(work, "lists"); os.makedirs(L)
+    def wf(name, text):
+        p = os.path.join(L, name); open(p, "w").write(text); return p
+    hosts = wf("hosts", "# a hosts list\n0.0.0.0 exact.example\n127.0.0.1 two.example three.example # comment\n"
+                        "0.0.0.0 localhost\n::1 ip6-localhost\n0.0.0.0 bad_label-.example!\n")
+    adb = wf("adb", "! AdGuard-style\n[Adblock Plus 2.0]\n||ads.example^\n||track.example^$important\n"
+                    "@@||good.ads.example^\n||cosmetic.example^$third-party\nexample.com##.banner\n/regex.*/\n")
+    plain = wf("plain", "plain.example\n*.wild.example\nnot a domain\nshared.example\n")
+    dnsm = wf("dnsm", "address=/dm1.example/dm2.example/0.0.0.0\nserver=/dm3.example/\naddress=/real.example/1.2.3.4\nlocal=/dm4.example/\n")
+    shared2 = wf("shared2", "shared.example\nonlylater.example\n")
+    rules = wf("rules", "mine.example\n@@||allowedbyrule.example^\n")
+    allow = wf("allow", "router.lan\nsafe.ads.example\n")
+    out, stats = os.path.join(work, "db"), os.path.join(work, "stats.json")
+    r = subprocess.run([SC, "build", "--out", out, "--stats", stats, "--rules", rules, "--allow", allow,
+                        "--list", "1:hosts:" + hosts, "--list", "2:adb:" + adb, "--list", "3:plain:" + plain,
+                        "--list", "4:dnsm:" + dnsm, "--list", "5:shared2:" + shared2], capture_output=True, text=True)
+    st = json.load(open(stats)) if os.path.exists(stats) else {}
+    check("wallguardc build writes the table and the stats", r.returncode == 0 and os.path.exists(out) and st.get("names", 0) > 0, r.stderr)
+    src = {s["id"]: s for s in st.get("sources", [])}
+    check("hosts: three names, localhost lines skipped, the bad label counted invalid",
+          src.get("hosts", {}).get("names") == 3 and src["hosts"]["invalid"] >= 1, src.get("hosts"))
+    check("AdGuard: ||name^ and $important kept, @@ becomes an allow, $third-party / cosmetic / regex unsupported",
+          src.get("adb", {}).get("names") == 2 and src["adb"]["allows"] == 1 and src["adb"]["unsupported"] == 3, src.get("adb"))
+    check("plain + *.wildcard kept, a line with spaces unsupported", src.get("plain", {}).get("names") == 3 and src["plain"]["unsupported"] == 1, src.get("plain"))
+    check("dnsmasq: address=/a/b/0.0.0.0, server=/x/, local=/x/ kept; an address= with a real address unsupported",
+          src.get("dnsm", {}).get("names") == 4 and src["dnsm"]["unsupported"] == 1, src.get("dnsm"))
+    check("dedupe across lists: shared.example counts as unique only for the earlier list",
+          src.get("shared2", {}).get("unique") == 1 and src["shared2"]["names"] == 2, src.get("shared2"))
+    def explain(name, mask=None):
+        a = [SC, "explain", "--db", out] + (["--mask", mask] if mask else []) + [name]
+        return json.loads(subprocess.run(a, capture_output=True, text=True).stdout)
+    e = explain("x.y.ads.example")
+    check("explain: a subdomain of a ||name^ entry is blocked, attributed to its list",
+          e["verdict"] == "blocked" and e["lists"] == ["adb"] and len(e["steps"]) == 4, e)
+    check("explain: an exact hosts entry does not cover its subdomains",
+          explain("exact.example")["verdict"] == "blocked" and explain("sub.exact.example")["verdict"] == "pass")
+    check("explain: allow wins (list @@, the safety allow-set, and an allow in My rules)",
+          [explain(n)["verdict"] for n in ("good.ads.example", "deep.safe.ads.example", "allowedbyrule.example")] == ["allowed"] * 3)
+    check("explain: My rules (bit 0) cover subdomains; the profile mask decides",
+          explain("a.mine.example")["lists"] == ["rules"] and explain("a.mine.example", "2")["verdict"] == "pass"
+          and explain("ads.example", "4")["verdict"] == "blocked")
+    r = subprocess.run([SC, "check", "--db", out], capture_output=True, text=True)
+    check("check: the table is sorted and readable", r.returncode == 0 and json.loads(r.stdout)["ok"] == 1, r.stdout)
+    bad = os.path.join(work, "bad.db"); open(bad, "wb").write(open(out, "rb").read()[:-3])
+    check("check: a truncated table is refused", subprocess.run([SC, "check", "--db", bad], capture_output=True).returncode != 0)
+    capdb, capst = os.path.join(work, "cap.db"), os.path.join(work, "cap.json")
+    subprocess.run([SC, "build", "--out", capdb, "--stats", capst, "--rules", rules, "--list", "1:hosts:" + hosts,
+                    "--list", "2:shared2:" + shared2], env=dict(os.environ, WALLGUARD_MAX_NAMES="4"), capture_output=True)
+    cs = {s["id"]: s for s in json.load(open(capst))["sources"]}
+    check("the cap keeps My rules and the earlier lists; the later list reports what did not fit",
+          json.load(open(capst))["names"] == 4 and cs["rules"]["capped"] == 0 and cs["hosts"]["capped"] == 0
+          and cs["shared2"]["capped"] == 2 and cs["shared2"]["unique"] == 0, cs)
+
+    # ---- 3. dnsmasq + a fake upstream
+    UP, PORT = 5401, 5402
+    seen = {}
+    def enc(name):
+        return b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\0"
+    def qname_of(m):
+        i, parts = 12, []
+        while m[i]:
+            parts.append(m[i + 1:i + 1 + m[i]].decode()); i += m[i] + 1
+        return ".".join(parts), i + 5
+    def upstream_answer(m):
+        name, qend = qname_of(m)
+        qtype = struct.unpack(">H", m[qend - 4:qend - 2])[0]
+        seen[name] = seen.get(name, 0) + 1
+        rr = b""
+        if name.endswith("cloak.test"):
+            target = "edge." + name.split(".")[0] + ".tracker-cdn.test"
+            rr = b"\xc0\x0c" + struct.pack(">HHIH", 5, 1, 300, len(enc(target))) + enc(target)
+            if qtype == 1:
+                # rb.cloak.test answers a private address: dnsmasq's rebind protection must still see it
+                rr += enc(target) + struct.pack(">HHIH", 1, 1, 300, 4) + socket.inet_aton("10.0.0.7" if name.startswith("rb.") else "93.184.215.7")
+            an = 2 if qtype == 1 else 1
+        elif qtype == 1:
+            rr = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 300, 4) + socket.inet_aton("192.0.2.53"); an = 1
+        else:
+            an = 0
+        # echo EDNS like a real upstream does (dnsmasq attaches EDE codes to it)
+        opt = b"\0" + struct.pack(">HHIH", 41, 1232, 0, 0) if struct.unpack(">H", m[10:12])[0] else b""
+        return m[:2] + b"\x81\x80" + m[4:6] + struct.pack(">HHH", an, 0, 1 if opt else 0) + m[12:qend] + rr + opt
+    us = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); us.bind(("127.0.0.1", UP)); us.settimeout(0.3)
+    def serve():
+        while not stop.is_set():
+            try: m, a = us.recvfrom(4096)
+            except socket.timeout: continue
+            us.sendto(upstream_answer(m), a)
+    threading.Thread(target=serve, daemon=True).start()
+
+    SD = os.path.join(work, "sd"); os.makedirs(SD)
+    # rc's layout: the directory is root's, dnsmasq (nobody) writes only in run/
+    RUN = os.path.join(SD, "run"); os.makedirs(RUN)
+    HITLOG = os.path.join(work, "dreadwatch.hits")
+    def build(extra_rules=""):
+        open(rules, "w").write("mine.example\n@@||allowedbyrule.example^\n" + extra_rules)
+        r = subprocess.run([SC, "build", "--out", os.path.join(SD, "db"), "--rules", rules, "--allow", allow,
+                            "--list", "1:hosts:" + hosts, "--list", "2:adb:" + adb, "--list", "3:plain:" + plain,
+                            "--list", "6:cdn:" + wf("cdn", "||tracker-cdn.test^\n")], capture_output=True, text=True)
+        return r.returncode == 0
+    pol_n = [0]
+    def policy(text):
+        # replace by rename, as rc does: a new inode each time, so two writes in one second both count
+        pol_n[0] += 1
+        tmp = os.path.join(SD, "policy.tmp%d" % pol_n[0])
+        open(tmp, "w").write(text); os.rename(tmp, os.path.join(SD, "policy"))
+    build(); policy("default 7fffffff\n")
+    conf = os.path.join(work, "d.conf")
+    open(conf, "w").write("port=%d\nlisten-address=127.0.0.1\nbind-interfaces\nno-resolv\nno-hosts\npid-file=\n"
+                          "server=127.0.0.1#%d\nwallguard-dir=%s\nstop-dns-rebind\nrebind-domain-ok=/example/\n"
+                          # dnsmasq's own answers for listed names: a local address= line, Dreadwatch
+                          "address=/cfg.ads.example/\nreaper-nx=/nx.ads.example/\nreaper-hitlog=%s\n" % (PORT, UP, SD, HITLOG))
+    dp = subprocess.Popen([DB, "-k", "-C", conf, "--log-facility=-"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    procs.append(dp); time.sleep(0.8)
+    check("dnsmasq starts with --wallguard-dir", dp.poll() is None, dp.stderr.read().decode()[-300:] if dp.poll() is not None else "")
+
+    def q(name, qtype=1, src="127.0.0.1", edns=True, opts=()):
+        m = struct.pack(">HHHHHH", random.randint(1, 65535), 0x0100, 1, 0, 0, 1 if edns else 0) + enc(name) + struct.pack(">HH", qtype, 1)
+        if edns:
+            rd = b"".join(struct.pack(">HH", c, len(d)) + d for c, d in opts)
+            m += b"\0" + struct.pack(">HHIH", 41, 1232, 0, len(rd)) + rd
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.bind((src, 0)); s.sendto(m, ("127.0.0.1", PORT))
+        try: r = s.recv(4096)
+        finally: s.close()
+        rcode, an, ar = r[3] & 0x0f, struct.unpack(">H", r[6:8])[0], struct.unpack(">H", r[10:12])[0]
+        _, i = qname_of(r)
+        addrs, ede = [], False
+        for _ in range(an + struct.unpack(">H", r[8:10])[0] + ar):
+            if r[i] & 0xc0 == 0xc0: i += 2
+            else:
+                while r[i]: i += r[i] + 1
+                i += 1
+            t, _c, _ttl, rdl = struct.unpack(">HHIH", r[i:i + 10]); i += 10
+            if t == 1: addrs.append(socket.inet_ntoa(r[i:i + 4]))
+            if t == 28: addrs.append(socket.inet_ntop(socket.AF_INET6, r[i:i + 16]))
+            if t == 41:
+                j = i
+                while j + 4 <= i + rdl:
+                    c, l = struct.unpack(">HH", r[j:j + 4]); ede = ede or (c == 15 and r[j + 4:j + 6] == b"\x00\x0f"); j += 4 + l
+            i += rdl
+        return rcode, addrs, ede
+
+    hits = lambda: [l.split() for l in open(os.path.join(RUN, "hits")).read().splitlines() if not l.startswith("#")] if os.path.exists(os.path.join(RUN, "hits")) else []
+    rc, a, ede = q("x.ads.example")
+    check("a listed name: A 0.0.0.0, NOERROR, EDE 15 Blocked", rc == 0 and a == ["0.0.0.0"] and ede, (rc, a, ede))
+    rc, a, ede = q("x.ads.example", 28)
+    check("AAAA: ::", rc == 0 and a == ["::"], (rc, a))
+    rc, a, ede = q("x.ads.example", 16)
+    check("any other type: NODATA (NOERROR, no answer)", rc == 0 and a == [], (rc, a))
+    check("an unlisted name is forwarded as usual", q("news.example")[1] == ["192.0.2.53"])
+    check("exact hosts entry blocked, its subdomain not",
+          q("exact.example")[1] == ["0.0.0.0"] and q("sub.exact.example")[1] == ["192.0.2.53"])
+    check("allow wins over a list (@@ in the list, the safety allow-set)",
+          q("good.ads.example")[1] == ["192.0.2.53"] and q("x.safe.ads.example")[1] == ["192.0.2.53"])
+    h = hits()
+    # review 2026-10-24 (S-A-1): a record carries the LIST ENTRY the lookup matched (||ads.example^), never the
+    # query as asked - the query is the asker's to invent, and every invented name was one more counter row
+    check("each blocked lookup is recorded: client, list bits, reason q, the list entry that matched",
+          h and h[0][1] == "127.0.0.1" and h[0][2] == "4" and h[0][3] == "q" and h[0][5] == "ads.example", h[:2])
+    check("...and never the query name itself", not any(x[5] == "x.ads.example" for x in h), h[:2])
+    check("a record is stamped with the date, not dnsmasq's uptime clock (no-RTC build, as on the router)",
+          h and int(h[0][0]) > 1_600_000_000 and abs(int(h[0][0]) - time.time()) < 120, h[:1])
+
+    check("records live in run/ only - nothing written beside root's files",
+          os.path.exists(os.path.join(RUN, "hits")) and not os.path.exists(os.path.join(SD, "hits")))
+    rc, a, _ = q("TWO.Example")
+    check("a mixed-case query is blocked and its entry recorded lowercased",
+          a == ["0.0.0.0"] and any(x[5] == "two.example" for x in hits()) and "TWO" not in open(os.path.join(RUN, "hits")).read(), hits()[-2:])
+    n0 = len(hits())
+    rc, a, _ = q("deep.x.y.z.ads.example")
+    check("a deep subdomain of a subtree entry records that entry (one row per entry, however many names are invented)",
+          a == ["0.0.0.0"] and len(hits()) == n0 + 1 and hits()[-1][5] == "ads.example", hits()[-1:])
+    rc, a, _ = q("bad\"x.ads.example")
+    check("a query with a byte outside host-name characters is blocked; what is recorded is the clean entry, never that byte",
+          a == ["0.0.0.0"] and '"' not in open(os.path.join(RUN, "hits")).read())
+    n0 = len(hits())
+    rc, a, ede = q("cfg.ads.example")
+    check("dnsmasq's own answer wins: an address= line for a listed name answers NXDOMAIN, not Wallguard's 0.0.0.0 - and records nothing",
+          rc == 3 and a == [] and len(hits()) == n0, (rc, a, len(hits()) - n0))
+    rc, a, ede = q("nx.ads.example")
+    hl = open(HITLOG).read() if os.path.exists(HITLOG) else ""
+    check("Dreadwatch's threat list answers a name Wallguard also lists - and counts the hit itself",
+          rc == 3 and "nx.ads.example" in hl and len(hits()) == n0, (rc, hl[-120:], len(hits()) - n0))
+
+    policy("default 7fffffff\nnet 127.0.0.3/32 0\nnet 127.0.0.4/32 2\n")
+    time.sleep(2.2)
+    check("profiles: a Bypass network gets nothing blocked, the default device still blocked",
+          q("x.ads.example", src="127.0.0.3")[1] == ["192.0.2.53"] and q("x.ads.example", src="127.0.0.2")[1] == ["0.0.0.0"])
+    check("profiles: a profile holding only list 1 blocks hosts names but not adb names",
+          q("exact.example", src="127.0.0.4")[1] == ["0.0.0.0"] and q("y.ads.example", src="127.0.0.4")[1] == ["192.0.2.53"])
+    v4 = lambda ip: bytes([1]) + socket.inet_aton(ip)
+    check("Encrypted DNS: the device named in option 65400 gets its own profile",
+          q("z.ads.example", opts=[(65400, v4("127.0.0.3"))])[1] == ["192.0.2.53"]
+          and q("z.ads.example")[1] == ["0.0.0.0"])
+
+    # ---- phase 2 (2026-10-21): safe search per profile flag, a block wins, a pause keeps services
+    def raw_q(name, qtype=1, src="127.0.0.1"):
+        m = struct.pack(">HHHHHH", random.randint(1, 65535), 0x0100, 1, 0, 0, 1) + enc(name) + struct.pack(">HH", qtype, 1)
+        m += b"\0" + struct.pack(">HHIH", 41, 1232, 0, 0)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.bind((src, 0)); s.sendto(m, ("127.0.0.1", PORT))
+        try: return s.recv(4096)
+        finally: s.close()
+    open(os.path.join(SD, "safesearch.tmp"), "w").write(
+        "name g www.google.com\nname g google.de\nname g cfg.ads.example\nname y www.youtube.com\n"
+        "addr g 216.239.38.120\naddr g 2001:4860:4802:32::78\naddr y 216.239.38.119\naddr Y 216.239.38.120\n")
+    os.rename(os.path.join(SD, "safesearch.tmp"), os.path.join(SD, "safesearch"))
+    policy("default 7fffffff\n"); time.sleep(2.2)
+    check("safe search: a profile without the flag gets the real answer", "216.239.38.120" not in q("www.google.com")[1])
+    policy("default 7fffffff 1\n"); time.sleep(2.2)
+    rc, a, ede = q("www.google.com")
+    check("safe search: Google answered with the enforcement address, NOERROR, no EDE", rc == 0 and a == ["216.239.38.120"] and not ede, (rc, a, ede))
+    check("safe search: AAAA too, and a country domain", q("www.google.com", 28)[1] == ["2001:4860:4802:32::78"] and q("google.de")[1] == ["216.239.38.120"])
+    r65 = raw_q("www.google.com", 65)
+    check("safe search: HTTPS records answered NODATA (no alternative endpoint)", (r65[3] & 0x0f) == 0 and struct.unpack(">H", r65[6:8])[0] == 0)
+    check("safe search: the flag for search engines leaves YouTube alone", "216.239.38.119" not in q("www.youtube.com")[1])
+    policy("default 7fffffff 2\n"); time.sleep(2.2)
+    ym = q("www.youtube.com")[1]
+    policy("default 7fffffff 6\n"); time.sleep(2.2)
+    ys = q("www.youtube.com")[1]
+    check("YouTube Restricted Mode: moderate, and strict wins over moderate", ym == ["216.239.38.119"] and ys == ["216.239.38.120"], (ym, ys))
+    policy("default 7fffffff 1\n"); time.sleep(2.2)
+    check("safe search: dnsmasq's own answer for a name still wins", q("cfg.ads.example")[0] == 3)
+    policy("default 0\nnet 127.0.0.3/32 7fffffff 1\n"); time.sleep(2.2)
+    check("safe search per profile: the network with the flag gets it, the default device does not",
+          q("www.google.com", src="127.0.0.3")[1] == ["216.239.38.120"] and "216.239.38.120" not in q("www.google.com", src="127.0.0.2")[1])
+    build("youtube.com\n"); policy("default 7fffffff 2\n"); time.sleep(2.2)
+    check("a block wins over YouTube Restricted Mode (YouTube blocked for the profile stays blocked)", q("www.youtube.com")[1] == ["0.0.0.0"])
+    build(); policy("default 7fffffff\nkeep 40\npause %d\n" % (int(time.time()) + 100)); time.sleep(2.2)
+    check("a pause lifts the ad lists but never the kept bits (a profile's blocked services)",
+          q("x.ads.example")[1] == ["192.0.2.53"] and q("y.tracker-cdn.test")[1] == ["0.0.0.0"], (q("x.ads.example"), q("y.tracker-cdn.test")))
+    policy("default 7fffffff\nmac 00:00:5e:00:53:01 7fffffff 1\n"); time.sleep(2.2)
+    check("the flags field parses on mac lines too (a device not in ARP falls back to the default)", "216.239.38.120" not in q("www.google.com")[1])
+
+    policy("default 7fffffff\nmode nx\n"); time.sleep(2.2)
+    rc, a, ede = q("x.ads.example")
+    check("NXDOMAIN mode answers NXDOMAIN (with EDE 15)", rc == 3 and ede, (rc, a, ede))
+    policy("default 7fffffff\npause %d\n" % (int(time.time()) + 100)); time.sleep(2.2)
+    check("pause: nothing blocked while it runs", q("x.ads.example")[1] == ["192.0.2.53"])
+    policy("default 7fffffff\npause %d\n" % (int(time.time()) - 1)); time.sleep(2.2)
+    check("...and it ends by itself (a pause in the past)", q("x.ads.example")[1] == ["0.0.0.0"])
+
+    pid0 = dp.pid
+    check("a name answered (and cached) before it was listed...", q("late.example")[1] == ["192.0.2.53"])
+    build("late.example\n"); time.sleep(2.2)
+    check("...is blocked once a new table is swapped in - no restart, same process, cache not consulted first",
+          q("late.example")[1] == ["0.0.0.0"] and dp.poll() is None and dp.pid == pid0)
+
+    n0 = seen.get("www.cloak.test", 0)
+    rc, a, ede = q("www.cloak.test")
+    rc2, a2, _ = q("www.cloak.test")
+    check("CNAME uncloaking: a chain into a listed name is NXDOMAIN with EDE 15", rc == 3 and ede and a == [], (rc, a, ede))
+    check("...and never cached: the second lookup went upstream again", seen.get("www.cloak.test", 0) == n0 + 2, seen.get("www.cloak.test"))
+    check("...recorded as reason c with the list entry the target matched (review S-A-1: not the target itself)",
+          any(x[3] == "c" and x[5] == "tracker-cdn.test" for x in hits()) and not any(x[5] == "edge.www.tracker-cdn.test" for x in hits()), hits()[-3:])
+    policy("default 7fffffff\nnet 127.0.0.3/32 0\n"); time.sleep(2.2)
+    n1 = seen.get("cdn.cloak.test", 0)
+    rb = q("cdn.cloak.test", src="127.0.0.3"); rb2 = q("cdn.cloak.test", src="127.0.0.3")
+    check("a Bypass device gets the chain answered - still uncached",
+          rb[0] == 0 and "93.184.215.7" in rb[1] and seen.get("cdn.cloak.test", 0) == n1 + 2, (rb, seen.get("cdn.cloak.test")))
+    re_ = q("enc.cloak.test", opts=[(65400, v4("127.0.0.3"))]); rp = q("enc2.cloak.test")
+    check("Encrypted DNS: the CNAME verdict follows the device named in option 65400, not 127.0.0.1",
+          "93.184.215.7" in re_[1] and rp[0] == 3, (re_, rp))
+    rr_ = q("rb.cloak.test", src="127.0.0.3")
+    check("a listed chain passed on for a Bypass device still meets rebind protection (private answer refused)",
+          "10.0.0.7" not in rr_[1], rr_)
+
+    open(os.path.join(SD, "live.on"), "w").close()
+    time.sleep(2.2); q("live1.example"); q("x.ads.example")
+    lv = open(os.path.join(RUN, "live")).read().splitlines() if os.path.exists(os.path.join(RUN, "live")) else []
+    check("live view: every lookup recorded only while live.on exists (allowed '-', blocked 'b')",
+          any(l.endswith(" - live1.example") for l in lv) and any(l.endswith(" b x.ads.example") for l in lv), lv[-4:])
+    os.unlink(os.path.join(SD, "live.on")); time.sleep(2.2); q("live2.example")
+    check("...and stops when it is switched off", "live2.example" not in open(os.path.join(RUN, "live")).read())
+
+    with open(os.path.join(SD, "db"), "r+b") as f: f.truncate(500)
+    t = time.time() + 10; os.utime(os.path.join(SD, "db"), (t, t)); time.sleep(2.2)
+    check("a damaged table passes everything (fails open) and DNS keeps working",
+          q("x.ads.example")[1] == ["192.0.2.53"] and dp.poll() is None)
+    sf = [f for f in os.listdir(RUN) if f.startswith("stats.") and not f.endswith(".tmp")]
+    time.sleep(max(0, 16 - (time.time() - (os.path.getmtime(os.path.join(RUN, sf[0])) if sf else time.time()))))
+    q("tick.example"); sf = [f for f in os.listdir(RUN) if f.startswith("stats.") and not f.endswith(".tmp")]
+    sv = open(os.path.join(RUN, sf[0])).read().split() if sf else []
+    check("per-instance counters: queries, blocked, cname, per-list, safe search", len(sv) == 4 + 31 + 1 and int(sv[35]) >= 4 and int(sv[1]) > 20 and int(sv[2]) > 5 and int(sv[3]) >= 1, sv[:6])
+
+    # ---- 4. 1M-name benchmark
+    big = os.path.join(L, "big")
+    rnd = random.Random(7)
+    with open(big, "w") as f:
+        for i in range(1000000):
+            f.write("0.0.0.0 %s%d.%s.example\n" % ("".join(rnd.choice(string.ascii_lowercase) for _ in range(8)), i, rnd.choice(("ads", "trk", "cdn", "px"))))
+    t0 = time.time()
+    r = subprocess.run([SC, "build", "--out", os.path.join(SD, "db"), "--list", "1:big:" + big, "--list", "2:adb:" + adb], capture_output=True, text=True)
+    tb = time.time() - t0
+    size = os.path.getsize(os.path.join(SD, "db"))
+    check("benchmark: 1M names compile (%.1f s) into one %.1f MB table" % (tb, size / 1e6), r.returncode == 0 and size < 13_000_000 and tb < 60, r.stderr)
+    policy("default 7fffffff\n"); time.sleep(2.2)
+    t0 = time.time(); nq = 0
+    while time.time() - t0 < 2:
+        q("bench%d.ads.example" % nq); nq += 1
+    check("benchmark: %d blocked lookups/s through dnsmasq with 1M names loaded (single client, UDP round trips)" % (nq / 2), nq > 200)
+    try:
+        rss = int(re.search(r"VmRSS:\s+(\d+)", open("/proc/%d/status" % dp.pid).read()).group(1))
+        print("note: dnsmasq VmRSS with the 1M table mapped: %d kB (the table is shared page cache, not per instance)" % rss)
+    except Exception:
+        pass
+except SystemExit:
+    pass
+finally:
+    stop.set()
+    for p in procs:
+        if p.poll() is None:
+            p.terminate()
+            try: p.wait(timeout=5)
+            except subprocess.TimeoutExpired: p.kill()
+    shutil.rmtree(work, ignore_errors=True)
+
+# ---- 5. pins
+check("both copies of wallguard_db.h are identical", read("wallguard/wallguard_db.h") == read("dnsmasq/src/wallguard_db.h"))
+fw, rf, op = read("dnsmasq/src/forward.c"), read("dnsmasq/src/rfc1035.c"), read("dnsmasq/src/option.c")
+check("dnsmasq: the option, the UDP and TCP gates (before the cache, real device), the CNAME hook, the build object",
+      '{ "wallguard-dir", 1, 0, LOPT_WALLGUARD_DIR },' in op and fw.count("wallguard_answer(") == 2 and fw.count("reaper_client(&") >= 3
+      and "rc = wallguard_cname_verdict(wallguard_client, now) ? 4 : 0;" in fw and "wallguard_cname_listed(name)" in rf
+      and "wallguard.o" in read("dnsmasq/Makefile"))
+# review 2026-10-21: the CNAME verdict gets the device rednsd named (stored with the forwarded
+# query), and a listed chain is reported only after the whole reply was checked
+check("dnsmasq: the forwarded query carries the asking device; a listed chain still meets rebind / ipsets",
+      "forward->frec_src.wallguard_client = *reaper_client(udpaddr);" in fw
+      and "&forward->frec_src.wallguard_client, daemon->edns_pktsz, ede" in fw
+      and "&peer_addr, reaper_client(&peer_addr), 65536, ede" in fw
+      and "if (wallguard_listed)\n    return 3;" in rf and "\t\treturn 3;" not in rf[rf.index("wallguard_cname_listed(name)") - 400:rf.index("wallguard_cname_listed(name)") + 200])
+check("tmp layout: /tmp/wallguard and /tmp/rednsd are root's (REAPER_TMP_DIRS), the daemons write only in run/",
+      '{ "/tmp/wallguard",\t\t0755 }' in read("shared/reaper_tmpsafe.h") and '{ "/tmp/rednsd",\t\t0755 }' in read("shared/reaper_tmpsafe.h")
+      and "reaper_secure_dir_for(SH_RUN, 0700" in read("rc/wallguard.c") and "reaper_secure_dir_for(RED_RUN, 0700" in read("rc/encdns.c")
+      and "chown(SH_DIR" not in read("rc/wallguard.c") and "chown(RED_DIR" not in read("rc/encdns.c")
+      and '"%s/run/%s"' in read("dnsmasq/src/wallguard.c"))
+
+if fails:
+    print("\n%d FAILED:" % len(fails))
+    for f in fails: print("  - " + f)
+    sys.exit(1)
+print("\nall checks passed")

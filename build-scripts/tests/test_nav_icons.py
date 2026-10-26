@@ -44,8 +44,12 @@ def rd(p): return open(p, encoding="utf-8", errors="replace").read()
 norm = lambda s: re.sub(r"\s+", "", s)
 
 shell = rd(shell_p)
-m = re.search(r"var ICONS\s*=\s*\{(.*?)\n\};", shell, re.S)
-check("reaper_shell.asp declares var ICONS = {...};", m is not None)
+# 2026-10-22: the map moved to www/reaper/menu.js (the menu model), shared by the shell and dashboard rails
+menu_p = os.path.join(www, "reaper", "menu.js")
+menu_js = open(menu_p, encoding="utf-8", errors="surrogateescape").read() if os.path.exists(menu_p) else ""
+m = re.search(r"var ICONS\s*=\s*\{(.*?)\n\s*\};", menu_js, re.S)
+check("www/reaper/menu.js declares var ICONS = {...} and the shell takes it from there",
+      m is not None and "var ICONS = ReaperMenu.ICONS;" in shell)
 if not m: print("\n1 FAILED"); sys.exit(1)
 ICONS = {k: norm(v) for k, v in re.findall(r"^\s*(\w+)\s*:\s*'(<svg.*?</svg>)'\s*,?\s*$", m.group(1), re.M)}
 DEFAULT = ICONS.get("_default", "")
@@ -84,15 +88,15 @@ check("Traffic Manager and Traffic Analyzer draw different glyphs",
       ICONS.get("menu_BandwidthMonitor") != ICONS.get("menu_TrafficAnalyzer"))
 
 # 4. dashboard rail parity
+# 2026-10-22: the dashboard no longer carries a hand-kept copy of the rail - it draws ReaperMenu.rail(),
+# whose icons are this same map, so parity is structural: the generated markup uses r.icon and no
+# static rail anchor (a literal <span class="ni"><svg) survives in the page.
 dash = rd(dash_p)
-links = re.findall(r'<a href="/(?:reaper_shell\.asp#)?([A-Za-z0-9_]+\.asp)"[^>]*>\s*<span class="ni">(<svg.*?</svg>)</span>', dash, re.S)
-check("Main_ReaperDash.asp rail parsed (at least 15 links)", len(links) >= 15, len(links))
-for page, svg in links:
-    owner = page_owner.get(page)
-    if not owner:
-        check("dashboard link %s belongs to a menu in menuTree.js" % page, False); continue
-    check("dashboard %-30s == shell %s" % (page, owner), ICONS.get(owner) == norm(svg),
-          "shell has %s" % ("no key" if owner not in ICONS else "a different glyph"))
+check("Main_ReaperDash.asp draws its rail from the menu model (ReaperMenu.rail(), r.icon)",
+      "ReaperMenu.rail()" in dash and "r.icon" in dash and '<script src="/reaper/menu.js"></script>' in dash)
+check("no static rail anchors remain in Main_ReaperDash.asp (only the add-on section's glyph template)",
+      dash.count('<span class="ni"><svg') == 1 and "var ICON = '<span class=\"ni\"><svg" in dash)
+check("menu.js's rail() picks ICONS[index] with the _default fallback", "icon: ICONS[m.index] || ICONS._default" in menu_js)
 
 if fails:
     print("\n%d FAILED:" % len(fails))

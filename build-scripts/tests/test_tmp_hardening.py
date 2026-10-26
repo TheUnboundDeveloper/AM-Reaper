@@ -234,9 +234,9 @@ dg = rd("others/reaper_diag")
 check("diag: scratch files in the private directory; the report created fresh under noclobber",
       'SCR=/tmp/reaper' in dg and 'RAW="$SCR/.rdiag_raw.$$"' in dg and 'rm -f "$OUT"\nset -C\n{' in dg and 'set +C' in dg)
 check("diag v1.3.33+ reports the four protections and the directories",
-      'VER="REAPER-DIAG v1.3.45"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
+      'VER="REAPER-DIAG v1.3.49"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
 check("diag page and marker follow the version",
-      "REAPER-DIAG v1.3.45</span>" in rd("www/Reaper_Diag.asp"))
+      "REAPER-DIAG v1.3.49</span>" in rd("www/Reaper_Diag.asp"))
 shell = shutil.which("bash")
 if shell:
     for rel in ["rom/webs_scripts/reaper_webs_update.sh", "rom/webs_scripts/reaper_webs_upgrade.sh", "others/reaper_diag"]:
@@ -294,8 +294,8 @@ check("V11: the per-disk app starter only refreshes lists where the refresher ex
 wmk = rd("www/Makefile")
 check("V11: ASUS's developer test form for the installer is not shipped", "rm -f $(INSTALLDIR)/www/apps_test.asp" in wmk)
 # the USB Application hub is NOT the installer: the dashboard rail and eight USB pages link to it
-check("V11: the USB Application hub page stays - no Reaper rule removes it",
-      "rm -f $(INSTALLDIR)/www/APP_Installation.asp" not in wmk and 'href="/reaper_shell.asp#APP_Installation.asp"' in rd("www/Main_ReaperDash.asp"))
+check("V11: the USB Application hub page stays - no Reaper rule removes it, and the menu model still lists it",
+      "rm -f $(INSTALLDIR)/www/APP_Installation.asp" not in wmk and "T('APP_Installation.asp'" in rd("www/reaper/menu.js"))
 
 # ---------------------------------------------------------------- 6. V5
 mk = rd("www/Makefile")

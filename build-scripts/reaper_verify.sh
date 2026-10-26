@@ -122,7 +122,8 @@ fi
 # NOTE: the build post-processes .asp during packing (packed != git source),
 # so a source sha-compare gives false positives. Check presence, non-trivial
 # size, and expected content markers (survive the transform) instead.
-critical="index.asp Main_ReaperDash.asp Advanced_VPNStatus.asp Reaper_Warden.asp"
+# 2026-10-24 (page review): Advanced_VPNStatus.asp no longer ships (Reaper_VPNStatus.asp replaces it)
+critical="index.asp Main_ReaperDash.asp Reaper_VPNStatus.asp Reaper_Warden.asp"
 missp=""; smallp=""
 for w in $critical; do
   f="$FS/www/$w"
@@ -131,7 +132,7 @@ for w in $critical; do
 done
 [ -z "$missp" ] && pass "www-present" "critical pages present" || fail "www-present" "missing:$missp"
 [ -z "$smallp" ] && pass "www-size" "critical pages non-trivial size" || fail "www-size" "truncated/empty:$smallp"
-if grep -qa "VPN" "$FS/www/Advanced_VPNStatus.asp" 2>/dev/null && grep -qai "warden" "$FS/www/Reaper_Warden.asp" 2>/dev/null; then
+if grep -qa "VPN" "$FS/www/Reaper_VPNStatus.asp" 2>/dev/null && grep -qai "warden" "$FS/www/Reaper_Warden.asp" 2>/dev/null; then
   pass "www-marker" "key pages contain expected content"
 else warn "www-marker" "expected content markers missing (inspect pages)"; fi
 
@@ -648,6 +649,41 @@ elif out=$(python3 "$STATICCHK" "$RSRC" 2>&1); then
 else
   echo "$out" | sed 's/^/    /'
   fail "static-checks" "a static source check failed (see above)"
+fi
+
+# ---- 30. stray files: editor/backup copies must never ship (2026-10-21) ----
+# The www install copies the whole tree; 31 *.bak.pre-* copies (dicts + pages, 18 MB raw) rode into
+# _r8.._r10 and grew the rootfs past the flash slot - the upgrade then failed with no message.
+_stray=$(find "$FS" \( -name '*.bak*' -o -name '*.orig' -o -name '*.rej' -o -name '*~' -o -name '*.pre-*' -o -name '*.swp' -o -name '.#*' -o -name '*.new' \) 2>/dev/null | head -5)
+if [ -z "$_stray" ]; then
+  pass "stray-files" "no backup/editor copies in the staged fs"
+else
+  fail "stray-files" "backup/editor copies in the image (move them out of the tree): $(echo "$_stray" | sed "s#$FS/##" | tr '\n' ' ')"
+fi
+
+# ---- 31. the rootfs must fit the flash slot (2026-10-21) --------------------
+# RT-BE96U UBI: rootfs volumes of 547 LEBs x 126976 B = 69,455,872 B each, 12 LEBs spare in all;
+# the flasher recreates the inactive slot at the new size and cannot grow it beyond that. _r7 (68.44 MB)
+# flashed; _r10 (73.34 MB) could not. The ceiling is the existing volume size - an image that fits it
+# needs no growth. Other models: warn only (their layout is not measured).
+if [ -f "$IMAGE" ] && command -v dtc >/dev/null 2>&1; then
+  _rfs=$(dtc -I dtb -O dts -q "$IMAGE" 2>/dev/null | awk '/nand_squashfs/ {n=1} n && /data-size/ {gsub(/[<>;]/,"",$3); print strtonum($3); exit}')
+  _cap=69455872
+  if [ -z "$_rfs" ]; then
+    warn "rootfs-size" "could not read the rootfs size from the FIT header"
+  elif [ "$_rfs" -gt "$_cap" ]; then
+    if [ "$MODEL" = RT-BE96U ]; then
+      fail "rootfs-size" "rootfs $_rfs B exceeds the RT-BE96U flash slot ($_cap B): the upgrade would fail silently"
+    else
+      warn "rootfs-size" "rootfs $_rfs B exceeds the RT-BE96U slot size ($_cap B); this model's slot is not measured"
+    fi
+  elif [ "$_rfs" -gt 67000000 ]; then
+    warn "rootfs-size" "rootfs $_rfs B is within $((_cap - _rfs)) B of the flash slot ($_cap B)"
+  else
+    pass "rootfs-size" "rootfs $_rfs B fits the flash slot ($_cap B, $((_cap - _rfs)) B to spare)"
+  fi
+else
+  warn "rootfs-size" "image or dtc missing - rootfs size not checked"
 fi
 
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"

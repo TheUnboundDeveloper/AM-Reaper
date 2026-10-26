@@ -336,7 +336,7 @@ if 'r->dfs && csbuf[0]) {' in web:
 ok("the move is applied live (chanspec + acs_update), verified on the operating chanspec, returned through dfs_ap_move when bgdfs; exit codes are real")
 
 inj = read("httpd/reaper_inject.c")
-if '"advanced_wireless_survey.asp\\":\\"Reaper_Survey.asp\\"' not in inj:
+if '{ "advanced_wireless_survey.asp", "Reaper_Survey.asp", ' not in inj:
     die("reaper_inject.c SUP map lacks the survey redirect")
 if '"Reaper_Survey.asp",' not in inj:
     die("reaper_inject.c reaper_native[] lacks Reaper_Survey.asp")

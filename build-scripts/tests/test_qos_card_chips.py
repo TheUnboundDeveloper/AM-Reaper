@@ -92,7 +92,8 @@ check("Traditional: Up + Down and Classes + guarantees, like Cake / Classful",
 check("Off: 'No control' is a cost, like the Limiter's 'Not bufferbloat'",
       ("RQOS_70", "warn") in M.get("off", []) and ("RQOS_85", "warn") in M.get("2", []))
 
-css = re.search(r"\n\.tag\{([^}]*)\}", page)
+# review 2026-10-24 (Q-C2-8): the page's .tag repeated rp.css's byte for byte and went; rp.css draws it
+css = re.search(r"\n\.tag\{([^}]*)\}", page) or re.search(r"\n\.tag\{([^}]*)\}", open(os.path.join(SRC, "www", "reaper", "rp.css"), encoding="utf-8").read())
 check("the plain .tag fallback is drawn readable (bone-dim), not steel",
       css is not None and "color:var(--bone-dim)" in css.group(1) and "--steel" not in css.group(1),
       css.group(1) if css else "")

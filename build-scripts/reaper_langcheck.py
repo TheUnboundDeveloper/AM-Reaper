@@ -25,6 +25,17 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # Added 2026-08-16 with the page itself - caught by this file's own
        # LANGCOVERAGE assertion on the very first run, which is what it is for.
        'Reaper_About.asp',
+       # Added 2026-10-22 with the Reaper-native UI wave 1 System page (Administration > System);
+       # the LANGCOVERAGE assertion flagged it on the first _r19 verify, as designed.
+       'Reaper_System.asp',
+       # Added 2026-10-23 with wave 1's other two Administration tabs (SNMP, Tweaks).
+       'Reaper_SNMP.asp', 'Reaper_Tweaks.asp',
+       # Added 2026-10-23 with the System Log wave (RLOG_ tokens, all inside backticks in JS).
+       'Reaper_Log.asp', 'Reaper_WLog.asp', 'Reaper_Leases.asp', 'Reaper_IPv6.asp', 'Reaper_Routes.asp', 'Reaper_PortFwd.asp',
+       # Added 2026-10-23 with the Network Tools wave (RNT_ tokens).
+       'Reaper_Analysis.asp', 'Reaper_Netstat.asp', 'Reaper_WOL.asp', 'Reaper_SmartConnect.asp', 'Reaper_IPv6Setup.asp', 'Reaper_LAN.asp', 'Reaper_DNS.asp', 'Reaper_Internet.asp',
+       'Reaper_IPTV.asp', 'Reaper_NAT.asp', 'Reaper_DDNS.asp', 'Reaper_VPNStatus.asp', 'Reaper_VPNDirector.asp',
+       'Reaper_VPNServer.asp', 'Reaper_VPNClient.asp', 'Reaper_Tor.asp', 'Reaper_Parental.asp',
        # Added 2026-08-20 with v2.5.6's Policy Routing page - the same LANGCOVERAGE
        # assertion caught it on the first FLEET build (the quick RT-BE96U test builds
        # never ran reaper_verify). Its RVR_ tokens sit in backtick JS contexts
@@ -78,6 +89,14 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # attribute and backtick JS templates (RDWT_25/26/27/30 carry %1/%2) -
        # translations must stay free of ` ${ and ".
        'Reaper_Dreadwatch.asp',
+       # Added 2026-10-21 with the Encrypted DNS tab (the Warden menu's third tab).
+       # RENC_ tokens sit in HTML text, one double-quoted placeholder/aria-label pair
+       # (RENC_20) and backtick JS templates (RENC_13/17/32/33/34 carry %1).
+       'Reaper_EncryptedDNS.asp',
+       # Added 2026-10-21 with the Wallguard tab (ad & tracker blocker, between Dreadwatch
+       # and Encrypted DNS). RSHD_ tokens sit in HTML text, double-quoted placeholders
+       # and backtick JS templates (RSHD_09/37/62/71/74/86 carry %1, RSHD_37 also %2).
+       'Reaper_Wallguard.asp',
        ]
 
 # Dropped at the same time: 'Reaper_WiFiAccel.asp'. The accelerator page is

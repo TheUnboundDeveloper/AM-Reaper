@@ -4,7 +4,7 @@ owner 2026-10-23; built 2026-10-24).
 
 WHY. The threat list reached dnsmasq as --reaper-nx=/host/ lines: ~54 B a name as a struct server in EVERY
 instance (the main one and one per extra network) plus the 21 MB text include in tmpfs - the same 683k names
-five times over, ~125 MB on the RT-BE96U, against the 1 GB RT-BE88U / BE86U budget. Now rc compiles the list
+five times over, ~125 MB on the RT-BE96U, against the RT-BE86U's 1 GB budget. Now rc compiles the list
 with wallguardc (--subtree: every name covers its subdomains, as reaper-nx did) into one Wallguard-format table that
 every instance maps read-only and shared (dnsmasq/src/reaper_nx.c): one copy, ~12 B a name, and the include
 shrinks to two lines. The answer has to stay what it was - NXDOMAIN + EDE 15 for the name and its subdomains,

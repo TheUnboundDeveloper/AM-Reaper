@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.4.9** · 2026-10-25 <!--@stamp-->
+> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -278,6 +278,54 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
   gone-page bounce; proposed: a bounce to the Diagnostics page.
   **[fixed 2026-10-25, v3.4.9, test image _r39 (metal owed): a gone-page row bounces it to the Diagnostics page]** ↳ notes:
   `aimesh-feedback-dead-link.md`
+- **[P3] /jffs/nvram/asus_device_list turns world-writable again after boot** (owner, v3.4.9 metal,
+  2026-10-26) — ASUS's prebuilt device discovery rewrites it 0666 after the boot sweep, so the Security
+  Review and the dashboard flag it for good. rwatch now takes the bit off /jffs/nvram files each tick.
+  **[fixed 2026-10-26 (v3.5.0); owed: the card stays clear past a device scan]** ↳
+  notes: `jffs-world-writable.md`
+- **[P1] Wallguard never builds its table - stuck on "The lists are downloading"** (owner, metal
+  2026-10-26) — the build lock used `flock`'s wait option, which the router's busybox lacks: it failed at once and
+  every build was skipped (since the 2026-10-21 review fixes; in the v3.4.9 cut). Lists download fine. Locks now
+  poll; Warden's counter locks had the same flaw. **[fixed 2026-10-26 (v3.5.0); owed on
+  metal: a table builds within a minute]** ↳ notes: `wallguard.md`
+- **[P2] AiMesh parking card dead: the on/off button stuck on "-"** (field, RT-BE88U v3.4.9 screenshot,
+  2026-10-26) — the card read the daemon's free-text state with nvram_get into a quoted script string; v3.4.9's
+  reason text has an apostrophe ("radio's"), so the script died. Read encoded and decoded now.
+  **[fixed 2026-10-26 (v3.5.0); awaiting the RT-BE88U tester]** ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
+- **[P3] Wallguard: the HaGeZi Threat Intelligence preset could never load** (owner, 2026-10-26) — the full
+  list is 43.5 MB / 2.1 M names (past the 32 MB list and 1 M name limits); the preset is TIF Medium now.
+  `adblock/` and `dnsmasq/` URLs both parse. **[fixed 2026-10-26 (v3.5.0)]** ↳ notes: `wallguard.md`
+- **[P2] AiMesh backhaul parking loops: park, "client network is down", release, every ~70 s** (field,
+  RT-BE88U v3.4.9, 2026-10-26) — with a radio's primary parked its client networks' state reads down although
+  they stay on the air (stations kept associated), so the v3.4.9 scheduler hold fired after every park. The
+  hold now reads only radios with the primary up, and a radio with a Wi-Fi schedule is never parked.
+  **[fixed 2026-10-26 (v3.5.0); awaiting the RT-BE88U tester]** ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
+- **[P3] Diag: "store is RAM although a USB disk is mounted" on every router** (same diag) — matched
+  /tmp/mnt/defaults; only a /dev block device counts now (v1.3.50). **[fixed 2026-10-26 (v3.5.0)]**
+  ↳ notes: `reaper-diag-counters.md`
+- **[P2] LAN > VLAN (per-port access / trunk) missing on every SDN model** (owner, 2026-10-26) — the
+  2026-10-23 LAN wave inverted stock's `mtlancfg` test: the tab was hidden, both pages removed from the image
+  and bounced to the Network page. Restored as the stock pair (Reaper-themed by the shell).
+  **[fixed 2026-10-26 (v3.5.0); then a native kit page]** ↳ notes: `lan-vlan-tab.md`
+- **[P3] Security Review card: clear ways to accept, add and remove** (owner, 2026-10-26) — one bar for ticked
+  rows (no per-row buttons), the watch rules as a list with Delete / Delete selected / Delete all and an Add
+  form, the text box behind Edit as text. **[built 2026-10-26 (v3.5.0); jsdom 18/18]** ↳
+  notes: `security-review.md`
+- **[P2] Upstream carries from Asuswrt-Merlin (Eric Sauvageau), 2026-10-26** — miniupnpd MX 0, urlfilterd bounds,
+  CA bundle 2026-10-21, wanduck CLOEXEC, SDN DNS over TCP (+ its IPv6 twin), OpenSSL no-ssl2. **[in v3.5.0 (test
+  image _r43); Wi-Fi start-up scripts held for owner review]** ↳ notes: `merlin-40585-review-2026-10-26.md`
+- **[P2] Wi-Fi start-up script fixes from GPL 40585** (Merlin review, 2026-10-26) — hndnvram.sh stops stacking a second
+  defaults mount (can swallow nvram commits), quoting, taskset hex. **[owner investigating; not carried]** ↳ notes: `merlin-40585-review-2026-10-26.md`
+- **[P2] RT-BE96U 40585 blob set = a rebase onto Merlin main** (2026-10-26) — AiMesh CSA handling, protect_srv/asd off the
+  shell; needs 40585 source symbols, LED calls, VLAN fix, ABI pins, Merlin 15ca75e1fae. **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
+- **[P3] HW QoS inert behind an ISP/IPTV profile bridge** — Merlin f5334a33d23 resolves the physical WAN port there;
+  merge that branch into `hwqos_tm_ifname`. **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
+- **[P2] Wallguard says why it cannot work** (owner, _r41 metal 2026-10-26) — names Warden on a blocked list
+  download, warns when a NAT rule sends DNS past the router, logs the table total. **[built 2026-10-26, v3.5.0
+  (test image _r42); owed: metal check]** ↳ notes: `wallguard-why.md`
+- **[P3] System Log: Find / Exclude lists and saved exclusions** (user request, 2026-10-26) — comma lists in both
+  boxes; the user's own logFilter.json in /jffs/reaper/logfilter. **[built 2026-10-26, v3.5.0 (test image _r41);
+  owed: metal check]** ↳ notes: `system-log-filter.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -401,6 +449,10 @@ is planned; a "still broken" answer moves the item back to Open bugs. Each note 
 
 ## Code quality / deferred (with reason)
 
+- **[P3] haveged 1.9.22 → 1.9.27** (Merlin a274d80d0d7, 2026-10-26) — we ship it; low risk, low value.
+  **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
+- **[P3] Faster local builds** (Merlin 0e562d854a5 parallel bootloader, ec279401070 no second image/OpenSSL build) —
+  build time only. **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
 - **[P3] Delete the dead ASUS DDNS code** (owner, 2026-10-23) — asuscomm is unreachable from v3.4.9
   (boot clears it, `start_ddns()` refuses it, no GUI or app route sets it). Left in place:
   `rc/asus_ddns.c`, the asus branches of `start_ddns()` and the watchdog, the inadyn asuscomm

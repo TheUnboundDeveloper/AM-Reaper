@@ -72,6 +72,14 @@ try:
     os.chmod(SCW, 0o755)
     os.chmod(os.path.join(bindir, "curl"), 0o755)
     open(os.path.join(bindir, "logger"), "w").write("#!/bin/sh\necho \"$*\" >> %s/logger.out\n" % work)
+    # 2026-10-26 (metal): the router's busybox 1.25 flock refuses -w - the script runs under a flock that does the
+    # same, so a lock taken the util-linux way fails here as it did on the router (every build was skipped)
+    _rf = shutil.which("flock")
+    if _rf:
+        open(os.path.join(bindir, "flock"), "w").write(
+            "#!/bin/sh\nfor a; do case \"$a\" in -w|-w*|--wait|--timeout) echo 'flock: invalid option' >&2; exit 1;; esac; done\nexec %s \"$@\"\n" % _rf)
+        os.chmod(os.path.join(bindir, "flock"), 0o755)
+    open(os.path.join(bindir, "usleep"), "w").write("#!/bin/sh\nexec sleep 0.2\n"); os.chmod(os.path.join(bindir, "usleep"), 0o755)
     os.chmod(os.path.join(bindir, "logger"), 0o755)
 
     for shell in ["sh"] + (["busybox"] if BB else []):

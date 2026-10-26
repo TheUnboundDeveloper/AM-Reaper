@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.4.9** · 2026-10-25 <!--@stamp-->
+> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -992,3 +992,23 @@ over 1 KB is kept whole (1,125 bytes written, read back equal, restored) and the
 | `httpd/web.c`, `www/Reaper_Firewall.asp` | Security Review: a checkbox per row and select-all, one bar of actions valid for every selected row (a disabled one says why). Accept selected = one `reaper_watch.cgi` `action=ack_many` (at most 100 items / 16 KB, each line checked as `ack_one`, all or nothing): one baseline write, one audit record, one accept-log line naming the items. Existence only / Ignore / Ignore folder = one `rules_set` with the new rules ahead and no duplicates, refused before sending past 100 rules / 8 KB. Seven strings in all 25 packs. | `ack_many`, `rvBulkSync`, `rvAckMany`, `rvBulkRule`; `test_review_cgi.py` |
 | `www/Reaper_Conn.asp` | The flow detail panel keeps its column's width: the title and the destination are cut with an ellipsis and shown whole on hover, the ACCELERATED badge never shrinks, the panel never scrolls sideways (owner: `03s0.signaling.access.vivint.ai`). | `.dhd`, `drow(k,v,full)`; `test_page_review_fixes.py` |
 | `rc/wallguard.c`, `rc/jffs2.c`, `rc/ubifs.c` | The ad and tracker blocker is named Wallguard (its earlier name belongs to another ad-block project). A router that ran a test image under the earlier name keeps its settings: the two nvram switches and its `/jffs` folder move once at boot, right after `/jffs` is mounted; an existing new folder and a link are never touched. | `wallguard_migrate_legacy()`; `test_wallguard_rc.py` |
+
+## v3.5.0 — field fixes, owner requests and fixes from Asuswrt-Merlin (2026-10-26)
+
+| Area | Change | Where |
+|---|---|---|
+| `wallguard/wallguard.sh`, `rc/rwarden.c` | BusyBox `flock` on this platform takes `-s -x -u -n` only; `flock -w` failed at once, so every Wallguard build/fold lock was "busy" and no table was ever built (v3.4.9). The build and fold locks poll `flock -n` (300 s / 10 s); Warden's four counter locks the same. | `test_busybox_flock.py`, `test_wallguard_sh.py` |
+| `wallguard/wallguard.sh`, `www/Reaper_Wallguard.asp` | A failed list download whose server `RW_SELF` drops (an `rw_g_<cc>` set, `rw_ban` or `rw_threat` that the chain carries; `rw_allow` respected) records `warden:<cc> <ip>` in the state file, the log and the list's row. `dns_bypass` reports port-53 DNAT targets that are not the router (cached 60 s); the page shows them while Wallguard is on. The build log reports the table total. | `test_wallguard_why.py` |
+| `rc/wallguard.c` | The HaGeZi TIF preset fetches `tif.medium.txt`; the full list exceeds the 32 MB per-list cap and the 1,000,000-name table. Id and bit unchanged. | `test_wallguard_rc.py` |
+| `httpd/web.c`, `www/Reaper_Log.asp` | `reaper_logf.cgi` (http_id gate; `get` / `set`): one pattern per line in `/jffs/reaper/logfilter`, validated by `rlogf_ok()` (64 x 128 printable ASCII; empty = unlink) and written with `rjf_set` (0600, atomic), read with `rview_slurp` (`O_NOFOLLOW`, bounded); carried by the settings file (`log` / `rlog_filter`, validated on import). Display filter only. | `test_log_filter.py` |
+| `rc/rwatch.c` | Step 3g2: `chmod o-w` on `/jffs/nvram` files that carry other-write (never through a link; untouched files keep their inode), before the review runs; one log line per boot. | `test_jffs_nvram_heal.py` |
+| `www/Reaper_Firewall.asp` | Security Review: one bar for ticked rows (`ack_many`), the watch rules as a list with Delete / Delete selected / Delete all / Add (validated before anything is sent). | `test_page_review_fixes.py` |
+| `rc/amaspark.c`, `www/Reaper_Wireless.asp` | The carrier hold acts only on radios whose primary is up (a parked primary made its client VIFs read down: a park/hold loop); a radio with a schedule is never parked. `amas_bh_state` is read with `nvram_char_to_ascii` (an apostrophe in it broke the card's script). | `test_amaspark_vif.py` |
+| `www/reaper/menu.js`, `www/Makefile`, `httpd/reaper_inject.c` | LAN › VLAN: stock's `mtlancfg` test restored, the two pages ship again, their bounce rows removed. | `test_page_review_fixes.py` |
+| `others/reaper_diag` | v1.3.50: the RAM-store WARN counts only a `/dev` block device mounted under `/tmp/mnt`. | `diag150` pins |
+| `rom/certs/ca-bundle.crt` | Asuswrt-Merlin `ea5483e5207` (Eric Sauvageau): Mozilla data of 2026-10-21. | `test_merlin_carry_2026_10_26.py` |
+| `rc/firewall_sdn.c` | Asuswrt-Merlin `e26fc8f4d78` (dave14305): TCP 53 from each SDN interface accepted before the host-service drop, as UDP 53 was. Reaper adds the same rule to the IPv6 chain. | `test_merlin_carry_2026_10_26.py` |
+| `rc/wanduck.c` | Asuswrt-Merlin `ba476c59af1` (Jacopo Labardi): `passivesock()` sockets are `SOCK_CLOEXEC`. | `test_merlin_carry_2026_10_26.py` |
+| `miniupnpd*/minissdp.c` | Asuswrt-Merlin `da326375b16` (Thomas Bernard): `MX: 0` is invalid (CVE-2026-107159). Not reachable in this build (`UPNP_STRICT` / `DELAY_MSEARCH_RESPONSE` off). | `test_merlin_carry_2026_10_26.py` |
+| `router-sysdep.rt-be96u/urlfilterd/filter.c` | Asuswrt-Merlin `d7c6a53e440` (ASUS GPL 102_40585): the payload offset is checked against the captured length and the search runs on a bounded NUL-terminated copy. Not reachable (urlfilterd is not started). | `test_merlin_carry_2026_10_26.py` |
+| router `Makefile` | Asuswrt-Merlin `9e53d766f86`: OpenSSL 3.5 configure without the deprecated `no-ssl2`. | `test_merlin_carry_2026_10_26.py` |

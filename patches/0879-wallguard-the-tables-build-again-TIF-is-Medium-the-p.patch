@@ -1,0 +1,309 @@
+From d4b1ba6c259a9aa68c8eee7a1733d49f62eb25e3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:21 -0400
+Subject: [PATCH] wallguard: the tables build again; TIF is Medium; the page
+ says why blocking cannot work
+
+The router's busybox flock has no wait option (it takes -s -x -u -n only), so
+every Wallguard build and fold lock failed at once: no table was ever built
+and the page kept saying the lists were downloading. wallguard.sh now polls
+flock -n (lock_wait: 300 s for a build, 10 s for a fold); Warden's four
+counter locks in rwarden.c had the same flaw and poll the same way.
+
+The HaGeZi Threat Intelligence preset fetches the Medium list. The full one
+(43.5 MB, about 2.1 million names) is past the per-list size and the table's
+name limit and could never load; the preset keeps its id and bit.
+
+A list download that Warden's router-traffic filter drops (a picked country,
+the ban list or a threat feed) now names Warden, the country or list and the
+server's address - in the log, the state file and the list's row on the
+page - with the three ways out. The page also warns when a NAT rule sends
+devices' DNS straight to another server (a Service Intercept rule, DNS
+Director): those lookups never reach dnsmasq, so Wallguard and Dreadwatch
+cannot see them. The build log reports the table's total, not the last
+list's count.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c             | 12 ++-
+ release/src/router/rc/wallguard.c           |  5 +-
+ release/src/router/wallguard/wallguard.sh   | 85 ++++++++++++++++++---
+ release/src/router/www/Reaper_Wallguard.asp | 14 +++-
+ 4 files changed, 99 insertions(+), 17 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 6a58e9f772f..ea428b4070e 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1703,7 +1703,10 @@ static void rw_gen_fold(void)
+ 	   * the banked $CTR before the mv and the live counters after the -Z, showing
+ 	   * the total dip backward for one tick. Same lock file as stats.sh (which
+ 	   * takes it shared); best-effort 5 s wait, proceed either way. */
+-	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 5 9 2>/dev/null\n"
++	  /* 2026-10-26 (metal): this busybox's flock has no wait option (only -s -x -u -n) - the 5 s wait asked of it
++	   * failed at once and no lock was ever held. Poll -n in 0.2 s steps for the same 5 s, then proceed either
++	   * way, as before. */
++	  "exec 9>/tmp/rwarden/ctr.lock; _w=25; while ! flock -n 9 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "NOW=$(date +%s)\n"
+ 	  "mkdir -p \"$DIR\" 2>/dev/null\n"
+ 	  "# one-time migration from the v2.2.1 single-value baseline (no per-country\n"
+@@ -1870,7 +1873,8 @@ static void rw_gen_stats(void)
+ 	   * synchronously in its single process, so every second waited here is a
+ 	   * second the whole GUI is frozen; a checkpoint holding the exclusive lock
+ 	   * that long is the rare case, and a one-tick dip beats a dead page. */
+-	  "exec 9>/tmp/rwarden/ctr.lock; flock -w 2 -s 9 2>/dev/null\n"
++	  /* 2026-10-26: shared, at most 2 s, polled (busybox flock has no -w) */
++	  "exec 9>/tmp/rwarden/ctr.lock; _w=10; while ! flock -s -n 9 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "BASE=0; SINCE=0\n"
+ 	  "if [ \"$SV\" = 1 ] && [ -f \"$CTR\" ]; then\n"
+ 	  "  BASE=$(awk '$1==\"TOTAL\"{print $2+0; exit}' \"$CTR\" 2>/dev/null); [ -n \"$BASE\" ] || BASE=0\n"
+@@ -2009,7 +2013,7 @@ static void rw_gen_dns(void)
+ 	  "# dnsmasq could not write: its 50-a-second / 256 KB bounds); the raw records go to a 500-line tmpfs log.\n"
+ 	  "# Writes /jffs only when there is something new, or the Warden retention interval has passed.\n"
+ 	  "dfold() {\n"
+-	  "  exec 8>$LOCK; flock -w 5 8 2>/dev/null\n"
++	  "  exec 8>$LOCK; _w=25; while ! flock -n 8 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "  NOW=$(date +%s)\n"
+ 	  "  mkdir -p \"${DCTR%/*}\" 2>/dev/null\n"
+ 	  "  case \"$(_nv rwarden_reset)\" in 24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;; esac\n"
+@@ -2088,7 +2092,7 @@ static void rw_gen_dns(void)
+ 	  "      }' \"$_O\" \"$_R\"\n"
+ 	  "}\n"
+ 	  "dreset() {\n"
+-	  "  exec 8>$LOCK; flock -w 5 8 2>/dev/null\n"
++	  "  exec 8>$LOCK; _w=25; while ! flock -n 8 2>/dev/null && [ $_w -gt 0 ]; do _w=$((_w-1)); usleep 200000; done\n"
+ 	  "  mkdir -p \"${DCTR%/*}\" 2>/dev/null\n"
+ 	  "  echo \"SINCE $(date +%s)\" > \"$DCTR.tmp\" && mv -f \"$DCTR.tmp\" \"$DCTR\"\n"
+ 	  "  rm -f \"$REC\" \"$HF\"\n"
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index e1b0fdc9295..6928df72dbb 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -48,7 +48,10 @@ static const struct { int bit; const char *id, *url; } presets[] = {
+ 	{ 6, "oisd_big",       "https://big.oisd.nl/" },
+ 	{ 7, "stevenblack",    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" },
+ 	{ 8, "adguard_dns",    "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" },
+-	{ 9, "hagezi_tif",     "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.txt" },
++	/* 2026-10-26 (metal): the full TIF list is 43.5 MB / 2.1 million names - past the 32 MB a list may be and the
++	 * 1,000,000-name table, so it could never load. Medium (9.6 MB, ~435k names) fits beside a main list. The id
++	 * and bit stay, so a profile or subscription that has it keeps it. */
++	{ 9, "hagezi_tif",     "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.medium.txt" },
+ };
+ #define NPRESETS (int)(sizeof(presets) / sizeof(presets[0]))
+ 
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index d4b74046b86..f6a2c346ba9 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -188,11 +188,24 @@ feed_ok() {
+ # cat what dnsmasq left in $RUN, but only a regular file - never through a symlink
+ run_cat() { for f in "$@"; do [ -f "$f" ] && [ ! -L "$f" ] && cat "$f"; done; }
+ 
++# wait for an exclusive lock on fd $1 for at most $2 seconds. The router's busybox 1.25 flock knows only
++# -s -x -u -n (metal 2026-10-26: a 300 s wait asked of flock itself failed at once, so EVERY table build was "skipped" and
++# Wallguard never blocked) - so poll -n in 0.2 s steps.
++lock_wait() {
++  _n=$(( $2 * 5 ))
++  while ! flock -n "$1" 2>/dev/null; do
++    [ "$_n" -le 0 ] && return 1
++    _n=$((_n - 1))
++    usleep 200000 2>/dev/null || sleep 1
++  done
++  return 0
++}
++
+ build() {
+   # one build at a time (rc's background rebuilds, Unbreak's Allow, the update): two at once wrote the
+   # same table file (review 2026-10-21); waits, so the later rule change still lands
+   exec 8>"$D/build.lock"
+-  flock -w 300 8 || { log "another block table build is still running - this one was skipped"; return 1; }
++  lock_wait 8 300 || { log "another block table build is still running - this one was skipped"; return 1; }
+   args=; miss=
+   [ -f "$D/feeds" ] || : > "$D/feeds"
+   [ -n "${S+x}" ] || S=$(st_lists)
+@@ -223,7 +236,7 @@ build() {
+   # shellcheck disable=SC2086
+   if "$SC" build --out "$D/db" --stats "$D/build.json" --rules "$J/block" --allow "$J/allow" \
+        --allow "$D/allow24" --allow "$D/safe" $args; then
+-    log "block table built: $(sed -n 's/.*"names":\([0-9]*\).*/\1/p' "$D/build.json") names"
++    log "block table built: $(grep -o '"names":[0-9]*' "$D/build.json" | head -1 | cut -d: -f2) names"
+     rm -rf "$ST"
+   else
+     log "the block table could not be built - the previous one stays in use"
+@@ -232,6 +245,30 @@ build() {
+   fi
+ }
+ 
++# 2026-10-26 (owner, _r41 metal): a list server that Warden's router-traffic filter (rwarden_self) drops - a
++# picked country, the ban list or a threat feed - failed as a bare "download failed" (OISD on OVH France).
++# Prints "<country code|ban|threat> <address>" when RW_SELF really carries the matching set and the address is
++# not whitelisted; nothing otherwise. IPv4 only: the drop logs seen so far are IPv4, and nslookup's IPv6 path
++# cannot be trusted on this busybox.
++warden_why() {
++  [ "$(nvram get rwarden_enable)" = 1 ] && [ "$(nvram get rwarden_self)" = 1 ] || return 1
++  _rs=$(iptables -S RW_SELF 2>/dev/null) || return 1
++  _h=$(echo "$1" | sed -n 's#^[a-zA-Z]*://\([^/:]*\).*#\1#p')
++  [ -n "$_h" ] || return 1
++  for _ip in $(nslookup "$_h" 127.0.0.1 2>/dev/null | awk '/^Name:/ {n = 1; next} n && /^Address/ && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}'); do
++    ipset test rw_allow "$_ip" 2>/dev/null && continue
++    for _s in rw_ban:ban rw_threat:threat; do
++      case "$_rs" in *"--match-set ${_s%%:*} dst"*) ipset test "${_s%%:*}" "$_ip" 2>/dev/null && { echo "${_s#*:} $_ip"; return 0; } ;; esac
++    done
++    # rwarden names the country sets in lower case (rw_g_fr) whatever case rwarden_geo holds
++    for _c in $(nvram get rwarden_geo | tr 'A-Z' 'a-z'); do
++      case "$_c" in ""|*[!a-z]*) continue ;; esac
++      case "$_rs" in *"--match-set rw_g_$_c dst"*) ipset test "rw_g_$_c" "$_ip" 2>/dev/null && { echo "$(echo "$_c" | tr 'a-z' 'A-Z') $_ip"; return 0; } ;; esac
++    done
++  done
++  return 1
++}
++
+ update() {
+   exec 9>"$D/update.lock"
+   flock -n 9 || { log "an update is already running"; return 0; }
+@@ -245,7 +282,7 @@ update() {
+     c=$CURL; [ "$kind" = c ] && c=$CURLC
+     prev=$(awk -v i="$id" '$1 == i {print $3}' "$D/state" 2>/dev/null)
+     now=$(date +%s)
+-    why=
++    why=; wd=
+     [ "$(mem_avail_kb)" -lt "$MEMMIN" ] && why="not fetched, less than $((MEMMIN / 1024)) MB of memory available"
+     # shellcheck disable=SC2086
+     if [ -z "$why" ] && $c -o "$L/$id.new" "$url" 2>/dev/null && [ -s "$L/$id.new" ]; then
+@@ -253,7 +290,15 @@ update() {
+       [ $(( $(ram_lists) - old + $(wc -c < "$L/$id.new") )) -gt "$LCAP" ] &&
+         why="not taken, the lists kept in RAM would pass $((LCAP / 1048576)) MB (Long-Term Storage can keep them on USB)"
+     else
+-      [ -n "$why" ] || why="download failed"
++      if [ -z "$why" ]; then
++        why="download failed"
++        wr=$(warden_why "$url") && [ -n "$wr" ] && {
++          wc=${wr%% *}; wi=${wr#* }
++          wd="warden:$wc $wi"
++          case "$wc" in ban) w="your Warden ban list" ;; threat) w="a Warden threat feed" ;; *) w="Warden's country block ($wc)" ;; esac
++          why="download failed - $w drops this server ($wi) for the router's own traffic; whitelist $wi on the Warden page, change that block, or untick the list"
++        }
++      fi
+     fi
+     if [ -z "$why" ]; then
+       mv "$L/$id.new" "$L/$id"
+@@ -262,7 +307,7 @@ update() {
+     else
+       rm -f "$L/$id.new"
+       if list_path "$id" >/dev/null; then st=failed; else st=missing; fi
+-      echo "$id $st ${prev:-0} $now" >> "$D/state.new"
++      echo "$id $st ${prev:-0} $now $wd" >> "$D/state.new"
+       log "list $id: $why$( [ "$st" = failed ] && echo ', previous copy kept')"
+     fi
+   done < "$D/feeds"
+@@ -359,7 +404,7 @@ fold() {
+   # one fold at a time (2026-10-25, release review): the cron fold and the page's stats both read and
+   # rewrite the counters, and two at once lost one's records
+   exec 6>"$D/fold.lock"
+-  flock -w 10 6 || return 0
++  lock_wait 6 10 || return 0
+   hist_bg		# records queued while the last writer was still out go now, new records or not
+   [ -f "$CTR" ] || { [ -f "$J/counters" ] && cp "$J/counters" "$CTR"; } || echo "SINCE $(date +%s)" > "$CTR"
+   [ -s "$CTR" ] || echo "SINCE $(date +%s)" > "$CTR"
+@@ -423,6 +468,24 @@ instances() {
+   done | awk '$2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ { q += $2; b += $3; c += $4 } END { printf "%d %d %d", q, b, c }'
+ }
+ 
++# 2026-10-26 (owner, _r41 metal): DNS that a NAT rule sends straight to another server (a Service Intercept
++# rule, DNS Director) never reaches dnsmasq, so Wallguard (and Dreadwatch) cannot see it - the owner's box sent
++# every LAN lookup to the AdGuard host and Wallguard blocked nothing. Prints the DNAT targets for port 53 that are
++# not the router's own addresses. Cached a minute: the page's status poll runs this.
++dns_bypass() {
++  _f=$D/bypass
++  if [ ! -f "$_f" ] || [ $(( $(date +%s) - $(date -r "$_f" +%s) )) -ge 60 ]; then
++    _own=" 127.0.0.1 ::1 $(nvram get lan_ipaddr) $(ip -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); printf "%s ", $4}')"
++    { iptables -t nat -S 2>/dev/null; ip6tables -t nat -S 2>/dev/null; } |
++      awk '/--dport 53( |$)/ && / -j DNAT / { for (i = 1; i < NF; i++) if ($i == "--to-destination") print $(i + 1) }' |
++      sed -e 's/^\[\(.*\)\]\(:[0-9-]*\)\{0,1\}$/\1/' -e 's/^\([0-9.]*\):[0-9-]*$/\1/' | sort -u |
++      while read -r _a; do case "$_own" in *" $_a "*) ;; *) echo "$_a" ;; esac; done |
++      grep -E '^[0-9a-fA-F.:]+$' | head -4 | tr '\n' ' ' > "$_f.tmp"
++    mv "$_f.tmp" "$_f"
++  fi
++  cat "$_f"
++}
++
+ stats() {
+   fold
+   touch "$D/state" "$D/feeds"
+@@ -432,10 +495,11 @@ stats() {
+   q=${1:-0}; b=${2:-0}; c=${3:-0}
+   awk -v q="$q" -v b="$b" -v c="$c" -v now="$(date +%s)" -v re="$NAMERE" -v ipre="$IPRE" -v macre="$MACRE" \
+       -v built="$( [ -f "$D/build.json" ] && cat "$D/build.json" || echo null)" \
+-      -v hist="$HS" -v histvol="$HV" \
++      -v hist="$HS" -v histvol="$HV" -v bypass="$(dns_bypass)" \
+       -v store="$(b=$(store_peek shl) && case "$b" in "${RSTORE_MNT_D:-/tmp/mnt}"/*) b=${b%/.reaper}; echo "${b##*/}" ;; esac)" \
+       -v live="$( [ -f "$D/live.on" ] && echo $(( 3600 - ($(date +%s) - $(date -r "$D/live.on" +%s)) )) || echo 0)" '
+-    FILENAME == ARGV[1] { st[$1] = $2; ok[$1] = $3; at[$1] = $4; next }
++    FILENAME == ARGV[1] { st[$1] = $2; ok[$1] = $3; at[$1] = $4
++      if ($5 ~ /^warden:([A-Z][A-Z]|ban|threat)$/ && $6 ~ /^[0-9.]+$/) { wd[$1] = substr($5, 8); wip[$1] = $6 }; next }
+     FILENAME == ARGV[2] { fb[$2] = $1; fu[$2] = $3; fk[$2] = $4; order[++nf] = $2; next }
+     $1 == "SINCE" { since = $2 } $1 == "TOTAL" { tot = $2 } $1 == "CNAME" { cn = $2 } $1 == "DROPPED" { dr = $2 }
+     $1 == "LIST" { lc[$2] = $3 }
+@@ -447,10 +511,11 @@ stats() {
+       out = ""; for (i = 1; i <= n && i <= k; i++) { sep = (i > 1) ? "," : ""; out = out sep idx[i] }; return out }
+     END {
+       gsub(/[^A-Za-z0-9 ._-]/, "", store); gsub(/[^A-Za-z0-9 ._-]/, "", histvol)
+-      printf "{\"ok\":1,\"now\":%d,\"queries\":%d,\"blocked_live\":%d,\"cname_live\":%d,\"since\":%d,\"total\":%d,\"cname\":%d,\"dropped\":%d,\"live\":%d,\"build\":%s,\"store\":\"%s\",\"hist\":\"%s\",\"histvol\":\"%s\",", now, q, b, c, since, tot, cn, dr, (live > 0 ? live : 0), built, store, hist, histvol
++      gsub(/[^0-9a-fA-F.: ]/, "", bypass); sub(/ +$/, "", bypass)
++      printf "{\"ok\":1,\"now\":%d,\"queries\":%d,\"blocked_live\":%d,\"cname_live\":%d,\"since\":%d,\"total\":%d,\"cname\":%d,\"dropped\":%d,\"live\":%d,\"build\":%s,\"store\":\"%s\",\"hist\":\"%s\",\"histvol\":\"%s\",\"bypass\":\"%s\",", now, q, b, c, since, tot, cn, dr, (live > 0 ? live : 0), built, store, hist, histvol, bypass
+       printf "\"feeds\":["
+       for (i = 1; i <= nf; i++) { id = order[i]
+-        printf "%s{\"id\":\"%s\",\"bit\":%d,\"kind\":\"%s\",\"st\":\"%s\",\"ok\":%d,\"at\":%d,\"blocked\":%d}", (i > 1 ? "," : ""), id, fb[id], fk[id], (id in st ? st[id] : "new"), ok[id], at[id], lc[fb[id]] }
++        printf "%s{\"id\":\"%s\",\"bit\":%d,\"kind\":\"%s\",\"st\":\"%s\",\"ok\":%d,\"at\":%d,\"blocked\":%d,\"warden\":\"%s\",\"wip\":\"%s\"}", (i > 1 ? "," : ""), id, fb[id], fk[id], (id in st ? st[id] : "new"), ok[id], at[id], lc[fb[id]], wd[id], wip[id] }
+       printf "],\"rules_blocked\":%d,\"top\":[", lc[0]
+       split(topn(ncnt, nn, 50), t, ",")
+       for (i = 1; t[i] != ""; i++) { k = t[i]; printf "%s{\"d\":\"%s\",\"n\":%d,\"bits\":\"%s\",\"t\":%d}", (i > 1 ? "," : ""), nm[k], ncnt[k], nbit[k], ntime[k] }
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 6b33cde622a..ebd66346a02 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -117,6 +117,11 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
+   <div id="bannertext"></div>
+ </div>
++<!-- 2026-10-26: devices' DNS that a NAT rule sends past the router (wallguard.sh dns_bypass) -->
++<div class="warnbanner" id="bypass">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div id="bypasstext"></div>
++</div>
+ 
+ <div class="stats">
+   <div class="stat"><div class="n" id="s_q">-</div><div class="l"><#RSHD_10#></div></div>
+@@ -272,7 +277,7 @@ var PRESET = {
+   hagezi_pro: ['HaGeZi Pro', `<#RSHD_29#>`], hagezi_proplus: ['HaGeZi Pro++', `<#RSHD_30#>`],
+   oisd_small: ['OISD Small', `<#RSHD_27#>`], oisd_big: ['OISD Big', `<#RSHD_28#>`],
+   stevenblack: ['StevenBlack Unified', `<#RSHD_28#>`], adguard_dns: ['AdGuard DNS filter', `<#RSHD_28#>`],
+-  hagezi_tif: ['HaGeZi Threat Intelligence', `<#RSHD_31#>`]
++  hagezi_tif: ['HaGeZi Threat Intelligence (Medium)', `<#RSHD_31#>`]
+ };
+ var ST = {ok: `<#RSHD_32#>`, failed: `<#RSHD_33#>`, missing: `<#RSHD_34#>`, 'new': `<#RSHD_34#>`};
+ var VERD = {b: `<#RSHD_82#>`, a: `<#RSHD_83#>`, p: `<#RSHD_84#>`, '-': `<#RSHD_85#>`, s: `<#RSHD_127#>`};
+@@ -505,7 +510,10 @@ function shPaintLists(){
+     shCell(tr, s ? shNum(s.unique) : DASH, 'num');
+     shCell(tr, f ? shNum(f.blocked) : DASH, 'num');
+     shCell(tr, f ? shWhen(f.ok) : DASH, 'dim');
+-    var stc = shCell(tr, f ? (ST[f.st] || f.st) : DASH); stc.className = f ? 'st-' + f.st : '';
++    /* 2026-10-26: a download Warden's router-traffic filter dropped names Warden, not a bare failure */
++    var wn = (f && f.warden && f.st !== 'ok') ? (f.warden === 'ban' ? `<#RSHD_136#>` : f.warden === 'threat' ? `<#RSHD_137#>` : f.warden) : '';
++    var stc = shCell(tr, f ? (wn ? `<#RSHD_134#>`.replace('%1', wn) : (ST[f.st] || f.st)) : DASH); stc.className = f ? 'st-' + f.st : '';
++    if(wn) stc.title = `<#RSHD_135#>`.replace(/%1/g, f.wip || '');
+     tb.appendChild(tr);
+   });
+   var b = stat && stat.build;
+@@ -600,6 +608,8 @@ function shRender(j){
+   /* the live view records only while Wallguard runs (metal, _r5: it could be started with Wallguard off) */
+   $('livebtn').disabled = !on && !liveTimer;
+   $('bannertext').textContent = bt; $('banner').style.display = bt ? 'flex' : 'none';
++  var by = (on && stat && stat.bypass) ? String(stat.bypass).split(' ').join(', ') : '';
++  $('bypasstext').textContent = by ? `<#RSHD_133#>`.replace('%1', by) : ''; $('bypass').style.display = by ? 'flex' : 'none';
+   if(!stat) return;
+   $('s_q').textContent = shNum(stat.queries);
+   $('s_b').textContent = shNum(stat.total);
+-- 
+2.25.1
+

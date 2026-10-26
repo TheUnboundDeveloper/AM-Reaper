@@ -152,7 +152,7 @@ check("httpd: rednsd's status file is opened O_NONBLOCK (LOW: a FIFO hung httpd)
       "RENC_NOTE : RENC_STATUS, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)" in web)
 ssh = read("wallguard/wallguard.sh"); scc = read("wallguard/wallguardc.c")
 check("wallguard.sh: builds are serialised; wallguardc's temp files are per process (LOW: two builds shared db.tmp)",
-      'exec 8>"$D/build.lock"' in ssh and "flock -w 300 8" in ssh and scc.count('"%s.%d.tmp"') == 2)
+      'exec 8>"$D/build.lock"' in ssh and "lock_wait 8 300" in ssh and "flock -w" not in ssh and scc.count('"%s.%d.tmp"') == 2)
 
 # ---------------------------------------------------------------- 2026-10-25: the rename's one-time carry-over
 # A box that ran a test image under the earlier name keeps its two nvram switches and its /jffs folder; the function is

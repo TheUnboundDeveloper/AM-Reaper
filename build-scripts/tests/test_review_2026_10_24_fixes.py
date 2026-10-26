@@ -103,7 +103,7 @@ check("S-B-5 the Network Tools argv store takes a 253-byte host name whole", "ch
 
 # ---- the correctness items
 check("Q-B-1 reaper_diag reads the /jffs copy's time with date -r (no stat applet), v1.3.47",
-      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.49"' in diag)
+      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.50"' in diag)
 shp = read("www/Reaper_Wallguard.asp")
 check("Q-C2-1 the Wallguard page keeps the Assign, Pause and Unbreak targets across the 15 s poll",
       "kt = t.value, kp = p.value, keep = u.value;" in shp and "if(kt) t.value = kt;" in shp and "if(kp) p.value = kp;" in shp and "if(keep) u.value = keep;" in shp)

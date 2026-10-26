@@ -85,6 +85,43 @@ int main(void){
 elif not gcc:
     print("note: no gcc - the vif_down() run is skipped")
 
+# 2026-10-26 (field, RT-BE88U diag): with a radio's primary parked, its client networks' per-BSS state reads down
+# although they stay on the air (three stations associated straight through) - the hold fired 5 s after every park,
+# released, re-parked a minute later, for ever. vif_down() is asked only about radios whose primary is up, and a radio
+# with a Wi-Fi schedule is never parked (its networks switch with the primary up, as on stock).
+check("the hold asks only about radios whose primary is up (not parked by us, read up this tick)",
+      "if (ifn[u][0] && radio[u] && !parked[u] && before[u] == 1)" in t and "vif_down(u, dn, sizeof(dn));" in t)
+check("the parking pass skips a radio with a Wi-Fi schedule, saying so once",
+      "if (sched_on(u)) {" in t and "sheld[AP_MAXU]" in t and "a Wi-Fi schedule is set, so its networks switch off and on with the radio fully up" in t
+      and t.find("if (sched_on(u)) {") < t.find("bss_set(ifn[u], 0);\n\t\t\t\tparked[u] = 1;"))
+ms = re.search(r"static int sched_on\(int u\)\n\{.*?\n\}\n", t, re.S)
+check("sched_on() is found", bool(ms))
+if ms and gcc:
+    drv2 = r'''#include <stdio.h>
+#include <string.h>
+static const char *NV[8][2]; static int nn;
+static int nvram_match(const char *k, const char *v){ int i; for (i = 0; i < nn; i++) if (!strcmp(NV[i][0], k)) return !strcmp(NV[i][1], v); return !strcmp("", v); }
+''' + ms.group(0) + r'''
+int main(void){
+	nn = 0; printf("%d%d", sched_on(0), sched_on(1));
+	NV[0][0] = "wl1_timesched"; NV[0][1] = "1"; nn = 1; printf(" %d%d", sched_on(0), sched_on(1));
+	NV[0][0] = "wl1_timesched"; NV[0][1] = "0"; NV[1][0] = "apg3_timesched"; NV[1][1] = "1"; nn = 2; printf(" %d%d", sched_on(0), sched_on(1));
+	NV[1][1] = "0"; printf(" %d%d\n", sched_on(0), sched_on(1));
+	return 0;
+}
+'''
+    td = tempfile.mkdtemp(prefix="apsch_")
+    try:
+        open(os.path.join(td, "s.c"), "w").write(drv2)
+        b = subprocess.run([gcc, "-Wall", "-Werror", "-o", os.path.join(td, "s"), os.path.join(td, "s.c")], capture_output=True, text=True)
+        check("sched_on(): compiles cleanly on the host", b.returncode == 0, b.stderr[-300:])
+        if b.returncode == 0:
+            o = subprocess.run([os.path.join(td, "s")], capture_output=True, text=True).stdout.strip()
+            check("sched_on(): no schedule 00; the radio's own scheduler marks that radio only; an SDN access-time schedule marks every radio; switched off again 00",
+                  o == "00 01 11 00", o)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
 if fails:
     print("\n%d FAILED:" % len(fails)); [print("  - " + f) for f in fails]; sys.exit(1)
 print("\nall checks passed")

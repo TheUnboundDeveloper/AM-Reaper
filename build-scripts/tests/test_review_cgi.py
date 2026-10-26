@@ -289,6 +289,19 @@ int main(int argc, char **argv)
                   '"ek":"RFW_394"' in ln.get("101", "") and '"ek":"RFW_394"' in ln.get("huge", "") and '"ok":0' in ln.get("empty", "")
                   and " audits=0 " in ln.get("101", ""))
 
+# 2026-10-26 (owner: "the way to remove a rule is not clear"): one way to act on each list. The review rows lose their
+# own buttons - the bar (shown with the list, greyed until rows are ticked) does it; the watch rules are a list with
+# Delete per row, Delete selected, Delete all (danger confirm) and an Add form; the text box sits behind Edit as text.
+check("page: the review rows carry no per-row buttons; the bar shows with the list and hints until rows are ticked",
+      "function rvActions(" not in fw and "function rvAckOne(" not in fw and 'id="rv_bhint"' in fw
+      and "$('rv_bulk').classList.toggle('hidden',!rvRows.length);" in fw
+      and '<th><#RFW_335#></th></tr></thead><tbody></tbody></table>' in fw)
+check("page: the watch rules are a list - Delete per row, Delete selected, Delete all behind a danger confirm, Add puts a rule first",
+      "function rvRulesRender(){" in fw and "function rvDelRules(idx){" in fw and 'id="rv_rdel"' in fw and 'id="rv_rclr"' in fw
+      and "reaperConfirm(`<#RFW_400#>`,{okLabel:`<#RFW_399#>`,danger:true}" in fw and "rvAddRule(mode+' '+pat);" in fw
+      and "s.charAt(0)==='#'" in fw)
+check("page: the raw text box is kept behind Edit as text", 'id="rv_txwrap" class="hidden"' in fw and 'id="rv_redit"' in fw and 'id="rv_rlist"' in fw)
+
 if fails:
     print("\n%d FAILED:" % len(fails))
     for f in fails: print("  - " + f)

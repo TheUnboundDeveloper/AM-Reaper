@@ -1,0 +1,332 @@
+From f9d5f492f43805c3bd570f128a855fa7d44f0d3f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:25 -0400
+Subject: [PATCH] system log: Find and Exclude take comma lists; saved
+ exclusions, the user's own logFilter.json
+
+Find shows a line holding any of its comma-separated words and Exclude hides
+a line holding any of its words (case ignored; Exclude wins). Saved
+exclusions are one pattern per line in /jffs/reaper/logfilter, read and
+written by the new reaper_logf.cgi behind the http_id gate (64 entries of up
+to 128 printable ASCII characters, checked again on save; an empty list
+removes the file). Stock's logFilter.json sits in the read-only image, so no
+user could add to it. Only the view changes: the log file, Save and a remote
+syslog server still get every line. The list rides the Reaper settings file
+(section log, key rlog_filter, validated on import).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c        | 92 +++++++++++++++++++++++++
+ release/src/router/www/Reaper_Log.asp | 96 ++++++++++++++++++++++++---
+ 2 files changed, 180 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index eaabbd41768..7ae22ae464f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24433,6 +24433,86 @@ do_reaper_watch_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
++/* reaper 2026-10-26: the System Log page's saved exclusions (Reaper_Log.asp) - Reaper's
++ * own logFilter.json. Stock's /www/ajax/logFilter.json is part of the read-only image, so a
++ * user could never add to it. One pattern per line in /jffs/reaper/logfilter (plain text,
++ * editable over SSH as well); the page hides a System log line that contains any of them,
++ * upper and lower case alike. Only the view: the log file, Save (syslog.txt) and a remote
++ * syslog server still get every line. */
++#define RLOGF_FILE	"/jffs/reaper/logfilter"
++#define RLOGF_MAX	64	/* patterns */
++#define RLOGF_LINE	128	/* bytes in one pattern */
++#define RLOGF_BYTES	(RLOGF_MAX * (RLOGF_LINE + 1))
++
++/* 0 when v is a list the page may save: printable ASCII, one pattern per line, bounded */
++static int rlogf_ok(const char *v)
++{
++	const char *p;
++	int n = 0, len = 0;
++
++	if (!v || strlen(v) >= RLOGF_BYTES)
++		return -1;
++	for (p = v; ; p++) {
++		if (!*p || *p == '\n') {
++			if (len > RLOGF_LINE || (len && ++n > RLOGF_MAX))
++				return -1;
++			len = 0;
++			if (!*p)
++				break;
++			continue;
++		}
++		if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e)
++			return -1;
++		len++;
++	}
++	return 0;
++}
++
++static void
++do_reaper_logf_cgi(char *url, FILE *stream)
++{
++	char *action = get_cgi("action");
++	int why = reaper_gate();
++
++	if (why != RGATE_OK) {
++		reaper_gate_deny(stream, why, "RDEVE");
++		return;
++	}
++	if (!action || !strcmp(action, "get")) {
++		char *l = rview_slurp(RLOGF_FILE, RLOGF_BYTES);
++		websWrite(stream, "{\"ok\":1,\"max\":%d,\"len\":%d,\"list\":", RLOGF_MAX, RLOGF_LINE);
++		gk_json_esc(stream, l ? l : "");
++		websWrite(stream, "}");
++		free(l);
++		return;
++	}
++	/* save the whole list (an empty one removes the file) */
++	if (!strcmp(action, "set")) {
++		char *v = get_cgi("list"), d[32];
++		const char *p;
++		int n = 0;
++
++		if (!v)
++			v = "";
++		if (rlogf_ok(v) != 0) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RLOG_98\"}");
++			return;
++		}
++		if (*v ? rjf_set(RLOGF_FILE, v, "log") != 0 : (unlink(RLOGF_FILE) != 0 && errno != ENOENT)) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RLOG_99\"}");
++			return;
++		}
++		for (p = v; *p; p++)
++			if (*p == '\n') n++;
++		n += *v && v[strlen(v) - 1] != '\n';
++		snprintf(d, sizeof(d), "%d pattern(s)", n);
++		reaper_audit("log", "exclusions", d);
++		websWrite(stream, "{\"ok\":1,\"n\":%d}", n);
++		return;
++	}
++	websWrite(stream, "{\"ok\":0,\"ek\":\"RDEVE_13\"}");
++}
++
+ /* reaper 2026-10-04: Site Survey (Reaper_Survey.asp, Network Tools). Replaces the
+  * stock Advanced_Wireless_Survey.asp, whose prebuilt wlcscan_core_escan() keeps
+  * only the networks that fit a fixed event buffer ("Memory not enough for scan
+@@ -28202,6 +28282,8 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	/* 2026-10-20: the review's watch rules (a /jffs file, multi-line; validated
+ 	 * by rview_rules_ok on import, the editor's own gate) */
+ 	{ "watch",  "rwatch_rules",    RVIEW_RULES_BYTES + 1 },
++	/* 2026-10-26: the System Log's saved exclusions (a /jffs file, multi-line, rlogf_ok) */
++	{ "log",    "rlog_filter",     RLOGF_BYTES },
+ };
+ #define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
+ static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
+@@ -28274,6 +28356,11 @@ static void rcfg_export_json(FILE *stream, int with_cfg)
+ 
+ 				gk_json_esc(stream, rv ? rv : "");
+ 				free(rv);
++			} else if (!strcmp(rcfg_flags[i].nv, "rlog_filter")) {	/* 2026-10-26: a /jffs file */
++				char *lv = rview_slurp(RLOGF_FILE, RLOGF_BYTES);
++
++				gk_json_esc(stream, lv ? lv : "");
++				free(lv);
+ 			} else
+ 				gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
+ 		}
+@@ -28351,6 +28438,8 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 			 * here is "printable ASCII, bounded" for those. */
+ 			if (!strcmp(rcfg_flags[i].nv, "rwatch_rules")) {	/* 2026-10-20: multi-line, its own gate */
+ 				if (!v || rview_rules_ok(v) != 0) { rejected++; continue; }
++			} else if (!strcmp(rcfg_flags[i].nv, "rlog_filter")) {	/* 2026-10-26: multi-line, its own gate */
++				if (!v || rlogf_ok(v) != 0) { rejected++; continue; }
+ 			} else if (!strcmp(rcfg_flags[i].nv, "rwarden_ban") || !strcmp(rcfg_flags[i].nv, "rwarden_allow") ||
+ 			    !strcmp(rcfg_flags[i].nv, "rwarden_cfeeds") || !strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {
+ 				if (!rcfg_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+@@ -28365,6 +28454,8 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 				} else if (!strcmp(rcfg_flags[i].nv, "rwatch_rules")) {	/* 2026-10-20 */
+ 					if (*v ? rjf_set(RVIEW_RULES, v, "review") != 0 : (unlink(RVIEW_RULES), 0)) { rejected++; continue; }
+ 					rview_alog("rules", "imported from a settings file");
++				} else if (!strcmp(rcfg_flags[i].nv, "rlog_filter")) {	/* 2026-10-26 */
++					if (*v ? rjf_set(RLOGF_FILE, v, "log") != 0 : (unlink(RLOGF_FILE), 0)) { rejected++; continue; }
+ 				} else
+ 					nvram_set(rcfg_flags[i].nv, v);
+ 			}
+@@ -39918,6 +40009,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "reaper_warden.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_warden_cgi, do_auth },
+ 	{ "reaper_encdns.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_encdns_cgi, do_auth },	/* 2026-10-21 Encrypted DNS */
+ 	{ "reaper_wallguard.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_wallguard_cgi, do_auth },	/* 2026-10-21 Wallguard */
++	{ "reaper_logf.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_logf_cgi, do_auth },	/* 2026-10-26 System Log exclusions */
+ 	{ "reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth },
+ 	{ "reaper_watch.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_watch_cgi, do_auth },
+ 	{ "reaper_pbr.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_pbr_cgi, do_auth },
+diff --git a/release/src/router/www/Reaper_Log.asp b/release/src/router/www/Reaper_Log.asp
+index f878712486d..79cf4a0d41c 100644
+--- a/release/src/router/www/Reaper_Log.asp
++++ b/release/src/router/www/Reaper_Log.asp
+@@ -20,15 +20,20 @@
+      The appGet reply is not JSON ("nvram_dump-<file>": + raw text + "\n}\n"), so the text is cut at the first '":'
+      and the last "\n}" rather than at fixed offsets. Polling runs only while auto refresh is on and the page is
+      visible, and never redraws while the reader has scrolled up. Settings: the stock four (log_ipaddr, log_port,
+-     message_loglevel, log_level), changed ones only, restart_logger. -->
++     message_loglevel, log_level), changed ones only, restart_logger.
++     2026-10-26 (owner, from a user request): Find and Exclude each take a comma-separated list (a line shows when it
++     has any Find word and no Exclude word, case-insensitive), and Saved exclusions is the user's own logFilter.json:
++     one pattern per line in /jffs/reaper/logfilter through reaper_logf.cgi, applied to the System log view only. -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+ /* page-specific rules only; the Reaper look comes from /reaper/rp.css */
+ .wins{display:flex;gap:6px;flex-wrap:wrap}
+ .logbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+ .logbar .spacer{flex:1}
+-.logbar input[type=text]{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 10px;outline:none;width:240px;max-width:100%}
+-.logbar input[type=text]:focus{border-color:var(--line)}
++.logbar input[type=text]{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 10px;outline:none;width:220px;max-width:100%}
++.logbar input[type=text]:focus,.lftext:focus{border-color:var(--line)}
++.lftext{display:block;width:100%;box-sizing:border-box;min-height:120px;resize:vertical;background:#000;border:1px solid var(--line-soft);border-radius:8px;
++  color:var(--bone);font-family:var(--mono);font-size:12px;line-height:1.5;padding:8px 10px;outline:none}
+ .logview{background:#000;border:1px solid var(--line-soft);border-radius:10px;color:var(--bone-dim);font-family:var(--mono);font-size:12px;line-height:1.5;
+   padding:10px 12px;margin:0;height:60vh;min-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+ .logmeta{font-size:12px;color:var(--steel);margin-top:8px;min-height:16px}
+@@ -63,7 +68,9 @@
+       <button type="button" class="win" data-v="login"><#RLOG_02#></button>
+     </div>
+     <div class="spacer"></div>
+-    <input type="text" id="find" placeholder="<#CTL_search#>" autocomplete="off">
++    <input type="text" id="find" placeholder="<#RLOG_89#>" title="<#RLOG_91#>" autocomplete="off">
++    <input type="text" id="excl" placeholder="<#RLOG_90#>" title="<#RLOG_92#>" autocomplete="off">
++    <label class="chk" id="l_lfon"><input type="checkbox" id="c_lfon" checked><#RLOG_93#></label>
+     <label class="chk"><input type="checkbox" id="c_auto" checked><#RLOG_03#></label>
+   </div>
+   <div class="secerr"><#RADM_78#></div>
+@@ -77,6 +84,17 @@
+   </div>
+ </div>
+ 
++<div class="panel" id="p_lf">
++  <h2><#RLOG_94#></h2>
++  <div class="hint" style="margin:0 0 10px"><#RLOG_95#></div>
++  <textarea class="lftext" id="t_lf" spellcheck="false" autocomplete="off"></textarea>
++  <div class="btns">
++    <button type="button" class="btn primary" id="b_lfsave"><#CTL_onlysave#></button>
++    <button type="button" class="btn" id="b_lfadd"><#RLOG_96#></button>
++    <span class="msg" id="lfmsg"></span>
++  </div>
++</div>
++
+ <div class="panel" id="p_set">
+   <h2><#RLOG_04#></h2>
+   <div class="secerr"><#RADM_78#></div>
+@@ -129,6 +147,8 @@ var LEVELS = ['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'i
+ var HOOK = {sys: 'nvram_dump("syslog.log","")', login: 'nvram_dump("security_recored.log","")'};
+ var view = 'sys', FILTER = ["already exist in UDB, can't add it", "not mesh client, can't update it's ip", "not exist in UDB, can't update it", 'send_redir_page'];
+ var timer = null, busy = false, lastText = {sys: null, login: null};
++var HID = '<% nvram_get("http_id"); %>';
++var SAVED = [], LFMAX = 64, LFLEN = 128;   /* the saved exclusions; the limits come back from reaper_logf.cgi */
+ 
+ function msg(id, t){ var m = q(id); m.textContent = t || ''; m.classList.toggle('show', !!t); if (t) m.setAttribute('title', t); }
+ 
+@@ -144,21 +164,29 @@ function clock(){
+ /* ---------- log view ---------- */
+ /* appGet answers {\n"nvram_dump-<file>":<raw text>\n}\n - not JSON; cut between the first '":' and the last "\n}" */
+ function cut(t){ var a = t.indexOf('":'), b = t.lastIndexOf('\n}'); if (a < 0) return ''; return t.slice(a + 2, b > a ? b : t.length); }
++/* a comma-separated box -> its lower-case words, empty ones dropped */
++function words(id){ return q(id).value.split(',').map(function(w){ return w.trim().toLowerCase(); }).filter(Boolean); }
++function hasAny(low, ws){ for (var i = 0; i < ws.length; i++) if (low.indexOf(ws[i]) >= 0) return true; return false; }
+ function render(){
+   var raw = lastText[view], box = q('logview');
+   if (raw === null){ box.textContent = ''; q('logmeta').textContent = ''; return; }
+-  var lines = raw.split('\n'), want = q('find').value.trim().toLowerCase(), out = [], hidden = 0, i, l;
++  var lines = raw.split('\n'), want = words('find'), drop = words('excl'), out = [], hidden = 0, i, l, low;
++  /* the built-in list and the saved exclusions apply to the System log only, and only while ticked */
++  var keep = view === 'sys' && q('c_lfon').checked, saved = keep ? SAVED.map(function(s){ return s.toLowerCase(); }) : [];
+   for (i = 0; i < lines.length; i++){
+     l = lines[i]; if (!l) continue;
+-    if (view === 'sys' && FILTER.some(function(f){ return l.indexOf(f) >= 0; })){ hidden++; continue; }
+-    if (want && l.toLowerCase().indexOf(want) < 0) continue;
++    if (keep && FILTER.some(function(f){ return l.indexOf(f) >= 0; })){ hidden++; continue; }
++    low = l.toLowerCase();
++    if (hasAny(low, saved) || hasAny(low, drop)){ hidden++; continue; }
++    if (want.length && !hasAny(low, want)) continue;
+     out.push(l);
+   }
+   /* never yank the view while the reader has scrolled up to read something */
+   var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+   box.textContent = out.join('\n');
+   if (atEnd) box.scrollTop = box.scrollHeight;
+-  q('logmeta').textContent = out.length + ' ' + `<#RLOG_10#>` + (want ? ' (' + `<#RLOG_11#>` + ')' : '');
++  q('logmeta').textContent = out.length + ' ' + `<#RLOG_10#>` + (want.length ? ' (' + `<#RLOG_11#>` + ')' : '') +
++    (hidden ? ' - ' + hidden + ' ' + `<#RLOG_100#>` : '');
+ }
+ function load(force){
+   if (busy) return; busy = true;
+@@ -179,9 +207,56 @@ function setView(v){
+   /* the login log has no Clear (stock had none: it is the record of who signed in) */
+   q('b_clear').style.display = v === 'sys' ? '' : 'none';
+   q('b_save').style.display = v === 'sys' ? '' : 'none';
++  q('l_lfon').style.display = v === 'sys' ? '' : 'none';
+   render(); load(true);
+ }
+ 
++/* ---------- saved exclusions (/jffs/reaper/logfilter through reaper_logf.cgi) ---------- */
++function lfReq(method, params, cb){
++  var x = new XMLHttpRequest(), f = new URLSearchParams(), done = false, k;
++  f.append('http_id', HID);
++  for (k in params) f.append(k, params[k]);
++  function fin(j){ if (!done){ done = true; cb(j); } }
++  x.open(method, '/reaper_logf.cgi' + (method === 'GET' ? '?' + f.toString() + '&_=' + Date.now() : ''), true);
++  if (method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  x.timeout = 12000;
++  x.onload = function(){ var j = null; if (x.status === 200){ try { j = JSON.parse(x.responseText); } catch (e) {} } fin(j); };
++  x.onerror = x.ontimeout = function(){ fin(null); };
++  try { x.send(method === 'POST' ? f.toString() : null); } catch (e) { fin(null); }
++}
++/* one entry per line, trimmed; blanks and repeats (any case) dropped */
++function lfList(text){
++  var seen = {}, out = [];
++  String(text).split(/\r?\n/).forEach(function(s){ s = s.trim(); var k = s.toLowerCase(); if (s && !seen[k]){ seen[k] = 1; out.push(s); } });
++  return out;
++}
++function lfLoad(){
++  lfReq('GET', {action: 'get'}, function(j){
++    if (!j || !j.ok){ msg('lfmsg', `<#RLOG_101#>`); return; }
++    if (j.max > 0) LFMAX = j.max;
++    if (j.len > 0) LFLEN = j.len;
++    SAVED = lfList(j.list || ''); q('t_lf').value = SAVED.join('\n'); render();
++  });
++}
++function lfSave(list, done){
++  msg('lfmsg', '');
++  if (list.length > LFMAX || list.some(function(s){ return s.length > LFLEN || /[^\x20-\x7e]/.test(s); })){ msg('lfmsg', `<#RLOG_98#>`); return; }
++  q('b_lfsave').disabled = q('b_lfadd').disabled = true;
++  lfReq('POST', {action: 'set', list: list.join('\n')}, function(j){
++    q('b_lfsave').disabled = q('b_lfadd').disabled = false;
++    if (!j || !j.ok){ msg('lfmsg', (j && j.ek === 'RLOG_98') ? `<#RLOG_98#>` : (j && /^RDEVE_1/.test(j.ek || '')) ? `<#RDEVE_1#>` : `<#RLOG_99#>`); return; }
++    SAVED = list; q('t_lf').value = list.join('\n');
++    if (done) done();
++    msg('lfmsg', `<#RLOG_97#>`.replace('%1', list.length)); render();
++  });
++}
++/* the Exclude box's words join the saved list in one step */
++function lfAdd(){
++  var add = q('excl').value.split(',').map(function(w){ return w.trim(); }).filter(Boolean);
++  if (!add.length){ q('excl').focus(); return; }
++  lfSave(lfList(q('t_lf').value + '\n' + add.join('\n')), function(){ q('excl').value = ''; });
++}
++
+ /* ---------- settings ---------- */
+ /* syslog priorities by number; log_level 8 = "all" (BusyBox syslogd -l 8) */
+ function fillLevels(sel, from, to){ var h = '', i; for (i = from; i <= to; i++) h += '<option value="' + i + '">' + hx(LEVELS[i]) + '</option>'; sel.innerHTML = h; }
+@@ -214,6 +289,11 @@ function boot(){
+     fx.onload = function(){ try { var f = JSON.parse(fx.responseText).filter; if (f && f.length){ FILTER = f.map(String); render(); } } catch (e) {} }; fx.send(); } catch (e) {}
+   Array.prototype.forEach.call(document.querySelectorAll('#wins .win'), function(w){ w.addEventListener('click', function(){ setView(w.getAttribute('data-v')); }); });
+   on('find', 'input', render);
++  on('excl', 'input', render);
++  on('c_lfon', 'change', render);
++  on('b_lfsave', 'click', function(){ lfSave(lfList(q('t_lf').value)); });
++  on('b_lfadd', 'click', lfAdd);
++  lfLoad();
+   on('c_auto', 'change', schedule);
+   on('b_refresh', 'click', function(){ load(true); });
+   on('b_save', 'click', function(){ location.href = '/syslog.txt'; });
+-- 
+2.25.1
+

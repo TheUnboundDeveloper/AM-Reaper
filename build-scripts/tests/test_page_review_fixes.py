@@ -126,6 +126,21 @@ if node and f0 > 0 and f1 > f0 and r0 > 0 and r1 > r0:
 else:
     print("note: node not found or the validator block moved - vector checks skipped")
 
+# 2026-10-26 (field, RT-BE88U screenshot): the parking card's button stuck on its placeholder - amas_bh_state holds the
+# daemon's free-text reason ("... its radio's carrier ..."), nvram_get passes ' through, and the apostrophe broke the script
+RW = rd(os.path.join(www, "Reaper_Wireless.asp"))
+check("Wireless Quality: the parking state is read encoded and decoded, never raw into a quoted string",
+      'nvram_char_to_ascii("", "amas_bh_state")' in RW and 'nvram_get("amas_bh_state")' not in RW
+      and "decodeURIComponent(s)" in RW)
+# 2026-10-26 (owner: "the new UI is missing the VLAN tab"): stock shows LAN > VLAN WITH mtlancfg (it excludes the pair
+# when !mtlancfg || SMART_HOME_MASTER_UI, and in Repeater / Media Bridge); the menu, the Makefile and the page table had it
+# backwards on every SDN model
+MJ = rd(os.path.join(www, "reaper", "menu.js")); MK = rd(os.path.join(www, "Makefile"))
+check("LAN > VLAN: shown with mtlancfg (not without), the pages ship on MULTILAN_CFG builds and are not bounced to SDN.asp",
+      "T('Advanced_VLAN_Switch_Content.asp', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))" in MJ
+      and "!sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI')" not in MJ
+      and "ifeq ($(RTCONFIG_MULTILAN_CFG),y)\n\trm -f $(INSTALLDIR)/www/Advanced_VLAN_Switch_Content.asp" not in MK
+      and '"advanced_vlan_switch_content.asp", "SDN.asp"' not in INJ and '"advanced_vlan_profile_content.asp", "SDN.asp"' not in INJ)
 # 2026-10-25 (owner): a page that opens another menu page itself (the USB Application list) marks it in the shell
 SH = rd(os.path.join(www, "reaper_shell.asp"))
 lp = SH[SH.find("function loadPage(page){"):SH.find("function markPage(base){")]

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Shroud (2026-10-21): the updater / collector script, release/src/router/shroud/shroud.sh.
+
+WHY THIS EXISTS. shroud.sh downloads the subscribed lists, keeps the previous copy of one that fails,
+compiles the table with shroudc, folds dnsmasq's blocked-lookup records into counters and prints the
+JSON the Shroud page renders. It runs under the router's busybox ash; every awk program in it must also
+run under busybox awk.
+
+WHAT IT DOES. Builds shroudc for the host, puts a fake curl first on PATH (it serves local files and
+fails on demand) and runs every action under /bin/sh and busybox ash: update (ok, failed-with-previous,
+missing), an unsubscribed list leaving the RAM disk, build after a rule change (no download), expired
+temporary allows dropped, fold (junk records dropped, '# dropped' banked, per-list tallies from the
+hex bit field, devices keyed by MAC), the stats JSON (valid, top names sorted, feeds with their state),
+unbreak for one device, the live view JSON, reset, the counters banked on /jffs.
+Exit 0 pass, 1 fail, 77 skipped.
+"""
+import json, os, shutil, stat, subprocess, sys, tempfile, time
+
+def skip(msg):
+    print("SKIP: " + msg); sys.exit(77)
+
+fails = []
+def check(name, cond, detail=""):
+    print(("ok   " if cond else "FAIL ") + name)
+    if not cond:
+        fails.append(name + (" - " + str(detail)[:500] if detail else ""))
+
+SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC", "")
+SH_FILE = os.path.join(SRC, "shroud", "shroud.sh")
+if not SRC or not os.path.isfile(SH_FILE):
+    skip("no router source tree with shroud/shroud.sh")
+CC = shutil.which("gcc") or shutil.which("cc")
+if not CC or not shutil.which("flock"):
+    skip("needs a host compiler and flock")
+BB = shutil.which("busybox")
+if BB and subprocess.run([BB, "ash", "-c", "true"], capture_output=True).returncode != 0:
+    BB = None
+
+work = tempfile.mkdtemp(prefix="shroudsh_")
+try:
+    SC = os.path.join(work, "shroudc")
+    b = subprocess.run([CC, "-O2", "-o", SC, os.path.join(SRC, "shroud", "shroudc.c")], capture_output=True, text=True)
+    check("shroudc builds", b.returncode == 0, b.stderr[-300:])
+    r = subprocess.run(["sh", "-n", SH_FILE], capture_output=True, text=True)
+    check("shroud.sh passes sh -n", r.returncode == 0, r.stderr)
+    if BB:
+        r = subprocess.run([BB, "ash", "-n", SH_FILE], capture_output=True, text=True)
+        check("shroud.sh passes busybox ash -n", r.returncode == 0, r.stderr)
+
+    bindir = os.path.join(work, "bin"); os.makedirs(bindir)
+    srv = os.path.join(work, "srv"); os.makedirs(srv)
+    # fake curl: "... -o OUT URL"; https://test/<file> is served from srv/<file>; srv/<file>.fail = exit 22
+    open(os.path.join(bindir, "curl"), "w").write(
+        "#!/bin/sh\nout=; url=\nwhile [ $# -gt 0 ]; do case \"$1\" in -o) out=$2; shift;; --version) exit 0;; https://*) url=$1;; esac; shift; done\n"
+        "f=%s/${url#https://test/}\n[ -f \"$f.fail\" ] && exit 22\n[ -f \"$f\" ] || exit 22\ncp \"$f\" \"$out\"\n" % srv)
+    os.chmod(os.path.join(bindir, "curl"), 0o755)
+    open(os.path.join(bindir, "logger"), "w").write("#!/bin/sh\necho \"$*\" >> %s/logger.out\n" % work)
+    os.chmod(os.path.join(bindir, "logger"), 0o755)
+
+    for shell in ["sh"] + (["busybox"] if BB else []):
+        tag = "sh" if shell == "sh" else "ash"
+        D, J = os.path.join(work, tag, "d"), os.path.join(work, tag, "j")
+        os.makedirs(D); os.makedirs(J)
+        env = dict(os.environ, SHROUD_DIR=D, SHROUD_JFFS=J, SHROUDC=SC, PATH=bindir + ":" + os.environ["PATH"], LC_ALL="C")
+        def run(*a):
+            cmd = (["sh", SH_FILE] if shell == "sh" else [BB, "ash", SH_FILE]) + list(a)
+            return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        open(os.path.join(srv, "one.txt"), "w").write("||ads.example^\n||track.example^\n")
+        open(os.path.join(srv, "two.txt"), "w").write("0.0.0.0 host.example\n")
+        open(os.path.join(D, "feeds"), "w").write("2 one https://test/one.txt p\n20 two https://test/two.txt c\n21 gone https://test/gone.txt c\n")
+        open(os.path.join(D, "safe"), "w").write("router.lan\n")
+        open(os.path.join(J, "block"), "w").write("mine.example\n")
+        open(os.path.join(J, "allow24"), "w").write("%d expired.example\n%d still.example\n" % (time.time() - 10, time.time() + 3600))
+        r = run("update")
+        st = {l.split()[0]: l.split() for l in open(os.path.join(D, "state")).read().splitlines()}
+        bj = json.load(open(os.path.join(D, "build.json"))) if os.path.exists(os.path.join(D, "build.json")) else {}
+        check("[%s] update: lists fetched, state ok / missing, table built" % tag,
+              r.returncode == 0 and st["one"][1] == "ok" and st["two"][1] == "ok" and st["gone"][1] == "missing" and bj.get("names") == 4, (r.stderr, st, bj))
+        check("[%s] build: expired temporary allows dropped from the file, running ones passed on" % tag,
+              open(os.path.join(J, "allow24")).read().count("example") == 1 and open(os.path.join(D, "allow24")).read().strip() == "still.example")
+        open(os.path.join(srv, "one.txt.fail"), "w").close()
+        open(os.path.join(D, "feeds"), "w").write("2 one https://test/one.txt p\n")
+        run("update"); st = {l.split()[0]: l.split() for l in open(os.path.join(D, "state")).read().splitlines()}
+        check("[%s] a failed download keeps the previous copy (state failed, last good time kept)" % tag,
+              st["one"][1] == "failed" and int(st["one"][2]) > 0 and os.path.exists(os.path.join(D, "lists", "one")))
+        check("[%s] an unsubscribed list leaves the RAM disk" % tag, not os.path.exists(os.path.join(D, "lists", "two")))
+        check("[%s] the failure is logged" % tag, "download failed, previous copy kept" in open(os.path.join(work, "logger.out")).read())
+        os.unlink(os.path.join(srv, "one.txt.fail"))
+        open(os.path.join(J, "block"), "w").write("mine.example\nother.example\n")
+        r = run("build")
+        check("[%s] build after a rule change: no download, the new rule is in" % tag,
+              r.returncode == 0 and json.load(open(os.path.join(D, "build.json")))["names"] == 4)
+
+        now = int(time.time())
+        open(os.path.join(D, "hits"), "w").write(
+            "%d 192.168.50.10 4 q aa:bb:cc:00:00:01 ads.example\n%d 192.168.50.10 4 q aa:bb:cc:00:00:01 ads.example\n"
+            "%d 192.168.50.20 100004 c - edge.track.example\n# dropped 7\nnot a record\n"
+            "%d 192.168.50.30 4 q - BAD\"name\n%d 192.168.50.30 zz q - x.example\n" % (now - 5, now - 4, now - 3, now - 2, now - 1))
+        open(os.path.join(D, "stats.%d" % os.getpid()), "w").write("%d 120 3 1" % now + " 0" * 31 + "\n")
+        open(os.path.join(D, "stats.999999"), "w").write("%d 999 9 9\n" % now)
+        r = run("stats")
+        try:
+            j = json.loads(r.stdout)
+        except Exception as e:
+            j = {}; check("[%s] stats: valid JSON" % tag, False, "%s %s %s" % (e, r.stdout[:300], r.stderr[:300]))
+        if j:
+            check("[%s] stats: valid JSON; queries summed over LIVE instances only (a dead pid's file removed)" % tag,
+                  j["ok"] == 1 and j["queries"] == 120 and not os.path.exists(os.path.join(D, "stats.999999")), j.get("queries"))
+            check("[%s] stats: totals, cname, '# dropped' banked, junk records never counted" % tag,
+                  j["total"] == 3 and j["cname"] == 1 and j["dropped"] == 7, j)
+            check("[%s] stats: per-list tallies from the hex bit field (0x100004 = bits 2 and 20)" % tag,
+                  [f["blocked"] for f in j["feeds"]] == [3], j["feeds"])
+            check("[%s] stats: top names sorted, devices keyed by MAC with their address" % tag,
+                  j["top"][0]["d"] == "ads.example" and j["top"][0]["n"] == 2
+                  and any(d["dev"] == "aa:bb:cc:00:00:01" and d["ip"] == "192.168.50.10" for d in j["devices"]), (j["top"], j["devices"]))
+            check("[%s] stats: the build report rides along" % tag, j["build"]["names"] == 4)
+        u = json.loads(run("unbreak", "aa:bb:cc:00:00:01", "15").stdout)
+        check("[%s] unbreak: the device's recent blocked names (by MAC)" % tag, [x["d"] for x in u["names"]] == ["ads.example"], u)
+        u = json.loads(run("unbreak", "192.168.50.20", "15").stdout)
+        check("[%s] unbreak: by address too, CNAME hits included" % tag, [x["d"] for x in u["names"]] == ["edge.track.example"], u)
+        open(os.path.join(D, "live"), "w").write("%d 192.168.50.10 1 b ads.example\n%d 192.168.50.10 1 - news.example\nbroken line\n" % (now, now))
+        lv = json.loads(run("live").stdout)
+        check("[%s] live: rows as JSON, junk dropped" % tag, [x["d"] for x in lv["rows"]] == ["ads.example", "news.example"], lv)
+        check("[%s] the counters are banked on /jffs" % tag, os.path.exists(os.path.join(J, "counters")))
+        run("reset")
+        j = json.loads(run("stats").stdout)
+        check("[%s] reset: counters restart, recent list cleared" % tag,
+              j["total"] == 0 and not os.path.exists(os.path.join(D, "recent")) and not os.path.exists(os.path.join(J, "counters")), j)
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+
+if fails:
+    print("\n%d FAILED:" % len(fails))
+    for f in fails: print("  - " + f)
+    sys.exit(1)
+print("\nall checks passed")

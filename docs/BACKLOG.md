@@ -133,6 +133,8 @@ answer moves the item back to Open bugs.*
 
 *Not fixed yet — work still to start or finish.*
 
+- **[P2] Header bar truncates English at 1080p** (owner, 2026-10-27, v3.6.0) — chip labels and values end in
+  "..." at 1920 px (fine at 1440p); English must fit the 1080p canvas. **[open]** ↳ notes: `header-chip-truncation.md`
 - **[P2] Backups: the DDNS hostname lost, and the settings file blind to the newer tools** (field
   report + owner, 2026-10-27) — both files blanked `ddns_hostname_x` (stock's asuscomm step; a no-ip
   name came back empty, its login restored); the settings file carried nothing of Wallguard or

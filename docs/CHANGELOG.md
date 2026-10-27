@@ -61,10 +61,10 @@ Everything in v3.5.0 is included.
   AiProtection groups, Alexa / IFTTT) stay deleted - the rebase had re-created them. The AiMesh MAC checks are
   upstream's `isValidMacAddress()` now, hardened to refuse any character but hex digits and separators. The patch series is regenerated from the new base: 855 patches, numbered from `0001`.
 - **libnvram / libwlcsm: ASUS's 40585 pair.** Same netlink socket-leak fix as the 42015 pair Reaper carried since
-  v3.1.8, plus a caller check in `nvram_set()`. **Behaviour change:** only init, rc, httpd, cfg_server/cfg_client,
-  asd, ahs and ookla_quota_mon may write `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys` and
-  `ookla_quota`; a shell `nvram set` of one of them is refused. Set them from the web UI. GT-BE98, GT-BE19000,
-  BQ16 and BQ16 Pro keep the 42015 pair: their platform trees predate the caller check.
+  v3.1.8, plus ASUS's caller check in `nvram_set()` for `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys`
+  and `ookla_quota`. On the RT-BE96U a root shell's `nvram set` of those keys still works (tested on the router);
+  every Reaper writer of them is httpd or rc either way. GT-BE98, GT-BE19000, BQ16 and BQ16 Pro keep the 42015
+  pair: their platform trees predate the caller check.
 - **OpenVPN server certificates on Easy-RSA 3.** On OpenSSL 3 builds 40585 stages `easyrsa` and no `pkitool`. The
   server-certificate repair imports the CA the router already holds into a fresh PKI and issues the server leaf
   with easyrsa; `reaper_verify` (ovpn-pki) runs the first-time and the repair chains on the image's own openssl.

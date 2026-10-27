@@ -32,7 +32,7 @@ gcc, node = shutil.which("gcc") or shutil.which("cc"), shutil.which("node")
 if gcc and node:
     d = tempfile.mkdtemp()
     vectors = [b"", b"plain text 1.2.3", b"it's", b'say "hi"', b"back`tick ${alert(1)}", b"trail\\", b"a\\'b",
-               b"</script><script>alert(1)</script>", b"tab\tnl\ncr\r", "Прошивка".encode(),
+               b"</script><script>alert(1)</script>", b"tab\tnl\ncr\r", "\u041f\u0440\u043e\u0448\u0438\u0432\u043a\u0430".encode(),
                "設定".encode(), "\U0001F600 ok".encode(), b"\x80lone", b"\xc3", b"\xe2\x82", b"\xc0\xaf",
                b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"&#60;b&#62;"]
     cvec = ",\n".join('{%s, %d}' % ('"' + "".join("\\x%02x" % c for c in v) + '"', len(v)) for v in vectors)

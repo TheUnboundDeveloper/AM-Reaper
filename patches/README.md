@@ -1,13 +1,13 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**892 <!--@patchcount--> patches, v1.0 → v3.5.0 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **`3006.102.8-beta2`** (base commit `a7ebfa133a`). Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**857 <!--@patchcount--> patches, v1.0 → v3.6.0 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **3006.102.10** (ASUS GPL 102_40585; base commit `ca72a61f8bc`, untagged upstream). Up to v3.5.0 the series was built on `3006.102.8-beta2` (`a7ebfa133a`); that series is in this repository's history at v3.5.0. Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
 ```bash
 git clone https://github.com/RMerl/asuswrt-merlin.ng.git
 cd asuswrt-merlin.ng
-git checkout 3006.102.8-beta2
+git checkout ca72a61f8bc        # Asuswrt-Merlin 3006.102.10 (untagged upstream)
 
 # git am --keep-cr is REQUIRED:
 #  - --keep-cr: several third-party files (e.g. lltdc) have CRLF line endings, so
@@ -17,22 +17,28 @@ git checkout 3006.102.8-beta2
 #    banners, sprites) that `patch` cannot apply.
 git am --keep-cr /path/to/AM-Reaper/patches/*.patch
 # The OpenSSL 3.5 source (release/src/router/openssl-3.5, 5,767 files) is not in the series - it is
-# 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
+# 129 MB as a patch. It ships as a hash-pinned archive. The 3006.102.10 base already carries the identical
+# tree, so unpacking it changes nothing there; it stays as the pinned reference:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
-# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 9.0.0.6.102_42015)
-# ships hash-pinned as overlays/wlcsm-42015-blobs.tar.gz. The series carries the swap for the
-# RT-BE96U platform tree; a sibling build copies the two files over its own
-# router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as build-scripts/ci/container_build.sh does.
+# The vendor WLCSM blob pair (libnvram.so + libwlcsm.so, the netlink leak fix): from v3.6.0 the base's
+# own 40585 pair, for the models the base carries (RT-BE96U/86U/88U, GT-BE98 Pro). The platform-archive
+# models (GT-BE98, GT-BE19000, BQ16, BQ16 Pro) take the stock 42015 pair from the hash-pinned
+# overlays/wlcsm-42015-blobs.tar.gz, as build-scripts/ci/container_build.sh decides per model.
 ```
 
-Verified: applying the full series with `git am --keep-cr` onto a clean `3006.102.8-beta2` checkout plus the `overlays/openssl-3.5-source.tar.gz` archive (from the rung that moved to OpenSSL 3.5) reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
+Verified: applying the full series with `git am --keep-cr` onto a clean `ca72a61f8bc` checkout (v3.6.0: 857 patches, replayed by the cut) reproduces the Reaper source tree exactly (0 differences under `release/src/router`). Build per [`../docs/DEV-SETUP.md`](../docs/DEV-SETUP.md). Per-version history is in [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 
 ## What the series contains
 
-> The series holds 892 <!--@patchcount--> patches. The per-rung descriptions in this file run
+> The series holds 857 <!--@patchcount--> patches. The per-rung descriptions in this file run
 > through v2.4.3; for every rung after that (v2.4.4 onward), the authoritative per-version
 > narrative is [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
+
+> ⚠ **Renumbered at v3.6.0.** The series was regenerated from the 3006.102.10 base and numbered from
+> `0001`; commits upstream now carries left it. **Every patch number in the per-rung sections below refers
+> to the pre-v3.6.0 series** (892 patches on `3006.102.8-beta2`, in this repository's history at v3.5.0);
+> match a section to today's files by the subject in the filename.
 
 The filenames carry the summary; the full per-finding security mapping (CVE-class, severity) is in [`../docs/REAPER-FIXES.md`](../docs/REAPER-FIXES.md). Roughly, in order:
 

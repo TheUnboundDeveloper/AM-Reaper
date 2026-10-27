@@ -1,0 +1,365 @@
+From bbdf4606423f2978908912b1d5c24ecbe22c7bd3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:46 -0400
+Subject: [PATCH] gatekeeper: a held device's DNS goes to a sinkhole that
+ answers every name with the router
+
+Security review 2026-10-20, F-6. In quarantine mode a held device could use
+the router's resolver for any name - a lookup and tunnelling channel from a
+device nobody approved. A second, upstream-less dnsmasq on port 5300 of
+every hooked bridge (/tmp/gk/sink.conf, root 0600) answers every name with
+the router's own address at TTL 0; REAPER_GKN redirects a held device's
+port 53 to it in both families, so the OS captive probe still resolves and
+the sign-in sheet still appears. It runs as /tmp/gk/gksink, a symlink to
+dnsmasq, so rc's name-based dnsmasq restart (killall_tk) leaves it alone;
+apply.sh starts it with a clean signal mask (both rc launchers use eval(),
+not system(): rc's blocked service signals were inherited and the stop
+never landed); the teardown finds it by its exact command line, TERM then
+KILL. gkd restarts a dead one at most once a minute, gives up after three
+failed re-applies. gkd/.gitignore keeps its build outputs out of the tree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/gkd/.gitignore  |   5 ++
+ release/src/router/gkd/gkd.c       |  77 ++++++++++++++++
+ release/src/router/rc/firewall.c   |   4 +-
+ release/src/router/rc/gatekeeper.c | 136 ++++++++++++++++++++++++++++-
+ 4 files changed, 220 insertions(+), 2 deletions(-)
+ create mode 100644 release/src/router/gkd/.gitignore
+
+diff --git a/release/src/router/gkd/.gitignore b/release/src/router/gkd/.gitignore
+new file mode 100644
+index 00000000000..b9f41d5bdb2
+--- /dev/null
++++ b/release/src/router/gkd/.gitignore
+@@ -0,0 +1,5 @@
++# build outputs (the rc/.gitignore pattern): never commit the binary or its objects
++*.o
++*.depend
++.gkd.depend
++gkd
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 39e9e08f587..8de7dfceaca 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -618,6 +618,82 @@ static void heal_lost_rules(void)
+ 	if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 0);
+ }
+ 
++/* 2026-10-20 (security review F-6): the DNS sinkhole for held devices
++ * (rc/gatekeeper.c gk_gen_sink; started by apply.sh as /tmp/gk/gksink, a symlink
++ * to dnsmasq that keeps it out of the stock resolver's name-based restart -
++ * r3 metal 2026-10-20; pidfile /tmp/gk/sink.pid)
++ * must be alive while quarantine is on, or a held device's redirected port 53
++ * answers nothing - the sign-in sheet then never appears. A dead one is
++ * restarted by re-running apply.sh (it reaps and starts the instance itself),
++ * at most once a minute, logged once per outage.
++ * Metal 2026-10-20: "alive" is decided by the process's exact command line,
++ * never by the pidfile alone - a lost pidfile beside a live instance made this
++ * re-apply the whole Gatekeeper every minute while each new start failed on the
++ * busy port. Three re-applies that bring no instance up end the attempts until
++ * the next Gatekeeper restart. */
++static int sink_cmdline_is(const char *pid)
++{
++	static const char want[] = GK_DIR "/gksink\0-C\0" GK_DIR "/sink.conf";	/* + the final NUL = /proc cmdline */
++	char path[64], buf[sizeof(want) + 1];
++	ssize_t n;
++	int fd;
++
++	snprintf(path, sizeof(path), "/proc/%s/cmdline", pid);
++	if ((fd = open(path, O_RDONLY)) < 0) return 0;
++	n = read(fd, buf, sizeof(buf));
++	close(fd);
++	return n == (ssize_t)sizeof(want) && memcmp(buf, want, sizeof(want)) == 0;
++}
++
++static int sink_alive(void)
++{
++	char pid[16] = "";
++	FILE *f;
++	DIR *d;
++	struct dirent *e;
++	int found = 0;
++
++	if ((f = fopen(GK_DIR "/sink.pid", "r")) != NULL) {	/* the cheap probe first */
++		if (fscanf(f, "%15[0-9]", pid) != 1) pid[0] = 0;
++		fclose(f);
++	}
++	if (pid[0] && sink_cmdline_is(pid)) return 1;
++	if ((d = opendir("/proc")) == NULL) return 0;
++	while (!found && (e = readdir(d)) != NULL)
++		if (e->d_name[0] >= '1' && e->d_name[0] <= '9' && sink_cmdline_is(e->d_name))
++			found = 1;
++	closedir(d);
++	return found;
++}
++
++static void heal_sink(void)
++{
++	static time_t last = 0;
++	static int logged = 0, missed = 0, strikes = 0;
++	time_t now = time(NULL);
++
++	if (nvram_match("gk_default", "1")) { logged = 0; missed = 0; strikes = 0; return; }	/* alert-only: no held devices, no sinkhole */
++	if (sink_alive()) { logged = 0; missed = 0; strikes = 0; return; }
++	/* dnsmasq daemonizes a moment after apply.sh started it: act on the
++	 * second consecutive miss, never on one glance */
++	if (++missed < 2) return;
++	if (strikes >= 3) {
++		if (strikes == 3) {
++			logmessage("gatekeeper", "the DNS sinkhole for held devices still does not start after 3 re-applies - giving up until the next Gatekeeper restart; read the 'failed to start' lines");
++			strikes++;
++		}
++		return;
++	}
++	if (now - last < 60) return;
++	last = now;
++	strikes++;
++	if (!logged) {
++		logmessage("gatekeeper", "the DNS sinkhole for held devices is not running - re-applying");
++		logged = 1;
++	}
++	if (reaper_script_ok(APPLY_SH)) run_locked("sh " APPLY_SH, 0);
++}
++
+ static void self_heal(void)
+ {
+ 	/* start_firewall rebuilds iptables wholesale (user chains deleted) and
+@@ -658,6 +734,7 @@ static void self_heal(void)
+ 		}
+ 		heal_networks();	/* v2.6.5: only meaningful once the base set is armed */
+ 		heal_lost_rules();	/* 2026-09-17: armed is not the same as complete */
++		heal_sink();		/* 2026-10-20 (F-6): the held devices' DNS sinkhole */
+ 		return;
+ 	}
+ 	unlink(CHAIN_STAMP);
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 872a4eb9964..54910f5484c 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -10466,7 +10466,9 @@ leave:
+ 	/* reaper v1.6.8 Gatekeeper: this rebuild just deleted our chains - re-apply
+ 	 * immediately (gkd's 10s self-heal is only the backstop, not the primary). */
+ 	if (nvram_match("gk_enable", "1") && f_exists("/tmp/gk/apply.sh"))
+-		(void)(reaper_script_ok("/tmp/gk/apply.sh") && system("sh /tmp/gk/apply.sh"));
++		/* 2026-10-20: eval(), not system() - a clean signal mask for what the
++		 * script starts (the Gatekeeper DNS sinkhole; see gatekeeper.c gk_apply_locked) */
++		(void)(reaper_script_ok("/tmp/gk/apply.sh") && eval("sh", "/tmp/gk/apply.sh"));
+ 
+ 	/* reaper v1.8.0 Warden: same story - a firewall rebuild flushes the
+ 	 * REAPER_WARDEN chain (RW_* sets); re-run the generated apply.sh so the
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index 1cf16a29b90..033a0df9ba5 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -52,6 +52,33 @@
+ #define GK_DIR    "/tmp/gk"
+ #define GK_APPLY  GK_DIR "/apply.sh"
+ #define GK_STAMP  GK_DIR "/chains.ok"	/* gkd's "armed" marker; keep in lockstep with gkd.c CHAIN_STAMP */
++/* 2026-10-20 (security review F-6): the DNS SINKHOLE for held devices. In
++ * quarantine mode a held device could still use the router's resolver - every
++ * name looked up on its behalf, a DNS tunnel open. Now a second, tiny dnsmasq
++ * (no upstream, no hosts, answers EVERY name with the router's own address,
++ * TTL 0) listens on port 5300 on every hooked bridge, and REAPER_GKN REDIRECTs
++ * a held device's port 53 there, so the OS captive probe still resolves to the
++ * router (the sign-in sheet still appears) and nothing else can be learned or
++ * tunnelled. Known MACs RETURN from REAPER_GKN before the redirect. The conf is
++ * written beside apply.sh, the process is (re)started by apply.sh itself and
++ * reaped by the teardown, gkd restarts a dead one (heal_sink). 5353 is mDNS. */
++#define GK_SINK_CONF GK_DIR "/sink.conf"
++#define GK_SINK_PID  GK_DIR "/sink.pid"
++#define GK_SINK_PORT "5300"
++/* The sinkhole runs as GK_SINK_BIN, a symlink to the real dnsmasq inside root's
++ * own /tmp/gk, exec'd by that path. r3 metal (2026-10-20): every full dnsmasq
++ * restart - a changed Dreadwatch list, a DHCP change, the stock watchdog - took
++ * the sinkhole with it: rc's stop_dnsmasq() reaps by NAME (killall_tk("dnsmasq"),
++ * shared/pids.c matching comm and basename(argv[0])), and the same matcher behind
++ * pids("dnsmasq") would have mistaken a live sinkhole for the real resolver. A
++ * held device then had no sign-in sheet until gkd's next heal, which re-ran the
++ * whole apply. Exec'd as /tmp/gk/gksink the process is comm "gksink" with the
++ * symlink path as argv[0], so no name-based stock matcher sees it; its own stop
++ * (GK_SINK_KILL) and gkd's liveness test match that exact command line. busybox's
++ * killall also compares the exe link, which still reads dnsmasq - nothing in the
++ * tree calls it on dnsmasq, and gkd heals the sinkhole within a minute anyway. */
++#define GK_SINK_EXE  "/usr/sbin/dnsmasq"
++#define GK_SINK_BIN  GK_DIR "/gksink"
+ 
+ /* strict MAC check - identical to httpd gk_valid_mac / gkd valid_mac. Every
+  * gk_rl consumer validates before use; this generator must too, since the
+@@ -251,6 +278,70 @@ static void gk_gen_sdnfi(void)
+ 		unlink(GK_DIR "/sdnfi.sh.tmp");
+ }
+ 
++/* 2026-10-20 (F-6): the sinkhole's dnsmasq configuration, regenerated with
++ * apply.sh so gk_refresh() follows the network set. gkifs is apply.sh's extra
++ * bridge list (" brN brM"); lan_ifname is resolved here, charset-gated like
++ * the script gates LANIF. lan_ipaddr is the answer for every name; a value
++ * outside dotted-decimal leaves the line out, and the instance then answers
++ * nothing at all (no-resolv) - still no upstream. 0600 root: dnsmasq reads it
++ * before dropping to nobody, and apply.sh refuses to exec a conf that is not
++ * root's own private regular file. */
++static void gk_gen_sink(const char *gkifs)
++{
++	FILE *f;
++	const char *lanif = nvram_safe_get("lan_ifname"), *lanip = nvram_safe_get("lan_ipaddr"), *q;
++	char ifs[512], *tok, *sp = NULL;
++
++	if ((f = fopen(GK_SINK_CONF ".tmp", "w")) == NULL)
++		return;
++	fprintf(f, "# generated by start_gk - do not edit: the DNS sinkhole for held devices\n"
++		   "pid-file=" GK_SINK_PID "\n"
++		   "port=" GK_SINK_PORT "\n"
++		   "bind-dynamic\n"
++		   "except-interface=lo\n");
++	for (q = lanif; *q; q++)
++		if (!isalnum((unsigned char)*q) && *q != '.' && *q != '_' && *q != '-')
++			break;
++	if (lanif[0] && !*q)
++		fprintf(f, "interface=%s\n", lanif);
++	snprintf(ifs, sizeof(ifs), "%s", gkifs ? gkifs : "");
++	for (tok = strtok_r(ifs, " ", &sp); tok; tok = strtok_r(NULL, " ", &sp))
++		fprintf(f, "interface=%s\n", tok);		/* gk_gen_apply gated every name already */
++	fprintf(f, "no-resolv\n"
++		   "no-hosts\n"
++		   "no-poll\n"
++		   "cache-size=0\n"
++		   "local-ttl=0\n");
++	for (q = lanip; *q; q++)
++		if (!isdigit((unsigned char)*q) && *q != '.')
++			break;
++	if (lanip[0] && !*q)
++		fprintf(f, "address=/#/%s\n", lanip);
++	fprintf(f, "log-facility=/dev/null\n");
++	fclose(f);
++	chmod(GK_SINK_CONF ".tmp", 0600);
++	if (rename(GK_SINK_CONF ".tmp", GK_SINK_CONF) != 0)
++		unlink(GK_SINK_CONF ".tmp");
++}
++
++/* the shell that stops a running sinkhole, used by apply.sh's teardown and by
++ * gk_teardown_rules(); waits for the port to free.
++ * Metal 2026-10-20: the first version trusted the pidfile and SIGTERM. rc ran
++ * apply.sh with its service signal set blocked, so the instance was born with
++ * TERM blocked; the next apply's kill never landed, its rm took the pidfile,
++ * and every later start died "Address already in use" while gkd re-applied
++ * once a minute. Now: every process whose command line is exactly the
++ * sinkhole's (a pidfile can be lost, and the pid in it reused), TERM, up to
++ * 1 s, then KILL (which no mask can hold off). The command line matched is the
++ * GK_SINK_BIN one. No '%' in here - the macro is spliced into an fprintf format
++ * in gk_gen_apply. */
++#define GK_SINK_KILL \
++	"_sp=; for _f in $(grep -l -F " GK_SINK_CONF " /proc/[0-9]*/cmdline 2>/dev/null); do " \
++	"[ \"$(tr '\\000' ' ' < $_f 2>/dev/null)\" = \"" GK_SINK_BIN " -C " GK_SINK_CONF " \" ] && _sp=\"$_sp $(echo $_f | cut -d/ -f3)\"; done; " \
++	"if [ -n \"$_sp\" ]; then kill $_sp 2>/dev/null; _i=0; while [ $_i -lt 5 ]; do _a=; " \
++	"for _p in $_sp; do kill -0 $_p 2>/dev/null && _a=1; done; [ -z \"$_a\" ] && break; usleep 200000 2>/dev/null; _i=$((_i+1)); done; " \
++	"kill -9 $_sp 2>/dev/null; fi; rm -f " GK_SINK_PID "\n"
++
+ #ifdef RTCONFIG_CFGSYNC
+ /* v2.7.3 (field: "AiMesh works great for some, not at all for others" -
+  * adversarial review of the whole onboarding path): AiMesh nodes are
+@@ -389,6 +480,8 @@ static void gk_gen_apply(void)
+ 		}
+ 	}
+ 
++	gk_gen_sink(gkifs);	/* 2026-10-20 (F-6): the sinkhole conf follows the same network set */
++
+ 	f = fopen(GK_APPLY ".tmp", "w");
+ 	if (!f) return;
+ 
+@@ -504,6 +597,9 @@ static void gk_gen_apply(void)
+ 		   "ebtables -F REAPER_GK 2>/dev/null; ebtables -X REAPER_GK 2>/dev/null\n"
+ 		   /* v2.6.5: our one rule in ASUS's SDN_FI (captive on isolated SDNs) */
+ 		   "while iptables -D SDN_FI -m conntrack --ctstate DNAT -d $LANIP -p tcp --dport 80 -j ACCEPT 2>/dev/null; do :; done\n"
++		   /* 2026-10-20 (F-6): a sinkhole from the previous apply goes too - it is
++		    * started again below only in quarantine mode */
++		   GK_SINK_KILL
+ 		   "# ---- build ----\n"
+ 		   "for T in iptables ip6tables; do\n"
+ 		   "  $T -N REAPER_GKF\n"
+@@ -560,6 +656,10 @@ static void gk_gen_apply(void)
+ 			 * short of a factory reset. HTTPS only - the plain-HTTP port stays
+ 			 * captive-redirected so OS portal probes still pop the sheet. */
+ 			"iptables -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"
++			/* 2026-10-20 (F-6): the sinkhole's port, where REAPER_GKN sends a held
++			 * device's DNS (the 53 RETURNs above stay for a sinkhole that is down) */
++			"iptables -A REAPER_GKI -p udp --dport " GK_SINK_PORT " -j RETURN\n"
++			"iptables -A REAPER_GKI -p tcp --dport " GK_SINK_PORT " -j RETURN\n"
+ 			"iptables -A REAPER_GKI -j DROP\n"
+ 			"ip6tables -A REAPER_GKI -p icmpv6 -j RETURN\n"       /* NDP must live */
+ 			"ip6tables -A REAPER_GKI -p udp --dport 546:547 -j RETURN\n"
+@@ -567,8 +667,21 @@ static void gk_gen_apply(void)
+ 			"ip6tables -A REAPER_GKI -p tcp --dport 53 -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -p tcp --dport 80 -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -p tcp --dport $GKADMIN -j RETURN\n"  /* admin escape hatch (v6) */
++			"ip6tables -A REAPER_GKI -p udp --dport " GK_SINK_PORT " -j RETURN\n"
++			"ip6tables -A REAPER_GKI -p tcp --dport " GK_SINK_PORT " -j RETURN\n"
+ 			"ip6tables -A REAPER_GKI -j DROP\n"
+ 			"ebtables -A REAPER_GK -j DROP\n");
++		/* 2026-10-20 (F-6): every held device's DNS lands on the sinkhole. REDIRECT,
++		 * not DNAT: it targets the arriving bridge's own address, which the SDN_FI
++		 * isolation never drops, on both families. Independent of gk_captive and
++		 * http_enable - the port-80 redirect below keeps its own gate - because a
++		 * held device must never have an outside resolver whatever the page does. */
++		fprintf(f,
++			"# held devices: DNS to the sinkhole (every name -> the router, no upstream)\n"
++			"for T in iptables ip6tables; do\n"
++			"  $T -t nat -A REAPER_GKN -p udp --dport 53 -j REDIRECT --to-ports " GK_SINK_PORT "\n"
++			"  $T -t nat -A REAPER_GKN -p tcp --dport 53 -j REDIRECT --to-ports " GK_SINK_PORT "\n"
++			"done\n");
+ 		/* captive redirect - decided at run time so it always agrees with httpd's
+ 		 * live view: only when gk_captive is on, an HTTPS admin instance exists
+ 		 * (http_enable != 0, so the escape hatch survives), and the router IP is
+@@ -591,6 +704,19 @@ static void gk_gen_apply(void)
+ 			 * still cannot reach the router UI, which is what the switch means.
+ 			 * Own script so gkd can re-insert it when ASUS rebuilds SDN_FI. */
+ 			"[ -x " GK_DIR "/sdnfi.sh ] && sh " GK_DIR "/sdnfi.sh\n");
++		/* 2026-10-20 (F-6): the sinkhole itself. The previous instance went in the
++		 * teardown; this one runs only from a conf that is root's own regular
++		 * file nobody else can write (the shell twin of reaper_script_ok), and
++		 * dnsmasq drops to nobody by itself. A start failure is one log line, and
++		 * gkd's heal_sink tries again. It runs through the GK_SINK_BIN symlink
++		 * (refreshed on every apply, so it can never point anywhere else), which
++		 * keeps it out of every name-based dnsmasq restart - see the define. */
++		fprintf(f,
++			"_sl=$(ls -ln " GK_SINK_CONF " 2>/dev/null)\n"
++			"case \"$_sl\" in\n"
++			"  -rw-------*) [ \"$(echo \"$_sl\" | awk '{print $3}')\" = 0 ] && { ln -sf " GK_SINK_EXE " " GK_SINK_BIN " && " GK_SINK_BIN " -C " GK_SINK_CONF " || logger -t gatekeeper 'DNS sinkhole for held devices failed to start'; };;\n"
++			"  *) logger -t gatekeeper 'DNS sinkhole conf is not a private root file - not started';;\n"
++			"esac\n");
+ 	}
+ 
+ 	/* hooks at position 1: revocation must beat any ESTABLISHED shortcut.
+@@ -651,6 +777,7 @@ static void gk_teardown_rules(void)
+ 	 * flush. A string literal cannot truncate. */
+ 	system(
+ 		REAPER_NV_HELPER	/* _nv for the one nvram read below (security review 2026-08-22) */
++		GK_SINK_KILL		/* 2026-10-20 (F-6): the held devices' DNS sinkhole */
+ 		"for I in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
+ 		"for T in iptables ip6tables; do "
+ 		"while $T -D " REAPER_HOOK_FWD " -i $I -j REAPER_GKF 2>/dev/null; do :; done; "
+@@ -678,6 +805,8 @@ void stop_gk(void)
+ 		killall_tk("gkd");
+ 	gk_teardown_rules();
+ 	unlink(GK_APPLY);
++	unlink(GK_SINK_CONF);	/* 2026-10-20 (F-6): the process went with the teardown */
++	unlink(GK_SINK_BIN);
+ 	/* clear the "armed" marker so the UI never shows enforcing after a disable
+ 	 * (gkd is not respawned when gk_enable=0, so it can't clear it itself). */
+ 	unlink(GK_STAMP);
+@@ -690,7 +819,12 @@ void stop_gk(void)
+ static int gk_apply_locked(void)
+ {
+ 	int lk = file_lock("firewall");
+-	int ret = reaper_script_ok(GK_APPLY) ? system("sh " GK_APPLY) : -1;
++	/* 2026-10-20: eval(), not system(). rc runs this with its service signal
++	 * set blocked (HUP INT QUIT USR1 USR2 ALRM TERM) and system() hands that
++	 * mask down, so the DNS sinkhole apply.sh starts could not be stopped by
++	 * TERM (metal: SigBlk 0x6a07). _eval() clears the mask in its child; the
++	 * result is still the script's exit status, which the callers test != 0. */
++	int ret = reaper_script_ok(GK_APPLY) ? eval("sh", GK_APPLY) : -1;
+ 
+ 	if (lk >= 0) file_unlock(lk);
+ 	return ret;
+-- 
+2.25.1
+

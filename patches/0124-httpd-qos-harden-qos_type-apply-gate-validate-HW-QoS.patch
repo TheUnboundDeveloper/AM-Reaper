@@ -1,0 +1,46 @@
+From 02e067b602b8b8a25a8cd4100534d8f793d653d5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 10 Jul 2026 22:03:14 -0400
+Subject: [PATCH] httpd/qos: harden qos_type apply gate + validate HW-QoS
+ classful ceilings (U1+U2)
+
+Reaper_v1.2.6 (rebuilt; the reverted wl0.4 attempt no longer occupies this slot).
+- U1 web.c validate_apply: reject qos_type longer than 2 chars before atoi(),
+  closing the atoi() overflow where an all-digit value > INT_MAX could bypass
+  the > 11 range check (previously only backstopped by the CKN_STR2 nvram check).
+- U2 QoS_EZQoS.asp hwqoscSerialize(): return a bool and abort submit on it -
+  reject all-zero class ceilings (would starve every upload class) and warn on a
+  >100% total, instead of silently writing a well-formed-but-broken qos schema.
+---
+ release/src-rt/version.conf    | 2 +-
+ release/src/router/httpd/web.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index f68ae9ccd7b..e2c861caee2 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.2.5
++EXTENDNO=Reaper_v1.2.6
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 02bf04204ce..7d959c40016 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4905,7 +4905,7 @@ int validate_apply(webs_t wp, json_object *root)
+ 					continue;
+ 				}
+ 				if(!strcmp(name, "qos_type") && *value &&
+-				   (strspn(value, "0123456789") != strlen(value) || atoi(value) > 11)){	/* 11 = HW QoS classful, the highest engine */
++				   (strlen(value) > 2 || strspn(value, "0123456789") != strlen(value) || atoi(value) > 11)){	/* 11 = HW QoS classful, the highest engine; len>2 guards atoi() overflow (U1) */
+ 					dbg("reject out-of-range qos_type=%s\n", value);
+ 					continue;
+ 				}
+-- 
+2.25.1
+

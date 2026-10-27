@@ -328,8 +328,14 @@ if [ -f "$OSSL_TGZ" ]; then
   [ "$want" = "$got" ] || { echo "::error::openssl-3.5 source archive hash mismatch"; echo "   expected $want"; echo "   got      $got"; exit 1; }
   tar -xzf "$OSSL_TGZ" || { echo "::error::openssl-3.5 source archive failed to unpack"; exit 1; }
   git add -A -- release/src/router/openssl-3.5
-  git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)' || { echo "::error::openssl-3.5 overlay commit failed"; exit 1; }
-  echo "   [MATCH] unpacked $(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) openssl-3.5 files, committed"
+  # From the 3006.102.10 base upstream ships the identical tree itself, so the
+  # unpack changes nothing and there is nothing to commit.
+  if git diff --cached --quiet; then
+    echo "   [MATCH] the base already carries this openssl-3.5 tree ($(git rev-parse HEAD:release/src/router/openssl-3.5)) - nothing to commit"
+  else
+    git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)' || { echo "::error::openssl-3.5 overlay commit failed"; exit 1; }
+    echo "   [MATCH] unpacked $(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) openssl-3.5 files, committed"
+  fi
 elif grep -q '^RTCONFIG_OPENSSL35=y' release/src/router/config_base 2>/dev/null; then
   echo "::error::the series selects OpenSSL 3.5 but overlays/openssl-3.5-source.tar.gz is missing"; exit 1
 fi
@@ -385,20 +391,39 @@ else
   MODEL_TREE="$ROUTER_TREE"
 fi
 
-# --- vendor WLCSM blobs (ASUS stock 9.0.0.6.102_42015) -----------------------
+# --- vendor WLCSM blobs: the pair this model's own libshared can run ---------
 # The WLCSM netlink socket leak ("stuck nvram") is fixed by the vendor in two
-# closed blobs and nowhere in source: libnvram.so and libwlcsm.so. The series
-# carries the swap for router-sysdep.rt-be96u only, because canon holds no
-# other model's platform tree; a sibling's copy arrives with the pinned base or
-# with its platform archive above, both older than the fix. All six models ship
-# the identical pair, so one hash-pinned archive supplies every router-sysdep.*
-# in the tree that carries the files. Same rule as the archives above: verified
-# before it is unpacked, and the model's OWN tree must end up with both - a
-# model whose platform tree never arrived is an error here, not a silent skip.
+# closed blobs and nowhere in source: libnvram.so and libwlcsm.so. From the
+# 3006.102.10 / GPL 40585 base the fix arrives WITH the base: every
+# router-sysdep.* it carries (RT-BE96U/86U/88U, GT-BE98_PRO) ships the 40585
+# pair. That libnvram.so calls check_allow_nvram_caller(), which only the 40585
+# spwenc.o in shared/prebuild/<MODEL>/ defines. The models whose platform tree
+# comes from an older GPL archive (GT-BE98, GT-BE19000, BQ16, BQ16_PRO) carry an
+# spwenc.o without it and a pre-fix pair, so they take the 42015 pair (the same
+# fix, no caller check) from the hash-pinned archive. The model's own spwenc.o
+# decides, so an archive that later gains the 40585 objects moves to the base
+# pair by itself. Either way the model's OWN tree must end up with a verified
+# pair - a model whose platform tree never arrived is an error, not a skip.
 _ph vendor-blobs
-BLOB_TGZ="$REPO_DIR/overlays/wlcsm-42015-blobs.tar.gz"
-if [ -f "$BLOB_TGZ" ]; then
-  hr; echo " Vendor WLCSM blobs (stock 42015) for every router-sysdep.* in the tree"; hr
+W40585_NVRAM=0309f85bdd72c4b26522ccbf274438ebe1de77d7e5c991dc6a4e3b127747a171
+W40585_WLCSM=f028d8244980496009825dc2af137e96e833129cc206d4498286d09bfa61b743
+_SYSDEP="release/src-rt-5.04behnd.4916/router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')"
+_SPW="release/src/router/shared/prebuild/$MODEL/spwenc.o"
+[ -f "$_SPW" ] || { echo "::error::$MODEL has no $_SPW (platform tree missing?)"; exit 1; }
+for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
+  [ -f "$_SYSDEP/$_pair" ] || { echo "::error::$MODEL: $_SYSDEP/$_pair is missing (platform tree missing?)"; exit 1; }
+done
+if grep -aq 'check_allow_nvram_caller' "$_SPW"; then
+  hr; echo " Vendor WLCSM blobs for $MODEL: the base's 40585 pair (its spwenc.o has the caller check)"; hr
+  _n=$(sha256sum "$_SYSDEP/wlan/nvram/prebuilt/libnvram.so" | cut -d' ' -f1)
+  _w=$(sha256sum "$_SYSDEP/wlcsm/prebuilt/libwlcsm.so" | cut -d' ' -f1)
+  [ "$_n" = "$W40585_NVRAM" ] || { echo "::error::$MODEL: libnvram.so is $_n, not the pinned 40585 build"; exit 1; }
+  [ "$_w" = "$W40585_WLCSM" ] || { echo "::error::$MODEL: libwlcsm.so is $_w, not the pinned 40585 build"; exit 1; }
+  echo "   [MATCH] $_SYSDEP carries the 40585 pair"
+else
+  BLOB_TGZ="$REPO_DIR/overlays/wlcsm-42015-blobs.tar.gz"
+  [ -f "$BLOB_TGZ" ] || { echo "::error::overlays/wlcsm-42015-blobs.tar.gz is missing -- the WLCSM fix would not reach $MODEL"; exit 1; }
+  hr; echo " Vendor WLCSM blobs for $MODEL: the stock 42015 pair (its spwenc.o predates the caller check)"; hr
   BLOB_SUM="$REPO_DIR/overlays/wlcsm-42015-blobs.sha256"
   [ -f "$BLOB_SUM" ] || { echo "::error::$BLOB_TGZ has no recorded sha256 -- refusing to unpack an unverified archive"; exit 1; }
   want=$(awk '{print $1}' "$BLOB_SUM" | head -1); got=$(sha256sum "$BLOB_TGZ" | cut -d' ' -f1)
@@ -406,30 +431,19 @@ if [ -f "$BLOB_TGZ" ]; then
   [ "$want" = "$got" ] || { echo "::error::wlcsm-42015 blob archive hash mismatch"; echo "   expected $want"; echo "   got      $got"; exit 1; }
   _BLOB_DIR=$(mktemp -d)
   tar -xzf "$BLOB_TGZ" -C "$_BLOB_DIR" || { echo "::error::wlcsm-42015 blob archive failed to unpack"; exit 1; }
-  _nblob=0
   for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
     _src="$_BLOB_DIR/wlcsm-42015/${_pair##*/}"
     [ -f "$_src" ] || { echo "::error::wlcsm-42015 archive carries no ${_pair##*/}"; exit 1; }
-    for _dst in release/src-rt-5.04behnd.4916/router-sysdep*/"$_pair"; do
-      [ -f "$_dst" ] || continue
-      cp -f "$_src" "$_dst"; _nblob=$((_nblob+1))
-      echo "   $_dst <- $(sha256sum "$_src" | cut -c1-16)"
-    done
-  done
-  _SYSDEP="release/src-rt-5.04behnd.4916/router-sysdep.$(echo "$MODEL" | tr 'A-Z' 'a-z')"
-  for _pair in "wlan/nvram/prebuilt/libnvram.so" "wlcsm/prebuilt/libwlcsm.so"; do
-    if ! cmp -s "$_BLOB_DIR/wlcsm-42015/${_pair##*/}" "$_SYSDEP/$_pair"; then
-      echo "::error::$MODEL: $_SYSDEP/$_pair is not the vendor blob after the swap (does this model's platform tree carry it?)"; exit 1
-    fi
+    cp -f "$_src" "$_SYSDEP/$_pair"
+    cmp -s "$_src" "$_SYSDEP/$_pair" || { echo "::error::$MODEL: $_SYSDEP/$_pair is not the vendor blob after the swap"; exit 1; }
+    echo "   $_SYSDEP/$_pair <- $(sha256sum "$_src" | cut -c1-16)"
   done
   rm -rf "$_BLOB_DIR"
-  echo "   [MATCH] $_nblob file(s) replaced; $_SYSDEP carries both vendor blobs"
-else
-  echo "::error::overlays/wlcsm-42015-blobs.tar.gz is missing -- the WLCSM fix would not reach $MODEL"; exit 1
+  echo "   [MATCH] $_SYSDEP carries the 42015 pair"
 fi
 
 # --- networkmap prebuilt: one client-table layout for every model --------------
-# networkmap is closed. ASUS's 3006.102.8 build of it ships byte-identical on
+# networkmap is closed. ASUS's build of it (40585 from the 3006.102.10 base) ships byte-identical on
 # RT-BE96U/86U/88U, GT-BE98/Pro and BQ16/Pro, and httpd (built from source at
 # that level) reads its shared-memory CLIENT_DETAIL_INFO_TABLE. A model whose
 # platform archive carries an OLDER networkmap (GT-BE19000: the GPL 39274 build,
@@ -440,7 +454,7 @@ fi
 # reference binary over the model's dir here and prove it by hash. The reference
 # is pinned: a canon change to that blob must update NMP_REF_SHA on purpose.
 _ph networkmap-prebuilt
-NMP_REF_SHA=6f29cad042db203f6b414f5caa1942af17e27c9fa2e00421c036f34f2e922197
+NMP_REF_SHA=522a0896d5e9381929a46f58be9ab100fddb5f1670a32c093602903282f330b7
 NMP_REF="release/src/router/networkmap/prebuild/RT-BE96U/networkmap"
 NMP_DST="release/src/router/networkmap/prebuild/${MODEL}/networkmap"
 hr; echo " networkmap prebuilt for $MODEL = the reference build (one client-table layout)"; hr
@@ -659,7 +673,8 @@ _ph collect-artifacts
 hr; echo " Collecting artifacts"; hr
 TARGET_DIR="$SRC_DIR/release/src-rt-5.04behnd.4916/targets/${PROFILE:-96813GW}"
 tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
-IMG="$TARGET_DIR/${MODEL}_3006_102.8_${VER}${tag}_nand_squashfs.pkgtb"
+FWSER="3006_$(sed -n 's/^SERIALNO=//p' "$SRC_DIR/release/src-rt/version.conf" | head -1)"
+IMG="$TARGET_DIR/${MODEL}_${FWSER}_${VER}${tag}_nand_squashfs.pkgtb"
 [ -f "$IMG" ] || { echo "::error::expected image not found: $IMG"; ls -la "$TARGET_DIR" | head -30; exit 1; }
 cp -v "$IMG" "$OUT_DIR/"
 IMG_NAME="$(basename "$IMG")"

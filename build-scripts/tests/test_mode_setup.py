@@ -115,8 +115,13 @@ check("mb: transformWLCObj folds wlcN_* into wlc_* - the page posts wlc_band/ssi
 # -- MLO + service ----------------------------------------------------------------------------
 mld = re.search(r"function handle_mld_enable\(mode\) \{(.*?)\n\}\n", plugins, re.S)
 mld = mld.group(1) if mld else ""
-check("mld: RT/AP take the default on a mode change, RP/MB force 0 (handle_mld_enable)",
-      'nvramDefaultGet(["mld_enable"])' in mld and 'qisPostData.mld_enable = "0"' in mld
+# 40585 base: ASUS's handle_mld_enable() turns MLO on for a Media Bridge only when the model advertises
+# mlo_media_bridge, the chosen parent is an MLO AP and the user kept the MLO prompt; every other RP/MB/WISP change
+# writes 0. The page has no MLO-parent step, so its MB value is the wizard's "no MLO uplink" outcome: 0.
+check("mld: RT/AP take the default on a mode change, RP/MB 0 unless an MLO parent AP was chosen (handle_mld_enable)",
+      'nvramDefaultGet(["mld_enable"])' in mld and 'qisPostData.mld_enable = useMloUplink ? "1" : "0";' in mld
+      and "const useMloUplink = (isMloParentAP && systemVariable.useMloConnection);" in mld
+      and re.search(r'function isMloMbParentAP\(mode, AP\)\{\s*return \(mode === "MB" && isSupport\("mlo_media_bridge"\) && isMloAPProfile\(AP\)\);', plugins) is not None
       and "if (MODE === 'mb') return '0';" in page and "return NV.mld_default || '0';" in page
       and "if (m !== null && CUR !== MODE) d.mld_enable = m;" in pd)
 grs = re.search(r"var getRestartService = function\(\)\{(.*?)\n\};?\n", plugins, re.S)

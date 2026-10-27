@@ -59,8 +59,8 @@ print("     (with a CIDR paste the GET overran from ~%s characters - %d%% of the
 worst = 3 * max(FWMAX, PBRMAX) + 256
 check("the POST body fits post_buf even fully percent-encoded (%d of %d bytes)" % (worst, POSTBUF), worst < POSTBUF)
 check("both CGIs read POST bodies (do_html_post_and_get) and keep their http_id gate",
-      '"reaper_fw.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_fw_cgi, do_auth' in wc
-      and '"reaper_pbr.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_pbr_cgi, do_auth' in wc)
+      '"reaper_fw.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_fw_cgi, do_auth' in wc
+      and '"reaper_pbr.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_pbr_cgi, do_auth' in wc)
 
 fw = read("www/Reaper_Firewall.asp")
 check("Firewall: fwpost() is a url-encoded POST, token in the URL, one-shot completion",

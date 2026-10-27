@@ -1,0 +1,61 @@
+From 0ed63f725bedbea8bfd9ad7a6acd3b5490480323 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 17:04:07 -0400
+Subject: [PATCH] shared: isValidMacAddress() refuses any character but hex
+ digits and separators
+
+At the 102.10 rebase (merge stop 63) Reaper's reaper_mac_or_empty() - a character
+whitelist in front of isValidMacAddress() - gave way to upstream's isValidMacAddress()
+alone on the AiMesh cfg-event paths (onboarding / cfg_onboarding.cgi, ob_selection,
+config_changed, prefer_node_apply; upstream's remove_slave / reset_default /
+device_reboot gates too). Upstream's function sets s = -1 on a foreign character and
+carries on, so a separator after one hex digit (i / 2 - 1 == -1) resets the count:
+A":A:BB:CC:DD:EE:FF and 0}],"k":[{"q":0:BB:CC:DD:EE:FF pass, and their quotes and
+braces reach the JSON events httpd writes for cfg_server. The function now returns 0
+on the first such character, which covers every caller; a real MAC never held one
+(a stray character already failed unless a separator followed it).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c   | 7 +++----
+ release/src/router/shared/misc.c | 6 +++++-
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index d4ef50f3200..ef82c3a9810 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -13425,10 +13425,9 @@ prepare_restore(webs_t wp){
+ }
+ 
+ /* reaper 2026-10-23: AiMesh re_mac / new_re_mac / target_bssid are printed unescaped into JSON events
+-   for the closed cfg_server. Accept a MAC (isValidMacAddress: 12 hex digits, optional : or -) or an
+-   empty value - stock passes empty values through and an empty string carries no quote or brace.
+-   The character whitelist comes first so that, whatever isValidMacAddress() tolerates, nothing but
+-   hex digits and separators can ever reach the event text. */
++   for the closed cfg_server. Since the 102.10 rebase the gates are upstream's isValidMacAddress();
++   shared/misc.c makes it refuse any character but hex digits and separators, so nothing else can
++   reach the event text. */
+ #ifdef RTCONFIG_BHCOST_OPT
+ /**
+  * @brief Generate amas_wlcX_target_bssid nvram string to RE.
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 9a783c90786..eb7c83f348f 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6119,7 +6119,11 @@ int isValidMacAddress(const char* mac) {
+ 			++s;
+ 		}
+ 		else
+-			s = -1;
++			/* Reaper 2026-10-27: any other character makes it no MAC. Stock set s = -1 and went
++			 * on, so a separator after one hex digit (i / 2 - 1 == -1) put the count back and
++			 * A":A:BB:CC:DD:EE:FF passed - a quote or brace into the JSON events httpd writes
++			 * for cfg_server from re_mac / new_re_mac / target_bssid. */
++			return 0;
+ 		++mac;
+ 	}
+ 	return (i == 12 && (s == 5 || s == 0));
+-- 
+2.25.1
+

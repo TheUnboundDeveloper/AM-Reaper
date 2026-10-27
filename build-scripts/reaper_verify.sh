@@ -31,7 +31,9 @@ P=$R/release/src-rt-5.04behnd.4916
 TDIR=${REAPER_TDIR:-$P/targets/96813GW}
 FS="${4:-$TDIR/fs}"
 tag=""; [ "$VARIANT" = "noMCP" ] && tag="_noMCP"
-IMAGE="${5:-$TDIR/${MODEL}_3006_102.8_${VERSION}${tag}_nand_squashfs.pkgtb}"
+# the firmware series in the image name comes from the tree (SERIALNO 102.10 -> 3006_102.10)
+FWSER="3006_$(sed -n 's/^SERIALNO=//p' "$R/release/src-rt/version.conf" 2>/dev/null | head -1)"
+IMAGE="${5:-$TDIR/${MODEL}_${FWSER}_${VERSION}${tag}_nand_squashfs.pkgtb}"
 RCONF="$R/release/src/router/.config"
 
 FAILN=0; WARNN=0; PASSN=0

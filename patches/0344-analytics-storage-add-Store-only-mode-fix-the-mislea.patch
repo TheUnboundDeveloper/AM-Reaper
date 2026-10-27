@@ -1,0 +1,549 @@
+From 8dc1ca726c23f18657126f999920481e9254cf9f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 8 Aug 2026 12:19:54 -0400
+Subject: [PATCH] analytics/storage: add "Store only" mode + fix the misleading
+ Off label
+
+Completes the retain/send model on the Long-Term Storage page. The health
+stream now has four explicit modes: Off / Store only / Store + Export /
+Export only. "Store only" persists connection-health history locally with no
+external push.
+
+  - rtrafd: reaper_export_mode gains "storeonly" (EXP_STORE). Health history
+    (healthhist.log) is retained when the mode STORES locally (storeonly or
+    both). Previously "off" also persisted, which is exactly why the old Off
+    label ("history kept locally") was misleading; off now keeps nothing,
+    exportonly pushes without a local copy.
+  - web.c: accept "storeonly" in both mode validators (store_set + export save).
+  - Reaper_Storage.asp: 4th "Store only" chip; corrected mode notes; a note
+    that stored history lands in the storage location selected at the top of
+    the page (reuse the existing RAM/JFFS/USB selector - owner call). Probe
+    toggle stays on the Data Export page.
+  - www/*.dict (25, lockstep 6074): RDST_60/61/62 added; RDST_56 corrected.
+
+v2.3.0 (rolled in with the header + probe work).
+---
+ release/src/router/httpd/web.c            | 4 ++--
+ release/src/router/rtrafd/rtrafd.c        | 9 +++++----
+ release/src/router/www/BR.dict            | 5 ++++-
+ release/src/router/www/CN.dict            | 5 ++++-
+ release/src/router/www/CZ.dict            | 5 ++++-
+ release/src/router/www/DA.dict            | 5 ++++-
+ release/src/router/www/DE.dict            | 5 ++++-
+ release/src/router/www/EN.dict            | 5 ++++-
+ release/src/router/www/ES.dict            | 5 ++++-
+ release/src/router/www/FI.dict            | 5 ++++-
+ release/src/router/www/FR.dict            | 5 ++++-
+ release/src/router/www/HU.dict            | 5 ++++-
+ release/src/router/www/IT.dict            | 5 ++++-
+ release/src/router/www/JP.dict            | 5 ++++-
+ release/src/router/www/KR.dict            | 5 ++++-
+ release/src/router/www/MS.dict            | 5 ++++-
+ release/src/router/www/NL.dict            | 5 ++++-
+ release/src/router/www/NO.dict            | 5 ++++-
+ release/src/router/www/PL.dict            | 5 ++++-
+ release/src/router/www/RO.dict            | 5 ++++-
+ release/src/router/www/RU.dict            | 5 ++++-
+ release/src/router/www/Reaper_Storage.asp | 6 ++++--
+ release/src/router/www/SL.dict            | 5 ++++-
+ release/src/router/www/SV.dict            | 5 ++++-
+ release/src/router/www/TH.dict            | 5 ++++-
+ release/src/router/www/TR.dict            | 5 ++++-
+ release/src/router/www/TW.dict            | 5 ++++-
+ release/src/router/www/UK.dict            | 5 ++++-
+ 28 files changed, 111 insertions(+), 33 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 9a80b30f65a..04a484eae01 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -24456,7 +24456,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		 * Anything other than off needs the per-device health probe running. */
+ 		{
+ 			char *xm = get_cgi("xmode");
+-			if (xm && (!strcmp(xm, "off") || !strcmp(xm, "both") || !strcmp(xm, "exportonly"))) {
++			if (xm && (!strcmp(xm, "off") || !strcmp(xm, "storeonly") || !strcmp(xm, "both") || !strcmp(xm, "exportonly"))) {
+ 				nvram_set("reaper_export_mode", xm);
+ 				if (strcmp(xm, "off")) nvram_set("rtraf_hprobe", "1");
+ 			}
+@@ -24552,7 +24552,7 @@ do_reaper_export_cgi(char *url, FILE *stream)
+ 
+ 	if (!strcmp(action, "save")) {
+ 		char *v;
+-		if ((v = get_cgi("mode")) && (!strcmp(v, "off") || !strcmp(v, "both") || !strcmp(v, "exportonly")))
++		if ((v = get_cgi("mode")) && (!strcmp(v, "off") || !strcmp(v, "storeonly") || !strcmp(v, "both") || !strcmp(v, "exportonly")))
+ 			nvram_set("reaper_export_mode", v);
+ 		if ((v = get_cgi("engine")))   nvram_set("reaper_export_engine", v);
+ 		if ((v = get_cgi("url")))      nvram_set("reaper_export_url", v);
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 7e44131c480..09c55bd41d3 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -109,7 +109,7 @@
+ #define HBUSY_BPS	(300ULL * 1000000)	/* defer a new cycle while either WAN dir is busier than this (speed-test back-off) */
+ #define HSPOOL		"/tmp/rtraf/healthhist.spool"	/* RAM staging for history rows; flushed to the store off the hot loop */
+ enum { HP_IDLE = 0, HP_SCAN, HP_SEND, HP_WAIT };	/* v2.2.4 health-cycle phase */
+-enum { EXP_OFF = 0, EXP_BOTH = 1, EXP_ONLY = 2 };	/* reaper_export_mode */
++enum { EXP_OFF = 0, EXP_STORE = 1, EXP_BOTH = 2, EXP_ONLY = 3 };	/* reaper_export_mode */
+ 
+ typedef struct { uint64_t rx, tx; } cnt_t;	/* class rings: rx=txbytes, tx=dropped pkts */
+ 						/* probe ring:  rx=avg rtt us, tx=loss %   */
+@@ -190,7 +190,8 @@ static void refresh_cfg(void)
+ 	if (cfg_hint > H_MAX_IV) cfg_hint = H_MAX_IV;
+ 	m = nvram_safe_get("reaper_export_mode");
+ 	cfg_export_mode = (strcmp(m, "exportonly") == 0) ? EXP_ONLY
+-			: (strcmp(m, "both") == 0)       ? EXP_BOTH : EXP_OFF;
++			: (strcmp(m, "both") == 0)       ? EXP_BOTH
++			: (strcmp(m, "storeonly") == 0)  ? EXP_STORE : EXP_OFF;
+ }
+ 
+ /* live snapshot holders (bits/sec), refreshed at each source's own cadence and
+@@ -1417,12 +1418,12 @@ static void write_health(void)
+ 	}
+ 
+ 	/* durable retention: SPOOL a compact JSONL row to tmpfs (cheap, non-blocking)
+-	 * unless the user chose export-only. v2.2.4: the actual flash append used to run
++	 * only when the mode retains locally (storeonly or both). v2.2.4: the actual flash append used to run
+ 	 * inline here on the health-close tick; it now piggybacks the hourly db_save via
+ 	 * health_flush_spool(), so no NAND/USB write ever lands on the 10 Hz loop. The
+ 	 * RAM spool is bounded: if the store is wedged/absent and the spool already tops
+ 	 * HLOG_MAX, skip the append rather than grow it (older rows flush first). */
+-	if (g_store_dir[0] && cfg_export_mode != EXP_ONLY) {
++	if (g_store_dir[0] && (cfg_export_mode == EXP_STORE || cfg_export_mode == EXP_BOTH)) {
+ 		struct stat st;
+ 		FILE *h;
+ 		if (stat(HSPOOL, &st) == 0 && st.st_size > HLOG_MAX) return;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index f17155a531b..cce3e57144f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index c8a4918c977..7f1bf56c0d7 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index bed4c7cd723..3a4a10b382e 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 33140bfe444..80a07c597c0 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index e68dbe26794..ef5e4d6729e 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index f1aae6994f5..8bb26b51435 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 64b6717d077..95753ef01cd 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index b64e12d02cb..bdf7a80fd45 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 88ad36dae34..d0e2ed8d151 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index bf4a87b45d6..001c0ea7937 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 98a15395a33..2c0a7d6bfe8 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index c4267372597..2f6556db261 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index e06459f0a2e..234993882b3 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 07e1125916c..9af3e22cd31 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index d225064a8b8..61f4a06d85e 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index ab699953f5e..31bad382a06 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index a841fdb7b7f..d22c9928f36 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index f070530809c..a7d2a64cbef 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 14af6b1bd1d..b31d7bd9c39 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 292212906aa..10a946faa12 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -101,6 +101,7 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+   <div class="tblbar" style="margin-top:10px">
+     <span class="lbl"><#RDST_55#></span>
+     <span class="fchip xstg" data-x="off"><#RDST_51#></span>
++    <span class="fchip xstg" data-x="storeonly"><#RDST_60#></span>
+     <span class="fchip xstg" data-x="both"><#RDST_52#></span>
+     <span class="fchip xstg" data-x="exportonly"><#RDST_53#></span>
+   </div>
+@@ -170,7 +171,7 @@ function loadStatus(){
+     loc = (j.loc === 'jffs' || j.loc === 'usb') ? j.loc : 'ram';
+     dsOn = {};
+     (j.ds || '').split(',').forEach(function(t){ t = t.trim(); if(t) dsOn[t] = 1; });
+-    xMode = (j.export_mode === 'both' || j.export_mode === 'exportonly') ? j.export_mode : 'off';
++    xMode = (j.export_mode === 'storeonly' || j.export_mode === 'both' || j.export_mode === 'exportonly') ? j.export_mode : 'off';
+     render();
+   });
+ }
+@@ -243,7 +244,8 @@ function render(){
+   var cfg = ' <a href="Reaper_Analytics.asp" target="_top" style="color:var(--bone);border-bottom:1px solid var(--crimson-deep)">' + esc(`<#RDST_59#>`) + '</a>';
+   var xn = document.getElementById('xnote');
+   xn.innerHTML = (xMode === 'off') ? esc(`<#RDST_56#>`)
+-    : (xMode === 'both') ? (esc(`<#RDST_57#>`) + cfg)
++    : (xMode === 'storeonly') ? (esc(`<#RDST_61#>`) + ' ' + esc(`<#RDST_62#>`))
++    : (xMode === 'both') ? (esc(`<#RDST_57#>`) + ' ' + esc(`<#RDST_62#>`) + cfg)
+     : (esc(`<#RDST_58#>`) + cfg);
+ }
+ 
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index ad5bf53ef5f..e6f115149eb 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 59920297d67..82af5f45178 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 24628e5ec05..f507ec32781 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index eea0ba663d0..0e6c147bacb 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 1cab778c1a4..e6e3a3a6c1b 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index e87870548a9..02d20747d0d 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6353,7 +6353,10 @@ RDST_52=Store + Export
+ RDST_53=Export only
+ RDST_54=Send per-device connection-health metrics to an analytics engine.
+ RDST_55=Mode
+-RDST_56=Off - history is kept locally only; nothing leaves the router.
++RDST_56=Off - connection-health is not retained or exported.
+ RDST_57=Store + Export - keep history here and stream a copy live.
+ RDST_58=Export only - stream metrics out without keeping a local copy.
+ RDST_59=Configure destination
++RDST_60=Store only
++RDST_61=Store only - keep connection-health history on the router; nothing is sent off it.
++RDST_62=History is written to the storage location selected above.
+-- 
+2.25.1
+

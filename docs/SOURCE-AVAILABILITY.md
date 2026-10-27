@@ -22,8 +22,8 @@ GPL-covered portions of any Reaper build is, deterministically:
 
 1. **The upstream Asuswrt-Merlin source**, at the exact pinned base:
    - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
-   - Tag: `3006.102.8-beta2`
-   - Commit: **`a7ebfa133a`**
+   - Commit: **`ca72a61f8bc`** (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; untagged upstream)
+   - Up to v3.5.0 the base was tag `3006.102.8-beta2`, commit `a7ebfa133a`
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
      model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 /
      ZenWiFi BQ16 / ZenWiFi BQ16 Pro — from

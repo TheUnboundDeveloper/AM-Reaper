@@ -71,8 +71,9 @@ check("JSON strings go through gk_json_esc (buffered) - never a websWrite per ch
       cgi.count("gk_json_esc(stream,") >= 4 and "rview_json_str" not in web)
 check("the settings export/import carries the rules: exported from the /jffs file, imported through rview_rules_ok, logged",
       '{ "watch",  "rwatch_rules",    RVIEW_RULES_BYTES + 1 },' in web
-      and 'char *rv = rview_slurp(RVIEW_RULES, RVIEW_RULES_BYTES);' in web
-      and 'if (!v || rview_rules_ok(v) != 0) { rejected++; continue; }' in web
+      # 2026-10-26: one /jffs-file branch serves the rules and the System Log exclusions (rlog_filter)
+      and 'v = !strcmp(nv, "rwatch_rules") ? rview_slurp(RVIEW_RULES, RVIEW_RULES_BYTES) : rview_slurp(RLOGF_FILE, RLOGF_BYTES);' in web
+      and 'if (rview_rules_ok(v) != 0 || (*v ? rjf_set(RVIEW_RULES, v, "review") != 0 : (unlink(RVIEW_RULES), 0)))' in web
       and 'rview_alog("rules", "imported from a settings file");' in web)
 
 # 2026-10-23 (owner): Reset baseline - removes ONLY the baseline (and the cached report), keeps the

@@ -141,7 +141,7 @@ head_part, tail_part = block.split(SPLIT, 1)
 tail_part = SPLIT + tail_part
 rebuild_src = lifted_array(rw, "rw_nx_rebuild_sh", macros)
 ok("D=/tmp/reaper_nx; K=/jffs/rwarden/dns.k.gz; O=/jffs/rwarden/dns.nx.gz; T=/tmp/rwarden/nx.rebuild.$$\n" in rebuild_src
-   and '/usr/sbin/wallguardc build --subtree --out $D/threat.db.new --kfile $T.k --kids "urlhaus phish c2 crypto ransom certpl threatview threatfox other legacy"' in rebuild_src
+   and '/usr/sbin/wallguardc build --subtree --out $D/threat.db.new --kfile $T.k --kids "urlhaus phish c2 crypto ransom certpl threatview threatfox other legacy custom1 custom2 custom3 custom4 custom5 custom6 custom7 custom8"' in rebuild_src
    and "/usr/sbin/wallguardc check --db $D/threat.db.new" in rebuild_src and "$T.l." not in rebuild_src,
    "the boot rebuild script lifts whole: the C defines' paths, wallguardc reads the feeds list itself (--kfile, review 2026-10-24 Q-A-3b) + check, the feed order with 'other' and 'legacy' after it")
 
@@ -490,9 +490,9 @@ for rel, needle, what in (
     ("shared/defaults.c", '{ "rwarden_dns_feeds", "urlhaus phish c2 threatfox", CKN_STR64', "defaults.c: Reaper's Basics (URLhaus mirror, phishing, C2, the ThreatFox snapshot) selected once the switch goes on"),
     ("shared/reaper_tmpsafe.h", '{ "/tmp/reaper_nx",\t\t0755 }', "reaper_tmpsafe.h: the table's directory is root's, 0755 (dnsmasq, as nobody, only reads it)"),
     ("httpd/web.c", 'fopen("/tmp/rwarden/dns.first", "r")', "web.c: the self-test takes its sample name from rc's dns.first (no text list to parse)"),
-    ("httpd/web.c", 'strcmp(name, "cfeeds") && strcmp(name, "dnsallow")) return 0;', "web.c: the page can read the dnsallow list"),
+    ("httpd/web.c", 'strcmp(name, "cfeeds") && strcmp(name, "dnsallow") && strcmp(name, "dnssrc")) return 0;', "web.c: the page can read the dnsallow list (and, 2026-10-27, its sources)"),
     ("httpd/web.c", '{ "ban", "allow", "cfeeds", "dnsallow", NULL };', "web.c: save_lists stores dnsallow"),
-    ("httpd/web.c", '!strcmp(nv + 8, "cfeeds") || !strcmp(nv + 8, "dnsallow"))', "web.c: the settings export carries the dnsallow list"),
+    ("httpd/web.c", '!strcmp(nv + 8, "cfeeds") || !strcmp(nv + 8, "dnsallow") ||', "web.c: the settings export carries the dnsallow list (2026-10-27: and the sources)"),
     ("httpd/web.c", '{ "warden", "rwarden_dns",      2   }, { "warden", "rwarden_dns_feeds", 64 },', "web.c: the switch and the list ids travel with a settings export"),
     # 2026-10-20: the settings moved to their own page, Dreadwatch (reviewer: a resolver answer and
     # an address drop are different enforcement points)
@@ -505,7 +505,8 @@ for rel, needle, what in (
     ("www/Reaper_Dreadwatch.asp", 'id="fd_basics"', "Dreadwatch: one built-in row for the Basics (nothing on the tab is removable)"),
     ("www/Reaper_Dreadwatch.asp", "if(id === 'basics') DNS_BASICS.forEach(function(b){ dfeeds.push(b); }); else dfeeds.push(id);", "Dreadwatch: saving the Basics row writes its three ids"),
     ("www/Reaper_Dreadwatch.asp", "$('fd_'+id).checked = (id === 'basics') ? DNS_BASICS.some(function(b){ return !!dfs[b]; }) : !!dfs[id];", "Dreadwatch: the Basics row reads as on when any of its lists is on"),
-    ("www/Reaper_Dreadwatch.asp", "if(updateNow || (dnsOn && changed && NV.warden === '1')){", "Dreadwatch: a changed domain setting fetches the list at once"),
+    # 2026-10-26: Warden on or off (Dreadwatch runs on its own switch)
+    ("www/Reaper_Dreadwatch.asp", "if(updateNow || (dnsOn && changed)){", "Dreadwatch: a changed domain setting fetches the list at once"),
     ("www/Reaper_Dreadwatch.asp", '<input type="hidden" name="rwarden_dns_feeds" value="">', "Dreadwatch: the list ids are applied through the form"),
     ("www/Reaper_Dreadwatch.asp", "function dwStats(){ dwGet('action=dns_status', dwRender); }", "Dreadwatch: the status follows the gated dns_status poll"),
 ):

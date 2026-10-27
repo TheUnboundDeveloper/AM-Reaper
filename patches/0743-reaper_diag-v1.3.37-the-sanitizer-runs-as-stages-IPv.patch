@@ -1,0 +1,590 @@
+From d66c3d01b1c07c784741b376f38f778acfc9625f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:54 -0400
+Subject: [PATCH] reaper_diag v1.3.37: the sanitizer runs as stages; IPv6
+ shapes, client names and generic names redacted
+
+v1.3.35: a report marked CLEAN carried the owner's IPv6 prefix - the
+sanitizer wanted a tail after "::", so a routed prefix in a Warden or
+ip6tables line passed; the reverse-zone names spelled the same prefix as
+nibbles; a DHCPv6 DUID kept the router MAC's last four bytes. All three
+shapes are redacted and the tripwire counts IPv6 residue. v1.3.36: the
+sanitizer is a pipeline of targeted stages (lit ctx mail mac ip6 ip4), each
+with its own ledger line, and a failing stage means no report; the ctx
+stage masks a client's DHCP domain and name ([CLIENT-DOMAIN-n],
+[CLIENT-NAME-n]) wherever dnsmasq or gatekeeper prints them, and the
+tripwire counts unmasked names; the boot-skeleton finding says what
+happened instead of assuming a refused line. v1.3.37: a generic device/OS
+word used as a client name is masked at its template position only, no
+longer across the whole report (uname, ps). Confirmed on the owner's box
+(_r5, _r6). Reaper_Diag.asp's sample ledger follows. Lean:
+tests/test_diag_sanitizer.py (rewritten for the pipeline),
+tests/test_tmp_hardening.py pinned, markers.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 377 +++++++++++++++++++++----
+ release/src/router/www/Reaper_Diag.asp |   9 +-
+ 2 files changed, 323 insertions(+), 63 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 8c817f6aee7..e7bd51b314d 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.34 (2026-10-10) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.37 (2026-10-13) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -76,6 +76,38 @@
+ #  (rc/rdnshc.c): switch, state and how long, the silent servers by role, whether LAN
+ #  devices ask the router or DHCP-handed servers, and a WARN finding per failing cause.
+ #
++#  v1.3.35 (2026-10-12, owner's report): three shapes the sanitizer let through, all
++#  found in one report it had marked CLEAN. (1) An IPv6 PREFIX that ends in "::"
++#  ("2001:db8:abcd::/48" in a Warden or ip6tables line): the compressed-form match
++#  demanded something after the "::", so a routed /48 was printed in full. (2) A
++#  REVERSE ZONE ("0.0.0.0.0.d.c.8.0.7.4.0.1.0.0.2.ip6.arpa" in dnsmasq's log): the
++#  same prefix spelled backwards; the IPv4 pass carved "8.0.7.4" out of its middle and
++#  left the rest. (3) A DHCPv6 DUID ("00:01:00:01:<time>:<mac>", the first line of
++#  dnsmasq's lease file): the six-byte MAC match took the front and left the router
++#  MAC's last four bytes in the open. A colon-hex run of any length is now one
++#  pseudonym, the "::" tail is optional (well-known bare prefixes fe80::, fc00::,
++#  fd00::, ff00:: and 2001:db8:: stay readable - they identify nothing and a rule
++#  line that reads "[IP6-7]/10" would lose its meaning), reverse zones of four
++#  nibbles or more become [IP6-ARPA-n], the lease file's duid line is not printed,
++#  and the tripwire re-scans for IPv6 residue too. test_diag_sanitizer.py runs the
++#  awk under busybox, gawk and mawk over exactly these lines.
++#
++#  v1.3.36 (2026-10-12, owner's _r5 report): a client's own DHCP domain ("Ignoring
++#  domain <d> for DHCP host name <n>") was printed raw - an employer's network name in
++#  a CLEAN report. The sanitizer is now a pipeline of targeted stages (section 2:
++#  literals, client-supplied names, e-mail, MAC, IPv6, IPv4), each with its own ledger
++#  lines; the new client-names stage reads the DHCP and gatekeeper log templates, so a
++#  name from days of USB syslog history is masked as well as one in the live log. The
++#  tripwire counts unmasked client names too. The boot-skeleton FINDING no longer says
++#  "one line was refused" when /tmp/err_rules is empty: it names the refused files
++#  when there are any, and otherwise says the full build never ran (no WAN yet).
++#
++#  v1.3.37 (2026-10-13, code review C5): the client-names stage masked a collected name
++#  everywhere it appeared, so a client that called itself "Linux" or "admin" blanked that
++#  word in the uname and ps lines too. A name that is only a device, vendor, OS or room
++#  word (genericname) is still masked at its template position - the promise stands -
++#  but is no longer masked across the rest of the report.
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -90,7 +122,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.34"
++VER="REAPER-DIAG v1.3.37"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -110,7 +142,7 @@ SNAP="$SCR/.rdiag_syslog.$$"
+ CTS="$SCR/.rdiag_ct.$$"
+ OUT="/tmp/reaper_diag_${MODEL}_${STAMP}.txt"
+ umask 077
+-trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $BODY $LEDG $FIND $SNAP $CTS' EXIT
++trap 'rm -f $RAW $RAW2 $SLIST $SLIST.s $AWKP $AWKP.* $BODY $BODY.* $LEDG $FIND $SNAP $CTS' EXIT
+ : > "$FIND"
+ 
+ sec() { echo ""; echo "#### $1 ####"; }
+@@ -217,42 +249,52 @@ awk -F'\t' '{ print length($2) "\t" $0 }' "$SLIST" | sort -rn | cut -f2- | awk '
+   awk -F'\t' -v mdl="$MODEL" 'toupper($2)!=toupper(mdl) && toupper($2)!="ASUS" && toupper($2)!="ASUSWRT"' > "$SLIST.s"
+ 
+ # ---------------------------------------------------------------------------
+-# 2. Sanitizer (busybox awk) - literals, MACs, IPv6, public IPv4
++# 2. Sanitizer pipeline (busybox awk) - one targeted stage per kind of data
+ # ---------------------------------------------------------------------------
+-cat > "$AWKP" <<'AWKEOF'
++# v1.3.36: the sanitizer was one program that knew two kinds of thing: values it
++# was handed (secrets, usernames, SSIDs and host names from nvram and the lease
++# files) and fixed shapes (e-mail, MAC, IPv6, IPv4). A name a LAN client chose for
++# itself is neither - dnsmasq's "Ignoring domain <d> for DHCP host name <n>" printed
++# an employer's domain raw in a report marked CLEAN - and no shape rule can catch
++# free text without also blanking names a reader needs (pool.ntp.org). So the
++# passes are separate programs now, run in order over the whole report, each
++# owning one kind of data and its own ledger lines:
++#   lit   values handed in by the literal list ($SLIST.s)
++#   ctx   names and domains clients wrote into known log lines (two passes over
++#         the report: collect from the lines, then mask everywhere)
++#   mail  e-mail addresses
++#   mac   MACs, DUIDs and colonless MACs
++#   ip6   IPv6 addresses and reverse zones
++#   ip4   public IPv4 addresses; strips the \001 sentinels and must stay LAST
++# A stage that fails stops the report: no partly sanitized file is ever written.
++# A new kind of leak gets its own stage (or a template in ctx), never a wider
++# shape rule. test_diag_sanitizer.py runs the stages, in SAN_STAGES order, under
++# busybox awk, gawk and mawk.
++SAN_STAGES="lit ctx mail mac ip6 ip4"
++
++cat > "$AWKP.lit" <<'AWKEOF'
+ BEGIN {
+   n = 0
+   while ((getline l < SFILE) > 0) {
+     t = index(l, "\t"); if (t < 2) continue
+     n++; CLS[n] = substr(l, 1, t-1); VAL[n] = substr(l, t+1)
+   }
+-  cS=0; cU=0; cW=0; cH=0; cM=0; c6=0; c4=0; cE=0
++  cS=0; cU=0; cW=0; cH=0
+ }
+ function toklit(cls, v) {
+   if (v in LMAP) return LMAP[v]
+   # v1.3.5: a \001 sentinel inside the word keeps a later literal (a hostname
+-  # "HOST-", a user "USER-") from matching inside an earlier token; stripped
+-  # before the line is printed.
++  # "HOST-", a user "USER-") from matching inside an earlier token; the ip4 stage
++  # strips it before the line is printed.
+   if (cls=="SEC")  { cS++; LMAP[v]="[R\001EDACTED-SECRET-" cS "]" }
+   else if (cls=="USR")  { cU++; LMAP[v]="[U\001SER-" cU "]" }
+   else if (cls=="SSID") { cW++; LMAP[v]="[S\001SID-" cW "]" }
+   else { cH++; LMAP[v]="[H\001OST-" cH "]" }
+   return LMAP[v]
+ }
+-function privip(ip,  a) {
+-  if (ip == FWVER) return 1
+-  split(ip, a, ".")
+-  if (a[1]>255||a[2]>255||a[3]>255||a[4]>255) return 1
+-  if (a[1]==10 || a[1]==127 || a[1]==0) return 1
+-  if (a[1]==192 && a[2]==168) return 1
+-  if (a[1]==172 && a[2]>=16 && a[2]<=31) return 1
+-  if (a[1]==169 && a[2]==254) return 1
+-  if (a[1]>=224) return 1
+-  return 0
+-}
+ {
+   line = $0
+-  # pass 1: sensitive literal values (longest first from sorted list)
++  # sensitive literal values (longest first from the sorted list)
+   # v1.3.5 (security review): build left-to-right and never re-scan the
+   # replacement - a hostname such as "HOST-" matched its own token "[HOST-n]"
+   # and looped forever, pinning httpd (the report runs inside it).
+@@ -265,29 +307,143 @@ function privip(ip,  a) {
+     }
+     line = out line
+   }
+-  # pass 1b (v1.2.0): e-mail addresses -> [EMAIL-n]. The nvram key classifier
+-  # above only catches values whose KEY looks sensitive; an address that turns
+-  # up in a log line, a DDNS record or an addon's output was passing straight
+-  # through. Runs before the MAC/IPv6/IPv4 passes so an addr@1.2.3.4 form is
+-  # taken as one unit rather than half-tokenized.
+-  out = ""
++  print line
++}
++END {
++  print "  secrets redacted           : " cS   > "/dev/stderr"
++  print "  usernames redacted         : " cU   > "/dev/stderr"
++  print "  SSID values redacted       : " cW   > "/dev/stderr"
++  print "  hostnames redacted         : " cH   > "/dev/stderr"
++}
++AWKEOF
++
++cat > "$AWKP.ctx" <<'AWKEOF'
++# v1.3.36: names and domains a LAN client wrote into a log line. Run over the
++# report twice (the file is given twice): pass 1 collects them from the known
++# templates, pass 2 masks each one everywhere it appears (5 characters or more,
++# so a short name cannot hit inside ordinary words, and not a generic device, OS,
++# vendor or room word - genericname - which identifies nobody) and at its own
++# position in the template (any length). Templates, all dnsmasq-dhcp or gatekeeper lines:
++#   "Ignoring domain <domain> for DHCP host name <name>"
++#   "DHCPACK(<if>) <ip> <mac> <name>"   (also DHCPREPLY / DHCPINFORM: name last)
++#   "not giving name <name> to the DHCP lease of ..."
++#   gatekeeper "... host (<name>) ..."
++# Generic domains (local, lan, home.arpa ...) identify nothing and stay readable.
++function istok(v) { return (index(v, "\001") > 0 || substr(v, 1, 1) == "[" || v == "*" || v == "") }
++function addr(v) { return ((v ~ /^[0-9a-fA-F:.]+$/ && v ~ /[:.]/) || v ~ /^MAC-[0-9]+$/) }
++function generic(d,  l) {
++  l = tolower(d)
++  return (l == "local" || l == "localdomain" || l == "lan" || l == "home" || l == "home.arpa" || l == "internal" || l == "intranet" || l == "localhost")
++}
++function plainname(v,  l) { l = tolower(v); return (l == "localhost" || l == "router" || l == "asus" || l == "asuswrt") }
++# v1.3.37: a name that is only a device, vendor, OS or room word identifies nobody; it is
++# masked at its template position but not across the rest of the report
++function genericname(v) { return (tolower(v) ~ /^(admin|guest|default|unknown|linux|android|windows|macos|ubuntu|debian|iphone|ipad|macbook|phone|tablet|laptop|notebook|desktop|computer|printer|scanner|camera|doorbell|thermostat|speaker|alexa|chromecast|firetv|appletv|homepod|playstation|nintendo|switch|galaxy|pixel|oneplus|kindle|watch|sonos|philips|samsung|apple|google|amazon|microsoft|lenovo|router|server|synology|raspberrypi|raspberry|espressif|esp32|esp8266|shelly|tasmota|homeassistant|openwrt|unifi|ubiquiti|tplink|netgear|canon|epson|brother|vizio|hisense|roborock|dyson|tesla|ecobee|smartthings|hubitat|homebridge|jellyfin|vacuum|fridge|washer|dryer|dishwasher|light|sensor|garage|sprinkler|solar|inverter|emporia|solaredge|kitchen|bedroom|livingroom|office|basement|upstairs|downstairs|hallway|nursery|bathroom)$/) }
++function ntok(v) { if (!(v in NM)) { cN++; NM[v] = "[CLIENT-NAME-" cN "]" }; return NM[v] }
++function dtok(v) { if (!(v in DM)) { cD++; DM[v] = "[CLIENT-DOMAIN-" cD "]" }; return DM[v] }
++# returns the line with every template position masked; with collect=1 it only
++# records what it finds (the line it returns is then not printed)
++function templ(line, collect,   p, q, rest, f, g, nf, v, i, out) {
++  if ((p = index(line, "Ignoring domain ")) > 0) {
++    rest = substr(line, p + 16); split(rest, f, " "); v = f[1]
++    if (!istok(v) && !generic(v)) {
++      if (collect) KD[v] = 1
++      else line = substr(line, 1, p + 15) dtok(v) substr(rest, length(v) + 1)
++    }
++    if ((q = index(line, "for DHCP host name ")) > 0) {
++      rest = substr(line, q + 19); split(rest, g, " "); v = g[1]
++      if (!istok(v) && !plainname(v)) {
++        if (collect) KN[v] = 1
++        else line = substr(line, 1, q + 18) ntok(v) substr(rest, length(v) + 1)
++      }
++    }
++  }
++  if (line ~ /DHCP(ACK|REPLY|INFORM)\(/) {
++    nf = split(line, f, " "); v = f[nf]
++    if (nf >= 3 && v !~ /^DHCP/ && !istok(v) && !addr(v) && !plainname(v)) {
++      if (collect) KN[v] = 1
++      else { q = length(line) - length(v); line = substr(line, 1, q) ntok(v) }
++    }
++  }
++  if ((p = index(line, "not giving name ")) > 0) {
++    rest = substr(line, p + 16); split(rest, f, " "); v = f[1]
++    if (!istok(v) && !plainname(v)) {
++      if (collect) KN[v] = 1
++      else line = substr(line, 1, p + 15) ntok(v) substr(rest, length(v) + 1)
++    }
++  }
++  if (line ~ /gatekeeper/ && (p = index(line, " host (")) > 0) {
++    rest = substr(line, p + 7); q = index(rest, ")")
++    if (q > 1) {
++      v = substr(rest, 1, q - 1)
++      if (!istok(v) && !plainname(v)) {
++        if (collect) KN[v] = 1
++        else line = substr(line, 1, p + 6) ntok(v) substr(rest, q)
++      }
++    }
++  }
++  return line
++}
++FNR == NR { templ($0, 1); next }
++FNR == 1 {
++  # pass 2 setup: the collected values, longest first, for the everywhere mask
++  m = 0
++  for (v in KN) if (length(v) >= 5 && !genericname(v)) { m++; LV[m] = v; LK[m] = "n" }
++  for (v in KD) if (length(v) >= 5) { m++; LV[m] = v; LK[m] = "d" }
++  for (i = 1; i <= m; i++) for (j = i + 1; j <= m; j++)
++    if (length(LV[j]) > length(LV[i])) { t = LV[i]; LV[i] = LV[j]; LV[j] = t; t = LK[i]; LK[i] = LK[j]; LK[j] = t }
++}
++{
++  line = $0
++  for (i = 1; i <= m; i++) {
++    v = LV[i]; out = ""
++    while ((p = index(line, v)) > 0) {
++      out = out substr(line, 1, p - 1) (LK[i] == "d" ? dtok(v) : ntok(v))
++      line = substr(line, p + length(v))
++    }
++    line = out line
++  }
++  print templ(line, 0)
++}
++END {
++  print "  client names from log lines: " cN+0   > "/dev/stderr"
++  print "  client domains redacted    : " cD+0   > "/dev/stderr"
++}
++AWKEOF
++
++cat > "$AWKP.mail" <<'AWKEOF'
++# v1.2.0: e-mail addresses -> [EMAIL-n]. The nvram key classifier only catches
++# values whose KEY looks sensitive; an address that turns up in a log line, a DDNS
++# record or an addon's output was passing straight through. Runs before the
++# MAC/IPv6/IPv4 stages so an addr@1.2.3.4 form is taken as one unit.
++{
++  line = $0; out = ""
+   while (match(line, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/)) {
+     m = substr(line, RSTART, RLENGTH)
+     if (!(m in EMAP)) { cE++; EMAP[m] = "[EMAIL-" cE "]" }
+     out = out substr(line, 1, RSTART-1) EMAP[m]
+     line = substr(line, RSTART + RLENGTH)
+   }
+-  line = out line
+-  # pass 2: MAC addresses -> MAC-n
++  print out line
++}
++END { print "  e-mail addresses redacted  : " cE+0   > "/dev/stderr" }
++AWKEOF
++
++cat > "$AWKP.mac" <<'AWKEOF'
++{
++  line = $0
++  # MAC addresses -> MAC-n. v1.3.35: a run of six bytes OR MORE is one
++  # pseudonym - a DHCPv6 DUID (00:01:00:01:<time>:<mac>) is a MAC with a prefix,
++  # and the exact-six match took its front and left the MAC's tail in the open.
+   out = ""
+-  while (match(line, /[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]/)) {
++  while (match(line, /[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F](:[0-9a-fA-F][0-9a-fA-F])*/)) {
+     m = toupper(substr(line, RSTART, RLENGTH))
+     if (!(m in MMAP)) { cM++; MMAP[m] = "MAC-" cM }
+     out = out substr(line, 1, RSTART-1) MMAP[m]
+     line = substr(line, RSTART + RLENGTH)
+   }
+   line = out line
+-  # pass 2b (v1.0.1): bare 12-hex runs = colonless MACs (bridge ids like
++  # v1.0.1: bare 12-hex runs = colonless MACs (bridge ids like
+   # 8000.aabbccddeeff, "serial:..." daemon args) - field-observed leak. Full
+   # hex runs are matched so a 12-char window inside a 16-char kernel pointer
+   # can not false-positive; all-digit 12-char runs are left alone unless the
+@@ -303,17 +459,70 @@ function privip(ip,  a) {
+     out = out substr(line, 1, RSTART-1) rep
+     line = substr(line, RSTART + RLENGTH)
+   }
+-  line = out line
+-  # pass 3: IPv6 (compressed :: forms and long full forms) -> [IP6-n]
++  print out line
++}
++END { print "  MAC addresses pseudonymized: " cM+0   > "/dev/stderr" }
++AWKEOF
++
++cat > "$AWKP.ip6" <<'AWKEOF'
++# v1.3.35: the bare well-known IPv6 prefixes that are kept as they are. Only the
++# bare form ("fe80::", "fc00::", "ff02::") and the all-nodes style multicast
++# addresses ("ff02::1", "ff02::fb") qualify: a full address under them
++# ("fe80::<EUI-64>") carries a MAC and is redacted like any other.
++function known6(a) {
++  a = tolower(a)
++  if (a ~ /::$/ && a ~ /^(fe[89ab][0-9a-f]|fc00|fd00|ff[0-9a-f][0-9a-f]|2001:db8|2001:0db8)::$/) return 1
++  if (a ~ /^ff[0-9a-f][0-9a-f]::[0-9a-f]+$/) return 1
++  return 0
++}
++{
++  line = $0
++  # IPv6 (compressed :: forms and long full forms) -> [IP6-n]. v1.3.35: the part
++  # after "::" is optional, so a prefix that ends in "::" (a routed /48 in a Warden
++  # or ip6tables rule) is matched too; the bare well-known prefixes in known6() are
++  # kept as they are.
+   out = ""
+-  while (match(line, /[0-9a-fA-F][0-9a-fA-F:]*::[0-9a-fA-F:.]*[0-9a-fA-F]|[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F:.]+/)) {
+-    m = substr(line, RSTART, RLENGTH)
+-    if (!(m in M6)) { c6++; M6[m] = "[IP6-" c6 "]" }
+-    out = out substr(line, 1, RSTART-1) M6[m]
++  while (match(line, /[0-9a-fA-F][0-9a-fA-F:]*::([0-9a-fA-F:.]*[0-9a-fA-F])?|[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F:.]+/)) {
++    m = substr(line, RSTART, RLENGTH); rep = m
++    if (!known6(m)) { if (!(m in M6)) { c6++; M6[m] = "[IP6-" c6 "]" }; rep = M6[m] }
++    out = out substr(line, 1, RSTART-1) rep
+     line = substr(line, RSTART + RLENGTH)
+   }
+   line = out line
+-  # pass 4: IPv4 - keep private/loopback/multicast/masks, token the rest
++  # v1.3.35: IPv6 reverse zones -> [IP6-ARPA-n]. dnsmasq logs the zones it answers
++  # reverse lookups for as nibble names, which is a global prefix spelled
++  # backwards; four nibbles or more. Runs before the IPv4 stage, which used to
++  # carve a "public IPv4" out of the middle of the nibbles.
++  out = ""
++  while (match(line, /[0-9a-fA-F]\.[0-9a-fA-F]\.[0-9a-fA-F]\.[0-9a-fA-F]\.([0-9a-fA-F]\.)*ip6\.arpa/)) {
++    m = tolower(substr(line, RSTART, RLENGTH))
++    if (!(m in MA)) { cA++; MA[m] = "[IP6-ARPA-" cA "]" }
++    out = out substr(line, 1, RSTART-1) MA[m]
++    line = substr(line, RSTART + RLENGTH)
++  }
++  print out line
++}
++END {
++  print "  IPv6 addresses redacted    : " c6+0   > "/dev/stderr"
++  print "  IPv6 reverse zones redacted: " cA+0   > "/dev/stderr"
++}
++AWKEOF
++
++cat > "$AWKP.ip4" <<'AWKEOF'
++function privip(ip,  a) {
++  if (ip == FWVER) return 1
++  split(ip, a, ".")
++  if (a[1]>255||a[2]>255||a[3]>255||a[4]>255) return 1
++  if (a[1]==10 || a[1]==127 || a[1]==0) return 1
++  if (a[1]==192 && a[2]==168) return 1
++  if (a[1]==172 && a[2]>=16 && a[2]<=31) return 1
++  if (a[1]==169 && a[2]==254) return 1
++  if (a[1]>=224) return 1
++  return 0
++}
++{
++  line = $0
++  # IPv4 - keep private/loopback/multicast/masks, token the rest
+   out = ""
+   while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
+     m = substr(line, RSTART, RLENGTH)
+@@ -323,19 +532,10 @@ function privip(ip,  a) {
+     line = substr(line, RSTART + RLENGTH)
+   }
+   line = out line
+-  gsub("\001", "", line)
++  gsub("\001", "", line)   # the LAST stage removes the lit stage's sentinels
+   print line
+ }
+-END {
+-  print "  secrets redacted           : " cS   > "/dev/stderr"
+-  print "  usernames redacted         : " cU   > "/dev/stderr"
+-  print "  SSID values redacted       : " cW   > "/dev/stderr"
+-  print "  hostnames redacted         : " cH   > "/dev/stderr"
+-  print "  MAC addresses pseudonymized: " cM   > "/dev/stderr"
+-  print "  IPv6 addresses redacted    : " c6   > "/dev/stderr"
+-  print "  public IPv4 redacted       : " c4   > "/dev/stderr"
+-  print "  e-mail addresses redacted  : " cE   > "/dev/stderr"
+-}
++END { print "  public IPv4 redacted       : " c4+0   > "/dev/stderr" }
+ AWKEOF
+ 
+ # ---------------------------------------------------------------------------
+@@ -957,8 +1157,10 @@ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+   if [ -f "$LF" ]; then
+     echo "  lease count: $(wc -l < $LF)"
+     # v1.3.5: fields only (expiry mac ip host); hostnames under 5 characters
+-    # are not on the redaction list, so they are shown as their length
+-    awk '{ h=$4; if (h != "*" && length(h) < 5) h="[host-" length(h) "ch]"; print "  " $1, $2, $3, h }' "$LF"
++    # are not on the redaction list, so they are shown as their length.
++    # v1.3.35: with DHCPv6 on, the file's first line is "duid <server DUID>",
++    # which embeds the router's own MAC and says nothing diagnostic - skipped.
++    awk '$1 == "duid" { next } { h=$4; if (h != "*" && length(h) < 5) h="[host-" length(h) "ch]"; print "  " $1, $2, $3, h }' "$LF"
+     break
+   fi
+ done
+@@ -1333,7 +1535,20 @@ fi
+ [ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" = 0 ] && finding WARN "port forwarding is ON but nat/PREROUTING has no jump to VSERVER - the WAN address was unknown when the firewall was built, or something rebuilt the nat table without it; forwards cannot work until the hook exists (see 14f)"
+ [ "$_vts" = 1 ] && [ "$_pfm" -gt 0 ] && finding WARN "port forwarding: $_pfm of $_pfn saved rule(s) have NO DNAT line in VSERVER - the rule was dropped at emission (charset gate) or the chain was flushed (see 14f)"
+ [ "$_vts" = 1 ] && [ "$_nrules" -gt 0 ] && [ "$_hook" -gt 0 ] && [ "$_pfm" = 0 ] && [ "$(iptables -S FORWARD 2>/dev/null | grep -c -- '--ctstate DNAT -j ACCEPT')" = 0 ] && finding WARN "port forwarding: DNAT lines are live but FORWARD has no ctstate-DNAT accept - forwarded flows are translated and then dropped (see 14f)"
+-[ "$_skel" = 1 ] && [ "$(nvram get sw_mode 2>/dev/null)" = 1 ] && finding WARN "firewall: the filter table is the boot-time skeleton only - the full ruleset never loaded (one line was refused; see 14f, the firewall: lines in 19 and /tmp/err_rules); port forwards, VPN server chains and the DoS guard are NOT in force"
++# v1.3.36: say what actually happened - a refused restore leaves .err files; with none, the
++# full build never ran (the router builds it when the WAN comes up, and rwatch asks for one
++# rebuild at its next tick when it finds the skeleton). It used to say "one line was refused"
++# in every case, which sent the reader to an empty /tmp/err_rules.
++_nerr=$(ls /tmp/err_rules/*.err 2>/dev/null | wc -l)
++if [ "$_skel" = 1 ] && [ "$(nvram get sw_mode 2>/dev/null)" = 1 ]; then
++  if [ "$_nerr" -gt 0 ]; then
++    finding WARN "firewall: the filter table is the boot-time skeleton only - the full ruleset was refused ($_nerr restore file(s) in /tmp/err_rules; see 14f and the firewall: lines in 19); port forwards, VPN server chains and the DoS guard are NOT in force"
++  elif [ "$(nvram get wan0_state_t 2>/dev/null)" != 2 ]; then
++    finding WARN "firewall: the filter table is the boot-time skeleton only - the full build has not run yet, and no refused line was recorded; the router builds it when the WAN connects (none yet: see 5) and rwatch requests one rebuild at its next tick. Port forwards, VPN server chains and the DoS guard are NOT in force until then"
++  else
++    finding WARN "firewall: the filter table is the boot-time skeleton only although the WAN is connected, and no refused line was recorded in /tmp/err_rules - read the firewall: lines in 19; port forwards, VPN server chains and the DoS guard are NOT in force"
++  fi
++fi
+ 
+ sec "14g. FIREWALL WITNESSES (reaper_fwsim - each feature's promise walked through the live tables)"
+ # v1.3.19: the walker pushes witness packets (ingress interface, addresses,
+@@ -1609,12 +1824,29 @@ echo ""; echo "#### END OF DIAG ####"
+   echo "  (WARN = acts on the fault class the section names; INFO = worth knowing, not a fault)"
+   cat "$RAW"
+ } > "$RAW2"
+-awk -v SFILE="$SLIST.s" -v FWVER="$(nvram get firmver 2>/dev/null)" -f "$AWKP" "$RAW2" > "$BODY" 2> "$LEDG"
++# v1.3.36: the stages run in SAN_STAGES order, each over the whole report; ctx is
++# given the file twice (collect, then mask). Any stage that fails ends the run with
++# no report written - a partly sanitized file must never reach the download.
++_FWV="$(nvram get firmver 2>/dev/null)"; _in="$RAW2"; _sn=0; : > "$LEDG"
++for _st in $SAN_STAGES; do
++  _sn=$((_sn+1))
++  if [ "$_st" = ctx ]; then _args="$_in $_in"; else _args="$_in"; fi
++  # word splitting of _args is deliberate (two paths with no spaces, both ours)
++  # shellcheck disable=SC2086
++  if ! awk -v SFILE="$SLIST.s" -v FWVER="$_FWV" -f "$AWKP.$_st" $_args > "$BODY.$_sn" 2>> "$LEDG"; then
++    rm -f "$BODY".* "$BODY"
++    echo "reaper_diag: sanitizer stage '$_st' failed - no report written" >&2
++    exit 1
++  fi
++  [ "$_in" = "$RAW2" ] || rm -f "$_in"
++  _in="$BODY.$_sn"
++done
++mv -f "$_in" "$BODY"
+ 
+ # ---------------------------------------------------------------------------
+-# 4b. POST-SANITIZE TRIPWIRE (v1.2.0)
+-# Re-scan the FINISHED body for anything still shaped like a public IPv4, a MAC
+-# or an e-mail. This is not a second sanitizer - it is the check that the first
++# 4b. POST-SANITIZE TRIPWIRE (v1.2.0; v1.3.35 adds the IPv6 shapes; v1.3.36 client names)
++# Re-scan the FINISHED body for anything still shaped like a public IPv4, an IPv6
++# address or reverse zone, a MAC or an e-mail. This is not a second sanitizer - it is the check that the first
+ # one actually worked, so that adding a section can never quietly start leaking.
+ # It prints COUNTS ONLY; printing an offending value would put the leak into the
+ # very file being audited. Uses the same privip() rules as the sanitizer so the
+@@ -1632,6 +1864,14 @@ RESID="$(awk -v FWVER="$(nvram get firmver 2>/dev/null)" '
+     if (a[1]>=224) return 1
+     return 0
+   }
++  function cok(v,  l) { l = tolower(v); return (substr(v, 1, 1) == "[" || v == "*" || v == "" || l == "localhost" || l == "router" || l == "asus" || l == "asuswrt") }
++  function gen(d,  l) { l = tolower(d); return (l == "local" || l == "localdomain" || l == "lan" || l == "home" || l == "home.arpa" || l == "internal" || l == "intranet" || l == "localhost") }
++  function known6(a) {
++    a = tolower(a)
++    if (a ~ /::$/ && a ~ /^(fe[89ab][0-9a-f]|fc00|fd00|ff[0-9a-f][0-9a-f]|2001:db8|2001:0db8)::$/) return 1
++    if (a ~ /^ff[0-9a-f][0-9a-f]::[0-9a-f]+$/) return 1
++    return 0
++  }
+   {
+     line = $0
+     while (match(line, /[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*/)) {
+@@ -1646,14 +1886,29 @@ RESID="$(awk -v FWVER="$(nvram get firmver 2>/dev/null)" '
+     while (match(line, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z]+/)) {
+       rE++; line = substr(line, RSTART + RLENGTH)
+     }
++    line = $0
++    while (match(line, /[0-9a-fA-F][0-9a-fA-F:]*::([0-9a-fA-F:.]*[0-9a-fA-F])?|[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F]+:[0-9a-fA-F:.]+/)) {
++      m = substr(line, RSTART, RLENGTH); if (!known6(m)) r6++
++      line = substr(line, RSTART + RLENGTH)
++    }
++    line = $0
++    while (match(line, /[0-9a-fA-F]\.[0-9a-fA-F]\.[0-9a-fA-F]\.[0-9a-fA-F]\.([0-9a-fA-F]\.)*ip6\.arpa/)) {
++      r6++; line = substr(line, RSTART + RLENGTH)
++    }
++    # v1.3.36: the client-names templates, read back: every value there must be a token
++    line = $0
++    if ((p = index(line, "Ignoring domain ")) > 0) { split(substr(line, p + 16), f, " "); if (!cok(f[1]) && !gen(f[1])) rC++ }
++    if ((p = index(line, "for DHCP host name ")) > 0) { split(substr(line, p + 19), f, " "); if (!cok(f[1])) rC++ }
++    if (line ~ /DHCP(ACK|REPLY|INFORM)\(/) { nf = split(line, f, " "); v = f[nf]; if (nf >= 3 && v !~ /^DHCP/ && !cok(v) && v !~ /^MAC-[0-9]+$/ && v !~ /^[0-9.]+$/) rC++ }
++    if ((p = index(line, "not giving name ")) > 0) { split(substr(line, p + 16), f, " "); if (!cok(f[1])) rC++ }
+   }
+-  END { printf "%d %d %d", r4+0, rM+0, rE+0 }' "$BODY")"
+-# Deliberate word splitting of the "n n n" triple below.
++  END { printf "%d %d %d %d %d", r4+0, rM+0, rE+0, r6+0, rC+0 }' "$BODY")"
++# Deliberate word splitting of the "n n n n n" figures below.
+ # shellcheck disable=SC2086
+ set -- $RESID
+-R4="${1:-0}"; RM="${2:-0}"; RE="${3:-0}"
+-if [ "$R4" = "0" ] && [ "$RM" = "0" ] && [ "$RE" = "0" ]; then
+-  VERDICT="CLEAN - no public IPv4, MAC or e-mail shape survived the sanitizer"
++R4="${1:-0}"; RM="${2:-0}"; RE="${3:-0}"; R6="${4:-0}"; RC="${5:-0}"
++if [ "$R4" = "0" ] && [ "$RM" = "0" ] && [ "$RE" = "0" ] && [ "$R6" = "0" ] && [ "$RC" = "0" ]; then
++  VERDICT="CLEAN - no public IPv4, IPv6, MAC, e-mail or client-supplied name survived the sanitizer"
+ else
+   VERDICT="REVIEW BEFORE SHARING - residue detected, see counts above"
+ fi
+@@ -1671,8 +1926,10 @@ set -C
+   echo ""
+   echo "  -- post-sanitize verification (counts only; values never printed) --"
+   echo "  residual public IPv4 shapes : $R4"
++  echo "  residual IPv6 shapes        : $R6"
+   echo "  residual MAC shapes         : $RM"
+   echo "  residual e-mail shapes      : $RE"
++  echo "  residual client names       : $RC"
+   echo "  VERDICT: $VERDICT"
+   echo ""
+   echo "  NOTE: pseudonyms (MAC-n / [EXT-IP-n] / [SSID-n] ...) are consistent"
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 887d7d90937..9b8136c9d1c 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.34</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.37</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+@@ -115,16 +115,19 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+   secrets redacted           : <span class="g">2</span>
+   usernames redacted         : <span class="g">1</span>
+   SSID values redacted       : <span class="g">3</span>
++  client names from log lines: <span class="g">2</span>
+   MAC addresses pseudonymized: <span class="g">14</span>
+   public IPv4 redacted       : <span class="g">3</span>
+   e-mail addresses redacted  : <span class="g">0</span>
+ 
+   -- post-sanitize verification (counts only; values never printed) --
+   residual public IPv4 shapes : <span class="g">0</span>
++  residual IPv6 shapes        : <span class="g">0</span>
+   residual MAC shapes         : <span class="g">0</span>
+   residual e-mail shapes      : <span class="g">0</span>
+-  VERDICT: <span class="g">CLEAN</span> - no public IPv4, MAC or e-mail shape
+-           survived the sanitizer
++  residual client names       : <span class="g">0</span>
++  VERDICT: <span class="g">CLEAN</span> - no public IPv4, IPv6, MAC, e-mail or
++           client-supplied name survived the sanitizer
+   <span class="r">NOTE: no credentials, MACs, host/user names or external IPs
+   are contained in this file. Safe to post publicly.
+   Set MEMBERS are never read - firewall sizes only.</span></pre>
+-- 
+2.25.1
+

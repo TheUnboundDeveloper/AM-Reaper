@@ -92,8 +92,11 @@ check("S-A-9 rednsd stops rather than keep root when the nobody account is missi
 check("S-B-3 the Encrypted DNS status prints rednsd's file first, the router's fields after it",
       '"{\\"st\\":%s,\\"ok\\":1,\\"enabled\\":%d' in web and '",\\"blk\\":{\\"on\\":%d' in web)
 check("S-B-4 every Wallguard save checker reads the whole line (%n lands on its end) and the JSON file emitter escapes < > &",
-      web.count("sh_whole(l, n)") == 7 and 'sscanf(l, "%23s %lx %39[^\\n]%n", id, &m, name, &n)' in web
-      and 'sscanf(l, "custom %d %419s%n", &slot, url, &n)' in web and 'sscanf(l, "%23s %1099s%n", id, ids, &n)' in web
+      # 2026-10-26: a custom list line may carry options after its URL; the rest of that line goes to
+      # sh_chk_opts(), which refuses any token it does not know - still "the whole line is read"
+      web.count("sh_whole(l, n)") == 6 and 'sscanf(l, "%23s %lx %39[^\\n]%n", id, &m, name, &n)' in web
+      and 'sscanf(l, "custom %d %419s%n", &slot, url, &n) == 2 && slot >= 1 && slot <= 8 && sh_url(url) && sh_chk_opts(l + n)' in web
+      and 'sscanf(l, "%23s %1099s%n", id, ids, &n)' in web
       and 'sscanf(l, "%23s %x %7s %7s%n", id, &d, a, z, &n)' in web and 'sscanf(l, "%23s %u%n", id, &f, &n)' in web
       and 'sscanf(l, "mac %39s %23s%n", a, id, &n)' in web and 'sscanf(l, "net %39s %23s%n", a, id, &n)' in web
       # Q-B-9: the JSON file emitter is the firewall page's fw_json_frag (one escaper), which escapes < > &
@@ -103,7 +106,7 @@ check("S-B-5 the Network Tools argv store takes a 253-byte host name whole", "ch
 
 # ---- the correctness items
 check("Q-B-1 reaper_diag reads the /jffs copy's time with date -r (no stat applet), v1.3.47",
-      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.50"' in diag)
+      "_tdu=$(date -r /jffs/rwarden/dns.k.gz +%s 2>/dev/null)" in diag and "stat -c" not in diag and 'VER="REAPER-DIAG v1.3.51"' in diag)
 shp = read("www/Reaper_Wallguard.asp")
 check("Q-C2-1 the Wallguard page keeps the Assign, Pause and Unbreak targets across the 15 s poll",
       "kt = t.value, kp = p.value, keep = u.value;" in shp and "if(kt) t.value = kt;" in shp and "if(kp) p.value = kp;" in shp and "if(keep) u.value = keep;" in shp)
@@ -198,7 +201,7 @@ shc, sdb, sdb2, dsh, stio, tmps, rcsh, encc, rtd = (read("wallguard/wallguardc.c
                                                    read("rc/wallguard.c"), read("rc/encdns.c"), read("rtrafd/rtrafd.c"))
 check("Q-A-3b wallguardc reads the feeds list itself (--kfile/--kids); update.sh and the boot rebuild use it, no split files",
       "static void read_kfile(const char *file, struct src *kid, int nk, int all_sub)" in shc and '"--kids"' in shc
-      and '--kfile $DN.k --kids \\"$RW_DIDS other\\"' in rwd and '--kfile $T.k --kids \\"" RW_DIDS_STR " other legacy\\"' in rwd
+      and '--kfile $DN.k --kids \\"$RW_DIDS other $RW_DCUST\\"' in rwd and '--kfile $T.k --kids \\"" RW_DIDS_STR " other legacy " RW_DCUST_STR "\\"' in rwd
       and "$DN.l." not in rwd and "$T.l." not in rwd)
 check("Q-A-8 the Wallguard policy reads the network table once, and identical policy / DoH-name files are not rewritten",
       "int mread = 0;" in rcsh and "get_mtlan(pmtl, &msz);" in rcsh and rcsh.count("get_mtlan(") == 1

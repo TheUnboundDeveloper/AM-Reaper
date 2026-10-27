@@ -1,0 +1,84 @@
+From affb78d75d9b5077535e48ddfeb3326b4acb8037 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 17 Oct 2026 19:18:21 -0400
+Subject: [PATCH] Asuswrt-Merlin 3006.102.10 carries: wanduck, WPS PIN, httpd
+ guards, IPsec, LLMNR, mounts, Time Machine, libdisk, minidlna
+
+Fixes from Eric "Merlin" Sauvageau's 3006.102.10 alpha 2 (29 commits over
+3006.102.9, GPL merge 0c5d53820c), each read against the Reaper tree before
+it was taken:
+- wanduck: FD_CLR(sfd) before the close, "Host:" parsed past the colon and
+  whitespace, gai_strerror on resolver errors, a NULL target guarded. The
+  "set_disconn_count only when switch_wan_line succeeds" refinement is NOT
+  taken: switch_wan_line() returns 0 when the target is already primary,
+  which would skip the reset and reopen the GT-BE98 fail-back loop.
+- services.c wl_wpsPincheck(): digits only. "0;reboot" parsed as 0 with a
+  valid checksum and reached the hostapd_cli command line (ASUS GPL 102_40585).
+- httpd web.c: eight upload handlers walk value = strstr(p, "\r\n\r\n") + 4
+  only when strstr() found it; nvram_check() guards a NULL str2;
+  validate_apply() guards its two NULLs; the Main_AdmStatus SystemCmd route
+  is removed (the page is not shipped; system_cmd_test is an extern in the
+  prebuilt web_hook.o, left alone).
+- firewall.c: IPSEC_DROP_SUBNET_ICMP uses lan_netmask instead of a /24.
+- wsdd2 llmnr.c: the loop entry is bounded.
+- common.c check_mountpoint(): getline() instead of a fixed buffer (stack
+  overflow on \040-escaped labels) and the fclose leak.
+- timemachine.c, libdisk disk_io_tools.c + disk_share.c, minidlna upnpsoap.c
+  + tagutils-dff.c: upstream verbatim.
+Not carried, by design: httpd no_cache max-age (drops no-store), the
+VUPNP/FUPNP re-add, unconditional core dumps, the Instant Guard INPUT
+insert, the WireGuard kill-switch rework, forced pause on ethernet ports.
+
+web.c also carries ej_wlpro_nvram()'s parse of wlN_chanfit_st for the
+Wireless page (whole-file grouping; it belongs with the node-fit commit).
+
+Host suites 72 pass / 2 skip, static checks 14/14. Metal: owner RT-BE96U
+v3.4.5_BETA_r7..r9.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 3c43f35e392..8e3c6330bde 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -43485,6 +43485,34 @@ ej_wlpro_nvram(int eid, webs_t wp, int argc, char_t **argv)
+ 			fclose(f);
+ 	}
+ 
++	/* reaper v3.4.6: the node fit (rc/reaper_meshchan.c) rides the same state line as
++	 * " fit=<s> nodes=<n> compat=<m> nondfs=<k> mld=<0|1> [hold=<h>] [next=<s>]", handed to
++	 * the page as wlN_chanfit_st = "fit|nodes|compat|nondfs|mld|hold|next" */
++	{
++		FILE *f = fopen("/tmp/reaper_bwfloor/state", "r");
++		char line[512], fs[16], nd[8], cp[8], nf[8], ml[4], hd[16], nx[12], val[80];
++		int u;
++
++		while (f && fgets(line, sizeof(line), f)) {
++			if (sscanf(line, "wl%d ", &u) != 1 || u < 0 || u > 7)
++				continue;
++			wlpro_punct_field(line, " fit=", fs, sizeof(fs));
++			if (!fs[0])
++				continue;
++			wlpro_punct_field(line, " nodes=", nd, sizeof(nd));
++			wlpro_punct_field(line, " compat=", cp, sizeof(cp));
++			wlpro_punct_field(line, " nondfs=", nf, sizeof(nf));
++			wlpro_punct_field(line, " mld=", ml, sizeof(ml));
++			wlpro_punct_field(line, " hold=", hd, sizeof(hd));
++			wlpro_punct_field(line, " next=", nx, sizeof(nx));
++			snprintf(val, sizeof(val), "%s|%s|%s|%s|%s|%s|%s", fs, nd, cp, nf, ml, hd, nx);
++			snprintf(key, sizeof(key), "wl%d_chanfit_st", u);
++			json_object_object_add(o, key, json_object_new_string(val));
++		}
++		if (f)
++			fclose(f);
++	}
++
+ 	/* reaper v3.3.1: the interference-mitigation pass of the puncturing applier
+ 	 * (/tmp/reaper/reaper_wlmit.state "wlN ... result=<r>"), handed to the page as wlN_rmit_st */
+ 	{
+-- 
+2.25.1
+

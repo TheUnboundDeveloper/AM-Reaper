@@ -1,0 +1,44 @@
+From 69381a9944bc34f839ec14cfe2c2c2c7a2daf9cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 11:49:00 -0400
+Subject: [PATCH] httpd: do_ModelProduct_png bounds its lowercase copy of
+ odmpid
+
+The loop copied every character of odmpid into the 32-byte lowercase_pid with no
+bound, then wrote a NUL through the source pointer instead of terminating the
+copy. A long odmpid (an nvram value; admin-set) overran the stack buffer. Bounded
+to sizeof - 1 and terminated, as do_CoBrand_img() already does for the same copy.
+Pre-existing in both the Reaper tree and ASUS 40585; found during the merge's
+loss audit.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 73219066755..d4ef50f3200 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -39529,12 +39529,15 @@ static void do_ModelProduct_png(char *url, FILE *stream)
+     char lowercase_pid[32] = {0};
+     char *p;
+ 
++    /* reaper 2026-10-27: bounded to the 32-byte buffer (odmpid is an nvram value of any length, and the
++       loop wrote past lowercase_pid for a long one); NUL-terminate the copy, not the source string.
++       Same bound as do_CoBrand_img() below. */
+     p = odmpid;
+-    for(i = 0; i < strlen(odmpid); i++){
+-        lowercase_pid[i] = tolower(*p);
++    for(i = 0; i < (int)strlen(odmpid) && i < (int)sizeof(lowercase_pid) - 1; i++){
++        lowercase_pid[i] = tolower((unsigned char)*p);
+         p++;
+     }
+-    *p = '\0';
++    lowercase_pid[i] = '\0';
+ 
+     if(!strcmp(productid, "TUF-BE9400") || !strcmp(productid, "TUF-BE6500"))
+         snprintf(default_image_name, sizeof(default_image_name), "Model_product_%s", productid);
+-- 
+2.25.1
+

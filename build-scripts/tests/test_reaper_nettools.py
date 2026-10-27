@@ -46,7 +46,7 @@ A, N, W, S = (T[p] for p in PAGES)
 for p in ("Reaper_Analysis.asp", "Reaper_Netstat.asp", "Reaper_WOL.asp"):
     # review 2026-10-24 (Q-C2-11): the reaper_net.cgi client is the kit's rp.net; the page passes its own token
     check(p + ": calls reaper_net.cgi with the http_id token", "rp.net(HTTPID, params, cb)" in T[p]
-          and "var HTTPID = '<% nvram_get(\"http_id\"); %>';" in T[p])
+          and "var HTTPID = <% nvram_get_js(\"http_id\"); %>;" in T[p])
 check("kit: rp.net POSTs to reaper_net.cgi with the page's http_id first in the body",
       "rp.net = function(httpId, params, cb){" in rd(os.path.join(www, "reaper", "rp.js"))
       and "'http_id=' + encodeURIComponent(httpId) + '&' + params" in rd(os.path.join(www, "reaper", "rp.js"))
@@ -76,7 +76,7 @@ check("kit: rp.pingPresets (one preset loader) and rp.cmp", "rp.pingPresets = fu
 # C: the runner
 web = rd(os.path.join(SRC, "httpd", "web.c"))
 i0 = web.index("#define RNET_DIR"); i1 = web.index("reaper v2.6.10: Reaper-wide settings export", i0); R = web[i0:i1]
-check("reaper_net.cgi registered with do_auth and gated by reaper_gate", '{ "reaper_net.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_net_cgi, do_auth },' in web
+check("reaper_net.cgi registered with do_auth and gated by reaper_gate", '{ "reaper_net.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_net_cgi, do_auth },' in web
       and "why = reaper_gate();" in R)
 check("runner: execvp, no shell (no system / popen / sh -c in the runner)", "execvp(j->argv[0], j->argv);" in R and not re.search(r"\b(system|popen|vpopen)\s*\(", R) and "sh -c" not in R)
 check("runner: one job (lock), runtime cap kills the tool, output capped, state always ends in DONE",
@@ -89,7 +89,9 @@ check("diag collector and runner share reaper_detach (the diag handler no longer
 # C: stock paths hardened
 check("apply.cgi SystemCmd: NULL guard (B2), shape check, atoi(NULL) fix (B1), WOL per-port wakes use the validated MAC (B6)",
       "/* reaper 2026-10-23 (B2)" in web and "if (!reaper_syscmd_shape_ok(current_url, system_cmd, wolmac, sizeof(wolmac))) {" in web
-      and "wan = u ? get_wan_ifname(atoi(u)) : NULL;" in web and "strlcpy(dstmac, wolmac, sizeof(dstmac));" in web)
+      # B1: ASUS 40585 guards atoi() with `sel`, which is 0 whenever u is NULL or empty (merge stop 63: covers our `u ?`)
+      and "if (!u || *u == '\\0' || !nvram_match(\"wans_mode\", \"lb\") ||" in web
+      and "wan = sel ? get_wan_ifname(atoi(u)) : NULL;" in web and "strlcpy(dstmac, wolmac, sizeof(dstmac));" in web)
 check("netool.cgi: targets validated, result reads limited, IPv4-only hosts, no interface override, counts/timeouts capped",
       "else if (rt != REQ_NETSTAT_MODE && rt != REQ_NETSTAT_NAT_MODE && !rnet_host_ok(target, 0)) {" in web and 'interface = "";' in web
       and web.count("if (req_t.response > 10) req_t.response = 10;") == 2 and web.count("if (req_t.hops > 30) req_t.hops = 30;") == 2)
@@ -148,7 +150,7 @@ node = shutil.which("node")
 if node:
     for p, t in T.items():
         s = re.findall(r"<script>(.*?)</script>", t, re.S)[-1]
-        s = re.sub(r"<%.*?%>", "0", s); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
+        s = re.sub(r"<%.*?%>", "0", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', s)); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(s); jp = f.name
         r = subprocess.run([node, "--check", jp], capture_output=True, text=True); os.unlink(jp)
         check(p + ": script parses (node --check)", r.returncode == 0, r.stderr[-300:])

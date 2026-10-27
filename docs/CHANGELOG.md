@@ -1,13 +1,14 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.6.0** · 2026-10-27 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
 per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
-All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
-Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
+From v3.6.0 the firmware line is `3006.102.10_Reaper_v<X>`, built on the Asuswrt-Merlin
+3006.102.10 base (ASUS GPL 102_40585); v1.0 - v3.5.0 are the `3006.102.8_Reaper_v<X>` line on the
+3006.102.8 base. All are for the ASUS RT-BE Series (BCM4916 platform).
 The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
 **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
 the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
@@ -45,6 +46,58 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.0 — rebased onto Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585), custom-script output kept, your own Wallguard and Dreadwatch sources, Bastion
+
+Everything in v3.5.0 is included.
+
+- **New base: Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585).** The Reaper series was rebased from
+  `3006.102.8-beta2` (`a7ebfa133a`) onto Merlin `main` at `ca72a61f8bc` (untagged upstream). The firmware line is
+  now `3006.102.10_Reaper_v<X>`; image names carry `3006_102.10`. Every Reaper change was replayed; where upstream
+  had fixed the same defect its fix was kept - the `asus_openssl_crypt` injection (C6), IPsec profile parsing
+  (H6/M2) and the miniupnpd 2.3.10 carry now come from upstream. A file-by-file audit of the result against the
+  pre-rebase tree found the Reaper fixes the replay had undone (four shipped stock pages, the multi-WAN DNS check)
+  and restored them, and seven stock pages Reaper deletes (app installer, AiCloud / WebDAV, the AiDisk wizard,
+  AiProtection groups, Alexa / IFTTT) stay deleted - the rebase had re-created them. The AiMesh MAC checks are
+  upstream's `isValidMacAddress()` now, hardened to refuse any character but hex digits and separators. The patch series is regenerated from the new base: 855 patches, numbered from `0001`.
+- **libnvram / libwlcsm: ASUS's 40585 pair.** Same netlink socket-leak fix as the 42015 pair Reaper carried since
+  v3.1.8, plus a caller check in `nvram_set()`. **Behaviour change:** only init, rc, httpd, cfg_server/cfg_client,
+  asd, ahs and ookla_quota_mon may write `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys` and
+  `ookla_quota`; a shell `nvram set` of one of them is refused. Set them from the web UI. GT-BE98, GT-BE19000,
+  BQ16 and BQ16 Pro keep the 42015 pair: their platform trees predate the caller check.
+- **OpenVPN server certificates on Easy-RSA 3.** On OpenSSL 3 builds 40585 stages `easyrsa` and no `pkitool`. The
+  server-certificate repair imports the CA the router already holds into a fresh PKI and issues the server leaf
+  with easyrsa; `reaper_verify` (ovpn-pki) runs the first-time and the repair chains on the image's own openssl.
+- **Custom scripts keep their output and say when they fail.** rc runs `/jffs/scripts/*` as before, but under a
+  watcher: the first 64 KB of a script's output is kept in `/tmp/reaper/script-<name>.log` (last run) and one
+  syslog line reports a non-zero exit with the last thing it printed. A script with Windows line endings is named
+  as such. `reaper_diag` v1.3.51 section 13 reports each script (executable, CRLF, last outcome).
+- **Wallguard and Dreadwatch: removable built-in lists, your own sources, API sources.** Every list can be removed,
+  including the ones the router sets up; your own lists are a text list at an `https://` address or a supplier's
+  API (GET or POST, a JSON field, one header). API keys are write-only (`/jffs/wallguard/keys`,
+  `/jffs/rwarden/dnskeys`, root 0600) and reach curl only through a root-only config file. Dreadwatch fetches
+  through Wallguard's code path.
+- **Bastion.** The menu that holds Warden, Dreadwatch, Wallguard and Encrypted DNS is named Bastion; the Warden tab
+  keeps its name. The four tools no longer gate each other: Dreadwatch runs without Warden.
+- **WAN 802.1Q only where the firmware can tag the WAN.** GT-BE98, GT-BE19000, BQ16 and BQ16 Pro build without
+  Multi-Service WAN, so the switch was dropped on save, the router rebooted and came back with no connection. The
+  page now shows the switch only with `mswan` support and points the others to LAN > IPTV (Internet VID / PRIO).
+- **Backups carry every option and keep the DDNS hostname.** The settings file now includes Wallguard and
+  Dreadwatch's sources; a restore no longer brings Wallguard back on with no lists. The hostname is no longer
+  blanked (Reaper has no ASUS DDNS, so every hostname is the operator's own).
+- **Browsers see a new page after a flash or a setting change.** Every ETag carries the build, stylesheets and
+  Reaper scripts answer `Cache-Control: no-cache`, and a page with server-side values gets no ETag.
+- **Settings written into page scripts are escaped** (`nvram_get_js`): a value holding `'` or `\` can no longer end
+  a script string early on Reaper pages.
+- **Translated labels fit.** A label too long for its space is shortened with "..." and shows the whole word on
+  hover; only shortened labels get the tooltip.
+- **Wireless Log:** one box per network inside each radio (main, guests, the AiMesh backhaul), named.
+- **Fixes:** the Internet Speed Test tab opens at once under the Reaper shell (it waited ~5 s for a stock menu
+  height); rwatch stands down during a firmware upgrade (a tick in the upgrade's teardown reported the missing
+  firewall chains as a failure and restarted rpunctd); USB start no longer logs a failed `tfs_linux` modprobe on
+  4.19-kernel models; httpd bounds the model name it lower-cases for the product image; the Feedback page's
+  Inner Version follows the running image instead of the image the router was first set up on; the About page
+  reads the base version from the firmware.
 
 ## v3.5.0 — Wallguard fixed and explains itself, System Log filters, Security Review rules list, VLAN tab back, fixes from Asuswrt-Merlin
 

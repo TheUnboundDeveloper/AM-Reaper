@@ -58,8 +58,13 @@ set -uo pipefail
 # The upstream pin every Reaper patch is generated against, and the one commit
 # that is deliberately dropped from the published series (it strips the sibling
 # models out of the vendor tree and is not part of the Reaper changeset).
-BASE=a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
-STRIP=48b0698465
+# 2026-10-27: rebased onto Asuswrt-Merlin 3006.102.10 (GPL 102_40585), merlin main
+# ca72a61f8bc; the strip is the be96u-only tree-removal commit on that base.
+BASE=ca72a61f8bc5ef920e29d63d53d9864262208f0c
+STRIP=837c436b3eb721dac464da1b9f6dbae28b8921ca
+# A rewrite of canon's history (a rebase, a filter-branch) gives the strip commit a
+# new hash; it is then found by its subject, so the count cannot silently grow by one.
+STRIP_SUBJECT='^lean: re-apply the be96u-only tree removals'
 
 # Paths whose content is published as a hash-pinned archive under overlays/
 # rather than as a patch. cut_rung.sh step 2 excludes this path from
@@ -97,6 +102,11 @@ count_patches() {
 	[ -n "$all" ] || return 1
 	n=$(printf '%s\n' "$all" | grep -c .)
 	strip_sha=$(git -C "$SRC" rev-parse "$STRIP" 2>/dev/null)
+	if ! { [ -n "$strip_sha" ] && printf '%s\n' "$all" | grep -q "^$strip_sha$"; }; then
+		# the pinned hash is not in this history: the strip commit by subject, if any
+		# (a CI tree applied from the series has none - the series leaves it out)
+		strip_sha=$(git -C "$SRC" log --format=%H --grep="$STRIP_SUBJECT" "$BASE"..HEAD 2>/dev/null | head -1)
+	fi
 	if [ -n "$strip_sha" ] && printf '%s\n' "$all" | grep -q "^$strip_sha$"; then
 		n=$((n - 1))
 	fi

@@ -1,0 +1,46 @@
+From 66b3de84107ed5c5f1fc64ca45f4aef6c0ff0003 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 09:53:21 -0400
+Subject: [PATCH] wanduck: the fail-back counter reset stays unconditional
+ (owner decision)
+
+Stop 56 had taken upstream's `if(switch_wan_line(...))` gate around the reset
+of the primary's fail-back counter. The 2026-10-17 carry commit (b757c3b5a90)
+records why that gate is not taken: switch_wan_line() returns 0 when the target
+is already primary, which would skip the reset and reopen the GT-BE98 fail-back
+loop the reset exists to close. Restored as the stack had it.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/wanduck.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 1660d789def..4977c91fef8 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -5327,10 +5327,17 @@ if(test_log) _dprintf("nat_rule: stop_nat_rules 7.\n");
+ 				rule_setup = 1;
+ 
+ 				handle_wan_line(other_wan_unit, rule_setup);
+-				/* changed_count[] of the primary was used as the fail-back counter,
+-				 * start clean or the next DISCONN scan switches straight back. */
+-				if(switch_wan_line(other_wan_unit, 0))
+-					set_disconn_count(other_wan_unit, S_IDLE);
++				switch_wan_line(other_wan_unit, 0);
++				/* reaper (field 2026-09-25, GT-BE98): changed_count[] of the primary doubles as
++				 * the fail-back counter above and was never reset here, so the primary became the
++				 * current line already holding wandog_fb_count (4) >= wandog_maxfail (2). One
++				 * DISCONN scan right after fail-back (default route not yet moved) then tripped
++				 * the DISCONN branch -> switch_wan_line(backup, 1) -> restart_wan_if <primary>,
++				 * killing the fresh PPPoE session in an endless fail-back loop. Start clean.
++				 * Upstream gates this reset on switch_wan_line()'s return; not taken: it returns 0
++				 * when the target is already primary, which would skip the reset and reopen the
++				 * loop (decision recorded 2026-10-17, b757c3b5a90). */
++				set_disconn_count(other_wan_unit, S_IDLE);
+ 			}
+ 			else if(conn_state[other_wan_unit] == PHY_RECONN){
+ 				_dprintf("\n# wanduck(fail-back): Try to prepare the backup line.\n");
+-- 
+2.25.1
+

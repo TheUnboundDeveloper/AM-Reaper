@@ -100,6 +100,8 @@ def run(ssi):
     js = iife
     def ssi_sub(m):
         h = m.group(1).strip()
+        if h.startswith("nvram_get_js("):   # 2026-10-26: httpd writes the whole JS string literal, quotes included
+            return json.dumps(ssi.get("nvram_get(" + h[len("nvram_get_js("):], ""))
         return ssi.get(h, "")
     js = re.sub(r"<%\s*([^%]+?);\s*%>", ssi_sub, js)
     js = re.sub(r"<#([^#]+)#>", r"[\1]", js)

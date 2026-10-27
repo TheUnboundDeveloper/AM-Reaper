@@ -1,0 +1,525 @@
+From 5c941cc1f7ef0d0659c2197380bdf3e6d0327ebe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:48:58 -0400
+Subject: [PATCH] iptables: restore the TRIGGER and webstr extensions (Port
+ Trigger and the URL filter)
+
+Both were deleted in 2026-07 with other extensions that did not compile
+against the HND toolchain headers, while the kernel kept the targets and rc
+kept writing the rules. With Port Trigger on, rc's `-j TRIGGER` line made the
+all-or-nothing nat restore fail: after a reboot there was no MASQUERADE and no
+LAN internet. The URL filter's `-m webstr` rules failed the same way in the
+filter table. libipt_TRIGGER.c is restored with the nf_nat include dropped and
+its one constant defined locally, ipt_TRIGGER.h copied from the kernel;
+libipt_webstr.c compiles as it was.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../extensions/libipt_TRIGGER.c               | 213 ++++++++++++++++
+ .../iptables-1.4.x/extensions/libipt_webstr.c | 241 ++++++++++++++++++
+ .../linux/netfilter_ipv4/ipt_TRIGGER.h        |  25 ++
+ 3 files changed, 479 insertions(+)
+ create mode 100644 release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
+ create mode 100644 release/src/router/iptables-1.4.x/extensions/libipt_webstr.c
+ create mode 100644 release/src/router/iptables-1.4.x/include/linux/netfilter_ipv4/ipt_TRIGGER.h
+
+diff --git a/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c b/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
+new file mode 100644
+index 00000000000..8d9a4a7ad88
+--- /dev/null
++++ b/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
+@@ -0,0 +1,213 @@
++/* Port-triggering target. 
++ *
++ * Copyright (C) 2003, CyberTAN Corporation
++ * All Rights Reserved.
++ */
++
++/* Shared library add-on to iptables to add port-trigger support. */
++
++#include <stdio.h>
++#include <netdb.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++#include <iptables.h>
++#include <xtables.h>
++/* reaper 2026-10-23: <net/netfilter/nf_nat.h> dropped - kernel-internal, absent from the toolchain
++   headers HND builds use (--with-kbuild), and nothing here uses it. Its absence is why commit
++   0b8cea213a deleted this file, which left every image without the TRIGGER target: with Port
++   Trigger on, iptables-restore refused the whole nat table. The one name it supplied is the option
++   bit parse() sets for --trigger-relate and final_check() tests; same value as the kernel header. */
++#ifndef IP_NAT_RANGE_PROTO_SPECIFIED
++#define IP_NAT_RANGE_PROTO_SPECIFIED 2
++#endif
++#include <linux/netfilter_ipv4/ip_tables.h>
++#include <linux/netfilter_ipv4/ipt_TRIGGER.h>
++
++/* Function which prints out usage message. */
++static void
++help(void)
++{
++	printf(
++"TRIGGER v%s options:\n"
++" --trigger-type (dnat|in|out)\n"
++"				Trigger type\n"
++" --trigger-proto proto\n"
++"				Trigger protocol\n"
++" --trigger-match port[-port]\n"
++"				Trigger destination port range\n"
++" --trigger-relate port[-port]\n"
++"				Port range to map related destination port range to.\n\n",
++XTABLES_VERSION);
++}
++
++static struct option opts[] = {
++	{.name = "trigger-type", .has_arg = true, .val = '1'},
++	{.name = "trigger-proto", .has_arg = true, .val = '2'},
++	{.name = "trigger-match", .has_arg = true, .val = '3'},
++	{.name = "trigger-relate", .has_arg = true, .val = '4'},
++	XT_GETOPT_TABLEEND,
++};
++
++/* Initialize the target. */
++static void
++init(struct xt_entry_target *t)
++{
++}
++
++/* Parses ports */
++static void
++parse_ports(const char *arg, u_int16_t *ports)
++{
++	const char *dash;
++	int port;
++
++	port = atoi(arg);
++	if (port == 0 || port > 65535)
++		xtables_error(PARAMETER_PROBLEM, "Port range `%s' invalid\n", arg);
++
++	dash = strchr(arg, '-');
++	if (!dash)
++		ports[0] = ports[1] = port;
++	else {
++		int maxport;
++
++		maxport = atoi(dash + 1);
++		if (maxport == 0 || maxport > 65535)
++			xtables_error(PARAMETER_PROBLEM,
++				   "Port range `%s' invalid\n", dash+1);
++		if (maxport < port)
++			xtables_error(PARAMETER_PROBLEM,
++				   "Port range `%s' invalid\n", arg);
++		ports[0] = port;
++		ports[1] = maxport;
++	}
++}
++
++
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++parse(int c, char **argv, int invert, unsigned int *flags,
++      const void *entry,
++      struct xt_entry_target **target)
++{
++	struct ipt_trigger_info *info = (struct ipt_trigger_info *)(*target)->data;
++
++	switch (c) {
++	case '1':
++		if (!strcasecmp(optarg, "dnat"))
++			info->type = IPT_TRIGGER_DNAT;
++		else if (!strcasecmp(optarg, "in"))
++			info->type = IPT_TRIGGER_IN;
++		else if (!strcasecmp(optarg, "out"))
++			info->type = IPT_TRIGGER_OUT;
++		else
++			xtables_error(PARAMETER_PROBLEM,
++				   "unknown type `%s' specified", optarg);
++		return 1;
++
++	case '2':
++		if (!strcasecmp(optarg, "tcp"))
++			info->proto = IPPROTO_TCP;
++		else if (!strcasecmp(optarg, "udp"))
++			info->proto = IPPROTO_UDP;
++		else if (!strcasecmp(optarg, "all"))
++			info->proto = 0;
++		else
++			xtables_error(PARAMETER_PROBLEM,
++				   "unknown protocol `%s' specified", optarg);
++		return 1;
++
++	case '3':
++		parse_ports(optarg, info->ports.mport);
++		return 1;
++
++	case '4':
++		parse_ports(optarg, info->ports.rport);
++		*flags |= IP_NAT_RANGE_PROTO_SPECIFIED;
++		return 1;
++
++	default:
++		return 0;
++	}
++}
++
++/* Final check; don't care. */
++static void final_check(unsigned int flags)
++{
++}
++
++/* Prints out the targinfo. */
++static void
++print(const void *ip,
++      const struct xt_entry_target *target,
++      int numeric)
++{
++	struct ipt_trigger_info *info = (struct ipt_trigger_info *)target->data;
++
++	printf(" TRIGGER ");
++	if (info->type == IPT_TRIGGER_DNAT)
++		printf("type:dnat ");
++	else if (info->type == IPT_TRIGGER_IN)
++		printf("type:in ");
++	else if (info->type == IPT_TRIGGER_OUT)
++		printf("type:out ");
++
++	if (info->proto == IPPROTO_TCP)
++		printf("tcp ");
++	else if (info->proto == IPPROTO_UDP)
++		printf("udp ");
++
++	printf("match:%hu", info->ports.mport[0]);
++	if (info->ports.mport[1] > info->ports.mport[0])
++		printf("-%hu", info->ports.mport[1]);
++	printf(" ");
++
++	printf("relate:%hu", info->ports.rport[0]);
++	if (info->ports.rport[1] > info->ports.rport[0])
++		printf("-%hu", info->ports.rport[1]);
++	printf(" ");
++}
++
++/* Saves the union ipt_targinfo in parsable form to stdout. */
++static void
++save(const void *ip, const struct xt_entry_target *target)
++{
++	struct ipt_trigger_info *info = (struct ipt_trigger_info *)target->data;
++
++	printf(" --trigger-type");
++	if (info->type == IPT_TRIGGER_DNAT)
++		printf(" dnat");
++	else if (info->type == IPT_TRIGGER_IN)
++		printf(" in");
++	else if (info->type == IPT_TRIGGER_OUT)
++		printf(" out");
++	printf(" --trigger-proto");
++	if (info->proto == IPPROTO_TCP)
++		printf(" tcp");
++	else if (info->proto == IPPROTO_UDP)
++		printf(" udp");
++	printf(" --trigger-match %hu-%hu", info->ports.mport[0], info->ports.mport[1]);
++	printf(" --trigger-relate %hu-%hu", info->ports.rport[0], info->ports.rport[1]);
++}
++
++static struct xtables_target trigger = {
++	.family		= NFPROTO_IPV4,
++	.name		= "TRIGGER",
++	.version	= XTABLES_VERSION,
++	.size		= XT_ALIGN(sizeof(struct ipt_trigger_info)),
++	.userspacesize	= XT_ALIGN(sizeof(struct ipt_trigger_info)),
++	.help		= &help,
++	.init		= &init,
++	.parse		= &parse,
++	.final_check	= &final_check,
++	.print		= &print,
++	.save		= &save,
++	.extra_opts	= opts 
++};
++
++void _init(void)
++{
++	xtables_register_target(&trigger);
++}
+diff --git a/release/src/router/iptables-1.4.x/extensions/libipt_webstr.c b/release/src/router/iptables-1.4.x/extensions/libipt_webstr.c
+new file mode 100644
+index 00000000000..c9bede0c192
+--- /dev/null
++++ b/release/src/router/iptables-1.4.x/extensions/libipt_webstr.c
+@@ -0,0 +1,241 @@
++/* Shared library add-on to iptables to add string matching support. 
++ * 
++ * Copyright (C) 2000 Emmanuel Roger  <winfield@freegates.be>
++ *
++ * ChangeLog
++ *     27.01.2001: Gianni Tedesco <gianni@ecsc.co.uk>
++ *             Changed --tos to --string in save(). Also
++ *             updated to work with slightly modified
++ *             ipt_string_info.
++ */
++
++/* Shared library add-on to iptables to add webstr matching support. 
++ *
++ * Copyright (C) 2003, CyberTAN Corporation
++ * All Rights Reserved.
++ *
++ * Description:
++ *   This is shared library, added to iptables, for web content inspection. 
++ *   It was derived from 'string' matching support, declared as above.
++ *
++ */
++
++/* iptable-1.4.0rc1 port. (ipt->xt)
++ *
++ * Copyright (C) 2008, Ralink Technology Corporation
++ * All Rights Reserved.
++ */
++
++#include <stdio.h>
++#include <netdb.h>
++#include <string.h>
++#include <stdlib.h>
++#include <getopt.h>
++
++#include <iptables.h>
++//#include <linux/netfilter_ipv4/ipt_webstr.h>
++
++#define BM_MAX_NLEN 256
++#define BM_MAX_HLEN 1024
++
++#define BLK_JAVA        0x01
++#define BLK_ACTIVE      0x02
++#define BLK_COOKIE      0x04
++#define BLK_PROXY       0x08
++
++typedef char *(*proc_ipt_search) (char *, char *, int, int);
++
++struct ipt_webstr_info {
++    char string[BM_MAX_NLEN];
++    u_int16_t invert;
++    u_int16_t len;
++    u_int8_t type;
++};
++
++enum xt_webstr_type
++{
++    IPT_WEBSTR_HOST,
++    IPT_WEBSTR_URL,
++    IPT_WEBSTR_CONTENT
++};
++
++
++
++/* Function which prints out usage message. */
++static void
++webstr_help(void)
++{
++	printf(
++"WEBSTR match v%s options:\n"
++"--webstr [!] host            Match a http string in a packet\n"
++"--webstr [!] url             Match a http string in a packet\n"
++"--webstr [!] content         Match a http string in a packet\n",
++XTABLES_VERSION);
++
++	fputc('\n', stdout);
++}
++
++static struct option webstr_opts[] = {
++	{.name = "host", .has_arg = true, .val = '1' },
++	{.name = "url", .has_arg = true, .val = '2' },
++	{.name = "content", .has_arg = true, .val = '3' },
++	XT_GETOPT_TABLEEND,
++};
++
++/* Initialize the match. */
++static void
++webstr_init(struct ipt_entry_match *m)
++{
++	return;
++}
++
++static void
++parse_string(const unsigned char *s, struct ipt_webstr_info *info)
++{	
++        if (strlen(s) <= BM_MAX_NLEN) strcpy(info->string, s);
++	else xtables_error(PARAMETER_PROBLEM, "WEBSTR too long `%s'", s);
++}
++
++/* Function which parses command options; returns true if it
++   ate an option */
++static int
++webstr_parse(int c, char **argv, int invert, unsigned int *flags,
++      const void *entry,
++#if 0
++      unsigned int *nfcache,
++#endif
++      struct ipt_entry_match **match)
++{
++	struct ipt_webstr_info *stringinfo = (struct ipt_webstr_info *)(*match)->data;
++
++	switch (c) {
++	case '1':
++		parse_string(argv[optind-1], stringinfo);
++		if (invert)
++			stringinfo->invert = 1;
++                stringinfo->len=strlen((char *)&stringinfo->string);
++                stringinfo->type = IPT_WEBSTR_HOST;
++		break;
++
++	case '2':
++		parse_string(argv[optind-1], stringinfo);
++		if (invert)
++			stringinfo->invert = 1;
++                stringinfo->len=strlen((char *)&stringinfo->string);
++                stringinfo->type = IPT_WEBSTR_URL;
++		break;
++
++	case '3':
++		parse_string(argv[optind-1], stringinfo);
++		if (invert)
++			stringinfo->invert = 1;
++                stringinfo->len=strlen((char *)&stringinfo->string);
++                stringinfo->type = IPT_WEBSTR_CONTENT;
++		break;
++
++	default:
++		return 0;
++	}
++
++	*flags = 1;
++	return 1;
++}
++
++static void
++print_string(char string[], int invert, int numeric)
++{
++
++	if (invert)
++		fputc('!', stdout);
++	printf("%s ",string);
++}
++
++/* Final check; must have specified --string. */
++static void
++webstr_final_check(unsigned int flags)
++{
++	if (!flags)
++		xtables_error(PARAMETER_PROBLEM,
++			   "WEBSTR match: You must specify `--webstr'");
++}
++
++/* Prints out the matchinfo. */
++static void
++webstr_print(const void *ip,
++      const struct ipt_entry_match *match,
++      int numeric)
++{
++	struct ipt_webstr_info *stringinfo = (struct ipt_webstr_info *)match->data;
++
++	printf("WEBSTR match ");
++
++	
++	switch (stringinfo->type) {
++	case IPT_WEBSTR_HOST:
++		printf("host ");
++		break;
++
++	case IPT_WEBSTR_URL:
++		printf("url ");
++		break;
++
++	case IPT_WEBSTR_CONTENT:
++		printf("content ");
++		break;
++
++	default:
++		printf("ERROR ");
++		break;
++	}
++
++	print_string(((struct ipt_webstr_info *)match->data)->string,
++		  ((struct ipt_webstr_info *)match->data)->invert, numeric);
++}
++
++/* Saves the union ipt_matchinfo in parsable form to stdout. */
++static void
++webstr_save(const void *ip, const struct ipt_entry_match *match)
++{
++	struct ipt_webstr_info *stringinfo = (struct ipt_webstr_info *)match->data;
++
++	switch (stringinfo->type) {
++	case IPT_WEBSTR_HOST:
++		printf(" --host ");
++		break;
++
++	case IPT_WEBSTR_URL:
++		printf(" --url ");
++		break;
++
++	case IPT_WEBSTR_CONTENT:
++		printf(" --content ");
++		break;
++
++	default:
++		printf(" ERROR ");
++		break;
++	}
++	print_string(((struct ipt_webstr_info *)match->data)->string,
++		  ((struct ipt_webstr_info *)match->data)->invert, 0);
++}
++
++static
++struct xtables_match webstr_match = {
++    .family = NFPROTO_IPV4,
++    .name = "webstr",
++    .version = XTABLES_VERSION,
++    .size = XT_ALIGN(sizeof(struct ipt_webstr_info)),
++    .userspacesize = XT_ALIGN(sizeof(struct ipt_webstr_info)),
++    .help = webstr_help,
++    .init = webstr_init,
++    .parse = webstr_parse,
++    .final_check = webstr_final_check,
++    .print = webstr_print,
++    .save = webstr_save,
++    .extra_opts = webstr_opts
++};
++
++void _init(void)
++{
++	xtables_register_match(&webstr_match);
++}
+diff --git a/release/src/router/iptables-1.4.x/include/linux/netfilter_ipv4/ipt_TRIGGER.h b/release/src/router/iptables-1.4.x/include/linux/netfilter_ipv4/ipt_TRIGGER.h
+new file mode 100644
+index 00000000000..aa1bb8bd0df
+--- /dev/null
++++ b/release/src/router/iptables-1.4.x/include/linux/netfilter_ipv4/ipt_TRIGGER.h
+@@ -0,0 +1,25 @@
++#ifndef _IPT_TRIGGER_H_target
++#define _IPT_TRIGGER_H_target
++
++#define TRIGGER_TIMEOUT 600	/* 600 secs */
++
++enum ipt_trigger_type
++{
++	IPT_TRIGGER_DNAT = 1,
++	IPT_TRIGGER_IN = 2,
++	IPT_TRIGGER_OUT = 3,
++	IPT_TRIGGER_REFRESH = 4
++};
++
++struct ipt_trigger_ports {
++	u_int16_t mport[2];	/* Related destination port range */
++	u_int16_t rport[2];	/* Port range to map related destination port range to */
++};
++
++struct ipt_trigger_info {
++	enum ipt_trigger_type type;
++	u_int16_t proto;	/* Related protocol */
++	struct ipt_trigger_ports ports;
++};
++
++#endif /*_IPT_TRIGGER_H_target*/
+-- 
+2.25.1
+

@@ -48,10 +48,13 @@ check("stub runs only for a missing .asp file (review 2026-10-24 Q-B-6: no acces
       and '<noscript><meta http-equiv=\\"refresh\\"' in out and "#include <unistd.h>" in inj)
 # review 2026-10-24 (Q-B-2): handle_request() answered "file not found" before reaper_output() could run the stub
 hc = open(os.path.join(SRC, "httpd", "httpd.c"), encoding="utf-8", errors="replace").read()
-g = hc.find("reaper_gone_page(file)")
+# 40585 base (merge stop 63): the gate matches on upstream's query-stripped file_path; the stub still gets `file`
+# (query kept for the bounce)
+g = hc.find("reaper_gone_page(file_path) && !check_if_file_exist(file_path)")
+qs = hc.rfind("copy_request_path_without_query(file, file_path, sizeof(file_path));", 0, g)
 check("httpd asks reaper_gone_page() and serves the bounce BEFORE its own 404 for a missing page",
-      0 < g < hc.find('send_error( 404, "Not Found", (char*) 0, "File not found." );') and "int reaper_gone_page(const char *file)" in inj
-      and "reaper_output(handler, file, conn_fp);" in hc[g:g + 600])
+      0 < qs < g < hc.find('send_error( 404, "Not Found", (char*) 0, "File not found." );', g) and "int reaper_gone_page(const char *file)" in inj
+      and g - qs < 800 and "reaper_output(handler, file, conn_fp);" in hc[g:g + 600])
 for name, _ in rows:
     stock = re.sub(r"\.asp$", "", name)
     real = [f for f in os.listdir(os.path.join(SRC, "www")) if f.lower() == name]

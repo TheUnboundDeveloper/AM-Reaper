@@ -1,0 +1,596 @@
+From c608c5f29a7d5a2b3d6d4a8fec7690d1e362fdec Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:53 -0400
+Subject: [PATCH] www: Dreadwatch, threat domains on their own page under
+ Warden
+
+Reviewer feedback: name blocking and address blocking are different
+enforcement points, and a block whose effect cannot be measured cannot be
+trusted. The Warden page's threat-domain card moves to a new tab,
+Warden > Dreadwatch: tiles (blocked lookups, names, devices, last update,
+not recorded), the feeds table with per-feed counts and last good download,
+the most-blocked names and devices (named through ReaperNames), the recent
+blocked lookups, Test now, Reset counters, a coverage card (DNS Director,
+the DoH canary) and the never-block names. Warden keeps one line pointing
+there. Everything rendered as text.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Dreadwatch.asp  | 399 ++++++++++++++++++
+ release/src/router/www/Reaper_Warden.asp      |  79 +---
+ .../router/www/require/menuTrees/menuTree.js  |   2 +
+ 3 files changed, 412 insertions(+), 68 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_Dreadwatch.asp
+
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+new file mode 100644
+index 00000000000..ac949c967af
+--- /dev/null
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -0,0 +1,399 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RDWT_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
++.lede{max-width:78ch;margin:6px 0 16px}
++.lede b{color:var(--bone);font-weight:600}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++.feedrow .v4only{font-family:var(--hdr);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);border:1px solid rgba(255,255,255,.14);border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
++.offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.offbanner b{color:var(--bone)}
++.warnbanner{display:flex;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
++.warnbanner b{color:var(--amber)}
++.warnx{flex:0 0 auto;margin-left:auto;align-self:flex-start;background:transparent;border:0;color:var(--bone-dim);font-size:20px;line-height:1;cursor:pointer;padding:0 2px;opacity:.6}
++.warnx:hover{opacity:1;color:var(--bone)}
++.warnx:focus-visible{outline:1px solid var(--amber);outline-offset:2px;border-radius:4px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
++/* two cards side by side only while each gets 400 px or more; below that one column, full width
++   (field request 2026-10-02: at tablet / narrow-iframe widths the list boxes sat side by side at
++   ~300 px each). min(100%,400px) lets the track shrink below 400 px on a phone instead of overflowing. */
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++.duo .card{margin:0}
++.feedrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.feedrow:last-child{border-bottom:none}
++.feedrow .fl{flex:1;color:var(--bone);font-size:13px}
++label.ck{position:relative;display:inline-flex;align-items:center;cursor:pointer}
++label.ck input{position:absolute;opacity:0;width:0;height:0}
++label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:var(--panel-2);display:inline-block;position:relative}
++label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
++label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
++.setrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
++.setrow:last-child{border-bottom:none}
++.setrow .sl{flex:1;color:var(--bone);font-size:13px}
++.setrow .sd{font-size:11.5px;color:var(--steel);display:block;margin-top:1px;font-weight:400}
++select,textarea,input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
++select.setsel{min-width:150px}
++select[multiple]{width:100%;height:170px;padding:4px}
++select[multiple] option{padding:3px 6px;border-radius:4px}
++.geosearch{width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:7px 12px;margin-bottom:10px}
++.geogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:5px 14px;max-height:236px;overflow-y:auto;padding-right:4px}
++label.geock{display:flex;gap:9px;padding:3px 2px;font-size:12.5px;color:var(--bone-dim)}
++label.geock .cl b{color:var(--crimson);font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-right:4px}
++textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
++input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.card li b{color:var(--bone);font-weight:600}
++.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
++.applying.show{display:flex}
++.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
++.applying h3{font-size:16px;margin-bottom:6px}
++.applying p{font-size:12px;color:var(--bone-dim)}
++.stat .n.proto{font-size:15px;padding-top:6px;letter-spacing:.02em}
++.stat .n .sub{display:block;font-family:var(--body);font-weight:400;font-size:11px;color:var(--steel);letter-spacing:0;margin-top:-2px}
++.stat .n.warn{color:var(--amber)}
++.topcard h2{display:flex;align-items:center;gap:10px}
++.livepill{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.12em;color:var(--jade);border:1px solid rgba(79,178,134,.4);border-radius:20px;padding:2px 8px}
++.livepill.stale{color:var(--steel);border-color:var(--line-soft)}
++.bdown{display:none;flex-wrap:wrap;align-items:baseline;gap:7px 20px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:0 0 12px}
++.bdown .bd{display:flex;align-items:baseline;gap:7px}
++.bdown .bk{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);white-space:nowrap}
++.bdown .bv{font-family:var(--hdr);font-weight:700;font-size:14px;line-height:1;color:var(--bone);font-variant-numeric:tabular-nums}
++.bdown .bd.win:not(:first-child){margin-left:auto}
++.toptbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
++.toptbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
++.toptbl td{padding:9px 8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
++.toptbl tbody tr:last-child td{border-bottom:none}
++.toptbl td.rank{font-family:var(--hdr);font-weight:700;color:var(--crimson);font-size:15px;width:44px}
++.toptbl td.cnt{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--bone)}
++.toptbl th.cnt{text-align:right}
++.toptbl td.empty{text-align:center;color:var(--steel);padding:20px}
++.toptbl .cc{display:inline-block;min-width:26px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--crimson);background:rgba(225,6,0,.10);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-right:10px;text-align:center}
++.toptbl .bar{position:relative;height:5px;border-radius:3px;background:var(--panel-2);margin-top:5px;overflow:hidden}
++.toptbl .bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--crimson-deep),var(--crimson));border-radius:3px}
++.dwtbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
++.dwtbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
++.dwtbl td{padding:8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
++.dwtbl tbody tr:last-child td{border-bottom:none}
++.dwtbl td.num,.dwtbl th.num{text-align:right;font-variant-numeric:tabular-nums}
++.dwtbl td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all}
++.dwtbl td.dim{color:var(--steel)}
++.dwtbl td.empty{text-align:center;color:var(--steel);padding:18px}
++.dwtbl td.dwst-ok{color:var(--jade)} .dwtbl td.dwst-failed{color:var(--amber)} .dwtbl td.dwst-off{color:var(--steel)}
++.cov{margin:4px 0 0}
++.cov li.good::before{background:var(--jade)}
++.cov li.gap::before{background:var(--amber)}
++.testres{margin-top:8px;font-size:12.5px}
++.testres.good{color:var(--jade)} .testres.bad{color:var(--amber)}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RDWT_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#4310-dreadwatch" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++  <span class="ver"><#RDWT_01#></span>
++  <span class="statuspill off" id="pill"><#RWDN_04#></span>
++  <span class="mastertg"><#RWDN_112#> <span class="tg" id="tgdns" onclick="dwTg(this)"></span></span>
++</div>
++<p class="lede"><#RWDN_111#></p>
++
++<div class="warnbanner" id="wardenoff" style="display:none">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div><b><#RDWT_00#></b> &mdash; <#RDWT_02#> <a href="/reaper_shell.asp#Reaper_Warden.asp" target="_top" style="color:var(--bone)"><#RWDN_00#></a></div>
++</div>
++<div class="warnbanner" id="nohitlog" style="display:none">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div><#RDWT_45#></div>
++</div>
++
++<div class="stats">
++  <div class="stat"><div class="n" id="s_total">&mdash;</div><div class="l"><#RDWT_03#></div></div>
++  <div class="stat"><div class="n" id="s_names">&mdash;</div><div class="l"><#RDWT_04#></div></div>
++  <div class="stat"><div class="n" id="s_clients">&mdash;</div><div class="l"><#RDWT_05#></div></div>
++  <div class="stat"><div class="n proto" id="s_upd">&mdash;</div><div class="l"><#RDWT_06#></div></div>
++  <div class="stat" id="s_droptile" style="display:none"><div class="n warn" id="s_dropped">0</div><div class="l"><#RDWT_07#></div></div>
++</div>
++
++<div class="card">
++  <h2><#RDWT_08#></h2>
++  <div class="desc"><#RDWT_14#></div>
++  <table class="dwtbl">
++    <thead><tr><th><#RDWT_09#></th><th style="width:44px"></th><th class="num"><#RDWT_10#></th><th class="num"><#RDWT_11#></th><th><#RDWT_12#></th><th><#RDWT_13#></th></tr></thead>
++    <tbody>
++      <tr><td><#RWDN_114#></td><td><label class="ck"><input type="checkbox" id="fd_urlhaus"><span class="box"></span></label></td><td class="num" id="fn_urlhaus">&mdash;</td><td class="num" id="fb_urlhaus">&mdash;</td><td class="dim" id="fo_urlhaus">&mdash;</td><td id="fs_urlhaus">&mdash;</td></tr>
++      <tr><td><#RWDN_115#></td><td><label class="ck"><input type="checkbox" id="fd_threatfox"><span class="box"></span></label></td><td class="num" id="fn_threatfox">&mdash;</td><td class="num" id="fb_threatfox">&mdash;</td><td class="dim" id="fo_threatfox">&mdash;</td><td id="fs_threatfox">&mdash;</td></tr>
++    </tbody>
++  </table>
++  <div class="desc" id="dnsstat" style="margin-top:10px"></div>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RDWT_15#></h2>
++    <table class="dwtbl"><thead><tr><th><#RDWT_16#></th><th><#RDWT_09#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead>
++      <tbody id="topbody"><tr><td colspan="4" class="empty"><#RDWT_23#></td></tr></tbody></table>
++  </div>
++  <div class="card">
++    <h2><#RDWT_18#></h2>
++    <table class="dwtbl"><thead><tr><th><#RDWT_19#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead>
++      <tbody id="clibody"><tr><td colspan="3" class="empty"><#RDWT_23#></td></tr></tbody></table>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RDWT_20#></h2>
++  <div class="desc"><#RDWT_22#></div>
++  <table class="dwtbl"><thead><tr><th><#RDWT_21#></th><th><#RDWT_19#></th><th><#RDWT_16#></th></tr></thead>
++    <tbody id="recbody"><tr><td colspan="3" class="empty"><#RDWT_23#></td></tr></tbody></table>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RDWT_24#></h2>
++    <div class="desc" id="testdesc"><#RDWT_41#></div>
++    <div><button type="button" class="btng" id="testbtn" onclick="dwTest()"><#RDWT_24#></button></div>
++    <div class="testres" id="testres"></div>
++    <div class="desc" id="since" style="margin-top:14px"></div>
++    <div><button type="button" class="btng" onclick="dwReset()"><#RDWT_28#></button></div>
++  </div>
++  <div class="card">
++    <h2><#RDWT_31#></h2>
++    <ul class="cov" id="cov"></ul>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RWDN_116#></h2>
++  <div class="desc"><#RWDN_118#></div>
++  <textarea id="dnsallow" placeholder="<#RWDN_117#>"></textarea>
++</div>
++
++<div class="actions">
++  <button class="btn" onclick="dwSave(false)"><#RWDN_28#></button>
++  <button class="btng" onclick="dwSave(true)"><#RWDN_27#></button>
++</div>
++
++<div class="card" style="margin-top:16px">
++  <h2><#RWDN_38#></h2>
++  <ul>
++    <li><#RDWT_44#></li>
++    <li><#RWDN_113#></li>
++    <li><#RDWT_36#></li>
++  </ul>
++</div>
++
++<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RWDN_30#></p></div></div>
++
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Dreadwatch.asp">
++  <input type="hidden" name="next_page" value="Reaper_Dreadwatch.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="">
++  <input type="hidden" name="action_wait" value="10">
++  <input type="hidden" name="rwarden_dns" value="">
++  <input type="hidden" name="rwarden_dns_feeds" value="">
++</form>
++
++<script src="/reaper_util.js"></script>
++<script>
++/* 2026-10-20 Dreadwatch: the threat-domain list on its own page (it used to be a card on the
++   Warden page). Settings: rwarden_dns / rwarden_dns_feeds (nvram, this form) and the
++   exemption names (the /jffs list store, save_lists). Status, counters and the self-test:
++   reaper_warden.cgi action=dns_status / dns_test / dns_reset, behind the http_id gate.
++   Everything the router reports is rendered with textContent. */
++var HID = '<% nvram_get("http_id"); %>';
++var NV = {
++  warden: '<% nvram_get("rwarden_enable"); %>',
++  dns:    '<% nvram_get("rwarden_dns"); %>',
++  dnsfeeds: '<% nvram_get("rwarden_dns_feeds"); %>',
++  dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>')
++};
++var DNS_FEED_IDS = ['urlhaus','threatfox'];
++var DNS_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z][a-z0-9-]{0,62}$/;
++function $(id){ return document.getElementById(id); }
++function dwSplit(s){ return String(s||'').split(/[\s,<>]+/).filter(function(x){ return x.length; }); }
++function dwTg(el){ el.className = (el.className.indexOf('on') >= 0) ? 'tg' : 'tg on'; }
++function dwWhen(t){ return t > 0 ? new Date(t*1000).toLocaleString() : '\u2014'; }
++function dwNum(n){ return Number(n||0).toLocaleString(); }
++/* an exemption is a host name (or a bare zone such as lan); a bad line refuses the whole save */
++function dwCleanNames(raw){
++  var out = [], bad = [];
++  String(raw||'').split(/[\s,<>]+/).forEach(function(t){
++    t = t.trim().toLowerCase(); if(!t) return;
++    if(t.length <= 253 && DNS_NAME_RE.test(t)) out.push(t); else bad.push(t);
++  });
++  return { ok: out.join(' '), bad: bad };
++}
++function dwCell(tr, text, cls){ var td = document.createElement('td'); td.textContent = text; if(cls) td.className = cls; tr.appendChild(td); return td; }
++function dwRows(tbodyId, rows, cols, fill){
++  var tb = $(tbodyId); tb.textContent = '';
++  if(!rows.length){ var tr = document.createElement('tr'), td = dwCell(tr, `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
++  rows.forEach(function(r){ var tr = document.createElement('tr'); fill(tr, r); tb.appendChild(tr); });
++}
++function dwDev(ip){
++  if(ip === '127.0.0.1' || ip === '::1') return `<#RDWT_37#>`;
++  var n = ReaperNames.byIp(ip, '');
++  return n ? n + ' (' + ip + ')' : ip;
++}
++function dwPaint(){
++  $('tgdns').className = 'tg' + (NV.dns === '1' ? ' on' : '');
++  var dfs = {}; dwSplit(NV.dnsfeeds).forEach(function(f){ dfs[f] = 1; });
++  DNS_FEED_IDS.forEach(function(id){ $('fd_'+id).checked = !!dfs[id]; });
++  $('dnsallow').value = dwSplit(NV.dnsallow).join('\n');
++  $('wardenoff').style.display = (NV.warden === '1') ? 'none' : 'flex';
++}
++var lastName = '';
++function dwRender(j){
++  var on = !!(j && j.enable);
++  var pill = $('pill');
++  pill.className = 'statuspill' + ((on && j.live && j.names > 0) ? '' : ' off');
++  pill.textContent = (on && j.live && j.names > 0) ? `<#RWDN_03#>` : `<#RWDN_04#>`;
++  if(!j || !j.ok){ return; }
++  $('s_total').textContent = dwNum(j.total);
++  $('s_names').textContent = dwNum(j.names);
++  $('s_clients').textContent = dwNum((j.clients||[]).length);
++  $('s_upd').textContent = dwWhen(j.upd);
++  $('s_droptile').style.display = j.dropped > 0 ? '' : 'none';
++  $('s_dropped').textContent = dwNum(j.dropped);
++  $('nohitlog').style.display = (on && j.names > 0 && !j.hitlog) ? 'flex' : 'none';
++  var st = $('dnsstat');
++  if(!on) st.textContent = '';
++  else if(j.names > 0 && j.live) st.textContent = `<#RWDN_119#>`.replace('%1', dwNum(j.names)).replace('%2', dwWhen(j.upd));
++  else if(j.names > 0) st.textContent = `<#RWDN_121#>`.replace('%1', dwNum(j.names));
++  else st.textContent = `<#RWDN_120#>`;
++  /* per feed: metadata from the updater, blocks from the counters */
++  var fc = {}; (j.fcount||[]).forEach(function(f){ fc[f.id] = f.n; });
++  var fm = {}; (j.feeds||[]).forEach(function(f){ fm[f.id] = f; });
++  var SN = {ok:`<#RDWT_38#>`, failed:`<#RDWT_39#>`, off:`<#RDWT_43#>`};
++  DNS_FEED_IDS.forEach(function(id){
++    var m = fm[id];
++    $('fn_'+id).textContent = m ? dwNum(m.kept) : '\u2014';
++    $('fb_'+id).textContent = dwNum(fc[id]);
++    $('fo_'+id).textContent = m ? dwWhen(m.ok) : '\u2014';
++    var s = $('fs_'+id); s.textContent = m ? (SN[m.st] || m.st) : '\u2014'; s.className = m ? 'dwst-' + m.st : '';
++  });
++  dwRows('topbody', j.top||[], 4, function(tr, r){ dwCell(tr, r.d, 'mono'); dwCell(tr, r.f === '-' ? '\u2014' : r.f.replace(',', ', '), 'dim'); dwCell(tr, dwNum(r.n), 'num'); dwCell(tr, dwWhen(r.t), 'dim'); });
++  dwRows('clibody', j.clients||[], 3, function(tr, r){ dwCell(tr, dwDev(r.ip)); dwCell(tr, dwNum(r.n), 'num'); dwCell(tr, dwWhen(r.t), 'dim'); });
++  dwRows('recbody', j.recent||[], 3, function(tr, r){ dwCell(tr, dwWhen(r.t), 'dim'); dwCell(tr, dwDev(r.ip)); dwCell(tr, r.d, 'mono'); });
++  $('since').textContent = j.since > 0 ? `<#RDWT_30#>`.replace('%1', dwWhen(j.since)) : '';
++  var cov = $('cov'); cov.textContent = '';
++  [[j.director, `<#RDWT_32#>`, `<#RDWT_33#>`], [j.canary, `<#RDWT_34#>`, `<#RDWT_35#>`]].forEach(function(c){
++    var li = document.createElement('li'); li.className = c[0] ? 'good' : 'gap'; li.textContent = c[0] ? c[1] : c[2]; cov.appendChild(li);
++  });
++  var li3 = document.createElement('li'); li3.className = 'gap'; li3.textContent = `<#RDWT_36#>`; cov.appendChild(li3);
++}
++function dwGet(q, cb, ms){
++  var x = new XMLHttpRequest(), done = false;
++  function fin(j){ if(done) return; done = true; cb(j); }
++  x.open('GET', '/reaper_warden.cgi?' + q + '&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
++  x.timeout = ms || 10000;
++  x.onreadystatechange = function(){ if(x.readyState !== 4) return; var j = null; if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){ j = null; } } fin(j); };
++  x.onerror = x.ontimeout = function(){ fin(null); };
++  try{ x.send(); }catch(e){ fin(null); }
++}
++function dwStats(){ dwGet('action=dns_status', dwRender); }
++function dwTest(){
++  var r = $('testres'); r.className = 'testres'; r.textContent = '\u2026';
++  dwGet('action=dns_test', function(j){
++    if(!j || !j.ok){
++      var EK = {RDWT_40:`<#RDWT_40#>`, RDWT_41:`<#RDWT_41#>`, RDWT_42:`<#RDWT_42#>`};
++      r.className = 'testres bad'; r.textContent = (j && j.ek && EK[j.ek]) ? EK[j.ek] : `<#RWDN_91#>`; return;
++    }
++    $('testdesc').textContent = `<#RDWT_25#>`.replace('%1', j.name);
++    r.className = 'testres ' + (j.blocked ? 'good' : 'bad');
++    r.textContent = j.blocked ? `<#RDWT_26#>`.replace('%1', j.name) : `<#RDWT_27#>`.replace('%1', j.name).replace('%2', String(j.rcode));
++    setTimeout(dwStats, 500);
++  }, 8000);
++}
++function dwReset(){
++  if(!confirm(`<#RDWT_29#>`)) return;
++  dwGet('action=dns_reset', function(){ dwStats(); });
++}
++function dwSave(updateNow){
++  var f = document.form;
++  var dnsallow = dwCleanNames($('dnsallow').value);
++  if(dnsallow.bad.length){ alert(`<#RWDN_122#>` + '\n\n' + dnsallow.bad.join('\n')); return; }
++  var dfeeds = [];
++  DNS_FEED_IDS.forEach(function(id){ if($('fd_'+id).checked) dfeeds.push(id); });
++  var dnsOn = $('tgdns').className.indexOf('on') >= 0;
++  /* a changed setting fetches the list at once (the update path); off needs no fetch -
++     the service restart removes the list and restarts dnsmasq itself */
++  var changed = ((dnsOn ? '1' : '0') !== (NV.dns === '1' ? '1' : '0'))
++             || (dfeeds.join(' ') !== dwSplit(NV.dnsfeeds).join(' '))
++             || (dnsallow.ok !== dwSplit(NV.dnsallow).join(' '));
++  f.rwarden_dns.value = dnsOn ? '1' : '0';
++  f.rwarden_dns_feeds.value = dfeeds.join(' ');
++  if(updateNow || (dnsOn && changed && NV.warden === '1')){ f.action_script.value = 'restart_rwarden;start_rwarden_update'; f.action_wait.value = '45'; }
++  else { f.action_script.value = 'restart_rwarden'; f.action_wait.value = '10'; }
++  $('applying').className = 'applying show';
++  /* the exemptions first (url-encoded - httpd reads a single line; see Reaper_Warden.asp),
++     then the form; only dnsallow is sent, so Warden's own lists are left alone */
++  var lf = new URLSearchParams();
++  lf.append('action', 'save_lists');
++  lf.append('http_id', HID);
++  lf.append('dnsallow', dnsallow.ok);
++  var lx = new XMLHttpRequest();
++  lx.open('POST', '/reaper_warden.cgi', true);
++  lx.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  lx.onreadystatechange = function(){
++    if(lx.readyState !== 4) return;
++    var r = null; try{ r = JSON.parse(lx.responseText); }catch(e){}
++    if(lx.status !== 200 || !r || !r.ok){ $('applying').className = 'applying'; alert((r && r.error) ? r.error : `<#RWDN_101#>`); return; }
++    f.submit();
++    setTimeout(function(){ location.reload(); }, ((parseInt(f.action_wait.value, 10) || 10) + 5) * 1000);
++  };
++  lx.send(lf.toString());
++}
++dwPaint();
++ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ dwStats(); });
++setInterval(dwStats, 30000);
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 8d1b2ba2eef..d893ba010f5 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -184,20 +184,13 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   </div>
+ </div>
+ 
+-<!-- 2026-10-19 threat domains: URLhaus / ThreatFox host names answered NXDOMAIN by every
+-     dnsmasq instance (rc/rwarden.c update.sh + conf-file=). Stored like the IP feeds: the
+-     switch and the list ids in nvram, the exemptions in the /jffs list store (dnsallow). -->
++<!-- 2026-10-20 (reviewer: a domain answer and an address drop are different enforcement
++     points and must not share one view): threat domains moved to their own page,
++     Reaper_Dreadwatch.asp - feeds, status, counters. This card only points there. -->
+ <div class="card" id="dnscard">
+   <h2><#RWDN_110#></h2>
+-  <div class="desc"><#RWDN_111#></div>
+-  <div class="setrow"><span class="sl"><#RWDN_112#><span class="sd"><#RWDN_113#></span></span>
+-    <span class="tg" id="tgdns" onclick="rwTg(this)"></span></div>
+-  <div class="feedrow"><span class="fl"><#RWDN_114#></span><label class="ck"><input type="checkbox" id="fd_urlhaus"><span class="box"></span></label></div>
+-  <div class="feedrow"><span class="fl"><#RWDN_115#></span><label class="ck"><input type="checkbox" id="fd_threatfox"><span class="box"></span></label></div>
+-  <div class="desc" id="dnsstat" style="margin-top:10px"></div>
+-  <div class="desc" style="margin-top:10px"><b><#RWDN_116#></b></div>
+-  <textarea id="dnsallow" placeholder="<#RWDN_117#>"></textarea>
+-  <div class="desc" style="margin-top:10px"><#RWDN_118#></div>
++  <div class="desc"><#RWDN_123#></div>
++  <a class="btng" href="/reaper_shell.asp#Reaper_Dreadwatch.asp" target="_top" style="display:inline-block;text-decoration:none"><#RDWT_00#></a>
+ </div>
+ 
+ <div class="card">
+@@ -266,7 +259,6 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+     <li><#RWDN_41#></li>
+     <li><#RWDN_42#></li>
+     <li><#RWDN_55#></li>
+-    <li><#RWDN_123#></li>
+   </ul>
+ </div>
+ 
+@@ -300,8 +292,6 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="rwarden_log" value="">
+   <input type="hidden" name="rwarden_stats_save" value="">
+   <input type="hidden" name="rwarden_reset" value="">
+-  <input type="hidden" name="rwarden_dns" value="">
+-  <input type="hidden" name="rwarden_dns_feeds" value="">
+ </form>
+ 
+ <script src="/reaper_util.js"></script>
+@@ -325,34 +315,12 @@ var NV = {
+   log:    '<% nvram_get("rwarden_log"); %>',
+   lastupd:'<% nvram_get("rwarden_lastupd"); %>',
+   save:   '<% nvram_get("rwarden_stats_save"); %>',
+-  reset:  '<% nvram_get("rwarden_reset"); %>',
+-  /* 2026-10-19 threat domains: switch, list ids, and the exemption names (a /jffs
+-     list, percent-encoded like the three above) */
+-  dns:    '<% nvram_get("rwarden_dns"); %>',
+-  dnsfeeds: '<% nvram_get("rwarden_dns_feeds"); %>',
+-  dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>')
++  reset:  '<% nvram_get("rwarden_reset"); %>'
++  /* 2026-10-20: the threat-domain settings left this page (Reaper_Dreadwatch.asp);
++     this form no longer posts rwarden_dns / rwarden_dns_feeds and save_lists no
++     longer sends dnsallow (an omitted list is left alone), so a Warden save can
++     never change them */
+ };
+-var DNS_FEED_IDS = ['urlhaus','threatfox'];
+-/* an exemption is a host name (or a bare zone such as lan): labels of letters,
+-   digits and hyphens, lower-cased on save; a bad line refuses the whole save,
+-   the Warden convention. update.sh re-filters with the same shape. */
+-var DNS_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z][a-z0-9-]{0,62}$/;
+-function rwCleanNames(raw){
+-  var out = [], bad = [];
+-  String(raw||'').split(/[\s,<>]+/).forEach(function(t){
+-    t = t.trim().toLowerCase(); if(!t) return;
+-    if(t.length <= 253 && DNS_NAME_RE.test(t)) out.push(t); else bad.push(t);
+-  });
+-  return { ok: out.join(' '), bad: bad };
+-}
+-function rwDnsStat(j){
+-  var el = document.getElementById('dnsstat'); if(!el) return;
+-  if(!j || typeof j.dns_n !== 'number' || !j.dns){ el.textContent = ''; return; }
+-  var n = Number(j.dns_n).toLocaleString();
+-  if(j.dns_n > 0 && j.dns_live) el.textContent = `<#RWDN_119#>`.replace('%1', n).replace('%2', j.dns_upd ? new Date(j.dns_upd*1000).toLocaleString() : '');
+-  else if(j.dns_n > 0) el.textContent = `<#RWDN_121#>`.replace('%1', n);
+-  else el.textContent = `<#RWDN_120#>`;
+-}
+ /* retention windows the backend (fold.sh) understands; anything else = off */
+ var RESET_IVS = ['off','24h','7d','30d','90d'];
+ var FEED_IDS = ['firehol1','feodo','spamhaus','dshield'];
+@@ -478,10 +446,6 @@ function rwPaint(){
+   var nf = 0;
+   FEED_IDS.forEach(function(id){ var c = !!feeds[id]; document.getElementById('f_'+id).checked = c; if(c) nf++; });
+   /* threat domains: only an explicit "1" arms the switch (nvram default "0") */
+-  document.getElementById('tgdns').className = 'tg' + (NV.dns === '1' ? ' on' : '');
+-  var dfs = {}; rwSplit(NV.dnsfeeds).forEach(function(f){ dfs[f] = 1; });
+-  DNS_FEED_IDS.forEach(function(id){ document.getElementById('fd_'+id).checked = !!dfs[id]; });
+-  document.getElementById('dnsallow').value = rwSplit(NV.dnsallow).join('\n');
+   /* P2-H5: 'out' was never achievable - the inbound source group and the
+      -I INPUT hook are emitted whatever the setting, so it produced exactly
+      the same ruleset as 'both'. The option is gone; a value stored by an
+@@ -625,27 +589,8 @@ function rwSave(updateNow){
+     return;
+   }
+ 
+-  /* threat domains: the exemptions are validated like the CIDR lists - one bad
+-     line refuses the whole save */
+-  var dnsallow = rwCleanNames(document.getElementById('dnsallow').value);
+-  if(dnsallow.bad.length){
+-    alert(`<#RWDN_122#>` + '\n\n' + dnsallow.bad.join('\n'));
+-    return;
+-  }
+-  var dfeeds = [];
+-  DNS_FEED_IDS.forEach(function(id){ if(document.getElementById('fd_'+id).checked) dfeeds.push(id); });
+-  var dnsOn = document.getElementById('tgdns').className.indexOf('on') >= 0;
+-  /* a changed domain setting fetches the list at once (the Update path), so the
+-     operator is not left waiting for 04:30; turning it off needs no fetch - the
+-     service restart removes the list and restarts dnsmasq itself */
+-  var dnsChanged = ((dnsOn ? '1' : '0') !== (NV.dns === '1' ? '1' : '0'))
+-                || (dfeeds.join(' ') !== rwSplit(NV.dnsfeeds).join(' '))
+-                || (dnsallow.ok !== rwSplit(NV.dnsallow).join(' '));
+-
+   f.rwarden_enable.value = on ? '1' : '0';
+   f.rwarden_feeds.value  = feeds.join(' ');
+-  f.rwarden_dns.value    = dnsOn ? '1' : '0';
+-  f.rwarden_dns_feeds.value = dfeeds.join(' ');
+ 
+   f.rwarden_geo.value    = rwCleanCC(geo);
+   f.rwarden_dir.value    = document.getElementById('dir').value;
+@@ -658,7 +603,7 @@ function rwSave(updateNow){
+   /* Save & Apply restarts the service (regenerates rules + updater). "Update
+      now" also regenerates first (so the fetch reflects current selections) then
+      runs the on-demand feed refresh. */
+-  if(updateNow || (on && dnsOn && dnsChanged)){
++  if(updateNow){
+     f.action_script.value = 'restart_rwarden;start_rwarden_update';
+     f.action_wait.value = '45';
+   } else {
+@@ -687,7 +632,6 @@ function rwSave(updateNow){
+   lf.append('ban', ban.ok);
+   lf.append('allow', allow.ok);
+   lf.append('cfeeds', cfeeds.ok);
+-  lf.append('dnsallow', dnsallow.ok);
+   var lx = new XMLHttpRequest();
+   lx.open('POST','/reaper_warden.cgi',true);
+   lx.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+@@ -777,7 +721,6 @@ function rwStats(){
+        The trailing item is the WINDOW the counts cover: the persisted start when
+        statistics are being saved, otherwise "since the last firewall rebuild" -
+        the counts are then only whatever the live iptables counters hold. */
+-    rwDnsStat(j);	/* 2026-10-19 threat domains: the card's status line */
+     var bd = document.getElementById('s_bdown');
+     if(bd){
+       var pairs = [];
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index cd22a8d71d2..bf6766b4b27 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -82,6 +82,8 @@ define(function(){
+ 				index: "menu_ReaperWarden",
+ 				tab: [
+ 					{url: "Reaper_Warden.asp", tabName: "<#RWDN_00#>"},
++					/* 2026-10-20: threat domains on their own tab - a resolver answer, not an address drop */
++					{url: "Reaper_Dreadwatch.asp", tabName: "<#RDWT_00#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
+-- 
+2.25.1
+

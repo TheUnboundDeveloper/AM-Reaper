@@ -138,7 +138,7 @@ node = shutil.which("node")
 if node:
     for k, p in PAGES.items():
         js = JS[k]; body = js[len("<script>"):js.rfind("</script>")]
-        body = re.sub(r"<%.*?%>", "", body); body = re.sub(r"`[^`]*`", "''", body)
+        body = re.sub(r"<%.*?%>", "", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', body)); body = re.sub(r"`[^`]*`", "''", body)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(body); jp = f.name
         r = subprocess.run([node, "--check", jp], capture_output=True, text=True); os.unlink(jp)
         check(p + ": page script parses (node --check)", r.returncode == 0, r.stderr[-300:])

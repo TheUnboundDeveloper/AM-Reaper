@@ -54,8 +54,17 @@ jobs:
               if r.get("verifiable"):
                   assert isinstance(r.get("patch_count"), int) and r["patch_count"] > 0, \
                       f"{v}: verifiable release must set a positive patch_count"
-          print(f"manifest OK: base {m['base']['commit'][:12]}, {len(m['releases'])} releases, "
-                f"{sum(1 for r in m['releases'] if r.get('verifiable'))} verifiable")
+              # 2026-10-27 (v3.6.0): a rebase onto a new upstream base regenerates the whole
+              # series, so a release built on an EARLIER base is reproduced from the series as
+              # it stood then - the lean commit named by its series_ref - not from patches/.
+              rb = r.get("base", m["base"]["commit"])
+              assert hexre.fullmatch(rb), f"{v}: bad base sha"
+              if rb != m["base"]["commit"]:
+                  assert rb in {p["commit"] for p in m.get("previous_bases", [])}, f"{v}: base {rb[:12]} is not a recorded previous base"
+                  assert hexre.fullmatch(r.get("series_ref", "")), f"{v}: a release on a previous base must name its series_ref"
+          cur = [r for r in m["releases"] if r.get("base", m["base"]["commit"]) == m["base"]["commit"]]
+          print(f"manifest OK: base {m['base']['commit'][:12]}, {len(m['releases'])} releases "
+                f"({len(cur)} on this base), {sum(1 for r in cur if r.get('verifiable'))} verifiable here")
           PY
 
   reproduce:
@@ -84,7 +93,9 @@ jobs:
           python3 - <<'PY' > "$RUNNER_TEMP/plan.tsv"
           import json
           m = json.load(open("reaper/provenance/manifest.json"))
-          rs = [r for r in m["releases"] if r.get("verifiable") and r.get("patch_count")]
+          # only releases on the CURRENT base: an earlier base's series lives at its series_ref
+          rs = [r for r in m["releases"] if r.get("verifiable") and r.get("patch_count")
+                and r.get("base", m["base"]["commit"]) == m["base"]["commit"]]
           rs.sort(key=lambda r: r["patch_count"])
           for r in rs:
               # source_tree_from_series is what applying the published patches from
@@ -161,8 +172,13 @@ jobs:
               fi
               tar -xzf "$ossl"
               git add -A -- release/src/router/openssl-3.5
-              git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)'
-              echo "  source overlay unpacked + committed ($(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) files)"
+              # from the 3006.102.10 base upstream ships the identical tree: nothing to commit
+              if git diff --cached --quiet; then
+                echo "  source overlay: the base already carries this tree - nothing to commit"
+              else
+                git commit -q -m 'overlay: openssl-3.5 source (overlays/openssl-3.5-source.tar.gz)'
+                echo "  source overlay unpacked + committed ($(git ls-tree -r --name-only HEAD release/src/router/openssl-3.5 | wc -l) files)"
+              fi
             fi
             got=$(git rev-parse HEAD:release/src/router)
             if [ "$got" = "$expected" ]; then

@@ -1,0 +1,48 @@
+From da9f3b46f68cac036a7c7dc8cf0a7dee17051392 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 27 Sep 2026 13:02:16 -0400
+Subject: [PATCH] wanduck: hold the next line switch, and nine stock defects
+
+Line-switch hold-off (field, GT-BE98): a switch restarts the line it
+leaves, and the stock grace before the next switch is wandog_maxfail x
+interval (~6 s), while a LAN-port WAN needs 15-20 s to return. From
+boot the two lines failed each other over until they were up together.
+After a switch the DISCONN branch now holds the next one for up to
+REAPER_SWITCH_HOLDOFF (30 s); the hold ends when the new line connects,
+an unplugged USB modem is not held, and it logs once per switch.
+
+Stock defects fixed:
+- do_dns_detect: the child's early return escaped the fork into a second
+  main loop with an armed alarm; a short read returned uninitialized
+  status.
+- do_backup_ping_detect: getaddrinfo result leaked every scan.
+- do_ping_detect: the IPv6 exemption let any wandog_target reach popen;
+  it now requires an IPv6 literal.
+- run_http_serv / parse_dst_url / handle_http_req: unterminated buffers
+  on the cap paths and a negative index on a short request.
+- send_page: a 5-digit https_lanport was truncated.
+- redirect server: idle clients held their slot forever; they are now
+  swept after 30 s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/wanduck.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 720770260d6..60279146488 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -687,6 +687,9 @@ int do_ping_detect(int wan_unit, const char *target)
+ 	*/
+ 
+ 	/* Check for valid domain to avoid shell escaping */
++	/* reaper 2026-09-26: the PDP2 exemption existed because an IPv6 literal target
++	 * fails is_valid_domainname(); as written it let ANY string through to popen()
++	 * on such a modem WAN. Keep it only for a real IPv6 address. */
+ 	if (!is_valid_domainname(target)
+ #if defined(RTCONFIG_IPV6) && defined(RTCONFIG_USB_MODEM)
+ 		&& !(dualwan_unit__usbif(wan_unit) && modem_pdp == 2
+-- 
+2.25.1
+

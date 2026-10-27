@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AiMesh MAC fields reach the closed cfg_server only as MAC addresses (or empty).
+"""AiMesh MAC fields reach the closed cfg_server only as MAC addresses (or an empty target_bssid).
 
 WHY THIS EXISTS (2026-10-23). httpd prints re_mac / new_re_mac / target_bssid unescaped into
 JSON events for the closed, root-run cfg_server (HTTPD_OB_LOCK_MSG, HTTPD_OB_SELECTION_MSG,
 HTTPD_CONFIG_CHANGED_MSG): cfg_onboarding.cgi and the applyapp action_modes onboarding,
 ob_selection, config_changed and prefer_node_apply. A value with a quote or brace rewrote the
 event. prefer_node_apply also ran ether_atoe() on a missing value (NULL) before checking it,
-which crashed httpd. httpd/web.c now gates every site on reaper_mac_or_empty(): a character
-whitelist (hex digits, ':' and '-') and the stock isValidMacAddress(), or an empty value (stock
-passes empties through; the topology page sends target_bssid "" for "Auto").
+which crashed httpd. On the 40585 base (merge stop 63) every site is ASUS's own isValidMacAddress()
+check (Reaper's reaper_mac_or_empty() wrapper is gone); empty values are refused except
+target_bssid "" ("Auto" on the topology page), which prefer_node_apply lets through by length.
 
-WHAT IT DOES. Compiles the real isValidMacAddress() (shared/misc.c) and reaper_mac_or_empty()
-(httpd/web.c) on the host and checks accepted/refused values, including a brute-force sweep that
-inserts or substitutes every non-MAC printable character at every position of a valid MAC. Then
-checks statically that each event site is gated and that prefer_node_apply converts only inside
-the check.
+WHAT IT DOES. Compiles the real isValidMacAddress() (shared/misc.c) on the host and checks
+accepted/refused values, including a brute-force sweep that inserts or substitutes every non-MAC
+printable character at every position of a valid MAC, and a run of non-hex text ahead of the
+first separator (a count-only check lets that through). Then checks statically that each event
+site is gated and that prefer_node_apply converts only inside the check.
 
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - argv[1] or REAPER_ROUTER_SRC).
 """
@@ -48,37 +48,30 @@ def func(text, sig):
     return text[a:text.find("\n}\n", a) + 3]
 
 ivm = func(misc, "int isValidMacAddress(const char* mac) {")
-helper = func(web, "static inline int reaper_mac_or_empty(const char *m)")
 check("isValidMacAddress() found in shared/misc.c", ivm is not None)
-check("reaper_mac_or_empty() found in httpd/web.c", helper is not None)
-if ivm is None or helper is None:
+if ivm is None:
     print("\n".join("FAIL: " + f for f in fails)); sys.exit(1)
 
-# ---- the helper sits outside every #if (its users are under RTCONFIG_AMAS and RTCONFIG_CFGSYNC)
-depth = 0
-for line in web[:web.find("static inline int reaper_mac_or_empty")].split("\n"):
-    s = line.strip()
-    if re.match(r"#\s*if", s):
-        depth += 1
-    elif re.match(r"#\s*endif", s):
-        depth -= 1
-check("reaper_mac_or_empty() is defined outside any #if block", depth == 0, depth)
-
-# ---- every event site is gated
-LOCK = ("else if (re_mac && new_re_mac && reaper_mac_or_empty(re_mac) && reaper_mac_or_empty(new_re_mac))\n"
-        "\t\t\tsnprintf(event_msg, sizeof(event_msg), HTTPD_OB_LOCK_MSG,")
+# ---- every event site is gated (40585 base, merge stop 63: ASUS's isValidMacAddress() at each site)
+LOCK = re.compile(r"if \(isValidMacAddress\(re_mac\) && isValidMacAddress\(new_re_mac\)\) \{\s*"
+                  r"snprintf\(event_msg, sizeof\(event_msg\), HTTPD_OB_LOCK_MSG,")
 check("both HTTPD_OB_LOCK_MSG sites (cfg_onboarding.cgi, applyapp onboarding) are gated",
-      web.count(LOCK) == 2 and web.count("HTTPD_OB_LOCK_MSG,") == 2, web.count(LOCK))
+      len(LOCK.findall(web)) == 2 and web.count("HTTPD_OB_LOCK_MSG,") == 2, len(LOCK.findall(web)))
 sel = web[web.find('!strcmp(action_mode, "ob_selection")'):]
 sel = sel[:sel.find("send_cfgmnt_event")]
-check("ob_selection refuses a non-empty non-MAC new_re_mac before HTTPD_OB_SELECTION_MSG",
-      "if (new_re_mac && !reaper_mac_or_empty(new_re_mac))" in sel and sel.find("reaper_mac_or_empty") < sel.find("HTTPD_OB_SELECTION_MSG"))
-check("config_changed gates re_mac", "if (re_mac && config && reaper_mac_or_empty(re_mac)) {" in web)
+check("ob_selection refuses a non-MAC new_re_mac before HTTPD_OB_SELECTION_MSG",
+      "if (new_re_mac && !isValidMacAddress(new_re_mac)) {" in sel
+      and sel.find("isValidMacAddress") < sel.find("} else {") < sel.find("HTTPD_OB_SELECTION_MSG"))
+cc = web[web.find('!strcmp(action_mode, "config_changed")'):]
+cc = cc[:cc.find("send_cfgmnt_event")]
+check("config_changed gates re_mac", "if (re_mac && config) {" in cc and "if (!isValidMacAddress(re_mac)) {" in cc
+      and cc.find("isValidMacAddress") < cc.find("} else {") < cc.find("HTTPD_CONFIG_CHANGED_MSG"))
 pn = web[web.find('!strcmp(action_mode, "prefer_node_apply")'):]
 pn = pn[:pn.find("send_cfgmnt_event")]
-g = pn.find("if (re_mac && target_bssid && reaper_mac_or_empty(re_mac) && reaper_mac_or_empty(target_bssid)) {")
+n = pn.find("if (re_mac && target_bssid) {")
+g = pn.find("if (!isValidMacAddress(re_mac) || (strlen(target_bssid) > 0 && !isValidMacAddress(target_bssid))) {")
 c = pn.find("prefer_node_convert_nvram(re_mac, target_bssid")
-check("prefer_node_apply converts only inside the check (no ether_atoe on NULL)", 0 <= g < c, (g, c))
+check("prefer_node_apply converts only inside the check (no ether_atoe on NULL)", 0 <= n < g < pn.find("} else {", g) < c, (n, g, c))
 check("HTTPD_CONFIG_CHANGED_MSG has exactly the two gated users", web.count("HTTPD_CONFIG_CHANGED_MSG,") == 2)
 
 # carried from ASUS GPL 102_40585 (via Merlin): the remaining cfg_server events
@@ -102,18 +95,22 @@ harness = r'''
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
-''' + ivm + "\n" + helper + r'''
+''' + ivm + r'''
 int main(int argc, char **argv)
 {
 	int i;
 	for (i = 1; i < argc; i++)
-		printf("%d\n", reaper_mac_or_empty(argv[i]));
+		printf("%d\n", isValidMacAddress(argv[i]));
 	return 0;
 }
 '''
-ACCEPT = ["AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "AABBCCDDEEFF", ""]
+ACCEPT = ["AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "AABBCCDDEEFF"]
+# "" is refused here; the one site that takes an empty value (target_bssid) skips the check by length
 REFUSE = ['AA:BB:CC:DD:EE:FF","x":"1', 'AA:BB:CC:DD:EE:F"', "{}", "AA:BB:CC:DD:EE", "AA:BB:CC:DD:EE:FF:00",
-          "AA:BB:CC:DD:EE:GG", "AABBCCDDEEFF0", " AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF\n", "A\":A:BB:CC:DD:EEFF"]
+          "AA:BB:CC:DD:EE:GG", "AABBCCDDEEFF0", " AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF\n", "A\":A:BB:CC:DD:EEFF", "",
+          # one hex digit, a run of non-hex text, then a separator: a separator-count check resets and lets the text
+          # through into the cfg_server JSON event (reaper_mac_or_empty's character whitelist refused these)
+          'A":A:BB:CC:DD:EE:FF', 'A","x":"y":A:BB:CC:DD:EE:FF', '0}],"k":[{"q":0:BB:CC:DD:EE:FF']
 base = "AA:BB:CC:DD:EE:FF"
 junk = [chr(c) for c in range(32, 127) if chr(c) not in "0123456789abcdefABCDEF:-"]
 sweep = []
@@ -122,19 +119,23 @@ for p in range(len(base) + 1):
         sweep.append(base[:p] + j + base[p:])
         if p < len(base):
             sweep.append(base[:p] + j + base[p + 1:])
+for j in junk:
+    sweep.append(base[0] + j + ":" + base[1:])
+    sweep.append(base[0] + j + j + "-" + base[1:].replace(":", "-"))
 with tempfile.TemporaryDirectory() as td:
     cf = os.path.join(td, "t.c"); exe = os.path.join(td, "t")
     open(cf, "w").write(harness)
     r = subprocess.run([CC, "-std=gnu99", "-Wall", "-Werror", "-o", exe, cf], capture_output=True, text=True)
-    check("the helpers compile on the host (-Wall -Werror)", r.returncode == 0, r.stderr)
+    check("isValidMacAddress() compiles on the host (-Wall -Werror)", r.returncode == 0, r.stderr)
     if r.returncode != 0:
         print("\n".join("FAIL: " + f for f in fails)); sys.exit(1)
     def run(vals):
         return subprocess.run([exe] + vals, capture_output=True, text=True).stdout.split()
     got = run(ACCEPT)
-    check("accepted: colon/dash/bare MACs in either case, and the empty value", got == ["1"] * len(ACCEPT), list(zip(ACCEPT, got)))
+    check("accepted: colon/dash/bare MACs in either case", got == ["1"] * len(ACCEPT), list(zip(ACCEPT, got)))
     got = run(REFUSE)
-    check("refused: injection strings, short/long/non-hex/padded values", got == ["0"] * len(REFUSE),
+    check("refused: injection strings (incl. non-hex text ahead of the first separator), short/long/non-hex/padded/empty values",
+          got == ["0"] * len(REFUSE),
           [v for v, o in zip(REFUSE, got) if o != "0"])
     got = run(sweep)
     passed = [v for v, o in zip(sweep, got) if o != "0"]

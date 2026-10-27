@@ -147,7 +147,7 @@ check("self_heal calls heal_sink in the armed branch, after heal_lost_rules and 
 
 # ---------------------------------------------------------------- diag, markers
 check("reaper_diag 14b reports the sinkhole (pid, port, redirect rule counts) and is v1.3.48",
-      'VER="REAPER-DIAG v1.3.50"' in diag and "dns sinkhole      : pid=" in diag and "grep -c 'redir ports 5300'" in diag
+      'VER="REAPER-DIAG v1.3.51"' in diag and "dns sinkhole      : pid=" in diag and "grep -c 'redir ports 5300'" in diag
       and diag.index("captive redirect  :") < diag.index("dns sinkhole      :"))
 mk = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "verify_markers.txt"), encoding="utf-8").read()
 check("markers pin the conf path, the redirect and the catch-all answer in the staged rc, and the heal line in the staged gkd",

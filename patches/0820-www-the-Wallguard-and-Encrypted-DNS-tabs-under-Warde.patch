@@ -1,0 +1,1186 @@
+From 12e43abfe767083c1fadc06cfa00aed8918e40e7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:27 -0400
+Subject: [PATCH] www: the Wallguard and Encrypted DNS tabs under Warden
+
+Wallguard: the switch, lists (presets and up to 8 of your own), My rules,
+Unbreak, profiles with blocked services, schedules and safe search, Why?, Pause,
+the counters and the live view. Encrypted DNS: the server switch, the
+certificate card, per-platform setup (Android, the Apple profile, Linux), the
+"Block encrypted DNS that goes around the router" switch with its counters and
+its one caution in amber. Both run as one closure with event listeners.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/www/Reaper_EncryptedDNS.asp    | 413 ++++++++++
+ release/src/router/www/Reaper_Wallguard.asp   | 738 ++++++++++++++++++
+ 2 files changed, 1151 insertions(+)
+ create mode 100644 release/src/router/www/Reaper_EncryptedDNS.asp
+ create mode 100644 release/src/router/www/Reaper_Wallguard.asp
+
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+new file mode 100644
+index 00000000000..1446a1d9849
+--- /dev/null
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -0,0 +1,413 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RENC_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++a{color:var(--bone)}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
++.lede{max-width:78ch;margin:6px 0 16px}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
++/* 2026-10-25 (release review E-2): the one way the block takes a device's DNS away - said before the switch is used */
++.card li.caution{color:var(--amber);font-weight:600}
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++.duo .card{margin:0}
++ol.steps{margin:10px 0 2px;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:13px;max-width:84ch}
++ol.steps li{color:var(--bone-dim);padding-left:4px}
++ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
++.card ol.steps li::before{display:none}
++.dev{border-top:1px solid var(--line-soft);padding:12px 2px}
++.dev:first-of-type{border-top:none}
++.dev h3{font-size:13.5px;margin-bottom:4px}
++.dev p{font-size:12.5px;max-width:84ch}
++.dev .need{color:var(--amber);font-size:12px;margin-top:6px}
++.dev .need::first-letter{text-transform:uppercase}
++code,.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--bone);background:var(--panel-2);border:1px solid var(--line-soft);border-radius:5px;padding:1px 6px;word-break:break-all}
++pre.mono{display:block;padding:8px 12px;margin-top:8px;white-space:pre-wrap}
++input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px;width:100%;max-width:520px;margin:8px 0}
++.kv{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:6px 16px;font-size:12.5px;margin-top:8px}
++.kv .k{color:var(--steel)}
++.kv .v{color:var(--bone);word-break:break-all}
++.certstate{margin-top:10px;font-size:12.5px}
++.certstate.good{color:var(--jade)} .certstate.bad{color:var(--amber)}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.card li.good::before{background:var(--jade)}
++.card li.gap::before{background:var(--amber)}
++.card li .dim{color:var(--steel)}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.btng:disabled{opacity:.4;cursor:default}
++.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
++.applying.show{display:flex}
++.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
++.applying h3{font-size:16px;margin-bottom:6px}
++.applying p{font-size:12px;color:var(--bone-dim)}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RENC_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#4312-encrypted-dns" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++  <span class="ver"><#RENC_01#></span>
++  <span class="statuspill off" id="pill"><#RENC_05#></span>
++  <span class="mastertg"><#RENC_02#> <span class="tg" id="tgdot"></span></span>
++</div>
++<p class="lede"><#RENC_03#></p>
++
++<div class="warnbanner" id="why">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div id="whytext"></div>
++</div>
++
++<div class="stats">
++  <div class="stat"><div class="n" id="s_conns">&mdash;</div><div class="l"><#RENC_06#></div></div>
++  <div class="stat"><div class="n" id="s_queries">&mdash;</div><div class="l"><#RENC_07#></div></div>
++  <div class="stat"><div class="n" id="s_refused">&mdash;</div><div class="l"><#RENC_08#></div></div>
++</div>
++
++<div class="card">
++  <h2><#RENC_09#></h2>
++  <ol class="steps">
++    <li><#RENC_10#></li>
++    <li><#RENC_11#></li>
++    <li><#RENC_12#></li>
++    <li id="step4"></li>
++    <li><#RENC_14#></li>
++    <li><#RENC_65#></li>
++  </ol>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RENC_27#></h2>
++    <div class="kv">
++      <div class="k"><#RENC_28#></div><div class="v" id="c_name">&mdash;</div>
++      <div class="k"><#RENC_29#></div><div class="v" id="c_issuer">&mdash;</div>
++      <div class="k"><#RENC_30#></div><div class="v" id="c_until">&mdash;</div>
++    </div>
++    <div class="certstate" id="c_state"></div>
++  </div>
++  <div class="card">
++    <h2><#RENC_35#></h2>
++    <ul id="listen"><li class="dim">&mdash;</li></ul>
++    <div class="desc" id="wanpriv" style="display:none"><#RENC_38#></div>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RENC_15#></h2>
++  <div class="dev">
++    <h3><#RENC_16#></h3>
++    <p id="d_android"></p>
++  </div>
++  <div class="dev">
++    <h3><#RENC_18#></h3>
++    <p><#RENC_19#></p>
++    <input type="text" id="ssids" placeholder="<#RENC_20#>" aria-label="<#RENC_20#>">
++    <div><button type="button" class="btng" id="appledl"><#RENC_21#></button></div>
++    <div class="need" id="d_apple_need" style="display:none"><#RENC_26#></div>
++  </div>
++  <div class="dev">
++    <h3><#RENC_22#></h3>
++    <p><#RENC_23#></p>
++    <pre class="mono" id="d_linux">&mdash;</pre>
++    <div class="need" id="d_linux_need" style="display:none"><#RENC_26#></div>
++  </div>
++  <div class="dev">
++    <h3><#RENC_24#></h3>
++    <p><#RENC_25#></p>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RENC_50#></h2>
++  <div style="display:flex;align-items:center;gap:14px;margin:10px 0 4px"><span style="color:var(--bone)"><#RENC_51#></span><span class="tg" id="tgblk"></span></div>
++  <div class="desc"><#RENC_52#></div>
++  <div class="stats" style="margin:12px 0 10px">
++    <div class="stat"><div class="n" id="b_list">-</div><div class="l"><#RENC_53#></div></div>
++    <div class="stat"><div class="n" id="b_names">-</div><div class="l"><#RENC_54#></div></div>
++    <div class="stat"><div class="n" id="b_853">-</div><div class="l"><#RENC_55#></div></div>
++    <div class="stat"><div class="n" id="b_443">-</div><div class="l"><#RENC_56#></div></div>
++  </div>
++  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 10px"><button type="button" class="btng" id="b_upd"><#RENC_57#></button><span class="dim" id="b_feed"></span></div>
++  <ul>
++    <li><#RENC_61#></li>
++    <li class="caution"><#RENC_62#></li>
++    <li id="b_exempt"></li>
++    <li><#RENC_64#></li>
++  </ul>
++</div>
++
++<div class="actions">
++  <button class="btn" data-act="save"><#RWDN_28#></button>
++</div>
++
++<div class="card" style="margin-top:16px">
++  <h2><#RENC_47#></h2>
++  <ul>
++    <li><#RENC_42#></li>
++    <li><#RENC_43#></li>
++    <li><#RENC_44#></li>
++    <li><#RENC_45#></li>
++    <li><#RENC_49#> <a href="/reaper_shell.asp#Reaper_Wallguard.asp" target="_top" style="color:var(--bone)"><#RSHD_00#></a></li>
++  </ul>
++</div>
++
++<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RENC_48#></p></div></div>
++
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_EncryptedDNS.asp">
++  <input type="hidden" name="next_page" value="Reaper_EncryptedDNS.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_rednsd">
++  <input type="hidden" name="action_wait" value="5">
++  <input type="hidden" name="reaper_dot_srv" value="">
++  <input type="hidden" name="reaper_doh_block" value="">
++</form>
++
++<script src="/reaper/rp.js"></script>
++<script>
++(function(){
++/* 2026-10-21 Encrypted DNS for devices: the switch (nvram reaper_dot_srv, this form ->
++   restart_rednsd) and rednsd's status (reaper_encdns.cgi, behind the http_id gate). The
++   per-device instructions are filled with the live values - the certificate's name and
++   the router's address - so nothing has to be looked up. Everything the router reports
++   is rendered with textContent.
++   Review 2026-10-24 (Q-C2-12): one closure, no page globals; the controls are wired below with
++   addEventListener, never with inline on*= attributes. */
++var HID = '<% nvram_get("http_id"); %>';
++var NV = {
++  on:   '<% nvram_get("reaper_dot_srv"); %>',
++  blk:  '<% nvram_get("reaper_doh_block"); %>',
++  lan:  '<% nvram_get("lan_ipaddr"); %>',
++  ddns: decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
++  ssid: [decodeURIComponent('<% nvram_char_to_ascii("", "wl0_ssid"); %>'), decodeURIComponent('<% nvram_char_to_ascii("", "wl1_ssid"); %>'),
++         decodeURIComponent('<% nvram_char_to_ascii("", "wl2_ssid"); %>'), decodeURIComponent('<% nvram_char_to_ascii("", "wl3_ssid"); %>')]
++};
++var LINK_DIRECTOR = ['/reaper_shell.asp#Reaper_DNS.asp?tab=dd', `<#Reaper_c_dns_director#>`];
++var LINK_CERT = ['/reaper_shell.asp#Reaper_DDNS.asp', `<#menu5_3#> > <#menu5_3_6#>`];
++var curName = '', curTrusted = false;
++var $ = rp.q;
++function encTg(el){ el.className = (el.className.indexOf('on') >= 0) ? 'tg' : 'tg on'; }
++function encNum(n){ return Number(n||0).toLocaleString(); }
++/* fill el with text whose %1 becomes a link (href, label) or a code chip (label only) */
++function encFill(el, text, href, label){
++  var parts = String(text).split('%1'), mid;
++  el.textContent = '';
++  el.appendChild(document.createTextNode(parts[0]));
++  if(parts.length > 1){
++    if(href){ mid = document.createElement('a'); mid.href = href; mid.target = '_top'; }
++    else mid = document.createElement('code');
++    mid.textContent = label;
++    el.appendChild(mid);
++    el.appendChild(document.createTextNode(parts.slice(1).join('%1')));
++  }
++}
++/* the name devices should use: the DDNS name when the certificate covers it, else its first plain name */
++function encPickName(c){
++  var names = (c && c.names) || [], i, n, dd = String(NV.ddns||'').toLowerCase();
++  for(i = 0; i < names.length; i++){
++    n = String(names[i]).toLowerCase();
++    if(n === dd || (n.indexOf('*.') === 0 && dd.slice(dd.indexOf('.')) === n.slice(1) && dd.indexOf('.') > 0)) return dd;
++  }
++  for(i = 0; i < names.length; i++) if(String(names[i]).indexOf('*') < 0) return String(names[i]);
++  return (c && c.cn) ? String(c.cn) : '';
++}
++function encRender(j){
++  var st = j && j.st, running = !!(j && j.running && st && st.state === 'running');
++  var pill = $('pill');
++  pill.className = 'statuspill' + (running ? '' : ' off');
++  pill.textContent = running ? `<#RENC_04#>` : `<#RENC_05#>`;
++  var why = $('why'), wt = '';
++  if(NV.on === '1' && !running){
++    var W = {no_cert:`<#RENC_39#>`, cert_error:`<#RENC_40#>`, bind_error:`<#RENC_41#>`};
++    wt = (st && W[st.state]) ? W[st.state] : `<#RENC_46#>`;
++  }
++  $('whytext').textContent = wt; why.style.display = wt ? 'flex' : 'none';
++  $('s_conns').textContent = running ? encNum(st.conns) : '\u2014';
++  $('s_queries').textContent = running ? encNum(st.queries) : '\u2014';
++  $('s_refused').textContent = running ? encNum((st.refused_peer||0) + (st.refused_policy||0) + (st.refused_busy||0)) : '\u2014';
++
++  /* certificate */
++  var c = (st && st.cert) || null, now = Date.now() / 1000, cs = $('c_state');
++  curName = c ? encPickName(c) : '';
++  curTrusted = !!(c && c.trusted && !(c.not_after && c.not_after < now));
++  $('c_name').textContent = curName || '\u2014';
++  $('c_issuer').textContent = (c && c.issuer) ? c.issuer : '\u2014';
++  $('c_until').textContent = (c && c.not_after) ? new Date(c.not_after * 1000).toLocaleDateString() : '\u2014';
++  if(!c || c.error){ cs.textContent = ''; }
++  else if(c.not_after && c.not_after < now){ cs.className = 'certstate bad'; encFill(cs, `<#RENC_34#>`, LINK_CERT[0], LINK_CERT[1]); }
++  else if(c.trusted){ cs.className = 'certstate good'; cs.textContent = `<#RENC_31#>`; }
++  else if(c.self_signed){ cs.className = 'certstate bad'; encFill(cs, `<#RENC_32#>`, LINK_CERT[0], LINK_CERT[1]); }
++  else { cs.className = 'certstate bad'; encFill(cs, `<#RENC_33#>`, LINK_CERT[0], LINK_CERT[1]); }
++
++  /* where it answers */
++  var ul = $('listen'); ul.textContent = '';
++  ((st && st.listen) || []).forEach(function(l){
++    var li = document.createElement('li'), code = document.createElement('code');
++    li.className = l.ok ? 'good' : 'gap';
++    code.textContent = l.a + (l.p !== 853 ? ':' + l.p : '');
++    li.appendChild(code);
++    if(l.wan){ var s = document.createElement('span'); s.className = 'dim'; s.textContent = ' \u2014 ' + `<#RENC_36#>`; li.appendChild(s); }
++    if(!l.ok){ var e = document.createElement('span'); e.className = 'dim'; e.textContent = ' \u2014 ' + `<#RENC_37#>`; li.appendChild(e); }
++    ul.appendChild(li);
++  });
++  if(!ul.firstChild){ var d = document.createElement('li'); d.className = 'dim'; d.textContent = '\u2014'; ul.appendChild(d); }
++  $('wanpriv').style.display = (j && j.wan_private && curTrusted) ? '' : 'none';
++
++  /* per device, with the live values */
++  encFill($('d_android'), `<#RENC_17#>`, null, curTrusted && curName ? curName : `<#RENC_26#>`);
++  $('appledl').disabled = !(curTrusted && curName);
++  $('d_apple_need').style.display = (curTrusted && curName) ? 'none' : '';
++  $('d_linux').textContent = (curTrusted && curName) ? 'DNS=' + NV.lan + '#' + curName + '\nDNSOverTLS=yes' : '\u2014';
++  $('d_linux_need').style.display = (curTrusted && curName) ? 'none' : '';
++
++  /* 2026-10-21: block encrypted DNS that goes around the router */
++  var b = (j && j.blk) || null, on = !!(b && b.on), D = String.fromCharCode(8212), fd = $('b_feed');
++  $('b_list').textContent = on && b.v4 >= 0 ? encNum(b.v4 + Math.max(0, b.v6)) : D;
++  $('b_names').textContent = on ? encNum(b.names) : D;
++  $('b_853').textContent = on ? encNum(b.rej853) : D;
++  $('b_443').textContent = on ? encNum(b.rej443) : D;
++  $('b_upd').disabled = !on;
++  if(!on) fd.textContent = '';
++  else if(b.feed && b.feed.st === 'ok') fd.textContent = `<#RENC_58#>`.replace('%1', new Date(b.feed.ok * 1000).toLocaleString()).replace('%2', encNum(b.feed.n));
++  else if(b.feed && b.feed.st === 'failed') fd.textContent = `<#RENC_59#>`.replace('%1', b.feed.ok ? new Date(b.feed.ok * 1000).toLocaleString() : D);
++  else fd.textContent = `<#RENC_60#>`;
++}
++function encDohUpdate(){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/reaper_encdns.cgi?action=doh_update&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
++  x.onreadystatechange = function(){ if(x.readyState === 4) setTimeout(encGet, 5000); };
++  try{ x.send(); }catch(e){}
++}
++function encGet(){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/reaper_encdns.cgi?http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
++  x.timeout = 8000;
++  x.onreadystatechange = function(){ if(x.readyState !== 4) return; var j = null; if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){ j = null; } } encRender(j); };
++  x.ontimeout = function(){ encRender(null); };
++  try{ x.send(); }catch(e){ encRender(null); }
++}
++function encXml(s){ return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
++function encUuid(){
++  var b = new Uint8Array(16), h = [], i;
++  (window.crypto || window.msCrypto).getRandomValues(b);
++  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
++  for(i = 0; i < 16; i++) h.push((b[i] + 0x100).toString(16).slice(1));
++  return (h.slice(0,4).join('') + '-' + h.slice(4,6).join('') + '-' + h.slice(6,8).join('') + '-' + h.slice(8,10).join('') + '-' + h.slice(10).join('')).toUpperCase();
++}
++/* An Apple configuration profile (com.apple.dnsSettings.managed): DNS-over-TLS to the router's
++   LAN address under the certificate's name, ONLY on the Wi-Fi networks listed - anywhere else
++   the device's normal DNS is left alone (a profile without on-demand rules would follow the
++   device away from home, where port 853 is closed, and leave it without DNS). */
++function encProfile(){
++  var ssids = $('ssids').value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length && s.length <= 32; });
++  if(!curTrusted || !curName || !ssids.length) { $('ssids').focus(); return; }
++  var x = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
++    + '<plist version="1.0"><dict>\n<key>PayloadContent</key><array><dict>\n'
++    + '<key>DNSSettings</key><dict><key>DNSProtocol</key><string>TLS</string>'
++    + '<key>ServerName</key><string>' + encXml(curName) + '</string>'
++    + '<key>ServerAddresses</key><array><string>' + encXml(NV.lan) + '</string></array></dict>\n'
++    + '<key>OnDemandRules</key><array>'
++    + '<dict><key>Action</key><string>Connect</string><key>InterfaceTypeMatch</key><string>WiFi</string><key>SSIDMatch</key><array>'
++    + ssids.map(function(s){ return '<string>' + encXml(s) + '</string>'; }).join('') + '</array></dict>'
++    + '<dict><key>Action</key><string>Disconnect</string></dict></array>\n'
++    + '<key>PayloadDisplayName</key><string>Encrypted DNS (' + encXml(curName) + ')</string>'
++    + '<key>PayloadIdentifier</key><string>reaper.encdns.dns.' + encXml(curName) + '</string>'
++    + '<key>PayloadType</key><string>com.apple.dnsSettings.managed</string>'
++    + '<key>PayloadUUID</key><string>' + encUuid() + '</string><key>PayloadVersion</key><integer>1</integer>\n'
++    + '</dict></array>\n'
++    + '<key>PayloadDisplayName</key><string>Encrypted DNS (' + encXml(curName) + ')</string>'
++    + '<key>PayloadIdentifier</key><string>reaper.encdns.' + encXml(curName) + '</string>'
++    + '<key>PayloadRemovalDisallowed</key><false/><key>PayloadType</key><string>Configuration</string>'
++    + '<key>PayloadUUID</key><string>' + encUuid() + '</string><key>PayloadVersion</key><integer>1</integer>\n'
++    + '</dict></plist>\n';
++  var a = document.createElement('a');
++  a.href = URL.createObjectURL(new Blob([x], {type: 'application/x-apple-aspen-config'}));
++  a.download = 'encrypted-dns-' + curName.replace(/[^a-z0-9.-]/gi, '_') + '.mobileconfig';
++  document.body.appendChild(a); a.click();
++  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
++}
++function encSave(){
++  var f = document.form;
++  f.reaper_dot_srv.value = ($('tgdot').className.indexOf('on') >= 0) ? '1' : '0';
++  f.reaper_doh_block.value = ($('tgblk').className.indexOf('on') >= 0) ? '1' : '0';
++  var sv = [];
++  /* review 2026-10-24: a Save that changes nothing used to restart rednsd (=== where !== was meant) */
++  if(f.reaper_dot_srv.value !== (NV.on === '1' ? '1' : '0') || f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0')) sv.push('restart_rednsd');
++  if(f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0')) sv.push('restart_dnsmasq', 'restart_firewall');
++  f.action_script.value = sv.join(';');
++  $('applying').className = 'applying show';
++  f.submit();
++  setTimeout(function(){ location.reload(); }, 9000);
++}
++/* the page's controls (were inline onclick= attributes) */
++var ACT = {save: encSave};
++document.addEventListener('click', function(e){
++  var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
++  if(b && ACT[b.getAttribute('data-act')]) ACT[b.getAttribute('data-act')]();
++});
++$('tgdot').addEventListener('click', function(){ encTg(this); });
++$('tgblk').addEventListener('click', function(){ encTg(this); });
++$('appledl').addEventListener('click', function(){ encProfile(); });
++$('b_upd').addEventListener('click', function(){ encDohUpdate(); });
++$('tgdot').className = 'tg' + (NV.on === '1' ? ' on' : '');
++$('tgblk').className = 'tg' + (NV.blk === '1' ? ' on' : '');
++encFill($('b_exempt'), `<#RENC_63#>`, LINK_DIRECTOR[0], LINK_DIRECTOR[1]);
++encFill($('step4'), `<#RENC_13#>`, LINK_DIRECTOR[0], LINK_DIRECTOR[1]);
++/* prefill the home Wi-Fi names with the radios' own (a 32-hex name is an SDN placeholder, not one a user set) */
++$('ssids').value = NV.ssid.filter(function(s, i, a){ return s && !/^[0-9a-fA-F]{32}$/.test(s) && a.indexOf(s) === i; }).join(', ');
++encRender(null);
++encGet();
++/* review 2026-10-24 (Q-C2-4): no poll while the tab is hidden; a tab that comes back polls at once */
++setInterval(function(){ if(!document.hidden) encGet(); }, 10000);
++document.addEventListener('visibilitychange', function(){ if(!document.hidden) encGet(); });
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+new file mode 100644
+index 00000000000..6b33cde622a
+--- /dev/null
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -0,0 +1,738 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#RSHD_00#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box;margin:0}
++html,body{background:var(--bg)}
++body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++a{color:var(--bone)}
++.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
++.pagehead h1{font-size:24px;font-weight:700}
++.pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
++.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
++.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
++.statuspill.warn{color:var(--amber);border-color:rgba(224,169,59,.4)}
++.mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
++.lede{max-width:78ch;margin:6px 0 16px}
++.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.tg.on{background:#33333a}
++.tg.on::after{left:21px;background:var(--bone)}
++.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
++.stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
++.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:84ch}
++.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
++.duo .card{margin:0}
++ol.steps{margin:10px 0 2px;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:13px;max-width:86ch}
++ol.steps li{color:var(--bone-dim);padding-left:4px}
++ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
++.card ol.steps li::before{display:none}
++.tbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
++.tbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
++.tbl td{padding:8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
++.tbl tbody tr:last-child td{border-bottom:none}
++.tbl td.num,.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
++.tbl td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all}
++.tbl td.dim,.dim{color:var(--steel)}
++.tbl td.empty{text-align:center;color:var(--steel);padding:18px}
++.st-ok{color:var(--jade)} .st-failed,.st-missing{color:var(--amber)} .st-new{color:var(--steel)}
++.v-b{color:var(--crimson)} .v-a{color:var(--jade)} .v-p{color:var(--amber)} .v--{color:var(--steel)}
++.sub{display:block;font-size:11px;color:var(--steel)}
++label.ck{position:relative;display:inline-flex;align-items:center;cursor:pointer}
++label.ck input{position:absolute;opacity:0;width:0;height:0}
++label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:var(--panel-2);display:inline-block;position:relative}
++label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
++label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
++label.ck input:disabled + .box{opacity:.35}
++select,textarea,input[type="text"],input[type="time"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
++textarea{width:100%;height:110px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
++.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
++.row input[type="text"]{flex:1;min-width:200px}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
++.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
++.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
++.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 14px;cursor:pointer}
++.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
++.btng.sm{padding:4px 9px;font-size:10.5px}
++.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:84ch}
++.card li{padding-left:16px;position:relative}
++.card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
++.result{margin-top:10px;font-size:12.5px}
++.result .line{margin:3px 0}
++input[type="time"]{color-scheme:dark}
++.pedit{display:none;margin:12px 0 4px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
++.pedit h3{font-size:14px;margin-bottom:4px}
++.pedit .cathead{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);margin:14px 0 6px}
++.chips{display:flex;flex-wrap:wrap;gap:8px}
++label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);border-radius:16px;color:var(--bone);font-size:12px}
++.day{font-family:var(--hdr);font-weight:600;font-size:11px;min-width:40px;padding:4px 6px;border-radius:6px;border:1px solid var(--line-soft);background:transparent;color:var(--steel);cursor:pointer}
++.day.on{color:var(--bone);border-color:var(--crimson-deep);background:rgba(225,6,0,.16)}
++.desc.warn{color:var(--amber)}
++.v-s{color:var(--jade)}
++.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
++.applying.show{display:flex}
++.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
++.applying h3{font-size:16px;margin-bottom:6px}
++.applying p{font-size:12px;color:var(--bone-dim)}
++</style>
++</head>
++<body>
++
++<div class="pagehead">
++  <h1><#RSHD_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#4311-wallguard" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++  <span class="ver"><#RSHD_01#></span>
++  <span class="statuspill off" id="pill"><#RSHD_03#></span>
++  <span class="mastertg"><#RSHD_06#> <span class="tg" id="tgon"></span></span>
++</div>
++<p class="lede"><#RSHD_07#></p>
++
++<div class="warnbanner" id="banner">
++  <svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>
++  <div id="bannertext"></div>
++</div>
++
++<div class="stats">
++  <div class="stat"><div class="n" id="s_q">-</div><div class="l"><#RSHD_10#></div></div>
++  <div class="stat"><div class="n" id="s_b">-</div><div class="l"><#RSHD_11#></div></div>
++  <div class="stat"><div class="n" id="s_p">-</div><div class="l"><#RSHD_12#></div></div>
++  <div class="stat"><div class="n" id="s_n">-</div><div class="l"><#RSHD_13#></div></div>
++  <div class="stat"><div class="n" id="s_c">-</div><div class="l"><#RSHD_14#></div></div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_15#></h2>
++  <ol class="steps">
++    <li><#RSHD_16#></li>
++    <li><#RSHD_17#></li>
++    <li><#RSHD_18#></li>
++    <li><#RSHD_19#></li>
++    <li><#RSHD_20#></li>
++    <li><#RSHD_98#></li>
++  </ol>
++</div>
++
++<div class="card">
++  <h2><#RSHD_21#></h2>
++  <table class="tbl">
++    <thead><tr><th><#RSHD_22#></th><th style="width:44px"></th><th class="num"><#RSHD_23#></th><th class="num"><#RSHD_24#></th><th><#RSHD_25#></th><th><#RSHD_26#></th></tr></thead>
++    <tbody id="listbody"></tbody>
++  </table>
++  <div class="desc" style="margin-top:12px"><#RSHD_35#></div>
++  <textarea id="custom" style="height:80px" placeholder="https://"></textarea>
++  <div class="row"><button type="button" class="btng" data-act="update"><#RSHD_36#></button><span class="dim" id="buildline"></span></div>
++  <div class="desc" id="storeline" style="margin-top:8px"></div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_39#></h2>
++  <div class="duo" style="margin:8px 0 0">
++    <div><div class="desc"><#RSHD_40#></div><textarea id="block" placeholder="ads.example.com"></textarea></div>
++    <div><div class="desc"><#RSHD_41#></div><textarea id="allow" placeholder="example.com"></textarea></div>
++  </div>
++  <div class="desc" id="allow24box" style="display:none"><b><#RSHD_42#>:</b> <span id="allow24"></span></div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_43#></h2>
++  <div class="desc"><#RSHD_44#></div>
++  <table class="tbl"><thead id="profhead"></thead><tbody id="profbody"></tbody></table>
++  <div class="pedit" id="pedit"></div>
++  <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btng" data-act="addprof"><#RSHD_47#></button></div>
++  <h3 style="font-size:12.5px;margin-top:14px"><#RSHD_50#></h3>
++  <table class="tbl"><thead><tr><th><#RSHD_51#> / <#RSHD_52#></th><th><#RSHD_53#></th><th style="width:80px"></th></tr></thead><tbody id="assignbody"></tbody></table>
++  <div class="row">
++    <select id="newtarget" style="min-width:240px"></select>
++    <select id="newpid"></select>
++    <button type="button" class="btng" data-act="addasg"><#RSHD_54#></button>
++  </div>
++</div>
++
++<div class="actions" style="margin-bottom:16px">
++  <span class="dim"><#RSHD_87#></span>
++  <select id="mode"><option value="null"><#RSHD_88#></option><option value="nx"><#RSHD_89#></option></select>
++  <button class="btn" data-act="save"><#RWDN_28#></button>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RSHD_56#></h2>
++    <div class="row">
++      <select id="ptarget" style="min-width:200px"></select>
++      <select id="pmins"><option value="5"><#RSHD_58#></option><option value="60"><#RSHD_59#></option><option value="six"><#RSHD_60#></option></select>
++      <button type="button" class="btng" data-act="pause"><#RSHD_56#></button>
++      <button type="button" class="btng" data-act="resume"><#RSHD_61#></button>
++    </div>
++    <ul id="pauses"></ul>
++  </div>
++  <div class="card">
++    <h2><#RSHD_68#></h2>
++    <div class="row"><input type="text" id="whyname" placeholder="<#RSHD_69#>"><button type="button" class="btng" data-act="why"><#RSHD_70#></button></div>
++    <div class="result" id="whyres"></div>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_63#></h2>
++  <div class="desc"><#RSHD_64#></div>
++  <div class="row"><select id="ubdev" style="min-width:260px"></select></div>
++  <table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th><th style="width:220px"></th></tr></thead><tbody id="ubbody"></tbody></table>
++</div>
++
++<div class="duo">
++  <div class="card">
++    <h2><#RSHD_76#></h2>
++    <table class="tbl"><thead><tr><th><#RDWT_16#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="topbody"></tbody></table>
++  </div>
++  <div class="card">
++    <h2><#RSHD_77#></h2>
++    <table class="tbl"><thead><tr><th><#RDWT_19#></th><th class="num"><#RDWT_11#></th><th><#RDWT_17#></th></tr></thead><tbody id="devbody"></tbody></table>
++  </div>
++</div>
++
++<div class="card">
++  <h2><#RSHD_78#></h2>
++  <div class="desc"><#RSHD_79#></div>
++  <div class="row"><button type="button" class="btng" id="livebtn"><#RSHD_80#></button><span class="dim" id="liveleft"></span></div>
++  <table class="tbl" id="livetbl" style="display:none"><thead><tr><th><#RDWT_21#></th><th><#RDWT_19#></th><th><#RDWT_16#></th><th><#RSHD_26#></th></tr></thead><tbody id="livebody"></tbody></table>
++</div>
++
++<div class="card">
++  <h2><#RSHD_90#></h2>
++  <ul>
++    <li><#RSHD_91#></li>
++    <li><#RSHD_92#></li>
++    <li><#RSHD_93#></li>
++    <li><#RSHD_94#></li>
++    <li><#RSHD_99#></li>
++  </ul>
++  <div style="margin-top:10px"><button type="button" class="btng sm" data-act="reset"><#RDWT_28#></button></div>
++</div>
++
++<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RSHD_97#></p></div></div>
++
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_Wallguard.asp">
++  <input type="hidden" name="next_page" value="Reaper_Wallguard.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="restart_wallguard">
++  <input type="hidden" name="action_wait" value="8">
++  <input type="hidden" name="wallguard_enable" value="">
++  <input type="hidden" name="wallguard_mode" value="">
++</form>
++
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++<script>
++(function(){
++/* 2026-10-21 Wallguard: Reaper's ad & tracker blocker. Settings: the switch and answer mode
++   (nvram, this form -> restart_wallguard) and the lists, rules, profiles and assignments
++   (/jffs/wallguard via reaper_wallguard.cgi action=save). Report, pause, Why?, Unbreak and the
++   live view: reaper_wallguard.cgi, behind the http_id gate. Everything the router reports is
++   rendered with textContent.
++   Review 2026-10-24 (Q-C2-12): one closure, no page globals; the buttons are wired below (data-act +
++   one delegated listener), never with inline on*= attributes. */
++var HID = '<% nvram_get("http_id"); %>';
++var NV = {
++  on: '<% nvram_get("wallguard_enable"); %>',
++  mode: '<% nvram_get("wallguard_mode"); %>',
++  clients: '<% nvram_char_to_ascii("", "custom_clientlist"); %>',
++  sdn: decodeURIComponent('<% nvram_char_to_ascii("", "sdn_rl"); %>')
++};
++var DASH = String.fromCharCode(8212);
++var PRESET = {
++  hagezi_light: ['HaGeZi Light', `<#RSHD_27#>`], hagezi_normal: ['HaGeZi Normal', `<#RSHD_28#>`],
++  hagezi_pro: ['HaGeZi Pro', `<#RSHD_29#>`], hagezi_proplus: ['HaGeZi Pro++', `<#RSHD_30#>`],
++  oisd_small: ['OISD Small', `<#RSHD_27#>`], oisd_big: ['OISD Big', `<#RSHD_28#>`],
++  stevenblack: ['StevenBlack Unified', `<#RSHD_28#>`], adguard_dns: ['AdGuard DNS filter', `<#RSHD_28#>`],
++  hagezi_tif: ['HaGeZi Threat Intelligence', `<#RSHD_31#>`]
++};
++var ST = {ok: `<#RSHD_32#>`, failed: `<#RSHD_33#>`, missing: `<#RSHD_34#>`, 'new': `<#RSHD_34#>`};
++var VERD = {b: `<#RSHD_82#>`, a: `<#RSHD_83#>`, p: `<#RSHD_84#>`, '-': `<#RSHD_85#>`, s: `<#RSHD_127#>`};
++/* phase 2 (2026-10-21): blocked services, schedules, safe search - per profile */
++var CATS = [['social', `<#RSHD_103#>`], ['video', `<#RSHD_104#>`], ['gaming', `<#RSHD_105#>`], ['messaging', `<#RSHD_106#>`],
++            ['shopping', `<#RSHD_107#>`], ['dating', `<#RSHD_108#>`], ['ai', `<#RSHD_109#>`]];
++var SVC_MAX = 13, WIN_MAX = 8, editPid = null;
++/* day names in the browser's language; index = the router's day number (0 Sunday) */
++var DAYN = rp.days;
++var EK = {RSHD_E1: `<#RSHD_95#>`, RSHD_E2: `<#RSHD_96#>`};
++var cfg = null, stat = null, liveTimer = null;
++var $ = rp.q;
++function shTg(el){ el.className = (el.className.indexOf('on') >= 0) ? 'tg' : 'tg on'; }
++function shNum(n){ return Number(n || 0).toLocaleString(); }
++function shWhen(t){ return t > 0 ? new Date(t * 1000).toLocaleString() : DASH; }
++function shCell(tr, text, cls){ var td = document.createElement('td'); td.textContent = text; if(cls) td.className = cls; tr.appendChild(td); return td; }
++function shRows(id, rows, cols, fill){
++  var tb = $(id); tb.textContent = '';
++  if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
++  rows.forEach(function(r){ var tr = document.createElement('tr'); fill(tr, r); tb.appendChild(tr); });
++}
++function shBtn(label, fn, sm){ var b = document.createElement('button'); b.type = 'button'; b.className = 'btng' + (sm ? ' sm' : ''); b.textContent = label; b.addEventListener('click', fn); return b; }
++function shCk(checked, disabled, onchange){
++  var l = document.createElement('label'), i = document.createElement('input'), s = document.createElement('span');
++  l.className = 'ck'; i.type = 'checkbox'; i.checked = !!checked; i.disabled = !!disabled; if(onchange) i.addEventListener('change', onchange); s.className = 'box';
++  l.appendChild(i); l.appendChild(s); return l;
++}
++function shReq(method, q, body, cb){
++  var x = new XMLHttpRequest(), done = false;
++  function fin(j){ if(done) return; done = true; cb(j); }
++  x.open(method, '/reaper_wallguard.cgi' + (method === 'GET' ? '?' + q + '&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now() : ''), true);
++  if(method === 'POST') x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
++  x.timeout = 12000;
++  x.onreadystatechange = function(){ if(x.readyState !== 4) return; var j = null; if(x.status === 200){ try{ j = JSON.parse(x.responseText); }catch(e){} } fin(j); };
++  x.onerror = x.ontimeout = function(){ fin(null); };
++  try{ x.send(method === 'POST' ? body : null); }catch(e){ fin(null); }
++}
++function shPost(params, cb){
++  var f = new URLSearchParams(); f.append('http_id', HID);
++  Object.keys(params).forEach(function(k){ f.append(k, params[k]); });
++  shReq('POST', '', f.toString(), cb);
++}
++function shErr(j){ alert((j && j.ek && EK[j.ek]) ? EK[j.ek] : `<#RSHD_95#>`); }
++
++/* ---- the operator's devices and networks */
++function shDevices(){
++  var out = [], seen = {}, raw = String(NV.clients || '');
++  try{ raw = decodeURIComponent(raw); }catch(e){}
++  raw.split('<').forEach(function(rec){
++    var f = rec.split('>'), name = f[0], mac = String(f[1] || '').toLowerCase();
++    if(name && /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) && !seen[mac]){ seen[mac] = 1; out.push({mac: mac, name: name}); }
++  });
++  ((stat && stat.devices) || []).forEach(function(d){
++    var k = String(d.dev).toLowerCase();
++    if(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(k) && !seen[k]){ seen[k] = 1; out.push({mac: k, name: ReaperNames.byMac(k, '') || d.ip}); }
++  });
++  return out;
++}
++function shNetworks(){
++  var out = [];
++  String(NV.sdn || '').split('<').forEach(function(rec){
++    var f = rec.split('>');
++    if(f.length > 4 && f[2] === '1' && +f[3] > 0 && +f[4] > 0) out.push({idx: f[0], name: f[1]});
++  });
++  return out;
++}
++function shDevLabel(key){
++  if(/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(key)){ var n = ReaperNames.byMac(key, ''); return n ? n + ' (' + key + ')' : key; }
++  var m = ReaperNames.byIp(key, ''); return m ? m + ' (' + key + ')' : key;
++}
++
++/* ---- config model */
++function shSubscribed(){
++  var out = [];
++  cfg.presets.forEach(function(p){ if(cfg.sel[p.id]) out.push({id: p.id, bit: p.bit, label: PRESET[p.id] ? PRESET[p.id][0] : p.id}); });
++  cfg.customs.forEach(function(u, i){ out.push({id: 'custom' + (i + 1), bit: 20 + i, label: u.replace(/^https:\/\//, '')}); });
++  return out;
++}
++function shParseConfig(j){
++  cfg = j; cfg.sel = {}; cfg.customs = [];
++  String(j.lists || '').split('\n').forEach(function(l){
++    l = l.trim(); if(!l) return;
++    var m = /^custom (\d) (\S+)$/.exec(l);
++    if(m) cfg.customs[(+m[1]) - 1] = m[2]; else cfg.sel[l] = 1;
++  });
++  cfg.customs = cfg.customs.filter(function(x){ return !!x; });
++  cfg.prof = [];
++  String(j.profiles || '').split('\n').forEach(function(l){
++    var m = /^([a-z0-9_]{1,16}) ([0-9a-f]+) (.+)$/.exec(l.trim()); if(m) cfg.prof.push({id: m[1], mask: parseInt(m[2], 16), name: m[3]});
++  });
++  if(!cfg.prof.some(function(p){ return p.id === 'default'; })) cfg.prof.unshift({id: 'default', mask: 0x7fffffff, name: `<#RSHD_45#>`, implicit: 1});
++  cfg.asg = [];
++  String(j.assign || '').split('\n').forEach(function(l){
++    var m = /^(mac|net) (\S+) ([a-z0-9_]{1,16})$/.exec(l.trim()); if(m) cfg.asg.push({kind: m[1], key: m[2], pid: m[3]});
++  });
++  cfg.svc = {}; cfg.sch = {}; cfg.saf = {};
++  String(j.services || '').split('\n').forEach(function(l){
++    var m = /^([a-z0-9_]{1,16}) ([a-z0-9_,]+)$/.exec(l.trim()); if(m) cfg.svc[m[1]] = m[2].split(',').filter(function(x){ return x; });
++  });
++  String(j.sched || '').split('\n').forEach(function(l){
++    var m = /^([a-z0-9_]{1,16}) ([0-9a-f]{1,2}) (\d{4}) (\d{4})$/.exec(l.trim());
++    if(m) (cfg.sch[m[1]] = cfg.sch[m[1]] || []).push({d: parseInt(m[2], 16), a: m[3], z: m[4]});
++  });
++  String(j.safe || '').split('\n').forEach(function(l){
++    var m = /^([a-z0-9_]{1,16}) ([0-7])$/.exec(l.trim()); if(m && +m[2]) cfg.saf[m[1]] = +m[2];
++  });
++  cfg.cat = j.catalog || []; cfg.svcbits = j.svcbits || {}; cfg.ss = j.ss || {};
++}
++function shEl(tag, cls, text){ var e = document.createElement(tag); if(cls) e.className = cls; if(text != null) e.textContent = text; return e; }
++function shProfName(pid){
++  if(pid === 'default') return `<#RSHD_45#>`;
++  var p = (cfg ? cfg.prof : []).filter(function(q){ return q.id === pid; })[0]; return p ? p.name : pid;
++}
++/* the profile a blocked record belongs to when only blocked-service bits matched, else null */
++function shSvcOwner(bitsHex){
++  var b = parseInt(bitsHex || '0', 16) >>> 0, all = 0, own = null, sb = (cfg && cfg.svcbits) || {};
++  Object.keys(sb).forEach(function(pid){ var m = (1 << sb[pid]) >>> 0; all = (all | m) >>> 0; if(b & m) own = pid; });
++  return (own && !((b & ~all) >>> 0)) ? own : null;
++}
++function shSvcMask(pid){ var sb = (cfg && cfg.svcbits) || {}; return sb[pid] != null ? (1 << sb[pid]) >>> 0 : 0; }
++function shSummary(pid){
++  var out = [], n = (cfg.svc[pid] || []).length;
++  if(n) out.push(`<#RSHD_129#>`.replace('%1', n) + ((cfg.sch[pid] || []).length ? ', ' + `<#RSHD_130#>` : ''));
++  if(cfg.saf[pid]) out.push(`<#RSHD_119#>`);
++  return out.length ? out.join(' / ') : DASH;
++}
++function shChip(checked, disabled, text, onchange){
++  var l = shEl('label', 'ck chip'), i = document.createElement('input');
++  i.type = 'checkbox'; i.checked = !!checked; i.disabled = !!disabled; i.addEventListener('change', onchange);
++  l.appendChild(i); l.appendChild(shEl('span', 'box')); l.appendChild(shEl('span', null, text)); return l;
++}
++function shSelect(opts, val, fn){
++  var s = document.createElement('select');
++  opts.forEach(function(o){ var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; s.appendChild(op); });
++  s.value = val; s.addEventListener('change', function(){ fn(s.value); }); return s;
++}
++function shTime(w, k){
++  var i = document.createElement('input'); i.type = 'time'; i.value = w[k].slice(0, 2) + ':' + w[k].slice(2);
++  i.addEventListener('change', function(){ if(/^\d\d:\d\d$/.test(i.value)) w[k] = i.value.replace(':', ''); }); return i;
++}
++function shEdit(pid){ editPid = (editPid === pid) ? null : pid; shPaintProfiles(); }
++function shFlags(pid, f){ if(f) cfg.saf[pid] = f; else delete cfg.saf[pid]; shPaintProfiles(); }
++/* one profile's blocked services, schedule and safe search */
++function shPaintEditor(){
++  var box = $('pedit'); box.textContent = '';
++  if(!editPid || !cfg){ box.style.display = 'none'; return; }
++  box.style.display = 'block';
++  var pid = editPid, sel = cfg.svc[pid] || [], wins = cfg.sch[pid] || [], fl = cfg.saf[pid] || 0;
++  box.appendChild(shEl('h3', null, `<#RSHD_102#>`.replace('%1', shProfName(pid))));
++  var used = Object.keys(cfg.svc).filter(function(k){ return k !== pid && (cfg.svc[k] || []).length; }).length;
++  var full = used >= SVC_MAX && !sel.length;
++  if(full) box.appendChild(shEl('div', 'desc warn', `<#RSHD_110#>`));
++  CATS.forEach(function(c){
++    var items = cfg.cat.filter(function(s){ return s.c === c[0]; });
++    if(!items.length) return;
++    var n = items.filter(function(s){ return sel.indexOf(s.id) >= 0; }).length, grid = shEl('div', 'chips');
++    box.appendChild(shEl('div', 'cathead', c[1] + (n ? ' (' + n + ')' : '')));
++    items.forEach(function(s){
++      grid.appendChild(shChip(sel.indexOf(s.id) >= 0, full, s.l, function(e){
++        var cur = (cfg.svc[pid] || []).filter(function(x){ return x !== s.id; });
++        if(e.target.checked) cur.push(s.id);
++        if(cur.length) cfg.svc[pid] = cur; else delete cfg.svc[pid];
++        shPaintProfiles();
++      }));
++    });
++    box.appendChild(grid);
++  });
++  /* schedule: when this profile's service block is on */
++  box.appendChild(shEl('div', 'cathead', `<#RSHD_111#>`));
++  var row = shEl('div', 'row');
++  row.appendChild(shSelect([['always', `<#RSHD_112#>`], ['times', `<#RSHD_113#>`]], wins.length ? 'times' : 'always', function(v){
++    if(v === 'always') delete cfg.sch[pid]; else cfg.sch[pid] = [{d: 62, a: '2100', z: '0700'}];
++    shPaintProfiles();
++  }));
++  box.appendChild(row);
++  wins.forEach(function(w, wi){
++    var r = shEl('div', 'row');
++    [1, 2, 3, 4, 5, 6, 0].forEach(function(d){
++      var b = shEl('button', 'day' + ((w.d & (1 << d)) ? ' on' : ''), DAYN[d]); b.type = 'button';
++      b.addEventListener('click', function(){ var nd = w.d ^ (1 << d); if(nd){ w.d = nd; shPaintEditor(); } });
++      r.appendChild(b);
++    });
++    r.appendChild(shEl('span', 'dim', `<#RSHD_115#>`)); r.appendChild(shTime(w, 'a'));
++    r.appendChild(shEl('span', 'dim', `<#RSHD_116#>`)); r.appendChild(shTime(w, 'z'));
++    r.appendChild(shBtn(`<#RSHD_55#>`, function(){ wins.splice(wi, 1); if(!wins.length) delete cfg.sch[pid]; shPaintProfiles(); }, 1));
++    box.appendChild(r);
++  });
++  if(wins.length && wins.length < WIN_MAX){
++    var ar = shEl('div', 'row'); ar.appendChild(shBtn(`<#RSHD_114#>`, function(){ wins.push({d: 62, a: '1600', z: '1800'}); shPaintEditor(); }, 1)); box.appendChild(ar);
++  }
++  var note = shEl('div', 'desc', `<#RSHD_117#>` + ' '), pl = shEl('a', null, `<#RSHD_118#>`);
++  pl.href = '/reaper_shell.asp#Reaper_Parental.asp'; pl.target = '_top'; pl.style.color = 'var(--bone)'; note.appendChild(pl); box.appendChild(note);
++  /* safe search */
++  box.appendChild(shEl('div', 'cathead', `<#RSHD_119#>`));
++  var sr = shEl('div', 'row');
++  sr.appendChild(shEl('span', null, `<#RSHD_120#>`));
++  sr.appendChild(shSelect([['0', `<#RSHD_03#>`], ['1', `<#RSHD_124#>`]], String(fl & 1), function(v){ shFlags(pid, (fl & 6) | +v); }));
++  sr.appendChild(shEl('span', null, `<#RSHD_121#>`));
++  sr.appendChild(shSelect([['0', `<#RSHD_03#>`], ['2', `<#RSHD_122#>`], ['4', `<#RSHD_123#>`]], (fl & 4) ? '4' : (fl & 2) ? '2' : '0',
++                          function(v){ shFlags(pid, (fl & 1) | +v); }));
++  box.appendChild(sr);
++  if(fl && !(cfg.ss && (cfg.ss.g || cfg.ss.y || cfg.ss.Y))) box.appendChild(shEl('div', 'desc warn', `<#RSHD_125#>`));
++  var dr = shEl('div', 'row'); dr.appendChild(shBtn(`<#RSHD_128#>`, function(){ editPid = null; shPaintProfiles(); }, 1)); box.appendChild(dr);
++}
++function shPaint(){
++  $('tgon').className = 'tg' + (NV.on === '1' ? ' on' : '');
++  $('mode').value = NV.mode === 'nx' ? 'nx' : 'null';
++  if(!cfg) return;
++  $('custom').value = cfg.customs.join('\n');
++  $('block').value = String(cfg.block || '');
++  $('allow').value = String(cfg.allow || '');
++  var a24 = String(cfg.allow24 || '').split('\n').map(function(l){ var p = l.split(' '); return p[1] ? p[1] + ' (' + shWhen(+p[0]) + ')' : ''; }).filter(function(x){ return x; });
++  $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
++  shPaintLists(); shPaintProfiles(); shPaintAssign(); shPaintTargets(); shPaintPauses();
++}
++function shPaintLists(){
++  var tb = $('listbody'), src = {}, fd = {};
++  ((stat && stat.build && stat.build.sources) || []).forEach(function(s){ src[s.id] = s; });
++  ((stat && stat.feeds) || []).forEach(function(f){ fd[f.id] = f; });
++  tb.textContent = '';
++  var rows = cfg.presets.map(function(p){ return {id: p.id, label: PRESET[p.id] ? PRESET[p.id][0] : p.id, sub: PRESET[p.id] ? PRESET[p.id][1] : '', preset: 1}; });
++  cfg.customs.forEach(function(u, i){ rows.push({id: 'custom' + (i + 1), label: u.replace(/^https:\/\//, ''), sub: '', preset: 0}); });
++  rows.forEach(function(r){
++    var tr = document.createElement('tr'), td = document.createElement('td'), f = fd[r.id], s = src[r.id];
++    td.textContent = r.label; if(r.sub){ var sp = document.createElement('span'); sp.className = 'sub'; sp.textContent = r.sub; td.appendChild(sp); }
++    tr.appendChild(td);
++    var tc = document.createElement('td');
++    if(r.preset) tc.appendChild(shCk(cfg.sel[r.id], false, function(e){ cfg.sel[r.id] = e.target.checked ? 1 : 0; shPaintProfiles(); }));
++    tr.appendChild(tc);
++    shCell(tr, s ? shNum(s.unique) : DASH, 'num');
++    shCell(tr, f ? shNum(f.blocked) : DASH, 'num');
++    shCell(tr, f ? shWhen(f.ok) : DASH, 'dim');
++    var stc = shCell(tr, f ? (ST[f.st] || f.st) : DASH); stc.className = f ? 'st-' + f.st : '';
++    tb.appendChild(tr);
++  });
++  var b = stat && stat.build;
++  $('buildline').textContent = b ? `<#RSHD_37#>`.replace('%1', shNum(b.names)).replace('%2', shWhen(b.built)) + (b.full ? '  ' + `<#RSHD_38#>` : '') : '';
++}
++function shPaintProfiles(){
++  var subs = shSubscribed(), head = $('profhead'), tb = $('profbody');
++  head.textContent = ''; tb.textContent = '';
++  var hr = document.createElement('tr');
++  [`<#RSHD_53#>`, `<#RSHD_49#>`].concat(subs.map(function(s){ return s.label; })).concat([`<#RSHD_100#>`, '']).forEach(function(t){ var th = document.createElement('th'); th.textContent = t; hr.appendChild(th); });
++  head.appendChild(hr);
++  var all = cfg.prof.concat([{id: 'bypass', mask: 0, name: `<#RSHD_46#>`, fixed: 1}]);
++  all.forEach(function(p){
++    var tr = document.createElement('tr');
++    shCell(tr, p.id === 'default' ? `<#RSHD_45#>` : p.name);
++    var bits = [0].concat(subs.map(function(s){ return s.bit; }));
++    bits.forEach(function(bit){
++      var td = document.createElement('td');
++      td.appendChild(shCk(p.mask & (1 << bit), p.fixed, function(e){ if(e.target.checked) p.mask |= (1 << bit); else p.mask &= ~(1 << bit); p.implicit = 0; }));
++      tr.appendChild(td);
++    });
++    var tds = document.createElement('td');
++    if(p.id !== 'bypass'){ tds.appendChild(shEl('span', 'dim', shSummary(p.id) + ' ')); tds.appendChild(shBtn(`<#RSHD_101#>`, function(){ shEdit(p.id); }, 1)); }
++    tr.appendChild(tds);
++    var tdx = document.createElement('td');
++    if(!p.fixed && p.id !== 'default') tdx.appendChild(shBtn(`<#RSHD_55#>`, function(){
++      cfg.prof = cfg.prof.filter(function(q){ return q !== p; }); cfg.asg = cfg.asg.filter(function(a){ return a.pid !== p.id; });
++      delete cfg.svc[p.id]; delete cfg.sch[p.id]; delete cfg.saf[p.id]; if(editPid === p.id) editPid = null;
++      shPaint();
++    }, 1));
++    tr.appendChild(tdx);
++    tb.appendChild(tr);
++  });
++  var sel = $('newpid'); sel.textContent = '';
++  all.forEach(function(p){ var o = document.createElement('option'); o.value = p.id; o.textContent = p.id === 'default' ? `<#RSHD_45#>` : p.name; sel.appendChild(o); });
++  shPaintEditor();
++}
++function shPaintAssign(){
++  var names = {}; cfg.prof.forEach(function(p){ names[p.id] = p.id === 'default' ? `<#RSHD_45#>` : p.name; }); names.bypass = `<#RSHD_46#>`;
++  var nets = {}; shNetworks().forEach(function(n){ nets[n.idx] = n.name; });
++  shRows('assignbody', cfg.asg, 3, function(tr, a){
++    shCell(tr, a.kind === 'mac' ? `<#RSHD_51#>` + ': ' + shDevLabel(a.key) : `<#RSHD_52#>` + ': ' + (nets[a.key] || a.key));
++    shCell(tr, names[a.pid] || a.pid);
++    var td = document.createElement('td'); td.appendChild(shBtn(`<#RSHD_55#>`, function(){ cfg.asg = cfg.asg.filter(function(q){ return q !== a; }); shPaintAssign(); }, 1)); tr.appendChild(td);
++  });
++}
++function shPaintTargets(){
++  /* review 2026-10-24 (Q-C2-1): the 15 s status poll rebuilds these menus - every chosen target survives it */
++  var t = $('newtarget'), p = $('ptarget'), u = $('ubdev'), kt = t.value, kp = p.value, keep = u.value;
++  [t, p, u].forEach(function(s){ s.textContent = ''; });
++  function opt(sel, v, label){ var o = document.createElement('option'); o.value = v; o.textContent = label; sel.appendChild(o); }
++  opt(p, 'all', `<#RSHD_57#>`);
++  opt(u, '', DASH);
++  shDevices().forEach(function(d){ var l = d.name + ' (' + d.mac + ')'; opt(t, 'mac ' + d.mac, `<#RSHD_51#>` + ': ' + l); opt(p, d.mac, l); opt(u, d.mac, l); });
++  shNetworks().forEach(function(n){ opt(t, 'net ' + n.idx, `<#RSHD_52#>` + ': ' + n.name); });
++  ((stat && stat.devices) || []).forEach(function(d){ if(!/^([0-9a-f]{2}:){5}/.test(d.dev)) opt(u, d.dev, shDevLabel(d.dev)); });
++  if(kt) t.value = kt;
++  if(kp) p.value = kp;
++  if(keep) u.value = keep;
++}
++function shPaintPauses(){
++  var ul = $('pauses'); ul.textContent = '';
++  (cfg.pause || []).forEach(function(x){
++    var li = document.createElement('li');
++    li.textContent = (x.t === 'all' ? `<#RSHD_57#>` : shDevLabel(x.t)) + ' ' + DASH + ' ' + `<#RSHD_62#>`.replace('%1', shWhen(x.until));
++    ul.appendChild(li);
++  });
++}
++function shAddProfile(){
++  var name = $('newprof').value.trim(); if(!name || /[<>&"'`\\]/.test(name)) return;
++  var base = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 12) || 'p', id = base, n = 2;
++  while(id === 'default' || id === 'bypass' || cfg.prof.some(function(p){ return p.id === id; })) id = base + (n++);
++  cfg.prof.push({id: id, mask: 1, name: name}); $('newprof').value = ''; shPaintProfiles();
++}
++function shAddAssign(){
++  var t = $('newtarget').value.split(' '), pid = $('newpid').value; if(t.length !== 2 || !pid) return;
++  cfg.asg = cfg.asg.filter(function(a){ return !(a.kind === t[0] && a.key === t[1]); });
++  cfg.asg.push({kind: t[0], key: t[1], pid: pid}); shPaintAssign();
++}
++
++/* ---- report */
++var shSigLists = '', shSigTargets = '';
++function shRender(j){
++  stat = (j && j.ok) ? j : null;
++  var on = NV.on === '1', built = !!(stat && stat.build), pill = $('pill'), bt = '';
++  var pausedAll = cfg && (cfg.pause || []).some(function(x){ return x.t === 'all'; });
++  if(!on){ pill.className = 'statuspill off'; pill.textContent = `<#RSHD_03#>`; }
++  else if(!built){ pill.className = 'statuspill warn'; pill.textContent = `<#RSHD_05#>`; bt = `<#RSHD_08#>`; }
++  else if(pausedAll){ pill.className = 'statuspill warn'; pill.textContent = `<#RSHD_04#>`; }
++  else { pill.className = 'statuspill'; pill.textContent = `<#RSHD_02#>`; }
++  if(pausedAll) cfg.pause.forEach(function(x){ if(x.t === 'all') bt = `<#RSHD_09#>`.replace('%1', shWhen(x.until)); });
++  /* the live view records only while Wallguard runs (metal, _r5: it could be started with Wallguard off) */
++  $('livebtn').disabled = !on && !liveTimer;
++  $('bannertext').textContent = bt; $('banner').style.display = bt ? 'flex' : 'none';
++  if(!stat) return;
++  $('s_q').textContent = shNum(stat.queries);
++  $('s_b').textContent = shNum(stat.total);
++  $('s_p').textContent = stat.queries > 0 ? (100 * stat.blocked_live / stat.queries).toFixed(1) + '%' : DASH;
++  $('s_n').textContent = stat.build ? shNum(stat.build.names) : DASH;
++  $('s_c').textContent = shNum(stat.cname);
++  shStoreLine(stat);
++  shRows('topbody', stat.top || [], 3, function(tr, r){ shCell(tr, r.d, 'mono'); shCell(tr, shNum(r.n), 'num'); shCell(tr, shWhen(r.t), 'dim'); });
++  shRows('devbody', stat.devices || [], 3, function(tr, r){ shCell(tr, shDevLabel(r.dev)); shCell(tr, shNum(r.n), 'num'); shCell(tr, shWhen(r.t), 'dim'); });
++  /* review 2026-10-24 (Q-C2-4): the list table and the target menus are rebuilt only when the status facts they
++     show have changed (a config change repaints them through shPaint regardless) */
++  if(cfg){
++    var sl = JSON.stringify([stat.build || null, stat.feeds || null]), stg = JSON.stringify(stat.devices || null);
++    if(sl !== shSigLists){ shSigLists = sl; shPaintLists(); }
++    if(stg !== shSigTargets){ shSigTargets = stg; shPaintTargets(); }
++  }
++  if(stat.live > 0 && !liveTimer) shLiveStart(); else if(!(stat.live > 0) && liveTimer) shLiveStop(true);
++}
++/* 2026-10-21: where the lists and the blocked-lookup history are kept (Long-Term Storage) */
++function shStoreLine(st){
++  var el = $('storeline'), a = shEl('a', null, `<#RDST_00#>`);
++  var ht = st.hist === 'usb' ? `<#RDWT_52#>`.replace('%1', st.histvol || '') : st.hist === 'jffs' ? `<#RDWT_53#>` : '';
++  el.textContent = (st.store ? `<#RSHD_131#>`.replace('%1', st.store) : `<#RSHD_132#>`) + (ht ? ' ' + ht : '') + ' ';
++  a.href = 'Reaper_Storage.asp'; el.appendChild(a);
++}
++function shStatus(){ shReq('GET', 'action=status', null, shRender); }
++function shConfig(cb){ shReq('GET', 'action=config', null, function(j){ if(j && j.ok){ shParseConfig(j); shPaint(); } if(cb) cb(); }); }
++
++/* ---- actions */
++function shAct(a){ shReq('GET', 'action=' + a, null, function(j){ if(!j || !j.ok) shErr(j); else setTimeout(shStatus, 1500); }); }
++function shPause(){
++  var t = $('ptarget').value, m = $('pmins').value;
++  if(m === 'six'){ var d = new Date(), s = new Date(d); s.setHours(6, 0, 0, 0); if(s <= d) s.setDate(s.getDate() + 1); m = Math.max(1, Math.round((s - d) / 60000)); }
++  shReq('GET', 'action=pause&target=' + encodeURIComponent(t) + '&minutes=' + m, null, function(j){ if(!j || !j.ok) shErr(j); else shConfig(shStatus); });
++}
++function shResume(){ shReq('GET', 'action=resume&target=' + encodeURIComponent($('ptarget').value), null, function(j){ if(!j || !j.ok) shErr(j); else shConfig(shStatus); }); }
++function shWhy(){
++  var n = $('whyname').value.trim().toLowerCase(), box = $('whyres'); if(!n) return;
++  box.textContent = '...';
++  shReq('GET', 'action=why&name=' + encodeURIComponent(n), null, function(j){
++    box.textContent = '';
++    function line(t, cls){ var d = document.createElement('div'); d.className = 'line' + (cls ? ' ' + cls : ''); d.textContent = t; box.appendChild(d); }
++    if(!j || !j.ok){ line((j && j.ek && EK[j.ek]) ? EK[j.ek] : `<#RSHD_96#>`, 'v-p'); return; }
++    var e = j.explain;
++    if(e && e.ok && e.verdict === 'allowed') line(`<#RSHD_72#>`, 'v-a');
++    else if(e && e.ok && e.bits) line(`<#RSHD_71#>`.replace('%1', e.lists.map(function(id){
++      return id === 'rules' ? `<#RSHD_39#>` : /^svc_/.test(id) ? `<#RSHD_126#>`.replace('%1', shProfName(id.slice(4))) : (PRESET[id] ? PRESET[id][0] : id);
++    }).join(', ')), 'v-b');
++    else line(`<#RSHD_73#>`, 'v--');
++    if(e && e.ok && e.bits && cfg) cfg.prof.concat([{id: 'bypass', mask: 0, name: `<#RSHD_46#>`}]).forEach(function(p){
++      var blocked = (e.bits & ((p.mask | shSvcMask(p.id)) >>> 0)) !== 0;
++      line((p.id === 'default' ? `<#RSHD_45#>` : p.name) + ': ' + (blocked ? VERD.b : VERD['-']), blocked ? 'v-b' : 'v--');
++    });
++    line(`<#RSHD_74#>`.replace('%1', j.live), 'dim');
++  });
++}
++function shUnbreak(){
++  var dev = $('ubdev').value; if(!dev){ $('ubbody').textContent = ''; return; }
++  shReq('GET', 'action=unbreak&minutes=15&dev=' + encodeURIComponent(dev), null, function(j){
++    var rows = (j && j.names) || [];
++    rows.sort(function(a, b){ return b.t - a.t; });
++    var tb = $('ubbody'); tb.textContent = '';
++    if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, `<#RSHD_67#>`, 'empty'); td.colSpan = 4; tb.appendChild(tr); return; }
++    rows.forEach(function(r){
++      var tr = document.createElement('tr'); shCell(tr, r.d, 'mono'); shCell(tr, shNum(r.n), 'num'); shCell(tr, shWhen(r.t), 'dim');
++      var td = document.createElement('td'), own = shSvcOwner(r.bits);
++      if(own) td.appendChild(shEl('span', 'dim', `<#RSHD_126#>`.replace('%1', shProfName(own))));
++      else {
++        td.appendChild(shBtn(`<#RSHD_65#>`, function(){ shAllow(r.d, '24h'); }, 1)); td.appendChild(document.createTextNode(' '));
++        td.appendChild(shBtn(`<#RSHD_66#>`, function(){ shAllow(r.d, 'always'); }, 1));
++      }
++      tr.appendChild(td); tb.appendChild(tr);
++    });
++  });
++}
++function shAllow(name, dur){ shPost({action: 'allow', name: name, dur: dur}, function(j){ if(!j || !j.ok) shErr(j); else { shConfig(); setTimeout(shUnbreak, 2500); } }); }
++function shLiveStart(){
++  $('livetbl').style.display = ''; $('livebtn').textContent = `<#RSHD_81#>`;
++  function tick(){ shReq('GET', 'action=live', null, function(j){
++    var rows = ((j && j.rows) || []).slice(-150).reverse();
++    shRows('livebody', rows, 4, function(tr, r){ shCell(tr, new Date(r.t * 1000).toLocaleTimeString(), 'dim'); shCell(tr, shDevLabel(r.ip)); shCell(tr, r.d, 'mono'); var c = shCell(tr, VERD[r.v] || r.v); c.className = 'v-' + r.v; });
++  }); if(stat && stat.live > 0) $('liveleft').textContent = `<#RSHD_86#>`.replace('%1', Math.ceil(stat.live / 60)); }
++  tick(); liveTimer = setInterval(tick, 3000);
++}
++function shLiveStop(quiet){
++  if(liveTimer) clearInterval(liveTimer); liveTimer = null;
++  $('livetbl').style.display = 'none'; $('livebtn').textContent = `<#RSHD_80#>`; $('liveleft').textContent = '';
++  if(!quiet) shReq('GET', 'action=live&op=off', null, function(){});
++}
++function shLive(){
++  if(liveTimer) shLiveStop(false);
++  else shReq('GET', 'action=live&op=on', null, function(j){ if(j && j.ok){ stat = stat || {}; stat.live = 3600; shLiveStart(); } });
++}
++function shReset(){ if(confirm(`<#RDWT_29#>`)) shAct('reset'); }
++function shSave(){
++  if(!cfg) return;
++  var lists = [], customs = $('custom').value.split('\n').map(function(s){ return s.trim(); }).filter(function(s){ return s; });
++  if(customs.length > 8 || customs.some(function(u){ return !/^https:\/\/[^\s"'`\\$<>]+$/.test(u); })){ alert(`<#RSHD_96#>`); return; }
++  cfg.presets.forEach(function(p){ if(cfg.sel[p.id]) lists.push(p.id); });
++  customs.forEach(function(u, i){ lists.push('custom ' + (i + 1) + ' ' + u); });
++  var prof = cfg.prof.filter(function(p){ return !p.implicit; }).map(function(p){ return p.id + ' ' + (p.mask >>> 0).toString(16) + ' ' + (p.id === 'default' ? 'Default' : p.name); });
++  var asg = cfg.asg.map(function(a){ return a.kind + ' ' + a.key + ' ' + a.pid; });
++  var pids = {}; cfg.prof.forEach(function(p){ pids[p.id] = 1; });
++  var svc = Object.keys(cfg.svc).filter(function(k){ return pids[k] && cfg.svc[k].length; }).map(function(k){ return k + ' ' + cfg.svc[k].join(','); });
++  var sch = []; Object.keys(cfg.sch).forEach(function(k){ if(pids[k] && cfg.svc[k]) cfg.sch[k].forEach(function(w){ sch.push(k + ' ' + w.d.toString(16) + ' ' + w.a + ' ' + w.z); }); });
++  var saf = Object.keys(cfg.saf).filter(function(k){ return pids[k] && cfg.saf[k]; }).map(function(k){ return k + ' ' + cfg.saf[k]; });
++  $('applying').className = 'applying show';
++  shPost({action: 'save', lists: lists.join('\n'), block: $('block').value, allow: $('allow').value, profiles: prof.join('\n'), assign: asg.join('\n'),
++          services: svc.join('\n'), sched: sch.join('\n'), safe: saf.join('\n')}, function(j){
++    if(!j || !j.ok){ $('applying').className = 'applying'; shErr(j); return; }
++    var f = document.form;
++    f.wallguard_enable.value = $('tgon').className.indexOf('on') >= 0 ? '1' : '0';
++    f.wallguard_mode.value = $('mode').value;
++    f.submit();
++    setTimeout(function(){ location.reload(); }, 10000);
++  });
++}
++/* the page's controls (were inline onclick= / onchange= attributes) */
++var ACT = {update: function(){ shAct('update'); }, addprof: shAddProfile, addasg: shAddAssign, save: shSave,
++           pause: shPause, resume: shResume, why: shWhy, reset: shReset};
++document.addEventListener('click', function(e){
++  var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
++  if(b && ACT[b.getAttribute('data-act')]) ACT[b.getAttribute('data-act')]();
++});
++$('tgon').addEventListener('click', function(){ shTg(this); });
++$('livebtn').addEventListener('click', function(){ shLive(); });
++$('ubdev').addEventListener('change', function(){ shUnbreak(); });
++shPaint();
++ReaperNames.refresh(NV.clients, function(){ shConfig(shStatus); });
++/* review 2026-10-24 (Q-C2-4): no poll while the tab is hidden; a tab that comes back polls at once */
++setInterval(function(){ if(!document.hidden) shStatus(); }, 15000);
++document.addEventListener('visibilitychange', function(){ if(!document.hidden) shStatus(); });
++})();
++</script>
++</body>
++</html>
+-- 
+2.25.1
+

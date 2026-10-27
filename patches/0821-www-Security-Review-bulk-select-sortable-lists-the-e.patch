@@ -1,0 +1,2328 @@
+From 36dc82154e9eceef64fc7ee3ecb5cfe1259587c9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:31 -0400
+Subject: [PATCH] www: Security Review bulk select, sortable lists, the
+ existing pages on the kit
+
+Firewall: Security Review select-several (checkbox column, select-all, one bar
+of actions, one request per Accept) and the protection rows. Devices and
+Gatekeeper: sortable columns through the kit sorter; Gatekeeper takes the
+connection type from the Devices data (MLO, wired, band). Connections: the
+detail panel keeps its width on long names. Dreadwatch: free lists, the name
+limit and the lists left out, removable never-block names. Firmware: a refused
+upload is reported. Storage: the Wallguard, Dreadwatch and Encrypted DNS rows.
+Wi-Fi Settings: Roaming Assistant can be switched off (the hidden input carrying
+0 was skipped by Apply) and a schedule edit stays in Apply. reaper_shell.asp:
+frames .asp pages only, marks a menu page a page opens by itself, polls less,
+no jQuery. The dashboard, QoS and WAN Ports pages share the kit's styles.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp    |  65 +--
+ release/src/router/www/Reaper_Conn.asp        |  90 ++-
+ release/src/router/www/Reaper_Devices.asp     |  37 +-
+ release/src/router/www/Reaper_Dreadwatch.asp  | 116 ++--
+ release/src/router/www/Reaper_Firewall.asp    | 173 +++++-
+ release/src/router/www/Reaper_Firmware.asp    |  26 +-
+ release/src/router/www/Reaper_GK.asp          |  56 +-
+ release/src/router/www/Reaper_QoS.asp         | 516 +++++++++++++-----
+ release/src/router/www/Reaper_Storage.asp     |  30 +-
+ release/src/router/www/Reaper_WANPorts.asp    |   2 +-
+ .../src/router/www/Reaper_WiFiSettings.asp    |  20 +-
+ release/src/router/www/reaper_shell.asp       | 203 ++++---
+ .../router/www/require/menuTrees/menuTree.js  |  10 +-
+ .../MULTISERVICE_WAN/Advanced_WAN_Content.asp |  29 +-
+ 14 files changed, 996 insertions(+), 377 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index c4ae40c45ac..39ebeeadb7a 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -7,6 +7,7 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/menu.js"></script>
+ <title>REAPER &mdash; <#AiProtection_title_Dashboard_title#></title>
+ <style>
+ /* self-hosted fonts (offline; no CDN) */
+@@ -512,36 +513,22 @@ main{min-width:0}
+     <script>var RP_CLK={seed:"<% uptime(); %>",dw:[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],mo:[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`]};</script><script src="/js/reaper_clock.js"></script>
+     <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+ 
+-    <div class="grp"><#menu5_1_1#></div>
+-    <nav class="nav">
+-      <a href="/Main_ReaperDash.asp" class="on"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span class="nl"><#Reaper_c_dashboard#></span></a>
+-      <a href="/reaper_shell.asp#AiMesh.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg></span><span class="nl">AiMesh</span></a>
+-      <a href="/reaper_shell.asp#SDN.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></span><span class="nl"><#Network#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_GK.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg></span><span class="nl"><#RGK_00#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_Warden.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg></span><span class="nl"><#RWDN_00#></span></a>
+-      <a href="/reaper_shell.asp#ParentalControl.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg></span><span class="nl"><#Parental_Control#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_QoS.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></span><span class="nl"><#Menu_TrafficManager#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_Traffic.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg></span><span class="nl"><#Traffic_Analyzer#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_Advisor.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg></span><span class="nl"><#Reaper_c_ai_advisor#></span></a>
+-      <a href="/reaper_shell.asp#APP_Installation.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg></span><span class="nl"><#Menu_usb_application#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_Devices.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg></span><span class="nl"><#RDEV_00#></span></a>
+-      <a href="/reaper_shell.asp#Reaper_Sysinfo.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span><span class="nl"><#Reaper_c_system_info#></span></a>
+-    </nav>
+-
+-    <div class="grp"><#menu5#></div>
+-    <nav class="nav">
+-      <a href="/reaper_shell.asp#Reaper_WiFiSettings.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg></span><span class="nl"><#menu5_1#></span></a>
+-      <a href="/reaper_shell.asp#Advanced_LAN_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 10V6h10v4"/></svg></span><span class="nl"><#menu5_2#></span></a>
+-      <a href="/reaper_shell.asp#Advanced_WAN_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg></span><span class="nl"><#menu5_3#></span></a>
+-      <a href="/reaper_shell.asp#Advanced_IPv6_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg></span><span class="nl">IPv6</span></a>
+-      <a href="/reaper_shell.asp#Advanced_VPNStatus.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v6M9 12h6"/></svg></span><span class="nl">VPN</span></a>
+-      <!-- the rail is duplicated between here and reaper_shell.asp and is kept in
+-           sync by hand (standing rule 6), so the firewall badge exists twice too -->
+-      <a href="/reaper_shell.asp#Reaper_Firewall.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg></span><span class="nl"><#menu5_5#></span><span class="nbadge" data-fwred></span></a>
+-      <a href="/reaper_shell.asp#Advanced_System_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span><span class="nl"><#menu5_6#></span></a>
+-      <a href="/reaper_shell.asp#Main_LogStatus_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg></span><span class="nl"><#System_Log#></span></a>
+-      <a href="/reaper_shell.asp#Main_Analysis_Content.asp"><span class="ni"><svg viewBox="0 0 24 24"><path d="M14 7a3 3 0 0 0-4 4l-6 6 2 2 6-6a3 3 0 0 0 4-4l-2 2-2-2z"/></svg></span><span class="nl"><#Network_Tools#></span></a>
+-    </nav>
++    <!-- 2026-10-22: the rail is drawn from the Reaper menu model (www/reaper/menu.js), the same list the
++         shell renders, instead of a hand-kept copy that ignored every mode/support condition -->
++    <script>
++    (function(){
++      var rail = ReaperMenu.rail(), h = '', i, r, top, open = false;
++      for (i = 0; i < rail.length; i++){ r = rail[i];
++        if (r.section){ h += (open ? '</nav>' : '') + '<div class="grp">' + esc(r.section) + '</div><nav class="nav">'; open = true; continue; }
++        top = (r.page === 'Main_ReaperDash.asp');
++        h += '<a href="' + (top ? '/' + esc(r.page) : '/reaper_shell.asp#' + esc(r.page)) + '"' + (top ? ' class="on"' : '')
++          + '><span class="ni">' + r.icon + '</span><span class="nl">' + esc(r.label) + '</span>'
++          + (r.badge === 'fwred' ? '<span class="nbadge" data-fwred></span>' : '') + '</a>';
++      }
++      if (open) h += '</nav>';
++      document.currentScript.insertAdjacentHTML('beforebegin', h);
++    })();
++    </script>
+ 
+     <!-- Addons. Filled at runtime from the same menuTree.js the shell reads;
+          stays hidden and empty unless an addon is actually installed. -->
+@@ -671,15 +658,15 @@ main{min-width:0}
+               <div><div class="name"><#RDSH_09#></div><div class="sub2 rtip" id="s_fw_sub">&mdash;</div></div></div><span class="tag ok" id="s_fw_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=witness"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 7h9M4 12h9M4 17h5"/><path d="M14 16l2.2 2.2L21 13"/></svg></div>
+               <div><div class="name"><#RFW_290#></div><div class="sub2 rtip" id="s_wit_sub">&mdash;</div></div></div><span class="tag ok" id="s_wit_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
++            <div class="srow" data-go="Reaper_System.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+               <div><div class="name"><#RDSH_10#></div><div class="sub2 rtip" id="s_rc_sub">&mdash;</div></div></div><span class="tag ok" id="s_rc_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
++            <div class="srow" data-go="Reaper_System.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg></div>
+               <div><div class="name"><#RDSH_11#></div><div class="sub2 rtip" id="s_adm_sub">&mdash;</div></div></div><span class="tag ok" id="s_adm_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
++            <div class="srow" data-go="Reaper_System.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h5"/></svg></div>
+               <div><div class="name"><#RDSH_12#></div><div class="sub2 rtip" id="s_jffs_sub">&mdash;</div></div></div><span class="tag ok" id="s_jffs_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_System_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
++            <div class="srow" data-go="Reaper_System.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></div>
+               <div><div class="name"><#RDSH_13#></div><div class="sub2 rtip" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
++            <div class="srow" data-go="Reaper_Internet.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
+               <div><div class="name">UPnP</div><div class="sub2 rtip" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
+             <div class="srow" data-go="Advanced_WWPS_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+               <div><div class="name">WPS</div><div class="sub2 rtip" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
+@@ -689,7 +676,7 @@ main{min-width:0}
+               <div><div class="name"><#RDSH_14#></div><div class="sub2 rtip" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
+             <div class="srow" data-go="MLO.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+               <div><div class="name"><#RDSH_15#></div><div class="sub2 rtip" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_WAN_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
++            <div class="srow" data-go="Reaper_DNS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+               <div><div class="name"><#RDSH_16#></div><div class="sub2 rtip" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_GK.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M7 11V8a5 5 0 0 1 10 0v3"/><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M12 15v2"/></svg></div>
+               <div><div class="name"><#RGK_00#></div><div class="sub2 rtip" id="s_gk_sub">&mdash;</div></div></div><span class="tag ok" id="s_gk_tag">&mdash;</span></div>
+@@ -2127,8 +2114,10 @@ window.addEventListener('resize', function(){ reaperTips(); });
+      which is always false here, so the retarget never fired and the row kept
+      sending the operator to a page that cannot change what it reports. The
+      `typeof` test and the try/catch are exactly what made that fail silently.
+-     This is the same expression state.js's isSupport() is built on. */
+-  var UI_SUPPORT = [<% get_ui_support(); %>][0] || {};
++     This is the same expression state.js's isSupport() is built on.
++     Review 2026-10-24 (Q-C2-13): menu.js (loaded in the head, synchronously) already carries that one
++     emission of the support table, so the page reads it from there instead of asking httpd twice. */
++  var UI_SUPPORT = ReaperMenu.facts().ui || {};
+   if (UI_SUPPORT['mtlancfg']) {
+     var enc = document.getElementById('srow_wifi_enc');
+     if (enc) enc.setAttribute('data-go', 'SDN.asp');
+diff --git a/release/src/router/www/Reaper_Conn.asp b/release/src/router/www/Reaper_Conn.asp
+index 2cd0a69b1de..2305e1dc91d 100644
+--- a/release/src/router/www/Reaper_Conn.asp
++++ b/release/src/router/www/Reaper_Conn.asp
+@@ -39,6 +39,11 @@ code{font-family:var(--mono)}
+ .viewtog{display:flex;gap:2px;background:var(--raised);border:1px solid var(--line2);border-radius:999px;padding:3px}
+ .viewtog button{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.06em;font-size:11px;font-weight:700;color:var(--bone-dim);background:transparent;border:0;border-radius:999px;padding:6px 13px;cursor:pointer}
+ .viewtog button.on{background:var(--red);color:#fff}
++/* 2026-10-24 (page review): text filter + column sort, as the stock Connections page had */
++.qfilter{font-family:var(--mono);font-size:11.5px;color:var(--bone);background:var(--raised);border:1px solid var(--line2);border-radius:999px;padding:6px 13px;width:220px;outline:none}
++.qfilter:focus{border-color:var(--steel)}
++.qhead div[data-k],.fhead div[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
++.qhead div[data-k]:hover,.fhead div[data-k]:hover,.qhead div.on,.fhead div.on{color:var(--bone)}
+ .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:18px}
+ .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+ .card .lbl{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.14em;font-size:9.5px;color:var(--steel)}
+@@ -54,17 +59,17 @@ code{font-family:var(--mono)}
+ .filters{margin-left:auto;display:flex;gap:2px;background:var(--raised);border:1px solid var(--line2);border-radius:999px;padding:3px;text-transform:none;letter-spacing:0}
+ .filters button{font-family:var(--body);font-size:11px;color:var(--bone-dim);background:transparent;border:0;border-radius:999px;padding:4px 11px;cursor:pointer}
+ .filters button.on{background:var(--red);color:#fff}
+-.split{display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start}
++.split{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+ /* v3.3.4: the detail panel follows the reader down the list (placeDetail). Its cell
+    stretches to the row so there is room to travel; the panel scrolls inside itself
+    when taller than the visible slice. */
+-.dside{align-self:stretch}
++.dside{align-self:stretch;min-width:0}
+ .ftable{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+ .fhead,.frow{display:grid;grid-template-columns:52px 2.3fr 52px 84px 58px 44px 76px 66px 62px 84px;gap:10px;align-items:center;padding:9px 14px}
+ /* v3.3.4 (after the row rule - same specificity, later wins): the two columns need ~1157px (ten fixed flow columns + the 340px panel); between
+    that and the old 1040px stack point the page overflowed the shell's stage. Compact band
+    first (panel 320, row gap 7 -> 1110px), then stack. */
+-@media(max-width:1200px){.split{grid-template-columns:1fr 320px}.fhead,.frow{gap:7px}}
++@media(max-width:1200px){.split{grid-template-columns:minmax(0,1fr) 320px}.fhead,.frow{gap:7px}}
+ @media(max-width:1110px){.split{grid-template-columns:1fr}.grid4{grid-template-columns:repeat(2,1fr)}}
+ .fhead{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.08em;font-size:9px;color:var(--steel);border-bottom:1px solid var(--line2)}
+ .fhead .r,.frow .r{text-align:right}
+@@ -87,16 +92,22 @@ code{font-family:var(--mono)}
+ .mix i{display:block;height:100%}
+ .mix span{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-family:var(--mono);font-size:9px;color:var(--bone);text-shadow:0 1px 2px #000}
+ .qpill{font-family:var(--mono);font-size:11px;color:var(--bone);background:var(--raised);border:1px solid var(--line2);border-radius:5px;padding:1px 0;text-align:center;display:block}
+-.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow:auto;position:relative;will-change:transform}
++/* 2026-10-25 (owner): the panel keeps its column's width whatever the names in it - a long destination
++   (03s0.signaling.access.vivint.ai) is cut with an ellipsis and shown whole on hover, the badge never shrinks,
++   and the panel never scrolls sideways */
++.detail{background:var(--panel);border:1px solid var(--line2);border-radius:12px;overflow-x:hidden;overflow-y:auto;position:relative;will-change:transform;min-width:0;max-width:100%}
+ .detail:empty{display:none}
+ .dhd{padding:13px 15px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(225,6,0,.08),transparent);display:flex;align-items:center;justify-content:space-between;gap:10px}
++.dhd>div:first-child{flex:1 1 auto;min-width:0}
++.dhd .chip{flex:0 0 auto;white-space:nowrap}
+ .dhd .k{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.12em;font-size:9.5px;color:var(--steel)}
+-.dhd .n{font-family:var(--hdr);font-size:20px;font-weight:700;color:var(--bone);margin-top:2px}
++.dhd .n{font-family:var(--hdr);font-size:20px;font-weight:700;color:var(--bone);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .drows{padding:6px 15px}
+ .drow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+ .drow:last-child{border-bottom:none}
+-.drow .dk{color:var(--steel);text-transform:uppercase;font-family:var(--hdr);letter-spacing:.08em;font-size:10px}
+-.drow .dv{font-family:var(--mono);color:var(--bone);text-align:right;word-break:break-all}
++.drow .dk{color:var(--steel);text-transform:uppercase;font-family:var(--hdr);letter-spacing:.08em;font-size:10px;flex:0 0 auto}
++.drow .dv{font-family:var(--mono);color:var(--bone);text-align:right;word-break:break-all;min-width:0}
++.drow .dv.cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal}
+ .drow .dv.big{font-size:15px}
+ .dsplit{padding:13px 15px;border-top:1px solid var(--line);background:var(--panel2)}
+ .dsplit .row2{display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px}
+@@ -142,6 +153,7 @@ code{font-family:var(--mono)}
+       <button data-v="quick"><#RCON_38#></button>
+       <button data-v="advanced"><#RCON_39#></button>
+     </div>
++    <input class="qfilter" id="qfilter" type="text" placeholder="<#CTL_search#>" title="<#CTL_search#>" autocomplete="off" spellcheck="false">
+     <div class="live">
+       <div class="rate" id="rate">
+         <button data-ms="500">500 ms</button>
+@@ -204,6 +216,45 @@ code{font-family:var(--mono)}
+   /* v2.1.3: view mode (Quick Look = default) + device-name map */
+   var view=(function(){ try{ return localStorage.getItem("reaper_conn_view")||"quick"; }catch(e){ return "quick"; } })();
+   var nameTimer=null;   /* D1: names now resolved via reaper_util.js ReaperNames */
++  /* 2026-10-24 (page review): the stock page filtered by protocol / address / port / state and sorted by any
++     column. Both views take a text filter (every word must match something on the row: device, addresses,
++     ports, protocol, state, scope, path, flow id) and a header-click sort, remembered per browser; the
++     rate order stays the default. */
++  var QF="", SORT=(function(){ try{ var s=JSON.parse(localStorage.getItem("reaper_conn_sort")||"null"); if(s&&s.k) return s; }catch(e){} return {k:"rate",dir:-1}; })();
++  var NUMK={q:1,dscp:1,rate:1,bytes:1,age:1,hw:1,scope:1};
++  function sortVal(c,k){
++    switch(k){
++      case "dev": return (cliName(c)||c.cli||"").toLowerCase();
++      case "dest": return (destName(c)||c.srv||"").toLowerCase();
++      case "ep": return c.cli||"";
++      case "scope": return isInside(c)?0:1;
++      case "proto": return protoName(c.proto);
++      case "st": return c.st||"";
++      case "id": return c.nfc;
++      case "path": return c.fam===6?"ipv6":(c.hwPct>=50?"runner":"cpu");
++      case "q": return c.q; case "dscp": return c.dscp; case "bytes": return c.bytes; case "age": return c.age; case "hw": return c.hwPct;
++      default: return c.rate;
++    }
++  }
++  function sorted(list){
++    var k=SORT.k, dir=SORT.dir, num=!!NUMK[k];
++    return list.slice().sort(function(a,b){
++      var x=sortVal(a,k), y=sortVal(b,k), r=num?(x-y):String(x).localeCompare(String(y));
++      return r?r*dir:(b.rate-a.rate);
++    });
++  }
++  function hay(c){
++    return [cliName(c),c.cli,c.cp,destName(c),c.srv,c.spt,protoName(c.proto),c.st,
++            isInside(c)?`<#IPConnection_VSList_Internal#>`:`<#IPConnection_VSList_External#>`,
++            c.fam===6?"IPv6":(c.hwPct>=50?"Runner":"CPU"),c.nfc.slice(-6)].join(" ").toLowerCase();
++  }
++  function filtered(list){
++    if(!QF) return list;
++    var terms=QF.split(/\s+/);
++    return list.filter(function(c){ var h=hay(c); return terms.every(function(t){ return h.indexOf(t)>=0; }); });
++  }
++  function hcell(k,label,cls){ var on=SORT.k===k; return '<div data-k="'+k+'" class="'+(cls||"")+(on?" on":"")+'">'+label+(on?(SORT.dir>0?" &#9650;":" &#9660;"):"")+'</div>'; }
++  function setSort(k){ if(SORT.k===k) SORT.dir=-SORT.dir; else SORT={k:k,dir:NUMK[k]?-1:1}; try{ localStorage.setItem("reaper_conn_sort",JSON.stringify(SORT)); }catch(e){} render(); }
+ 
+   function fmtBytes(b){ return ReaperFmt.bytes(b); }   /* D3: shared decimal-SI formatters (reaper_util.js) */
+   function fmtRate(bps){ return ReaperFmt.rate(bps); }
+@@ -306,9 +357,9 @@ code{font-family:var(--mono)}
+ 
+   /* -------- Quick Look: a fast, Merlin-style at-a-glance list -------- */
+   function renderQuick(){
+-    var conns=state.conns.slice().sort(function(a,b){ return b.rate-a.rate; });
++    var all=state.conns, conns=sorted(filtered(all));
+     var qv=document.getElementById("quickView");
+-    if(!conns.length){ qv.innerHTML=emptyBox(); return; }
++    if(!all.length){ qv.innerHTML=emptyBox(); return; }
+     var ext=conns.filter(function(c){return !isInside(c);}).length;
+     var rows=conns.map(function(c){
+       var nm=cliName(c), inside=isInside(c);
+@@ -323,17 +374,16 @@ code{font-family:var(--mono)}
+         '<div>'+st+'</div>'+
+         '</div>';
+     }).join("");
+-    qv.innerHTML='<div class="qsum">'+conns.length+` <#RCON_41#> &middot; `+ext+` <#RCON_42#>, `+(conns.length-ext)+` <#RCON_43#></div>`+
++    qv.innerHTML='<div class="qsum">'+(QF?conns.length+" / "+all.length:conns.length)+` <#RCON_41#> &middot; `+ext+` <#RCON_42#>, `+(conns.length-ext)+` <#RCON_43#></div>`+
+       '<div class="qtable"><div class="qhead">'+
+-        `<div><#Clientlist_device#></div><div><#AiProtection_event_Destination#></div><div><#RCON_37#></div><div><#RCON_27#></div><div><#RCON_36#></div>`+
++        hcell("dev",`<#Clientlist_device#>`)+hcell("dest",`<#AiProtection_event_Destination#>`)+hcell("scope",`<#RCON_37#>`)+hcell("proto",`<#RCON_27#>`)+hcell("st",`<#RCON_36#>`)+
+       '</div>'+rows+'</div>';
+   }
+ 
+   /* -------- Advanced: the live flow explorer (unchanged) -------- */
+   function renderAdv(){
+     var conns=state.conns;
+-    var shown=conns.filter(function(c){ return filter==="all"||(c.fam!==6&&((filter==="acc"&&c.hwPct>=50)||(filter==="cpu"&&c.hwPct<50))); })
+-                   .sort(function(a,b){ return b.rate-a.rate; });
++    var shown=sorted(filtered(conns.filter(function(c){ return filter==="all"||(c.fam!==6&&((filter==="acc"&&c.hwPct>=50)||(filter==="cpu"&&c.hwPct<50))); })));
+     /* IPv6 A1: the accelerator figures come from the fcache feed, which is IPv4; the v6 rows carry none */
+     var v4=conns.filter(function(c){return c.fam!==6;});
+     var accN=v4.filter(function(c){return c.hwPct>=50;}).length;
+@@ -366,7 +416,7 @@ code{font-family:var(--mono)}
+         (c.fam===6?'<div class="num dim">&mdash;</div>':'<div class="mix"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i><span>'+hw.toFixed(0)+'% HW</span></div>')+
+         '</div>';
+     }).join("");
+-    document.getElementById("fbody").innerHTML='<div class="ftable"><div class="fhead"><div>'+`<#RCON_26#>`+'</div><div>'+`<#AiProtection_event_Source#>`+' &rarr; '+`<#AiProtection_event_Destination#>`+'</div><div>'+`<#RCON_27#>`+'</div><div>'+`<#RCON_28#>`+'</div><div class="r">'+`<#RCON_35#>`+'</div><div class="r">DSCP</div><div class="r">'+`<#RTRF_25#>`+'</div><div class="r">'+`<#RCON_29#>`+'</div><div class="r">'+`<#RCON_30#>`+'</div><div>HW / CPU</div></div>'+rows+'</div>';
++    document.getElementById("fbody").innerHTML='<div class="ftable"><div class="fhead">'+hcell("id",`<#RCON_26#>`)+hcell("ep",`<#AiProtection_event_Source#>`+' &rarr; '+`<#AiProtection_event_Destination#>`)+hcell("proto",`<#RCON_27#>`)+hcell("path",`<#RCON_28#>`)+hcell("q",`<#RCON_35#>`,"r")+hcell("dscp","DSCP","r")+hcell("rate",`<#RTRF_25#>`,"r")+hcell("bytes",`<#RCON_29#>`,"r")+hcell("age",`<#RCON_30#>`,"r")+hcell("hw","HW / CPU")+'</div>'+rows+'</div>';
+     document.querySelectorAll(".frow").forEach(function(r){ r.onclick=function(){ state.sel=r.getAttribute("data-n"); renderAdv(); }; });
+     renderDetail();
+   }
+@@ -377,14 +427,14 @@ code{font-family:var(--mono)}
+     var c=state.conns.filter(function(x){return x.nfc===state.sel;})[0];
+     if(!c){ document.getElementById("detail").innerHTML=""; return; }
+     var hw=c.hwPct, cpu=100-hw, acc=hw>=50;
+-    var nm=cliName(c);
++    var nm=cliName(c), dn=destName(c), dst=epStr(c.srv,c.spt)+(dn?' \u00b7 '+dn:"");
+     document.getElementById("detail").innerHTML=
+-      '<div class="dhd"><div><div class="k">'+`<#RCON_26#>`+' '+esc(c.nfc.slice(-6))+'</div><div class="n">'+esc(destName(c)||c.srv)+'</div></div>'+
++      '<div class="dhd"><div><div class="k">'+`<#RCON_26#>`+' '+esc(c.nfc.slice(-6))+'</div><div class="n" title="'+esc(dn||c.srv)+'">'+esc(dn||c.srv)+'</div></div>'+
+         (c.fam===6?'<span class="chip" title="'+`<#RCON_47#>`+'">IPv6</span>':acc?'<span class="chip acc">&#10003; '+`<#RCON_07#>`+'</span>':'<span class="chip" style="color:var(--amber);border-color:rgba(224,169,59,.4)">'+`<#RCON_08#>`+'</span>')+'</div>'+
+       '<div class="drows">'+
+         (nm?drow(`<#RCON_26#>`,esc(nm)):"")+
+         drow(`<#AiProtection_event_Source#>`,esc(epStr(c.cli,c.cp)))+
+-        drow(`<#AiProtection_event_Destination#>`,esc(epStr(c.srv,c.spt))+(destName(c)?' &middot; '+esc(destName(c)):""))+
++        drow(`<#AiProtection_event_Destination#>`,esc(dst),dst)+
+         drow(`<#IPConnection_VServerProto_itemname#>`,esc(protoName(c.proto))+(c.st?(' &middot; '+esc(c.st)):""))+
+         drow(`<#RCON_19#>`,(c.fam===6?'&mdash;':acc?'<span style="color:var(--jade)">&#10003; Runner</span>':'<span style="color:var(--amber)">'+`<#RCON_32#>`+'</span>'))+
+         drow(`<#RQOS_22#>`,c.q)+
+@@ -398,7 +448,8 @@ code{font-family:var(--mono)}
+         '<div class="mix" style="height:16px"><i class="hw" style="width:'+hw+'%"></i><i class="cpu" style="width:'+cpu+'%"></i></div></div>');
+     placeDetail();
+   }
+-  function drow(k,v){ return '<div class="drow"><span class="dk">'+k+'</span><span class="dv">'+v+'</span></div>'; }
++  /* full = the value as plain text: the cell then stays on one line, cut with an ellipsis, whole on hover */
++  function drow(k,v,full){ return '<div class="drow"><span class="dk">'+k+'</span><span class="dv'+(full?' cut" title="'+esc(full):'')+'">'+v+'</span></div>'; }
+   /* v3.3.4: the detail panel follows the reader down the list. Inside reaper_shell the page
+      frame never scrolls (the shell grows it to the page's height and publishes the visible
+      slice as --rv-top / --rv-h on this document's root), so position:sticky can never engage;
+@@ -462,6 +513,9 @@ code{font-family:var(--mono)}
+   });
+   document.getElementById("filters").addEventListener("click",function(e){ var b=e.target.closest("button"); if(!b)return; filter=b.getAttribute("data-f"); document.querySelectorAll("#filters button").forEach(function(x){x.classList.toggle("on",x===b);}); renderAdv(); });
+   document.getElementById("viewtog").addEventListener("click",function(e){ var b=e.target.closest("button"); if(!b)return; view=b.getAttribute("data-v"); try{ localStorage.setItem("reaper_conn_view",view); }catch(err){} applyView(); render(); });
++  document.getElementById("qfilter").addEventListener("input",function(){ QF=this.value.trim().toLowerCase(); render(); });
++  document.getElementById("quickView").addEventListener("click",function(e){ var h=e.target.closest(".qhead [data-k]"); if(h) setSort(h.getAttribute("data-k")); });
++  document.getElementById("fbody").addEventListener("click",function(e){ var h=e.target.closest(".fhead [data-k]"); if(h) setSort(h.getAttribute("data-k")); });
+   var lb=document.getElementById("livebtn");
+   lb.addEventListener("click",function(){ setLive(!live);
+     /* when paused via the button, clear the rate 'on' state so Pause isn't implied */
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index 59bde0dea96..1a9df72d497 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -94,6 +94,9 @@ td.ip{white-space:normal}
+ .search{margin-left:auto;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone-dim);font-family:var(--body);font-size:12.5px;padding:6px 12px;width:200px}
+ .tblwrap{overflow-x:auto}
+ table{width:100%;border-collapse:collapse;font-size:12.8px}
++/* 2026-10-24 (backlog: sortable lists): a header with data-k sorts on click */
++th[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
++th[data-k]:hover,th[data-k].on{color:var(--bone)}
+ th{font-family:var(--hdr);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+ td{padding:9px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap;vertical-align:middle}
+ tr:last-child td{border-bottom:none}
+@@ -174,8 +177,8 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+   <div class="tblwrap">
+     <table>
+       <thead><tr>
+-        <th><#RDEV_23#></th><th>MAC</th><th><#RDEV_24#></th><th><#RDEV_25#></th>
+-        <th><#RDEV_26#></th><th><#RDEV_27#></th><th><#RDEV_28#></th><th></th>
++        <th data-k="name"><#RDEV_23#></th><th data-k="mac">MAC</th><th data-k="ip"><#RDEV_24#></th><th data-k="conn"><#RDEV_25#></th>
++        <th data-k="gk"><#RDEV_26#></th><th data-k="last"><#RDEV_27#></th><th data-k="traf"><#RDEV_28#></th><th></th>
+       </tr></thead>
+       <tbody id="rows"></tbody>
+     </table>
+@@ -198,6 +201,7 @@ select.acc{background:var(--panel-2);border:1px solid var(--line-soft);border-ra
+ <div class="ovl" id="pin_ovl"><div class="modal" id="pin_modal"></div></div>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* CSRF token */
+ var D = null, TRAF = {}, filter = "all", q = "";
+@@ -208,7 +212,7 @@ var DERR = {
+   RDEVE_1:`<#RDEVE_1#>`, RDEVE_2:`<#RDEVE_2#>`, RDEVE_3:`<#RDEVE_3#>`, RDEVE_4:`<#RDEVE_4#>`,
+   RDEVE_5:`<#RDEVE_5#>`, RDEVE_6:`<#RDEVE_6#>`, RDEVE_7:`<#RDEVE_7#>`, RDEVE_8:`<#RDEVE_8#>`,
+   RDEVE_9:`<#RDEVE_9#>`, RDEVE_10:`<#RDEVE_10#>`, RDEVE_11:`<#RDEVE_11#>`, RDEVE_12:`<#RDEVE_12#>`,
+-  RDEVE_13:`<#RDEVE_13#>`, RDEVE_14:`<#RDEVE_14#>`, RDEVE_15:`<#RDEVE_15#>`
++  RDEVE_13:`<#RDEVE_13#>`, RDEVE_14:`<#RDEVE_14#>`, RDEVE_15:`<#RDEVE_15#>`, RDEVE_19:`<#RDEVE_19#>`
+ };
+ function errText(j){ return (j && j.ek && DERR[j.ek]) || (j && j.error) || `<#RDEV_92#>`; }
+ 
+@@ -539,10 +543,34 @@ function visible(d){
+   return true;
+ }
+ 
++/* 2026-10-24 (backlog: sort the Devices list): click a column header to sort, again to reverse; remembered per
++   browser. The list refreshes every few seconds, so the order is applied at every render from the saved key,
++   never from the previous DOM - a refresh re-sorts the fresh rows instead of letting them jump. Names sort
++   without case, IPs by octet (rp.cmp), online devices stay ahead of offline ones on a name sort, numbers
++   largest first; the default is the router's own order. The row index stays the position in D.devices
++   (the edit / pin / access actions address rows by it). */
++function sortVal(d, k){
++  switch(k){
++    case 'name': return (d.name || d.host || '').toLowerCase();
++    case 'mac': return d.mac || '';
++    case 'ip': return d.ip || '';
++    case 'conn': return d.mlo_link || d.mlo ? 'mlo' : d.wired ? 'wired' : (d.band ? String(d.band) : '');
++    case 'gk': return (d.gk === undefined || d.gk === null) ? '' : d.gk;
++    case 'last': return d.online ? 2147483647 : (d.last || '');
++    case 'traf': return TRAF[d.mac] || 0;
++  }
++  return '';
++}
++/* the sort state, header marks and click handling are the kit's (rp.sorter, shared with the Gatekeeper list) */
++var SORTER = rp.sorter('rdev_sort', {name:'text', mac:'text', ip:'ip', conn:'text', gk:'num', last:'num', traf:'num'}, sortVal, function(){ renderRows(); });
++function devOrder(){ return SORTER.order(D.devices); }
++function sortHead(){ SORTER.head(); }
++
+ function renderRows(){
+   if(!D){ return; }
+   var now = D.now, el = '';
+-  D.devices.forEach(function(d, i){
++  devOrder().forEach(function(i){
++    var d = D.devices[i];
+     if(!visible(d)) return;
+     var nameHtml = d.name
+       ? '<span class="dname rtip" data-i="' + i + '" title="' + esc(T('RDEV_68')) + '">' + esc(d.name) + '</span><span class="src">' + esc(d.src) + '</span>'
+@@ -604,6 +632,7 @@ function renderRows(){
+   });
+   document.getElementById('rows').innerHTML = el || '<tr><td colspan="8" style="color:var(--steel)">' + esc(T('RDEV_76')) + '</td></tr>';
+   wireRows();
++  sortHead();
+   if(window.reaperTips) window.reaperTips(document.getElementById('rows'));
+ }
+ 
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index ac949c967af..03dc8c99442 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -38,15 +38,9 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
+ .tg.on{background:#33333a}
+ .tg.on::after{left:21px;background:var(--bone)}
+-.feedrow .v4only{font-family:var(--hdr);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);border:1px solid rgba(255,255,255,.14);border-radius:4px;padding:1px 6px;margin-left:8px;vertical-align:middle}
+-.offbanner{display:none;background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
+-.offbanner b{color:var(--bone)}
+ .warnbanner{display:flex;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
+ .warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
+ .warnbanner b{color:var(--amber)}
+-.warnx{flex:0 0 auto;margin-left:auto;align-self:flex-start;background:transparent;border:0;color:var(--bone-dim);font-size:20px;line-height:1;cursor:pointer;padding:0 2px;opacity:.6}
+-.warnx:hover{opacity:1;color:var(--bone)}
+-.warnx:focus-visible{outline:1px solid var(--amber);outline-offset:2px;border-radius:4px}
+ .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
+ .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
+@@ -59,28 +53,15 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+    ~300 px each). min(100%,400px) lets the track shrink below 400 px on a phone instead of overflowing. */
+ .duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
+ .duo .card{margin:0}
+-.feedrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
+-.feedrow:last-child{border-bottom:none}
+-.feedrow .fl{flex:1;color:var(--bone);font-size:13px}
+ label.ck{position:relative;display:inline-flex;align-items:center;cursor:pointer}
+ label.ck input{position:absolute;opacity:0;width:0;height:0}
+ label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:var(--panel-2);display:inline-block;position:relative}
+ label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
+ label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
+-.setrow{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line-soft)}
+-.setrow:last-child{border-bottom:none}
+-.setrow .sl{flex:1;color:var(--bone);font-size:13px}
+-.setrow .sd{font-size:11.5px;color:var(--steel);display:block;margin-top:1px;font-weight:400}
+ select,textarea,input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
+-select.setsel{min-width:150px}
+ select[multiple]{width:100%;height:170px;padding:4px}
+ select[multiple] option{padding:3px 6px;border-radius:4px}
+-.geosearch{width:100%;box-sizing:border-box;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:7px 12px;margin-bottom:10px}
+-.geogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:5px 14px;max-height:236px;overflow-y:auto;padding-right:4px}
+-label.geock{display:flex;gap:9px;padding:3px 2px;font-size:12.5px;color:var(--bone-dim)}
+-label.geock .cl b{color:var(--crimson);font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-right:4px}
+ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
+-input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
+ .btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
+@@ -96,27 +77,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ .applying h3{font-size:16px;margin-bottom:6px}
+ .applying p{font-size:12px;color:var(--bone-dim)}
+ .stat .n.proto{font-size:15px;padding-top:6px;letter-spacing:.02em}
+-.stat .n .sub{display:block;font-family:var(--body);font-weight:400;font-size:11px;color:var(--steel);letter-spacing:0;margin-top:-2px}
+ .stat .n.warn{color:var(--amber)}
+-.topcard h2{display:flex;align-items:center;gap:10px}
+-.livepill{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.12em;color:var(--jade);border:1px solid rgba(79,178,134,.4);border-radius:20px;padding:2px 8px}
+-.livepill.stale{color:var(--steel);border-color:var(--line-soft)}
+-.bdown{display:none;flex-wrap:wrap;align-items:baseline;gap:7px 20px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:0 0 12px}
+-.bdown .bd{display:flex;align-items:baseline;gap:7px}
+-.bdown .bk{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);white-space:nowrap}
+-.bdown .bv{font-family:var(--hdr);font-weight:700;font-size:14px;line-height:1;color:var(--bone);font-variant-numeric:tabular-nums}
+-.bdown .bd.win:not(:first-child){margin-left:auto}
+-.toptbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}
+-.toptbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
+-.toptbl td{padding:9px 8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
+-.toptbl tbody tr:last-child td{border-bottom:none}
+-.toptbl td.rank{font-family:var(--hdr);font-weight:700;color:var(--crimson);font-size:15px;width:44px}
+-.toptbl td.cnt{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--bone)}
+-.toptbl th.cnt{text-align:right}
+-.toptbl td.empty{text-align:center;color:var(--steel);padding:20px}
+-.toptbl .cc{display:inline-block;min-width:26px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--crimson);background:rgba(225,6,0,.10);border:1px solid var(--line);border-radius:5px;padding:1px 6px;margin-right:10px;text-align:center}
+-.toptbl .bar{position:relative;height:5px;border-radius:3px;background:var(--panel-2);margin-top:5px;overflow:hidden}
+-.toptbl .bar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--crimson-deep),var(--crimson));border-radius:3px}
+ .dwtbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+ .dwtbl th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft)}
+ .dwtbl td{padding:8px;border-bottom:1px solid var(--line-soft);color:var(--bone);vertical-align:middle}
+@@ -125,7 +86,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ .dwtbl td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all}
+ .dwtbl td.dim{color:var(--steel)}
+ .dwtbl td.empty{text-align:center;color:var(--steel);padding:18px}
+-.dwtbl td.dwst-ok{color:var(--jade)} .dwtbl td.dwst-failed{color:var(--amber)} .dwtbl td.dwst-off{color:var(--steel)}
++.dwtbl td.dwst-ok{color:var(--jade)} .dwtbl td.dwst-failed{color:var(--amber)} .dwtbl td.dwst-off{color:var(--steel)} .dwtbl td.dwst-key{color:var(--amber)}
+ .cov{margin:4px 0 0}
+ .cov li.good::before{background:var(--jade)}
+ .cov li.gap::before{background:var(--amber)}
+@@ -166,11 +127,17 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <table class="dwtbl">
+     <thead><tr><th><#RDWT_09#></th><th style="width:44px"></th><th class="num"><#RDWT_10#></th><th class="num"><#RDWT_11#></th><th><#RDWT_12#></th><th><#RDWT_13#></th></tr></thead>
+     <tbody>
+-      <tr><td><#RWDN_114#></td><td><label class="ck"><input type="checkbox" id="fd_urlhaus"><span class="box"></span></label></td><td class="num" id="fn_urlhaus">&mdash;</td><td class="num" id="fb_urlhaus">&mdash;</td><td class="dim" id="fo_urlhaus">&mdash;</td><td id="fs_urlhaus">&mdash;</td></tr>
+-      <tr><td><#RWDN_115#></td><td><label class="ck"><input type="checkbox" id="fd_threatfox"><span class="box"></span></label></td><td class="num" id="fn_threatfox">&mdash;</td><td class="num" id="fb_threatfox">&mdash;</td><td class="dim" id="fo_threatfox">&mdash;</td><td id="fs_threatfox">&mdash;</td></tr>
++      <tr><td><#RDWT_63#></td><td><label class="ck"><input type="checkbox" id="fd_basics"><span class="box"></span></label></td><td class="num" id="fn_basics">&mdash;</td><td class="num" id="fb_basics">&mdash;</td><td class="dim" id="fo_basics">&mdash;</td><td id="fs_basics">&mdash;</td></tr>
++      <tr><td><#RDWT_57#></td><td><label class="ck"><input type="checkbox" id="fd_crypto"><span class="box"></span></label></td><td class="num" id="fn_crypto">&mdash;</td><td class="num" id="fb_crypto">&mdash;</td><td class="dim" id="fo_crypto">&mdash;</td><td id="fs_crypto">&mdash;</td></tr>
++      <tr><td><#RDWT_58#></td><td><label class="ck"><input type="checkbox" id="fd_ransom"><span class="box"></span></label></td><td class="num" id="fn_ransom">&mdash;</td><td class="num" id="fb_ransom">&mdash;</td><td class="dim" id="fo_ransom">&mdash;</td><td id="fs_ransom">&mdash;</td></tr>
++      <tr><td><#RDWT_61#></td><td><label class="ck"><input type="checkbox" id="fd_certpl"><span class="box"></span></label></td><td class="num" id="fn_certpl">&mdash;</td><td class="num" id="fb_certpl">&mdash;</td><td class="dim" id="fo_certpl">&mdash;</td><td id="fs_certpl">&mdash;</td></tr>
++      <tr><td><#RDWT_62#></td><td><label class="ck"><input type="checkbox" id="fd_threatview"><span class="box"></span></label></td><td class="num" id="fn_threatview">&mdash;</td><td class="num" id="fb_threatview">&mdash;</td><td class="dim" id="fo_threatview">&mdash;</td><td id="fs_threatview">&mdash;</td></tr>
+     </tbody>
+   </table>
++  <div class="desc dwst-failed" id="dwcap" style="margin-top:10px;display:none"></div>
++  <div class="desc" style="margin-top:10px"><#RDWT_60#> <a href="Reaper_Wallguard.asp">Wallguard</a>.</div>
+   <div class="desc" id="dnsstat" style="margin-top:10px"></div>
++  <div class="desc" id="histline" style="margin-top:6px"></div>
+ </div>
+ 
+ <div class="duo">
+@@ -251,11 +218,18 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+ var HID = '<% nvram_get("http_id"); %>';
+ var NV = {
+   warden: '<% nvram_get("rwarden_enable"); %>',
++  dot:    '<% nvram_get("reaper_dot_srv"); %>',
++  wallguard: '<% nvram_get("wallguard_enable"); %>',
++  blk:    '<% nvram_get("reaper_doh_block"); %>',
+   dns:    '<% nvram_get("rwarden_dns"); %>',
+   dnsfeeds: '<% nvram_get("rwarden_dns_feeds"); %>',
+   dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>')
+ };
+-var DNS_FEED_IDS = ['urlhaus','threatfox'];
++/* 2026-10-21: abuse.ch closed its keyless downloads - free lists on global CDNs; ThreatFox waits for a key.
++   2026-10-21 (owner): the three default lists show as ONE row, "Reaper's Basics" - one switch, their
++   figures added up; built in, so it can be unticked but never removed. The ids below it stay separate. */
++var DNS_BASICS = ['urlhaus','phish','c2','threatfox'];	/* threatfox = the bundled snapshot */
++var DNS_ROWS = ['basics','crypto','ransom','certpl','threatview'];
+ var DNS_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z][a-z0-9-]{0,62}$/;
+ function $(id){ return document.getElementById(id); }
+ function dwSplit(s){ return String(s||'').split(/[\s,<>]+/).filter(function(x){ return x.length; }); }
+@@ -285,11 +259,10 @@ function dwDev(ip){
+ function dwPaint(){
+   $('tgdns').className = 'tg' + (NV.dns === '1' ? ' on' : '');
+   var dfs = {}; dwSplit(NV.dnsfeeds).forEach(function(f){ dfs[f] = 1; });
+-  DNS_FEED_IDS.forEach(function(id){ $('fd_'+id).checked = !!dfs[id]; });
++  DNS_ROWS.forEach(function(id){ $('fd_'+id).checked = (id === 'basics') ? DNS_BASICS.some(function(b){ return !!dfs[b]; }) : !!dfs[id]; });
+   $('dnsallow').value = dwSplit(NV.dnsallow).join('\n');
+   $('wardenoff').style.display = (NV.warden === '1') ? 'none' : 'flex';
+ }
+-var lastName = '';
+ function dwRender(j){
+   var on = !!(j && j.enable);
+   var pill = $('pill');
+@@ -303,6 +276,13 @@ function dwRender(j){
+   $('s_droptile').style.display = j.dropped > 0 ? '' : 'none';
+   $('s_dropped').textContent = dwNum(j.dropped);
+   $('nohitlog').style.display = (on && j.names > 0 && !j.hitlog) ? 'flex' : 'none';
++  /* 2026-10-21: blocked lookups also kept on Long-Term Storage - say where, link the tab */
++  var hl = $('histline'); hl.textContent = '';
++  if(j.hist === 'usb' || j.hist === 'jffs'){
++    var ha = document.createElement('a'); ha.href = 'Reaper_Storage.asp'; ha.textContent = `<#RDST_00#>`;
++    hl.textContent = (j.hist === 'usb' ? `<#RDWT_52#>`.replace('%1', j.histvol || '') : `<#RDWT_53#>`) + ' ';
++    hl.appendChild(ha);
++  }
+   var st = $('dnsstat');
+   if(!on) st.textContent = '';
+   else if(j.names > 0 && j.live) st.textContent = `<#RWDN_119#>`.replace('%1', dwNum(j.names)).replace('%2', dwWhen(j.upd));
+@@ -311,14 +291,32 @@ function dwRender(j){
+   /* per feed: metadata from the updater, blocks from the counters */
+   var fc = {}; (j.fcount||[]).forEach(function(f){ fc[f.id] = f.n; });
+   var fm = {}; (j.feeds||[]).forEach(function(f){ fm[f.id] = f; });
+-  var SN = {ok:`<#RDWT_38#>`, failed:`<#RDWT_39#>`, off:`<#RDWT_43#>`};
+-  DNS_FEED_IDS.forEach(function(id){
++  var SN = {ok:`<#RDWT_38#>`, failed:`<#RDWT_39#>`, off:`<#RDWT_43#>`, key:`<#RDWT_59#>`};
++  /* Reaper's Basics: its three lists added up - names kept, blocks, the newest good download; the
++     state is off when none of them is selected, failed when any download failed, else ok */
++  fm.basics = (function(){
++    var any = false, kept = 0, ok = 0, st = 'ok';
++    DNS_BASICS.forEach(function(b){ var m = fm[b]; if(!m) return; any = true; kept += Number(m.kept||0);
++      if(Number(m.ok) > ok) ok = Number(m.ok); if(m.st === 'failed') st = 'failed'; });
++    if(!DNS_BASICS.some(function(b){ return fm[b] && Number(fm[b].on) === 1; })) st = 'off';
++    return any ? {kept: kept, ok: ok, st: st} : null;
++  })();
++  fc.basics = DNS_BASICS.reduce(function(a, b){ return a + Number(fc[b]||0); }, 0);
++  DNS_ROWS.forEach(function(id){
+     var m = fm[id];
+     $('fn_'+id).textContent = m ? dwNum(m.kept) : '\u2014';
+     $('fb_'+id).textContent = dwNum(fc[id]);
+     $('fo_'+id).textContent = m ? dwWhen(m.ok) : '\u2014';
+     var s = $('fs_'+id); s.textContent = m ? (SN[m.st] || m.st) : '\u2014'; s.className = m ? 'dwst-' + m.st : '';
+   });
++  /* 2026-10-22: the lists the name limit left part of out (the lowest-priority ones; Basics fills first) */
++  var cut = [];
++  DNS_ROWS.forEach(function(id){
++    var n = id === 'basics' ? DNS_BASICS.reduce(function(a, b){ return a + Number((fm[b]||{}).cut||0); }, 0) : Number((fm[id]||{}).cut||0);
++    if(n > 0) cut.push($('fn_'+id).parentNode.cells[0].textContent + ' ' + dwNum(n));
++  });
++  $('dwcap').style.display = cut.length ? '' : 'none';
++  $('dwcap').textContent = cut.length ? `<#RDWT_64#>`.replace('%1', cut.join(', ')) : '';
+   dwRows('topbody', j.top||[], 4, function(tr, r){ dwCell(tr, r.d, 'mono'); dwCell(tr, r.f === '-' ? '\u2014' : r.f.replace(',', ', '), 'dim'); dwCell(tr, dwNum(r.n), 'num'); dwCell(tr, dwWhen(r.t), 'dim'); });
+   dwRows('clibody', j.clients||[], 3, function(tr, r){ dwCell(tr, dwDev(r.ip)); dwCell(tr, dwNum(r.n), 'num'); dwCell(tr, dwWhen(r.t), 'dim'); });
+   dwRows('recbody', j.recent||[], 3, function(tr, r){ dwCell(tr, dwWhen(r.t), 'dim'); dwCell(tr, dwDev(r.ip)); dwCell(tr, r.d, 'mono'); });
+@@ -328,6 +326,28 @@ function dwRender(j){
+     var li = document.createElement('li'); li.className = c[0] ? 'good' : 'gap'; li.textContent = c[0] ? c[1] : c[2]; cov.appendChild(li);
+   });
+   var li3 = document.createElement('li'); li3.className = 'gap'; li3.textContent = `<#RDWT_36#>`; cov.appendChild(li3);
++  var li4 = document.createElement('li'), tp = `<#RDWT_46#>`.split('%1'), wa = document.createElement('a');
++  wa.href = '/reaper_shell.asp#Reaper_DNS.asp'; wa.target = '_top'; wa.style.color = 'var(--bone)';
++  wa.textContent = `<#menu5_2#> > DNS > <#WAN_DNS_Privacy#>`;
++  li4.appendChild(document.createTextNode(tp[0])); li4.appendChild(wa); li4.appendChild(document.createTextNode(tp.slice(1).join('%1'))); cov.appendChild(li4);
++  /* 2026-10-21: devices can encrypt to the router itself - the Encrypted DNS tab */
++  var li5 = document.createElement('li'), ea = document.createElement('a');
++  li5.className = NV.dot === '1' ? 'good' : 'gap';
++  li5.appendChild(document.createTextNode((NV.dot === '1' ? `<#RDWT_47#>` : `<#RDWT_48#>`) + ' '));
++  ea.href = '/reaper_shell.asp#Reaper_EncryptedDNS.asp'; ea.target = '_top'; ea.style.color = 'var(--bone)'; ea.textContent = `<#RENC_00#>`;
++  li5.appendChild(ea); cov.appendChild(li5);
++  /* 2026-10-21: encrypted DNS that goes around the router - blocked, or not yet */
++  var li7 = document.createElement('li'), ba = document.createElement('a');
++  li7.className = NV.blk === '1' ? 'good' : 'gap';
++  li7.appendChild(document.createTextNode((NV.blk === '1' ? `<#RDWT_50#>` : `<#RDWT_51#>`) + ' '));
++  ba.href = '/reaper_shell.asp#Reaper_EncryptedDNS.asp'; ba.target = '_top'; ba.style.color = 'var(--bone)'; ba.textContent = `<#RENC_00#>`;
++  li7.appendChild(ba); cov.appendChild(li7);
++  /* 2026-10-21: ads and trackers are Wallguard's job, on its own tab */
++  var li6 = document.createElement('li'), sa = document.createElement('a');
++  if (NV.wallguard === '1') li6.className = 'good';
++  li6.appendChild(document.createTextNode(`<#RDWT_49#>` + ' '));
++  sa.href = '/reaper_shell.asp#Reaper_Wallguard.asp'; sa.target = '_top'; sa.style.color = 'var(--bone)'; sa.textContent = `<#RSHD_00#>`;
++  li6.appendChild(sa); cov.appendChild(li6);
+ }
+ function dwGet(q, cb, ms){
+   var x = new XMLHttpRequest(), done = false;
+@@ -361,7 +381,7 @@ function dwSave(updateNow){
+   var dnsallow = dwCleanNames($('dnsallow').value);
+   if(dnsallow.bad.length){ alert(`<#RWDN_122#>` + '\n\n' + dnsallow.bad.join('\n')); return; }
+   var dfeeds = [];
+-  DNS_FEED_IDS.forEach(function(id){ if($('fd_'+id).checked) dfeeds.push(id); });
++  DNS_ROWS.forEach(function(id){ if(!$('fd_'+id).checked) return; if(id === 'basics') DNS_BASICS.forEach(function(b){ dfeeds.push(b); }); else dfeeds.push(id); });
+   var dnsOn = $('tgdns').className.indexOf('on') >= 0;
+   /* a changed setting fetches the list at once (the update path); off needs no fetch -
+      the service restart removes the list and restarts dnsmasq itself */
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 3b108b71393..04c3bbee68c 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -95,14 +95,22 @@ textarea.fld:focus{outline:2px solid rgba(225,6,0,.4);outline-offset:1px;border-
+ .btn[disabled]{opacity:.4;cursor:not-allowed}
+ .note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:8px}
+ /* security review rows: the status cell carries the colour, the detail cell is a hash or a value */
+-.rv-added td:nth-child(3),.rv-changed td:nth-child(3),.rv-new td:nth-child(3){color:var(--amber)}
+-.rv-removed td:nth-child(3){color:var(--danger)}
++/* 2026-10-25: the status cell is the 4th since the selection checkbox became the 1st */
++.rv-added td:nth-child(4),.rv-changed td:nth-child(4),.rv-new td:nth-child(4){color:var(--amber)}
++.rv-removed td:nth-child(4){color:var(--danger)}
+ .rt td.rvmono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace;font-size:11.5px;color:var(--steel);word-break:break-all}
+ .rvn{margin:4px 0 0 18px;padding:0;font-size:12px;color:var(--amber);line-height:1.6}
+ .rvn li{margin:2px 0}
+-.rv-rule td:nth-child(3){color:var(--steel);font-style:italic}
++.rv-rule td:nth-child(4){color:var(--steel);font-style:italic}
+ .rt td.rvact{white-space:nowrap}
+ .rt td.rvact .btn{margin:0 4px 2px 0;padding:2px 8px;font-size:11px}
++/* 2026-10-25 (owner): select several rows and act once - a checkbox column and a bar that stays in view */
++.rt th.rvsel,.rt td.rvsel{width:26px;text-align:center}
++.rvsel input{accent-color:#9a9fa6;width:14px;height:14px;margin:0;cursor:pointer;vertical-align:middle}
++.rvbulk{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;margin:8px 0 4px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px}
++.rvbulk .btn{padding:2px 10px;font-size:11.5px;margin:0}
++.rvbulk .btn:disabled{opacity:.45;cursor:not-allowed}
++.rvbulk .rvbn{font-size:12px;color:var(--bone);margin-right:4px}
+ .rvh{margin:16px 0 4px;font-size:13px;color:var(--bone)}
+ textarea.fld.rvrules{font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;resize:vertical}
+ .rvlog{margin:4px 0 0 18px;padding:0;font-size:12px;color:var(--steel);line-height:1.6}
+@@ -252,9 +260,11 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+         <span class="tg" id="rv_tg" role="switch" aria-label="<#RFW_330#>"></span><span class="suffix"><#RFW_330#></span></label>
+       <button class="btn ghost sm hidden" id="rv_ack" style="margin-left:auto"><#RFW_331#></button>
++      <button class="btn ghost sm hidden" id="rv_reset"><#RFW_385#></button>
+     </div>
+     <p class="note" id="rv_state"></p>
+-    <table class="rt hidden" id="rv_tbl"><thead><tr><th><#RFW_332#></th><th><#RFW_333#></th><th><#RFW_334#></th><th><#RFW_335#></th><th><#RFW_368#></th></tr></thead><tbody></tbody></table>
++    <div class="rvbulk hidden" id="rv_bulk"><span class="rvbn" id="rv_bcount"></span><button class="btn ghost sm" type="button" id="rv_bacc"><#RFW_370#></button><button class="btn ghost sm" type="button" id="rv_bexist"><#RFW_371#></button><button class="btn ghost sm" type="button" id="rv_bign"><#RFW_372#></button><button class="btn ghost sm" type="button" id="rv_bdir"><#RFW_373#></button><button class="btn ghost sm" type="button" id="rv_bclr" style="margin-left:auto"><#CTL_clear#></button></div>
++    <table class="rt hidden" id="rv_tbl"><thead><tr><th class="rvsel"><input type="checkbox" id="rv_all" aria-label="<#select_all#>" title="<#select_all#>"></th><th><#RFW_332#></th><th><#RFW_333#></th><th><#RFW_334#></th><th><#RFW_335#></th><th><#RFW_368#></th></tr></thead><tbody></tbody></table>
+     <p class="note hidden" id="rv_trunc"><#RFW_354#></p>
+     <div id="rv_nwrap" class="hidden"><p class="note"><b><#RFW_360#></b></p><ul class="rvn" id="rv_nlist"></ul></div>
+     <div id="rv_wwrap" class="hidden"><p class="note" id="rv_ww"></p></div>
+@@ -730,6 +740,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+ <iframe name="fw_hidden" id="fw_hidden" width="0" height="0" frameborder="0" style="display:none"></iframe>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
+ <script>
+ function $(id){return document.getElementById(id);}
+ 
+@@ -867,6 +878,31 @@ function normPort(v){
+   }
+   return out.join(',');
+ }
++/* 2026-10-24 (page review): the address forms the stock pages accepted and rc parses (ipt_addr_compact /
++   iprange_ex_conv): an IPv4 host, a.b.c.*, a.b.c.d-N (N above d), CIDR, an IPv4-IPv4 range; an IPv6 host,
++   prefix or IPv6-IPv6 range. rp.v comes from /reaper/rp.js. */
++function v4ok(s){
++  var m;
++  if(!s)return false;
++  if(rp.v.ipv4(s)||rp.v.cidr4(s))return true;
++  if((m=/^((?:\d{1,3}\.){3})\*$/.exec(s)))return rp.v.ipv4(m[1]+'0');
++  if((m=/^(.+)-(.+)$/.exec(s))){
++    if(!rp.v.ipv4(m[1]))return false;
++    if(rp.v.ipv4(m[2])){var a=m[1].split('.'),b=m[2].split('.'),i;for(i=0;i<4;i++){if(+a[i]<+b[i])return true;if(+a[i]>+b[i])return false;}return false;}
++    return /^\d{1,3}$/.test(m[2])&&+m[2]<=255&&+m[2]>+m[1].split('.')[3];
++  }
++  return false;
++}
++function v6ok(s){
++  var m;
++  if(!s)return false;
++  if(rp.v.ipv6(s))return true;
++  if((m=/^([^\/]+)\/(\d{1,3})$/.exec(s)))return rp.v.ipv6(m[1])&&+m[2]<=128;
++  if((m=/^([0-9A-Fa-f:.]+)-([0-9A-Fa-f:.]+)$/.exec(s)))return rp.v.ipv6(m[1])&&rp.v.ipv6(m[2]);
++  return false;
++}
++/* 0 = empty (any), 4 / 6 = the family, -1 = not an address */
++function addrFam(s){return !s?0:(v4ok(s)?4:(v6ok(s)?6:-1));}
+ /* extended blocklist closing the _fw_keyword_safe silent-drop gap (adds " ' ` $) */
+ var KWBLOCK=['#','%','&','*','{','}','\\',':','<','>','?','/','+','"',"'",'`','$'];
+ function kwBad(v){
+@@ -1544,8 +1580,8 @@ function stopAuto(){if(stTimer){clearInterval(stTimer);stTimer=null;}if(rvTimer)
+ var rvTimer=null,rvBusy=false;
+ var RV_T={S:`<#RFW_343#>`,K:`<#RFW_344#>`,A:`<#RFW_345#>`,E:`<#RFW_366#>`,C:`<#RFW_346#>`,N:`<#RFW_347#>`};
+ var RV_S={added:`<#RFW_348#>`,changed:`<#RFW_349#>`,removed:`<#RFW_350#>`,baseline:`<#RFW_351#>`,'new':`<#RFW_352#>`,rule:`<#RFW_367#>`};
+-var RV_EK={RFW_338:`<#RFW_338#>`,RFW_355:`<#RFW_355#>`,RFW_356:`<#RFW_356#>`,RFW_357:`<#RFW_357#>`,RFW_369:`<#RFW_369#>`};
+-var RV_ACT={'accept-all':`<#RFW_380#>`,'accept-one':`<#RFW_381#>`,rules:`<#RFW_382#>`};
++var RV_EK={RFW_338:`<#RFW_338#>`,RFW_355:`<#RFW_355#>`,RFW_356:`<#RFW_356#>`,RFW_357:`<#RFW_357#>`,RFW_369:`<#RFW_369#>`,RFW_394:`<#RFW_394#>`};
++var RV_ACT={'accept-all':`<#RFW_380#>`,'accept-one':`<#RFW_381#>`,'accept-many':`<#RFW_390#>`,rules:`<#RFW_382#>`,reset:`<#RFW_388#>`};
+ var rvRulesText='';
+ function rvcgi(q,cb){xhr('/reaper_watch.cgi?'+q+'&http_id='+encodeURIComponent(REAPER_HTTPID),cb||function(){});}
+ function rvpost(q,cb){
+@@ -1563,8 +1599,21 @@ function rvLoad(){
+   if(rvBusy)return;rvBusy=true;
+   rvcgi('action=status',function(j){rvBusy=false;rvRender(j);});
+ }
++/* 2026-10-25 (owner): select several rows and act once. The selection is a set of row keys (type, tab, item)
++   that survives the 30 s refresh for rows still listed; a successful bulk action clears it. */
++var rvSel={},rvRows=[],rvArmed=false;
+ function rvRender(j){
++  var keep={};
++  rvRows=[];rvArmed=false;
++  rvRender0(j);
++  rvRows.forEach(function(it){if(rvSel[rvKey(it)])keep[rvKey(it)]=1;});
++  rvSel=keep;
++  rvBulkSync();
++}
++function rvRender0(j){
+   var st=$('rv_state'),tbl=$('rv_tbl'),body=tbl.querySelector('tbody'),ack=$('rv_ack'),tr=$('rv_trunc'),nw=$('rv_nwrap'),nl=$('rv_nlist');
++  /* 2026-10-23: Reset baseline is offered only while a baseline is accepted */
++  $('rv_reset').classList.toggle('hidden',!(j&&(j.enabled===1||j.enabled==='1'||j.enabled===true)&&j.armed));
+   var en=!!(j&&(j.enabled===1||j.enabled==='1'||j.enabled===true));
+   tgSet($('rv_tg'),en);
+   body.textContent='';tbl.classList.add('hidden');tr.classList.add('hidden');nl.textContent='';nw.classList.add('hidden');$('rv_wwrap').classList.add('hidden');
+@@ -1580,8 +1629,13 @@ function rvRender(j){
+     items=items.filter(function(it){return it.st!=='baseline';});
+     st.textContent=(j.unreviewed>0?`<#RFW_341#>`.replace('%1',j.unreviewed):`<#RFW_342#>`.replace('%1',j.total||0)).replace('%2',when);
+   }
++  rvRows=items;rvArmed=!!j.armed;
+   items.forEach(function(it){
+     var r=document.createElement('tr');if(it.st!=='baseline')r.className='rv-'+it.st;
++    var c0=document.createElement('td'),cb=document.createElement('input');
++    c0.className='rvsel';cb.type='checkbox';cb.checked=!!rvSel[rvKey(it)];cb.setAttribute('aria-label',it.k);
++    cb.onchange=function(){if(cb.checked)rvSel[rvKey(it)]=1;else delete rvSel[rvKey(it)];rvBulkSync();};
++    c0.appendChild(cb);r.appendChild(c0);
+     [RV_T[it.t]||it.t,it.k,RV_S[it.st]||it.st,it.v||''].forEach(function(v,i){var td=document.createElement('td');td.textContent=v;if(i===3)td.className='rvmono';r.appendChild(td);});
+     r.appendChild(rvActions(it,!!j.armed));
+     body.appendChild(r);
+@@ -1628,6 +1682,56 @@ function rvActions(it,armed){
+   }
+   return td;
+ }
++/* ---- bulk: the actions valid for EVERY selected row; a disabled one says why on hover ---- */
++function rvKey(it){return it.t+'\t'+it.k;}
++function rvFile(it){return /^[SAKE]$/.test(it.t);}
++function rvDir(it){var d=it.k.replace(/\/[^\/]*$/,'');return (rvFile(it)&&d.indexOf('/jffs/')===0&&d.split('/').length>3)?d:'';}
++function rvSelected(){return rvRows.filter(function(it){return !!rvSel[rvKey(it)];});}
++function rvBulkSync(){
++  var s=rvSelected(),n=s.length,all=$('rv_all');
++  function set(id,ok,why){var b=$(id);b.disabled=!ok;b.title=ok?'':why;}
++  $('rv_bulk').classList.toggle('hidden',!n);
++  $('rv_bcount').textContent=`<#RFW_389#>`.replace('%1',n);
++  set('rv_bacc',n>0&&n<=100&&s.every(function(it){return rvArmed&&it.st!=='baseline'&&it.st!=='new';}),n>100?`<#RFW_394#>`:`<#RFW_391#>`);
++  set('rv_bexist',n>0&&s.every(function(it){return rvFile(it)&&it.t!=='E';}),`<#RFW_392#>`);
++  set('rv_bign',n>0,'');
++  set('rv_bdir',n>0&&s.every(function(it){return !!rvDir(it);}),`<#RFW_393#>`);
++  all.checked=rvRows.length>0&&n===rvRows.length;all.indeterminate=n>0&&n<rvRows.length;
++}
++function rvSelAll(on){
++  rvSel={};
++  if(on)rvRows.forEach(function(it){rvSel[rvKey(it)]=1;});
++  Array.prototype.forEach.call(document.querySelectorAll('#rv_tbl tbody td.rvsel input'),function(c){c.checked=on;});
++  rvBulkSync();
++}
++/* Accept selected: ONE request (ack_many), one audit record, one accept-log line */
++function rvAckMany(){
++  var s=rvSelected(),body;
++  if(!s.length)return;
++  body='action=ack_many&items='+encodeURIComponent(s.map(rvKey).join('\n'));
++  if(s.length>100||body.length>60000){$('rv_state').textContent=`<#RFW_394#>`;return;}
++  rvpost(body,function(j){
++    if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
++    rvSelAll(false);
++    $('rv_state').textContent=`<#RFW_358#>`;
++    setTimeout(rvLoad,3000);setTimeout(rvLoadLog,3000);
++  });
++}
++/* Existence only / Ignore / Ignore folder for the selection: every new rule AHEAD of the saved ones (first match
++   wins, as one row's button does), duplicates of a saved rule or of each other dropped, ONE rules_set save.
++   The server's caps (100 rules, 8 KB) are checked first so a refusal says why. */
++function rvBulkRule(kind){
++  var cur=$('rv_rules').value.replace(/\s+$/,''),have=cur?cur.split('\n'):[],add=[],text,n;
++  rvSelected().forEach(function(it){
++    var l=kind==='exist'?'exist '+rvGlobEsc(it.k):kind==='dir'?'ignore '+rvGlobEsc(rvDir(it))+'/*':
++      'ignore '+(rvFile(it)?'':(it.t==='C'?'cron:':'nvram:'))+rvGlobEsc(it.k);
++    if(have.indexOf(l)<0&&add.indexOf(l)<0)add.push(l);
++  });
++  text=add.concat(have).join('\n');
++  n=text.split('\n').filter(function(l){return l&&l.charAt(0)!=='#';}).length;
++  if(n>100||text.length>8192){$('rv_state').textContent=`<#RFW_395#>`;return;}
++  rvSaveRules(text,true);
++}
+ function rvAckOne(it){
+   rvpost('action=ack_one&t='+encodeURIComponent(it.t)+'&k='+encodeURIComponent(it.k),function(j){
+     if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
+@@ -1640,9 +1744,10 @@ function rvAddRule(line){
+   if((cur+'\n').indexOf(line+'\n')===0||cur.split('\n').indexOf(line)>=0){rvSaveRules(cur);return;}
+   rvSaveRules(line+(cur?'\n'+cur:''));
+ }
+-function rvSaveRules(text){
++function rvSaveRules(text,bulk){
+   rvpost('action=rules_set&rules='+encodeURIComponent(text),function(j){
+-    if(!j||!j.ok){$('rv_rstate').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
++    if(!j||!j.ok){var m=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;$('rv_rstate').textContent=m;if(bulk)$('rv_state').textContent=m;return;}
++    if(bulk)rvSelAll(false);
+     $('rv_rules').value=text;rvRulesText=text;
+     $('rv_rstate').textContent=`<#RFW_377#>`;
+     setTimeout(rvLoad,3000);setTimeout(rvLoad,8000);rvLoadLog();
+@@ -1670,8 +1775,11 @@ function rvToggle(){
+     setTimeout(rvLoad,on?2500:200);
+   });
+ }
++/* 2026-10-23 (owner, metal): reaperConfirm calls back with false on Cancel, Escape or a click outside -
++   this callback ignored it, so Cancel accepted the baseline anyway */
+ function rvAck(){
+-  reaperConfirm(`<#RFW_353#>`,{okLabel:`<#RFW_331#>`},function(){
++  reaperConfirm(`<#RFW_353#>`,{okLabel:`<#RFW_331#>`},function(ok){
++    if(!ok)return;
+     rvpost('action=ack',function(j){
+       if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
+       $('rv_state').textContent=`<#RFW_358#>`;
+@@ -1680,6 +1788,19 @@ function rvAck(){
+   });
+ }
+ 
++/* 2026-10-23 (owner): clear the accepted baseline - every watched item is unreviewed again until a
++   new acceptance; the watch rules and the accept log stay. Danger confirm: Enter does not confirm. */
++function rvReset(){
++  reaperConfirm(`<#RFW_386#>`,{okLabel:`<#RFW_385#>`,danger:true},function(ok){
++    if(!ok)return;
++    rvpost('action=reset',function(j){
++      if(!j||!j.ok){$('rv_state').textContent=(j&&j.ek&&RV_EK[j.ek])?RV_EK[j.ek]:`<#RFW_359#>`;return;}
++      $('rv_state').textContent=`<#RFW_387#>`;
++      setTimeout(rvLoad,3000);setTimeout(rvLoad,8000);rvLoadLog();
++    });
++  });
++}
++
+ /* =================== LOGGING view =================== */
+ function classOf(line){
+   /* Warden emits three distinct prefixes - REAPER-WARDEN (inbound source
+@@ -1751,13 +1872,24 @@ function initGeneral(){
+   v4parse();v4render();v6parse();v6render();
+   $('v4_add').onclick=function(){
+     var src=$('v4_src').value.trim(),proto=$('v4_proto').value,port=normPort($('v4_port').value);
++    /* 2026-10-24 (page review): stock required a legal source address and a port; an empty address reaches rc
++       as a rule with no -s (every source), a bad one is skipped silently (ipt_addr_compact) */
++    if(!v4ok(src)){alert((src||'?')+' '+`<#JS_validip#>`);return;}
+     if(port===null){alert(`<#RFW_67#>`);return;}
++    if(port===''){alert(`<#JS_fieldblank#>`);return;}
+     if(v4rules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
+     v4rules.push({proto:proto,src:src,port:port});$('v4_src').value='';$('v4_port').value='';v4render();
+   };
+   $('v6_add').onclick=function(){
+     var desc=$('v6_desc').value.replace(/[<>'%]/g,'').trim();
+     var rip=$('v6_rip').value.replace(/\s/g,''),lip=$('v6_lip').value.replace(/\s/g,''),port=$('v6_port').value.replace(/\s/g,''),proto=$('v6_proto').value;
++    /* 2026-10-24 (page review): stock checked both addresses, the port list and the OTHER protocol number; rc
++       (firewall.c ipv6_fw_rulelist) only filters characters on one of its two paths, and a bad field makes
++       ip6tables-restore refuse the whole table. rc splits the port field on , and emits --dport per item. */
++    if(rip&&!v6ok(rip)){alert(rip+' '+`<#JS_validip#>`);return;}
++    if(!lip||!v6ok(lip)){alert((lip||'?')+' '+`<#JS_validip#>`);return;}
++    if(proto==='OTHER'){ if(!/^\d{1,3}$/.test(port)||+port<1||+port>255){alert((port||'?')+' '+`<#Manual_Setting_JS_invalid#>`);return;} }
++    else{ var np=normPort(port); if(np===null){alert(port+' '+`<#JS_validport#>`);return;} if(np===''){alert(`<#JS_fieldblank#>`);return;} port=np; }
+     if(v6rules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
+     v6rules.push({desc:desc,rip:rip,lip:lip,port:port,proto:proto});
+     $('v6_desc').value='';$('v6_rip').value='';$('v6_lip').value='';$('v6_port').value='';v6render();
+@@ -1801,6 +1933,12 @@ function initNetsvc(){
+     var sport=normPort($('lw_sport').value),dport=normPort($('lw_dport').value),proto=$('lw_proto').value;
+     if(sport===null||dport===null){alert(`<#RFW_67#>`);return;}
+     if(!sip&&!dip&&!sport&&!dport){alert(`<#RFW_66#>`);return;}
++    /* 2026-10-24 (page review): stock accepted IPv4, a.b.c.*, a.b.c.d-N, CIDR or IPv6 and refused a v4/v6 mix;
++       rc skips a rule whose address it cannot parse (ipt_addr_compact), so a typo silently did nothing */
++    var fs=addrFam(sip),fd=addrFam(dip);
++    if(fs<0){alert(sip+' '+`<#JS_validip#>`);return;}
++    if(fd<0){alert(dip+' '+`<#JS_validip#>`);return;}
++    if(fs&&fd&&fs!==fd){alert(sip+' / '+dip+' '+`<#JS_validip#>`);return;}
+     if(lwrules.length>=128){alert(`<#RFW_64#>`.replace('%N%','128'));return;}
+     lwrules.push({sip:sip,sport:sport,dip:dip,dport:dport,proto:proto});
+     $('lw_sip').value='';$('lw_sport').value='';$('lw_dip').value='';$('lw_dport').value='';lwrender();
+@@ -1809,13 +1947,17 @@ function initNetsvc(){
+     var anyday=false;var bm='';
+     for(var d=0;d<7;d++){var c=$('lwd'+d).checked;bm+=c?'1':'0';if(c)anyday=true;}
+     if($('n_en').classList.contains('on')&&!anyday){alert(`<#RFW_78#>`);return;}
+-    function p4(v){v=(v||'').replace(/\D/g,'').slice(0,4);return (v+'0000').slice(0,4);}
+-    function pk(a,b){return p4($(a).value)+p4($(b).value);}
++    /* 2026-10-24 (page review): HH:MM with hour 0-23 and minute 0-59, as stock's validator.timeRange; rc
++       (timematch_conv2) checks only the length and a 25:99 made iptables-restore refuse the whole table.
++       Empty = the field's default (00:00 start, 23:59 end). */
++    function tm(id,dflt){var v=$(id).value.trim(),m=/^(\d{1,2}):(\d{2})$/.exec(v);if(!v)return dflt;if(!m||+m[1]>23||+m[2]>59)return null;return ('0'+m[1]).slice(-2)+m[2];}
++    var t1=tm('lw_wd1','0000'),t2=tm('lw_wd2','2359'),t3=tm('lw_we1','0000'),t4=tm('lw_we2','2359');
++    if(t1===null||t2===null||t3===null||t4===null){alert(`<#RADM_71#>`);return;}
+     var lw=lwrules.map(function(r){return '<'+r.sip+'>'+r.sport+'>'+r.dip+'>'+r.dport+'>'+r.proto;}).join('');
+     fwApply({
+       fw_lw_enable_x:tgGet($('n_en')),filter_lw_default_x:$('n_mode').value,
+       filter_lwlist:lw,filter_lw_date_x:bm,
+-      filter_lw_time_x:pk('lw_wd1','lw_wd2'),filter_lw_time2_x:pk('lw_we1','lw_we2'),
++      filter_lw_time_x:t1+t2,filter_lw_time2_x:t3+t4,
+       filter_lw_icmp_x:$('lw_icmp').value.replace(/[^0-9 ]/g,'')
+     });
+   };
+@@ -2181,6 +2323,13 @@ function boot(){
+   $('st_auto').onclick=function(){this.classList.toggle('on');stopAuto();startAuto();};
+   $('rv_tg').onclick=rvToggle;
+   $('rv_ack').onclick=rvAck;
++  $('rv_reset').onclick=rvReset;
++  $('rv_all').onchange=function(){rvSelAll(this.checked);};
++  $('rv_bclr').onclick=function(){rvSelAll(false);};
++  $('rv_bacc').onclick=rvAckMany;
++  $('rv_bexist').onclick=function(){rvBulkRule('exist');};
++  $('rv_bign').onclick=function(){rvBulkRule('ignore');};
++  $('rv_bdir').onclick=function(){rvBulkRule('dir');};
+   $('rv_rsave').onclick=function(){rvSaveRules($('rv_rules').value.replace(/\r/g,'').replace(/\s+$/,''));};
+   $('wt_refresh').onclick=function(){try{var _h=$('wt_hint');if(_h)_h.textContent=' ...';}catch(e){}loadWit(true);};
+   $('wt_auto').onclick=function(){this.classList.toggle('on');stopWitAuto();startWitAuto();};
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index e0c4a8cf2ef..99f16cd5e7c 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -545,7 +545,6 @@ function veilInstall(on){
+  * terminal states keep their Close: veilFail(), both poll chains at tries>450,
+  * the window 'error' handler. upXhr stays in page scope for veilOff(); upAborting
+  * stays as the guard of the flash-started hand-off. */
+-var LBL_CLOSE = `<#CTL_close#>`;
+ var upXhr = null, upAborting = 0;
+ 
+ /* the shell owns the header + rail; dim and disable them while a flash runs so
+@@ -801,13 +800,35 @@ function doUpload(){
+     veil(esc(`<#RFWU_11#>`), esc(`<#RFWU_28#>`), false);
+     pollUpBack(0, 0);
+   });
+-  x.onload = handed;
++  /* 2026-10-21: httpd answers a REFUSED image with the stock UpdateError page (and still reboots when
++     services were already stopped). Liveness alone read that reboot as success and sent the user to
++     the login page of the OLD firmware, twice, with no message. Read the answer first. */
++  x.onload = function(){
++    if(String(x.responseText || '').indexOf('UpdateError') >= 0){ upRefused(); return; }
++    handed();
++  };
+   x.onerror = x.ontimeout = handed;
+   /* a user cancel must NOT be read as 'the flash started' */
+   x.onabort = function(){ if(!upAborting) handed(); };
+   x.send(fd);
+ }
+ 
++var upRefused = once(function(){
++  busy = 0;
++  veilFail(esc(`<#RFWU_58#>`), '');
++  setStat('upStat', esc(`<#RFWU_58#>`), 'err');
++});
++/* the last refusal, kept in nvram by httpd until the next successful upgrade */
++function showLastRefusal(){
++  nvGet('reaper_upg_fail', function(v){
++    var m = /^(\d+) ([12])$/.exec(String(v || ''));
++    if(!m) return;
++    var when = new Date(parseInt(m[1], 10) * 1000).toLocaleString();
++    var why = (m[2] === '2') ? `<#RFWU_61#>` : `<#RFWU_60#>`;
++    setStat('upStat', esc(`<#RFWU_59#>`.replace('%1', when).replace('%2', why)), 'err');
++  });
++}
++
+ function pollUpBack(tries, wentDown){
+   /* Liveness verdict. httpd can keep answering right through verification and
+      the start of the flash, so a 2-minute window declared a perfectly good
+@@ -842,6 +863,7 @@ function pollUpBack(tries, wentDown){
+ 
+ function boot(){
+   $id('rvModel').textContent = MODEL;
++  showLastRefusal();
+   $id('rvVariant').innerHTML = IS_MCP ? `<#Reaper_c_ai_advisor#> <span class="badge">MCP</span>` : `<#RFWU_48#> <span class="badge">noMCP</span>`;
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+diff --git a/release/src/router/www/Reaper_GK.asp b/release/src/router/www/Reaper_GK.asp
+index 41dda1e896f..79cb93d2473 100644
+--- a/release/src/router/www/Reaper_GK.asp
++++ b/release/src/router/www/Reaper_GK.asp
+@@ -79,6 +79,9 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .search{margin-left:auto;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone-dim);font-family:var(--body);font-size:12.5px;padding:6px 12px;width:200px}
+ .tblwrap{overflow-x:auto}
+ table{width:100%;border-collapse:collapse;font-size:12.8px}
++/* 2026-10-24 (backlog: sortable lists): a header with data-k sorts on click */
++th[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
++th[data-k]:hover,th[data-k].on{color:var(--bone)}
+ th{font-family:var(--hdr);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+ td{padding:9px 10px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
+ td.dev{color:var(--bone);font-weight:600}
+@@ -147,7 +150,7 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+   </div>
+   <div class="tblwrap">
+   <table>
+-    <thead><tr><th><#RGK_15#></th><th>MAC</th><th><#RGK_17#></th><th><#RGK_18#></th><th><#RGK_19#></th><th></th></tr></thead>
++    <thead><tr><th data-k="name"><#RGK_15#></th><th data-k="mac">MAC</th><th data-k="conn"><#RGK_17#></th><th data-k="state"><#RGK_18#></th><th data-k="last"><#RGK_19#></th><th></th></tr></thead>
+     <tbody id="devrows"></tbody>
+   </table>
+   </div>
+@@ -187,9 +190,10 @@ td.mac{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--
+ </div>
+ 
+ <script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';  /* F4 CSRF token */
+-(function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0, repaintPending:false }; })();
++(function(){ window.GK = { st:null, filter:'all', busy:false, notArmedSince:0, repaintPending:false, conn:{}, connAt:0 }; })();
+ /* server-substituted once so gkPaint can swap arming<->fault wording client-side */
+ var GK_TXT = { arming:`<#RGK_57#>`, warm:`<#RGK_58#>`, fault:`<#RGK_59#>`, faultMsg:`<#RGK_60#>` };
+ var GK_STUCK_MS = 60000;  /* enabled-but-not-armed past this = treat as a fault, not warmup */
+@@ -212,9 +216,22 @@ function gkLeft(ep){
+   var h = Math.floor(d/3600), m = Math.floor((d%3600)/60);
+   return h + ':' + (m<10?'0':'') + m;
+ }
++/* 2026-10-25 (owner: "Gatekeeper shows the wrong connection type for some devices; the Devices page is
++   right"): gkd's record keeps the band a MAC was first seen on and knows nothing of multi-link, and the
++   old test put that band ahead of the wired flag. The type now comes from the Devices page's own data
++   (reaper_dev.cgi: live L2 evidence, MLO, node clients by backhaul), read every 15 s, labelled in the
++   Devices order (MLO, wired, band); gkd's record, wired first, is the fallback for a MAC that list lacks. */
+ function gkConn(d){
+-  if(d.band) return `<#RGK_50#> &middot; ` + gkEsc(d.band);
++  var c = GK.conn[String(d.mac || '').toUpperCase()];
++  if(c){
++    if(c.mlo && c.bands) return 'MLO &middot; ' + gkEsc(c.bands) + ' GHz';
++    if(c.mlo_link) return 'MLO' + (c.band ? ' &middot; ' + gkEsc(c.band) + ' GHz' : '');
++    if(c.wired) return `<#RGK_49#>`;
++    if(c.band) return `<#RGK_50#> &middot; ` + gkEsc(c.band) + ' GHz';
++    return '-';
++  }
+   if(d.wired) return `<#RGK_49#>`;
++  if(d.band) return `<#RGK_50#> &middot; ` + gkEsc(d.band) + (/^[0-9.]+$/.test(d.band) ? ' GHz' : '');
+   return '-';
+ }
+ 
+@@ -250,6 +267,16 @@ function gkRefresh(){
+     GK.st = j;
+     gkPaint();
+   });
++  /* the connection types (see gkConn): every third tick, on the same timer so a background tab stops it too */
++  if(Date.now() - GK.connAt < 15000) return;
++  GK.connAt = Date.now();
++  gkGet('/reaper_dev.cgi?action=status&poll=1&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){   /* CSRF-gated, as on Devices */
++    if(!j || !j.devices) return;
++    var m = {};
++    j.devices.forEach(function(e){ if(e && e.mac) m[String(e.mac).toUpperCase()] = e; });
++    GK.conn = m;
++    if(GK.st && !gkEditing()) gkPaint();
++  });
+ }
+ 
+ function gkPaint(){
+@@ -303,7 +330,7 @@ function gkPaint(){
+       + '<div class="pacts">'
+       + '<button class="btn" onclick="gkSet(\'' + gkMac(d.mac) + `\',1)"><#RGK_05#></button>`
+       + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',2)"><#RGK_06#></button>`
+-      + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',3)"><#RGK_07#> &middot; ` + gkEsc(j.guest_hours) + ' <#RGK_61#></button>'
++      + '<button class="btng" onclick="gkSet(\'' + gkMac(d.mac) + `\',3)"><#RGK_07#> &middot; ` + gkEsc(j.guest_hours) + ` <#RGK_61#></button>`
+       + '<button class="btnd" onclick="gkSet(\'' + gkMac(d.mac) + `\',0)"><#RGK_08#></button>`
+       + '</div></div>';
+   }
+@@ -319,6 +346,24 @@ function gkPaint(){
+   gkRender();
+ }
+ 
++/* 2026-10-24 (backlog: sort the Gatekeeper list): header click sorts, again reverses; remembered per browser;
++   applied at every 5 s repaint from the saved key, so a refresh re-sorts the fresh rows. Names without case,
++   online devices ahead of offline ones on a name sort, numbers largest first; default = gkd's order. */
++function gkSortVal(d, k){
++  switch(k){
++    case 'name': return (d.host || '').toLowerCase();
++    case 'mac': return d.mac || '';
++    case 'conn': return String(gkConn(d)).replace(/<[^>]*>/g, '').toLowerCase();
++    case 'state': return d.state;
++    case 'last': return d.online ? 2147483647 : (d.last || '');
++  }
++  return '';
++}
++/* the sort state, header marks and click handling are the kit's (rp.sorter, shared with the Devices list) */
++var GKSORTER = rp.sorter('rgk_sort', {name:'text', mac:'text', conn:'text', state:'num', last:'num'}, gkSortVal, function(){ gkRender(); });
++function gkOrder(devs){ return GKSORTER.on() ? GKSORTER.order(devs).map(function(i){ return devs[i]; }) : devs; }
++function gkSortHead(){ GKSORTER.head(); }
++
+ function gkRender(){
+   var j = GK.st;
+   if(!j) return;
+@@ -326,7 +371,7 @@ function gkRender(){
+   GK.repaintPending = false;
+   var q = document.getElementById('q').value.toLowerCase();
+   var rows = '';
+-  var devs = j.devices || [];
++  var devs = gkOrder(j.devices || []);
+   var stName = {0:`<#RGK_13#>`,1:`<#RGK_11#>`,2:`<#RGK_06#>`,3:`<#RGK_07#>`};
+   var stCls  = {0:'block',1:'full',2:'inet',3:'guest'};
+   for(var i = 0; i < devs.length; i++){
+@@ -348,6 +393,7 @@ function gkRender(){
+       + '</select></td></tr>';
+   }
+   document.getElementById('devrows').innerHTML = rows || `<tr><td colspan="6" class="nopend"><#RGK_56#></td></tr>`;
++  gkSortHead();
+ }
+ 
+ function gkFilter(el){
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 502e367f09e..0baaa467744 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -8,55 +8,9 @@
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="reaper-native" content="1">
+ <title>REAPER &mdash; <#Menu_TrafficManager#></title>
++<link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+-@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
+-@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+-:root{
+-  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
+-  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+-  --crimson:#E10600; --crimson-deep:#B3000C;
+-  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#E0A93B;
+-  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+-}
+-*{box-sizing:border-box}
+-html,body{margin:0;min-height:100%}
+-body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
+-  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
+-    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
+-  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
+-h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-.mono{font-variant-numeric:tabular-nums}
+-html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+-::-webkit-scrollbar{width:12px;height:12px}
+-::-webkit-scrollbar-track{background:#000}
+-::-webkit-scrollbar-thumb{background:var(--crimson);border-radius:8px;border:2px solid #000}
+-.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
+-a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+-
+-.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+-.pagehead h1{font-size:24px;font-weight:700}
+-.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
+-  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
+-.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--steel)}
+-.pill.on .dot{background:var(--jade)} .pill.on{color:var(--bone)}
+-.spacer{flex:1}
+-.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
+-  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;
+-  padding:9px 18px;cursor:pointer;transition:.15s;text-transform:uppercase}
+-.btn:hover{border-color:var(--line)}
+-.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
+-.btn.primary:hover{filter:brightness(1.1)}
+-.btn.ghost{background:transparent}
+-
+-.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:18px}
+-.panel h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px}
+-.panel .sub{font-size:12.5px;color:var(--steel);margin:2px 0 14px;line-height:1.5}
+-
++/* page-specific rules only: the shared Reaper look comes from /reaper/rp.css (2026-10-22) */
+ /* mode cards */
+ .modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
+ .mode{border:1px solid var(--line-soft);border-radius:12px;background:var(--panel-2);padding:14px 15px;cursor:pointer;transition:.15s;position:relative}
+@@ -68,48 +22,12 @@ a{color:var(--bone-dim)} a:hover{color:var(--bone)}
+ .tags{display:flex;flex-wrap:wrap;gap:5px}
+ /* chips: two colours only (owner, 2026-10-15). .good = something the engine does, .warn =
+    something it lacks or costs. Every chip carries one; the plain .tag style is a fallback. */
+-.tag{font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+-  border:1px solid rgba(236,231,219,.22);border-radius:5px;padding:2.5px 7px;color:var(--bone-dim)}
+-.tag.good{color:var(--jade);border-color:rgba(79,178,134,.35)}
+-.tag.warn{color:var(--amber);border-color:rgba(224,169,59,.35)}
+ .mode .rec{position:absolute;top:-9px;left:12px;background:var(--crimson);color:#fff;font-family:var(--hdr);
+   font-weight:700;font-size:9px;letter-spacing:.15em;border-radius:4px;padding:2px 7px}
+ 
+ /* bandwidth */
+-.bwrow{display:flex;gap:26px;flex-wrap:wrap}
+-.bwfield label{display:block;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);margin-bottom:6px}
+-.bwfield input{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);
+-  font-family:var(--body);font-size:14px;padding:9px 11px;width:150px;outline:none}
+-.bwfield input:focus{border-color:var(--line)}
+-.bwfield .unit{margin-left:7px;color:var(--steel);font-size:12px}
+-.hint{font-size:12px;color:var(--steel);line-height:1.55;margin-top:10px}
+-.hint b{color:var(--bone-dim);font-weight:600}
+-
+-/* toggles - NEUTRAL GREY by design (an ON toggle in brand red reads as an alert) */
+-.togglerow{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid var(--line-soft)}
+-.togglerow:first-of-type{border-top:none}
+-.tswitch{position:relative;flex:0 0 42px;height:22px;margin-top:2px}
+-.tswitch input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:2}
+-.tswitch .track{position:absolute;inset:0;background:#26262b;border:1px solid var(--line-soft);border-radius:999px;transition:.15s}
+-.tswitch .track::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6a6f75;transition:.15s}
+-.tswitch input:checked ~ .track{background:#3a3f45}
+-.tswitch input:checked ~ .track::after{left:22px;background:#c9cdd2}
+-.tmeta .tname{font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.05em;color:var(--bone)}
+-.tmeta .tdesc{font-size:12px;color:var(--steel);line-height:1.5;margin-top:2px}
+-
++.bwfield select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:9px 11px;outline:none;min-width:150px}
+ /* class editor */
+-table.classes{width:100%;border-collapse:collapse;margin-top:6px}
+-table.classes th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+-  color:var(--steel);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line-soft)}
+-table.classes td{padding:9px 10px;border-bottom:1px solid var(--line-soft);font-size:13px;color:var(--bone-dim)}
+-table.classes tr:last-child td{border-bottom:none}
+-table.classes input[type=text]{background:#000;border:1px solid var(--line-soft);border-radius:7px;color:var(--bone);
+-  font-family:var(--body);font-size:13px;padding:7px 9px;outline:none}
+-table.classes input[type=text]:focus{border-color:var(--line)}
+-.qbadge{font-family:var(--hdr);font-weight:700;font-size:12px;color:var(--bone)}
+-.qnote{font-size:10px;color:var(--steel);letter-spacing:.05em}
+-.arrows span{cursor:pointer;color:var(--steel);font-size:15px;padding:0 4px;user-select:none}
+-.arrows span:hover{color:var(--bone)}
+ .statcell{font-size:12px}
+ .statcell .rate{color:var(--bone);font-weight:500}
+ .statcell .drops{color:var(--steel)} .statcell .drops.hot{color:var(--amber)}
+@@ -121,47 +39,9 @@ table.classes input[type=text]:focus{border-color:var(--line)}
+ .xq .xt .xv{font-size:13px;color:var(--bone-dim);margin-top:4px}
+ 
+ /* Bandwidth Limiter editor (per-device caps) */
+-.bwl-add{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
+-.bwl-add .f{display:flex;flex-direction:column;gap:5px}
+-.bwl-add label{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
+-.bwl-add input{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 10px;outline:none}
+-.bwl-add input:focus{border-color:var(--line)}
+-.bwl-add input.dev{width:220px}
+-.bwl-add input.num{width:96px}
+-.bwldel{cursor:pointer;color:var(--steel);font-size:19px;line-height:1;padding:2px 8px;user-select:none}
+-.bwldel:hover{color:var(--crimson)}
+-table.classes td .unit{margin-left:5px;color:var(--steel);font-size:11px}
+ table.classes input.bwlnum{width:66px}
+-
+-/* FAQ fly-out */
+-.scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+-.scrim.open{opacity:1;pointer-events:auto}
+-.flyout{position:fixed;top:0;right:-460px;width:440px;max-width:92vw;height:100vh;background:var(--panel);
+-  border-left:1px solid var(--line);z-index:41;transition:right .22s ease;display:flex;flex-direction:column}
+-.flyout.open{right:0}
+-.flyout .fhead{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line-soft)}
+-.flyout .fhead h2{font-size:16px;font-weight:700;flex:1}
+-.flyout .fclose{cursor:pointer;color:var(--steel);font-size:20px;line-height:1;padding:2px 6px}
+-.flyout .fclose:hover{color:var(--bone)}
+-.flyout .fbody{overflow-y:auto;padding:6px 18px 40px}
+-.flyout details{border-bottom:1px solid var(--line-soft);padding:2px 0}
+-.flyout summary{cursor:pointer;font-family:var(--hdr);font-weight:600;font-size:13.5px;letter-spacing:.04em;color:var(--bone);
+-  padding:12px 2px;list-style:none;position:relative;padding-right:22px}
+-.flyout summary::-webkit-details-marker{display:none}
+-.flyout summary::after{content:"+";position:absolute;right:4px;top:10px;color:var(--steel);font-size:16px}
+-.flyout details[open] summary::after{content:"\2013"}
+-.flyout .fc{font-size:12.5px;line-height:1.65;color:var(--bone-dim);padding:0 2px 14px}
+-.flyout .fc b{color:var(--bone);font-weight:600}
+-.flyout .fc ul{margin:6px 0;padding-left:18px}
+-.flyout .fc li{margin:4px 0}
+-.flyout .fc .fx{color:var(--jade)}
+-
+-/* applying overlay */
+-.applying{position:fixed;inset:0;background:rgba(0,0,0,.78);display:none;z-index:60;place-items:center}
+-.applying.show{display:grid}
+-.applying .abox{text-align:center}
+-.applying .abox h2{font-size:18px;margin-bottom:8px}
+-.applying .abox p{color:var(--steel);font-size:13px}
++/* user-defined rules editor (2026-10-22) */
++.rign{text-decoration:line-through;color:var(--steel)}
+ </style>
+ </head>
+ <body>
+@@ -206,6 +86,34 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+       <div class="qnote" style="margin-top:5px"><#RQOS_08#></div>
+     </div>
+   </div>
++  <!-- 2026-10-22: link overhead (qos_overhead / qos_atm / qos_mpu) - read by start_tqos and start_cake;
++       it had no control since the stock QoS page was replaced -->
++  <div class="bwrow" id="ohrow" style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line-soft);display:none">
++    <div class="bwfield"><label><#RQOS_134#></label><select id="oh_preset" onchange="ohPreset(this)"><option value=""><#Select_menu_default#></option></select></div>
++    <div class="bwfield"><label><#RQOS_135#></label><input type="text" class="short" id="oh_bytes" maxlength="3"><span class="unit">B</span></div>
++    <div class="bwfield"><label><#RQOS_136#></label><select id="oh_atm"><option value="0">Ethernet</option><option value="1">ATM</option><option value="2">PTM</option></select></div>
++    <div class="bwfield" id="oh_mpuf"><label>MPU</label><input type="text" class="short" id="oh_mpu" maxlength="3"><span class="unit">B</span></div>
++  </div>
++  <div class="hint" id="ohhint" style="display:none"><#RQOS_137#></div>
++</div>
++
++<div class="panel" id="tqpanel" style="display:none">
++  <h2><#RQOS_138#></h2>
++  <div class="sub"><#RQOS_139#></div>
++  <table class="classes">
++    <thead><tr><th><#BM_UserList4#></th><th style="width:130px"><#RQOS_140#></th><th style="width:130px"><#RQOS_141#></th><th style="width:140px"><#RQOS_142#></th></tr></thead>
++    <tbody id="tqbody"></tbody>
++  </table>
++  <div class="togglerow" style="margin-top:14px;border-top:1px solid var(--line-soft)">
++    <div class="tmeta"><div class="tname"><#RQOS_144#></div><div class="tdesc"><#RQOS_143#></div></div>
++  </div>
++  <div class="bwrow" style="margin-top:6px">
++    <label class="pill" style="cursor:pointer"><input type="checkbox" id="tg_ack"> ACK</label>
++    <label class="pill" style="cursor:pointer"><input type="checkbox" id="tg_syn"> SYN</label>
++    <label class="pill" style="cursor:pointer"><input type="checkbox" id="tg_fin"> FIN</label>
++    <label class="pill" style="cursor:pointer"><input type="checkbox" id="tg_rst"> RST</label>
++    <label class="pill" style="cursor:pointer"><input type="checkbox" id="tg_icmp"> ICMP</label>
++  </div>
+ </div>
+ 
+ <div class="panel" id="clpanel" style="display:none">
+@@ -254,10 +162,6 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+        metal-validated rule of 2026-08-30 (441->1191 during two speed tests,
+        frozen at idle - predicted and confirmed). -->
+   <div class="hint" id="rqos_dropnote" style="margin-top:6px"><#RQOS_124#></div>
+-  <!-- transferred-range rules are non-sticky (rule_gum=0) and match with
+-       connbytes, so they re-evaluate per packet and cannot ride hardware flow
+-       offload. Filled by rulesWarn() only when such a rule is actually present. -->
+-  <div class="hint" id="xferwarn" style="margin-top:8px;display:none;color:var(--amber)"></div>
+ 
+   <div class="xq">
+     <div class="xt"><div class="xn"><#RQOS_29#></div><div class="xv statcell" id="xq0">&ndash;</div></div>
+@@ -266,6 +170,39 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   </div>
+ </div>
+ 
++<div class="panel" id="rulespanel" style="display:none">
++  <h2><#qos_user_rules#></h2>
++  <div class="sub"><#RQOS_127#></div>
++  <table class="classes">
++    <thead><tr>
++      <th><#BM_UserList1#></th><th><#BM_UserList2#></th><th><#BM_UserList3#></th>
++      <th style="width:90px"><#IPConnection_VServerProto_itemname#></th>
++      <th style="width:130px"><#UserQoS_transferred#></th>
++      <th style="width:180px"><#BM_UserList4#></th><th style="width:44px"></th>
++    </tr></thead>
++    <tbody id="rulestbody"></tbody>
++  </table>
++  <div class="rbudget" id="rbudget"></div>
++  <div class="bwl-add">
++    <div class="f"><label><#select_service#></label><select id="rl_preset" onchange="rulePreset(this)"><option value=""><#Select_menu_default#></option></select></div>
++    <div class="f"><label><#BM_UserList1#></label><input id="rl_desc" maxlength="32" style="width:170px" autocomplete="off"></div>
++    <div class="f"><label><#BM_UserList2#></label>
++      <input class="dev" id="rl_addr" list="rl_clients" placeholder="192.168.50.10 / AA:BB:CC:DD:EE:FF" maxlength="31" autocomplete="off">
++      <datalist id="rl_clients"></datalist></div>
++    <div class="f"><label><#BM_UserList3#></label><input class="num" id="rl_port" maxlength="64" placeholder="80,443" style="width:130px" autocomplete="off"></div>
++    <div class="f"><label><#IPConnection_VServerProto_itemname#></label>
++      <select id="rl_proto" onchange="protoSync()"><option value="tcp/udp">TCP/UDP</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="any">any</option></select></div>
++    <div class="f"><label><#UserQoS_transferred#> (KB)</label>
++      <div class="pair"><input class="num" id="rl_min" maxlength="9" placeholder="min" style="width:80px"> ~ <input class="num" id="rl_max" maxlength="9" placeholder="max" style="width:80px"></div></div>
++    <div class="f"><label><#BM_UserList4#></label><select id="rl_prio"></select></div>
++    <button type="button" class="btn" onclick="ruleAdd()"><#CTL_add#></button>
++  </div>
++  <div class="hint" id="rl_hint" style="margin-top:12px"></div>
++  <!-- transferred-range rules are non-sticky (rule_gum=0) and match with connbytes, so they re-evaluate
++       per packet and cannot ride hardware flow offload. Filled by rulesWarn() only when such a rule exists. -->
++  <div class="hint" id="xferwarn" style="margin-top:8px;display:none;color:var(--amber)"></div>
++</div>
++
+ <div class="panel" id="bwlimpanel" style="display:none">
+   <h2><#Bandwidth_Limiter#></h2>
+   <div class="sub"><#RQOS_110#></div>
+@@ -380,6 +317,16 @@ if (self === top) location.href = '/reaper_shell.asp#Reaper_QoS.asp';
+   <input type="hidden" name="qos_sched" value="" disabled>
+   <input type="hidden" name="qos_ipolicer" value="" disabled>
+   <input type="hidden" name="qos_bw_rulelist" value="" disabled>
++  <input type="hidden" name="qos_rulelist" value="" disabled>
++  <input type="hidden" name="qos_overhead" value="" disabled>
++  <input type="hidden" name="qos_atm" value="" disabled>
++  <input type="hidden" name="qos_mpu" value="" disabled>
++  <input type="hidden" name="qos_irates" value="" disabled>
++  <input type="hidden" name="qos_ack" value="" disabled>
++  <input type="hidden" name="qos_syn" value="" disabled>
++  <input type="hidden" name="qos_fin" value="" disabled>
++  <input type="hidden" name="qos_rst" value="" disabled>
++  <input type="hidden" name="qos_icmp" value="" disabled>
+ </form>
+ 
+ <script>
+@@ -398,7 +345,10 @@ var NV = {
+   sched:   '<% nvram_get("qos_sched"); %>',
+   ipolicer:'<% nvram_get("qos_ipolicer"); %>',
+   bwrule:  '<% nvram_get("qos_bw_rulelist"); %>',
+-  rules:   decodeURIComponent('<% nvram_char_to_ascii("", "qos_rulelist"); %>')
++  rules:   decodeURIComponent('<% nvram_char_to_ascii("", "qos_rulelist"); %>'),
++  overhead:'<% nvram_get("qos_overhead"); %>', atm: '<% nvram_get("qos_atm"); %>', mpu: '<% nvram_get("qos_mpu"); %>',
++  irates:  '<% nvram_get("qos_irates"); %>',
++  ack: '<% nvram_get("qos_ack"); %>', syn: '<% nvram_get("qos_syn"); %>', fin: '<% nvram_get("qos_fin"); %>', rst: '<% nvram_get("qos_rst"); %>', icmp: '<% nvram_get("qos_icmp"); %>'
+ };
+ /* 2026-10-10: a vlanNNNN WAN device = the external-switch jack whose trunk also carries the LAN
+  * (GT-BE98 family); rc/qos.c does not shape it - show the note next to the engine choice. */
+@@ -448,18 +398,13 @@ function renderModes(){
+    engine it also misclassifies anything long-lived -- streaming video is HTTPS
+    and passes any byte threshold in seconds, so it ends up in the bulk class
+    (metal, 2026-08-10). The shipped presets no longer do this; a user rule still
+-   can, so name the offenders. Rules are edited on the stock user-rules page;
+-   this page only reports. Format: desc>addr>port>proto>transferred>prio, and
+-   the stock editor writes a bare "~" for "no range". */
++   can, so name the offenders. 2026-10-22: the rules are edited on this page now
++   (RULES below); the stock editor wrote a bare "~" for "no range", normalised away. */
+ function rulesWarn(){
+   var el = document.getElementById('xferwarn');
+   if(!el) return;
+-  var bad = [], parts = String(NV.rules || '').split('<'), i, f;
+-  for(i = 0; i < parts.length; i++){
+-    if(!parts[i]) continue;
+-    f = parts[i].split('>');
+-    if(f.length === 6 && f[4] && f[4] !== '~') bad.push(f[0] || ('#' + i));
+-  }
++  var bad = [], i;
++  for(i = 0; i < RULES.length; i++) if(RULES[i].xfer) bad.push(RULES[i].desc || ('#' + (i + 1)));
+   if(!bad.length || sel !== '11'){ el.style.display = 'none'; return; }
+   el.innerHTML = `<#RQOS_123#>` + ' <b>' + bwlEsc(bad.join(', ')) + '</b>';
+   el.style.display = '';
+@@ -467,7 +412,14 @@ function rulesWarn(){
+ 
+ function syncPanels(){
+   document.getElementById('clpanel').style.display = (sel === '11') ? '' : 'none';
+-  rulesWarn();
++  /* 2026-10-22: user rules reach the firewall under Traditional (0) and HW QoS Classful (11) only (rc/qos.c) */
++  document.getElementById('rulespanel').style.display = (sel === '0' || sel === '11') ? '' : 'none';
++  document.getElementById('tqpanel').style.display = (sel === '0') ? '' : 'none';
++  /* link overhead: start_tqos (0) and start_cake (9) read it; MPU is a Cake knob */
++  document.getElementById('ohrow').style.display = (sel === '0' || sel === '9') ? '' : 'none';
++  document.getElementById('ohhint').style.display = (sel === '0' || sel === '9') ? '' : 'none';
++  document.getElementById('oh_mpuf').style.display = (sel === '9') ? '' : 'none';
++  if (typeof renderRules === 'function') renderRules();
+   document.getElementById('bwlimpanel').style.display = (sel === '2') ? '' : 'none';
+   document.getElementById('bwpanel').style.display = (sel === '2') ? 'none' : '';
+   var on = (NV.enable === '1');
+@@ -530,6 +482,7 @@ function renumber(){
+     rows[i].querySelector('.qb').textContent = 'Q'+(i+1);
+     rows[i].querySelector('.qn').textContent = (i===0?`<#RQOS_93#>`:(i===rows.length-1?`<#RQOS_94#>`:''));
+   }
++  if (typeof renderRules === 'function' && sel === '11') renderRules();   /* the rules' priority menus name the classes */
+ }
+ function rowMove(sp,dir){
+   var tr = sp.parentNode.parentNode, tb = tr.parentNode;
+@@ -626,7 +579,7 @@ function bwlEsc(s){ return esc(s); }   /* consolidated to shared window.esc (rea
+ function bwlDecode(s){ return String(s||'').replace(/&#62/g,'>').replace(/&#60/g,'<'); }
+ function bwlKb2Mb(k){ k=parseInt(k,10)||0; return k ? String(Math.round(k/1024*10)/10) : '0'; }
+ function bwlMb2Kb(m){ m=parseFloat(m)||0; return Math.round(m*1024); }
+-function bwlNameOf(mac){ return ReaperNames.byMac(mac, mac); }
++function bwlNameOf(mac){ return mac.indexOf(':') >= 0 ? ReaperNames.byMac(mac, mac) : ReaperNames.byIp(mac, mac); }   /* an IP / range target shows as typed */
+ function parseBwl(){
+   BWL = [];
+   var raw = bwlDecode(NV.bwrule);
+@@ -665,7 +618,12 @@ function renderBwl(){
+ function bwlAdd(){
+   var dev = document.getElementById('bwl_dev'), dn = document.getElementById('bwl_dn'), up = document.getElementById('bwl_up');
+   var mac = (dev.value||'').trim().toUpperCase();
+-  if(!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)){ alert(`<#RQOS_113#>`); return; }
++  /* 2026-10-24 (page review): stock (QoS_EZQoS.asp) and rc (qos.c address_format_checker) also take an IPv4
++     address, a.b.c.*, a.b.c.d-N or a CIDR block as the target; the checks mirror stock's, alert per form */
++  if(mac.indexOf(':') >= 0){ if(!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)){ alert(`<#RQOS_113#>`); return; } }
++  else if(mac.split('.').length === 4){ if(!(RX_IP.test(mac) || RX_IPSTAR.test(mac) || RX_IPMASK.test(mac)
++      || (RX_IPRANGE.test(mac) && parseInt(mac.split('.')[3].split('-')[0], 10) < parseInt(mac.split('.')[3].split('-')[1], 10)))){ alert(mac + ' ' + `<#JS_validip#>`); return; } }
++  else { alert((mac || '?') + ' ' + `<#Manual_Setting_JS_invalid#>`); return; }
+   if(BWL.length >= 32){ alert(`<#RQOS_115#>`); return; }
+   for(var i=0;i<BWL.length;i++){ if(BWL[i].mac.toUpperCase()===mac){ alert(`<#JS_duplicate#>`); return; } }
+   var d = parseFloat(dn.value), u = parseFloat(up.value);
+@@ -696,10 +654,265 @@ function fetchBwlClients(){
+         dl.appendChild(o);
+       }
+     }
++    fillRuleClients(cl);
+     renderBwl();
+   });
+ }
+ 
++/* ---------- user-defined classification rules (qos_rulelist) ----------
++   2026-10-22 (owner priority, Reaper-native UI wave 0): the stock Advanced_QOSUserRules page was
++   redirected here with no editor behind it, so the list could not be edited at all. Format, per
++   rc/qos.c add_qos_rules(): rows each prefixed by '<', fields '>'-joined:
++     desc>addr>port>proto>transferred>prio
++   addr = "" (any device) | IPv4 | 192.168.50.10-20 | 192.168.50.* | 192.168.50.0/24 | MAC;
++   port = "" | n | a:b | comma list (iptables multiport, 15 at most); proto any|tcp|udp|tcp/udp;
++   transferred = "" | "min~" | "min~max" in KB (connbytes; such a rule is non-sticky, see rulesWarn);
++   prio 0-4 = Highest..Lowest, and under the classful engine CONNMARK class 1..5 = the class table
++   rows in order. The list only reaches the firewall for qos_type 0 and 11. qos_rulelist is on the
++   nvram whitelist (/jffs/nvram), so httpd's 4096-character validator is the size limit, not the
++   1 KB kernel wall; the stock page allowed 128 rows. */
++var RULES = [], RULE_MAX = 128, RULE_BYTES = 4096;
++function parseRules(){
++  RULES = [];
++  var rows = String(NV.rules || '').split('<'), i, f;
++  for (i = 0; i < rows.length; i++){
++    if (!rows[i]) continue;
++    f = rows[i].split('>');
++    if (f.length !== 6) continue;
++    RULES.push({desc: f[0], addr: f[1], port: f[2], proto: f[3] || 'any', xfer: (f[4] === '~' ? '' : f[4]),
++                prio: String(Math.min(4, Math.max(0, parseInt(f[5], 10) || 0)))});
++  }
++}
++function serializeRules(){
++  var out = '', i, r;
++  for (i = 0; i < RULES.length; i++){ r = RULES[i]; out += '<' + [r.desc, r.addr, r.port, r.proto, r.xfer, r.prio].join('>'); }
++  return out;
++}
++function prioNames(){
++  if (sel === '11'){
++    var rows = document.querySelectorAll('#ctbody tr'), n = [], i, ins;
++    for (i = 0; i < 5; i++){ ins = rows[i] ? rows[i].getElementsByTagName('input') : null; n.push((ins && ins[0] && ins[0].value) ? ins[0].value : (DEFN[i] || ('Q' + (i + 1)))); }
++    return n;
++  }
++  return [`<#Highest#>`, `<#High#>`, `<#Medium#>`, `<#Low#>`, `<#Lowest#>`];
++}
++function prioOptions(cur, names){
++  /* (review 2026-10-24, Q-C2-6: renderRules reads the class names once and passes them in) */
++  names = names || prioNames();
++  var h = '', i;
++  for (i = 0; i < 5; i++) h += '<option value="' + i + '"' + (String(cur) === String(i) ? ' selected' : '') + '>' + (sel === '11' ? (i + 1) + ' - ' : '') + esc(names[i]) + '</option>';
++  return h;
++}
++function xferText(x){
++  if (!x) return '&mdash;';
++  var p = x.split('~');
++  return esc(p[0]) + (p[1] ? ' - ' + esc(p[1]) : '+') + ' KB';
++}
++/* rc drops the port whenever the protocol is any (qos.c: "if proto = any, no proto / dport"), so a rule
++   carrying both matches every port of its source. Metal 2026-10-22: 192.168.50.250 port 5555 any became
++   "-s 192.168.50.250/32" only. Never silently: the port box is off under any, and a stored rule that
++   still carries both shows its port struck through with the reason. */
++function rulePortCell(r){
++  if (!r.port) return '*';
++  if (r.proto === 'any') return `<span class="rign" title="<#RQOS_145#>">` + esc(r.port) + '</span>';
++  return esc(r.port);
++}
++function protoSync(){
++  var any = document.getElementById('rl_proto').value === 'any', p = document.getElementById('rl_port');
++  p.disabled = any; if (any) p.value = ''; p.placeholder = any ? '*' : '80,443';
++}
++function renderRules(){
++  var tb = document.getElementById('rulestbody'), i, pn; if (!tb) return;
++  pn = prioNames();
++  tb.innerHTML = '';
++  if (!RULES.length) tb.innerHTML = `<tr><td colspan="7" style="color:var(--steel);text-align:center;padding:16px"><#IPConnection_VSList_Norule#></td></tr>`;
++  for (i = 0; i < RULES.length; i++){ (function(idx){
++    var r = RULES[idx], tr = document.createElement('tr');
++    tr.innerHTML =
++      '<td class="rcell"><span class="rn">' + esc(r.desc) + '</span></td>'
++      + '<td class="rcell">' + (r.addr ? esc(r.addr) : '*') + '</td>'
++      + '<td class="rcell">' + rulePortCell(r) + '</td>'
++      + '<td class="rcell">' + esc(r.proto) + '</td>'
++      + '<td class="rcell">' + xferText(r.xfer) + '</td>'
++      + '<td><select>' + prioOptions(r.prio, pn) + '</select></td>'
++      + `<td><span class="bwldel" title="<#CTL_del#>">&times;</span></td>`;
++    tr.querySelector('select').onchange = function(){ r.prio = this.value; };
++    tr.querySelector('.bwldel').onclick = function(){ RULES.splice(idx, 1); renderRules(); };
++    tb.appendChild(tr);
++  })(i); }
++  var ps = document.getElementById('rl_prio'); if (ps) ps.innerHTML = prioOptions(ps.value || '1', pn);
++  var b = document.getElementById('rbudget'), len = serializeRules().length;
++  if (b){ b.textContent = RULES.length + ' / ' + RULE_MAX + '   ' + len + ' / ' + RULE_BYTES; b.className = 'rbudget' + ((len > RULE_BYTES * 0.9 || RULES.length >= RULE_MAX) ? ' hot' : ''); }
++  rulesWarn();
++}
++var OCT = '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])';
++var RX_IP = new RegExp('^' + OCT + '\\.' + OCT + '\\.' + OCT + '\\.' + OCT + '$');
++var RX_IPSTAR = new RegExp('^' + OCT + '\\.' + OCT + '\\.' + OCT + '\\.\\*$');
++var RX_IPRANGE = new RegExp('^' + OCT + '\\.' + OCT + '\\.' + OCT + '\\.' + OCT + '-' + OCT + '$');
++var RX_IPMASK = new RegExp('^' + OCT + '\\.' + OCT + '\\.' + OCT + '\\.' + OCT + '/(3[0-2]|[12]?[0-9])$');
++function ruleAddrOk(a){
++  if (a === '') return true;
++  if (/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(a)) return true;
++  if (RX_IP.test(a) || RX_IPSTAR.test(a) || RX_IPMASK.test(a)) return true;
++  if (RX_IPRANGE.test(a)){ var q = a.split('.')[3].split('-'); return parseInt(q[0], 10) < parseInt(q[1], 10); }
++  return false;
++}
++function rulePortOk(p){
++  if (p === '') return true;
++  if (!/^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$/.test(p)) return false;
++  var items = p.split(','), i, ab;
++  if (items.length > 15) return false;
++  for (i = 0; i < items.length; i++){
++    ab = items[i].split(':');
++    if (parseInt(ab[0], 10) < 1 || parseInt(ab[0], 10) > 65535) return false;
++    if (ab[1] !== undefined && (parseInt(ab[1], 10) > 65535 || parseInt(ab[1], 10) <= parseInt(ab[0], 10))) return false;
++  }
++  return true;
++}
++function ruleAdd(){
++  var desc = (document.getElementById('rl_desc').value || '').trim();
++  var addr = (document.getElementById('rl_addr').value || '').trim();
++  var port = (document.getElementById('rl_port').value || '').replace(/\s+/g, '');
++  var proto = document.getElementById('rl_proto').value;
++  var mn = (document.getElementById('rl_min').value || '').trim(), mx = (document.getElementById('rl_max').value || '').trim();
++  var prio = document.getElementById('rl_prio').value || '1', xfer = '', i, r;
++  if (/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(addr)) addr = addr.toUpperCase();
++  if (!desc || desc.length > 32 || /[<>'%]/.test(desc)){ alert(`<#RQOS_132#>`); return; }
++  if (!ruleAddrOk(addr)){ alert(`<#RQOS_129#>`); return; }
++  if (!rulePortOk(port)){ alert(`<#RQOS_130#>`); return; }
++  if (proto === 'any' && port){ alert(`<#RQOS_145#>`); return; }
++  if (mn !== '' || mx !== ''){
++    if ((mn !== '' && !/^[0-9]{1,9}$/.test(mn)) || (mx !== '' && !/^[0-9]{1,9}$/.test(mx))){ alert(`<#RQOS_131#>`); return; }
++    if (mn === '') mn = '0';
++    if (mx !== '' && parseInt(mx, 10) <= parseInt(mn, 10)){ alert(`<#RQOS_131#>`); return; }
++    xfer = mn + '~' + mx;
++  }
++  if (RULES.length >= RULE_MAX){ alert(`<#JS_itemlimit1#> ` + RULE_MAX + ` <#JS_itemlimit2#>`); return; }
++  for (i = 0; i < RULES.length; i++){ r = RULES[i];
++    if (r.addr === addr && r.port === port && r.proto === proto && r.xfer === xfer){ alert(`<#JS_duplicate#>`); return; } }
++  RULES.push({desc: desc, addr: addr, port: port, proto: proto, xfer: xfer, prio: String(prio)});
++  if (serializeRules().length > RULE_BYTES){ RULES.pop(); alert(`<#RQOS_133#>`); return; }
++  document.getElementById('rl_desc').value = ''; document.getElementById('rl_addr').value = '';
++  document.getElementById('rl_port').value = ''; document.getElementById('rl_min').value = ''; document.getElementById('rl_max').value = '';
++  document.getElementById('rl_preset').value = '';
++  renderRules();
++}
++/* the stock preset catalogue (www/ajax_qos_default.xml, 60 services in groups; a group header is a
++   row whose port is 0000). Picking one fills the add row; nothing is added until Add. */
++var PRESETS = [];
++function fetchPresets(){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/ajax_qos_default.xml?_=' + Date.now(), true);
++  x.onreadystatechange = function(){
++    if (x.readyState !== 4 || x.status !== 200) return;
++    var doc = x.responseXML;
++    if (!doc || !doc.getElementsByTagName('qos_rule').length){
++      try { doc = new DOMParser().parseFromString(String(x.responseText).replace(new RegExp('^' + String.fromCharCode(65279)), ''), 'text/xml'); } catch(e){ return; }
++    }
++    var rules = doc.getElementsByTagName('qos_rule'), sel_ = document.getElementById('rl_preset'), grp = null, i;
++    var PR = {Highest: '0', High: '1', Medium: '2', Low: '3', Lowest: '4'};
++    function tx(el, tag){ var n = el.getElementsByTagName(tag)[0]; return n && n.textContent ? n.textContent.trim() : ''; }
++    PRESETS = [];
++    for (i = 0; i < rules.length; i++){
++      var d = tx(rules[i], 'desc'), port = tx(rules[i], 'port').replace(/\s+/g, ''), proto = tx(rules[i], 'proto').toLowerCase();
++      if (!d) continue;
++      if (port === '0000'){ grp = document.createElement('optgroup'); grp.label = d; sel_.appendChild(grp); continue; }
++      var rate = tx(rules[i], 'rate'), pr = PR[tx(rules[i], 'prio')] || '1';
++      PRESETS.push({desc: d, port: port, proto: (proto === 'any' || proto === '' ? 'any' : proto), rate: rate, prio: pr});
++      var o = document.createElement('option'); o.value = String(PRESETS.length - 1); o.textContent = d;
++      (grp || sel_).appendChild(o);
++    }
++  };
++  x.send();
++}
++function rulePreset(s){
++  var p = PRESETS[parseInt(s.value, 10)]; if (!p) return;
++  document.getElementById('rl_desc').value = p.desc.substring(0, 32);
++  document.getElementById('rl_port').value = p.port;
++  document.getElementById('rl_proto').value = (p.proto === 'tcp/udp' || p.proto === 'tcp' || p.proto === 'udp') ? p.proto : 'any';
++  protoSync();
++  var mm = (p.rate || '').split('~');
++  document.getElementById('rl_min').value = mm[0] || ''; document.getElementById('rl_max').value = mm[1] || '';
++  document.getElementById('rl_prio').value = p.prio;
++}
++function fillRuleClients(cl){
++  var dl = document.getElementById('rl_clients'); if (!dl || !cl) return;
++  dl.innerHTML = '';
++  var ml = cl.maclist || [], i;
++  for (i = 0; i < ml.length; i++){
++    var mac = ml[i], c = cl[mac]; if (!c) continue;
++    var nm = ReaperNames.byMac(mac, mac), o = document.createElement('option');
++    o.value = mac; o.label = nm + (c.ip ? ' (' + c.ip + ')' : ''); dl.appendChild(o);
++    if (c.ip){ var o2 = document.createElement('option'); o2.value = c.ip; o2.label = nm + ' (' + mac + ')'; dl.appendChild(o2); }
++  }
++}
++document.getElementById('rl_hint').textContent = `<#RQOS_128#>`.replace('%1', RULE_MAX).replace('%2', RULE_BYTES) + ' ' + `<#RQOS_145#>`;
++/* review 2026-10-24 (Q-C2-6): a keystroke in a class name relabels the priority menus in place; the rules table is not rebuilt */
++function prioRelabel(){
++  var names = prioNames(), sels = document.querySelectorAll('#rulestbody select, #rl_prio'), i, j, o;
++  for (i = 0; i < sels.length; i++){ o = sels[i].options; for (j = 0; j < o.length && j < 5; j++) o[j].textContent = (sel === '11' ? (j + 1) + ' - ' : '') + names[j]; }
++}
++document.getElementById('ctbody').addEventListener('input', function(){ if (sel === '11') prioRelabel(); });
++
++/* ---------- link overhead (qos_overhead / qos_atm / qos_mpu) ----------
++   2026-10-22: lost when QoS_EZQoS was replaced. rc/qos.c: start_tqos adds the bytes to every class and,
++   for qos_atm 1, shapes with "linklayer atm" (53-byte cells), for 2 (PTM) takes 1/65 off the rate;
++   start_cake passes "overhead N mpu M" plus the linklayer. The preset table is the stock page's. */
++var OH_PRESETS = [["1","48","0","Conservative default"],["0","42","84","Ethernet with VLAN"],["0","18","64","Cable (DOCSIS)"],
++  ["0","27","0","PPPoE VDSL"],["1","32","0","RFC2684/RFC1483 Bridged LLC/Snap"],["1","32","0","ADSL PPPoE VC/Mux"],
++  ["1","40","0","ADSL PPPoE LLC/Snap"],["0","19","0","VDSL Bridged/IPoE"],["2","30","0","VDSL2 PPPoE PTM"],["2","22","0","VDSL2 Bridged PTM"]];
++function ohInit(){
++  var s = document.getElementById('oh_preset'), i;
++  for (i = 0; i < OH_PRESETS.length; i++){ var o = document.createElement('option'); o.value = String(i); o.textContent = OH_PRESETS[i][3]; s.appendChild(o); }
++  document.getElementById('oh_bytes').value = /^[0-9]{1,3}$/.test(NV.overhead) ? NV.overhead : '0';
++  document.getElementById('oh_atm').value = (NV.atm === '1' || NV.atm === '2') ? NV.atm : '0';
++  document.getElementById('oh_mpu').value = /^[0-9]{1,3}$/.test(NV.mpu) ? NV.mpu : '0';
++}
++function ohPreset(s){
++  var p = OH_PRESETS[parseInt(s.value, 10)]; if (!p) return;
++  document.getElementById('oh_atm').value = p[0]; document.getElementById('oh_bytes').value = p[1]; document.getElementById('oh_mpu').value = p[2];
++}
++function ohRead(){
++  var b = document.getElementById('oh_bytes').value.trim(), m = document.getElementById('oh_mpu').value.trim();
++  if (!/^[0-9]{1,3}$/.test(b) || !/^[0-9]{1,3}$/.test(m)) return null;
++  return {overhead: String(parseInt(b, 10)), atm: document.getElementById('oh_atm').value, mpu: String(parseInt(m, 10))};
++}
++
++/* ---------- Traditional QoS (qos_type 0): per-class rates + small-packet priority ----------
++   2026-10-22: lost when Advanced_QOSUserPrio was replaced. qos_orates = "min-ceil" upload pairs per class
++   (the same nvram the classful editor writes - rc reads classes 0-4 either way), qos_irates = download
++   ceilings; both are percentages of the bandwidth above, 10 entries with the last five unused. A ceiling
++   of 0 leaves the class out (rc: rate < 1 -> skipped). qos_ack/syn/fin/rst/icmp "on"|"off" put those
++   packets in the top class (start_tqos). */
++function tqBuild(){
++  var tb = document.getElementById('tqbody'); if (!tb) return;
++  var o = (NV.orates || '').split(','), d = (NV.irates || '').split(','), names = [`<#Highest#>`, `<#High#>`, `<#Medium#>`, `<#Low#>`, `<#Lowest#>`], i;
++  tb.innerHTML = '';
++  for (i = 0; i < 5; i++){
++    var seg = (o[i] || '0-0').split('-'), tr = document.createElement('tr');
++    tr.innerHTML = '<td><span class="qbadge">' + names[i] + '</span></td>'
++      + '<td><input type="text" maxlength="3" style="width:56px" value="' + (parseInt(seg[0], 10) || 0) + '" onblur="clampPct(this)"><span class="unit">%</span></td>'
++      + '<td><input type="text" maxlength="3" style="width:56px" value="' + (seg.length > 1 ? (parseInt(seg[1], 10) || 0) : 0) + '" onblur="clampPct(this)"><span class="unit">%</span></td>'
++      + '<td><input type="text" maxlength="3" style="width:56px" value="' + (parseInt(d[i], 10) || 0) + '" onblur="clampPct(this)"><span class="unit">%</span></td>';
++    tb.appendChild(tr);
++  }
++  var F = {ack: 'tg_ack', syn: 'tg_syn', fin: 'tg_fin', rst: 'tg_rst', icmp: 'tg_icmp'}, k;
++  for (k in F) document.getElementById(F[k]).checked = (NV[k] === 'on');
++}
++function tqSerialize(){
++  var rows = document.querySelectorAll('#tqbody tr'), ups = [], dns = [], i;
++  for (i = 0; i < 5; i++){
++    var ins = rows[i] ? rows[i].getElementsByTagName('input') : null;
++    var mn = ins ? Math.min(100, Math.max(0, parseInt(ins[0].value, 10) || 0)) : 0;
++    var cl = ins ? Math.min(100, Math.max(0, parseInt(ins[1].value, 10) || 0)) : 0;
++    var dn = ins ? Math.min(100, Math.max(0, parseInt(ins[2].value, 10) || 0)) : 0;
++    if (mn > cl && cl > 0) mn = cl;
++    ups.push(mn + '-' + cl); dns.push(String(dn));
++  }
++  for (i = 5; i < 10; i++){ ups.push('0-0'); dns.push('0'); }
++  return {orates: ups.join(','), irates: dns.join(',')};
++}
++
+ function applyQoS(){
+   var f = document.form;
+   var wasOn = (NV.enable==='1'), wasType = String(NV.type);
+@@ -732,6 +945,22 @@ function applyQoS(){
+     var bl = serializeBwl(); if (bl === false) return;
+     f.qos_bw_rulelist.disabled = false; f.qos_bw_rulelist.value = bl;
+   }
++  if (sel === '0' || sel === '11'){
++    f.qos_rulelist.disabled = false; f.qos_rulelist.value = serializeRules();
++  }
++  if (sel === '0' || sel === '9'){
++    var oh = ohRead(); if (!oh){ alert(`<#RQOS_135#>: 0-999`); return; }
++    f.qos_overhead.disabled = false; f.qos_overhead.value = oh.overhead;
++    f.qos_atm.disabled = false; f.qos_atm.value = oh.atm;
++    f.qos_mpu.disabled = false; f.qos_mpu.value = (sel === '9') ? oh.mpu : (NV.mpu || '0');
++  }
++  if (sel === '0'){
++    var tq = tqSerialize();
++    f.qos_orates.disabled = false; f.qos_orates.value = tq.orates;
++    f.qos_irates.disabled = false; f.qos_irates.value = tq.irates;
++    var FL = {qos_ack: 'tg_ack', qos_syn: 'tg_syn', qos_fin: 'tg_fin', qos_rst: 'tg_rst', qos_icmp: 'tg_icmp'}, fk;
++    for (fk in FL){ f[fk].disabled = false; f[fk].value = document.getElementById(FL[fk]).checked ? 'on' : 'off'; }
++  }
+ 
+   /* stock HND semantics: same enable+type (or turning off) restarts live;
+      an engine switch / fresh enable reconfigures the accelerator = reboot */
+@@ -763,7 +992,8 @@ document.getElementById('tg_pshaper').checked = (NV.pshaper !== '0');
+ document.getElementById('tg_minrates').checked = (NV.minrates !== '0');
+ document.getElementById('tg_dscp').checked = (NV.dscp === '1');
+ document.getElementById('tg_ipolicer').checked = (NV.ipolicer !== '0');
+-renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats();
++/* (review 2026-10-24, Q-C2-6: syncPanels draws the rules once the modes are known; the extra boot-time renderRules went) */
++parseRules(); renderModes(); syncPanels(); buildEditor(); parseBwl(); renderBwl(); fetchBwlClients(); pollStats(); fetchPresets(); ohInit(); tqBuild(); protoSync();
+ </script>
+ </body>
+ </html>
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 027d3fb4fcc..c072593150f 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -89,7 +89,6 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+ .btn[disabled]{opacity:.4;cursor:not-allowed}
+ .saved{margin-left:12px;font-size:12px;color:var(--jade)}
+ .saved.err{color:var(--danger)}
+-.foot{font-size:12px;color:var(--steel);max-width:1120px}
+ </style>
+ </head>
+ <body>
+@@ -214,7 +213,14 @@ var DSETS = [
+   {k:'watch', name:`<#RDST_14#>`, write:`<#RDST_15#>`, cap:'3 ' + CAP_INC},
+   {k:'chq',   name:`<#RDST_16#>`, write:`<#RDST_17#>`, cap:'4 MB ' + CAP_RING},
+   {k:'slog',  name:`<#RDST_18#>`, write:`<#RDST_19#>`, cap:'8 MB x 2'},
+-  {k:'ward',  name:`<#RDST_20#>`, write:`<#RDST_21#>`, cap:'&mdash;', locked:1}
++  /* 2026-10-21: Wallguard / Dreadwatch / Encrypted DNS. shl = USB only (lists are big; the table
++     itself never leaves RAM); shh / dw caps follow the location (16 MB x 2 USB, 2 MB x 2 JFFS) */
++  {k:'shl',   name:`<#RDST_99#>`,  write:`<#RDST_100#>`, cap:'', usbonly:1},
++  {k:'shh',   name:`<#RDST_103#>`, write:`<#RDST_104#>`, cap:'', logcap:1},
++  {k:'dw',    name:`<#RDST_105#>`, write:`<#RDST_106#>`, cap:'', logcap:1},
++  {k:'edns',  name:`<#RDST_107#>`, write:`<#RDST_108#>`, cap:'4 MB x 2'},
++  {k:'ward',  name:`<#RDST_20#>`, write:`<#RDST_21#>`, cap:'&mdash;', locked:1},
++  {k:'edoh',  name:`<#RDST_109#>`, write:`<#RDST_110#>`, cap:'&mdash;', locked:2}
+ ];
+ 
+ function xGet(url, cb){
+@@ -280,6 +286,8 @@ function render(){
+   ln.innerHTML = (loc === 'usb')
+       ? ('<b>' + esc(`<#RDST_24#>`) + '</b> ' + esc(`<#RDST_25#>`))
+       : (loc === 'jffs') ? esc(`<#RDST_26#>`) : esc(`<#RDST_27#>`);
++  /* 2026-10-21: blocked-lookup history maps every device to the names it asked for */
++  if(loc === 'usb' && (dsOn.shh || dsOn.dw)) ln.innerHTML += ' ' + esc(`<#RDST_112#>`);
+ 
+   /* status pill: the router's state for the SAVED setting (attaching = the
+      pinned volume has not mounted yet this boot; waiting = it has not come
+@@ -300,7 +308,17 @@ function render(){
+   var el = '';
+   DSETS.forEach(function(ds){
+     var tog, since, cap = ds.cap;
+-    if(ds.locked){
++    if(ds.locked === 2){
++      /* 2026-10-21: the Encrypted DNS blocked-address list stays on /jffs like Warden's cache (the
++         firewall loads it at boot, before any USB mount): its real size and last update */
++      tog = '<span class="chip" title="' + esc(`<#RDST_111#>`) + '">' + esc(`<#RDST_23#>`) + '</span>';
++      cap = (S && S.edoh_bytes) ? fmtBytes(S.edoh_bytes) : '&mdash;';
++      since = (S && S.edoh_at) ? fmtDate(S.edoh_at) : '<span style="color:var(--steel)">&mdash;</span>';
++    } else if(ds.usbonly && loc !== 'usb'){
++      tog = '<span class="chip" title="' + esc(`<#RDST_102#>`) + '">' + esc(`<#RDST_101#>`) + '</span>';
++      cap = '&mdash;';
++      since = '<span style="color:var(--steel)">&mdash;</span>';
++    } else if(ds.locked){
+       /* 2026-08-11: this row used to hardcode an em-dash for both size and
+          "collecting since" - the field report ("Long-Term storage has no date
+          next to it") was looking at exactly that. Warden's store cannot move
+@@ -325,6 +343,8 @@ function render(){
+       var sinceEpoch = (S && S[ds.k + '_since']) ? S[ds.k + '_since'] : 0;
+       since = (durable && sinceEpoch)
+             ? fmtDate(sinceEpoch) : '<span style="color:var(--steel)">&mdash;</span>';
++      if(ds.usbonly) cap = (S && S.shl_bytes) ? fmtBytes(S.shl_bytes) : '&mdash;';
++      if(ds.logcap) cap = (loc === 'usb' ? '16 MB' : '2 MB') + ' x 2';
+     }
+     el += '<tr>' +
+       '<td>' + tog + '</td>' +
+@@ -440,7 +460,9 @@ function save(){
+ }
+ 
+ function doSave(){
+-  var order = ['dev','traf','watch','chq','slog'];
++  /* 2026-10-24: every switchable row of the catalog (a hard-coded five-key list silently dropped the Wallguard,
++     Dreadwatch and Encrypted DNS rows); a USB-only row is posted only while the location is USB */
++  var order = DSETS.filter(function(d){ return !d.locked && !(d.usbonly && loc !== 'usb'); }).map(function(d){ return d.k; });
+   var list = order.filter(function(k){ return dsOn[k]; }).join(',');
+   var btn = document.getElementById('saveBtn'); btn.disabled = true;
+   xGet('/reaper_dev.cgi?action=store_set&loc=' + encodeURIComponent(loc) +
+diff --git a/release/src/router/www/Reaper_WANPorts.asp b/release/src/router/www/Reaper_WANPorts.asp
+index 0927248db0b..e76c7914f01 100644
+--- a/release/src/router/www/Reaper_WANPorts.asp
++++ b/release/src/router/www/Reaper_WANPorts.asp
+@@ -532,7 +532,7 @@ var S = {
+ };
+ function freshHidden(){
+   var H = {
+-    current_page: {v: 'Advanced_WANPort_Content.asp'}, next_page: {v: 'Advanced_WANPort_Content.asp'}, modified: {v: '0'},
++    current_page: {v: 'Reaper_WANPorts.asp'}, next_page: {v: 'Reaper_WANPorts.asp'}, modified: {v: '0'},	/* 2026-10-22: own name (httpd's redirect list now knows Reaper pages) */
+     action_mode: {v: 'apply_new'}, action_wait: {v: NV.reboot_time}, action_script: {v: 'reboot'},
+     preferred_lang: {v: NV.preferred_lang}, firmver: {v: NV.firmver}, wl_ssid: {v: NV.wl_ssid},
+     wan_unit: {v: NV.wan_unit}, wans_extwan: {v: NV.wans_extwan}, wans_dualwan: {v: NV.wans_dualwan},
+diff --git a/release/src/router/www/Reaper_WiFiSettings.asp b/release/src/router/www/Reaper_WiFiSettings.asp
+index e162e664cfe..1aeaf55398c 100644
+--- a/release/src/router/www/Reaper_WiFiSettings.asp
++++ b/release/src/router/www/Reaper_WiFiSettings.asp
+@@ -232,7 +232,6 @@ a{color:var(--ice)}
+ 
+   /* ---- option sets ---- */
+   var ED=[["1",`<#CTL_Enabled#>`],["0",`<#CTL_Disabled#>`]];
+-  var YN=[["1",`<#checkbox_Yes#>`],["0",`<#checkbox_No#>`]];
+   var ONOFF=[["on",`<#WLANConfig11b_WirelessCtrl_button1name#>`],["off",`<#WLANConfig11b_WirelessCtrl_buttonname#>`]];
+   /* stock regen_mode() option sets, English names hardcoded exactly as stock does */
+   var MODES={"2.4":[["0",`<#Auto#>`],["1","N only"],["2","Legacy"]],
+@@ -849,7 +848,7 @@ a{color:var(--ice)}
+   var chgN=document.getElementById("chgN"), btn=document.getElementById("applyAll");
+   function chanDirty(u){ return composeChanspec(u)!==nv(u,"chanspec"); }
+   function recount(){
+-    var n=0, seenG={};
++    var n=0, seenG={}, cntG={};
+     document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
+       var c=el.closest(".cell"), nm=el.getAttribute("data-name")||"", d;
+       if(/_@(pmode|pslice|pdyn|psrc|pgain|phold)$/.test(nm)){ var pu=+nm.slice(2).split("_")[0]; d=(nm.slice(-6)==="@pmode")?punctDirty(pu):(!lockSuppressed(el)&&getVal(el)!==el._base&&punctDirty(pu)); }
+@@ -857,8 +856,14 @@ a{color:var(--ice)}
+       else if(el.type==="checkbox"){ d=!el._hardLock&&((el.checked?"1":"0")!==el._base);
+         var gk=el.getAttribute("data-g"); if(gk){ if(seenG[gk]) d=false; else seenG[gk]=1; } }
+       else d=!lockSuppressed(el)&&getVal(el)!==el._base;
+-      if(c&&!c.hasAttribute("data-acs")) c.classList.toggle("dirty",d); if(d) n++;
++      if(c&&!c.hasAttribute("data-acs")) c.classList.toggle("dirty",d);
++      /* one key shown in two columns (amas_chanfit) is one change - Apply posts it once */
++      if(d){ var gg=el.getAttribute("data-g"); if(!gg||!cntG[gg]){ n++; if(gg) cntG[gg]=1; } }
+     });
++    /* a Time Scheduling grid edit is a change of its own while the scheduler switch itself is
++       unchanged; counted HERE, so a later edit elsewhere cannot drop it from the count and grey
++       Apply out with the schedule still pending (it used to be added only at the grid's OK) */
++    RADIOS.forEach(function(r){ var t=q(r.unit,"timesched"); if(t&&schedDirty(r.unit)&&getVal(t)===t._base) n++; });
+     document.querySelectorAll('.cell[data-acs]').forEach(function(c){ c.classList.toggle("dirty",Array.prototype.some.call(c.querySelectorAll("input"),function(i){ return !i._hardLock&&((i.checked?"1":"0")!==i._base); })); });
+     chgN.textContent=n; btn.disabled=n===0; return n;
+   }
+@@ -984,10 +989,9 @@ a{color:var(--ice)}
+     if(schedArr.every(function(d){ return d.every(function(x){ return x===0; }); })){ alert(`<#RWFP_45#>`); return; }
+     SCHED[schedU]=arrToSched(schedArr);
+     var c=q(schedU,"timesched").closest(".cell"); if(c) c.classList.toggle("dirty",SCHED[schedU]!==nv(schedU,"sched_v2")||getVal(q(schedU,"timesched"))!==q(schedU,"timesched")._base);
+-    document.getElementById("schedModal").classList.remove("show"); recountSched();
++    document.getElementById("schedModal").classList.remove("show"); recount();
+   };
+   function schedDirty(u){ return SCHED[u]!==undefined&&SCHED[u]!==nv(u,"sched_v2"); }
+-  function recountSched(){ var n=recount(); RADIOS.forEach(function(r){ if(schedDirty(r.unit)&&getVal(q(r.unit,"timesched"))===q(r.unit,"timesched")._base) n++; }); chgN.textContent=n; btn.disabled=n===0; }
+ 
+   /* ---- apply: every pending change for every radio in ONE restart_wireless ---- */
+   btn.addEventListener("click",function(){
+@@ -1014,7 +1018,11 @@ a{color:var(--ice)}
+     var n=0, add=function(name,value){ var i=document.createElement("input"); i.type="hidden"; i.className="dyn"; i.name=name; i.value=value; f.appendChild(i); n++; };
+     var reboot=false, postedG={};
+     document.querySelectorAll("[data-name],[data-g]").forEach(function(el){
+-      if(el.closest("[hidden]")) return;
++      /* a hidden control is not posted - except Roaming Assistant's number: the Enabled/Disabled
++         select hides it when it writes 0 (= off). Skipping it meant Disabled lit Apply and Apply
++         posted nothing (field 2026-10-21, GT-BE98: "cannot disable Roaming Assistant") */
++      var hid=el.closest("[hidden]");
++      if(hid && !(hid.classList.contains("rssiNum") && !hid.parentElement.closest("[hidden]"))) return;
+       var nm=el.getAttribute("data-name")||"", g=el.getAttribute("data-g");
+       if(g){ if(postedG[g]) return; var gv=(el.type==="checkbox")?(el.checked?"1":"0"):String(el.value); if(el._hardLock||gv===el._base) return; postedG[g]=1; add(g,gv); if(g==="usb_usb3") reboot=true; return; }
+       if(/_@(chan|ext|range|pmode|pslice|pdyn|psrc|pgain|phold)$/.test(nm)) return;   /* folded into chanspec / punct below */
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 730b4b0d1bc..df737064a12 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -7,11 +7,11 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>REAPER &mdash; <#Settings#></title>
+-<!-- state.js provides the globals menuTree.js needs (isSupport, naming vars,
+-     rc_support flags) and document.writes require.min.js itself -->
+-<script type="text/javascript" src="/js/jquery.js"></script>
+-<script type="text/javascript" src="/state.js"></script>
++<!-- review 2026-10-24 (Q-C2-2): the shell used to load jquery.js, state.js and (through it) require.js - some
++     320 KB - only to reach menuTree.js for the add-on pages. It fetches that one file and lifts them out as text
++     now (ReaperAddons.fromText, the dashboard's path); reaper_util.js and menu.js draw the rail. -->
+ <script type="text/javascript" src="/reaper_util.js"></script>
++<script type="text/javascript" src="/reaper/menu.js"></script>
+ <style>
+ /* REAPER settings shell: owns topbar + rail geometry; stock pages load
+    unmodified into the frame (all settings preserved); /reaper/reaper_content.css
+@@ -389,7 +389,8 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+ <style>@keyframes rwspin{to{transform:rotate(360deg)}}</style>
+ 
+ <script>
+-/* Full rollout: every stock page carries /reaper/reaper_content.css baked in. */
++/* Stock pages are themed by httpd (reaper_inject.c injects /reaper/reaper_content.css); the frame-load
++   injector further down only re-applies it to framed pages that arrive without it (the SDN/MLO overlays). */
+ /* frameUrl() falls back here when a page name fails the allow-list. index.asp is
+    the (now superseded) Network Map: framing it makes reaper_inject's bounce send
+    the TOP window to the dashboard, so a malformed target lands somewhere sane. */
+@@ -461,60 +462,23 @@ window.reaperWaitDone = function(){
+   window.shellChromeLock(false);
+ };
+ 
+-var ICONS = {
+-  menu_Index:          '<svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+-  menu_AiMesh:         '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg>',
+-  menu_GuestNetwork:   '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>',
+-  menu_AiProtection:   '<svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>',
+-  menu_ParentalControl:'<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg>',
+-  /* reaper 2026-10-10: Traffic Manager is menu_QoS on stock trees and
+-     menu_BandwidthMonitor on Reaper's (Reaper_QoS.asp); both draw the bars the
+-     dashboard uses. The line chart belongs to Traffic Analyzer alone. */
+-  menu_QoS:            '<svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg>',
+-  menu_BandwidthMonitor:'<svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg>',
+-  menu_TrafficAnalyzer:'<svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg>',
+-  /* reaper 2026-10-10: the Reaper menus menuTrees/menuTree.js adds had no key here
+-     and fell to _default (the circle-dot); same glyphs as Main_ReaperDash.asp's rail */
+-  menu_ReaperGK:       '<svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M9 11v-1.5a3 3 0 0 1 6 0V11"/><rect x="9" y="11" width="6" height="5" rx="1"/></svg>',
+-  menu_ReaperWarden:   '<svg viewBox="0 0 24 24"><path d="M12 3l8 3.5v6c0 4.5-3.2 7.5-8 8.5-4.8-1-8-4-8-8.5v-6z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>',
+-  menu_ReaperAdvisor:  '<svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg>',
+-  menu_Sysinfo:        '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+-  menu_IPv6:           '<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg>',
+-  /* stock menus a model may still show (exclude.menus() decides); none is on the
+-     dashboard rail, each gets its own glyph so nothing falls to _default */
+-  menu_NewDashboard:   '<svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-5"/></svg>',
+-  menu_UU:             '<svg viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></svg>',
+-  menu_TencentAcceleration:'<svg viewBox="0 0 24 24"><path d="M5 6l6 6-6 6M13 6l6 6-6 6"/></svg>',
+-  menu_SMS:            '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
+-  menu_GameBoost:      '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="9" rx="4"/><path d="M8 12v-2M7 12h2M15.5 12h.01M18 13.5h.01"/></svg>',
+-  menu_OpenNAT:        '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg>',
+-  menu_APP:            '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg>',
+-  menu_ReaperDevices:  '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>',
+-  /* same puzzle-piece glyph Main_ReaperDash.asp draws for its addon rail group,
+-     so an addon looks identical on the dashboard and inside the shell */
+-  menu_Addons:         '<svg viewBox="0 0 24 24"><path d="M10 4h4v3a2 2 0 0 0 2 2h3v4h-3a2 2 0 0 0-2 2v3h-4v-3a2 2 0 0 0-2-2H5V9h3a2 2 0 0 0 2-2z"/></svg>',
+-  menu_AiCloud:        '<svg viewBox="0 0 24 24"><path d="M7 17a4 4 0 0 1 .6-8 5 5 0 0 1 9.6 1.4A3.5 3.5 0 0 1 17 17z"/></svg>',
+-  menu_Wireless:       '<svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg>',
+-  menu_LAN:            '<svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 10V6h10v4"/></svg>',
+-  menu_WAN:            '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg>',
+-  menu_Alexa_IFTTT:    '<svg viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4z"/></svg>',
+-  menu_VPN:            '<svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v6M9 12h6"/></svg>',
+-  menu_Firewall:       '<svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg>',
+-  menu_Setting:        '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>',
+-  menu_Log:            '<svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6z"/><path d="M9 9h6M9 13h6M9 17h4"/></svg>',
+-  menu_NekworkTool:    '<svg viewBox="0 0 24 24"><path d="M14 7a3 3 0 0 0-4 4l-6 6 2 2 6-6a3 3 0 0 0 4-4l-2 2-2-2z"/></svg>',
+-  _default:            '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5"/></svg>'
+-};
++/* 2026-10-22: the rail glyphs live in www/reaper/menu.js now, shared with the dashboard rail */
++var ICONS = ReaperMenu.ICONS;
+ 
+ var reaperShell = true;
+ function $id(id){return document.getElementById(id);}
+-function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
++/* esc() is reaper_util.js's window.esc (= ReaperEsc), loaded above - the shell's own copy was the same function
++   (review 2026-10-24, Q-C2-11) */
+ function frameUrl(page){
+-  /* allow-list (matches REAPER-FIXES.md R4-2): only a bare same-origin page
+-     filename, optionally with a query - no leading slash/backslash, no scheme,
+-     no path. Anything else falls back to the dashboard so a hash fragment cannot
+-     steer the iframe off-origin. */
+-  if(!/^[A-Za-z0-9_.\-]+\.(asp|html?)(\?.*)?$/.test(page)) page = DEFAULT_PAGE;
++  /* allow-list (REAPER-FIXES.md R4-2; review 2026-10-24 S-C2-1): a bare same-origin
++     .asp page name - no leading slash/backslash, no scheme, no path, and never
++     .htm/.html (start_apply.htm and its kin apply nvram from a query; httpd now
++     refuses that on a GET as well) - with a query only for a Reaper page (the deep
++     links ?tab= ?t= ?view= ?af= ?mac= ?mode=), from a small character set. Every
++     page the menu model, the SUP map and reaper_gone[] can name fits this; anything
++     else lands on the dashboard so a hash fragment cannot steer the iframe. */
++  var m=/^([A-Za-z0-9_-]+\.asp)(\?[A-Za-z0-9_=&.%:-]*)?$/.exec(page);
++  if(!m || (m[2] && m[1].indexOf('Reaper_')!==0)) page = DEFAULT_PAGE;
+   return '/' + page;
+ }
+ 
+@@ -527,14 +491,13 @@ function isTopLevelPage(u){
+   return /^\/?Main_ReaperDash\.asp$/i.test(String(u||''));
+ }
+ 
+-function isExternalUrl(u){
+-  /* an addon-supplied menu target that is NOT a bare same-origin page: an
+-     absolute/protocol-relative http(s) link or a mailto (e.g. a third-party
+-     addon's "Help & Support" entry). These must open in a new browser tab -
+-     never inside the shell iframe, where frameUrl would otherwise fold them
+-     onto the dashboard. Only ever called on real menuTree entries. */
+-  return /^(https?:)?\/\//i.test(u) || /^mailto:/i.test(u);
+-}
++/* an addon-supplied menu target that is NOT a bare same-origin page: an
++   absolute/protocol-relative http(s) link or a mailto (e.g. a third-party
++   addon's "Help & Support" entry). These must open in a new browser tab -
++   never inside the shell iframe, where frameUrl would otherwise fold them
++   onto the dashboard. Only ever called on real menuTree entries. The test is
++   reaper_util.js's ReaperAddons.isExternal (one copy; review 2026-10-24, Q-C2-11). */
++function isExternalUrl(u){ return ReaperAddons.isExternal(u); }
+ 
+ var MENULIST=[], EXTABS=[];   /* set by buildRail; used for the shell tab bar */
+ 
+@@ -586,15 +549,48 @@ function loadPage(page){
+     f.src = frameUrl(page);
+   }
+   try{ history.replaceState(null, '', '/reaper_shell.asp#' + page); }catch(e){}
++  /* 2026-10-22: a deep link keeps its query for the frame (?af=...) but the rail and the tab strip
++     know pages by bare file name */
++  markPage(page.split('?')[0]);
++}
++
++/* rail item + tab strip for the page in the frame, by bare file name */
++function markPage(base){
+   var links=document.querySelectorAll('#rail a.item');
+   for(var i=0;i<links.length;i++){
+     var pages=(links[i].getAttribute('data-pages')||'').split('|');
+-    var hit=(pages.indexOf(page)!==-1);
++    var hit=(pages.indexOf(base)!==-1);
+     links[i].classList.toggle('on', hit);   /* toggle, never rewrite className */
+   }
+-  renderTabs(page);
++  renderTabs(base);
+ }
+ 
++/* 2026-10-25 (owner): a page that opens another one itself - the USB Application landing list's
++   links - changed the frame but not the hash, the rail or the tab strip, so the opened tab stayed
++   unhighlighted and a reload went back to the list. On load, a frame now showing a different MENU
++   page is marked as if its tab had been clicked; a page no menu lists leaves everything as it was. */
++function inMenu(base){
++  for(var i=0;i<MENULIST.length;i++){
++    var m=MENULIST[i]; if(!m||!m.tab) continue;
++    for(var j=0;j<m.tab.length;j++) if(m.tab[j] && m.tab[j].url===base) return true;
++  }
++  return false;
++}
++(function(){
++  var f=$id('page_frame');
++  if(!f) return;
++  f.addEventListener('load', function(){
++    try{
++      var l=f.contentWindow.location, base=l.pathname.replace(/^\//, '');
++      if(base===(location.hash||'').replace('#', '').split('?')[0] || !inMenu(base)) return;
++      var page=base+(base.indexOf('Reaper_')===0 ? l.search : '');
++      if(frameUrl(page)!=='/'+page) page=base;   /* keep the hash inside frameUrl()'s allow-list */
++      history.replaceState(null, '', '/reaper_shell.asp#' + page);
++      markPage(base);
++    }catch(e){}
++  });
++})();
++
+ /* i18n overflow helper: any element with class "rtip" truncates via CSS instead
+    of stretching its box; when it is actually clipped we hand the full text to a
+    native title tooltip so hover reveals the whole word/label. Re-run after the
+@@ -787,7 +783,15 @@ var RV_CSS_NATIVE = RV_CSS
+   var f=$id('page_frame');
+   if(!f) return;
+   var HDR=64;                    /* sticky topbar: the frame's visible slice starts under it */
++  /* review 2026-10-24 (Q-C2-7): scroll and resize fire many times a frame; the frame is measured and the two
++     properties written once per animation frame */
++  var raf=0;
+   function anchor(){
++    if(raf) return;
++    if(!window.requestAnimationFrame){ anchorNow(); return; }
++    raf=window.requestAnimationFrame(function(){ raf=0; anchorNow(); });
++  }
++  function anchorNow(){
+     try{
+       var d=f.contentDocument;
+       if(!d||!d.documentElement) return;
+@@ -939,21 +943,49 @@ function railFallback(){
+       {menuName:`<#Reaper_c_dashboard#>`, index:'menu_Index', tab:[{url:'Main_ReaperDash.asp',tabName:'__HIDE__'}]},
+       {menuName:`<#menu5#>`, index:'menu_Split', tab:[{url:'NULL',tabName:'__HIDE__'}]},
+       {menuName:`<#menu5_1#>`, index:'menu_Wireless', tab:[{url:'Advanced_Wireless_Content.asp',tabName:`<#menu5_1_1#>`}]},
+-      {menuName:`<#menu5_2#>`, index:'menu_LAN', tab:[{url:'Advanced_LAN_Content.asp',tabName:`<#menu5_2_1#>`}]},
+-      {menuName:`<#menu5_3#>`, index:'menu_WAN', tab:[{url:'Advanced_WAN_Content.asp',tabName:`<#menu5_3_1#>`}]},
++      {menuName:`<#menu5_2#>`, index:'menu_LAN', tab:[{url:'Reaper_LAN.asp',tabName:`<#menu5_2#>`}]},
++      {menuName:`<#menu5_3#>`, index:'menu_WAN', tab:[{url:'Reaper_Internet.asp',tabName:`<#menu5_3_1#>`}]},
+       {menuName:`<#menu5_5#>`, index:'menu_Firewall', tab:[{url:'Reaper_Firewall.asp',tabName:`<#RFW_0#>`}]},
+-      {menuName:`<#menu5_6#>`, index:'menu_Setting', tab:[{url:'Advanced_System_Content.asp',tabName:`<#menu5_6_2#>`}]},
+-      {menuName:`<#System_Log#>`, index:'menu_Log', tab:[{url:'Main_LogStatus_Content.asp',tabName:`<#menu5_7_2#>`}]}
++      {menuName:`<#menu5_6#>`, index:'menu_Setting', tab:[{url:'Reaper_System.asp',tabName:`<#menu5_6_2#>`}]},
++      {menuName:`<#System_Log#>`, index:'menu_Log', tab:[{url:'Reaper_Log.asp',tabName:`<#menu5_7_2#>`}]}
+     ],
+     exclude:{menus:function(){return[];},tabs:function(){return[];}}
+   });
+ }
+-try{
+-  require(['/require/modules/menuTree.js'], function(menuTree){
+-    try{ buildRail(menuTree); }catch(e){ railFallback(); }
+-  }, function(){ railFallback(); });
+-  setTimeout(railFallback, 4000);
+-}catch(e){ railFallback(); }
++/* 2026-10-22: the rail is drawn from the Reaper menu model (www/reaper/menu.js) - one list with every
++   mode/support condition, shared with the dashboard. menuTree.js is fetched as TEXT (review 2026-10-24, Q-C2-2:
++   no require.js, no state.js, no jQuery in the shell any more), only to find the pages Merlin add-ons bound into
++   it: ReaperAddons.fromText lifts them out, they become one menu_Addons entry, and buildRail draws the Add-ons
++   section from it exactly as it did from the loaded module. */
++function railFromModel(addons){
++  var ad=[];
++  if(addons && addons.entries && addons.entries.length)
++    ad=[{menuName:'', index:'menu_Addons', tab:addons.entries.map(function(e){ return {url:e.url, tabName:e.label}; })}];
++  var tree=ReaperMenu.tree();
++  buildRail({list:tree.list.concat(ad), exclude:{menus:function(){return [];}, tabs:function(){return [];}}});
++}
++(function(){
++  var built=false;
++  function go(addons){
++    if(built) return; built=true;
++    try{ railFromModel(addons); }catch(e){ try{ railFromModel(null); }catch(e2){ railFallback(); } }
++  }
++  try{
++    var x=new XMLHttpRequest();
++    x.open('GET','/require/modules/menuTree.js?_='+(new Date()).getTime(),true);
++    x.timeout=6000;
++    x.onreadystatechange=function(){
++      if(x.readyState!==4) return;
++      var res=null;
++      if(x.status===200){ try{ res=ReaperAddons.fromText(x.responseText||''); }catch(e){ res=null; } }
++      go(res);
++    };
++    x.ontimeout=x.onerror=function(){ go(null); };
++    x.send();
++    /* the rail is never blank for long: without an answer by then it is drawn without the add-ons */
++    setTimeout(function(){ go(null); }, 4000);
++  }catch(e){ go(null); }
++})();
+ 
+ /* ---- Firewall rail badge -----------------------------------------------------
+    Until 2026-09-16 this carried the walker's red count on every page and
+@@ -1259,25 +1291,22 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   /* clients + mesh via appGet.cgi (raw XHR, polled) - mirrors the dashboard's
+      working pollClients. httpApi.js is NOT loaded in the shell head, so the old
+      httpApi.hookGet call threw and left these pills blank. */
++  /* review 2026-10-24 (Q-C2-3): both hooks in ONE request, every 30 s, not while the tab is hidden; a tab that
++     comes back polls at once */
+   function pollPills(){
++    if(document.hidden) return;
+     var x=new XMLHttpRequest();
+-    x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(),true);
++    x.open('GET','/appGet.cgi?hook=get_clientlist()%3bget_cfg_clientlist()&_='+(new Date()).getTime(),true);
+     x.onreadystatechange=function(){
+       if(x.readyState!==4||x.status!==200) return;
+-      try{ var j=JSON.parse(x.responseText); var cl=j.get_clientlist||j, ml=cl.maclist||[]; var n=0;
+-        for(var i=0;i<ml.length;i++){var c=cl[ml[i]]; if(c&&String(c.isOnline)==='1')n++;}
+-        $t('p_clients', String(n)); }catch(e){}
++      try{ var j=JSON.parse(x.responseText), cl=j.get_clientlist, cfg=j.get_cfg_clientlist;
++        if(cl){ var ml=cl.maclist||[], n=0; for(var i=0;i<ml.length;i++){var c=cl[ml[i]]; if(c&&String(c.isOnline)==='1')n++;} $t('p_clients', String(n)); }
++        if(cfg&&cfg.length!=null) $t('p_mesh', String(Math.max(0,cfg.length-1))); }catch(e){}
+     };
+     x.send();
+-    var y=new XMLHttpRequest();
+-    y.open('GET','/appGet.cgi?hook=get_cfg_clientlist()&_='+(new Date()).getTime(),true);
+-    y.onreadystatechange=function(){
+-      if(y.readyState!==4||y.status!==200) return;
+-      try{ var j=JSON.parse(y.responseText); var cfg=j.get_cfg_clientlist||j; if(cfg&&cfg.length!=null) $t('p_mesh', String(Math.max(0,cfg.length-1))); }catch(e){}
+-    };
+-    y.send();
+   }
+-  pollPills(); setInterval(pollPills, 10000);
++  pollPills(); setInterval(pollPills, 30000);
++  document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollPills(); });
+ })();
+ </script>
+ </body>
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index bf6766b4b27..520c91f8749 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -84,6 +84,10 @@ define(function(){
+ 					{url: "Reaper_Warden.asp", tabName: "<#RWDN_00#>"},
+ 					/* 2026-10-20: threat domains on their own tab - a resolver answer, not an address drop */
+ 					{url: "Reaper_Dreadwatch.asp", tabName: "<#RDWT_00#>"},
++					/* 2026-10-21: Wallguard, the ad & tracker blocker (one shared table in every dnsmasq) */
++					{url: "Reaper_Wallguard.asp", tabName: "<#RSHD_00#>"},
++					/* 2026-10-21: devices encrypt their DNS to the router (rednsd, DNS-over-TLS) */
++					{url: "Reaper_EncryptedDNS.asp", tabName: "<#RENC_00#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+ 			},
+@@ -656,7 +660,7 @@ define(function(){
+ 								}		
+ 							}
+ 
+-							menuTree.list[i].tab.splice(index, 1);
++							if(index >= 0) menuTree.list[i].tab.splice(index, 1);	/* 2026-10-22: splice(-1) removed the LAST tab when WebProtector was not in the list */
+ 						}
+ 					}
+ 				}
+@@ -1020,7 +1024,7 @@ define(function(){
+ 					retArray.push("Main_IPTStatus_Content.asp");
+ 					retArray.push("Reaper_Conn.asp");
+ 					retArray.push("Advanced_Smart_Connect.asp");
+-					retArray.push("DNSFilter.asp");
++					retArray.push("DNSDirector.asp");	/* 2026-10-22: was "DNSFilter.asp" (no such page), so media bridge showed DNS Director */
+ 				}
+ 
+                 if(isSupport("ark_qoe")){
+@@ -1076,7 +1080,7 @@ define(function(){
+ 
+ 				if(!gobi_support){
+ 					retArray.push("SMS_Inbox.asp");
+-					retArray.push("SMS_New.asp");
++					retArray.push("SMS_Send.asp");	/* 2026-10-22: the tab is SMS_Send.asp */
+ 				}
+ 
+ 				return retArray;
+diff --git a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+index 8b358684694..80d19529e24 100644
+--- a/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/MULTISERVICE_WAN/Advanced_WAN_Content.asp
+@@ -1764,6 +1764,8 @@ function display_upnp_options(){
+ 	document.getElementById("upnp_range_int").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	document.getElementById("upnp_range_ext").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	document.getElementById("upnp_secure_tr").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
++	/* reaper 2026-08-11 (ported to this overlay 2026-10-22 - the overlay is the file that ships): router-service-port protection follows the master UPnP switch */
++	document.getElementById("upnp_protect_svc_tr").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	if (igd2_support) {
+ 		document.getElementById("upnp_pinhole").style.display = (document.form.wan_upnp_enable[0].checked) ? "" : "none";
+ 	} else {
+@@ -3888,12 +3890,13 @@ function change_wizard(o, id){
+ 											</td>
+ 										</tr>
+ 										<tr id="upnp_pinhole">
+-											<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,5);">Enable IGDv2 (IPv6 pinhole support)</a></th>
+-											<td>
+-												<input type="radio" name="upnp_pinhole_enable" class="input" value="1" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "1", "checked"); %>><#checkbox_Yes#>
+-												<input type="radio" name="upnp_pinhole_enable" class="input" value="0" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "0", "checked"); %>><#checkbox_No#>
+-											</td>
+-										</tr>
++								<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,5);">UPnP: Allow IPv6 pinholes (IGD:2 firewall control)</a></th>
++								<td>
++									<input type="radio" name="upnp_pinhole_enable" class="input" value="1" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "1", "checked"); %>><#checkbox_Yes#>
++									<input type="radio" name="upnp_pinhole_enable" class="input" value="0" onclick="display_upnp_options();" <% nvram_match("upnp_pinhole_enable", "0", "checked"); %>><#checkbox_No#>
++									<div style="color:#FFCC00;font-size:11px;margin-top:3px;">Lets IPv6 clients open a firewall hole straight to themselves. IPv4 port mapping and PCP are unaffected by this setting.</div>
++								</td>
++							</tr>
+ 										<tr id="upnp_secure_tr">
+ 											<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,3);">Enable secure UPnP mode</a></th>
+ 											<td>
+@@ -3901,6 +3904,20 @@ function change_wizard(o, id){
+ 												<input type="radio" name="upnp_secure" class="input" value="0" <% nvram_match_x("", "upnp_secure", "0", "checked"); %>><#checkbox_No#>
+ 											</td>
+ 										</tr>
++<!-- reaper 2026-08-11: VUPNP hooks nat/PREROUTING, which is evaluated
++							     before the routing decision, so a UPnP/PCP mapping on one of the
++							     router's OWN inbound ports takes that traffic away from the router
++							     entirely. secure_mode does not help - mapping the VPN port to
++							     yourself IS the attack. Default on; exposed so it can be turned off
++							     if someone deliberately wants a LAN host to take one of these over. -->
++							<tr id="upnp_protect_svc_tr">
++								<th>UPnP: Protect router service ports</th>
++								<td>
++									<input type="radio" name="upnp_protect_svc" class="input" value="1" <% nvram_match_x("", "upnp_protect_svc", "1", "checked"); %>><#checkbox_Yes#>
++									<input type="radio" name="upnp_protect_svc" class="input" value="0" <% nvram_match_x("", "upnp_protect_svc", "0", "checked"); %>><#checkbox_No#>
++									<div style="color:#FFCC00;font-size:11px;margin-top:3px;">Refuses UPnP/PCP requests for the ports this router listens on itself &mdash; OpenVPN, WireGuard, IPSec, SSH and web admin &mdash; so a LAN device cannot intercept inbound traffic meant for the router.</div>
++								</td>
++							</tr>
+ 										<tr id="upnp_range_int">
+ 											<th>UPNP: Allowed internal port range</th>
+ 												<td>
+-- 
+2.25.1
+

@@ -72,10 +72,10 @@ check("usb.c: the directory block is guarded for SAMBA4 and sits inside start_sa
 check("usb.c: guest enrollment result is checked and logged",
       'if (system("echo -e \\"\\n\\n\\" |/usr/bin/smbpasswd -c /etc/smb.conf -s -a nobody") != 0)' in body
       and 'logmessage("Samba Server", "guest account enrollment failed' in body)
+# 40585 base (merge stop 60): ASUS enrolls through fork/pipe/execl (no shell); the log reads waitpid()'s status
 check("usb.c: account enrollment result is checked and logged by name",
-      "if (system(cmd) != 0)" in body
-      and 'logmessage("Samba Server", "account enrollment failed for %s' in body
-      and re.search(r'account enrollment failed for %s[^"]*", char_user\);', body) is not None)
+      re.search(r"waitpid\(_pid, &_st, 0\);(?:\s*/\*.*?\*/)?\s*if \(!WIFEXITED\(_st\) \|\| WEXITSTATUS\(_st\) != 0\)\s*"
+                r'logmessage\("Samba Server", "account enrollment failed for %s[^"]*", char_user\);', body, re.S) is not None)
 leaks = [l for l in body.splitlines()
          if "logmessage(" in l and re.search(r"\b(cmd|suit_passwd|char_passwd|dec_passwd|tmp_ascii_passwd)\b", l)]
 check("usb.c: no log line in start_samba() carries a password buffer", not leaks, leaks)

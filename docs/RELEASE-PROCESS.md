@@ -272,6 +272,7 @@ as the repository owner. First applied 2026-09-12: 166 releases (28 versions,
   only behind the Firmware page's Beta Channel switch, and only when the beta's
   number is higher than the stable line's; the refresh retires a beta line the
   moment the stable line reaches its number. `latest.json` never records a beta.
-- The base pin (`3006.102.8-beta2`, `a7ebfa133a`) never moves. Upstream
-  carry-forwards are cherry-picked, not rebased, so the reproduction recipe
-  stays stable across releases.
+- The base pin (`ca72a61f8bc`, Asuswrt-Merlin 3006.102.10, from v3.6.0; `a7ebfa133a`
+  before) moves only at a deliberate rebase onto a new upstream release
+  (`docs/GPL-MERGE.md`), whose cut regenerates the whole series; between rebases
+  upstream carry-forwards are cherry-picked and the recipe stays stable.

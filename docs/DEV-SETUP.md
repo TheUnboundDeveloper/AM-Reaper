@@ -23,7 +23,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    ```bash
    git clone https://github.com/RMerl/asuswrt-merlin.ng.git
    cd asuswrt-merlin.ng
-   git checkout 3006.102.8-beta2        # the base this fork was built on
+   git checkout ca72a61f8bc             # the base: Asuswrt-Merlin 3006.102.10 (untagged upstream)
    ```
    (Alternatively, ASUS's GPL release tarball for the RT-BE96U from <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 
@@ -179,7 +179,7 @@ The non-obvious parts:
 Format is **`.pkgtb`** (modern Broadcom NAND package), not the older `.trx`.
 
 ### Version label (`BUILDREV`)
-`release/src-rt/Makefile` defaults `BUILDREV` to **empty** and keeps it empty through the exported sub-makes; the brand and version come from `EXTENDNO` in `version.conf` (`EXTENDNO=Reaper_v<X>`). The image is therefore named **`<MODEL>_3006_102.8_Reaper_v<X>…_nand_squashfs.pkgtb`**, with no commit hash in the name. (Older trees defaulted `BUILDREV` to `-reaper`, which the export flipped to `-g<commit>`, giving `…_beta2-g<hash>` names.) The exact source is pinned by the provenance step instead, which records the source tree's hashes (`gen_provenance.sh`).
+`release/src-rt/Makefile` defaults `BUILDREV` to **empty** and keeps it empty through the exported sub-makes; the brand and version come from `EXTENDNO` in `version.conf` (`EXTENDNO=Reaper_v<X>`). The image is therefore named **`<MODEL>_3006_<SERIALNO>_Reaper_v<X>…_nand_squashfs.pkgtb`** (`SERIALNO` from `version.conf`: `102.10` from v3.6.0), with no commit hash in the name. (Older trees defaulted `BUILDREV` to `-reaper`, which the export flipped to `-g<commit>`, giving `…_beta2-g<hash>` names.) The exact source is pinned by the provenance step instead, which records the source tree's hashes (`gen_provenance.sh`).
 > Edit the **real** `release/src-rt/Makefile`, not the per-platform `Makefile` (it's a symlink — editing through the link shows no git diff).
 
 ---

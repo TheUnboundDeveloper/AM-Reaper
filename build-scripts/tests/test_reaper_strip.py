@@ -35,7 +35,8 @@ import reaper_strip as RS   # noqa: E402
 www = os.path.join(SRC, "www")
 files = RS.reaper_files(www)
 check("the stripper finds Reaper's pages, scripts and stylesheets (and no stock file)",
-      len(files) >= 50 and all(os.path.basename(f).lower().startswith(("reaper", "main_reaperdash", "rp.", "menu.", "internet_speed_reaper"))
+      # fit. = www/reaper/fit.js (2026-10-26, translated labels that do not fit), Reaper's own kit folder
+      len(files) >= 50 and all(os.path.basename(f).lower().startswith(("reaper", "main_reaperdash", "rp.", "menu.", "fit.", "internet_speed_reaper"))
                                for f in files), [os.path.basename(f) for f in files][:80])
 
 work = tempfile.mkdtemp(prefix="rstrip_")

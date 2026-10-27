@@ -26,7 +26,7 @@ def check(name, cond, detail=""):
 
 # ---- httpd
 check("reaper_logf.cgi is registered behind do_auth",
-      re.search(r'\{ "reaper_logf\.cgi\*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_logf_cgi, do_auth \}', web))
+      re.search(r'\{ "reaper_logf\.cgi\*", "application/json", no_cache, do_html_post_and_get, do_reaper_logf_cgi, do_auth \}', web))
 m = re.search(r'\ndo_reaper_logf_cgi\(char \*url, FILE \*stream\)\n\{(.*?)\n\}\n', web, re.S)
 body = m.group(1) if m else ""
 check("the handler refuses anything without the token before reading an action", body.find("reaper_gate()") >= 0 and
@@ -37,8 +37,10 @@ check("the list is read without following a link (rview_slurp, bounded)", "rview
 check("the file is /jffs/reaper/logfilter, 64 entries of 128", '#define RLOGF_FILE\t"/jffs/reaper/logfilter"' in web and
       re.search(r'#define RLOGF_MAX\t64\b', web) and re.search(r'#define RLOGF_LINE\t128\b', web))
 check("the settings file carries it: table row, export, validated import",
-      '{ "log",    "rlog_filter",     RLOGF_BYTES }' in web and web.count('!strcmp(rcfg_flags[i].nv, "rlog_filter")') == 3 and
-      "if (!v || rlogf_ok(v) != 0) { rejected++; continue; }" in web)
+      # 2026-10-27: export / import go through rcfg_get / rcfg_put
+      '{ "log",    "rlog_filter",     RLOGF_BYTES }' in web and "rview_slurp(RLOGF_FILE, RLOGF_BYTES)" in web and
+      'if (!strcmp(nv, "rlog_filter"))\t/* 2026-10-26: multi-line, its own gate */' in web and
+      'return (rlogf_ok(v) != 0 || (*v ? rjf_set(RLOGF_FILE, v, "log") != 0 : (unlink(RLOGF_FILE), 0))) ? -1 : 0;' in web)
 
 v = re.search(r'\nstatic int rlogf_ok\(const char \*v\)\n\{.*?\n\}\n', web, re.S)
 check("rlogf_ok() found", v)
@@ -91,7 +93,7 @@ check("a line shows with ANY Find word; any Exclude or saved word hides it",
 check("the saved list and the built-in list apply to the System log only, and only while ticked",
       "var keep = view === 'sys' && q('c_lfon').checked" in page)
 check("the page sends the token with every request to reaper_logf.cgi",
-      "f.append('http_id', HID);" in page and "'/reaper_logf.cgi'" in page and "var HID = '<% nvram_get(\"http_id\"); %>';" in page)
+      "f.append('http_id', HID);" in page and "'/reaper_logf.cgi'" in page and "var HID = <% nvram_get_js(\"http_id\"); %>;" in page)
 check("the page checks the limits before sending", "list.length > LFMAX" in page and "s.length > LFLEN" in page)
 check("the page stays ASCII", all(ord(ch) < 128 for ch in page))
 

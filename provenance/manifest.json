@@ -2,16 +2,31 @@
   "description": "Build provenance for the RT-BE Series 'Reaper' firmware. Each published image is traceable to an exact, independently-reproducible source tree: apply the published patch series onto the pinned upstream base, then hash release/src/router. The CI workflow .github/workflows/verify-provenance.yml reproduces every 'verifiable' entry on each run.",
   "base": {
     "project": "Asuswrt-Merlin",
-    "tag": "3006.102.8-beta2",
-    "commit": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+    "tag": "3006.102.10 (untagged upstream; git describe 3006.102.9-54-gca72a61f8bc)",
+    "commit": "ca72a61f8bc5ef920e29d63d53d9864262208f0c",
     "upstream": "https://github.com/RMerl/asuswrt-merlin.ng",
     "source_tree": {
-      "release/src/router": "91ac46a9fde7714dbed651d02c04898b4e134be0",
-      "release/src-rt": "3de97a56ffbfb82625b1bb8929c3c70da9dc9c80"
+      "release/src/router": "96c37d854f74382786cf1814aea3436e47ad9b2b",
+      "release/src-rt": "574c0af7892967aeb7b78f8408efb476b91590f7"
     },
-    "note": "The base pin never moves. Reaper changes are carried as the patches/ series, and upstream carry-forwards (e.g. Merlin 3006.102.8 -> v2.1.2) are cherry-picked, NOT rebased, so this base stays constant and the reproduction recipe below is stable across releases.",
+    "note": "From v3.6.0 the base is Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585). The base moves only at a deliberate rebase onto a new upstream release, whose cut regenerates the whole patches/ series from the new base (v3.6.0: 857 patches, numbered from 0001); between rebases upstream carry-forwards are cherry-picked into the series and this base stays constant. A release built on an earlier base names it in its own \"base\" field and is reproduced from its series_ref (previous_bases).",
     "series_note": "Applying the published patches/ series from this base reproduces every release's source. Two hashes are recorded per release: source_tree is the tree of the build commit on the RT-BE96U branch (what the firmware was actually built from); source_tree_from_series is what `git am --keep-cr patches/[0-9]*.patch` onto this base yields. They differ ONLY by three vendored openssh-sftp documentation files (README.md, SECURITY.md, .github/ci-status.md) that the series' *.md doc-hunk exclusion strips; no source or code file differs, and release/src-rt is identical. CI (verify-provenance.yml) checks source_tree_from_series."
   },
+  "previous_bases": [
+    {
+      "project": "Asuswrt-Merlin",
+      "tag": "3006.102.8-beta2",
+      "commit": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "upstream": "https://github.com/RMerl/asuswrt-merlin.ng",
+      "source_tree": {
+        "release/src/router": "91ac46a9fde7714dbed651d02c04898b4e134be0",
+        "release/src-rt": "3de97a56ffbfb82625b1bb8929c3c70da9dc9c80"
+      },
+      "releases": "v1.0 - v3.5.0",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315",
+      "note": "The series for every release on this base is this repository's patches/ at commit series_ref (v3.5.0): apply its first patch_count patches with git am --keep-cr onto this commit."
+    }
+  ],
   "toolchain": {
     "host": "Ubuntu 20.04 (WSL2)",
     "cross": "am-toolchains crosstools gcc-10.3 (BCM4916 userspace, 32-bit ARM)",
@@ -20,6 +35,34 @@
   },
   "reproduce": "git clone https://github.com/RMerl/asuswrt-merlin.ng && cd asuswrt-merlin.ng && git checkout a7ebfa133a && git am --keep-cr /path/to/patches/0001-*.patch .. /path/to/patches/<NNNN>-*.patch && git rev-parse HEAD:release/src/router  # == the release's source_tree['release/src/router']",
   "releases": [
+    {
+      "version": "v3.6.0",
+      "firmware": "3006.102.10_Reaper_v3.6.0",
+      "build_commit": "0ed63f725b",
+      "source_tree": {
+        "release/src/router": "ad4c92e8efffc2a93c1f652c884bcf159a46a73a",
+        "release/src-rt": "8c2246ed704f11e628f8f1da1a31a3964896fa23"
+      },
+      "source_tree_from_series": {
+        "release/src/router": "4001857aa9c8979ebfa03b08dc0bceb69cb96170",
+        "release/src-rt": "8c2246ed704f11e628f8f1da1a31a3964896fa23"
+      },
+      "images": [],
+      "patch_count": 857,
+      "verifiable": true,
+      "models": [
+        "RT-BE96U"
+      ],
+      "date": "2026-10-27",
+      "parent": "v3.5.0",
+      "summary": "The rebase onto Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585): the series regenerated from base ca72a61f8bc (857 patches, numbered from 0001; the C6 asus_openssl_crypt and H6/M2 IPsec fixes and the miniupnpd 2.3.10 carry now come from upstream). The 40585 libnvram/libwlcsm pair (nvram_set caller check: a shell nvram set of sshd_enable/sshd_port/sshd_pass/sshd_authkeys/ookla_quota is refused); OpenVPN server-certificate repair on Easy-RSA 3; SERIALNO 102.10. Post-v3.5.0: custom-script output kept (/tmp/reaper/script-<name>.log, failures logged), Wallguard and Dreadwatch removable lists + own/API sources, Bastion menu (the four tools independent), WAN 802.1Q only with mswan support, backups carry every option and keep the DDNS hostname, browser cache bust, nvram_get_js escaping, translated labels fit, Wireless Log boxes per network. Rebase fixes: seven stock pages Reaper deletes stay deleted, four shipped pages keep their Reaper edits, the multi-WAN DNS check, isValidMacAddress() refuses non-MAC characters (AiMesh event gates), the speed-test tab, rwatch stands down during an upgrade, tfs_linux only where it exists, innerver follows the running image. Metal: the owner's RT-BE96U ran the merged tree as test images _gm40585/_gm40585_r2; v3.6.0_BETA_r1 verify 38/1/0.",
+      "models_note": "Overlays re-proven against the new series: all seven active ones apply. GT-BE98_PRO.patch lost three obsolete top-level rc/prebuild/*.o hunks (40585 stages rc/prebuild/<MODEL>/ at build time); RT-BE88U.patch's target.mak hunk was regenerated onto upstream's new RT-BE88U block. The sibling port branches stay on the old base until their next port. CI's vendor-blob step chooses per model: the base's 40585 pair where the model's spwenc.o has the caller check, the 42015 archive for GT-BE98, GT-BE19000, BQ16 and BQ16 Pro. Images for every model come from the public CI matrix after Dev is pushed.",
+      "logs": {
+        "build": "provenance/logs/v3.6.0/build-rt-be96u.summary.log",
+        "verify": "provenance/logs/v3.6.0/reaper_verify-rt-be96u.log"
+      },
+      "base": "ca72a61f8bc5ef920e29d63d53d9864262208f0c"
+    },
     {
       "version": "v3.5.0",
       "firmware": "3006.102.8_Reaper_v3.5.0",
@@ -41,7 +84,9 @@
       "date": "2026-10-26",
       "parent": "v3.4.9",
       "summary": "Fourteen patches (0879-0892). d4b1ba6c25 wallguard: lock_wait polls flock -n (BusyBox flock has no -w: every v3.4.9 build and fold lock failed), rwarden's four counter locks the same; the TIF preset on tif.medium.txt; warden_why (a list server RW_SELF drops: country / ban / threat + address in the log, state and the list's row); dns_bypass (port-53 DNAT targets that are not the router, the page's banner); the build log's table total. 063b226ca4 amaspark: the carrier hold only on radios whose primary is up (a parked primary read its client VIFs down: a park/hold loop), scheduled radios never parked; the parking card reads amas_bh_state encoded. 93722c9fef Security Review: one bar for ticked rows, the rules as a list (delete / delete selected / delete all / add); rwatch 3g2 clears other-write on /jffs/nvram files each tick. f9d5f492f4 System Log: Find / Exclude comma lists, saved exclusions via reaper_logf.cgi (http_id gate, rlogf_ok 64 x 128, /jffs/reaper/logfilter 0600, in the settings file). 19ad86abca LAN > VLAN: stock's mtlancfg test, the pages ship, no bounce rows. 9d2af93913 reaper_diag v1.3.50. From Asuswrt-Merlin (Eric Sauvageau), unchanged: 7c9264f205 miniupnpd MX 0 (da326375b16, Thomas Bernard; compiled out here), 0365474205 urlfilterd bounds (d7c6a53e440, ASUS GPL 102_40585; daemon not started), 32f4b56e96 CA bundle (ea5483e5207), 6addfbe501 wanduck CLOEXEC (ba476c59af1, Jacopo Labardi), 47e76f7400 SDN TCP 53 (e26fc8f4d78, dave14305) + Reaper's IPv6 rule, 31bde04667 openssl35 no-ssl2 (9e53d766f86). 11d358e7d6 25 packs (32 tokens each). d40a320e72 bump. Metal: the owner's RT-BE96U ran this content as test images _r40-_r43; _r43 read back over the lab session 2026-10-26 (CA store verifies, SDN TCP 53 rule present, wanduck sockets not inherited, no crash).",
-      "models_note": "No separate cut build: the content is the RT-BE96U test image _r43 (verify 39/0/0, on the owner's router 2026-10-26) with only the version string changed, so no image is attached here. Images for every model come from the public CI matrix after Dev is pushed. All changes are shared code except the urlfilterd fix, which lives in the RT-BE96U platform tree; all seven branches ported with 0 unsynced shared files. No overlay overlap (no identity file touched). Wallguard stays off by default."
+      "models_note": "No separate cut build: the content is the RT-BE96U test image _r43 (verify 39/0/0, on the owner's router 2026-10-26) with only the version string changed, so no image is attached here. Images for every model come from the public CI matrix after Dev is pushed. All changes are shared code except the urlfilterd fix, which lives in the RT-BE96U platform tree; all seven branches ported with 0 unsynced shared files. No overlay overlap (no identity file touched). Wallguard stays off by default.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.9",
@@ -64,7 +109,9 @@
       "date": "2026-10-25",
       "parent": "v3.4.8",
       "summary": "Twenty-two patches (0857-0878). b4a0678f5b shared: reaper_store_io.h (the one no-follow writer for the long-term store), reaper_private_dir, the Wallguard / rednsd / reaper_nx tmp dirs, reaper_write_changed, defaults (every new feature off). e87d8b0823 iptables: libipt_TRIGGER.c + ipt_TRIGGER.h and libipt_webstr.c restored (Port Trigger made the nat restore fail, the URL filter the filter restore). 4116e91c95 dnsmasq: --wallguard-dir (Wallguard's gate, CNAME chain, policy, safe search, entry-only records) and --reaper-nx-db (Dreadwatch's names in one shared mapped table), rednsd's client option believed from loopback only. fe299de645 wallguard/: wallguardc, wallguard.sh (pending refetch, 96 MB RAM cap, detached history writer), rstore, the services catalog; router Makefile. b9cef6b140 dreadwatch/: the frozen ThreatFox snapshot. 19f0173aad + 7ccdc015cb rednsd/: the DoT server, encdns.sh (/24 and /48 floors, IPv6 cap), the DoH names and the resolver seed. 19db306d3c rc: wallguard.c, encdns.c, the dnsmasq lines, REAPER_EDNS, the one-time carry-over of the earlier test name, ASUS DDNS switched off once, DoQ through DNS Director. af411e1bbf rc: Dreadwatch free lists + one table + priority limit, the DDNS/Let's Encrypt whitelist, Security Review protection rows (adopt / retire), _nvs, rstore everywhere. 20104dfe00 amaspark: carriers held up while a client network is down (Wireless Scheduler). 649a0b11da rc: pc.c fftype, IPsec key folders 0700, bcrelay, MPPE refusals, WireGuard peer rule. 6313e5d775 Samba quiet. 4f84fb233c rtrafd via the store writer. fb48dc08bc httpd: the native pages' CGIs (secrets masked), apply = POST, the HTTP cross-site guard, one page table, ack_many, UPnP description escaping. 9923c7d608 reaper_diag v1.3.46-v1.3.49. eb9912b479 the page kit + menu model. ab249481f6 27 native pages. 1e96c0bec8 Wallguard and Encrypted DNS tabs. 053087dce8 existing pages: bulk select, sorting, Gatekeeper connection type, Connections panel, Roaming Assistant off, shell framing. 2a24aec737 66 replaced stock pages unshipped (bounced), orphans deleted, comment strip, buildFS prune (~2 MB). 15efb01bf2 25 packs (1,425 added, 78 removed, 2 reworded, lockstep 8850). 03e52ff8b2 bump. Metal: the owner's RT-BE96U ran the rung's content as test images _r12-_r39; _r39 read back over the lab session 2026-10-25 (every fix present, Wallguard / Encrypted DNS inert when off); its one finding (the Security Review listing the earlier test name's setting as removed) is fixed in af411e1bbf.",
-      "models_note": "No local cut build this time (owner: compile check only - every changed package cross-compiled, the full lean suite and the static, CSRF and marker checks pass; the same content ran on the owner's RT-BE96U as _r39). Images for every model come from the public CI matrix after Dev is pushed. All changes are shared code ported onto all seven branches (0 unsynced shared files each). Main_ReaperDash.asp and reaper_shell.asp overlap every overlay, so the seven roster overlays were regenerated (2 identity lines each; identity and shape gates pass); the dormant RT-BE92U overlay is left alone. Wallguard, Encrypted DNS and its block are off by default."
+      "models_note": "No local cut build this time (owner: compile check only - every changed package cross-compiled, the full lean suite and the static, CSRF and marker checks pass; the same content ran on the owner's RT-BE96U as _r39). Images for every model come from the public CI matrix after Dev is pushed. All changes are shared code ported onto all seven branches (0 unsynced shared files each). Main_ReaperDash.asp and reaper_shell.asp overlap every overlay, so the seven roster overlays were regenerated (2 identity lines each; identity and shape gates pass); the dormant RT-BE92U overlay is left alone. Wallguard, Encrypted DNS and its block are off by default.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.8",
@@ -91,7 +138,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.8/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.8/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.7",
@@ -118,7 +167,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.7/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.7/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.6",
@@ -145,7 +196,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.6/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.6/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.5",
@@ -172,7 +225,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.5/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.4",
@@ -199,7 +254,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.4/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.3",
@@ -226,7 +283,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.2",
@@ -253,7 +312,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.2/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.4.0",
@@ -280,7 +341,9 @@
       "logs": {
         "build": "provenance/logs/v3.4.0/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.4.0/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.9",
@@ -307,7 +370,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.9/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.9/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.8",
@@ -334,7 +399,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.8/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.8/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.7",
@@ -361,7 +428,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.7/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.7/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.6",
@@ -388,7 +457,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.6/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.6/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.5",
@@ -415,7 +486,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.5/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.4",
@@ -442,7 +515,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.4/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.3",
@@ -469,7 +544,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.2",
@@ -496,7 +573,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.2/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.1",
@@ -523,7 +602,9 @@
       "logs": {
         "build": "provenance/logs/v3.3.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.3.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.3.0",
@@ -546,7 +627,9 @@
       "date": "2026-09-29",
       "parent": "v3.2.9",
       "summary": "Five patches (0727-0731). 0cdd3aa46b pppd 2.4.7: CVE-2026-85495 (GHSA-frhv-j822-2pvx, lcp_reqci NAK buffer overrun, pre-auth) ported from ppp 2.5.4 (one pass per option type, NAK reset on reject, CONFREJ past PPP_MRU - 8) and GHSA-j686-vmph-4m7c (short MS-CHAP challenge -> empty response; ascii2unicode clamp). 52f4462149 strongSwan 6.0.4: the seven official 5.x-6.0.7 patches as-is (CVE-2026-78123, -78124, -78129, -78130, -78131, -78132, -78134), 13 files. 3459114fbc Tor 0.4.9.12 -> 0.4.9.13 from the signature-verified tarball (64 files incl. regenerated configure and the tracked orconfig.h.in~). e06a2475e2 Reaper: every Gatekeeper apply.sh (gkd self-heal with an armed re-check under the lock, IPv6 re-apply, failed-rule retry, sdnfi.sh; rc start_gk/gk_refresh) runs under file_lock(\"firewall\") - a gkd heal racing start_firewall's tail interleaved REAPER_GKF and dropped an SDN_FF bridge ACCEPT (field, RT-BE96U); reaper_fwsim 1.8 WAN source/destination pickers test every set rule instead of the first 32 set names (field, RT-BE86U: rw_threat hidden behind country sets). 03d5e527a6 version bump. Code built and verified (reaper_verify 34/34) on RT-BE96U MCP test images v3.2.9_BETA r1-r3 before the cut; on r3 a forced restart_firewall over the lab exec left REAPER_GKF 126 rules with no duplicates, the SDN_FF bridge rule present, failcount 0 and Rule Status 0 red. No local cut image; the release images come from CI.",
-      "models_note": "Patches 0727-0731 touch shared code only (pppd, strongswan, tor, gkd, rc, reaper_fwsim, version.conf). No roster overlay needed regenerating; all six pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, dormant RT-BE92U 11) and the hidden-character scan is clean. All five roster siblings report post-commit parity 0 with canon, dicts in lockstep, at EXTENDNO Reaper_v3.3.0 (rt-be86u 03ee3b4f32, rt-be88u 3b33979594, gt-be98 97832fd0ff, gt-be98-pro 06f2b29ca6, gt-be19000 e5e7d6ffe2). GT-BE19000 remains a prerelease model by design; RT-BE92U stays dormant off the roster."
+      "models_note": "Patches 0727-0731 touch shared code only (pppd, strongswan, tor, gkd, rc, reaper_fwsim, version.conf). No roster overlay needed regenerating; all six pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, dormant RT-BE92U 11) and the hidden-character scan is clean. All five roster siblings report post-commit parity 0 with canon, dicts in lockstep, at EXTENDNO Reaper_v3.3.0 (rt-be86u 03ee3b4f32, rt-be88u 3b33979594, gt-be98 97832fd0ff, gt-be98-pro 06f2b29ca6, gt-be19000 e5e7d6ffe2). GT-BE19000 remains a prerelease model by design; RT-BE92U stays dormant off the roster.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.9",
@@ -587,7 +670,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.9/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.9/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.8",
@@ -610,7 +695,9 @@
       "date": "2026-09-27",
       "parent": "v3.2.7",
       "summary": "Five patches (0718-0722). 87e49b23cd kernel CVE-2026-90110: inetpeer tree ordered by raw address, mainline SipHash ordering backported to 4.19.294 (siphash_key_t, call sites hand-applied). a9c4c74570 strongSwan 6.0.4: CVE-2026-78127 (message.c enumerator leak on a truncated log line), CVE-2026-78135 (CREATE_CHILD_SA on an unestablished IKE_SA before EAP), CVE-2026-78133 (use-after-free after a failed passive multi-KE rekey collision), upstream 6.1.0 hunks; IPsec server ships off. 2581f3a4a7 wanduck: REAPER_SWITCH_HOLDOFF 30 s after switch_wan_line (timestamp at the end of the switch, cleared in the fo/fb CONNED blocks, USB-unplugged bypass, one logmessage per switch) against the boot-time line-switch ping-pong (field GT-BE98); plus nine stock defects: do_dns_detect child return escaping the fork and a signed/unsigned short read, do_backup_ping_detect getaddrinfo leak, do_ping_detect IPv6 exemption requiring inet_pton, run_http_serv/parse_dst_url/handle_http_req buffer terminators and a negative index, send_page dut_port[6], idle redirect clients swept after 30 s. e05f804be1 Reaper: static preamble puncturing (rc/reaper_punct.c applier, wlN_punct, wl eht dissubchan), dynamic controller rpunctd (timed chanim_stats windows, hold/gain/interval gates, presets, confirmation scan, blacklist/fallback, belief file reconciled by the rwatch tick), front-chain narrowness from rc/reaper_hook.h (FORWARD: destination only; RETURN in a user chain not a bypass), detached fwsim worker for Rule Status, hidden menu anchors for Skynet/MerlinAU/YazFi, diag v1.3.22/v1.3.23, wlcsm_bindfix default removed, 39 tokens x 25 packs. 83fb6c3f73 version bump. The code was built and verified (reaper_verify 34/34) on RT-BE96U MCP test images v3.2.7_BETA r5-r8 before the cut; no local v3.2.8 image is recorded, release images come from the CI build.",
-      "models_note": "Patches 0718-0722 touch shared code only (kernel inetpeer, strongSwan, rc, rpunctd, httpd, www, dicts, version.conf); the overlays differ from the regenerated set only in blob-hash index lines, so none was rewritten, and all six pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, and the dormant RT-BE92U 11); the hidden-character scan is clean. All five roster siblings report post-commit parity 0 with canon, dicts in lockstep, at EXTENDNO Reaper_v3.2.8 (rt-be86u 7695a99ca1, rt-be88u 7db003c165, gt-be98 26ea146b32, gt-be98-pro 3bd1e357c2, gt-be19000 b051fc4d1d). GT-BE19000 remains a prerelease model by design; RT-BE92U stays dormant off the roster."
+      "models_note": "Patches 0718-0722 touch shared code only (kernel inetpeer, strongSwan, rc, rpunctd, httpd, www, dicts, version.conf); the overlays differ from the regenerated set only in blob-hash index lines, so none was rewritten, and all six pass the identity gate (RT-BE86U 13 files, RT-BE88U 21, GT-BE98 19, GT-BE98_PRO 24, GT-BE19000 12, and the dormant RT-BE92U 11); the hidden-character scan is clean. All five roster siblings report post-commit parity 0 with canon, dicts in lockstep, at EXTENDNO Reaper_v3.2.8 (rt-be86u 7695a99ca1, rt-be88u 7db003c165, gt-be98 26ea146b32, gt-be98-pro 3bd1e357c2, gt-be19000 b051fc4d1d). GT-BE19000 remains a prerelease model by design; RT-BE92U stays dormant off the roster.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.7",
@@ -651,7 +738,9 @@
         "build": "provenance/logs/v3.2.7/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.7/reaper_verify-rt-be96u.log"
       },
-      "channel": "beta"
+      "channel": "beta",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.6",
@@ -692,7 +781,9 @@
         "build": "provenance/logs/v3.2.6/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.6/reaper_verify-rt-be96u.log"
       },
-      "channel": "beta"
+      "channel": "beta",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.5",
@@ -733,7 +824,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.5/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.4",
@@ -756,7 +849,9 @@
       "date": "2026-09-22",
       "parent": "v3.2.3",
       "summary": "A Policy Routing source rule to a WireGuard client target now carries the replies home. rc/reaper_pbr.c: the rule marked the flow's first packet and saved the mark on the conntrack entry as intended, but the REAPER_PBR PREROUTING jump has no -i, so the REPLY arriving on wgcN had the same mark restored and was routed by lookup wgcN; under MULTILAN_CFG that table holds only 0/1 and 128/1 dev wgcN with no LAN route, so the reply went back into the tunnel. The chain now opens with -m conntrack --ctdir REPLY -j RETURN in both families, ahead of the restores and the trailing --save-mark (scoping only the restores would let an unmarked reply save 0 over the flow's verdict); replies route by main, as VPN Director's do, and wgcN rp_filter is loose. OpenVPN targets (their tables carry the LAN route) and VPN Director (its from <src> rule never matches a reply) were unaffected. reaper_fwsim models --ctdir, so the new rule is a modelled row. Root cause from a tester capture on an RT-BE86U; reproduced in a network-namespace model (without the rule 0/10 pings answered, with it 10/10). Metal confirmation from the reporter owed. No local image was built for this rung; it ships inside v3.2.5.",
-      "models_note": "Patches 0699-0700 touch 3 files: rc/reaper_pbr.c, reaper_fwsim/reaper_fwsim.c and release/src-rt/version.conf. None of them overlaps a model overlay, so the six overlay files are unchanged and pass the identity gate. All five roster siblings were ported at EXTENDNO Reaper_v3.2.4 (rt-be86u 94df18d117, rt-be88u 7bdc57663c, gt-be98 37439c3afd, gt-be98-pro 6fcdc85b2a, gt-be19000 8dafcae5b4). The sibling branches still carry the port add/rename/delete gap recorded in the backlog (tor1_crypt_st.h, openssl-3.5 files, stale www); the CI build is unaffected because it assembles each model from the series plus its overlay."
+      "models_note": "Patches 0699-0700 touch 3 files: rc/reaper_pbr.c, reaper_fwsim/reaper_fwsim.c and release/src-rt/version.conf. None of them overlaps a model overlay, so the six overlay files are unchanged and pass the identity gate. All five roster siblings were ported at EXTENDNO Reaper_v3.2.4 (rt-be86u 94df18d117, rt-be88u 7bdc57663c, gt-be98 37439c3afd, gt-be98-pro 6fcdc85b2a, gt-be19000 8dafcae5b4). The sibling branches still carry the port add/rename/delete gap recorded in the backlog (tor1_crypt_st.h, openssl-3.5 files, stale www); the CI build is unaffected because it assembles each model from the series plus its overlay.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.3",
@@ -783,7 +878,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.2",
@@ -810,7 +907,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.2/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.1",
@@ -837,7 +936,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.2.0",
@@ -864,7 +965,9 @@
       "logs": {
         "build": "provenance/logs/v3.2.0/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.2.0/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.9",
@@ -905,7 +1008,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.9/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.9/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.8",
@@ -946,7 +1051,9 @@
         "build": "provenance/logs/v3.1.8/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.8/reaper_verify-rt-be96u.log"
       },
-      "channel": "beta"
+      "channel": "beta",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.7",
@@ -973,7 +1080,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.7/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.7/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.6",
@@ -1000,7 +1109,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.6/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.6/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.5",
@@ -1027,7 +1138,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.5/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.4",
@@ -1050,7 +1163,9 @@
       "date": "2026-09-12",
       "parent": "v3.1.3",
       "summary": "An OpenVPN server can be created again, DDNS stops restarting itself, and the GT-BE19000 joins the fleet. Since the OpenSSL 3.5 move in v3.1.0 every server certificate came out as a key with no certificate: pkitool put -extensions server on the certificate REQUEST, whose [server] section carries an authorityKeyIdentifier that cannot be computed without an issuer; OpenSSL 3.x refuses the request and the signing step is never reached. The extensions now go only on the signing call (openssl ca never copied request extensions), and the repair path keeps its output and names the failing stage. DDNS: a dual-WAN router with IPv6 only on the secondary WAN failed the per-WAN address test on every run, which cleared ddns_ipv6_updated, which kept the watchdog's early return from ever being taken - a 30 s restart loop for the life of the boot; it now records the state (ddns_ipv6_absent), stands down, and wan6_up() clears it. The EDNS Client Subnet option is removed end to end. GT-BE19000: the 46 missing per-model directories, radio firmware for both chips (6717a0 + 6726b0) from the non-AI vendor image after an AI-image misread was retracted, its own rtl8372 and platform archives, a derived 12-file identity overlay, reaper_verify 27/27, on the CI roster as a prerelease. cut_fleet's dict guard now references canon's previous version commit instead of a merge base frozen at v1.5.0d, so a deliberately deleted key no longer blocks every port.",
-      "models_note": "Cut on RT-BE96U (be96u-only) and ported to FIVE sibling branches - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and, for the first time, GT-BE19000 - with port_sibling_v2 guards passing and 0 unsynced shared files on every one; all 25 dicts byte-identical to canon on every branch (6729 keys, lockstep). No patch in 0649-0652 overlaps any overlays/<MODEL>.patch, so every sibling takes the rung from the series; all five overlays regenerated unchanged, including GT-BE19000's first one. New in overlays/ for this rung: GT-BE19000.patch (12 files), GT-BE19000-platform.tar.gz (1288 files, both radio blobs - the pinned upstream carries no router-sysdep.gt-be19000, as it carries none for GT-BE98) and uboot-rtl8372-GT-BE19000.tar.gz, each with its sha256."
+      "models_note": "Cut on RT-BE96U (be96u-only) and ported to FIVE sibling branches - RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro and, for the first time, GT-BE19000 - with port_sibling_v2 guards passing and 0 unsynced shared files on every one; all 25 dicts byte-identical to canon on every branch (6729 keys, lockstep). No patch in 0649-0652 overlaps any overlays/<MODEL>.patch, so every sibling takes the rung from the series; all five overlays regenerated unchanged, including GT-BE19000's first one. New in overlays/ for this rung: GT-BE19000.patch (12 files), GT-BE19000-platform.tar.gz (1288 files, both radio blobs - the pinned upstream carries no router-sysdep.gt-be19000, as it carries none for GT-BE98) and uboot-rtl8372-GT-BE19000.tar.gz, each with its sha256.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.3",
@@ -1092,7 +1207,9 @@
         "verify": "provenance/logs/v3.1.3/reaper_verify-rt-be96u.log"
       },
       "channel": "beta",
-      "images_note": "The ladder already held an unmarked v3.1.3_BETA image built 2026-09-10 23:20, before the policy-routing and rwatch corrections that finished this rung, so the ship step staged today's build under the next free _r1 rather than overwriting it. The _r1 pair is THIS rung's image - built from 4046485fc8, reaper_verify 27/27 - and the earlier one is kept only because the ladder never overwrites. Do not read the unmarked name as the newer image."
+      "images_note": "The ladder already held an unmarked v3.1.3_BETA image built 2026-09-10 23:20, before the policy-routing and rwatch corrections that finished this rung, so the ship step staged today's build under the next free _r1 rather than overwriting it. The _r1 pair is THIS rung's image - built from 4046485fc8, reaper_verify 27/27 - and the earlier one is kept only because the ladder never overwrites. Do not read the unmarked name as the newer image.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.2",
@@ -1133,7 +1250,9 @@
         "build": "provenance/logs/v3.1.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.2/reaper_verify-rt-be96u.log"
       },
-      "channel": "beta"
+      "channel": "beta",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.1",
@@ -1173,7 +1292,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.1.0",
@@ -1205,7 +1326,9 @@
       "logs": {
         "build": "provenance/logs/v3.1.0/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.1.0/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.0.9",
@@ -1237,7 +1360,9 @@
       "logs": {
         "build": "provenance/logs/v3.0.9/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.0.9/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.0.7",
@@ -1269,7 +1394,9 @@
       "logs": {
         "build": "provenance/logs/v3.0.7/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v3.0.7/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v3.0.0",
@@ -1292,7 +1419,9 @@
       "date": "2026-08-31",
       "parent": "v2.8.8",
       "summary": "The v3.0.0 milestone: the release rung that consolidates the whole window since v2.8.8 (patches 0564-0593, 30 patches) into the first 3.x line. Four themes. (1) Backup & Restore, rebuilt: a single Reaper-native master panel (Reaper_Backup.asp) absorbs the stock Restore/Save/Upload page, factory reset, and the JFFS save/restore into one theme-centric page; the stock Administration page is removed; the one-file .rbk full backup/restore is now reachable as 'Complete restore' from the landing banner, and the parser defect that silently dropped the TLS-buffered POST tail - the root cause of every failed metal restore since v2.7.2 - is fixed (owner-confirmed both restore modes now work on hardware). A full 24-language i18n review plus a spelling pass rides along. (2) First-boot hardening finalised: the QIS/setup-wizard gate is retired for the un-dismissable SecBanner + state.js flow; factory Wi-Fi is open again by owner decision with a working credential-change path (the do_chpass http_id contract, centralised in httpApi.chpass); the dedicated Reaper_FirstBoot.asp page is retired and its deletion propagated to all five sibling branches so no overlay carries an orphaned page. (3) Upstream alignment from Asuswrt-Merlin 3006.102.9 (Eric 'Merlin' Sauvageau): two OpenSSL 1.1.1 CVE backports, the kernel Brahma-B53 Spectre/Meltdown mitigation whitelists, Tor 0.4.9.11, an IPv6-LAN-through-Tor redirect, and four staged 3006.102.9 pull-forwards. (4) Release-gate work: an adversarial security review of the window remediated four actionable findings, and a regression framework was added - reaper_static_checks.py (dict-lockstep, ASCII, control-byte, brace-parity, macro-continuation) wired into reaper_verify, plus a hardened reaper_csrfcheck.py. Field fixes across the window: AiMesh node search, restore lockout, Apply-button correctness, Firewall Status posture completeness, Service Intercept, rtrafd cadence and rail-clock convergence, the DNS-self-feed loop, and the stubby DoT crash-restart. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Overlay overlap: resolved to pure identity. This window rewrites shared www heavily (the Backup & Restore panel, the first-boot flow, state.js) and - the one wrinkle - DELETES Reaper_FirstBoot.asp on canon, which the stock port classified as 'model-only' and left orphaned on every sibling, so the first overlay regeneration carried the whole 379-line page as shared code and the identity gate failed on all five. Fixed by propagating the deletion to all five sibling branches (rt-be86u/rt-be88u/gt-be98/gt-be98-pro/rt-be92u) and dropping the file from the banner-reference sets in port_sibling_v2.sh and check_overlays.py; the overlays were then regenerated and the identity gate passes - every overlay differs from canon only by its banner filename. All five siblings are ported at this rung and take the entire window from the shared code plus the patch series."
+      "models_note": "Overlay overlap: resolved to pure identity. This window rewrites shared www heavily (the Backup & Restore panel, the first-boot flow, state.js) and - the one wrinkle - DELETES Reaper_FirstBoot.asp on canon, which the stock port classified as 'model-only' and left orphaned on every sibling, so the first overlay regeneration carried the whole 379-line page as shared code and the identity gate failed on all five. Fixed by propagating the deletion to all five sibling branches (rt-be86u/rt-be88u/gt-be98/gt-be98-pro/rt-be92u) and dropping the file from the banner-reference sets in port_sibling_v2.sh and check_overlays.py; the overlays were then regenerated and the identity gate passes - every overlay differs from canon only by its banner filename. All five siblings are ported at this rung and take the entire window from the shared code plus the patch series.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.8",
@@ -1319,7 +1448,9 @@
       "logs": {
         "build": "provenance/logs/v2.8.8/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.8.8/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.7",
@@ -1342,7 +1473,9 @@
       "date": "2026-08-28",
       "parent": "v2.8.6",
       "summary": "Documentation and diagnostics only - no C, rc, httpd or kernel change, so nothing here alters how the router forwards, filters or shapes traffic. Four things: the diagnostic report's QoS section no longer truncates away the per-queue shaper rate, which had made a silently-inactive QoS configuration print identically to a working one; its wireless-churn ranking now counts events rather than log lines, which had inflated it about sevenfold (2,810 lines for 411 events over 48h on live metal); twelve more pages gained a help link into the owner's guide, reusing the existing shared label key so no new translations are owed; and the IPv6 firewall's Both/Other protocol labels are translated in all 25 packs (RFW_257 minted), the last of that page's untranslated set. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Overlay overlap: none. The rung touches 40 files and none of them collide with any overlays/<MODEL>.patch, so all four siblings pick the change up from the patch series rather than needing an overlay edit. Ported to rt-be86u, rt-be88u, gt-be98 and gt-be98-pro; rt-be92u carries it on its own branch. Verified after the port that every branch has both the new dict key and the page reference to it, at 6746 dict lines each - the port supplements sibling dicts rather than overwriting them, so a new key does not silently reach the page without reaching the packs."
+      "models_note": "Overlay overlap: none. The rung touches 40 files and none of them collide with any overlays/<MODEL>.patch, so all four siblings pick the change up from the patch series rather than needing an overlay edit. Ported to rt-be86u, rt-be88u, gt-be98 and gt-be98-pro; rt-be92u carries it on its own branch. Verified after the port that every branch has both the new dict key and the page reference to it, at 6746 dict lines each - the port supplements sibling dicts rather than overwriting them, so a new key does not silently reach the page without reaching the packs.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.6",
@@ -1365,7 +1498,9 @@
       "date": "2026-08-27",
       "parent": "v2.8.5a",
       "summary": "Supersedes v2.8.5a, which was cut and built for RT-BE96U but never published; this rung carries the same five fixes plus one diagnostic change, and is what ships. The five: the Connections/Flow Explorer page had been empty since v2.8.3 because a CSRF gate was added to its feed without teaching the page to send the token; the Let's Encrypt renewal notice fired on every boot (the flag is set by every start_letsencrypt(), not only by a renewal) and promised a sign-out nothing in the tree performed, which is also the step that lets httpd install the new certificate; clients pinned to the AdGuard DNS filter removed in v2.7.6 were silently unfiltered, now migrated to Unfiltered with each named in the log; the rules engine derived the LAN anti-lockout network by pattern-matching the netmask, so /22 and /23 networks got a /24 and hosts outside it had no RETURN at all (the arithmetic fix rwarden received in v2.8.3, validated off-router across ten mask cases by compiling the emitted shell on the host); and Gatekeeper's generated apply.sh ended on `fc flush`, so a non-zero flush was reported as the cold-boot LAN deferral. The diagnostic change (reaper_diag v1.3.7) adds the four accelerator keys - fc_disable, fc_disable_force, runner_disable, runner_disable_force - to section 9, and reaper_wanbounce_enable plus its tmpfs latch to section 17, after a GT-BE98 8 Gbps-to-1.5 Gbps report that could not be triaged from a report because neither the accelerator state nor the bounce state was ever printed. Outside the image: a pre-build gate at reaper_tests/ and reaper_verify check 19, csrf-callers.",
-      "models_note": "No overlay overlap: this rung touches 2 files, neither of which appears in any per-model overlay, so all five overlays are unchanged and the siblings pick the change up from the series. The overlay identity gate passed for every model - GT-BE98 19 files, GT-BE98_PRO 24, RT-BE86U 13, RT-BE88U 21, RT-BE92U 12, identity-only in each case. Ports committed with all guards green: banner correct and solo, BUILD_NAME intact, SAMBA4 present on every model including GT-BE98_PRO, dicts in lockstep, 0 unsynced shared files. GT-BE98 keeps its GPL-39274 reaper_chanlist_shim.c as model overlay. No images built at cut time - the RT-BE96U image in hand is v2.8.5a, so every model including RT-BE96U needs a build for v2.8.6."
+      "models_note": "No overlay overlap: this rung touches 2 files, neither of which appears in any per-model overlay, so all five overlays are unchanged and the siblings pick the change up from the series. The overlay identity gate passed for every model - GT-BE98 19 files, GT-BE98_PRO 24, RT-BE86U 13, RT-BE88U 21, RT-BE92U 12, identity-only in each case. Ports committed with all guards green: banner correct and solo, BUILD_NAME intact, SAMBA4 present on every model including GT-BE98_PRO, dicts in lockstep, 0 unsynced shared files. GT-BE98 keeps its GPL-39274 reaper_chanlist_shim.c as model overlay. No images built at cut time - the RT-BE96U image in hand is v2.8.5a, so every model including RT-BE96U needs a build for v2.8.6.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.5a",
@@ -1392,7 +1527,9 @@
       "logs": {
         "build": "provenance/logs/v2.8.5a/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.8.5a/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.4",
@@ -1419,7 +1556,9 @@
       "logs": {
         "build": "provenance/logs/v2.8.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.8.4/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.8.3",
@@ -1442,7 +1581,9 @@
       "date": "2026-08-26",
       "parent": "v2.7.9",
       "summary": "One commit (patch 0553). Closes the 2026-08-26 audit's Medium (17) and Low (14) remainder and fixes three defects found only while validating the earlier fixes on hardware. (1) THE WARDEN nvram->/jffs MIGRATION WAS DESTROYING LISTS: rc's nvram_safe_get() returns EMPTY for these keys above roughly 200-400 bytes while `nvram get` returns them in full (186 B read fine; 381 and 706 both came back empty; 602 B captured verbatim through the CLI in the same shell). The migration therefore wrote a 0-byte file and then unset nvram - the list was not truncated, it was gone, and the page reported success. Fixed two ways: rw_nvram_cli_get() reads through the path that demonstrably works, and the nvram originals are now DELIBERATELY KEPT so the worst case is 'did not migrate' rather than 'destroyed'. WHY the two read paths disagree is NOT established and is tracked separately; this rung removes the data loss, not the mystery. Proven on metal: a 912-byte, 60-entry list migrates byte-for-byte identical, the ipset populates to 60, and nvram still holds the original. (2) `%%` in an fprintf format string yields ONE `%`, so the generated shell carried ${LANIP%.*} where ${LANIP%%.*} was intended; LANNET came out empty and the Warden LAN anti-lockout RETURN was malformed. Found only by reading the GENERATED script on the router - a green build, a clean cppcheck and a passing staged-symbol grep were all blind to it. (3) rw_gen_apply()'s script ended on `conntrack -D`, which returns 1 when no live flow matches - the normal case for a freshly-banned address - so start_rwarden() logged the cold-boot 'LAN not ready at boot - protection deferred' on EVERY start with a non-empty ban list while protection was fully armed, making the genuine deferral indistinguishable from noise. The script now ends with an explicit `exit 0`. This one was unreachable until (1) was fixed: an empty ban list emits no conntrack lines at all. The Medium/Low batch also brings: atomic publish for the Warden update/fold/stats writes; a geo-fetch deadline so one slow custom feed cannot eat the window; ipset destroy-on-type-mismatch; the DNAT target restricted to a single IPv4 host; a CSRF gate on reaper_conn.cgi; LRU eviction and a pre-NTP grant refusal in gkd; a three-state exists flag in rjf_get() so an unreadable file is no longer indistinguishable from an absent one; rjf_syncdir() fsync-after-rename; a log-only proto-31 netlink socket-count detector in rwatch; and rexport's nine bare `nvram get` calls moved behind the _nv guard. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "All five sibling branches ported to v2.8.3 and committed locally: RT-BE86U e9775f7333, RT-BE88U d43d8cee9b, GT-BE98 0d6d0d3ebd, GT-BE98_PRO 06e822010b, RT-BE92U 3b97446d3e. Every sibling's dicts are in lockstep with canon. Each carries TWO port commits: the rung was cut, then the canon commit was amended to add the `exit 0` fix and cut_fleet re-run, which ported the delta on top rather than resetting the branches. This rung touches 16 files, all shared code under release/src/router plus release/src-rt/version.conf, so no per-model file changed: step 7 reports every overlay differs from its regenerated form ONLY in blob-hash (index) lines, which git apply never reads, so none was rewritten. The overlay identity gate - the same check CI runs before the build matrix - passes on all five: GT-BE98 19 files, GT-BE98_PRO 24, RT-BE86U 13, RT-BE88U 21, RT-BE92U 12, identity only, no shared-code reversion."
+      "models_note": "All five sibling branches ported to v2.8.3 and committed locally: RT-BE86U e9775f7333, RT-BE88U d43d8cee9b, GT-BE98 0d6d0d3ebd, GT-BE98_PRO 06e822010b, RT-BE92U 3b97446d3e. Every sibling's dicts are in lockstep with canon. Each carries TWO port commits: the rung was cut, then the canon commit was amended to add the `exit 0` fix and cut_fleet re-run, which ported the delta on top rather than resetting the branches. This rung touches 16 files, all shared code under release/src/router plus release/src-rt/version.conf, so no per-model file changed: step 7 reports every overlay differs from its regenerated form ONLY in blob-hash (index) lines, which git apply never reads, so none was rewritten. The overlay identity gate - the same check CI runs before the build matrix - passes on all five: GT-BE98 19 files, GT-BE98_PRO 24, RT-BE86U 13, RT-BE88U 21, RT-BE92U 12, identity only, no shared-code reversion.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.9",
@@ -1465,7 +1606,9 @@
       "date": "2026-08-26",
       "parent": "v2.7.8",
       "summary": "Two commits (patches 0551-0552). Remediates a six-agent audit of the Reaper-authored surface - 2 Critical, 8 High, every one with a proven reachability trace. C1: rfw_gen_apply()'s teardown branch wrote apply.sh.tmp and returned success without renaming it into place (the enabled path does), so stop_reaper_fw() exec'd the PREVIOUS still-enabled script, rebuilt and re-hooked every chain it was asked to remove, then unlinked it - firewall enforcing, UI reporting it off, nothing left that could take it down until a reboot; introduced by ea085cdf16 (v2.5.1). C2: neither Gatekeeper CGI compared the target MAC against the requesting client, and the v1.7.3 $GKADMIN hatch was appended in the quarantine tail - after the per-MAC DROP and not at all when gk_default=1 - so blocking your own device severed the UI, SSH and LAN together with the captive page unreachable; the hatch now goes in ahead of the per-device rules and both CGIs refuse a self-block. H1: rmcpd's slow-read deadline was only tested once fgets returned a complete line and the request line preceded it entirely, so a dribbling peer parked the accept loop and held an armed session past both its expiry and a USB-key pull; bounded now with SIGALRM without SA_RESTART, which covers TLS. H2: del_iQosRules() flushes the whole mangle table and add_qos_rules() restores it without -n, deleting REAPER_PBR and its jump while the ip rules survive - selected flows fell through to main and left over the WAN in clear; reaper_pbr_reassert() now runs from the add_iQosRules tail and both HW-QoS teardown returns. H3: rjf_set() created only the last directory level, so with the engine off (the shipped default) every firewall list save failed ENOENT and the firewall half of an .rbk restore was silently rejected under a success banner. H4: rwarden_ban/allow/cfeeds were the last lists in nvram and hit the silent 1 KB cap near 63 CIDRs; they move to /jffs/rwarden behind a marker-guarded migration, the page POSTs them to a new reaper_warden.cgi save action and waits before applying, and export/import share one predicate. H5: the AiMesh window asserted a bare -j RETURN at position 1 of REAPER_GKI - above the cfg_relist exemptions and every per-device rule, so blocked devices regained access - and opened on cfg_obstatus=2, the ordinary AiMesh search; now REQ/LOCKED only and locally deadline-capped. H6: the self-heal throttle was a process-local static and the action it throttled respawns gkd, so the backoff was structurally dead and a persistent MISS meant a rebuild plus fc flush every 10-30s forever; the stamp now lives in tmpfs with a strike limit. H7: the export test ran synchronously from the single-process httpd select loop into an openssl s_client that -quiet makes -ign_eof, so a collector holding the session open took the whole GUI down until a reboot; detached with a bounded wait and s_client now exits on EOF. H8: a full conntrack flow table made every miss walk all 16384 slots - bounding the probe would have mis-credited a flow's whole cumulative counter as one delta, so an amortised compaction restores the empty slots instead. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "This rung touches 15 files and step 7 reports NO overlap with any overlays/<MODEL>.patch, so no overlay needed regenerating - the siblings pick these fixes up from the patch series itself. The sibling branches were NOT ported for this rung: the work was cut and built for RT-BE96U only. Port and rebuild the other five before publishing any sibling image at v2.7.9. All ten fixes are in shared code under release/src/router, so nothing here is per-model identity."
+      "models_note": "This rung touches 15 files and step 7 reports NO overlap with any overlays/<MODEL>.patch, so no overlay needed regenerating - the siblings pick these fixes up from the patch series itself. The sibling branches were NOT ported for this rung: the work was cut and built for RT-BE96U only. Port and rebuild the other five before publishing any sibling image at v2.7.9. All ten fixes are in shared code under release/src/router, so nothing here is per-model identity.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.8",
@@ -1492,7 +1635,9 @@
       "logs": {
         "build": "provenance/logs/v2.7.8/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.7.8/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.7",
@@ -1515,7 +1660,9 @@
       "date": "2026-08-25",
       "parent": "v2.7.6",
       "summary": "Six canon commits, patches 0536-0541. Removes AdGuard from the firmware entirely at user request - the Parental Controls tab and its ADGUARDDNS_UI page set, the AdGuard entries in the DNS Director and DNS-over-TLS provider lists, both AiBoard cards, the per-profile SDN switch, the RTCONFIG_ADGUARDDNS Kconfig stanza and 26 dict tokens in all 25 languages; the DNS server rows are blanked in place rather than deleted so a stale stored mode cannot read out of bounds. Fixes the field-reported \"Check for update\" failure: webs_update.sh shipped 0644, so rc's _eval/execvp could not run it and failed silently with no log and no nvram change - the tracked mode is corrected and rom/Makefile now forces 0755 on all three installed webs scripts (root-caused on live hardware). Lands the six reported Policy Routing defects plus an rwatch self-heal for the ip-rule half: a WireGuard target can no longer reboot the box (free-slot and interface-up checks before the blog skip write, vendor byte form), armed state is cleared before the nvram commit so a confirmed change leaves no phantom \"awaiting confirmation\", a fresh box seeds an honest baseline, the target list hides unconfigured tunnels, and firewall-start add-ons run last. Completes the 24-language functional translation pass and reworks the accel-bypass wording from \"whole LAN\" to \"LAN\". Gatekeeper diagnostics 14b now reads the re-list count the service records instead of grepping iptables.",
-      "models_note": "All five branches ported to v2.7.7 and committed locally: RT-BE86U 53f4362054, RT-BE88U 9de058360c, GT-BE98 2f03c4879a, GT-BE98_PRO 2bbb458db4, RT-BE92U 125c1bcb28. Every sibling's 25 dicts are in lockstep at 6744 lines, matching canon. This rung touches 69 files and overlapped all five overlays on release/src/router/www/state.js (the AdGuard removal), so every overlay was regenerated - 2 substantive lines each - and the overlay identity gate that CI runs passes. Note the sibling dict sync is a net REMOVAL this rung: the 26 AdGuard tokens are deleted fleet-wide, which is intentional and was verified to be the only key difference before the copy."
+      "models_note": "All five branches ported to v2.7.7 and committed locally: RT-BE86U 53f4362054, RT-BE88U 9de058360c, GT-BE98 2f03c4879a, GT-BE98_PRO 2bbb458db4, RT-BE92U 125c1bcb28. Every sibling's 25 dicts are in lockstep at 6744 lines, matching canon. This rung touches 69 files and overlapped all five overlays on release/src/router/www/state.js (the AdGuard removal), so every overlay was regenerated - 2 substantive lines each - and the overlay identity gate that CI runs passes. Note the sibling dict sync is a net REMOVAL this rung: the 26 AdGuard tokens are deleted fleet-wide, which is intentional and was verified to be the only key difference before the copy.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.6",
@@ -1546,7 +1693,9 @@
       "logs": {
         "build": "provenance/logs/v2.7.6/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.7.6/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.3",
@@ -1573,7 +1722,9 @@
       "logs": {
         "build": "provenance/logs/v2.7.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.7.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.7.1",
@@ -1600,7 +1751,9 @@
       "logs": {
         "build": "provenance/logs/v2.7.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.7.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.5",
@@ -1627,7 +1780,9 @@
       "logs": {
         "build": "provenance/logs/v2.6.5/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.6.5/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.4",
@@ -1654,7 +1809,9 @@
       "logs": {
         "build": "provenance/logs/v2.6.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.6.4/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.3",
@@ -1681,7 +1838,9 @@
       "logs": {
         "build": "provenance/logs/v2.6.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.6.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.2",
@@ -1708,7 +1867,9 @@
       "logs": {
         "build": "provenance/logs/v2.6.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.6.2/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.1",
@@ -1735,7 +1896,9 @@
       "logs": {
         "build": "provenance/logs/v2.6.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.6.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.6.0",
@@ -1758,7 +1921,9 @@
       "date": "2026-08-21",
       "parent": "v2.5.7",
       "summary": "v2.5.8-v2.6.0 as one public rung. v2.5.8: upstream Asuswrt-Merlin 3006.102.8_4 alignment (UPnP gaming fix = completed revert of the Asus jump patch, OpenVPN 2.7.6, miniupnpd 2.3.11 in both daemons, libovpn tls-auth key regen, netstat-nat/ddns-start/remove_dups fixes) - upstream commits by Eric Sauvageau, credited as author. v2.5.9: the trusted-tester batch - Warden country sets empty after reboot (per-set ipset cache replay, no empty-set cache overwrite, maxelem), wireless AiMesh node shown as Wired (node classified from the mesh client table), Addons rail unified across dashboard and shell, Policy Routing usability (Modify on every list, inline Domain lists, multi-line domain entry, relabelled selectors) plus object sets decoupled from the firewall engine and fqdn sets persisted across reboots; Reaper theme option removed from the Tweaks page. v2.6.0: HW QoS Classful could take IPv4 off the air where the traffic manager rejects the class-queue recreate (GT-BE98 field diag) - the rebuild is now transactional with a layered fallback to the stock layout. NO IMAGES YET - image hashes are added when the build ships.",
-      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707)."
+      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707).",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.5.7",
@@ -1781,7 +1946,9 @@
       "date": "2026-08-20",
       "parent": "v2.5.3",
       "summary": "v2.5.8-v2.6.0 as one public rung. v2.5.8: upstream Asuswrt-Merlin 3006.102.8_4 alignment (UPnP gaming fix = completed revert of the Asus jump patch, OpenVPN 2.7.6, miniupnpd 2.3.11 in both daemons, libovpn tls-auth key regen, netstat-nat/ddns-start/remove_dups fixes) - upstream commits by Eric Sauvageau, credited as author. v2.5.9: the trusted-tester batch - Warden country sets empty after reboot (per-set ipset cache replay, no empty-set cache overwrite, maxelem), wireless AiMesh node shown as Wired (node classified from the mesh client table), Addons rail unified across dashboard and shell, Policy Routing usability (Modify on every list, inline Domain lists, multi-line domain entry, relabelled selectors) plus object sets decoupled from the firewall engine and fqdn sets persisted across reboots; Reaper theme option removed from the Tweaks page. v2.6.0: HW QoS Classful could take IPv4 off the air where the traffic manager rejects the class-queue recreate (GT-BE98 field diag) - the rebuild is now transactional with a layered fallback to the stock layout. NO IMAGES YET - image hashes are added when the build ships.",
-      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707)."
+      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707).",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.5.3",
@@ -1804,7 +1971,9 @@
       "date": "2026-08-19",
       "parent": "v2.5.0",
       "summary": "v2.5.3 folds three internal iterations (v2.5.1 pre-public hardening, the v2.5.2 metal fixes, and the v2.5.3 code-review batch) into one rung on top of v2.5.0; v2.5.1 and v2.5.2 were never published. Biggest item is a build-side resurrection: /usr/lib/ipsec/{starter,stroke,charon} and swanctl were ABSENT from every prior shipped image (strongSwan stale-configure trap) - this build finally stages them, so IPSec Server / IPSec client / Instant Guard, dead on all earlier releases, should now function (needs on-metal confirmation). Gatekeeper: first/last device stamping is gated on ntp_ready with backfill, fixing the 'first seen ~961 days ago' freeze (devices seen in the pre-NTP boot window had been pinned to RC_BUILDTIME 2024-01-01) - confirmed on RT-BE96U metal. Firewall engine: the admin-management RETURN is scoped to INPUT only (it was also emitted on FORWARD/OUTPUT, exempting the admin address's forwarded :443/:22 from the whole firewall); port-forward external and internal ports reject empty/comma shapes iptables would refuse; the Gatekeeper and Warden apply.sh are now generated atomically (temp+rename) like reaper_fw's, so a concurrent restart_firewall can't exec a half-written teardown; the firewall zone-matrix save cap was raised 2048->8192 (CGI + nvram class) so the UI stops refusing a full zone matrix the engine accepts. Warden: a partial feed update no longer stamps the last-updated time as success, the retention window and per-run flock were corrected, and a shared lock between fold.sh and stats.sh removes a one-tick backward dip in the block count at the 15-minute checkpoint. Analytics export skips the push when health.json is >3 min stale (a crashed collector) instead of POSTing a frozen snapshot as live; the 11 reaper_export_* keys gained a length class and factory default (applied on factory reset only). QoS: the classful shaper leaves the rate you set intact (a 10% egress-headroom experiment added in v2.5.1 was reverted in v2.5.2 after it caused low-priority tail-drops on the BE96U hardware queues) with the on-page figures corrected to decimal kbps. Inherited/UI: OpenVPN 'if'-field trailing newline, an SNMP rwuser policy tightening, a shared HTML escaper across the Gatekeeper/Warden/Firewall pages, the dashboard logo header alignment, the firmware page's Mesh-Nodes section moved to the bottom, mesh nodes on a wireless backhaul reported as range-extenders rather than Wired, and the left-nav item geometry standardized to the dashboard so the rail is identical on every page. Build-validated on RT-BE96U (MAKE_EXIT=0); the v2.5.2 portion (Gatekeeper first-seen, QoS shaping) is metal-confirmed, while the IPSec resurrection and the v2.5.3 firewall-emission changes still need on-metal confirmation. NO IMAGES YET - image hashes are added when the build ships.",
-      "models_note": "Overlay overlap (step 7): this rung touches www/Main_ReaperDash.asp and www/reaper_shell.asp (the dashboard logo header and the shared left-nav geometry), both carried by the GT-BE98, GT-BE98_PRO, RT-BE86U and RT-BE88U overlays - regenerate each overlays/<MODEL>.patch before the fleet run. BE96U (canon) is unaffected and installs directly from the series."
+      "models_note": "Overlay overlap (step 7): this rung touches www/Main_ReaperDash.asp and www/reaper_shell.asp (the dashboard logo header and the shared left-nav geometry), both carried by the GT-BE98, GT-BE98_PRO, RT-BE86U and RT-BE88U overlays - regenerate each overlays/<MODEL>.patch before the fleet run. BE96U (canon) is unaffected and installs directly from the series.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.5.0",
@@ -1827,7 +1996,9 @@
       "date": "2026-08-19",
       "parent": "v2.4.9",
       "summary": "v2.5.0 folds in the Warden user-supplied-blocklists / geo-before-feed feature, a full three-phase security review of Reaper's own code, and the shared-escaper UI/i18n consolidation plus the tagged-WAN PPPoE-1500 MTU residual. The five defective fixes flagged by the 2026-08-18 adversarial re-review were corrected (Gatekeeper br_ifname, rtrafd rsrc inbound attribution, adaptive Prometheus staleness, a hard RFWH fail-closed firewall apply, and an atomic marker-gated LASTGOOD snapshot); the QoS priority remap was reverted because the hardware rejects the in-place renumber, pending a delqcfg-based fix validated on metal. New security fixes: firewall-object command injection, a Warden planted-script RCE, world-writable working files plus two CSRF endpoints and a constant-time scrape token, SNMP WAN interface pin + LAN-scoped bind, two DHCP-reservation dnsmasq-injection paths, UPnP PPTP/FTP protect denies, Warden manual-ban conntrack teardown, rmcp 2FA arming-key lockdown, a reaper_export length cap, an httpd pre-auth Content-Length CPU-spin DoS and a url[128] OOB, firmware manifest-injection validation, USB-eject and default-password chpass CSRF tokens, and an rfw_field truncation rule-widening. Build-validated on RT-BE96U (MAKE_EXIT=0); the QoS behaviour and the first-boot password flow still need on-metal confirmation. NO IMAGES YET - image hashes are added when the build ships.",
-      "models_note": "Overlay overlap (step 7): this rung touches www/Main_ReaperDash.asp, www/Reaper_FirstBoot.asp and www/state.js, which are also carried by the GT-BE98, GT-BE98_PRO, RT-BE86U and RT-BE88U overlays - regenerate each overlays/<MODEL>.patch before the fleet run. BE96U (canon) is unaffected."
+      "models_note": "Overlay overlap (step 7): this rung touches www/Main_ReaperDash.asp, www/Reaper_FirstBoot.asp and www/state.js, which are also carried by the GT-BE98, GT-BE98_PRO, RT-BE86U and RT-BE88U overlays - regenerate each overlays/<MODEL>.patch before the fleet run. BE96U (canon) is unaffected.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.9",
@@ -1850,7 +2021,9 @@
       "date": "2026-08-18",
       "parent": "v2.4.7",
       "summary": "v2.5.8-v2.6.0 as one public rung. v2.5.8: upstream Asuswrt-Merlin 3006.102.8_4 alignment (UPnP gaming fix = completed revert of the Asus jump patch, OpenVPN 2.7.6, miniupnpd 2.3.11 in both daemons, libovpn tls-auth key regen, netstat-nat/ddns-start/remove_dups fixes) - upstream commits by Eric Sauvageau, credited as author. v2.5.9: the trusted-tester batch - Warden country sets empty after reboot (per-set ipset cache replay, no empty-set cache overwrite, maxelem), wireless AiMesh node shown as Wired (node classified from the mesh client table), Addons rail unified across dashboard and shell, Policy Routing usability (Modify on every list, inline Domain lists, multi-line domain entry, relabelled selectors) plus object sets decoupled from the firewall engine and fqdn sets persisted across reboots; Reaper theme option removed from the Tweaks page. v2.6.0: HW QoS Classful could take IPv4 off the air where the traffic manager rejects the class-queue recreate (GT-BE98 field diag) - the rebuild is now transactional with a layered fallback to the stock layout. NO IMAGES YET - image hashes are added when the build ships.",
-      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707)."
+      "models_note": "Overlay overlap: the rung touches Main_ReaperDash.asp and reaper_shell.asp, which every model overlay also carries (identity lines only); all four overlays were regenerated and pass the identity gate (GT-BE98 19, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22 files, identity-only). All four siblings ported (port_sibling_v2, all guards passed, dicts lockstep 6707).",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.7",
@@ -1873,7 +2046,9 @@
       "date": "2026-08-17",
       "parent": "v2.4.6",
       "summary": "A small rung: two corrections to things v2.4.6 left half-finished, and no behaviour change in either. (1) miniupnpd-igdv2 gains the User-Agent capture and the 'IGD desc: served vN to <ip>' line that 8f15112975 added only to miniupnpd/. The two daemons are separate source trees, so enabling IPv6 pinholes - which switches the router to the igdv2 binary - silently switched the diagnostic off, and it did so on the one path that still serves an IGD:2 description, i.e. the configuration most likely to need diagnosing. Ported as the exact 9cb5d563f4..HEAD delta after verifying the igdv2 files were byte-identical to miniupnpd's at that commit; both copies are now byte-identical again, which is the invariant whose absence caused the gap. (2) The Tweaks page names the socket bind shim: RTWK_03 was 'nvram netlink workaround', which described the symptom without identifying the control, and RTWK_04 now also states that it is on by default. The switch itself and its default have been unchanged since ef5078d35a - this rung only makes them findable. Value-only rewrite across all 25 packs, lockstep held at 6635. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Cut from RT-BE96U; all four siblings ported in the same run (rt-be86u 1716f07e16, rt-be88u e9389eec90, gt-be98 90f0ef075f, gt-be98-pro 1d45a645ca), each with the dict supplement and dicts verified in lockstep at EXTENDNO=Reaper_v2.4.7. Unlike v2.4.6, this rung touches NO per-model file: all four overlays came back 'unchanged' from the regeneration step, which is an independent confirmation that the payload is shared code only - a rung that had quietly altered model identity could not produce that result. The overlay identity gate, the same check CI runs before the build matrix, passed all four as identity-only: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22."
+      "models_note": "Cut from RT-BE96U; all four siblings ported in the same run (rt-be86u 1716f07e16, rt-be88u e9389eec90, gt-be98 90f0ef075f, gt-be98-pro 1d45a645ca), each with the dict supplement and dicts verified in lockstep at EXTENDNO=Reaper_v2.4.7. Unlike v2.4.6, this rung touches NO per-model file: all four overlays came back 'unchanged' from the regeneration step, which is an independent confirmation that the payload is shared code only - a rung that had quietly altered model identity could not produce that result. The overlay identity gate, the same check CI runs before the build matrix, passed all four as identity-only: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.6",
@@ -1896,7 +2071,9 @@
       "date": "2026-08-17",
       "parent": "v2.4.5",
       "summary": "Two field reports, and the rung is named for them. UPnP: the router no longer advertises WANPPPConnection - a service neither daemon implements, which turned discovery into a dead end for a control point that probed for it first (adopts upstream Merlin b2bfafe1bd) - and the default daemon is built without --igd2 again, so it presents one consistent IGD:1 identity in SSDP and in its device description. IPv6 pinholes are unaffected: they live in miniupnpd-igdv2 (--igd2 --ipv6) and upnp_pinhole_enable selects between the two daemons. The upnp_igd2_desc nvram knob and the force_igd_desc_v1 emission are removed - with an IGD:1 binary there is nothing left for them to select. AiMesh: theme injection is now suppressed on a node (re_mode=1 / disable_ui=1), which ends a message.htm <-> reaper_shell.asp redirect loop that left a freshly flashed node showing a blank page with a cycling address bar and no reachable login page. Also in this rung: three previously nvram-only settings gained controls on Tools_OtherSettings (the WLCSM bind shim, now default ON; the theme kill switch; the Warden refresh schedule), plus two defects in that page's save path; removal of the provably inert Asusnat toggle; time-based x-axes for the QoSDiag and Tools_Sysinfo live charts; a quieter firmware-flash overlay that no longer offers dismissal mid-write; reaper_diag firewall/accelerator triage with an e-mail redaction pass and a post-sanitize tripwire; and the Reaper_About page with build-written provenance. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Cut from RT-BE96U; all four siblings ported in the same run (rt-be86u 7e7bfb1218, rt-be88u 46c4f5b549, gt-be98 2bba7df54e, gt-be98-pro fe4e3120d0), each with the 25-dict version-jump supplement and dicts verified in lockstep. This rung TOUCHES per-model overlay files - the overlap check named Main_ReaperDash.asp and reaper_shell.asp on all four, plus Tools_Sysinfo.asp on RT-BE86U / RT-BE88U / GT-BE98_PRO - so every overlay was regenerated after the ports, never before (regenerating first writes an overlay that reverts the rung on every sibling, applies cleanly, and is caught by nothing downstream). Substantive changes: 157 lines for RT-BE86U / RT-BE88U / GT-BE98_PRO, 4 for GT-BE98. The overlay identity gate - the same check CI runs before the build matrix - passed all four as identity-only: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22."
+      "models_note": "Cut from RT-BE96U; all four siblings ported in the same run (rt-be86u 7e7bfb1218, rt-be88u 46c4f5b549, gt-be98 2bba7df54e, gt-be98-pro fe4e3120d0), each with the 25-dict version-jump supplement and dicts verified in lockstep. This rung TOUCHES per-model overlay files - the overlap check named Main_ReaperDash.asp and reaper_shell.asp on all four, plus Tools_Sysinfo.asp on RT-BE86U / RT-BE88U / GT-BE98_PRO - so every overlay was regenerated after the ports, never before (regenerating first writes an overlay that reverts the rung on every sibling, applies cleanly, and is caught by nothing downstream). Substantive changes: 157 lines for RT-BE86U / RT-BE88U / GT-BE98_PRO, 4 for GT-BE98. The overlay identity gate - the same check CI runs before the build matrix - passed all four as identity-only: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.5",
@@ -1919,7 +2096,9 @@
       "date": "2026-08-16",
       "parent": "v2.4.4",
       "summary": "Display, logging and language work on the six field reports open against v2.4.4, plus one defect found while fixing them. No change to forwarding, filtering or shaping.\n\nReaper_Traffic.asp live charts are rewritten onto requestAnimationFrame with x derived from each sample's ARRIVAL TIME rather than its buffer index. The old lineChart placed points at x = 44+(W-44)*i/(n-1), so with the 120-slot ring full, one arrival translated the whole trace by exactly one slot - 956/119 = 8.03 viewBox units, 0.84% of the plot width - and the chart only ever existed at 1000/pollMs positions per second. Polling faster shrinks the step but cannot remove it, and it cannot exceed 10 Hz anyway: rtrafd rewrites live.json every TICK_MS=100 and httpd is single-threaded. Decoupling the two clocks turns poll jitter into interpolation. The Y scale was an independent second source: a raw per-poll max moved every point vertically the instant a peak scrolled off the left edge, so it now snaps to round values and holds before shrinking. Also: persistent SVG nodes with attribute-only updates instead of an innerHTML rebuild per frame, interpolated clipping at both window edges, and trace-breaking across a discontinuity so returning from a history window does not draw a ramp that never happened.\n\nMain_ReaperDash.asp gains main{min-width:0}. .app is grid-template-columns:236px 1fr and main is the 1fr item, whose default min-width:auto resolves to min-content - the topbar's. .pills already carried min-width:0;overflow:hidden, but that only zeroes the automatic minimum once the container width is definite; during the track's intrinsic sizing the nowrap strip still contributed full min-content, so the DOCUMENT grew instead of the strip clipping. Measured docSW 1784 pre-fix, i.e. overflow for any viewport 1701-1788 CSS px - 1745 = a 1920 panel at 110% scaling, which is how it was hit. Below 1701 the failure was worse and silent: the responsive .pills nth-child(n+6/5/4/3) rules count the webs_state_flag badge as a pill, so the update notice vanished entirely under 1700. The notifier therefore also moves out of the strip to a full-width .fwbar banner at the top of .wrap, same #fw_update_badge id and same server-rendered reveal; FW_new_firmware_available and menu5_6_3 already ship in all 25 packs.\n\nMain_ReaperDash.asp also grows an Addons rail group. reaper_shell.asp builds its rail at runtime from /require/modules/menuTree.js - the file Merlin addons bind-mount over - so every page inside the shell inherits addon entries; the dashboard is the one top-level page with its own static rail and never had the mechanism. It cannot call the shell's code: menuTree.js is a require module needing globals state.js supplies, and this page deliberately loads neither, its first-boot credential gate being hand-rolled precisely so it does not depend on state.js. The file is therefore read as TEXT and never evaluated. It is owned by third-party code, so values are treated as hostile: URLs must match ^[A-Za-z0-9_.-]+\\.(asp|htm|html)$ and are DROPPED rather than sanitised, labels go through esc(). Degrades in three steps - parsed entries, a single shell link when an addon block exists but its tabs do not parse, and no change at all otherwise. No new dict keys; the group label is the file's own menuName. The extractor is written against the documented menuTree entry shape, not an observed addon-patched file.\n\nrc/rwarden.c adds RW_ODROP, an outbound-only terminal chain with its own REAPER-WARDEN-OUT log prefix, and points RW_OUT's destination match at it. Outbound drops previously fell through to the shared RW_DROP and carried the inbound prefix, so no log could answer whether egress blocking was firing. Teardown (shell and rw_teardown_rules), both LIVE sums, both -Z loops in fold.sh/stats.sh and the status JSON learn the chain; the count is reported as \"out\"/\"out_n\" rather than folded into the inbound total. Emitted only when the configured direction includes outbound.\n\nReaper_Warden.asp moves the blocked-hits breakdown out of the stat card. .stats is repeat(auto-fit,minmax(150px,1fr)), so the v2.4.2 split rendered as two 11px .sub lines inside a ~150px cell: with feed-dominated numbers it wrapped to three lines, broke mid-separator, and made that card taller than the other four. It is now one label/value strip between the topcard .desc and .toptbl, built as DOM nodes with textContent rather than innerHTML because the labels are dict values. Label style is taken from .toptbl th and value style from .stat .n so it cannot read as a continuation of the prose above it. RWDN_73-76 are translated into all 24 non-EN packs IN PLACE at their existing line indices, so the closed resolver's line-index lockstep is untouched by construction; they were the only keys on that page still English everywhere.\n\ninternet_speed.html resets level_err_cnt at the start of a run. It was reset on a completed result (line ~574), on the silent-retry path in error_handling() and on tripping LEVEL_ERR_MAX, but never at run START, so the count carried across every test in the page's lifetime and a later run could begin with the tolerance already spent. A page reload cleared it, which is why it read as random rather than progressive.\n\nSCOPE, stated plainly because the first draft of this entry overclaimed it: level_err_cnt is NOT a retry budget - nothing is retried. It is a tolerance for `level == \"error\"` entries in the ookla result buffer before the run is declared failed. The genuine single retry is speedTest_retry_done (986eb9f041) and the UI freeze was the sync->async poll rewrite (80fc8bfa88); this change is neither, and it does not touch why the binary emits error lines. It fixes exactly one pattern: later tests in a session failing sooner than earlier ones.\n\nKNOWN AND DELIBERATELY NOT FIXED IN THIS RUNG: level_err_cnt is consumed once per POLL, not once per error. process_speedTest_result() runs every 200 ms until a type==\"result\" entry sets get_next=false, re-reads the whole buffer, and re-tests speedTest_result[length-2] with no index or dedupe - so an unchanged buffer counts the SAME error entry again every tick. LEVEL_ERR_MAX=50 is therefore ~10 s of a stalled tail at 5/sec, not 50 distinct errors, and that fits a FIRST-run mid-test death far better than the leak does. The fix is to count an entry once (track the buffer length at the last increment); the run stays bounded regardless because get_speedTest_result() already raises ERR_TIMEOUT at test_timeout. It changes how a run is bounded rather than when a counter is cleared, so it is not being slipped into a rung that is already cut. Recorded in docs/BACKLOG.md.\n\nFour remaining hardcoded strings are tokenized: the Drop/Accept options and the new Both option on the two Reaper_Firewall.asp logging selects, the Reaper_QoSDiag.asp title, and two reaper_shell.asp topbar button titles. Only RFW_252 (Both) is new; it is English-seeded in all 25 packs and DELIBERATELY not translated. The other three options of that same select (RFW_100/138/139) are English in every non-EN pack, as is the entire RFW_* namespace - 244 of the 306 untranslated Reaper keys measured 2026-08-16 - so translating one option alone would render \"None / Drop / Accept / Beide\". ASUS's own option_both_direction is translated 24/24 with English \"Both\" but means bidirectional (CN renders it as such) and was rejected: this select is a logged-packets type, not a direction. The namespace-wide gap is recorded in docs/BACKLOG.md.\n\nNO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Overlay-overlap check: this rung touches 34 files and DOES overlap all four overlays/<MODEL>.patch identity overlays, on release/src/router/www/Main_ReaperDash.asp and release/src/router/www/reaper_shell.asp - both carry the per-model banner reference, and both were edited here (the Addons rail and the topbar-overflow/notifier work on the dashboard, two tokenized topbar button titles on the shell). This differs from v2.4.4, which overlapped nothing. All four overlays were therefore REGENERATED - 6 substantive lines changed in each - and regenerated AFTER the sibling ports, never before: an overlay rebuilt against an un-ported sibling encodes a diff that REVERTS the rung on every model, and it applies cleanly, so nothing downstream would catch it (the 2026-08-10 regression). The identity gate that CI runs before the build matrix passes on all four: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22, identity only, zero .dict in any of them - which is what keeps the 25 packs in lockstep on the CI siblings. Ports: rt-be86u 161be4a7f6, rt-be88u 65b15c79c6, gt-be98 f9ce9b8d1c, gt-be98-pro 1e2c03703a, each reporting post-commit parity of 0 unsynced shared files against be96u-only, dicts committed per model and in lockstep, and EXTENDNO=Reaper_v2.4.5. Per-model banner, target.mak BUILD_NAME and SAMBA4 guards all passed on each. release/src-rt/version.conf is overlay-protected, so each sibling carries its own bump rather than taking it from the series."
+      "models_note": "Overlay-overlap check: this rung touches 34 files and DOES overlap all four overlays/<MODEL>.patch identity overlays, on release/src/router/www/Main_ReaperDash.asp and release/src/router/www/reaper_shell.asp - both carry the per-model banner reference, and both were edited here (the Addons rail and the topbar-overflow/notifier work on the dashboard, two tokenized topbar button titles on the shell). This differs from v2.4.4, which overlapped nothing. All four overlays were therefore REGENERATED - 6 substantive lines changed in each - and regenerated AFTER the sibling ports, never before: an overlay rebuilt against an un-ported sibling encodes a diff that REVERTS the rung on every model, and it applies cleanly, so nothing downstream would catch it (the 2026-08-10 regression). The identity gate that CI runs before the build matrix passes on all four: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22, identity only, zero .dict in any of them - which is what keeps the 25 packs in lockstep on the CI siblings. Ports: rt-be86u 161be4a7f6, rt-be88u 65b15c79c6, gt-be98 f9ce9b8d1c, gt-be98-pro 1e2c03703a, each reporting post-commit parity of 0 unsynced shared files against be96u-only, dicts committed per model and in lockstep, and EXTENDNO=Reaper_v2.4.5. Per-model banner, target.mak BUILD_NAME and SAMBA4 guards all passed on each. release/src-rt/version.conf is overlay-protected, so each sibling carries its own bump rather than taking it from the series.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.4",
@@ -1971,7 +2150,9 @@
       "logs": {
         "build": "provenance/logs/v2.4.4/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.4.4/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.3",
@@ -2023,7 +2204,9 @@
       "logs": {
         "build": "provenance/logs/v2.4.3/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.4.3/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.2",
@@ -2050,7 +2233,9 @@
       "logs": {
         "build": "provenance/logs/v2.4.2/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.4.2/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.4.1",
@@ -2102,7 +2287,9 @@
       "logs": {
         "build": "provenance/logs/v2.4.1/build-rt-be96u.summary.log",
         "verify": "provenance/logs/v2.4.1/reaper_verify-rt-be96u.log"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.7",
@@ -2125,7 +2312,9 @@
       "date": "2026-08-12",
       "parent": "v2.3.6",
       "summary": "Source rung only - no images yet. Five changes, all in the web UI and its httpd backend, none touching the data path. (1) The Professional Wi-Fi page collapsed 116 individual server-side nvram reads into a single call that iterates wl_ifnames, so it self-sizes to each model's radio count and band layout instead of a hardcoded wl0..wl3 - a tri-band unit was paying 29 reads for a radio it does not have. (2) The wireless Auto Scan now ranks the exact chanspec the radio ran and applies it verbatim: 5 GHz sweeps 80 MHz blocks derived from the driver rather than bare 20 MHz channels, results record what actually went on air, and a clean sweep locks in its winner. (3) The firmware page lists AiMesh nodes with their reported firmware and opens each node's own upgrade page for a native flash. (4) Both silent drop-gates in the AiMesh onboarding list now log which keys were missing, so a failed 'Search for node' diagnoses itself. (5) A model-specific 6 GHz sentence was removed from the Smart Connect note. NOT COMPILED and not run on hardware.",
-      "models_note": "Overlay-overlap check (cut step 7): this rung touches 31 files and overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick these changes up from the patch series with no branch port and no overlay regeneration. The sibling branches themselves remain at their previous rung and matter only for local builds and future overlay regen."
+      "models_note": "Overlay-overlap check (cut step 7): this rung touches 31 files and overlaps NONE of the overlays/<MODEL>.patch identity overlays, so all four siblings pick these changes up from the patch series with no branch port and no overlay regeneration. The sibling branches themselves remain at their previous rung and matter only for local builds and future overlay regen.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.6",
@@ -2148,7 +2337,9 @@
       "date": "2026-08-12",
       "parent": "v2.3.5",
       "summary": "Single-change release: a workaround for a Broadcom defect in the closed libnvram.so that can permanently wedge an nvram write while leaving the router otherwise up. _wlcsm_init() passes the ADDRESS of its saved-PID field to the internal netlink port allocator as the port-candidate out-parameter; on EADDRINUSE the allocator walks ten candidates and writes each back through that pointer, corrupting the saved PID. The next call sees saved_pid != getpid(), concludes the process forked, and re-initialises without closing the previous socket - leaking one netlink socket per pass until all ten candidates are gone, after which wlcsm_nvram_getall() retries the failing send without bound while holding the nvram mutex. Because the send path re-enters _wlcsm_init(), each retry redoes the whole socket-plus-ten-binds sequence: roughly sixteen syscalls per pass with no backoff, which burns a core in system time, floods stderr, and never completes the write. The trigger is PID reuse landing on a netlink port a long-lived process already holds, and the leaked ports then squat for the life of the stuck process, so it compounds with uptime and process churn. Caught live on metal 2026-08-11 and confirmed instruction-by-instruction in the shipped binary. The fix is a small LD_PRELOAD object of our own (the closed library is not modified): it interposes bind() and, only when the real call already failed EADDRINUSE on an AF_NETLINK protocol-31 socket with a non-zero nl_pid, retries once with nl_pid = 0 so the kernel autobinds - which is what Broadcom's own second WLCSM socket already does. Every step of the failure chain is gated on that first bind, so making it succeed removes all of it. SHIPS INERT: /etc/ld.so.preload is global to every dynamically linked process and this has not run on hardware, so the nvram flag defaults to 0 and no router behaviour changes until an operator sets wlcsm_bindfix=1. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Canon-only rung; the four sibling BRANCHES are still at v2.3.5 and were not ported. That does not affect CI: build_one.sh reconstructs a sibling as the canon tree replayed from patches/ plus overlays/<MODEL>.patch (identity only), so the new wlcsm_bindfix package reaches all five models straight from the series. cut_rung step 7 confirms it: this rung touches 8 files and overlaps no overlay, so no overlay regeneration is required and none was done. The sibling branches will pick the package up on their next port_sibling_v2 run - worth a dry run first, since a brand-new top-level package directory has not previously been exercised through the protect classifier. NOT BUILT and NOT on hardware on any model."
+      "models_note": "Canon-only rung; the four sibling BRANCHES are still at v2.3.5 and were not ported. That does not affect CI: build_one.sh reconstructs a sibling as the canon tree replayed from patches/ plus overlays/<MODEL>.patch (identity only), so the new wlcsm_bindfix package reaches all five models straight from the series. cut_rung step 7 confirms it: this rung touches 8 files and overlaps no overlay, so no overlay regeneration is required and none was done. The sibling branches will pick the package up on their next port_sibling_v2 run - worth a dry run first, since a brand-new top-level package directory has not previously been exercised through the protect classifier. NOT BUILT and NOT on hardware on any model.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.5",
@@ -2175,7 +2366,9 @@
       "date": "2026-08-11",
       "parent": "v2.3.4",
       "summary": "Five-part maintenance rung, all of it driven by field reports of features that reported success while doing nothing. Warden's blocked-hit counters now survive a reboot and a firmware upgrade, per-country included, and gain a user-selectable retention window; the counters had no per-country persistence at all and the total was banked only on a path that the reboot and Save-and-Apply flows never took. UPnP mappings are restored after every firewall rebuild instead of being silently flushed and never re-added -- the daemon kept reporting them as live, which is why this read as 'UPnP is broken' -- and the default daemon is now an IGD:2 device, with new refusal of UPnP/PCP mappings on the router's own VPN, SSH and web-admin ports. The DHCP Leases page resolves its Device Name column from custom_clientlist server-side rather than from networkmap's volatile client table, and both the device name and the client-chosen DHCP hostname are now escaped for the JavaScript and HTML sinks they land in. The Smart Connect page explains its '- -' columns instead of looking broken, and an unclosed table cell there is fixed. Finally, first-boot enforcement moves out of page JavaScript and into httpd: the credential and Wi-Fi steps could previously be walked past by typing the URL of any of the 117 pages that do not load state.js, and the Wi-Fi step was never reached at all because the credential step exited to a page whose own guard did not check it. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Fleet-ported 2026-08-11, same day as the rung. Order followed was rung -> sibling ports -> overlays, which is not negotiable: regenerating an overlay before the port writes one that REVERTS the rung on every sibling and still applies cleanly, which is the 2026-08-10 regression. Ports run in git worktrees under /home/reaper/port (the four per-model WSL instances were deleted 2026-08-10; port_sibling_v2.sh takes REAPER_TREE). Each model got two commits: the dict supplement, then the guarded overlay port. The dict step is mandatory here because port_sibling_v2 protects ??.dict as per-model identity and this rung ADDS tokens (RWDN_56..68, RDST_64, RFB_15/16) -- without it the siblings render raw <#token#> text on the Warden, Storage and first-boot pages. Verified per model rather than trusting the checkout: EN.dict 6312 lines matching canon, RFB_15 present, DE.dict RWDN_56 present, and a single distinct line count across all 24 (stale dicts are internally lockstep too, so lockstep alone proves nothing). Every port guard passed on all four -- branch, target.mak block, BUILD_NAME, router-sysdep base, HAS_6G band match, banner content and banner references, SAMBA4 token -- and each reported post-commit parity of 0 unsynced shared files against canon. 20 shared files synced per model. Sibling tips: rt-be86u e1a4d04afa, rt-be88u af418c1f82, gt-be98 5d7da42f7f, gt-be98-pro 18f54e5a77. All four overlays regenerated from the new tips (4 substantive lines each, the banner swap) and the identity gate passes: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22, identity only. NOT BUILT on any model -- source ports only."
+      "models_note": "Fleet-ported 2026-08-11, same day as the rung. Order followed was rung -> sibling ports -> overlays, which is not negotiable: regenerating an overlay before the port writes one that REVERTS the rung on every sibling and still applies cleanly, which is the 2026-08-10 regression. Ports run in git worktrees under /home/reaper/port (the four per-model WSL instances were deleted 2026-08-10; port_sibling_v2.sh takes REAPER_TREE). Each model got two commits: the dict supplement, then the guarded overlay port. The dict step is mandatory here because port_sibling_v2 protects ??.dict as per-model identity and this rung ADDS tokens (RWDN_56..68, RDST_64, RFB_15/16) -- without it the siblings render raw <#token#> text on the Warden, Storage and first-boot pages. Verified per model rather than trusting the checkout: EN.dict 6312 lines matching canon, RFB_15 present, DE.dict RWDN_56 present, and a single distinct line count across all 24 (stale dicts are internally lockstep too, so lockstep alone proves nothing). Every port guard passed on all four -- branch, target.mak block, BUILD_NAME, router-sysdep base, HAS_6G band match, banner content and banner references, SAMBA4 token -- and each reported post-commit parity of 0 unsynced shared files against canon. 20 shared files synced per model. Sibling tips: rt-be86u e1a4d04afa, rt-be88u af418c1f82, gt-be98 5d7da42f7f, gt-be98-pro 18f54e5a77. All four overlays regenerated from the new tips (4 substantive lines each, the banner swap) and the identity gate passes: GT-BE98 19 files, GT-BE98_PRO 26, RT-BE86U 14, RT-BE88U 22, identity only. NOT BUILT on any model -- source ports only.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.4",
@@ -2198,7 +2391,9 @@
       "date": "2026-08-11",
       "parent": "v2.3.3",
       "summary": "Single-defect release: a framed-layout regression introduced by v2.3.3's own overlay re-anchoring, found on metal within hours of flashing it. Reaper_QoS.asp and Reaper_Traffic.asp rendered oversized and clipped at the right edge of a 1080p screen with no scrollbar. The v2.3.3 rule listed .flyout among the full-frame overlays and forced the whole list to position:absolute; the FAQ fly-out is not a full-frame overlay but a 440px side panel PARKED OFF-SCREEN at right:-460px. A parked absolute panel counts towards the framed document's scrollWidth and a parked fixed one does not, so the document reported +460px, the shell's frame-grow widened #page_frame to match, and every grid stretched to the wider frame - the 'zoomed in' symptom - putting the right-hand column outside the window. Only those two pages carry a fly-out, which is exactly why only those two broke. Fixed by keeping .flyout position:fixed while still anchoring its top/height to the visible slice; inside a frame that never scrolls internally the two resolve against the same box, so the fly-out still opens on screen. Measured alternatives, recorded so they are not retried: with an absolute panel right:-460px adds 460, transform:translateX(100%) adds 440, and visibility:hidden changes nothing - only a clipping ancestor prevents it, and clipping the framed root would break the deliberate frame-widening that lets wide stock tables pan. Second, .stage now carries min-width:0: it is a grid item whose default min-width:auto refuses to shrink below its content, so overflow-x:auto could never scroll and the page clipped SILENTLY instead of showing a horizontal scrollbar; any future frame-grow now pans visibly. Verified with a negative control in a mock render of the real shell, both pages - broken: doc 1603->2063 (+460), frame widened to 1603px, flyout absolute; fixed: doc 1143->1143, frame not widened, flyout fixed - matching the owner's on-router reading of doc 1405->1865 with ASIDE#flyout.flyout as the outermost offender. v2.3.3 was built and flashed before this was found, so the fix ships as its own version rather than redefining v2.3.3. NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Fleet-ported 2026-08-11, immediately after the v2.3.3 port. 7 shared files synced per model with post-commit parity 0 unsynced shared files against canon on all four; dicts already in sync (this rung changes none) and lockstep at 6296 lines. Port commits: rt-be86u d40c4c1e7e, rt-be88u 6f249685f8, gt-be98 e35d4d76b3, gt-be98-pro 8dfab50d63. UNLIKE v2.3.3, the overlays DID need regenerating: reaper_shell.asp is in every overlays/<MODEL>.patch file set, so changing it shifted the banner line's hunk context - 2 substantive lines per model. All four regenerated and re-checked with the same identity gate CI runs (build-scripts/ci/check_overlays.py): identity only, no shared-code reversion. Sibling builds unvalidated on metal."
+      "models_note": "Fleet-ported 2026-08-11, immediately after the v2.3.3 port. 7 shared files synced per model with post-commit parity 0 unsynced shared files against canon on all four; dicts already in sync (this rung changes none) and lockstep at 6296 lines. Port commits: rt-be86u d40c4c1e7e, rt-be88u 6f249685f8, gt-be98 e35d4d76b3, gt-be98-pro 8dfab50d63. UNLIKE v2.3.3, the overlays DID need regenerating: reaper_shell.asp is in every overlays/<MODEL>.patch file set, so changing it shifted the banner line's hunk context - 2 substantive lines per model. All four regenerated and re-checked with the same identity gate CI runs (build-scripts/ci/check_overlays.py): identity only, no shared-code reversion. Sibling builds unvalidated on metal.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.3",
@@ -2225,7 +2420,9 @@
       "date": "2026-08-11",
       "parent": "v2.3.2",
       "summary": "Security + de-cloud rung, built and metal-validated on RT-BE96U. Every remaining admin-browser request to the ASUS CDN is gone from the files that ship on this model, verified against the staged filesystem rather than the source tree: client_function.js leaked the name of every ASUS-made LAN device out of the admin browser and wrote the fetched icon into custom_usericon (49 shipped pages load it; an earlier pass fixed only the dashboard copy, which does not ship); the AdGuard banner was fetched from the CDN with the bundled copy wired only as an error fallback, so every visit to that page announced itself before quietly falling back; collected_FAQ, DNS_List, extend_sdn_scenarios, ui-model-name, extend_model_icon, tz_db and pppIspList_V2 now treat the bundled /ajax/ copy as authoritative; GameProfile.asp no longer fetches from ASUS and no longer re-arms itself every 5 seconds forever on failure; Open NAT, IPTV and VPN partner-server lists resolve locally. Per-game artwork removed outright (104 rules, 414 lines) - publisher-owned game art hosted by ASUS, not ours to re-host in a redistributed image, and after the CDN urls were dropped every rule pointed at the same bundled placeholder anyway. QoS: the imq0 ingress redirect is no longer emitted for the hardware engines, where only the tc/HTB engine builds the qdisc it feeds - metal showed 4,619 packets through a redirect that could never shape anything. rexport: values reached a curl -K config unvalidated, where a double quote closes the url string and a following 'output = <path>' directive is an arbitrary file write as root; validated at the httpd layer plus a runtime guard in the generated script. rmcpd: ASUS '>'-delimited security tuples walked through the structural secret scrub, so a live PSK could reach an operator transcript via the lab exec tool. rwatch: the armed log line hardcoded /jffs/rwatch even when the dump root is relocated to the durable store. Native firewall Phase 1 scaffolding is carried but inert - reaper_fw.c is not referenced by rc/Makefile, the page is unwired, and reaper_fw_enable defaults to 0. Second cut of this rung (2026-08-11, patches 0380-0388), all browser- and accounting-side: the post-flash wait doubled its poll chain every round - a failed XHR fires both readystatechange and error, so each round scheduled two successors and the tab genuinely locked up after a firmware upgrade, which is the real cause behind the 'frozen browser' reports (an escape-less veil was a second, lesser defect fixed earlier). Framed overlays - Please Wait, countdowns, progress bars - now anchor to the shell's visible slice rather than the framed document, so they centre on screen instead of in the iframe's viewport. QoS ships the owner's validated classful profile as the type-11 default (rates, weighted/priority mix, class names, preset rules) and the DSCP map is corrected - CS4/AF4x had been landing in Streaming and CS3/AF3x in Gaming, inverted against the class names; preset rules no longer classify by transferred bytes, which had been demoting long-lived streams into the bulk queue. A stored XSS in the client-picker dropdown is closed: the value crossed two parsers - HTML-decoded into an onclick attribute, then parsed as a JS string literal - so HTML-encoding alone was the wrong escape, and a hostile DHCP hostname reached admin context; the last shipped ASUS URL went with it. rtrafd now takes its byte counts from conntrack instead of the accelerator's flow table: /proc/fcache/nflist lists only accelerated flows, so fast downloads - the ones most likely to be offloaded - were the ones most likely to be missing from the traffic list, and br0 under-reported. Plus the Network Map is retired with the dashboard taking its rail slot, the AiMesh node model name centres over its MAC line, and the firmware, Data Export and USB/storage strings are translated across all 24 language packs (dicts in lockstep at 6297 lines). NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "Fleet-ported 2026-08-11. The four sibling branches were at Reaper_v2.3.1, two rungs behind, so this port carried v2.3.2 and v2.3.3 together: 47 shared files synced per model with port_sibling_v2 (post-commit parity 0 unsynced shared files against canon on all four), plus a separate language-dict sync. The dict step is deliberate - _port_protect classifies *.dict as protected, which is right for a same-version port but would have shipped raw <#TOKEN#> placeholders and English text in 24 languages across a version jump; verified additive-safe first (zero keys exist in a sibling dict that canon lacks, no sibling-side differing value carries model identity). All four dict sets are in lockstep at 6296 lines. Port commits: rt-be86u 523aee1792, rt-be88u 725b7296fb, gt-be98 11d7bb86e6, gt-be98-pro fd1c4e26b4, each followed by its dict commit. OVERLAYS NEEDED NO CHANGE, and this was proven rather than assumed: regenerating overlays/<MODEL>.patch from the ported branches reproduces the shipped file byte-for-byte except for 4 `index` blob-hash lines per model, the patch content being one banner-filename swap per file; CI applies overlays with `git apply --binary --whitespace=nowarn` and no --3way, so those hashes are never read. The decisive check: the published 388-patch series was replayed onto the pinned base and all four SHIPPED overlays apply clean to that exact tree (b034902b69, matching source_tree_from_series). Sibling builds are unvalidated on metal."
+      "models_note": "Fleet-ported 2026-08-11. The four sibling branches were at Reaper_v2.3.1, two rungs behind, so this port carried v2.3.2 and v2.3.3 together: 47 shared files synced per model with port_sibling_v2 (post-commit parity 0 unsynced shared files against canon on all four), plus a separate language-dict sync. The dict step is deliberate - _port_protect classifies *.dict as protected, which is right for a same-version port but would have shipped raw <#TOKEN#> placeholders and English text in 24 languages across a version jump; verified additive-safe first (zero keys exist in a sibling dict that canon lacks, no sibling-side differing value carries model identity). All four dict sets are in lockstep at 6296 lines. Port commits: rt-be86u 523aee1792, rt-be88u 725b7296fb, gt-be98 11d7bb86e6, gt-be98-pro fd1c4e26b4, each followed by its dict commit. OVERLAYS NEEDED NO CHANGE, and this was proven rather than assumed: regenerating overlays/<MODEL>.patch from the ported branches reproduces the shipped file byte-for-byte except for 4 `index` blob-hash lines per model, the patch content being one banner-filename swap per file; CI applies overlays with `git apply --binary --whitespace=nowarn` and no --3way, so those hashes are never read. The decisive check: the published 388-patch series was replayed onto the pinned base and all four SHIPPED overlays apply clean to that exact tree (b034902b69, matching source_tree_from_series). Sibling builds are unvalidated on metal.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.2",
@@ -2252,7 +2449,9 @@
       "date": "2026-08-10",
       "parent": "v2.3.1",
       "summary": "Fix rung. Reaper_Firmware.asp's flash overlay could trap the user with no way out (full-viewport click blocker, no dismiss path, two code paths that raised it and returned) - now escapable, with a heartbeat and an error guard, and the false 'image rejected' window widened from ~2 to ~5 min. QoS end-to-end review: qos_dscp_wmm now opt-in (it defaulted on and promoted all sub-512KB web traffic to Wi-Fi AC_VO), qos_default corrected to the class actually named Default, the DSCP->class map un-inverted, committed rates budgeted to 85% so qid0/qid6 keep a share, both hardware engines refuse to arm with no upload bandwidth, plus idempotence and tmctl error logging for the classful engine. Backlog sweep: QOSDIAG-1, B3-SEC-002 (shell injection via vpnc region/conntype), B5-SEC-002 (constant-time password compare), A3-REL-008 (rwatch dump rate-limit). NO IMAGES YET - this entry records the source rung; image hashes are added when the build ships.",
-      "models_note": "The published patch series is the RT-BE96U line. None of this rung's files appear in any overlays/<MODEL>.patch file set (verified 2026-08-10), so the sibling overlays are unchanged and every model picks these fixes up from the series."
+      "models_note": "The published patch series is the RT-BE96U line. None of this rung's files appear in any overlays/<MODEL>.patch file set (verified 2026-08-10), so the sibling overlays are unchanged and every model picks these fixes up from the series.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.3.1",
@@ -2292,7 +2491,9 @@
       "date": "2026-08-08",
       "parent": "v2.3.0",
       "summary": "Native firmware page rung: Reaper_Firmware.asp (Phase 2 - check, download, verify and flash from the router GUI) plus the update-check path fix so the check never routes through cfg_mnt/ASUS. Shipped fleet-wide (all five models, both variants, 19/19 on the verify gate) and published as five GitHub releases. This is the first release whose full patch series applies end-to-end onto the pinned base: patches 0246/0247/0252 (the v1.8.6a banner rename and version bump, and the v1.8.6c version bump) had never been extracted, which broke the replay at old patch 0247 for every release from v1.8.6a onward.",
-      "models_note": "The published patch series is the RT-BE96U line; siblings are produced by porting the shared code onto each per-model branch, so they are not independently patch-reproducible. The image SHAs above are RT-BE96U; per-model sums are in each SHA256SUMS-<MODEL>-Reaper_v2.3.1.txt."
+      "models_note": "The published patch series is the RT-BE96U line; siblings are produced by porting the shared code onto each per-model branch, so they are not independently patch-reproducible. The image SHAs above are RT-BE96U; per-model sums are in each SHA256SUMS-<MODEL>-Reaper_v2.3.1.txt.",
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.5",
@@ -2348,7 +2549,9 @@
       "source_tree_from_series": {
         "release/src/router": "704ee7691d64d8bce7026d3106695cb3c6057443",
         "release/src-rt": "967e3bea6bd7fc69d687680ea83ab4e4460e5201"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.4",
@@ -2404,7 +2607,9 @@
       "source_tree_from_series": {
         "release/src/router": "0b6887ba7baf9390711e89b249ce8688351d1bae",
         "release/src-rt": "212e9e67bd9fbc952e073be8e65cf112881fb2f9"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.3",
@@ -2455,7 +2660,9 @@
       "source_tree_from_series": {
         "release/src/router": "db42a58edfe3d3307c92b2ce4385833f776fdde4",
         "release/src-rt": "9f98bed0e70817b304efd41e760e81c606eea206"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.2",
@@ -2506,7 +2713,9 @@
       "source_tree_from_series": {
         "release/src/router": "94b75307a71c86125e054ad8628734d138f91cf9",
         "release/src-rt": "6d199e5fa9468526ec9b68d47deca8fe1cf83f8e"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.1",
@@ -2557,7 +2766,9 @@
       "source_tree_from_series": {
         "release/src/router": "4b4c8704a96f2821199b2f594db1c447736b26a9",
         "release/src-rt": "475fbccb2d09ebe70e113b9ee3cdb76d11ed78f1"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.1.0",
@@ -2613,7 +2824,9 @@
       "source_tree_from_series": {
         "release/src/router": "38647570d5bc7db56447a2a9a927c65e73518632",
         "release/src-rt": "5faca3f896def375685e353e3af2e7e2a8490d11"
-      }
+      },
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.8",
@@ -2631,7 +2844,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.7",
@@ -2649,7 +2864,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.6",
@@ -2667,7 +2884,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.5",
@@ -2685,7 +2904,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.4",
@@ -2703,7 +2924,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.3",
@@ -2721,7 +2944,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.2",
@@ -2739,7 +2964,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.1",
@@ -2757,7 +2984,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v2.0.0",
@@ -2775,7 +3004,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.9d",
@@ -2793,7 +3024,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.9c",
@@ -2811,7 +3044,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.9b",
@@ -2829,7 +3064,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.9a",
@@ -2847,7 +3084,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.9",
@@ -2865,7 +3104,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.7",
@@ -2883,7 +3124,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.6",
@@ -2901,7 +3144,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.5",
@@ -2919,7 +3164,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.4",
@@ -2937,7 +3184,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.3",
@@ -2955,7 +3204,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.2",
@@ -2973,7 +3224,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.1",
@@ -2991,7 +3244,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.9.0",
@@ -3009,7 +3264,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.9",
@@ -3027,7 +3284,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.8",
@@ -3045,7 +3304,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.7",
@@ -3063,7 +3324,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.6c",
@@ -3081,7 +3344,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.6b",
@@ -3099,7 +3364,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.6a",
@@ -3117,7 +3384,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     },
     {
       "version": "v1.8.6",
@@ -3135,7 +3404,9 @@
       "verifiable": false,
       "models": [
         "RT-BE96U"
-      ]
+      ],
+      "base": "a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3",
+      "series_ref": "a0eb45f04c387ed3c5079645092a4a392ca90315"
     }
   ]
 }

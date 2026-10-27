@@ -150,7 +150,7 @@ for eng in ("start_hwqos", "start_hwqos_classful"):
 page = open(os.path.join(SRC, "www", "Reaper_QoS.asp"), encoding="utf-8", errors="replace").read()
 check("QoS page: the note sits by the engine choice, hidden until wan0_ifname is a vlanNNNN device",
       'id="rqos_trunknote"' in page and "<#RQOS_125#>" in page
-      and "wanif:   '<% nvram_get(\"wan0_ifname\"); %>'" in page
+      and "wanif:   <% nvram_get_js(\"wan0_ifname\"); %>" in page
       and "/^vlan[0-9]+$/.test(NV.wanif)" in page
       and page.find('id="modes"') < page.find('id="rqos_trunknote"'))
 packs = [x for x in glob.glob(os.path.join(SRC, "www", "*.dict")) if not x.endswith("temp.dict")]

@@ -1,0 +1,1692 @@
+From cd900bb972f06d520e4073a62f81b84ab58efd2b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 09:38:44 -0400
+Subject: [PATCH] www: Reaper edits on conditionally-removed stock pages
+ restored onto upstream's text
+
+The unshipped-page list used by the replay driver and the end sweep was read from
+every rm in www/Makefile, including the ones inside ifeq/ifneq blocks, so pages
+this build does ship (AiMesh.asp, Advanced_FirmwareUpgrade_Content.asp,
+Advanced_OperationMode_Content.asp, ...) had been reset to upstream's text and
+two Reaper pages the Makefile removes only in some configurations
+(Reaper_Advisor.asp, Reaper_SNMP.asp) had been dropped. Each page with a Reaper
+edit is a three-way merge of the pre-rebase copy onto upstream's 40585 text; the
+two Reaper pages come back verbatim. Pages with stock drift only stay upstream's.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ .../www/AdaptiveQoS_Bandwidth_Monitor.asp     |  19 +-
+ .../www/Advanced_FirmwareUpgrade_Content.asp  |  86 ++---
+ .../src/router/www/Advanced_IPTV_Content.asp  |   3 +-
+ .../www/Advanced_OperationMode_Content.asp    |  14 +-
+ .../src/router/www/Advanced_Smart_Connect.asp | 189 +++++++++-
+ .../router/www/Advanced_System_Content.asp    |  14 +-
+ .../router/www/Advanced_WANPort_Content.asp   |  13 +-
+ .../src/router/www/Advanced_WWPS_Content.asp  |  10 +-
+ release/src/router/www/AiMesh.asp             |  21 ++
+ .../router/www/Main_DHCPStatus_Content.asp    |  60 ++-
+ .../src/router/www/Main_WStatus_Content.asp   |   9 +-
+ release/src/router/www/Reaper_Advisor.asp     | 349 ++++++++++++++++++
+ release/src/router/www/Reaper_SNMP.asp        | 220 +++++++++++
+ .../src/router/www/Tools_OtherSettings.asp    |  84 ++++-
+ .../VPNC_V2/Advanced_VPNClient_Content.asp    |  50 ++-
+ .../VPNS_V2/Advanced_VPNServer_Content.asp    |  46 ++-
+ 16 files changed, 1044 insertions(+), 143 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_Advisor.asp
+ create mode 100644 release/src/router/www/Reaper_SNMP.asp
+
+diff --git a/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp b/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
+index fa1830d3e0f..78cc642e0a8 100644
+--- a/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
++++ b/release/src/router/www/AdaptiveQoS_Bandwidth_Monitor.asp
+@@ -825,21 +825,10 @@ function render_app_icon(apps_array){
+         const icon = document.querySelector('.appIcons[data-type="'+apps_array[i][3]+'-'+apps_array[i][4]+'"]');
+         if(icon){
+             if(!icon.classList.contains('cloudIcon') && !icon.classList.contains('noCloudIcon')){
+-                fetch('https://nw-dlcdnet.asus.com/plugin/app_icons/'+ apps_array[i][3] +'-'+ apps_array[i][4] +'-0.png')
+-                    .then(response => {
+-                        if (!response.ok) {
+-                            throw new Error('Network response was not ok');
+-                        }
+-                        return response.blob();
+-                    })
+-                    .then(blob => {
+-                        const imageUrl = URL.createObjectURL(blob)
+-                        icon.style.backgroundImage = `url(${imageUrl})`;
+-                        icon.classList.add('cloudIcon');
+-                    })
+-                    .catch(error => {
+-                        //
+-                    })
++                /* reaper de-cloud: do not fetch per-app icons from nw-dlcdnet.asus.com -
++                   that request leaks the user's app set to ASUS. Keep the bundled default
++                   icon and mark the slot done so it isn't retried. */
++                icon.classList.add('noCloudIcon');
+             }
+         }
+     }
+diff --git a/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp b/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
+index a3fb15b83e1..ee72be28135 100644
+--- a/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
++++ b/release/src/router/www/Advanced_FirmwareUpgrade_Content.asp
+@@ -196,8 +196,16 @@ if(cfg_sync_support){
+ 	var cfg_check = '<% nvram_get("cfg_check"); %>';
+ 	var cfg_upgrade = '<% nvram_get("cfg_upgrade"); %>';
+ }
+-download_url_redir = "https://fwupdate.asuswrt-merlin.net/" + based_modelid;
+-download_url = "https://www.asuswrt-merlin.net/download";
++/* reaper 2026-10-15: the check and the upgrade go through AiMesh (cfg_mnt) only
++   when at least one node is paired - then cfg_mnt runs start_fw_check on every
++   unit, which execs each unit's own webs_update.sh (Reaper's manifest check on a
++   Reaper unit, the vendor's on a stock node), and sequences the upgrade with
++   "start_webs_upgrade 1" (download-only on a Reaper unit since 2026-10-15).
++   A router with no node keeps the direct Reaper check it has always used. */
++var reaper_mesh_nodes = ('<% nvram_get("cfg_relist"); %>' != '' || '<% nvram_get("cfg_relist_x"); %>' != '');
++/* reaper: firmware comes from the Reaper GitHub project, not ASUS/Merlin */
++download_url_redir = "https://github.com/TheUnboundDeveloper/AM-Reaper/releases";
++download_url = "https://github.com/TheUnboundDeveloper/AM-Reaper/releases";
+ 
+ /* Disable these for Asuswrt-Merlin */
+ afwupg_support=false;
+@@ -227,7 +235,7 @@ var extendno = '<% nvram_get("extendno"); %>';
+ var FWString = '';
+ FWString = firmver.replace(/\./g,"") + "." + buildno;
+ if ((extendno != "") && (extendno != "0"))
+-	FWString += "_"+extendno;
++	FWString += "_"+extendno.replace(/^reaper/,"Reaper");
+ 
+ if(gobi_support){
+ 	var mobile_upgrade_md5 = "";
+@@ -817,7 +825,9 @@ function detect_firmware(flag){
+ 		},
+ 
+ 		success: function(){
+-			if(cfg_sync_support){
++			/* reaper: result polling must match the path detect_update() took -
++			   cfg_check for the AiMesh path, webs_state_* for the direct one. */
++			if(cfg_sync_support && reaper_mesh_nodes){
+ 				if(cfg_check == "" || cfg_check == "0" || cfg_check == "1" || cfg_check == "5"){
+ 					setTimeout("detect_firmware();", 1000);
+ 				}
+@@ -949,7 +959,13 @@ function detect_update(){
+ 	document.getElementById('update_states').innerHTML="Checking for available updates...";
+ 	document.getElementById('update_scan').style.display="";
+ 	document.getElementById('update').disabled = true;
+-	if(cfg_sync_support){
++	/* reaper 2026-10-15: through cfg_mnt only with a node paired (see
++	   reaper_mesh_nodes). The earlier note here - "cfg_mnt asks ASUS's servers
++	   and bypasses reaper_webs_update.sh" - was wrong for this router: cfg_mnt's
++	   check runs rc start_fw_check, which execs /usr/sbin/webs_update.sh, i.e.
++	   the Reaper script. Turning the path off cost every Reaper main router the
++	   ability to check or upgrade its nodes. */
++	if(cfg_sync_support && reaper_mesh_nodes){
+ 		cfgsync_firmware_check();
+ 	}
+ 	else{
+@@ -2202,7 +2218,7 @@ function get_mobile_fw_upgrade_status(){
+ 					<li><#FW_n0#></li>
+ 					<li><#FW_n1#></li>
+ 					<li id="fw_note2"><#FW_n2#>&nbsp;<#FW_n3#></li>
+-					<li id="fw_note3">Get the latest firmware version from the download site at <a style="font-weight: bolder;text-decoration: underline;color:#FFFFFF;" href="https://www.asuswrt-merlin.net/download/" target="_blank">https://www.asuswrt-merlin.net/download/</a></li>
++					<li id="fw_note3">Get the latest Reaper firmware from the project releases page at <a style="font-weight: bolder;text-decoration: underline;color:#FFFFFF;" href="https://github.com/TheUnboundDeveloper/AM-Reaper/releases" target="_blank">github.com/TheUnboundDeveloper/AM-Reaper/releases</a></li>
+ 					<li style="display:none;"id="fw_note5"><#FW_n5#></li>
+ 					</ol>
+ 		  </div>
+@@ -2269,56 +2285,14 @@ function get_mobile_fw_upgrade_status(){
+ 			</tr>
+ 		</table>
+ 
+-		<table id="secur_stab_setting" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
+-			<thead>
+-			<tr>
+-				<td colspan="2"><#Secur_Stab_auto_upgrade#></td>
+-			</tr>	
+-			</thead>
+-			<tr>
+-				<th><#Secur_Stab_auto_upgrade#></th>
+-				<td>
+-					<div align="center" class="left" style="width:75px; float:left; cursor:pointer;" id="switch_security_update_enable"></div>
+-					<script type="text/javascript">
+-						$('#switch_security_update_enable').iphoneSwitch(httpApi.securityUpdate.get(),
+-								function () {
+-									//on
+-									PolicyStatus()
+-                                        .then(data => {
+-                                            if (data.PP < 1) {
+-                                                const policyModal = new PolicyModalComponent({
+-                                                    policy: "PP",
+-                                                    policyStatus: data,
+-                                                    agreeCallback: () => {
+-                                                        httpApi.securityUpdate.set(1);
+-                                                    },
+-                                                    knowRiskCallback: () => {
+-                                                        alert(`<#ASUS_POLICY_Function_Confirm#>`);
+-                                                        location.reload();
+-                                                    }
+-                                                });
+-                                                policyModal.show();
+-                                                return false;
+-                                            } else {
+-                                                httpApi.securityUpdate.set(1);
+-                                            }
+-                                        });
+-								},
+-								function () {
+-									//off
+-									httpApi.securityUpdate.set(0);
+-								}
+-						);
+-					</script>
+-				</td>	
+-			</tr>
+-
+-			<tr>
+-				<td colspan="2">
+-					<#Secur_Stab_auto_upgrade_desc#>
+-				</td>
+-			</tr>
+-		</table>
++		<!-- reaper de-cloud (2026-08-06): the stock "Security Update" (TrendMicro
++		     signature auto-upgrade) section is removed. It is ASUS cloud machinery
++		     (httpApi.securityUpdate + the ASUS privacy-policy modal) that does
++		     nothing on the de-clouded build; the stock auto-firmware-upgrade
++		     scheduler above it is likewise already stripped at load
++		     (afwupg_support=false). Reaper's own update check is the
++		     firmware_check_enable toggle + the Check button below, which drive the
++		     GitHub manifest check (reaper_webs_update.sh). -->
+ 
+ 		<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
+ 			<thead>
+diff --git a/release/src/router/www/Advanced_IPTV_Content.asp b/release/src/router/www/Advanced_IPTV_Content.asp
+index db288cb16ce..1e674c012a8 100644
+--- a/release/src/router/www/Advanced_IPTV_Content.asp
++++ b/release/src/router/www/Advanced_IPTV_Content.asp
+@@ -223,7 +223,8 @@ function initial(){
+ }
+ 
+ function get_cloud_profiles(){
+-	$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/iptv_profile.json",
++	$.when({}).done(  /* reaper de-cloud: no browser->ASUS-CDN request. IPTV ISP profiles were fetched
++		   from ASUS; bundled/manual profiles only. */
+ 		function(data){
+ 			Object.keys(data).forEach(function(profile_name) {
+ 				var newProfile = {};
+diff --git a/release/src/router/www/Advanced_OperationMode_Content.asp b/release/src/router/www/Advanced_OperationMode_Content.asp
+index f692812c5ac..e3eda7da4c7 100644
+--- a/release/src/router/www/Advanced_OperationMode_Content.asp
++++ b/release/src/router/www/Advanced_OperationMode_Content.asp
+@@ -414,29 +414,27 @@ function saveMode(){
+ 			confirmFlag = confirm(sdn_change_mode_hint.replace("#OPMODE", $("#apMode").find("label").html()));
+ 		}
+ 		if(confirmFlag){
+-			parent.location.href = '/QIS_wizard.htm?flag=lanip';
++			/* reaper 2026-10-15 (rung B): the native step page, not the stock wizard */
++			parent.location.href = '/Reaper_ModeSetup.asp?mode=ap';
+ 		}
+ 		return false;
+ 	}
+ 	else if(document.form.sw_mode.value == 4){
+-		parent.location.href = '/QIS_wizard.htm?flag=sitesurvey_mb';
++		parent.location.href = '/Reaper_ModeSetup.asp?mode=mb';	/* reaper rung B */
+ 		return false;
+ 	}
+ 	else if(document.form.sw_mode.value == 5){
+ 		parent.location.href = '/QIS_wizard.htm?flag=amasnode_page';
+ 		return false;
+ 	}
+-	else if(document.form.sw_mode.value == 6){
+-		parent.location.href = '/QIS_wizard.htm?flag=wispMode';
+-		return false;
+-	}
++	/* reaper rung B: the WISP branch (sw_mode 6) is gone - RTCONFIG_WISP is unset on the roster, its radio is never shown */
+ 	else{ // default router
+ 		let confirmFlag = true;
+ 		if(isSupport("mtlancfg") && sw_mode_orig == "3"){
+ 			confirmFlag = confirm(sdn_change_mode_hint.replace("#OPMODE", $("#routerMode").find("label").html()));
+ 		}
+ 		if(confirmFlag){
+-			parent.location.href = '/QIS_wizard.htm?flag=rtMode';
++			parent.location.href = '/Reaper_ModeSetup.asp?mode=rt';	/* reaper rung B */
+ 		}
+ 		return false;		
+ 	}
+@@ -675,7 +673,7 @@ function setScenerion(mode, express){
+ 		if(odmpid == "RT-AC66U_B1" || odmpid == "RT-AC1750_B1" || odmpid == "RT-N66U_C1" || odmpid == "RT-AC1900U" || odmpid == "RT-AC67U")
+ 			$("#Senario").css({"height": "", "background": "url(/images/RT-AC66U_V2/rt.jpg) center no-repeat", "margin": "auto", "margin-bottom": "30px"});
+ 		else
+-			$("#Senario").css({"height": "", "background": "url(/images/New_ui/rt.jpg) center no-repeat", "margin": "auto", "margin-bottom": "30px"});
++			$("#Senario").css({"height": "260px", "background": "url(/images/New_ui/rt_reaper.png) center/contain no-repeat", "margin": "auto", "margin-bottom": "30px"});
+ 		var desc = "";
+ 		if(amesh_support && ameshRouter_support) {
+ 			desc += "<#AiMesh_GW_desc#>";
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index db8e9cbd65d..9aa96735060 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -129,6 +129,8 @@ let phyRate = [1148, 4804, 4804, 4804];
+ 
+ function initial(){
+ 	show_menu();
++	setupSmartConnectToggle();
++	scExcluded = 0;		/* reaper: recount excluded bands on every (re)generation */
+ 	genBand();
+ 	genSteerLoadBalance();
+ 	genSteerBWUtilization();		// Steering Trigger BW Utilization
+@@ -147,6 +149,7 @@ function initial(){
+ 	genIfQualityaCapability();
+ 
+ 	genBounceDetect();
++	genSmartConnectExcludedNote();	/* reaper: explain any "- -" columns */
+ }
+ 
+ function isSmartConnectSelifBand(band){
+@@ -178,6 +181,34 @@ function isSmartConnectSelifBand(band){
+ 	return false;
+ }
+ 
++/* reaper 2026-08-11: every "- -" on this page means ONE thing - that band's slot
++ * bit is clear in smart_connect_selif_x, so isSmartConnectSelifBand() is false and
++ * the row is suppressed. It does NOT mean the band has no policy: the page has
++ * already parsed wl<n>_bsd_steering_policy et al into bsd_steering_policy_array[i]
++ * for every band before it decides to print this. Rendered bare, "- -" reads as
++ * "broken" - which is exactly how it was reported from the field.
++ *
++ * Worth knowing when reading a screenshot of this page: the bit index is the
++ * band's slot in the FIXED five-slot bandName array ["2G","5G1","5G2","6G1","6G2"],
++ * not the wl unit index and not the position among the bands this router has. On a
++ * tri-band 2.4/5/6 box that means 6 GHz needs bit 3, so masks 3 and 7 render
++ * IDENTICALLY (bit 2 is 5G2, a radio that does not exist) - and shared/defaults.c
++ * ships "3" for HAS_6G models on purpose ("don't invole 6GHz band in smart connect
++ * by default"), so 6 GHz showing "- -" out of the box is stock intent, not a fault.
++ * The band selection itself lives on Wireless -> General, not here. */
++let scExcluded = 0;
++function scExcludedCell(styleAttr){
++	scExcluded++;
++	return `<td ${styleAttr} align="center" title="This band is not part of the Smart Connect group, so it has no steering rules to show. Its settings are not lost - ${RP_SDN_MIGRATED ? 'band membership is managed on the Network page (open the main network and choose its Wi-Fi bands)' : 'add the band under Wireless &gt; General to edit them'}." style="cursor:help">- -</td>`;
++}
++
++/* Show the explanation under the tables only when something is actually hidden. */
++function genSmartConnectExcludedNote(){
++	const el = document.querySelector('#sc_excluded_note');
++	if(!el) return;
++	el.style.display = scExcluded ? '' : 'none';
++}
++
+ function genBand(){
+ 	let code = '<th style="width:20%"><#Interface#></th>';
+ 
+@@ -197,12 +228,18 @@ function genSteerLoadBalance(){
+ 			flag = true;
+ 		}
+ 
+-		code += '<td align="center">';
++		/* reaper 2026-08-11: this branch opened a <td>, wrote "- -" and then
++		   `continue`d - skipping the `code += '</td>'` at the bottom of the loop, so
++		   the cell was never closed and every later cell in the row nested inside it.
++		   Emit the whole cell in one piece instead (and open the <td> only on the
++		   path that actually closes it). */
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '- -';
++			code += scExcludedCell('');
+ 			continue;
+ 		}
+-		
++
++		code += '<td align="center">';
++
+ 		if(flag){
+ 			code += '<input type="radio" value="1" id="wl'+ i +'_bsd_steering_balance_yes" name="wl'+ i +'_bsd_steering_balance" onchange="loadBalanceChange('+ i +', this)" checked><#checkbox_Yes#>';
+ 			code += '<input type="radio" value="0" id="wl'+ i +'_bsd_steering_balance_no" name="wl'+ i +'_bsd_steering_balance" onchange="loadBalanceChange('+ i +', this)"><#checkbox_No#>';
+@@ -222,7 +259,7 @@ function genSteerBWUtilization(){
+ 	let code = '<th><#smart_connect_Bandwidth#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -242,7 +279,7 @@ function genStreerRSSI(){
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -271,7 +308,7 @@ function genSteerPhyRateLess(){
+ 	let code = '<th><#PHY_Rate_Less#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -290,7 +327,7 @@ function genSteerPhyRateGreat(){
+ 	let code = '<th><#PHY_Rate_Greater#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -309,7 +346,7 @@ function genSteerCapability(){
+ 	let code = '<th><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -351,7 +388,7 @@ function genStaRSSI(){
+ 	let code = '<th>RSSI</th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -380,7 +417,7 @@ function genStaPhyRateLess(){
+ 	let code = '<th style="width:20%"><#PHY_Rate_Less#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -399,7 +436,7 @@ function genStaPhyRateGreat(){
+ 	let code = '<th style="width:20%"><#PHY_Rate_Greater#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td align="center" style="width:20%">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -418,7 +455,7 @@ function genStaCapability(){
+ 	let code = '<th style="width:20%"><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -460,7 +497,7 @@ function genIfQualityBWUtilization(){
+ 	let code = '<th><#smart_connect_Bandwidth#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -479,7 +516,7 @@ function genIfQualityaCapability(){
+ 	let code = '<th style="width:20%"><#Capability#></th>';
+ 	for(let i=0; i<wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += '<td style="width:20%" align="center">- -</td>';
++			code += scExcludedCell('style="width:20%"');
+ 			continue;
+ 		}
+ 
+@@ -532,7 +569,7 @@ function genIfSelectBand(){
+ 	let code = '<th style="width:20%"><#Interface_target#></th>';
+ 	for(let i=0; i< wl_info.wl_if_total; i++){
+ 		if(!isSmartConnectSelifBand(bandList[i])){
+-			code += `<td style="width:${80/parseInt(bandList.length)}%;" align="center">- -</td>`;
++			code += scExcludedCell(`style="width:${80/parseInt(bandList.length)}%;"`);
+ 			continue;
+ 		}
+ 
+@@ -912,6 +949,112 @@ function showClientlistModal(){
+ 	const clientlistModal = new ClientlistModel();
+ 	clientlistModal.show();
+ }
++
++/*
++	Master Smart Connect on/off toggle.
++	smart_connect_x: 0 = Disabled (each radio broadcasts independently, no band steering),
++	                 1/2/3 = Enabled (see SMRTCONN_* in shared.h). The whole Steering /
++	                 STA / Interface-Qualify / Bounce-Detect rule set on this page only takes
++	                 effect while smart_connect_x != 0, so turning it off here disables every
++	                 Smart Connect function and control at once.
++*/
++function isSmartConnectEnabled(){
++	return parseInt(variable['smart_connect_x']) > 0;
++}
++
++/* reaper v2.9.4: once cfg_server has performed the SDN migration (main network
++   on the MAINFH subunit-1 profiles), band membership is owned by the Network
++   page and the classic smart_connect_x/selif pair no longer drives anything -
++   the old toggle set nvram, fired a bare restart_wireless, and the per-band
++   profiles came back unchanged: a dead switch (owner, metal, 2026-08-30).
++   Rewriting sdn_rl from this classic page is NOT attempted - mis-serializing it
++   takes down every SSID; the SDN app owns that write. Detect the state from
++   sdn_rl itself (enum/numeric fields only, no user text). */
++var RP_SDN_MIGRATED = (httpApi.nvramGet(["sdn_rl"]).sdn_rl || '').indexOf('MAINFH') >= 0;
++var RP_NETPAGE = '/reaper_shell.asp#SDN.asp';
++
++function setupSmartConnectToggle(){
++	var btn = document.getElementById('smartConnectToggle');
++	if(!btn) return;
++
++	if(RP_SDN_MIGRATED){
++		/* not a dead switch, not a hand-forged sdn_rl: point at the owner */
++		btn.value = 'Manage on Network page';
++		btn.title = 'In this firmware state the main network\'s band membership is managed on the Network page - open the main network there and choose its Wi-Fi bands.';
++		var hintEl = document.getElementById('scWhereHint');
++		if(hintEl) hintEl.innerHTML = 'Choose which radios take part on the <b>Network</b> page &mdash; open the main network and pick its Wi-Fi bands.';
++		return;
++	}
++
++	if(isSmartConnectEnabled()){
++		btn.value = 'Disable Smart Connect';
++		btn.title = 'Turn off Smart Connect (band steering) for all radios';
++		// inline !important: reaper_content.css force-shows .formfontdesc,
++		// which kept this box visible while Smart Connect was on
++		var disc = document.getElementById('scDisableDisclaimer');
++		if(disc) disc.style.setProperty('display', 'none', 'important');
++	}
++	else{
++		btn.value = 'Enable Smart Connect';
++		btn.title = 'Turn Smart Connect (band steering) back on for all radios';
++		// Surface the band-steering caveat while Smart Connect is off.
++		var disc = document.getElementById('scDisableDisclaimer');
++		if(disc) disc.style.display = '';
++		// Grey out the rule set: nothing on this page applies while Smart Connect is off.
++		var div = document.getElementById('bsd_steering_div');
++		if(div){
++			div.style.opacity = '0.4';
++			div.style.pointerEvents = 'none';
++		}
++	}
++}
++
++function toggleSmartConnect(){
++	if(RP_SDN_MIGRATED){
++		/* v2.9.4: the classic pair is inert here - go where the control lives */
++		top.location = RP_NETPAGE;
++		return;
++	}
++
++	var setObj = {};
++
++	if(isSmartConnectEnabled()){
++		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nNote: if your radios share the same SSID, a device may stay on a less-than-optimal band (e.g. 2.4 GHz instead of 5 / 6 GHz). Set a preferred band on the device, or disconnect/reconnect to re-select; give each band its own SSID to make the choice explicit.\n\nWireless will restart.')){
++			return;
++		}
++		setObj['smart_connect_x'] = '0';
++	}
++	else{
++		if(!confirm('Enable Smart Connect?\n\nAll radios will be steered as one Smart Connect group.\n\nWireless will restart.')){
++			return;
++		}
++		setObj['smart_connect_x'] = '1';	// SMRTCONN_FULL_BANDS
++		if(typeof smart_connect_v2_support !== 'undefined' && smart_connect_v2_support){
++			// v2 selects participating bands via a bitmask; (re)select every available band.
++			// The mask is indexed by BAND SLOT, not by how many bands exist: bit i means
++			// bandName[i] of ["2G","5G1","5G2","6G1","6G2"] - the same mapping
++			// isSmartConnectSelifBand() reads back. Counting the present bands instead
++			// (2^bandList.length - 1) is wrong for any radio set with a gap in it. On a
++			// tri-band RT-BE96U (2G + 5G1 + 6G1) the correct mask is bits 0,1,3 = 11,
++			// but 2^3-1 = 7 = bits 0,1,2 = 2G + 5G1 + 5G2: it selects a 5 GHz-2 radio
++			// that does not exist and silently drops 6 GHz out of the steering group.
++			var selifMask = 0;
++			for(var b=0; b<bandName.length; b++){
++				if(get_wl_unit_by_band(bandName[b]) != '') selifMask |= (1 << b);
++			}
++			setObj['smart_connect_selif_x'] = '' + selifMask;
++		}
++	}
++
++	setObj['action_mode'] = 'apply';
++	setObj['rc_service'] = 'restart_wireless';
++	httpApi.nvramSet(setObj, function(){
++		showLoading(10);
++		setTimeout(function(){
++			location.reload();
++		}, 10000);
++	});
++}
+ </script>
+ </head>
+ 
+@@ -954,8 +1097,20 @@ function showClientlistModal(){
+ 			<div>&nbsp;</div>
+ 			<div class="formfonttitle"><#menu5_1#> - <#smart_connect_rule#></div>
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+-			<div class="formfontdesc"><#smart_connect_hint#></div>
+-			<div style="text-align:right;margin-top:-36px;padding-bottom:3px;"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div>
++			<div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:8px;">
++			<div class="formfontdesc" style="flex:1;margin-bottom:0;"><#smart_connect_hint#></div>
++			<div style="white-space:nowrap;padding-top:2px;"><input type="button" id="smartConnectToggle" class="button_gen" style="margin-right:8px;" value="Smart Connect" onClick="toggleSmartConnect();"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div></div>
++			<div id="scDisableDisclaimer" class="formfontdesc" style="display:none;color:#FFCC00;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #FFCC00;border-radius:4px;background:rgba(255,204,0,0.06);">
++				<b>Heads up &mdash; Smart Connect is off.</b> Band steering no longer moves your devices between the 2.4 / 5 / 6 GHz radios. If those radios share the same SSID, a device may stay connected to a less-than-optimal band (for example 2.4 GHz instead of 5 GHz or 6 GHz). Set a preferred band on the device itself if that option is available; if it is not, disconnect and reconnect to the Wi-Fi to let the device re-select the preferred band. To make the choice explicit, give each band its own separate SSID.
++			</div>
++			<!-- reaper 2026-08-11: a bare "- -" column reads as a broken page. It only ever
++			     means the band is not in the Smart Connect group (its slot bit is clear in
++			     smart_connect_selif_x); the band's steering policy still exists and is
++			     re-shown the moment the band is added back. Shown only when a column is
++			     actually suppressed - see genSmartConnectExcludedNote(). -->
++			<div id="sc_excluded_note" class="formfontdesc" style="display:none;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #6b8fa3;border-radius:4px;background:rgba(107,143,163,0.10);">
++				<b>Some bands show &ldquo;- -&rdquo;.</b> Those radios are not part of the Smart Connect group, so there are no steering rules to display for them. Nothing has been lost &mdash; each band keeps its own policy and it reappears here as soon as the band is added back. <span id="scWhereHint">Choose which radios take part under <b>Wireless &gt; General</b>.</span>
++			</div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+ 					<thead>
+diff --git a/release/src/router/www/Advanced_System_Content.asp b/release/src/router/www/Advanced_System_Content.asp
+index 745f55c0435..1a0973e9f96 100644
+--- a/release/src/router/www/Advanced_System_Content.asp
++++ b/release/src/router/www/Advanced_System_Content.asp
+@@ -1842,6 +1842,7 @@ function appendMonitorOption(obj){
+ 	}
+ }
+ 
++
+ var isPingListOpen = 0;
+ function create_DNSlist_view(){
+ 	//count ping_target
+@@ -1884,17 +1885,8 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-					}
+-				}
+-			}
+-		);
++		/* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++		   /ajax/DNS_List.json above is authoritative. */
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/Advanced_WANPort_Content.asp b/release/src/router/www/Advanced_WANPort_Content.asp
+index bfe8dc459d1..997c0124315 100644
+--- a/release/src/router/www/Advanced_WANPort_Content.asp
++++ b/release/src/router/www/Advanced_WANPort_Content.asp
+@@ -1880,17 +1880,8 @@ function updatDNSListOnline(){
+ 				return local_data[e];
+ 		});
+ 
+-		$.getJSON("https://nw-dlcdnet.asus.com/plugin/js/DNS_List.json",
+-			function(cloud_data){
+-				if(JSON.stringify(local_data) != JSON.stringify(cloud_data)){
+-					if(Object.keys(cloud_data).length > 0){
+-						DNSService = Object.keys(cloud_data).map(function(e){
+-							return cloud_data[e];
+-						});
+-					}
+-				}
+-			}
+-		);
++		/* reaper de-cloud: no browser->ASUS-CDN request. The bundled
++		   /ajax/DNS_List.json above is authoritative. */
+ 	});
+ }
+ 
+diff --git a/release/src/router/www/Advanced_WWPS_Content.asp b/release/src/router/www/Advanced_WWPS_Content.asp
+index 86efde8025d..bdced2ef8ca 100644
+--- a/release/src/router/www/Advanced_WWPS_Content.asp
++++ b/release/src/router/www/Advanced_WWPS_Content.asp
+@@ -753,14 +753,16 @@ function changemethod(wpsmethod){
+ }
+ 
+ function _change_wl_unit_status(__unit){
+-	document.titleForm.current_page.value = "Advanced_Wireless_Content.asp?af=wl_auth_mode_x";
+-	document.titleForm.next_page.value = "Advanced_Wireless_Content.asp?af=wl_auth_mode_x";
++	/* reaper 2026-09-20: the authentication method lives on the Network menu (SDN profile) now */
++	document.titleForm.current_page.value = "SDN.asp";
++	document.titleForm.next_page.value = "SDN.asp";
+ 	change_wl_unit_status(__unit);
+ }
+ 
+ function _change_wl_advanced_unit_status(__unit){
+-	document.titleForm.current_page.value = "Advanced_WAdvanced_Content.asp?af=wl_radio";
+-	document.titleForm.next_page.value = "Advanced_WAdvanced_Content.asp?af=wl_radio";
++	/* reaper 2026-09-20: Enable Radio is on Wireless > Settings (the stock page is SUP-redirected there) */
++	document.titleForm.current_page.value = "Reaper_WiFiSettings.asp";
++	document.titleForm.next_page.value = "Reaper_WiFiSettings.asp";
+ 	change_wl_unit_status(__unit);
+ }
+ 
+diff --git a/release/src/router/www/AiMesh.asp b/release/src/router/www/AiMesh.asp
+index fa07fbba4d3..93c9337eaff 100644
+--- a/release/src/router/www/AiMesh.asp
++++ b/release/src/router/www/AiMesh.asp
+@@ -22,6 +22,7 @@
+ <script type="text/javascript" src="/state.js"></script>
+ <script type="text/javascript" src="/js/httpApi.js"></script>
+ <script type="text/javascript" src="/client_function.js"></script>
++<script>var REAPER_HTTPID = '<% nvram_get("http_id"); %>';	/* reaper v3.3.1: token for the non-routing node-card overlay in aimesh_topology.html (reaper_dev.cgi action=status is gated) */</script>
+ <script type="text/javascript" src="/form.js"></script>
+ <script type="text/javascript" src="/js/collected_FAQ.js"></script>
+ <script>
+@@ -53,8 +54,24 @@ if(theme == "WHITE"){
+ if(isSupport("TS_UI"))
+ 	$('link').last().after('<link rel="stylesheet" type="text/css" href="css/difference.css">');
+ 
++/* reaper 2026-10-15: cfg_server - the AiMesh controller - is started by rc
++   start_cfgsync() only when cfg_master=1 or x_Setting=1 (RTCONFIG_MASTER_DET).
++   Stock forced its setup wizard, which sets x_Setting, so a stock main router
++   never sat at 0. Reaper keeps x_Setting=0 until setup (that is what keeps a
++   factory box findable as a node) and the box is usable meanwhile - so until
++   the setup box runs there is no cfg_server: Add node finds nothing and the
++   page looks empty. Same root as the Network page's main-network notice; same
++   cure, the setup box, which sets x_Setting and reboots into a working CAP. */
++function reaperAiMeshNotice(){
++	var sw = '<% nvram_get("sw_mode"); %>', psta = '<% nvram_get("wlc_psta"); %>', re = '<% nvram_get("re_mode"); %>';
++	var xs = '<% nvram_get("x_Setting"); %>', master = '<% nvram_get("cfg_master"); %>';
++	var routerOrAp = (sw == "1") || (sw == "3" && psta != "1");
++	if(routerOrAp && re != "1" && xs != "1" && master != "1")
++		document.getElementById("rams_setup_notice").style.display = "";
++}
+ function initial(){
+ 	show_menu();
++	reaperAiMeshNotice();
+ 	$("#AiMesh_Topology").load("/aimesh/aimesh_topology.html", function(){
+ 		setTimeout(function(){
+ 			$('link').filter("[href*='/aimesh/aimesh_topology.css']").after('<link rel="stylesheet" type="text/css" href="/aimesh/aimesh_system_settings.css">');
+@@ -115,6 +132,10 @@ function change_tab(_index){
+ 			<table width="98%" border="0" align="left" cellpadding="0" cellspacing="0">
+ 				<tr>
+ 					<td align="left" valign="top">
++						<div id="rams_setup_notice" style="display:none;width:760px;box-sizing:border-box;margin:0 0 10px;padding:12px 16px;border-radius:6px;background:rgba(224,169,59,.10);border:1px solid rgba(224,169,59,.38);box-shadow:inset 3px 0 0 #E0A93B;">
++							<span style="font-size:13px;line-height:1.5;color:#ECE7DB;"><#RAMS_10#></span>
++							<a href="Reaper_WiFiSetup.asp" style="display:inline-block;margin-left:12px;font-weight:600;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;background:#E0A93B;color:#1a1206;text-decoration:none;border-radius:6px;padding:7px 11px;white-space:nowrap;"><#RWFS_1#></a>
++						</div>
+ 						<table width="760px" border="0" cellpadding="5" cellspacing="0" class="FormTitle" id="FormTitle" style="border-radius:3px;">
+ 							<tbody>
+ 								<tr>
+diff --git a/release/src/router/www/Main_DHCPStatus_Content.asp b/release/src/router/www/Main_DHCPStatus_Content.asp
+index 22081f36fb4..939a83ae35c 100644
+--- a/release/src/router/www/Main_DHCPStatus_Content.asp
++++ b/release/src/router/www/Main_DHCPStatus_Content.asp
+@@ -47,7 +47,30 @@ if (isSupport("UI4")) {
+ 
+ function initial() {
+ 	show_menu();
+-	show_leases();
++	fetchDeviceNames(show_leases);
++}
++
++/* reaper: unified device-name overlay - same source/priority every other page
++ * uses (custom_clientlist nickName, else networkmap auto-name), keyed by MAC */
++var devNameByMac = {};
++function fetchDeviceNames(cb) {
++	$.getJSON("/appGet.cgi?hook=get_clientlist()&_=" + Date.now(), function(data){
++		try {
++			var cl = (data && data.get_clientlist) ? data.get_clientlist : (data || {});
++			var ml = cl.maclist || [];
++			for (var i = 0; i < ml.length; i++) {
++				var mac = String(ml[i]), c = cl[mac];
++				if (!c) continue;
++				var nm = (c.nickName && String(c.nickName).length) ? String(c.nickName)
++					: ((c.name && String(c.name).length) ? String(c.name) : "");
++				if (nm) devNameByMac[mac.toUpperCase()] = nm;
++			}
++		} catch(e) {}
++		if (cb) cb();
++	}).fail(function(){ if (cb) cb(); });
++}
++function escDevName(s) {
++	return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+ }
+ 
+ function pad(num, size) {
+@@ -77,22 +100,45 @@ function show_leases() {
+ 			else
+ 				var popupHandler = `onclick="oui_query_full_vendor('${line[1].toUpperCase()}');overlib_str_tmp='${overlib_str}';return overlib('${overlib_str}');" onmouseout="nd();"`;
+ 
+-			leasearray[i][1] = `<span ${popupHandler} style="cursor:pointer; text-decoration:underline; ${macFieldStyle}">${line[1].toUpperCase()}</span>`;
++			var leaseMac = line[1].toUpperCase();
++			/* reaper 2026-08-11: the trailing field is the admin-assigned name that
++			   ej_get_leases_array() resolved from custom_clientlist server-side.
++			   That is the authoritative source and, unlike the get_clientlist()
++			   overlay below, it is present even when networkmap has never catalogued
++			   (or has aged out) the device - which is why this column used to show an
++			   em-dash for hosts the Devices page named just fine. The overlay is kept
++			   as a SECOND source so networkmap's auto-derived names still appear for
++			   devices the admin has never renamed. */
++			var custName = String(line.pop() || "");
++			var devName = custName || devNameByMac[leaseMac] || "";
++			var devNameHtml = devName ? escDevName(devName) : "&mdash;";
++			leasearray[i][1] = `<span ${popupHandler} style="cursor:pointer; text-decoration:underline; ${macFieldStyle}">${leaseMac}</span>`;
++			leasearray[i].splice(2, 0, devNameHtml);	// unified Device Name column after MAC
++			/* The table API writes every cell with jQuery .html() (js/table/table.js),
++			   so the self-reported DHCP hostname - which any LAN client chooses for
++			   itself - lands in an HTML sink. Escape it here; index 4 is the hostname
++			   in both the plain and the MULTILAN row shapes after the splice above. */
++			leasearray[i][4] = escDevName(String(leasearray[i][4] == null ? "" : leasearray[i][4]));
+ 		}
+ 
+ 		var headerarray = [{
+ 		                        "title" : "Time Left",
+-		                        "width" : "20%",
++		                        "width" : "16%",
+ 		                        "sort" : "str"
+ 		                    },
+ 		                    {
+ 		                        "title" : "MAC Address",
+-		                        "width" : "20%",
++		                        "width" : "18%",
++		                        "sort" : "str"
++		                    },
++		                    {
++		                        "title" : "Device Name",
++		                        "width" : "21%",
+ 		                        "sort" : "str"
+ 		                    },
+ 		                    {
+ 		                        "title" : "IP Address",
+-		                        "width" : "20%",
++		                        "width" : "16%",
+ 		                        "sort" : "ip",
+ 		                        "defaultSort" : "increase"
+ 		                    }];
+@@ -100,7 +146,7 @@ function show_leases() {
+ 		if (isSupport("mtlancfg")) {
+ 			headerarray.push({
+ 			                    "title" : "Hostname",
+-			                    "width" : "35%",
++			                    "width" : "24%",
+ 			                    "sort" : "str"
+ 			                },
+ 			                {
+@@ -111,7 +157,7 @@ function show_leases() {
+ 		} else {
+ 			headerarray.push({
+ 			                    "title" : "Hostname",
+-			                    "width" : "40%",
++			                    "width" : "29%",
+ 			                    "sort" : "str"
+ 			                });
+ 		}
+diff --git a/release/src/router/www/Main_WStatus_Content.asp b/release/src/router/www/Main_WStatus_Content.asp
+index bb45975948c..fa21473fa7a 100644
+--- a/release/src/router/www/Main_WStatus_Content.asp
++++ b/release/src/router/www/Main_WStatus_Content.asp
+@@ -129,12 +129,17 @@ function redraw(){
+ 	var bandname_array = [];
+ 	var code = "";
+ 
+-	if (based_modelid === 'GT-AXE16000') {
++	if (based_modelid === 'GT-AXE16000' || based_modelid === 'GT-BE98' || based_modelid === 'BQ16') {
++		// reaper: GT-BE98 (non-Pro) shares the GT-AXE16000 quad-band layout
++		// (wl0=5G-1, wl1=5G-2, wl2=6G, wl3=2.4G). Stock only special-cased
++		// GT-AXE16000/GT-BE98_PRO, so GT-BE98 fell into the generic tri-band
++		// else and mis-mapped the radios (2.4 GHz radio + its clients dropped,
++		// 5 GHz-2 section omitted). This branch orders/labels all four correctly.
+ 		apinfo_array = [dataarray3, dataarray0, dataarray1, dataarray2];
+ 		client_array = [wificlients3, wificlients0, wificlients1, wificlients2];
+ 		dfs_array = [[],dfs_statusarray0, dfs_statusarray1, []];
+ 		bandname_array = ["2.4 GHz", "5 GHz-1", "5 GHz-2", "6 GHz"];
+-	} else if (based_modelid === 'GT-BE98_PRO') {
++	} else if (based_modelid === 'GT-BE98_PRO' || based_modelid === 'BQ16_PRO') {
+ 		apinfo_array = [dataarray3, dataarray0, dataarray1, dataarray2];
+ 		client_array = [wificlients3, wificlients0, wificlients1, wificlients2];
+ 		dfs_array = [[], dfs_statusarray0, [], []];
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+new file mode 100644
+index 00000000000..c349a4a2862
+--- /dev/null
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -0,0 +1,349 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#Reaper_c_ai_advisor#></title>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line-soft:rgba(255,255,255,.06); --line:rgba(225,6,0,.16);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:22px 26px 60px}
++h1,h2,h3,.hdr{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++a{color:var(--bone-dim)} a:hover{color:var(--bone)}
++.pagehead{display:flex;align-items:center;gap:14px;margin-bottom:8px;flex-wrap:wrap}
++.pagehead h1{font-size:24px;font-weight:700}
++.spacer{flex:1}
++.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-soft);border-radius:999px;
++  padding:5px 12px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.06em;color:var(--bone-dim);background:var(--panel)}
++.pill .dot{width:8px;height:8px;border-radius:50%;background:var(--steel)}
++.pill.armed .dot{background:var(--jade);box-shadow:0 0 8px var(--jade)}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;padding:9px 16px;cursor:pointer;text-transform:uppercase}
++.btn:hover{border-color:var(--line)}
++.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.ghost{background:transparent}
++.btn:disabled{opacity:.4;cursor:not-allowed}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:16px;max-width:820px}
++.panel h2{font-size:17px;font-weight:700;margin-bottom:4px}
++.panel .sub{font-size:12.5px;color:var(--steel);margin-bottom:14px}
++.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
++label.fld{display:block;font-size:12px;color:var(--bone-dim);margin-bottom:5px}
++.fhint{font-size:11.5px;color:var(--steel);margin-top:5px;line-height:1.4}
++input[type=text],input[type=password],input[type=number]{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:8px;
++  color:var(--bone);font-family:var(--body);font-size:14px;padding:9px 12px;min-width:240px}
++input:focus{outline:none;border-color:var(--line)}
++.note{font-size:12.5px;line-height:1.55}
++.banner{border:1px solid var(--line);border-radius:12px;background:linear-gradient(180deg,rgba(225,6,0,.06),transparent);
++  padding:14px 16px;margin-bottom:18px;max-width:820px}
++.banner ul{margin:8px 0 0;padding-left:18px}
++.banner li{margin:3px 0;font-size:12.5px}
++.creds{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;margin-top:12px}
++.creds .k{font-size:11px;color:var(--steel);text-transform:uppercase;letter-spacing:.1em}
++.creds .v{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--bone);word-break:break-all;margin:2px 0 10px}
++pre.snip{background:#0a0a0c;border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;overflow-x:auto;
++  font-size:12px;color:var(--bone-dim);white-space:pre;max-width:100%}
++.count{font-family:var(--hdr);font-size:15px;color:var(--amber)}
++.msg{font-size:12.5px;margin-top:8px;min-height:16px}
++.msg.err{color:var(--crimson)}
++.msg.ok{color:var(--jade)}
++.hide{display:none!important}
++.hr{height:1px;background:var(--line-soft);margin:16px 0;border:0}
++.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
++@media(max-width:680px){.grid2{grid-template-columns:1fr}}
++</style>
++</head>
++<body>
++<div class="pagehead">
++  <div class="eyebrow">Reaper</div>
++  <h1><#Reaper_c_ai_advisor#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#416-ai-advisor-mcp-build-only" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
++  <span id="statePill" class="pill"><span class="dot"></span><span id="stateTxt"><#RADV_77#></span></span>
++  <button class="btn ghost" onclick="loadStatus()"><#CTL_refresh#></button>
++  <div class="spacer"></div>
++</div>
++
++<div class="banner note">
++  <#RADV_01#>
++  <ul>
++    <li><#RADV_02#></li>
++    <li><#RADV_03#></li>
++    <li><#RADV_04#></li>
++    <li><#RADV_05#></li>
++    <li><#RADV_06#></li>
++    <li><#RADV_07#></li>
++  </ul>
++</div>
++
++<!-- PROVISION -->
++<div class="panel">
++  <h2>1 &middot; <#RADV_08#></h2>
++  <div class="sub"><#RADV_09#></div>
++  <div id="provState" class="note"></div>
++  <div class="row" id="oldRow" style="display:none">
++    <div>
++      <label class="fld" for="oldcode"><#RADV_10#></label>
++      <input type="password" id="oldcode" autocomplete="off" placeholder="<#RADV_11#>">
++    </div>
++  </div>
++  <div class="row">
++    <div>
++      <label class="fld" for="code"><#RADV_12#></label>
++      <input type="text" id="code" autocomplete="off" spellcheck="false" placeholder="<#RADV_13#>">
++    </div>
++    <button class="btn" onclick="genCode()"><#CTL_Generate#></button>
++    <button class="btn primary" onclick="provision()"><#RADV_14#></button>
++    <button class="btn ghost" onclick="deprovision()"><#CTL_clear#></button>
++  </div>
++  <div id="provMsg" class="msg"></div>
++</div>
++
++<!-- USB KEY (optional 2nd factor) -->
++<div class="panel">
++  <h2>2 &middot; <#RADV_15#> <span style="color:var(--steel);font-weight:400;font-size:13px"><#RADV_16#></span></h2>
++  <div class="sub"><#RADV_17#></div>
++  <div id="usbState" class="note"></div>
++  <div class="row">
++    <button class="btn primary" onclick="usbEnroll()"><#RADV_18#></button>
++    <button class="btn ghost" onclick="usbUnenroll()"><#RADV_19#></button>
++  </div>
++  <div class="note" style="color:var(--steel)"><#RADV_20#> <span class="mono">reaper.key</span> <#RADV_21#></div>
++  <div id="usbMsg" class="msg"></div>
++</div>
++
++<!-- SETTINGS -->
++<div class="panel">
++  <h2>3 &middot; <#Settings#></h2>
++  <div class="sub"><#RADV_22#></div>
++  <div class="grid2">
++    <div><label class="fld" for="port"><#RADV_23#> (1024&ndash;65535)</label><input type="number" id="port" min="1024" max="65535"></div>
++    <div><label class="fld" for="timeout"><#RADV_24#> (15&ndash;240 min)</label><input type="number" id="timeout" min="15" max="240"></div>
++    <div><label class="fld" for="client"><#RADV_25#></label><input type="text" id="client" autocomplete="off" spellcheck="false">
++      <!-- v3.1.0 (backlog): the example + "blank = any host" sentence clipped as a
++           placeholder in this cell; it reads in full as a hint line instead -->
++      <div class="fhint"><#RADV_26#></div></div>
++  </div>
++  <div class="row"><button class="btn" onclick="saveSettings()"><#RADV_27#></button></div>
++  <div id="setMsg" class="msg"></div>
++</div>
++
++<!-- ARM -->
++<div class="panel">
++  <h2>4 &middot; <#RADV_28#></h2>
++  <div class="sub"><#RADV_29#></div>
++  <div class="row">
++    <div><label class="fld" for="armcode"><#RADV_08#></label><input type="password" id="armcode" autocomplete="off" placeholder="<#RADV_30#>"></div>
++    <button class="btn primary" id="armBtn" onclick="arm()"><#RADV_31#></button>
++    <button class="btn ghost" id="disarmBtn" onclick="disarm()"><#RADV_32#></button>
++  </div>
++  <div class="row" style="margin-top:8px">
++    <label class="fld" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400">
++      <input type="checkbox" id="netdiag"> <#RADV_73#>
++    </label>
++  </div>
++  <div class="sub" style="margin-top:2px"><#RADV_74#></div>
++  <div id="armMsg" class="msg"></div>
++
++  <div id="armedBox" class="creds hide">
++    <div class="k"><#RADV_33#></div><div class="v"><span id="countdown" class="count">&mdash;</span></div>
++    <div class="k"><#RADV_34#></div><div class="v" id="epUrl">&mdash;</div>
++    <div class="k"><#RADV_76#></div><div class="v" id="epUrl6">&mdash;</div>
++    <div class="k"><#RADV_35#></div><div class="v" id="epTok">&mdash;</div>
++    <hr class="hr">
++    <div class="k"><#RADV_36#></div>
++    <pre class="snip" id="snip">&mdash;</pre>
++    <button class="btn" onclick="copySnip()"><#RADV_75#></button>
++    <div class="note" style="margin-top:10px;color:var(--steel)">
++      <#RADV_37#> (<span class="mono">https</span>) <#RADV_38#> <span class="mono">http</span> <#RADV_39#> <span class="mono">mcp-remote</span> <#RADV_40#>
++    </div>
++  </div>
++</div>
++
++<script src="/reaper_util.js"></script>
++<script>
++var CGI = '/reaper_mcp.cgi';
++var REAPER_HTTPID = <% nvram_get_js("http_id"); %>;  /* F4 CSRF token */
++var endExpiry = 0, ticker = null, provisionedNow = false;
++
++function post(action, params){
++  var body = 'action=' + encodeURIComponent(action) + '&http_id=' + encodeURIComponent(REAPER_HTTPID);
++  if(params) for(var k in params) body += '&' + k + '=' + encodeURIComponent(params[k]);
++  return fetch(CGI, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body})
++    .then(function(r){return r.text();}).then(function(t){ try{return JSON.parse(t);}catch(e){return {ok:0,error:`<#RADV_41#>`};} });
++}
++
++function setMsg(id, text, cls){ var e=document.getElementById(id); e.textContent=text||''; e.className='msg'+(cls?(' '+cls):''); }
++
++function fmtLeft(sec){ if(sec<0)sec=0; var m=Math.floor(sec/60), s=sec%60; return m+'m '+(s<10?'0':'')+s+'s'; }
++
++function loadStatus(){
++  post('status').then(function(d){
++    var pill=document.getElementById('statePill'), txt=document.getElementById('stateTxt');
++    if(d.armed){ pill.className='pill armed'; txt.textContent=`<#RADV_42#>`; endExpiry=d.expiry; startTicker(); document.getElementById('armedBox').classList.remove('hide'); }
++    else { pill.className='pill'; txt.textContent=`<#RADV_77#>`; document.getElementById('armedBox').classList.add('hide'); stopTicker(); }
++    document.getElementById('provState').innerHTML = d.provisioned
++      ? `<span style="color:var(--jade)"><#RADV_43#></span> <#RADV_44#>`
++      : `<span style="color:var(--amber)"><#RADV_45#></span> <#RADV_46#>`;
++    document.getElementById('oldRow').style.display = d.provisioned ? '' : 'none';
++    provisionedNow = !!d.provisioned;
++    document.getElementById('usbState').innerHTML = d.usb_enrolled
++      ? `<span style="color:var(--jade)"><#RADV_47#></span> <#RADV_48#>`
++      : `<span style="color:var(--steel)"><#RADV_49#></span> <#RADV_50#>`;
++    if(d.port) document.getElementById('port').value=d.port;
++    if(d.timeout) document.getElementById('timeout').value=d.timeout;
++    /* prefill the IP pin so it is retained across visits/applies (empty = any LAN host) */
++    document.getElementById('client').value = (typeof d.client!=='undefined' ? d.client : '');
++    document.getElementById('armBtn').disabled = !d.provisioned || (d.locked?true:false);
++    if(d.locked) setMsg('armMsg',`<#RADV_51#>`,'err');
++  });
++}
++
++function genCode(){
++  var a=new Uint8Array(16); (crypto||window.crypto).getRandomValues(a);
++  var abc='0123456789ABCDEFGHJKMNPQRSTVWXYZ', out='';
++  for(var i=0;i<a.length;i++){ out+=abc[a[i]&31]; if(i%4===3 && i<a.length-1) out+='-'; }
++  document.getElementById('code').value=out;
++}
++
++/* CGI error keys (ek) -> localized text; the raw English d.error stays the
++   fallback so an unmapped/new key still surfaces (pre-v2.1.1 these messages
++   bypassed the dict entirely) */
++var AERR = {
++  RADVE_1:`<#RADVE_1#>`, RADVE_2:`<#RADVE_2#>`, RADVE_3:`<#RADVE_3#>`, RADVE_4:`<#RADVE_4#>`,
++  RADVE_5:`<#RADVE_5#>`, RADVE_6:`<#RADVE_6#>`, RADVE_7:`<#RADVE_7#>`, RADVE_8:`<#RADVE_8#>`,
++  RADVE_9:`<#RADVE_9#>`, RADVE_10:`<#RADVE_10#>`, RADVE_11:`<#RADVE_11#>`, RADVE_12:`<#RADVE_12#>`,
++  RADVE_13:`<#RADVE_13#>`, RADVE_14:`<#RADVE_14#>`, RADVE_15:`<#RADVE_15#>`, RADVE_16:`<#RADVE_16#>`,
++  RADVE_17:`<#RADVE_17#>`, RADVE_18:`<#RADVE_18#>`, RADVE_19:`<#RADVE_19#>`
++};
++function aerr(d, fb){ return (d && d.ek && AERR[d.ek]) || (d && d.error) || fb; }
++
++function provision(){
++  var code=document.getElementById('code').value.trim();
++  if(code.length<12){ setMsg('provMsg',`<#RADV_52#>`,'err'); return; }
++  var p={code:code};
++  if(provisionedNow){
++    var oc=document.getElementById('oldcode').value;
++    if(!oc){ setMsg('provMsg',`<#RADV_53#>`,'err'); return; }
++    p.oldcode=oc;
++  }
++  post('provision',p).then(function(d){
++    if(d.ok){ setMsg('provMsg',`<#RADV_54#>`,'ok'); document.getElementById('code').value=''; document.getElementById('oldcode').value=''; loadStatus(); }
++    else setMsg('provMsg', aerr(d,`<#RADV_55#>`), 'err');
++  });
++}
++
++function deprovision(){
++  if(!confirm(`<#RADV_56#>`)) return;
++  var p={};
++  if(provisionedNow){
++    var c=prompt(`<#RADV_57#>`); if(!c) return; p.code=c;
++  }
++  post('deprovision',p).then(function(d){ setMsg('provMsg', d.ok?`<#RADV_58#>`:aerr(d,`<#RADV_55#>`), d.ok?'ok':'err'); loadStatus(); });
++}
++
++function usbEnroll(){
++  setMsg('usbMsg',`<#RADV_59#>`,'');
++  post('usb_enroll').then(function(d){
++    if(d.ok){ setMsg('usbMsg',`<#RADV_60#>`+esc(d.volume)+`<#RADV_61#>`,'ok'); loadStatus(); }
++    else setMsg('usbMsg', aerr(d,`<#RADV_55#>`), 'err');
++  });
++}
++function usbUnenroll(){
++  if(!confirm(`<#RADV_62#>`)) return;
++  var p={};
++  if(provisionedNow){
++    var c=prompt(`<#RADV_57#>`); if(!c) return; p.code=c;
++  }
++  post('usb_unenroll',p).then(function(d){ setMsg('usbMsg', d.ok?`<#RADV_63#>`:aerr(d,`<#RADV_55#>`), d.ok?'ok':'err'); loadStatus(); });
++}
++
++/* themed waiting modal lives in the framing shell (reaper_shell.asp) */
++function rwait(m){ var w=(window.parent&&window.parent.reaperWait)?window.parent:window; if(w.reaperWait) w.reaperWait(m); }
++function rdone(){ var w=(window.parent&&window.parent.reaperWaitDone)?window.parent:window; if(w.reaperWaitDone) w.reaperWaitDone(); }
++function saveSettings(){
++  var port=parseInt(document.getElementById('port').value,10);
++  var to=parseInt(document.getElementById('timeout').value,10);
++  var cl=document.getElementById('client').value.trim();
++  if(!(port>=1024&&port<=65535)){ setMsg('setMsg',`<#RADV_64#>`,'err'); return; }
++  if(!(to>=15&&to<=240)){ setMsg('setMsg',`<#RADV_65#>`,'err'); return; }
++  var f=new FormData();
++  f.append('action_mode','apply'); f.append('rmcp_port',''+port); f.append('rmcp_timeout',''+to); f.append('rmcp_client',cl);
++  f.append('http_id',REAPER_HTTPID);  /* F4 CSRF token - applyapp.cgi needs it to persist */
++  rwait(`<#Reaper_c_applying#>`);
++  fetch('/applyapp.cgi',{method:'POST',body:new URLSearchParams(f)}).then(function(r){
++    rdone();
++    if(r.ok){ setMsg('setMsg',`<#RADV_66#>`,'ok'); } else { setMsg('setMsg',`<#RADV_55#>`,'err'); }
++  }).catch(function(){ rdone(); setMsg('setMsg',`<#RADV_55#>`,'err'); });
++}
++
++function arm(){
++  var code=document.getElementById('armcode').value;
++  if(!code){ setMsg('armMsg',`<#RADV_67#>`,'err'); return; }
++  setMsg('armMsg',`<#RADV_68#>`,'');
++  var nd = document.getElementById('netdiag').checked ? 1 : 0;
++  rwait(`<#Reaper_c_applying#>`);
++  post('arm',{code:code, netdiag:nd}).then(function(d){
++    rdone();
++    document.getElementById('armcode').value='';
++    if(!d.ok){ setMsg('armMsg', aerr(d,`<#RADV_69#>`), 'err'); loadStatus(); return; }
++    setMsg('armMsg',`<#RADV_70#>`,'ok');
++    endExpiry=d.expiry;
++    document.getElementById('epUrl').textContent=d.url;
++    document.getElementById('epUrl6').textContent=d.url6||'-';   /* IPv6 A8: present when the LAN holds an IPv6 address */
++    document.getElementById('epTok').textContent=d.token;
++    document.getElementById('snip').textContent=buildSnip(d.url,d.token);
++    document.getElementById('armedBox').classList.remove('hide');
++    startTicker(); loadStatus();
++  });
++}
++
++function disarm(){ post('disarm').then(function(){ setMsg('armMsg',`<#RADV_71#>`,'ok'); loadStatus(); }); }
++
++function buildSnip(url,tok){
++  return '{\n  "mcpServers": {\n    "reaper-router": {\n      "url": "'+url+'",\n      "headers": { "Authorization": "Bearer '+tok+'" }\n    }\n  }\n}';
++}
++function copySnip(){ var t=document.getElementById('snip').textContent; if(navigator.clipboard) navigator.clipboard.writeText(t); }
++
++var tickN=0;
++function startTicker(){ stopTicker(); tickN=0; ticker=setInterval(tick,1000); tick(); }
++function stopTicker(){ if(ticker){clearInterval(ticker);ticker=null;} }
++function tick(){
++  var left=endExpiry-Math.floor(Date.now()/1000);
++  document.getElementById('countdown').textContent=fmtLeft(left);
++  if(left<=0){ stopTicker(); loadStatus(); return; }
++  /* reaper v1.4.9: re-poll the server every ~5s so a server-side session end
++     (USB key pulled, session timeout, or disarm) flips the UI to locked promptly
++     instead of counting down a session the router has already torn down. */
++  if((++tickN % 5)===0){
++    post('status').then(function(d){
++      if(!d.armed){ stopTicker(); setMsg('armMsg',`<#RADV_72#>`,'err'); loadStatus(); }
++      else if(d.expiry){ endExpiry=d.expiry; }
++    });
++  }
++}
++
++loadStatus();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_SNMP.asp b/release/src/router/www/Reaper_SNMP.asp
+new file mode 100644
+index 00000000000..b91d5e050aa
+--- /dev/null
++++ b/release/src/router/www/Reaper_SNMP.asp
+@@ -0,0 +1,220 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; SNMP</title>
++<!-- Reaper_SNMP.asp - Administration > SNMP (Reaper-native UI wave 1, 2026-10-23).
++     Replaces Advanced_SNMP_Content.asp: the same nine settings (parity file
++     build-scripts/tests/ui_parity/Advanced_SNMP_Content.json) on the kit, only the changed ones posted.
++     What rc/snmpd.c does with them, and the page says so: SNMPv3 only (v1/v2c communities are never
++     written), the v3 user is the router login name, both passphrases are cut to one token (spaces and
++     control characters dropped) and net-snmp refuses one shorter than 8 - so the page asks for 8 to 64
++     printable characters without spaces, and only while SNMP is on (the stock page's privacy-password
++     check blocked Apply even with SNMP off). restart_snmpd also rebuilds the firewall (the WAN rule). -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++/* page-specific rules only; the Reaper look comes from /reaper/rp.css */
++.frow input.mid{width:320px} .frow select{min-width:160px}
++.frow.off,.panel.off{display:none}
++.frow.bad input,.frow.bad select{border-color:var(--crimson)!important;box-shadow:0 0 0 2px rgba(225,6,0,.25)}
++.msg{font-size:12.5px;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;min-width:0;display:none}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_6#></div>
++    <h1>SNMP</h1>
++  </div>
++  <span class="pill" id="statepill"><span class="dot"></span><span id="statetext"></span></span>
++  <div class="spacer"></div>
++  <span class="pill warn chgpill" id="chgpill"><span class="dot"></span><span><#RADM_77#>: <b id="chgcount">0</b></span></span>
++  <button type="button" class="btn ghost" id="discardbtn" disabled><#Discard#></button>
++  <button type="button" class="btn primary" id="applybtn"><#CTL_apply#></button>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#RSNM_01#></div>
++
++<div class="rframe">
++<div class="panel" id="p_agent">
++  <h2><#RSNM_02#></h2>
++  <div class="secerr"><#RADM_78#></div>
++  <div class="frow"><div class="fl"><#RSNM_03#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_snmpd_enable"><span class="track"></span></label></div></div>
++  <div class="frow on1" id="r_wan"><div class="fl"><#RSNM_04#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_snmpd_wan"><span class="track"></span></label></div><div class="fh"><#RSNM_05#></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_06#></div><div class="fc"><input type="text" class="mid" id="i_sysName" maxlength="255" autocomplete="off"></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_07#></div><div class="fc"><input type="text" class="mid" id="i_sysLocation" maxlength="255" autocomplete="off"></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_08#></div><div class="fc"><input type="text" class="mid" id="i_sysContact" maxlength="255" autocomplete="off"></div><div class="fh"><#RSNM_09#></div></div>
++</div>
++
++<div class="panel" id="p_user">
++  <h2><#RSNM_10#></h2>
++  <div class="sub"><#RSNM_11#></div>
++  <div class="secerr"><#RADM_78#></div>
++  <div class="frow on1"><div class="fl"><#RSNM_12#></div><div class="fc"><span class="fv mono" id="v3user"></span></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_13#></div><div class="fc"><select id="s_v3_auth_type"><option value="SHA">SHA</option><option value="MD5">MD5</option></select></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_14#></div><div class="fc"><input type="password" class="mid mono" id="i_v3_auth_passwd" maxlength="64" autocomplete="new-password"></div><div class="fh"><#RSNM_18#></div></div>
++  <div class="frow on1"><div class="fl"><#RSNM_15#></div><div class="fc"><select id="s_v3_priv_type"><option value="AES">AES</option><option value="DES">DES</option><option value="NONE"><#wl_securitylevel_0#></option></select></div></div>
++  <div class="frow on1" id="r_privpw"><div class="fl"><#RSNM_16#></div><div class="fc"><input type="password" class="mid mono" id="i_v3_priv_passwd" maxlength="64" autocomplete="new-password"></div></div>
++  <div class="frow on1"><div class="fl"></div><div class="fc"><label class="chk"><input type="checkbox" id="c_showpw"><#RSNM_17#></label></div></div>
++</div>
++</div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RADM_61#></p></div></div>
++<iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
++<form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
++  <input type="hidden" name="current_page" value="Reaper_SNMP.asp">
++  <input type="hidden" name="next_page" value="Reaper_SNMP.asp">
++  <input type="hidden" name="action_mode" value="apply">
++  <input type="hidden" name="action_script" value="">
++  <input type="hidden" name="action_wait" value="5">
++  <input type="hidden" name="snmpd_enable" value="" disabled>
++  <input type="hidden" name="snmpd_wan" value="" disabled>
++  <input type="hidden" name="sysName" value="" disabled>
++  <input type="hidden" name="sysLocation" value="" disabled>
++  <input type="hidden" name="sysContact" value="" disabled>
++  <input type="hidden" name="v3_auth_type" value="" disabled>
++  <input type="hidden" name="v3_auth_passwd" value="" disabled>
++  <input type="hidden" name="v3_priv_type" value="" disabled>
++  <input type="hidden" name="v3_priv_passwd" value="" disabled>
++</form>
++
++<script>
++(function(){
++'use strict';
++/* everything stays inside this closure: a page-level name can shadow reaper_util.js's window.esc and friends */
++var q = rp.q;
++var chk = rp.chk, U = rp.dec, msg = rp.msg, on = rp.on, setChk = rp.setChk, show = rp.show;   /* the kit's copies (rp.js) */
++var SW = <% nvram_get_js("sw_mode"); %>;
++var ROUTER = (SW === '1');
++
++/* what the box holds now: the page posts only what differs from this */
++var NV = {
++  snmpd_enable: <% nvram_get_js("snmpd_enable"); %>, snmpd_wan: <% nvram_get_js("snmpd_wan"); %>,
++  sysName: U('<% nvram_char_to_ascii("","sysName"); %>'), sysLocation: U('<% nvram_char_to_ascii("","sysLocation"); %>'),
++  sysContact: U('<% nvram_char_to_ascii("","sysContact"); %>'),
++  /* review 2026-10-24 (S-C2-2): the passphrases never ride the page source - a presence flag each, an empty field
++     that posts only when typed (the Internet page's pattern) */
++  v3_auth_type: <% nvram_get_js("v3_auth_type"); %>, v3_auth_passwd: '', v3_auth_set: '<% nvram_match("v3_auth_passwd", "", "0"); %>' !== '0',
++  v3_priv_type: <% nvram_get_js("v3_priv_type"); %>, v3_priv_passwd: '', v3_priv_set: '<% nvram_match("v3_priv_passwd", "", "0"); %>' !== '0',
++  http_username: U('<% nvram_char_to_ascii("","http_username"); %>')
++};
++/* an empty nvram value means the default (shared/defaults.c): compare against what the control shows for it */
++(function(){ var D = {snmpd_enable: '0', snmpd_wan: '0', v3_auth_type: 'SHA', v3_priv_type: 'AES'}, k;
++  for (k in D) if (NV[k] === '') NV[k] = D[k]; })();
++
++function isOn(v){ return v === '1'; }
++function shown(id){ var e = q(id); return !!e && !e.classList.contains('off'); }
++function pick(sel, v){ var i; for (i = 0; i < sel.options.length; i++) if (sel.options[i].value === v){ sel.value = v; return; } }
++
++/* ---------- sections: each initialises in its own guard and contributes its own fields ---------- */
++var SECTIONS = [], BROKEN = {};
++function section(panel, init, collect){ SECTIONS.push({panel: panel, init: init, collect: collect}); }
++
++section('p_agent', function(){
++  setChk('t_snmpd_enable', isOn(NV.snmpd_enable)); setChk('t_snmpd_wan', isOn(NV.snmpd_wan));
++  q('i_sysName').value = NV.sysName; q('i_sysLocation').value = NV.sysLocation; q('i_sysContact').value = NV.sysContact;
++}, function(c){
++  c.snmpd_enable = chk('t_snmpd_enable');
++  /* the WAN rule is a router-mode firewall rule; outside router mode the switch is hidden and the value kept */
++  c.snmpd_wan = ROUTER ? chk('t_snmpd_wan') : NV.snmpd_wan;
++  c.sysName = q('i_sysName').value.trim(); c.sysLocation = q('i_sysLocation').value.trim(); c.sysContact = q('i_sysContact').value.trim();
++});
++
++section('p_user', function(){
++  q('v3user').textContent = NV.http_username;
++  pick(q('s_v3_auth_type'), NV.v3_auth_type); pick(q('s_v3_priv_type'), NV.v3_priv_type);
++  q('i_v3_auth_passwd').value = ''; q('i_v3_auth_passwd').placeholder = NV.v3_auth_set ? '********' : '';
++  q('i_v3_priv_passwd').value = ''; q('i_v3_priv_passwd').placeholder = NV.v3_priv_set ? '********' : '';
++}, function(c){
++  c.v3_auth_type = q('s_v3_auth_type').value; c.v3_auth_passwd = q('i_v3_auth_passwd').value;
++  c.v3_priv_type = q('s_v3_priv_type').value;
++  /* a hidden privacy password (privacy None) keeps what nvram holds */
++  c.v3_priv_passwd = shown('r_privpw') ? q('i_v3_priv_passwd').value : NV.v3_priv_passwd;
++});
++
++function sync(){
++  var on = q('t_snmpd_enable').checked, rows = document.querySelectorAll('.frow.on1'), i;
++  for (i = 0; i < rows.length; i++) rows[i].classList.toggle('off', !on);
++  show('p_user', on);
++  if (on){ show('r_wan', ROUTER); show('r_privpw', q('s_v3_priv_type').value !== 'NONE'); }
++}
++function statePill(){
++  var on = isOn(NV.snmpd_enable);
++  q('statetext').textContent = on ? `<#RSNM_20#>` : `<#RSNM_21#>`;
++  q('statepill').className = 'pill' + (on ? ' on' : '');
++}
++
++/* ---------- collect, unsaved changes ---------- */
++function collect(){
++  var c = {};
++  SECTIONS.forEach(function(s){ if (!BROKEN[s.panel]) s.collect(c); });
++  return c;
++}
++function diff(c){ return rp.diff(c, NV); }
++function dirty(){ var changed; try { changed = diff(collect()); } catch (e) { return; } rp.dirtyMark(changed); }
++
++/* ---------- validate: returns '' or the message; the row is marked ---------- */
++/* rc/snmpd.c drops spaces and control characters from both passphrases and net-snmp refuses one under 8 */
++function pwOk(p){ return /^[\x21-\x7e]{8,64}$/.test(p); }
++function validate(c){
++  function bad(id, m){
++    var el = q(id), row = el && el.closest ? el.closest('.frow') : null;
++    if (row){ row.classList.add('bad'); setTimeout(function(){ row.classList.remove('bad'); }, 6000); }
++    if (el && el.focus) el.focus();
++    return m;
++  }
++  if (c.snmpd_enable !== '1') return '';
++  /* an empty field keeps the stored passphrase (when one is stored); a typed one must pass the rule */
++  if (c.v3_auth_passwd !== '' ? !pwOk(c.v3_auth_passwd) : !NV.v3_auth_set) return bad('i_v3_auth_passwd', `<#RSNM_19#>`);
++  if (c.v3_priv_type !== 'NONE' && (c.v3_priv_passwd !== '' ? !pwOk(c.v3_priv_passwd) : !NV.v3_priv_set)) return bad('i_v3_priv_passwd', `<#RSNM_19#>`);
++  return '';
++}
++
++/* ---------- apply ---------- */
++function applyAll(){
++  msg('');
++  var c = collect(), err = validate(c), changed, n = 0, k;
++  if (err){ msg(err); return; }
++  changed = diff(c); for (k in changed) n++;
++  if (!n){ msg(`<#RADM_63#>`); return; }
++  /* restart_snmpd = stop, start (only when enabled) and a firewall rebuild; with SNMP off before and after,
++     nothing runs that reads these values, so the save alone is enough */
++  var live = c.snmpd_enable === '1' || NV.snmpd_enable === '1';
++  var script = live ? 'restart_snmpd' : 'saveNvram', wait = live ? 5 : 1;
++  rp.applying(`<#Reaper_c_applying#>`, `<#RADM_61#>`);
++  rp.post(document.form, changed, script, wait, false);
++  setTimeout(function(){ location.reload(); }, (wait + 4) * 1000);
++}
++
++/* ---------- wiring ---------- */
++function boot(){
++  SECTIONS.forEach(function(s){
++    try { s.init(); }
++    catch (e){
++      BROKEN[s.panel] = 1; var p = q(s.panel); if (p) p.classList.add('broken');
++      if (window.console) console.error('Reaper_SNMP: section ' + s.panel + ' failed to load:', e);
++    }
++  });
++  on('applybtn', 'click', applyAll);
++  on('discardbtn', 'click', function(){ location.reload(); });
++  on('t_snmpd_enable', 'change', sync);
++  on('s_v3_priv_type', 'change', sync);
++  on('c_showpw', 'change', function(){ var t = q('c_showpw').checked ? 'text' : 'password'; q('i_v3_auth_passwd').type = t; q('i_v3_priv_passwd').type = t; });
++  document.addEventListener('input', dirty); document.addEventListener('change', dirty);
++  sync(); statePill(); dirty();
++}
++boot();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Tools_OtherSettings.asp b/release/src/router/www/Tools_OtherSettings.asp
+index 65d7718cf48..31084b21d24 100644
+--- a/release/src/router/www/Tools_OtherSettings.asp
++++ b/release/src/router/www/Tools_OtherSettings.asp
+@@ -18,9 +18,47 @@
+ <script language="JavaScript" type="text/javascript" src="/validator.js"></script>
+ <script language="JavaScript" type="text/javascript" src="/popup.js"></script>
+ <script language="JavaScript" type="text/javascript" src="/help.js"></script>
++<style>
++/* reaper 2026-08-17: the three Reaper rows below used to print their whole
++   explanation in a <span> beside the control, which read as a wall of text next
++   to a one-word dropdown - and sat badly against the stock rows on this same
++   page, which put their help behind ASUS's hintstyle/openHint popup. These get
++   a "?" beside the LABEL instead; the text is unchanged and simply moves into a
++   panel the button discloses.
++
++   Deliberately NOT wired to openHint(): that indexes numbered arrays in the
++   stock helpcontent.js, so every entry we add is a merge conflict waiting for
++   the next GPL drop, and the strings already exist as RTWK_ tokens. This is
++   self-contained - no new dictionary keys, nothing stock to collide with.
++   Colours come from currentColor so it works under the injected Reaper theme
++   and under plain stock styling alike. */
++.rtwkq{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
++  margin-left:7px;border:1px solid currentColor;border-radius:50%;font-size:11px;line-height:1;
++  font-weight:700;text-decoration:none;color:inherit;opacity:.6;cursor:pointer;vertical-align:middle}
++.rtwkq:hover,.rtwkq:focus-visible{opacity:1}
++.rtwkhelp{display:none;margin-top:7px;font-size:12px;line-height:1.55;opacity:.85;max-width:74ch}
++.rtwkhelp.on{display:block}
++</style>
+ <script>
+ 
++var RTWK_ORIG = {};
++
++/* Toggle the help panel a "?" owns. aria-expanded tracks it so the control is
++   announced correctly; the panel is plain markup, so nothing is evaluated. */
++function rtwkHelp(a){
++	var d = document.getElementById(a.getAttribute('aria-controls'));
++	if(!d) return false;
++	var on = d.className.indexOf('on') < 0;
++	d.className = on ? 'rtwkhelp on' : 'rtwkhelp';
++	a.setAttribute('aria-expanded', on ? 'true' : 'false');
++	return false;
++}
++
+ function initial() {
++	/* what we loaded with, so the submit can ask for ONLY the restarts the
++	   change actually needs - see the action_script assembly in applyRule(). */
++	RTWK_ORIG.sched  = document.form.rwarden_sched.value;
++
+ 	show_menu();
+ 	initConntrackValues()
+ }
+@@ -60,6 +98,27 @@ function applyRule(){
+ 	    !validator.numberRange(document.form.udp_unreplied, 1, 86400))
+ 		return false;
+ 
++	/* reaper: same alphabet rc/rwarden.c rw_valid_sched() accepts (digits, space,
++	   * / , -). That consumer already rejects anything else and falls back to the
++	   default, so this cannot be an injection path - the check is here so the user
++	   is TOLD rather than silently getting 30 4 * * *. Empty is allowed and means
++	   "use the default". */
++	var sc = document.form.rwarden_sched.value.replace(/^\s+|\s+$/g, '');
++	if(sc !== '' && !/^[0-9 *\/,-]{1,64}$/.test(sc)){
++		alert('<#RTWK_07#>');
++		document.form.rwarden_sched.focus();
++		return false;
++	}
++	document.form.rwarden_sched.value = sc;
++
++	/* Only ask for what the change needs. The Warden cron line is written by
++	   start_rwarden(), so a schedule change needs restart_rwarden or it saves to
++	   nvram and never reaches cron; no-op when Warden is disabled. */
++	var acts = document.form.action_script.value;
++	if(sc !== RTWK_ORIG.sched)
++		acts += ';restart_rwarden';
++	document.form.action_script.value = acts;
++
+ 	showLoading();
+ 
+ 	document.form.ct_tcp_timeout.value = "0 "+
+@@ -119,6 +178,24 @@ function applyRule(){
+ 			<div>&nbsp;</div>
+ 			<div class="formfonttitle"><#menu5_6#> - Tweaks</div>
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
++				<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3"  class="FormTable" style="margin-top:8px;">
++					<thead>
++						<tr>
++							<td colspan="2"><#RTWK_00#></td>
++						</tr>
++					</thead>
++
++
++					<tr>
++						<th><#RTWK_05#><a class="rtwkq" href="javascript:void(0);" role="button" aria-controls="rtwkh3" aria-expanded="false" onclick="return rtwkHelp(this);">?</a></th>
++						<td>
++							<input type="text" maxlength="64" class="input_25_table" name="rwarden_sched"
++							       value="<% nvram_get("rwarden_sched"); %>" placeholder="30 4 * * *">
++							<div class="rtwkhelp" id="rtwkh3"><#RTWK_06#></div>
++						</td>
++					</tr>
++				</table>
++
+ 				<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3"  class="FormTable" style="margin-top:8px;">
+ 					<thead>
+ 						<tr>
+@@ -233,13 +310,6 @@ function applyRule(){
+ 							<input type="radio" name="ipv6_ns_drop" class="input" value="0" <% nvram_match_x("", "ipv6_ns_drop", "0", "checked"); %>><#checkbox_No#>
+ 						</td>
+ 					</tr>
+-					<tr>
+-						<th>Disable Asusnat tunnel</th>
+-						<td>
+-							<input type="radio" name="aae_disable_force" class="input" value="1" <% nvram_match_x("", "aae_disable_force", "1", "checked"); %>><#checkbox_Yes#>
+-							<input type="radio" name="aae_disable_force" class="input" value="0" <% nvram_match_x("", "aae_disable_force", "0", "checked"); %>><#checkbox_No#>
+-						</td>
+-					</tr>
+ 					<tr>
+ 						<th><a class="hintstyle" href="javascript:void(0);" onClick="openHint(50,21);">dhcpd: send empty WPAD with a carriage return</a></th>
+ 						<td>
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+index e7d43fb703c..2b5b959cc6a 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNC_V2/Advanced_VPNClient_Content.asp
+@@ -21,9 +21,55 @@
+ .rwd_iframe {
+ 	width: 100%;
+ }
++/* anti-flash veil for the nested SPA: vpnc.html paints stock-blue (vpnc.css) for a
++   beat before reaperThemeFrame injects the reaper theme into it. Hide the frame over
++   a dark backdrop until the reaper sheet has actually LOADED inside it, then fade in
++   - mirrors the shell's #page_frame veil, one level deeper. */
++#vpnc_iframe{opacity:0;transition:opacity .18s ease;background:#0f0f12}
++#vpnc_iframe.reaper-lit{opacity:1}
+ </style>
+ <script>
+ 
++function reaperThemeFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		/* keep the reaper sheet PRESENT and LAST in <head>. vpnc.html's own ready
++		   block appends theme sheets via $('link').last().after(), and the SPA can
++		   re-append on re-render; a later equal-!important stock rule then re-stocks
++		   the server-list cards even though reaper_content.css is loaded (owner report
++		   v1.7.5: sheet present but cards still teal). Re-appending an already-loaded
++		   <link> only reorders it - no extra network request. */
++		var reveal=function(){ try{ ifr.classList.add("reaper-lit"); }catch(e){} };
++		var ensureCss=function(){ try{
++			var head=d.head||d.documentElement; if(!head) return;
++			var l=d.querySelector('link[href*="reaper_content"]');
++			if(!l){
++				l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++				/* NO cache-bust query: httpd 404s a querystringed static path, which
++				   silently killed this hook from v1.2.4b to v1.6.3 (vpnc.html has no
++				   head close tag, so serve-time injection cannot cover it either) */
++				l.href="/reaper/reaper_content.css";
++				l.onload=reveal; l.onerror=reveal;   /* unveil ONLY once the theme is applied */
++				head.appendChild(l);
++			} else {
++				if(l!==head.lastElementChild) head.appendChild(l);   /* out-order late stock sheet */
++				reveal();   /* sheet already present + loaded -> safe to show now */
++			}
++		}catch(e){} };
++		/* DO NOT run a ResizeObserver / continuous height sync here. vpnc.html sizes
++		   the parent .rwd_iframe ITSELF via resize_iframe_height() (Math.max(menu,
++		   container, popup)+30px, called from ~10 render/resize events). The old
++		   reaper grow() set a DIFFERENT target (scrollHeight); the two resizers
++		   ping-ponged ~30px apart forever through this observer = the constant
++		   reflow/paint churn + "endless loading" the owner saw on v1.7.5. Let the
++		   SPA own the height; only fall back if it left the frame collapsed, and
++		   re-assert the reaper sheet a few times as the SPA renders. */
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
++		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
++		tick(); setTimeout(tick,400); setTimeout(tick,1200);
++		setTimeout(reveal,2000);   /* failsafe: never leave the frame veiled */
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
+ 	setTimeout(function(){
+@@ -47,7 +93,7 @@ function initial(){
+ 
+ 		if(referer != "")
+ 			vpnc_iframe_src += "?referer=" + referer + "";
+-		document.getElementById("vpnc_iframe").setAttribute("src", vpnc_iframe_src);
++		var _vcifr=document.getElementById("vpnc_iframe"); _vcifr.addEventListener("load", function(){ reaperThemeFrame(_vcifr); }); _vcifr.setAttribute("src", vpnc_iframe_src);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+@@ -85,7 +131,7 @@ function initial(){
+ 							<tbody>
+ 								<tr>
+ 									<td bgcolor="#4D595D" valign="top">
+-										<iframe id="vpnc_iframe" class="rwd_iframe" frameborder="0"></iframe>
++										<iframe id="vpnc_iframe" class="rwd_iframe" frameborder="0" scrolling="no"></iframe>
+ 									</td>
+ 								</tr>
+ 							</tbody>
+diff --git a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+index 2e0881b4455..1b6c39e500a 100644
+--- a/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
++++ b/release/src/router/www/sysdep/FUNCTION/VPNS_V2/Advanced_VPNServer_Content.asp
+@@ -21,14 +21,56 @@
+ .rwd_iframe {
+ 	width: 100%;
+ }
++/* anti-flash veil for the nested SPA: vpns.html paints stock-blue for a beat before
++   reaperThemeFrame injects the reaper theme. Hide the frame over a dark backdrop until
++   the reaper sheet has actually LOADED inside it, then fade in (shell veil, one deeper). */
++#vpns_iframe{opacity:0;transition:opacity .18s ease;background:#0f0f12}
++#vpns_iframe.reaper-lit{opacity:1}
+ </style>
+ <script>
+ 
++function reaperThemeFrame(ifr){
++	try{
++		var d=ifr.contentDocument; if(!d) return;
++		/* keep the reaper sheet PRESENT and LAST in <head> (vpns.html also gets
++		   serve-time injection, so this is belt-and-braces): re-appending an
++		   already-loaded <link> only reorders it - no extra request - so it
++		   out-orders any theme sheet the SPA appends via $('link').last().after(). */
++		var reveal=function(){ try{ ifr.classList.add("reaper-lit"); }catch(e){} };
++		var ensureCss=function(){ try{
++			var head=d.head||d.documentElement; if(!head) return;
++			var l=d.querySelector('link[href*="reaper_content"]');
++			if(!l){
++				l=d.createElement("link"); l.rel="stylesheet"; l.type="text/css";
++				/* NO cache-bust query: httpd 404s a querystringed static path (the
++				   vpnc.html lesson, v1.6.4) */
++				l.href="/reaper/reaper_content.css";
++				l.onload=reveal; l.onerror=reveal;   /* unveil ONLY once the theme is applied */
++				head.appendChild(l);
++			} else {
++				if(l!==head.lastElementChild) head.appendChild(l);   /* out-order late stock sheet */
++				reveal();   /* sheet already present + loaded -> safe to show now */
++			}
++		}catch(e){} };
++		/* DO NOT run a ResizeObserver / continuous height sync here. vpns.html sizes
++		   the parent .rwd_iframe ITSELF via resize_iframe_height() (vpns_general.js).
++		   The old reaper grow() set a DIFFERENT target (scrollHeight); the two
++		   resizers ping-ponged forever = constant reflow/paint churn. Let the SPA own
++		   the height; only fall back if it left the frame collapsed, and re-assert the
++		   reaper sheet a few times as the SPA renders. */
++		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }
++		var tick=function(){ ensureCss(); try{ if(ifr.offsetHeight<120){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>120) ifr.style.height=h+"px"; } }catch(e){} };
++		tick(); setTimeout(tick,400); setTimeout(tick,1200);
++		setTimeout(reveal,2000);   /* failsafe: never leave the frame veiled */
++	}catch(e){}
++}
+ function initial(){
+ 	show_menu();
++	var ifr=document.getElementById("vpns_iframe");
++	ifr.addEventListener("load", function(){ reaperThemeFrame(ifr); });
+ 	setTimeout(function(){
+ 		var curTheme = (parent.webWrapper) ? "?current_theme=white" : "";
+-		document.getElementById("vpns_iframe").setAttribute("src", "/VPN/vpns.html" + curTheme);
++		ifr.setAttribute("src", "/VPN/vpns.html" + curTheme);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
+@@ -66,7 +108,7 @@ function initial(){
+ 							<tbody>
+ 								<tr>
+ 									<td bgcolor="#4D595D" valign="top">
+-										<iframe id="vpns_iframe" class="rwd_iframe" frameborder="0"></iframe>
++										<iframe id="vpns_iframe" class="rwd_iframe" frameborder="0" scrolling="no"></iframe>
+ 									</td>
+ 								</tr>
+ 							</tbody>
+-- 
+2.25.1
+

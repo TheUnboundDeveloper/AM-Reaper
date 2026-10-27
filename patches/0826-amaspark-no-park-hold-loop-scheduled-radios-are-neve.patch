@@ -1,0 +1,105 @@
+From a1d27774026f5084857466f3d27cfebf2fdc158a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:22 -0400
+Subject: [PATCH] amaspark: no park/hold loop; scheduled radios are never
+ parked; the card survives an apostrophe
+
+With a radio's primary interface parked, its client networks read as down,
+so the hold that keeps carriers up for them fired again and again (RT-BE88U
+field report). The hold now acts only on radios whose primary is up, and a
+radio with a Wi-Fi schedule (wlN_timesched or any apgN_timesched) is never
+parked, with one log line saying so.
+
+The parking card read the daemon's free-text state with nvram_get into a
+quoted script string. Since v3.4.9 that text can carry an apostrophe, which
+ended the string, stopped the page script and left the button showing a
+dash. It is read encoded now (nvram_char_to_ascii + decode).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/amaspark.c           | 31 ++++++++++++++++++++--
+ release/src/router/www/Reaper_Wireless.asp |  5 +++-
+ 2 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/amaspark.c b/release/src/router/rc/amaspark.c
+index 8df0d938275..68712cef69c 100644
+--- a/release/src/router/rc/amaspark.c
++++ b/release/src/router/rc/amaspark.c
+@@ -171,6 +171,25 @@ static int vif_down(int u, char *out, size_t n)
+ 	return 0;
+ }
+ 
++/* 2026-10-26 (field, RT-BE88U diag: park, "client network wl0.1 is down" 5 s later, release, re-park a minute
++ * later - for ever, while wl0.1 kept its three stations associated throughout). With a radio's primary BSS parked,
++ * the per-BSS state of its client networks reads down although they are on the air, so vif_down() is only asked
++ * about radios whose primary is up. And a radio with a Wi-Fi schedule is never parked: the schedule's turn-off and
++ * turn-on then always happen with the primary up, exactly as on stock firmware - the field report this guards. */
++static int sched_on(int u)
++{
++	char key[32];
++	int i;
++
++	snprintf(key, sizeof(key), "wl%d_timesched", u);
++	if (nvram_match(key, "1")) return 1;
++	for (i = 1; i <= 16; i++) {	/* an SDN network's access-time schedule (apgN) can switch any radio's network */
++		snprintf(key, sizeof(key), "apg%d_timesched", i);
++		if (nvram_match(key, "1")) return 1;
++	}
++	return 0;
++}
++
+ static void bss_set(const char *ifn, int up)
+ {
+ 	eval("wl", "-i", (char *)ifn, "bss", up ? "up" : "down");
+@@ -219,7 +238,7 @@ static void state_write(const char parked[AP_MAXU], char ifn[AP_MAXU][IFNAMSIZ],
+ 
+ int amaspark_main(int argc, char *argv[])
+ {
+-	char parked[AP_MAXU] = { 0 }, held[AP_MAXU] = { 0 };
++	char parked[AP_MAXU] = { 0 }, held[AP_MAXU] = { 0 }, sheld[AP_MAXU] = { 0 };
+ 	char ifn[AP_MAXU][IFNAMSIZ];
+ 	int nband[AP_MAXU], before[AP_MAXU], radio[AP_MAXU];
+ 	int last_enabled = -1, last_window = 0, ob_capped = 0, settling = 0, vheld = 0;
+@@ -340,7 +359,7 @@ int amaspark_main(int argc, char *argv[])
+ 		if (want || vheld) {
+ 			char dn[IFNAMSIZ] = "";
+ 			for (u = 0; u < AP_MAXU && !dn[0]; u++)
+-				if (ifn[u][0] && radio[u])
++				if (ifn[u][0] && radio[u] && !parked[u] && before[u] == 1)	/* 2026-10-26: readable only with the primary up */
+ 					vif_down(u, dn, sizeof(dn));
+ 			if (dn[0]) {
+ 				snprintf(vbuf, sizeof(vbuf), "client network %s is down (a Wi-Fi schedule may have turned it off) - its radio's carrier stays up so it can come back as on stock firmware", dn);
+@@ -375,6 +394,14 @@ int amaspark_main(int argc, char *argv[])
+ 				if (!ifn[u][0] || !radio[u] || parked[u]) continue;
+ 				if (nband[u] == 4) continue;		/* 6 GHz: never by our hand */
+ 				if (before[u] != 1) continue;		/* down already (not ours) or unknown */
++				if (sched_on(u)) {			/* 2026-10-26: a Wi-Fi schedule keeps its radio unparked */
++					if (!sheld[u]) {
++						sheld[u] = 1;
++						logmessage(AP_TAG, "not parking %s (%s backhaul carrier): a Wi-Fi schedule is set, so its networks switch off and on with the radio fully up, as on stock firmware", ifn[u], band_name(nband[u]));
++					}
++					continue;
++				}
++				sheld[u] = 0;
+ 				if (bss_assoc_count(ifn[u]) > 0) {
+ 					/* Something is associated to the backhaul carrier. The only
+ 					 * thing that associates to it is a node, so the registry is
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index eebd51d2121..22db9818a7c 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -227,7 +227,10 @@ tr.curchan td{background:rgba(224,169,59,.07)}
+ /* reaper v3.0.8: AiMesh backhaul parking (rc/amaspark.c). The daemon reads the
+    switch within seconds; the state line is what it last wrote to nvram. */
+ var PARK_ON = ('<% nvram_get("amas_bh_park"); %>' === '1');
+-var PARK_STATE = '<% nvram_get("amas_bh_state"); %>';
++/* 2026-10-26 (field, RT-BE88U screenshot: the button stuck on its placeholder, no state line): the state is the
++   daemon's last reason, free text since v3.4.9 ("... its radio's carrier stays up ..."). nvram_get passes ' through,
++   so the apostrophe ended this string, the script did not run and the card was dead. Encoded by httpd, decoded here. */
++var PARK_STATE = (function(s){ try { return decodeURIComponent(s); } catch (e) { return s; } })('<% nvram_char_to_ascii("", "amas_bh_state"); %>');
+ var PARK_NODE = ('<% nvram_get("re_mode"); %>' === '1');
+ function parkRender(){
+   var b = document.getElementById("parktog"), s = document.getElementById("parkstate");
+-- 
+2.25.1
+

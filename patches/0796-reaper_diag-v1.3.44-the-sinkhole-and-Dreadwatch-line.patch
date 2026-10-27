@@ -1,0 +1,99 @@
+From dcdfdd07b270ed2cc7407906ac9bfb4aed6579c3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:56 -0400
+Subject: [PATCH] reaper_diag v1.3.44: the sinkhole and Dreadwatch lines
+
+v1.3.42: section 14b reports the Gatekeeper DNS sinkhole (pid, port,
+redirect rule counts). v1.3.43: section 14 a Dreadwatch line - blocked
+lookups in total and per feed, not recorded, devices, pending hits and each
+feed's last result, counts only; a finding when the list predates counting.
+v1.3.44: a missing hits file reads 0 instead of printing a shell error.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 32 ++++++++++++++++++--------
+ release/src/router/www/Reaper_Diag.asp |  2 +-
+ 2 files changed, 24 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index ac38484e53e..f569dd74a58 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,10 +1,14 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.41 (2026-10-19) - sanitized one-shot diagnostic bundle
+-#  v1.3.41 reports the security review (switch, baseline, unreviewed changes and
+-#  login-notice COUNTS - never the sources) in 12 and 17, and the threat-domain
+-#  list state (names loaded, cache, last build, which dnsmasq instances include
+-#  it) in 14, each with a FINDING when something is on but not in force.
++#  REAPER-DIAG v1.3.44 (2026-10-20) - sanitized one-shot diagnostic bundle
++#  v1.3.44 guards the Dreadwatch pending count in 14: no hits file reads 0, not a
++#  shell error (the first r3 report carried one). v1.3.43 adds the Dreadwatch line in 14 (threat-domain block counts per feed,
++#  never a name or a device). v1.3.42 adds the Gatekeeper DNS sinkhole line in 14b (held devices' resolver:
++#  pid, port, redirect rule counts). v1.3.41 reports the security review (switch,
++#  baseline, unreviewed changes and login-notice COUNTS - never the sources) in
++#  12 and 17, and the threat-domain list state (names loaded, cache, last build,
++#  which dnsmasq instances include it) in 14, each with a FINDING when something
++#  is on but not in force.
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -154,7 +158,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.41"
++VER="REAPER-DIAG v1.3.44"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -1524,12 +1528,19 @@ nvram show 2>/dev/null | grep '^rwarden_' | sort | sed 's/^/  /'
+ # v1.3.41: threat domains (rwarden_dns) - the list dnsmasq answers NXDOMAIN for: how many
+ # names, the /jffs copy, when it was last built, and how many of the dnsmasq instances
+ # (main + one per guest/VLAN network) were started with the include. Names never dumped.
+-_td="$(nvram get rwarden_dns 2>/dev/null)"; _tdn=$(grep -c '^address=' /tmp/rwarden/dns.conf 2>/dev/null); _tdu=$(cat /tmp/rwarden/dns.upd 2>/dev/null)
++# v1.3.43 (Dreadwatch): the list is reaper-nx= lines (address= on a box that has not rebuilt it
++# since the update) with a counted /jffs copy (dns.nx; the old dns.cache only before the first
++# rebuild); the hit counters - totals and per-feed counts only, never a name or a device address.
++_td="$(nvram get rwarden_dns 2>/dev/null)"; _tdn=$(grep -c -e '^reaper-nx=' -e '^address=' /tmp/rwarden/dns.conf 2>/dev/null); _tdu=$(cat /tmp/rwarden/dns.upd 2>/dev/null)
+ case "$_tdn" in ''|*[!0-9]*) _tdn=0;; esac
+ _tdc=$(ls /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | wc -l | tr -d ' '); _tdi=$(grep -l '^conf-file=/tmp/rwarden/dns.conf' /etc/dnsmasq.conf /etc/dnsmasq-*.conf 2>/dev/null | wc -l | tr -d ' ')
+-echo "  threat domains    : rwarden_dns=${_td:-unset}  names=$_tdn  cache=$( [ -s /jffs/rwarden/dns.cache ] && echo present || echo none )  built=$( [ -n "$_tdu" ] && date -d @$_tdu '+%F %R' 2>/dev/null || echo never )  included_in=${_tdi:-0}/${_tdc:-0} dnsmasq conf(s)"
++_tdh=0; grep -q '^reaper-hitlog=' /tmp/rwarden/dns.conf 2>/dev/null && _tdh=1
++echo "  threat domains    : rwarden_dns=${_td:-unset}  names=$_tdn  counted=$_tdh  cache=$( [ -s /jffs/rwarden/dns.nx ] && echo dns.nx || { [ -s /jffs/rwarden/dns.cache ] && echo dns.cache-legacy || echo none; } )  built=$( [ -n "$_tdu" ] && date -d @$_tdu '+%F %R' 2>/dev/null || echo never )  included_in=${_tdi:-0}/${_tdc:-0} dnsmasq conf(s)"
++_tdk=/jffs/rwarden/dns.counters; [ "$(nvram get rwarden_stats_save 2>/dev/null)" = 0 ] && _tdk=/tmp/rwarden/dns.counters
++echo "  dreadwatch        : $(awk '$1=="TOTAL"{t=$2} $1=="DROPPED"{d=$2} $1=="SINCE"{s=$2} $1=="FEED"{f=f " " $2 "=" $3} $1=="CLIENT"{c++} END{printf "blocked=%d not_recorded=%d devices=%d since=%s per_feed:%s", t, d, c, (s ? s : "-"), (f ? f : " none")}' $_tdk 2>/dev/null || echo "no counters")  pending=$( [ -f /tmp/dreadwatch/dns.hits ] && wc -l < /tmp/dreadwatch/dns.hits || echo 0 )  feeds: $(awk '{printf "%s%s=%s/%s", (NR>1?" ":""), $1, $7, $4}' /jffs/rwarden/dns.feeds 2>/dev/null)"
+ [ "$_td" = 1 ] && [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && [ "$_tdn" = 0 ] && finding WARN "threat domains are switched on but no list is loaded - the feeds have not been fetched yet, or every fetch failed (see 14 and the rwarden lines in the log)"
+-[ "$_td" = 1 ] && [ "$_tdn" -gt 0 ] && [ "${_tdi:-0}" -lt "${_tdc:-0}" ] && finding WARN "threat domains: the list is built but $((_tdc-_tdi)) dnsmasq instance(s) run without it - a dnsmasq restart loads it (Warden page: Save, or the nightly update)"
++[ "$_td" = 1 ] && [ "$_tdn" -gt 0 ] && [ "${_tdi:-0}" -lt "${_tdc:-0}" ] && finding WARN "threat domains: the list is built but $((_tdc-_tdi)) dnsmasq instance(s) run without it - a dnsmasq restart loads it (Dreadwatch page: Save, or the nightly update)"
++[ "$_td" = 1 ] && [ "$_tdn" -gt 0 ] && [ "$_tdh" = 0 ] && finding INFO "threat domains: the list predates Dreadwatch counting (address= lines) - blocks are not counted until the next list update"
+ echo "  -- chain packet/byte counters --"
+ # The counters are the whole point: a climbing RW_ODROP during a reported
+ # outage says Warden dropped it, and a flat one says look upstream. Before
+@@ -1599,6 +1610,9 @@ echo "  seen table        : $( [ -f /tmp/gk/seen.tsv ] && wc -l < /tmp/gk/seen.t
+ echo "  armed stamp       : $( [ -f /tmp/gk/chains.ok ] && echo yes || echo no )"
+ echo "  front-chain jumps : v4 $(iptables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) / v6 $(ip6tables -nL REAPER_HOOK_F 2>/dev/null | grep -c REAPER_GKF) (REAPER_HOOK_F -> REAPER_GKF, one per bridge)"
+ echo "  captive redirect  : v4 $(iptables -t nat -nL REAPER_GKN >/dev/null 2>&1 && echo present || echo absent) / v6 $(ip6tables -t nat -nL REAPER_GKN >/dev/null 2>&1 && echo present || echo absent) (REAPER_GKN in nat)"
++# 2026-10-20 (security review F-6): the DNS sinkhole for held devices - quarantine mode only; '-' = no pidfile
++GK_SP="$(cat /tmp/gk/sink.pid 2>/dev/null)"; case "$GK_SP" in ''|*[!0-9]*) GK_SP="-";; *) kill -0 "$GK_SP" 2>/dev/null || GK_SP="dead";; esac
++echo "  dns sinkhole      : pid=$GK_SP port=5300 redirect v4 $(iptables -t nat -nL REAPER_GKN 2>/dev/null | grep -c 'redir ports 5300') / v6 $(ip6tables -t nat -nL REAPER_GKN 2>/dev/null | grep -c 'redir ports 5300') rule(s) (held devices' DNS answered by the router alone)"
+ # v2.7.3: AiMesh infrastructure exemptions (cfg_relist MACs, sanitized as counts)
+ echo "  aimesh registry   : $(nvram get cfg_relist 2>/dev/null | grep -o ':..:..:..:..:' | wc -l) record MAC(s) in cfg_relist; exempt input rules: $( [ -f /tmp/gk/relist.n ] && cat /tmp/gk/relist.n || echo 0 )"
+ echo "  onboarding window : status=$(nvram get cfg_obstatus 2>/dev/null) gate=$(iptables -C REAPER_GKI -j RETURN 2>/dev/null && echo OPEN || echo closed)"
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 695be727b2f..28b6d9ac11c 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.41</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.44</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

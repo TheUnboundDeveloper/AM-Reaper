@@ -1,0 +1,59 @@
+From 4dd346fc991086623f656aa855b6f7a63f51bffd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:53 -0400
+Subject: [PATCH] defaults: Device names across networks, IPv6 device names and
+ the LAN name check start off
+
+Three switches on the DNS Failover page's DNSMASQ row started on at factory
+while the other three on that row start off. reaper_dns_revshare,
+reaper_dns_v6names and reaper_landns_enable default to 0 (owner,
+2026-10-12: an optional feature starts off, with its GUI switch); each one
+is a click away, and an upgrade keeps the stored values. The sdn.c comment
+on the rev-server block follows. Lean: tests/test_factory_defaults_off.py,
+tests/test_rev_server.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/sdn.c          | 2 +-
+ release/src/router/shared/defaults.c | 9 +++++----
+ 2 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 8a627ba4fa2..8c26cdc692f 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -587,7 +587,7 @@ static int _handle_sdn_stubby(const MTLAN_T *pmtl, const int action)
+  * Owner decisions: main LAN <-> each VLAN both ways, never VLAN <-> VLAN, Guest and
+  * Portal profiles (and any captive-portal network) excluded - a PTR sweep from a
+  * guest network would otherwise list the household's device names. Behind
+- * reaper_dns_revshare (default 1). Skipped with dns_fwd_local=1 (no bogus-priv:
++ * reaper_dns_revshare (off at factory from v3.4.2; was on). Skipped with dns_fwd_local=1 (no bogus-priv:
+  * private reverse goes upstream by the operator's choice). No loop: no instance is
+  * ever given its own subnet, and the instance asked answers its own zone itself.
+  * Both call sites sit before the custom .add append, so an operator file still wins.
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 470e25a2c64..ce064c3d019 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3185,13 +3185,14 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "reaper_dnshc_fail", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive misses -> demoted */
+ 	{ "reaper_dnshc_recover", "3", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* consecutive hits -> restored */
+ 	{ "reaper_dnshc_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 1 = only NOERROR with a record counts as alive */
+-	/* 2026-10-10: the dashboard's LAN name resolution check (rc/rdnshc.c landns_*): status only, on by default, switch on the DNS Failover page */
+-	{ "reaper_landns_enable", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	/* 2026-10-10: the dashboard's LAN name resolution check (rc/rdnshc.c landns_*): status only, switch on the DNS
++	 * Failover page. Off at factory (owner 2026-10-12: every DNSMASQ switch on that page starts off; was on). */
++	{ "reaper_landns_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "reaper_landns_domain", "", CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* the random label goes under this; empty = dns_probe_host */
+ 	{ "reaper_dns_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq strict-order */
+ 	{ "reaper_dns_nocache", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* dnsmasq cache-size=0 */
+-	{ "reaper_dns_revshare", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: main LAN <-> VLAN reverse DNS (rev-server), owner: default on */
+-	{ "reaper_dns_v6names", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: IPv6 device names (rc/rv6names.c), owner: default on */
++	{ "reaper_dns_revshare", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: main LAN <-> VLAN reverse DNS (rev-server); off at factory from v3.4.2 (owner 2026-10-12; was on) */
++	{ "reaper_dns_v6names", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-08: IPv6 device names (rc/rv6names.c); off at factory from v3.4.2 (owner 2026-10-12; was on) */
+ 	{ "reaper_dot_strict", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* stubby round_robin_upstreams: 0 (sequential DoT failover) */
+ 	{ "gk_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* master switch (no listener; enforcement = iptables/ebtables) */
+ 	{ "gk_default", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* new unknown MAC: 0 = quarantine until approved, 1 = alert only */
+-- 
+2.25.1
+

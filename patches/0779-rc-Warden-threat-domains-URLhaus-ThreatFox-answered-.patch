@@ -1,0 +1,610 @@
+From 7cd163646d2df8ca96cc2acb926e89c5b0a2e083 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:53 -0400
+Subject: [PATCH] rc: Warden threat domains (URLhaus / ThreatFox answered
+ NXDOMAIN) and the list host whitelisted once
+
+Threat domains, new and off by default: abuse.ch's public hostfiles become
+address=/host/ lines in /tmp/rwarden/dns.conf, included by every dnsmasq
+instance (services.c for the main one, sdn.c for each guest/VLAN network -
+emitted only when the file exists, a missing include is fatal to dnsmasq).
+Per-feed keep-last-good on a failed fetch, a 100,000-name cap, a never-block
+set (the feed hosts, NTP, DDNS, DNS-over-TLS names, the LAN domain) plus the
+user's exemptions (/jffs/rwarden/dnsallow), one restart_dnsmasq only when the
+list changed, /jffs/rwarden/dns.cache replayed at boot, rw_dns_sync() when the
+switch flips. reaper_warden_dns_conf() exported through rc.h. Keys
+rwarden_dns / rwarden_dns_feeds (defaults in the security-review commit).
+The country-list fetch is redirect-pinned to https like the threat feeds.
+
+The list host: www.ipdeny.com (51.15.12.186) is in France; with FR selected
+and the router-self filter on, Warden dropped its own downloads, the update
+budget ran out and countries added after that never loaded. The address is
+seeded into the whitelist once, visibly and removably; a country with no data
+is logged as NOT blocked and named in one closing line.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rc.h               |   2 +
+ release/src/router/rc/rwarden.c          | 252 ++++++++++++++++++++++-
+ release/src/router/rc/sdn.c              |   9 +
+ release/src/router/rc/services.c         |   9 +
+ release/src/router/www/Reaper_Warden.asp |  75 ++++++-
+ 5 files changed, 336 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 777e064cbf9..a76b8031ed2 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3038,6 +3038,7 @@ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exa
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
++extern const char *reaper_warden_dns_conf(void);	/* 2026-10-19: the threat-domain include for every dnsmasq instance, or NULL (rc/services.c, rc/sdn.c) */
+ /* reaper v2.3.8 native firewall: object-model custom rules engine (rc/reaper_fw.c).
+  * start/stop apply the COMMITTED ruleset; apply/confirm/rollback drive the
+  * commit-confirm state machine; dryrun compiles a preview and executes nothing. */
+@@ -3069,6 +3070,7 @@ extern void reaper_usb_mount_stamp(void);	/* rc/usb.c */
+ #define REAPER_USB_RETRY_MARK	"/tmp/reaper/.reaper_usb_retry_"	/* + partition: mount events re-sent so far */
+ #define REAPER_USB_RETRY_MAX	3
+ extern void reaper_usbmon_check(void);
++extern void reaper_store_check(void);	/* 2026-10-18: pinned long-term store - adopt + last seen (rc/reaper_usbmon.c) */
+ extern void reaper_usb_mounted_mark(const char *part);
+ extern int reaper_slp_should_arm(unsigned long up, unsigned long stamp, int have_stamp, unsigned long floor, unsigned long grace);	/* rc/watchdog.c, libc only */
+ /* v2.6.2 shared REAPER_HOOK front chains (rc/reaper_hook.c) */
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 792f096ba8e..7ae0951252f 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -55,7 +55,9 @@
+  *   clock would present as a whole-network outage rather than a router-only
+  *   one. Cannot lock a user out: management is LAN->router (INPUT) and the
+  *   replies carry a LAN destination, which RW_SELF exempts, so the GUI stays
+- *   reachable and the toggle stays revocable.
++ *   reachable and the toggle stays revocable. The country-list host is NOT a
++ *   built-in carve-out: it is seeded once into the user's whitelist
++ *   (rw_seed_allow, 2026-10-19) and stays removable.
+  *
+  * STATS (v1.8.7): start_rwarden generates /tmp/rwarden/stats.sh, which reads
+  *   the live iptables/ip6tables packet counters and emits a JSON snapshot
+@@ -90,6 +92,12 @@
+ #define RW_CCTMP  "/tmp/rwarden/cc.live"	/* scratch: live per-country deltas being folded */
+ #define RW_CHTMP  "/tmp/rwarden/ch.live"	/* scratch: one chain listing, read by every bucket */
+ #define RW_SAVE   "/jffs/rwarden/sets.ipset"
++/* 2026-10-19 threat domains: the dnsmasq include (address=/host/ lines) every
++ * instance reads through conf-file=, its /jffs copy for a boot before the first
++ * update, and the stamp of the last successful list build */
++#define RW_DNS_CONF  "/tmp/rwarden/dns.conf"
++#define RW_DNS_CACHE "/jffs/rwarden/dns.cache"
++#define RW_DNS_UPD   "/tmp/rwarden/dns.upd"
+ /* The threat sets' ceiling. Was a bare literal repeated at six ipset-create
+  * sites AND implicitly assumed by the UI, so "surface the count against the
+  * limit" had no single number to quote. One definition, string form for the
+@@ -113,6 +121,19 @@
+ #define RW_GEO_BUDGET_S "900"
+ #define RW_GEO_MAXELEM   262144		/* per-country sets; the default 65536 truncates the biggest zones */
+ #define RW_GEO_MAXELEM_S "262144"	/* same value, for string-pasted script text */
++/* The country-list host, seeded ONCE into the user's whitelist (owner,
++ * 2026-10-19). www.ipdeny.com is hosted in France (Scaleway, 51.15.0.0/16), so
++ * with FR selected and the router-traffic filter on, RW_SELF dropped the
++ * updater's own downloads: every fetch timed out, the 900 s geo budget ran out,
++ * and countries added after FR was armed never loaded at all (27 of 79 sat at
++ * zero entries on the owner's box while the page showed them as blocked). A
++ * plain whitelist entry rather than a hidden carve-out, so it is visible on the
++ * page and removable - a user who deletes it owns the consequence, and the
++ * one-shot marker below guarantees it is never put back. IPv4 only: the host
++ * has no AAAA record (checked 2026-10-19). If ipdeny ever moves, the
++ * REAPER-WARDEN-SELF log line names the new DST. */
++#define RW_GEO_HOST_IP  "51.15.12.186"
++#define RW_SEED_MARK    REAPER_RW_DIR "/.seed_geohost"
+ 
+ /* Curated open IP/CIDR feeds. id must be [a-z0-9]; url is emitted only into a
+  * single-quoted curl arg in the generated updater, and is a fixed literal here
+@@ -1051,6 +1072,22 @@ static void rw_gen_update(void)
+ 	  "CURLG='curl -fsSL --max-filesize 33554432 --retry 1 --max-time 20'\n"
+ 	  "GEO_DEADLINE=$(( $(date +%%s) + " RW_GEO_BUDGET_S " ))\n"
+ 	  "geo_budget_left() { [ \"$(date +%%s)\" -lt \"$GEO_DEADLINE\" ]; }\n"
++	  /* 2026-10-19: one wrapper per country fetch so a failure can say WHICH
++	   * kind it was. Every miss used to log "FAILED ... keeping last-good" -
++	   * including fetches never attempted because the budget had run out, and
++	   * sets that had never held a single entry, so a country the page listed
++	   * as blocked could be silently unblocked forever. GT records whether the
++	   * fetch was actually tried; geo_fail sorts the miss into skipped / no data
++	   * (NOT blocked) / stale. */
++	  "GEO_SKIP=0; GEO_FAIL=0\n"
++	  "geo_get() { GT=0; geo_budget_left || return 1; GT=1; $CURLG \"$1\" -o $TMP 2>/dev/null && [ -s $TMP ]; }\n"
++	  "geo_fail() {\n"
++	  "  [ \"$GT\" = 1 ] || { GEO_SKIP=$((GEO_SKIP+1)); return 0; }\n"
++	  "  GEO_FAIL=$((GEO_FAIL+1))\n"
++	  "  NE=$(ipset -t list $3 2>/dev/null | sed -n 's/.*Number of entries: //p')\n"
++	  "  if [ \"${NE:-0}\" -gt 0 ]; then logger -t rwarden \"geo $1 fetch FAILED for $2 - keeping last-good\"\n"
++	  "  else logger -t rwarden \"geo $1 fetch FAILED for $2 - NO data loaded yet, this country is NOT blocked\"; fi\n"
++	  "}\n"
+ 	  /* https-only INCLUDING across redirects. -L follows redirects and curl
+ 	   * permits https->http by default, so an https feed that 302s to http was
+ 	   * still followed - and whatever came back is loaded straight into a DROP
+@@ -1063,6 +1100,8 @@ static void rw_gen_update(void)
+ 	  "if curl --proto-redir =https --version >/dev/null 2>&1; then\n"
+ 	  "  CURL=\"$CURL --proto =https --proto-redir =https\"\n"
+ 	  "  CURLC=\"$CURLC --proto =https --proto-redir =https\"\n"
++	  /* 2026-10-19: the geo fetch was the one curl left unpinned */
++	  "  CURLG=\"$CURLG --proto =https --proto-redir =https\"\n"
+ 	  "else\n"
+ 	  "  logger -t rwarden \"curl has no --proto-redir; feed fetches are not redirect-pinned\"\n"
+ 	  "fi\n"
+@@ -1191,14 +1230,26 @@ static void rw_gen_update(void)
+ 	save = NULL;
+ 	list = strdup(nvram_safe_get("rwarden_geo"));
+ 	if (list) {
++		/* every set this run is responsible for, for the closing "NOT blocked"
++		 * summary (89 countries x "rw_g6_xx " fits with room to spare) */
++		char geosets[2048];
++		geosets[0] = 0;
+ 		for (tok = strtok_r(list, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save)) {
+ 			char cc[3];
+ 			if (!rw_valid_cc(tok)) continue;
+ 			cc[0] = tolower((int)tok[0]); cc[1] = tolower((int)tok[1]); cc[2] = 0;
++			if (strlen(geosets) + 20 < sizeof(geosets)) {
++				strlcat(geosets, " rw_g_", sizeof(geosets));
++				strlcat(geosets, cc, sizeof(geosets));
++				if (!rw_geo_no_v6(cc)) {
++					strlcat(geosets, " rw_g6_", sizeof(geosets));
++					strlcat(geosets, cc, sizeof(geosets));
++				}
++			}
+ 			/* IPv4 (batch ipset restore, per-entry fallback - see threat sets) */
+ 			fprintf(f,
+ 			  "ipset create rw_g_%s hash:net maxelem " RW_GEO_MAXELEM_S " -exist\n"
+-			  "if geo_budget_left && $CURLG \"https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
++			  "if geo_get \"https://www.ipdeny.com/ipblocks/data/aggregated/%s-aggregated.zone\"; then\n"
+ 			  "  ipset create rw_g_%s_t hash:net maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g_%s_t\n"
+ 			  "  grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $TMP | rw_f4 | sed 's/^/add rw_g_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+@@ -1208,8 +1259,8 @@ static void rw_gen_update(void)
+ 			  "  fi\n"
+ 			  "  ipset swap rw_g_%s_t rw_g_%s; ipset destroy rw_g_%s_t\n"
+ 			  "  OK=1\n"
+-				  "else logger -t rwarden \"geo v4 fetch FAILED for %s - keeping last-good\"; fi\n",
+-			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
++				  "else geo_fail v4 %s rw_g_%s; fi\n",
++			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+ 			/* IPv6 (same batch + fallback shape). reaper v2.6.1: a few
+ 			 * countries have NO v6 zone upstream (ipdeny 404s for kp), which
+ 			 * logged "geo v6 fetch FAILED ... keeping last-good" on every
+@@ -1223,7 +1274,7 @@ static void rw_gen_update(void)
+ 			}
+ 			fprintf(f,
+ 			  "ipset create rw_g6_%s hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist\n"
+-			  "if geo_budget_left && $CURLG \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\" -o $TMP 2>/dev/null && [ -s $TMP ]; then\n"
++			  "if geo_get \"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/%s-aggregated.zone\"; then\n"
+ 			  "  ipset create rw_g6_%s_t hash:net family inet6 maxelem " RW_GEO_MAXELEM_S " -exist; ipset flush rw_g6_%s_t\n"
+ 			  "  grep -oiE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(/[0-9]{1,3})?' $TMP | rw_f6 | sed 's/^/add rw_g6_%s_t /' > $TMP.rst\n"
+ 			  "  if ! ipset restore -! < $TMP.rst 2>/dev/null; then\n"
+@@ -1233,11 +1284,93 @@ static void rw_gen_update(void)
+ 			  "  fi\n"
+ 			  "  ipset swap rw_g6_%s_t rw_g6_%s; ipset destroy rw_g6_%s_t\n"
+ 			  "  OK=1\n"
+-				  "else logger -t rwarden \"geo v6 fetch FAILED for %s - keeping last-good\"; fi\n",
+-			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
++				  "else geo_fail v6 %s rw_g6_%s; fi\n",
++			  cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc, cc);
+ 		}
+ 		free(list);
++		/* One closing line per run that a user can act on. The per-fetch lines
++		 * scroll past in a burst of ~150; this one names every selected country
++		 * that is enforcing nothing, whatever the cause. */
++		fprintf(f,
++		  "[ \"$GEO_SKIP\" -gt 0 ] && logger -t rwarden \"geo: update time budget (" RW_GEO_BUDGET_S " s) ran out - $GEO_SKIP list fetch(es) not attempted\"\n"
++		  "GEO_EMPTY=''\n"
++		  "for s in%s; do\n"
++		  "  NE=$(ipset -t list $s 2>/dev/null | sed -n 's/.*Number of entries: //p')\n"
++		  "  [ \"${NE:-0}\" -gt 0 ] && continue\n"
++		  "  case $s in rw_g6_*) GEO_EMPTY=\"$GEO_EMPTY ${s#rw_g6_}(v6)\";; *) GEO_EMPTY=\"$GEO_EMPTY ${s#rw_g_}\";; esac\n"
++		  "done\n"
++		  "[ -n \"$GEO_EMPTY\" ] && logger -t rwarden \"geo: selected but NO data loaded, NOT blocked:$GEO_EMPTY\"\n",
++		  geosets);
++		/* The failure this was written for: with the router-traffic filter on,
++		 * a blocked country that hosts the list server stops every download. */
++		if (nvram_match("rwarden_self", "1"))
++			fprintf(f,
++			  "[ $((GEO_FAIL+GEO_SKIP)) -gt 0 ] && logger -t rwarden \"geo: router-traffic filter is ON - the list host www.ipdeny.com (" RW_GEO_HOST_IP ") must stay whitelisted, or the router blocks its own list downloads (see REAPER-WARDEN-SELF drops)\"\n");
+ 	}
++	/* 2026-10-19 threat domains. URLhaus and ThreatFox publish hostfiles
++	 * (`127.0.0.1<TAB>host` lines, `#` comments, on abuse.ch's keyless legacy
++	 * path); the usable names become `address=/host/` lines - dnsmasq answers
++	 * NXDOMAIN for the host and its subdomains, the man page's own blocklist
++	 * idiom - in ONE file every dnsmasq instance includes (conf-file=, see
++	 * reaper_warden_dns_conf). address= lines are read at start only, so a
++	 * CHANGED list restarts dnsmasq once at the end of this run; an unchanged
++	 * one does nothing. Keep-last-good on a failed fetch, the /jffs copy
++	 * rewritten only when the list changed. Never blocked: the feed and list
++	 * hosts (or the next update could not run), this router's own names, the
++	 * local zones, and the operator's /jffs/rwarden/dnsallow - each with its
++	 * subdomains. One fputs so the lean test can lift the block whole. */
++	fputs(
++	  "# ---- threat domains (2026-10-19): URLhaus / ThreatFox hostfiles -> dnsmasq\n"
++	  "# address=/host/ lines (NXDOMAIN for the host and its subdomains), read by every\n"
++	  "# dnsmasq instance through conf-file= and restarted only when the list changed.\n"
++	  "RW_DNS_CAP=100000\n"
++	  "RW_DNSC=" RW_DNS_CONF "\n"
++	  "RW_DNSK=" RW_DNS_CACHE "\n"
++	  "RW_DNSU=" RW_DNS_UPD "\n"
++	  "RW_DNSA=" RW_CACHE "/dnsallow\n"
++	  "DNS_CHANGED=0\n"
++	  "rw_dom() { tr -d '\\r' | awk '($1==\"127.0.0.1\"||$1==\"0.0.0.0\") && NF>=2 {print tolower($2)}' | grep -E '^[a-z0-9]([a-z0-9-]{0,62}\\.)+[a-z][a-z0-9-]{0,62}$'; }\n"
++	  "# never-block: the feed and list hosts, this router's own names, the local zones\n"
++	  "# and the operator's exemptions (the dnsallow list) - each covers its subdomains\n"
++	  "rw_dexempt() {\n"
++	  "  { printf '%s\\n' abuse.ch ipdeny.com pool.ntp.org asuscomm.com asus.com github.com githubusercontent.com spamhaus.org local arpa lan\n"
++	  "    for k in lan_domain ddns_hostname_x ntp_server0 ntp_server1; do _nv $k; done\n"
++	  "    _nv dnspriv_rulelist | tr '<' '\\n' | cut -d'>' -f3\n"
++	  "    tr ' ,<>' '\\n' < $RW_DNSA 2>/dev/null\n"
++	  "  } | tr 'A-Z' 'a-z' | grep -E '^[a-z0-9]([a-z0-9-]{0,62}\\.)*[a-z][a-z0-9-]{0,62}$' | sort -u > $TMP.ex\n"
++	  "  awk 'FILENAME==ARGV[1] { x[$1]=1; next } { d=$1; if (d in x) next; n=split(d, p, \".\"); s=\"\"; for (i=n; i>1; i--) { s=(s==\"\" ? p[i] : p[i] \".\" s); if (s in x) next } print d }' $TMP.ex -\n"
++	  "}\n"
++	  "# one feed: fetch and parse into its own .last file, which a failed fetch keeps (so one\n"
++	  "# feed's outage never shrinks the list to the other feed); prints the names it contributed\n"
++	  "rw_dfeed() {\n"
++	  "  case \"$DF\" in *\" $1 \"*) ;; *) rm -f $RW_DNSC.$1.last; echo 0; return 0;; esac\n"
++	  "  if $CURL --max-filesize 4194304 \"$2\" -o $TMP 2>/dev/null; then rw_dom < $TMP > $RW_DNSC.$1.last\n"
++	  "  else logger -t rwarden \"threat domains: $1 fetch FAILED - keeping the previous download\"; fi\n"
++	  "  [ -s $RW_DNSC.$1.last ] && cat $RW_DNSC.$1.last >> $DN\n"
++	  "  if [ -f $RW_DNSC.$1.last ]; then wc -l < $RW_DNSC.$1.last | tr -d ' '; else echo 0; fi\n"
++	  "}\n"
++	  "if [ \"$(_nv rwarden_dns)\" = 1 ]; then\n"
++	  "  DF=\" $(_nv rwarden_dns_feeds) \"; DN=$TMP.dn; : > $DN\n"
++	  "  DU=$(rw_dfeed urlhaus 'https://urlhaus.abuse.ch/downloads/hostfile/')\n"
++	  "  DT=$(rw_dfeed threatfox 'https://threatfox.abuse.ch/downloads/hostfile/')\n"
++	  "  if [ $((DU+DT)) -gt 0 ]; then\n"
++	  "    sort -u $DN > $DN.u; DA=$(wc -l < $DN.u | tr -d ' ')\n"
++	  "    rw_dexempt < $DN.u | head -n $RW_DNS_CAP > $DN.f; DL=$(wc -l < $DN.f | tr -d ' ')\n"
++	  "    if [ \"$DL\" -gt 0 ]; then\n"
++	  "      { echo \"# generated by Warden threat domains - do not edit; NXDOMAIN for each host and its subdomains\"; sed 's|^|address=/|; s|$|/|' $DN.f; } > $RW_DNSC.new\n"
++	  "      if cmp -s $RW_DNSC.new $RW_DNSC 2>/dev/null; then rm -f $RW_DNSC.new\n"
++	  "      elif mv -f $RW_DNSC.new $RW_DNSC; then\n"
++	  "        mkdir -p \"${RW_DNSK%/*}\"; cp -f $RW_DNSC $RW_DNSK.tmp && mv -f $RW_DNSK.tmp $RW_DNSK\n"
++	  "        DNS_CHANGED=1\n"
++	  "      fi\n"
++	  "      date +%s > $RW_DNSU\n"
++	  "      logger -t rwarden \"threat domains: $DL loaded (URLhaus $DU, ThreatFox $DT), $((DA-DL)) exempted or over the cap$([ \"$DNS_CHANGED\" = 1 ] && echo ', list changed - dnsmasq restarts')\"\n"
++	  "    else logger -t rwarden \"threat domains: the feeds produced no usable entries - keeping last-good\"; fi\n"
++	  "  else logger -t rwarden \"threat domains: nothing fetched and no previous download - keeping last-good\"; fi\n"
++	  "  rm -f $DN $DN.u $DN.f $TMP.ex\n"
++	  "elif [ -f $RW_DNSC ]; then\n"
++	  "  rm -f $RW_DNSC $RW_DNSC.*.last; DNS_CHANGED=1\n"
++	  "fi\n", f);
+ 	/* persist every warden set to jffs. NOTE (2026-07-29 audit): `ipset save`
+ 	 * accepts AT MOST ONE setname; handed several it prints "Unknown argument"
+ 	 * to stderr, writes NOTHING, and still EXITS 0 - so the old one-liner
+@@ -1273,6 +1406,11 @@ static void rw_gen_update(void)
+ 	 * flush the flow cache so existing flows to a now-blocked peer re-traverse
+ 	 * the REAPER_WARDEN chain and get dropped (A3-NET-001). No-op if accel off. */
+ 	fprintf(f, "fc flush 2>/dev/null\n");
++	/* 2026-10-19: the threat-domain list is read by dnsmasq at start only
++	 * (address= lines never reload on SIGHUP), so a CHANGED list restarts it -
++	 * once, here, at the end of the run, never from a UI tick. The explicit
++	 * exit 0 keeps the && from leaking a status (build-sop's wrapper trap). */
++	fprintf(f, "[ \"$DNS_CHANGED\" = 1 ] && service restart_dnsmasq >/dev/null 2>&1\nexit 0\n");
+ 	fclose(f);
+ 	/* Atomic publish, same as rw_gen_apply. These are rewritten on every
+ 	 * Save & Apply while cron and httpd may be EXECUTING them: fold.sh runs
+@@ -1504,6 +1642,12 @@ static void rw_gen_stats(void)
+ 	  "GE=$(echo \"$SETS\" | awk '$1 ~ /^rw_g6?_[a-z][a-z]$/ {s+=$2} END{print s+0}')\n"
+ 	  "GZ=$(echo \"$SETS\" | awk '$1 ~ /^rw_g_[a-z][a-z]$/ && $2==0 {z++} END{print z+0}')\n"
+ 	  "SV=1; [ \"$(_nv rwarden_stats_save)\" = 0 ] && SV=0\n"
++	  /* 2026-10-19 threat domains: switch, names in the list, the last build
++	   * stamp, and whether the running dnsmasq was started with the include */
++	  "DNE=$(_nv rwarden_dns); [ \"$DNE\" = 1 ] || DNE=0\n"
++	  "DN=$(grep -c '^address=' " RW_DNS_CONF " 2>/dev/null); case \"$DN\" in ''|*[!0-9]*) DN=0;; esac\n"
++	  "DNU=$(cat " RW_DNS_UPD " 2>/dev/null); case \"$DNU\" in ''|*[!0-9]*) DNU=0;; esac\n"
++	  "DNL=0; grep -q '^conf-file=" RW_DNS_CONF "' /etc/dnsmasq.conf 2>/dev/null && DNL=1\n"
+ 	  "RI=$(_nv rwarden_reset)\n"
+ 	  "case \"$RI\" in 24h|7d|30d|90d) ;; *) RI=off;; esac\n"
+ 	  /* Shared lock (see fold.sh): hold it across the banked $CTR reads and the
+@@ -1588,10 +1732,13 @@ static void rw_gen_stats(void)
+ 	   * anything?" without the operator reading iptables counters by hand - the
+ 	   * question behind the 2026-08-15 field report. Appending keys is safe: the
+ 	   * page reads named fields, so an older UI simply ignores them. */
+-	  "\"self\":%d,\"self_n\":%d,\"out\":%d,\"out_n\":%d}\\n' "
++	  "\"self\":%d,\"self_n\":%d,\"out\":%d,\"out_n\":%d,"
++	  /* 2026-10-19: the threat-domain card reads these four (appended keys,
++	   * so an older page simply ignores them) */
++	  "\"dns\":%d,\"dns_n\":%d,\"dns_upd\":%d,\"dns_live\":%d}\\n' "
+ 	  "\"$EN\" \"$ARMED\" \"$V6\" \"$LU\" \"$((TN+TN6))\" \"$GN\" \"$GE\" \"$GZ\" \"$TOTAL\" \"$SINCE\" \"$TOP\" "
+ 	  "\"$GEO\" \"$THREAT\" \"$BAN\" \"$UNCL\" \"$SV\" \"$RI\" \"$JP\" "
+-	  "\"$SELF\" \"$SELFN\" \"$OUTA\" \"$OUTN\"\n", f);
++	  "\"$SELF\" \"$SELFN\" \"$OUTA\" \"$OUTN\" \"$DNE\" \"$DN\" \"$DNU\" \"$DNL\"\n", f);
+ 	fclose(f);
+ 	/* Atomic publish, same as rw_gen_apply. These are rewritten on every
+ 	 * Save & Apply while cron and httpd may be EXECUTING them: fold.sh runs
+@@ -1652,9 +1799,95 @@ void stop_rwarden(void)
+ 	}
+ }
+ 
++/* Put the country-list host into the whitelist ONCE (see RW_GEO_HOST_IP).
++ * Owner-directed exception to "an update never rewrites a user setting": it
++ * only ADDS one entry, never removes or reorders anything, and the marker is
++ * written whether or not the entry was added - so a user who deletes it later
++ * keeps it deleted. Runs only after the nvram -> /jffs list migration has
++ * committed: before that, the allow file is about to be overwritten by the
++ * migration and a seed written now would be lost with the marker already set.
++ * Runs whether or not Warden is enabled, so the entry is on the page before the
++ * user first arms it. */
++static void rw_seed_allow(void)
++{
++	char *cur, *dup, *nv, *tok, *save = NULL;
++	int have = 0;
++	size_t n;
++
++	if (!f_exists(REAPER_RW_DIR "/.committed") || f_exists(RW_SEED_MARK))
++		return;
++	if ((cur = rw_list_get("allow")) == NULL)
++		return;
++	if ((dup = strdup(cur)) != NULL) {
++		for (tok = strtok_r(dup, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save))
++			if (!strcmp(tok, RW_GEO_HOST_IP) || !strcmp(tok, RW_GEO_HOST_IP "/32")) { have = 1; break; }
++		free(dup);
++	} else {
++		free(cur);
++		return;
++	}
++	if (!have) {
++		n = strlen(cur) + sizeof(" " RW_GEO_HOST_IP);
++		if ((nv = malloc(n)) == NULL) { free(cur); return; }
++		snprintf(nv, n, "%s%s%s", cur, (*cur && cur[strlen(cur) - 1] != ' ') ? " " : "", RW_GEO_HOST_IP);
++		if (rw_list_set("allow", nv) != 0) { free(nv); free(cur); return; }	/* retry next start */
++		free(nv);
++		logmessage("rwarden", "whitelist: added the country-list host www.ipdeny.com (%s) once - remove it on the Warden page if not wanted", RW_GEO_HOST_IP);
++	}
++	free(cur);
++	rjf_set(RW_SEED_MARK, "1", "rwarden");
++}
++
++/* 2026-10-19 threat domains. The include every dnsmasq instance is handed, or
++ * NULL. NULL whenever Warden or the domain list is off, AND whenever no list
++ * file exists even after replaying the /jffs copy (a boot before the first
++ * update): a missing conf-file= include is fatal to dnsmasq, and only the main
++ * instance has a guard that drops a vanished path - the SDN instances have
++ * none. Exported for rc/services.c and rc/sdn.c. */
++const char *reaper_warden_dns_conf(void)
++{
++	if (!nvram_match("rwarden_enable", "1") || !nvram_match("rwarden_dns", "1"))
++		return NULL;
++	if (!f_exists(RW_DNS_CONF)) {
++		if (!f_exists(RW_DNS_CACHE))
++			return NULL;
++		reaper_secure_dir(RW_DIR, 0700);
++		eval("cp", "-f", RW_DNS_CACHE, RW_DNS_CONF);
++		if (!f_exists(RW_DNS_CONF))
++			return NULL;
++	}
++	return RW_DNS_CONF;
++}
++
++/* Reconcile the running dnsmasq with the switch: wanted = the include can be
++ * handed out, live = /etc/dnsmasq.conf carries it. Disagreement = ONE
++ * restart_dnsmasq (the rfw_sync_dnsmasq() precedent in reaper_fw.c); a missing
++ * /etc/dnsmasq.conf means dnsmasq has not been generated yet and will take the
++ * line itself. Off: the live list goes first, so no generation can find it. */
++static void rw_dns_sync(void)
++{
++	FILE *f;
++	char l[512];
++	int live = 0, wanted;
++
++	wanted = reaper_warden_dns_conf() != NULL;
++	if (!wanted)
++		unlink(RW_DNS_CONF);
++	if ((f = fopen("/etc/dnsmasq.conf", "r")) == NULL)
++		return;
++	while (fgets(l, sizeof(l), f))
++		if (!strncmp(l, "conf-file=" RW_DNS_CONF, sizeof("conf-file=" RW_DNS_CONF) - 1)) { live = 1; break; }
++	fclose(f);
++	if (live != wanted) {
++		logmessage("rwarden", "threat domains %s - restarting dnsmasq", wanted ? "on" : "off");
++		notify_rc("restart_dnsmasq");
++	}
++}
++
+ void start_rwarden(void)
+ {
+ 	rw_list_migrate();	/* v2.7.9: one-shot nvram -> /jffs, before any list is read */
++	rw_seed_allow();	/* 2026-10-19: one-shot, after the migration, before apply reads the list */
+ 	/* P2-H5: "out" and "both" have always produced a byte-identical
+ 	 * ruleset - do_out gates only the RW_OUT chain, while the inbound source
+ 	 * group and the -I INPUT hook are emitted unconditionally. The choice was
+@@ -1667,6 +1900,7 @@ void start_rwarden(void)
+ 	if (nvram_match("rwarden_dir", "out"))
+ 		nvram_set("rwarden_dir", "both");
+ 	stop_rwarden();
++	rw_dns_sync();		/* 2026-10-19: before the early returns - it handles the off case itself */
+ 	if (!is_routing_enabled())
+ 		return;
+ 	if (!nvram_match("rwarden_enable", "1"))
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 8c26cdc692f..9e6a5b52257 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -841,6 +841,15 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 		if(pmtl->sdn_t.ahs_sw)
+ 			fprintf(fp, "addn-hosts=/etc/hosts\n");
+ 
++		/* 2026-10-19: Warden threat domains for this network's clients too; the
++		 * helper answers NULL unless the file exists (a missing include is fatal
++		 * and this instance has no guard for it) */
++		{
++			const char *wd = reaper_warden_dns_conf();
++			if (wd)
++				fprintf(fp, "conf-file=%s\n", wd);
++		}
++
+ 		if (pmtl->nw_t.dhcp_enable)
+ 		{
+ 			have_dhcp |= 1;
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index d74e39cfa3d..3752f23928f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2560,6 +2560,15 @@ void start_dnsmasq(void)
+ 		}
+ 	}
+ 
++	/* 2026-10-19: Warden threat domains (rc/rwarden.c) - an include of address=/host/
++	 * lines. Emitted only when the file exists: a missing include is fatal to
++	 * dnsmasq, and the guard below only handles a path that vanishes later. */
++	{
++		const char *wd = reaper_warden_dns_conf();
++		if (wd)
++			fprintf(fp, "conf-file=%s\n", wd);
++	}
++
+ 	/* close fp move to the last */
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	write_rev_servers_main(fp);	/* 2026-10-08: reverse DNS for each eligible VLAN, before the .add */
+diff --git a/release/src/router/www/Reaper_Warden.asp b/release/src/router/www/Reaper_Warden.asp
+index 9e6494dc54b..8d1b2ba2eef 100644
+--- a/release/src/router/www/Reaper_Warden.asp
++++ b/release/src/router/www/Reaper_Warden.asp
+@@ -184,6 +184,22 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   </div>
+ </div>
+ 
++<!-- 2026-10-19 threat domains: URLhaus / ThreatFox host names answered NXDOMAIN by every
++     dnsmasq instance (rc/rwarden.c update.sh + conf-file=). Stored like the IP feeds: the
++     switch and the list ids in nvram, the exemptions in the /jffs list store (dnsallow). -->
++<div class="card" id="dnscard">
++  <h2><#RWDN_110#></h2>
++  <div class="desc"><#RWDN_111#></div>
++  <div class="setrow"><span class="sl"><#RWDN_112#><span class="sd"><#RWDN_113#></span></span>
++    <span class="tg" id="tgdns" onclick="rwTg(this)"></span></div>
++  <div class="feedrow"><span class="fl"><#RWDN_114#></span><label class="ck"><input type="checkbox" id="fd_urlhaus"><span class="box"></span></label></div>
++  <div class="feedrow"><span class="fl"><#RWDN_115#></span><label class="ck"><input type="checkbox" id="fd_threatfox"><span class="box"></span></label></div>
++  <div class="desc" id="dnsstat" style="margin-top:10px"></div>
++  <div class="desc" style="margin-top:10px"><b><#RWDN_116#></b></div>
++  <textarea id="dnsallow" placeholder="<#RWDN_117#>"></textarea>
++  <div class="desc" style="margin-top:10px"><#RWDN_118#></div>
++</div>
++
+ <div class="card">
+   <h2><#RWDN_77#></h2>
+   <div class="desc"><#RWDN_78#></div>
+@@ -250,6 +266,7 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+     <li><#RWDN_41#></li>
+     <li><#RWDN_42#></li>
+     <li><#RWDN_55#></li>
++    <li><#RWDN_123#></li>
+   </ul>
+ </div>
+ 
+@@ -283,6 +300,8 @@ input.cc{width:100%;font-family:ui-monospace,Consolas,monospace}
+   <input type="hidden" name="rwarden_log" value="">
+   <input type="hidden" name="rwarden_stats_save" value="">
+   <input type="hidden" name="rwarden_reset" value="">
++  <input type="hidden" name="rwarden_dns" value="">
++  <input type="hidden" name="rwarden_dns_feeds" value="">
+ </form>
+ 
+ <script src="/reaper_util.js"></script>
+@@ -306,8 +325,34 @@ var NV = {
+   log:    '<% nvram_get("rwarden_log"); %>',
+   lastupd:'<% nvram_get("rwarden_lastupd"); %>',
+   save:   '<% nvram_get("rwarden_stats_save"); %>',
+-  reset:  '<% nvram_get("rwarden_reset"); %>'
++  reset:  '<% nvram_get("rwarden_reset"); %>',
++  /* 2026-10-19 threat domains: switch, list ids, and the exemption names (a /jffs
++     list, percent-encoded like the three above) */
++  dns:    '<% nvram_get("rwarden_dns"); %>',
++  dnsfeeds: '<% nvram_get("rwarden_dns_feeds"); %>',
++  dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>')
+ };
++var DNS_FEED_IDS = ['urlhaus','threatfox'];
++/* an exemption is a host name (or a bare zone such as lan): labels of letters,
++   digits and hyphens, lower-cased on save; a bad line refuses the whole save,
++   the Warden convention. update.sh re-filters with the same shape. */
++var DNS_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z][a-z0-9-]{0,62}$/;
++function rwCleanNames(raw){
++  var out = [], bad = [];
++  String(raw||'').split(/[\s,<>]+/).forEach(function(t){
++    t = t.trim().toLowerCase(); if(!t) return;
++    if(t.length <= 253 && DNS_NAME_RE.test(t)) out.push(t); else bad.push(t);
++  });
++  return { ok: out.join(' '), bad: bad };
++}
++function rwDnsStat(j){
++  var el = document.getElementById('dnsstat'); if(!el) return;
++  if(!j || typeof j.dns_n !== 'number' || !j.dns){ el.textContent = ''; return; }
++  var n = Number(j.dns_n).toLocaleString();
++  if(j.dns_n > 0 && j.dns_live) el.textContent = `<#RWDN_119#>`.replace('%1', n).replace('%2', j.dns_upd ? new Date(j.dns_upd*1000).toLocaleString() : '');
++  else if(j.dns_n > 0) el.textContent = `<#RWDN_121#>`.replace('%1', n);
++  else el.textContent = `<#RWDN_120#>`;
++}
+ /* retention windows the backend (fold.sh) understands; anything else = off */
+ var RESET_IVS = ['off','24h','7d','30d','90d'];
+ var FEED_IDS = ['firehol1','feodo','spamhaus','dshield'];
+@@ -432,6 +477,11 @@ function rwPaint(){
+   var feeds = {}; rwSplit(NV.feeds).forEach(function(f){ feeds[f] = 1; });
+   var nf = 0;
+   FEED_IDS.forEach(function(id){ var c = !!feeds[id]; document.getElementById('f_'+id).checked = c; if(c) nf++; });
++  /* threat domains: only an explicit "1" arms the switch (nvram default "0") */
++  document.getElementById('tgdns').className = 'tg' + (NV.dns === '1' ? ' on' : '');
++  var dfs = {}; rwSplit(NV.dnsfeeds).forEach(function(f){ dfs[f] = 1; });
++  DNS_FEED_IDS.forEach(function(id){ document.getElementById('fd_'+id).checked = !!dfs[id]; });
++  document.getElementById('dnsallow').value = rwSplit(NV.dnsallow).join('\n');
+   /* P2-H5: 'out' was never achievable - the inbound source group and the
+      -I INPUT hook are emitted whatever the setting, so it produced exactly
+      the same ruleset as 'both'. The option is gone; a value stored by an
+@@ -575,8 +625,27 @@ function rwSave(updateNow){
+     return;
+   }
+ 
++  /* threat domains: the exemptions are validated like the CIDR lists - one bad
++     line refuses the whole save */
++  var dnsallow = rwCleanNames(document.getElementById('dnsallow').value);
++  if(dnsallow.bad.length){
++    alert(`<#RWDN_122#>` + '\n\n' + dnsallow.bad.join('\n'));
++    return;
++  }
++  var dfeeds = [];
++  DNS_FEED_IDS.forEach(function(id){ if(document.getElementById('fd_'+id).checked) dfeeds.push(id); });
++  var dnsOn = document.getElementById('tgdns').className.indexOf('on') >= 0;
++  /* a changed domain setting fetches the list at once (the Update path), so the
++     operator is not left waiting for 04:30; turning it off needs no fetch - the
++     service restart removes the list and restarts dnsmasq itself */
++  var dnsChanged = ((dnsOn ? '1' : '0') !== (NV.dns === '1' ? '1' : '0'))
++                || (dfeeds.join(' ') !== rwSplit(NV.dnsfeeds).join(' '))
++                || (dnsallow.ok !== rwSplit(NV.dnsallow).join(' '));
++
+   f.rwarden_enable.value = on ? '1' : '0';
+   f.rwarden_feeds.value  = feeds.join(' ');
++  f.rwarden_dns.value    = dnsOn ? '1' : '0';
++  f.rwarden_dns_feeds.value = dfeeds.join(' ');
+ 
+   f.rwarden_geo.value    = rwCleanCC(geo);
+   f.rwarden_dir.value    = document.getElementById('dir').value;
+@@ -589,7 +658,7 @@ function rwSave(updateNow){
+   /* Save & Apply restarts the service (regenerates rules + updater). "Update
+      now" also regenerates first (so the fetch reflects current selections) then
+      runs the on-demand feed refresh. */
+-  if(updateNow){
++  if(updateNow || (on && dnsOn && dnsChanged)){
+     f.action_script.value = 'restart_rwarden;start_rwarden_update';
+     f.action_wait.value = '45';
+   } else {
+@@ -618,6 +687,7 @@ function rwSave(updateNow){
+   lf.append('ban', ban.ok);
+   lf.append('allow', allow.ok);
+   lf.append('cfeeds', cfeeds.ok);
++  lf.append('dnsallow', dnsallow.ok);
+   var lx = new XMLHttpRequest();
+   lx.open('POST','/reaper_warden.cgi',true);
+   lx.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+@@ -707,6 +777,7 @@ function rwStats(){
+        The trailing item is the WINDOW the counts cover: the persisted start when
+        statistics are being saved, otherwise "since the last firewall rebuild" -
+        the counts are then only whatever the live iptables counters hold. */
++    rwDnsStat(j);	/* 2026-10-19 threat domains: the card's status line */
+     var bd = document.getElementById('s_bdown');
+     if(bd){
+       var pairs = [];
+-- 
+2.25.1
+

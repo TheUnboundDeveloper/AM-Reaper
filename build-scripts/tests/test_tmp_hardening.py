@@ -182,7 +182,10 @@ for rel in SET:
 check("every Reaper /tmp directory is made through reaper_secure_dir", not mk_left, mk_left)
 check("every Reaper script run checks reaper_script_ok first (the Warden fold keeps its own lstat check)", not ex_left, ex_left)
 rw = rd("rc/rwarden.c")
-check("the Warden fold's own owner/mode check is still there", re.search(r"lstat\(RW_FOLD, &fst\) == 0 && S_ISREG\(fst\.st_mode\)", rw) is not None)
+# 2026-10-26: the same check covers fold.sh (Warden on) or dns.sh fold (Dreadwatch alone), whichever stop runs
+check("the Warden fold's own owner/mode check is still there",
+      re.search(r"const char \*sh = warden \? RW_FOLD : nvram_match\(\"rwarden_dns\", \"1\"\) \? RW_DNSSH : NULL;", rw) is not None
+      and re.search(r"if \(sh && lstat\(sh, &fst\) == 0 && S_ISREG\(fst\.st_mode\) &&\n\t\t    fst\.st_uid == 0 && \(fst\.st_mode & 077\) == 0\)", rw) is not None)
 rwt = rd("rc/rwatch.c")
 i = rwt.find("int reaper_lockrun_main(")
 check("reaper_lockrun runs a listed script only when reaper_script_ok agrees", i >= 0 and "reaper_script_ok(argv[1])" in rwt[i:i + 2500])
@@ -234,9 +237,9 @@ dg = rd("others/reaper_diag")
 check("diag: scratch files in the private directory; the report created fresh under noclobber",
       'SCR=/tmp/reaper' in dg and 'RAW="$SCR/.rdiag_raw.$$"' in dg and 'rm -f "$OUT"\nset -C\n{' in dg and 'set +C' in dg)
 check("diag v1.3.33+ reports the four protections and the directories",
-      'VER="REAPER-DIAG v1.3.50"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
+      'VER="REAPER-DIAG v1.3.51"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
 check("diag page and marker follow the version",
-      "REAPER-DIAG v1.3.50</span>" in rd("www/Reaper_Diag.asp"))
+      "REAPER-DIAG v1.3.51</span>" in rd("www/Reaper_Diag.asp"))
 shell = shutil.which("bash")
 if shell:
     for rel in ["rom/webs_scripts/reaper_webs_update.sh", "rom/webs_scripts/reaper_webs_upgrade.sh", "others/reaper_diag"]:

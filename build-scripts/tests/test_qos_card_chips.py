@@ -56,8 +56,12 @@ def modes(text):
 ACCEL_ON, ACCEL_OFF = ("RQOS_69", "good"), ("RQOS_79", "warn")
 
 # accelerator per engine, from the rc decision: fc_disable for NON_AQOS unless HWQOS/HWQOS_CLASSFUL
-check("rc: the accelerator rule is still 'every engine but 10/11 turns it off'",
-      "IS_NON_AQOS() && !IS_HWQOS() && !IS_HWQOS_CLASSFUL()" in init)
+# 40585 base: the rule also spares upstream's Router Boost (rb_enable) and HW AQM (IS_BCMTM_QOS, qos_type 8 - owner
+# 2026-10-27: dormant, no card offers it); both lines (fc_disable, runner_disable) carry the same exclusions
+_acc = re.findall(r"routing_mode && IS_NON_AQOS\(\)((?: && !IS_\w+\(\))+)\)", init)
+check("rc: the accelerator rule is still 'every engine but 10/11 turns it off' (plus upstream's RB / BCM TM qos_type 8)",
+      len(_acc) >= 2 and all(sorted(re.findall(r"!(IS_\w+)\(\)", a)) == ["IS_BCMTM_QOS", "IS_HWQOS", "IS_HWQOS_CLASSFUL", "IS_RB_QOS"]
+                             for a in _acc), _acc)
 def accel_expected(key):
     return ACCEL_ON if key in ("off", "10", "11") else ACCEL_OFF
 

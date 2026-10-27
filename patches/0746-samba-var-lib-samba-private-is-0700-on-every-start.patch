@@ -1,0 +1,34 @@
+From e6411c2f0bf5b08092cfeffdd2a588a38bed7601 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:56 -0400
+Subject: [PATCH] samba: /var/lib/samba/private is 0700 on every start
+
+The five runtime directories v3.4.0 moved ahead of enrollment come from
+mkdir_if_none, which makes them 0777; Samba installs private as 0700
+(secrets.tdb, the messaging sockets) and never re-checks it. chmod after
+the mkdirs; /var is tmpfs, so nothing of a user's is touched. Lean:
+tests/test_samba_enroll_dirs.py; REAPER-FIXES C18.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index d99c09aed18..bbf0a78365d 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3570,6 +3570,10 @@ start_samba(void)
+ 	mkdir_if_none("/var/lib/samba");
+ 	mkdir_if_none("/var/lib/samba/private");
+ 	mkdir_if_none("/var/cache/samba");
++	/* reaper 2026-10-13: mkdir_if_none makes 0777 directories; Samba installs private
++	   0700 (secrets.tdb, the messaging sockets) and never re-checks it, so hold it there
++	   on every start. /var is tmpfs: nothing of a user's is touched. */
++	chmod("/var/lib/samba/private", 0700);
+ #endif
+ 
+ 	unlink("/etc/smb.conf");
+-- 
+2.25.1
+

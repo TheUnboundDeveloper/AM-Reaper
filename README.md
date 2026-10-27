@@ -1,8 +1,8 @@
 # AM-Reaper
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.6.0** · 2026-10-27 <!--@stamp-->
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.5.0** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings).
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.6.0** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings).
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE-series owners.
 
@@ -47,7 +47,7 @@ This repo is **lean by design.** It contains *our work* — not the multi-GB ven
 - **Compliance:** [`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) (GPL source + written offer).
 
 **Not in the repo (externally sourced — see [docs/DEV-SETUP.md](docs/DEV-SETUP.md) § "Get the inputs"):**
-- The **upstream firmware source** — clone `RMerl/asuswrt-merlin.ng` at tag `3006.102.8-beta2`.
+- The **upstream firmware source** — clone `RMerl/asuswrt-merlin.ng` and check out commit `ca72a61f8bc` (Asuswrt-Merlin 3006.102.10; untagged upstream).
 - The **proprietary Broadcom/ASUS/Trend Micro/Tuxera components** — licensed for ASUS hardware only; they come with the upstream source / ASUS GPL drop, never redistributed here.
 - The **toolchains** — gcc-10.3 ARM/aarch64 from `RMerl/am-toolchains`.
 - The **flashable `.pkgtb` images** are build artifacts. They *are* published here, on GitHub [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases) (the in-tree [`releases/`](releases/) folder holds only the update-check manifest), and the complete corresponding source travels with them in [`patches/`](patches/) + [`provenance/`](provenance/) — see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md).
@@ -75,13 +75,13 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Base & status
 
 - Commands: what each build/cut/verify script does, and what a fork can run — [`docs/COMMANDS.md`](docs/COMMANDS.md).
-- Base: Asuswrt-Merlin **3006.102.8** (patches apply on tag `3006.102.8-beta2`; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
-- Current version: **v3.1.0** <!--@pubver--> (firmware line `3006.102.8_Reaper_v<version>`) — *current* means the newest
+- Base: Asuswrt-Merlin **3006.102.10** (ASUS GPL 102_40585) from v3.6.0 (patches apply on commit `ca72a61f8bc`; 3006.102.8 before; the sibling-model strip is optional — see [`patches/README.md`](patches/README.md)).
+- Current version: **v3.1.0** <!--@pubver--> (firmware line `3006.102.10_Reaper_v<version>` from v3.6.0, `3006.102.8_Reaper_v<version>` before) — *current* means the newest
   **published release**, i.e. the newest image you can actually download from
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models
   (published 2026-09-08 <!--@pubdate-->). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on.
   Source rungs are cut more often than releases are published (many rungs — e.g. v2.6.1–v2.6.9, v2.7.0,
-  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.5.0** <!--@treever-->) is normally
+  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.6.0** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the
   static checks and the patch-marker manifest) before it is cut; the maintainer's RT-BE96U runs each rung on metal,
   and the OpenSSL 3.5 move was validated there before its cut. The seven BCM4916 siblings are built

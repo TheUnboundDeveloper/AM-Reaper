@@ -121,8 +121,9 @@ for want in ("\tchar ip6[46];", "\tchar resv6[24];", "ndn = reaper_nd_load(ndt, 
              'if (!reaper_dhcp6_sfx_valid(sfx)) {', '"ek\\":\\"RDEVE_14\\"', '"ek\\":\\"RDEVE_15\\"',
              'rjf_set(REAPER_DHCP6_FILE, out, "reaper_dev")', 'rdev_audit(pin ? "pin6" : "unpin6", umac, pin ? lsfx : "");',
              '{ "dev",    "rdev_dhcp6",      8192 },', 'static int rdev_dhcp6_import(const char *v)',
-             '} else if (!strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {\t/* IPv6 A3: a /jffs list */',
-             'if (rdev_dhcp6_import(v) != 0) { rejected++; continue; }'):
+             # 2026-10-27: the settings file reads / writes each value through rcfg_get / rcfg_put
+             'if (!strcmp(nv, "rdev_dhcp6")) {\t/* IPv6 A3: a /jffs list */',
+             'return (rcfg_ok(v, rcfg_flags[i].max) && rdev_dhcp6_import(v) == 0) ? 0 : -1;'):
     if want not in web:
         die("web.c lacks %s" % want)
 check("web.c: struct, collector (neighbour cache + DHCPv6 lease bridge), nolease, JSON, the two actions, the backup flag", True)
@@ -131,7 +132,8 @@ body = web[gate:gate + 60000]
 check("the DHCPv6 actions sit behind the CGI's token gate (only store_status is exempt)",
       body.index('if (strcmp(action, "store_status") != 0) {') < body.index('"set_reserve6"'), "")
 check("the import validation of rdev_dhcp6 uses the printable charset, not the flag charset",
-      '!strcmp(rcfg_flags[i].nv, "rwarden_cfeeds") || !strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {' in web)
+      # 2026-10-27: rcfg_put - printable (rcfg_ok), then the reservation parser
+      'return (rcfg_ok(v, rcfg_flags[i].max) && rdev_dhcp6_import(v) == 0) ? 0 : -1;' in web)
 
 svc = read("rc/services.c")
 for want in ('void write_static_leases6(FILE *fp)', 'fprintf((FILE *)arg, "dhcp-host=%s,[%s]\\n", mac, sfx);',

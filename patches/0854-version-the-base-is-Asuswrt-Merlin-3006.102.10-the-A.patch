@@ -1,0 +1,73 @@
+From c7853bb48d04abe7cd23a128e94949c5733503e2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 15:51:05 -0400
+Subject: [PATCH] version: the base is Asuswrt-Merlin 3006.102.10; the About
+ page and innerver follow it
+
+- version.conf SERIALNO 102.8 -> 102.10, as upstream: buildno, the
+  firmware string and the image name now say 102.10.
+- Reaper_About.asp: the base chip read a hard-coded 3006.102.8; it is
+  rendered from buildno so the next rebase cannot leave it stale.
+- init_nvram2(): stock set innerver only at first setup (x_Setting=0), so a
+  router set up on v3.1.0 still reported 3.0.0.6.102.8_Reaper_v3.1.0 on
+  every later image (the Feedback page's "Inner Version"). It now follows
+  the running image; init_syspara() has already set firmver, buildno and
+  extendno by then.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf             | 2 +-
+ release/src/router/rc/init.c            | 9 ++++++---
+ release/src/router/www/Reaper_About.asp | 2 +-
+ 3 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 702d39af91c..ad11e773883 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -3,7 +3,7 @@ FS_VER=0.6
+ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+-SERIALNO=102.8
++SERIALNO=102.10
+ EXTENDNO=Reaper_v3.5.0
+ 
+ RCNO=0
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 4df8598eb89..be368964a60 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -24293,10 +24293,13 @@ int init_nvram2(void)
+ 	unsigned int wifi_gen_val = 0;
+ #endif /* AMAS */
+ 
+-	if (nvram_match("x_Setting", "0")) {
+-		snprintf(ver, sizeof(ver), "%s.%s_%s", nvram_safe_get("firmver"), nvram_safe_get("buildno"), nvram_safe_get("extendno"));
++	/* Reaper 2026-10-27: stock set innerver only at first setup (x_Setting=0), so it
++	 * kept naming the image the router was set up on (3.0.0.6.102.8_Reaper_v3.1.0
++	 * on a box running v3.5.0). Keep it on the running image; init_syspara() has
++	 * already set firmver/buildno/extendno from this build. */
++	snprintf(ver, sizeof(ver), "%s.%s_%s", nvram_safe_get("firmver"), nvram_safe_get("buildno"), nvram_safe_get("extendno"));
++	if (!nvram_match("innerver", ver))
+ 		nvram_set("innerver", ver);
+-	}
+ 
+ 	/* set default lan_hostname */
+ 	if (NEED_TO_SET_DEFAULT_VALUE("lan_hostname") || !nvram_invmatch("lan_hostname", "")) {
+diff --git a/release/src/router/www/Reaper_About.asp b/release/src/router/www/Reaper_About.asp
+index 7dca32e5663..8923580882e 100644
+--- a/release/src/router/www/Reaper_About.asp
++++ b/release/src/router/www/Reaper_About.asp
+@@ -128,7 +128,7 @@ b.on{color:var(--bone);font-weight:600}
+       <a href="https://unbounded-engineering.com/" target="_blank" rel="noopener noreferrer">Unbounded Engineering LLC</a></div>
+     <div class="verline">
+       <span class="vchip"><#RABT_04#> <b id="p_ver">&mdash;</b></span>
+-      <span class="vchip"><#RABT_05#> <b>3006.102.8</b></span>
++      <span class="vchip"><#RABT_05#> <b>3006.<% nvram_get("buildno"); %></b></span>
+       <span class="vchip"><#RABT_06#> <b><% nvram_get("productid"); %></b></span>
+       <span class="vchip"><#RABT_07#> <b id="p_var">&mdash;</b></span>
+     </div>
+-- 
+2.25.1
+

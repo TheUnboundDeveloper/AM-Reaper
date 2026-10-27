@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.6.0** · 2026-10-27 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -56,8 +56,8 @@ A run on `Dev` is the **beta** channel and a run on `main` is **stable**. Since
 tag and the release title:
 
 ```
-Dev   ->  RT-BE96U_3006_102.8_Reaper_v3.1.2_BETA_nand_squashfs.pkgtb
-main  ->  RT-BE96U_3006_102.8_Reaper_v3.1.2_nand_squashfs.pkgtb
+Dev   ->  RT-BE96U_3006_102.10_Reaper_v3.6.0_BETA_nand_squashfs.pkgtb
+main  ->  RT-BE96U_3006_102.10_Reaper_v3.6.0_nand_squashfs.pkgtb
 ```
 
 The marker goes into `EXTENDNO`, which is the one string the filename, the
@@ -305,11 +305,11 @@ If you see any of these, something is genuinely wrong and the job will fail:
 
 | Input | Value |
 |---|---|
-| Upstream base | `RMerl/asuswrt-merlin.ng` tag `3006.102.8-beta2`, commit `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3` |
+| Upstream base | `RMerl/asuswrt-merlin.ng` commit `ca72a61f8bc5ef920e29d63d53d9864262208f0c` (Asuswrt-Merlin 3006.102.10, untagged upstream) |
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
 | GitHub Actions | every `uses:` is pinned to a full commit SHA with a `# vN.N.N` comment (`actions/checkout`, `actions/cache`, `actions/cache/restore`, `actions/upload-artifact`); `build-scripts/tests/test_workflow_pins.py` fails the hygiene run on a tag pin, and `.github/dependabot.yml` proposes bumps as pull requests. A major tag is a moving pointer that runs new code in the build job unseen - security review 2026-10-20, F-5. |
-| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0892` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v2.8.8` (patch series `0001`–`0857` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

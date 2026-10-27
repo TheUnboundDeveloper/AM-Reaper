@@ -1,0 +1,231 @@
+From 015a2c8d1603f2a57883bdad28e52f3ffc53da8b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 11:44:22 -0400
+Subject: [PATCH] www: Reaper edits on four shipped stock pages restored;
+ popup.js overlays above the shell
+
+Found by the loss audit (every line the stack changed against the old base,
+checked in the merged tree). Four stock pages this image ships had been left at
+upstream's text: their www/Makefile rm lines are conditional, and the end sweep
+treated them as unshipped.
+
+- Advanced_Wireless_Content.asp: three-way merge (radio-slot mask, overlay timing);
+  the one conflict keeps upstream's warning colour with our Status_Active label.
+- APP_Installation.asp: three-way merge; the Download Master advert stays removed
+  unconditionally (upstream gates it on nodm_support || UI4).
+- AiMesh_Node_RbkFirmware.asp / AiMesh_Node_RevertFirmware.asp: upstream rewrote
+  both files; our one edit (extendno "reaper" -> "Reaper" in the version string)
+  re-applied.
+- popup.js: 40585 added two more full-screen overlays to AsusLoaderComponent at
+  z-index 2000, below the Reaper shell's header; raised to the value our fix gave
+  the original loader.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/APP_Installation.asp   |  9 +-
+ .../router/www/Advanced_Wireless_Content.asp  | 84 +++++++++++++------
+ .../router/www/AiMesh_Node_RbkFirmware.asp    |  2 +-
+ .../router/www/AiMesh_Node_RevertFirmware.asp |  2 +-
+ release/src/router/www/popup.js               |  4 +-
+ 5 files changed, 68 insertions(+), 33 deletions(-)
+
+diff --git a/release/src/router/www/APP_Installation.asp b/release/src/router/www/APP_Installation.asp
+index 5257f5356e9..f7e41e1e933 100644
+--- a/release/src/router/www/APP_Installation.asp
++++ b/release/src/router/www/APP_Installation.asp
+@@ -118,7 +118,7 @@ var faq_href1 = "https://nw-dlcdnet.asus.com/support/forward.html?model=&type=Fa
+ var faq_href2 = "https://nw-dlcdnet.asus.com/support/forward.html?model=&type=Faq&lang="+ui_lang+"&kw=&num=142";
+ 
+ function initial(){
+-	default_apps_array = [["AiDisk", "aidisk.asp", "<#AiDiskWelcome_desp1#>", "Aidisk_png", ""],
++	default_apps_array = [["USB / File Sharing", "Advanced_AiDisk_samba.asp", "<#AiDiskWelcome_desp1#>", "Aidisk_png", ""],
+ 			["<#Servers_Center#>", "mediaserver.asp", "<#UPnPMediaServer_Help#>", "server_png", ""],
+ 			["<#Network_Printer_Server#>", "PrinterServer.asp", "<#Network_Printer_desc#>", "PrinterServer_png", ""],
+ 			["3G/4G", "Advanced_Modem_Content.asp", "<#HSDPAConfig_hsdpa_enable_hint1#>", "modem_png", ""],
+@@ -144,8 +144,8 @@ function initial(){
+ 	}
+ 
+ 	if(sw_mode == 2 || sw_mode == 3 || sw_mode == 4 || re_mode == "1" || noaidisk_support){
+-		if(default_apps_array.getIndexByValue2D("AiDisk") != -1)
+-			default_apps_array = default_apps_array.del(default_apps_array.getIndexByValue2D("AiDisk")[0]);
++		if(default_apps_array.getIndexByValue2D("USB / File Sharing") != -1)
++			default_apps_array = default_apps_array.del(default_apps_array.getIndexByValue2D("USB / File Sharing")[0]);
+ 	}
+ 
+ 	if(!printer_support || noprinter_support){
+@@ -498,7 +498,8 @@ function show_apps(){
+ 			apps_array.splice(aicloud_idx[0], 1);
+ 	}
+ 
+-	if(nodm_support || isSupport("UI4")){
++	/* Reaper: Download Master advert removed from the USB Application page (was gated on nodm_support; now unconditional). */
++	{
+ 		var dm_idx = apps_array.getIndexByValue2D("downloadmaster");
+ 		if(dm_idx[1] != -1 && dm_idx != -1)
+ 			apps_array.splice(dm_idx[0], 1);
+diff --git a/release/src/router/www/Advanced_Wireless_Content.asp b/release/src/router/www/Advanced_Wireless_Content.asp
+index e234c7f013e..8b8f50094e8 100644
+--- a/release/src/router/www/Advanced_Wireless_Content.asp
++++ b/release/src/router/www/Advanced_Wireless_Content.asp
+@@ -2280,7 +2280,7 @@ if (isBRCMplatform && (prefix === "6g1" || prefix === "6g2")) {
+                     <tr id="${prefix}_outdoor_status_field" style="display:${displayFlag}">
+                         <th><#Outdoor_status#></th>
+                         <td>
+-                            <div id="${prefix}_outdoor_status">${od_mode === "1" ? "<#Outdoor_active#>" : "<#Status_Inactive#>"}</div>
++                            <div id="${prefix}_outdoor_status">${od_mode === "1" ? "<#Status_Active#>" : "<#Status_Inactive#>"}</div>
+                             <div id="${prefix}_outdoor_status_hint" style="color:var(--wrt-badge-warning-color, #FFCC00);display:${od_mode === "1" ? "" : "none"};"><#Outdoor_status_hint#></div>
+                         </td>
+                     </tr>
+@@ -3065,29 +3065,30 @@ if (isBRCMplatform && (prefix === "6g1" || prefix === "6g2")) {
+                 let commonStringError = {};
+                 let validateErrorCount = 0;
+                 if (smartConnectEnable && version === "v2") {
++                    /* reaper 2026-10-04: the mask is built per radio SLOT from radioSeqArray. The
++                       stock fallback `return 7` (= slots 0-2) sat behind a second, identical
++                       smartConnectEnable guard, so it could never run - but it would have dropped
++                       6 GHz on a tri-band box the moment either guard was edited. Removed: the
++                       outer guard is the only one, and there is no fallback to be wrong. */
+                     postObject.smart_connect_selif_x = (() => {
+-                        if (smartConnectEnable) {
+-                            let smartConnectSelifArray = [];
+-                            for (let element of radioSeqArray) {
+-                                if (element === "") {
+-                                    continue;
+-                                }
+-
+-                                let smartConnectRadioElement = document.getElementById(`smart_connect_check_${element}`);
+-                                if (smartConnectRadioElement) {
+-                                    let value = smartConnectRadioElement.checked ? "1" : "0";
+-                                    smartConnectSelifArray.push(value);
+-                                } else {
+-                                    smartConnectSelifArray.push("0");
+-                                }
++                        let smartConnectSelifArray = [];
++                        for (let element of radioSeqArray) {
++                            if (element === "") {
++                                continue;
+                             }
+ 
+-                            // put string array to binary string and transforms it to decimal
+-                            let smartConnectSelifStr = smartConnectSelifArray.join("");
+-                            return parseInt(smartConnectSelifStr, 2);
++                            let smartConnectRadioElement = document.getElementById(`smart_connect_check_${element}`);
++                            if (smartConnectRadioElement) {
++                                let value = smartConnectRadioElement.checked ? "1" : "0";
++                                smartConnectSelifArray.push(value);
++                            } else {
++                                smartConnectSelifArray.push("0");
++                            }
+                         }
+ 
+-                        return 7;
++                        // put string array to binary string and transforms it to decimal
++                        let smartConnectSelifStr = smartConnectSelifArray.join("");
++                        return parseInt(smartConnectSelifStr, 2);
+                     })();
+                 }
+ 
+@@ -3616,13 +3617,46 @@ if (isBRCMplatform && (prefix === "6g1" || prefix === "6g2")) {
+                     });
+                 }
+ 
+-                httpApi.nvramSet(postObject, function () {
+-                    showLoading(restartTime);
+-                    window.scrollTo && window.scrollTo({top: 0, left: 0, behavior: 'smooth'});
+-                    setTimeout(function () {
+-                        location.reload();
+-                    }, restartTime * 1000);
++                /* reaper v2.9.3: the overlay used to be raised INSIDE the nvramSet success
++                   callback. Applying a wireless security change deauths the client, so the
++                   response to that very request never arrives, the callback never runs, and
++                   the page sits inert while the router applies the change perfectly. Field
++                   report 2026-08-30: "it appeared nothing happened when in reality it
++                   rebooted the wifi with the password" - the owner only noticed it had
++                   worked when he tried to leave the page and found himself disconnected.
++                   This is the FIRST-BOOT path now that factory Wi-Fi is open again, so it is
++                   the common case, not an edge one. Raise the overlay and arm the reload
++                   BEFORE the request: feedback must never depend on the connection the
++                   change is about to drop. */
++                var wlSecChanged = Object.keys(postObject).some(function (k) {
++                    return /_(ssid|auth_mode_x|wpa_psk|crypto|mfp)$/.test(k);
+                 });
++
++                showLoading(restartTime);
++                window.scrollTo && window.scrollTo({top: 0, left: 0, behavior: 'smooth'});
++
++                if (wlSecChanged) {
++                    /* Say plainly that the browser itself may be the client that drops.
++                       DrSurf_sweet_advise1 is stock and already translated in all 25 packs,
++                       so this costs no new token. Backticks because the English carries an
++                       apostrophe and other locales may too. */
++                    try {
++                        var lb = document.getElementById("loadingBlock");
++                        if (lb && !document.getElementById("rwl_dc_hint")) {
++                            var hint = document.createElement("div");
++                            hint.id = "rwl_dc_hint";
++                            hint.style.cssText = "margin:14px 18px 0;line-height:1.5";
++                            hint.textContent = `<#DrSurf_sweet_advise1#>`;
++                            lb.appendChild(hint);
++                        }
++                    } catch (e) {}
++                }
++
++                setTimeout(function () {
++                    location.reload();
++                }, restartTime * 1000);
++
++                httpApi.nvramSet(postObject, function () {});
+             }
+ 
+             function mloHint() {
+diff --git a/release/src/router/www/AiMesh_Node_RbkFirmware.asp b/release/src/router/www/AiMesh_Node_RbkFirmware.asp
+index ce8ee466a0c..d214e829fed 100644
+--- a/release/src/router/www/AiMesh_Node_RbkFirmware.asp
++++ b/release/src/router/www/AiMesh_Node_RbkFirmware.asp
+@@ -163,7 +163,7 @@ var buildno = httpApi.nvramGet(["buildno"]).buildno;
+ var extendno = httpApi.nvramGet(["extendno"]).extendno;
+ var FWString = '';
+ FWString = firmver+"."+buildno;
+-FWString += "_"+extendno;
++FWString += "_"+extendno.replace(/^reaper/,"Reaper");
+ 
+ var frsmodel =  (httpApi.nvramGet(["webs_state_odm"]).webs_state_odm != "")? httpApi.nvramGet(["webs_state_odm"]).webs_state_odm:httpApi.nvramGet(["productid"]).productid;
+ var firmver_org =  httpApi.nvramGet(["firmver_org"]).firmver_org;
+diff --git a/release/src/router/www/AiMesh_Node_RevertFirmware.asp b/release/src/router/www/AiMesh_Node_RevertFirmware.asp
+index 24dd769e58b..d08fb4ef621 100644
+--- a/release/src/router/www/AiMesh_Node_RevertFirmware.asp
++++ b/release/src/router/www/AiMesh_Node_RevertFirmware.asp
+@@ -121,7 +121,7 @@ var buildno = httpApi.nvramGet(["buildno"]).buildno;
+ var extendno = httpApi.nvramGet(["extendno"]).extendno;
+ var FWString = '';
+ FWString = firmver+"."+buildno;
+-FWString += "_"+extendno;
++FWString += "_"+extendno.replace(/^reaper/,"Reaper");
+ 
+ var frsmodel =  (httpApi.nvramGet(["webs_update_odm"]).webs_update_odm != "")? httpApi.nvramGet(["webs_update_odm"]).webs_update_odm:httpApi.nvramGet(["productid"]).productid;
+ var firmver_org =  httpApi.nvramGet(["firmver_org"]).firmver_org;
+diff --git a/release/src/router/www/popup.js b/release/src/router/www/popup.js
+index 44747b34a6f..24da3eb2d7c 100644
+--- a/release/src/router/www/popup.js
++++ b/release/src/router/www/popup.js
+@@ -104,7 +104,7 @@ class AsusLoaderComponent {
+ 				right: 0;
+ 				bottom: 0;
+ 				left: 0;
+-				z-index: 2000;
++				z-index: 2147483000;	/* reaper: above the Reaper shell chrome, as the loader below */
+ 				backdrop-filter: blur(3px);
+ 				-webkit-backdrop-filter: blur(3px);
+ 				background-color: var(--loader-mask-bg, rgba(255, 255, 255, 0.6));
+@@ -569,7 +569,7 @@ class AsusLoaderComponent {
+         // Kept separate from detailStyle so the live-update loader is untouched.
+         const rescueDetailStyle = `<style>
+ 			.popup_bg {
+-				position: fixed; inset: 0; z-index: 2000;
++				position: fixed; inset: 0; z-index: 2147483000;	/* reaper: above the Reaper shell chrome */
+ 				display: flex; align-items: center; justify-content: center;
+ 				padding: 24px;
+ 				backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+-- 
+2.25.1
+

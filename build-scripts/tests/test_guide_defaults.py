@@ -190,16 +190,49 @@ check("section 8 states how many entries Reaper adds", m is not None)
 # (every { "key", ...} entry, comments stripped, no #if evaluation - the method that reproduces the
 # 93 / 18 written at v3.4.2). Checked when a stock tree is available: REAPER_STOCK_SRC, or the
 # stock-base checkout beside this repository's clone (.../stock-base/release/src/router).
-stock = os.environ.get("REAPER_STOCK_SRC") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(SRC))))),
-    "stock-base", "release", "src", "router")
-sdef = os.path.join(stock, "shared", "defaults.c")
+# 2026-10-27 (40585 rebase): "stock" is the PINNED base (build-scripts/patch_count.sh BASE=), not whatever the
+# stock-base checkout happens to be at - against the old a7ebfa133a checkout the merged tree counted ASUS 40585's
+# own 8 new keys as Reaper adds and its 4 dropped keys as Reaper removals. Order: REAPER_STOCK_SRC; the pin read
+# from the router tree's own git history; the stock-base checkout only when its HEAD is the pin.
+import subprocess
+def _pin():
+    try:
+        m = re.search(r"^BASE=([0-9a-f]{7,40})\s*$", rd(os.path.join(HERE, "..", "patch_count.sh")), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+def _git(d, *a):
+    try:
+        r = subprocess.run(["git", "-C", d] + list(a), capture_output=True, text=True, errors="replace")
+        return r.stdout if r.returncode == 0 else None
+    except OSError:
+        return None
+PIN = _pin()
+stext, sref = None, None
+if os.environ.get("REAPER_STOCK_SRC"):
+    sdef = os.path.join(os.environ["REAPER_STOCK_SRC"], "shared", "defaults.c")
+    if os.path.isfile(sdef):
+        stext, sref = rd(sdef), sdef
+if stext is None and PIN:
+    t = _git(os.path.join(SRC, "shared"), "show", PIN + ":./defaults.c")
+    if t:
+        stext, sref = t, "pinned base " + PIN[:11]
+if stext is None:
+    stock = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(SRC))))),
+                         "stock-base", "release", "src", "router")
+    sdef = os.path.join(stock, "shared", "defaults.c")
+    head = (_git(stock, "rev-parse", "HEAD") or "").strip()
+    if os.path.isfile(sdef) and (not PIN or (head and head.startswith(PIN))):
+        stext, sref = rd(sdef), sdef
+    elif os.path.isfile(sdef):
+        print("note: stock-base is at %s, not the pinned base %s - the adds/removes figures are not recomputed" % (head[:11], PIN[:11]))
 mr = re.search(r"removes (\d+)\*\*", sec)
-if not os.path.isfile(sdef):
-    print("note: no stock tree (REAPER_STOCK_SRC) - the adds/removes figures are not recomputed")
+if stext is None:
+    print("note: no stock tree (REAPER_STOCK_SRC / pinned base) - the adds/removes figures are not recomputed")
 else:
+    print("note: adds/removes recomputed against %s" % sref)
     KEY = re.compile(r'^\s*\{\s*"([A-Za-z0-9_.:\-]+)"\s*,', re.M)
-    ours, theirs = set(KEY.findall(strip_comments(rd(DEF)))), set(KEY.findall(strip_comments(rd(sdef))))
+    ours, theirs = set(KEY.findall(strip_comments(rd(DEF)))), set(KEY.findall(strip_comments(stext)))
     added, removed = len(ours - theirs), len(theirs - ours)
     check("section 8's \"adds N\" is the real count of keys Reaper adds over stock (%d)" % added,
           m is not None and int(m.group(1)) == added, m.group(1) if m else None)

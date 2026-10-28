@@ -24,11 +24,15 @@ same file that produces the published releases, and runs the same
    - `MCP` — the standard image (includes the read-only Advisor MCP server).
    - `noMCP` — the same firmware with the MCP server compiled out.
    - `both` — builds each in its own job, in parallel.
-5. Choose a model. Any one of the eight <!--@modelcount--> — `RT-BE96U` (the default), `RT-BE86U`,
-   `RT-BE88U`, `GT-BE98`, `GT-BE98_PRO`, `GT-BE19000`, `BQ16`, `BQ16_PRO` <!--@models--> — or `all`, which
-   fans out to every model. `all` with `both` is 16 <!--@fleetjobs--> concurrent jobs.
-   *The GT-BE19000 joined the roster on 2026-09-12, the ZenWiFi BQ16 (BE25000) on
-   2026-10-01 and the ZenWiFi BQ16 Pro on 2026-10-04. All three publish only as prereleases until
+5. Choose a model. Any one of the four <!--@modelcount--> — `GT-BE98` (the default), `GT-BE19000`,
+   `BQ16`, `BQ16_PRO` <!--@models--> — or `all`, which
+   fans out to every model. `all` with `both` is 8 <!--@fleetjobs--> concurrent jobs.
+   *This is the `Dev-102.8` branch: the 3006.102.8 line, for the four models that have no ASUS GPL
+   102_40585-era release yet. Their newest GPLs (102_39274 / 102_39256) lack closed components the
+   40585 source calls, so they stay on this base, with the Reaper changes of the 3006.102.10 line
+   backported, until ASUS publishes one. The RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro build from
+   the `Dev` branch. The GT-BE19000 joined the roster on 2026-09-12, the ZenWiFi BQ16 (BE25000) on
+   2026-10-01 and the ZenWiFi BQ16 Pro on 2026-10-04; those three publish only as prereleases until
    field testers have run them.*
 6. When the run finishes, download the artifacts from the run summary page.
 

@@ -69,7 +69,7 @@ on:
       model:
         description: 'Model to build (all = every model)'
         type: choice
-        default: RT-BE96U
+        default: GT-BE98
         # `all` is the eight BCM4916 models x two variants = 16 jobs.
         # RT-BE92U is retired from the roster (see the note above) and is
         # deliberately not selectable here.
@@ -84,7 +84,14 @@ on:
         # from the ASUS GPL 102_39256 drop; prerelease-only until a unit has booted one.
         # BQ16_PRO (ZenWiFi BQ16 Pro, 2.4/5/6/6) joined 2026-10-04 from its own 102_39256 drop
         # and stock image; the same prerelease-only rule until a unit has booted one.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, BQ16, BQ16_PRO, all]
+        # Dev-102.8 (from v3.6.0, 2026-10-27): this branch is the 3006.102.8 line and builds ONLY the four
+        # models with no ASUS GPL 102_40585-era release yet. Their newest GPLs (102_39274 / 102_39256) lack
+        # closed components the 40585 source calls, so they stay on this base, with the Reaper changes of
+        # the 3006.102.10 line (branch Dev) backported, until ASUS publishes one. RT-BE96U, RT-BE86U,
+        # RT-BE88U and GT-BE98_PRO build from Dev. update-manifest lines are merged per model, so the two
+        # lines never touch each other's lines; the one shared file is the per-version note, which is why
+        # the v3.6.0 CHANGELOG section is identical on both branches.
+        options: [GT-BE98, GT-BE19000, BQ16, BQ16_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -254,7 +261,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["GT-BE98","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -459,7 +466,7 @@ jobs:
             -e BASE_COMMIT="$BASE_COMMIT" \
             -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
             -e EXPECTED_VERSION="$EXPECTED_VERSION" \
-            -e REAPER_BETA="${{ github.ref == 'refs/heads/Dev' && '1' || '0' }}" \
+            -e REAPER_BETA="${{ (github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && '1' || '0' }}" \
             -e MODEL="${{ matrix.model }}" \
             -e VARIANT="${{ matrix.variant }}" \
             -e REPO_DIR=/work/reaper \
@@ -532,7 +539,7 @@ jobs:
   tag:
     name: Tag for release
     needs: build
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -580,12 +587,12 @@ jobs:
           # A beta re-spin of the same version follows the normal re-release
           # path: delete the beta tag or dispatch release.yml with
           # allow_republish.
-          if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
+          if [ "${{ github.ref }}" = "refs/heads/Dev" ] || [ "${{ github.ref }}" = "refs/heads/Dev-102.8" ]; then
             V="$V-beta"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
+            MODELS="GT-BE98 GT-BE19000 BQ16 BQ16_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -632,19 +639,19 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["GT-BE98","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
       # Belt-and-braces: the -beta tag already trips release.yml's *beta* match,
       # but a Dev publish is ALWAYS a pre-release even if the naming changes.
-      prerelease: ${{ github.ref == 'refs/heads/Dev' }}
+      prerelease: ${{ github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8' }}
 
   # ---------------------------------------------------------------------------
   # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
@@ -669,7 +676,7 @@ jobs:
   refresh_manifest:
     name: Refresh update manifest
     needs: [tag, release]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -732,7 +739,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
+            export MODELS="GT-BE98 GT-BE19000 BQ16 BQ16_PRO"
           else
             export MODELS="$MODELSEL"
           fi
@@ -746,7 +753,7 @@ jobs:
             echo "manifest already advertises $V -- nothing to commit"
             exit 0
           fi
-          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
+          if [ "$SRC_REF" = "refs/heads/Dev" ] || [ "$SRC_REF" = "refs/heads/Dev-102.8" ]; then
             git commit -m "updates: advertise Reaper $V on the beta line of the firmware update manifest [skip ci]"
           else
             git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"

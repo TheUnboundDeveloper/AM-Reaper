@@ -431,7 +431,8 @@ ok('rjf_set(RVIEW_BASE, body, "review")' in cgi and "O_RDONLY | O_NOFOLLOW" in c
 kick = between(web, "static void rview_kick(void)", "\n}\n", "rview_kick")
 ok("reaper_script_ok(RVIEW_SH)" in kick and kick.count("fork()") == 2 and "setsid()" in kick and "_eval(argv, NULL, 30, NULL)" in kick,
    "web.c: the re-check runs detached (double fork) and only when the script passes reaper_script_ok")
-ok('{ "reaper_watch.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web, "web.c: the mime row carries do_auth")
+ok(any('{ "reaper_watch.cgi*", "application/json", %s, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' % nc in web
+       for nc in ("no_cache", "no_cache_IE7")), "web.c: the mime row carries do_auth")	# no_cache_IE7 on the 102.8 base
 ok('{ "watch",  "rwatch_review",   2    }' in web, "web.c: the settings export carries rwatch_review (max 2 for a 0/1 flag)")
 ok('nvram_set("rwatch_review", on ? "1" : "0");' in cgi and 'reaper_audit("review"' in cgi, "web.c: the switch is audited")
 
@@ -474,7 +475,7 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.50"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.51"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")

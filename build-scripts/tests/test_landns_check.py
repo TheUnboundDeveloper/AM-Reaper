@@ -169,7 +169,7 @@ check("defaults: reaper_landns_enable=0 (off at factory, owner 2026-10-12) and r
 # ---------------------------------------------------------------- wiring: the dashboard
 db = read("www/Main_ReaperDash.asp")
 check("dashboard reads the state at render and in the live poll",
-      "landns:   '<% nvram_get(\"reaper_landns_state\"); %>'," in db
+      "landns:   <% nvram_get_js(\"reaper_landns_state\"); %>," in db
       and "'reaper_landns_state'];" in db and "if(typeof j.reaper_landns_state==='string') NET.lan=j.reaper_landns_state;" in db)
 check("both Internet paints end in netPaint() (amber wins while failing; colours handed back when it clears)",
       db.count("netPaint();") >= 2 and "e.style.background = amber ? 'var(--amber)' : '';" in db
@@ -194,7 +194,7 @@ check("no tooltip in AP / repeater / bridge mode (the two spots are plain text a
 # ---------------------------------------------------------------- wiring: the shell header (every framed page)
 sh = read("www/reaper_shell.asp")
 check("shell reads the state at render and in the live poll (with the IPv6 face, for the Internet line)",
-      "lan:'<% nvram_get(\"reaper_landns_state\"); %>'" in sh
+      "lan:<% nvram_get_js(\"reaper_landns_state\"); %>" in sh
       and "%3bnvram_get(reaper_landns_state)%3bwan_ipv6_network()&_=" in sh
       and "if(typeof j.reaper_landns_state==='string') NET.lan=j.reaper_landns_state;" in sh
       and "if(j.wan_ipv6_network && typeof j.wan_ipv6_network==='object') WAN6=j.wan_ipv6_network;" in sh)

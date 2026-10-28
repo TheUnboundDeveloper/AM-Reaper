@@ -249,10 +249,11 @@ try:
     rw = read("rc/rwarden.c")
     for needle, what in (
         ('echo \\"reaper-nx-db=$RW_NXDB\\"; } > $RW_DNSC.new', "update.sh: the include is two lines - the hit log and the table"),
-        ('build --subtree --out $RW_NXDB.new --kfile $DN.k --kids \\"$RW_DIDS other\\"', "update.sh: wallguardc compiles the feeds list itself (--kfile, review 2026-10-24 Q-A-3b) with --subtree, then checks the table before it is installed"),
+        # 2026-10-27: the ids gain your own sources' slots ($RW_DCUST)
+        ('build --subtree --out $RW_NXDB.new --kfile $DN.k --kids \\"$RW_DIDS other $RW_DCUST\\"', "update.sh: wallguardc compiles the feeds list itself (--kfile, review 2026-10-24 Q-A-3b) with --subtree, then checks the table before it is installed"),
         ("check --db $RW_NXDB.new >/dev/null 2>&1 && mv -f $RW_NXDB.new $RW_NXDB", "update.sh: ...renamed into place only when the check passes"),
         ('#define RW_DIDS_STR  "urlhaus phish c2 crypto ransom certpl threatview threatfox"', "rwarden.c: the feed order is one define (bit = position in it)"),
-        ('--kids \\"$RW_DIDS other\\"', "update.sh: a name no feed claims goes under 'other', never left out"),
+        ('--kids \\"$RW_DIDS other $RW_DCUST\\"', "update.sh: a name no feed claims goes under 'other', never left out"),
         ("static const char rw_nx_rebuild_sh[] =", "boot: the table is rebuilt from the /jffs copy before the first update"),
         ('fprintf(f, "reaper-hitlog=%s\\nreaper-nx-db=%s\\n", RW_HITS, RW_NX_DB);', "boot: the two-line include is written when missing"),
         ("_dvalid() { awk '(NF == 3 || NF == 4)", "dns.sh: a record may carry the feed ids (4th field), charset-checked"),

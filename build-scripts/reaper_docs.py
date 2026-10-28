@@ -113,7 +113,7 @@ class Facts(object):
         except Exception as e:
             self.problems.append("public-build.yml: %s" % e)
             return None
-        m = re.search(r"^\s*options:\s*\[([^\]]*RT-BE[^\]]*)\]", text, re.M)
+        m = re.search(r"^\s*options:\s*\[([^\]]*(?:RT-BE|GT-BE|BQ16)[^\]]*)\]", text, re.M)   # Dev-102.8 lists no RT-BE
         if not m:
             self.problems.append("public-build.yml: model options list not found")
             return None

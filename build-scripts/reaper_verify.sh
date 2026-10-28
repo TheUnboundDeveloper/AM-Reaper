@@ -278,7 +278,8 @@ fi
 # rules the port uses -- if they disagree, gaps ship silently).
 if [ -f /home/reaper/reaper_build/_port_protect.sh ]; then
   . /home/reaper/reaper_build/_port_protect.sh
-  CANON_REF=be96u-only
+  # the 102.8 line (Dev-102.8) checks against its own canon, be96u-102.8
+  CANON_REF=${REAPER_CANON_REF:-be96u-only}
   if git -C "$R" rev-parse --verify -q "$CANON_REF" >/dev/null 2>&1; then
     HEADB=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null)
     if [ "$HEADB" = "$CANON_REF" ]; then

@@ -122,7 +122,7 @@ unlisted = sorted(f for f in os.listdir(www) if f.endswith(".asp") and '<meta na
                   and ('"%s"' % f) not in inj)
 check("every page with the reaper-native meta is on an httpd inject list (else it gets the stock skin)", not unlisted, unlisted)
 check("rp.js carries rp.md5 and rp.chpass (hexMD5 current, base64 new, http_id, POST body, synchronous)",
-      "rp.md5 = function(s){" in rpjs and "rp.chpass = function(post){" in rpjs and "p.http_id = '<% nvram_get(\"http_id\"); %>'" in rpjs
+      "rp.md5 = function(s){" in rpjs and "rp.chpass = function(post){" in rpjs and "p.http_id = <% nvram_get_js(\"http_id\"); %>" in rpjs
       and "x.open('POST', '/chpass.cgi', false);" in rpjs and "p.new_passwd = btoa(p.new_passwd);" in rpjs)
 check("rp.esc delegates to reaper_util.js's ReaperEsc and never to window.esc (a page global could point that back at rp.esc)",
       "var f = window.ReaperEsc; return (typeof f === 'function' && f !== rp.esc) ? f(s)" in rpjs and "window.esc(s)" not in rpjs)
@@ -130,7 +130,7 @@ check("rp.esc delegates to reaper_util.js's ReaperEsc and never to window.esc (a
 node = shutil.which("node")
 if node:
     s = re.findall(r"<script>(.*?)</script>", t, re.S)[-1]
-    s = re.sub(r"<%.*?%>", "0", s); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
+    s = re.sub(r"<%.*?%>", "0", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', s)); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
         f.write(s); jp = f.name
     r = subprocess.run([node, "--check", jp], capture_output=True, text=True); os.unlink(jp)
@@ -138,7 +138,7 @@ if node:
     # rp.md5 against RFC 1321 vectors, rp.js run under node with a stub DOM
     harness = ("var window = {}; var document = {readyState: 'complete', addEventListener: function(){}, querySelectorAll: function(){ return []; },"
                " getElementById: function(){ return null; }, body: {appendChild: function(){}} }; window.addEventListener = function(){};"
-               " var XMLHttpRequest = function(){};\n" + re.sub(r"<%.*?%>", "", rpjs)
+               " var XMLHttpRequest = function(){};\n" + re.sub(r"<%.*?%>", "", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', rpjs))
                + "\nconsole.log(JSON.stringify([window.rp.md5(''), window.rp.md5('abc'), window.rp.md5('message digest'), window.rp.md5('The quick brown fox jumps over the lazy dog')]));\n")
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
         f.write(harness); jp = f.name

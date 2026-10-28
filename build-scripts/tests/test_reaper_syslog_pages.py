@@ -56,7 +56,7 @@ check("Leases/IPv6/PortFwd: emitter arrays declared before the ej call (strict m
       and ".pop()" not in I6 and "<% get_vserver_array(); %>" in PF and "<% get_upnp_array(); %>" in PF)
 check("PortFwd: Reaper's own DNAT chain is named, not passed off as a user port forward", "REAPER_GKN: `<#RLOG_" in PF)
 check("Routes: every table + rules from reaper_pbr.cgi?action=routes, local table folded by default",
-      "'/reaper_pbr.cgi?action=routes&http_id=' + encodeURIComponent(HTTPID)" in RT and "var HTTPID = '<% nvram_get(\"http_id\"); %>';" in RT
+      "'/reaper_pbr.cgi?action=routes&http_id=' + encodeURIComponent(HTTPID)" in RT and "var HTTPID = <% nvram_get_js(\"http_id\"); %>;" in RT
       and "if (t === 'local' && !showLocal) return;" in RT)
 check("sortable lists use the kit comparator", "rp.cmp(" in LS and "rp.cmp(" in I6 and "rp.cmp(" in W)
 
@@ -76,8 +76,8 @@ aj = rd(os.path.join(www, "ajax_reaper_wlstatus.asp"))
 check("ajax_reaper_wlstatus.asp runs get_wl_status only (stock's ajax also ran the closed driver dump every refresh)",
       aj.strip() == "<% get_wl_status(); %>")
 
-# _r25 field: a ?query on a static file 404s (httpd do_file looks the path up with the query) - the kit stylesheet
-# gets its 60 s cache from an exact httpd mime entry instead
+# _r25 field: a ?query on a static file 404'd on the old base (do_file looked the path up with the query); kept so
+# the kit does not grow a cache-busting query the build stamp already covers
 allw = "".join(rd(os.path.join(www, f)) for f in os.listdir(www) if f.endswith(".asp"))
 check("no page links rp.css with a query string (httpd answers 404)", "rp.css?" not in allw)
 
@@ -90,9 +90,15 @@ check("reaper_pbr.cgi routes action: ip rule + every table (v4/v6) + rt_tables, 
 check("data_arrays.c: UPnP + pinhole descriptions and IPv6 hostnames go through lease_js_escape (no str_escape_quotes left for them)",
       da.count("lease_js_escape(desc2, sizeof(desc2), desc);") == 2 and da.count("lease_js_escape(host_esc, sizeof(host_esc), hostname);") == 2
       and "str_escape_quotes(desc2" not in da)
-check("httpd serves reaper/rp.css with the 60 s cache, ahead of the 1 h **.css rule",
-      '{ "reaper/rp.css", "text/css", cache_object_60, NULL, do_file, NULL },' in web
-      and web.index('"reaper/rp.css", "text/css"') < web.index('{ "**.css", "text/css", cache_object,'))
+# 40585 base (merge stops 63/64): upstream serves every .css no_cache and do_file strips the query; the cache bust
+# answers .css with Cache-Control: no-cache plus a build-stamped ETag, so the old 60 s rp.css row is gone (moot)
+_hc = rd(os.path.join(SRC, "httpd", "httpd.c"))
+_css = web.find('{ "**.css", "text/css", no_cache, NULL, do_file, NULL },')
+check("httpd serves reaper/rp.css fresh: **.css is no_cache with no cached row ahead of it, .css revalidates on a build-stamped ETag",
+      _css >= 0 and not re.search(r'\{ "reaper/[^"]*", "text/css", cache_object', web[:_css])
+      and '(!strcasecmp(ext, ".css") || (!strcasecmp(ext, ".js") && etag_header_flag == 1));' in _hc
+      and "if (revalidate)\n\t\textra_header = no_cache;" in _hc
+      and "reaper_append_buildinfo_to_etag(etag_value, sizeof(etag_value));" in _hc)
 check("data_arrays.c: a missing IPv6 client list still closes the array", "close the array - returning here left it open" in da)
 check("web-broadcom-am.c: no-SCBSTATS stations keep the column count; one failed interface no longer drops the rest",
       'ret += websWrite(wp, "\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"");' in wb and "if (wl_ioctl(name_vif, WLC_GET_VAR, auth, mac_list_size))\n\t\t\t\tcontinue;" in wb)
@@ -109,13 +115,13 @@ node = shutil.which("node")
 if node:
     for p, t in T.items():
         s = re.findall(r"<script>(.*?)</script>", t, re.S)[-1]
-        s = re.sub(r"<%.*?%>", "0", s); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
+        s = re.sub(r"<%.*?%>", "0", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', s)); s = re.sub(r"<#[A-Za-z0-9_-]+#>", "X", s)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(s); jp = f.name
         r = subprocess.run([node, "--check", jp], capture_output=True, text=True); os.unlink(jp)
         check(p + ": script parses (node --check)", r.returncode == 0, r.stderr[-300:])
     rpjs = rd(os.path.join(www, "reaper", "rp.js"))
     h = ("var window = {}; var document = {readyState: 'complete', addEventListener: function(){}, querySelectorAll: function(){ return []; },"
-         " getElementById: function(){ return null; }, body: {appendChild: function(){}} }; window.addEventListener = function(){};\n" + re.sub(r"<%.*?%>", "", rpjs)
+         " getElementById: function(){ return null; }, body: {appendChild: function(){}} }; window.addEventListener = function(){};\n" + re.sub(r"<%.*?%>", "", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', rpjs))
          + "\nconsole.log(['10.0.0.20','192.168.50.3','','10.0.0.3','fe80::1'].sort(window.rp.cmp('ip')).join(','));\n")
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(h); jp = f.name
     r = subprocess.run([node, jp], capture_output=True, text=True); os.unlink(jp)

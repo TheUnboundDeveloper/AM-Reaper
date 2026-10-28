@@ -855,7 +855,7 @@ def check_fw_beta_channel(router):
         if "<#%s#>" % k not in page:
             bad.append("Reaper_Firmware.asp: token %s not used" % k)
     dash = open(dash_p, encoding="utf-8", errors="replace").read()
-    if 'nvram_get("webs_state_channel")' not in dash:
+    if 'nvram_get_js("webs_state_channel")' not in dash:
         bad.append("Main_ReaperDash.asp: the update badge does not label a beta")
     npacks = 0
     for fn in sorted(os.listdir(www)):

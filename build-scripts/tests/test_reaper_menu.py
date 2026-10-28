@@ -44,7 +44,7 @@ if not node:
     print("note: node not found - the runtime checks are skipped"); sys.exit(1 if fails else 0)
 
 js = t.replace("[<% get_ui_support(); %>][0]", "{}").replace("[<% get_operation_mode(); %>][0]", "'rt'")
-js = re.sub(r"<%.*?%>", "", js); js = re.sub(r"<#([A-Za-z0-9_]+)#>", r"\1", js)
+js = re.sub(r"<%.*?%>", "", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', js)); js = re.sub(r"<#([A-Za-z0-9_]+)#>", r"\1", js)
 ALL = {k: 1 for k in ("amas", "amasRouter", "mssid", "sdn_mwl", "mtlancfg", "PARENTAL2", "webs_filter", "ookla", "dns_dpi", "reaper_mcp",
                       "usbX", "media", "dualwan", "ipv6", "openvpnd", "pptpd", "ipsec_srv", "vpnc", "tor", "wireguard", "snmp", "nwtool",
                       "smart_connect_v2", "dnsfilter", "switchctrl", "mlo", "sdn_mainfh", "nt_center", "nt_center_ui", "fanctrl")}

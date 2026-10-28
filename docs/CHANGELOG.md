@@ -47,11 +47,12 @@ node, not only on the primary router.
 
 ---
 
-## v3.6.0 — rebased onto Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585), custom-script output kept, your own Wallguard and Dreadwatch sources, Bastion
+## v3.6.0 — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585) for four models, custom-script output kept, your own Wallguard and Dreadwatch sources, Bastion
 
 Everything in v3.5.0 is included.
 
-- **New base: Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585).** The Reaper series was rebased from
+- **New base for the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro: Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585).**
+  The Reaper series was rebased from
   `3006.102.8-beta2` (`a7ebfa133a`) onto Merlin `main` at `ca72a61f8bc` (untagged upstream). The firmware line is
   now `3006.102.10_Reaper_v<X>`; image names carry `3006_102.10`. Every Reaper change was replayed; where upstream
   had fixed the same defect its fix was kept - the `asus_openssl_crypt` injection (C6), IPsec profile parsing
@@ -60,12 +61,18 @@ Everything in v3.5.0 is included.
   and restored them, and seven stock pages Reaper deletes (app installer, AiCloud / WebDAV, the AiDisk wizard,
   AiProtection groups, Alexa / IFTTT) stay deleted - the rebase had re-created them. The AiMesh MAC checks are
   upstream's `isValidMacAddress()` now, hardened to refuse any character but hex digits and separators. The patch series is regenerated from the new base: 855 patches, numbered from `0001`.
+- **GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro stay on 3006.102.8.** ASUS has not published a 102_40585-era GPL for them, and the
+  40585 source calls closed components their 102_39274 / 102_39256 releases do not have (the clean-room build
+  stopped at `MISC_INFO_WIFI_GEN`). Their v3.6.0 is built from the 3006.102.8 base, image names `3006_102.8`,
+  from the `Dev-102.8` branch, and carries every Reaper change below; what they do not get is the new base and
+  the items marked for the 3006.102.10 models. `isValidMacAddress()` is hardened the same way on both bases.
+  They move to the new base when ASUS publishes one.
 - **libnvram / libwlcsm: ASUS's 40585 pair.** Same netlink socket-leak fix as the 42015 pair Reaper carried since
   v3.1.8, plus ASUS's caller check in `nvram_set()` for `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys`
   and `ookla_quota`. On the RT-BE96U a root shell's `nvram set` of those keys still works (tested on the router);
   every Reaper writer of them is httpd or rc either way. GT-BE98, GT-BE19000, BQ16 and BQ16 Pro keep the 42015
   pair: their platform trees predate the caller check.
-- **OpenVPN server certificates on Easy-RSA 3.** On OpenSSL 3 builds 40585 stages `easyrsa` and no `pkitool`. The
+- **OpenVPN server certificates on Easy-RSA 3 (3006.102.10 models).** On OpenSSL 3 builds 40585 stages `easyrsa` and no `pkitool`. The
   server-certificate repair imports the CA the router already holds into a fresh PKI and issues the server leaf
   with easyrsa; `reaper_verify` (ovpn-pki) runs the first-time and the repair chains on the image's own openssl.
 - **Custom scripts keep their output and say when they fail.** rc runs `/jffs/scripts/*` as before, but under a
@@ -93,9 +100,9 @@ Everything in v3.5.0 is included.
   hover; only shortened labels get the tooltip.
 - **Wireless Log:** one box per network inside each radio (main, guests, the AiMesh backhaul), named.
 - **Fixes:** the Internet Speed Test tab opens at once under the Reaper shell (it waited ~5 s for a stock menu
-  height); rwatch stands down during a firmware upgrade (a tick in the upgrade's teardown reported the missing
+  height; 3006.102.10 models); rwatch stands down during a firmware upgrade (a tick in the upgrade's teardown reported the missing
   firewall chains as a failure and restarted rpunctd); USB start no longer logs a failed `tfs_linux` modprobe on
-  4.19-kernel models; httpd bounds the model name it lower-cases for the product image; the Feedback page's
+  4.19-kernel models (3006.102.10 models); httpd bounds the model name it lower-cases for the product image; the Feedback page's
   Inner Version follows the running image instead of the image the router was first set up on; the About page
   reads the base version from the firmware.
 

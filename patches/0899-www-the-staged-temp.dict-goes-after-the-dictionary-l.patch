@@ -1,0 +1,35 @@
+From 27fdca64c14a7704b2bb284b3c1ed071947b5949 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 11:08:10 -0400
+Subject: [PATCH] www: the staged temp.dict goes after the dictionary loops,
+ not before them
+
+gendict.pl leaves a 3-byte temp.dict in the source www (ASUS gitignores it); on a
+warm tree the `for F in $(wildcard *.dict)` loops stage it as an empty 26th
+dictionary and reaper_verify's i18n-dict check sees line counts 0 and 8832. The
+rule's existing rm runs before the loops; this one runs after.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+(cherry picked from commit b2df5e9d90546367653c4875c60453e7f43fbc66)
+---
+ release/src/router/www/Makefile | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 670d1f0b737..df440627908 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -397,6 +397,10 @@ else
+ 		./gendict.pl $(BUILD_NAME) $$F $(INSTALLDIR)/www/$$F; \
+ 	done
+ endif
++	# reaper 2026-10-27: gendict.pl leaves a 3-byte temp.dict in the source www (gitignored), so on a warm tree
++	# the wildcard loops above stage it as an empty 26th dictionary. Not a dictionary - drop the staged copy here,
++	# after the loops (the rm near the top of this rule runs before they do).
++	rm -f $(INSTALLDIR)/www/temp.dict
+ 	# reaper 2026-10-25 (review 2026-10-24, Q-C2-10): /* */ and // comments out of Reaper's own pages, scripts and
+ 	# stylesheets - the vendor minifier above leaves them (its strip_comments() is a stub). A file the stripper cannot
+ 	# lex is left as it is, and the build never fails on it (build-scripts/tests/test_reaper_strip.py proves the tokens).
+-- 
+2.25.1
+

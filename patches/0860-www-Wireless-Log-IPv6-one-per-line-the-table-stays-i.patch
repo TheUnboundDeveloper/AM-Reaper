@@ -1,0 +1,74 @@
+From fd064c684d26f735d50787cda3c946682c50f7d1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 08:10:56 -0400
+Subject: [PATCH] www: Wireless Log - IPv6 one per line, the table stays inside
+ its card
+
+Field report (v3.5.0): the Wireless Log drew client rows past the page
+edge. v3.5.0 had no scroll box round the table (v3.6.0 has one), and the
+table itself was far wider than needed:
+
+- httpd joins a client's IPv6 addresses with commas into one token, and the
+  page printed it as one unbreakable line; now one address per line, as the
+  stock page's tooltip showed them.
+- the Name column was squeezed to a few characters (rp.css break-word lets
+  it shrink to nothing); it keeps 9em and wraps between words.
+- key/value values wrapped mid-word (break-all: "(IS" / "M)"); they wrap at
+  spaces first now.
+
+Measured in the shell with fabricated clients (three IPv6 each) at 1920
+and 1366: the table fits its card (scrollWidth == clientWidth), Name
+column 205-225 px (was 59).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_WLog.asp | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_WLog.asp b/release/src/router/www/Reaper_WLog.asp
+index 736a6f3e11d..308f4ab7b91 100644
+--- a/release/src/router/www/Reaper_WLog.asp
++++ b/release/src/router/www/Reaper_WLog.asp
+@@ -28,13 +28,16 @@
+ .bar select{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:7px 9px;outline:none}
+ .kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px 18px;font-size:12.5px;margin:6px 0 12px}
+ .kv .k{color:var(--steel);font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+-.kv .v{color:var(--bone);font-family:var(--mono);word-break:break-all}
++.kv .v{color:var(--bone);font-family:var(--mono);overflow-wrap:anywhere}
+ .rtab th{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);text-align:left;padding:7px 8px;border-bottom:1px solid var(--line-soft);cursor:pointer;user-select:none;white-space:nowrap}
+ .rtab th:hover,.rtab th.on{color:var(--bone)}
+ .rtab th .dir{display:inline-block;width:10px;margin-left:3px}
+ .rtab td{padding:7px 8px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:top}
+ .rtab td.mono{font-family:var(--mono);white-space:nowrap}
+ .rtab td .sub2{display:block;color:var(--steel);font-size:11.5px;font-family:var(--mono)}
++/* 2026-10-28 (field report): the name keeps a readable width and wraps between words; a single long name
++   still breaks rather than widening the table */
++.rtab td.name{min-width:9em;word-break:normal;overflow-wrap:anywhere}
+ .empty{color:var(--steel);font-size:12.5px;padding:8px 0}
+ .net{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:10px;padding:12px 14px;margin-top:12px}
+ .net h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px;font-weight:700;color:var(--bone);margin:0 0 6px;word-break:break-all}
+@@ -145,6 +148,12 @@ function nets(i, d, list){
+   out.forEach(function(n, k){ n.k = k; });
+   return out.sort(function(a, b){ return RANK[a.kind] - RANK[b.kind] || a.k - b.k; });
+ }
++/* 2026-10-28 (field report): httpd joins a client's IPv6 addresses with commas into one token - printed as one
++   line it ran the table past the page edge. One address per line, as stock's tooltip showed them. */
++function v6lines(s){
++  return String(s || '').split(',').map(function(a){ return a.trim(); }).filter(Boolean).map(function(a){
++    return '<span class="sub2">' + hx(a) + '</span>'; }).join('');
++}
+ function netHtml(n, col, cmp){
+   var title = n.name || (n.kind === 'bh' ? `<#RLOG_78#>` : n.kind === 'main' ? `<#RLOG_79#>` : '-');
+   var h = '<div class="net"><h3>' + hx(title) +
+@@ -158,7 +167,7 @@ function netHtml(n, col, cmp){
+   h += '<div class="tw"><table class="rtab"><thead><tr>' + COLS.map(function(c){ return '<th data-k="' + c.k + '"' + (c.k === col.k ? ' class="on"' : '') + '>' + hx(c.h) +
+     '<span class="dir">' + (c.k === col.k ? (SORT.dir > 0 ? '&#9650;' : '&#9660;') : '') + '</span></th>'; }).join('') + '</tr></thead><tbody>';
+   n.list.forEach(function(r){
+-    h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + hx(r.ip || '-') + (r.ip6 ? '<span class="sub2">' + hx(r.ip6) + '</span>' : '') +
++    h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + hx(r.ip || '-') + v6lines(r.ip6) +
+       '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(isNaN(r.rssi) ? '?' : r.rssi + ' dBm') + '</td><td class="mono">' + hx((r.rx || '-') + ' / ' + (r.tx || '-')) +
+       '</td><td class="mono">' + hx(r.conn || '-') + '</td><td class="mono">' + hx(r.phy || '-') + '</td><td class="mono">' + hx(r.flags || '') + '</td></tr>';
+   });
+-- 
+2.25.1
+

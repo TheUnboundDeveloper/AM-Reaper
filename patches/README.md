@@ -1,6 +1,6 @@
 # patches/
 
-The complete **Reaper** series for the RT-BE96U (**857 <!--@patchcount--> patches, v1.0 → v3.6.0 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **3006.102.10** (ASUS GPL 102_40585; base commit `ca72a61f8bc`, untagged upstream). Up to v3.5.0 the series was built on `3006.102.8-beta2` (`a7ebfa133a`); that series is in this repository's history at v3.5.0. Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
+The complete **Reaper** series for the RT-BE96U (**862 <!--@patchcount--> patches, v1.0 → v3.6.1 <!--@treever-->**), as `git format-patch` files generated on top of Asuswrt-Merlin **3006.102.10** (ASUS GPL 102_40585; base commit `ca72a61f8bc`, untagged upstream). Up to v3.5.0 the series was built on `3006.102.8-beta2` (`a7ebfa133a`); that series is in this repository's history at v3.5.0. Apply them to a stock upstream checkout to reproduce the full Reaper source — security hardening, the de-cloud removals, all Hardware QoS engines, the Traffic Analyzer, the Reaper UI, and the optional AI Advisor.
 
 ## Apply
 
@@ -31,7 +31,7 @@ Verified: applying the full series with `git am --keep-cr` onto a clean `ca72a61
 
 ## What the series contains
 
-> The series holds 857 <!--@patchcount--> patches. The per-rung descriptions in this file run
+> The series holds 862 <!--@patchcount--> patches. The per-rung descriptions in this file run
 > through v2.4.3; for every rung after that (v2.4.4 onward), the authoritative per-version
 > narrative is [`../docs/CHANGELOG.md`](../docs/CHANGELOG.md).
 

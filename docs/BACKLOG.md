@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -41,47 +41,10 @@ internal quality, or deferred by decision.
 highest priority first - what was fixed and what to ask the tester for is in the notes. A "still broken"
 answer moves the item back to Open bugs.*
 
-- **[P1] Pre-build review 2026-10-21: root wrote into the USB store by path; Wallguard MAC check let
-  a command through**
-  ↳ notes: `review-2026-10-21.md`
-- **[P1] Dreadwatch threat domains: both feeds return HTTP 410**
-  ↳ notes: `dreadwatch-abusech-410.md`
-- **[P1] Test images _r8-_r10 could not be flashed and nothing said so**
-  ↳ notes: `review-2026-10-21.md`
-- **[P1] DDNS certificate stuck on "Unknown or processing..." or blank**
-  ↳ notes: `ddns-cert-warden.md`
-- **[P1] Dreadwatch: the name limit cut alphabetically, so a large optional list pushed out Reaper's
-  Basics**
-  ↳ notes: `dreadwatch-limit.md`
-- **[P1] RAM: the Dreadwatch name list is held in RAM five times** ↳ notes: `ram-dedupe.md`
 - **[P1] Wallguard never builds its table - stuck on "The lists are downloading"**
   ↳ notes: `wallguard.md`
 - **[P1] WAN 802.1Q switch did nothing on GT-BE98 (rebooted, came back off)**
   ↳ notes: `wan-vlan-mswan.md`
-- **[P2] Reviewer feedback: Dreadwatch, Security Review rules, latency & loss chart**
-  ↳ notes: `reviewer-feedback-2026-10-20.md`
-- **[P2] Files under /jffs left writable by every user** ↳ notes: `jffs-world-writable.md`
-- **[P2] IPsec's /jffs/ca_files: root-run scripts 0777, private keys readable by everyone**
-  ↳ notes: `ipsec-ca-files-perms.md`
-- **[P2] Wallguard — ad & tracker blocker, phases 1 + 2**
-  ↳ notes: `wallguard.md`, `release-review-2026-10-25.md`
-- **[P2] Warden threat domains on/off did not take effect until the next dnsmasq restart**
-  ↳ notes: `wallguard.md`
-- **[P2] Encrypted DNS for devices — Step A** ↳ notes: `encrypted-dns.md`
-- **[P2] Encrypted DNS: block encrypted DNS that goes around the router**
-  ↳ notes: `encrypted-dns.md`, `release-review-2026-10-25.md`
-- **[P2] Wi-Fi Settings: Roaming Assistant cannot be switched off**
-  ↳ notes: `roamast-apply-inactive.md`
-- **[P2] Long-Term Storage rows: Wallguard lists on USB, Wallguard / Dreadwatch blocked lookups,
-  Encrypted DNS activity**
-  ↳ notes: `wallguard.md`
-- **[P2] Older store writers followed links too (rwatch device / channel / syslog history and
-  incident dumps, httpd audit log, rtrafd database and health log)**
-  ↳ notes: `review-2026-10-21.md`
-- **[P2] Hard-coded never-block names could not be removed (Dreadwatch, Wallguard)**
-  ↳ notes: `visible-exemptions.md`
-- **[P2] Wireless Scheduler: the SSID is not broadcast when the schedule turns Wi-Fi back on**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
 - **[P2] AiMesh parking card dead: the on/off button stuck on "-"**
   ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
 - **[P2] AiMesh backhaul parking loops: park, "client network is down", release, every ~70 s**
@@ -102,20 +65,13 @@ answer moves the item back to Open bugs.*
   ↳ notes: `wallguard-sources.md`
 - **[P2] Bastion tools independent: Dreadwatch no longer needs Warden**
   ↳ notes: `bastion-independent.md`
-- **[P3] Wi-Fi Settings: a Time Scheduling edit could drop out of Apply; a shared row counted
-  twice**
-  ↳ notes: `roamast-apply-inactive.md`
-- **[P3] Samba log noise: "Unknown parameter use spnego" and "sys_path_to_bdev() failed"**
-  ↳ notes: `samba-log-noise.md`
-- **[P3] Sort the Devices and Gatekeeper lists** ↳ notes: `devices-gatekeeper-sort.md`
-- **[P3] Security review: select several rows and act once**
-  ↳ notes: `security-review-bulk-select.md`
-- **[P3] Connections: the flow detail panel stretches on long names**
-  ↳ notes: `conn-detail-panel-long-names.md`
-- **[P3] Gatekeeper device list: wrong connection type for some devices**
-  ↳ notes: `gatekeeper-connection-type.md`
-- **[P3] AiMesh: the "feedback" link after a failed node join goes nowhere**
-  ↳ notes: `aimesh-feedback-dead-link.md`
+- **[P2] Header bar truncates English at 1080p** ↳ notes: `header-chip-truncation.md`
+- **[P2] Backups: the DDNS hostname lost, and the settings file blind to the newer tools**
+  ↳ notes: `backup-coverage.md`
+- **[P2] Doubled menu after a language switch (the dashboard inside the settings frame)**
+  ↳ notes: `doubled-menu-language-switch.md`
+- **[P2] DHCP manual assignment: device names gone from the Host Name column**
+  ↳ notes: `dhcp-reservation-names.md`
 - **[P3] /jffs/nvram/asus_device_list turns world-writable again after boot**
   ↳ notes: `jffs-world-writable.md`
 - **[P3] Wallguard: the HaGeZi Threat Intelligence preset could never load** ↳ notes: `wallguard.md`
@@ -123,26 +79,18 @@ answer moves the item back to Open bugs.*
   ↳ notes: `reaper-diag-counters.md`
 - **[P3] Security Review card: clear ways to accept, add and remove** ↳ notes: `security-review.md`
 - **[P3] System Log: Find / Exclude lists and saved exclusions** ↳ notes: `system-log-filter.md`
-- **[P3] USB Application: opening a sub-page from the main menu leaves its tab unhighlighted**
-  ↳ notes: `usb-app-tab-highlight.md`
 - **[P3] The Warden menu is Bastion** ↳ notes: `bastion-menu.md`
 - **[P3] System Log: lines are not wrapped** ↳ notes: `system-log-filter.md`
 - **[P3] Wireless Log: one box per network** ↳ notes: `wireless-log-networks.md`
+- **[P3] Wireless Log: client rows run past the page edge** ↳ notes: `wireless-log-overflow.md`
 
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P2] Header bar truncates English at 1080p** (owner, 2026-10-27, v3.6.0) — chip labels and values end in
-  "..." at 1920 px (fine at 1440p); English must fit the 1080p canvas. **[open]** ↳ notes: `header-chip-truncation.md`
-- **[P2] Backups: the DDNS hostname lost, and the settings file blind to the newer tools** (field
-  report + owner, 2026-10-27) — both files blanked `ddns_hostname_x` (stock's asuscomm step; a no-ip
-  name came back empty, its login restored); the settings file carried nothing of Wallguard or
-  Dreadwatch's sources, and no switch added since Warden. Now: hostname kept; every Reaper feature
-  carried, API keys included; per-box items stay router-settings only; a coverage test fails on an
-  unplaced option.
-  **[built in canon 2026-10-27, unbuilt - next rung; owed on metal: a full and a settings restore]**
-  ↳ notes: `backup-coverage.md`
+- **[P2] AiMesh: the preferred uplink node is ignored** (field report, BQ16, v3.5.0) — a node set
+  to prefer one node joins another; no Reaper change on that path found in the code.
+  **[needs data]** ↳ notes: `aimesh-preferred-uplink.md`
 - **[P3] Review 2026-10-24: the owner-only decisions and the merges that would change behaviour**
   (adversarial and quality agents over the whole pending delta) — decide: the hidden-input key lists
   (Q-C1-11), the Wallguard / Encrypted DNS look on the kit stylesheet (Q-C2-12 CSS), the ten stock rail

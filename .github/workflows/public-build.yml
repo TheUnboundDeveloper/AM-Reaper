@@ -84,7 +84,15 @@ on:
         # from the ASUS GPL 102_39256 drop; prerelease-only until a unit has booted one.
         # BQ16_PRO (ZenWiFi BQ16 Pro, 2.4/5/6/6) joined 2026-10-04 from its own 102_39256 drop
         # and stock image; the same prerelease-only rule until a unit has booted one.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, BQ16, BQ16_PRO, all]
+        # From v3.6.0 (2026-10-27) GT-BE98, GT-BE19000, BQ16 and BQ16_PRO are NOT on
+        # this roster. The 3006.102.10 base is ASUS GPL 102_40585, and the newest GPL
+        # those four have is 102_39274 / 102_39256: the 40585 open source calls
+        # functions their older closed parts do not have (first stop: rc/init.c
+        # MISC_INFO_WIFI_GEN, run 40595696540). They stay on the 3006.102.8 base and
+        # build from the Dev-102.8 branch, with this line's Reaper changes backported,
+        # until ASUS publishes a 40585-era GPL for them. update-manifest lines are
+        # merged per model, so leaving them off here leaves their lines untouched.
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -256,7 +264,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -587,7 +595,7 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -640,7 +648,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -734,7 +742,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000 BQ16 BQ16_PRO"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98_PRO"
           else
             export MODELS="$MODELSEL"
           fi

@@ -148,8 +148,8 @@ Choose one:
 
 **Actions → Build firmware from source → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 16 <!--@fleetjobs--> jobs,
-      ~1.5 h each — eight models)
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 8 <!--@fleetjobs--> jobs,
+      ~1.5 h each — four models on this branch; the other four build from `Dev-102.8`)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.

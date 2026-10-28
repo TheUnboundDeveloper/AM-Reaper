@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,30 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.1 — no doubled menu after a language switch, English header labels whole, DHCP reservation names, Wireless Log width
+
+Everything in v3.6.0 is included. Both lines carry every change: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **The dashboard never opens inside the settings frame.** Field report (GT-BE98, v3.4.9): after switching the
+  language from English to Russian the page showed two menus and two top bars - the dashboard had loaded inside the
+  settings shell's content frame, and the shell remembered it in its address, so a reload repeated it. The dashboard
+  now takes the whole window when it finds itself in that frame, and the shell opens the dashboard as the whole
+  window rather than in the frame.
+- **Header labels: English is never cut.** WAN, Mode, Uptime, Firmware, Clients and Mesh Nodes ended in "..." in
+  English at 1920 px. Each label now keeps at least its English width; only a translation longer than the English is
+  shortened (whole word on hover), and on a narrow window the last labels are hidden whole instead. The Firmware
+  label shows the Reaper version (`Reaper_v3.6.1`); the full firmware string is on hover.
+- **DHCP manual assignment shows device names again.** Since v3.4.9 the Host Name column of LAN > DHCP Server >
+  Manual Assignment read empty for most reservations. Nothing was deleted: the stock page v3.4.9 replaced showed each
+  device's name from the client list beside its MAC, and the Reaper page showed only the reservation's own host name
+  (field 4 of `dhcp_staticlist`), which most reservations leave empty. A reservation without a host name now shows the
+  device's name there in grey (your name for it, else the detected one). Display only: the saved list and the CSV
+  export are unchanged.
+- **Wireless Log stays inside the page.** Field report (v3.5.0): client rows ran past the page edge. A client's IPv6
+  addresses printed as one unbroken line; they now print one per line, the Name column keeps a readable width, and
+  long values wrap at spaces.
 
 ## v3.6.0 — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585) for four models, custom-script output kept, your own Wallguard and Dreadwatch sources, Bastion
 

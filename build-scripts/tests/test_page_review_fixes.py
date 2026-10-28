@@ -146,8 +146,15 @@ SH = rd(os.path.join(www, "reaper_shell.asp"))
 lp = SH[SH.find("function loadPage(page){"):SH.find("function markPage(base){")]
 check("loadPage marks through markPage(); the frame's own navigation to a menu page marks it too, hash in frameUrl's allow-list",
       "markPage(page.split('?')[0]);" in lp and "function inMenu(base){" in SH
-      and "if(base===(location.hash||'').replace('#', '').split('?')[0] || !inMenu(base)) return;" in SH
+      and "if(base===(location.hash||'').replace('#', '').split('?')[0] || !inMenu(base) || isTopLevelPage(base)) return;" in SH
       and "if(frameUrl(page)!=='/'+page) page=base;" in SH and "markPage(base);\n    }catch(e){}" in SH)
+# 2026-10-28 (owner field report, GT-BE98 v3.4.9): after an EN -> RU switch the dashboard rendered inside the shell's
+# frame (two rails, two top bars). A page with its own chrome replaces the window from loadPage(), the frame-load marker
+# never writes it into the hash, and the dashboard leaves the frame by itself
+DSH = rd(os.path.join(www, "Main_ReaperDash.asp"))
+check("doubled menu: loadPage() replaces the window for a top-level page; the dashboard leaves #page_frame itself",
+      "if(isTopLevelPage(page.split('?')[0])){ location.replace('/'+page.split('?')[0]); return; }" in lp
+      and "if(rfe&&rfe.id==='page_frame')top.location.replace('/Main_ReaperDash.asp');" in DSH)
 # 2026-10-25 (owner): Gatekeeper's connection type follows the Devices page's data and order
 GKP = rd(os.path.join(www, "Reaper_GK.asp"))
 gc = GKP[GKP.find("function gkConn(d){"):GKP.find("function gkEditing(){")]

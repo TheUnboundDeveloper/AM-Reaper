@@ -1,0 +1,64 @@
+From 2b4f60b7776b018703a3f0f4b82f1cdb470b9328 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 07:40:37 -0400
+Subject: [PATCH] www: the dashboard never renders inside the shell frame
+ (doubled menu) (102.8 line)
+
+The dashboard carries its own topbar and rail. When it loaded inside the
+shell content frame (field report, GT-BE98 v3.4.9, after a language switch)
+both were drawn, one inside the other, and the shell then wrote
+#Main_ReaperDash.asp into its hash so every reload repeated it.
+
+- Main_ReaperDash.asp: framed in the shell page_frame, it takes the whole
+  window instead. Top level and the hidden apply frame are unchanged.
+- reaper_shell.asp: loadPage() opens a page with its own chrome as the
+  window, never in the frame; the frame-load marker never writes it into
+  the hash.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 4 ++++
+ release/src/router/www/reaper_shell.asp    | 5 ++++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 4a13956ed34..39b46f0709a 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -9,6 +9,10 @@
+ <script src="/reaper_util.js"></script>
+ <script src="/reaper/menu.js"></script>
+ <script src="/reaper/fit.js"></script>
++<script>/* 2026-10-28 (owner field report): this page carries its own topbar and rail, so it must never render
++   inside the shell's content frame - that painted both, one inside the other. Whatever puts it there (a
++   stale #Main_ReaperDash.asp hash, a framed login landing on "/"), it takes the whole window instead. */
++try{var rfe=window.frameElement;if(rfe&&rfe.id==='page_frame')top.location.replace('/Main_ReaperDash.asp');}catch(e){}</script>
+ <script>if(window.RFIT) RFIT.watch(document);	/* 2026-10-26: a too-long label - one line, "...", whole text on hover */</script>
+ <title>REAPER &mdash; <#AiProtection_title_Dashboard_title#></title>
+ <style>
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index dee52aa0573..42d4dd818d7 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -539,6 +539,9 @@ function renderTabs(page){
+ }
+ 
+ function loadPage(page){
++  /* 2026-10-28: a page with its own chrome replaces the window, never the frame (see isTopLevelPage) -
++     a #Main_ReaperDash.asp hash framed the dashboard inside the shell (owner field report) */
++  if(isTopLevelPage(page.split('?')[0])){ location.replace('/'+page.split('?')[0]); return; }
+   var f=$id('page_frame');
+   if(f){
+     /* anti-flash veil: hide the frame for the swap; the load handler below
+@@ -595,7 +598,7 @@ function inMenu(base){
+   f.addEventListener('load', function(){
+     try{
+       var l=f.contentWindow.location, base=l.pathname.replace(/^\//, '');
+-      if(base===(location.hash||'').replace('#', '').split('?')[0] || !inMenu(base)) return;
++      if(base===(location.hash||'').replace('#', '').split('?')[0] || !inMenu(base) || isTopLevelPage(base)) return;
+       var page=base+(base.indexOf('Reaper_')===0 ? l.search : '');
+       if(frameUrl(page)!=='/'+page) page=base;   /* keep the hash inside frameUrl()'s allow-list */
+       history.replaceState(null, '', '/reaper_shell.asp#' + page);
+-- 
+2.25.1
+

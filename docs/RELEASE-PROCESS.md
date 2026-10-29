@@ -113,6 +113,17 @@ Two things it deliberately leaves to you: the provenance `summary` prose (it
 writes a `TODO`) and the `docs/CHANGELOG.md` section (release notes are
 extracted from it).
 
+### Two lines, one version (from v3.6.0)
+
+Every rung is cut twice, with the same version number: on `Dev` (Asuswrt-Merlin 3006.102.10 -
+RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and on `Dev-102.8` (3006.102.8 - GT-BE98, GT-BE19000,
+BQ16, BQ16 Pro). The 102.10 rung's Reaper changes are backported to the 102.8 canon first; only
+changes specific to the 40585 code stay on one line. Each branch has its own patch series,
+overlays, `provenance/manifest.json` and `EXPECTED_VERSION` pin. The `docs/CHANGELOG.md` section
+for the version must be **byte-identical** on both branches: `refresh_manifest` writes one
+`updates/notes/Reaper_<version>.txt` from it and the last branch to publish wins. Both branches
+are pushed, and the build is dispatched on each.
+
 ### Why the replay matters
 
 Two source-tree hashes are recorded per release, and they are not the same:
@@ -123,8 +134,10 @@ Two source-tree hashes are recorded per release, and they are not the same:
   the pinned base yields. **This is what CI computes and compares**, so this is
   the one that must be right. (The vendor WLCSM blob pair in
   `overlays/wlcsm-42015-blobs.tar.gz` lives under `release/src-rt-5.04behnd.4916`,
-  outside both hashed trees; CI copies it over every model's platform copy after
-  the overlay and asserts the model's own tree carries both files.)
+  outside both hashed trees; CI copies it over the platform copy of a model whose
+  `spwenc.o` predates the 40585 caller check - the four 3006.102.8 models - while the
+  3006.102.10 models keep the base's 40585 pair, and either way asserts the model's own
+  tree carries both files.)
 
 They differ only by three vendored `openssh-sftp` `*.md` files that the series'
 doc-hunk exclusion strips. `cut_rung.sh` asserts that nothing else differs — if

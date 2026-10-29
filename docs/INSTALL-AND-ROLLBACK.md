@@ -16,7 +16,7 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 | File | What it is |
 |------|-----------|
 | `RT-BE96U_3006_<series>_<EXTENDNO>_nand_squashfs.pkgtb` (`102.10` from v3.6.0) | The **AI Advisor** firmware (includes the optional MCP server). |
-| — with `_BETA` in `<EXTENDNO>` | A **pre-release** from the Dev branch. Same install steps; less testing behind it. The router reports the same string on the dashboard and the About page, so you can always check which channel the firmware you are running came from. A release carries no marker. |
+| — with `_BETA` in `<EXTENDNO>` | A **pre-release** from the `Dev` or `Dev-102.8` branch. Same install steps; less testing behind it. The router reports the same string on the dashboard and the About page, so you can always check which channel the firmware you are running came from. A release carries no marker. |
 | `RT-BE96U_..._noMCP_...pkgtb` | The **Standard** firmware: the same image **without** the AI Advisor / MCP server compiled in (choose this if you don’t want the MCP feature present at all). |
 | `..._loader.pkgtb` | **Recovery loader only** — used in Rescue Mode, *not* a normal firmware. Don’t flash this from the Web UI as your firmware. |
 
@@ -55,7 +55,7 @@ A cross‑major upgrade can leave stale nvram. To avoid odd behaviour:
 
 ### Verify the install
 - **Administration → System / firmware version** shows the Reaper build.
-- **System Info → Features** row reflects the Reaper package set (traffic analyzer, classful HW‑QoS, MCP on the AI Advisor build, etc.).
+- **System Info → Capabilities** lists the feature flags the image was built with, and the **About** page (the scythe mark at the foot of the menu) its patch count and upstream base.
 - Internet + Wi‑Fi work.
 
 ---

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -25,7 +25,7 @@ internal quality, or deferred by decision.
 - [Waiting on field response](#waiting-on-field-response)
 - [Open bugs / under investigation](#open-bugs--under-investigation)
 - [UI / UX polish](#ui--ux-polish)
-- [Features to add](#features-to-add)
+- [Potential features to add](#potential-features-to-add)
 - [Documentation](#documentation)
 - [Code quality / deferred (with reason)](#code-quality--deferred-with-reason)
 - [Reported, investigated, closed as working-as-designed
@@ -41,19 +41,10 @@ internal quality, or deferred by decision.
 highest priority first - what was fixed and what to ask the tester for is in the notes. A "still broken"
 answer moves the item back to Open bugs.*
 
-- **[P1] Wallguard never builds its table - stuck on "The lists are downloading"**
-  ↳ notes: `wallguard.md`
+- **[P1] RT-BE86U: 5 GHz radio down after a Guest Network Pro save (live Wi-Fi driver reload)**
+  ↳ notes: `be86u-5ghz-driver-reload.md`
 - **[P1] WAN 802.1Q switch did nothing on GT-BE98 (rebooted, came back off)**
   ↳ notes: `wan-vlan-mswan.md`
-- **[P2] AiMesh parking card dead: the on/off button stuck on "-"**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
-- **[P2] AiMesh backhaul parking loops: park, "client network is down", release, every ~70 s**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
-- **[P2] LAN > VLAN (per-port access / trunk) missing on every SDN model**
-  ↳ notes: `lan-vlan-tab.md`
-- **[P2] Upstream carries from Asuswrt-Merlin (Eric Sauvageau), 2026-10-26**
-  ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P2] Wallguard says why it cannot work** ↳ notes: `wallguard-why.md`
 - **[P2] Reaper pages: settings written into page scripts without escaping**
   ↳ notes: `nvram-get-js-escaping.md`
 - **[P2] firewall-start "not honoured": custom scripts kept no trace of failing**
@@ -72,17 +63,15 @@ answer moves the item back to Open bugs.*
   ↳ notes: `doubled-menu-language-switch.md`
 - **[P2] DHCP manual assignment: device names gone from the Host Name column**
   ↳ notes: `dhcp-reservation-names.md`
-- **[P3] /jffs/nvram/asus_device_list turns world-writable again after boot**
-  ↳ notes: `jffs-world-writable.md`
-- **[P3] Wallguard: the HaGeZi Threat Intelligence preset could never load** ↳ notes: `wallguard.md`
-- **[P3] Diag: "store is RAM although a USB disk is mounted" on every router**
-  ↳ notes: `reaper-diag-counters.md`
-- **[P3] Security Review card: clear ways to accept, add and remove** ↳ notes: `security-review.md`
-- **[P3] System Log: Find / Exclude lists and saved exclusions** ↳ notes: `system-log-filter.md`
 - **[P3] The Warden menu is Bastion** ↳ notes: `bastion-menu.md`
 - **[P3] System Log: lines are not wrapped** ↳ notes: `system-log-filter.md`
 - **[P3] Wireless Log: one box per network** ↳ notes: `wireless-log-networks.md`
 - **[P3] Wireless Log: client rows run past the page edge** ↳ notes: `wireless-log-overflow.md`
+- **[P3] Dreadwatch: removable built-in lists, your own sources, API sources**
+  ↳ notes: `dreadwatch-custom-feeds.md`
+- **[P3] Wallguard / Dreadwatch: an API key inside the source address (`$APIkey`)**
+  ↳ notes: `wallguard-sources.md`
+- **[P3] Wallguard: abuse.ch templates in "Add a source"** ↳ notes: `wallguard-sources.md`
 
 ## Open bugs / under investigation
 
@@ -165,13 +154,6 @@ answer moves the item back to Open bugs.*
   reaper_dot_srv, the country list and custom feeds hashed; a setting the accepted baseline predates is adopted into
   it silently with one log line (`test_rwatch_review.py`). The rest (admin access, second WAN, servers, DNS/DDNS,
   the update chain, open Wi-Fi) not started]** ↳ notes: `security-review-coverage.md`
-- **[P3] Dreadwatch: removable built-in lists, your own sources, API sources** (owner, 2026-10-23 /
-  2026-10-27: Wallguard's sources on Dreadwatch) — every built-in row removable (Basics too) with
-  Restore; up to 8 sources of your own, a text list at an https address or an API (POST body, key
-  header, JSON field) fetched through `wallguard.sh fetch`; keys write-only in /jffs/rwarden/dnskeys;
-  one table id per source, after the built-in lists.
-  **[built in canon 2026-10-27, unbuilt - next rung; owed on metal: a real abuse.ch Auth-Key]**
-  ↳ notes: `dreadwatch-custom-feeds.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** (owner,
   2026-10-22) — a Long-Term Storage row "Dreadwatch lists" (USB only, like Wallguard's): each list's
   download and the compiled copy on the volume through `rstore`, restored after a reboot without

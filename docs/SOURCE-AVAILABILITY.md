@@ -24,6 +24,9 @@ GPL-covered portions of any Reaper build is, deterministically:
    - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
    - Commit: **`ca72a61f8bc`** (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; untagged upstream)
    - Up to v3.5.0 the base was tag `3006.102.8-beta2`, commit `a7ebfa133a`
+   - From v3.6.0 the GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro build from the `Dev-102.8`
+     branch on that older base (commit `a7ebfa133a`); that branch's copy of this file, patch series
+     and overlays are their corresponding source.
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
      model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 /
      ZenWiFi BQ16 / ZenWiFi BQ16 Pro — from
@@ -40,9 +43,10 @@ Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
 OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
-vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
-unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
-`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component) comes with
+the pinned base for the models it carries: ASUS's 102_40585 pair, unmodified. A model whose
+platform tree comes from an older ASUS GPL takes the pair from ASUS's public
+9.0.0.6.102_42015 firmware instead, shipped as `overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the RT-BE96U image.
 

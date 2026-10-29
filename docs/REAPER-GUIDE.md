@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
-**Applies to:** Reaper firmware, line `3006.102.8_Reaper_v<X>`, for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro. This guide describes the feature set as of the v3.6.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.6.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -151,13 +151,13 @@ This guide is written for someone who will install and run the firmware: technic
 
 ## 1. What Reaper is, and is not
 
-Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin 3006.102.8 for the ASUS RT-BE series (Broadcom BCM4916, Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
+Reaper is a security-hardened, de-clouded rebuild of Asuswrt-Merlin (3006.102.10; 3006.102.8 for four models, see 2.1) for the ASUS RT-BE series (Broadcom BCM4916, Wi-Fi 7). Its stated goal is that **only physical access** should be able to compromise the router: the open-source userspace has been audited and patched against remotely or LAN-reachable command injection, buffer overflows, format-string bugs and authentication bypasses, across several audit rounds. That hardening is invisible in normal use. What you will notice is the de-cloud work (the router no longer talks to ASUS), the different interface, and the features listed below.
 
 Reaper is distributed as a patch series applied to the public Asuswrt-Merlin source. Releases are compiled in a public GitHub Actions clean room from pinned inputs, and the About page in the firmware states the patch count, upstream commit and build date of the image you are running so that it can be rebuilt and checked.
 
 ### 1.1 What it keeps
 
-- **Everything Asuswrt-Merlin ships** for this platform that is not cloud-coupled: user scripts (firewall/services events), cron, custom service configs, Entware via `amtm`, `nano`, NTP, SNMP (SNMPv3 only, see below), OpenVPN client and server, WireGuard, IPsec/strongSwan (built and staged from v2.5.3 onward; the server side is confirmed on hardware, a client tunnel is still owed confirmation), VPN Director, DNS Director, Cake SQM, Tor, ipset, USB sharing (Samba 4 SMB3, vsftpd, minidlna, AFP), traffic statistics.
+- **Everything Asuswrt-Merlin ships** for this platform that is not cloud-coupled: user scripts (firewall/services events), cron, custom service configs, Entware via `amtm`, `nano`, NTP, SNMP (SNMPv3 only, see below), OpenVPN client and server, WireGuard, IPsec/strongSwan (built and staged from v2.5.3 onward; the server side is confirmed on hardware, a client tunnel is still owed confirmation), VPN Director, DNS Director, Cake SQM, Tor, ipset, USB sharing (Samba 4 SMB3, vsftpd, minidlna, AFP). The stock traffic statistics collector is retired; the Traffic Analyzer (4.7) keeps the history.
 - **AiMesh.** It has been retained because no suitable open-source replacement is known, and replacing it would require a compatible implementation on every mesh node. The AiMesh config-sync and discovery services ship as closed vendor binaries and could not be source-audited.
 - **The closed Broadcom blobs**, unmodified (see 1.5).
 
@@ -165,6 +165,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 - **The first-boot QIS setup wizard**, with its EULA and privacy-consent screens, and the Advanced privacy page. From v3.4.2 every route into the wizard is closed (the default setup address, the first-use redirect while the WAN is down, the landing after a LAN subnet change, a dead menu entry); the one part kept is the **AiMesh add-node** window, which carries the Reaper look (9.3).
 - **Quagga** (the `zebra` and `ripd` routing daemons, v3.3.4): it shipped inert with a default management password.
+- **ASUS DDNS (`asuscomm.com`, v3.4.9).** A saved ASUS DDNS setting is switched off once at boot, with a log line; the DDNS page offers the other providers.
 - **The USB application network installer** (v3.3.7): it installed plain-HTTP packages as root. The USB Application page, the mount chain and the disk check stay.
 - **Phone-home.** The ASUS AWS-IoT cloud connector and account binding, the AAE/AiHome cloud tunnel, AiCloud/WebDAV, the AiDisk cloud-share wizard, the stock privacy-policy check, the stock "Security Update" (Trend Micro signature) panel, and every browser-side callback to ASUS servers — device and app icons, the FAQ index, DNS-provider and ISP lists, the Open NAT game database, timezone tables and so on. The build now fails if an ASUS CDN reference reaches the shipped web root, so this cannot silently creep back. Nothing in the web interface contacts ASUS any more; the only outbound checks the firmware makes on its own are the opt-in firmware check, which goes to the Reaper GitHub release channel, and — with the LAN name resolution check switched on (4.14a, off at factory) — one DNS query a minute for a random name under the domain you set there, or the stock network-monitoring name, which that domain's DNS servers see.
 - **Adaptive QoS / Trend Micro DPI.** AiProtection, DPI-based Adaptive QoS and the web-history feature are gone with the engine that powered them. Reaper's own hardware QoS and Traffic Analyzer take their place.
@@ -193,7 +194,7 @@ The noMCP build is the right choice if you never want the MCP feature present. T
 
 The Wi-Fi drivers and a set of prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, the Broadcom `hostapd`/`wpa_supplicant` forks, `libnvram`, `libtmctl`, the rdpa driver) are proprietary, are licensed for genuine ASUS hardware only, and are never modified. Reaper hardens the userspace around them. Some defects live inside them and can only be worked around, not fixed:
 
-- The **"settings will not save" freeze** in `libnvram.so` / `libwlcsm.so`. Since v3.1.8 every image ships the vendor's own corrected pair, taken unmodified from ASUS stock 9.0.0.6.102_42015 on the same platform release; Reaper's earlier socket bind shim is retired. The watchdog still kills a hung `nvram` reader as a safety net (log tag `reaper-nv`).
+- The **"settings will not save" freeze** in `libnvram.so` / `libwlcsm.so`. Since v3.1.8 every image ships the vendor's own corrected pair, unmodified: from v3.6.0 the four 3006.102.10 models take the pair that comes with ASUS's 102_40585 release, and the four 3006.102.8 models keep the pair from ASUS stock 9.0.0.6.102_42015 (the same fix, without 40585's check on which programs may write certain settings). Reaper's earlier socket bind shim is retired. The watchdog still kills a hung `nvram` reader as a safety net (log tag `reaper-nv`).
 - **Weighted (WRR) QoS classes** cannot be created on the Ethernet egress scheduler; every class runs strict priority. The UI no longer offers the weight control.
 - On the **GT-BE98**, a Guest Network Pro network with AP isolation combined with a manual WAN VLAN can stop the 2.5 Gbps-1 LAN port passing untagged main-LAN traffic. There is no userspace interface to correct the switch programming. Workarounds: keep Guest Pro off that port, move the device, or tag it with the guest VLAN.
 - A known over-the-air **5 GHz denial-of-service** in the Broadcom radio software (a malformed frame can drop the 5 GHz radio until reboot) cannot be patched from this firmware.
@@ -211,11 +212,13 @@ This section is the one to read before you flash and again after you have been r
 - **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
 - **ZenWiFi BQ16** (BE25000, quad-band 2.4/5/5/6 GHz, v3.3.2) and **ZenWiFi BQ16 Pro** (BE30000, quad-band 2.4/5/6/6 GHz, v3.3.4) — built from the ASUS 102_39256 GPL drop with radio firmware taken from the matching stock image, and published as **prereleases** on the same terms as the GT-BE19000. The BQ16 Pro carries the BQ16's header art until its own is drawn.
 
+**Two base lines (from v3.6.0).** The RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro are built on Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585); their file names say `3006_102.10`. The GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro stay on 3006.102.8 (`3006_102.8`): ASUS has not published a 40585-era GPL for them, and their closed components cannot link against the newer source. Both lines carry the same Reaper changes and the same version number; the four move to 3006.102.10 once ASUS publishes their GPL.
+
 **Flash only the image built for your exact model.** Cross-flashing between models can brick the router. The release assets for each model are:
 
 | File | What it is |
 |---|---|
-| `<MODEL>_3006_102.8_<build>_nand_squashfs.pkgtb` | The AI Advisor (MCP) firmware you flash. |
+| `<MODEL>_3006_102.10_<build>_nand_squashfs.pkgtb` (`3006_102.8` on the four 3006.102.8 models) | The AI Advisor (MCP) firmware you flash. |
 | `<MODEL>_..._noMCP_...pkgtb` | The Standard firmware without the Advisor. |
 | `SHA256SUMS` | Checksums. Verify the download before flashing; a truncated image is a common cause of a failed flash. |
 
@@ -239,7 +242,7 @@ Then:
 1. Log in, go to **Administration → Firmware Upgrade**, choose **Manual upload**, pick the `_nand_squashfs.pkgtb` (Standard or MCP — not the `_loader`), and let it flash. The router reboots on its own; allow several minutes.
 2. **The first non-stock flash may need** `nvram set DOWNGRADE_CHECK_PASS=1` over SSH first. If the upload is refused, that is why.
 3. After the first successful boot, a **factory reset is recommended** when coming from much older firmware, another third-party firmware, stock-with-VPN, or across a major version. Do **not** reload an old settings backup across a reset; reconfigure by hand (or restore only if the versions are close).
-4. Verify: the firmware version on the Administration/About page reads `…_Reaper_v<X>`, the System Info "Features" row lists the Reaper packages, and internet and Wi-Fi work.
+4. Verify: the firmware version on the Administration/About page reads `…_Reaper_v<X>`, System Info → Capabilities lists the feature flags it was built with, and internet and Wi-Fi work.
 
 **Rolling back to stock** is the same operation with the stock ASUS `.pkgtb`, followed by a factory reset. There is no cloud or account tie-in to undo. If the web interface is unreachable, use ASUS rescue mode (Firmware Restoration utility or TFTP) with the stock image.
 
@@ -471,7 +474,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 ## 3. The dashboard and navigation
 
-**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time.
+**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time. Since v3.4.9 the settings pages for System (with SNMP and Tweaks), LAN, WAN, VPN and Parental Controls, and the System Log group (log, wireless log, leases, routes, port forwards, IPv6, analysis, netstat, wake on LAN), are Reaper-native; LAN › VLAN keeps the stock VLAN Switch and VLAN Profile pages on models with guest/VLAN networks.
 
 **Dashboard cards**
 
@@ -484,7 +487,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 **Navigation**
 
-- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Warden, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
+- The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Bastion, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
 - **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch / Wallguard / Encrypted DNS under Bastion; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
 - Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Logout after* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
 - **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
@@ -1042,7 +1045,7 @@ abuse.ch closed the free URLhaus and ThreatFox downloads in October 2026 (both a
 
 **Your own sources.** **Add a source** adds up to 8 lists of your own, https only, in either form:
 - a **text list** at a web address: hosts files, plain names, Adblock `||name^`, CSV (`name,what`) or dnsmasq lines (`address=/name/`, `server=/name/`, `local=/name/`);
-- a supplier's **API**: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). The *abuse.ch ThreatFox* and *URLhaus* templates fill in everything except your key, so a free abuse.ch account key brings both back as live lists.
+- a supplier's **API**: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). The *abuse.ch ThreatFox* and *URLhaus* templates fill in everything except your key, so a free abuse.ch account key brings both back as live lists. A supplier that takes the key **inside the address** instead (`https://example.com/feed?api_token=$APIkey`, or abuse.ch's `https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt`) needs only that address, with `$APIkey` typed where the key goes, and your key: the router puts the key there at each download (never in the host name).
 
 Each source has its own row, tick, figures and state; **Modify** edits it and **Delete** removes it with its download. The key stays on the router in `/jffs/rwarden/dnskeys`, readable by root only, and is never shown again (the row says *key saved*); it reaches curl in a root-only file, never on a command line. Both backup files carry the sources and the key (2.5). A source that needs a key it does not have is not fetched, and its row and the log say so. Your sources fill the name limit after the built-in lists, and a source's own host is never blocked. The fetch is Wallguard's (4.3.11), so a source behaves the same on both tabs.
 
@@ -1082,7 +1085,7 @@ Limits, stated plainly:
 **How to use it** (the tab shows the same steps):
 
 1. Switch on **Block ads and trackers** at the top of the tab and save. One balanced list, **HaGeZi Normal**, is ticked to start with; the lists download in the background and blocking starts as soon as the first table is built (the pill reads *Waiting for lists* until then).
-2. Choose lists under **Lists**. Lighter lists (HaGeZi Light, OISD Small) break fewer sites; stricter ones (HaGeZi Pro, Pro++) block more and break more. **HaGeZi Threat Intelligence** adds malware and phishing domains (HaGeZi's *Medium* variant, about 435,000 names: the full list is past the 1,000,000-name limit on its own). A built-in list you never want to see can be **removed** from the table (Delete on its row); *Removed built-in lists* under the table brings it back. **Add a source** adds up to 8 of your own (https only): hosts files, plain domain lists, AdGuard/ABP-style `||name^` lists and dnsmasq lines all work. A supplier that serves its data only through an **API** (abuse.ch, for example) works too: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). The *abuse.ch ThreatFox* and *URLhaus* templates fill all of that in except your key. The key stays on the router in `/jffs/wallguard/keys`, readable by root only, is never shown again (the row says *key saved*) and travels with both backup files (2.5); a source that needs a key it does not have is not fetched, and its row and the log say so. Save — DNS keeps running while the lists download.
+2. Choose lists under **Lists**. Lighter lists (HaGeZi Light, OISD Small) break fewer sites; stricter ones (HaGeZi Pro, Pro++) block more and break more. **HaGeZi Threat Intelligence** adds malware and phishing domains (HaGeZi's *Medium* variant, about 435,000 names: the full list is past the 1,000,000-name limit on its own). A built-in list you never want to see can be **removed** from the table (Delete on its row); *Removed built-in lists* under the table brings it back. **Add a source** adds up to 8 of your own (https only): hosts files, plain domain lists, AdGuard/ABP-style `||name^` lists and dnsmasq lines all work. A supplier that serves its data only through an **API** (abuse.ch, for example) works too: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). A supplier that takes the key **inside the address** instead (`https://example.com/feed?api_token=$APIkey`) needs only that address, with `$APIkey` typed where the key goes, and your key: the router puts the key there at each download (never in the host name). The key stays on the router in `/jffs/wallguard/keys`, readable by root only, is never shown again (the row says *key saved*) and travels with both backup files (2.5); a source that needs a key it does not have is not fetched, and its row and the log say so. Save — DNS keeps running while the lists download.
 3. If a site or app stops working, open **Unbreak**, pick the device, and allow the name it was refused in the last 15 minutes — for **24 hours** or **always**.
 4. Under **Profiles**, give devices or whole guest/VLAN networks a profile of their own: **Bypass** for gear that must not be filtered (a work laptop, a smart TV that breaks), a stricter profile for a child's tablet. *Default* applies to every device without one.
 5. **Why?** shows which list or rule decides a name, per profile, and what the router answers right now. **Pause** switches blocking off for everyone or one device for 5 minutes, an hour or until 06:00; it switches itself back on.
@@ -2495,7 +2498,7 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | QoS classes and rules when turned on | Reaper's five-class profile and starter rules (8.1, 8.2) | `qos_class_names`, `qos_orates`, `qos_rulelist` |
 | Traffic Analyzer | Off | `rtraf_enable` `0` |
 | Traffic latency probe (and the latency & loss chart) | Off; no target, nothing sent | `rtraf_probe` empty |
-| Stock traffic statistics | On (the stock collector behind the Traffic Monitor pages; it has no switch) | `rstats_enable` `1` |
+| Stock traffic statistics | Retired: the stock collector (`rstats`) no longer ships; the Traffic Analyzer keeps the traffic history | `rstats_enable` `1` (read by nothing) |
 | Connections destination names | On | `rconn_names` `1` |
 | Passive channel monitor | Off | `rchq_enable` `0` |
 | Data export, health probe | Off | `reaper_export_mode` empty |
@@ -2550,9 +2553,9 @@ validation and a pinned host, and verifies each image's SHA-256 and size before 
 
 ### 9.2 The AiProtection pages
 
-Thirteen `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
-Intrusion Prevention, Infected Device Prevention, Web Protector, Content Filter, Ad Block, Key
-Guard, and their mobile variants. **None is in the menu.**
+Eight `AiProtection_*.asp` pages remain in the image — Home Security, Malicious Sites Blocking,
+Intrusion Prevention, Infected Device Prevention and Web Protector, three of them with a mobile
+variant. **None is in the menu.**
 
 The engine behind them is gone. AiProtection is a TrendMicro product: the router ships traffic
 metadata to TrendMicro's cloud for classification, which is precisely the arrangement Reaper exists
@@ -2574,7 +2577,7 @@ What replaces them, and what does not:
 
 ### 9.3 The setup wizard pages
 
-The stock Quick Internet Setup pages (`QIS_wizard.htm` and its parts) remain in the image. From v3.4.2
+The stock Quick Internet Setup page (`QIS_wizard.htm`) remains in the image. From v3.4.2
 nothing leads into them: the default setup address sends you to the dashboard, the first-use redirect
 while the WAN is down is gone, the landing after a LAN subnet change goes to the dashboard, and the menu
 entry is removed. The one part still used is the **AiMesh add-node** window (Network Map → AiMesh →

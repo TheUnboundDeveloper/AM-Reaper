@@ -94,7 +94,8 @@ out=; url=
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) exit 0 ;;
-    -K) cat "$2" >> "$WORK/wgcurl.cfg"; ls -l "$2" | cut -c1-10 >> "$WORK/wgcurl.mode"; shift 2; continue ;;
+    -K) cat "$2" >> "$WORK/wgcurl.cfg"; ls -l "$2" | cut -c1-10 >> "$WORK/wgcurl.mode"
+        cu=$(sed -n 's/^url = "\(.*\)"$/\1/p' "$2"); [ -n "$cu" ] && url=$cu; shift 2; continue ;;
     -o) out=$2; shift 2; continue ;;
     https://*) url=$1 ;;
   esac
@@ -102,6 +103,7 @@ while [ $# -gt 0 ]; do
 done
 case "$url" in
   *mylist.example*) f=mylist.txt ;;
+  *keyed.example*) f=keyed.txt ;;
   *api.example*) f=${API_FILE:-api.json} ;;
   *) exit 6 ;;
 esac
@@ -141,6 +143,8 @@ SRCFILE = "\n".join([
     "custom 4 https://mylist.example/x name=a;reboot",
     'custom 5 https://mylist.example/"x',
     "custom 6 http://mylist.example/plain",
+    "custom 7 https://keyed.example/k/$APIkey/hosts.txt name=InUrl",
+    "custom 8 https://$APIkey.mylist.example/l",
     "custom 1 https://dup.example/second", ""])
 
 shells = [("sh", [SH])] + ([("ash", [BB, "ash"])] if BB else [])
@@ -153,6 +157,7 @@ for tag, shell in shells:
         open(os.path.join(fix, "ransom.txt"), "w").write("ransom1.example\n")
         open(os.path.join(fix, "urlhaus.txt"), "w").write("0.0.0.0 uh1.example\n")
         open(os.path.join(fix, "mylist.txt"), "w").write(MYLIST)
+        open(os.path.join(fix, "keyed.txt"), "w").write("0.0.0.0 keyed1.example\n")
         open(os.path.join(fix, "api.json"), "w").write(API)
         open(os.path.join(fix, "nofield.json"), "w").write('{"data":[{"other":"x.example"}]}')
         open(os.path.join(binp, "curl"), "w").write(FAKECURL); os.chmod(os.path.join(binp, "curl"), 0o755)
@@ -162,7 +167,7 @@ for tag, shell in shells:
         open(os.path.join(wjffs, "dnsallow"), "w").write("")
         srcp, keyp = os.path.join(wjffs, "dnssrc"), os.path.join(wjffs, "dnskeys")
         open(srcp, "w").write(SRCFILE)
-        open(keyp, "w").write("2 S3cretKEY-42\n"); os.chmod(keyp, 0o600)
+        open(keyp, "w").write("2 S3cretKEY-42\n7 Q7/k+y\n"); os.chmod(keyp, 0o600)
         logf = os.path.join(work, "logger.out")
         over = ('RW_DNSC=%s/dns.conf\nRW_DNSK=%s/dns.nx\nRW_DNSL=%s/dns.cache\nRW_DNSU=%s/dns.upd\nRW_DNSF=%s/dns.feeds\n'
                 'RW_DNSH=/tmp/dreadwatch/dns.hits\nRW_DNSA=%s/dnsallow\nRW_DNS_CAP=200000\nRW_NXDIR=%s/nx\nRW_NXDB=%s/nx/threat.db\n'
@@ -192,7 +197,7 @@ for tag, shell in shells:
               "urlhaus" not in fetched and "phishing" not in fetched and "C2Intel" not in fetched and "Prigent" not in fetched
               and "blocklistproject" in fetched, fetched)
         want = ["ransom ransom1.example", "custom1 hosts1.example", "custom1 adblock1.example", "custom1 dnsm.example",
-                "custom1 srv.example", "custom1 loc.example", "custom1 bare1.example", "custom2 bad-domain.example", "custom2 evil.example.net"]
+                "custom1 srv.example", "custom1 loc.example", "custom1 bare1.example", "custom2 bad-domain.example", "custom2 evil.example.net", "custom7 keyed1.example"]
         check("[%s] your sources' names carry their own ids, after the built-in lists: hosts, adblock, dnsmasq and bare lines; "
               "the API's JSON field (a URL cut to its host, an address dropped); the source's own host never listed" % tag, kl == want, kl)
         calls = rf(os.path.join(work, "wallguardc.calls"))
@@ -202,6 +207,14 @@ for tag, shell in shells:
         check("[%s] the API key reaches curl only in its -K config (0600), never an argument of curl or wallguard.sh, never the log" % tag,
               'header = "Auth-Key: S3cretKEY-42"' in cfg and "S3cretKEY" not in cargs and "S3cretKEY" not in wargs and "S3cretKEY" not in log
               and rf(os.path.join(work, "wgcurl.mode")).startswith("-rw-------") and os.listdir(kt) == [], (cfg, cargs, wargs))
+        # 2026-10-28 (owner): the key inside the address
+        check("[%s] $APIkey in a source's URL: fetched with the key %%-encoded in the -K config's url; the key is in no argument or log line, "
+              "update.sh hands wallguard.sh the URL with the placeholder" % tag,
+              'url = "https://keyed.example/k/Q7%2Fk%2By/hosts.txt"' in cfg and "Q7" not in cargs and "Q7" not in wargs and "Q7" not in log
+              and ("fetch %s/feed.1 https://keyed.example/k/$APIkey/hosts.txt name=InUrl %s custom7" % (work, keyp)) in wargs
+              and fm.get("custom7", [])[6:7] == ["ok"], (cfg, wargs, fm.get("custom7")))
+        check("[%s] $APIkey in a source's host: the line is skipped as not allowed" % tag,
+              "your source 8 has characters that are not allowed - skipped" in log and "custom8" not in fm, (log[-600:], sorted(fm)))
         check("[%s] the POST body went from a file, decoded, with a JSON content type" % tag,
               'data-binary = "@' in cfg and 'header = "Content-Type: application/json"' in cfg, cfg)
         check("[%s] wallguard.sh was called with the key FILE and the slot id" % tag,
@@ -290,11 +303,14 @@ int main(int argc, char **argv) { char b[4096]; int i;
         if r.returncode == 0:
             good = ["hidden basics", "hidden crypto", "hidden ransom", "hidden certpl", "hidden threatview", "off 1", "off 8",
                     "custom 1 https://lists.example/hosts.txt", "custom 8 https://lists.example/l name=My%20list fmt=list",
-                    "custom 2 https://threatfox-api.abuse.ch/api/v1/ name=abuse.ch%20ThreatFox fmt=json:ioc method=post body=%7B%22query%22%3A%22get_iocs%22%2C%22days%22%3A7%7D hdr=Auth-Key"]
+                    "custom 2 https://threatfox-api.abuse.ch/api/v1/ name=abuse.ch%20ThreatFox fmt=json:ioc method=post body=%7B%22query%22%3A%22get_iocs%22%2C%22days%22%3A7%7D hdr=Auth-Key",
+                    "custom 7 https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt",
+                    "custom 6 https://api.qfeeds.com/api?feed_type=malware_domains&api_token=$APIkey name=QFeeds"]
             bad = ["hidden urlhaus", "hidden hagezi_light", "hidden", "off 9", "off 0", "off 3x", "off 03", "custom 9 https://a.example/l",
                    "custom 01 https://a.example/l", "custom 1 http://a.example/l", "custom 1 https://a.example/l junk",
                    "custom 1 https://a.example/l name=%3Cb%3E", "custom 1 https://a.example/l name=A name=B", "custom 1 https://a.ex\"ample/l",
-                   "custom1 https://a.example/l", "basics", "urlhaus"]
+                   "custom1 https://a.example/l", "basics", "urlhaus",
+                   "custom 7 https://$APIkey.example/l", "custom 7 https://a.example/$HOME", "custom 7 https://a.example/$APIke"]
             r = subprocess.run([exe, "src"] + good, capture_output=True, text=True)
             check("httpd: every good sources line passes", r.stdout.strip() == "1" * len(good), list(zip(good, r.stdout.strip())))
             r = subprocess.run([exe, "src"] + bad, capture_output=True, text=True)
@@ -333,6 +349,10 @@ check("page: removable rows, the sources form, Restore, the save carries dnssrc 
                               "lf.append('dnssrc', src);", "if(keys) lf.append('dnskeys', keys);", "rwarden_list(\"dnssrc\")", "rwarden_list(\"dnskeys\")"))
       and "DNS_ROWS" not in page)
 check("page: pure ASCII", all(ord(ch) < 0x7f for ch in page))
+check("page: $APIkey (2026-10-28) - the hint line, a URL with it is valid (never in the host), it needs a key and keeps one, the row says API",
+      all(s in page for s in ("<#RSHD_163#>", "function dwUrlKey(u){", ".test(s.url.replace(/\\$APIkey/g, ''))",
+                              "/^https:\\/\\/[^\\/?#]*\\$/.test(s.url)", "if((s.hdr || dwUrlKey(s.url)) && !key && !dwHasKey(s.slot)){",
+                              "else if(!s.hdr && !dwUrlKey(s.url) && dwHasKey(s.slot))", "s.method === 'post' || dwUrlKey(s.url)")))
 packs = "BR CN CZ DA DE EN ES FI FR HU IT JP KR MS NL NO PL RO RU SL SV TH TR TW UK".split()
 miss = [pk for pk in packs if not re.search(r"^RDWT_65=.*/jffs/rwarden/dnskeys", rd("www/%s.dict" % pk), re.M)]
 check("RDWT_65 (the key hint, Dreadwatch's key file) in all 25 packs", not miss, miss)

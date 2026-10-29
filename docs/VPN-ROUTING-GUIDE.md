@@ -1,6 +1,6 @@
 # Reaper Policy Routing — user guide
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-12 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 > **This guide has moved.** Every section below now lives in
 > **[`REAPER-GUIDE.md`](REAPER-GUIDE.md)**, the single Reaper manual, under

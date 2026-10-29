@@ -1,0 +1,97 @@
+From e9dafccee5f80f57ecd843085ef6281962f112c6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 15:24:49 -0400
+Subject: [PATCH] rc: an upgrade no longer resets the DTIM interval to 1
+
+reaper_dtim_default() (v3.3.4) meant to set wlN_dtim=1 once, but it keyed
+"once" on a new /jffs marker that no earlier image wrote, so the first boot
+after any flash over an older Reaper overwrote a DTIM the user had chosen
+(tester: 3 -> 1). Removed the function, its call before start_lan() and the
+prototype. 1 stays the compiled default (defaults.c), which reaches only a
+box with no value set - a new or factory-reset router. A firmware update
+never rewrites an existing setting.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/init.c     |  1 -
+ release/src/router/rc/rc.h       |  1 -
+ release/src/router/rc/services.c | 39 --------------------------------
+ 3 files changed, 41 deletions(-)
+
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 9836cd9e57..4247ca117a 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27124,7 +27124,6 @@ logmessage("ATE", "boot/continue fail= %d/%d\n", nvram_get_int("Ate_boot_fail"),
+ 			update_11ax_config();
+ #endif
+ 
+-			reaper_dtim_default();	/* reaper: DTIM 1 on every radio, once, before the radios come up */
+ 			start_lan();
+ #if defined(CONFIG_BCMWL5) && defined(RTCONFIG_DHDAP)
+ 			if (!restore_defaults_g) {
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 492655a8e8..8a0315b882 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2994,7 +2994,6 @@ extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit *
+ extern void gk_teardown_rules(void);
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+-extern void reaper_dtim_default(void);	/* reaper: DTIM 1 on every radio, once (owner 2026-10-04) */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ /* reaper v2.3.8 native firewall: object-model custom rules engine (rc/reaper_fw.c).
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index a46b1290e9..4e83f75905 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8812,45 +8812,6 @@ static void wlcsm_bindfix_remove(void)
+ 		unlink(LD_SO_PRELOAD);
+ }
+ 
+-/* reaper 2026-10-04 (owner): the DTIM interval is 1 on every radio. The
+- * compiled default for this family already reads 1 (defaults.c, the HND AX
+- * branch) but a box keeps whatever its nvram carries - ASUS stock sets 3 on
+- * these models and the stock explainer said so - so the first boot of an
+- * image with this function sets 1 on each radio ONCE, says so, and leaves a
+- * marker. From then on the value is the user's: the Wi-Fi Settings page may
+- * raise it again and this never runs twice (a factory reset clears both the
+- * marker and the value, so it runs once more and finds 1). Called before
+- * start_lan(), so the radios come up with it. */
+-#define REAPER_DTIM_MARK	"/jffs/reaper/.dtim1"
+-void reaper_dtim_default(void)
+-{
+-	char key[32], was[8] = "";
+-	int unit, n = 0;
+-
+-	if (f_exists(REAPER_DTIM_MARK))
+-		return;
+-	for (unit = 0; unit < 4; unit++) {
+-		snprintf(key, sizeof(key), "wl%d_ifname", unit);
+-		if (!*nvram_safe_get(key))
+-			continue;
+-		snprintf(key, sizeof(key), "wl%d_dtim", unit);
+-		if (nvram_match(key, "1"))
+-			continue;
+-		if (!was[0])
+-			strlcpy(was, nvram_safe_get(key), sizeof(was));
+-		nvram_set(key, "1");
+-		n++;
+-	}
+-	if (!nvram_match("wl_dtim", "1"))
+-		nvram_set("wl_dtim", "1");
+-	if (n) {
+-		nvram_commit();
+-		logmessage("wireless", "DTIM interval set to 1 on %d radio(s) (was %s) - the Reaper default: sleeping clients wake at every beacon; raise it on the Wi-Fi Settings page if you prefer longer client sleeps", n, was[0] ? was : "unset");
+-	}
+-	mkdir("/jffs/reaper", 0755);
+-	f_write_string(REAPER_DTIM_MARK, "1\n", 0, 0);
+-}
+-
+ void start_wlcsm_bindfix(void)
+ {
+ 	/* RETIRED 2026-09-16. libnvram.so and libwlcsm.so now carry Broadcom's own
+-- 
+2.25.1
+

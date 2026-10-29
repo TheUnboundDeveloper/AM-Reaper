@@ -1,11 +1,11 @@
 # Contributing
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 Thanks for wanting to help harden the RT-BE Series. The **RT-BE96U** is the primary,
 hardware-validated model; the same tree also ships **RT-BE86U**, **RT-BE88U**,
-**GT-BE98**, **GT-BE98 Pro** and **GT-BE19000** (BCM4916 / WiFi 7) from per-model
-branches.
+**GT-BE98**, **GT-BE98 Pro**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**
+(BCM4916 / WiFi 7) from per-model branches.
 
 1. **Set up the build environment** — read [`docs/DEV-SETUP.md`](docs/DEV-SETUP.md). It covers fetching the upstream source and toolchains, applying [`patches/`](patches/), the WSL/gcc-10.3 build recipe, and how to verify a change compiles and links.
 2. **Understand what's already fixed** — [`docs/REAPER-FIXES.md`](docs/REAPER-FIXES.md) is the authoritative fix list. Check it (including the "deferred by decision" items) before re-reporting or re-fixing something.

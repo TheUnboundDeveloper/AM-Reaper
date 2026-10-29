@@ -1,0 +1,33 @@
+From 2bf5fb16f9ac9c91e78da4cdc3258170811439ad Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 23 Sep 2026 20:21:54 -0400
+Subject: [PATCH] libovpn: replace a DH under 2048 bits, not only one under
+ 1024
+
+fd5aae91df raised the weak-DH warning to 2048 bits but left the
+replacement test at `len < 1024`, so a 1024-2047-bit DH logged
+"Using a pre-generated 2048-bit PEM" and was then used anyway, which
+the security level OpenVPN requests from OpenSSL 3.x rejects. Use the
+same 2048-bit threshold for both the warning and the fallback.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/libovpn/openvpn_setup.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index 53f192f473..72fbc9ce72 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -1451,7 +1451,7 @@ void ovpn_write_dh(ovpn_sconf_t *sconf, int unit) {
+ 		}
+ 	}
+ 
+-	if (len < 1024) {	// Provide a 2048-bit PEM, from RFC 3526.
++	if (len < 2048) {	// Provide a 2048-bit PEM, from RFC 3526.
+ 		set_ovpn_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_DH, NULL, "/etc/ssl/certs/dh2048.pem");
+ 		ovpn_write_key(OVPN_TYPE_SERVER, unit, OVPN_SERVER_DH);
+ 	}
+-- 
+2.25.1
+

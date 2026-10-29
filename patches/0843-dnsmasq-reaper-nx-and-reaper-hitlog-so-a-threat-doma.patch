@@ -1,0 +1,307 @@
+From 3ae272ce8c7f0ff0c23dad7be4c84dafce5bc092 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:48 -0400
+Subject: [PATCH] dnsmasq: reaper-nx= and reaper-hitlog=, so a threat-domain
+ block can be counted
+
+Every answer-less address=, local= and server= entry carries the same
+server flags, so a hit on a threat entry could not be told apart. The u16
+server flags are widened to u32 (four structs, server_details, the option.c
+locals, dbus.c) for a SERV_REAPER_NX bit, set by --reaper-nx=/name/ (answered
+like an answer-less address=). After a successful lookup_domain whose local
+answer is NXDOMAIN from such an entry, reaper_hit() appends
+"<epoch> <client> <listed name>" to --reaper-hitlog=PATH: opened per record
+O_APPEND|O_NOFOLLOW, at most 50 records a second (the excess written as one
+"# dropped N" line), nothing past 256 KB. Ordinary answers, local= and
+address= hits are never recorded; nothing goes to syslog per lookup.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dbus.c         |  2 +-
+ release/src/router/dnsmasq/src/dnsmasq.h      | 16 +++--
+ release/src/router/dnsmasq/src/domain-match.c | 63 +++++++++++++++++++
+ release/src/router/dnsmasq/src/forward.c      | 14 ++++-
+ release/src/router/dnsmasq/src/option.c       | 26 ++++++--
+ 5 files changed, 109 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dbus.c b/release/src/router/dnsmasq/src/dbus.c
+index 30c29811e3..5daaed697e 100644
+--- a/release/src/router/dnsmasq/src/dbus.c
++++ b/release/src/router/dnsmasq/src/dbus.c
+@@ -298,7 +298,7 @@ static DBusMessage* dbus_read_servers_ex(DBusMessage *message, int strings)
+     {
+       const char *str = NULL;
+       union  mysockaddr addr, source_addr;
+-      u16 flags = 0;
++      u32 flags = 0;
+       char interface[IF_NAMESIZE];
+       char *str_addr, *str_domain = NULL;
+       struct server_details sdetails = { 0 };
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index 2ae02c8791..2619528142 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -592,6 +592,10 @@ union mysockaddr {
+ #define SERV_LOOP            8192  /* server causes forwarding loop */
+ #define SERV_DO_DNSSEC      16384  /* Validate DNSSEC when using this server */
+ #define SERV_GOT_TCP        32768  /* Got some data from the TCP connection */
++/* reaper 2026-10-20 (Dreadwatch): a threat-list entry, --reaper-nx=/domain/. It
++   answers exactly like --address=/domain/ (NXDOMAIN for the zone); the bit only
++   lets reaper_hit() tell these answers from the LAN's own local= zones. */
++#define SERV_REAPER_NX      65536
+ 
+ struct serverfd {
+   int fd;
+@@ -614,7 +618,7 @@ struct randfd_list {
+ 
+ 
+ struct server {
+-  u16 flags, domain_len;
++  u32 flags; u16 domain_len;	/* reaper 2026-10-20: flags widened for SERV_REAPER_NX */
+   char *domain;
+   struct server *next;
+   int serial, arrayposn;
+@@ -635,21 +639,21 @@ struct server {
+ 
+ /* First four fields must match struct server in next three definitions.. */
+ struct serv_addr4 {
+-  u16 flags, domain_len;
++  u32 flags; u16 domain_len;	/* reaper 2026-10-20: flags widened for SERV_REAPER_NX */
+   char *domain;
+   struct server *next;
+   struct in_addr addr;
+ };
+ 
+ struct serv_addr6 {
+-  u16 flags, domain_len;
++  u32 flags; u16 domain_len;	/* reaper 2026-10-20: flags widened for SERV_REAPER_NX */
+   char *domain;
+   struct server *next;
+   struct in6_addr addr;
+ };
+ 
+ struct serv_local {
+-  u16 flags, domain_len;
++  u32 flags; u16 domain_len;	/* reaper 2026-10-20: flags widened for SERV_REAPER_NX */
+   char *domain;
+   struct server *next;
+ };
+@@ -1179,6 +1183,7 @@ extern struct daemon {
+   struct resolvc default_resolv, *resolv_files;
+   time_t last_resolv;
+   char *servers_file;
++  char *reaper_hitlog;	/* reaper 2026-10-20: --reaper-hitlog, see reaper_hit() */
+   struct mx_srv_record *mxnames;
+   struct naptr *naptr;
+   struct txt_record *txt, *rr;
+@@ -1364,7 +1369,7 @@ struct server_details {
+   struct addrinfo *hostinfo, *orig_hostinfo;
+   char *interface, *source, *scope_id, *interface_opt;
+   int serv_port, source_port, addr_type, scope_index, valid;
+-  u16 *flags;
++  u32 *flags;	/* reaper 2026-10-20: struct server flags widened */
+ };
+ 
+ /* cache.c */
+@@ -1979,6 +1984,7 @@ int dnssec_server(struct server *server, char *keyname, int is_ds, int *firstp,
+ #endif
+ void mark_servers(int flag);
+ void cleanup_servers(void);
++void reaper_hit(int first, union mysockaddr *client);	/* reaper 2026-10-20 */
+ int add_update_server(int flags,
+ 		      union mysockaddr *addr,
+ 		      union mysockaddr *source_addr,
+diff --git a/release/src/router/dnsmasq/src/domain-match.c b/release/src/router/dnsmasq/src/domain-match.c
+index d3ab6b3764..715eff60b4 100644
+--- a/release/src/router/dnsmasq/src/domain-match.c
++++ b/release/src/router/dnsmasq/src/domain-match.c
+@@ -779,3 +779,66 @@ int add_update_server(int flags,
+   return 1;
+ }
+ 
++
++/* reaper 2026-10-20 (Dreadwatch): one record per NXDOMAIN answered from a
++   --reaper-nx (threat-list) entry, so the list's effect can be measured:
++   "<epoch> <client> <listed domain>\n" appended to --reaper-hitlog. The domain
++   is the LIST entry that matched (a lookup of x.bad.example records
++   bad.example), so a collector can attribute it to its feed by exact name.
++   Bounded: 50 records a second (the excess is counted and reported as one
++   "# dropped N" line with the next record written), and the file stops growing
++   at 256 KB until the collector moves it away - the next record then creates a
++   fresh file. Opened per record, O_APPEND|O_NOFOLLOW, after the privilege drop:
++   the directory is the run user's own. Never syslog. */
++#define REAPER_HIT_RATE 50
++#define REAPER_HIT_MAX  (256 * 1024)
++void reaper_hit(int first, union mysockaddr *client)
++{
++  static time_t win;
++  static int used;
++  static unsigned int dropped;
++  struct server *s;
++  struct stat st;
++  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + MAXDNAMESTR];
++  time_t now;
++  int fd, n = 0;
++
++  if (!daemon->reaper_hitlog || first < 0 || first >= daemon->serverarraysz)
++    return;
++  s = daemon->serverarray[first];
++  if (!(s->flags & SERV_REAPER_NX) || !s->domain)
++    return;
++
++  now = time(NULL);
++  if (now != win)
++    {
++      win = now;
++      used = 0;
++    }
++  if (used >= REAPER_HIT_RATE)
++    {
++      dropped++;
++      return;
++    }
++  used++;
++
++  strcpy(ip, "-");
++  if (client && client->sa.sa_family == AF_INET)
++    inet_ntop(AF_INET, &client->in.sin_addr, ip, sizeof(ip));
++  else if (client && client->sa.sa_family == AF_INET6)
++    inet_ntop(AF_INET6, &client->in6.sin6_addr, ip, sizeof(ip));
++
++  if ((fd = open(daemon->reaper_hitlog, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0600)) == -1)
++    return;
++  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size < REAPER_HIT_MAX)
++    {
++      if (dropped)
++	n = snprintf(line, sizeof(line), "# dropped %u\n", dropped);
++      n += snprintf(line + n, sizeof(line) - n, "%ld %s %s\n", (long)now, ip, s->domain);
++      if (n > 0 && (size_t)n < sizeof(line) && write(fd, line, n) == n)
++	dropped = 0;
++    }
++  else
++    dropped++;
++  close(fd);
++}
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index 2d41eea422..93d3df1a9c 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -380,7 +380,12 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+ 	}
+       
+       if (lookup_domain(daemon->namebuff, gotname, &first, &last))
+-	flags = is_local_answer(now, first, daemon->namebuff);
++	{
++	  flags = is_local_answer(now, first, daemon->namebuff);
++	  /* reaper 2026-10-20: count a threat-list answer (first = the matched entry) */
++	  if (flags & F_NXDOMAIN)
++	    reaper_hit(first, udpaddr);
++	}
+       else
+ 	{
+ 	  /* no available server. */
+@@ -2632,7 +2637,12 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 	  checking_disabled = header->hb4 & HB4_CD;
+ 	  
+ 	  if (lookup_domain(daemon->namebuff, gotname, &first, &last))
+-	    flags = is_local_answer(now, first, daemon->namebuff);
++	    {
++	      flags = is_local_answer(now, first, daemon->namebuff);
++	      /* reaper 2026-10-20: count a threat-list answer, as on UDP */
++	      if (flags & F_NXDOMAIN)
++		reaper_hit(first, &peer_addr);
++	    }
+ 	  else
+ 	    ede = EDE_NOT_READY;
+ 	  
+diff --git a/release/src/router/dnsmasq/src/option.c b/release/src/router/dnsmasq/src/option.c
+index b1db4d54df..ce125ac1f2 100644
+--- a/release/src/router/dnsmasq/src/option.c
++++ b/release/src/router/dnsmasq/src/option.c
+@@ -202,6 +202,8 @@ struct myoption {
+ #define LOPT_SPLIT_RELAY   390
+ #define LOPT_LOG_MALLOC    391
+ #define LOPT_RDNSS_WAR     392
++#define LOPT_REAPER_NX     393	/* reaper 2026-10-20 (Dreadwatch) */
++#define LOPT_REAPER_HITLOG 394
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -403,6 +405,8 @@ static const struct myoption opts[] =
+     { "no-ident", 0, 0, LOPT_NO_IDENT },
+     { "max-tcp-connections", 1, 0, LOPT_MAX_PROCS },
+ 	{ "rdnss-war", 0, 0, LOPT_RDNSS_WAR },
++	{ "reaper-nx", 1, 0, LOPT_REAPER_NX },
++	{ "reaper-hitlog", 1, 0, LOPT_REAPER_HITLOG },
+     { "leasequery", 2, 0, LOPT_LEASEQUERY },
+     { "log-malloc", 0, 0, LOPT_LOG_MALLOC },
+     { NULL, 0, 0, 0 }
+@@ -615,6 +619,8 @@ static struct {
+   { LOPT_MAX_PROCS, ARG_ONE, "<integer>", gettext_noop("Maximum number of concurrent tcp connections."), NULL },
+   { LOPT_LOG_MALLOC, OPT_LOG_MALLOC, NULL, gettext_noop("Log memory allocation for debugging."), NULL },
+   { LOPT_RDNSS_WAR, OPT_RDNSS_WAR, NULL, gettext_noop("Workaround to flush RDNSS."), NULL },
++  { LOPT_REAPER_NX, ARG_DUP, "/<domain>/", gettext_noop("Answer NXDOMAIN for a threat-list domain (counted by --reaper-hitlog)."), NULL },
++  { LOPT_REAPER_HITLOG, ARG_ONE, "<path>", gettext_noop("Append one line per threat-list answer to this file."), NULL },
+   { 0, 0, NULL, NULL, NULL }
+ }; 
+ 
+@@ -1140,7 +1146,7 @@ static char *domain_rev4(int from_file, char *server, struct in_addr *addr4, int
+   int i, j;
+   char *string;
+   int msize;
+-  u16 flags = 0;
++  u32 flags = 0;
+   char domain[29]; /* strlen("xxx.yyy.zzz.ttt.in-addr.arpa")+1 */
+   union mysockaddr serv_addr, source_addr;
+   char interface[IF_NAMESIZE+1];
+@@ -1226,7 +1232,7 @@ static char *domain_rev6(int from_file, char *server, struct in6_addr *addr6, in
+   int i, j;
+   char *string;
+   int msize;
+-  u16 flags = 0;
++  u32 flags = 0;
+   char domain[73]; /* strlen("32*<n.>ip6.arpa")+1 */
+   union mysockaddr serv_addr, source_addr;
+   char interface[IF_NAMESIZE+1];
+@@ -2337,6 +2343,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+     case LOPT_SERVERS_FILE:
+       daemon->servers_file = opt_string_alloc(arg);
+       break;
++
++    case LOPT_REAPER_HITLOG: /* reaper 2026-10-20 */
++      daemon->reaper_hitlog = opt_string_alloc(arg);
++      break;
+       
+     case 'm':  /* --mx-host */
+       {
+@@ -3063,9 +3073,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+     case 'S':            /*  --server */
+     case LOPT_LOCAL:     /*  --local */
+     case 'A':            /*  --address */
++    case LOPT_REAPER_NX: /*  --reaper-nx (reaper 2026-10-20): --address=/domain/ with a marker */
+       {
+ 	char *lastdomain = NULL, *domain = "", *cur_domain;
+-	u16 flags = 0;
++	u32 flags = 0;
+ 	char *err;
+ 	union all_addr addr;
+ 	union mysockaddr serv_addr, source_addr;
+@@ -3094,7 +3105,14 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+ 	      }
+ 	  }
+ 	
+-	if (!arg || !*arg)
++	if (option == LOPT_REAPER_NX)
++	  {
++	    /* domains only, never an answer: the entry is an NXDOMAIN like address=/x/ */
++	    if (!lastdomain || (arg && *arg))
++	      ret_err(_("bad --reaper-nx: /domain/ only"));
++	    flags = SERV_LITERAL_ADDRESS | SERV_REAPER_NX;
++	  }
++	else if (!arg || !*arg)
+ 	  flags = SERV_LITERAL_ADDRESS;
+ 	else if (option == 'A')
+ 	  {
+-- 
+2.25.1
+

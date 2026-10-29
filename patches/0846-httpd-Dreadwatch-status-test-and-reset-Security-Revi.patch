@@ -1,0 +1,587 @@
+From d0d60a4003771c3251cdfc1c36dc31dd068f2df0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:51 -0400
+Subject: [PATCH] httpd: Dreadwatch status, test and reset; Security Review
+ per-item accept, rules and log; SameSite on the session cookie
+
+reaper_warden.cgi gains dns_status (dns.sh stats), dns_reset and dns_test
+(one A query to 127.0.0.1:53 from C, 1.5 s timeout), behind the existing
+gate. reaper_watch.cgi gains ack_one (folds one item into the baseline with
+a linear write), rules / rules_set (100 rules, 8 KB, charset and prefix
+validated) and log; Accept all audits what it folded in; every action
+appends to /jffs/reaper/review/accept.log (200 kept). The settings export
+carries the rules (rwatch_rules), re-validated on import. Security review
+2026-10-20, F-4: SameSite=Lax on the session cookie at both open emitters
+(login_cgi, send_token_headers). Reaper_Dreadwatch.asp is a native page.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c         |  10 +-
+ release/src/router/httpd/reaper_inject.c |   1 +
+ release/src/router/httpd/web.c           | 451 ++++++++++++++++++++++-
+ 3 files changed, 455 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 4fe97581c5..ba8b9b534f 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -803,7 +803,15 @@ send_token_headers( int status, char* title, char* extra_header, char* mime_type
+     if ( mime_type != (char*) 0 )
+ 	(void) fprintf( conn_fp, "Content-Type: %s\r\n", mime_type );
+ 
+-    (void) fprintf( conn_fp, "Set-Cookie: %s\r\n", token_cookie);
++    /* reaper 2026-10-20 (security review F-4): SameSite=Lax on the session cookie.
++     * The cookie text comes from the closed gen_asus_token_cookie() and always ends
++     * in ';' ("HttpOnly;" or "Secure;"), so the attribute is appended here, in open
++     * code, by the only two emitters (this one and login_cgi in web.c). Lax, not
++     * Strict: a bookmark or a link to the router must still open logged in; a
++     * cross-site POST or XHR then carries no session at all, a second layer beside
++     * the per-boot http_id every Reaper control already demands. An empty cookie
++     * (a blob failure) gets no bare attribute. */
++    (void) fprintf( conn_fp, "Set-Cookie: %s%s\r\n", token_cookie, token_cookie[0] ? " SameSite=Lax" : "");
+ 
+     (void) fprintf( conn_fp, "Connection: close\r\n" );
+     (void) fprintf( conn_fp, "\r\n" );
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 3598690c77..43d10a6604 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -321,6 +321,7 @@ static const char *reaper_native[] = {
+ 	"Reaper_Diag.asp",
+ 	"Reaper_Wireless.asp",
+ 	"Reaper_Warden.asp",
++	"Reaper_Dreadwatch.asp",	/* 2026-10-20: threat domains, the Warden menu's second tab (Warden's chrome) */
+ 	"Reaper_Devices.asp",
+ 	"Reaper_Storage.asp",	/* v1.9.1: Device Identity Manager Rung B (System Log group) */
+ 	/* Native pages with their own theme and NO in-page self-bounce (like GK):
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 73af7f80c8..d564af0910 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -23408,6 +23408,185 @@ static void reaper_audit(const char *feat, const char *act, const char *detail)
+ #define RVIEW_AUTH    "/tmp/reaper/review.auth"
+ #define RVIEW_BASE    "/jffs/reaper/review/baseline"
+ #define RVIEW_INV_MAX (200 * 1024)
++/* 2026-10-20 (reviewer: expected /jffs churn made every run noise; accepts must be
++ * logged): the operator's rules (rc/rwatch.c RV_RULES - `<mode> <glob>` lines the
++ * inventory AND the diff apply, first match wins) and a log of every acceptance and
++ * rules change. Both persistent on /jffs (they survive a firmware update), both
++ * written through rjf_set. */
++#define RVIEW_DIFF    "/tmp/reaper/review.diff"
++#define RVIEW_RULES   "/jffs/reaper/review/rules"
++#define RVIEW_ALOG    "/jffs/reaper/review/accept.log"
++#define RVIEW_RULES_MAX   100
++#define RVIEW_RULES_BYTES 8192
++#define RVIEW_ALOG_LINES  200
++
++/* a whole small regular file, never through a link; NULL when absent or bad */
++static char *rview_slurp(const char *path, size_t max)
++{
++	struct stat st;
++	char *b;
++	size_t got = 0;
++	ssize_t r;
++	int fd = open(path, O_RDONLY | O_NOFOLLOW);
++
++	if (fd < 0)
++		return NULL;
++	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || (size_t)st.st_size > max || (b = malloc(st.st_size + 1)) == NULL) {
++		close(fd);
++		return NULL;
++	}
++	while (got < (size_t)st.st_size && (r = read(fd, b + got, st.st_size - got)) > 0)
++		got += r;
++	close(fd);
++	if (got != (size_t)st.st_size) {
++		free(b);
++		return NULL;
++	}
++	b[got] = '\0';
++	return b;
++}
++
++/* one line into the accept log (time, client, action, detail), keeping the last
++ * RVIEW_ALOG_LINES; tabs, newlines and control bytes in the detail become spaces */
++static void rview_alog(const char *action, const char *detail)
++{
++	char line[768], *old, *p, *keep;
++	size_t n, i, nl = 0;
++
++	snprintf(line, sizeof(line), "%ld\t%s\t%s\t%s\n", (long)time(NULL),
++		 reaper_client_ip[0] ? reaper_client_ip : "-", action, detail ? detail : "");
++	for (i = 0; line[i]; i++)	/* the first three tabs are the separators */
++		if (((unsigned char)line[i] < 0x20 && line[i] != '\t' && !(line[i] == '\n' && line[i + 1] == '\0')) || line[i] == 0x7f)
++			line[i] = ' ';
++	for (i = 0, nl = 0; line[i]; i++)
++		if (line[i] == '\t' && ++nl > 3)
++			line[i] = ' ';
++	old = rview_slurp(RVIEW_ALOG, 256 * 1024);
++	keep = old ? old : "";
++	for (p = keep, nl = 0; *p; p++)
++		if (*p == '\n') nl++;
++	for (p = keep; nl >= RVIEW_ALOG_LINES && *p; p++)	/* drop the oldest lines */
++		if (*p == '\n') nl--;
++	n = strlen(p) + strlen(line) + 1;
++	if ((keep = malloc(n)) != NULL) {
++		snprintf(keep, n, "%s%s", p, line);
++		rjf_set(RVIEW_ALOG, keep, "review");
++		free(keep);
++	}
++	free(old);
++}
++
++/* what an Accept-all folds in: counts by status from the last diff, and the first
++ * 20 item keys (the diff is control-byte free - rwatch strips it) */
++static void rview_fold_summary(char *out, size_t osz)
++{
++	FILE *f = fopen(RVIEW_DIFF, "r");
++	char ln[1024], keys[512] = "";
++	int add = 0, chg = 0, rem = 0, rul = 0, nk = 0;
++
++	if (f) {
++		while (fgets(ln, sizeof(ln), f)) {
++			char *st = ln, *t, *k, *e;
++			if ((t = strchr(st, '\t')) == NULL) continue;
++			*t++ = 0;
++			if ((k = strchr(t, '\t')) == NULL) continue;
++			*k++ = 0;
++			if ((e = strchr(k, '\t')) != NULL) *e = 0;
++			if (!strcmp(st, "added")) add++;
++			else if (!strcmp(st, "changed")) chg++;
++			else if (!strcmp(st, "removed")) rem++;
++			else if (!strcmp(st, "rule")) rul++;
++			else continue;
++			if (nk++ < 20 && strlen(keys) + strlen(k) + 3 < sizeof(keys))
++				snprintf(keys + strlen(keys), sizeof(keys) - strlen(keys), "%s%s", keys[0] ? ", " : "", k);
++		}
++		fclose(f);
++	}
++	snprintf(out, osz, "%d added, %d changed, %d removed, %d by rule%s%s", add, chg, rem, rul, keys[0] ? ": " : "", keys);
++}
++
++/* one inventory/baseline line's item identity: a file is one item whatever its
++ * mode letter (S/A/K/E - rwatch _rv_diff's kk()), anything else is type+key */
++static int rview_same_item(const char *line, char t, const char *k)
++{
++	const char *tab = strchr(line, '\t'), *end;
++	size_t kl = strlen(k);
++	int f1, f2;
++
++	if (!tab || tab == line) return 0;
++	f1 = strchr("SAKE", line[0]) != NULL;
++	f2 = strchr("SAKE", t) != NULL;
++	if (f1 != f2 || (!f1 && line[0] != t)) return 0;
++	end = strchr(tab + 1, '\t');
++	if (!end) end = tab + 1 + strlen(tab + 1);
++	return (size_t)(end - (tab + 1)) == kl && strncmp(tab + 1, k, kl) == 0;
++}
++
++/* the baseline with one item folded in: every baseline line of the item dropped,
++ * every inventory line of it appended (none when it is gone). *hit = the item was
++ * in either. Linear: a write cursor, never strcat over a 200 KB buffer. NULL = no
++ * memory. Both inputs are modified in place temporarily and restored. */
++static char *rview_fold_one(char *base, char *inv, char t, const char *k, int *hit)
++{
++	size_t osz = strlen(base) + strlen(inv) + 4, ol = 0, l;
++	char *out = malloc(osz), *p, *e, c;
++	int pass, same;
++
++	*hit = 0;
++	if (!out) return NULL;
++	for (pass = 0; pass < 2; pass++) {
++		for (p = pass ? inv : base; *p; p = e) {
++			e = strchr(p, '\n'); e = e ? e + 1 : p + strlen(p);
++			l = (size_t)(e - p);
++			c = *e; *e = 0;
++			same = rview_same_item(p, t, k);
++			if (same) *hit = 1;
++			if (pass ? same : !same) {	/* the baseline's other lines, then the item's live line */
++				memcpy(out + ol, p, l); ol += l;
++				if (out[ol - 1] != '\n') out[ol++] = '\n';
++			}
++			*e = c;
++		}
++	}
++	out[ol] = 0;
++	return out;
++}
++
++/* a saved rules text is one rule per line: `hash|meta|exist|ignore <pattern>`, the
++ * pattern /jffs/..., cron:... or nvram:..., printable ASCII without a quote,
++ * backslash or backtick; blank lines and # comments kept. 0 = valid. */
++static int rview_rules_ok(const char *s)
++{
++	int n = 0;
++	size_t len = strlen(s);
++
++	if (len > RVIEW_RULES_BYTES) return -1;
++	while (*s) {
++		const char *e = strchr(s, '\n'), *p, *sp;
++		size_t l = e ? (size_t)(e - s) : strlen(s);
++		char ln[260];
++
++		if (l >= sizeof(ln)) return -1;
++		memcpy(ln, s, l); ln[l] = 0;
++		if (l && ln[l - 1] == '\r') ln[--l] = 0;
++		for (p = ln; *p; p++)
++			if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e || *p == '"' || *p == '\\' || *p == '`')
++				return -1;
++		if (ln[0] && ln[0] != '#') {
++			if ((sp = strchr(ln, ' ')) == NULL) return -1;
++			if (!((sp - ln == 4 && (!strncmp(ln, "hash", 4) || !strncmp(ln, "meta", 4))) ||
++			      (sp - ln == 5 && !strncmp(ln, "exist", 5)) || (sp - ln == 6 && !strncmp(ln, "ignore", 6))))
++				return -1;
++			while (*sp == ' ') sp++;
++			if (strncmp(sp, "/jffs/", 6) && strncmp(sp, "cron:", 5) && strncmp(sp, "nvram:", 6))
++				return -1;
++			if (++n > RVIEW_RULES_MAX) return -1;
++		}
++		s += l + (e ? 1 : 0);
++		if (!e) break;
++	}
++	return 0;
++}
+ 
+ /* a detached `sh rwatch.sh review` so the card refreshes at once after a
+  * toggle or an acceptance: the witness worker's double-fork shape, never on
+@@ -23530,20 +23709,148 @@ do_reaper_watch_cgi(char *url, FILE *stream)
+ 			return;
+ 		}
+ 		body[got] = '\0';
+-		if (rjf_set(RVIEW_BASE, body, "review") != 0) {
++		{
++			/* 2026-10-20: say WHAT was folded in, in the audit line and the accept log */
++			char sum[640];
++			rview_fold_summary(sum, sizeof(sum));
++			if (rjf_set(RVIEW_BASE, body, "review") != 0) {
++				free(body);
++				websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_357\"}");
++				return;
++			}
+ 			free(body);
++			unlink(RVIEW_LAST);
++			unlink(RVIEW_AUTH);
++			reaper_audit("review", "baseline", sum);
++			rview_alog("accept-all", sum);
++		}
++		rview_kick();
++		websWrite(stream, "{\"ok\":1,\"running\":1}");
++		return;
++	}
++
++	/* 2026-10-20: fold ONE item into the baseline - its current inventory line
++	 * replaces the baseline's (or, gone from the inventory, it leaves the baseline).
++	 * Only against an accepted baseline: before one exists there is nothing to fold. */
++	if (!strcmp(action, "ack_one")) {
++		char *t = get_cgi("t"), *k = get_cgi("k"), *base, *inv, *out;
++		int hit = 0;
++		if (!nvram_match("rwatch_review", "1")) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_355\"}");
++			return;
++		}
++		if (!t || strlen(t) != 1 || !strchr("SAKECN", t[0]) || !k || !*k || strlen(k) > 1024 || strchr(k, '\n') || strchr(k, '\t')) {
++			websWrite(stream, "{\"ok\":0,\"error\":\"bad item\"}");
++			return;
++		}
++		base = rview_slurp(RVIEW_BASE, RVIEW_INV_MAX);
++		inv = rview_slurp(RVIEW_INV, RVIEW_INV_MAX);
++		if (!base || !*base || !inv) {
++			free(base); free(inv);
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_356\"}");
++			return;
++		}
++		out = rview_fold_one(base, inv, t[0], k, &hit);
++		free(base); free(inv);
++		if (!out) {
+ 			websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_357\"}");
+ 			return;
+ 		}
+-		free(body);
++		if (!hit) {
++			free(out);
++			websWrite(stream, "{\"ok\":0,\"error\":\"no such item\"}");
++			return;
++		}
++		if (rjf_set(RVIEW_BASE, out, "review") != 0) {
++			free(out);
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_357\"}");
++			return;
++		}
++		free(out);
+ 		unlink(RVIEW_LAST);
+-		unlink(RVIEW_AUTH);
+-		reaper_audit("review", "baseline", "accepted");
++		{
++			char d[1100];
++			snprintf(d, sizeof(d), "%c %s", t[0], k);
++			reaper_audit("review", "accepted-one", d);
++			rview_alog("accept-one", d);
++		}
+ 		rview_kick();
+ 		websWrite(stream, "{\"ok\":1,\"running\":1}");
+ 		return;
+ 	}
+ 
++	/* the operator's rules, as saved (empty when none) */
++	if (!strcmp(action, "rules")) {
++		char *r = rview_slurp(RVIEW_RULES, RVIEW_RULES_BYTES);
++		websWrite(stream, "{\"ok\":1,\"max\":%d,\"rules\":", RVIEW_RULES_MAX);
++		gk_json_esc(stream, r ? r : "");	/* buffered escaping, never a write per byte */
++		websWrite(stream, "}");
++		free(r);
++		return;
++	}
++
++	/* save the rules (validated whole; an empty text removes the file = the defaults) */
++	if (!strcmp(action, "rules_set")) {
++		char *r = get_cgi("rules");
++		if (!r) r = "";
++		if (rview_rules_ok(r) != 0) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_369\"}");
++			return;
++		}
++		if (*r) {
++			if (rjf_set(RVIEW_RULES, r, "review") != 0) {
++				websWrite(stream, "{\"ok\":0,\"ek\":\"RFW_357\"}");
++				return;
++			}
++		} else
++			unlink(RVIEW_RULES);
++		{
++			char d[64];
++			int n = 0;
++			const char *q;
++			for (q = r; *q; q++) if (*q == '\n') n++;
++			snprintf(d, sizeof(d), "%d line(s)", n + (*r && r[strlen(r) - 1] != '\n'));
++			reaper_audit("review", "rules", d);
++			rview_alog("rules", d);
++		}
++		unlink(RVIEW_LAST);
++		if (nvram_match("rwatch_review", "1")) rview_kick();
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++
++	/* the accept log, newest first, at most 20 entries */
++	if (!strcmp(action, "log")) {
++		char *l = rview_slurp(RVIEW_ALOG, 256 * 1024), *ln[RVIEW_ALOG_LINES], *p, *s;
++		int n = 0, i, first = 1;
++		websWrite(stream, "{\"ok\":1,\"log\":[");
++		for (p = l ? l : ""; *p && n < RVIEW_ALOG_LINES; ) {
++			ln[n++] = p;
++			if ((s = strchr(p, '\n')) == NULL) break;
++			*s = 0; p = s + 1;
++		}
++		for (i = n - 1; i >= 0 && i >= n - 20; i--) {
++			char *f[4] = { ln[i], "", "", "" };
++			int j;
++			for (j = 1; j < 4; j++) {
++				if ((s = strchr(f[j - 1], '\t')) == NULL) break;
++				*s = 0; f[j] = s + 1;
++			}
++			if (j < 4) continue;
++			websWrite(stream, "%s{\"ts\":%ld,\"ip\":", first ? "" : ",", atol(f[0]));
++			gk_json_esc(stream, f[1]);
++			websWrite(stream, ",\"act\":");
++			gk_json_esc(stream, f[2]);
++			websWrite(stream, ",\"d\":");
++			gk_json_esc(stream, f[3]);
++			websWrite(stream, "}");
++			first = 0;
++		}
++		websWrite(stream, "]}");
++		free(l);
++		return;
++	}
++
+ 	websWrite(stream, "{\"ok\":0,\"error\":\"unknown action\"}");
+ }
+ 
+@@ -25100,6 +25407,79 @@ ej_rwarden_list(int eid, webs_t wp, int argc, char_t **argv)
+ 	return 0;
+ }
+ 
++/* 2026-10-20 Dreadwatch (Reaper_Dreadwatch.asp): the threat-domain list's own report,
++ * produced by the collector rc generates (rc/rwarden.c rw_gen_dns), and a self-test. */
++#define RDW_SH   "/tmp/rwarden/dns.sh"
++#define RDW_CONF "/tmp/rwarden/dns.conf"
++
++/* the first name on the list (reaper-nx=/name/, or an older firmware's address=/name/),
++ * charset-checked; 0 = found */
++static int rdw_first_name(char *out, size_t osz)
++{
++	FILE *f = fopen(RDW_CONF, "r");
++	char ln[300], *p, *e;
++	int found = -1;
++
++	if (!f)
++		return -1;
++	while (found && fgets(ln, sizeof(ln), f)) {
++		if (!strncmp(ln, "reaper-nx=/", 11)) p = ln + 11;
++		else if (!strncmp(ln, "address=/", 9)) p = ln + 9;
++		else continue;
++		if ((e = strchr(p, '/')) == NULL || e == p || (size_t)(e - p) >= osz) continue;
++		*e = 0;
++		if (strspn(p, "abcdefghijklmnopqrstuvwxyz0123456789.-") != strlen(p)) continue;
++		strlcpy(out, p, osz);
++		found = 0;
++	}
++	fclose(f);
++	return found;
++}
++
++/* one A query for name to the router's own resolver (127.0.0.1:53), 1.5 s at most;
++ * 0 = answered, *rcode = the answer's RCODE (3 = NXDOMAIN) */
++static int rdw_query(const char *name, int *rcode)
++{
++	unsigned char q[300], r[512];
++	struct sockaddr_in a;
++	struct timeval tv = { 1, 500000 };
++	const char *p = name, *dot;
++	int n = 12, s, len;
++
++	memset(q, 0, 12);
++	q[0] = 0x52; q[1] = 0x57;	/* id */
++	q[2] = 0x01;			/* RD */
++	q[5] = 1;			/* one question */
++	while (*p) {
++		dot = strchr(p, '.');
++		len = dot ? (int)(dot - p) : (int)strlen(p);
++		if (len < 1 || len > 63 || n + len + 6 > (int)sizeof(q))
++			return -1;
++		q[n++] = (unsigned char)len;
++		memcpy(q + n, p, len);
++		n += len;
++		p += len + (dot ? 1 : 0);
++	}
++	q[n++] = 0;
++	q[n++] = 0; q[n++] = 1;		/* A */
++	q[n++] = 0; q[n++] = 1;		/* IN */
++	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
++		return -1;
++	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++	memset(&a, 0, sizeof(a));
++	a.sin_family = AF_INET;
++	a.sin_port = htons(53);
++	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	if (connect(s, (struct sockaddr *)&a, sizeof(a)) != 0 || send(s, q, n, 0) != n ||
++	    (len = recv(s, r, sizeof(r), 0)) < 12 || r[0] != 0x52 || r[1] != 0x57) {
++		close(s);
++		return -1;
++	}
++	close(s);
++	*rcode = r[3] & 0x0f;
++	return 0;
++}
++
+ static void
+ do_reaper_warden_cgi(char *url, FILE *stream)
+ {
+@@ -25150,6 +25530,50 @@ do_reaper_warden_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* 2026-10-20 Dreadwatch: fold the pending hit records, then report (dns.sh stats).
++	 * The script runs only as root's own unwritable-by-others file. */
++	if (!strcmp(action, "dns_status")) {
++		char big[2048];
++		if (reaper_script_ok(RDW_SH) && (p = popen("sh " RDW_SH " stats 2>/dev/null", "r")) != NULL) {
++			while (fgets(big, sizeof(big), p) != NULL) {
++				websWrite(stream, "%s", big);
++				got = 1;
++			}
++			pclose(p);
++		}
++		if (!got)
++			websWrite(stream, "{\"ok\":0,\"enable\":%d}",
++				  nvram_match("rwarden_enable", "1") && nvram_match("rwarden_dns", "1") ? 1 : 0);
++		return;
++	}
++	if (!strcmp(action, "dns_reset")) {
++		if (!reaper_script_ok(RDW_SH)) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RDWT_40\"}");
++			return;
++		}
++		eval("sh", RDW_SH, "reset");
++		reaper_audit("dreadwatch", "reset", "counters");
++		websWrite(stream, "{\"ok\":1}");
++		return;
++	}
++	/* the self-test: ask the router's own resolver for a name on the list; the
++	 * answer must be NXDOMAIN, and the lookup itself is counted (client 127.0.0.1) */
++	if (!strcmp(action, "dns_test")) {
++		char name[256];
++		int rc = -1;
++		if (rdw_first_name(name, sizeof(name)) != 0) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RDWT_41\"}");
++			return;
++		}
++		if (rdw_query(name, &rc) != 0) {
++			websWrite(stream, "{\"ok\":0,\"ek\":\"RDWT_42\",\"name\":\"%s\"}", name);
++			return;
++		}
++		reaper_audit("dreadwatch", "self-test", name);
++		websWrite(stream, "{\"ok\":1,\"name\":\"%s\",\"rcode\":%d,\"blocked\":%d}", name, rc, rc == 3);
++		return;
++	}
++
+ 	if (f_exists("/tmp/rwarden/stats.sh") &&
+ 	    reaper_script_ok("/tmp/rwarden/stats.sh") && (p = popen("sh /tmp/rwarden/stats.sh 2>/dev/null", "r")) != NULL) {
+ 		while (fgets(buf, sizeof(buf), p) != NULL) {
+@@ -26041,6 +26465,9 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	/* 2026-10-19: the security review switch (rc/rwatch.c 3h); the accepted
+ 	 * baseline itself is a /jffs file that the full .rbk carries, not a flag */
+ 	{ "watch",  "rwatch_review",   2    },
++	/* 2026-10-20: the review's watch rules (a /jffs file, multi-line; validated
++	 * by rview_rules_ok on import, the editor's own gate) */
++	{ "watch",  "rwatch_rules",    RVIEW_RULES_BYTES + 1 },
+ };
+ #define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
+ static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
+@@ -26108,6 +26535,11 @@ static void rcfg_export_json(FILE *stream, int with_cfg)
+ 				const char *jv = rjf_get(REAPER_DHCP6_FILE, &ex);
+ 
+ 				gk_json_esc(stream, (ex && jv) ? jv : "");
++			} else if (!strcmp(rcfg_flags[i].nv, "rwatch_rules")) {	/* 2026-10-20: a /jffs file */
++				char *rv = rview_slurp(RVIEW_RULES, RVIEW_RULES_BYTES);
++
++				gk_json_esc(stream, rv ? rv : "");
++				free(rv);
+ 			} else
+ 				gk_json_esc(stream, nvram_safe_get(rcfg_flags[i].nv));
+ 		}
+@@ -26183,7 +26615,9 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 			 * CIDRs (`/`) and name>url>url6 feed records (`>`); rc re-validates
+ 			 * each structurally (rw_valid_cidr / rw_valid_feedurl), so the gate
+ 			 * here is "printable ASCII, bounded" for those. */
+-			if (!strcmp(rcfg_flags[i].nv, "rwarden_ban") || !strcmp(rcfg_flags[i].nv, "rwarden_allow") ||
++			if (!strcmp(rcfg_flags[i].nv, "rwatch_rules")) {	/* 2026-10-20: multi-line, its own gate */
++				if (!v || rview_rules_ok(v) != 0) { rejected++; continue; }
++			} else if (!strcmp(rcfg_flags[i].nv, "rwarden_ban") || !strcmp(rcfg_flags[i].nv, "rwarden_allow") ||
+ 			    !strcmp(rcfg_flags[i].nv, "rwarden_cfeeds") || !strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {
+ 				if (!rcfg_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+ 			} else if (!rcfg_flag_ok(v, rcfg_flags[i].max)) { rejected++; continue; }
+@@ -26194,6 +26628,9 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 					if (rw_list_set(ln, v) != 0) { rejected++; continue; }
+ 				} else if (!strcmp(rcfg_flags[i].nv, "rdev_dhcp6")) {	/* IPv6 A3 */
+ 					if (rdev_dhcp6_import(v) != 0) { rejected++; continue; }
++				} else if (!strcmp(rcfg_flags[i].nv, "rwatch_rules")) {	/* 2026-10-20 */
++					if (*v ? rjf_set(RVIEW_RULES, v, "review") != 0 : (unlink(RVIEW_RULES), 0)) { rejected++; continue; }
++					rview_alog("rules", "imported from a settings file");
+ 				} else
+ 					nvram_set(rcfg_flags[i].nv, v);
+ 			}
+@@ -31277,7 +31714,9 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 
+ 		token_ret = gen_asus_token_cookie(asus_token, sizeof(asus_token), token_cookie, sizeof(token_cookie));
+ 
+-		websWrite(wp,"Set-Cookie: %s\r\n",token_cookie);
++		/* reaper 2026-10-20 (security review F-4): SameSite=Lax, the twin of
++		 * send_token_headers() in httpd.c - the blob's cookie text ends in ';' */
++		websWrite(wp,"Set-Cookie: %s%s\r\n",token_cookie, token_cookie[0] ? " SameSite=Lax" : "");
+ 		websWrite(wp,"Connection: close\r\n" );
+ 		websWrite(wp,"\r\n" );
+ 		if (fromapp_flag == 0){
+-- 
+2.25.1
+

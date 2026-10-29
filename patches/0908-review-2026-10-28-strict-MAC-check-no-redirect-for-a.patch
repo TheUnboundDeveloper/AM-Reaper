@@ -1,0 +1,96 @@
+From 9b2dc06838388a8712c0ee97e960e74e14cabb7c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 19:33:07 -0400
+Subject: [PATCH] review 2026-10-28: strict MAC check, no redirect for a header
+ API key, Surfshark handlers off
+
+Fixes from the review of both lines after the GPL split (owner: "disable them
+and correct the other two low findings"). PRIVATE report:
+docs/security-testing/review-2026-10-28/REPORT.md.
+
+- R-1 (rebase regression, LOW) shared/misc.c isValidMacAddress(): a separator
+  out of place now returns 0. Stock broke out of the loop and returned
+  i == 12 && s == 0, so 12 hex digits, a separator and anything after
+  (AABBCCDDEEFF:"},{...) passed unread. On the 102.10 line the AiMesh
+  applyapp action modes gate re_mac / new_re_mac / target_bssid with this
+  function alone and print them into cfg_server's JSON events (signed-in
+  admin only); before the rebase Reaper's reaper_mac_or_empty() stood there,
+  as it still does on 102.8, where this is defence in depth.
+- R-2 (LOW) wallguard.sh fetch(): a source that sends its API key in a
+  header (hdr=) gets max-redirs = 0 in its root-only curl config. curl sends
+  custom headers on every request it follows, to any host, and the fetch runs
+  with -L. A redirect now fails with curl 47, named in Wallguard's log and in
+  Dreadwatch's (rc/rwarden.c rw_dsrc). A key inside the URL ($APIkey) still
+  follows redirects - it rides the first request only.
+- D-1 (de-cloud, 102.10 only) httpd/web.c: surfshark_login.cgi and
+  surfshark_2fa.cgi (new with GPL 102_40585; closed web_hook.o code that signs
+  in to a third-party VPN cloud; no shipped page calls them) go under #if 0,
+  as the Instant Guard pre-auth row did. The rc applet stays; it runs only
+  when called.
+
+Tests (lean): test_review_2026_10_28.py (the real isValidMacAddress() on good
+and bad strings + the stock-break mutant; no compiled Surfshark row),
+test_wallguard_sources.py (max-redirs with a header key, none for a URL key,
+the curl 47 messages).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c           | 1 +
+ release/src/router/shared/misc.c          | 5 ++++-
+ release/src/router/wallguard/wallguard.sh | 4 ++++
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 2aba1c90693..62a2d7a898e 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1497,6 +1497,7 @@ domains:
+ 	  "    99) echo \"it sends an API key and none is saved for it (Dreadwatch page, the source's Modify)\"; return 99 ;;\n"
+ 	  "    98) echo \"the answer held no names in the JSON field it is set to read\" ;;\n"
+ 	  "    22) echo \"the server answered with an HTTP error: a wrong address, or a key it refuses\" ;;\n"
++	  "    47) echo \"the server redirects, and a source that sends its API key in a header never follows a redirect (give its final address)\" ;;\n"
+ 	  "    *) echo \"no answer, curl exit $_e: name lookup, connection, certificate or timeout\" ;;\n"
+ 	  "  esac\n"
+ 	  "  return 1\n"
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 9fcdf42e774..ea981bc4dd7 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6021,8 +6021,11 @@ int isValidMacAddress(const char* mac) {
+ 		if (isxdigit(*mac))
+ 			i++;
+ 		else if (*mac == ':' || *mac == '-') {
++			/* Reaper review 2026-10-28 (R-1): a separator out of place makes it no MAC. Stock broke out
++			 * of the loop and returned i == 12 && s == 0, so 12 hex digits, a separator and then anything
++			 * (AABBCCDDEEFF:"},{...) passed without the rest being read. */
+ 			if (i == 0 || i / 2 - 1 != s)
+-				break;
++				return 0;
+ 			++s;
+ 		}
+ 		else
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index 38e8f456ca5..ef740e192d9 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -319,6 +319,9 @@ fetch() {
+     umask 077
+     : > "$_cf"
+     [ -n "$_h" ] && printf 'header = "%s: %s"\n' "$_h" "$_k" >> "$_cf"
++    # review 2026-10-28 (R-2): curl sends a custom header on every request it follows, to any host - a key sent
++    # in a header never follows a redirect (curl exits 47 instead)
++    [ -n "$_h" ] && printf 'max-redirs = 0\n' >> "$_cf"
+     [ -n "$_uk" ] && WGK=$_k awk -v u="$2" 'BEGIN { k = ENVIRON["WGK"]; for (i = 33; i < 127; i++) c[sprintf("%c", i)] = i
+       e = ""; for (i = 1; i <= length(k); i++) { x = substr(k, i, 1); if (x !~ /^[A-Za-z0-9._~-]$/) x = sprintf("%%%02X", c[x]); e = e x }
+       o = ""; while ((i = index(u, "$APIkey")) > 0) { o = o substr(u, 1, i - 1) e; u = substr(u, i + 7) }
+@@ -358,6 +361,7 @@ update() {
+       case "$fr" in
+         99) why="not fetched - it sends an API key and none is saved for it (Wallguard page, the list's Edit)" ;;
+         98) why="the answer held no names in the field it is set to read" ;;
++        47) why="not fetched - the server redirects, and a source that sends its API key in a header never follows a redirect (give its final address)" ;;
+       esac
+     fi
+     if [ -z "$why" ] && [ "$fr" = 0 ] && [ -s "$L/$id.new" ]; then
+-- 
+2.25.1
+

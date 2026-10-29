@@ -99,6 +99,12 @@ CASES = [
     ("a port range in iptables form, and a local port that is not a port",
      "<range>1000:2000>192.168.50.6>>TCP><badl>25565>192.168.50.7>25565x>TCP>",
      ["-A VSERVER -p tcp -m tcp --dport 1000:2000 -j DNAT --to 192.168.50.6"]),
+    # 2026-10-23: the stock page saves ranges as typed ("8000-8010", "9000~9001"); rc dropped them
+    # since v3.1.5 (R15) because _fw_ports_ok() takes only ':'. Now normalised before the checks.
+    ("a dash range and a tilde range, as the stock page saved them; a local-port range stays refused",
+     "<dash>8000-8010>192.168.50.8>>TCP><tilde>9000~9001>192.168.50.9>>UDP><lrange>7000>192.168.50.10>7000-7001>TCP>",
+     ["-A VSERVER -p tcp -m tcp --dport 8000:8010 -j DNAT --to 192.168.50.8",
+      "-A VSERVER -p udp -m udp --dport 9000:9001 -j DNAT --to 192.168.50.9"]),
 ]
 
 def main():

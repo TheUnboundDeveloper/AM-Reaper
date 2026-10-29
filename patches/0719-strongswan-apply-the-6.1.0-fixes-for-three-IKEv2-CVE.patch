@@ -1,0 +1,404 @@
+From a9c4c74570508ea324aaa2f27d5f8708eb3efbac Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 27 Sep 2026 13:02:15 -0400
+Subject: [PATCH] strongswan: apply the 6.1.0 fixes for three IKEv2 CVEs
+
+- CVE-2026-78127: the payload enumerator leaked on a truncated log line,
+  pre-authentication (encoding/message.c).
+- CVE-2026-78135: CREATE_CHILD_SA was accepted on an IKE_SA that was not
+  yet established, before EAP completed (task_manager_v2.c).
+- CVE-2026-78133: use-after-free after a failed passive multi-KE rekeying
+  collision (child_rekey, ike_rekey).
+
+Upstream 6.1.0 fixes applied to the vendored 6.0.4 source. The IPsec
+server ships off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/libcharon/encoding/message.c          | 23 ++++-----
+ .../src/libcharon/sa/ikev2/task_manager_v2.c  | 34 +++++++-------
+ .../libcharon/sa/ikev2/tasks/child_rekey.c    | 47 ++++++++++++++-----
+ .../libcharon/sa/ikev2/tasks/child_rekey.h    |  3 +-
+ .../src/libcharon/sa/ikev2/tasks/ike_rekey.c  | 40 ++++++++++++----
+ .../src/libcharon/sa/ikev2/tasks/ike_rekey.h  |  3 +-
+ 6 files changed, 101 insertions(+), 49 deletions(-)
+
+diff --git a/release/src/router/strongswan/src/libcharon/encoding/message.c b/release/src/router/strongswan/src/libcharon/encoding/message.c
+index 634cba98fa..bf489c5c74 100644
+--- a/release/src/router/strongswan/src/libcharon/encoding/message.c
++++ b/release/src/router/strongswan/src/libcharon/encoding/message.c
+@@ -1398,7 +1398,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 						   payload->get_type(payload));
+ 		if (written >= len || written < 0)
+ 		{
+-			return buf;
++			goto err;
+ 		}
+ 		pos += written;
+ 		len -= written;
+@@ -1424,7 +1424,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 			}
+ 			if (written >= len || written < 0)
+ 			{
+-				return buf;
++				goto err;
+ 			}
+ 			pos += written;
+ 			len -= written;
+@@ -1454,7 +1454,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 							   eap->get_code(eap), method);
+ 			if (written >= len || written < 0)
+ 			{
+-				return buf;
++				goto err;
+ 			}
+ 			pos += written;
+ 			len -= written;
+@@ -1495,7 +1495,8 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 								   attribute->get_type(attribute));
+ 				if (written >= len || written < 0)
+ 				{
+-					return buf;
++					attributes->destroy(attributes);
++					goto err;
+ 				}
+ 				pos += written;
+ 				len -= written;
+@@ -1507,7 +1508,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 				written = snprintf(pos, len, ")");
+ 				if (written >= len || written < 0)
+ 				{
+-					return buf;
++					goto err;
+ 				}
+ 				pos += written;
+ 				len -= written;
+@@ -1529,7 +1530,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 			}
+ 			if (written >= len || written < 0)
+ 			{
+-				return buf;
++				goto err;
+ 			}
+ 			pos += written;
+ 			len -= written;
+@@ -1544,7 +1545,7 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 							   frag->get_total_fragments(frag));
+ 			if (written >= len || written < 0)
+ 			{
+-				return buf;
++				goto err;
+ 			}
+ 			pos += written;
+ 			len -= written;
+@@ -1557,16 +1558,16 @@ static char* get_string(private_message_t *this, char *buf, int len)
+ 			written = snprintf(pos, len, "(%d)", unknown->get_type(unknown));
+ 			if (written >= len || written < 0)
+ 			{
+-				return buf;
++				goto err;
+ 			}
+ 			pos += written;
+ 			len -= written;
+ 		}
+ 	}
+-	enumerator->destroy(enumerator);
+-
+-	/* remove last space */
+ 	snprintf(pos, len, " ]");
++
++err:
++	enumerator->destroy(enumerator);
+ 	return buf;
+ }
+ #endif
+diff --git a/release/src/router/strongswan/src/libcharon/sa/ikev2/task_manager_v2.c b/release/src/router/strongswan/src/libcharon/sa/ikev2/task_manager_v2.c
+index 0f3b937fdd..f9e9ab933a 100644
+--- a/release/src/router/strongswan/src/libcharon/sa/ikev2/task_manager_v2.c
++++ b/release/src/router/strongswan/src/libcharon/sa/ikev2/task_manager_v2.c
+@@ -927,7 +927,8 @@ static status_t process_response(private_task_manager_t *this,
+  * Handle exchange collisions, returns TRUE if the given passive task was
+  * adopted by the active task and the task manager lost control over it.
+  */
+-static bool handle_collisions(private_task_manager_t *this, task_t *task)
++static bool handle_collisions(private_task_manager_t *this, task_t *task,
++							  bool done)
+ {
+ 	enumerator_t *enumerator;
+ 	task_t *active;
+@@ -951,7 +952,7 @@ static bool handle_collisions(private_task_manager_t *this, task_t *task)
+ 					if (type == TASK_IKE_REKEY || type == TASK_IKE_DELETE)
+ 					{
+ 						ike_rekey_t *rekey = (ike_rekey_t*)active;
+-						adopted = rekey->collide(rekey, task);
++						adopted = rekey->collide(rekey, task, done);
+ 						break;
+ 					}
+ 					continue;
+@@ -959,7 +960,7 @@ static bool handle_collisions(private_task_manager_t *this, task_t *task)
+ 					if (type == TASK_CHILD_REKEY)
+ 					{
+ 						child_rekey_t *rekey = (child_rekey_t*)active;
+-						adopted = rekey->collide(rekey, task);
++						adopted = rekey->collide(rekey, task, done);
+ 						break;
+ 					}
+ 					continue;
+@@ -1011,14 +1012,14 @@ static status_t build_response(private_task_manager_t *this, message_t *request)
+ 			case SUCCESS:
+ 				/* task completed, remove it */
+ 				array_remove_at(this->passive_tasks, enumerator);
+-				if (!handle_collisions(this, task))
++				if (!handle_collisions(this, task, TRUE))
+ 				{
+ 					task->destroy(task);
+ 				}
+ 				break;
+ 			case NEED_MORE:
+ 				/* processed, but task needs another exchange */
+-				if (handle_collisions(this, task))
++				if (handle_collisions(this, task, FALSE))
+ 				{
+ 					array_remove_at(this->passive_tasks, enumerator);
+ 				}
+@@ -1029,7 +1030,7 @@ static status_t build_response(private_task_manager_t *this, message_t *request)
+ 				/* FALL */
+ 			case DESTROY_ME:
+ 				/* destroy IKE_SA, but SEND response first */
+-				if (handle_collisions(this, task))
++				if (handle_collisions(this, task, FALSE))
+ 				{
+ 					array_remove_at(this->passive_tasks, enumerator);
+ 				}
+@@ -1133,9 +1134,18 @@ static status_t process_request(private_task_manager_t *this,
+ 	delete_payload_t *delete;
+ 	ike_sa_state_t state;
+ 
++	state = this->ike_sa->get_state(this->ike_sa);
++	if (message->get_exchange_type(message) == CREATE_CHILD_SA &&
++		(state == IKE_CREATED || state == IKE_CONNECTING))
++	{
++		DBG1(DBG_IKE, "received CREATE_CHILD_SA request for "
++			 "unestablished IKE_SA, rejected");
++		return FAILED;
++	}
++
++	/* create tasks depending on request type, if not already some queued */
+ 	if (array_count(this->passive_tasks) == 0)
+-	{	/* create tasks depending on request type, if not already some queued */
+-		state = this->ike_sa->get_state(this->ike_sa);
++	{
+ 		switch (message->get_exchange_type(message))
+ 		{
+ 			case IKE_SA_INIT:
+@@ -1176,14 +1186,6 @@ static status_t process_request(private_task_manager_t *this,
+ 			{	/* FIXME: we should prevent this on mediation connections */
+ 				bool notify_found = FALSE, ts_found = FALSE;
+ 
+-				if (state == IKE_CREATED ||
+-					state == IKE_CONNECTING)
+-				{
+-					DBG1(DBG_IKE, "received CREATE_CHILD_SA request for "
+-						 "unestablished IKE_SA, rejected");
+-					return FAILED;
+-				}
+-
+ 				enumerator = message->create_payload_enumerator(message);
+ 				while (enumerator->enumerate(enumerator, &payload))
+ 				{
+diff --git a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.c b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.c
+index 80c3b21311..46247fef67 100644
+--- a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.c
++++ b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.c
+@@ -403,7 +403,7 @@ METHOD(task_t, build_r, status_t,
+ 	child_sa_t *child_sa, *old_replacement;
+ 	child_sa_state_t state = CHILD_INSTALLED;
+ 	uint32_t reqid;
+-	bool followup_sent = FALSE;
++	bool active, followup_sent = FALSE;
+ 
+ 	if (!this->child_sa)
+ 	{
+@@ -423,7 +423,8 @@ METHOD(task_t, build_r, status_t,
+ 		message->add_notify(message, TRUE, TEMPORARY_FAILURE, chunk_empty);
+ 		return SUCCESS;
+ 	}
+-	if (actively_rekeying(this, &followup_sent) && followup_sent)
++	active = actively_rekeying(this, &followup_sent);
++	if (active && followup_sent)
+ 	{
+ 		DBG1(DBG_IKE, "peer initiated rekeying, but we did too and already "
+ 			 "sent IKE_FOLLOWUP_KE");
+@@ -483,8 +484,9 @@ METHOD(task_t, build_r, status_t,
+ 		/* like installing the outbound SA, we only trigger the child-rekey
+ 		 * event once the old SA is deleted */
+ 	}
+-	else if (this->child_sa->get_state(this->child_sa) == CHILD_REKEYING)
+-	{	/* rekeying failed, reuse old child */
++	else if (!active &&
++			 this->child_sa->get_state(this->child_sa) == CHILD_REKEYING)
++	{	/* rekeying failed, reuse old child, unless we are actively rekeying */
+ 		this->child_sa->set_state(this->child_sa, state);
+ 	}
+ 	return SUCCESS;
+@@ -1127,8 +1129,22 @@ METHOD(child_rekey_t, handle_delete, child_rekey_collision_t,
+ 	return CHILD_REKEY_COLLISION_NONE;
+ }
+ 
++/**
++ * Clear the colliding passive task if it did not complete successfully.
++ */
++static void clear_collision(private_child_rekey_t *this, task_t *other)
++{
++	if (this->collision == other)
++	{
++		DBG1(DBG_IKE, "colliding passive rekeying for CHILD_SA %s{%u} "
++			 "failed", this->child_sa->get_name(this->child_sa),
++			 this->child_sa->get_unique_id(this->child_sa));
++		this->collision = NULL;
++	}
++}
++
+ METHOD(child_rekey_t, collide, bool,
+-	private_child_rekey_t *this, task_t *other)
++	private_child_rekey_t *this, task_t *other, bool done)
+ {
+ 	private_child_rekey_t *rekey = (private_child_rekey_t*)other;
+ 	child_sa_t *other_child;
+@@ -1142,16 +1158,25 @@ METHOD(child_rekey_t, collide, bool,
+ 	other_child = rekey->child_create->get_child(rekey->child_create);
+ 	if (!other_child)
+ 	{
+-		/* ignore passive tasks that did not successfully create a CHILD_SA */
++		/* ignore passive tasks that did not successfully create a CHILD_SA,
++		 * if we are already tracking it in the multi-KE case, clear it */
++		clear_collision(this, other);
+ 		return FALSE;
+ 	}
+ 	if (other_child->get_state(other_child) != CHILD_INSTALLED)
+ 	{
+-		DBG1(DBG_IKE, "colliding passive rekeying for CHILD_SA %s{%u} is not "
+-			 "yet complete", this->child_sa->get_name(this->child_sa),
+-			 this->child_sa->get_unique_id(this->child_sa));
+-		/* we do reference the task to check its state later */
+-		this->collision = other;
++		if (done)
++		{	/* passive task failed, clear it if necessary */
++			clear_collision(this, other);
++		}
++		else
++		{
++			DBG1(DBG_IKE, "colliding passive rekeying for CHILD_SA %s{%u} is "
++				 "not yet complete", this->child_sa->get_name(this->child_sa),
++				 this->child_sa->get_unique_id(this->child_sa));
++			/* we do reference the task to check its state later */
++			this->collision = other;
++		}
+ 		return FALSE;
+ 	}
+ 	if (this->collision && this->collision != other)
+diff --git a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.h b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.h
+index a8daed7436..fef0bba8d0 100644
+--- a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.h
++++ b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/child_rekey.h
+@@ -79,10 +79,11 @@ struct child_rekey_t {
+ 	 * are going on and notifies the active task by passing the passive.
+ 	 *
+ 	 * @param other		passive task
++	 * @param done		passive task is done and gets destroyed if not adopted
+ 	 * @return			whether the task was adopted and should be removed from
+ 	 *					the task manager's control
+ 	 */
+-	bool (*collide)(child_rekey_t* this, task_t *other);
++	bool (*collide)(child_rekey_t* this, task_t *other, bool done);
+ };
+ 
+ /**
+diff --git a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.c b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.c
+index f624464ec1..cb45bdab1c 100644
+--- a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.c
++++ b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.c
+@@ -743,8 +743,23 @@ METHOD(ike_rekey_t, did_collide, bool,
+ 	return this->collision != NULL;
+ }
+ 
++/**
++ * Clear the colliding passive task if it did not complete successfully.
++ */
++static bool clear_collision(private_ike_rekey_t *this,
++							private_ike_rekey_t *other)
++{
++	if (this->collision == other)
++	{
++		DBG1(DBG_IKE, "colliding passive rekeying failed, ignore");
++		this->collision = NULL;
++		return TRUE;
++	}
++	return FALSE;
++}
++
+ METHOD(ike_rekey_t, collide, bool,
+-	private_ike_rekey_t* this, task_t *other)
++	private_ike_rekey_t* this, task_t *other, bool done)
+ {
+ 	DBG1(DBG_IKE, "detected %N collision with %N", task_type_names,
+ 		 TASK_IKE_REKEY, task_type_names, other->get_type(other));
+@@ -760,23 +775,30 @@ METHOD(ike_rekey_t, collide, bool,
+ 
+ 			if (!rekey->ike_init)
+ 			{
+-				DBG1(DBG_IKE, "colliding exchange did not result in an IKE_SA, "
+-					 "ignore");
+-				if (this->collision == rekey)
++				if (!clear_collision(this, rekey))
+ 				{
+-					this->collision = NULL;
++					DBG1(DBG_IKE, "colliding exchange did not result in an "
++						 "IKE_SA, ignore");
+ 				}
+ 				break;
+ 			}
+-			/* we keep track of the passive exchange in any case, if not
+-			 * complete yet, this method might be called again later */
+-			this->collision = rekey;
++			/* we keep track of the passive exchange, if not complete yet, this
++			 * method might be called again later */
+ 			if (rekey->flags & IKE_REKEY_DONE)
+ 			{
++				this->collision = rekey;
+ 				this->flags |= IKE_REKEY_ADOPTED_PASSIVE;
+ 				return TRUE;
+ 			}
+-			DBG1(DBG_IKE, "colliding passive exchange is not yet complete");
++			else if (done)
++			{	/* passive task failed, clear it if necessary */
++				clear_collision(this, rekey);
++			}
++			else
++			{
++				DBG1(DBG_IKE, "colliding passive exchange is not yet complete");
++				this->collision = rekey;
++			}
+ 			break;
+ 		}
+ 		default:
+diff --git a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.h b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.h
+index 5fab3491c1..e68fa622d8 100644
+--- a/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.h
++++ b/release/src/router/strongswan/src/libcharon/sa/ikev2/tasks/ike_rekey.h
+@@ -54,10 +54,11 @@ struct ike_rekey_t {
+ 	 * are going on and notifies the active task by passing the passive.
+ 	 *
+ 	 * @param other		passive task
++	 * @param done		passive task is done and gets destroyed if not adopted
+ 	 * @return			whether the task was adopted and should be removed from
+ 	 *					the task manager's control
+ 	 */
+-	bool (*collide)(ike_rekey_t* this, task_t *other);
++	bool (*collide)(ike_rekey_t* this, task_t *other, bool done);
+ };
+ 
+ /**
+-- 
+2.25.1
+

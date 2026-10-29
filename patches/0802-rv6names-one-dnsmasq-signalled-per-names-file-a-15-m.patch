@@ -1,0 +1,359 @@
+From 1ca93f1e3c2f07407dd810f375e8788f37450a7f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:08:00 -0400
+Subject: [PATCH] rv6names: one dnsmasq signalled per names file, a 15 min hold
+ and 5 min pacing
+
+IPv6 device names signalled every dnsmasq instance whenever any names file
+changed, and dnsmasq's SIGHUP runs cache_reload(), which frees every cached
+answer that did not come from a hosts file - on a busy LAN the DNS cache
+emptied every few minutes. v6n_reload_br signals only the instance whose
+bridge's file changed (no ALL_SDN); rv6n_hold_merge holds a changed set for
+15 min before it is written; rv6n_hup_due paces reloads to one per 5 min,
+on uptime. Lean: tests/test_rv6names.py (hold and pacing host-executed);
+REAPER-FIXES C20.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/rv6names.c           | 131 +++++++++++++++++----
+ release/src/router/shared/reaper_v6names.c |  50 ++++++++
+ release/src/router/shared/reaper_v6names.h |  33 +++++-
+ 3 files changed, 187 insertions(+), 27 deletions(-)
+
+diff --git a/release/src/router/rc/rv6names.c b/release/src/router/rc/rv6names.c
+index 84e921b181..788355cedc 100644
+--- a/release/src/router/rc/rv6names.c
++++ b/release/src/router/rc/rv6names.c
+@@ -16,8 +16,15 @@
+  *     then refuse that lease its name - cache.c "not giving name ..."),
+  *   - writes "<ipv6> <name>" for each global neighbour whose MAC has a usable name
+  *     into /tmp/rv6names/<bridge>/hosts - only when the content changed, through
+- *     a temp file and rename(), so dnsmasq never reads half a file, and send
+- *     ONE SIGHUP when anything changed (addn-hosts= is re-read on SIGHUP).
++ *     a temp file and rename(), so dnsmasq never reads half a file, and signal
++ *     that bridge's dnsmasq (addn-hosts= is re-read on SIGHUP).
++ * 2026-10-13: dnsmasq's SIGHUP empties its whole DNS cache (cache_reload) and
++ * re-logs its server list, and privacy addresses drop in and out of the neighbour
++ * cache, so the old "one SIGHUP to every instance on any change" emptied every
++ * cache every 1-3 minutes (owner's _r7 syslog). Now: a departed address keeps its
++ * name for V6N_HOLD; only the instance whose file changed is signalled; and at
++ * most once per V6N_MIN_HUP (the first change after a start and a switch-off are
++ * signalled at once). Timing runs on uptime, never the wall clock.
+  *     NOT hostsdir=: this dnsmasq is built -DNO_INOTIFY and refuses to start
+  *     with it - that took DNS, DHCP and RA down on r26.
+  * IPv6 lines only: dnsmasq compares a DHCPv4 lease's name with hosts entries of
+@@ -25,7 +32,7 @@
+  * the plain DHCP name, so a forward lookup of that name also returns the
+  * device's current IPv6 addresses.
+  *
+- * Gate: reaper_dns_v6names == 1 (default 1) and IPv6 enabled, router mode. Off
++ * Gate: reaper_dns_v6names == 1 (off at factory from v3.4.2; was on) and IPv6 enabled, router mode. Off
+  * (or IPv6 off) empties every file once, so dnsmasq drops the names, then idles
+  * on one nvram read every 30 s. Syslog only on enable / disable, never per tick.
+  */
+@@ -34,6 +41,7 @@
+ #include <dirent.h>
+ #include <sys/stat.h>
+ #include <arpa/inet.h>
++#include <sys/sysinfo.h>
+ 
+ #define V6N_TAG		"rv6names"
+ #define V6N_DIR		"/tmp/rv6names"
+@@ -44,6 +52,8 @@
+ #define V6N_LINES	256
+ #define V6N_BUF		(V6N_LINES * (RV6N_ADDR_MAX + RV6N_NAME_MAX + 2) + 1)
+ #define V6N_BR_MAX	24
++#define V6N_HOLD	900	/* s a departed address keeps its name (owner 2026-10-13) */
++#define V6N_MIN_HUP	300	/* s between two signals to one dnsmasq instance (owner 2026-10-13) */
+ 
+ static volatile sig_atomic_t g_stop;
+ static void on_sig(int s) { (void)s; g_stop = 1; }
+@@ -55,6 +65,32 @@ static struct v4name v4[V6N_LEASE_MAX];
+ static char v6names[V6N_LEASE_MAX][RV6N_NAME_MAX];
+ static struct rv6n_pair pairs[V6N_ND_MAX];
+ static char outbuf[V6N_BUF], curbuf[V6N_BUF];
++static struct rv6n_held held[V6N_ND_MAX], fresh[V6N_ND_MAX];
++static int nheld;
++
++/* per bridge: a rewritten file not yet signalled, and when this bridge was last signalled */
++static struct { char br[16]; int pending; long last; } bst[V6N_BR_MAX];
++static int nbst;
++
++static long up_s(void)
++{
++	struct sysinfo si;
++	return sysinfo(&si) == 0 ? (long)si.uptime : 0;
++}
++
++static int bst_of(const char *br)
++{
++	int i;
++	for (i = 0; i < nbst; i++)
++		if (!strcmp(bst[i].br, br))
++			return i;
++	if (nbst >= V6N_BR_MAX)
++		return -1;
++	strlcpy(bst[nbst].br, br, sizeof(bst[nbst].br));
++	bst[nbst].pending = 0;
++	bst[nbst].last = 0;
++	return nbst++;
++}
+ 
+ static int v6n_on(void)
+ {
+@@ -149,13 +185,33 @@ static int put_file(const char *br, const char *content)
+ 	return 1;
+ }
+ 
+-/* every dnsmasq instance re-reads its addn-hosts file on SIGHUP */
+-static void v6n_reload(void)
++/* signal the one dnsmasq instance that reads this bridge's file: the main LAN's
++ * for lan_ifname, the SDN instance whose network is this bridge otherwise; a
++ * bridge no instance serves is left alone */
++static void v6n_reload_br(const char *br)
+ {
++	if (!strcmp(br, nvram_safe_get("lan_ifname"))) {
+ #ifdef RTCONFIG_MULTILAN_CFG
+-	reload_dnsmasq(ALL_SDN);
++		reload_dnsmasq(LAN_IN_SDN_IDX);
+ #else
+-	reload_dnsmasq();
++		reload_dnsmasq();
++#endif
++		return;
++	}
++#ifdef RTCONFIG_MULTILAN_CFG
++	{
++		MTLAN_T *pmtl;
++		size_t sz = 0, i;
++		if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++			return;
++		get_mtlan(pmtl, &sz);
++		for (i = 0; i < sz; i++)
++			if (!strcmp(pmtl[i].nw_t.ifname, br)) {
++				reload_dnsmasq(pmtl[i].sdn_t.sdn_idx);
++				break;
++			}
++		FREE_MTLAN((void *)pmtl);
++	}
+ #endif
+ }
+ 
+@@ -164,34 +220,58 @@ static void clear_all(void)
+ {
+ 	DIR *d;
+ 	struct dirent *e;
+-	int changed = 0;
++	int i;
+ 
++	nheld = 0;
++	for (i = 0; i < nbst; i++) {	/* the first change after a re-enable is signalled at once */
++		bst[i].pending = 0;
++		bst[i].last = 0;
++	}
+ 	if ((d = opendir(V6N_DIR)) == NULL)
+ 		return;
+ 	while ((e = readdir(d)) != NULL)
+-		if (e->d_name[0] != '.')
+-			changed |= put_file(e->d_name, "");
++		if (e->d_name[0] != '.' && put_file(e->d_name, ""))
++			v6n_reload_br(e->d_name);	/* withdrawing names is never paced */
+ 	closedir(d);
+-	if (changed)
+-		v6n_reload();
+ }
+ 
+ static void tick(void)
+ {
+ 	char brs[V6N_BR_MAX][16];
+-	int nbr = 0, nn, n4, n6, i, b, changed = 0;
++	int nbr = 0, nn, nf = 0, n4, n6, i, b, k;
++	long now = up_s();
+ 	DIR *d;
+ 	struct dirent *e;
+ 
+ 	nn = reaper_nd_load(nd, V6N_ND_MAX);
+ 	read_leases(&n4, &n6);
+ 
++	/* this tick's pairs, folded into the hold table */
++	for (i = 0; i < nn && nf < V6N_ND_MAX; i++) {
++		const char *nm;
++		if (!nd[i].br[0] || !reaper_nd_global(nd[i].ip))
++			continue;
++		if ((nm = name_of(nd[i].mac, n4)) == NULL)
++			continue;
++		if (!inet_ntop(AF_INET6, nd[i].ip, fresh[nf].addr, sizeof(fresh[nf].addr)))
++			continue;
++		strlcpy(fresh[nf].br, nd[i].br, sizeof(fresh[nf].br));
++		strlcpy(fresh[nf].name, nm, sizeof(fresh[nf].name));
++		fresh[nf].seen = now;
++		nf++;
++	}
++	nheld = rv6n_hold_merge(held, nheld, V6N_ND_MAX, fresh, nf, now, V6N_HOLD);
++
+ 	/* every bridge we must speak for: the ones with neighbours and the ones
+ 	 * whose directory exists (a dnsmasq instance reads it - keep it current) */
+ 	for (i = 0; i < nn && nbr < V6N_BR_MAX; i++) {
+ 		for (b = 0; b < nbr && strcmp(brs[b], nd[i].br); b++) ;
+ 		if (b == nbr && nd[i].br[0]) strlcpy(brs[nbr++], nd[i].br, sizeof(brs[0]));
+ 	}
++	for (i = 0; i < nheld && nbr < V6N_BR_MAX; i++) {
++		for (b = 0; b < nbr && strcmp(brs[b], held[i].br); b++) ;
++		if (b == nbr) strlcpy(brs[nbr++], held[i].br, sizeof(brs[0]));
++	}
+ 	if ((d = opendir(V6N_DIR)) != NULL) {
+ 		while ((e = readdir(d)) != NULL && nbr < V6N_BR_MAX) {
+ 			if (e->d_name[0] == '.') continue;
+@@ -203,23 +283,26 @@ static void tick(void)
+ 
+ 	for (b = 0; b < nbr; b++) {
+ 		int np = 0;
+-		for (i = 0; i < nn; i++) {
+-			const char *nm;
+-			if (strcmp(nd[i].br, brs[b]) || !reaper_nd_global(nd[i].ip))
++		for (i = 0; i < nheld && np < V6N_ND_MAX; i++) {
++			if (strcmp(held[i].br, brs[b]) || is_v6lease_name(held[i].name, n6))
+ 				continue;
+-			if ((nm = name_of(nd[i].mac, n4)) == NULL || is_v6lease_name(nm, n6))
+-				continue;
+-			if (!inet_ntop(AF_INET6, nd[i].ip, pairs[np].addr, sizeof(pairs[np].addr)))
+-				continue;
+-			strlcpy(pairs[np].name, nm, sizeof(pairs[np].name));
++			strlcpy(pairs[np].addr, held[i].addr, sizeof(pairs[np].addr));
++			strlcpy(pairs[np].name, held[i].name, sizeof(pairs[np].name));
+ 			np++;
+ 		}
+ 		if (rv6n_render(pairs, np, V6N_LINES, outbuf, sizeof(outbuf)) < 0)
+ 			outbuf[0] = '\0';
+-		changed |= put_file(brs[b], outbuf);
++		if (put_file(brs[b], outbuf) && (k = bst_of(brs[b])) >= 0)
++			bst[k].pending = 1;
+ 	}
+-	if (changed)
+-		v6n_reload();	/* one SIGHUP per tick, only when a file really changed */
++	/* a rewritten file waits for its instance's pacing interval; the pending flag
++	 * carries it over, because the next tick finds the file already current */
++	for (k = 0; k < nbst; k++)
++		if (rv6n_hup_due(bst[k].pending, bst[k].last, now, V6N_MIN_HUP)) {
++			v6n_reload_br(bst[k].br);
++			bst[k].pending = 0;
++			bst[k].last = now ? now : 1;
++		}
+ }
+ 
+ int rv6names_main(int argc, char *argv[])
+diff --git a/release/src/router/shared/reaper_v6names.c b/release/src/router/shared/reaper_v6names.c
+index 572dacf154..a7295a5e70 100644
+--- a/release/src/router/shared/reaper_v6names.c
++++ b/release/src/router/shared/reaper_v6names.c
+@@ -98,3 +98,53 @@ int rv6n_render(struct rv6n_pair *pairs, int n, int cap, char *out, size_t outle
+ 	}
+ 	return lines;
+ }
++
++int rv6n_hold_merge(struct rv6n_held *tbl, int n, int cap, const struct rv6n_held *fresh, int nf,
++		    long now, long hold)
++{
++	int i, j, w;
++
++	if (!tbl || cap <= 0)
++		return 0;
++	if (n < 0) n = 0;
++	if (n > cap) n = cap;
++	for (i = 0; fresh && i < nf; i++) {
++		for (j = 0; j < n; j++)
++			if (!strcmp(tbl[j].br, fresh[i].br) && !strcmp(tbl[j].addr, fresh[i].addr))
++				break;
++		if (j == n) {
++			if (n < cap)
++				n++;
++			else {
++				int old = -1;
++				for (j = 0; j < n; j++)
++					if (tbl[j].seen < now && (old < 0 || tbl[j].seen < tbl[old].seen))
++						old = j;
++				if (old < 0)
++					continue;	/* full of pairs seen this tick: drop the newcomer */
++				j = old;
++			}
++			snprintf(tbl[j].br, sizeof(tbl[j].br), "%s", fresh[i].br);
++			snprintf(tbl[j].addr, sizeof(tbl[j].addr), "%s", fresh[i].addr);
++		}
++		snprintf(tbl[j].name, sizeof(tbl[j].name), "%s", fresh[i].name);
++		tbl[j].seen = now;
++	}
++	for (i = 0, w = 0; i < n; i++) {
++		if (now - tbl[i].seen >= hold)
++			continue;
++		if (w != i)
++			tbl[w] = tbl[i];
++		w++;
++	}
++	return w;
++}
++
++int rv6n_hup_due(int pending, long last, long now, long min_gap)
++{
++	if (!pending)
++		return 0;
++	if (last <= 0 || now < last)
++		return 1;
++	return now - last >= min_gap;
++}
+diff --git a/release/src/router/shared/reaper_v6names.h b/release/src/router/shared/reaper_v6names.h
+index ef1939404a..205822913e 100644
+--- a/release/src/router/shared/reaper_v6names.h
++++ b/release/src/router/shared/reaper_v6names.h
+@@ -9,14 +9,19 @@
+  * handed out, so dnsmasq has no name for them and a DNS filter (AdGuard) lists them
+  * as bare addresses. rc/rv6names.c maps each LAN neighbour's IPv6 address to the
+  * name its DHCPv4 lease carries and writes "<ipv6> <name>" lines into a hosts file
+- * per bridge, which that bridge's dnsmasq reads through hostsdir= (inotify, no
+- * restart). These helpers are the pure part, proved on the host:
++ * per bridge, which that bridge's dnsmasq reads through addn-hosts= (re-read on
++ * SIGHUP; this dnsmasq is built -DNO_INOTIFY, so hostsdir= is not available). These
++ * helpers are the pure part, proved on the host:
+  *   - which names may be written (a DHCP name dnsmasq would itself accept);
+  *   - parsing one dnsmasq lease line (DHCPv4 -> MAC + name; DHCPv6 -> name only,
+  *     because an IPv6 hosts entry under a DHCPv6 lease's name would make dnsmasq
+  *     refuse that lease its name: cache.c "not giving name ...");
+  *   - rendering the hosts file: IPv6 only (an IPv4 line could take a DHCPv4 lease's
+- *     name), sorted, capped, so an unchanged set produces byte-identical output. */
++ *     name), sorted, capped, so an unchanged set produces byte-identical output;
++ *   - 2026-10-13: the hold table and the reload pacing. dnsmasq's SIGHUP empties its
++ *     whole DNS cache (cache_reload), so a departed address keeps its name for a
++ *     while (privacy addresses drop in and out of the neighbour cache) and each
++ *     instance is signalled at most once per pacing interval. */
+ #ifndef REAPER_V6NAMES_H
+ #define REAPER_V6NAMES_H
+ 
+@@ -46,4 +51,26 @@ int rv6n_lease_line(const char *line, char *mac, size_t maclen, char *name, size
+  * number of lines written, or -1 when out is too small (out is then empty). */
+ int rv6n_render(struct rv6n_pair *pairs, int n, int cap, char *out, size_t outlen);
+ 
++/* 2026-10-13: one (bridge, address) -> name entry, kept after the neighbour leaves */
++struct rv6n_held {
++	char br[16];
++	char addr[RV6N_ADDR_MAX];
++	char name[RV6N_NAME_MAX];
++	long seen;			/* uptime (s) the pair was last in the neighbour cache */
++};
++
++/* Fold one tick's pairs (fresh, all stamped now) into the hold table tbl (n used,
++ * cap slots). The key is bridge + address: a fresh pair refreshes its entry, and
++ * an address that now carries another name takes the new name at once. Entries
++ * not seen for hold seconds or more are dropped. With the table full, a new pair
++ * replaces the entry seen longest ago, unless every entry was seen this tick.
++ * Returns the new entry count. */
++int rv6n_hold_merge(struct rv6n_held *tbl, int n, int cap, const struct rv6n_held *fresh, int nf,
++		    long now, long hold);
++
++/* 1 when a bridge with a rewritten file (pending) may signal its dnsmasq now:
++ * never signalled yet (last <= 0), or min_gap seconds or more since the last
++ * signal, or the clock went backwards. 0 otherwise. now and last are uptime. */
++int rv6n_hup_due(int pending, long last, long now, long min_gap);
++
+ #endif /* REAPER_V6NAMES_H */
+-- 
+2.25.1
+

@@ -1,0 +1,723 @@
+From 9713a19487bb7d9d32486e36fc76279a6cbd4ec2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 08:41:26 -0400
+Subject: [PATCH] reaper: Policy Routing swaps its rules in place, the DNS
+ health check holds while the uplink is down, a slewed first clock sync
+ counts, the firewall chains are signed and watched
+
+Policy Routing (rc/reaper_pbr.c): a rebuild no longer tears down first. The
+new rules are built under the other chain name (REAPER_PBR <-> REAPER_PBR_N),
+the PREROUTING jump is replaced in place (-R), the old chain is dropped and the
+new one renamed (-E). Routing rules are kept or added first and only stale
+fwmark-form rules are deleted afterwards, so live tunnel flows never see a
+rules-free window. Full teardown stays on the disable path only. The fwsim kick
+after an apply is dedented; it always ran after either apply.
+
+DNS health check (rc/rdnshc.c): a miss is not counted while the uplink is known
+down (link_wan 0, or wan0_state_t set and not 2); hits always count; one HOLD
+and one back line per transition. Boxes without those keys are never held.
+Each WAN blip used to cost a failover, a re-apply, a restore and two extra
+dnsmasq reloads.
+
+Clock (rc/ntpd.c): busybox ntpd slews a clock that is already within a second
+(amtm RouterDate pre-sets it), and the hook honoured "step" only, so ntp_ready
+stayed 0 and everything gated on it (WireGuard, OpenVPN, cron, add-ons) waited.
+A stratum or periodic event with 0 < stratum < 16 now counts as the first sync
+and logs "Initial clock set (slewed: ...)".
+
+Firewall chains (rc/reaper_fw.c, rc/rwatch.c): apply.sh signs REAPER_FWI/F/O
+and the nat FWM chain (md5 of -S) into /tmp/reaper_fw/chainsig; rwatch 3f
+recomputes it, and two ticks of mismatch re-apply the committed apply.sh under
+the firewall lock, 600 s apart, at most twice, never while a candidate is
+armed. FWN/FWHC stay unsigned.
+
+rwatch also: the incident bundle takes dmesg and a 300-line syslog tail right
+after summary.txt, before its own fcctl/bpmctl dumps push the trigger out; the
+syslog mirror rotates at 8 MB before appending, not after.
+
+rc/lan.c: stop_lan logs the radio-off line only for a wl* name (eth1-eth4 were
+logged as radios). rc/init.c: the one-time DTIM default runs before start_lan
+(the function itself is in services.c, with the destination-names commit).
+
+reaper_fwsim: witness row A1b, the WAN masquerade, with a $NAT placeholder from
+wanN_nat_x (n/a when NAT is off).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/init.c                  |   1 +
+ release/src/router/rc/lan.c                   |  12 +-
+ release/src/router/rc/ntpd.c                  |  24 +-
+ release/src/router/rc/rdnshc.c                |  25 +-
+ release/src/router/rc/reaper_fw.c             |  23 ++
+ release/src/router/rc/reaper_pbr.c            | 219 +++++++++++++-----
+ release/src/router/rc/rwatch.c                |  69 +++++-
+ .../src/router/reaper_fwsim/reaper_fwsim.c    |   5 +
+ .../src/router/reaper_fwsim/witness.static    |   3 +
+ 9 files changed, 312 insertions(+), 69 deletions(-)
+ mode change 100755 => 100644 release/src/router/reaper_fwsim/witness.static
+
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 4247ca117a..9836cd9e57 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27124,6 +27124,7 @@ logmessage("ATE", "boot/continue fail= %d/%d\n", nvram_get_int("Ate_boot_fail"),
+ 			update_11ax_config();
+ #endif
+ 
++			reaper_dtim_default();	/* reaper: DTIM 1 on every radio, once, before the radios come up */
+ 			start_lan();
+ #if defined(CONFIG_BCMWL5) && defined(RTCONFIG_DHDAP)
+ 			if (!restore_defaults_g) {
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index fff12d2781..0224a09404 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -3026,11 +3026,17 @@ void stop_lan(void)
+ #endif
+ 					/* reaper: name each radio-off in syslog - these
+ 					 * are synchronous calls into the closed wl driver
+-					 * and are the prime suspects for the reboot stall. */
+-					logmessage("stop_lan", "wl radio off %s: begin (uptime %lu)", ifname, (unsigned long)uptime());
++					 * and are the prime suspects for the reboot stall.
++					 * Wireless names only (2026-10-04): stock runs the two
++					 * commands on every lan_ifnames entry and they fail
++					 * silently on an Ethernet port, so eth1-eth4 logged a
++					 * radio-off they never had. */
++					if (strncmp(ifname, "wl", 2) == 0)
++						logmessage("stop_lan", "wl radio off %s: begin (uptime %lu)", ifname, (unsigned long)uptime());
+ 					eval("wlconf", ifname, "down");
+ 					eval("wl", "-i", ifname, "radio", "off");
+-					logmessage("stop_lan", "wl radio off %s: done (uptime %lu)", ifname, (unsigned long)uptime());
++					if (strncmp(ifname, "wl", 2) == 0)
++						logmessage("stop_lan", "wl radio off %s: done (uptime %lu)", ifname, (unsigned long)uptime());
+ 				}
+ 				ifconfig(ifname, 0, NULL, NULL);
+ #elif defined RTCONFIG_RALINK
+diff --git a/release/src/router/rc/ntpd.c b/release/src/router/rc/ntpd.c
+index 7881d9bbba..5c5888b14d 100644
+--- a/release/src/router/rc/ntpd.c
++++ b/release/src/router/rc/ntpd.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include <string.h>
++#include <stdlib.h>
+ #include <rc.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -92,9 +93,28 @@ int ntpd_synced_main(int argc, char *argv[])
+ 		logmessage("ntpd", "Unable to reach ntp server so far, keep trying");
+ #endif
+ 
+-	if (!nvram_match("ntp_ready", "1") && (argc == 2 && !strcmp(argv[1], "step"))) {
++	/* reaper 2026-10-04 (RT-BE86U field, two diags): busybox ntpd runs this hook
++	 * with "step" only after it STEPPED the clock (STEP_THRESHOLD is 1 s in this
++	 * tree). A clock that is already within a second when the first reply comes
++	 * - amtm RouterDate sets it from an HTTPS Date header early in boot - is
++	 * slewed instead, the hook saw only "stratum" and "periodic", and ntp_ready
++	 * stayed 0 for 36+ minutes with WireGuard, OpenVPN, diskmon, ddns and every
++	 * add-on NTP wait behind it, while the clock itself was right. The first good
++	 * reply raises "stratum" (16 -> the peer's + 1) and busybox exports the
++	 * stratum in the environment, so a stratum below 16 on "stratum" or
++	 * "periodic" is the same fact as a step: the clock is synchronised. */
++	const char *ev = (argc == 2 && argv[1]) ? argv[1] : "";
++	const char *st = getenv("stratum");
++	int stratum = st ? atoi(st) : 0;
++	int synced = !strcmp(ev, "step") ||
++		((!strcmp(ev, "stratum") || !strcmp(ev, "periodic")) && stratum > 0 && stratum < 16);
++
++	if (!nvram_match("ntp_ready", "1") && synced) {
+ 		nvram_set("ntp_ready", "1");
+-		logmessage("ntpd", "Initial clock set");
++		if (!strcmp(ev, "step"))
++			logmessage("ntpd", "Initial clock set");
++		else
++			logmessage("ntpd", "Initial clock set (slewed: the clock was already within a second of the server; stratum %d on the %s event)", stratum, ev);
+ /* Code from ntpclient */
+ 		now = time( (time_t*) 0 );
+ 		nvram_set_int("ntp_diff_ts", now-bf_time);
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index f0abb3433f..d0bfda769a 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -377,6 +377,7 @@ int rdnshc_main(int argc, char *argv[])
+ 	struct hc_cfg c;
+ 	char watched[INET6_ADDRSTRLEN] = "";
+ 	int down = 0, misses = 0, hits = 0, last_enabled = -1, i, alive = -1, v6_warned = 0;
++	int uplink_down = 0, held = 0;	/* v3.3.4: misses are not counted while the WAN is known down */
+ 	int last_fam = 0, v6skip_warned = 0;
+ 	long since = 0;
+ 	(void)argc; (void)argv;
+@@ -467,8 +468,28 @@ int rdnshc_main(int argc, char *argv[])
+ 			} else if (!alive)
+ 				last_fam = 0;
+ 		}
+-		if (alive) { hits++; misses = 0; } else { misses++; hits = 0; }
+-		if (!alive && !down)
++		/* v3.3.4: a probe that cannot leave the router says nothing about the
++		 * resolver. Owner 2026-10-04 19:45: an ~80 s WAN link loss failed the
++		 * AdGuard host on br55 (it answers a real query only through the
++		 * uplink) - FAILOVER, re-applied after wan_up rewrote the list, RESTORED
++		 * three hits later: three dnsmasq reloads and ~10 s of unfiltered DNS for
++		 * an outage that was never the resolver's. A miss while the uplink is
++		 * KNOWN down (wanduck's link_wan reads 0, or wan0_state_t is set and not
++		 * CONNECTED = 2) moves neither counter; a hit always counts (a cached
++		 * answer is a live resolver). A box that does not maintain those keys is
++		 * never held, so a dead resolver can never hide behind this. */
++		uplink_down = !alive && (nvram_match("link_wan", "0") ||
++			(*nvram_safe_get("wan0_state_t") && nvram_get_int("wan0_state_t") != 2));
++		if (alive) { hits++; misses = 0; }
++		else if (!uplink_down) { misses++; hits = 0; }
++		if (uplink_down && !held) {
++			logmessage(HC_TAG, "DNS Health Check HOLD: the uplink is down (link_wan=%s wan0_state_t=%s) - a probe cannot reach %s from here, so misses are not counted until it is back", nvram_safe_get("link_wan"), nvram_safe_get("wan0_state_t"), c.target);
++			held = 1;
++		} else if (!uplink_down && held) {
++			logmessage(HC_TAG, "DNS Health Check: the uplink is back - %s is judged normally again", c.target);
++			held = 0;
++		}
++		if (!alive && !down && !uplink_down)
+ 			logmessage(HC_TAG, "DNS Health Check: %s did not answer within %d ms on any configured address (miss %d of %d)", c.target, c.timeout_ms, misses, c.fail);
+ 
+ 		if (!down && misses >= c.fail) {
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index fc8ef1d41a..6b6ca13826 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -2030,7 +2030,12 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "\n");
+ 
+ 	/* ---- teardown (S4: only our own chains, never the table) ---- */
++	/* 2026-10-04: drop the chain signatures FIRST. rwatch 3f compares the live
++	 * chains against " RFW_DIR "/chainsig, written at the end of a successful
++	 * build; while this script is tearing down and rebuilding, no signature
++	 * exists and the check stays silent instead of seeing a half-built chain. */
+ 	fprintf(f,
++	  "rm -f " RFW_DIR "/chainsig " RFW_DIR "/chainsig.tmp 2>/dev/null\n"
+ 	  "for T in iptables ip6tables; do\n"
+ 	  "  for P in INPUT:" RFW_CHAIN_IN " FORWARD:" RFW_CHAIN_FWD " OUTPUT:" RFW_CHAIN_OUT "; do\n"
+ 	  "    H=\"${P%%%%:*}\"; C=\"${P##*:}\"\n"
+@@ -2199,6 +2204,24 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "  logger -t reaper_fw \"$RFW_HARD structural step(s) failed - firewall not active\"\n"
+ 	  "  exit 1\n"
+ 	  "fi\n"
++	  /* 2026-10-04 (backlog "chain-integrity watchdog covers the Warden drop
++	   * chains only"): the invariant for THESE chains is "they still read exactly
++	   * as this script built them". Gatekeeper's chains interleave DROP and
++	   * RETURN and gkd re-applies them itself; ours have no daemon, so sign them
++	   * here - one md5 of `-S` per chain, filter v4+v6 and the nat MASQ chain -
++	   * and let rwatch 3f recompute and compare. REAPER_FWN / REAPER_FWHC are
++	   * NOT signed: hcgate.sh toggles them at run time by design. Written after
++	   * the hard-failure exit (nothing to sign) and before the soft one (the
++	   * chains are live in whatever shape loaded, and that shape is the truth). */
++	  ": > " RFW_DIR "/chainsig.tmp\n"
++	  "for T in iptables ip6tables; do\n"
++	  "  for C in " RFW_CHAIN_IN " " RFW_CHAIN_FWD " " RFW_CHAIN_OUT "; do\n"
++	  "    $T -S \"$C\" >/dev/null 2>&1 || continue\n"
++	  "    echo \"$T filter $C $($T -S \"$C\" 2>/dev/null | md5sum | cut -d' ' -f1)\" >> " RFW_DIR "/chainsig.tmp\n"
++	  "  done\n"
++	  "done\n"
++	  "iptables -t nat -S " RFW_CHAIN_MASQ " >/dev/null 2>&1 && echo \"iptables nat " RFW_CHAIN_MASQ " $(iptables -t nat -S " RFW_CHAIN_MASQ " 2>/dev/null | md5sum | cut -d' ' -f1)\" >> " RFW_DIR "/chainsig.tmp\n"
++	  "mv -f " RFW_DIR "/chainsig.tmp " RFW_DIR "/chainsig 2>/dev/null\n"
+ 	  "if [ \"$RFW_FAIL\" -gt 0 ]; then\n"
+ 	  "  logger -t reaper_fw \"$RFW_FAIL rule(s) failed to load\"\n"
+ 	  "  exit 3\n"
+diff --git a/release/src/router/rc/reaper_pbr.c b/release/src/router/rc/reaper_pbr.c
+index e8a2d188a9..06ab76a486 100644
+--- a/release/src/router/rc/reaper_pbr.c
++++ b/release/src/router/rc/reaper_pbr.c
+@@ -143,6 +143,8 @@
+ #define PPBR_CACHE      "/jffs/reaper_pbr"
+ #define PPBR_LASTGOOD   PPBR_CACHE "/lastgood"     /* last CONFIRMED config = rollback + boot source */
+ #define PPBR_CHAIN      "REAPER_PBR"
++#define PPBR_CHAIN_N    "REAPER_PBR_N"      /* the other name: the swap-in rebuild builds beside the live chain (v3.3.4, R07 second half) */
++#define PPBR_PREF_LIST  "9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9012 9013 9014 9015 9101 9102 9103 9104 9105 9106 9107 9108 9109 9110 9111 9112 9113 9114 9115"
+ #define PPBR_MASK       "0x000F0000"        /* bits 16-19 */
+ #define PPBR_PRIO_BASE  9000                 /* lookup rules: 9000+code */
+ #define PPBR_PRIO_KS    9100                 /* fail-closed prohibit: 9100+code */
+@@ -328,6 +330,18 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	  "  done < \"$SKIPREC\"\n"
+ 	  "  rm -f \"$SKIPREC\"\n"
+ 	  "}\n"
++	  /* v3.3.4 (R07 second half): the swap-in rebuild keeps every bypass entry the
++	   * new config still wants (PBR_SKIP_WANT, computed by the generator plus the
++	   * run-time LAN net) and removes only OUR entries that it no longer wants.
++	   * The old record moves to .old so pbr_skip_add can re-own a kept entry. */
++	  "pbr_skip_prune() {\n"
++	  "  rm -f \"$SKIPREC.old\"; [ -f \"$SKIPREC\" ] || return 0\n"
++	  "  mv \"$SKIPREC\" \"$SKIPREC.old\"\n"
++	  "  while read N F; do\n"
++	  "    [ \"$F\" = new ] || continue\n"
++	  "    case \" $PBR_SKIP_WANT \" in *\" $N \"*) ;; *) [ -w \"$SKIP\" ] && printf 'del %%s ' \"$N\" > \"$SKIP\" 2>/dev/null;; esac\n"
++	  "  done < \"$SKIPREC.old\"\n"
++	  "}\n"
+ 	  "# v2.6.9: count the mark rules that were meant to load and the ones that\n"
+ 	  "# did not (a `-m set` rule fails when its set is not there yet at boot);\n"
+ 	  "# rwatch compares the live chain against EXPECT and re-runs this script.\n"
+@@ -349,7 +363,10 @@ static void ppbr_emit_skip_helpers(FILE *f)
+ 	   * re-runs this script when the interface appears, which turns it into
+ 	   * `new`. */
+ 	  "  if [ -n \"$2\" ] && [ ! -d /sys/class/net/\"$2\" ]; then echo \"$1 pending\" >> \"$SKIPREC\"; logger -t reaper_pbr \"WireGuard iface $2 down - $1 skip-bypass not installed yet (installed when the client starts)\"; return 0; fi\n"
+-	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then echo \"$1 pre\" >> \"$SKIPREC\"; return 0; fi\n"
++	  /* v3.3.4 (R07 second half): an entry that is already in the table and that
++	   * the PREVIOUS apply added is still OURS - record it `new` again, so the
++	   * next prune may drop it; `pre` stays what it was: somebody else's. */
++	  "  if grep -qsx -- \"$1\" \"$SKIP\"; then if grep -qsx -- \"$1 new\" \"$SKIPREC.old\" 2>/dev/null; then echo \"$1 new\" >> \"$SKIPREC\"; else echo \"$1 pre\" >> \"$SKIPREC\"; fi; return 0; fi\n"
+ 	  /* WG_NETWORK_TBL_SZ is 8 PER FAMILY, not 8 in total. Counting every line
+ 	   * in /proc/blog/skip_wireguard_network lumped v4 and v6 together, so a
+ 	   * handful of v6 entries from a WireGuard server's AllowedIPs could refuse
+@@ -461,6 +478,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	int used_fc[16];             /* fail-closed for that code */
+ 	int wg_lanwide = 0;          /* a WG rule with a non-source selector (P6) */
+ 	int wg_rules = 0;
++	char wantbuf[2048] = "";    /* the bypass entries the new config wants (v3.3.4 prune) */
+ 
+ 	memset(used, 0, sizeof(used));
+ 	memset(used_fc, 0, sizeof(used_fc));
+@@ -472,7 +490,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 
+ 	fprintf(f,
+ 	  "#!/bin/sh\n" REAPER_NV_HELPER
+-	  "# generated by reaper_pbr - do not edit; idempotent (teardown then rebuild)\n"
++	  "# generated by reaper_pbr - do not edit; idempotent (swap-in rebuild: what is live stays until its replacement is in place)\n"
+ 	  "MASK=" PPBR_MASK "\n"
+ 	  /* v2.7.6 (field: after a reboot the ip rules were there but the mangle
+ 	   * chain was short, and only a UI Apply healed it): every `-m set` rule
+@@ -491,37 +509,41 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	  "[ -n \"$PBR_SETS_DONE\" ] || { [ -f " RFW_SETS " ] && sh " RFW_SETS " 2>/dev/null; }\n"
+ 	  "\n");
+ 	ppbr_emit_skip_helpers(f);
+-	fprintf(f,
+-	  "\n"
+-	  "# ---- teardown (P1: only our chain + our pref band + our skip entries) ----\n"
+-	  "for T in iptables ip6tables; do\n"
+-	  "  while $T -t mangle -D PREROUTING -j " PPBR_CHAIN " 2>/dev/null; do :; done\n"
+-	  "  $T -t mangle -F " PPBR_CHAIN " 2>/dev/null\n"
+-	  "  $T -t mangle -X " PPBR_CHAIN " 2>/dev/null\n"
+-	  "done\n"
+-	  "for V in -4 -6; do\n"
+-	  "  for P in 9001 9002 9003 9004 9005 9006 9007 9008 9009 9010 9011 9015 "
+-	  "9101 9102 9103 9104 9105 9106 9107 9108 9109 9110 9111 9115; do\n"
+-	  /* v2.7.6 (field: a box also running an addon that manages its own ip
+-	   * rules): `rule del pref P` is owner-blind - it removed whatever sat at
+-	   * our pref. Only delete a rule that carries OUR fwmark form (bits 16-19,
+-	   * mask 0xf0000); anything else at that pref is somebody else's and stays. */
+-	  "    while ip $V rule show 2>/dev/null | grep -Eq \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\"; do\n"
+-	  /* Fully qualified: the grep above proves one of OUR rules is at this pref,
+-	   * but `del pref P` removes the FIRST rule there, which on a box running an
+-	   * addon that also uses 9001-9115 can be theirs. Matching the fwmark form
+-	   * on the delete means we can only ever remove our own. */
+-	  "      _fm=$(ip $V rule show 2>/dev/null | grep -E \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\" | head -1 | sed -n 's|.*fwmark \\(0x[0-9a-fA-F]*/0x[0-9a-fA-F]*\\).*|\\1|p')\n"
+-	  "      [ -n \"$_fm\" ] || break\n"
+-	  "      ip $V rule del fwmark $_fm pref $P 2>/dev/null || break\n"
+-	  "    done\n"
+-	  "  done\n"
+-	  "done\n"
+-	  "pbr_skip_del_ours\n"
+-	  "\n");
+ 
++	/* v3.3.4 (review R07, second half): the full teardown below is the DISABLE
++	 * path only. An apply used to run it first and rebuild from nothing, so
++	 * every apply - and every VPN event that regenerates - had a window with
++	 * no mark chain and no routing rules: new flows fell to `main` (out the
++	 * WAN), flows through a tunnel lost their path mid-stream, and a BLOCK
++	 * rule stopped blocking, for as long as the few dozen iptables/ip calls
++	 * took. The build path now swaps in: see the swap-in comment below. */
+ 	if (teardown_only) {
+-		fprintf(f, "rm -f " PPBR_DIR "/expect " PPBR_DIR "/expect_rules " PPBR_DIR "/expect_rules6 " PPBR_DIR "/failcount\n" "exit 0\n");
++		fprintf(f,
++		  "\n"
++		  "# ---- teardown (P1: only our chains + our pref band + our skip entries) ----\n"
++		  "for T in iptables ip6tables; do\n"
++		  "  for C in " PPBR_CHAIN " " PPBR_CHAIN_N "; do\n"
++		  "    while $T -t mangle -D PREROUTING -j $C 2>/dev/null; do :; done\n"
++		  "    $T -t mangle -F $C 2>/dev/null\n"
++		  "    $T -t mangle -X $C 2>/dev/null\n"
++		  "  done\n"
++		  "done\n"
++		  "for V in -4 -6; do\n"
++		  "  for P in " PPBR_PREF_LIST "; do\n"
++		  /* v2.7.6 (field: a box also running an addon that manages its own ip
++		   * rules): `rule del pref P` is owner-blind - it removed whatever sat at
++		   * our pref. Only delete a rule that carries OUR fwmark form (bits 16-19,
++		   * mask 0xf0000); anything else at that pref is somebody else's and stays. */
++		  "    while ip $V rule show 2>/dev/null | grep -Eq \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\"; do\n"
++		  "      _fm=$(ip $V rule show 2>/dev/null | grep -E \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\" | head -1 | sed -n 's|.*fwmark \\(0x[0-9a-fA-F]*/0x[0-9a-fA-F]*\\).*|\\1|p')\n"
++		  "      [ -n \"$_fm\" ] || break\n"
++		  "      ip $V rule del fwmark $_fm pref $P 2>/dev/null || break\n"
++		  "    done\n"
++		  "  done\n"
++		  "done\n"
++		  "pbr_skip_del_ours\n"
++		  "rm -f " PPBR_DIR "/expect " PPBR_DIR "/expect_rules " PPBR_DIR "/expect_rules6 " PPBR_DIR "/failcount\n"
++		  "exit 0\n");
+ 		fclose(f);
+ 		if (rename(tmp, path) != 0) { unlink(tmp); return 0; }
+ 		return 1;
+@@ -605,18 +627,22 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 						 * minutes for the life of the box - each pass taking the
+ 						 * firewall lock and issuing an fc flush. */
+ 						fprintf(rb, "ipset list -n rwfw_%s >/dev/null 2>&1 && ", ent);
+-					fprintf(rb, "pbr_rule iptables -t mangle -A " PPBR_CHAIN " -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					fprintf(rb, "pbr_rule iptables -t mangle -A $C4 -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+ 					        sel4, code);
+ 				}
+ 				if (sel6[0]) {
+ 					if (!strncmp(sel6, "-m set", 6))
+ 						/* only when the v6 set exists (see ppbr_selector) */
+ 						fprintf(rb, "ipset list -n rwfw6_%s >/dev/null 2>&1 && ", ent);
+-					fprintf(rb, "pbr_rule ip6tables -t mangle -A " PPBR_CHAIN " -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
++					fprintf(rb, "pbr_rule ip6tables -t mangle -A $C6 -m mark --mark 0x0/$MASK %s -j MARK --set-xmark 0x%X0000/$MASK\n",
+ 					        sel6, code);
+ 				}
+ 				if (wg) {
+-					if (skipnet[0]) fprintf(rb, "pbr_skip_add %s %s\n", skipnet, tbl);
++					if (skipnet[0]) {
++						size_t wl = strlen(wantbuf);
++						fprintf(rb, "pbr_skip_add %s %s\n", skipnet, tbl);
++						snprintf(wantbuf + wl, sizeof(wantbuf) - wl, "%s%s", wl ? " " : "", skipnet);
++					}
+ 					else            wg_lanwide = 1;
+ 				}
+ 				nent++;
+@@ -636,6 +662,27 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 		free(list);
+ 	}
+ 
++	/* ---- swap-in (v3.3.4, review R07 second half) ----
++	 * The new chain is built under the name the live chain does NOT have
++	 * (REAPER_PBR <-> REAPER_PBR_N), complete with its selector rules, and
++	 * only then does the PREROUTING jump move to it - REPLACED in place, one
++	 * netlink operation, so the position among the other mangle rules is kept
++	 * and no packet ever sees "no chain". The old chain is dropped afterwards
++	 * and the new one renamed to REAPER_PBR (rwatch and the diag count that
++	 * name). Routing rules: the ones already live and still wanted are kept
++	 * and counted, the missing ones added, and only then are OUR stale ones
++	 * removed (a code whose target changed: the new rule goes in behind the
++	 * old at the same pref, then the old is deleted - the flow is routed by
++	 * one or the other at every instant, never by `main`). Bypass entries:
++	 * pbr_skip_prune drops only ours that the new config no longer wants. */
++	fprintf(f,
++	  "# ---- swap-in rebuild: build beside the live chain, replace the jump, drop the old ----\n"
++	  "pbr_live() { \"$1\" -t mangle -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING -j " PPBR_CHAIN "(_N)?$' | head -1 | awk '{print $NF}'; }\n"
++	  "pbr_new() { [ \"$(pbr_live \"$1\")\" = " PPBR_CHAIN_N " ] && echo " PPBR_CHAIN " || echo " PPBR_CHAIN_N "; }\n"
++	  "C4=\"$(pbr_new iptables)\"; C6=\"$(pbr_new ip6tables)\"\n"
++	  "pbr_chain() { [ \"$1\" = iptables ] && echo \"$C4\" || echo \"$C6\"; }\n"
++	  "PBR_NRULES=%d\n", nrules);
++
+ 	/* ---- the chain: restore a prior verdict, but only a LIVE one ----
+ 	 * v3.1.7 (WireGuard policy-routing field report, 2026-09-14): the chain
+ 	 * used to restore whatever code the conntrack carried and RETURN on any
+@@ -662,16 +709,24 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	 * replies route by `main`, as VPN Director's do (wgcN rp_filter is loose). */
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+-	  "  $T -t mangle -N " PPBR_CHAIN " 2>/dev/null\n"
+-	  "  $T -t mangle -F " PPBR_CHAIN "\n"
+-	  "  $T -t mangle -A " PPBR_CHAIN " -m conntrack --ctdir REPLY -j RETURN\n");
++	  "  C=\"$(pbr_chain $T)\"\n"
++	  "  $T -t mangle -N $C 2>/dev/null\n"
++	  "  $T -t mangle -F $C\n"
++	  "  $T -t mangle -A $C -m conntrack --ctdir REPLY -j RETURN\n");
+ 	for (i = 1; i < 16; i++)
+ 		if (used[i])
+-			fprintf(f, "  $T -t mangle -A " PPBR_CHAIN " -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
++			fprintf(f, "  $T -t mangle -A $C -m connmark --mark 0x%X0000/$MASK -j CONNMARK --restore-mark --nfmask $MASK --ctmask $MASK\n", i);
+ 	fprintf(f,
+ 	  /* a restored (live) verdict: only the first packet of a flow is matched */
+-	  "  $T -t mangle -A " PPBR_CHAIN " -m mark ! --mark 0x0/$MASK -j RETURN\n"
++	  "  $T -t mangle -A $C -m mark ! --mark 0x0/$MASK -j RETURN\n"
+ 	  "done\n");
++	/* the bypass list: what the new config wants is known here (the rule loop
++	 * collected the static nets; the LAN-wide net is read at run time), so the
++	 * prune runs BEFORE the adds - a kept entry is never removed and re-added,
++	 * and a dropped one frees its slot for a new one (8 per family). */
++	if (wg_lanwide)
++		fprintf(f, "LANNET=\"$(ip -4 route show dev \"$(_nv lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n");
++	fprintf(f, "PBR_SKIP_WANT=\"%s%s\"\npbr_skip_prune\n", wantbuf, wg_lanwide ? " $LANNET" : "");
+ 	{
+ 		char rbuf[4096];
+ 		size_t n;
+@@ -685,49 +740,94 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 		/* P6: VPN Director's "all LAN" bypass, computed at run time so a LAN
+ 		 * re-address is followed on the next apply. */
+ 		fprintf(f,
+-		  "LANNET=\"$(ip -4 route show dev \"$(_nv lan_ifname)\" scope link 2>/dev/null | awk '/proto kernel/{print $1; exit}')\"\n"
+ 		  "if [ -n \"$LANNET\" ]; then pbr_skip_add \"$LANNET\"; else logger -t reaper_pbr \"LAN network unknown - the LAN-wide WireGuard bypass could not be installed\"; NFAIL=$((NFAIL+1)); SKIPFAIL=1; fi\n");
+ 	}
+ 
+ 	fprintf(f,
+ 	  "for T in iptables ip6tables; do\n"
+-	  "  $T -t mangle -A " PPBR_CHAIN " -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n"
++	  "  C=\"$(pbr_chain $T)\"; $T -t mangle -A $C -j CONNMARK --save-mark --nfmask $MASK --ctmask $MASK\n"
+ 	  "done\n");
+ 
+-	if (nrules > 0)
+-		fprintf(f,
+-		  "iptables -t mangle -A PREROUTING -j " PPBR_CHAIN "\n"
+-		  "ip6tables -t mangle -A PREROUTING -j " PPBR_CHAIN " 2>/dev/null\n");
++	fprintf(f,
++	  "for T in iptables ip6tables; do\n"
++	  "  C=\"$(pbr_chain $T)\"; [ \"$C\" = " PPBR_CHAIN " ] && O=" PPBR_CHAIN_N " || O=" PPBR_CHAIN "\n"
++	  "  if [ \"$PBR_NRULES\" -gt 0 ]; then\n"
++	  /* -S lists the policy first, so rule k is line k+1: replace rule _i-1 */
++	  "    _i=$($T -t mangle -S PREROUTING 2>/dev/null | grep -nE '^-A PREROUTING -j " PPBR_CHAIN "(_N)?$' | head -1 | cut -d: -f1)\n"
++	  "    case \"$_i\" in ''|*[!0-9]*) _i=0;; esac\n"
++	  "    if [ \"$_i\" -gt 1 ]; then $T -t mangle -R PREROUTING $((_i-1)) -j $C 2>/dev/null || $T -t mangle -A PREROUTING -j $C 2>/dev/null; else $T -t mangle -A PREROUTING -j $C 2>/dev/null; fi\n"
++	  "  fi\n"
++	  "  while $T -t mangle -D PREROUTING -j $O 2>/dev/null; do :; done\n"
++	  "  [ \"$PBR_NRULES\" -gt 0 ] || while $T -t mangle -D PREROUTING -j $C 2>/dev/null; do :; done\n"
++	  "  $T -t mangle -F $O 2>/dev/null; $T -t mangle -X $O 2>/dev/null\n"
++	  "  [ \"$C\" = " PPBR_CHAIN " ] || $T -t mangle -E $C " PPBR_CHAIN " 2>/dev/null || logger -t reaper_pbr \"$T: could not rename $C to " PPBR_CHAIN " - the live chain keeps the staging name until the next apply\"\n"
++	  /* the jump is what makes any of this matter: its absence is a counted failure (E_PARTIAL, rwatch heals) */
++	  "  if [ \"$PBR_NRULES\" -gt 0 ] && ! $T -t mangle -S PREROUTING 2>/dev/null | grep -qE '^-A PREROUTING -j " PPBR_CHAIN "(_N)?$'; then NFAIL=$((NFAIL+1)); logger -t reaper_pbr \"$T: the PREROUTING jump to " PPBR_CHAIN " is missing after the swap-in\"; fi\n"
++	  "done\n");
+ 
+ 	/* one ip rule per used mark code, both families (P3 fail-closed for tunnel
+ 	 * targets; for v6 the prohibit also catches a tunnel with no v6 routes).
+ 	 * v3.1.5 (review R07): CHECKED through pbr_route. The v6 half is checked
+ 	 * only while IPv6 is enabled on the box - with it disabled a v6 rule that
+-	 * does not load is not a leak, so it stays the best-effort add it was. */
++	 * does not load is not a leak, so it stays the best-effort add it was.
++	 * v3.3.4 (R07 second half): a rule that is already live in its wanted form
++	 * is kept and counted, not deleted and re-added; what is missing is added;
++	 * then only OUR rules that are not the wanted one at their pref go. The
++	 * wanted forms are written as `ip rule show` prints them (mask without its
++	 * leading zeros; hex case differs by tool, hence grep -i). */
++	fprintf(f, "pbr_wanted() { case \"$1\" in\n");
++	for (i = 1; i < 16; i++) {
++		if (!used[i]) continue;
++		if (used_tbl[i]) {
++			fprintf(f, "  %d) echo 'fwmark 0x%x0000/0x0*f0000 lookup %s';;\n", PPBR_PRIO_BASE + i, i, used_tbl[i]);
++			if (used_fc[i])
++				fprintf(f, "  %d) echo 'fwmark 0x%x0000/0x0*f0000 prohibit';;\n", PPBR_PRIO_KS + i, i);
++		} else
++			fprintf(f, "  %d) echo 'fwmark 0x%x0000/0x0*f0000 prohibit';;\n", PPBR_PRIO_BASE + i, i);
++	}
++	fprintf(f,
++	  "  *) echo '';;\n"
++	  "esac; }\n"
++	  "pbr_route_set() { _v=$1; _p=$2; _w=\"$(pbr_wanted $_p)\"; shift 2\n"
++	  "  if [ -n \"$_w\" ] && ip $_v rule show 2>/dev/null | grep -iqE \"^$_p:.*$_w\\$\"; then case $_v in -4) NROUTE4=$((NROUTE4+1));; -6) NROUTE6=$((NROUTE6+1));; esac\n"
++	  "  else pbr_route $_v rule add \"$@\" pref $_p; fi; }\n"
++	  "pbr_route_try() { _v=$1; _p=$2; _w=\"$(pbr_wanted $_p)\"; shift 2\n"
++	  "  [ -n \"$_w\" ] && ip $_v rule show 2>/dev/null | grep -iqE \"^$_p:.*$_w\\$\" || ip $_v rule add \"$@\" pref $_p 2>/dev/null; }\n");
+ 	{
+-	const char *r6 = ipv6_enabled() ? "pbr_route -6" : "ip -6";
+-	const char *t6 = ipv6_enabled() ? "" : " 2>/dev/null";
++	const char *r6 = ipv6_enabled() ? "pbr_route_set" : "pbr_route_try";
+ 	for (i = 1; i < 16; i++) {
+ 		if (!used[i]) continue;
+ 		if (used_tbl[i]) {
+ 			fprintf(f,
+-			  "pbr_route -4 rule add fwmark 0x%X0000/$MASK lookup %s pref %d\n"
+-			  "%s rule add fwmark 0x%X0000/$MASK lookup %s pref %d%s\n",
+-			  i, used_tbl[i], PPBR_PRIO_BASE + i, r6, i, used_tbl[i], PPBR_PRIO_BASE + i, t6);
++			  "pbr_route_set -4 %d fwmark 0x%X0000/$MASK lookup %s\n"
++			  "%s -6 %d fwmark 0x%X0000/$MASK lookup %s\n",
++			  PPBR_PRIO_BASE + i, i, used_tbl[i], r6, PPBR_PRIO_BASE + i, i, used_tbl[i]);
+ 			if (used_fc[i])
+ 				fprintf(f,
+-				  "pbr_route -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
+-				  "%s rule add fwmark 0x%X0000/$MASK prohibit pref %d%s\n",
+-				  i, PPBR_PRIO_KS + i, r6, i, PPBR_PRIO_KS + i, t6);
++				  "pbr_route_set -4 %d fwmark 0x%X0000/$MASK prohibit\n"
++				  "%s -6 %d fwmark 0x%X0000/$MASK prohibit\n",
++				  PPBR_PRIO_KS + i, i, r6, PPBR_PRIO_KS + i, i);
+ 		} else {
+ 			/* BLOCK */
+ 			fprintf(f,
+-			  "pbr_route -4 rule add fwmark 0x%X0000/$MASK prohibit pref %d\n"
+-			  "%s rule add fwmark 0x%X0000/$MASK prohibit pref %d%s\n",
+-			  i, PPBR_PRIO_BASE + i, r6, i, PPBR_PRIO_BASE + i, t6);
++			  "pbr_route_set -4 %d fwmark 0x%X0000/$MASK prohibit\n"
++			  "%s -6 %d fwmark 0x%X0000/$MASK prohibit\n",
++			  PPBR_PRIO_BASE + i, i, r6, PPBR_PRIO_BASE + i, i);
+ 		}
+ 	}
+ 	}
++	fprintf(f,
++	  "# stale routing rules: only OUR fwmark form, and only where the live rule is not the wanted one at its pref\n"
++	  "for V in -4 -6; do\n"
++	  "  for P in " PPBR_PREF_LIST "; do\n"
++	  "    _w=\"$(pbr_wanted $P)\"; _k=0\n"
++	  "    ip $V rule show 2>/dev/null | grep -E \"^$P:.*fwmark 0x[0-9a-fA-F]+/0x0*[fF]0000\" | while read -r _ln; do\n"
++	  "      if [ -n \"$_w\" ] && [ \"$_k\" = 0 ] && echo \"$_ln\" | grep -iqE \"$_w\\$\"; then _k=1; continue; fi\n"
++	  "      set -- $(echo \"$_ln\" | awk '{a=\"\"; for(i=1;i<=NF;i++){ if($i==\"fwmark\") f=$(i+1); if($i==\"lookup\") a=\"lookup \" $(i+1); if($i==\"prohibit\") a=\"prohibit\" } print f, a}')\n"
++	  "      [ -n \"$1\" ] && ip $V rule del fwmark $1 $2 $3 pref $P 2>/dev/null\n"
++	  "    done\n"
++	  "  done\n"
++	  "done\n");
+ 
+ 	if (wg_rules) {
+ 		/* flows learnt before the bypass existed keep their old path */
+@@ -737,6 +837,7 @@ static int ppbr_gen(const char *path, int teardown_only, const ppbr_cfg_t *cfg)
+ 	}
+ 
+ 	fprintf(f,
++	  "rm -f \"$SKIPREC.old\"\n"
+ 	  "echo $NEXPECT > " PPBR_DIR "/expect\n"
+ 	  /* v3.1.5 (review R07): what was MEANT to load, per family - rwatch heals
+ 	   * a live count short of this. It was a count of the live rules, which a
+@@ -965,7 +1066,9 @@ void reaper_pbr_reassert(void)
+ 		system("sh /tmp/reaper_pbr/candidate.sh");
+ 	else if (f_exists("/tmp/reaper_pbr/apply.sh"))
+ 		system("sh /tmp/reaper_pbr/apply.sh");
+-		reaper_fwsim_kick(1);	/* v3.1.7: re-walk the witnesses (marks are part of the promise) */
++	/* v3.1.7: re-walk the witnesses after either apply (marks are part of the promise);
++	 * v3.3.4: dedented - it always ran here, the old indentation only read as if it did not */
++	reaper_fwsim_kick(1);
+ 	file_unlock(lock);
+ }
+ 
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index fab6c11802..b993db752b 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -471,6 +471,61 @@ static void rwatch_gen(void)
+ 	  "  rm -f /tmp/reaper/hook.n 2>/dev/null\n"
+ 	  "fi\n"
+ 	  "\n"
++	  /* 2026-10-04 (backlog "chain-integrity watchdog covers the Warden drop
++	   * chains only"). The rules engine's chains could not take 3d's "ends in
++	   * DROP" test - they RETURN by design - so they had no invariant at all, and
++	   * an addon's firewall-start that flushed REAPER_FWF went unnoticed until a
++	   * rule it carried was missed. The invariant that fits them: "the chain
++	   * still reads exactly as the engine built it". apply.sh signs each chain it
++	   * built (md5 of `-S`, see rc/reaper_fw.c) into /tmp/reaper_fw/chainsig and
++	   * removes the file while it rebuilds; here the live chains are hashed the
++	   * same way. No signature file (engine off, or an apply in progress) = no
++	   * check; an armed commit-confirm candidate = no check either, because the
++	   * live set is deliberately not the committed apply.sh. A mismatch must
++	   * hold on two consecutive ticks before it is a FAILURE (a tick can land
++	   * between a teardown and its signature). The heal is the committed
++	   * apply.sh itself - ours, idempotent, under the firewall lock - spaced
++	   * 10 min apart and capped at two like the hook re-pin: a chain that keeps
++	   * changing after two rebuilds has an editor, and churn is not a repair.
++	   * Gatekeeper is deliberately NOT covered here: gkd re-applies its own
++	   * chains when they vanish, and they change on every device decision. */
++	  "# 3f) rules-engine chain signatures: REAPER_FW* still read as apply.sh built them\n"
++	  "RFWDRIFT=\"\"\n"
++	  "if [ -s /tmp/reaper_fw/chainsig ] && [ ! -d /tmp/reaper_fw/armed ]; then\n"
++	  "  while read _t _tb _c _sig; do\n"
++	  "    [ -n \"$_sig\" ] || continue\n"
++	  "    case \"$_t\" in iptables|ip6tables) ;; *) continue;; esac\n"
++	  "    case \"$_tb\" in nat) _tf=\"-t nat\";; *) _tf=\"\";; esac\n"
++	  "    _now=$($_t $_tf -S \"$_c\" 2>/dev/null | md5sum | cut -d' ' -f1)\n"
++	  "    [ \"$_now\" = \"$_sig\" ] && continue\n"
++	  "    if $_t $_tf -nL \"$_c\" >/dev/null 2>&1; then RFWDRIFT=\"$RFWDRIFT $_t/$_c:changed\"; else RFWDRIFT=\"$RFWDRIFT $_t/$_c:gone\"; fi\n"
++	  "  done < /tmp/reaper_fw/chainsig\n"
++	  "fi\n"
++	  "if [ -n \"$RFWDRIFT\" ]; then\n"
++	  "  _rprev=$(cat /tmp/reaper/rfwsig.miss 2>/dev/null)\n"
++	  "  echo \"$RFWDRIFT\" > /tmp/reaper/rfwsig.miss 2>/dev/null\n"
++	  "  if [ \"$_rprev\" = \"$RFWDRIFT\" ]; then\n"
++	  "    FAIL=\"$FAIL rules-chain-drift\"\n"
++	  "    if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -x /tmp/reaper_fw/apply.sh ]; then\n"
++	  "      _rl=$(cat /tmp/reaper/rfwsig.at 2>/dev/null || echo 0); case \"$_rl\" in ''|*[!0-9]*) _rl=0;; esac\n"
++	  "      _rn=$(cat /tmp/reaper/rfwsig.n 2>/dev/null || echo 0); case \"$_rn\" in ''|*[!0-9]*) _rn=0;; esac\n"
++	  "      if [ \"$_rn\" -ge 2 ]; then\n"
++	  "        if [ \"$_rn\" = 2 ]; then\n"
++	  "          echo 3 > /tmp/reaper/rfwsig.n 2>/dev/null\n"
++	  "          logger -t rwatch \"rules-engine chains changed again after two re-applies ($RFWDRIFT) - something keeps editing REAPER_FW*, so re-applying has STOPPED; find what writes to those chains, or apply the rules again from the Firewall page\"\n"
++	  "        fi\n"
++	  "      elif [ $((UP - _rl)) -ge 600 ]; then\n"
++	  "        echo $UP > /tmp/reaper/rfwsig.at 2>/dev/null\n"
++	  "        echo $((_rn + 1)) > /tmp/reaper/rfwsig.n 2>/dev/null\n"
++	  "        logger -t rwatch \"rules-engine chains differ from what the engine built ($RFWDRIFT) - re-applying the committed ruleset\"\n"
++	  "        reaper_lockrun /tmp/reaper_fw/apply.sh >/dev/null 2>&1\n"
++	  "      fi\n"
++	  "    fi\n"
++	  "  fi\n"
++	  "else\n"
++	  "  rm -f /tmp/reaper/rfwsig.miss /tmp/reaper/rfwsig.n 2>/dev/null\n"
++	  "fi\n"
++	  "\n"
+ 	  /* v3.1.2 (owner, 2026-09-10: "Warden does not log and/or drop outbound
+ 	   * blocks anymore - haven't seen any in the syslog for a number of
+ 	   * releases"). "No outbound lines" has four completely different causes and
+@@ -602,6 +657,11 @@ static void rwatch_gen(void)
+ 	  "  mkdir -p \"$D\" 2>/dev/null || return\n"
+ 	  "  echo $NOWD > \"$DUMPROOT/.last\" 2>/dev/null\n"
+ 	  "  { date; uptime; echo \"reasons:$*\"; } > \"$D/summary.txt\" 2>&1\n"
++	  /* the two logs FIRST: the fcctl and bpmctl status calls below make the kernel
++	   * print their tables into dmesg and syslog, which swamped a 200-line tail taken
++	   * last (owner bundle 2026-10-04 19:45:08, reason wan-gw: only BPM tables survived) */
++	  "  dmesg | tail -120 > \"$D/dmesg.txt\" 2>&1\n"
++	  "  tail -300 /tmp/syslog.log > \"$D/syslog-tail.txt\" 2>/dev/null\n"
+ 	  "  { ip route; ip -6 route; } > \"$D/route.txt\" 2>&1\n"
+ 	  "  iptables -nvxL > \"$D/iptables.txt\" 2>&1\n"
+ 	  "  ip6tables -nvxL > \"$D/ip6tables.txt\" 2>&1\n"
+@@ -613,8 +673,6 @@ static void rwatch_gen(void)
+ 	  "  bpmctl status > \"$D/bpm.txt\" 2>&1\n"
+ 	  "  WANIF=\"$(_nv wan0_ifname)\"\n"
+ 	  "  [ -n \"$WANIF\" ] && tmctl getqstats --devtype 0 --if \"$WANIF\" --qid 0 > \"$D/tmctl-q0.txt\" 2>&1\n"
+-	  "  dmesg | tail -120 > \"$D/dmesg.txt\" 2>&1\n"
+-	  "  tail -200 /tmp/syslog.log > \"$D/syslog-tail.txt\" 2>/dev/null\n"
+ 	  "  ls -1dt \"$DUMPROOT\"/inc-* 2>/dev/null | tail -n +4 | while read d; do rm -rf \"$d\"; done\n"
+ 	  "}\n"
+ 	  "\n"
+@@ -757,8 +815,13 @@ static void rwatch_gen(void)
+ 	  "esac\n"
+ 	  "\n"
+ 	  "# 3) syslog mirror (append lines added since the last tick), rotated at 8 MB\n"
++	  /* v3.3.4 (r11 first boot read): rotate BEFORE appending. Rotating after the
++	   * append left the live mirror absent for the whole next interval, and the
++	   * diag then said "no mirror" on a box carrying 8 MB of it. */
+ 	  "case \"$DS\" in *,slog,*)\n"
+ 	  "  if [ \"$VOLATILE\" = 0 ] && [ -r /tmp/syslog.log ]; then\n"
++	  "    SZ=$(wc -c < \"$BASE/syslog.mirror\" 2>/dev/null || echo 0)\n"
++	  "    [ \"$SZ\" -gt 8388608 ] && mv \"$BASE/syslog.mirror\" \"$BASE/syslog.mirror.1\" 2>/dev/null\n"
+ 	  "    CURN=$(wc -l < /tmp/syslog.log 2>/dev/null || echo 0)\n"
+ 	  "    LASTN=$(cat /tmp/rhist.slogn 2>/dev/null || echo 0)\n"
+ 	  "    case \"$LASTN\" in ''|*[!0-9]*) LASTN=0;; esac\n"
+@@ -768,8 +831,6 @@ static void rwatch_gen(void)
+ 	  "      cat /tmp/syslog.log >> \"$BASE/syslog.mirror\" 2>/dev/null\n"
+ 	  "    fi\n"
+ 	  "    echo \"$CURN\" > /tmp/rhist.slogn\n"
+-	  "    SZ=$(wc -c < \"$BASE/syslog.mirror\" 2>/dev/null || echo 0)\n"
+-	  "    [ \"$SZ\" -gt 8388608 ] && mv \"$BASE/syslog.mirror\" \"$BASE/syslog.mirror.1\" 2>/dev/null\n"
+ 	  "  fi ;;\n"
+ 	  "esac\n"
+ 	  /* rwatch reports through syslog and the /tmp/reaper state files, never
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 1b86275f78..5223327f70 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -1722,6 +1722,10 @@ static void gen_witnesses(void)
+ 	}
+ 	sub_set("LANMAC", lanmac);
+ 	if (lan6) sub_set("V6", "up");
++	/* 2026-10-04 (A1b, the masquerade witness): $NAT resolves only while NAT is
++	 * on for the PRIMARY WAN unit - the unit the tables were emitted for
++	 * (ifaces_from_nv). A box run without NAT makes the row n/a, not red. */
++	{ int u = nv_is("wan1_primary", "1") ? 1 : 0; if (nv_is(u ? "wan1_nat_x" : "wan0_nat_x", "1")) sub_set("NAT", "on"); }
+ 
+ 	load_witness_file(opt_static, 1);
+ 	if (!lan4) return;
+@@ -2471,6 +2475,7 @@ static void gen_witnesses(void)
+ static const char *dump_keys[] = {
+ 	"sw_mode", "lan_ifname", "lan_ipaddr", "wan0_ifname", "wan0_proto",
+ 	"wan0_pppoe_ifname", "wan0_ipaddr", "wan1_primary", "wan1_ifname", "wan1_proto", "wan1_pppoe_ifname",
++	"wan0_nat_x", "wan1_nat_x",	/* A1b: the $NAT placeholder */
+ 	"dmz_ip", "sdn_access_rl",
+ 	"https_lanport", "misc_http_x", "misc_httpsport_x", "misc_ping_x", "fw_enable_x", "fw_dos_x",
+ 	"sshd_enable", "sshd_wan", "sshd_port",
+diff --git a/release/src/router/reaper_fwsim/witness.static b/release/src/router/reaper_fwsim/witness.static
+old mode 100755
+new mode 100644
+index 6f163e3a0a..ffae588ba1
+--- a/release/src/router/reaper_fwsim/witness.static
++++ b/release/src/router/reaper_fwsim/witness.static
+@@ -18,6 +18,9 @@
+ 
+ # ---- A. core reachability -------------------------------------------------
+ A1|LAN host reaches the WAN|4|$LANIF|$LANHOST|$WANDST|tcp|443|NEW|ACCEPT||$LANMAC
++# A1b (2026-10-04, tester ask): the same flow must leave with the WAN address, or the reply has
++# nowhere to come back to. Judged on POSTROUTING like F6; n/a while NAT is off ($NAT).
++A1b|LAN host's traffic to the WAN is source-translated|4|$LANIF|$LANHOST|$WANDST|tcp|443|NEW|SNAT||$LANMAC|$NAT
+ A2|Reply from the WAN reaches the LAN host|4|$WANIF|$WANDST|$LANHOST|tcp|40000|ESTABLISHED|ACCEPT
+ A3|LAN host resolves DNS at the router|4|$LANIF|$LANHOST|$RTR|udp|53|NEW|RESOLVED||$LANMAC
+ A4|Unsolicited WAN traffic never reaches a LAN host|4|$WANIF|$WANSRC|$LANHOST|tcp|445|NEW|DROP
+-- 
+2.25.1
+

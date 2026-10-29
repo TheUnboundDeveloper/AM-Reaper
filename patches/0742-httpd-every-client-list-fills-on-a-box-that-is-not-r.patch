@@ -1,0 +1,1161 @@
+From 0e1cee1ab2a4862c60e3756b3f8810e1aa53e6cf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 3 Oct 2026 12:24:32 -0400
+Subject: [PATCH] httpd: every client list fills on a box that is not routing;
+ the diag collector runs detached from the request
+
+GT-BE19000 tester, Access Point mode (2026-10-02): the Network page's Main
+Network card showed 0 devices and its Clients tab "No device connected" while
+the AiMesh node card (fixed in v3.3.1) counted them. Owner: fix it for every
+menu, at the source.
+
+- ej_get_clientlist(): on a non-routing box (rdev_nonrouting(): sw_mode not
+  router or hotspot) the hook merges Reaper's device store. networkmap sets
+  isOnline from DHCP leases and conntrack, which a bridging box does not have,
+  so every stock surface on that hook - the Network page's cards and Clients
+  tab, Parental Controls, the QoS pickers, the topology node card - read empty
+  there. A row networkmap produced is kept and marked present (ip, band,
+  network and node filled where it left them blank); a device it does not know
+  is added in its own shape with from = "reaper_dev". Nodes, backhaul stations
+  and affiliated MLO links are not devices and are left out, as the Devices
+  page leaves them.
+- rdev_collect(): the scan that was the body of reaper_dev.cgi action=status
+  (steps 1-7 unchanged) is now one collector for both callers, cached as a
+  snapshot for the hook - it is polled every 10 s by several pages and the scan
+  popen()s wl per VIF and brctl per bridge on a single-flight httpd. The status
+  action still takes a fresh pass. New at the end: every present device gets a
+  network - cfg_mnt's own answer, else the VIF map (vif_used), else the bridge
+  the cable was learned on (the FDB scan now walks br0 and every enabled SDN's
+  own bridge, where a guest or IoT VLAN's wired clients are learned), else the
+  main fronthaul row.
+- do_reaper_diag_cgi (perf audit P2): the collector ran INLINE - popen()
+  drained to EOF inside the single-threaded httpd, so every diagnostic run
+  froze the whole GUI and the login page for the length of the collection. It
+  is now a detached grandchild (rdiag_worker, the rwifi sampler's shape) that
+  writes OK <path> or ERR to /tmp/.reaper_diag_state; the page asks
+  action=start, polls action=status every 2 s (cap 5 min) and fetches
+  action=get. start reclaims a lock older than 180 s; status says RUNNING only
+  while the lock is under 300 s old. The CSRF gate, the lock and the
+  /tmp/reaper_diag_ path contract are unchanged; no dictionary change.
+- get_client_detail_info (perf audit P30): nmp_wl_offline_check is written
+  only when it is not already "1" - it was one nvram write per clientlist GET
+  on a 3-10 s poller.
+
+Tests: build-scripts/tests/test_apmode_surfaces.py section 6 compiles
+rdev_sdn_of_bridge, rdev_sdn_of_vif_in and rdev_sta_sdn from source (13
+checks) and asserts the hook's merge; verify_markers "diag collector started
+detached" plus the page's start and status literals.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c         | 823 +++++++++++++++++++------
+ release/src/router/www/Reaper_Diag.asp |  60 +-
+ 2 files changed, 683 insertions(+), 200 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 8e477615d5..32481c391d 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -650,6 +650,9 @@ static int get_clientlist_ex(struct json_object **clients);
+ #define AVLBL_BW320 16
+ 
+ static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey);
++/* v3.3.3: the device store feeds the client-list hook on a box that is not routing (defined with the rdev code) */
++static int rdev_nonrouting(void);
++static void rdev_merge_clientlist(struct json_object *clients, struct json_object *macArray);
+ static int get_custom_clientlist_info(struct json_object *json_object_ptr);
+ static int get_client_name(char *ipaddr, char *name, size_t name_len);
+ #define CLIENTAPILEVEL "7"
+@@ -10482,7 +10485,10 @@ static int get_client_detail_info(struct json_object *clients, struct json_objec
+ #endif
+ 
+ 	// set check wireless offline
+-	nvram_set("nmp_wl_offline_check", "1");
++	/* reaper 2026-10-03 (perf audit P30): one nvram write per clientlist GET
++	 * on a 3-10 s poller; skip it while the flag is already raised. */
++	if (!nvram_match("nmp_wl_offline_check", "1"))
++		nvram_set("nmp_wl_offline_check", "1");
+ 
+ 	lock = file_lock("networkmap");
+ 	shm_client_info_id = shmget((key_t)shmkey, sizeof(CLIENT_DETAIL_INFO_TABLE), 0666|IPC_CREAT);
+@@ -10887,7 +10893,11 @@ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ 		return 0;
+ 	}
+ 	
+-	if(!pids("networkmap")){
++	/* v3.3.3: a routing box without networkmap answers empty as before; a box that
++	 * is not routing still has Reaper's device store to answer from (see
++	 * rdev_merge_clientlist below the rdev code). */
++	int have_nmp = pids("networkmap");
++	if(!have_nmp && !rdev_nonrouting()){
+ 		websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
+ 		return 0;
+ 	}
+@@ -10909,7 +10919,8 @@ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ 	1011	FREE-WIFI
+ 	1012	CAPTIVE PORTAL
+ 	*/
+-	get_client_detail_info(clients, macArray, SHMKEY_LAN);
++	if (have_nmp)
++		get_client_detail_info(clients, macArray, SHMKEY_LAN);
+ 
+ #if defined(RTCONFIG_TAGGED_BASED_VLAN) && !defined(FLAG_FUNCTION_TEMPORARILY_CANCELED)
+ 	int i, vlan_flag;
+@@ -10937,6 +10948,11 @@ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ 	}
+ #endif
+ 
++	/* v3.3.3: networkmap sets isOnline from DHCP leases and conntrack, which a
++	 * bridging box does not have, so every view on this hook read empty there
++	 * (GT-BE19000 tester, Access Point mode). Reaper's own presence scan fills it. */
++	if (rdev_nonrouting())
++		rdev_merge_clientlist(clients, macArray);
+ 	json_object_object_add(clients, "maclist", macArray);
+ 	json_object_object_add(clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+ 	websWrite(wp, "%s", json_object_to_json_string(clients));
+@@ -21917,18 +21933,61 @@ do_reaper_wifisetup_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"ok\":1,\"radios\":%d,\"selif\":%d}", n, selif);
+ }
+ 
++/* reaper 2026-10-03 (perf audit P2): the collector used to run INLINE here -
++ * popen() drained to EOF inside the single-threaded httpd, so every diagnostic
++ * run froze the whole GUI, and the login page, for every admin for the length
++ * of the collection (tens of seconds; the lock allowed 180 s). The run is now
++ * a detached grandchild (the shape rwifi's sampler and the walker use) that
++ * writes its verdict to a state file; the page asks action=start, polls
++ * action=status every 2 s and fetches action=get. The CSRF gate, the lock and
++ * the /tmp/reaper_diag_ path contract are unchanged. */
++#define RDIAG_LOCK	"/tmp/.reaper_diag_busy"
++#define RDIAG_STATE	"/tmp/.reaper_diag_state"
++#define RDIAG_RECLAIM	180	/* s: a lock older than this is a dead worker's - start may reclaim it */
++#define RDIAG_RUNMAX	300	/* s: status stops answering RUNNING for a lock older than this */
++
++static void rdiag_worker(void)
++{
++	FILE *p, *f;
++	char line[256], path[128];
++
++	path[0] = '\0';
++	if ((p = popen("/usr/sbin/reaper_diag 2>/dev/null", "r")) != NULL) {
++		while (fgets(line, sizeof(line), p)) {
++			char *m = strstr(line, "written to: ");
++			if (m != NULL) {
++				snprintf(path, sizeof(path), "%s", m + 12);
++				m = strchr(path, '\n');
++				if (m != NULL)
++					*m = '\0';
++			}
++		}
++		pclose(p);
++	}
++	if ((f = fopen(RDIAG_STATE ".tmp", "w")) != NULL) {
++		if (path[0] != '\0')
++			fprintf(f, "OK %s\n", path);
++		else
++			fputs("ERR\n", f);
++		fclose(f);
++		rename(RDIAG_STATE ".tmp", RDIAG_STATE);
++	}
++	unlink(RDIAG_LOCK);
++}
++
+ static void
+ do_reaper_diag_cgi(char *url, FILE *stream)
+ {
+-	FILE *p, *f;
+-	char line[256], path[128], buf[4096];
++	FILE *f;
++	char path[128], buf[4096], state[160], *nl;
+ 	size_t n;
+ 	struct stat st;
+-	const char *lock = "/tmp/.reaper_diag_busy";
++	char *act = get_cgi("action");
++	long lock_age = -1;
+ 
+-	/* reaper (A1-SEC-002): this read popen()s the diag collector; require the
+-	 * http_id CSRF token (Reaper_Diag.asp now sends it) so a cross-site GET
+-	 * cannot trigger a diagnostic run. */
++	/* reaper (A1-SEC-002): every action here either starts the collector or
++	 * reads its report; require the http_id CSRF token (Reaper_Diag.asp sends
++	 * it) so a cross-site GET cannot trigger a run or read one. */
+ 	{
+ 		int why = reaper_gate();
+ 		if (why != RGATE_OK) {
+@@ -21937,30 +21996,76 @@ do_reaper_diag_cgi(char *url, FILE *stream)
+ 		}
+ 	}
+ 
+-	path[0] = '\0';
++	if (act == NULL || act[0] == '\0')
++		act = "start";
++	if (stat(RDIAG_LOCK, &st) == 0)
++		lock_age = (long)(time(NULL) - st.st_mtime);
+ 
+-	if (stat(lock, &st) == 0 && (time(NULL) - st.st_mtime) < 180) {
+-		websWrite(stream, "ERROR: a diagnostic collection is already running. Try again shortly.\n");
+-		return;
+-	}
+-	if ((f = fopen(lock, "w")) != NULL)
+-		fclose(f);
++	if (strcmp(act, "start") == 0) {
++		pid_t pid;
+ 
+-	if ((p = popen("/usr/sbin/reaper_diag 2>/dev/null", "r")) != NULL) {
+-		while (fgets(line, sizeof(line), p)) {
+-			char *m = strstr(line, "written to: ");
+-			if (m != NULL) {
+-				snprintf(path, sizeof(path), "%s", m + 12);
+-				m = strchr(path, '\n');
+-				if (m != NULL)
+-					*m = '\0';
++		if (lock_age >= 0 && lock_age < RDIAG_RECLAIM) {
++			websWrite(stream, "ERROR: a diagnostic collection is already running. Try again shortly.\n");
++			return;
++		}
++		if ((f = fopen(RDIAG_LOCK, "w")) != NULL)
++			fclose(f);
++		if ((f = fopen(RDIAG_STATE, "w")) != NULL) {
++			fputs("RUNNING\n", f);
++			fclose(f);
++		}
++		logmessage("reaper_diag", "diag collector started detached");
++		pid = fork();
++		if (pid == 0) {
++			/* intermediate child: detach a grandchild so httpd reaps
++			 * immediately and the worker never becomes a zombie */
++			if (fork() == 0) {
++				int fd;
++				setsid();
++				for (fd = 0; fd < 64; fd++)
++					close(fd);
++				fd = open("/dev/null", O_RDWR);
++				if (fd == 0) {
++					dup2(0, 1);
++					dup2(0, 2);
++				}
++				rdiag_worker();
++				_exit(0);
+ 			}
++			_exit(0);
+ 		}
+-		pclose(p);
++		if (pid > 0)
++			waitpid(pid, NULL, 0);
++		websWrite(stream, "STARTED\n");
++		return;
+ 	}
+ 
+-	unlink(lock);
++	state[0] = '\0';
++	if ((f = fopen(RDIAG_STATE, "r")) != NULL) {
++		if (fgets(state, sizeof(state), f) == NULL)
++			state[0] = '\0';
++		fclose(f);
++	}
++	if ((nl = strchr(state, '\n')) != NULL)
++		*nl = '\0';
+ 
++	if (strcmp(act, "status") == 0) {
++		if (strncmp(state, "OK ", 3) == 0)
++			websWrite(stream, "READY\n");
++		else if (strcmp(state, "RUNNING") == 0 && lock_age >= 0 && lock_age < RDIAG_RUNMAX)
++			websWrite(stream, "RUNNING\n");
++		else
++			websWrite(stream, "ERROR: diagnostic collection failed. Check the system log and try again.\n");
++		return;
++	}
++
++	if (strcmp(act, "get") != 0) {
++		websWrite(stream, "ERROR: unknown action.\n");
++		return;
++	}
++	path[0] = '\0';
++	if (strncmp(state, "OK ", 3) == 0)
++		snprintf(path, sizeof(path), "%s", state + 3);
+ 	if (path[0] == '\0' || strncmp(path, "/tmp/reaper_diag_", 17) != 0 ||
+ 	    strstr(path, "..") != NULL || (f = fopen(path, "r")) == NULL) {
+ 		websWrite(stream, "ERROR: diagnostic collection failed. Check the system log and try again.\n");
+@@ -21970,6 +22075,7 @@ do_reaper_diag_cgi(char *url, FILE *stream)
+ 		fwrite(buf, 1, n, stream);
+ 	fclose(f);
+ 	unlink(path);
++	unlink(RDIAG_STATE);
+ }
+ 
+ /* reaper QoS v3: per-class egress queue counters for the Reaper_QoS.asp live
+@@ -26467,6 +26573,9 @@ struct rdev {
+ 				 * device hangs off; "" = not placed. Spelled like
+ 				 * get_cfg_clientlist()'s "mac", which is what the topology
+ 				 * page's node card compares against. */
++	char vif[16];		/* v3.3.3: the VIF (wlN.M) the station was seen on - its network's key */
++	int  unit;		/* v3.3.3: radio unit of that VIF, -1 = unknown */
++	int  sdn;		/* v3.3.3: sdn_rl index of the network the device is on, -1 = unknown */
+ };
+ 
+ /* v3.3.1: record the node a device hangs off. Only a well-formed MAC is kept,
+@@ -26509,6 +26618,8 @@ static int rdev_find(struct rdev *v, int *n, const char *macraw)
+ 	memset(&v[*n], 0, sizeof(v[0]));
+ 	snprintf(v[*n].mac, sizeof(v[0].mac), "%s", mac);
+ 	v[*n].gk_state = -1;
++	v[*n].unit = -1;
++	v[*n].sdn = -1;
+ 	return (*n)++;
+ }
+ 
+@@ -26616,6 +26727,10 @@ static void rdev_scan_wl(struct rdev *v, int *n, int mlo_on)
+ 					v[idx].bandmask |= bandbit;
+ 					if (!v[idx].band[0])
+ 						snprintf(v[idx].band, sizeof(v[0].band), "%s", band);
++					if (!v[idx].vif[0]) {
++						snprintf(v[idx].vif, sizeof(v[0].vif), "%s", tok);
++						v[idx].unit = u;
++					}
+ 				}
+ 				pclose(p);
+ 			}
+@@ -26643,23 +26758,54 @@ static int rdev_lookup(struct rdev *v, int n, const char *macraw)
+  * Wi-Fi devices showed as "Wired"). A MAC on an eth* port is wired; on a wlN[.M]
+  * port it is wireless on that radio's band, and being in the table means it is
+  * actively bridging => online. Only reclassifies devices already in the table. */
+-static void rdev_scan_fdb(struct rdev *v, int *n)
++/* v3.3.3: the network a bridge carries, as the Network page keys its cards. br0
++ * is shared by the LAN row (idx 0) and the main fronthaul row(s), and the page
++ * files the main network under the MAINFH row's idx, so that one wins (the lowest
++ * when Smart Connect is off and there is one per band). A guest or IoT VLAN has
++ * its own bridge and one row. -1 when no enabled row names the bridge. */
++static int rdev_sdn_of_bridge(const char *br, MTLAN_T *pmtl, size_t sz)
+ {
+-	struct { int pno, kind, bandbit; char band[8]; } port[40];
++	size_t i;
++	int best = -1, mainfh = -1;
++	if (!br || !br[0] || !pmtl) return -1;
++	for (i = 0; i < sz; i++) {
++		int idx = pmtl[i].sdn_t.sdn_idx;
++		if (!pmtl[i].enable || strcmp(pmtl[i].nw_t.br_ifname, br)) continue;
++		if (!strcmp(pmtl[i].name, "MAINFH")) {
++			if (mainfh < 0 || idx < mainfh) mainfh = idx;
++		} else if (best < 0 || (idx > 0 && (best == 0 || idx < best))) {
++			best = idx;
++		}
++	}
++	return mainfh >= 0 ? mainfh : best;
++}
++
++/* one bridge's forwarding table: the port a MAC was learned on is ground truth
++ * and, unlike wl assoclist, never omits EHT/6GHz/pseudo-MLO stations (assoclist
++ * DROPPING associated 6GHz/EHT clients is exactly why some Wi-Fi devices showed
++ * as "Wired"). A MAC on an eth* port is wired - and on the network this bridge
++ * carries; on a wlN[.M] port it is wireless on that radio's band and that VIF.
++ * Being in the table means it is actively bridging => online. Only reclassifies
++ * devices already in the table. */
++static void rdev_scan_fdb_br(struct rdev *v, int *n, const char *br, int sdn)
++{
++	struct { int pno, kind, bandbit, unit; char band[8]; char name[16]; } port[40];
+ 	int nports = 0;
+ 	DIR *d;
+ 	struct dirent *e;
+ 	FILE *p;
+-	char line[192];
++	char line[192], path[128], cmd[96];
+ 
+-	d = opendir("/sys/class/net/br0/brif");
++	/* brN only, before the name reaches opendir/popen */
++	if (!br || !br[0] || br[strspn(br, "abcdefghijklmnopqrstuvwxyz0123456789")] != '\0') return;
++	snprintf(path, sizeof(path), "/sys/class/net/%s/brif", br);
++	d = opendir(path);
+ 	if (!d) return;
+ 	while ((e = readdir(d)) != NULL && nports < 40) {
+-		char path[128];
+ 		FILE *f;
+ 		long pno = -1;
+ 		if (e->d_name[0] == '.') continue;
+-		snprintf(path, sizeof(path), "/sys/class/net/br0/brif/%s/port_no", e->d_name);
++		snprintf(path, sizeof(path), "/sys/class/net/%s/brif/%s/port_no", br, e->d_name);
+ 		if ((f = fopen(path, "r")) != NULL) {
+ 			if (fscanf(f, "%li", &pno) != 1) pno = -1;	/* sysfs is 0x.. hex */
+ 			fclose(f);
+@@ -26668,13 +26814,16 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ 		port[nports].pno = (int)pno;
+ 		port[nports].kind = 0;
+ 		port[nports].bandbit = 0;
++		port[nports].unit = -1;
+ 		port[nports].band[0] = 0;
++		snprintf(port[nports].name, sizeof(port[0].name), "%s", e->d_name);
+ 		if (!strncmp(e->d_name, "eth", 3)) {
+ 			port[nports].kind = 1;		/* wired */
+ 		} else if (!strncmp(e->d_name, "wl", 2)) {
+ 			char key[16];
+ 			int u = atoi(e->d_name + 2), nb;	/* wlN[.M] -> N */
+ 			port[nports].kind = 2;		/* wireless */
++			port[nports].unit = u;
+ 			snprintf(key, sizeof(key), "wl%d_nband", u);
+ 			nb = nvram_get_int(key);
+ 			snprintf(port[nports].band, sizeof(port[0].band), "%s",
+@@ -26686,7 +26835,8 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ 	closedir(d);
+ 	if (!nports) return;
+ 
+-	p = popen("brctl showmacs br0 2>/dev/null", "r");
++	snprintf(cmd, sizeof(cmd), "brctl showmacs %s 2>/dev/null", br);
++	p = popen(cmd, "r");
+ 	if (!p) return;
+ 	while (fgets(line, sizeof(line), p)) {
+ 		int pno, idx, k;
+@@ -26699,7 +26849,11 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ 		for (k = 0; k < nports; k++) {
+ 			if (port[k].pno != pno) continue;
+ 			if (port[k].kind == 1) {
+-				if (!v[idx].wifi) { v[idx].wired = 1; v[idx].online = 1; }
++				if (!v[idx].wifi) {
++					v[idx].wired = 1; v[idx].online = 1;
++					/* a cabled device is on the network its bridge carries */
++					if (v[idx].sdn < 0 && sdn >= 0) v[idx].sdn = sdn;
++				}
+ 			} else if (port[k].kind == 2) {
+ 				v[idx].wifi = 1; v[idx].wired = 0; v[idx].online = 1;
+ 				if (!v[idx].mlo && !v[idx].bandmask) {	/* don't clobber merged MLO bands */
+@@ -26707,6 +26861,10 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ 					if (!v[idx].band[0])
+ 						snprintf(v[idx].band, sizeof(v[0].band), "%s", port[k].band);
+ 				}
++				if (!v[idx].vif[0]) {
++					snprintf(v[idx].vif, sizeof(v[0].vif), "%s", port[k].name);
++					v[idx].unit = port[k].unit;
++				}
+ 			}
+ 			break;
+ 		}
+@@ -26714,6 +26872,118 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+ 	pclose(p);
+ }
+ 
++/* v3.3.3: br0 and every enabled SDN's own bridge (a guest or IoT VLAN's wired
++ * clients are learned there, not on br0). Was br0 only. */
++static void rdev_scan_fdb(struct rdev *v, int *n)
++{
++	MTLAN_T *pmtl;
++	size_t sz = 0, i, j;
++	char done[32][IFNAMSIZ];
++	int nd = 0;
++
++	pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
++	if (pmtl && !get_mtlan(pmtl, &sz)) sz = 0;
++	rdev_scan_fdb_br(v, n, "br0", rdev_sdn_of_bridge("br0", pmtl, sz));
++	snprintf(done[nd++], IFNAMSIZ, "%s", "br0");
++	for (i = 0; pmtl && i < sz && nd < 32; i++) {
++		const char *br = pmtl[i].nw_t.br_ifname;
++		int seen = 0;
++		if (!br[0] || !pmtl[i].enable) continue;
++		for (j = 0; j < (size_t)nd; j++)
++			if (!strcmp(done[j], br)) { seen = 1; break; }
++		if (seen) continue;
++		snprintf(done[nd++], IFNAMSIZ, "%s", br);
++		rdev_scan_fdb_br(v, n, br, rdev_sdn_of_bridge(br, pmtl, sz));
++	}
++	if (pmtl) FREE_MTLAN((void *)pmtl);
++}
++
++/* v3.3.3: the network a VIF belongs to, from the map cfg_mnt keeps for stock's
++ * own get_sdn_idx_form_apg_ifnames(): { "vif_used": { "<node mac>": [ { "sdn_idx",
++ * "sdn_band": [ { "wl_ifname": "wl1.1", ... } ] } ] } }. This router's own key is
++ * tried first (get_lan_hwaddr()), then any node's: a mesh carries the same
++ * networks on the same VIF names. -1 when nothing names the VIF. */
++static int rdev_sdn_of_vif_in(json_object *list, const char *vif)
++{
++	int cnt, i, ret = -1;
++	if (!list || !json_object_is_type(list, json_type_array)) return -1;
++	cnt = json_object_array_length(list);
++	for (i = 0; i < cnt && ret < 0; i++) {
++		json_object *ent = json_object_array_get_idx(list, i), *sidx = NULL, *bands = NULL;
++		int bc, b;
++		if (!ent || !json_object_is_type(ent, json_type_object)) continue;
++		if (!json_object_object_get_ex(ent, "sdn_idx", &sidx) || !sidx) continue;
++		if (!json_object_object_get_ex(ent, "sdn_band", &bands) || !bands ||
++		    !json_object_is_type(bands, json_type_array)) continue;
++		bc = json_object_array_length(bands);
++		for (b = 0; b < bc; b++) {
++			json_object *bo = json_object_array_get_idx(bands, b), *ifn = NULL;
++			const char *s;
++			if (!bo || !json_object_is_type(bo, json_type_object)) continue;
++			if (!json_object_object_get_ex(bo, "wl_ifname", &ifn) || !ifn ||
++			    !json_object_is_type(ifn, json_type_string)) continue;
++			s = json_object_get_string(ifn);
++			if (!s || strcmp(s, vif)) continue;
++			if (json_object_is_type(sidx, json_type_int))
++				ret = json_object_get_int(sidx);
++			else if (json_object_is_type(sidx, json_type_string) && json_object_get_string(sidx))
++				ret = atoi(json_object_get_string(sidx));
++			break;
++		}
++	}
++	return ret;
++}
++
++static int rdev_sdn_of_vif(json_object *root, const char *vif)
++{
++	json_object *used = NULL, *mine = NULL;
++	char self[18];
++	const char *h;
++	int i, ret = -1;
++
++	if (!root || !vif || !vif[0] || !json_object_is_type(root, json_type_object)) return -1;
++	if (!json_object_object_get_ex(root, "vif_used", &used) || !used ||
++	    !json_object_is_type(used, json_type_object)) return -1;
++	h = get_lan_hwaddr();
++	snprintf(self, sizeof(self), "%s", h ? h : "");
++	for (i = 0; self[i]; i++) self[i] = toupper((unsigned char)self[i]);
++	if (self[0] && json_object_object_get_ex(used, self, &mine) && mine)
++		ret = rdev_sdn_of_vif_in(mine, vif);
++	if (ret < 0) {
++		json_object_object_foreach(used, nodekey, nodelist) {
++			(void)nodekey;
++			if ((ret = rdev_sdn_of_vif_in(nodelist, vif)) >= 0) break;
++		}
++	}
++	return ret;
++}
++
++/* v3.3.3: give every present device a network: cfg_mnt's own answer (recorded by
++ * the mesh scan), else the VIF map, else the bridge the cable was learned on
++ * (recorded by the FDB scan), else the main fronthaul row - which is what a
++ * station the lists have not caught up with is on in practice. */
++static void rdev_sdn_resolve(struct rdev *v, int n)
++{
++	json_object *map;
++	MTLAN_T *pmtl;
++	size_t sz = 0;
++	int i, deflt = -1;
++
++	pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
++	if (pmtl) {
++		if (get_mtlan(pmtl, &sz)) deflt = rdev_sdn_of_bridge("br0", pmtl, sz);
++		FREE_MTLAN((void *)pmtl);
++	}
++	if (deflt < 0) deflt = 0;
++	map = json_object_from_file(APG_IFNAMES_USED_FILE);
++	for (i = 0; i < n; i++) {
++		if (!v[i].online || v[i].node) continue;
++		if (v[i].sdn < 0 && v[i].vif[0]) v[i].sdn = rdev_sdn_of_vif(map, v[i].vif);
++		if (v[i].sdn < 0) v[i].sdn = deflt;
++	}
++	if (map) json_object_put(map);
++}
++
+ /* reaper 2026-08-14, field report ("some Wi-Fi clients connected through AiMesh
+  * nodes are shown as Wired"):
+  *
+@@ -26750,6 +27020,19 @@ static void rdev_scan_fdb(struct rdev *v, int *n)
+  * "mld_mac" (seen live: 7A:..:27 under 6G_1 with mld_mac 78:..:27, the MAC that
+  * holds the lease). Guarded like every other read here: a valid-but-wrong type
+  * must not reach a string helper. */
++/* v3.3.3: the sdn_rl index cfg_mnt files a station under ("sdn_idx", int or
++ * string - the field stock's get_sdn_index_by_mac reads). -1 when absent. */
++static int rdev_sta_sdn(json_object *staval)
++{
++	json_object *s = NULL;
++	if (!staval || !json_object_is_type(staval, json_type_object)) return -1;
++	if (!json_object_object_get_ex(staval, "sdn_idx", &s) || !s) return -1;
++	if (json_object_is_type(s, json_type_int)) return json_object_get_int(s);
++	if (json_object_is_type(s, json_type_string) && json_object_get_string(s) && *json_object_get_string(s))
++		return atoi(json_object_get_string(s));
++	return -1;
++}
++
+ static const char *rdev_sta_mldmac(json_object *staval)
+ {
+ 	json_object *m = NULL;
+@@ -26911,6 +27194,7 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 				 * node it is associated to - recorded even when our own radio
+ 				 * placed it, since then the key is this router's own MAC. */
+ 				rdev_set_via(&v[idx], nodemac);
++				{ int sd = rdev_sta_sdn(staval); if (sd >= 0) v[idx].sdn = sd; }	/* v3.3.3: cfg_mnt's own answer wins over the bridge guess */
+ 				if (v[idx].wifi) continue;	/* our own radio already placed it */
+ 				/* listed as wired on a node too -> the wireless entry is
+ 				 * stale; believe the cable. */
+@@ -26935,9 +27219,9 @@ static void rdev_scan_amesh(struct rdev *v, int *n)
+ 			if (!json_object_is_type(wmacs, json_type_object)) continue;
+ 			json_object_object_foreach(wmacs, wmac, wval) {
+ 				int idx;
+-				(void)wval;
+ 				if ((idx = rdev_lookup(v, *n, wmac)) < 0) continue;
+ 				rdev_set_via(&v[idx], wnode);
++				{ int sd = rdev_sta_sdn(wval); if (sd >= 0) v[idx].sdn = sd; }	/* v3.3.3 */
+ 			}
+ 		}
+ 	}
+@@ -27127,6 +27411,320 @@ static void rdev_audit(const char *act, const char *mac, const char *detail)
+ 	}
+ }
+ 
++/* v3.3.3: the device store's merged snapshot, ONE collector for reaper_dev.cgi
++ * (action=status) and ej_get_clientlist() on a box that is not routing. Steps
++ * 1-7 were the body of the status action until v3.3.2 and are unchanged; the
++ * network resolve at the end is new. Cached because the client-list hook is
++ * polled every 10 s by several pages and the scan popen()s wl per VIF and brctl
++ * per bridge on a single-flight httpd; the status action always takes a fresh
++ * pass, as it did. */
++#define RDEV_TTL 10	/* s */
++static struct rdev rdev_tab[RDEV_MAX];
++static int rdev_tab_n = 0, rdev_tab_mlo = 0;
++static time_t rdev_tab_t = 0;
++
++static void rdev_collect(void)
++{
++	struct rdev *dev = rdev_tab;
++	static struct gk_seen seen[GK_SEEN_MAX];
++	int n = 0, ns, i, mlo_on;
++	char line[512];
++	FILE *f;
++	char *buf, *tok, *sp = NULL;
++
++	/* MLO fronthaul active? mld_enable is the master switch (same flag the
++	 * stock Wireless page reads); a non-empty mld{0,1,2}_ifnames means a
++	 * Multi-Link Device is actually formed. When on, a client's per-link
++	 * affiliated MACs each appear in a radio assoclist as a locally-
++	 * administered, lease-less station - NOT a separate device. */
++	mlo_on = (nvram_match("mld_enable", "1") &&
++	          (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
++	           *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
++
++	/* 1. DHCP leases: known devices (ip + self-reported host) */
++	f = fopen("/var/lib/misc/dnsmasq.leases", "r");
++	if (f) {
++		while (fgets(line, sizeof(line), f)) {
++			char mac[64], ip[64], host[64];
++			int idx;
++			/* fmt: <expiry> <mac> <ip> <host> <clientid> */
++			if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
++			idx = rdev_find(dev, &n, mac);
++			if (idx < 0) continue;
++			if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
++			if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
++				snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
++		}
++		fclose(f);
++	}
++
++	/* 2. ARP: currently-talking devices on the LAN bridge (=> online) */
++	f = fopen("/proc/net/arp", "r");
++	if (f) {
++		char ip[64], hw[64], dif[32];
++		unsigned flags;
++		if (fgets(line, sizeof(line), f)) { /* header */ }
++		while (fgets(line, sizeof(line), f)) {
++			int idx;
++			if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
++				continue;
++			if (!(flags & 2) || strncmp(dif, "br", 2)) continue;
++			idx = rdev_find(dev, &n, hw);
++			if (idx < 0) continue;
++			dev[idx].online = 1;
++			if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
++		}
++		fclose(f);
++	}
++
++	/* 3. wireless assoclists (band + wifi + online) */
++	rdev_scan_wl(dev, &n, mlo_on);
++	/* bridge FDB is authoritative for wired/wireless + band (assoclist omits
++	 * some EHT/6GHz/pseudo-MLO stations, which used to read as "Wired"). */
++	rdev_scan_fdb(dev, &n);
++	/* AiMesh: a client associated to a NODE is in neither of the above -
++	 * the FDB places it on the backhaul port and it reads as Wired. Must
++	 * run after the FDB so it can correct that verdict, and before the
++	 * fallback below so it can pre-empt it. */
++	rdev_scan_amesh(dev, &n);
++	/* AiMesh NODES (the node device itself, not its clients): the cfg_mnt
++	 * table knows each node by LAN MAC and carries its uplink type
++	 * (re_path), so that verdict is authoritative and OVERRIDES the FDB
++	 * guess - a node reaches us over a backhaul interface that is neither
++	 * eth*- nor wl*-named (WDS/dpsta) and otherwise lands on the Wired
++	 * default below. See rdev_node_classify() for the 2026-08-19 miss. */
++	rdev_node_classify(dev, n);
++	/* last resort: an online device nothing above could place is Wired. */
++	for (i = 0; i < n; i++) {
++		if (!(dev[i].online && !dev[i].wifi && !dev[i].wired))
++			continue;
++		dev[i].wired = 1;
++	}
++	/* v3.3.1: a present device no mesh list placed behind a node hangs off
++	 * this router - the same default stock applies to an empty pap_mac
++	 * (client_function.js: amesh_papMac "" -> get_lan_hwaddr()). */
++	{
++		const char *self = get_lan_hwaddr();
++		for (i = 0; i < n; i++)
++			if (dev[i].online && !dev[i].via[0] && !dev[i].node)
++				rdev_set_via(&dev[i], self);
++	}
++
++	/* 4. dhcp_staticlist reservations: <MAC>IP>DNS>HOST */
++	buf = strdup(nvram_safe_get("dhcp_staticlist"));
++	if (buf) {
++		for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++			char rmac[64], rip[64];
++			int idx;
++			rip[0] = 0;
++			if (sscanf(tok, "%63[^>]>%63[^>]", rmac, rip) < 1) continue;
++			idx = rdev_find(dev, &n, rmac);
++			if (idx < 0) continue;
++			dev[idx].resv = 1;
++			snprintf(dev[idx].resv_ip, sizeof(dev[0].resv_ip), "%s", rip);
++		}
++		free(buf);
++	}
++
++	/* 5. gk_rl access states (also surfaces offline gk-listed devices) */
++	buf = strdup(gk_rl_get());
++	sp = NULL;
++	if (buf) {
++		for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++			char gmac[64];
++			int st = -1, idx; long exp = 0;
++			if (sscanf(tok, "%63[^>]>%d>%ld", gmac, &st, &exp) < 2) continue;
++			if (st < 0 || st > 3) continue;
++			idx = rdev_find(dev, &n, gmac);
++			if (idx < 0) continue;
++			dev[idx].gk_state = st;
++			dev[idx].gk_expiry = exp;
++		}
++		free(buf);
++	}
++
++	/* 6. seen.tsv enrichment (first/last/band/online) when gkd has it fresh */
++	ns = gk_load_seen(seen, GK_SEEN_MAX);
++	for (i = 0; i < ns; i++) {
++		int idx = rdev_find(dev, &n, seen[i].mac);
++		if (idx < 0) continue;
++		if (seen[i].online) dev[idx].online = 1;
++		if (seen[i].last > dev[idx].last) dev[idx].last = seen[i].last;
++		if (!dev[idx].band[0] && seen[i].band[0])
++			snprintf(dev[idx].band, sizeof(dev[0].band), "%s", seen[i].band);
++		if (!dev[idx].host[0] && seen[i].host[0])
++			snprintf(dev[idx].host, sizeof(dev[0].host), "%s", seen[i].host);
++		if (!dev[idx].ip[0] && seen[i].ip[0])
++			snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", seen[i].ip);
++	}
++
++	/* 7. v3.1.1: a host the lease file could not give - the announced hostname
++	 * (a device that lost a name clash reads "*" in the leases), then
++	 * networkmap's vendor label for a device that announces no name at all.
++	 * Same chain as the Gatekeeper page; the vendor case is flagged so the
++	 * page labels its source honestly. */
++	for (i = 0; i < n; i++) {
++		if (dev[i].host[0]) continue;
++		if (reaper_dhcpname_get(dev[i].mac, dev[i].host, sizeof(dev[0].host))) continue;
++		if (gk_nmp_name(dev[i].mac, dev[i].host, sizeof(dev[0].host)))
++			dev[i].host_vendor = 1;
++	}
++
++	/* v3.3.3: which network each present device is on (Network page cards) */
++	rdev_sdn_resolve(dev, n);
++	rdev_tab_n = n;
++	rdev_tab_mlo = mlo_on;
++	rdev_tab_t = time(NULL);
++}
++
++/* the snapshot, refreshed when older than max_age seconds (0 = always) */
++static void rdev_snapshot(int max_age)
++{
++	time_t now = time(NULL);
++	if (max_age <= 0 || !rdev_tab_t || now < rdev_tab_t || now - rdev_tab_t >= max_age)
++		rdev_collect();
++}
++
++/* a box that is not routing: AP, repeater, media bridge, a node (the dashboard
++ * tiles and the topology overlay gate on the same two routing modes) */
++static int rdev_nonrouting(void)
++{
++	int m = sw_mode();
++	return !(m == SW_MODE_ROUTER || m == SW_MODE_HOTSPOT);
++}
++
++/* does the hook's maclist already carry this MAC? */
++static int rdev_maclist_has(struct json_object *macArray, const char *mac)
++{
++	int i, cnt = json_object_array_length(macArray);
++	for (i = 0; i < cnt; i++) {
++		const char *s = json_object_get_string(json_object_array_get_idx(macArray, i));
++		if (s && !strcasecmp(s, mac)) return 1;
++	}
++	return 0;
++}
++
++/* v3.3.3: a box that is not routing has no DHCP leases or conntrack for
++ * networkmap to set isOnline from, so every stock client view fed by the
++ * get_clientlist hook - the Network page's cards and Clients tab, Parental
++ * Controls, the QoS pickers, the topology node card - read empty there (the
++ * GT-BE19000 tester's AP-mode reports). The dashboard tiles (v3.1.6) and the
++ * node card (v3.3.1) each grew an overlay from Reaper's device store; this is
++ * the same data at the hook, once, for all of them. A row networkmap did
++ * produce is kept and only marked present (ip / band / network / node filled
++ * where it left them blank); a device it does not know is added in its own
++ * shape with from = "reaper_dev". Nodes, backhaul stations and affiliated MLO
++ * links are not devices and are left out, as the Devices page leaves them. */
++static void rdev_merge_clientlist(struct json_object *clients, struct json_object *macArray)
++{
++	int i, u, nbtab[4];
++	const char *self;
++
++	if (!clients || !macArray) return;
++	rdev_snapshot(RDEV_TTL);
++	self = get_lan_hwaddr();
++	for (u = 0; u < 4; u++) {
++		char k[16];
++		snprintf(k, sizeof(k), "wl%d_nband", u);
++		nbtab[u] = nvram_get_int(k);
++	}
++
++	for (i = 0; i < rdev_tab_n; i++) {
++		struct rdev *d = &rdev_tab[i];
++		struct json_object *row = NULL, *o = NULL;
++		char iswl[4], sdn[8], uname[40], ssid_key[32];
++		const char *s;
++		int mlo_link, wl = 0;
++
++		if (!d->online || d->node || d->bh_sta) continue;
++		mlo_link = (rdev_tab_mlo && d->wifi && !d->ip[0] && !d->resv && rdev_is_rand(d->mac) && !d->mlo) ? 1 : 0;
++		if (mlo_link) continue;
++
++		/* isWL as networkmap spells it (client_function.js isWL_map): 0 wired,
++		 * 1 = 2.4 GHz, 2/3 = first/second 5 GHz radio, 4/5 = first/second 6 GHz */
++		if (d->wifi) {
++			int nb = (d->unit >= 0 && d->unit < 4) ? nbtab[d->unit] : 0, same = 0;
++			if (!nb) nb = !strcmp(d->band, "2.4") ? 2 : !strcmp(d->band, "5") ? 1 : !strcmp(d->band, "6") ? 4 : 0;
++			if (d->unit >= 0)
++				for (u = 0; u < d->unit && u < 4; u++)
++					if (nbtab[u] == nb) same++;
++			wl = (nb == 2) ? 1 : (nb == 1) ? 2 + (same ? 1 : 0) : (nb == 4) ? 4 + (same ? 1 : 0) : 0;
++		}
++		snprintf(iswl, sizeof(iswl), "%d", wl);
++		snprintf(sdn, sizeof(sdn), "%d", d->sdn < 0 ? 0 : d->sdn);
++
++		if (json_object_object_get_ex(clients, d->mac, &row) && row) {
++			/* networkmap knows the device: mark it present, fill what it left blank */
++			json_object_object_add(row, "isOnline", json_object_new_string("1"));
++			if (d->ip[0] && (!json_object_object_get_ex(row, "ip", &o) || !o || !(s = json_object_get_string(o)) ||
++			    !*s || !strcmp(s, "0.0.0.0") || !strcmp(s, "offline")))
++				json_object_object_add(row, "ip", json_object_new_string(d->ip));
++			if (wl && (!json_object_object_get_ex(row, "isWL", &o) || !o || !(s = json_object_get_string(o)) || !strcmp(s, "0")))
++				json_object_object_add(row, "isWL", json_object_new_string(iswl));
++			if (d->sdn >= 0 && (!json_object_object_get_ex(row, "sdn_idx", &o) || !o || !(s = json_object_get_string(o)) || !strcmp(s, "0")))
++				json_object_object_add(row, "sdn_idx", json_object_new_string(sdn));
++			if (d->via[0] && (!json_object_object_get_ex(row, "amesh_papMac", &o) || !o || !(s = json_object_get_string(o)) || !*s))
++				json_object_object_add(row, "amesh_papMac", json_object_new_string(d->via));
++			if (!rdev_maclist_has(macArray, d->mac))
++				json_object_array_add(macArray, json_object_new_string(d->mac));
++			continue;
++		}
++
++		row = json_object_new_object();
++		gk_client_name(d->mac, uname, sizeof(uname));
++		snprintf(ssid_key, sizeof(ssid_key), "%s_ssid", d->vif);
++		json_object_object_add(row, "sdn_idx", json_object_new_string(sdn));
++		json_object_object_add(row, "sdn_type", json_object_new_string(""));
++		json_object_object_add(row, "vlan_id", json_object_new_string("0"));
++		json_object_object_add(row, "mlo", json_object_new_string(d->mlo ? "1" : "0"));
++		json_object_object_add(row, "type", json_object_new_string("0"));
++		json_object_object_add(row, "defaultType", json_object_new_string("0"));
++		json_object_object_add(row, "name", json_object_new_string(d->host[0] ? d->host : ""));
++		json_object_object_add(row, "nickName", json_object_new_string(uname[0] ? uname : ""));
++		json_object_object_add(row, "ip", json_object_new_string(d->ip[0] ? d->ip : ""));
++		json_object_object_add(row, "mac", json_object_new_string(d->mac));
++		json_object_object_add(row, "from", json_object_new_string("reaper_dev"));
++		json_object_object_add(row, "macRepeat", json_object_new_string("1"));
++		json_object_object_add(row, "isGateway", json_object_new_string("0"));
++		json_object_object_add(row, "isASUS", json_object_new_string("0"));
++		json_object_object_add(row, "isWebServer", json_object_new_string("0"));
++		json_object_object_add(row, "isPrinter", json_object_new_string("0"));
++		json_object_object_add(row, "isITunes", json_object_new_string("0"));
++		json_object_object_add(row, "dpiType", json_object_new_string(""));
++		json_object_object_add(row, "dpiDevice", json_object_new_string(""));
++		json_object_object_add(row, "vendor", json_object_new_string(d->host_vendor ? d->host : ""));
++		json_object_object_add(row, "isWL", json_object_new_string(iswl));
++		json_object_object_add(row, "isGN", json_object_new_string(""));
++		json_object_object_add(row, "isOnline", json_object_new_string("1"));
++		json_object_object_add(row, "ssid", json_object_new_string(d->vif[0] ? nvram_safe_get(ssid_key) : ""));
++		json_object_object_add(row, "isLogin", json_object_new_string("0"));
++		json_object_object_add(row, "opMode", json_object_new_string("0"));
++		json_object_object_add(row, "rssi", json_object_new_string(""));
++		json_object_object_add(row, "curTx", json_object_new_string(""));
++		json_object_object_add(row, "curRx", json_object_new_string(""));
++		json_object_object_add(row, "totalTx", json_object_new_string(""));
++		json_object_object_add(row, "totalRx", json_object_new_string(""));
++		json_object_object_add(row, "wlConnectTime", json_object_new_string(""));
++		json_object_object_add(row, "ipMethod", json_object_new_string(""));
++		json_object_object_add(row, "ROG", json_object_new_string("0"));
++		json_object_object_add(row, "group", json_object_new_string(""));
++		json_object_object_add(row, "callback", json_object_new_string(""));
++		json_object_object_add(row, "keeparp", json_object_new_string(""));
++		json_object_object_add(row, "qosLevel", json_object_new_string(""));
++		json_object_object_add(row, "wtfast", json_object_new_string("0"));
++		json_object_object_add(row, "internetMode", json_object_new_string("allow"));
++		json_object_object_add(row, "internetState", json_object_new_string("1"));
++		json_object_object_add(row, "amesh_isRe", json_object_new_string("0"));
++		if (d->via[0] && (!self || strcasecmp(d->via, self)))
++			json_object_object_add(row, "amesh_isReClient", json_object_new_string("1"));
++		json_object_object_add(row, "amesh_papMac", json_object_new_string(d->via));
++		json_object_object_add(row, "amesh_bind_mac", json_object_new_string(""));
++		json_object_object_add(row, "amesh_bind_band", json_object_new_string("0"));
++		json_object_object_add(clients, d->mac, row);
++		json_object_array_add(macArray, json_object_new_string(d->mac));
++	}
++}
++
+ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ {
+ 	char *action = get_cgi("action");
+@@ -27149,12 +27747,8 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 
+ 	/* ---------------- STATUS: the merged snapshot ---------------- */
+ 	if (!strcmp(action, "status")) {
+-		static struct rdev dev[RDEV_MAX];
+-		static struct gk_seen seen[GK_SEEN_MAX];
+-		int n = 0, ns, i, first;
+-		char line[512];
+-		FILE *f;
+-		char *buf, *tok, *sp = NULL;
++		struct rdev *dev;
++		int n, i, first;
+ 		unsigned int lan_ip, lan_mask, lan_net, dstart, dend;
+ 		int pool_size, gk_on, mlo_on;
+ 
+@@ -27165,143 +27759,12 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		dend     = rdev_ip2u(nvram_safe_get("dhcp_end"));
+ 		pool_size = (dend >= dstart && dstart) ? (int)(dend - dstart + 1) : 0;
+ 		gk_on    = nvram_match("gk_enable", "1") ? 1 : 0;
+-		/* MLO fronthaul active? mld_enable is the master switch (same flag the
+-		 * stock Wireless page reads); a non-empty mld{0,1,2}_ifnames means a
+-		 * Multi-Link Device is actually formed. When on, a client's per-link
+-		 * affiliated MACs each appear in a radio assoclist as a locally-
+-		 * administered, lease-less station - NOT a separate device. */
+-		mlo_on = (nvram_match("mld_enable", "1") &&
+-		          (*nvram_safe_get("mld0_ifnames") || *nvram_safe_get("mld1_ifnames") ||
+-		           *nvram_safe_get("mld2_ifnames"))) ? 1 : 0;
+-
+-		/* 1. DHCP leases: known devices (ip + self-reported host) */
+-		f = fopen("/var/lib/misc/dnsmasq.leases", "r");
+-		if (f) {
+-			while (fgets(line, sizeof(line), f)) {
+-				char mac[64], ip[64], host[64];
+-				int idx;
+-				/* fmt: <expiry> <mac> <ip> <host> <clientid> */
+-				if (sscanf(line, "%*s %63s %63s %63s", mac, ip, host) < 2) continue;
+-				idx = rdev_find(dev, &n, mac);
+-				if (idx < 0) continue;
+-				if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
+-				if (host[0] && strcmp(host, "*") && !dev[idx].host[0])
+-					snprintf(dev[idx].host, sizeof(dev[0].host), "%s", host);
+-			}
+-			fclose(f);
+-		}
+-
+-		/* 2. ARP: currently-talking devices on the LAN bridge (=> online) */
+-		f = fopen("/proc/net/arp", "r");
+-		if (f) {
+-			char ip[64], hw[64], dif[32];
+-			unsigned flags;
+-			if (fgets(line, sizeof(line), f)) { /* header */ }
+-			while (fgets(line, sizeof(line), f)) {
+-				int idx;
+-				if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dif) != 4)
+-					continue;
+-				if (!(flags & 2) || strncmp(dif, "br", 2)) continue;
+-				idx = rdev_find(dev, &n, hw);
+-				if (idx < 0) continue;
+-				dev[idx].online = 1;
+-				if (!dev[idx].ip[0]) snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", ip);
+-			}
+-			fclose(f);
+-		}
+-
+-		/* 3. wireless assoclists (band + wifi + online) */
+-		rdev_scan_wl(dev, &n, mlo_on);
+-		/* bridge FDB is authoritative for wired/wireless + band (assoclist omits
+-		 * some EHT/6GHz/pseudo-MLO stations, which used to read as "Wired"). */
+-		rdev_scan_fdb(dev, &n);
+-		/* AiMesh: a client associated to a NODE is in neither of the above -
+-		 * the FDB places it on the backhaul port and it reads as Wired. Must
+-		 * run after the FDB so it can correct that verdict, and before the
+-		 * fallback below so it can pre-empt it. */
+-		rdev_scan_amesh(dev, &n);
+-		/* AiMesh NODES (the node device itself, not its clients): the cfg_mnt
+-		 * table knows each node by LAN MAC and carries its uplink type
+-		 * (re_path), so that verdict is authoritative and OVERRIDES the FDB
+-		 * guess - a node reaches us over a backhaul interface that is neither
+-		 * eth*- nor wl*-named (WDS/dpsta) and otherwise lands on the Wired
+-		 * default below. See rdev_node_classify() for the 2026-08-19 miss. */
+-		rdev_node_classify(dev, n);
+-		/* last resort: an online device nothing above could place is Wired. */
+-		for (i = 0; i < n; i++) {
+-			if (!(dev[i].online && !dev[i].wifi && !dev[i].wired))
+-				continue;
+-			dev[i].wired = 1;
+-		}
+-		/* v3.3.1: a present device no mesh list placed behind a node hangs off
+-		 * this router - the same default stock applies to an empty pap_mac
+-		 * (client_function.js: amesh_papMac "" -> get_lan_hwaddr()). */
+-		{
+-			const char *self = get_lan_hwaddr();
+-			for (i = 0; i < n; i++)
+-				if (dev[i].online && !dev[i].via[0] && !dev[i].node)
+-					rdev_set_via(&dev[i], self);
+-		}
+-
+-		/* 4. dhcp_staticlist reservations: <MAC>IP>DNS>HOST */
+-		buf = strdup(nvram_safe_get("dhcp_staticlist"));
+-		if (buf) {
+-			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+-				char rmac[64], rip[64];
+-				int idx;
+-				rip[0] = 0;
+-				if (sscanf(tok, "%63[^>]>%63[^>]", rmac, rip) < 1) continue;
+-				idx = rdev_find(dev, &n, rmac);
+-				if (idx < 0) continue;
+-				dev[idx].resv = 1;
+-				snprintf(dev[idx].resv_ip, sizeof(dev[0].resv_ip), "%s", rip);
+-			}
+-			free(buf);
+-		}
+-
+-		/* 5. gk_rl access states (also surfaces offline gk-listed devices) */
+-		buf = strdup(gk_rl_get());
+-		sp = NULL;
+-		if (buf) {
+-			for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+-				char gmac[64];
+-				int st = -1, idx; long exp = 0;
+-				if (sscanf(tok, "%63[^>]>%d>%ld", gmac, &st, &exp) < 2) continue;
+-				if (st < 0 || st > 3) continue;
+-				idx = rdev_find(dev, &n, gmac);
+-				if (idx < 0) continue;
+-				dev[idx].gk_state = st;
+-				dev[idx].gk_expiry = exp;
+-			}
+-			free(buf);
+-		}
+-
+-		/* 6. seen.tsv enrichment (first/last/band/online) when gkd has it fresh */
+-		ns = gk_load_seen(seen, GK_SEEN_MAX);
+-		for (i = 0; i < ns; i++) {
+-			int idx = rdev_find(dev, &n, seen[i].mac);
+-			if (idx < 0) continue;
+-			if (seen[i].online) dev[idx].online = 1;
+-			if (seen[i].last > dev[idx].last) dev[idx].last = seen[i].last;
+-			if (!dev[idx].band[0] && seen[i].band[0])
+-				snprintf(dev[idx].band, sizeof(dev[0].band), "%s", seen[i].band);
+-			if (!dev[idx].host[0] && seen[i].host[0])
+-				snprintf(dev[idx].host, sizeof(dev[0].host), "%s", seen[i].host);
+-			if (!dev[idx].ip[0] && seen[i].ip[0])
+-				snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", seen[i].ip);
+-		}
+-
+-		/* 7. v3.1.1: a host the lease file could not give - the announced hostname
+-		 * (a device that lost a name clash reads "*" in the leases), then
+-		 * networkmap's vendor label for a device that announces no name at all.
+-		 * Same chain as the Gatekeeper page; the vendor case is flagged so the
+-		 * page labels its source honestly. */
+-		for (i = 0; i < n; i++) {
+-			if (dev[i].host[0]) continue;
+-			if (reaper_dhcpname_get(dev[i].mac, dev[i].host, sizeof(dev[0].host))) continue;
+-			if (gk_nmp_name(dev[i].mac, dev[i].host, sizeof(dev[0].host)))
+-				dev[i].host_vendor = 1;
+-		}
++		/* v3.3.3: the scan lives in rdev_collect() so the client-list hook can share
++		 * it on a box that is not routing; this action always takes a fresh pass. */
++		rdev_snapshot(0);
++		dev = rdev_tab;
++		n = rdev_tab_n;
++		mlo_on = rdev_tab_mlo;
+ 
+ 		/* ---- pool / store facts + next free out-of-pool host ---- */
+ 		{
+@@ -27386,8 +27849,8 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 				if (d->bandmask & 1) strlcat(bands, "2.4", sizeof(bands));
+ 				if (d->bandmask & 2) { if (bands[0]) strlcat(bands, "+", sizeof(bands)); strlcat(bands, "5", sizeof(bands)); }
+ 				if (d->bandmask & 4) { if (bands[0]) strlcat(bands, "+", sizeof(bands)); strlcat(bands, "6", sizeof(bands)); }
+-				websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d,\"mlo_link\":%d,\"mlo\":%d,\"bands\":\"%s\",\"node\":%d,\"via\":\"%s\"}",
+-					rdev_is_rand(d->mac), orphan, dup, nolease, d->node ? 0 : mlo_link, d->mlo, bands, d->node ? 1 : 0, d->via);
++				websWrite(stream, ",\"rand\":%d,\"orphan\":%d,\"dup\":%d,\"nolease\":%d,\"mlo_link\":%d,\"mlo\":%d,\"bands\":\"%s\",\"sdn\":%d,\"node\":%d,\"via\":\"%s\"}",
++					rdev_is_rand(d->mac), orphan, dup, nolease, d->node ? 0 : mlo_link, d->mlo, bands, d->sdn, d->node ? 1 : 0, d->via);
+ 			}
+ 		}
+ 		websWrite(stream, "]}");
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index af3ba35a5a..f7cab7c8c0 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -163,31 +163,51 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+       if(dotT){ clearInterval(dotT); dotT=null; }
+     }
+   }
++  /* 2026-10-03: the collector no longer runs inside the request. start kicks
++     off a detached worker, status is polled every 2 s (cap 5 min), get fetches
++     the report - so the rest of the GUI stays alive while it collects. */
++  function req(action, tmo, cb){
++    var x=new XMLHttpRequest(), fired=false;
++    function fin(s,t){ if(fired) return; fired=true; cb(s,t); }
++    x.open('GET','/reaper_diag.cgi?http_id='+encodeURIComponent('<% nvram_get("http_id"); %>')+'&action='+action+'&_='+Date.now(), true);
++    x.timeout=tmo;
++    x.onreadystatechange=function(){ if(x.readyState!==4) return; fin(x.status, x.responseText||''); };
++    x.ontimeout=function(){ fin(0, ''); };
++    x.onerror=function(){ fin(0, ''); };
++    x.send();
++  }
+   document.getElementById('dl').addEventListener('click', function(){
+     if(busy) return;
+     busy=true;
+-    var btn=this, err=document.getElementById('dlerr');
++    var btn=this, err=document.getElementById('dlerr'), t0=Date.now();
++    function done(ok){ overlay(false); busy=false; btn.disabled=false; if(!ok) err.style.display='block'; }
+     btn.disabled=true; err.style.display='none';
+     overlay(true);
+-    var x=new XMLHttpRequest();
+-    x.open('GET','/reaper_diag.cgi?http_id='+encodeURIComponent('<% nvram_get("http_id"); %>')+'&_='+Date.now(), true);
+-    x.timeout=180000;
+-    x.onreadystatechange=function(){
+-      if(x.readyState!==4) return;
+-      overlay(false); busy=false; btn.disabled=false;
+-      var t=x.responseText||'';
+-      if(x.status===200 && t.length>200 && t.indexOf('ERROR:')!==0){
+-        var a=document.createElement('a');
+-        a.href=URL.createObjectURL(new Blob([t],{type:'text/plain'}));
+-        a.download=fname();
+-        document.body.appendChild(a); a.click();
+-        setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000);
+-      }else{
+-        err.style.display='block';
+-      }
+-    };
+-    x.ontimeout=function(){ overlay(false); busy=false; btn.disabled=false; document.getElementById('dlerr').style.display='block'; };
+-    x.send();
++    req('start', 15000, function(st, t){
++      if(st!==200 || t.indexOf('STARTED')!==0){ done(false); return; }
++      (function poll(){
++        if(Date.now()-t0>300000){ done(false); return; }
++        setTimeout(function(){
++          req('status', 15000, function(st2, t2){
++            if(st2!==200){ done(false); return; }
++            if(t2.indexOf('RUNNING')===0){ poll(); return; }
++            if(t2.indexOf('READY')!==0){ done(false); return; }
++            req('get', 60000, function(st3, t3){
++              if(st3===200 && t3.length>200 && t3.indexOf('ERROR:')!==0){
++                var a=document.createElement('a');
++                a.href=URL.createObjectURL(new Blob([t3],{type:'text/plain'}));
++                a.download=fname();
++                document.body.appendChild(a); a.click();
++                setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },2000);
++                done(true);
++              }else{
++                done(false);
++              }
++            });
++          });
++        }, 2000);
++      })();
++    });
+   });
+ })();
+ </script>
+-- 
+2.25.1
+

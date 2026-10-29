@@ -29,7 +29,8 @@ if [ -z "${WINUSER:-}" ]; then   # honor an explicit override unconditionally
 			WINUSER="$(echo "$_d" | sed -E 's#^/mnt/c/Users/([^/]+)/.*#\1#')"; break
 		done
 	fi
-	# 3) last resort: the profile-folder guess if we had one, else the build box.
+	# 3) last resort: the unvalidated profile-folder guess (empty if there was none;
+	#    export WINUSER to override - no developer's folder name is built in).
 	[ -z "$WINUSER" ] && WINUSER="${_cand:-}"
 fi
 

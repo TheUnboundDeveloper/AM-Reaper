@@ -122,7 +122,8 @@ fi
 # NOTE: the build post-processes .asp during packing (packed != git source),
 # so a source sha-compare gives false positives. Check presence, non-trivial
 # size, and expected content markers (survive the transform) instead.
-critical="index.asp Main_ReaperDash.asp Advanced_VPNStatus.asp Reaper_Warden.asp"
+# 2026-10-24 (page review): Advanced_VPNStatus.asp no longer ships (Reaper_VPNStatus.asp replaces it)
+critical="index.asp Main_ReaperDash.asp Reaper_VPNStatus.asp Reaper_Warden.asp"
 missp=""; smallp=""
 for w in $critical; do
   f="$FS/www/$w"
@@ -131,7 +132,7 @@ for w in $critical; do
 done
 [ -z "$missp" ] && pass "www-present" "critical pages present" || fail "www-present" "missing:$missp"
 [ -z "$smallp" ] && pass "www-size" "critical pages non-trivial size" || fail "www-size" "truncated/empty:$smallp"
-if grep -qa "VPN" "$FS/www/Advanced_VPNStatus.asp" 2>/dev/null && grep -qai "warden" "$FS/www/Reaper_Warden.asp" 2>/dev/null; then
+if grep -qa "VPN" "$FS/www/Reaper_VPNStatus.asp" 2>/dev/null && grep -qai "warden" "$FS/www/Reaper_Warden.asp" 2>/dev/null; then
   pass "www-marker" "key pages contain expected content"
 else warn "www-marker" "expected content markers missing (inspect pages)"; fi
 
@@ -170,6 +171,8 @@ case "$MODEL" in
   GT-BE98_PRO) want_ban=277f468046f99abda5d15181700ee150cd56ab0d258e7495090b8128d08fc08b; ban_file=GT-BE98P_REAPER_Header.png;;
   RT-BE92U)    want_ban=032fc64c249e10391c12041cde1dd6f1d9d9bf8349495f79a09ba36e77d6db72; ban_file=RT-BE92U_REAPER_Header.png;;
   GT-BE19000)  want_ban=f6acf9cbae479656ae6fa4fd37d401f1df583b275ca7d036bec761152b78f9f0; ban_file=GT-BE19000_REAPER_Header.png;;
+  BQ16)        want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE25000_REAPER_Header.png;;   # the ZenWiFi BQ16's art is named by its class, BE25000 (owner, 2026-10-01)
+  BQ16_PRO)    want_ban=4ab6570ef27ae641c356fd078087af0fec4bc6e587d6f1564045f3812c5cd0f1; ban_file=BE30000_REAPER_Header.png;;   # PLACEHOLDER = the BQ16's art under the Pro's stem (2026-10-04); re-checksum when the owner's Pro art lands
   *)           want_ban=""; ban_file="";;
 esac
 BAN="$FS/www/images/$ban_file"
@@ -227,7 +230,7 @@ else pass "banner-refs" "$(printf '%s\n' "$_brefs" | wc -l) referenced banner fi
 # the chip set off the vendor image FOR THE EXACT SKU, never off a sibling and
 # never off the other SKU of the same model.
 case "$MODEL" in
-  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000)  want_dhd="6717a0 6726b0";;
+  RT-BE96U|GT-BE98|GT-BE98_PRO|GT-BE19000|BQ16|BQ16_PRO)  want_dhd="6717a0 6726b0";;   # BQ16 / BQ16_PRO: read off each one's own stock 102_39256 image
   RT-BE86U|RT-BE88U)                        want_dhd="6726b0";;
   *)                                        want_dhd="";;
 esac
@@ -275,7 +278,8 @@ fi
 # rules the port uses -- if they disagree, gaps ship silently).
 if [ -f /home/reaper/reaper_build/_port_protect.sh ]; then
   . /home/reaper/reaper_build/_port_protect.sh
-  CANON_REF=be96u-only
+  # the 102.8 line (Dev-102.8) checks against its own canon, be96u-102.8
+  CANON_REF=${REAPER_CANON_REF:-be96u-only}
   if git -C "$R" rev-parse --verify -q "$CANON_REF" >/dev/null 2>&1; then
     HEADB=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null)
     if [ "$HEADB" = "$CANON_REF" ]; then
@@ -294,12 +298,19 @@ else warn "shared-parity" "_port_protect.sh not deployed -- parity unchecked"; f
 
 # ---- 10. rung-critical patch markers in the STAGED image -------------------
 # verify_markers.txt lines: <staged-path>|<literal>|<min>  or  <staged-path>|!<literal>
+# with an optional 4th field naming the only variant the line applies to
+# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design.
 # One line per field-critical fix -> every model/variant image PROVES it ships.
 MARKF=/home/reaper/reaper_build/verify_markers.txt
 if [ -f "$MARKF" ]; then
   mfail=0; mnum=0
-  while IFS='|' read -r mpath mpat mmin; do
+  while IFS='|' read -r mpath mpat mmin mvar; do
     case "$mpath" in ''|'#'*) continue;; esac
+    case "$mvar" in
+      ''|"$VARIANT") ;;
+      MCP|noMCP) continue;;
+      *) fail "patch-marker" "$mpath: unknown variant field '$mvar'"; mfail=1; continue;;
+    esac
     mnum=$((mnum+1))
     tgt="$FS/$mpath"
     if [ ! -f "$tgt" ]; then fail "patch-marker" "$mpath MISSING from staged fs"; mfail=1; continue; fi
@@ -537,6 +548,18 @@ fi
 # staged, the binary must be a target-arch ELF, and the static file must hold
 # the core rows.
 check_elf usr/bin/reaper_fwsim reaper_fwsim 1
+
+# ---- host-arch: nothing built for the build host may ship in the image --------
+# reaper 2026-10-05 (r11 first-boot image read): the stock router Makefile copied the
+# TOOLCHAIN's own x86-64 libexpat.so into /lib of every image (197 KB no ARM process
+# could load). The install line is gone; this keeps any host-architecture ELF out.
+# (`file` pads the column after the colon when given many names, so the ELF word is matched past any run of blanks)
+_hostelf="$(find "$FS" -type f -size +1k -exec file {} + 2>/dev/null | grep -E ':[[:space:]]*ELF' | grep -v -E 'ARM|aarch64' | sed "s|^$FS/||; s|:.*||" | head -5 | tr '\n' ' ')"
+if [ -z "$_hostelf" ]; then
+  pass "host-arch" "no host-architecture ELF in the staged fs"
+else
+  fail "host-arch" "host-architecture ELF in the image: $_hostelf"
+fi
 if [ -s "$FS/usr/share/reaper/witness.static" ]; then
   _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
   if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then
@@ -568,6 +591,44 @@ else
   fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
 fi
 
+# ---- 28. the Runner 4-frag transmit cap is in the kernel that was built ----
+# 2026-10-14: the Runner's CPU-TX path drops a non-GSO skb with more than 4 page
+# frags (closed bdmf; GT-BE98 field 2026-10-14, IPv6 DoT through a 6in4 tunnel,
+# "skb->nr_frags N exceed max_sg_array 4" 1:1 with eth1 tx_dropped). The fix is
+# a kernel hunk in netif_skb_features() with its sysctl net.core.reaper_tx_sg_max;
+# the kernel is not in the staged rootfs, so verify_markers.txt cannot see it.
+# The sysctl name is a literal in vmlinux, built in the same pass as the image.
+_vml="$P/kernel/linux-4.19/vmlinux"
+if [ -f "$P/kernel/linux-4.19/.config" ] && ! grep -q '^CONFIG_BCM_XRDP=y' "$P/kernel/linux-4.19/.config"; then
+  pass "kernel-sg-cap" "n/a -- this kernel is not a Runner (XRDP) build; the cap is compiled out"
+elif [ ! -f "$_vml" ]; then
+  warn "kernel-sg-cap" "no vmlinux at $_vml -- the Runner 4-frag cap could not be checked"
+elif grep -qa 'reaper_tx_sg_max' "$_vml" && grep -qa 'reaper_tx_sg_linearized' "$_vml"; then
+  pass "kernel-sg-cap" "vmlinux carries net.core.reaper_tx_sg_max + reaper_tx_sg_linearized"
+else
+  fail "kernel-sg-cap" "vmlinux has no reaper_tx_sg_max/reaper_tx_sg_linearized -- the image ships without the Runner 4-frag cap (packets with >4 frags are dropped on Runner ports)"
+fi
+
+# ---- 29. no private key may ship in the image (check_no_private_keys.py) ---
+# 2026-10-17: vendored source trees carry key files, and a model profile can copy
+# one into /rom, where every unit of that model then shares it. No Reaper image
+# carries one (the keys a box uses are generated on the box); this asserts it on
+# every build and every port, over the whole staged rootfs. A binary that only
+# quotes the PEM header (a key converter, a PEM parser) has no body and passes.
+# key-allowlist.txt names the PUBLIC self-test vectors some libraries compile in
+# (GnuTLS), by exact block hash and path; anything else is a FAIL.
+NOKEYS="$_SDIR/check_no_private_keys.py"
+[ -f "$NOKEYS" ] || NOKEYS=/home/reaper/reaper_build/check_no_private_keys.py
+KEYALLOW="$(dirname "$NOKEYS")/key-allowlist.txt"
+if [ ! -f "$NOKEYS" ]; then
+  warn "no-private-keys" "check_no_private_keys.py not found - check skipped"
+elif out=$(python3 "$NOKEYS" ${KEYALLOW:+--allowlist "$KEYALLOW"} "$FS" 2>&1); then
+  pass "no-private-keys" "$(echo "$out" | tail -1)"
+else
+  echo "$out" | sed 's/^/    /'
+  fail "no-private-keys" "private-key material in the staged rootfs (see above) -- a key baked into the image is shared by every unit"
+fi
+
 # ---- 20. static source checks (reaper_static_checks.py) --------------------
 # Promotes this session's by-hand static checks into one gate: (1) *.dict line
 # lockstep, (2) ASCII-only Reaper www pages (the minify step silently strips
@@ -589,6 +650,41 @@ elif out=$(python3 "$STATICCHK" "$RSRC" 2>&1); then
 else
   echo "$out" | sed 's/^/    /'
   fail "static-checks" "a static source check failed (see above)"
+fi
+
+# ---- 30. stray files: editor/backup copies must never ship (2026-10-21) ----
+# The www install copies the whole tree; 31 *.bak.pre-* copies (dicts + pages, 18 MB raw) rode into
+# _r8.._r10 and grew the rootfs past the flash slot - the upgrade then failed with no message.
+_stray=$(find "$FS" \( -name '*.bak*' -o -name '*.orig' -o -name '*.rej' -o -name '*~' -o -name '*.pre-*' -o -name '*.swp' -o -name '.#*' -o -name '*.new' \) 2>/dev/null | head -5)
+if [ -z "$_stray" ]; then
+  pass "stray-files" "no backup/editor copies in the staged fs"
+else
+  fail "stray-files" "backup/editor copies in the image (move them out of the tree): $(echo "$_stray" | sed "s#$FS/##" | tr '\n' ' ')"
+fi
+
+# ---- 31. the rootfs must fit the flash slot (2026-10-21) --------------------
+# RT-BE96U UBI: rootfs volumes of 547 LEBs x 126976 B = 69,455,872 B each, 12 LEBs spare in all;
+# the flasher recreates the inactive slot at the new size and cannot grow it beyond that. _r7 (68.44 MB)
+# flashed; _r10 (73.34 MB) could not. The ceiling is the existing volume size - an image that fits it
+# needs no growth. Other models: warn only (their layout is not measured).
+if [ -f "$IMAGE" ] && command -v dtc >/dev/null 2>&1; then
+  _rfs=$(dtc -I dtb -O dts -q "$IMAGE" 2>/dev/null | awk '/nand_squashfs/ {n=1} n && /data-size/ {gsub(/[<>;]/,"",$3); print strtonum($3); exit}')
+  _cap=69455872
+  if [ -z "$_rfs" ]; then
+    warn "rootfs-size" "could not read the rootfs size from the FIT header"
+  elif [ "$_rfs" -gt "$_cap" ]; then
+    if [ "$MODEL" = RT-BE96U ]; then
+      fail "rootfs-size" "rootfs $_rfs B exceeds the RT-BE96U flash slot ($_cap B): the upgrade would fail silently"
+    else
+      warn "rootfs-size" "rootfs $_rfs B exceeds the RT-BE96U slot size ($_cap B); this model's slot is not measured"
+    fi
+  elif [ "$_rfs" -gt 67000000 ]; then
+    warn "rootfs-size" "rootfs $_rfs B is within $((_cap - _rfs)) B of the flash slot ($_cap B)"
+  else
+    pass "rootfs-size" "rootfs $_rfs B fits the flash slot ($_cap B, $((_cap - _rfs)) B to spare)"
+  fi
+else
+  warn "rootfs-size" "image or dtc missing - rootfs size not checked"
 fi
 
 echo "reaper_verify: $PASSN pass, $WARNN warn, $FAILN FAIL  ($MODEL $VARIANT)"

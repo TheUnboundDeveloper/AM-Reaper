@@ -1,0 +1,508 @@
+From 7579cfb08939fb34f848a32f90bccbd95b2a990a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 18:02:49 -0400
+Subject: [PATCH] rc: Dreadwatch - the threat-domain list counted per feed,
+ name and device; the abuse.ch hosts whitelisted once
+
+The list is emitted as reaper-nx= lines with per-feed sections for
+attribution, plus reaper-hitlog=. /tmp/dreadwatch is created for dnsmasq's
+run user. A generated dns.sh folds the records into /jffs/rwarden/dns.counters
+(total, dropped, per feed, top 100 names and devices) under the fold job's
+lock, keeps the newest 500 in /tmp/rwarden/dns.recent, serves the page's
+stats and resets; the 15-minute fold runs it first. Per-feed download
+metadata in /jffs/rwarden/dns.feeds. The /jffs list copy is renamed dns.nx
+so an older image never replays the new syntax (the legacy dns.cache is
+replayed only when alone and removed once dns.nx exists). Stop clears the
+counters when Warden or the domain switch is off.
+
+Whitelist seed: the four Fastly addresses the abuse.ch feed hosts answer
+from (151.101.2.49, .66.49, .130.49, .194.49 - inside the US country list)
+are added once beside the ipdeny host, only those missing, under their own
+marker, so a deleted entry is never put back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c | 341 +++++++++++++++++++++++++++-----
+ 1 file changed, 296 insertions(+), 45 deletions(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 7ae0951252..9c05b864ee 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -74,6 +74,8 @@
+ #include <ctype.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
++#include <errno.h>
++#include <pwd.h>	/* 2026-10-20: rw_hits_dir - dnsmasq's run user */
+ 
+ #include "rc.h"
+ #include <shared.h>
+@@ -96,8 +98,24 @@
+  * instance reads through conf-file=, its /jffs copy for a boot before the first
+  * update, and the stamp of the last successful list build */
+ #define RW_DNS_CONF  "/tmp/rwarden/dns.conf"
+-#define RW_DNS_CACHE "/jffs/rwarden/dns.cache"
++/* 2026-10-20 (Dreadwatch): the list is now reaper-nx=/host/ lines (dnsmasq counts
++ * their answers, see dnsmasq domain-match.c reaper_hit) in "# feed <ids>" sections.
++ * Its /jffs copy has a NEW name: a firmware older than this one replays the copy
++ * verbatim and its dnsmasq does not know reaper-nx= - refusing to start, i.e. no
++ * DNS at all after a downgrade. The old address= copy (RW_DNS_LEGACY) is still
++ * replayed when it is all there is, and removed once the new copy is written, so
++ * an older firmware simply rebuilds its own. */
++#define RW_DNS_CACHE "/jffs/rwarden/dns.nx"
++#define RW_DNS_LEGACY "/jffs/rwarden/dns.cache"
+ #define RW_DNS_UPD   "/tmp/rwarden/dns.upd"
++#define RW_DNS_FEEDS "/jffs/rwarden/dns.feeds"	/* per feed: id on raw kept last-ok last-try state */
++#define RW_DNS_CTRS  "/jffs/rwarden/dns.counters"	/* banked hits: SINCE TOTAL DROPPED FEED NAME CLIENT */
++#define RW_DNS_REC   "/tmp/rwarden/dns.recent"	/* the last 500 hit records (tmpfs) */
++#define RW_DNSSH     "/tmp/rwarden/dns.sh"	/* fold | stats | reset */
++/* dnsmasq writes the hits after dropping to nobody, and /tmp/rwarden is root 0700,
++ * so the hit file has its own directory, owned by dnsmasq's run user */
++#define RW_HITS_DIR  "/tmp/dreadwatch"
++#define RW_HITS      RW_HITS_DIR "/dns.hits"
+ /* The threat sets' ceiling. Was a bare literal repeated at six ipset-create
+  * sites AND implicitly assumed by the UI, so "surface the count against the
+  * limit" had no single number to quote. One definition, string form for the
+@@ -134,6 +152,18 @@
+  * REAPER-WARDEN-SELF log line names the new DST. */
+ #define RW_GEO_HOST_IP  "51.15.12.186"
+ #define RW_SEED_MARK    REAPER_RW_DIR "/.seed_geohost"
++/* The abuse.ch feed hosts, seeded the same way (owner, 2026-10-20) so no feed,
++ * country list or manual ban can cut the router off from its own threat lists:
++ * urlhaus/threatfox (Dreadwatch hostfiles) and feodotracker (the feodo IP feed)
++ * are all CNAMEs of p2.shared.global.fastly.net, and the USA country list covers
++ * 151.101.0.0/16 - the ipdeny failure above, with US in place of FR. Fastly
++ * answers with one of exactly these four anycast addresses depending on the
++ * resolver's location (resolved 2026-10-20 from ten client subnets; no AAAA).
++ * They are SHARED frontends, so the entry exempts every site Fastly serves from
++ * them - which a feed listing them would have blocked by mistake anyway. Own
++ * marker, so boxes that already took the ipdeny seed still get this one once. */
++#define RW_ABUSECH_IPS  "151.101.2.49 151.101.66.49 151.101.130.49 151.101.194.49"
++#define RW_SEED_MARK_ABUSECH REAPER_RW_DIR "/.seed_abusech"
+ 
+ /* Curated open IP/CIDR feeds. id must be [a-z0-9]; url is emitted only into a
+  * single-quoted curl arg in the generated updater, and is a fixed literal here
+@@ -1309,10 +1339,11 @@ static void rw_gen_update(void)
+ 	}
+ 	/* 2026-10-19 threat domains. URLhaus and ThreatFox publish hostfiles
+ 	 * (`127.0.0.1<TAB>host` lines, `#` comments, on abuse.ch's keyless legacy
+-	 * path); the usable names become `address=/host/` lines - dnsmasq answers
+-	 * NXDOMAIN for the host and its subdomains, the man page's own blocklist
+-	 * idiom - in ONE file every dnsmasq instance includes (conf-file=, see
+-	 * reaper_warden_dns_conf). address= lines are read at start only, so a
++	 * path); the usable names become `reaper-nx=/host/` lines (2026-10-20: was
++	 * address=/host/, the man page's blocklist idiom - same NXDOMAIN for the host
++	 * and its subdomains, plus a marker so dnsmasq counts each answer, see
++	 * rw_gen_dns) in ONE file every dnsmasq instance includes (conf-file=, see
++	 * reaper_warden_dns_conf). These lines are read at start only, so a
+ 	 * CHANGED list restarts dnsmasq once at the end of this run; an unchanged
+ 	 * one does nothing. Keep-last-good on a failed fetch, the /jffs copy
+ 	 * rewritten only when the list changed. Never blocked: the feed and list
+@@ -1321,12 +1352,16 @@ static void rw_gen_update(void)
+ 	 * subdomains. One fputs so the lean test can lift the block whole. */
+ 	fputs(
+ 	  "# ---- threat domains (2026-10-19): URLhaus / ThreatFox hostfiles -> dnsmasq\n"
+-	  "# address=/host/ lines (NXDOMAIN for the host and its subdomains), read by every\n"
+-	  "# dnsmasq instance through conf-file= and restarted only when the list changed.\n"
++	  "# reaper-nx=/host/ lines (NXDOMAIN for the host and its subdomains, each answer\n"
++	  "# counted - Dreadwatch, 2026-10-20) in per-feed sections, read by every dnsmasq\n"
++	  "# instance through conf-file= and restarted only when the list changed.\n"
+ 	  "RW_DNS_CAP=100000\n"
+ 	  "RW_DNSC=" RW_DNS_CONF "\n"
+ 	  "RW_DNSK=" RW_DNS_CACHE "\n"
++	  "RW_DNSL=" RW_DNS_LEGACY "\n"
+ 	  "RW_DNSU=" RW_DNS_UPD "\n"
++	  "RW_DNSF=" RW_DNS_FEEDS "\n"
++	  "RW_DNSH=" RW_HITS "\n"
+ 	  "RW_DNSA=" RW_CACHE "/dnsallow\n"
+ 	  "DNS_CHANGED=0\n"
+ 	  "rw_dom() { tr -d '\\r' | awk '($1==\"127.0.0.1\"||$1==\"0.0.0.0\") && NF>=2 {print tolower($2)}' | grep -E '^[a-z0-9]([a-z0-9-]{0,62}\\.)+[a-z][a-z0-9-]{0,62}$'; }\n"
+@@ -1343,9 +1378,9 @@ static void rw_gen_update(void)
+ 	  "# one feed: fetch and parse into its own .last file, which a failed fetch keeps (so one\n"
+ 	  "# feed's outage never shrinks the list to the other feed); prints the names it contributed\n"
+ 	  "rw_dfeed() {\n"
+-	  "  case \"$DF\" in *\" $1 \"*) ;; *) rm -f $RW_DNSC.$1.last; echo 0; return 0;; esac\n"
+-	  "  if $CURL --max-filesize 4194304 \"$2\" -o $TMP 2>/dev/null; then rw_dom < $TMP > $RW_DNSC.$1.last\n"
+-	  "  else logger -t rwarden \"threat domains: $1 fetch FAILED - keeping the previous download\"; fi\n"
++	  "  case \"$DF\" in *\" $1 \"*) ;; *) rm -f $RW_DNSC.$1.last; echo off > $TMP.st.$1; echo 0; return 0;; esac\n"
++	  "  if $CURL --max-filesize 4194304 \"$2\" -o $TMP 2>/dev/null; then rw_dom < $TMP > $RW_DNSC.$1.last; echo ok > $TMP.st.$1\n"
++	  "  else logger -t rwarden \"threat domains: $1 fetch FAILED - keeping the previous download\"; echo failed > $TMP.st.$1; fi\n"
+ 	  "  [ -s $RW_DNSC.$1.last ] && cat $RW_DNSC.$1.last >> $DN\n"
+ 	  "  if [ -f $RW_DNSC.$1.last ]; then wc -l < $RW_DNSC.$1.last | tr -d ' '; else echo 0; fi\n"
+ 	  "}\n"
+@@ -1357,19 +1392,38 @@ static void rw_gen_update(void)
+ 	  "    sort -u $DN > $DN.u; DA=$(wc -l < $DN.u | tr -d ' ')\n"
+ 	  "    rw_dexempt < $DN.u | head -n $RW_DNS_CAP > $DN.f; DL=$(wc -l < $DN.f | tr -d ' ')\n"
+ 	  "    if [ \"$DL\" -gt 0 ]; then\n"
+-	  "      { echo \"# generated by Warden threat domains - do not edit; NXDOMAIN for each host and its subdomains\"; sed 's|^|address=/|; s|$|/|' $DN.f; } > $RW_DNSC.new\n"
++	  "      # which feeds list each kept name (a name in both is in both); the list is written in\n"
++	  "      # \"# feed <ids>\" sections so the hit collector attributes by exact name from the list itself\n"
++	  "      _U=$RW_DNSC.urlhaus.last; [ -f $_U ] || _U=/dev/null\n"
++	  "      _T=$RW_DNSC.threatfox.last; [ -f $_T ] || _T=/dev/null\n"
++	  "      awk 'FILENAME==ARGV[1]{u[$1]=1;next} FILENAME==ARGV[2]{t[$1]=1;next} {k=\"\"; if($1 in u) k=\"urlhaus\"; if($1 in t) k=(k==\"\") ? \"threatfox\" : k \",threatfox\"; if(k==\"\") k=\"-\"; print k, $1}' $_U $_T $DN.f | sort > $DN.k\n"
++	  "      { echo \"# generated by Dreadwatch (Warden threat domains) - do not edit; NXDOMAIN for each host and its subdomains, each answer counted\"\n"
++	  "        echo \"reaper-hitlog=$RW_DNSH\"\n"
++	  "        awk '{ if ($1 != c) { c = $1; print \"# feed \" c } print \"reaper-nx=/\" $2 \"/\" }' $DN.k; } > $RW_DNSC.new\n"
+ 	  "      if cmp -s $RW_DNSC.new $RW_DNSC 2>/dev/null; then rm -f $RW_DNSC.new\n"
+ 	  "      elif mv -f $RW_DNSC.new $RW_DNSC; then\n"
+-	  "        mkdir -p \"${RW_DNSK%/*}\"; cp -f $RW_DNSC $RW_DNSK.tmp && mv -f $RW_DNSK.tmp $RW_DNSK\n"
++	  "        mkdir -p \"${RW_DNSK%/*}\"; cp -f $RW_DNSC $RW_DNSK.tmp && mv -f $RW_DNSK.tmp $RW_DNSK && rm -f $RW_DNSL\n"
+ 	  "        DNS_CHANGED=1\n"
+ 	  "      fi\n"
+ 	  "      date +%s > $RW_DNSU\n"
+ 	  "      logger -t rwarden \"threat domains: $DL loaded (URLhaus $DU, ThreatFox $DT), $((DA-DL)) exempted or over the cap$([ \"$DNS_CHANGED\" = 1 ] && echo ', list changed - dnsmasq restarts')\"\n"
+ 	  "    else logger -t rwarden \"threat domains: the feeds produced no usable entries - keeping last-good\"; fi\n"
+ 	  "  else logger -t rwarden \"threat domains: nothing fetched and no previous download - keeping last-good\"; fi\n"
+-	  "  rm -f $DN $DN.u $DN.f $TMP.ex\n"
++	  "  # per-feed state for the Dreadwatch page: id, selected, names downloaded, names in the list,\n"
++	  "  # last good fetch, last attempt, state - kept across reboots; a failed fetch keeps last-ok\n"
++	  "  _NOW=$(date +%s)\n"
++	  "  for _id in urlhaus threatfox; do\n"
++	  "    _st=$(cat $TMP.st.$_id 2>/dev/null); [ -n \"$_st\" ] || _st=off\n"
++	  "    _on=0; case \"$DF\" in *\" $_id \"*) _on=1;; esac\n"
++	  "    _raw=0; [ -f $RW_DNSC.$_id.last ] && _raw=$(wc -l < $RW_DNSC.$_id.last | tr -d ' ')\n"
++	  "    if [ -f $DN.k ]; then _kept=$(awk -v id=$_id '{n=split($1,a,\",\"); for(i=1;i<=n;i++) if(a[i]==id) c++} END{print c+0}' $DN.k)\n"
++	  "    else _kept=$(awk -v id=$_id '$1==id{print $4+0; exit}' $RW_DNSF 2>/dev/null); fi\n"
++	  "    _ok=$(awk -v id=$_id '$1==id{print $5+0; exit}' $RW_DNSF 2>/dev/null); [ \"$_st\" = ok ] && _ok=$_NOW\n"
++	  "    echo \"$_id $_on ${_raw:-0} ${_kept:-0} ${_ok:-0} $_NOW $_st\"\n"
++	  "  done > $RW_DNSF.new 2>/dev/null && { mkdir -p \"${RW_DNSF%/*}\"; mv -f $RW_DNSF.new $RW_DNSF; }\n"
++	  "  rm -f $DN $DN.u $DN.f $DN.k $TMP.ex $TMP.st.*\n"
+ 	  "elif [ -f $RW_DNSC ]; then\n"
+-	  "  rm -f $RW_DNSC $RW_DNSC.*.last; DNS_CHANGED=1\n"
++	  "  rm -f $RW_DNSC $RW_DNSC.*.last $RW_DNSF; DNS_CHANGED=1\n"
+ 	  "fi\n", f);
+ 	/* persist every warden set to jffs. NOTE (2026-07-29 audit): `ipset save`
+ 	 * accepts AT MOST ONE setname; handed several it prints "Unknown argument"
+@@ -1484,6 +1538,9 @@ static void rw_gen_fold(void)
+ 	  "TMPCH=" RW_CHTMP ".$$\n"
+ 	  "# not armed -> nothing to bank or reset. This is the normal case at boot and\n"
+ 	  "# right after the C teardown, so it must be a silent no-op.\n"
++	  /* 2026-10-20 Dreadwatch: the domain hits are banked first and independently -
++	   * every early exit below is about the IP counters, not about them */
++	  "[ -f " RW_DNSSH " ] && sh " RW_DNSSH " fold\n"
+ 	  "iptables -nL RW_DROP >/dev/null 2>&1 || exit 0\n"
+ 	  /* Serialize the read -> bank -> zero critical section against stats.sh's
+ 	   * banked+live read: without it a 30 s poll landing mid-checkpoint can read
+@@ -1645,7 +1702,7 @@ static void rw_gen_stats(void)
+ 	  /* 2026-10-19 threat domains: switch, names in the list, the last build
+ 	   * stamp, and whether the running dnsmasq was started with the include */
+ 	  "DNE=$(_nv rwarden_dns); [ \"$DNE\" = 1 ] || DNE=0\n"
+-	  "DN=$(grep -c '^address=' " RW_DNS_CONF " 2>/dev/null); case \"$DN\" in ''|*[!0-9]*) DN=0;; esac\n"
++	  "DN=$(grep -c -e '^reaper-nx=' -e '^address=' " RW_DNS_CONF " 2>/dev/null); case \"$DN\" in ''|*[!0-9]*) DN=0;; esac\n"
+ 	  "DNU=$(cat " RW_DNS_UPD " 2>/dev/null); case \"$DNU\" in ''|*[!0-9]*) DNU=0;; esac\n"
+ 	  "DNL=0; grep -q '^conf-file=" RW_DNS_CONF "' /etc/dnsmasq.conf 2>/dev/null && DNL=1\n"
+ 	  "RI=$(_nv rwarden_reset)\n"
+@@ -1752,6 +1809,136 @@ static void rw_gen_stats(void)
+ 		unlink(RW_STATS ".tmp");
+ }
+ 
++/* 2026-10-20 (Dreadwatch - reviewer: "a control whose effect can't be independently
++ * measured can't be trusted"): dns.sh banks the hits dnsmasq records for the
++ * threat-domain list (dnsmasq domain-match.c reaper_hit: one line per NXDOMAIN
++ * answered from a reaper-nx= entry) and reports them to the Dreadwatch page.
++ * fold - from fold.sh's 15-minute checkpoint and ahead of every report; stats -
++ * httpd's dns_status; reset - the page's Reset. Own lock (dns.lock), so it never
++ * waits on, or holds up, the Warden counter checkpoint. One fputs so the lean
++ * test can lift it whole. */
++static void rw_gen_dns(void)
++{
++	FILE *f = fopen(RW_DNSSH ".tmp", "w");
++	if (!f) return;
++	fputs(
++	  "#!/bin/sh\n"
++	  REAPER_NV_HELPER
++	  "# ---- Dreadwatch hit collector (generated by start_rwarden - do not edit)\n"
++	  "HF=" RW_HITS "\n"
++	  "CONF=" RW_DNS_CONF "\n"
++	  "DCTR=" RW_DNS_CTRS "\n"
++	  "FEEDS=" RW_DNS_FEEDS "\n"
++	  "REC=" RW_DNS_REC "\n"
++	  "UPD=" RW_DNS_UPD "\n"
++	  "LOCK=/tmp/rwarden/dns.lock\n"
++	  "# where the counters live: /jffs unless the operator turned statistics saving off (rwarden_stats_save)\n"
++	  "[ \"$(_nv rwarden_stats_save)\" = 0 ] && DCTR=/tmp/rwarden/dns.counters\n"
++	  "# a hit record is \"<epoch> <client> <listed domain>\" (dnsmasq reaper_hit); the file is written by\n"
++	  "# dnsmasq's unprivileged user, so anything else is dropped here, never trusted\n"
++	  "_dvalid() { awk 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9A-Fa-f.:-]+$/ && $3 ~ /^[a-z0-9.-]+$/'; }\n"
++	  "# bank the recorded hits: TOTAL, per FEED (from the list's \"# feed <ids>\" sections - a name in two\n"
++	  "# feeds counts for both), per NAME and per CLIENT (the 100 largest of each kept), DROPPED (records\n"
++	  "# dnsmasq could not write: its 50-a-second / 256 KB bounds); the raw records go to a 500-line tmpfs log.\n"
++	  "# Writes /jffs only when there is something new, or the Warden retention interval has passed.\n"
++	  "dfold() {\n"
++	  "  exec 8>$LOCK; flock -w 5 8 2>/dev/null\n"
++	  "  NOW=$(date +%s)\n"
++	  "  mkdir -p \"${DCTR%/*}\" 2>/dev/null\n"
++	  "  case \"$(_nv rwarden_reset)\" in 24h) IV=86400;; 7d) IV=604800;; 30d) IV=2592000;; 90d) IV=7776000;; *) IV=0;; esac\n"
++	  "  SINCE=$(awk '$1==\"SINCE\"{print $2+0; exit}' \"$DCTR\" 2>/dev/null); case \"$SINCE\" in ''|0|*[!0-9]*) SINCE=$NOW;; esac\n"
++	  "  if [ \"$IV\" -gt 0 ] && [ $((NOW-SINCE)) -ge \"$IV\" ]; then\n"
++	  "    echo \"SINCE $NOW\" > \"$DCTR.tmp\" && mv -f \"$DCTR.tmp\" \"$DCTR\"; SINCE=$NOW\n"
++	  "    logger -t rwarden \"Dreadwatch counters reset - retention interval reached\"\n"
++	  "  fi\n"
++	  "  if [ ! -s \"$HF\" ]; then\n"
++	  "    [ -f \"$DCTR\" ] || echo \"SINCE $NOW\" > \"$DCTR\" 2>/dev/null\n"
++	  "    return 0\n"
++	  "  fi\n"
++	  "  W=/tmp/rwarden/dns.work.$$\n"
++	  "  mv -f \"$HF\" \"$W\" 2>/dev/null || return 0\n"
++	  "  _D=$(awk '$1==\"#\" && $2==\"dropped\" && $3 ~ /^[0-9]+$/ {s+=$3} END{print s+0}' \"$W\")\n"
++	  "  _dvalid < \"$W\" > \"$W.v\"\n"
++	  "  _O=$DCTR; [ -f \"$_O\" ] || _O=/dev/null\n"
++	  "  _C=$CONF; [ -f \"$_C\" ] || _C=/dev/null\n"
++	  "  awk -v SINCE=\"$SINCE\" -v DR=\"$_D\" '\n"
++	  "    FILENAME==ARGV[1] { if ($1==\"TOTAL\") tot=$2+0; else if ($1==\"DROPPED\") dr=$2+0; else if ($1==\"FEED\") fe[$2]=$3+0\n"
++	  "        else if ($1==\"NAME\") { nn[$2]=$3+0; nf[$2]=$4; nl[$2]=$5+0 } else if ($1==\"CLIENT\") { cn[$2]=$3+0; cl[$2]=$4+0 }\n"
++	  "        next }\n"
++	  "    FILENAME==ARGV[2] { h[$3]++; hl[$3]=$1; hc[$2]++; hcl[$2]=$1; nt++; next }\n"
++	  "    FILENAME==ARGV[3] { if ($1==\"#\" && $2==\"feed\") { cur=$3; next }\n"
++	  "        if (index($0, \"reaper-nx=/\")==1) { d=substr($0, 12); sub(/\\/$/, \"\", d); if (d in h) lf[d]=cur }\n"
++	  "        next }\n"
++	  "    END {\n"
++	  "      print \"SINCE\", SINCE; print \"TOTAL\", tot+nt; print \"DROPPED\", dr+DR\n"
++	  "      for (d in h) { f = (d in lf) ? lf[d] : ((d in nf) ? nf[d] : \"-\"); n = split(f, a, \",\")\n"
++	  "        for (i = 1; i <= n; i++) fe[a[i]] += h[d]\n"
++	  "        nn[d] += h[d]; nf[d] = f; nl[d] = hl[d] }\n"
++	  "      for (k in fe) print \"FEED\", k, fe[k]\n"
++	  "      for (d in nn) print \"NAME\", d, nn[d], nf[d], nl[d]\n"
++	  "      for (c in hc) { cn[c] += hc[c]; cl[c] = hcl[c] }\n"
++	  "      for (c in cn) print \"CLIENT\", c, cn[c], cl[c]\n"
++	  "    }' \"$_O\" \"$W.v\" \"$_C\" > \"$W.n\"\n"
++	  "  { grep -v -e '^NAME ' -e '^CLIENT ' \"$W.n\"; grep '^NAME ' \"$W.n\" | sort -k3,3nr | head -n 100; grep '^CLIENT ' \"$W.n\" | sort -k3,3nr | head -n 100; } > \"$DCTR.tmp\" 2>/dev/null && mv -f \"$DCTR.tmp\" \"$DCTR\"\n"
++	  "  { cat \"$REC\" 2>/dev/null; cat \"$W.v\"; } | tail -n 500 > \"$REC.tmp\" && mv -f \"$REC.tmp\" \"$REC\"\n"
++	  "  rm -f \"$W\" \"$W.v\" \"$W.n\"\n"
++	  "}\n"
++	  "# the page's JSON: state, the list, per-feed metadata, the counters, the last 100 blocked lookups\n"
++	  "# (newest first) and the coverage hints. Every value is a number or a charset-checked token.\n"
++	  "dstats() {\n"
++	  "  dfold\n"
++	  "  EN=0; [ \"$(_nv rwarden_enable)\" = 1 ] && [ \"$(_nv rwarden_dns)\" = 1 ] && EN=1\n"
++	  "  LIVE=0; grep -q \"^conf-file=$CONF\" /etc/dnsmasq.conf 2>/dev/null && LIVE=1\n"
++	  "  HL=0; grep -q '^reaper-hitlog=' \"$CONF\" 2>/dev/null && HL=1\n"
++	  "  N=$(grep -c -e '^reaper-nx=' -e '^address=' \"$CONF\" 2>/dev/null); case \"$N\" in ''|*[!0-9]*) N=0;; esac\n"
++	  "  U=$(cat \"$UPD\" 2>/dev/null); case \"$U\" in ''|*[!0-9]*) U=0;; esac\n"
++	  "  P=$(wc -l < \"$HF\" 2>/dev/null | tr -d ' '); case \"$P\" in ''|*[!0-9]*) P=0;; esac\n"
++	  "  DD=0; [ \"$(_nv dnsfilter_enable_x)\" = 1 ] && [ \"$(_nv dnsfilter_mode)\" != 0 ] && DD=1\n"
++	  "  CAN=0; grep -q '^address=/use-application-dns.net/' /etc/dnsmasq.conf 2>/dev/null && CAN=1\n"
++	  "  printf '{\"ok\":1,\"enable\":%d,\"live\":%d,\"hitlog\":%d,\"names\":%d,\"upd\":%d,\"pending\":%d,\"director\":%d,\"canary\":%d,\"feeds\":[' \\\n"
++	  "    \"$EN\" \"$LIVE\" \"$HL\" \"$N\" \"$U\" \"$P\" \"$DD\" \"$CAN\"\n"
++	  "  awk 'NF>=7 && $1 ~ /^[a-z0-9]+$/ && $7 ~ /^[a-z]+$/ { if (n++) printf \",\"; printf \"{\\\"id\\\":\\\"%s\\\",\\\"on\\\":%d,\\\"raw\\\":%d,\\\"kept\\\":%d,\\\"ok\\\":%d,\\\"try\\\":%d,\\\"st\\\":\\\"%s\\\"}\", $1, $2, $3, $4, $5, $6, $7 }' \"$FEEDS\" 2>/dev/null\n"
++	  "  printf '],'\n"
++	  "  _O=$DCTR; [ -f \"$_O\" ] || _O=/dev/null\n"
++	  "  _R=$REC; [ -f \"$_R\" ] || _R=/dev/null\n"
++	  "  awk 'FILENAME==ARGV[1] { if ($1==\"SINCE\") s=$2+0; else if ($1==\"TOTAL\") t=$2+0; else if ($1==\"DROPPED\") d=$2+0\n"
++	  "        else if ($1==\"FEED\" && $2 ~ /^[a-z0-9-]+$/) fc[++nf]=sprintf(\"{\\\"id\\\":\\\"%s\\\",\\\"n\\\":%d}\", $2, $3)\n"
++	  "        else if ($1==\"NAME\" && nn<20 && $2 ~ /^[a-z0-9.-]+$/ && $4 ~ /^[a-z0-9,-]+$/) nm[++nn]=sprintf(\"{\\\"d\\\":\\\"%s\\\",\\\"n\\\":%d,\\\"f\\\":\\\"%s\\\",\\\"t\\\":%d}\", $2, $3, $4, $5)\n"
++	  "        else if ($1==\"CLIENT\" && nc<20 && $2 ~ /^[0-9A-Fa-f.:-]+$/) cl[++nc]=sprintf(\"{\\\"ip\\\":\\\"%s\\\",\\\"n\\\":%d,\\\"t\\\":%d}\", $2, $3, $4)\n"
++	  "        next }\n"
++	  "      { r[++nr]=$0 }\n"
++	  "      END {\n"
++	  "        printf \"\\\"since\\\":%d,\\\"total\\\":%d,\\\"dropped\\\":%d,\\\"fcount\\\":[\", s, t, d\n"
++	  "        for (i = 1; i <= nf; i++) printf \"%s%s\", (i > 1 ? \",\" : \"\"), fc[i]\n"
++	  "        printf \"],\\\"top\\\":[\"\n"
++	  "        for (i = 1; i <= nn; i++) printf \"%s%s\", (i > 1 ? \",\" : \"\"), nm[i]\n"
++	  "        printf \"],\\\"clients\\\":[\"\n"
++	  "        for (i = 1; i <= nc; i++) printf \"%s%s\", (i > 1 ? \",\" : \"\"), cl[i]\n"
++	  "        printf \"],\\\"recent\\\":[\"\n"
++	  "        for (i = nr; i >= 1 && i > nr - 100; i--) { split(r[i], x, \" \"); printf \"%s{\\\"t\\\":%d,\\\"ip\\\":\\\"%s\\\",\\\"d\\\":\\\"%s\\\"}\", (i < nr ? \",\" : \"\"), x[1], x[2], x[3] }\n"
++	  "        printf \"]}\\n\"\n"
++	  "      }' \"$_O\" \"$_R\"\n"
++	  "}\n"
++	  "dreset() {\n"
++	  "  exec 8>$LOCK; flock -w 5 8 2>/dev/null\n"
++	  "  mkdir -p \"${DCTR%/*}\" 2>/dev/null\n"
++	  "  echo \"SINCE $(date +%s)\" > \"$DCTR.tmp\" && mv -f \"$DCTR.tmp\" \"$DCTR\"\n"
++	  "  rm -f \"$REC\" \"$HF\"\n"
++	  "  logger -t rwarden \"Dreadwatch counters reset by the operator\"\n"
++	  "}\n"
++	  "case \"$1\" in\n"
++	  "  fold) dfold;;\n"
++	  "  stats) dstats;;\n"
++	  "  reset) dreset;;\n"
++	  "esac\n"
++	  "exit 0\n"
++	  , f);
++	fclose(f);
++	chmod(RW_DNSSH ".tmp", 0700);
++	if (rename(RW_DNSSH ".tmp", RW_DNSSH) != 0)
++		unlink(RW_DNSSH ".tmp");
++}
++
+ void stop_rwarden(void)
+ {
+ 	/* reaper 2026-08-11 field fix: bank the live packet counters BEFORE the
+@@ -1785,6 +1972,7 @@ void stop_rwarden(void)
+ 	unlink(RW_UPDATE);
+ 	unlink(RW_STATS);
+ 	unlink(RW_FOLD);
++	unlink(RW_DNSSH);
+ 	/* reaper v2.2.9 field fix (block count did not survive reboot/reflash): reset the
+ 	   cumulative store ONLY on a genuine user-DISABLE. stop_rwarden() is also called
+ 	   by start_rwarden() (the stop-then-start idiom) on every boot/restart AND by
+@@ -1797,45 +1985,81 @@ void stop_rwarden(void)
+ 		unlink(RW_BASE);
+ 		unlink(RW_CTRS);
+ 	}
++	/* 2026-10-20 Dreadwatch: its counters follow its own switch the same way
++	 * (Warden off, or the domain list off = a genuine disable) */
++	if (!nvram_match("rwarden_enable", "1") || !nvram_match("rwarden_dns", "1")) {
++		unlink(RW_DNS_CTRS);
++		unlink(RW_DNS_REC);
++		unlink(RW_HITS);
++	}
+ }
+ 
+-/* Put the country-list host into the whitelist ONCE (see RW_GEO_HOST_IP).
+- * Owner-directed exception to "an update never rewrites a user setting": it
+- * only ADDS one entry, never removes or reorders anything, and the marker is
+- * written whether or not the entry was added - so a user who deletes it later
+- * keeps it deleted. Runs only after the nvram -> /jffs list migration has
+- * committed: before that, the allow file is about to be overwritten by the
+- * migration and a seed written now would be lost with the marker already set.
+- * Runs whether or not Warden is enabled, so the entry is on the page before the
+- * user first arms it. */
+-static void rw_seed_allow(void)
++/* 1 when the whitelist already holds ip (bare or /32), 0 when not, -1 on OOM. */
++static int rw_seed_has(const char *list, const char *ip)
+ {
+-	char *cur, *dup, *nv, *tok, *save = NULL;
++	char *dup, *tok, *save = NULL;
++	size_t l = strlen(ip);
+ 	int have = 0;
+-	size_t n;
+ 
+-	if (!f_exists(REAPER_RW_DIR "/.committed") || f_exists(RW_SEED_MARK))
++	if ((dup = strdup(list)) == NULL)
++		return -1;
++	for (tok = strtok_r(dup, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save))
++		if (!strncmp(tok, ip, l) && (!tok[l] || !strcmp(tok + l, "/32"))) { have = 1; break; }
++	free(dup);
++	return have;
++}
++
++/* Put the space-separated addresses in ips into the whitelist ONCE (see
++ * RW_GEO_HOST_IP, RW_ABUSECH_IPS). Owner-directed exception to "an update never
++ * rewrites a user setting": it only ADDS the missing entries, never removes or
++ * reorders anything, and the marker is written whether or not anything was
++ * added - so a user who deletes an entry later keeps it deleted. */
++static void rw_seed_one(const char *ips, const char *mark, const char *what)
++{
++	char *cur, *nv, ip[48], added[160] = "";
++	const char *s, *e;
++	size_t l, n;
++	int h;
++
++	if (f_exists(mark))
+ 		return;
+ 	if ((cur = rw_list_get("allow")) == NULL)
+ 		return;
+-	if ((dup = strdup(cur)) != NULL) {
+-		for (tok = strtok_r(dup, " ,<>", &save); tok; tok = strtok_r(NULL, " ,<>", &save))
+-			if (!strcmp(tok, RW_GEO_HOST_IP) || !strcmp(tok, RW_GEO_HOST_IP "/32")) { have = 1; break; }
+-		free(dup);
+-	} else {
+-		free(cur);
+-		return;
+-	}
+-	if (!have) {
+-		n = strlen(cur) + sizeof(" " RW_GEO_HOST_IP);
++	for (s = ips; *s; s = e) {
++		while (*s == ' ') s++;
++		for (e = s; *e && *e != ' '; e++) ;
++		if ((l = e - s) == 0 || l >= sizeof(ip))
++			continue;
++		memcpy(ip, s, l);
++		ip[l] = '\0';
++		if ((h = rw_seed_has(cur, ip)) < 0) { free(cur); return; }
++		if (h)
++			continue;
++		n = strlen(cur) + l + 2;
+ 		if ((nv = malloc(n)) == NULL) { free(cur); return; }
+-		snprintf(nv, n, "%s%s%s", cur, (*cur && cur[strlen(cur) - 1] != ' ') ? " " : "", RW_GEO_HOST_IP);
+-		if (rw_list_set("allow", nv) != 0) { free(nv); free(cur); return; }	/* retry next start */
+-		free(nv);
+-		logmessage("rwarden", "whitelist: added the country-list host www.ipdeny.com (%s) once - remove it on the Warden page if not wanted", RW_GEO_HOST_IP);
++		snprintf(nv, n, "%s%s%s", cur, (*cur && cur[strlen(cur) - 1] != ' ') ? " " : "", ip);
++		free(cur);
++		cur = nv;
++		n = strlen(added);
++		snprintf(added + n, sizeof(added) - n, "%s%s", n ? " " : "", ip);
+ 	}
++	if (*added && rw_list_set("allow", cur) != 0) { free(cur); return; }	/* retry next start */
+ 	free(cur);
+-	rjf_set(RW_SEED_MARK, "1", "rwarden");
++	if (*added)
++		logmessage("rwarden", "whitelist: added %s (%s) once - remove it on the Warden page if not wanted", what, added);
++	rjf_set(mark, "1", "rwarden");
++}
++
++/* Runs only after the nvram -> /jffs list migration has committed: before that,
++ * the allow file is about to be overwritten by the migration and a seed written
++ * now would be lost with the marker already set. Runs whether or not Warden is
++ * enabled, so the entries are on the page before the user first arms it. */
++static void rw_seed_allow(void)
++{
++	if (!f_exists(REAPER_RW_DIR "/.committed"))
++		return;
++	rw_seed_one(RW_GEO_HOST_IP, RW_SEED_MARK, "the country-list host www.ipdeny.com");
++	rw_seed_one(RW_ABUSECH_IPS, RW_SEED_MARK_ABUSECH, "the abuse.ch feed hosts (URLhaus, ThreatFox, Feodo Tracker)");
+ }
+ 
+ /* 2026-10-19 threat domains. The include every dnsmasq instance is handed, or
+@@ -1844,18 +2068,44 @@ static void rw_seed_allow(void)
+  * update): a missing conf-file= include is fatal to dnsmasq, and only the main
+  * instance has a guard that drops a vanished path - the SDN instances have
+  * none. Exported for rc/services.c and rc/sdn.c. */
++/* 2026-10-20 Dreadwatch: the directory dnsmasq writes its hit records into. dnsmasq
++ * has dropped to its run user (nobody) when it answers, and /tmp/rwarden is root
++ * 0700, so the records get their own directory, created here (as root, before the
++ * instance starts) and owned by that user. Anything else already holding the name
++ * is left alone: dnsmasq opens the file O_NOFOLLOW and simply records nothing. */
++static void rw_hits_dir(void)
++{
++	struct passwd *pw = getpwnam("nobody");
++	uid_t u = pw ? pw->pw_uid : 65534;
++	gid_t g = pw ? pw->pw_gid : 65534;
++	struct stat st;
++
++	if (mkdir(RW_HITS_DIR, 0700) != 0 && errno != EEXIST)
++		return;
++	if (lstat(RW_HITS_DIR, &st) != 0 || !S_ISDIR(st.st_mode))
++		return;
++	if ((st.st_uid != u || st.st_gid != g) && chown(RW_HITS_DIR, u, g) != 0)
++		return;
++	if ((st.st_mode & 07777) != 0700)
++		chmod(RW_HITS_DIR, 0700);
++}
++
+ const char *reaper_warden_dns_conf(void)
+ {
+ 	if (!nvram_match("rwarden_enable", "1") || !nvram_match("rwarden_dns", "1"))
+ 		return NULL;
+ 	if (!f_exists(RW_DNS_CONF)) {
+-		if (!f_exists(RW_DNS_CACHE))
++		/* the counted copy, or - before the first update on this firmware -
++		 * the plain address= one an older firmware left */
++		const char *k = f_exists(RW_DNS_CACHE) ? RW_DNS_CACHE : f_exists(RW_DNS_LEGACY) ? RW_DNS_LEGACY : NULL;
++		if (!k)
+ 			return NULL;
+ 		reaper_secure_dir(RW_DIR, 0700);
+-		eval("cp", "-f", RW_DNS_CACHE, RW_DNS_CONF);
++		eval("cp", "-f", (char *)k, RW_DNS_CONF);
+ 		if (!f_exists(RW_DNS_CONF))
+ 			return NULL;
+ 	}
++	rw_hits_dir();
+ 	return RW_DNS_CONF;
+ }
+ 
+@@ -1911,6 +2161,7 @@ void start_rwarden(void)
+ 	rw_gen_update();
+ 	rw_gen_stats();
+ 	rw_gen_fold();
++	rw_gen_dns();		/* 2026-10-20: Dreadwatch hit collector */
+ 	chmod(RW_APPLY, 0700);
+ 	chmod(RW_UPDATE, 0700);
+ 	chmod(RW_STATS, 0700);
+-- 
+2.25.1
+

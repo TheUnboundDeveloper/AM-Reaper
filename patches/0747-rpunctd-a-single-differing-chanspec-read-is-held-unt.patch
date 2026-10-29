@@ -1,0 +1,179 @@
+From 070a88c21234801e0f07d2d50c8fc79c3de181d1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 08:41:25 -0400
+Subject: [PATCH] rpunctd: a single differing chanspec read is held until a
+ second read agrees
+
+read_geometry() took one differing chanspec iovar read as a channel change
+(RP_TICK 10 s). On the owner RT-BE96U that produced six false "below 80 MHz" /
+"monitoring afresh" resets on wl1 over two days with no CSA and no client
+drop, each one throwing away the puncturing baseline.
+
+pc_cs_confirm() in punct_core returns SAME / HOLD / ACCEPT: a differing read is
+held without moving raw_cs, the held tick arms no window and skips evaluation,
+and only a second read that agrees is accepted. One LOG_INFO line per held
+read. test_punct_dyn.py 82/82.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rpunctd/punct_core.c | 12 +++++++++++
+ release/src/router/rpunctd/punct_core.h |  8 +++++++
+ release/src/router/rpunctd/punct_host.c | 10 +++++++++
+ release/src/router/rpunctd/rpunctd.c    | 28 +++++++++++++++++++++----
+ 4 files changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/rpunctd/punct_core.c b/release/src/router/rpunctd/punct_core.c
+index efd779e43c..5814076957 100644
+--- a/release/src/router/rpunctd/punct_core.c
++++ b/release/src/router/rpunctd/punct_core.c
+@@ -753,3 +753,15 @@ void pc_block_scans(pc_radio_t *r)
+ 	r->tier = PC_TIER_PASSIVE;
+ 	r->scan_pending = 0;
+ }
++
++/* reaper 2026-10-03: a differing chanspec read is held until the next read agrees (see the
++ * header). old/new/old is a scan artefact and changes nothing; old/new/new is a channel change,
++ * taken one read late; old/a/b holds b in turn. */
++enum pc_cs pc_cs_confirm(const char *cur, const char *seen, char *pend, int plen)
++{
++	if (!seen[0]) return PC_CS_SAME;	/* an empty read says nothing: never confirms an empty pend */
++	if (!strcmp(seen, cur)) { pend[0] = 0; return PC_CS_SAME; }
++	if (!cur[0] || !strcmp(seen, pend)) { pend[0] = 0; return PC_CS_ACCEPT; }
++	snprintf(pend, plen, "%s", seen);
++	return PC_CS_HOLD;
++}
+diff --git a/release/src/router/rpunctd/punct_core.h b/release/src/router/rpunctd/punct_core.h
+index c62ef7dc25..30931fd6f9 100644
+--- a/release/src/router/rpunctd/punct_core.h
++++ b/release/src/router/rpunctd/punct_core.h
+@@ -157,6 +157,14 @@ int pc_report_proof(pc_radio_t *r, int after_restore, int compared, int worse, i
+ /* v3.3.1 r6: a confirmation scan lost a client - no more scans on this radio (Passive from now) */
+ void pc_block_scans(pc_radio_t *r);
+ 
++/* reaper 2026-10-03: is a chanspec read the radio's channel? The `chanspec` iovar answers with
++ * a scan or background-DFS channel while one runs (owner RT-BE96U, six one-tick reads on wl1 in
++ * 13 h, no CSA), so a differing read counts only when the next read agrees. `cur` is the accepted
++ * chanspec ("" = none yet: the first read is taken as is); `pend` holds a differing read until
++ * the next one, and is cleared by every answer but HOLD. */
++enum pc_cs { PC_CS_SAME = 0, PC_CS_HOLD, PC_CS_ACCEPT };
++enum pc_cs pc_cs_confirm(const char *cur, const char *seen, char *pend, int plen);
++
+ /* helpers shared with the tests */
+ int pc_legal_masks(int width, int primary, unsigned out[], int max);
+ int pc_score(const pc_radio_t *r, unsigned mask);
+diff --git a/release/src/router/rpunctd/punct_host.c b/release/src/router/rpunctd/punct_host.c
+index 4154fe82fe..9d311118c0 100644
+--- a/release/src/router/rpunctd/punct_host.c
++++ b/release/src/router/rpunctd/punct_host.c
+@@ -17,6 +17,8 @@
+  *   lost <now>                                               the slice is no longer on the radio
+  *   legal <width> <primary>                                  print the legal bitmaps
+  *   score <mask>                                             print pc_score at the last state
++ *   cs <chanspec>                                            one chanspec read through pc_cs_confirm:
++ *                                                            prints "cs <read> SAME|HOLD|ACCEPT <accepted>"
+  * Every decision that is not NONE prints "<now> <ACTION> <mask> <text>"; state
+  * changes print "<now> STATE <name>".
+  */
+@@ -31,6 +33,7 @@ int main(int argc, char **argv)
+ 	pc_radio_t r;
+ 	pc_decision_t d;
+ 	char line[512], w1[16], w2[16];
++	char cs_cur[32] = "", cs_pend[32] = "", cs_read[32];
+ 	enum pc_state last = PC_DISABLED;
+ 	long now;
+ 
+@@ -84,6 +87,13 @@ int main(int argc, char **argv)
+ 		} else if (!strncmp(line, "lost ", 5)) {
+ 			sscanf(line + 5, "%ld", &now);
+ 			pc_report_lost(&r, now);
++		} else if (!strncmp(line, "cs ", 3)) {
++			enum pc_cs v;
++			cs_read[0] = 0;
++			sscanf(line + 3, "%31s", cs_read);
++			v = pc_cs_confirm(cs_cur, cs_read, cs_pend, sizeof(cs_pend));
++			if (v == PC_CS_ACCEPT) snprintf(cs_cur, sizeof(cs_cur), "%s", cs_read);
++			printf("cs %s %s %s\n", cs_read, v == PC_CS_SAME ? "SAME" : v == PC_CS_HOLD ? "HOLD" : "ACCEPT", cs_cur);
+ 		} else if (!strncmp(line, "legal ", 6)) {
+ 			int wd, p, n, i; unsigned m[PC_CAND_MAX];
+ 			sscanf(line + 6, "%d %d", &wd, &p);
+diff --git a/release/src/router/rpunctd/rpunctd.c b/release/src/router/rpunctd/rpunctd.c
+index d34a35030f..d2f669b4b1 100644
+--- a/release/src/router/rpunctd/rpunctd.c
++++ b/release/src/router/rpunctd/rpunctd.c
+@@ -124,6 +124,8 @@ struct radio {
+ 	pc_radio_t pc;
+ 	char cs[32];		/* live chanspec as the driver prints it */
+ 	int raw_cs;		/* the driver's raw chanspec at the last geometry read (an iovar, no fork) */
++	char cs_pend[32];	/* a differing read held until the next read agrees (pc_cs_confirm) */
++	int cs_held;		/* this tick's read was held: no window on a channel the radio may not be on */
+ 	int width, start, is6g;
+ 	int armed, misses, geom_ok;
+ 	int seed_pending;	/* a geometry change waits for the applier to finish before the seed */
+@@ -257,12 +259,28 @@ static int read_geometry(struct radio *r, long now, int *changed)
+ 	int ch, width = 0, range2 = 0, start, primary, raw = 0;
+ 
+ 	*changed = 0;
++	r->cs_held = 0;
+ 	if (wl_iovar_getint(r->ifn, "chanspec", &raw) != 0) raw = 0;
+-	if (raw && raw == r->raw_cs && r->cs[0]) return 1;
++	if (raw && raw == r->raw_cs && r->cs[0]) { r->cs_pend[0] = 0; return 1; }	/* back home: a held read is void */
+ 	if (!wl_line(r->ifn, "chanspec", buf, sizeof(buf))) return 0;
+ 	buf[strcspn(buf, " \t")] = 0;
++	/* reaper 2026-10-03: one differing read is not a channel change - a scan or background
++	 * DFS check answers this iovar for one tick, and taking it threw the neighbour inventory,
++	 * noise baseline and proof away ~6x a day with "monitoring afresh". raw_cs stays on the
++	 * accepted channel while a read is held, so the next tick reads the printed form again. */
++	switch (pc_cs_confirm(r->cs, buf, r->cs_pend, sizeof(r->cs_pend))) {
++	case PC_CS_SAME:
++		r->raw_cs = raw;
++		return 1;	/* same channel, whatever its width: nothing to re-read */
++	case PC_CS_HOLD:
++		r->cs_held = 1;
++		syslog(LOG_INFO, "rpunctd: %s read %s once while on %s - waiting for a second read before monitoring afresh",
++			r->ifn, buf, r->cs);
++		return 1;
++	case PC_CS_ACCEPT:
++		break;
++	}
+ 	r->raw_cs = raw;
+-	if (!strcmp(buf, r->cs)) return 1;	/* same channel, whatever its width: nothing to re-read */
+ 	*changed = 1;
+ 	strlcpy(r->cs, buf, sizeof(r->cs));
+ 	r->n_nb = 0; memset(r->nb_rssi, 0, sizeof(r->nb_rssi));	/* the inventory belonged to the old channel */
+@@ -1110,6 +1128,7 @@ static int sweep_config(void)
+ 			}
+ 			pc_init(&r->pc, pre, tier, gain, hold);
+ 			r->cs[0] = 0; r->raw_cs = 0; r->geom_ok = 0; r->armed = 0; r->misses = 0; r->seed_pending = 0;
++			r->cs_pend[0] = 0; r->cs_held = 0;
+ 			r->last_logged[0] = 0; r->last_log_s = 0;
+ 			/* r6: a saved setting retries what an earlier read gave up on */
+ 			r->phy_warned = 0; r->phy_ok = 0; r->imp_logged = 0;
+@@ -1232,7 +1251,7 @@ int main(int argc, char **argv)
+ 			}
+ 			for (u = 0; u < RP_MAXU; u++) {
+ 				R[u].armed = 0;
+-				if (q == 2) { R[u].raw_cs = 0; R[u].cs[0] = 0; }	/* re-read the channel after */
++				if (q == 2) { R[u].raw_cs = 0; R[u].cs[0] = 0; R[u].cs_pend[0] = 0; }	/* re-read the channel after (taken as is) */
+ 			}
+ 			sleep(2);
+ 			continue;
+@@ -1256,6 +1275,7 @@ int main(int argc, char **argv)
+ 				} else
+ 					syslog(LOG_NOTICE, "rpunctd: %s on %s: below 80 MHz, nothing to puncture", r->ifn, r->cs);
+ 			}
++			if (r->cs_held) { r->armed = 0; continue; }	/* the radio is elsewhere this instant */
+ 			if (r->geom_ok && r->seed_pending && seed_from_driver(r))
+ 				r->seed_pending = 0;
+ 			if (r->geom_ok) arm_window(r);
+@@ -1268,7 +1288,7 @@ int main(int argc, char **argv)
+ 			struct radio *r = &R[u];
+ 			pc_sample_t s;
+ 			pc_decision_t d;
+-			if (!r->dyn || !r->geom_ok) continue;
++			if (!r->dyn || !r->geom_ok || r->cs_held) continue;	/* a held read: no window, no evaluation, no miss */
+ 			if (!read_window(r, &s)) { s.valid = 0; r->misses++; }
+ 			else r->misses = 0;
+ 			/* v3.3.1: the second baseline restart after an interference-mitigation change */
+-- 
+2.25.1
+

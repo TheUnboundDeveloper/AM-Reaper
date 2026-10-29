@@ -1,0 +1,56 @@
+From 79d8a6e9eeb5eb1a2698c550551f85742b12db98 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 17 Oct 2026 19:18:23 -0400
+Subject: [PATCH] www: the guest portal passcode stops at 15 characters
+
+Field: a guest-network portal passcode of 16 or more characters failed every
+sign-in. The portal only uses the first 16 characters of what the user
+types, and the stored passcode is compared whole, so anything longer could
+never match. The SDN page caps the passcode field at 15 characters, refuses
+a longer value on save, and shows a hint (RGNP_01) when a profile already
+holds a longer one - the stored value is left as it is (an update never
+rewrites a user's setting).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index a111b722b5..4240230c24 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -6242,7 +6242,7 @@ function Get_Component_Full_Setting(view_mode){
+ 					resize_iframe_height();
+ 					set_apply_btn_status($(this).closest(".profile_setting"));
+ 				});
+-			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":64, "container_id":"container_FWF_passcode"};
++			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
+ 			Get_Component_Input(FWF_passcode_parm).hide().appendTo($freewifi_cntr);
+ 
+ 			var FWF_terms_service_enabled_parm = {"title":"<#FreeWiFi_OptionHint#>", "type":"switch", "id":"FWF_terms_service_enabled", "set_value":"on"};
+@@ -8421,6 +8421,9 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 					}
+ 				})());
+ 				$(_obj).find("#FWF_passcode").val(_cp_rl_data.local_auth_profile);
++				//Reaper: guests can only sign in with a passcode of 15 characters or fewer
++				if(_cp_rl_data.auth_type == "1" && (_cp_rl_data.local_auth_profile || "").length > 15)
++					$(_obj).find("#FWF_passcode").show_validate_hint(`<#RGNP_01#>`);
+ 			}
+ 			else if(_cp_rl_data.cp_idx == "4"){
+ 				var response = httpApi.hookGet("get_customized_attribute-" + _cp_rl_data.idx_for_customized_ui + "");
+@@ -10379,6 +10382,11 @@ function validate_format_Wizard_Item(_obj, _type){
+ 						$FWF_passcode.focus();
+ 						return false;
+ 					}
++					if($FWF_passcode.val().length > 15){//Reaper: longer passcodes never sign in
++						$FWF_passcode.show_validate_hint(`<#RGNP_01#>`);
++						$FWF_passcode.focus();
++						return false;
++					}
+ 					var isValid_passcode = valid_block_chars($FWF_passcode.val(), ["<", ">"]);
+ 					if(isValid_passcode.isError){
+ 						$FWF_passcode.show_validate_hint(isValid_passcode.errReason);
+-- 
+2.25.1
+

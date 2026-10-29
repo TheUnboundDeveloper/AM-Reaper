@@ -22,8 +22,9 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # Five models are selectable, all BCM4916, all with a completed green
-      # clean-room build as of 2026-08-10.
+      # Eight models are selectable, all BCM4916. The first five had a completed
+      # green clean-room build as of 2026-08-10; the GT-BE19000, BQ16 and BQ16_PRO
+      # joined later (see the model options below).
       #
       # RT-BE92U (BCM6765) was wired into this pipeline at v2.7.6 and RETIRED
       # from the roster after v3.1.2 (owner, 2026-09-10): upstream Merlin has
@@ -40,8 +41,8 @@ on:
       #
       # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
-      # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
-      # upstream carries router-sysdep for every other model but not that one.
+      # plus overlays/<MODEL>-platform.tar.gz for the models whose router-sysdep
+      # the pinned upstream does not carry (GT-BE98, GT-BE19000, BQ16, BQ16_PRO).
       #
       # The overlays are generated from the per-model branch tips. An earlier
       # generation read those branches from the WRONG place and silently carried
@@ -62,14 +63,14 @@ on:
       # repeat silently.
       #
       # 'all' fans out to every model on the roster. Combined with variant=both
-      # that is 10 concurrent jobs of ~1.5 h each -- within the 20-job limit for
+      # that is 16 concurrent jobs of ~1.5 h each -- within the 20-job limit for
       # public repos, and fail-fast is off below so one model dying does not
-      # cancel the other four.
+      # cancel the others.
       model:
         description: 'Model to build (all = every model)'
         type: choice
-        default: RT-BE96U
-        # `all` is the six BCM4916 models x two variants = 12 jobs.
+        default: GT-BE98
+        # `all` is the eight BCM4916 models x two variants = 16 jobs.
         # RT-BE92U is retired from the roster (see the note above) and is
         # deliberately not selectable here.
         # GT-BE19000 joined the roster 2026-09-12, once the three things a CI job
@@ -79,7 +80,18 @@ on:
         # router-sysdep.gt-be19000, exactly as it does not for GT-BE98.
         # It still publishes only as a prerelease (release.yml): the model builds and
         # verifies, but no hardware has run an image.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, all]
+        # BQ16 (ZenWiFi, quad-band) joined 2026-10-01 under the same three conditions,
+        # from the ASUS GPL 102_39256 drop; prerelease-only until a unit has booted one.
+        # BQ16_PRO (ZenWiFi BQ16 Pro, 2.4/5/6/6) joined 2026-10-04 from its own 102_39256 drop
+        # and stock image; the same prerelease-only rule until a unit has booted one.
+        # Dev-102.8 (from v3.6.0, 2026-10-27): this branch is the 3006.102.8 line and builds ONLY the four
+        # models with no ASUS GPL 102_40585-era release yet. Their newest GPLs (102_39274 / 102_39256) lack
+        # closed components the 40585 source calls, so they stay on this base, with the Reaper changes of
+        # the 3006.102.10 line (branch Dev) backported, until ASUS publishes one. RT-BE96U, RT-BE86U,
+        # RT-BE88U and GT-BE98_PRO build from Dev. update-manifest lines are merged per model, so the two
+        # lines never touch each other's lines; the one shared file is the per-version note, which is why
+        # the v3.6.0 CHANGELOG section is identical on both branches.
+        options: [GT-BE98, GT-BE19000, BQ16, BQ16_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -94,12 +106,15 @@ on:
         default: ''
       # Publishing is OPT-IN and takes effect on main or Dev (Dev = the beta
       # channel, published as a prerelease; only the stable on-router update
-      # manifest stays main-only). Left unticked (the default) the run builds,
+      # manifest stays main-only). On this 3006.102.8 line Dev-102.8 is the beta
+      # channel and main-102.8 the stable one (the line cannot share main with
+      # Dev's 3006.102.10 series); its manifest refresh still commits to main.
+      # Left unticked (the default) the run builds,
       # verifies and uploads its artifacts, and stops there -- no tag, no
       # release, nothing user-facing. Tick it only when you intend these
       # clean-room images to become the published ones.
       publish:
-        description: 'Publish a GitHub Release when the build succeeds (prerelease on Dev, stable on main)'
+        description: 'Publish a GitHub Release when the build succeeds (prerelease on Dev-102.8, stable on main-102.8)'
         type: boolean
         default: false
 
@@ -134,7 +149,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.2.3'
+    ${{ inputs.version == '' && 'Reaper_v3.6.2'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -169,7 +184,7 @@ jobs:
       # the build job's checkout for why every checkout here needs one.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -180,7 +195,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -205,7 +220,7 @@ jobs:
     steps:
       - name: Restore toolchain cache
         id: cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -249,7 +264,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["GT-BE98","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -298,7 +313,7 @@ jobs:
       - name: Checkout patch series and build scripts
         id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -316,7 +331,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -368,7 +383,7 @@ jobs:
           exit $rc
 
       - name: Restore pinned toolchains
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -380,6 +395,31 @@ jobs:
           ACTUAL="$(git -C "${GITHUB_WORKSPACE}/.cache/am-toolchains" rev-parse HEAD)"
           echo "expected $TOOLCHAIN_COMMIT"; echo "actual   $ACTUAL"
           [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ]
+
+      # One pull, retried, before anything runs the image. Docker Hub answers
+      # 401/500 transiently; on 2026-10-07 both RT-BE96U jobs lost the pull in
+      # the same second while the other 16 jobs got through. Fall back to the
+      # AWS ECR Public mirror of the Docker official images (same image and digest),
+      # retagged so the steps below run the local ubuntu:20.04 without pulling again.
+      - name: Pull the clean-room image
+        run: |
+          set -uo pipefail
+          IMG=ubuntu:20.04
+          MIRROR=public.ecr.aws/docker/library/ubuntu:20.04
+          for i in 1 2 3 4 5; do
+            docker pull -q "$IMG" && break
+            echo "::warning::docker pull $IMG failed (attempt $i/5)"
+            [ "$i" -lt 5 ] && sleep $((i * 15))
+          done
+          if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+            echo "::warning::Docker Hub unavailable; pulling $MIRROR"
+            for i in 1 2 3; do
+              docker pull -q "$MIRROR" && docker tag "$MIRROR" "$IMG" && break
+              [ "$i" -lt 3 ] && sleep $((i * 15))
+            done
+          fi
+          docker image inspect "$IMG" >/dev/null 2>&1 || { echo "::error::could not pull $IMG"; exit 1; }
+          echo "image: $(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG")"
 
       # Safety net only: the local WSL flow builds without emulation (Samba
       # cross-compiles via cross-answers). Registering ARM binfmt on the host
@@ -405,21 +445,31 @@ jobs:
           fi
           echo "qemu-arm binfmt registered:"
           sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
-          docker run --rm -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+          docker run --rm --pull never --network host \
+            -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
             ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
 
+      # --network host: the container resolves names through the runner's own
+      # resolver instead of the one Docker synthesises for a bridged container.
+      # 2026-10-14 (run 38578920955): 17 of 18 build jobs passed; on the BQ16 MCP
+      # runner the host installed qemu-user-static at 14:22:50, then 9 s into this
+      # step every apt fetch in the container died with "Could not resolve
+      # 'archive.ubuntu.com'". Nothing in the build listens on a port, so the
+      # container needs no network namespace of its own; sharing the host's
+      # makes "the container resolves what the runner resolves" true by
+      # construction. container_build.sh keeps a bounded resolver probe as the
+      # fallback that names the cause instead of six "Unable to locate package".
       - name: Build in Ubuntu 20.04 clean room
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          docker pull -q ubuntu:20.04
-          docker run --rm \
+          docker run --rm --pull never --network host \
             -e UPSTREAM_REPO="$UPSTREAM_REPO" \
             -e BASE_TAG="$BASE_TAG" \
             -e BASE_COMMIT="$BASE_COMMIT" \
             -e TOOLCHAIN_COMMIT="$TOOLCHAIN_COMMIT" \
             -e EXPECTED_VERSION="$EXPECTED_VERSION" \
-            -e REAPER_BETA="${{ github.ref == 'refs/heads/Dev' && '1' || '0' }}" \
+            -e REAPER_BETA="${{ (github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && '1' || '0' }}" \
             -e MODEL="${{ matrix.model }}" \
             -e VARIANT="${{ matrix.variant }}" \
             -e REPO_DIR=/work/reaper \
@@ -445,7 +495,7 @@ jobs:
 
       - name: Upload firmware
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firmware-${{ matrix.model }}-${{ matrix.variant }}
           path: out/*.pkgtb
@@ -455,7 +505,7 @@ jobs:
 
       - name: Upload build evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evidence-${{ matrix.model }}-${{ matrix.variant }}
           path: |
@@ -492,7 +542,7 @@ jobs:
   tag:
     name: Tag for release
     needs: build
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -540,12 +590,12 @@ jobs:
           # A beta re-spin of the same version follows the normal re-release
           # path: delete the beta tag or dispatch release.yml with
           # allow_republish.
-          if [ "${{ github.ref }}" = "refs/heads/Dev" ]; then
+          if [ "${{ github.ref }}" = "refs/heads/Dev" ] || [ "${{ github.ref }}" = "refs/heads/Dev-102.8" ]; then
             V="$V-beta"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
+            MODELS="GT-BE98 GT-BE19000 BQ16 BQ16_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -592,19 +642,19 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["GT-BE98","GT-BE19000","BQ16","BQ16_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
       # Belt-and-braces: the -beta tag already trips release.yml's *beta* match,
       # but a Dev publish is ALWAYS a pre-release even if the naming changes.
-      prerelease: ${{ github.ref == 'refs/heads/Dev' }}
+      prerelease: ${{ github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8' }}
 
   # ---------------------------------------------------------------------------
   # UPDATE-MANIFEST REFRESH -- runs ONCE, after the whole per-model release
@@ -615,8 +665,8 @@ jobs:
   # still advertised the previous one and the router reported "up to date".
   # This job closes that gap by regenerating the discovery files from the
   # releases just published. It is a SINGLE writer on purpose: the release job
-  # is a per-model matrix, so refreshing inside it would race five commits to
-  # main. The concurrency group serializes it across overlapping runs too.
+  # is a per-model matrix, so refreshing inside it would race one commit per
+  # model to main. The concurrency group serializes it across overlapping runs too.
   #
   # ALWAYS WRITES TO MAIN, whichever branch was dispatched: the manifest lives
   # on main because that is the URL baked into every fielded router. A main
@@ -629,7 +679,7 @@ jobs:
   refresh_manifest:
     name: Refresh update manifest
     needs: [tag, release]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -643,7 +693,7 @@ jobs:
       # job exists to close.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -659,7 +709,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -692,7 +742,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
+            export MODELS="GT-BE98 GT-BE19000 BQ16 BQ16_PRO"
           else
             export MODELS="$MODELSEL"
           fi
@@ -706,7 +756,7 @@ jobs:
             echo "manifest already advertises $V -- nothing to commit"
             exit 0
           fi
-          if [ "$SRC_REF" = "refs/heads/Dev" ]; then
+          if [ "$SRC_REF" = "refs/heads/Dev" ] || [ "$SRC_REF" = "refs/heads/Dev-102.8" ]; then
             git commit -m "updates: advertise Reaper $V on the beta line of the firmware update manifest [skip ci]"
           else
             git commit -m "updates: advertise Reaper $V in the firmware update manifest [skip ci]"

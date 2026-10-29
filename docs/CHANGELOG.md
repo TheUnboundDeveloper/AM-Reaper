@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -9,8 +9,8 @@ per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 All versions are the `3006.102.8_Reaper_v<X>` firmware line, built on the
 Asuswrt-Merlin 3006.102.8 base for the ASUS RT-BE Series (BCM4916 platform).
 The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
-**RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** are
-built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+**RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
+the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -45,6 +45,1516 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.2 — RT-BE86U keeps 5 GHz after a Guest Network Pro save, API keys inside a source address, review fixes
+
+Everything in v3.6.1 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Two have an effect on one side only: the
+Surfshark handlers exist only on 3006.102.10, and the Wi-Fi driver gate is compiled only for the models in ASUS's own
+list (RT-BE86U in this fleet).
+
+- **RT-BE86U: the 5 GHz radio survives a Guest Network Pro save.** Field report (RT-BE86U, v3.6.0): saving a Guest
+  Network Pro network left the 5 GHz radio down about half the time - LED off, `wl1` "wl driver adapter not found" -
+  until a power cycle. On this model a wireless restart re-runs `init_nvram()`, and ASUS's closed
+  `reload_wl_check()` then reloads both Wi-Fi drivers live whenever `ed_thresh_reload` is set: on any difference in
+  the stored energy-detect values, not only on a change of ED mode. The drivers now stay loaded unless the ED mode
+  (`no_dy_ed_thresh_ctrl`) changed; either outcome is one log line.
+- **Wallguard and Dreadwatch: an API key inside the source address.** For suppliers that take the key in the URL,
+  type `$APIkey` where it goes (for example `https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt`)
+  and save the key as before. The fetch inserts it %-encoded through the root-only curl config, never on a command
+  line. `$APIkey` is the only `$` a source address may carry, and never in the host; keys stay write-only.
+- **Wallguard: no abuse.ch templates in "Add a source".** ThreatFox and URLhaus are threat feeds and stay in
+  Dreadwatch's templates; Wallguard's form loses its Template row.
+- **A source with its API key in a header no longer follows redirects.** curl sends custom headers on every request
+  it follows, to any host, so these fetches run with `max-redirs = 0`. A redirect fails with curl error 47, named in
+  the Wallguard and Dreadwatch logs. A key inside the address still follows redirects (it rides the first request).
+- **MAC address check: a separator out of place is refused.** `isValidMacAddress()` passed 12 hex digits followed by
+  a separator and anything after it (the stock loop stopped there unread). It now returns false. On 3006.102.10 the
+  AiMesh admin actions that take a node MAC rely on it alone (signed-in admin only); on 3006.102.8 Reaper's own
+  check stands there as well.
+- **Surfshark sign-in handlers off (3006.102.10).** `surfshark_login.cgi` and `surfshark_2fa.cgi`, new with GPL
+  102_40585, sign in to a third-party VPN service, and no shipped page calls them. They are compiled out, as the
+  Instant Guard handler was.
+
+## v3.6.1 — no doubled menu after a language switch, English header labels whole, DHCP reservation names, Wireless Log width
+
+Everything in v3.6.0 is included. Both lines carry every change: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **The dashboard never opens inside the settings frame.** Field report (GT-BE98, v3.4.9): after switching the
+  language from English to Russian the page showed two menus and two top bars - the dashboard had loaded inside the
+  settings shell's content frame, and the shell remembered it in its address, so a reload repeated it. The dashboard
+  now takes the whole window when it finds itself in that frame, and the shell opens the dashboard as the whole
+  window rather than in the frame.
+- **Header labels: English is never cut.** WAN, Mode, Uptime, Firmware, Clients and Mesh Nodes ended in "..." in
+  English at 1920 px. Each label now keeps at least its English width; only a translation longer than the English is
+  shortened (whole word on hover), and on a narrow window the last labels are hidden whole instead. The Firmware
+  label shows the Reaper version (`Reaper_v3.6.1`); the full firmware string is on hover.
+- **DHCP manual assignment shows device names again.** Since v3.4.9 the Host Name column of LAN > DHCP Server >
+  Manual Assignment read empty for most reservations. Nothing was deleted: the stock page v3.4.9 replaced showed each
+  device's name from the client list beside its MAC, and the Reaper page showed only the reservation's own host name
+  (field 4 of `dhcp_staticlist`), which most reservations leave empty. A reservation without a host name now shows the
+  device's name there in grey (your name for it, else the detected one). Display only: the saved list and the CSV
+  export are unchanged.
+- **Wireless Log stays inside the page.** Field report (v3.5.0): client rows ran past the page edge. A client's IPv6
+  addresses printed as one unbroken line; they now print one per line, the Name column keeps a readable width, and
+  long values wrap at spaces.
+
+## v3.6.0 — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585) for four models, custom-script output kept, your own Wallguard and Dreadwatch sources, Bastion
+
+Everything in v3.5.0 is included.
+
+- **New base for the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro: Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585).**
+  The Reaper series was rebased from
+  `3006.102.8-beta2` (`a7ebfa133a`) onto Merlin `main` at `ca72a61f8bc` (untagged upstream). The firmware line is
+  now `3006.102.10_Reaper_v<X>`; image names carry `3006_102.10`. Every Reaper change was replayed; where upstream
+  had fixed the same defect its fix was kept - the `asus_openssl_crypt` injection (C6), IPsec profile parsing
+  (H6/M2) and the miniupnpd 2.3.10 carry now come from upstream. A file-by-file audit of the result against the
+  pre-rebase tree found the Reaper fixes the replay had undone (four shipped stock pages, the multi-WAN DNS check)
+  and restored them, and seven stock pages Reaper deletes (app installer, AiCloud / WebDAV, the AiDisk wizard,
+  AiProtection groups, Alexa / IFTTT) stay deleted - the rebase had re-created them. The AiMesh MAC checks are
+  upstream's `isValidMacAddress()` now, hardened to refuse any character but hex digits and separators. The patch series is regenerated from the new base: 855 patches, numbered from `0001`.
+- **GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro stay on 3006.102.8.** ASUS has not published a 102_40585-era GPL for them, and the
+  40585 source calls closed components their 102_39274 / 102_39256 releases do not have (the clean-room build
+  stopped at `MISC_INFO_WIFI_GEN`). Their v3.6.0 is built from the 3006.102.8 base, image names `3006_102.8`,
+  from the `Dev-102.8` branch, and carries every Reaper change below; what they do not get is the new base and
+  the items marked for the 3006.102.10 models. `isValidMacAddress()` is hardened the same way on both bases.
+  They move to the new base when ASUS publishes one.
+- **libnvram / libwlcsm: ASUS's 40585 pair.** Same netlink socket-leak fix as the 42015 pair Reaper carried since
+  v3.1.8, plus ASUS's caller check in `nvram_set()` for `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys`
+  and `ookla_quota`. On the RT-BE96U a root shell's `nvram set` of those keys still works (tested on the router);
+  every Reaper writer of them is httpd or rc either way. GT-BE98, GT-BE19000, BQ16 and BQ16 Pro keep the 42015
+  pair: their platform trees predate the caller check.
+- **OpenVPN server certificates on Easy-RSA 3 (3006.102.10 models).** On OpenSSL 3 builds 40585 stages `easyrsa` and no `pkitool`. The
+  server-certificate repair imports the CA the router already holds into a fresh PKI and issues the server leaf
+  with easyrsa; `reaper_verify` (ovpn-pki) runs the first-time and the repair chains on the image's own openssl.
+- **Custom scripts keep their output and say when they fail.** rc runs `/jffs/scripts/*` as before, but under a
+  watcher: the first 64 KB of a script's output is kept in `/tmp/reaper/script-<name>.log` (last run) and one
+  syslog line reports a non-zero exit with the last thing it printed. A script with Windows line endings is named
+  as such. `reaper_diag` v1.3.51 section 13 reports each script (executable, CRLF, last outcome).
+- **Wallguard and Dreadwatch: removable built-in lists, your own sources, API sources.** Every list can be removed,
+  including the ones the router sets up; your own lists are a text list at an `https://` address or a supplier's
+  API (GET or POST, a JSON field, one header). API keys are write-only (`/jffs/wallguard/keys`,
+  `/jffs/rwarden/dnskeys`, root 0600) and reach curl only through a root-only config file. Dreadwatch fetches
+  through Wallguard's code path.
+- **Bastion.** The menu that holds Warden, Dreadwatch, Wallguard and Encrypted DNS is named Bastion; the Warden tab
+  keeps its name. The four tools no longer gate each other: Dreadwatch runs without Warden.
+- **WAN 802.1Q only where the firmware can tag the WAN.** GT-BE98, GT-BE19000, BQ16 and BQ16 Pro build without
+  Multi-Service WAN, so the switch was dropped on save, the router rebooted and came back with no connection. The
+  page now shows the switch only with `mswan` support and points the others to LAN > IPTV (Internet VID / PRIO).
+- **Backups carry every option and keep the DDNS hostname.** The settings file now includes Wallguard and
+  Dreadwatch's sources; a restore no longer brings Wallguard back on with no lists. The hostname is no longer
+  blanked (Reaper has no ASUS DDNS, so every hostname is the operator's own).
+- **Browsers see a new page after a flash or a setting change.** Every ETag carries the build, stylesheets and
+  Reaper scripts answer `Cache-Control: no-cache`, and a page with server-side values gets no ETag.
+- **Settings written into page scripts are escaped** (`nvram_get_js`): a value holding `'` or `\` can no longer end
+  a script string early on Reaper pages.
+- **Translated labels fit.** A label too long for its space is shortened with "..." and shows the whole word on
+  hover; only shortened labels get the tooltip.
+- **Wireless Log:** one box per network inside each radio (main, guests, the AiMesh backhaul), named.
+- **Fixes:** the Internet Speed Test tab opens at once under the Reaper shell (it waited ~5 s for a stock menu
+  height; 3006.102.10 models); rwatch stands down during a firmware upgrade (a tick in the upgrade's teardown reported the missing
+  firewall chains as a failure and restarted rpunctd); USB start no longer logs a failed `tfs_linux` modprobe on
+  4.19-kernel models (3006.102.10 models); httpd bounds the model name it lower-cases for the product image; the Feedback page's
+  Inner Version follows the running image instead of the image the router was first set up on; the About page
+  reads the base version from the firmware.
+
+## v3.5.0 — Wallguard fixed and explains itself, System Log filters, Security Review rules list, VLAN tab back, fixes from Asuswrt-Merlin
+
+Everything in v3.4.9 is included.
+
+- **Wallguard builds its block table again.** The router's BusyBox `flock` has no wait option, so in
+  v3.4.9 every table build and fold failed at once: no list was ever blocked and the page kept saying
+  the lists were downloading. The locks now poll; Warden's counter locks, which had the same flaw, poll
+  too. The **HaGeZi Threat Intelligence** preset now fetches the *Medium* list - the full list (about
+  2.1 million names, 43 MB) is larger than one list or the table may be, so it could never load; a
+  profile that had it keeps it.
+- **Wallguard says why it cannot work.** A list whose server Warden's router-traffic filter drops (a
+  picked country, the ban list or a threat feed) reads *blocked by Warden (FR)* on the page, with the
+  address and the three ways out on hover, and the log line names the same. When a firewall rule sends
+  devices' DNS straight to another server (a Service Intercept rule, DNS Director), an amber banner says
+  so: those lookups never reach the router, so Wallguard and Dreadwatch cannot see them. The build log
+  reports the table's total instead of the last list's count.
+- **System Log: Find and Exclude take comma-separated lists, and Saved exclusions keep yours.** Find
+  shows a line holding any of its words and Exclude hides a line holding any of its words (case is
+  ignored). *Saved exclusions* is your own version of the stock `logFilter.json`, which is part of the
+  read-only image: one entry per line, kept in `/jffs/reaper/logfilter` (64 entries of up to 128
+  characters, editable over SSH too) and carried by the Reaper settings file; *Add the Exclude words*
+  moves the Exclude box into it. Only the view changes - the log file, Save and a remote syslog server
+  still get every line. Guide 2.12.
+- **Security Review: one bar for the rows you tick, and the watch rules as a list.** Accept, ignore, or
+  watch size and date only for every ticked row at once; the rules list has Delete, Delete selected,
+  Delete all and an Add form (a new rule goes first; the first matching rule wins), with the raw text
+  behind *Edit as text*. A JFFS-backed setting that ASUS's prebuilt device discovery rewrites as
+  writable by everyone is put right on each watchdog tick, so the review and the dashboard no longer
+  flag it for good.
+- **LAN › VLAN is back on every model with guest/VLAN networks.** A v3.4.9 menu change had inverted
+  stock's test and hid the tab; the VLAN Switch and VLAN Profile pages (per-port access and trunk) ship
+  again.
+- **AiMesh backhaul parking: no park/hold loop, schedules respected, the card works again.** With a
+  radio's primary parked its client networks read as down, so the hold fired over and over (RT-BE88U
+  field report); it now acts only on radios whose primary is up, and a radio with a Wi-Fi schedule is
+  never parked. The parking card on Wireless › Wireless Quality showed only a dash when the reason text
+  held an apostrophe; it reads the text safely now.
+- **Diagnostics report v1.3.50:** the "store in RAM" warning no longer counts the platform's own
+  defaults volume.
+- **From Asuswrt-Merlin (Eric "Merlin" Sauvageau),** carried unchanged after checking that none was
+  already fixed another way: the **CA bundle** (Mozilla data of 2026-10-21 - Entrust Root CA, ePKI,
+  Atos TrustedRoot 2011 and SecureSign Root CA12 out); **DNS over TCP from guest/VLAN networks to the
+  router** (by dave14305 - truncated and large DNSSEC answers failed there; Reaper adds the same rule
+  for IPv6); **wanduck's listening sockets close when it starts another program** (by Jacopo Labardi);
+  miniupnpd treating **`MX: 0` as invalid** (CVE-2026-107159, by Thomas Bernard - compiled out in this
+  build's configuration, carried to match upstream); **urlfilterd bounding the packet data it searches**
+  (from ASUS GPL 102_40585 - the daemon is not started in this image); and OpenSSL 3.5's build dropping a
+  deprecated option.
+
+---
+
+## v3.4.9 — Wallguard ad blocker, Encrypted DNS for devices, Reaper-native settings pages, Dreadwatch on free lists
+
+Everything in v3.4.8 is included.
+
+- **Wallguard: an ad and tracker blocker in the router's resolver (Warden › Wallguard).** Block lists
+  (HaGeZi, OISD and up to 8 of your own; hosts, plain-domain and `||name^` formats) compile with
+  `wallguardc` into one table every dnsmasq instance maps and shares - a million names in about 12 MB
+  once, swapped in place without a DNS restart. A listed name, and its subdomains where the list says
+  so, is answered `0.0.0.0`/`::` or NXDOMAIN; every name of an answer's CNAME chain is checked, so a
+  tracker hidden behind a site's own name is caught. **Profiles** per device (by MAC) or per guest/VLAN
+  network: *Bypass*, stricter lists, **blocked services** (about 45, by name), **schedules** for them
+  and **safe search** (Google, Bing, DuckDuckGo, YouTube Restricted Mode). *My rules*, **Unbreak** (the
+  names a device was refused in the last 15 minutes, allowed for 24 hours or always), **Why?**, **Pause**
+  and an opt-in live view of all lookups (RAM only, off by itself after an hour). Only blocked lookups
+  are recorded, under the list entry that matched. The router's own answers (local names, `address=`,
+  Dreadwatch) win. Off by default. Guide 4.3.11.
+- **Encrypted DNS for devices (Warden › Encrypted DNS).** `rednsd`, a DNS-over-TLS server on port 853
+  of the LAN networks with the router's certificate, so a device encrypts its lookups to the router and
+  Dreadwatch, Wallguard and DNS Director still apply: Android Private DNS, an Apple configuration profile
+  limited to your Wi-Fi names, systemd-resolved. Each device is judged by its real address. **Block
+  encrypted DNS that goes around the router** (a second switch) rejects DNS-over-TLS and DNS-over-QUIC
+  (TCP and UDP 853) to any other server and HTTPS to the known public DoH resolvers (a shipped seed plus a
+  maintained list, refreshed nightly), and answers their names NXDOMAIN; browsers on automatic DNS fall
+  back to the router. A device set to one named outside provider has no DNS while the block is on (the
+  page says so). Both off by default. Guide 4.3.12.
+- **Reaper-native settings pages: System, LAN, WAN, VPN, Parental Controls, the logs and tools.** Pages
+  on Reaper's component kit (`www/reaper/rp.js`, `rp.css`, one menu model in `menu.js`) replace the stock
+  ones for System (with SNMP and Tweaks), the System Log group (log, wireless log, leases, routes, port
+  forwards, IPv6, analysis, netstat, wake on LAN), LAN (DHCP, switch), WAN (Internet, NAT, DDNS, IPv6
+  setup, IPTV, DNS, Smart Connect), VPN (status, VPN Director, server, client, Tor) and Parental Controls
+  time scheduling. Each was compared field by field with the page it replaces (posted names and values,
+  the stock validations); a stored password, key or pre-shared key is never placed in the page source -
+  it shows as `********` and posts only when retyped. **Behaviour change:** the 66 stock pages these
+  replace no longer ship; their URLs (bookmarks, add-ons) bounce to the Reaper page.
+- **Dreadwatch: free lists after abuse.ch closed its keyless feeds (HTTP 410).** Reaper's Basics (one
+  built-in row: the URLhaus mirror, phishing and C2 lists plus a frozen snapshot of the last keyless
+  ThreatFox list, 21 October 2026) and optional crypto-mining, ransomware, CERT Polska and Threatview
+  lists. The name limit is filled in priority order, Basics first, up to 1,000,000 names with a
+  free-memory guard; each list is checked by dnsmasq before it is installed, over-long and
+  parent-covered names are dropped, and the page names any list left out. The built-in never-block
+  names are now one-time entries in the *Never block* box that you can remove. Guide 4.3.10.
+- **Dreadwatch: the list is held once, however many networks the router runs.** Every dnsmasq instance
+  (the main one and each guest or VLAN network's own) loaded the threat list for itself, about 54 bytes
+  a name in each plus the 21 MB text include in RAM; on an RT-BE96U with four instances that was the
+  largest user-space consumer, and the RT-BE86U has 1 GB. The list is now compiled with Wallguard's
+  compiler (`wallguardc build --subtree`, one list per feed) into one table, `/tmp/reaper_nx/threat.db`,
+  12 bytes a name, which every instance maps read-only from the same file (`dnsmasq --reaper-nx-db`);
+  the include shrinks to two lines. The answers are unchanged: NXDOMAIN for a listed name and its
+  subdomains, the router's own `address=` or `local=` entry winning where it covers a longer name,
+  Dreadwatch ahead of Wallguard. Each hit record now names the feed, so the per-feed counters no longer
+  read the text list. The compiler checks each new table before it is installed; a missing or damaged
+  table blocks nothing and is logged once. The `/jffs` copy is `dns.k.gz`, rebuilt into the table at
+  boot; `dns.nx.gz` is still written so a downgrade keeps blocking. Guide 4.3.10.
+- **Port Trigger and the URL filter work again; Port Trigger on no longer costs the LAN its internet.**
+  The `TRIGGER` and `webstr` iptables extensions had been dropped from the build in 2026-07 while the
+  kernel and rc kept using them. With Port Trigger on, rc's `-j TRIGGER` line made the whole nat restore
+  fail, so after a reboot there was no masquerading; the URL filter's `-m webstr` rules failed the same
+  way. Both extensions are back.
+- **ASUS DDNS (asuscomm.com) is removed.** **Behaviour change:** a saved ASUS DDNS setting is switched
+  off once at boot, with a log line; the DDNS page offers the other providers. Separately, with Warden's
+  router-traffic filter on and the United States blocked, the DDNS and Let's Encrypt hosts (both US) were
+  dropped, so the certificate stayed *Unknown or processing*; they are now whitelisted once while a DDNS
+  certificate is in use.
+- **Security Review: Reaper's own protections are watched.** Besides the exposure settings, the
+  review now lists Warden (switch, feeds, country list, self-filter, direction), Dreadwatch (switch,
+  feeds), Gatekeeper (switch, default, captive page), Wallguard, the rules engine, policy routing and the
+  Encrypted DNS server — a protection turned off is a change like any other. A setting that an accepted
+  baseline predates (this update, or a later one that widens the list) is adopted into the baseline as
+  it stands, with one log line naming it, and a setting the firmware stops watching (renamed or dropped)
+  is retired from it the same way, so an upgrade never alarms by itself. A file or cron entry that
+  disappears is still a change. Guide 2.9.
+- **Security Review: select several rows and act once.** Owner request: a checkbox on every row and a
+  select-all, with one bar of actions for the selection - Accept, Existence only, Ignore and Ignore
+  folder, each offered only when it fits every selected row (a greyed one says why on hover). Accepting
+  a selection is one request, one audit record and one accept-log line naming the items, instead of one
+  of each per row; an item that is no longer listed refuses the whole selection and nothing is written.
+  The rules for Existence only / Ignore are saved once, ahead of the existing rules, without duplicates,
+  and a save that would pass 100 rules or 8 KB is refused before it is sent. At most 100 rows at a time.
+- **Long-Term Storage: new rows, and every write on the USB volume through one no-follow writer.** Rows
+  for Wallguard's lists (USB only: kept on the volume and rebuilt from it after a reboot, no download),
+  Wallguard's and Dreadwatch's blocked lookups and Encrypted DNS activity. A USB store is a volume other
+  people can write (guest shares map to the admin account), so a root write by path could follow a
+  planted link: device, channel and syslog history, incident dumps, the audit log and the traffic
+  database now go through `rstore` / `reaper_store_io` (each level opened without following links,
+  temp file and rename), same rings and rotation.
+- **Field and owner fixes.**
+  - **Test images that could not be flashed said nothing.** Stray backup files in `www/` grew the
+    RT-BE96U rootfs past its flash slot; the flasher refused the image and the router rebooted on the
+    old firmware while the Firmware page reported success. The build now fails on stray `www/` files and
+    on an oversized rootfs, and httpd and the Firmware page report a refused upload.
+  - **Roaming Assistant could not be switched off** (GT-BE98): *Disabled* hid the input carrying the 0
+    and Apply skips hidden inputs. A Time Scheduling edit could also drop out of Apply; both fixed.
+  - **Warden threat domains on/off took effect only at the next dnsmasq restart** - the restart was
+    requested from inside the running service and dropped; dnsmasq is now restarted directly.
+  - **IPsec:** `/jffs/ca_files` and strongSwan's `private/` are root's alone (0700), enforced at boot and
+    every IPsec start; the scripts there were rewritten world-writable and run as root on every start.
+  - **Parental Controls:** a device with no time window listed after an *Internet only inside* device was
+    blocked all day (a rule type carried over between devices).
+  - **VPN:** `bcrelay` no longer starts for the default PPTP broadcast setting; the PPTP/L2TP client with
+    MPPE-128 refuses PAP, CHAP and MS-CHAPv1; a WireGuard server peer switched off loses its policy rule
+    at once instead of at reboot.
+  - **DNS Director's DNS-over-TLS block covers UDP 853** (DNS-over-QUIC went around it).
+  - **UPnP:** a port-mapping description a LAN client writes is escaped for the page's script, so a
+    `</script>` in it can no longer end the element.
+  - **Samba:** no `use spnego` / `auth methods` lines (removed in Samba 4), no quota lookups
+    (`sys_path_to_bdev() failed`), no "smbpasswd did not exist" line at each start.
+  - **Devices and Gatekeeper lists sort** by any column (a second click reverses; remembered per
+    browser), one sorter in the kit. **Gatekeeper's connection type** comes from the Devices page's data,
+    in its order (MLO, wired, band).
+  - **Connections:** the flow detail panel keeps its width on long names (title and destination cut with
+    an ellipsis, shown whole on hover; the ACCELERATED badge always fits).
+  - **USB Applications:** USB Application is the first tab and USB Disks the last; a page opened from the
+    application list highlights its tab.
+  - **AiMesh:** the "feedback" link after a failed node join opens the Diagnostics page (it pointed at a
+    stock page Merlin's build removes).
+- **Wireless Scheduler with AiMesh backhaul parking: networks come back on schedule.** Field report
+  (RT-BE88U): the scheduler turned the networks back on at the end of their off window and logged it,
+  but no SSID was broadcast until a reboot. Backhaul parking (off by default) keeps each radio's
+  backhaul carrier down while no node is paired, and the scheduler's turn-on was never proven to work
+  under a parked carrier. Parking now holds every carrier up while a network that is switched on in the
+  settings is down on the air - a schedule's off window - so the turn-on runs as on stock firmware, and
+  parks again a minute after every network is back. One log line each way (`amaspark`).
+- **Review 2026-10-24: one high and three medium findings fixed.** An adversarial review of every
+  pending line (resolver, daemons, rc, httpd, build, the new pages). (1) **An apply is a POST.** The apply
+  pages (`start_apply.htm` and its kin) and `apply.cgi` refuse `action_mode=apply` on a GET; the form
+  pages had read a GET's query the same as a posted form, and the Reaper shell framed any `.htm` page with
+  any query same-origin, so one link opened by a logged-in admin could write the configuration. The shell
+  now frames `.asp` pages only, a query allowed for Reaper pages alone; the firmware check and upgrade
+  GETs and the ASUS app are untouched. (2) **Wallguard records the list entry, not the name asked.** A
+  blocked-lookup record carries the entry that matched (`doubleclick.net`, not `x7f3.doubleclick.net`),
+  and the 15-minute fold keeps the 200 busiest names and devices, so a device inventing names can no
+  longer grow `/jffs/wallguard/counters` without bound. *Most-blocked names* and Unbreak show the entries
+  that block, and Allow in Unbreak allows that entry; the Live view still shows names as asked. (3) **The
+  cross-site guard over plain HTTP.** Browsers send neither Referer nor Sec-Fetch-Site on a cross-site
+  navigation to a private address over plain HTTP, which the shipped default serves beside HTTPS; a
+  header-less browser request on the HTTP listener is now cross-site (curl and scripts still pass, HTTPS
+  unchanged). (4) The guard's AiMesh onboarding exception reads its query decoded the way the CGI parser
+  does, so an encoded key name no longer slips past it. Guide 4.3.11.
+- **Review 2026-10-24: the thirteen low findings, five correctness slips and the performance items.**
+  The Encrypted DNS server asks for an oversized answer over TCP without stalling other devices, counts
+  its per-device connection cap by the device rather than by address, makes room for a new connection
+  when its table is full, and stops rather than keep root if the unprivileged account were missing. The
+  DoH address list is validated the way the kernel reads it, and one rejected entry no longer stops the
+  rest from loading. The Security Review reports a cron line hidden under a Reaper job name (it compares
+  the command, not just the name). Wallguard's fold, the Dreadwatch collector and the watchdog refuse a
+  directory, link or pipe planted where they read. The Wallguard save checks read each line whole, the
+  Encrypted DNS status can no longer be overridden by its own status file, a 253-character Network Tools
+  target runs whole, the Wallguard page keeps the Pause and Assign targets across its refresh, and a Save
+  on the Encrypted DNS page that changes nothing no longer restarts the server. Performance: the nightly
+  threat-list update does its parsing, filtering and counting in one pass each and no longer sorts the
+  whole list or re-parses the bundled ThreatFox snapshot every night; the threat table is rebuilt at
+  boot in the background, so DNS comes up 15 to 20 seconds earlier and the list takes effect once the
+  table lands; a history ring is trimmed once per tenth of its length rather than rewritten on every
+  append (about 2 GB a day of flash or USB writes less); the Security Review reads its settings in one
+  call instead of 37; the settings shell no longer loads jQuery and the stock state script (about 320 KB
+  per visit); and the Wallguard, Encrypted DNS, Log, VPN, IPv6 and Internet pages poll less often, only
+  the open tab, and not at all while the tab is hidden.
+- **Review 2026-10-24: the remaining quality items; a smaller image.** The image no longer carries
+  Reaper's script and style comments (a build step strips them from the staged pages only; about 300 KB,
+  40% of the settings shell), and 82 dictionary entries nothing used are gone from every pack. Helpers
+  that up to 20 pages each carried byte for byte now live once in the kit script, and 33 style rules
+  repeated across 3 to 26 pages once in the kit stylesheet (about 38 KB of page source, served once and
+  cached). Files no supported model uses leave the image after the build (ADSL and unused PHY firmware,
+  headers, kmod's binary indexes, unlinked libraries; about 2 MB - the RT-BE96U rootfs had come within
+  1 MB of its flash slot). Dead code, unused styles and a second support-table request on the dashboard
+  are gone; Wallguard and Encrypted DNS leave an unchanged config file alone; httpd keeps one page table
+  for removed and superseded pages. Every page was compared before and after in a browser engine with
+  the router's own settings: same document, same posted fields, same styles.
+- **Wallguard and Encrypted DNS: hardened before release.** A failure-mode review of both features:
+  - **Lists after a reboot.** When every list download failed (a router that boots before its
+    internet connection is up), Wallguard built a table holding My rules alone, and every retry only
+    looked for a missing table, so nothing on the lists was blocked until the 05:15 update. Such an
+    update now leaves a mark, and the lists are fetched again when the WAN comes up and every
+    10 minutes until they arrive.
+  - **Memory.** The lists held in RAM stay under 96 MB together, and none is downloaded while less
+    than 160 MB of memory is available. A list that would pass either limit is not taken, the copy
+    already held stays, and the log says why. Long-Term Storage can keep the lists on USB instead.
+  - **Hung USB disk.** The page's statistics no longer wait on the USB volume: blocked-lookup history
+    is queued and written by one background writer, so a slow or hung disk cannot freeze the web
+    interface. Two folds of the counters can no longer run at once and lose records.
+  - **Encrypted DNS address list.** Every entry becomes an HTTPS refusal for the whole network, so a
+    range wider than IPv4 /24 or IPv6 /48 is refused, and the IPv6 part stops at its set's size, so a
+    long list cannot slow a firewall restart.
+- **Diagnostics report v1.3.46 to v1.3.49.** v1.3.46 reads Dreadwatch's compiled table: the name count,
+  the gzip copies, the table's size and how many dnsmasq instances map it, with a finding when names are
+  counted but the table is missing; v1.3.47 reads that copy's time with `date -r` (this busybox has no
+  `stat`); v1.3.48 reads the settings once instead of seven times and counts the log in one pass (about
+  15 s instead of 17 to 18 s); v1.3.49 says in section 5 when `/jffs/configs/dnsmasq.conf` replaces the
+  generated DNS and DHCP config (an add-on removed without its cleanup leaves one, and it survives every
+  flash) and when a local upstream in the live config has nothing listening, each with a finding.
+- **Dictionaries.** Against v3.4.8: 1,425 tokens added and 2 reworded in all 25 packs, translated, and
+  78 removed (lockstep 8850).
+
+---
+
+## v3.4.8 — Dreadwatch, Security Review watch rules, the latency and loss chart, security-review fixes
+
+Everything in v3.4.7 is included.
+
+- **Dreadwatch: threat domains on their own page, with counts.** Reviewer feedback: name blocking
+  (dnsmasq NXDOMAIN) and address blocking (`ipset` drops) are different enforcement points, and a block
+  whose effect cannot be measured cannot be trusted. The v3.4.7 card left the Warden page for a new tab,
+  **Warden › Dreadwatch**, with its own feeds table, status and counters. dnsmasq gained two Reaper
+  options: `reaper-nx=/name/` (answered like an answer-less `address=`, but flagged as Dreadwatch's)
+  and `reaper-hitlog=PATH`, which records each NXDOMAIN answered from the list as time, asking client
+  and the listed name — at most 50 records a second and 256 KB between collections, the excess counted
+  as *Not recorded*; ordinary lookups are never recorded and nothing goes to syslog per lookup. Warden's
+  15-minute job (and each page refresh) folds the records into `/jffs/rwarden/dns.counters`: total since
+  reset, per feed, the top 100 names and devices; the newest 500 lookups stay in RAM. The page adds a
+  self-test (one query to the router's resolver, NXDOMAIN expected), a reset, and a coverage card (DNS
+  Director forcing, the Firefox DoH canary). **Needs Warden on**, as before. **Behaviour change:** the
+  list's `/jffs` copy is now `dns.nx`; the v3.4.7 `dns.cache` is replayed only when no `dns.nx` exists
+  and is removed once one is written, so a downgrade rebuilds its list at its first update. Guide 4.3.10.
+- **Security Review: watch rules, per-item accept, an acceptance log.** Reviewer feedback: expected
+  `/jffs` churn turned every run into the same list. Rules in `/jffs/reaper/review/rules` (`hash`,
+  `meta`, `exist`, `ignore` and a glob, or `cron:` / `nvram:` patterns; first match wins, 100 at most)
+  are applied by one awk engine to both the live inventory and the baseline, so an ignored path is
+  never reported as removed and a changed mode is a grey *rule changed* row, not a change. Each row
+  gets Accept, Existence only, Ignore and Ignore folder; Accept all stays. Every acceptance and rules
+  save is audited, logged with counts and up to 20 items (`reaper-audit: review …`) and appended to
+  `/jffs/reaper/review/accept.log` (200 kept; the card shows 10). The rules survive updates and ride
+  the settings export (`rwatch_rules`, validated on import). Guide 2.9.
+- **Traffic Analyzer: latency and loss get their own chart, with a real right axis.** Reviewer
+  feedback: latency showed only on the history windows, under a *Latency (right axis)* legend with no
+  right axis. A **Latency & loss** card under WAN throughput now draws round-trip time (left, ms) and
+  the one-minute loss (right, %) on every window; live it samples on each poll and holds the last reply
+  until the next 5-second probe, so the line is continuous, and on history a period with no reply is a
+  gap. `rtrafd` publishes each probe's sequence number and result (`seq`, `last_us`) for this. The WAN
+  throughput chart is back to its two traces. Guide 4.7.1.
+- **Warden: the abuse.ch feed hosts are whitelisted once.** `urlhaus`, `threatfox` and
+  `feodotracker.abuse.ch` are Fastly anycast names answered from `151.101.2.49`, `.66.49`, `.130.49`
+  and `.194.49`, inside the United States country list — the v3.4.7 ipdeny failure with US in place of
+  FR. The four addresses are added like the ipdeny entry: only those missing (bare or `/32`), appended,
+  logged, under their own one-time marker, so a deleted entry is never put back. Guide 4.3.5.
+- **Security review 2026-10-20: one medium and five low findings fixed.** IPv6 device names now honour
+  dnsmasq's hosts-clash rule, so a LAN device can no longer have its IPv6 address served for the
+  router's or another device's name (F-1; it was opt-in). The Connections page's name table ignores
+  DNS replies from LAN hosts that are not a resolver the router knows (DHCP-advertised, or one it
+  forwards to), and its backfill only accepts the answer to the question it asked (F-2, F-3). The
+  session cookie carries `SameSite=Lax` (F-4). The public-build workflows pin every GitHub Action to
+  a commit SHA (F-5). **Behaviour change:** a device held by Gatekeeper now gets every name answered
+  with the router's own address by a resolver of its own on port 5300 (run under its own name, so a
+  dnsmasq restart leaves it alone), so the sign-in sheet still appears but nothing can be looked up
+  or tunnelled (F-6). Detail in REAPER-FIXES; guide 4.2.6, 4.2.8, 4.14b.
+- **No file or folder under /jffs stays writable by every user.** Field (RT-BE88U): the v3.3.8
+  umask fix only shaped new files; anything created earlier kept 0666 through every rewrite, and a
+  full-backup restore brings old modes back - 250+ entries on the reporting box, among them
+  `/jffs/nvram/sshd_authkeys` (dropbear's authorized keys), the VPN and HTTPS private keys, the ACME
+  account and the rule lists. dnsmasq, avahi and lldpd run as `nobody`, so one compromised daemon
+  could plant an SSH key and become root. At every boot, right after /jffs is mounted and before
+  anything runs from it, the "other" write bit is removed from every regular file and folder on it
+  (symlinks never followed, FIFOs and sticky shared folders left alone, one log line with the count;
+  `reaper_jffs_perm_sweep`, `rc/ubifs.c` / `jffs2.c`). The Security Review lists any entry that has
+  it again (the card and the dashboard, one log line per change of the count). **Behaviour change:**
+  an add-on that relied on a world-writable file or folder under /jffs needs its own owner instead.
+- **Diagnostics report v1.3.42 to v1.3.45.** Section 14b gains the Gatekeeper sinkhole (pid, port,
+  redirect rule counts); section 14 a Dreadwatch line: blocked lookups in total and per feed, not
+  recorded, devices, pending hits and each feed's last result — counts only. A finding notes a list
+  that predates counting. v1.3.44 reads a missing hits file as 0 instead of printing a shell error;
+  v1.3.45 counts files and folders under /jffs any user can write (section 3, a finding when not 0).
+- **Dictionaries.** 71 tokens added and 2 reworded in all 25 packs, translated (lockstep 7503).
+
+---
+
+## v3.4.7 — security review and threat domains, login watch, the pinned USB store, device presence
+
+Everything in v3.4.6 is included.
+
+- **Security review (new, off by default).** The self-monitor can now watch for drift: `/jffs/scripts`,
+  `/jffs/configs` and `authorized_keys` by content hash, the other `/jffs/.ssh` files and `/jffs/addons`
+  by size/date, every cron entry that is not Reaper's own, and the exposure settings (NAT, forwards, DMZ,
+  UPnP, remote web, SSH, Telnet, custom scripts, WAN DNS, remote syslog, cloud sync). Nothing is reported
+  until **Accept current state as baseline** on Firewall › Status; afterwards each change set is listed on
+  that card, logged once (`rwatch: security review:`) and shown as an amber dashboard bar until accepted.
+  Advisory end to end: nothing is undone and no failure is declared. Baseline at
+  `/jffs/reaper/review/baseline` (carried by the full backup); switch `rwatch_review`; report served by
+  `reaper_watch.cgi`. Section 2.9 of the guide.
+- **Security Review on the Security Posture card.** A sixteenth posture row, paired with Warden:
+  amber *Disabled*, amber *No baseline* while the switch is on but nothing has been accepted, green
+  *Baseline* (accepted, nothing unreviewed, last check time), red *Review* with the counts of changes
+  and login notices. Painted from the same cached report the dashboard bar reads; the row opens the
+  Status tab. After a boot, while no report exists yet, the row shows *Baseline* in amber and both
+  pages say that the first check can take up to 10 minutes (the boot grace plus the next tick).
+  The diagnostics report (v1.3.41) gains the review's state and the threat-domain list
+  state in section 12 and 14, with a finding when changes or login bursts are unreviewed or a list is
+  switched on but not loaded (counts only, never the sources). Backups: the switches and the exemption
+  list ride the settings export; the accepted baseline and the domain cache ride the full backup.
+- **Security review: failed-login notices.** Ten or more failed SSH (dropbear) or web-interface
+  (httpd) logins from one source inside one 5-minute check become a notice on the review card and
+  one log line per source per hour; Accept clears them. The self-monitor reads the system log from a
+  byte cursor and reads the rotated file's tail first when the log shrinks. Advisory only.
+- **SSH over IPv6 from the internet is rate-limited.** The stock brute-force guard is IPv4-only and
+  the IPv6 rule for a WAN-open SSH port was a plain accept, at two sites in `rc/firewall.c`. One
+  helper now writes two `-m recent` rules ahead of that accept at both: the sixth new connection
+  from one /64 inside 60 s is dropped (`--update`, so a flood keeps its own block fresh). `xt_recent`
+  is built into this kernel. WAN only (`sshd_enable` 1 with the IPv6 firewall on); no switch.
+- **Warden threat domains (new, off by default).** URLhaus and ThreatFox host names, from abuse.ch's
+  public hostfiles, become `address=/host/` lines in `/tmp/rwarden/dns.conf`, included by every dnsmasq
+  instance (main and each guest/VLAN network) — a lookup of a listed name or anything under it is
+  answered NXDOMAIN. Downloads with the nightly feed update (or Update now), keeps each list's previous
+  download on a failed fetch, caps at 100,000 names, never blocks the feed hosts, your NTP, DDNS and
+  DNS-over-TLS names, the LAN domain or the names you list; restarts dnsmasq once only when the list
+  changed; `/jffs/rwarden/dns.cache` replays at boot. Only devices resolving through the router are
+  covered (DoH, own-DNS and VPN clients are not). Keys `rwarden_dns`, `rwarden_dns_feeds`; list
+  `dnsallow`. Guide 4.3.10. Also: the country-list fetch is now redirect-pinned to https like the
+  threat feeds, and the self-monitor's loopback-DNS check retries once before declaring a failure.
+- **Warden: the country-list host is whitelisted once.** `www.ipdeny.com` (51.15.12.186) is hosted in
+  France; with FR selected and the router-self filter on, Warden dropped its own list downloads, the
+  15-minute update budget ran out and countries added after that never loaded (27 of 79 on the reporting
+  box, shown as blocked). The address is added to the whitelist once, visibly and removably; the update
+  now logs a country that has **no** data as *NOT blocked* and names every such country in one closing line.
+- **Devices page: presence behind an AiMesh node.** A client the node left out of its client list read
+  *Wired* and stayed *connected* for the bridge's 5-minute ageing after it left. A radio-port or backhaul
+  sighting older than 90 s is no longer presence; an unlisted client behind a wireless backhaul reads
+  *Wi-Fi via that node*. Cabled devices on the router's own ports keep the full ageing. The page also
+  refreshes on its own now, every 15 seconds while it is visible and never under an open dialog or a rename
+  in progress; it used to fetch once.
+- **AiMesh channel fit: the node's backhaul stayed off; unknown DFS status counts as DFS.** Owner (RT-AX92U
+  node, v3.4.6): the node drops channels 116–128 on its 30-minute radar lock-out and, being 160 MHz wide,
+  cannot hold 100/160 then; the fit rated 100/160 usable under the 80 MHz cap and read the router's own
+  cleared DFS block as non-DFS. A node that does the width now needs the whole channel, flag 4 in the
+  controller's list is DFS, and a channel a node stops listing is held for six hours (confirmed on the
+  owner's mesh: the 5 GHz backhaul up on 149/80 from boot). Region-neutral: when the router's own entry is
+  missing from the mesh channel lists an undetermined channel is no longer treated as radar-free, so the fit
+  cannot re-allow or move onto a DFS channel on a guess; it holds and says why.
+- **Front-chain watchdog names the rule.** A `front-chain-drift` now logs the offending rule text (for
+  example `-A FORWARD -i tailscale0 -j ACCEPT`) and the fix; built-in targets listed in
+  `/jffs/reaper/front_exempt` are ignored and logged (listing `ACCEPT` there exempted every blanket accept).
+  Guide 2.9 shows how a script inserts after Reaper's hook instead of at position 1.
+- **Long-term storage: one pinned USB volume.** Field (RT-BE86U, one SSD with two partitions): both
+  partitions grew Reaper's history folders and the traffic history was split between them, because each
+  writer took "the first mounted volume" and the mount order changes from boot to boot. The store is now a
+  pinned volume: a box already set to USB adopts the volume that holds its history (the most recently
+  written one when both do) once it has settled after boot; the Storage page lists the mounted volumes and
+  the pin with its state; a missing pinned volume is waited for (history stays in RAM meanwhile), never
+  replaced by another. Keys `reaper_store_vid`, `reaper_store_vname`.
+- **Traffic Analyzer: the Latency and Loss tiles no longer vanish.** The live figure was the running average
+  of the open 5-minute bucket, so it read 0 right after every boundary and for as long as the target was
+  unreachable, and the page dropped both tiles on a 0; it now comes from the last 60 seconds of probes. With
+  the collector switched off the page says so once, with the switch, instead of drawing empty charts under
+  a green *Live* pill (field, BQ16); its status chips use the two standing colours.
+- **Firmware page: mesh nodes are no longer all badged "Different version".** The node's version string was
+  compared with the display form of the router's own, which can never match; version keys are compared now
+  (the MCP/noMCP variant and a test build's suffix are not differences; a stock node still reads different).
+- **Traffic Manager: the Guaranteed-minimums alert and its help now say 85%,** the engine's intended budget,
+  instead of 100%.
+- **Dictionaries.** 104 tokens added and 5 reworded in all 25 packs, translated (lockstep 7432).
+
+---
+
+## v3.4.6 — the channel picker follows the AiMesh nodes, portal passcodes, WAN link reset, Merlin 3006.102.10 carries
+
+Everything in v3.4.5 is included.
+
+- **AiMesh: the 5 GHz channel picker stays on channels every node can use.** Field (owner RT-BE96U with an
+  RT-AX92U node, MLO on): after a failed DFS check the radio's own fall-back parked it on a channel the node
+  could not follow, inside the mesh controller's exclusion list, for two hours. The main router now reads the
+  per-node channel lists the AiMesh controller already collects, fits each radio to the block every node can
+  use, and hands those exclusions to the picker. When the exclusions in force leave the nodes nothing but DFS
+  channels, the stock Auto-width exclusions every node can use (149–161 at 80 MHz, in the US) are allowed
+  again and written through to the running picker; a radio found outside the plan for a minute is moved to a
+  channel the nodes can use, and the controller holds still while a node is joining. On by default and inert
+  until a node is registered; switch on the Wireless page, status in Diagnostics (`node fit:`). Logged as
+  `reaper_bwfloor: wlN: channels fitted to N AiMesh node(s) ...`. Host test `test_mesh_chanfit.py`.
+- **Guest network portal: a passcode of 16 or more characters failed every sign-in.** The portal only uses the
+  first 16 characters of what the visitor types, and the stored passcode is compared whole. The passcode field
+  now stops at 15 characters, a longer value is refused on save, and a profile that already holds a longer one
+  shows a hint; the stored value is left untouched.
+- **10G fibre ONTs that drop packets (Nokia ONTs reported):** the ONT does not complete the Energy-Efficient
+  Ethernet handshake. EEE was already switched off on every port at boot; the WAN port is now also power-
+  cycled at switch init on every model, so the link renegotiates before EEE goes off. The fix is ASUS's own
+  (GPL 102_40585) as merged by Eric "Merlin" Sauvageau in Asuswrt-Merlin 3006.102.10; the LAN-port bounce
+  and the external-PHY reset that come with it are not taken. Verified on the owner's 10G WAN; the ONT case
+  itself needs a reporter with that ONT.
+- **Hardening carried from Eric "Merlin" Sauvageau's Asuswrt-Merlin 3006.102.10:** wanduck's socket cleanup,
+  `Host:` parsing and resolver error text; a WPS PIN must be digits only (a PIN such as `0;reboot` passed the
+  checksum and reached the hostapd command line); eight httpd upload handlers no longer walk past a missing
+  header boundary; `nvram_check()` and `validate_apply()` guard their NULLs; the unused Main_AdmStatus
+  system-command route is gone; the IPsec ICMP rule uses the real LAN netmask; LLMNR bounds its loop entry;
+  the USB mount check reads labels of any length (a stack overflow on escaped labels) and no longer leaks a
+  file handle; Time Machine, libdisk and minidlna take the upstream fixes verbatim. Two refinements were
+  deliberately not taken (see the commit message).
+- **Repository: the public history was rewritten on 2026-10-17** — test fixtures, docs and patch text now use
+  documentation addresses (RFC 3849/5737/7042) instead of real network values, and two vendored packages
+  no longer carry their upstream test trees. Anyone with a clone or fork needs to re-clone; the published
+  images and provenance records are unchanged. **Build gates:** the repo's personal-data scan runs on every
+  push and in the cut, and every image is checked for private-key material before it ships (the only
+  allowed blocks are GnuTLS's six public self-test vectors, pinned by hash).
+
+## v3.4.5 — a factory Reaper router joins AiMesh as a node, mode changes stay in Reaper
+
+Everything in v3.4.4 is included.
+
+- **AiMesh: a factory-fresh Reaper router could not be added as a node** (field: a ZenWiFi BQ16 under a
+  GT-BE98 main router with MLO on stopped at "Unable to add" near 24%; the same unit on stock firmware
+  joined). Reaper ships the WPS setting off, and the rule that turns WPS on for a radio kept the AiMesh
+  join inside that setting, so the box came up with WPS disabled on the band the join uses. On a box that
+  has never been set up, while it joins a mesh, that band now gets WPS for the join only; the WPS setting
+  itself is never changed, and the reboot that ends the join closes the window. Logged as
+  `aimesh: wlN: WPS on for the AiMesh join of this factory box`. Host test `test_aimesh_wps_enrollee.py`.
+- **Operation mode: Access Point, Media Bridge and the return to Router stay in Reaper.** They used to
+  leave the shell for ASUS's setup wizard. A Reaper step page writes the same settings the wizard writes
+  (checked against the wizard's own source), picks the Media Bridge parent from the Site Survey scan and
+  restarts the router. The MLO page's "Get started" opens the Wireless console. Repeater and AiMesh Node
+  still use the stock wizard. 85 new strings in all 25 languages. Host test `test_mode_setup.py`.
+- **QoS page: two colours only.** Every chip on the engine cards is green (something the engine does) or
+  amber (something it lacks or costs); Hardware QoS's "Upload only" and "No classes" are amber.
+- **Build gate:** a release marker quoted a dictionary token, which the web install turns into a number,
+  so it could never match; markers now pin token-free text.
+
+## v3.4.4 — AiMesh with a Reaper main router, the hostapd "-30" errors, quieter logs
+
+Everything in v3.4.3 is included.
+
+- **AiMesh: a Reaper main router could not upgrade its nodes, and nodes misreported the version.**
+  Reaper's firmware scripts now follow the stock ones in the GPL tree. Stock `ssl_webs_upgrade.sh` treats
+  `start_webs_upgrade 1` as "download and verify only" - the step AiMesh runs on every unit before it
+  flashes them; `reaper_webs_upgrade.sh` ignored the argument and flashed and rebooted the main router
+  mid-upgrade. It now downloads, verifies and waits for AiMesh's flash step. `webs_state_info` uses the
+  stock firmware-version layout (`3006_102_8_Reaper_v<ver>`) that the update notice reads; nodes showed
+  `3.0.0.6.Reaper_v...`. The firmware page takes the mesh path whenever nodes are registered (it was
+  forced off). The AiMesh page says AiMesh starts once the router setup is done and links the setup box.
+  The `aimesh:` onboarding log lines are throttled. Host test `test_aimesh_interop.py`.
+- **`WLC_SCB_DEAUTHORIZE error (-30)` after a client left.** The kernel log showed this pair after Wi-Fi
+  clients disconnected, most often when the router itself disconnected one (a Roaming Assistant kick,
+  for example). -30 is Broadcom's "not found": hostapd was asking the driver to de-authorize a client the
+  driver had already removed. When the driver reports a disconnect, hostapd no longer sends that request,
+  at the three places in hostapd that did; Broadcom's hostapd already skipped removing the station in
+  that case. Owner box: 9 such errors per boot window down to 1; a disconnected client reconnects with a
+  fresh key handshake and no error. Host test `test_hostapd_driver_ind.py`.
+- **"RADIUS: starting accounting session" on every connection, with no RADIUS configured.** hostapd logged
+  it before checking for an accounting server; nothing was ever sent. It is logged only when an accounting
+  server exists. Host test `test_hostapd_accounting_log.py`.
+- **USB: every NAS app restarted once per partition.** A disk with two mountable partitions, or two disks
+  at boot, stopped and started Samba, FTP, the media server and UPnP twice. Each mount or unmount now
+  starts a 3 s settle window and only the last one restarts the apps. Host test `test_nasapps_settle.py`.
+- **Samba restarted on every WAN event - twice with the WireGuard server on.** Open SMB sessions dropped
+  on each lease change or PPPoE reconnect. Samba now restarts only when SMB over the WAN is on or br0's
+  IPv6 addresses changed; the WireGuard hook, which regenerated an identical config, no longer restarts
+  it. Host test `test_samba_wan_restart.py`.
+- **QoS page: the engine cards.** Plain chips are readable instead of looking switched off; every card
+  names the accelerator first (the Bandwidth Limiter turns it off and now says so); Classful shows its
+  optional download cap; Traditional shows that it shapes both directions with classes. Colors will be updated in v3.4.5 to communicate functionality better. Host test `test_qos_card_chips.py`.
+- **Header tooltip: "Details: System Log"** pointed at a log that holds nothing while the LAN name check
+  works; it now says failures and recoveries are recorded there, translated in all 25 languages (it was
+  English everywhere). Host test `test_landns_tooltip_text.py`.
+- **Diagnostics v1.3.39.** Section 4c reads DNS Director per network and says which networks the global
+  mode does not reach; section 10 reads hardware QoS on the port it really shapes (and says when there is
+  none); section 16 probes every gateway of a multipath route; section 5 names resolvers by kind. Host
+  test `test_diag_sanitizer.py`.
+- **CI:** the build container shares the runner's network, so it resolves names the way the runner does
+  (one job of 18 lost its DNS and failed in seconds).
+
+## v3.4.3 — packets dropped at the Runner on IPv6 DNS-over-TLS, radios lost on a network restart
+
+- **A packet with more than four fragments was dropped at the Runner (field, GT-BE98).** The Runner's CPU
+  transmit path takes at most four page fragments per non-GSO packet (`RUNNER_MAX_SG_FRAGS`); the closed
+  `bdmf` refuses the rest and the prebuilt `enet` driver drops the packet, logging `skb->nr_frags N exceed
+  max_sg_array 4`, and the retransmit carries the same fragments and is dropped again. stubby writes small TLS
+  records to several upstreams from one thread, so once the upstream round trip is long - IPv6 DNS-over-TLS
+  through a 6in4 tunnel, any broker - a packet collects 5-10 fragments. The kernel now linearizes a non-GSO
+  packet with more than `net.core.reaper_tx_sg_max` (4; 0 = stock) fragments before the driver sees it;
+  `net.core.reaper_tx_sg_linearized` counts how often. On an older image `net.core.max_skb_frags=4` is a
+  no-build workaround. Host test `test_kernel_runner_sg_cap.py`; `reaper_verify` section 28 checks the kernel
+  that was built.
+- **5 GHz and 6 GHz radios dead after a network restart with Dynamic puncturing on.**
+  `restart_net` (an IPv6 or LAN change), `allnet`, `net_and_phy` and `wps_enr` tore the radios down without
+  stopping the radio readers - rpunctd arms a 4 s measurement window on every Dynamic radio each tick,
+  reaper_bwfloor and rchqd read every 15 s and 10 s - and never dropped `wlready`, so rpunctd's own guard was
+  blind; the wl1 and wl2 dongle firmware trapped seven seconds in and stayed down until a power cycle while
+  every client sat on 2.4 GHz. The readers now stop beside `stop_acsd()` in every teardown branch and in
+  `restart_wireless`, an armed window is waited out, and each reader also pauses on its own while `rc_service`
+  names a radio-stopping service. Confirmed on the owner box: two `restart_net`, radios up, no trap. A trapped
+  dongle cannot be revived from userspace (`dhd devreset` re-downloads the firmware and it traps again), so
+  prevention is the whole fix. Host test `test_wl_readers_quiesce.py`.
+- **Diagnostics v1.3.38.** Section 15 reports the Runner cap, `max_skb_frags`, the refused-packet lines (the
+  syslog count anchored on the kernel's own line) and `tx_dropped` per port; section 5 counts DNS-over-TLS
+  upstreams by family; section 7 names a radio that is on but whose driver has no adapter; 19b counts dongle
+  traps, lists the crash dumps by name and prints the restart that preceded each; the dmesg summary no longer
+  masks "exceed" as "N". Host test `test_diag_sanitizer.py`.
+
+## v3.4.2 — the TCP-load hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes
+
+Replaces the withdrawn v3.4.0 beta; everything in v3.4.0 and v3.3.9 is included.
+
+- **v3.4.0 hung or rebooted under TCP load (field, two boxes).** The v3.4.0 hunk for CVE-2024-50154 dropped
+  `timer_pending()` from `reqsk_queue_unlink()` without upstream's `from_timer` guard, so the request-socket
+  timer's drop path called `del_timer_sync()` on the timer it was running from: a self-deadlock, a hang or a
+  reboot under `PANIC_ON_OOPS`. `__inet_csk_reqsk_queue_drop()` carries the guard now, as 4.19.y does; the
+  exported API is unchanged. Host test `test_kernel_cve_onehunk_set.py`.
+- **A fixed WAN port is the factory default.** Stock Auto-detect (`autowan_enable=1`) can only find the WAN by
+  bridging every candidate port into the LAN, so a new or factory-reset router joined its ISP port to the LAN
+  once. The factory default is now the port labelled WAN with Auto off; Auto stays a choice on the WAN Ports
+  page, and on the fixed-port path lldpd no longer binds a WAN interface. An upgrade keeps the stored choice.
+  Host test `test_factory_defaults_off.py`.
+- **Three DNS Failover switches start off at factory.** Device names across networks, IPv6 device names and
+  the LAN name resolution check start off, like the other three switches on that row; each is a click away,
+  and an upgrade keeps the stored values. Host tests `test_factory_defaults_off.py`, `test_rev_server.py`.
+- **The stock setup wizard is reachable from AiMesh add-node only.** Four live paths still led into it on a
+  box that has no wizard: the default CGI, wanduck's first-use captive redirect (and the first-use "direct
+  rule" that held a connected box's NAT), the LAN-subnet landing pages and a dead menu entry. All closed; a
+  factory box is usable at once and stays discoverable as an AiMesh node. The one wizard flow Reaper keeps -
+  AiMesh add-node / node mode - runs in the Reaper palette, with a centred title, progressive wording and a
+  prerequisites box in all 25 languages. Host tests `test_qis_default_retired.py`, `test_wanduck_firstuse.py`,
+  `test_qis_theme_append.py`, `test_amas_pages_i18n.py`.
+- **A first boot in a DST zone kept the stock DST rule (field, US clock an hour behind).** Nothing had replaced
+  the stock default `time_zone_dstoff` since the wizard was retired. The setup page writes the chosen zone's
+  rule from the bundled zone table, and Apply waits for the table (the reply, a failed fetch, or 8 s). Host
+  test `test_firstboot_dstoff.py`.
+- **lldpd CVE-2026-46433.** The VLAN tag strip moved `s - 12` bytes from offset 16, four past the receive
+  buffer: a heap over-read any L2-adjacent host triggers with a tagged frame of MTU size. Both vendored trees
+  carry upstream's fix. Host test `test_lldpd_vlan_strip.py`.
+- **OpenVPN 2.7.8 security fixes backported** onto the 2.7.7 tree: CVE-2026-88964 (unsigned underflow when a
+  pushed `domain_search_list` is cleared), CVE-2026-84790 (certificate subjects with embedded NUL bytes
+  accepted) and two hardening commits. The reported version stays 2.7.7; the full 2.7.8 import is for the
+  next component rung.
+- **Samba's private directory is 0700.** The runtime directories created before enrollment (v3.4.0) came from
+  `mkdir_if_none`, which makes them 0777; `/var/lib/samba/private` (secrets.tdb, the messaging sockets) is
+  0700 on every start. Host test `test_samba_enroll_dirs.py`.
+- **IPv6 device names no longer empty the DNS cache.** `rv6names` signalled every dnsmasq instance whenever any
+  names file changed, and dnsmasq's SIGHUP drops every cached answer; one instance per names file now, a
+  15 min hold on a changed set and 5 min pacing. Host test `test_rv6names.py`.
+- **Diagnostics v1.3.37.** The sanitizer runs as a pipeline of targeted stages, each with its own ledger line
+  and no report when a stage fails; a routed IPv6 prefix, reverse-zone nibbles and a DHCPv6 DUID are redacted;
+  a client's DHCP domain and name are masked wherever dnsmasq or Gatekeeper prints them; a generic device/OS
+  word used as a client name is masked at its template position only. Host test `test_diag_sanitizer.py`.
+- **rwatch on a pre-NTP boot.** A no-WAN boot runs at the 2023 clock while the last bundle's stamp holds real
+  time, so the incident dump was "suppressed" for the one boot that needed it, and the recovery line counted
+  years of outage. A stamp ahead of the clock throttles nothing, the outage timer runs on uptime, and the
+  FAILURE line follows the dump. Host test `test_rwatch_clockstep.py`.
+- **Also:** the LAN name check asks every upstream at once instead of one wait per server (host test
+  `test_landns_check.py`); the DNS Failover status poll parses its reply once. Docs: the guide gained a full
+  factory-defaults section (8) and a review of every feature page.
+
+## v3.4.0 — SMB login works on the first start, the LAN name check, the header tooltip on every page, five kernel CVE fixes
+
+- **SMB login was refused after the first Samba start of a boot (field, RT-BE96U).** `start_samba()` enrolled the
+  accounts with `smbpasswd` before the block that creates `/var/lib/samba/private`. Samba 4.15's `smbpasswd`, run
+  as root, opens `secrets.tdb` there before it touches the password file and exits 1 without a message when the
+  directory is missing; `/var` is tmpfs, so the first Samba start of every boot left `/etc/samba/smbpasswd` empty
+  (smbd logs "did not exist. File successfully created.") and every login was refused until something restarted
+  Samba. Reaper defaults Samba off, so for most users the first start is the GUI switch-on. The directories are
+  created first now, and an enrollment that fails is logged by account name. Host test `test_samba_enroll_dirs.py`.
+- **LAN name resolution is checked, and the Dashboard says so.** The Internet status read "Connected" whenever the
+  WAN held an address, even when LAN devices could not resolve a single name. `rdnshc` now asks the path LAN
+  devices use once a minute - the router's DNS for `localhost` and for a random name under a configurable domain,
+  or the servers DHCP hands out - and publishes `reaper_landns_state`. While it fails the Dashboard's Internet dot
+  and word turn amber and a tooltip on the WAN pill and the Internet card names the state, how long, and the
+  silent servers. Status only: nothing is moved or reloaded. Switch, domain and live state on the DNS Failover
+  page (`reaper_landns_enable=1`); Diagnostics v1.3.34 reports it. Host test `test_landns_check.py`.
+- **The header's Internet tooltip on every page.** It lived on the Dashboard only; every other page is framed in the
+  shell, whose header had the pill but not the tooltip. The shell carries the same box, readings and colours, and
+  its pill now matches the Dashboard: Connected if IPv4 or IPv6 is up, the danger colour when down, the mode name
+  in AP / repeater / bridge mode. Host tests `test_landns_check.py` (the shared functions diffed verbatim),
+  `test_shell_nettip.py` (the header code run under node for five states).
+- **Five kernel one-hunk CVE fixes** from the 2026-08-30 check: CVE-2023-52881, CVE-2024-47684, CVE-2024-50154,
+  CVE-2023-6932, CVE-2024-50299 - the 4.19.y stable hunks, no ABI change; all LOW on this platform, three of
+  them reboot-class under `PANIC_ON_OOPS`. Host test `test_kernel_cve_onehunk_set.py`.
+- **Firewall and Policy Routing list saves are POSTed.** A hosts list the CGI accepts became a 10.7 KB GET line for
+  CIDRs against httpd's 10 KB request-line buffer: a 400, and the page kept rows the router never stored (field,
+  RT-BE88U). The list travels in the request body, a failed save resyncs the page, and the whole list is
+  pre-checked before the save. Host test `test_fw_list_post.py`.
+- **cru adopts a crontab orphaned by a login rename.** crond ignores a crontab whose name is not in `/etc/passwd`,
+  and a login rename without a reboot rebuilds the file under the new name - every boot-registered job (rwatch,
+  Warden, the PBR deadline watcher) was dead until the next reboot (field, GT-BE98 v3.0.0). Host test
+  `test_cru_adopt.py`.
+- **Navigation rail icons unified** between the Dashboard and the shell: the Reaper menus (Gatekeeper, Warden,
+  Advisor, System Info, IPv6) no longer fall to the default glyph on framed pages. Host test `test_nav_icons.py`.
+
+## v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
+
+- **GT-BE98 / GT-BE98 Pro main routers were unusable on v3.3.8 (field, three GT-BE98 Pro units).** v3.3.7 made
+  hardware QoS resolve an 802.1Q WAN device to its parent port so a PPPoE line is shaped on its physical port. On
+  the boards with the external 2.5G switch (GT-BE98, GT-BE98 Pro, GT-BE96, GT-BE19000) the "2.5G WAN/LAN-1" jack is
+  `vlan4094` on `eth1`, and `eth1` is also LAN-2..4 and a wired AiMesh backhaul - so the whole shaper (queues
+  rebuilt, PI2, the port shaper at the upload rate) landed on the LAN trunk: load 17, `ksoftirqd` and `bcmsw_rx`
+  burning, 45 of 2400 flows accelerated, eight daemons stuck on `rtnl_lock`, a wired node unable to rejoin. v3.3.6
+  had pointed `tmctl` at `vlan4094` itself, which it refuses, so hardware QoS on that jack was silently inert. A
+  resolved parent that is a bridge member or in `lan_ifnames` is now never shaped: both engines refuse to arm with
+  one syslog line, and the QoS page says so next to the engine choice. A PPPoE session over an ISP VLAN on a
+  dedicated WAN port still shapes its parent. Confirmed by the reporter on test images. Host tests
+  `test_hwqos_lan_trunk.py`, `test_hwqos_pppoe.py`.
+- **ZenWiFi BQ16 / BQ16 Pro: the client list was empty from the first build.** Every page fed by
+  `get_clientlist()` - the Dashboard counts, the stock client list, the AiMesh topology's per-node counts - read
+  networkmap's shared-memory client table through a struct with one member gated on `RTCONFIG_CAPTIVE_PORTAL`.
+  The prebuilt networkmap (the same ASUS build on every BCM4916 model) writes that member; the BQ16 and BQ16 Pro
+  are the only models built without Captive Portal, so their httpd read the entry counters 256 bytes early: a
+  zero count. The member is now unconditional (an ABI pin, like the bwdpi block next to it). Host test
+  `test_networkmap_abi_pin.py` compiles the table under both flag sets and requires one size.
+- **GT-BE19000: the clean room ships the same networkmap build as every other model.** Its platform archive
+  carried the GPL 39274 networkmap, whose client table predates `mlo_links`/`is_re` - the defect that emptied the
+  GT-BE98 list at v1.5.9. `ci/container_build.sh` now copies canon's hash-pinned reference binary over the model's
+  prebuild dir after the archive is unpacked and proves it by hash (`test_networkmap_prebuilt_parity.py`). Not yet
+  seen on hardware; the model has no router-mode tester.
+
+## v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
+
+- **First image with the v3.3.7 changes.** v3.3.7 produced no fleet images: v3.3.7 removed the `rc/Makefile`
+  line that compiles `reaper_chanlist_shim.c`, so the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro failed to link `rc`
+  (their closed rc objects lack `wl_scb`, `backup_eth_ob_log` and `is_wan_port_ext_switch`, which the shim stubs).
+  Separately, every noMCP image failed `reaper_verify` on markers for MCP-only files. The line is restored;
+  `verify_markers.txt` takes an optional variant field (`|MCP` / `|noMCP`). Host tests
+  `test_sibling_rc_units.py`, `test_verify_markers_variant.py`.
+- **Kernel: CVE-2026-43198 (audit V8).** An IPv4 client connecting to a dual-stack listener gets a v6-mapped
+  child socket, which was published in the established hash while its `pinet6` still pointed at the listener's
+  `ipv6_pinfo`; another CPU could use it in that window. Port of upstream 858d2a4f67ff (5.10.y aef4a9ae):
+  `__tcp_v4_syn_recv_sock()` runs a child-init hook before the child is hashed. The exported
+  `tcp_v4_syn_recv_sock()` and the af_ops signature are unchanged. Host test `test_kernel_tcp6_mapped_race.py`.
+- **rc runs with umask 022 (field, GT-BE98).** rc ran with umask 0, so a file any rc-started process created
+  without an explicit mode was 0666 - writable by the non-root services (dnsmasq and tftpd as `nobody`,
+  Entware daemons). ASUS's own commented-out `umask(022)` is switched on after sysinit's directory block, so the
+  directories ASUS creates 0777 keep their mode; vsftpd, Samba and tftpd set their own. **Behaviour change:** such
+  files are now 0644; an add-on that wrote into one as a non-root user must set its own mode. Host test
+  `test_rc_umask.py`.
+- **Traffic Analyzer: Top Devices and Top Talkers show 10, 20, 30 or 50 rows.** A selector per table (remembered
+  in the browser), fixed column layout and padded rows so the table does not jump; `rtrafd` keeps 64 top-talker
+  slots (was 20).
+
+## v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
+
+- **IPv6 coverage review (2026-10-07) and remediation.** Twelve Reaper surfaces that were IPv4-only now
+  handle IPv6: Gatekeeper's captive check, Service Intercept (redirects for both families, a DNAT twin
+  with an IPv6 target), the watchdog (`wan6-gw` / `wan6-internet`), SNMP (`udp6` agent address), DHCPv6
+  names, Flow Explorer (every IPv6 conntrack entry is a row, LAN ends named through the neighbour cache),
+  the passive name map (16-byte keys, AAAA records), Devices (IPv6 addresses, DHCPv6 leases bridged to
+  their devices, DHCPv6 reservations kept as host suffixes), the Traffic Analyzer (IPv6 labels and
+  ICMPv6 probes), the Advisor (a listener on the router's own LAN IPv6 address), Warden (an "IPv4 only"
+  chip) and the diag. Shared helpers: `reaper_nd` (neighbour cache), `reaper_dhcp6`. Host tests
+  `test_reaper_nd.py`, `test_devices_ipv6.py`, `test_ipv6_twins.py`, `test_ipv6_daemons.py`.
+- **A 6in4 tunnel day on the maintainer's box (2026-10-08) found five defects, all fixed.** Stock
+  `stop_ddns()` re-restored the whole IPv4 filter table from a snapshot taken before the guest rows,
+  Gatekeeper, Warden and the rules engine were added, so every DDNS stop deleted them; it now deletes only
+  its own rule (`test_filter_restore_sites.py`). The watchdog's rules-engine heal was refused by
+  `reaper_lockrun` (not allowlisted) - now listed (`test_lockrun_allowlist.py`). Rule Status modelled the
+  IPv6 egress as the IPv4 WAN device - walker v1.9 follows the tunnel. The watchdog's tunnel note names
+  the cause. The Network editor's IPv6 switch stays on screen for wired-only VLANs.
+- **DNS health check, dual-stack.** Both faces of a LAN resolver named by an IPv4 and an IPv6 address
+  are probed every tick; the IPv6 line sits directly behind the IPv4 line; a face that stops answering
+  is moved behind the other servers on its own; the intercept gate closes per address family; nothing
+  touches the IPv6 side while IPv6 is off (`reaper_resolv_order`, `test_rdnshc_order.py`). DNS Failover
+  shows an IPv6 status line.
+- **Names across networks.** The main LAN's resolver forwards each VLAN's reverse zone to that VLAN's
+  resolver and back (`rev-server`), never VLAN to VLAN, never guest or portal networks
+  (`test_rev_server.py`). **IPv6 device names:** `rv6names` maps each LAN device's current IPv6 addresses
+  to its DHCPv4 name every minute and gives each network's resolver its own addn-hosts file, reloaded
+  once on change (`test_rv6names.py`; `test_dnsmasq_start.py` starts the shipped dnsmasq with every
+  directive Reaper writes, after a `hostsdir=` build stopped dnsmasq). Both are switches on DNS Failover,
+  on by default.
+- **Dashboard and client lists show IPv6 without a reload.** The Internet card's IPv6 half is re-read
+  on every poll (it was painted once at load) and polls fast while IPv6 is configured but not yet up;
+  `get_clientlist` fills a missing global IPv6 address of an online client from the neighbour cache.
+- **Connections:** IPv6 endpoints in canonical form, each LAN end named by MAC, Internal/External from
+  the LAN flag; IPv6 entries of the accelerator flow table are skipped (they were parsed as IPv4 and
+  showed as "2001").
+- **Security.** DDNS request logs redact the provider credential and the client config is owner-only
+  (CVE-2026-16528 class). Review 2026-10-07: two pre-login rows for a removed cloud feature compiled out,
+  stock proxy rows and links removed, archive wildcards and three retired-flow pages behind a login, the
+  offline page's WAN poll trimmed, dead code removed. **/tmp hardening (audit F1/V3):** the four
+  `fs.protected_*` protections on at boot, every Reaper directory created root-only at boot and checked
+  at each use, about 45 loose Reaper files moved into `/tmp/reaper`, fixed-path files created fresh and
+  never through a link, a script run only when it is a root-owned private file, the firmware download
+  created under `umask 022` and checked before the flash (`test_tmp_hardening.py`). **The app network
+  installer is removed (V11):** it ran plain-HTTP packages as root and the vendor host's HTTPS serves an
+  incomplete certificate chain; the USB Application page, the USB mount chain and the disk check stay.
+  Site Survey CSV export guards against spreadsheet formulas (V10); five dangling `/tmp` links gone (V5).
+- **Hardware QoS shapes on a PPPoE line (field, GT-BE98).** Both hardware engines took their port from
+  stock `get_wan_ifname()`, which returns `ppp0` on PPPoE / PPTP / L2TP; the Runner traffic manager has
+  queues only on physical ports, so every `tmctl` call failed (rc=108) and nothing was shaped -
+  classification marked packets and nothing acted on the marks. The engines now program the port the
+  session rides on (`wanX_ifname`, an 802.1Q VLAN resolved to its parent) and log which port they shape.
+  The shaper then counts PPPoE's 8-byte header, so set the upload a little under the line. Host test
+  `test_hwqos_pppoe.py`.
+- **Rule Status walker v1.10:** a stand-in host is never an address a device holds (ARP, leases,
+  reservations).
+- **Firewall page:** Apply, Keep and Revert dim at once and poll until the router reports the state, so
+  the first click is no longer refused as a double apply.
+- **Devices page:** the table card sizes to its rows instead of clipping the last column.
+- **Diagnostics v1.3.31-v1.3.33:** per-network IPv6, the health check per family, the tunnel, reverse
+  DNS and IPv6 names, the /tmp hardening, and the dynamic-puncturing gain and interval actually applied.
+- **Language packs:** a full-firmware sweep of cross-pack copies, homoglyphs and borrowed tokens; new
+  tokens in all 25 packs.
+
+## v3.3.6 — the WAN port stays out of the LAN, WAN Ports replaces the Dual WAN tab, a quieter Traffic Analyzer, real Site Survey security names
+
+- **Auto WAN port detection no longer bridges the internet port into the LAN at every boot and link
+  drop (owner).** Stock detection finds the port by adding every candidate to `br0` and running a DHCP
+  client on the bridge; the closed `restore_auto_wanport()` redid that at each boot and each WAN link
+  loss, so the ISP port carried LAN traffic for ~35-45 s every time (only DHCP and RS/RA were
+  filtered). Now the first port that carries the WAN is pinned (`reaper_wanport`): the restore calls
+  are skipped, wanduck stops relaunching the search, and `_eval` refuses a `brctl addif` of that port
+  while Auto is on and Dual WAN is off. A fixed port clears the pin; **Detect again** (or
+  `service start_reaper_wanredetect`) runs one search. Dual WAN, AP mode, IPTV, bonding, static WAN and
+  MAC clone are untouched (stock `is_auto_wanport_enabled()` gate); a new or reset router still
+  starts on Auto. Host test `test_wan_pin.py`.
+- **WAN > WAN Ports replaces the Dual WAN tab.** The only place to pick the WAN port was the Dual WAN
+  tab, and nothing said Auto searches several ports even with Dual WAN off. The native page shows the
+  ports (Auto with its explainer and the pinned port), Dual WAN, monitoring, Load Balance rules and the
+  ISP profile; the stock page redirects to it and is unchanged. Its apply is a port of the stock
+  `applyRule()`: a mock parity harness drives both pages through 28 scenarios (incl. three refusals)
+  and finds the same nvram changes. One deliberate difference: a legacy single-WAN `lan` on the combo
+  port shows that port instead of silently selecting Auto. `RWAN_1..22` in all 25 packs.
+- **Traffic Analyzer stays quiet on a busy conntrack table (field, RT-BE88U: rtrafd at about one core
+  with ~10.7k entries from a LAN DHT crawler).** The conntrack pass is paced by its own measured cost
+  (near 3% of one core, 2 s floor, 30 s ceiling, one log line per change), every rate and staleness
+  figure uses the measured interval, and the connection health probe counts inside the same pass
+  instead of a second full read. Host test `test_rtrafd_pacing.py`.
+- **Site Survey shows real security names (field: WPA2/WPA3 networks read "WEP").** This platform's
+  `wl` prints the privacy bit as `WEP` on every protected network and the RSN header as
+  `RSN (WPA2):`; the parser matched only `RSN:`. Both forms are read now and the AKM suites fold into
+  one name: WPA2-Personal, WPA2/WPA3-Personal, WPA3-Personal, WPA/WPA2-Personal, WPA2-Enterprise, OWE.
+  An empty band (6 GHz with no network in range) reads as empty, not as a refused scan, and the list's
+  heading row stays in view while it scrolls.
+- **Audit 2026-10-06 fixes.** The stock download row for the WireGuard client configuration image
+  (`wgs_client.png`) needs a login (it carried a client's private key); rdnsmapd accepts DNS replies
+  from LAN bridges only, so nothing on the WAN side can plant Flow Explorer names; strongSwan carries
+  the 6.0.6 security set. See `REAPER-FIXES.md`.
+- **Flow Explorer:** the Advanced detail panel glides to the reader with one measurement per frame
+  instead of jumping on every scroll event.
+
+## v3.3.5 — an update keeps the DTIM Interval you set
+
+- **A firmware update no longer changes the DTIM Interval (field: 3 → 1 after flashing v3.3.4).**
+  v3.3.4 set `wlN_dtim=1` on the first boot that found no `/jffs/reaper/.dtim1` marker. The marker
+  was new in v3.3.4, so every flash over an earlier Reaper replaced the value the user had chosen.
+  `reaper_dtim_default()` and its call before `start_lan()` are removed. 1 stays the compiled
+  default, which only a router with no value set receives (a new box or a factory reset). The
+  build gate now requires the old log line to be ABSENT from `sbin/rc`.
+- **The v3.3.4 prereleases are withdrawn.** v3.3.5 is v3.3.4 plus this fix and nothing else. A
+  router that already ran v3.3.4 keeps whatever DTIM it has now; one that was reset to 1 shows
+  "DTIM interval set to 1 ... (was N)" in the system log - set it again under Wireless > Wireless
+  Settings.
+
+## v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
+
+- **A real Site Survey replaces the stock one (field, RT-BE86U: "nothing beyond channel 44").** The
+  stock Network Tools page ran a prebuilt scan core whose fixed event buffer kept only the first
+  networks in channel order. `Reaper_Survey.asp` reads `wl escanresults` per radio through a
+  detached worker (`httpd/reaper_survey.c`, a libc parser; 512-network cap; never runs beside a
+  capture or Auto Scan) and shows each radio's own outcome - networks and time, a passive or
+  own-block fallback, radio off, or the driver's own error text and exit code. Channel occupancy is
+  drawn as one card per channel with this router's channel marked. A 5 GHz radio under radar
+  monitoring refuses every scan request on this platform; a plain Scan never moves a radio and says
+  so. **Scan with channel move** (two-step confirm) does what the stock core did silently: it moves a
+  5 GHz radio that heard nothing to 36/80 or 149/80 with the `chanspec` and `acs_update` iovars - a
+  bare `wl chanspec` changes only the configured value of a running radio - scans once the radio
+  really operates there, and returns through `dfs_ap_move` when the driver has background radar
+  checks, so the radio keeps serving through the minute-long check. A move cut short is undone at the
+  next start. The worker resets `SIGCHLD`: it inherited httpd's reaper, and every exit status had read
+  -1.
+- **The Flow Explorer names the destination.** `rdnsmapd` learns names at DNS time instead of looking
+  anything up: an `AF_PACKET` socket with a 16-instruction classic BPF filter (UDP replies from port
+  53) blocks in `recv`, and every A record in a reply's answer section is stored under the question's
+  name, which follows the CNAME chain for free. The table is a 131,136-byte tmpfs file that the daemon
+  and httpd both map (`shared/reaper_dnsmap.h`: 2048 slots, earliest-expiry replacement, TTL clamped
+  to 1-24 h), so there is no publish or parse step and no idle CPU. A **Names** switch on the page
+  (default on) stops the daemon and deletes the table; switching it back on sends one reverse query
+  per listed remote address to the local resolver (about 50 per second, capped at 512) and shows those
+  names muted until a forward reply replaces them. The page keeps a name while its address is listed,
+  labels the router's own bridge addresses "This router", treats every live bridge subnet as LAN (not
+  only `br0` - guest and VLAN sources showed the WAN address), and its detail panel now follows the
+  reader down the list.
+- **Policy Routing rebuilds without a rules-free window.** An Apply used to tear the chain down and
+  build it again. `rc/reaper_pbr.c` now builds the new rules under a second chain name, replaces the
+  `PREROUTING` jump in place (`-R`), drops the old chain and renames the new one; routing rules are
+  kept or added first and only stale ones are deleted afterwards. A full teardown happens only when
+  the feature is switched off.
+- **The DNS health check holds its verdict while the uplink is down (owner RT-BE96U).** Each WAN blip
+  cost a resolver failover, a re-apply, a restore and two extra dnsmasq reloads, because a
+  LAN-side resolver failed the real-query probe whenever the uplink was gone. `rc/rdnshc.c` no longer
+  counts a miss while the WAN is known down; boxes without the WAN state keys are never held.
+- **A clock that is already right counts as synced (field, RT-BE86U).** busybox `ntpd` slews a clock
+  that is within a second, and amtm's RouterDate pre-sets it, so the sync hook - which honoured only
+  `step` - never set `ntp_ready`, and WireGuard, OpenVPN, cron and add-ons waited 23 minutes or more.
+  A stratum or periodic event with a valid stratum now counts as the first sync.
+- **The firewall chains are signed and watched.** `apply.sh` writes an md5 of each Reaper filter chain
+  and the nat chain; `rwatch` recomputes it, and two ticks of drift re-apply the committed rules under
+  the firewall lock (600 s apart, at most twice, never while a change is armed). rwatch's incident
+  bundle now takes the kernel log and a 300-line syslog tail first, before its own accelerator dumps
+  push the trigger out, and the syslog mirror rotates before appending, not after.
+- **rpunctd no longer resets on one odd read.** A single differing chanspec read was taken as a
+  channel change (six false resets on wl1 in two days, each discarding the puncturing baseline); a
+  second read must now agree.
+- **Diagnostics v1.3.29.** Reads a boot that rotated into `syslog.log-1`; adds findings for an unset
+  `ntp_ready` after 300 s, for every probe lost and for a log that starts after the boot; prints the
+  lease time remaining (udhcpc stores boot uptime plus lease); labels mounts hidden by a later mount;
+  lists each log file once when `/tmp` names are symlinks to `/jffs`; adds the name map's counters.
+- **Image and build hygiene.** A stock Makefile line copied the toolchain's own x86-64 `libexpat.so`
+  into `/lib` of every image (197 KB no ARM process could load); it is gone, and `reaper_verify`
+  gained a `host-arch` check that fails on any non-ARM binary in the staged filesystem. Quagga
+  (zebra, ripd) is no longer built: it shipped inert, with a default vty password.
+- **Rule Status witnesses the WAN masquerade.** A new witness row (A1b) checks that a LAN-to-WAN
+  flow leaves source-translated, judged on `POSTROUTING` like the existing F6 row; its expectation
+  comes from the primary WAN's NAT setting and reads n/a when NAT is off. A per-egress-interface
+  audit is not built.
+- **Quieter, truer logs.** The `stop_lan` trace logged "wl radio off" for `eth1`-`eth4` because its
+  marker sat in the loop over every LAN interface; it now fires for `wl*` names only, and the stock
+  `wlconf`/`wl` calls are untouched. A hand-set `wlcsm_bindfix=1` (v3.2.8 dropped only the default)
+  logged "retired ... ignored" on every boot; it now logs once more, then removes the key from
+  nvram. The Wireless Quality card's neighbour list is labelled as the puncturing confirmation scan
+  of the radio's own block, not a site survey (`RWIF_117`, 25 packs).
+- **DTIM Interval defaults to 1 on every radio.** The stock explainer said 3, and a box kept the 3 its
+  nvram carried from stock. The first boot on v3.3.4 sets `wlN_dtim=1` once per radio before the
+  radios come up (marker `/jffs/reaper/.dtim1`, one log line); a user may raise it afterwards, and
+  the explainer now says 1 and why.
+  **Known issue:** the marker is new, so the first boot after a flash over ANY earlier Reaper also
+  replaces a DTIM the user chose (for example 3, Apple's recommendation); the log line names the old
+  value. Re-set it under Wireless > Wireless Settings; it is not changed again. Removed in v3.3.5;
+  the v3.3.4 prereleases were withdrawn.
+- **Every Reaper overlay opens where you are looking.** Inside the shell frame a fixed-position box
+  centres on the middle of the whole page, not the screen. The Wireless Settings scheduler grid, the
+  last overlay that did, now opens over the row you clicked; the Flow Explorer's detail panel (above)
+  uses the same visible-slice values. The 24 stock `confirm()` dialogs on nine pages are unchanged.
+- **The firmware page has no dead buttons.** During a download from the update server the overlay
+  shows no button (the 25 s timed reveal of a Cancel that could not cancel is gone), and the
+  manual-upload veil's Cancel hatch is removed; Close still appears on a failure.
+- **Smart Connect's band mask loses an unreachable fallback.** `Advanced_Wireless_Content.asp` built
+  the mask behind two identical guards with a `return 7` (slots 0-2, no 6 GHz) behind the second; it
+  could not run, but it would have dropped 6 GHz on a tri-band box the moment either guard was edited.
+  Removed; no behaviour change.
+- **Wording and languages.** The System Log page's two dropdowns now say what each one does (the
+  filter excludes the level it names); the About page's ASUS and Broadcom credits are reworded to
+  describe the hardware, the GPL source drops and the closed components left unmodified; 94 of the
+  113 strings that were still English in every language pack are translated (19 brand and acronym
+  tokens stay English; a native-speaker review is owed). The BQ16 now appears on the GT-BE98
+  branch of the Wireless status page, where Reaper's own quad-band branch had never listed it.
+- **The ZenWiFi BQ16 Pro joins (BE30000, quad-band 2.4/5/6/6 GHz).** Same GPL drop as the BQ16, the
+  GT-BE98 Pro's radio layout, its own radio driver and dongle firmware from the stock Pro image. It
+  builds and passes verification and publishes as a prerelease; it carries the BQ16's header art
+  until its own is drawn. No tester has run it yet.
+- **Tooling.** New host suites `test_site_survey.py` and `test_dnsmap.py` (the DNS parser, the BPF
+  program run through an interpreter, the backfill), `test_pbr_apply_script.py` drives the swap-in
+  against a stateful fake `iptables`, and `test_reaper_diag_counters.py` covers the rotated boot. The
+  stale-configure guard (`build-scripts/reaper_stale_configure.sh`) now also clears a package's
+  `stamp-h1`: 76 packages in the router Makefile re-run configure only when that sentinel is missing, so
+  clearing the Makefile alone left the package unbuildable (hit by this rung's cut build on expat).
+
+## v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
+
+- **A USB volume that is late or missing no longer takes the LAN resolver down (field, RT-BE86U,
+  Entware).** The stock boot order loads the USB storage drivers after `services-start`, so a
+  dnsmasq whose postconf put its log, a `conf-file` or a `conf-dir` on `/opt` exited on every boot
+  and the LAN had no DNS or DHCP until the volume mounted - or for good when it did not.
+  `start_dnsmasq` now drops such a line whose path is not there yet, logs it, and the watchdog
+  restarts dnsmasq once the path exists. Beside it: the `pre-mount` cap (now 300 s) stops the
+  script together with anything it started - an orphaned `e2fsck` used to hold the device and the
+  mount then failed for good; a busy device is waited for up to 120 s instead of abandoned; and a
+  new mount watchdog (`rc/reaper_usbmon.c`) re-sends a lost mount event for a partition never
+  mounted since boot (three tries, 30 min window), gives the volumes back after a flash that never
+  took, and once re-enumerates a storage device that produced no disk - RT-BE96U and RT-BE86U have
+  no USB power control, and that last path is logged as untested.
+- **A reboot releases the USB volumes before it unmounts them (field, RT-BE86U).** v3.3.2 fixed the
+  flash path; a GUI reboot had the same race - `init` started `services-stop` in the background and
+  unmounted seconds later with Entware still up (35 busy retries, a lazy detach, a dirty volume).
+  The reboot and halt paths now run `reaper_usb_release reboot` first: `services-stop` to
+  completion, the holder sweep, then `swapoff` of every swap under `/tmp/mnt` - a swap file is the
+  one holder a process sweep cannot clear, and it kept a detached volume mounted through the final
+  kill. The flash path gets the swapoff too. On the RT-BE96U the volume unmounted 12 s after the
+  release with no busy line and the next boot mounted a clean journal.
+- **The soft-lockup panic is held off through boot and USB mounts.** This kernel is built with
+  `BOOTPARAM_SOFTLOCKUP_PANIC=y`, so a CPU stalled for 20 s - swap I/O to a USB disk through the
+  post-mount storm on a 1 GB box - panics and reboots with nothing kept. `init` writes
+  `softlockup_panic=0` at boot and `rc/usb.c` around every mount; the watchdog arms it again once
+  the box has been up 600 s and no mount has been active for 300 s (logged; seen at 624 s on the
+  RT-BE96U). A truly hung box is still reset by the hardware watchdog.
+- **LAN DNS and DHCP no longer drop for ~20 s at boot or when the WAN re-homes (RT-BE96U).**
+  dnsmasq exited on a transient "Network is unreachable" while auto-WAN-port briefly held the WAN
+  address on `br0`, and came back only when the watchdog respawned it. The `exit(0)` in
+  `send_from()` is an ASUS addition: for `ENETUNREACH` and `EHOSTUNREACH` it now logs (at most once
+  per 10 s) and drops the one reply, as upstream dnsmasq does; every other send failure keeps the
+  exit. The conf is `bind-dynamic`, so the address is re-tracked without a restart.
+- **Every client list fills on a box that is not routing (GT-BE19000 tester, Access Point mode).**
+  The Network page's cards and Clients tab, Parental Controls and the QoS pickers all read
+  networkmap's `get_clientlist` hook, which never marks a client present without DHCP leases and
+  conntrack. httpd now merges Reaper's own presence scan into that hook on a non-routing box, once,
+  for all of them (the dashboard tiles and the AiMesh node card had each grown their own overlay);
+  a row networkmap produced is kept and marked present, a device it does not know is added. Each
+  present device is also given its network - cfg_mnt's answer, the VIF map, or the bridge the cable
+  was learned on; the FDB scan now walks every SDN bridge, so a guest VLAN's wired clients land on
+  their own card.
+- **The Diagnostics report no longer freezes the web interface while it is collected.** The
+  collector ran inside httpd's single thread, so every page and the login page waited for it. It
+  now runs as a detached worker; the page starts it, polls every 2 s and fetches the report when it
+  is ready (cap 5 min). Same tokens, no dictionary change.
+- **Less background churn (from the 2026-08-28 efficiency audit).** The Warden page's 30 s poll ran
+  one `ipset` and one `sed` per country set inside httpd (~360 processes); it now reads one
+  `ipset -t list` listing (7). Firewall rebuilds re-fed every Warden block list from the on-disk
+  cache - up to 800,000 entries into sets that were already full, on each WAN bounce or Apply;
+  populated sets are now skipped and the count logged (a boot still restores them). rtrafd's seven
+  per-queue `tmctl` reads every 4 s and its `ping` each cost four processes through a shell
+  wrapper; each is now one process with a `poll()` deadline, and a queue that answers nothing keeps
+  its last reading instead of banking a zero. The firewall's fqdn set cache is rewritten to `/jffs`
+  only when the members changed, the bonding state is published only when it changes, and the
+  client-list refresh flag is no longer re-written on every poll.
+- **Boot no longer dumps ~230 lines of memory statistics into syslog.** Stock `rc` called a closed
+  Broadcom debug routine after the services started, which logged `/proc/meminfo`, `free`, the
+  whole `/proc/slabinfo` and the buffer-pool status under the tag `dbg` on every boot. It now runs
+  only with the stock `dbg` nvram flag set to `1`.
+- **Layout: the Security Posture card, the shell on phones, the Warden list boxes, the setup box.**
+  The dashboard's Security Posture card cut off its right column below ~1500 px (reported on
+  Safari, reproduced in Chromium): `1fr` tracks cannot shrink below a row's longest unbroken label,
+  and the card's overflow clip hid the second column's status pills. The tracks are now
+  `minmax(0,1fr)`; a long label truncates and shows its full text on hover. The shell laid every
+  phone out at 481 px (the topbar's minimum width) and clipped the right edge of every page; the
+  topbar now wraps. Warden's Manual block list and Whitelist boxes stack into one full-width column
+  whenever they would be narrower than 400 px side by side. The first-boot box's login rows regained
+  their label column and row gap, lost when v3.3.2 wrapped them in a form.
+- **Tooling: sibling ports carry canon's added and deleted files.** `git diff --name-only` paired a
+  canon add with a stale branch file by rename detection, so only the branch path showed and the
+  add was never ported; a `.bin` suffix alone protected the OpenSSL test vectors; canon's deletes
+  were never replayed. The port now diffs `--no-renames`, syncs those files and removes what canon
+  removed (`build-scripts/_port_protect.sh`). Three new host suites cover the rung
+  (`test_dnsmasq_send_exit.py`, `test_usb_boot_mount.py`, `test_usb_late_mount.py`) beside the
+  extended `test_usb_flash_release.py` and `test_apmode_surfaces.py`.
+
+## v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
+
+- **A firmware flash releases the USB volumes before it ejects them (field, RT-BE86U).** Every
+  flash path - the GUI upload handlers, the `upgrade` service and the update-check script - ran
+  `ejusb -1 0` before anything else was stopped. Stock's unmount stops only the NAS services and
+  the ASUS apps, so Entware's daemons (they stop from the user's `services-stop`, which only the
+  normal reboot path runs), a dnsmasq writing its log under `/opt` and rtrafd's history store
+  kept the volume busy: the eject failed for forty seconds, fell back to a lazy detach, and the
+  router flashed with a filesystem that was never cleanly unmounted. The next boot mounted it
+  only after dnsmasq had already failed to start. A new step, `reaper_usb_release`
+  (`rc/reaper_usbrel.c`), runs just before each of those ejects (and before the factory reset's)
+  and does what a reboot would have done first: the user's `services-stop` (once per flash),
+  rtrafd (it saves on SIGTERM), then every process still holding a file, its working directory,
+  its executable or a mapped library under `/tmp/mnt` - SIGTERM, five seconds, SIGKILL, names
+  logged. It does nothing while no USB volume is mounted, and the GUI's own Eject does not use
+  it. The watchdog leaves dnsmasq alone while it runs, so it cannot restart one that would
+  reopen a log on the volume. Behaviour change: a dnsmasq holding a file on the USB volume is
+  stopped for the length of the flash. Test `test_usb_flash_release.py` runs the sweep against
+  real holder processes.
+- **A boot clears a service request that survived the flash.** The new image refused every
+  `notify_rc` with "rc could not be informed (rc_last:restart_upgrade)" because `rc_service` still
+  named a service from the previous image; nothing on a boot ever cleared it. `init.c` now unsets
+  `rc_service`, `rc_service_pid` and `last_rc_service` beside the `ASUS_STOP_COMMIT` unset -
+  nothing can be mid-service that early. (The same report's reboot loop is not explained by
+  either fix and is still open.)
+- **The first-boot setup box (field, GT-BE98).** Chrome's saved-login autofill could put the
+  router password into the Wi-Fi password field, because both sat in one form and a browser
+  pairs a saved login with the first visible password field there. The Wi-Fi fields now live
+  outside the credential form, and the Wi-Fi key and the new login password are marked as new
+  passwords. Nothing is prepopulated any more, the router login name is lowercase only (folded
+  as you type), and the button reads **Apply & Reboot**. The form used to send a wait of zero,
+  so the hidden frame's reply sent the page back to itself within seconds while the router went
+  down; it now sends the model's reboot time, and the page shows the same REBOOTING screen the
+  GUI's Reboot shows - countdown, then it waits for the router to answer and goes to the login
+  page.
+- **ZenWiFi BQ16 (BE25000) joins the roster.** Quad-band 2.4/5/5/6 GHz on the BCM4916, built
+  from the ASUS 102_39256 GPL drop for every closed object and the stock 102_39256 image for the
+  radio firmware (BCM6717 + BCM6726, both stamped for the BQ16). networkmap is pinned to the
+  fleet's binary, so the client list does not hit the shared-memory mismatch the GT-BE98 once
+  had. No Realtek switch on this board (Broadcom PHYs and a BCM53134), so no switch blob. Both
+  variants build and pass verification; the System Information page maps its four radios like
+  the GT-BE98's. It publishes only as a prerelease until a unit has booted an image.
+
+## v3.3.1 — a minimum channel width on Auto, one factory state on every model, the setup box finishes the main network
+
+- **Minimum width on Auto (Wireless › Settings, 5 and 6 GHz).** With Channel bandwidth on Auto the
+  closed channel picker (acsd2) chooses the width as well as the channel, and it narrows to 40 or
+  20 MHz when it judges part of a wide channel busy; preamble puncturing exists only at 80 MHz and
+  wider, so each such narrowing removed the one state puncturing could have handled. A per-radio
+  switch keeps the picker at 80 MHz or wider: **80/160 MHz** on 5 GHz and **80/160/320 MHz** on
+  6 GHz name the widths it may still choose, and each client uses what it supports within the width
+  the radio is on (160 MHz on 5 GHz still needs Enable 160 MHz). `rc/reaper_bwfloor.c` appends the
+  radio's 20 and 40 MHz chanspecs (`wl chanspecs`) to `wlN_acs_excl_chans` at the end of
+  `set_acs_ifnames()`, the list stock rebuilds at boot and every wireless restart; records them
+  under `/jffs/reaper_bwfloor/` (the list lives on /jffs and survives a reboot); strips exactly
+  those entries before stock reads the list; and adds nothing when no channel at 80 MHz or wider
+  would remain, because acsd2 discards an all-excluded list, DFS exclusions included. No closed
+  code touched. Needs Auto channel; inactive on a fixed channel or width, an AiMesh node and
+  2.4 GHz. Off by default (`wlN_bwfloor`). With the floor on, the puncturing rows unlock on Auto
+  bandwidth (Follow channel lists the slices of the width the radio is on, taken from the
+  watcher's report; Dynamic follows the radio); without it they stay locked there, and the
+  hover reason says which of the two would open them.
+- **The floor lifts itself after radar.** A radar hit vacates the channel, and with the floor armed
+  the picker may have no wide channel to return to for the non-occupancy period. A watcher
+  (`/sbin/reaper_bwfloor`, every 15 s) lifts a radio's floor when it has run narrower than 80 MHz
+  for 120 s, or has been off the air for 180 s outside a DFS availability check (up to 11 minutes)
+  and outside a Wi-Fi schedule: it removes its own entries and restarts acsd2, for 30 minutes,
+  doubling on a repeat within two hours (four hours at most), then re-arms. One `reaper_bwfloor`
+  log line per lift and re-arm; the Settings cell reads Holding, Lifted, Not active or Not applied;
+  the diagnostics report (v1.3.25, section 7) adds a `min width:` line and flags a lifted floor or
+  a stopped watcher. The rwatch tick restarts the watcher if it dies. A wireless restart stops the
+  watcher with the radios and starts it again once they are back (`wlready=1`), so the teardown
+  never counts towards a lift; `service restart_reaper_bwfloor` restarts it by hand.
+- **Dynamic puncturing: the confirmation scan reads more than busy time.** The passive scan that
+  resolves a candidate already returns, per 20 MHz channel, the neighbouring networks heard there
+  (channel, width and signal; names and addresses are not kept) and the PHY figures (noise floor,
+  carrier-sense glitches, bad PLCP headers). Both count now: a neighbour's home channels (its 20 or
+  40, or the 80 MHz block holding its control channel) take their counter group's persistent busy
+  as a prior, weighted by signal, so a 110 ms snapshot that caught a gap no longer hides where the
+  interference lives; a noise floor above the scan's quietest channel or a stream of PHY errors
+  counts as busy on that channel even when carrier sense reads low. Neither ever lowers a reading.
+  On a scan source a slice is put back only after a fresh scan (150 s) of its channels agrees,
+  taken at most once per scan cooldown; the counters alone no longer restore there (Passive is
+  unchanged). The Wireless Quality card lists the scanned channels (carrier sense / PHY impairment
+  / neighbour signal) and the networks heard; the `rpunctd` scan line in the log carries the same.
+  Decision core host-tested (`test_punct_dyn.py`, 38 checks).
+- **Dynamic puncturing: two passive inputs, and no scan may cost a client.** (1) Every tick the
+  controller reads the radio's own PHY figures (`wl chanim_stats`: glitches and bad PLCP headers
+  per second, background noise in dBm) - the energy below carrier sense that never reads busy. The
+  noise term is the rise above the radio's own quiet baseline on its channel (it follows a quieter
+  reading at once and a louder one over about an hour): the whole-channel figure grows with the
+  width, and a 320 MHz channel at rest reads about -79 dBm where a 160 MHz one reads -93. A
+  second trigger (Conservative 35 %, Balanced 25 %, Aggressive 20 % on the scan's impairment scale,
+  held like the busy trigger) may only request a confirmation scan of the puncturable channels,
+  under the same cooldown and idle gate; a slice is chosen only where that scan reads it at trigger
+  level. Its edges are logged with the raw figures for calibration. (2) Every 30 s (every tick
+  while a change is being judged) it reads the station table (`wl bs_data -noreset`: a plain read
+  clears the counters). Another reader resets that table every few seconds, so each read is taken
+  as its own short window and the windows are summed; the per-packet width (txbw / acked) gives
+  each client's operating width.
+  Clients narrower than the radio break ties between qualifying slices (the slice outside their
+  block wins), and 120 s after each change every client's rate and retries are compared with the
+  interval before it: when at least two and at least half of the compared clients got worse
+  (rate down a quarter and retries up five points), the slice comes off and is not retried on that
+  channel; after a restore the same finding only lengthens the next restore hold. A confirmation
+  scan that loses a client now stops scanning on that radio (Passive from then). The scan's
+  impairment figure takes glitch and bad-PLCP counts as the per-second counts the vendor header
+  documents; the r4 image scaled them by 9. The status line repeats only when its verdict
+  changes, not when a busy figure moves a point. Host-tested (`test_punct_dyn.py`, 76 checks,
+  including the station parser and noise baseline run on the router's real output; five
+  mutants caught).
+- **One factory state on every model (field, GT-BE98).** Units with a printed Wi-Fi key reset to
+  that key with the Wi-Fi setup flagged done, so the first-boot banner showed only the password row
+  and the setup box - and the main-network reconcile it runs - never ran; the Network page then
+  showed an unclickable main card until an unrelated apply. `restore_defaults_wifi()` no longer
+  applies the label key, label SSID or the done flag: every reset is admin/admin with open template
+  Wi-Fi, secured through the setup box. The banner also treats a key equal to the printed key as
+  factory, and the RSEC_5/9/13 texts say the factory Wi-Fi is open.
+- **The setup box reboots into a working main network.** The main network's SDN rows are created
+  only at boot (`init_apg`, gated on setup being complete), so the v3.2.9 in-place reconcile could
+  never create them. The box now marks setup complete, saves and reboots (the page waits about
+  three minutes); the result is one all-band main card. The Network page shows a notice pointing
+  to the box while no main rows exist on a router or access point.
+- **The WAN pill follows the primary WAN.** The shell's WAN pill, shown on every page but the
+  dashboard, read the first WAN only and said Disconnected after a Dual WAN fail-over. It follows
+  `wan_primary` now (either line up in load balance), as the dashboard's Internet card has since
+  v3.2.8.
+- **AiMesh node cards count clients on a box that is not routing (field, GT-BE19000).** In Access
+  Point, repeater or media-bridge mode every node card on the AiMesh page read 0. The card is stock:
+  it counts `get_clientlist()` rows whose `isOnline` is set and whose parent-node MAC is the node,
+  and networkmap (a closed binary) derives that flag from DHCP leases and conntrack, which a
+  bridging box does not have. Same cause as the v3.1.6 dashboard tiles. `reaper_dev.cgi` now names
+  the node each device hangs off (`via`, from cfg_mnt's per-node wireless and wired client lists,
+  this router otherwise), and on a non-routing box the topology page overlays that store after
+  every client-list rebuild, read asynchronously and cached 30 s. Rows networkmap already placed are
+  kept; MLO links and nodes are folded as on the dashboard. A routing box does not take the path.
+  Tripwire: `test_apmode_surfaces.py` section 5.
+- **IPv6 Stateful also offers SLAAC (field, GT-BE98).** In Stateful mode dnsmasq's `dhcp-range`
+  carried no `slaac` flag, so the router advertisement had no autonomous prefix: hosts with a
+  DHCPv6 client got an address, SLAAC-only hosts (most Linux VMs and containers, Android) got
+  none. `rc/services.c` now adds `slaac` to the Stateful range (and its `constructor:` form) when
+  the prefix is a /64, so the advertisement sets the A flag while DHCPv6 still hands out leases.
+  Behaviour change: on Stateful, DHCPv6-capable hosts may now hold a SLAAC address beside their
+  lease. Stateless and SLAAC-only modes are unchanged. Diagnostics section 6 now prints the
+  autoconfiguration type, the dnsmasq range mode, the DHCPv6 lease count, `ipv6_fw_enable` and
+  the ip6tables policies, with a finding when the LAN is DHCPv6-only.
+- **A DNS server on one of the router's VLAN networks is no longer routed out the WAN.** On every
+  WAN-up stock `wan_up()` adds a /32 host route via the WAN gateway for each WAN DNS server unless
+  it is in the WAN subnet, the main LAN subnet or `lan_route`. Guest Network Pro / VLAN subnets were
+  not checked, so a resolver on such a network (AdGuard Home on a VLAN, set as the WAN DNS server)
+  got `<dns> via <WAN gateway>`, which beats the bridge's own route: the router's queries to it and
+  the replies to its upstream lookups left through the WAN and timed out. `rc/wan.c`
+  `dns_in_sdn_subnet()` reads the saved VLAN subnets (`get_mtsubnet()`, so it is right even when
+  the WAN comes up before the bridges) and skips the route for any address inside one.
+- **Interference mitigation (Wireless › Settings, per radio).** A new row sets the radio driver's
+  own interference mitigation: **Driver default** (Reaper writes nothing) or **+ HW ACI**, which
+  adds the hardware adjacent-channel mitigation bit (16) to the driver's mask (default 75 on this
+  dongle). `/sbin/reaper_punct` applies it at start-up, after every wireless restart and on save
+  without a radio restart; it records the value it found, undoes only its own write, and reports
+  applied / driver / refused / waiting in `/tmp/reaper_wlmit.state`, shown as the row's status.
+  The rwatch tick re-runs the applier while the row is set. A change resets dynamic puncturing's
+  noise baseline and PHY-impairment state, since the mitigation moves those figures by design.
+  In a 2.4 GHz microwave A/B on the RT-BE96U, + HW ACI did not improve client throughput and at
+  times reduced it; the help text says so and recommends Driver default. Off by default
+  (`wlN_rmit`). The diagnostics report (section 7) adds an `interference:` line per radio. Of the
+  other driver functions trialled, dynamic BSS width (`obss_dyn_bw`) was dropped (it switches the
+  whole BSS width by channel-switch announcement and cost clients), spatial reuse stays with
+  stock's watchdog, and the energy-detect thresholds are regulatory and left alone.
+- **The floor's re-arm no longer moves the channel.** When a lifted floor re-armed while the radio
+  was already 80 MHz or wider, the watcher still restarted acsd2, which could pick a new channel
+  and drop clients. The re-arm now only restores the exclusions and marks the radio
+  `picker-pending`; acsd2 picks them up at its next restart, and is restarted by the watcher only
+  if the radio later runs below the floor.
+- **Dynamic puncturing: a ceiling on the Active scan source.** The Active source scanned whatever
+  the radio's own airtime; it now scans only while the radio's own traffic is at or below 30 % of
+  airtime (the idle-scan tier keeps its preset level), so a confirmation scan does not land in
+  the middle of a busy client's stream. The status line says `own airtime above the scan
+  ceiling` while it waits. `test_punct_dyn.py` 78 checks; `test_wlmit.py` covers the mitigation
+  applier and the re-arm.
+
+## v3.3.0 — pppd, strongSwan and Tor security fixes, Gatekeeper no longer races a firewall restart
+
+- **pppd: CVE-2026-85495.** `lcp_reqci()` wrote one Configure-NAK entry per repeated option into a
+  fixed 1500-byte buffer with no bound, so a PPPoE peer (the ISP's access concentrator or a rogue one
+  on the WAN segment) could overrun it before authentication by repeating an option a few hundred
+  times. Ported from ppp 2.5.4: each option type is processed once and duplicates are ignored with
+  one warning, and a NAK that would outgrow the buffer becomes a Configure-Reject. Exposed mainly
+  with PPPoE authentication set to CHAP.
+- **pppd: GHSA-j686-vmph-4m7c.** An MS-CHAP challenge shorter than the protocol requires was read
+  past its end, leaking up to 15 bytes into the response; it now gets an empty response. The
+  `ascii2unicode` length clamp from 2.5.4 is also taken.
+- **strongSwan: seven CVEs from 2026-09-07.** The official patches, applied as-is:
+  CVE-2026-78123 and -78124 (PKCS#7 in the openssl plugin), -78129 (PKCS#5 parameters), -78130,
+  -78131 and -78132 (x509 attribute certificates), -78134 (EAP inner-authentication identity
+  binding). IPsec is off by default.
+- **Tor 0.4.9.13.** Ten fixes rated High upstream, among them a use-after-free on a failed TLS
+  handshake, a reverse-DNS double free and a stream-isolation bypass; geoip and fallback
+  directories refreshed. Taken from the signature-verified release tarball. Tor is off by default.
+- **Gatekeeper no longer races a firewall restart (field, RT-BE96U).** After a System-page Apply,
+  the firewall rebuild re-applied Gatekeeper while `gkd`'s self-heal applied it a second time.
+  iptables here has no lock between writers, so the two lost each other's updates: Gatekeeper's
+  per-device rules came out in the wrong order, and a VLAN network lost its WAN accept rule, so new
+  connections from that VLAN were dropped until the network was restarted. Every Gatekeeper apply now
+  runs under the lock the firewall rebuild holds, and the self-heal skips the apply when the rebuild
+  has already restored the chains. Rule Status showed it as D3b and G2 rows turning Unsuccessful.
+- **Rule Status:** VPN-server and port-forward rows on a box blocking many countries (field,
+  RT-BE86U).** The WAN test address is chosen from a list so that one the threat feed blocks is
+  skipped, but only the first 32 block lists were checked. Warden adds one list per blocked country
+  ahead of the threat feed's, so with about 30 countries blocked the feed was never checked and the
+  rows were tested from an address it drops. Every list is checked now (`reaper_fwsim` 1.8). Report
+  only; no rule changes.
+
+## v3.2.9 — OpenSSL 3.5.9, the first-boot box finishes setup, Dual WAN backup shown, USB format works
+
+- **OpenSSL 3.5.9: CVE-2026-84782 (High).** The DTLS retransmission logic resumed a suspended
+  handshake write from a stale buffer offset, so a retransmission could disclose heap memory to the
+  peer or crash. Also fixed, all Low: CVE-2026-35189 (relative CRLDP memory growth), CVE-2026-35191
+  (QUIC amplification credit), CVE-2026-42772 (QUIC O(n²) reassembly), CVE-2026-54872 (non-NIST EC
+  scalar-multiplication timing), CVE-2026-54873 (QUIC STREAM fragment memory). Taken from the release
+  tarball (signature verified) with the two carried differences of the 3.5.8 import (RSDNTWK): the
+  Broadcom build targets in `Configurations/10-main.conf` and no empty submodule directories. Same
+  library SONAME; the closed components still reach it through the 1.1 shim.
+- **IPv6: CVE-2023-52340.** Forged ICMPv6 Packet Too Big messages, accepted from the WAN, each add
+  a route-cache exception; past the 4,096 `net.ipv6.route.max_size` default, `dst_alloc()` fails
+  and neighbour discovery stops, taking IPv6 down. rc now sets `max_size` to `INT_MAX` at boot, the
+  same change as mainline `af6d10345ca7`; the GC and exception expiry still bound the cache. Only
+  boxes with IPv6 enabled were exposed.
+- **e2fsprogs 1.45.6: CVE-2022-1304.** An extent-tree leaf with zero entries sent libext2fs out of
+  bounds; the disk check (`e2fsck`, run on a USB app-folder disk at mount, from the USB page and on schedule)
+  could be attacked with a crafted disk. Upstream `ab51d587bb9b` (1.46.6) applied.
+- **First-boot setup box: the main network is usable on the Network page.** The banner's box wrote
+  the radios and Smart Connect but never ran the SDN reconcile, so a factory box kept its single
+  default profile row until some later SDN apply, and the Network page's main card could not be
+  opened (adding a guest network was the workaround, because that apply is the reconcile). The box's
+  CGI now calls `sync_apgx_to_wlunit()` before it commits and the page's apply ends in `restart_sdn`,
+  the order every stock SDN writer uses.
+- **USB Format and Scan reach the right disk (field, RT-BE86U).** The page posted `diskmon_usbport`
+  through `start_apply`, which rewrites every `diskmon_*` key, so the port never reached rc: Format
+  did nothing and `disk_monitor` then crashed on a missing disk. The page now sets the port through
+  `change_diskmon_unit` and reads it back before scanning or formatting (which also stops a two-disk
+  box acting on the wrong disk); `start_diskformat` returns cleanly when the disk is gone and reports
+  a failed format; the scan says when a FAT/exFAT volume cannot be checked.
+- **Dynamic puncturing survives a wireless restart (field, GT-BE98).** `restart_wireless` never
+  stopped `rpunctd`, so the controller kept arming measurement windows through the radio teardown and
+  a dongle radio could die until reboot. It is now stopped before the radios go down and started after
+  they are ready, and it touches no radio while they are not.
+- **Dual WAN: the backup line is shown and lit.** The Dashboard read unit 0 only; it now follows
+  `wan_primary`, so a fail-over shows the backup line as connected with its address. The WAN LED
+  logic is in a closed ASUS object that lights white only for the WAN port; a connected backup line
+  now lights the LED red and white together, red alone while it is down, and the stock logic repaints
+  it on fail-back.
+- **Rules engine.** A group, zone or zone-policy list longer than the engine takes used to drop the
+  rest silently; each cap now logs once per ruleset and the page refuses it at save. The confirmed
+  snapshot on `/jffs` is written in full before any file is replaced, a boot that finds snapshot files
+  without their completion marker re-adopts them instead of saving empty lists over them, and a save
+  that fails (a full `/jffs`) keeps the draft and says so.
+- **Warden applies in one batch.** Its rules are restored with one `iptables-restore --noflush` per
+  stack instead of one command per rule, with a per-rule fallback.
+- **Rule Status tests a rule from its own zone.** A rules-engine witness entered from the LAN bridge
+  whatever zone the rule named, so a VLAN-only drop was judged by the stock LAN accept and a VLAN-only
+  accept could read OK without being tested. It now enters on the rule's source zone from that
+  subnet and aims at the router's address there, or at the destination zone for a forward rule; a zone
+  with no live interface gives no row (`reaper_fwsim` 1.7). Report only; no rule changes.
+- **AiMesh: "Ethernet Backhaul Mode" is now "Ethernet-Only Backhaul".** The setting forbids the
+  wireless fallback; wired backhaul already works with it off.
+- **Diagnostics v1.3.24** adds roaming, scheduler, DFS and auth/PMF settings, roamast and radar event
+  counts, and a warning when the log store is in RAM while a USB disk is attached.
+- **Dictionaries.** 4 tokens added and 4 relabelled in all 25 packs.
+
+## v3.2.8 — preamble puncturing: a static slice per radio, and a dynamic controller that picks one
+
+- **Static preamble puncturing (Wireless › Settings, RT-BE96U-measured).** A Wi-Fi 7 radio can
+  switch off one slice of a wide channel and keep the rest, instead of narrowing the whole channel.
+  The driver has had the control (`wl eht dissubchan`) all along; nothing in the firmware called it.
+  A new per-radio row offers the legal slices: one 20 MHz at 80 MHz (not the primary), one 40 or
+  80 MHz at 320 MHz outside the primary 80 (160 MHz is driver-judged), as **Fixed channel** (tied to
+  one chanspec) or **Follow channel** (tied to the width, so it survives acsd and DFS moves). The
+  pattern applies live, without a radio restart; the beacon's EHT Operation element advertises it
+  and the driver narrows the HE Operation width for Wi-Fi 6 clients by itself. A wireless restart
+  clears it, so a one-shot applier (`rc/reaper_punct.c`) re-applies it at boot, after every
+  wireless start, on the page's apply and on the rwatch tick, and clears only what it set. State in
+  `/tmp/reaper_punct.state`; diag section 7 reports setting, live pattern and result. Off by default.
+- **Dynamic preamble puncturing (`rpunctd`).** Broadcom's own dynamic puncturing is compiled out of
+  this SDK, so this is a policy layer over the static control: *dynamic selection, static
+  application*. Every 10 s the controller asks the driver for one timed `chanim_stats` window,
+  which is the only form that fills the per-sub-band carrier-sense counters (pri20, sec20, sec40,
+  sec80 - measured; the accumulators never do), keeps rolling averages, and evaluates slowly: a
+  slice must stay above the trigger for the hold time, the candidate must be legal and score a
+  minimum expected-capacity gain (kept width × free airtime; a cleaner 240 loses to a slightly
+  noisy 320), and a minimum interval must have passed since the last change. Restoration needs the
+  long clean hold and a meaningful gain too, with a backoff when a restore did not hold. Presets
+  Conservative (default: 80 % trigger, 60 s hold, 20 % gain, 300 s interval), Balanced and
+  Aggressive; minimum gain and hold are overridable. At 320 MHz the counters resolve only the
+  secondary 80 of the primary 160; the far 160 is a remainder. **Passive telemetry** acts on what
+  the counters resolve; the **idle** and **active confirmation scan** sources let the radio listen
+  passively on a candidate's own 20 MHz channels for about a second (measured, clients stay) and
+  read the per-channel figures back from `chanim_stats all`. Every decision is one syslog line that
+  says why (`rpunctd`); the applier stays the one writer. A refused bitmap is blacklisted for the
+  channel, three refusals or two disruptive applies (a channel-switch announcement, a moved
+  chanspec, lost clients) fall back to no puncturing with slowed timers, telemetry loss holds the
+  current pattern, and the daemon never restarts wireless. It runs only while a radio is set to
+  Dynamic, exits when none is, and is restarted by the rwatch tick if it dies. Wireless › Wireless
+  Quality gains a read-only card (state, excluded slice, busy per slice, candidate, last change and
+  why); Settings shows a one-line status. Setting: `wlN_punct = dyn|<preset>|<source>|<gain>|<hold>`.
+  Not gated on routing mode. Decision core host-tested (`test_punct_dyn.py`, 30 checks).
+- **Dynamic puncturing: the controller's file always says what it believes is on the radio (crawl
+  2026-09-26).** A refused or failed apply used to leave its bitmap in `/tmp/reaper_punct.dyn`, so
+  the rwatch tick sent a refused slice to the driver every five minutes, or applied a failed one
+  while the controller and the card said none - and nothing cleared it. The file now mirrors the
+  controller's belief and carries the channel the choice was made on: a restarted controller
+  resumes a slice only on that channel and takes a stale one off, and every tick the applier's
+  record is reconciled against the belief (a slice that fell off the radio is forgotten, one the
+  controller did not choose is taken off). The controller also waits for an idle applier before
+  running it, gates interface names before they reach a shell (the applier too), reads the raw
+  chanspec without a fork and parses the printed form only on a change, and no longer logs "below
+  80 MHz" every tick on a narrow channel.
+- **Front chains: what may sit ahead of them, decided once.** The narrowness patterns hook.sh and
+  rwatch 3d judge a rule by come from one header (`rc/reaper_hook.h`). In FORWARD only a
+  destination now counts as narrow: a port-only or interface-only ACCEPT there passed every device
+  to every host on that port past Warden, Gatekeeper and the rules engine, and stayed there. INPUT
+  and OUTPUT keep port-or-destination. A RETURN inside a user chain no longer counts as a bypass
+  (it resumes the base chain), so a whitelist chain ahead is tolerated instead of fought; a negated
+  match narrows nothing. Pinned by `test_front_narrow.py` on the shell lifted from both emitters.
+- **Rule Status re-walk off the request path.** "Re-check now" ran reaper_fwsim inside httpd,
+  which serves one request at a time, so every admin page stalled for the walk (up to 12 s). It is
+  a detached worker now; the page shows the current report and polls until its timestamp moves.
+- **Wireless Quality: the puncturing card polls once a minute with no Dynamic radio, and not at
+  all in a hidden tab.**
+- **strongSwan 6.0.4: CVE-2026-78127** (payload enumerator leaked on a truncated log line,
+  pre-authentication), **CVE-2026-78135** (CREATE_CHILD_SA accepted on an unestablished IKE_SA before
+  EAP completed), **CVE-2026-78133** (use-after-free after a failed passive multi-KE rekeying
+  collision) - the upstream 6.1.0 fixes applied to the vendored source. The IPsec server ships off.
+- **Kernel: CVE-2026-90110.** The inetpeer tree was ordered by raw address, so a remote sender could
+  shape it; mainline's SipHash ordering backported to 4.19.294.
+- **`wlcsm_bindfix` default removed** - the shim was retired in v3.1.8 and the leftover default
+  made every box log "retired" on every boot. The Reaper daemons' build outputs are git-ignored.
+- **Add-on installers find their menu anchor again (field: Skynet, MerlinAU, YazFi).** Third-party
+  installers register their page by appending a line to the menu tree after the stock line of the
+  page they extend; Skynet appends after the stock firewall page, MerlinAU after the firmware page.
+  Reaper had retired that line and the others it replaced with native pages (firewall, wireless,
+  firmware, backup, Sysinfo, QoS, traffic statistics, connections), so those seds matched nothing
+  and the add-on had no tab. The retired lines are back as hidden entries, which the shell and the
+  dashboard skip; a `user<N>.asp` inserted beside one is lifted into the Addons section like every
+  other add-on page. YazFi anchors on a plain `Guest_network.asp` line that 3006 only names inside a
+  ternary (stock Merlin included); a hidden line for it is added too. FlexQoS gets no anchor: it
+  refuses to install without Adaptive QoS (`qos_type=1`), which Reaper retired with the DPI stack.
+- **Dual WAN: no line-switch ping-pong at boot (stock ASUS `wanduck`, every model; field,
+  GT-BE98).** A line switch restarts the line it leaves, and the grace before the next switch was
+  `wandog_maxfail` x interval (~6 s), while a LAN-port WAN takes 15-20 s to come back. From boot the
+  two lines kept failing each other over until they happened to be up together. After a switch
+  the next one now waits up to 30 s, and the hold ends as soon as the new line connects; a line
+  that is really down still switches when the hold ends,
+  and an unplugged USB modem is not held. The hold logs once per switch under `wanduck`.
+- **Nine stock `wanduck` defects (every model; review of the whole file).** The backup-line DNS probe's
+  child could return out of its fork into a second main loop with an armed alarm, and a short read
+  returned the parent's uninitialized status; the backup ping probe leaked its `getaddrinfo` result on
+  every scan of an outage; the IPv6 exemption in the ping probe let any `wandog_target` reach `popen`
+  unvalidated (it now requires an IPv6 literal); the redirect web server lost its terminator on a
+  full-size request and on the URL/host cap paths, indexed before the buffer on a request under four
+  bytes, cut a five-digit HTTPS LAN port to four, and never closed an idle client, so 100 of them
+  wedged it (idle clients are now swept after 30 s).
+- **Diagnostics v1.3.22.** Section 7 reports the puncturing setting, live pattern, applier result
+  and the controller's state (WARN when `rpunctd` should run and does not). Section 5 gains a Dual
+  WAN block - `wans_mode`, `wan_primary`, the watchdog and DNS-probe settings, both units' state,
+  address and gateway presence, and the live default route (WARN when there is none) - and prints
+  `message_loglevel` / `log_level` with an INFO finding when `rc` and `wanduck` lines are being
+  dropped (field, GT-BE98 dual-WAN report).
+- **Diagnostics v1.3.23: the hardware, stated.** Section 1 gains a hardware block: the SoC name and
+  revision as the chip-ID register reports them (`/proc/socinfo` - a BCM6813 and a BCM4916 both
+  run the 96813 platform), CPU and DDR clocks and DDR size, the boot loader's board ID (the device
+  tree the unit booted), the LAN switch actually running (Realtek RTL8372, MaxLinear, or Broadcom
+  only) and each radio's chip and revision. One model name covers several boards - the GT-BE98
+  ships as `GT-BE98` (RTL8372 switch), `GT-BE98_BCM` (Broadcom PHYs) and `GT-BE98_ICP`, the RT-BE96U
+  has a B0 board - and rc switches its port handling on that ID, so a variant board now raises an
+  INFO finding instead of having to be inferred from the process list (field, GT-BE98).
+- **Dictionaries.** 39 tokens added in all 25 packs, translated; two help texts extended.
+
+## v3.2.7 — Dual WAN fail-back no longer restarts the primary WAN in a loop
+
+- **Fail-back loop fixed (stock ASUS `wanduck`, every model).** In fail-back mode the primary line's
+  disconnect counter doubles as the fail-back counter while the backup line is active, and reaches
+  `wandog_fb_count` (default 4). Returning to the primary never reset it, so the primary became the
+  active line already at or above `wandog_maxfail` (default 2). One disconnected check just after
+  fail-back, while the default route still pointed at the backup, switched back to the backup and
+  issued `restart_wan_if` for the primary, dropping a PPPoE session that had just come up. The primary
+  recovered, failed back and the cycle repeated; unplugging the backup stopped it only because a
+  disconnected primary is not counted while the other line has no link. The counter is now reset on
+  fail-back. Reported on a GT-BE98 with PPPoE on the WAN port and a LAN-port WAN as backup.
+
+## v3.2.6 — Asuswrt-Merlin 3006.102.9 carry: OpenVPN 2.7.7, tzdata 2026c, a 2048-bit DH floor
+
+- **Carried from Asuswrt-Merlin 3006.102.9** (Eric Sauvageau unless noted; cherry-picked with
+  authorship kept): OpenVPN 2.7.7; IANA tzdata 2026c; Wireless Log fixes for Repeater and Media
+  Bridge modes, with the follow-up DFS fix; the System Log page stops querying the router while
+  auto-refresh is off; two MultiWAN help-popup fixes; a parallel libimobiledevice build; amtm 7.0
+  (Decoderman). The rest of 3006.102.9 was already in the tree (OpenSSL 3.5, Tor 0.4.9.11 with
+  IPv6, the Brahma-B53 mitigation backport) or is not carried: the hardware AQM QoS mode (Reaper's
+  Hardware QoS engines cover it), EasyRSA 3 (the existing certificate path is fixed for OpenSSL 3.5
+  and checked on every build), the FTP TLS upgrade change, and the OpenVPN/Tor switch restyle.
+- **Time zones.** The zoneinfo tree dated from a 2017 ASUS GPL merge. About 28 zone names gave the
+  wrong offset under current rules (Mexico, Egypt, Greenland, Kazakhstan, Mongolia, Paraguay, Sudan,
+  North Korea and others); US zones were already correct. New names include `Europe/Kyiv`,
+  `America/Nuuk` and `Pacific/Kanton`. The router's own clock follows the POSIX rule the GUI writes to
+  `TZ`; the database feeds `/etc/localtime` and anything that names a region/city zone.
+- **OpenVPN server DH is at least 2048 bits.** Upstream raised the weak-DH warning from 1024 to 2048
+  bits but left the replacement test at 1024, so a 1024–2047-bit DH was warned about and still used,
+  and OpenSSL 3.x rejects it at the security level OpenVPN requests. Any DH under 2048 bits is now
+  replaced with the built-in RFC 3526 2048-bit group.
+
+## v3.2.5 — Samba and the Traffic Analyzer ship off
+
+- **Optional features ship off.** A factory-reset or new router no longer starts an SMB file
+  server when a disk is plugged in: `enable_samba` and `smbd_enable` default to `0` (stock ships
+  `1`). Turn sharing on under USB Application › Network Place. The Traffic Analyzer collector
+  (`rtraf_enable`) also defaults to `0`; the Traffic page's own switch turns it on. Defaults only
+  apply after a factory reset or on clean NVRAM; an upgraded router keeps its current values.
+  Unchanged on purpose: the self-monitor (`rwatch_enable`), and the PPPoE re-dial and stock
+  Traffic Monitor history, which have no switch in the GUI. The Reaper theme is untouched. Same
+  change on all six models.
+
+## v3.2.4 — a policy-routing rule to a WireGuard client brings the replies home
+
+- **A source rule to a WireGuard client now works.** The rule marked the flow's first packet and
+  saved the mark on the connection, as intended, but the `REAPER_PBR` jump has no input
+  interface, so the reply arriving from the tunnel had the same mark restored and was routed by
+  the client's table. That table holds only the two half-default routes into the tunnel, with no
+  LAN route, so the reply went back into the tunnel and the LAN host never saw it. OpenVPN
+  targets were unaffected (their tables carry the LAN route), as was VPN Director. The chain now
+  opens with `-m conntrack --ctdir REPLY -j RETURN` in both families, ahead of the restores, so
+  replies route by `main`. The rule walker models it. Found from a tester capture on an
+  RT-BE86U; reproduced and verified in a network-namespace model. **Metal confirmation owed.**
 
 ## v3.2.3 — locked Settings cells say why, four-radio fixes, Warden and boot efficiency
 

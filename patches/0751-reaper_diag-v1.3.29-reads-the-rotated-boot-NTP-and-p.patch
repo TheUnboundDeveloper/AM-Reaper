@@ -1,0 +1,244 @@
+From fd26fb547b76c3abc0f712bdbd6a529667262256 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 6 Oct 2026 08:41:29 -0400
+Subject: [PATCH] reaper_diag v1.3.29: reads the rotated boot, NTP and probe
+ findings, the lease remaining, the name-map counters, each log file once
+
+- syslog.log-1 is read ahead of the live file, so a boot that rotated out is
+  still found; a live log that starts after the boot is an INFO finding.
+- section 5: an ntp line, and a WARN when ntp_ready is still 0 after 300 s;
+  the lease line prints the time remaining (udhcpc stores boot-uptime + lease).
+- section 16: a WARN when every probe was lost.
+- section 3: df rows hidden by a later mount are labelled (device + path).
+- 11b: the destination-name map's counters, read with the hexdump applet
+  (this busybox has no od); 12c: rdnsmapd and its switch.
+- a log kept on /jffs is reached through /tmp symlinks: every file is listed
+  once by its resolved path; the mirror's rotated copy is named.
+
+Reaper_Diag.asp pins the version.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 102 ++++++++++++++++++++++---
+ release/src/router/www/Reaper_Diag.asp |   2 +-
+ 2 files changed, 94 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index c15613c1ed..7094733e55 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.25 (2026-09-30) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.29 (2026-10-05) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -34,6 +34,21 @@
+ #  script can derive itself. Every new line is a count, a name or a state;
+ #  MACs/hosts/public addresses go through the same sanitizer as before.
+ #
++#  v1.3.28 reads the ROTATED syslog ahead of the live one. syslogd keeps one
++#  file behind (-b 1) and a busy box rotates the boot into syslog.log-1 within
++#  ~25 minutes (RT-BE86U 2026-10-04: 231 Warden drops, four OpenVPN clients, a
++#  server and WireGuard in 26 min), so every 19b count described a window that
++#  began long after boot and the reader took the live head for "at boot".
++#  Section 19b now says where the boot is, section 5 prints the NTP state with
++#  a finding when ntp_ready never came up, and section 16 says so when every
++#  probe from the router lost 100 %.
++#
++#  v1.3.29 (r11 first boot): the name-map counters read through `hexdump` (this
++#  busybox has no `od`); a log kept on /jffs is reached through /tmp symlinks, so
++#  the rotated file is listed once by its resolved path; the syslog mirror's
++#  rotated copy is named when the live mirror is between rotation and the next
++#  tick.
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -48,7 +63,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.25"
++VER="REAPER-DIAG v1.3.29"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -98,6 +113,8 @@ probe() {
+   _loss="$(echo "$_o" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)% packet loss.*/\1/p')"
+   _rtt="$(echo "$_o" | sed -n 's|.*= [0-9.]*/\([0-9.]*\)/.*|\1|p')"
+   echo "  $_l : loss=${_loss:-100}%  avg_rtt=${_rtt:-n/a}ms"
++  # v1.3.28: one probe that answered is enough to say the router has a path out
++  case "${_loss:-100}" in *[!0-9]*) ;; *) [ "${_loss:-100}" -lt 100 ] && PROBE_OK=1;; esac
+ }
+ 
+ # v1.3.0: one-line verdicts collected during the gather and printed FIRST.
+@@ -114,7 +131,18 @@ slog_files() {
+     usb) for d in /tmp/mnt/*/; do [ -s "${d}.reaper/syslog.mirror" ] && { _m="${d}.reaper/syslog.mirror"; break; }; done ;;
+   esac
+   [ -n "$_m" ] && echo "$_m"
+-  [ -s /tmp/syslog.log ] && echo /tmp/syslog.log
++  # v1.3.28: the ROTATED file ahead of the live one - the boot is in syslog.log-1 on any
++  # box that logs more than 256 KB before a diag is collected. Order matters: the
++  # snapshot dedup in 19b is order-preserving and the span maths reads the first line.
++  # v1.3.29: a log kept on /jffs is reached through /tmp symlinks (r11 first boot read the
++  # rotated file twice) - list each file once, by its resolved path.
++  _seen=" "
++  for _r in /jffs/syslog.log-1 /tmp/syslog.log-1 /jffs/syslog.log /tmp/syslog.log; do
++    [ -s "$_r" ] || continue
++    _p="$(readlink -f "$_r" 2>/dev/null)"; [ -n "$_p" ] || _p="$_r"
++    case "$_seen" in *" $_p "*) continue;; esac
++    _seen="$_seen$_p "; echo "$_r"
++  done
+ }
+ 
+ # ---------------------------------------------------------------------------
+@@ -339,7 +367,15 @@ done
+ sec "3. SYSTEM"
+ echo "  loadavg: $(cat /proc/loadavg 2>/dev/null)"
+ head -4 /proc/meminfo 2>/dev/null | sed 's/^/  /'
+-echo "  -- storage --"; df -h 2>/dev/null | sed 's/^/  /'
++# v1.3.26: df still lists a mount that a LATER mount covers (same path or a parent) and prints
++# the covering filesystem's figures for it. Stock does this at every boot: the platform init
++# mounts a 128k tmpfs on /tmp/mnt and the defaults volume under it, then rc's sysinit mounts
++# /tmp on top, so those rows read 1000 MB. Label them, matched on device AND path: df skips
++# zero-size entries (the rootfs that the real root covers), so a path alone would hit the wrong row.
++RSHADOW="$(awk '{ d[NR]=$1; p[NR]=$2 } END { for (i=1; i<=NR; i++) for (j=i+1; j<=NR; j++) if (p[j]==p[i] || index(p[i], p[j] "/")==1) { print d[i] " " p[i]; break } }' /proc/mounts 2>/dev/null)"
++echo "  -- storage --"; df -h 2>/dev/null | awk -v sh="$(echo "$RSHADOW" | tr '
++' '|')" 'BEGIN { n=split(sh, a, "|"); for (i=1; i<=n; i++) if (a[i]!="") c[a[i]]++ }
++  { k=$1 " " $NF; if (c[k]>0) { c[k]--; print "  " $0 "   [hidden under a later mount - figures are not its own]" } else print "  " $0 }'
+ echo "  -- jffs/usb mounts --"; mount 2>/dev/null | grep -E "jffs|/mnt|usb|sd[a-z]" | sed 's/^/  /'
+ # v1.3.4: /jffs health. Since v2.6.3-v2.6.9 the Reaper lists (Gatekeeper devices,
+ # routing rules, firewall lists, Warden cache) live ONLY here: a full, read-only
+@@ -422,6 +458,12 @@ case "$WIP" in
+   ""|0.0.0.0) echo "  wan0 IPv4: NONE";;
+   *) echo "  wan0 IPv4: PUBLIC (present, redacted; mask $(nvram get wan0_netmask 2>/dev/null))";;
+ esac
++# v1.3.28 (RT-BE86U 2026-10-04, two diags): ntp_ready never came up although the clock was
++# right - WireGuard, OpenVPN, ddns, diskmon and every add-on NTP wait sat behind it for 36+
++# minutes, and nothing in the report said so. initial-set counts rc's "Initial clock set".
++echo "  ntp               : ntp_ready=$(nvram get ntp_ready 2>/dev/null) server=$(nvram get ntp_server0 2>/dev/null) dns_local_cache=$(nvram get dns_local_cache 2>/dev/null) initial-set=$(cat /tmp/syslog.log-1 /tmp/syslog.log 2>/dev/null | grep -c 'Initial clock set')"
++_upn="$(cut -d. -f1 /proc/uptime 2>/dev/null)"; case "$_upn" in ''|*[!0-9]*) _upn=0;; esac
++[ "$(nvram get ntp_ready 2>/dev/null)" != 1 ] && [ "$_upn" -gt 300 ] && finding WARN "ntp_ready is not 1 after $((_upn/60)) min of uptime - every service that waits for the first clock sync (WireGuard, OpenVPN, ddns, diskmon, add-on cron jobs) is still waiting; see the ntp line in 5 and the boot in 19b"
+ echo "  -- DNS in use --"
+ for d in $(nvram get wan0_dns 2>/dev/null) $(nvram get wan0_xdns 2>/dev/null) $(awk '/^nameserver/{print $2}' /etc/resolv.conf 2>/dev/null); do
+   case "$d" in
+@@ -443,7 +485,13 @@ echo "  wan iface         : $WANIF  speed=$(cat /sys/class/net/$WANIF/speed 2>/d
+ WPROTO="$(nvram get wan0_proto 2>/dev/null)"
+ echo "  proto             : $WPROTO  state_t=$(nvram get wan0_state_t 2>/dev/null) sbstate=$(nvram get wan0_sbstate_t 2>/dev/null) auxstate=$(nvram get wan0_auxstate_t 2>/dev/null)"
+ case "$WPROTO" in
+-  dhcp) echo "  dhcp lease        : lease=$(nvram get wan0_lease 2>/dev/null)s expires_in=$(nvram get wan0_expires 2>/dev/null)s";;
++  # v1.3.27: wan0_expires is the boot-uptime at which the lease ENDS (rc/udhcpc.c expires(): uptime + lease),
++  # not a countdown - v1.3.0..26 printed it as "expires_in" and read 1902 s on an 1800 s lease (owner, first
++  # boot 2026-10-04). Subtract /proc/uptime, clamp at 0, "?" when either value is missing.
++  dhcp) _wl="$(nvram get wan0_lease 2>/dev/null)"; _we="$(nvram get wan0_expires 2>/dev/null)"
++        _up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"; _rem="?"
++        case "${_we:-x}${_up:-x}" in *[!0-9]*) ;; *) _rem=$((_we - _up)); [ "$_rem" -lt 0 ] && _rem=0;; esac
++        echo "  dhcp lease        : lease=${_wl:-?}s remaining=${_rem}s (ends at uptime ${_we:-?} s; uptime now ${_up:-?} s)";;
+   pppoe) echo "  pppoe             : $(grep -i 'up with MTU' /tmp/syslog.log 2>/dev/null | tail -1 | cut -c17- | sed 's/^ *//')"
+          echo "  pppoe mtu/mru     : mtu=$(nvram get wan0_pppoe_mtu 2>/dev/null) mru=$(nvram get wan0_pppoe_mru 2>/dev/null) (both >1492 needed for RFC 4638)";;
+ esac
+@@ -756,6 +804,9 @@ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases; do
+ done
+ 
+ sec "11b. CONNTRACK (counts, timeouts - no flows printed)"
++# v3.3.4: the passive DNS name map behind the Flow Explorer destination names (rdnsmapd,
++# shared/reaper_dnsmap.h) - counts only: replies parsed, A records written, the table size.
++[ -s /tmp/reaper/dnsmap ] && echo "  dns name map      : $(hexdump -s 16 -n 8 -e '2/4 "%u " "\n"' /tmp/reaper/dnsmap 2>/dev/null | awk '{print "replies=" $1 " updates=" $2}')  file=$(wc -c < /tmp/reaper/dnsmap 2>/dev/null | tr -d ' ') bytes  rconn_names=$(nvram get rconn_names 2>/dev/null)"
+ CT=/proc/net/nf_conntrack
+ if [ -r $CT ]; then
+   # v1.3.14: ONE read. Every figure below used to re-read the LIVE file, so the
+@@ -851,7 +902,7 @@ svc() { # name knob expected-running-when
+   printf "  %-8s %-22s running=%s\n" "$1" "$2=${_on:-unset}" "$_run"
+   if [ "$_on" = "$3" ] && [ "$_run" = 0 ]; then finding WARN "$1 is enabled ($2=$3) but not running"; fi
+ }
+-svc rtrafd rtraf_enable 1; svc gkd gk_enable 1; svc rchqd rchq_enable 1
++svc rtrafd rtraf_enable 1; svc gkd gk_enable 1; svc rchqd rchq_enable 1; svc rdnsmapd rconn_names 1
+ # v1.3.13: rmcpd is NOT switch-driven. It is never launched at boot; it starts only on an
+ # explicit ARM from the Advisor page (httpd writes /tmp/reaper_mcp/session, rc start_rmcp
+ # refuses without it) and exits on the arming timeout or Disable. running=0 with no
+@@ -1153,6 +1204,9 @@ GW="$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')"
+ if [ -n "$GW" ]; then probe "default gateway   " "$GW"; else echo "  default gateway   : NONE in routing table"; fi
+ probe "Cloudflare-DNS-v4 " 1.1.1.1
+ probe "Google-DNS-v4     " 8.8.8.8
++# v1.3.28 (RT-BE86U 2026-10-04): the box had no connectivity at all while the dashboard said
++# Connected; the probes showed it, the FINDINGS block did not.
++[ -z "$PROBE_OK" ] && finding WARN "every connectivity probe from the router lost 100 % (gateway, Cloudflare, Google) - the router itself has no path out, or Warden's self chain drops the probes (section 14 IN SET); read 5 and 16 before anything about DNS or clients"
+ 
+ sec "17. RWATCH (self-monitor state + durable store)"
+ nvram show 2>/dev/null | grep -E '^(rwatch_|reaper_store)' | sort | sed 's/^/  /'
+@@ -1188,6 +1242,10 @@ if [ -s "$RS_BASE/syslog.mirror" ]; then
+   echo "  syslog mirror     : $RS_BASE/syslog.mirror $(wc -c < "$RS_BASE/syslog.mirror" 2>/dev/null) bytes, $(wc -l < "$RS_BASE/syslog.mirror" 2>/dev/null) lines"
+   echo "     spans          : $(head -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15) .. $(tail -1 "$RS_BASE/syslog.mirror" 2>/dev/null | cut -c1-15)"
+   [ -s "$RS_BASE/syslog.mirror.1" ] && echo "     rotated        : syslog.mirror.1 $(wc -c < "$RS_BASE/syslog.mirror.1" 2>/dev/null) bytes"
++elif [ -s "$RS_BASE/syslog.mirror.1" ]; then
++  # v1.3.29: rwatch rotates the mirror at 8 MB; before that order was fixed the live file was
++  # absent until the next tick, which read here as "no mirror" on a box that had 8 MB of it
++  echo "  syslog mirror     : rotated moments ago - syslog.mirror.1 $(wc -c < "$RS_BASE/syslog.mirror.1" 2>/dev/null) bytes, $(wc -l < "$RS_BASE/syslog.mirror.1" 2>/dev/null) lines; the live mirror restarts at the next rwatch tick"
+ else
+   echo "  syslog mirror     : none (needs 'slog' in reaper_store_ds and a non-volatile store)"
+ fi
+@@ -1233,6 +1291,35 @@ if [ -n "$SLF" ]; then
+   cat $SLF 2>/dev/null | awk '!seen[$0]++' | grep -v 'rmcpd-lab: exec:' > "$SNAP" 2>/dev/null
+   SLF="$SNAP"
+   echo "  sources           : $SLFSRC"
++  # v1.3.28: where the boot is. Each file's size and first stamp, and a finding when the live
++  # file starts more than 5 minutes after boot (its first and last stamps give its span; uptime
++  # minus that span is how long after boot it starts). Pseudo-epoch with 30.4-day months and no
++  # year: only differences are used, and a pre-NTP head (epoch-era stamp) makes the span absurd
++  # and the test false, which is right - such a file holds the boot.
++  AWKPE='BEGIN{split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",A," ");for(i=1;i<=12;i++)mn[A[i]]=i}
++function pe(m,d,t){split(t,T,":");return mn[m]*2629800+d*86400+T[1]*3600+T[2]*60+T[3]}
++'
++  _fseen=" "
++  for _f in /tmp/syslog.log-1 /tmp/syslog.log /jffs/syslog.log-1 /jffs/syslog.log; do
++    [ -s "$_f" ] || continue
++    _fp="$(readlink -f "$_f" 2>/dev/null)"; [ -n "$_fp" ] || _fp="$_f"
++    case "$_fseen" in *" $_fp "*) continue;; esac
++    _fseen="$_fseen$_fp "
++    echo "  file              : $_f$( [ "$_fp" != "$_f" ] && echo " -> $_fp") $(wc -c < "$_f" 2>/dev/null | tr -d ' ') bytes, first stamp $(head -1 "$_f" 2>/dev/null | cut -c1-15)"
++  done
++  if [ -s /tmp/syslog.log-1 ] || [ -s /jffs/syslog.log-1 ]; then
++    _upb="$(cut -d. -f1 /proc/uptime 2>/dev/null)"; case "$_upb" in ''|*[!0-9]*) _upb=0;; esac
++    _fe="$(head -1 /tmp/syslog.log 2>/dev/null | awk "$AWKPE"'mn[$1]{print pe($1,$2,$3)}')"
++    _le="$(tail -1 /tmp/syslog.log 2>/dev/null | awk "$AWKPE"'mn[$1]{print pe($1,$2,$3)}')"
++    if [ -n "$_fe" ] && [ -n "$_le" ]; then
++      [ "$_fe" -gt "$_le" ] && _fe=$((_fe - 31557600))
++      _gap=$((_upb - (_le - _fe)))
++      if [ "$_gap" -gt 300 ] && [ "$_gap" -lt "$_upb" ]; then
++        echo "  live log starts   : ~$((_gap/60)) min after boot - the boot is in syslog.log-1 (part of the snapshot above)"
++        finding INFO "the live syslog starts ~$((_gap/60)) min after boot - the boot is in syslog.log-1, which 19b now reads; section 19 (the live tail) says nothing about boot"
++      fi
++    fi
++  fi
+   echo "  snapshot          : $(wc -l < "$SNAP" 2>/dev/null) distinct line(s) after collapsing source overlap and lab command echoes"
+   echo "  span              : $(cat $SLF 2>/dev/null | head -1 | cut -c1-15) .. $(tail -1 /tmp/syslog.log 2>/dev/null | cut -c1-15)   lines=$(cat $SLF 2>/dev/null | wc -l)"
+   # CHURNFIX (v1.3.8): hostapd emits the SAME "IEEE 802.11: disassociated" line
+@@ -1251,9 +1338,6 @@ if [ -n "$SLF" ]; then
+     # the log is stamped by the pre-NTP boot clock (months off, and the format
+     # has no year), which inflated the span and reported a hot loop as ~0/h.
+     # Pseudo-epoch with 30.4-day months is fine: only the difference is used.
+-    AWKPE='BEGIN{split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",A," ");for(i=1;i<=12;i++)mn[A[i]]=i}
+-function pe(m,d,t){split(t,T,":");return mn[m]*2629800+d*86400+T[1]*3600+T[2]*60+T[3]}
+-'
+     LP="$(tail -1 /tmp/syslog.log 2>/dev/null | awk "$AWKPE"'mn[$1]{print pe($1,$2,$3)}')"
+     FEP="$(cat $SLF 2>/dev/null | awk -v L="$LP" "$AWKPE"'mn[$1]{e=pe($1,$2,$3); if(e>L)e-=31557600; if(L-e<=5184000){print e; exit}}')"
+     if [ -n "$LP" ] && [ -n "$FEP" ] && [ "$LP" -gt "$FEP" ]; then
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index f7cab7c8c0..cb21478da4 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.25</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.29</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

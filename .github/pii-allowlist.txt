@@ -1,7 +1,76 @@
-# Files allowed to contain PII-scan patterns (see repo-hygiene.yml).
-# Only third-party upstream context or scrub documentation belongs here —
-# never add a file that carries the maintainer's own personal details.
+# Allowlist for build-scripts/reaper_piicheck.py (run by repo-hygiene.yml).
+# Two kinds of line:
+#   <path or glob>   the GENERIC detectors skip that file - vendored upstream context or
+#                    scrub documentation only. The private deny-list still reads it.
+#   <rule>:<value>   accept one value everywhere - public infrastructure or a documented
+#                    example. Rules: mail home mac ipv4 ipv6 host basic urlcred.
+# Never add a file or a value that carries the maintainer's own personal details: change
+# the test or doc to a documentation value instead (RFC 5737 / 3849 / 9637 / 7042).
 #
+# --- values ---
+# firmware version strings the dotted-quad detector reads as addresses
+ipv4:3.0.0.6
+ipv4:8.0.7.4
+# example.com's public address (dnsmap fixtures resolve example.com)
+ipv4:93.184.216.34
+# example.com's other public address: the Wallguard tests' fake upstream answers with it (dnsmasq's rebind
+# check refuses a TEST-NET answer, so a documentation value cannot stand in here)
+ipv4:93.184.215.7
+# addresses from ASUS's own stock OUTPUT_IP block rules, replayed by the firewall-restore tests
+ipv4:51.15.120.245
+ipv4:45.33.73.134
+# the public address of www.ipdeny.com, the country-list host Warden whitelists once so its own
+# downloads are never dropped by the router-self filter (v3.4.7, rc/rwarden.c RW_GEO_HOST_IP),
+# and the hosting provider's public range named in the comment beside it
+ipv4:51.15.12.186
+ipv4:51.15.0.0
+# the four Fastly CDN addresses the abuse.ch feed hosts (urlhaus, threatfox, feodotracker) answer
+# from, seeded once into the Warden whitelist (v3.4.8, rc/rwarden.c RW_ABUSECH_IPS), and Fastly's
+# public range named in the comment beside them
+ipv4:151.101.2.49
+ipv4:151.101.66.49
+ipv4:151.101.130.49
+ipv4:151.101.194.49
+ipv4:151.101.0.0
+# the classic placeholder addresses in examples and help text
+ipv4:1.2.3.4
+ipv4:5.6.7.8
+# subnet-boundary arithmetic in the shared topbar JavaScript (patch 0046)
+ipv4:126.255.255.255
+ipv4:128.0.0.0
+# v3.4.9: the bounds of a valid unicast IPv4 address, quoted by the native pages' validation messages
+ipv4:1.0.0.1
+ipv4:223.255.255.254
+# v3.4.9: the public 6to4 relay anycast address (RFC 3068), named by the IPv6 setup page's help text
+ipv4:192.88.99.1
+# v3.4.9: the ASUS DDNS server and the Let's Encrypt ACME endpoint Warden whitelists once while the
+# DDNS certificate is in use (rc/rwarden.c RW_ASUSDDNS_IP, RW_LE_IPS), and the two country-list ranges
+# the comment beside them names (they hold those hosts, so the US block dropped them)
+ipv4:52.250.42.40
+ipv4:172.65.32.248
+ipv4:52.224.0.0
+ipv4:172.64.0.0
+# v3.4.9: public DNS resolvers (Cloudflare, Google, Quad9, NextDNS) as the Encrypted DNS tests' list entries, and
+# the search engines' published safe-search enforcement addresses (Google forcesafesearch / YouTube restrict,
+# Bing strict) the Wallguard tests' stubbed resolver returns
+ipv4:1.1.1.1
+ipv4:8.8.8.8
+ipv4:9.9.9.9
+ipv4:45.90.28.0
+ipv4:216.239.38.120
+ipv4:216.239.38.119
+ipv4:204.79.197.220
+ipv6:2606:4700:4700::1111
+ipv6:2001:4860:4860::8888
+ipv6:2001:4860:4802:32::78
+#
+# --- paths ---
+# the checker's own negative controls: invented real-looking values, by design
+build-scripts/tests/test_piicheck.py
+# patch 0863 (v3.4.9): rednsd/doh-seed.txt alone - the published anycast addresses of the large public
+# DNS-over-HTTPS resolvers (Cloudflare, Google, Quad9, NextDNS, Control D, AdGuard, OpenDNS, CleanBrowsing,
+# Mullvad). Public infrastructure; its own commit so rednsd's code stays under the detectors.
+patches/0863-rednsd-the-shipped-seed-of-public-DoH-resolver-addre.patch
 # patches 0103/0222/0223: third-party upstream author/translator addresses in
 # deleted-file diff context and imported package metadata (pre-existing upstream).
 patches/0103-www-shared-delete-AiCloud-WebDAV-CloudSync-remnants-.patch

@@ -1,0 +1,39 @@
+From ef6556ba6df7946c8b4cf1b0d5f95439822547da Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 20:47:34 -0400
+Subject: [PATCH] shared: isValidMacAddress() refuses any character but hex
+ digits and separators (102.8 line)
+
+Port of 0ed63f725be. Stock set s = -1 on any other character and went on,
+so a separator after one hex digit (i / 2 - 1 == -1) put the count back and
+A":A:BB:CC:DD:EE:FF passed. On this line the AiMesh gates in web.c already
+run reaper_mac_or_empty()'s character whitelist first, but other callers
+take isValidMacAddress() alone (the user-icon MAC has no length check), so
+the function itself is hardened here too, as on the 102.10 line.
+
+(cherry picked from commit 0ed63f725be, shared/misc.c only)
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/shared/misc.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/shared/misc.c b/release/src/router/shared/misc.c
+index 01e3d8afc21..9fcdf42e774 100644
+--- a/release/src/router/shared/misc.c
++++ b/release/src/router/shared/misc.c
+@@ -6026,7 +6026,11 @@ int isValidMacAddress(const char* mac) {
+ 			++s;
+ 		}
+ 		else
+-			s = -1;
++			/* Reaper 2026-10-27: any other character makes it no MAC. Stock set s = -1 and went
++			 * on, so a separator after one hex digit (i / 2 - 1 == -1) put the count back and
++			 * A":A:BB:CC:DD:EE:FF passed - a quote or brace into the JSON events httpd writes
++			 * for cfg_server from re_mac / new_re_mac / target_bssid. */
++			return 0;
+ 		++mac;
+ 	}
+ 	return (i == 12 && (s == 5 || s == 0));
+-- 
+2.25.1
+

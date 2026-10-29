@@ -1,0 +1,213 @@
+From 3caff7844d4a25a32fe94794a74b59ef90c7315e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 20 Oct 2026 21:56:34 -0400
+Subject: [PATCH] jffs: no file or folder on /jffs stays writable by every user
+
+Field (RT-BE88U, v3.4.7): 250+ files under /jffs were mode 0666 - SSH
+authorized keys, VPN certificates and keys, ACME files, rule lists. The
+v3.3.8 umask 022 shapes only NEW files; a rewrite keeps the old mode and
+a backup restore untars the old modes. With a nobody-run daemon able to
+write sshd_authkeys, that is a path to root.
+
+shared/reaper_jfile.c reaper_jffs_perm_sweep(): an lstat walk of the
+mount (same device, depth 32, regular files and folders only, sticky
+folders kept) that clears only the other-write bit (0666 -> 0664). Called
+from start_jffs2() and the ubifs mount right after setup_jffs_dirs(),
+before anything runs from /jffs.
+
+syslogd starts about 44 s later, so the sweep's result is logged by
+reaper_jffs_perm_report() from init's START case right after
+start_logger(), which also writes the boot record /tmp/reaper/jffs.sweep
+("<changed> <failed>") for the diagnostics.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/init.c             |   3 +
+ release/src/router/rc/jffs2.c            |   3 +
+ release/src/router/rc/ubifs.c            |   3 +
+ release/src/router/shared/reaper_jfile.c | 107 +++++++++++++++++++++++
+ release/src/router/shared/shared.h       |   2 +
+ 5 files changed, 118 insertions(+)
+
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index 7dd54a0aee..c69de91b54 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27035,6 +27035,9 @@ int init_main(int argc, char *argv[])
+ 
+ 		case SIGUSR2:		/* START */
+ 			start_logger();
++			/* 2026-10-20: the /jffs world-write sweep ran before syslogd existed -
++			 * log its result now, and write the boot record (shared/reaper_jfile.c) */
++			reaper_jffs_perm_report();
+ #if defined(RTCONFIG_QCA)
+ 			logmessage("INIT", "firmware version: %s_%s_%s\n", nvram_safe_get("firmver"), nvram_safe_get("buildno"), nvram_safe_get("extendno"));
+ 			if (!strncmp(nvram_safe_get("firmver"), "7.0", 3)) {
+diff --git a/release/src/router/rc/jffs2.c b/release/src/router/rc/jffs2.c
+index 92d7cc2be8..c70abf56b9 100644
+--- a/release/src/router/rc/jffs2.c
++++ b/release/src/router/rc/jffs2.c
+@@ -502,6 +502,9 @@ void start_jffs2(void)
+ #endif
+ 
+ 	setup_jffs_dirs();
++	/* 2026-10-20 (field): before anything runs from /jffs, no file or folder on it
++	 * stays writable by every user (shared/reaper_jfile.c) */
++	reaper_jffs_perm_sweep("/jffs");
+ 
+ 	_dprintf("%s: create jffs2 successfully\n", __func__);
+ 	logmessage("jffs2", "create jffs2 successfully");
+diff --git a/release/src/router/rc/ubifs.c b/release/src/router/rc/ubifs.c
+index 9ac61dac30..eb87ec3e9d 100644
+--- a/release/src/router/rc/ubifs.c
++++ b/release/src/router/rc/ubifs.c
+@@ -294,6 +294,9 @@ skip_mnt:
+ #endif
+ 
+ 	setup_jffs_dirs();
++	/* 2026-10-20 (field): before anything runs from /jffs, no file or folder on it
++	 * stays writable by every user (shared/reaper_jfile.c) */
++	reaper_jffs_perm_sweep(UBIFS_MNT_DIR);
+ 
+ #if defined(RTCONFIG_TEST_BOARDDATA_FILE)
+ 	/* Copy /lib/firmware to /tmp/firmware, and
+diff --git a/release/src/router/shared/reaper_jfile.c b/release/src/router/shared/reaper_jfile.c
+index a071d4090e..705990bbc7 100644
+--- a/release/src/router/shared/reaper_jfile.c
++++ b/release/src/router/shared/reaper_jfile.c
+@@ -20,12 +20,119 @@
+ #include <unistd.h>
+ #include <sys/stat.h>
+ #include <fcntl.h>
++#include <dirent.h>
++#include <limits.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+ #include "shared.h"
+ 
+ #define RJF_MAX (256 * 1024)	/* sanity cap on a read, far above any real list */
+ 
++/* 2026-10-20 (field, RT-BE88U): write-for-everyone under /jffs. rc has run with
++ * umask 022 since v3.3.8, but that only shapes NEW files: a file created
++ * earlier keeps 0666 through every later rewrite, and a full-backup restore
++ * untars old modes back. The reporter found 250+ such entries - sshd_authkeys,
++ * the VPN and HTTPS keys, the ACME account, the rule lists - so any non-root
++ * daemon (dnsmasq, avahi, lldpd run as nobody) that was compromised could plant
++ * an SSH key and become root. Every boot, right after /jffs is mounted and
++ * before anything runs, this removes the "other" write bit from every regular
++ * file and directory on that file system: symlinks are never followed or
++ * changed, FIFOs and sockets are left alone, other mounts are not entered, and
++ * a sticky directory (1777, shared on purpose) keeps its mode. Everything that
++ * writes /jffs runs as root, which the owner and group bits still serve. One
++ * log line when anything changed; the Security Review reports a regression. */
++static void rjf_ww_walk(char *path, size_t cap, dev_t dev, int depth, int *fixed, int *failed)
++{
++	struct stat st;
++	struct dirent *e;
++	DIR *d;
++	size_t l;
++
++	if (lstat(path, &st) != 0 || st.st_dev != dev)
++		return;
++	if ((S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) && (st.st_mode & S_IWOTH)
++	    && !(S_ISDIR(st.st_mode) && (st.st_mode & S_ISVTX))) {
++		if (chmod(path, (st.st_mode & 07777) & ~S_IWOTH) == 0)
++			(*fixed)++;
++		else
++			(*failed)++;
++	}
++	if (!S_ISDIR(st.st_mode) || depth >= 32 || (d = opendir(path)) == NULL)
++		return;
++	l = strlen(path);
++	while ((e = readdir(d)) != NULL) {
++		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
++			continue;
++		if (l + 1 + strlen(e->d_name) + 1 > cap)
++			continue;
++		snprintf(path + l, cap - l, "/%s", e->d_name);
++		rjf_ww_walk(path, cap, dev, depth + 1, fixed, failed);
++		path[l] = '\0';
++	}
++	closedir(d);
++}
++
++/* The sweep runs right after /jffs is mounted, and syslogd cannot have started
++ * yet - it writes /jffs/syslog.log (r1 metal, 2026-10-20: the line never reached
++ * the log). So the result is kept here, in pid 1 like the boot loop that starts
++ * syslogd, and reaper_jffs_perm_report() logs it once syslogd runs and writes
++ * the per-boot record the diagnostics report reads. A sweep that runs later,
++ * with syslogd already up, logs at once. */
++#ifndef RJF_WW_REC
++#define RJF_WW_REC "/tmp/reaper/jffs.sweep"
++#endif
++static int rjf_ww_ran, rjf_ww_fixed, rjf_ww_failed, rjf_ww_logged;
++static char rjf_ww_root[64];
++
++static void rjf_ww_log(void)
++{
++	logmessage("reaper", "jffs: write access for all users removed from %d file(s) and folder(s) under %s%s (left by firmware before v3.3.8, or restored from an older backup)",
++	           rjf_ww_fixed, rjf_ww_root, rjf_ww_failed ? ", some could not be changed" : "");
++	rjf_ww_logged = 1;
++}
++
++/* Returns how many entries were changed, -1 when root is not a directory. */
++int reaper_jffs_perm_sweep(const char *root)
++{
++	char path[PATH_MAX];
++	struct stat st;
++	int fixed = 0, failed = 0;
++
++	if (lstat(root, &st) != 0 || !S_ISDIR(st.st_mode))
++		return -1;
++	snprintf(path, sizeof(path), "%s", root);
++	rjf_ww_walk(path, sizeof(path), st.st_dev, 0, &fixed, &failed);
++	rjf_ww_ran = 1;
++	rjf_ww_fixed = fixed;
++	rjf_ww_failed = failed;
++	rjf_ww_logged = 0;
++	snprintf(rjf_ww_root, sizeof(rjf_ww_root), "%s", root);
++	if ((fixed || failed) && pids("syslogd"))
++		rjf_ww_log();
++	return fixed;
++}
++
++/* After syslogd starts (rc/init.c, right after start_logger()): log a sweep that
++ * ran before it, once, and write "<changed> <failed>" to RJF_WW_REC - every boot,
++ * zeros included, so the diagnostics report can tell "nothing to do" from "did
++ * not run". syslogd is launched without a wait, so give it up to 3 s to appear. */
++void reaper_jffs_perm_report(void)
++{
++	char rec[32];
++	int i;
++
++	if (!rjf_ww_ran)
++		return;
++	if ((rjf_ww_fixed || rjf_ww_failed) && !rjf_ww_logged) {
++		for (i = 0; i < 30 && !pids("syslogd"); i++)
++			usleep(100000);
++		usleep(200000);		/* its socket is bound a moment after the process exists */
++		rjf_ww_log();
++	}
++	snprintf(rec, sizeof(rec), "%d %d\n", rjf_ww_fixed, rjf_ww_failed);
++	reaper_write_atomic(RJF_WW_REC, rec, strlen(rec), 0644);
++}
++
+ static char *rjf_buf;	/* last value returned by rjf_get(); replaced on each call */
+ 
+ /* *exists: 1 = read in full, 0 = absent, -1 = OPENED BUT UNREADABLE.
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index b98b70acd4..307e700b85 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -3634,6 +3634,8 @@ extern char *reaper_fw_list_get(const char *key);	/* key: obj grp svc zone zpol
+ extern char *rw_list_get(const char *name);	/* name: ban allow cfeeds. CALLER FREES. */
+ extern int rw_list_set(const char *name, const char *v);
+ extern void rw_list_migrate(void);		/* one-shot nvram -> file (start_rwarden) */
++extern int reaper_jffs_perm_sweep(const char *root);	/* every boot: no write-for-everyone under /jffs */
++extern void reaper_jffs_perm_report(void);		/* after start_logger(): log it, write the boot record */
+ extern int reaper_fw_list_stage(const char *key, const char *v);
+ #ifdef RTCONFIG_VAR_NVRAM
+ extern char *var_nvram_get(const char *name);
+-- 
+2.25.1
+

@@ -1,0 +1,182 @@
+From 673ade55e2099c5ab39b0532555c859aae6d6480 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 20:27:00 -0400
+Subject: [PATCH] rtrafd, www: Traffic Analyzer - Top Devices and Top Talkers
+ show 10, 20, 30 or 50 rows
+
+Each table gets its own 10/20/30/50 selector (remembered in the browser), a
+fixed layout and padded rows, so the page does not jump as rows come and go.
+rtrafd keeps 64 live top-talker slots (was 20) so the 50-row view is full and
+the spare slots absorb eviction churn.
+---
+ release/src/router/rtrafd/rtrafd.c        |  4 +-
+ release/src/router/www/Reaper_Traffic.asp | 92 +++++++++++++++++++----
+ 2 files changed, 80 insertions(+), 16 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 1c6cbed45d..5e0a54e9b9 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -116,7 +116,7 @@ static int hp_ct_ready = 0;		/* health probe: that pass has published its counts
+ #define RT_DEVKEY	"router"
+ #define RT_DEVLBL	"Router"
+ #define NFLOW		16384	/* conntrack delta table (power of 2) */
+-#define NTOP		20
++#define NTOP		64	/* live top-talker slots; the page shows up to 50 (v3.3.8: 20 -> 64, the spare slots absorb eviction churn) */
+ #define FC_MAX		1536	/* flows parsed per fcache poll (bounded work) */
+ #define FC_SLOTS	16384	/* fcache flow-id -> last-bytes delta table */
+ #define SAVE_EVERY	3600	/* persist once an hour (jffs - NAND wear) */
+@@ -1108,7 +1108,7 @@ static void top_note(const char *src, const char *dst, int dport, int proto,
+ 	 * draws that line in the same spot. */
+ 	if (top_is_self(dst)) return;
+ 
+-	/* ...and NTOP is 20 SLOTS, which is not the same thing as 20 talkers. One
++	/* ...and NTOP is a count of SLOTS, which is not the same thing as talkers. One
+ 	 * conversation opened over eleven parallel connections used to occupy eleven
+ 	 * of them: a wrong reading (the panel promises a per-destination-port
+ 	 * bucket, and showed eleven identical rows instead), and a real loss, since
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 64248cf889..3f88ad77b1 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -94,6 +94,36 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ .bar>span{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--s1)}
+ .tname{color:var(--bone);font-weight:500}
+ .tsub{color:var(--steel);font-size:11px;margin-top:1px}
++/* Top devices / Top talkers: a fixed box. The table always holds exactly the
++   chosen number of rows (blank rows pad it), every row has one height, and the
++   columns are fixed, so a refresh never moves the panels below it. */
++.phead{display:flex;align-items:center;gap:10px}
++.phead h2{flex:1}
++.rowsel{display:inline-flex;border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
++.rowsel button{font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.05em;background:transparent;
++  color:var(--bone-dim);border:0;border-left:1px solid var(--line-soft);padding:4px 9px;cursor:pointer;min-width:32px}
++.rowsel button:first-child{border-left:0}
++.rowsel button:hover{color:var(--bone)}
++.rowsel button.on{color:#fff;background:linear-gradient(180deg,var(--crimson),var(--crimson-deep))}
++table.ta.tfix{table-layout:fixed}
++table.ta.tfix tbody tr{height:54px}
++table.ta.tfix td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;padding-top:0;padding-bottom:0}
++table.ta.tfix .tname,table.ta.tfix .tsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++table.ta.tfix tr.pad td{border-bottom-color:transparent}
++table.ta.tfix .dcell{display:flex;align-items:center;gap:7px;min-width:0}
++table.ta.tfix .dip{overflow:hidden;text-overflow:ellipsis;min-width:0}
++table.ta.tfix .dcell .badge{flex:none}
++.grid>.panel{min-width:0}
++@media(max-width:600px){
++  .phead{flex-wrap:wrap}
++  table.ta.tfix .c-num{width:78px}
++  table.ta.tfix .c-src{width:42%}
++  table.ta.tfix td,table.ta.tfix th{padding-left:5px;padding-right:5px}
++  table.ta.tfix .dcell{flex-wrap:wrap;row-gap:3px}
++  table.ta.tfix .dip{flex:1 1 100%}
++}
++table.ta.tfix .c-num{width:104px}
++table.ta.tfix .c-src{width:40%}
+ .badge{font-family:var(--hdr);font-size:9.5px;letter-spacing:.08em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 6px;color:var(--steel)}
+ .badge.updonly{margin-left:9px;vertical-align:2px;text-transform:none;letter-spacing:.06em;cursor:help}
+ 
+@@ -203,14 +233,14 @@ table.ta .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--bon
+ 
+ <div class="grid">
+   <div class="panel">
+-    <h2><#RTRF_19#></h2>
++    <div class="phead"><h2><#RTRF_19#></h2><div class="rowsel" data-tbl="cli"><button type="button">10</button><button type="button">20</button><button type="button">30</button><button type="button">50</button></div></div>
+     <div class="sub"><#RTRF_20#></div>
+-    <table class="ta"><thead><tr><th><#Clientlist_device#></th><th class="num"><#RTRF_21#></th><th class="num"><#RTRF_22#></th></tr></thead><tbody id="clitbody"></tbody></table>
++    <table class="ta tfix"><colgroup><col><col class="c-num"><col class="c-num"></colgroup><thead><tr><th><#Clientlist_device#></th><th class="num"><#RTRF_21#></th><th class="num"><#RTRF_22#></th></tr></thead><tbody id="clitbody"></tbody></table>
+   </div>
+   <div class="panel">
+-    <h2><#RTRF_23#></h2>
++    <div class="phead"><h2><#RTRF_23#></h2><div class="rowsel" data-tbl="top"><button type="button">10</button><button type="button">20</button><button type="button">30</button><button type="button">50</button></div></div>
+     <div class="sub"><#RTRF_24#></div>
+-    <table class="ta"><thead><tr><th><#AiProtection_event_Source#></th><th><#AiProtection_event_Destination#></th><th class="num"><#RTRF_25#></th></tr></thead><tbody id="toptbody"></tbody></table>
++    <table class="ta tfix"><colgroup><col class="c-src"><col><col class="c-num"></colgroup><thead><tr><th><#AiProtection_event_Source#></th><th><#AiProtection_event_Destination#></th><th class="num"><#RTRF_25#></th></tr></thead><tbody id="toptbody"></tbody></table>
+   </div>
+ </div>
+ 
+@@ -409,6 +439,40 @@ function devCell(ip, mac){
+   return '<span class="tname">'+esc(head)+'</span>'+(bits.length?'<div class="tsub">'+bits.join(' &middot; ')+'</div>':'');
+ }
+ 
++/* ---- Top devices / Top talkers: fixed row count ----
++   The tables used to hold however many rows the last sample had, so each refresh
++   grew or shrank the panel and moved everything under it. Now each table always
++   renders exactly TOPN[which] rows (the 10/20/30/50 buttons in its header, kept
++   per table in localStorage): real rows first, then blank rows to fill the box.
++   Renderers hand over up to TOPN_MAX rows; the latest set is kept so a button
++   press redraws at once instead of waiting for the next sample. */
++var TOPN_MAX=50, TOPN_OPTS=[10,20,30,50], TOPN={cli:10,top:10}, TOPROWS={cli:null,top:null};
++var TOPTB={cli:'clitbody',top:'toptbody'};
++function fillTop(which, rows, empty){
++  TOPROWS[which]={rows:rows, empty:empty};
++  var n=TOPN[which], h='', i;
++  for(i=0;i<n;i++){
++    if(i<rows.length) h+=rows[i];
++    else if(i===0) h+='<tr><td colspan="3" style="color:var(--steel)">'+empty+'</td></tr>';
++    else h+='<tr class="pad"><td colspan="3"></td></tr>';
++  }
++  document.getElementById(TOPTB[which]).innerHTML=h;
++}
++(function(){
++  try{ ['cli','top'].forEach(function(w){ var v=parseInt(localStorage.getItem('rtraf_rows_'+w),10); if(TOPN_OPTS.indexOf(v)>=0) TOPN[w]=v; }); }catch(e){}
++  var sels=document.querySelectorAll('.rowsel');
++  for(var s=0;s<sels.length;s++)(function(sel){
++    var w=sel.getAttribute('data-tbl'), bs=sel.querySelectorAll('button'), j;
++    var mark=function(){ for(var k=0;k<bs.length;k++) bs[k].className=(parseInt(bs[k].textContent,10)===TOPN[w])?'on':''; };
++    for(j=0;j<bs.length;j++) bs[j].onclick=function(){
++      TOPN[w]=parseInt(this.textContent,10);
++      try{ localStorage.setItem('rtraf_rows_'+w, String(TOPN[w])); }catch(e){}
++      mark(); var c=TOPROWS[w]; fillTop(w, c?c.rows:[], c?c.empty:'');
++    };
++    mark(); fillTop(w, [], '');   /* full-size box from the first paint */
++  })(sels[s]);
++})();
++
+ /* ---- SVG chart helpers (W=1000 viewBox) ---- */
+ var W=1000;
+ function axis(svg, H, maxv, unit){
+@@ -632,9 +696,9 @@ function renderLive(d){
+   var th=''; for(var i=0;i<tiles.length;i++) th+='<div class="tile"><div class="k">'+tiles[i][0]+'</div><div class="v '+tiles[i][2]+'">'+tiles[i][1]+'</div></div>';
+   document.getElementById('tiles').innerHTML=th;
+   if(drawTbl){
+-    var tb=''; (d.top||[]).sort(function(a,b){return b.rate-a.rate;}).slice(0,12).forEach(function(t){
+-      tb+='<tr><td>'+devCell(t.src,t.smac)+'</td><td>'+esc(t.dst)+' <span class="badge">'+esc(portName(t.dport,t.proto))+'</span></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'; });
+-    document.getElementById('toptbody').innerHTML = tb || `<tr><td colspan="3" style="color:var(--steel)"><#RTRF_63#></td></tr>`;
++    var tr=[]; (d.top||[]).sort(function(a,b){return b.rate-a.rate;}).slice(0,TOPN_MAX).forEach(function(t){
++      tr.push('<tr><td>'+devCell(t.src,t.smac)+'</td><td><div class="dcell"><span class="dip" title="'+esc(t.dst)+'">'+esc(t.dst)+'</span><span class="badge">'+esc(portName(t.dport,t.proto))+'</span></div></td><td class="num">'+fmtBps(t.rate*8)+'</td></tr>'); });
++    fillTop('top', tr, `<#RTRF_63#>`);
+   }
+ 
+   if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
+@@ -678,10 +742,10 @@ function renderLive(d){
+ 
+   var devs=(d.dev||[]).slice().sort(function(a,b){return (b.dn+b.up)-(a.dn+a.up);}), dmax=1;
+   if(devs.length) dmax=Math.max(1,devs[0].dn+devs[0].up);
+-  var dh='';
+-  devs.slice(0,15).forEach(function(r){ var tot=r.dn+r.up;
+-    dh+='<tr><td>'+devCell(r.ip||r.ip6,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'; });
+-  document.getElementById('clitbody').innerHTML = dh || `<tr><td colspan="3" style="color:var(--steel)"><#RTRF_66#></td></tr>`;
++  var dh=[];
++  devs.slice(0,TOPN_MAX).forEach(function(r){ var tot=r.dn+r.up;
++    dh.push('<tr><td>'+devCell(r.ip||r.ip6,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'); });
++  fillTop('cli', dh, `<#RTRF_66#>`);
+   }
+ 
+   /* quota meter (shared render, also used by history windows) */
+@@ -753,9 +817,9 @@ function renderHist(d){
+     a.dn+=dn; a.up+=up; }
+   rows.forEach(function(r){ r.tot=r.dn+r.up; });
+   rows.sort(function(a,b){return b.tot-a.tot;});
+-  var maxTot=rows.length?rows[0].tot:1, tb='';
+-  rows.slice(0,15).forEach(function(r){ tb+='<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'; });
+-  document.getElementById('clitbody').innerHTML = tb || `<tr><td colspan="3" style="color:var(--steel)"><#RTRF_69#></td></tr>`;
++  var maxTot=rows.length?Math.max(1,rows[0].tot):1, tb=[];
++  rows.slice(0,TOPN_MAX).forEach(function(r){ tb.push('<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'); });
++  fillTop('cli', tb, `<#RTRF_69#>`);
+ 
+   /* quota: rendered by histTick's single 'live' fetch via renderQuota() - a second
+      identical getJSON('live') here was a redundant CGI round-trip every cycle. */
+-- 
+2.25.1
+

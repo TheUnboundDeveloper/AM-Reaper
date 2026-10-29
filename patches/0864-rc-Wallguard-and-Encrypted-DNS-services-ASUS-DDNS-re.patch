@@ -1,0 +1,1965 @@
+From 19db306d3c203f8d22f604b5126db496a6c3745c Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:10 -0400
+Subject: [PATCH] rc: Wallguard and Encrypted DNS services; ASUS DDNS removed;
+ DoQ through DNS Director
+
+rc/wallguard.c writes the feeds, safe-search and policy files, the cron jobs and
+the wallguard-dir line into every dnsmasq instance (main and SDN), reconciles
+the running dnsmasq with the switch directly (a notify_rc from inside the
+service was dropped), fetches again at WAN up while lists are owed, and carries
+the earlier test name's two settings and /jffs folder over once
+(wallguard_migrate_legacy, after the /jffs permission sweep, lstat, no links
+followed). rc/encdns.c starts rednsd with the certificate, opens 853 on the LAN
+bridges, and for the block: REAPER_EDNS rejects 853 (TCP and UDP) and 443 to
+the listed resolvers from br+, the provider names go NXDOMAIN, the router's own
+DoT hosts excluded. Off by default, inert when off. init.c: a saved ASUS DDNS
+(WWW.ASUS.COM*) is switched off once with a log line - asuscomm is not supported
+on this firmware. dnsfilter.c: DNS Director's DoT block covers UDP 853 (QUIC).
+firewall.c also carries the Port Trigger rule fix.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile    |   4 +
+ release/src/router/rc/dnsfilter.c |   4 +
+ release/src/router/rc/encdns.c    | 508 +++++++++++++++++
+ release/src/router/rc/firewall.c  |  64 ++-
+ release/src/router/rc/init.c      |   8 +-
+ release/src/router/rc/jffs2.c     |   2 +
+ release/src/router/rc/rc.h        |  24 +
+ release/src/router/rc/sdn.c       |  16 +-
+ release/src/router/rc/services.c  |  83 ++-
+ release/src/router/rc/ubifs.c     |   2 +
+ release/src/router/rc/wallguard.c | 891 ++++++++++++++++++++++++++++++
+ 11 files changed, 1591 insertions(+), 15 deletions(-)
+ create mode 100644 release/src/router/rc/encdns.c
+ create mode 100644 release/src/router/rc/wallguard.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 67e72f5326..0511729541 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -439,6 +439,10 @@ OBJS += format.o
+ OBJS += gatekeeper.o
+ # reaper v1.8.0: Warden ipset threat-feed / geo / manual-IP firewall
+ OBJS += rwarden.o
++# reaper 2026-10-21: Encrypted DNS for devices - rc side of rednsd (runtime-gated by reaper_dot_srv)
++OBJS += encdns.o
++# reaper 2026-10-21: Wallguard - the ad & tracker blocker, rc side (runtime-gated by wallguard_enable)
++OBJS += wallguard.o
+ # reaper v2.3.8: native firewall - object-model custom rules engine.
+ # Unconditional like rwarden.o (no new RTCONFIG flag); runtime-gated by
+ # reaper_fw_enable, which defaults to 0.
+diff --git a/release/src/router/rc/dnsfilter.c b/release/src/router/rc/dnsfilter.c
+index 8a85ab6830..81c6a4a1a8 100644
+--- a/release/src/router/rc/dnsfilter.c
++++ b/release/src/router/rc/dnsfilter.c
+@@ -705,6 +705,8 @@ void dnsfilter6_dot_rules(FILE *fp)
+ 	if (nvram_get_int("dnsfilter_enable_x") == 0) return;
+ 
+ 	fprintf(fp, "-A FORWARD -i br+ -m tcp -p tcp --dport 853 -j DNSFILTER_DOT\n");
++	/* reaper 2026-10-21: and UDP 853 (DNS-over-QUIC), which went around the filter */
++	fprintf(fp, "-A FORWARD -i br+ -p udp -m udp --dport 853 -j DNSFILTER_DOT\n");
+ 
+ 	nv = nvp = malloc(255 * 6 + 1);
+ 	if (nv) nvram_split_get("dnsfilter_rulelist", nv, 255 * 6 + 1, 5);
+@@ -752,6 +754,8 @@ void dnsfilter_dot_rules(FILE *fp)
+ 	if (nvram_get_int("dnsfilter_enable_x") == 0) return;
+ 
+ 	fprintf(fp, "-A FORWARD -i br+ -m tcp -p tcp --dport 853 -j DNSFILTER_DOT\n");
++	/* reaper 2026-10-21: and UDP 853 (DNS-over-QUIC), which went around the filter */
++	fprintf(fp, "-A FORWARD -i br+ -p udp -m udp --dport 853 -j DNSFILTER_DOT\n");
+ 
+ #ifdef HND_ROUTER
+ 	nv = nvp = malloc(255 * 6 + 1);
+diff --git a/release/src/router/rc/encdns.c b/release/src/router/rc/encdns.c
+new file mode 100644
+index 0000000000..771afa99da
+--- /dev/null
++++ b/release/src/router/rc/encdns.c
+@@ -0,0 +1,508 @@
++/*
++ * reaper 2026-10-21: Encrypted DNS for devices - the rc side of rednsd
++ * (release/src/router/rednsd/rednsd.c), the router's own DNS-over-TLS server.
++ *
++ * rc decides whether it runs (nvram reaper_dot_srv, off at factory; the switch is on
++ * Warden > Encrypted DNS) and writes everything it needs into /tmp/rednsd/rednsd.conf:
++ *   - the certificate httpd serves (/etc/cert.pem + /etc/key.pem: Let's Encrypt from
++ *     any provider, an uploaded one, or the router's own self-signed one);
++ *   - where to listen: the main LAN address (IPv4 + IPv6), each guest/VLAN network's
++ *     address, and the WAN address when it is public - devices that look the
++ *     certificate's name up get the WAN address and reach the router through br0;
++ *   - who may connect, and which dnsmasq instance answers them ("peer" lines);
++ *   - who DNS Director sends elsewhere ("deny-mac" / "deny-net", "allow-mac").
++ * Port 853 is dropped on every non-LAN interface while it runs (rednsd_wan_drop()), a
++ * backstop to rednsd's own peer filter.
++ *
++ * A change to the listen/certificate part restarts it (the listeners need root, which
++ * rednsd gives up after binding); a change to peers or policy only is a SIGHUP.
++ */
++#include <rc.h>
++#include <net/ethernet.h>
++#include <shared.h>
++#include <pwd.h>
++#include <stdarg.h>
++#include <sys/stat.h>
++#include <arpa/inet.h>
++#include <ctype.h>
++#ifdef RTCONFIG_DNSFILTER
++#include "dnsfilter.h"
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++#include "mtlan_utils.h"
++#endif
++
++#define RED_DIR		"/tmp/rednsd"		/* root 0755 (REAPER_TMP_DIRS): the config, rc's note */
++#define RED_RUN		RED_DIR "/run"		/* nobody 0700: rednsd's status file */
++#define RED_CONF	RED_DIR "/rednsd.conf"
++#define RED_STATUS	RED_RUN "/status.json"
++#define RED_NOTE	RED_DIR "/note.json"	/* why rc did not start it; the page prefers this */
++#define RED_PORT	853
++#define RED_CERT	"/etc/cert.pem"
++#define RED_KEY		"/etc/key.pem"
++#define RED_CABUNDLE	"/etc/ssl/certs/ca-certificates.crt"
++
++struct rb {
++	char b[12288];
++	size_t o;
++};
++
++static void rb_add(struct rb *r, const char *fmt, ...)
++{
++	va_list ap;
++	int n;
++
++	if (r->o >= sizeof(r->b) - 1)
++		return;
++	va_start(ap, fmt);
++	n = vsnprintf(r->b + r->o, sizeof(r->b) - r->o, fmt, ap);
++	va_end(ap);
++	if (n > 0)
++		r->o = (r->o + n < sizeof(r->b)) ? r->o + n : sizeof(r->b) - 1;
++}
++
++static int mask_bits(const char *mask)
++{
++	struct in_addr a;
++	uint32_t m;
++	int n = 0;
++
++	if (!mask || inet_pton(AF_INET, mask, &a) != 1)
++		return -1;
++	for (m = ntohl(a.s_addr); m & 0x80000000u; m <<= 1)
++		n++;
++	return n;
++}
++
++/* an address the internet can reach: not private, CGNAT, link-local or loopback */
++static int public_v4(const char *s)
++{
++	struct in_addr a;
++	uint32_t x;
++
++	if (!s || inet_pton(AF_INET, s, &a) != 1)
++		return 0;
++	x = ntohl(a.s_addr);
++	if ((x >> 24) == 0 || (x >> 24) == 10 || (x >> 24) == 127 || x >= 0xe0000000u)
++		return 0;
++	if ((x & 0xfff00000u) == 0xac100000u || (x & 0xffff0000u) == 0xc0a80000u
++	    || (x & 0xffc00000u) == 0x64400000u || (x & 0xffff0000u) == 0xa9fe0000u)
++		return 0;
++	return 1;
++}
++
++/* the main LAN's IPv4 subnet as a.b.c.d/n */
++static int lan_subnet(char *out, size_t n)
++{
++	struct in_addr ip, mask;
++	int bits = mask_bits(nvram_safe_get("lan_netmask"));
++
++	if (bits < 0 || inet_pton(AF_INET, nvram_safe_get("lan_ipaddr"), &ip) != 1
++	    || inet_pton(AF_INET, nvram_safe_get("lan_netmask"), &mask) != 1)
++		return 0;
++	ip.s_addr &= mask.s_addr;
++	snprintf(out, n, "%s/%d", inet_ntoa(ip), bits);
++	return 1;
++}
++
++/* certificate + listeners: a change here needs a restart */
++static void red_static(struct rb *r)
++{
++	char lan6[INET6_ADDRSTRLEN] = "";
++	int unit;
++
++	rb_add(r, "cert %s\nkey %s\n", RED_CERT, RED_KEY);
++	if (f_exists(RED_CABUNDLE))
++		rb_add(r, "cabundle %s\n", RED_CABUNDLE);
++	rb_add(r, "status %s\n", RED_STATUS);
++	rb_add(r, "listen %s %d\n", nvram_safe_get("lan_ipaddr"), RED_PORT);
++#ifdef RTCONFIG_IPV6
++	if (ipv6_enabled()) {
++		const char *p = getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, 0);
++		if (p && *p) {
++			snprintf(lan6, sizeof(lan6), "%s", p);
++			rb_add(r, "listen %s %d\n", lan6, RED_PORT);
++		}
++	}
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++	{
++		MTLAN_T *pmtl;
++		size_t mtl_sz = 0, i;
++		if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T)))) {
++			get_mtlan(pmtl, &mtl_sz);
++			for (i = 0; i < mtl_sz; i++)
++				if (pmtl[i].enable && pmtl[i].nw_t.idx && pmtl[i].nw_t.addr[0]
++				    && strcmp(pmtl[i].nw_t.addr, nvram_safe_get("lan_ipaddr")))
++					rb_add(r, "listen %s %d\n", pmtl[i].nw_t.addr, RED_PORT);
++			FREE_MTLAN((void *)pmtl);
++		}
++	}
++#endif
++	/* the certificate's name resolves to the WAN address: listen there too, for LAN
++	   peers only (rednsd's peer filter + rednsd_wan_drop()). Behind double NAT the
++	   WAN address is private and nobody's name points at it - nothing to add. */
++	for (unit = WAN_UNIT_FIRST; unit < WAN_UNIT_MAX; unit++) {
++		char name[32];
++		snprintf(name, sizeof(name), "wan%d_ipaddr", unit);
++		if (public_v4(nvram_safe_get(name)))
++			rb_add(r, "listen %s %d wan\n", nvram_safe_get(name), RED_PORT);
++	}
++}
++
++#ifdef RTCONFIG_DNSFILTER
++/* the router answers this DNS Director mode itself (or nobody filters) */
++static int dnsf_router_ok(int mode)
++{
++	return mode == DNSF_SRV_UNFILTERED || mode == DNSF_SRV_ROUTER;
++}
++#endif
++
++/* peers + DNS Director policy: a change here is a SIGHUP */
++static void red_policy(struct rb *r)
++{
++	char net[64];
++#ifdef RTCONFIG_IPV6
++	char lan6p[INET6_ADDRSTRLEN + 8] = "";
++#endif
++
++	if (lan_subnet(net, sizeof(net)))
++		rb_add(r, "peer %s 127.0.0.1\n", net);	/* the main instance also listens on loopback */
++#ifdef RTCONFIG_IPV6
++	if (ipv6_enabled()) {
++		const char *p = getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, GIF_PREFIXLEN);
++		if (p && *p) {
++			snprintf(lan6p, sizeof(lan6p), "%s", p);
++			rb_add(r, "peer %s ::1\n", lan6p);
++		}
++	}
++#endif
++#ifdef RTCONFIG_MULTILAN_CFG
++	{
++		MTLAN_T *pmtl;
++		size_t mtl_sz = 0, i;
++		if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T)))) {
++			get_mtlan(pmtl, &mtl_sz);
++			for (i = 0; i < mtl_sz; i++) {
++				const MTLAN_T *m = &pmtl[i];
++				if (!m->enable || !m->nw_t.idx || !m->nw_t.addr[0] || !m->nw_t.subnet[0]
++				    || !strcmp(m->nw_t.addr, nvram_safe_get("lan_ipaddr")))
++					continue;
++				/* a guest/VLAN device is answered by its own network's instance */
++				rb_add(r, "peer %s/%u %s\n", m->nw_t.subnet, m->nw_t.prefixlen, m->nw_t.addr);
++#ifdef RTCONFIG_DNSFILTER
++				if (nvram_get_int("dnsfilter_enable_x") && !dnsf_router_ok(m->sdn_t.dnsf_idx))
++					rb_add(r, "deny-net %s/%u\n", m->nw_t.subnet, m->nw_t.prefixlen);
++#endif
++			}
++			FREE_MTLAN((void *)pmtl);
++		}
++	}
++#endif
++#ifdef RTCONFIG_DNSFILTER
++	/* DNS Director: a device it sends to another server must not get the router's
++	   unfiltered answers over DoT. rednsd closes it before TLS, so Android's automatic
++	   mode falls back to port 53, where DNS Director applies. */
++	if (nvram_get_int("dnsfilter_enable_x")) {
++		char *nv, *nvp, *rule, *name, *mac, *mode, macbuf[18];
++		unsigned char ea[ETHER_ADDR_LEN];
++
++#ifdef HND_ROUTER
++		nv = nvp = malloc(255 * 6 + 1);
++		if (nv) nvram_split_get("dnsfilter_rulelist", nv, 255 * 6 + 1, 5);
++#else
++		nv = nvp = strdup(nvram_safe_get("dnsfilter_rulelist"));
++#endif
++		while (nv && (rule = strsep(&nvp, "<")) != NULL) {
++			if (vstrsep(rule, ">", &name, &mac, &mode) != 3 || !*mac || !*mode || !ether_atoe(mac, ea))
++				continue;
++			/* the normalised address: DNS Director's text may hold anything after the sixth group */
++			rb_add(r, "%s %s\n", dnsf_router_ok(safe_atoi(mode)) ? "allow-mac" : "deny-mac", ether_etoa(ea, macbuf));
++		}
++		free(nv);
++		if (!dnsf_router_ok(nvram_get_int("dnsfilter_mode"))) {
++			if (lan_subnet(net, sizeof(net)))
++				rb_add(r, "deny-net %s\n", net);
++#ifdef RTCONFIG_IPV6
++			if (*lan6p)
++				rb_add(r, "deny-net %s\n", lan6p);
++#endif
++		}
++	}
++#endif
++}
++
++static int red_enabled(void)
++{
++	return is_routing_enabled() && nvram_get_int("reaper_dot_srv") == 1;
++}
++
++/* the page reads this when rednsd is not running to say why */
++static void red_status_note(const char *state)
++{
++	char buf[96];
++
++	if (reaper_secure_dir(RED_DIR, 0755) != 0)
++		return;
++	snprintf(buf, sizeof(buf), "{\"state\":\"%s\"}\n", state);
++	reaper_write_atomic(RED_NOTE, buf, strlen(buf), 0644);
++}
++
++void stop_rednsd(void)
++{
++	if (pids("rednsd"))
++		killall_tk("rednsd");
++}
++
++void start_rednsd(void)
++{
++	struct rb s, p;
++	struct passwd *pw;
++	FILE *f;
++
++	stop_rednsd();
++	if (!red_enabled()) {
++		unlink(RED_CONF);
++		unlink(RED_STATUS);
++		unlink(RED_NOTE);
++		return;
++	}
++	if (!f_exists(RED_CERT) || !f_exists(RED_KEY)) {
++		logmessage("rednsd", "Encrypted DNS for devices waits for the router's certificate");
++		unlink(RED_CONF);	/* rwatch respawns rednsd only while rc has a config out */
++		red_status_note("no_cert");
++		return;
++	}
++	memset(&s, 0, sizeof(s));
++	memset(&p, 0, sizeof(p));
++	red_static(&s);
++	red_policy(&p);
++	/* root's directory (the config); rednsd, after dropping to nobody, writes its status in run/ */
++	if (reaper_secure_dir(RED_DIR, 0755) != 0 || !(pw = getpwnam("nobody")) ||
++	    reaper_secure_dir_for(RED_RUN, 0700, pw->pw_uid, pw->pw_gid) != 0) {
++		logmessage("rednsd", "Encrypted DNS for devices cannot set up " RED_DIR " - not started");
++		return;
++	}
++	unlink(RED_NOTE);
++	if (!(f = fopen(RED_CONF, "w")))
++		return;
++	fputs("# generated by rc (encdns.c) - Encrypted DNS for devices\n", f);
++	fputs(s.b, f);
++	fputs(p.b, f);
++	fclose(f);
++	chmod(RED_CONF, 0644);
++	xstart("rednsd");
++}
++
++/* After a LAN, guest network, WAN or DNS Director change: rewrite the config and tell
++   rednsd only when something it uses changed. */
++void rednsd_refresh(void)
++{
++	struct rb s, p;
++	char *old, head[] = "# generated by rc (encdns.c) - Encrypted DNS for devices\n";
++	size_t hl = sizeof(head) - 1;
++	FILE *f;
++
++	if (!red_enabled()) {
++		if (pids("rednsd"))
++			start_rednsd();		/* stops it and clears its files */
++		return;
++	}
++	if (!pids("rednsd")) {
++		start_rednsd();
++		return;
++	}
++	memset(&s, 0, sizeof(s));
++	memset(&p, 0, sizeof(p));
++	red_static(&s);
++	red_policy(&p);
++	old = read_whole_file(RED_CONF);
++	if (old && strlen(old) == hl + s.o + p.o && !strncmp(old + hl, s.b, s.o) && !strcmp(old + hl + s.o, p.b)) {
++		free(old);
++		return;					/* nothing changed */
++	}
++	if (!old || strncmp(old, head, hl) || strncmp(old + hl, s.b, s.o) || strncmp(old + hl + s.o, "peer ", 5)) {
++		free(old);
++		start_rednsd();				/* the listeners or certificate changed */
++		return;
++	}
++	free(old);
++	if ((f = fopen(RED_CONF, "w"))) {
++		fputs(head, f);
++		fputs(s.b, f);
++		fputs(p.b, f);
++		fclose(f);
++		killall("rednsd", SIGHUP);		/* peers or policy only */
++	}
++}
++
++/* The certificate httpd serves changed (renewal, upload): rednsd read it as root at
++   start and cannot read it again, so it starts over. */
++void rednsd_cert_changed(void)
++{
++	if (red_enabled())
++		start_rednsd();
++}
++
++/* Port 853 answers on LAN-side bridges only: drop it on every other interface (WAN,
++   VPN) while rednsd runs. Called from filter_setting() right after the INVALID drop,
++   ahead of every accept, for IPv4 and IPv6. */
++void rednsd_wan_drop(FILE *fp)
++{
++	if (!fp || !red_enabled())
++		return;
++	fprintf(fp, "-A INPUT -i lo -p tcp --dport %d -j ACCEPT\n", RED_PORT);
++	fprintf(fp, "-A INPUT ! -i br+ -p tcp --dport %d -j DROP\n", RED_PORT);
++	fprintf(fp, "-A INPUT ! -i br+ -p udp --dport %d -j DROP\n", RED_PORT);
++}
++
++/* ---- 2026-10-21: block encrypted DNS that goes around the router (Encrypted DNS tab).
++   A device that encrypts its DNS to an outside provider is invisible to Wallguard, Dreadwatch,
++   DNS Director and Gatekeeper; with this on, LAN and guest devices cannot: DoT / DoQ (853) to
++   anything is refused, HTTPS (TCP/UDP 443) to the known DoH resolvers' addresses is refused,
++   the DoH provider names answer NXDOMAIN and the browser canaries tell automatic DoH to stand
++   down. "Automatic" encrypted DNS then falls back to the router silently; devices that want
++   encryption use the router's own (rednsd above). DNS Director's "No filtering" devices are
++   exempt. Off by default (reaper_doh_block). */
++#define EDNS_SET4	"redns_doh"
++#define EDNS_SET6	"redns_doh6"
++#define EDNS_SCRIPT	"/usr/sbin/encdns.sh"
++#define EDNS_NAMES	"/usr/share/encdns/doh-names"
++#define EDNS_CONF	RED_DIR "/doh.conf"
++
++int edns_block_enabled(void)
++{
++	return is_routing_enabled() && nvram_get_int("reaper_doh_block") == 1;
++}
++
++/* The sets exist before any rule names them - reaper_restore_rules drops a match-set line
++   whose set is missing, silently - and hold the shipped seed + the cached list from boot. */
++static void edns_sets_ensure(void)
++{
++	eval("ipset", "create", EDNS_SET4, "hash:net", "maxelem", "65536", "-exist");
++	eval("ipset", "create", EDNS_SET6, "hash:net", "family", "inet6", "maxelem", "16384", "-exist");
++	if (reaper_secure_dir(RED_DIR, 0755) == 0 && f_exists(EDNS_SCRIPT))
++		eval("sh", EDNS_SCRIPT, "replay");
++}
++
++/* The REAPER_EDNS chain (declared in filter_setting / filter_setting2) and its FORWARD jump
++   for LAN and guest bridges, next to DNS Director's DoT rules: after ESTABLISHED (a toggle
++   leaves running connections alone), before the guest-network chain and the LAN accept. */
++void edns_block_rules(FILE *fp, int v6)
++{
++	if (!fp || !edns_block_enabled())
++		return;
++	if (!v6)
++		edns_sets_ensure();		/* once per firewall build; IPv4 is written first */
++#ifdef RTCONFIG_DNSFILTER
++	/* a device DNS Director lets use any DNS server ("No filtering") may encrypt as it likes */
++	if (nvram_get_int("dnsfilter_enable_x")) {
++		char *nv, *nvp, *rule, *name, *mac, *mode, macbuf[18];
++		unsigned char ea[ETHER_ADDR_LEN];
++#ifdef HND_ROUTER
++		nv = nvp = malloc(255 * 6 + 1);
++		if (nv) nvram_split_get("dnsfilter_rulelist", nv, 255 * 6 + 1, 5);
++#else
++		nv = nvp = strdup(nvram_safe_get("dnsfilter_rulelist"));
++#endif
++		while (nv && (rule = strsep(&nvp, "<")) != NULL) {
++			if (vstrsep(rule, ">", &name, &mac, &mode) != 3 || !*mac || !*mode || !ether_atoe(mac, ea))
++				continue;
++			if (safe_atoi(mode) == DNSF_SRV_UNFILTERED)
++				/* the normalised address: text after the sixth group would land in the rule */
++				fprintf(fp, "-A REAPER_EDNS -m mac --mac-source %s -j RETURN\n", ether_etoa(ea, macbuf));
++		}
++		free(nv);
++	}
++#endif
++	fprintf(fp, "-A REAPER_EDNS -p tcp --dport 853 -j REJECT --reject-with tcp-reset\n");
++	fprintf(fp, "-A REAPER_EDNS -p udp --dport 853 -j REJECT\n");
++	fprintf(fp, "-A REAPER_EDNS -p tcp --dport 443 -m set --match-set %s dst -j REJECT --reject-with tcp-reset\n",
++		v6 ? EDNS_SET6 : EDNS_SET4);
++	fprintf(fp, "-A REAPER_EDNS -p udp --dport 443 -m set --match-set %s dst -j REJECT\n", v6 ? EDNS_SET6 : EDNS_SET4);
++	fprintf(fp, "-A FORWARD -i br+ -j REAPER_EDNS\n");
++}
++
++/* is name (or a name it sits under) one the router itself encrypts to (DNS Privacy) */
++static int edns_router_upstream(const char *name)
++{
++	char *nv = strdup(nvram_safe_get("dnspriv_rulelist")), *p = nv, *rule;
++	size_t n = strlen(name);
++	int hit = 0;
++
++	while (!hit && p && (rule = strsep(&p, "<")) != NULL) {
++		char *addr = NULL, *port = NULL, *host = NULL, *spki = NULL;
++		size_t h;
++		if (vstrsep(rule, ">", &addr, &port, &host, &spki) < 3 || !host || !*host)
++			continue;
++		h = strlen(host);
++		hit = !strcasecmp(host, name) || (h > n && host[h - n - 1] == '.' && !strcasecmp(host + h - n, name));
++	}
++	free(nv);
++	return hit;
++}
++
++/* The DoH provider names, answered NXDOMAIN (with their subdomains) while the block is on:
++   the conf-file every dnsmasq instance includes (services.c, sdn.c). Written here, when a
++   dnsmasq config is written; NULL = no include. */
++const char *reaper_edns_dns_conf(void)
++{
++	FILE *f;
++	char line[256], *b = NULL, *nb;
++	size_t len = 0;
++
++	if (!edns_block_enabled() || reaper_secure_dir(RED_DIR, 0755) != 0 || !(f = fopen(EDNS_NAMES, "r")))
++		return NULL;
++	while (fgets(line, sizeof(line), f)) {
++		char *s = line, *e;
++		size_t i;
++		int ok = 1;
++		while (*s == ' ' || *s == '\t')
++			s++;
++		for (e = s; *e && *e != '\n' && *e != '\r' && *e != ' ' && *e != '#'; e++)
++			;
++		*e = 0;
++		if (!*s || !strchr(s, '.') || edns_router_upstream(s))
++			continue;
++		for (i = 0; s[i]; i++)
++			if (!(isalnum((unsigned char)s[i]) || s[i] == '.' || s[i] == '-'))
++				ok = 0;
++		if (!ok || !(nb = realloc(b, len + strlen(s) + 12)))
++			continue;
++		b = nb;
++		len += sprintf(b + len, "address=/%s/\n", s);
++	}
++	fclose(f);
++	if (!b)
++		return NULL;
++	/* review 2026-10-24 (Q-A-8): written once per network on every dnsmasq start - identical bytes are left alone */
++	if (reaper_write_changed(EDNS_CONF, b, len, 0644) != 0) {
++		free(b);
++		return NULL;
++	}
++	free(b);
++	return EDNS_CONF;
++}
++
++/* end of start_firewall: the daily list update follows the switch; the first one runs as
++   soon as the router is online after the block is switched on */
++void edns_block_sync(void)
++{
++	if (!edns_block_enabled()) {
++		eval("cru", "d", "edns_doh");
++		return;
++	}
++	eval("cru", "a", "edns_doh", "25 5 * * * sh " EDNS_SCRIPT " update");
++	if (!f_exists("/jffs/encdns/doh.ips") && nvram_get_int("wan0_state_t") == 2)
++		edns_doh_update();
++}
++
++/* the page's "Update list now", and the first fetch: in the background, never waited on */
++void edns_doh_update(void)
++{
++	char *argv[] = { "sh", EDNS_SCRIPT, "update", NULL };
++	pid_t pid;
++
++	if (edns_block_enabled() && f_exists(EDNS_SCRIPT))
++		_eval(argv, ">/dev/null", 0, &pid);
++}
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index fbd6ae7bac..86ca633b1b 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -1597,6 +1597,15 @@ void write_port_forwarding(FILE *fp, char *config, char *chain, char *lan_ip, ch
+ 			_fw_strip_spaces(port);
+ 			_fw_strip_spaces(dstip);
+ 			_fw_strip_spaces(lport);
++			/* reaper 2026-10-23: the stock page validates a range on a COPY with '-' and '~' turned into
++			   ':' but saves what was typed, so "8000-8010" arrived here and _fw_ports_ok() dropped the
++			   rule - every dash-range forward was silently dead since v3.1.5 (R15). Convert to the form
++			   iptables takes; OTHER carries a protocol name, never a range. The local port is a single
++			   port (DNAT would need a-b, not a:b, for a range), so it is left as saved. */
++			if (!proto || strcmp(proto, "OTHER") != 0)
++				for (c = port; c && *c; c++)
++					if (*c == '-' || *c == '~')
++						*c = ':';
+ 			if (!_fw_field_safe(port) || !_fw_field_safe(dstip) || (lport && *lport && !_fw_field_safe(lport)))
+ 				continue;
+ 
+@@ -5361,6 +5370,7 @@ filter_setting(int wan_unit, char *lan_if, char *lan_ip, char *logaccept, char *
+ #ifdef RTCONFIG_DNSFILTER
+ 	    ":DNSFILTER_DOT - [0:0]\n"
+ #endif
++	    ":REAPER_EDNS - [0:0]\n"	/* reaper 2026-10-21 */
+ #ifdef RTCONFIG_PARENTALCTRL
+ 	    ":WGNPControls - [0:0]\n"
+ 	    ":PControls - [0:0]\n"
+@@ -5437,6 +5447,7 @@ filter_setting(int wan_unit, char *lan_if, char *lan_ip, char *logaccept, char *
+ #ifdef RTCONFIG_DNSFILTER
+ 		    ":DNSFILTER_DOT - [0:0]\n"
+ #endif
++		    ":REAPER_EDNS - [0:0]\n"	/* reaper 2026-10-21 */
+ #ifdef RTCONFIG_PARENTALCTRL
+ 		    ":WGNPControls - [0:0]\n"
+ 		    ":PControls - [0:0]\n"
+@@ -5835,6 +5846,8 @@ TRACE_PT("writing Parental Control\n");
+ 		/* Filter known SPI state */
+ 		fprintf(fp, "-A INPUT -m state --state RELATED,ESTABLISHED -j %s\n", logaccept);
+ 		fprintf(fp, "-A INPUT -m state --state INVALID -j %s\n", logdrop);
++		/* reaper 2026-10-21: Encrypted DNS for devices answers on LAN-side bridges only */
++		rednsd_wan_drop(fp);
+ 
+ #ifdef RTCONFIG_TAGGED_BASED_VLAN
+ 		/* Deny none brX to access brX subnet */
+@@ -5893,6 +5906,7 @@ TRACE_PT("writing Parental Control\n");
+ #ifdef RTCONFIG_IPV6
+ 		if (ipv6_enabled()) {
+ 			fprintf(fp_ipv6, "-A INPUT -m state --state RELATED,ESTABLISHED -j %s\n", logaccept);
++			rednsd_wan_drop(fp_ipv6);	/* reaper 2026-10-21 */
+ 			fprintf(fp_ipv6, "-A INPUT -i %s -m state --state NEW -j %s\n", lan_if, "ACCEPT");
+ 			fprintf(fp_ipv6, "-A INPUT -i %s -m state --state NEW -j %s\n", "lo", "ACCEPT");
+ 			fprintf(fp_ipv6, "-A INPUT -m state --state INVALID -j %s\n", logdrop);
+@@ -7006,6 +7020,12 @@ TRACE_PT("write wl filter\n");
+ 	if (ipv6_enabled())
+ 		dnsfilter6_dot_rules(fp_ipv6);
+ #endif
++#endif
++	/* reaper 2026-10-21: block encrypted DNS that goes around the router (Encrypted DNS tab) */
++	edns_block_rules(fp, 0);
++#ifdef RTCONFIG_IPV6
++	if (ipv6_enabled())
++		edns_block_rules(fp_ipv6, 1);
+ #endif
+ 
+ 	// Allow LAN -> X after all (URL/Keyword/Network...) filter.
+@@ -7155,6 +7175,7 @@ filter_setting2(char *lan_if, char *lan_ip, char *logaccept, char *logdrop)
+ #ifdef RTCONFIG_DNSFILTER
+ 	   ":DNSFILTER_DOT - [0:0]\n"
+ #endif
++	   ":REAPER_EDNS - [0:0]\n"	/* reaper 2026-10-21 */
+ #ifdef RTCONFIG_PARENTALCTRL
+ 	    ":WGNPControls - [0:0]\n"
+ 	    ":PControls - [0:0]\n"
+@@ -7245,6 +7266,7 @@ filter_setting2(char *lan_if, char *lan_ip, char *logaccept, char *logdrop)
+ #ifdef RTCONFIG_DNSFILTER
+ 		    ":DNSFILTER_DOT - [0:0]\n"
+ #endif
++		    ":REAPER_EDNS - [0:0]\n"	/* reaper 2026-10-21 */
+ #ifdef RTCONFIG_GRE
+ 			":GREI - [0:0]\n"
+ 			":GREF - [0:0]\n"
+@@ -7647,6 +7669,8 @@ TRACE_PT("writing Parental Control\n");
+ 		/* Filter known SPI state */
+ 		fprintf(fp, "-A INPUT -m state --state RELATED,ESTABLISHED -j %s\n", logaccept);
+ 		fprintf(fp, "-A INPUT -m state --state INVALID -j %s\n", logdrop);
++		/* reaper 2026-10-21: Encrypted DNS for devices answers on LAN-side bridges only */
++		rednsd_wan_drop(fp);
+ 
+ #ifdef RTCONFIG_TAGGED_BASED_VLAN
+ 		/* Deny none brX to access brX subnet */
+@@ -7691,6 +7715,7 @@ TRACE_PT("writing Parental Control\n");
+ #ifdef RTCONFIG_IPV6
+ 		if (ipv6_enabled()) {
+ 			fprintf(fp_ipv6, "-A INPUT -m state --state RELATED,ESTABLISHED -j %s\n", logaccept);
++			rednsd_wan_drop(fp_ipv6);	/* reaper 2026-10-21 */
+ 			fprintf(fp_ipv6, "-A INPUT -i %s -m state --state NEW -j %s\n", lan_if, "ACCEPT");
+ 			fprintf(fp_ipv6, "-A INPUT -i %s -m state --state NEW -j %s\n", "lo", "ACCEPT");
+ 			fprintf(fp_ipv6, "-A INPUT -m state --state INVALID -j %s\n", logdrop);
+@@ -8875,6 +8900,12 @@ TRACE_PT("write wl filter\n");
+ 	if (ipv6_enabled())
+ 		dnsfilter6_dot_rules(fp_ipv6);
+ #endif
++#endif
++	/* reaper 2026-10-21: block encrypted DNS that goes around the router (Encrypted DNS tab) */
++	edns_block_rules(fp, 0);
++#if defined(RTCONFIG_IPV6) && defined(HND_ROUTER)
++	if (ipv6_enabled())
++		edns_block_rules(fp_ipv6, 1);
+ #endif
+ 
+ 	// Allow LAN -> X after all (URL/Keyword/Network...) filter.
+@@ -9008,14 +9039,28 @@ write_porttrigger(FILE *fp, char *wan_if, int is_nat)
+ 		(void)proto_conv(in_proto, in_protoptr);
+ 		(void)proto_conv(out_proto, out_protoptr);
+ 
+-		/* parse_ports() of libipt_TRIGGER.c only accepts '-', not ':'. */
++		/* parse_ports() of libipt_TRIGGER.c only accepts '-', not ':'.
++		   reaper 2026-10-23: the trigger port feeds BOTH --dport (iptables wants a:b) and
++		   --trigger-match (parse_ports wants a-b); stock passed it unchanged to both, so a
++		   saved a:b range triggered on its first port only, and a-b broke the --dport line. */
+ 		if ((p = strchr(in_port, ':')) != NULL)
+ 			*p = '-';
+-		fprintf(fp, "-A %s -p %s -m %s --dport %s "
+-			"-j TRIGGER --trigger-type out --trigger-proto %s --trigger-match %s --trigger-relate %s\n",
+-			chain,
+-			out_protoptr, out_protoptr, out_port,
+-			in_protoptr, out_port, in_port);
++		{
++			char dport[16], tmatch[16];
++			if (strlen(out_port) >= sizeof(dport))
++				continue;
++			strlcpy(dport, out_port, sizeof(dport));
++			strlcpy(tmatch, out_port, sizeof(tmatch));
++			if ((p = strchr(dport, '-')) != NULL)
++				*p = ':';
++			if ((p = strchr(tmatch, ':')) != NULL)
++				*p = '-';
++			fprintf(fp, "-A %s -p %s -m %s --dport %s "
++				"-j TRIGGER --trigger-type out --trigger-proto %s --trigger-match %s --trigger-relate %s\n",
++				chain,
++				out_protoptr, out_protoptr, dport,
++				in_protoptr, tmatch, in_port);
++		}
+ 	}
+ 	free(nv);
+ }
+@@ -10391,6 +10436,13 @@ leave:
+ 	 * belong in the picture the walker paints. */
+ 	reaper_fwsim_kick(3);
+ 
++	/* reaper 2026-10-21: a WAN address or DNS Director change reaches Encrypted DNS
++	 * here (start_firewall runs for both); it only acts if something it uses changed. */
++	rednsd_refresh();
++	edns_block_sync();	/* reaper 2026-10-21: the encrypted-DNS block's daily list */
++	/* reaper 2026-10-21: Wallguard fetches its lists once the WAN is up after a cold boot */
++	wallguard_on_firewall();
++
+ 	return 0;
+ }
+ 
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index c69de91b54..2aef4e02a7 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -24602,8 +24602,12 @@ int init_nvram2(void)
+ 	}
+ #endif
+ 
+-	/* 2024/12/25 stop asuscomm.cn service. reset values of ddns_enable_x and ddns_hostname_x if WWW.ASUS.COM.CN is used. */
+-	if(!strcmp(nvram_safe_get("ddns_server_x"), "WWW.ASUS.COM.CN") || ( noasusddns() && !strcmp(nvram_safe_get("ddns_server_x"), "WWW.ASUS.COM"))){
++	/* 2024/12/25 stop asuscomm.cn service. reset values of ddns_enable_x and ddns_hostname_x if WWW.ASUS.COM.CN is used.
++	   reaper 2026-10-23: asuscomm.com is removed from Reaper too (owner decision), so a saved WWW.ASUS.COM is cleared the
++	   same way, once, with a log line. The DDNS page offers the other providers. */
++	if(!strncmp(nvram_safe_get("ddns_server_x"), "WWW.ASUS.COM", 12)){
++		logmessage("ddns", "ASUS DDNS (%s, %s) is not supported on this firmware - DDNS was turned off; choose another provider on the DDNS page",
++		           nvram_safe_get("ddns_server_x"), nvram_safe_get("ddns_hostname_x"));
+ 		nvram_set("ddns_enable_x", "0");
+ 		nvram_set("ddns_hostname_x", "");
+ 		nvram_set("ddns_server_x", "");
+diff --git a/release/src/router/rc/jffs2.c b/release/src/router/rc/jffs2.c
+index c70abf56b9..3c6dad3dae 100644
+--- a/release/src/router/rc/jffs2.c
++++ b/release/src/router/rc/jffs2.c
+@@ -505,6 +505,8 @@ void start_jffs2(void)
+ 	/* 2026-10-20 (field): before anything runs from /jffs, no file or folder on it
+ 	 * stays writable by every user (shared/reaper_jfile.c) */
+ 	reaper_jffs_perm_sweep("/jffs");
++	/* 2026-10-25: Wallguard settings saved under its earlier test name move once (rc/wallguard.c) */
++	wallguard_migrate_legacy("/jffs");
+ 
+ 	_dprintf("%s: create jffs2 successfully\n", __func__);
+ 	logmessage("jffs2", "create jffs2 successfully");
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 402aaaf246..65d2be4006 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2993,6 +2993,29 @@ extern void stop_rtraf(void);	/* reaper v1.3.0 traffic collector */
+ extern void start_rtraf(void);
+ extern void stop_rdnsmap(void);	/* reaper v3.3.4 passive DNS name map (Flow Explorer names) */
+ extern void start_rdnsmap(void);
++/* reaper 2026-10-21: Encrypted DNS for devices (rc/encdns.c, rednsd) */
++extern void start_rednsd(void);
++extern void stop_rednsd(void);
++extern void rednsd_refresh(void);
++extern void rednsd_cert_changed(void);
++extern void rednsd_wan_drop(FILE *fp);
++/* reaper 2026-10-21: block encrypted DNS that goes around the router (rc/encdns.c) */
++extern int edns_block_enabled(void);
++extern void edns_block_rules(FILE *fp, int v6);
++extern const char *reaper_edns_dns_conf(void);
++extern void edns_block_sync(void);
++extern void edns_doh_update(void);
++/* reaper 2026-10-21: Wallguard, the ad & tracker blocker (rc/wallguard.c) */
++extern int wallguard_enabled(void);
++extern const char *reaper_wallguard_dir(void);
++extern void start_wallguard(void);
++extern void stop_wallguard(void);
++extern void wallguard_update(void);
++extern void wallguard_rebuild(void);
++extern void wallguard_write_policy(void);
++extern void wallguard_on_firewall(void);
++extern void wallguard_store_attached(void);
++extern void wallguard_migrate_legacy(const char *jffs);	/* 2026-10-25: settings saved under the earlier test name */
+ extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor */
+ extern void start_rchqd(void);
+ extern void stop_rpunctd(void);	/* reaper v3.2.8 dynamic preamble puncturing controller */
+@@ -3010,6 +3033,7 @@ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exa
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
++extern void rwarden_ddns_seed(void);	/* 2026-10-22: ASUS DDNS + Let's Encrypt whitelisted once (rc/rwarden.c) */
+ extern const char *reaper_warden_dns_conf(void);	/* 2026-10-19: the threat-domain include for every dnsmasq instance, or NULL (rc/services.c, rc/sdn.c) */
+ /* reaper v2.3.8 native firewall: object-model custom rules engine (rc/reaper_fw.c).
+  * start/stop apply the COMMITTED ruleset; apply/confirm/rollback drive the
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 5219f4d4c3..1324e19d08 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -849,6 +849,20 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 			if (wd)
+ 				fprintf(fp, "conf-file=%s\n", wd);
+ 		}
++		/* 2026-10-21: Wallguard for this network's devices too (one shared table) */
++		{
++			const char *sd = reaper_wallguard_dir();
++			if (sd) {
++				fprintf(fp, "wallguard-dir=%s\n", sd);
++				wallguard_write_policy();	/* this network's subnet may have changed */
++			}
++		}
++		/* 2026-10-21: the encrypted-DNS block's DoH provider names, here too */
++		{
++			const char *ec = reaper_edns_dns_conf();
++			if (ec)
++				fprintf(fp, "conf-file=%s\n", ec);
++		}
+ 
+ 		if (pmtl->nw_t.dhcp_enable)
+ 		{
+@@ -937,7 +951,7 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 
+ 		/* Instruct clients like Firefox to not auto-enable DoH */
+ 		n = nvram_get_int("dns_priv_override");
+-		if ((n == 1) ||
++		if ((n == 1) || edns_block_enabled() ||	/* reaper 2026-10-21: the encrypted-DNS block */
+ 			(n == 0 && (
+ #ifdef RTCONFIG_DNSPRIVACY
+ 						   nvram_get_int("dnspriv_enable") ||
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5a49d04884..5e0ac9283f 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2486,7 +2486,8 @@ void start_dnsmasq(void)
+ 
+ 	/* Instruct clients like Firefox to not auto-enable DoH */
+ 	n = nvram_get_int("dns_priv_override");
+-	if ((n == 1) ||
++	/* reaper 2026-10-21: the encrypted-DNS block answers the canaries too, whatever the WAN page says */
++	if ((n == 1) || edns_block_enabled() ||
+ 	    (n == 0 && (
+ #ifdef RTCONFIG_DNSPRIVACY
+ 	       nvram_get_int("dnspriv_enable") ||
+@@ -2565,6 +2566,19 @@ void start_dnsmasq(void)
+ 		if (wd)
+ 			fprintf(fp, "conf-file=%s\n", wd);
+ 	}
++	/* 2026-10-21: Wallguard (rc/wallguard.c) - the ad & tracker blocker's table directory.
++	 * A list update never touches this line; only the switch adds or removes it. */
++	{
++		const char *sd = reaper_wallguard_dir();
++		if (sd)
++			fprintf(fp, "wallguard-dir=%s\n", sd);
++	}
++	/* 2026-10-21: the encrypted-DNS block's DoH provider names (rc/encdns.c) */
++	{
++		const char *ec = reaper_edns_dns_conf();
++		if (ec)
++			fprintf(fp, "conf-file=%s\n", ec);
++	}
+ 
+ 	/* close fp move to the last */
+ #ifdef RTCONFIG_MULTILAN_CFG
+@@ -2620,6 +2634,8 @@ void start_dnsmasq(void)
+ 		handle_sdn_feature(sdn_idx, SDN_FEATURE_DNSMASQ, RC_SERVICE_START);
+ 	}
+ #endif
++	/* reaper 2026-10-21: a LAN or guest network change may move Encrypted DNS's listeners */
++	rednsd_refresh();
+ 	TRACE_PT("end\n");
+ }
+ 
+@@ -5417,6 +5433,7 @@ ddns_updated_main(int argc, char *argv[])
+ 		 * reads this flag to decide whether the renewal alert is warranted. */
+ 		if (prepare_cert_in_etc() > 0) {
+ 			nvram_set("httpds_reload_cert", "2");
++			rednsd_cert_changed();	/* reaper 2026-10-21: Encrypted DNS serves the same certificate */
+ #if defined(RTCONFIG_IPV6)
+ 			if (ipv6_enabled() && nvram_match("misc_http_x", "1"))
+ 				nvram_set("httpds6_reload_cert", "2");
+@@ -5535,6 +5552,11 @@ start_ddns(char *caller, int isAidisk)
+ 			 * no-IPv6-on-this-WAN hold below rather than inheriting it. */
+ 			nvram_unset("ddns_ipv6_absent");
+ 		}
++		/* reaper 2026-10-22: the ASUS DDNS server and the Let's Encrypt API go into
++		 * Warden's whitelist once, before the first update - with the router-traffic
++		 * filter on and the United States blocked, both were dropped and the
++		 * certificate stayed "Unknown or processing..." (rc/rwarden.c) */
++		rwarden_ddns_seed();
+ 	}
+ 	else { // AiDisk register DDNS
+ 		log_title = "asusddns";
+@@ -5580,6 +5602,11 @@ start_ddns(char *caller, int isAidisk)
+ 		passwd = nvram_safe_get("secret_code");
+ 		wild = 0;
+ 	}
++	/* reaper 2026-10-23: ASUS DDNS (WWW.ASUS.COM / .CN) is removed from Reaper; nothing reaches ns1.asuscomm.com */
++	if (strncmp(server, "WWW.ASUS.COM", 12) == 0) {
++		logmessage(log_title, "ASUS DDNS is not supported on this firmware - choose another DDNS provider");
++		return -1;
++	}
+ #ifdef RTCONFIG_INADYN
+ 	if (strcmp(server, "DNS.HE.NET") == 0)
+ 		user = nvram_safe_get("ddns_hostname_x"); /* The username is also the hostname in HE.NET */
+@@ -7542,6 +7569,8 @@ stop_misc(void)
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
+ 	stop_rdnsmap();	/* reaper v3.3.4 passive DNS name map */
++	stop_rednsd();	/* reaper 2026-10-21 Encrypted DNS for devices */
++	stop_wallguard();	/* reaper 2026-10-21 Wallguard: banks the counters */
+ 	stop_rchqd();	/* reaper v1.6.1 */
+ 	stop_rpunctd();	/* reaper v3.2.8 dynamic puncturing controller */
+ 	stop_reaper_bwfloor();	/* reaper v3.3.1 minimum channel width watcher */
+@@ -8032,11 +8061,13 @@ stop_rstats(void)
+ void
+ start_rstats(int new)
+ {
+-	if (!is_routing_enabled()) return;
+-
++	/* reaper 2026-10-22 (owner): rstats is retired. rtrafd (v1.3.0) collects the traffic
++	 * history Reaper_Traffic shows, and the stock Traffic Monitor pages - the only readers
++	 * of rstats' files - are superseded. The daemon ran on every WAN event writing hourly
++	 * snapshots nobody read; it no longer ships (router Makefile). stop_rstats() stays so a
++	 * copy left by an older firmware is still put down. */
++	(void)new;
+ 	stop_rstats();
+-	if (new) xstart("rstats", "--new");
+-	else xstart("rstats");
+ }
+ 
+ void
+@@ -14328,6 +14359,8 @@ start_services(void)
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ 	start_rdnsmap();	/* reaper v3.3.4 passive DNS name map (Flow Explorer destination names) */
++	start_rednsd();	/* reaper 2026-10-21 Encrypted DNS for devices (no-op unless reaper_dot_srv) */
++	start_wallguard();	/* reaper 2026-10-21 Wallguard ad & tracker blocker (no-op unless wallguard_enable) */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+ 	start_gk();	/* reaper v1.6.8 Gatekeeper (no-op unless gk_enable) */
+ 	start_amaspark();	/* reaper v3.0.8 AiMesh backhaul parking (router mode; idle unless amas_bh_park) */
+@@ -20714,6 +20747,7 @@ check_ddr_done:
+ 		if (r > 0) {
+ 			/* Load new certification after the current session logout. */
+ 			nvram_set("httpds_reload_cert", "2");
++			rednsd_cert_changed();	/* reaper 2026-10-21: Encrypted DNS serves the same certificate */
+ #if defined(RTCONFIG_IPV6)
+ 			if (ipv6_enabled() && nvram_match("misc_http_x", "1")) {
+ 				nvram_set("httpds6_reload_cert", "2");
+@@ -22487,8 +22521,10 @@ retry_wps_enr:
+ 	else if (strcmp(script, "vpncall") == 0)
+ 	{
+ #if defined(RTCONFIG_OPENVPN)
++#if !defined(RTCONFIG_VPN_FUSION_MERLIN)
+ 		char buf[32] = {0};
+ 		int i;
++#endif
+ 		int openvpnc_unit = nvram_get_int("vpn_client_unit");
+ #endif
+ 		if (action & RC_SERVICE_STOP){
+@@ -22496,7 +22532,10 @@ retry_wps_enr:
+ 			stop_aae_sip_conn(1);
+ #endif
+ 			stop_vpnc();
+-#if defined(RTCONFIG_OPENVPN)
++#if defined(RTCONFIG_OPENVPN) && !defined(RTCONFIG_VPN_FUSION_MERLIN)
++			/* reaper 2026-10-24 (VPN wave, B-VPNC-1): legacy single-client model only. With VPN_FUSION_MERLIN the
++			   OpenVPN clients have their own enable flags and restart_vpnclientN; stopping them all here (and never
++			   restarting them below) made any Apply on the PPTP / L2TP client page drop every OpenVPN tunnel. */
+ 			for( i = 1; i <= OVPN_CLIENT_MAX; i++ )
+ 			{
+ 				sprintf(buf, "vpnclient%d", i);
+@@ -22565,6 +22604,7 @@ retry_wps_enr:
+ 			}
+ #endif
+ 			else{
++#if !defined(RTCONFIG_VPN_FUSION_MERLIN)	/* reaper 2026-10-24 (VPN wave, B-VPNC-1): see the stop branch */
+ 				for( i = 1; i <= OVPN_CLIENT_MAX; i++ )
+ 				{
+ 					sprintf(buf, "vpnclient%d", i);
+@@ -22573,6 +22613,7 @@ retry_wps_enr:
+ 						stop_ovpn_client(i);
+ 					}
+ 				}
++#endif
+ #endif
+ 				start_vpnc();
+ #if defined(RTCONFIG_OPENVPN)
+@@ -22608,6 +22649,36 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rdnsmap();
+ 		if(action & RC_SERVICE_START) start_rdnsmap();
+ 	}
++	else if (strcmp(script, "rednsd") == 0)	/* reaper 2026-10-21 Encrypted DNS for devices */
++	{
++		if(action & RC_SERVICE_STOP) stop_rednsd();
++		if(action & RC_SERVICE_START) start_rednsd();
++	}
++	/* reaper 2026-10-21 Wallguard. restart_wallguard = the switch / subscription; the other verbs
++	 * never restart anything: update downloads + rebuilds, rebuild recompiles from the lists
++	 * on disk (a rule change), policy rewrites who gets what (profiles, pause). All return
++	 * at once - downloads and builds run in the background (wallguard.sh, its own lock). */
++	else if (strcmp(script, "wallguard") == 0)
++	{
++		if((action & RC_SERVICE_STOP) && !(action & RC_SERVICE_START)) stop_wallguard();
++		if(action & RC_SERVICE_START) start_wallguard();
++	}
++	else if (strcmp(script, "edns_doh") == 0)	/* reaper 2026-10-21: the encrypted-DNS block's list, now */
++	{
++		if(action & RC_SERVICE_START) edns_doh_update();
++	}
++	else if (strcmp(script, "wallguard_update") == 0)
++	{
++		if(action & RC_SERVICE_START) wallguard_update();
++	}
++	else if (strcmp(script, "wallguard_rebuild") == 0)
++	{
++		if(action & RC_SERVICE_START) wallguard_rebuild();
++	}
++	else if (strcmp(script, "wallguard_policy") == 0)
++	{
++		if((action & RC_SERVICE_START) && wallguard_enabled()) wallguard_write_policy();
++	}
+ #if defined(RTCONFIG_AUTO_WANPORT) && !defined(RTCONFIG_BCM_MFG)
+ 	else if (strcmp(script, "reaper_wanredetect") == 0)	/* reaper v3.3.6: forget the pinned WAN port, detect once */
+ 	{
+diff --git a/release/src/router/rc/ubifs.c b/release/src/router/rc/ubifs.c
+index eb87ec3e9d..7745a8c694 100644
+--- a/release/src/router/rc/ubifs.c
++++ b/release/src/router/rc/ubifs.c
+@@ -297,6 +297,8 @@ skip_mnt:
+ 	/* 2026-10-20 (field): before anything runs from /jffs, no file or folder on it
+ 	 * stays writable by every user (shared/reaper_jfile.c) */
+ 	reaper_jffs_perm_sweep(UBIFS_MNT_DIR);
++	/* 2026-10-25: Wallguard settings saved under its earlier test name move once (rc/wallguard.c) */
++	wallguard_migrate_legacy(UBIFS_MNT_DIR);
+ 
+ #if defined(RTCONFIG_TEST_BOARDDATA_FILE)
+ 	/* Copy /lib/firmware to /tmp/firmware, and
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+new file mode 100644
+index 0000000000..e1b0fdc929
+--- /dev/null
++++ b/release/src/router/rc/wallguard.c
+@@ -0,0 +1,891 @@
++/*
++ * reaper 2026-10-21: Wallguard - Reaper's ad & tracker blocker (Warden > Wallguard), rc side.
++ *
++ * The engine lives inside dnsmasq (dnsmasq/src/wallguard.c) and reads one directory, SH_DIR.
++ * rc keeps that directory filled and the dnsmasq instances pointed at it:
++ *   feeds    the subscribed lists, "<bit> <id> <url> <p|c>" - read by /usr/sbin/wallguard.sh
++ *   safe     names never blocked: the router's own, NTP, DDNS, DoT servers, every list host
++ *   policy   which list bits each device / network gets, pauses, the answer mode -
++ *            rewritten by tmp + rename (the engine tells writes apart by inode)
++ *   db       the compiled table, built by wallguard.sh (wallguardc) - never by rc itself
++ * The operator's settings live on /jffs (SH_JFFS), never in nvram lists:
++ *   lists     one subscribed list per line: a preset id, or "custom <slot> <https-url>"
++ *   block / allow / allow24   My rules; allow24 = "<expiry> <name>" (Unbreak's 24 h allows)
++ *   profiles  "<id> <mask-hex> <name>"   assign  "mac <MAC> <id>" | "net <sdn-idx> <id>"
++ * Pauses are RAM only (SH_DIR/pause: "all <until>" | "mac <MAC> <until>"): a reboot ends
++ * them, and the engine ends them by itself when <until> passes.
++ *
++ * nvram: wallguard_enable (0), wallguard_mode (null | nx). Lists download in the background; a
++ * list update never restarts dnsmasq - only switching Wallguard on or off does, once.
++ */
++#include <rc.h>
++#include <shared.h>
++#include <ctype.h>
++#include <pwd.h>
++#include <stdarg.h>
++#include <stdint.h>
++#include <arpa/inet.h>
++#include <sys/stat.h>
++#ifdef RTCONFIG_MULTILAN_CFG
++#include "mtlan_utils.h"
++#endif
++
++#define SH_DIR		"/tmp/wallguard"	/* root 0755 (REAPER_TMP_DIRS): db, policy, feeds, lists - root writes only */
++#define SH_RUN		SH_DIR "/run"	/* nobody 0700: dnsmasq's hits, stats.<pid>, live */
++#define SH_JFFS		"/jffs/wallguard"
++#define SH_SCRIPT	"/usr/sbin/wallguard.sh"
++#define SH_DEFAULT_PRESET "hagezi_normal"
++#define SH_CUSTOM_BIT0	20		/* custom slot n (1..8) = bit 19+n */
++#define SH_CUSTOM_MAX	8
++
++/* The preset catalog. A preset's bit never changes: profiles store bit masks. */
++static const struct { int bit; const char *id, *url; } presets[] = {
++	{ 1, "hagezi_light",   "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/light.txt" },
++	{ 2, "hagezi_normal",  "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/multi.txt" },
++	{ 3, "hagezi_pro",     "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt" },
++	{ 4, "hagezi_proplus", "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.plus.txt" },
++	{ 5, "oisd_small",     "https://small.oisd.nl/" },
++	{ 6, "oisd_big",       "https://big.oisd.nl/" },
++	{ 7, "stevenblack",    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts" },
++	{ 8, "adguard_dns",    "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt" },
++	{ 9, "hagezi_tif",     "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.txt" },
++};
++#define NPRESETS (int)(sizeof(presets) / sizeof(presets[0]))
++
++/* Phase 2 (2026-10-21): blocked services. A profile that blocks any service gets one list bit
++   of its own from the bits presets and custom lists never use; its services' domains compile
++   as one local list (lists/svc_<profile>) under that bit, which only its own mask carries. */
++#define SH_CATALOG	"/usr/share/wallguard/services"	/* id|label|category|domains */
++#define SH_SVC_MAX	13
++#define SH_WIN_MAX	8		/* schedule windows per profile */
++static const int sh_svc_bit[SH_SVC_MAX] = { 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 28, 29, 30 };
++/* policy flags (the engine's WALLGUARD_F_*): 1 SafeSearch, 2 YouTube moderate, 4 YouTube strict */
++#define SH_FLAGS_MAX	7
++
++int wallguard_enabled(void)
++{
++	return is_routing_enabled() && nvram_get_int("wallguard_enable") == 1;
++}
++
++/* the line every dnsmasq instance gets while Wallguard is on (services.c, sdn.c) */
++const char *reaper_wallguard_dir(void)
++{
++	return wallguard_enabled() ? SH_DIR : NULL;
++}
++
++static int sh_name_ok(const char *s)
++{
++	size_t n = strlen(s), i;
++
++	if (n < 3 || n > 253 || !strchr(s, '.'))
++		return 0;
++	for (i = 0; i < n; i++)
++		if (!(isalnum((unsigned char)s[i]) || s[i] == '.' || s[i] == '-' || s[i] == '_'))
++			return 0;
++	return 1;
++}
++
++static int sh_url_ok(const char *u)
++{
++	size_t i;
++
++	if (strncmp(u, "https://", 8) || strlen(u) > 400)
++		return 0;
++	for (i = 0; u[i]; i++)
++		if ((unsigned char)u[i] <= ' ' || u[i] == '"' || u[i] == '\'' || u[i] == '`' || u[i] == '\\' || u[i] == '$')
++			return 0;
++	return 1;
++}
++
++/* host part of an https URL, or "" */
++static void sh_url_host(const char *u, char *h, size_t n)
++{
++	size_t i = 0;
++
++	*h = 0;
++	if (strncmp(u, "https://", 8))
++		return;
++	for (u += 8; *u && *u != '/' && *u != ':' && i + 1 < n; u++)
++		h[i++] = (char)tolower((unsigned char)*u);
++	h[i] = 0;
++}
++
++/* dnsmasq (nobody) reads these, so 0644; a fresh file renamed into place, which also
++   gives dnsmasq the new inode it watches for */
++static int sh_write(const char *path, const char *text)
++{
++	/* review 2026-10-24 (Q-A-8): start_dnsmasq writes the policy once per network; identical bytes are not
++	   rewritten, so dnsmasq (which reloads on a new inode) is not woken once per network */
++	return reaper_write_changed(path, text, strlen(text), 0644);
++}
++
++/* append to a growing buffer (the files rc writes are small) */
++static void sh_add(char **b, size_t *len, size_t *cap, const char *fmt, ...)
++{
++	va_list ap;
++	int n;
++
++	for (;;) {
++		if (*cap - *len < 512) {
++			*cap = *cap ? *cap * 2 : 4096;
++			*b = realloc(*b, *cap);
++			if (!*b) { *len = *cap = 0; return; }
++		}
++		va_start(ap, fmt);
++		n = vsnprintf(*b + *len, *cap - *len, fmt, ap);
++		va_end(ap);
++		if (n < 0) return;
++		if ((size_t)n < *cap - *len) { *len += (size_t)n; return; }
++		*cap *= 2;
++		*b = realloc(*b, *cap);
++		if (!*b) { *len = *cap = 0; return; }
++	}
++}
++
++/* a profile id as the page makes them: [a-z0-9_], 1..19 */
++static int sh_pid_ok(const char *s)
++{
++	size_t i;
++
++	for (i = 0; s[i]; i++)
++		if (!(islower((unsigned char)s[i]) || isdigit((unsigned char)s[i]) || s[i] == '_'))
++			return 0;
++	return i > 0 && i < 20;
++}
++
++struct sh_svc { char pid[20]; char ids[1024]; int bit; };
++
++/* profiles that block services (/jffs/wallguard/services: "<profile> id,id,..."), in file
++   order, each with its own bit; Bypass never blocks anything */
++static int sh_svc_alloc(struct sh_svc *s)
++{
++	char *cfg, *line, *save;
++	int ex, n = 0;
++
++	cfg = strdup(rjf_get(SH_JFFS "/services", &ex));
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line && n < SH_SVC_MAX; line = strtok_r(NULL, "\n", &save)) {
++		char pid[20], ids[1024];
++		int i;
++		if (sscanf(line, "%19s %1023s", pid, ids) != 2 || !sh_pid_ok(pid) || !strcmp(pid, "bypass"))
++			continue;
++		for (i = 0; i < n && strcmp(s[i].pid, pid); i++)
++			;
++		if (i < n)
++			continue;
++		snprintf(s[n].pid, sizeof(s[n].pid), "%s", pid);
++		snprintf(s[n].ids, sizeof(s[n].ids), "%s", ids);
++		s[n].bit = sh_svc_bit[n];
++		n++;
++	}
++	free(cfg);
++	return n;
++}
++
++/* is id in a comma-separated list */
++static int sh_id_in(const char *list, const char *id)
++{
++	size_t n = strlen(id);
++	const char *p = list;
++
++	while (p && *p) {
++		if (!strncmp(p, id, n) && (p[n] == ',' || !p[n]))
++			return 1;
++		if ((p = strchr(p, ',')))
++			p++;
++	}
++	return 0;
++}
++
++/* one profile's services as a list wallguardc compiles: every catalog domain of every chosen
++   service, with its subdomains ("*.name"). 0 = nothing to block (unknown ids only). */
++static int sh_write_svc_list(const struct sh_svc *s)
++{
++	FILE *f = fopen(SH_CATALOG, "r");
++	char line[2048], path[96], *b = NULL;
++	size_t len = 0, cap = 0;
++	int any = 0;
++
++	if (!f)
++		return 0;
++	sh_add(&b, &len, &cap, "%s", "");
++	while (fgets(line, sizeof(line), f)) {
++		char *lab, *cat, *dom, *d, *sv;
++		if (line[0] == '#' || !(lab = strchr(line, '|')))
++			continue;
++		*lab++ = 0;
++		if (!(cat = strchr(lab, '|')))
++			continue;
++		*cat++ = 0;
++		if (!(dom = strchr(cat, '|')))
++			continue;
++		*dom++ = 0;
++		if (!sh_id_in(s->ids, line))
++			continue;
++		for (d = strtok_r(dom, " \t\r\n", &sv); d; d = strtok_r(NULL, " \t\r\n", &sv))
++			if (sh_name_ok(d)) {
++				sh_add(&b, &len, &cap, "*.%s\n", d);
++				any = 1;
++			}
++	}
++	fclose(f);
++	snprintf(path, sizeof(path), SH_DIR "/lists/svc_%s", s->pid);
++	if (b) {
++		if (any)
++			sh_write(path, b);
++		free(b);
++	}
++	return any;
++}
++
++/* ---- feeds: the subscribed lists, for wallguard.sh */
++static void sh_write_feeds(void)
++{
++	char *cfg, *line, *save, *b = NULL;
++	size_t len = 0, cap = 0;
++	int ex, i, any = 0;
++
++	cfg = strdup(rjf_get(SH_JFFS "/lists", &ex));
++	if (cfg && ex <= 0) {		/* first switch-on: one balanced preset */
++		free(cfg);
++		rjf_set(SH_JFFS "/lists", SH_DEFAULT_PRESET, "wallguard");
++		cfg = strdup(SH_DEFAULT_PRESET);
++	}
++	sh_add(&b, &len, &cap, "%s", "");
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line; line = strtok_r(NULL, "\n", &save)) {
++		int slot;
++		char url[512];
++		for (i = 0; i < NPRESETS; i++)
++			if (!strcmp(line, presets[i].id)) {
++				sh_add(&b, &len, &cap, "%d %s %s p\n", presets[i].bit, presets[i].id, presets[i].url);
++				any = 1;
++				break;
++			}
++		if (i < NPRESETS)
++			continue;
++		if (sscanf(line, "custom %d %511s", &slot, url) == 2 && slot >= 1 && slot <= SH_CUSTOM_MAX && sh_url_ok(url)) {
++			sh_add(&b, &len, &cap, "%d custom%d %s c\n", SH_CUSTOM_BIT0 + slot - 1, slot, url);
++			any = 1;
++		}
++	}
++	free(cfg);
++	/* each profile's blocked services: a local list under its own bit; svcbits tells the
++	   page which bit is whose (Unbreak, Why?) */
++	{
++		struct sh_svc s[SH_SVC_MAX];
++		char *sb = NULL;
++		size_t sl = 0, sc = 0;
++		int k, ns = sh_svc_alloc(s);
++
++		reaper_secure_dir(SH_DIR "/lists", 0755);
++		sh_add(&sb, &sl, &sc, "%s", "");
++		for (k = 0; k < ns; k++)
++			if (sh_write_svc_list(&s[k])) {
++				sh_add(&b, &len, &cap, "%d svc_%s - s\n", s[k].bit, s[k].pid);
++				sh_add(&sb, &sl, &sc, "%s %d\n", s[k].pid, s[k].bit);
++			}
++		if (sb) {
++			sh_write(SH_DIR "/svcbits", sb);
++			free(sb);
++		}
++	}
++	if (b) {
++		sh_write(SH_DIR "/feeds", b);
++		free(b);
++	}
++	if (!any)
++		logmessage("wallguard", "no list is subscribed - only My rules block");
++}
++
++/* the bits of every subscribed list (+ My rules), the default profile's mask - never a
++   profile's blocked services (kind s), which only that profile's own mask carries */
++static uint32_t sh_all_bits(void)
++{
++	FILE *f = fopen(SH_DIR "/feeds", "r");
++	char line[600], kind;
++	uint32_t m = 1;		/* bit 0 = My rules */
++	int bit;
++
++	if (!f)
++		return m;
++	while (fgets(line, sizeof(line), f))
++		if ((kind = 0, sscanf(line, "%d %*s %*s %c", &bit, &kind)) >= 1 && bit >= 1 && bit <= 30 && kind != 's')
++			m |= 1u << bit;
++	fclose(f);
++	return m;
++}
++
++/* ---- seeded allow entries (owner, 2026-10-22). The names Wallguard never blocks used to be a fixed list
++ * here that the operator could not take out - a hard-coded exemption outlives a service that is later
++ * compromised, or a lapsed domain someone else buys. They are now entries in the operator's own allow
++ * list (the Wallguard page), added ONCE: ASUS (router, DDNS, firmware), the threat-list hosts, Warden's list
++ * hosts, the safe-search enforcement hosts (blocking one breaks safe search for that profile), GitHub
++ * (lists, firmware check), the time servers, and every preset list's host. A removed entry stays
++ * removed (the marker is written either way); a failed write is retried next time. */
++#define SH_SEED_MARK SH_JFFS "/.seed_allow"
++static int sh_list_has(const char *list, const char *name)
++{
++	size_t n = strlen(name);
++	const char *p = list;
++
++	while (p && *p) {
++		const char *e = strchr(p, '\n');
++		size_t l = e ? (size_t)(e - p) : strlen(p);
++		if (l == n && !strncmp(p, name, n))
++			return 1;
++		p = e ? e + 1 : NULL;
++	}
++	return 0;
++}
++
++/* one name onto the allow buffer unless it is there already; noted in added for the log line */
++static void sh_seed_add(char **b, size_t *len, size_t *cap, const char *nm, char *added, size_t asz)
++{
++	size_t n;
++
++	if (!sh_name_ok(nm) || sh_list_has(*b ? *b : "", nm))
++		return;
++	sh_add(b, len, cap, "%s\n", nm);
++	n = strlen(added);
++	snprintf(added + n, asz - n, "%s%s", n ? " " : "", nm);
++}
++
++static void sh_seed_allow(void)
++{
++	static const char *seed[] = {
++		"asus.com", "asusrouter.com", "asuscomm.com", "abuse.ch", "spamhaus.org",
++		"www.ipdeny.com", "iplists.firehol.org",
++		"forcesafesearch.google.com", "strict.bing.com", "safe.duckduckgo.com",
++		"restrict.youtube.com", "restrictmoderate.youtube.com",
++		"github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
++		"pool.ntp.org", "time.google.com", "time.cloudflare.com",
++		NULL };
++	char *cur, *b = NULL, host[256], added[1024] = "";
++	size_t len = 0, cap = 0;
++	int i, ex;
++
++	if (f_exists(SH_SEED_MARK) || !(cur = strdup(rjf_get(SH_JFFS "/allow", &ex))))
++		return;
++	sh_add(&b, &len, &cap, "%s", cur);
++	if (len && b[len - 1] != '\n')
++		sh_add(&b, &len, &cap, "%s", "\n");
++	for (i = 0; seed[i]; i++)
++		sh_seed_add(&b, &len, &cap, seed[i], added, sizeof(added));
++	for (i = 0; i < NPRESETS; i++) {
++		sh_url_host(presets[i].url, host, sizeof(host));
++		sh_seed_add(&b, &len, &cap, host, added, sizeof(added));
++	}
++	if (*added && rjf_set(SH_JFFS "/allow", b, "wallguard") != 0) {	/* retry next time */
++		free(cur); free(b);
++		return;
++	}
++	if (*added)
++		logmessage("wallguard", "allow list: added %s once - remove any of them on the Wallguard page if not wanted", added);
++	rjf_set(SH_SEED_MARK, "1", "wallguard");
++	free(cur); free(b);
++}
++
++/* ---- safe: names that are never blocked without being on the allow list - the operator's own
++   (DDNS, NTP and DoT servers, LAN domain, VPN endpoints) and the hosts of their custom lists */
++static void sh_write_safe(void)
++{
++	char *b = NULL, host[256], *cfg, *line, *save;
++	size_t len = 0, cap = 0;
++	int i, ex;
++	const char *v;
++
++	sh_seed_allow();	/* 2026-10-22: the fixed names live in the operator's allow list now */
++	sh_add(&b, &len, &cap, "%s", "");
++	/* the hosts of the operator's own custom lists (the presets' hosts are seeded entries) */
++	cfg = strdup(rjf_get(SH_JFFS "/lists", &ex));
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line; line = strtok_r(NULL, "\n", &save)) {
++		int slot;
++		char url[512];
++		if (sscanf(line, "custom %d %511s", &slot, url) == 2) {
++			sh_url_host(url, host, sizeof(host));
++			if (sh_name_ok(host))
++				sh_add(&b, &len, &cap, "%s\n", host);
++		}
++	}
++	free(cfg);
++	/* the operator's own names: DDNS, NTP servers, the LAN domain, DoT servers */
++	{
++		const char *keys[] = { "ddns_hostname_x", "ntp_server0", "ntp_server1", "lan_domain", NULL };
++		for (i = 0; keys[i]; i++)
++			if (sh_name_ok(v = nvram_safe_get(keys[i])))
++				sh_add(&b, &len, &cap, "%s\n", v);
++	}
++	/* the router's own VPN client endpoints: an ad list must never cut its tunnels */
++	for (i = 1; i <= 5; i++) {
++		char k[32];
++		snprintf(k, sizeof(k), "vpn_client%d_addr", i);
++		if (sh_name_ok(v = nvram_safe_get(k)))
++			sh_add(&b, &len, &cap, "%s\n", v);
++		snprintf(k, sizeof(k), "wgc%d_ep_addr", i);
++		if (sh_name_ok(v = nvram_safe_get(k)))
++			sh_add(&b, &len, &cap, "%s\n", v);
++	}
++	{
++		/* dnspriv_rulelist: <address>port>hostname>spki ... */
++		char *nv = strdup(nvram_safe_get("dnspriv_rulelist")), *p = nv, *rule;
++		while (p && (rule = strsep(&p, "<")) != NULL) {
++			char *addr = NULL, *port = NULL, *hostname = NULL, *spki = NULL;
++			if (vstrsep(rule, ">", &addr, &port, &hostname, &spki) >= 3 && hostname && sh_name_ok(hostname))
++				sh_add(&b, &len, &cap, "%s\n", hostname);
++		}
++		free(nv);
++	}
++	if (b) {
++		sh_write(SH_DIR "/safe", b);
++		free(b);
++	}
++}
++
++/* ---- policy */
++struct sh_prof { char id[20]; uint32_t mask; };
++
++static int sh_profiles(struct sh_prof *p, int max, uint32_t all)
++{
++	char *cfg, *line, *save;
++	int ex, n = 0;
++
++	/* built in: default = every subscribed list + My rules; bypass = nothing */
++	snprintf(p[n].id, sizeof(p[n].id), "default"); p[n++].mask = all;
++	snprintf(p[n].id, sizeof(p[n].id), "bypass"); p[n++].mask = 0;
++	cfg = strdup(rjf_get(SH_JFFS "/profiles", &ex));
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line && n < max; line = strtok_r(NULL, "\n", &save)) {
++		char id[20];
++		unsigned long m;
++		int i;
++		if (sscanf(line, "%19s %lx", id, &m) != 2)
++			continue;
++		for (i = 0; i < n && strcmp(p[i].id, id); i++)
++			;
++		if (!strcmp(id, "bypass"))
++			continue;			/* bypass is always "nothing" */
++		if (i == n) {
++			snprintf(p[n].id, sizeof(p[n].id), "%s", id);
++			n++;
++		}
++		p[i].mask = (uint32_t)m & all;		/* only lists that exist */
++	}
++	free(cfg);
++	return n;
++}
++
++static uint32_t sh_mask_of(const struct sh_prof *p, int n, const char *id, int *found)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		if (!strcmp(p[i].id, id)) {
++			*found = 1;
++			return p[i].mask;
++		}
++	*found = 0;
++	return p[0].mask;
++}
++
++/* ---- schedules (phase 2): when a profile's service block is on */
++struct sh_win { int days, from, to; };	/* days: bit 0 Sunday .. bit 6 Saturday; minutes */
++
++/* Is the service block on at tm? No window = always. A window whose end is before its start
++   runs past midnight into the next day (its day is the day it starts); start == end is the
++   whole day. */
++static int sh_sched_active(const struct sh_win *w, int n, const struct tm *tm)
++{
++	int i, now = tm->tm_hour * 60 + tm->tm_min;
++	int today = 1 << tm->tm_wday, yday = 1 << ((tm->tm_wday + 6) % 7);
++
++	if (n <= 0)
++		return 1;
++	for (i = 0; i < n; i++) {
++		if (w[i].from == w[i].to) {
++			if (w[i].days & today)
++				return 1;
++		} else if (w[i].from < w[i].to) {
++			if ((w[i].days & today) && now >= w[i].from && now < w[i].to)
++				return 1;
++		} else if (((w[i].days & today) && now >= w[i].from) || ((w[i].days & yday) && now < w[i].to))
++			return 1;
++	}
++	return 0;
++}
++
++/* a profile's windows from /jffs/wallguard/sched: "<profile> <days hex> <HHMM> <HHMM>" */
++static int sh_sched_of(const char *sched, const char *pid, struct sh_win *w)
++{
++	const char *p = sched;
++	int n = 0;
++
++	while (p && *p && n < SH_WIN_MAX) {
++		char id[20];
++		unsigned int d, a, z;
++		if (sscanf(p, "%19s %x %u %u", id, &d, &a, &z) == 4 && !strcmp(id, pid) && d >= 1 && d <= 0x7f
++		    && a / 100 < 24 && a % 100 < 60 && z / 100 < 24 && z % 100 < 60) {
++			w[n].days = (int)d;
++			w[n].from = (int)(a / 100 * 60 + a % 100);
++			w[n].to = (int)(z / 100 * 60 + z % 100);
++			n++;
++		}
++		if ((p = strchr(p, '\n')))
++			p++;
++	}
++	return n;
++}
++
++/* a profile's service bit while its schedule says the block is on (always, before the
++   clock is set: a router that has not synced its time yet keeps the services blocked) */
++static uint32_t sh_svc_mask(const struct sh_svc *s, int ns, const char *sched, const char *pid, const struct tm *tm)
++{
++	struct sh_win w[SH_WIN_MAX];
++	int k;
++
++	for (k = 0; k < ns; k++)
++		if (!strcmp(s[k].pid, pid))
++			return (!tm || sh_sched_active(w, sh_sched_of(sched, pid, w), tm)) ? 1u << s[k].bit : 0;
++	return 0;
++}
++
++/* a profile's safe-search flags from /jffs/wallguard/safe: "<profile> <flags>" */
++static unsigned int sh_flags_of(const char *safe, const char *pid)
++{
++	const char *p = safe;
++
++	if (!strcmp(pid, "bypass"))
++		return 0;			/* Bypass changes nothing, safe search included */
++	while (p && *p) {
++		char id[20];
++		unsigned int f;
++		if (sscanf(p, "%19s %u", id, &f) == 2 && !strcmp(id, pid))
++			return f & SH_FLAGS_MAX;
++		if ((p = strchr(p, '\n')))
++			p++;
++	}
++	return 0;
++}
++
++/* one cron entry per distinct window edge (+ a quarter-hourly catch-up while any schedule
++   exists): each rewrites the policy, the only place a schedule takes effect. rc keeps the
++   names it added in SH_DIR/cron and touches cron only when the set changes. */
++static void sh_sched_cron(const struct sh_svc *s, int ns, const char *sched)
++{
++	char *b = NULL, *old, name[24];
++	size_t len = 0, cap = 0;
++	int k, i, n, seen[24 * 60 / 8 + 1];
++
++	memset(seen, 0, sizeof(seen));
++	sh_add(&b, &len, &cap, "%s", "");
++	for (k = 0; k < ns; k++) {
++		struct sh_win w[SH_WIN_MAX];
++		n = sh_sched_of(sched, s[k].pid, w);
++		for (i = 0; i < 2 * n; i++) {
++			int m = i & 1 ? w[i / 2].to : w[i / 2].from;
++			if (seen[m / 8] & (1 << (m % 8)))
++				continue;
++			seen[m / 8] |= 1 << (m % 8);
++			sh_add(&b, &len, &cap, "wallguard_e%02d%02d %d %d\n", m / 60, m % 60, m % 60, m / 60);
++		}
++	}
++	if (len)
++		sh_add(&b, &len, &cap, "wallguard_sp\n");
++	old = read_whole_file(SH_DIR "/cron");
++	if (b && (!old || strcmp(old, b))) {
++		char *p, *e;
++		for (p = old; p && *p; p = e ? e + 1 : NULL) {
++			e = strchr(p, '\n');
++			if (sscanf(p, "%23s", name) == 1 && !strncmp(name, "wallguard_", 10))
++				eval("cru", "d", name);
++		}
++		for (p = b; *p; p = e ? e + 1 : p + strlen(p)) {
++			int mm, hh;
++			char line[96];
++			e = strchr(p, '\n');
++			if (sscanf(p, "%23s %d %d", name, &mm, &hh) == 3)
++				snprintf(line, sizeof(line), "%d %d * * * service start_wallguard_policy >/dev/null 2>&1", mm, hh);
++			else if (sscanf(p, "%23s", name) == 1 && !strcmp(name, "wallguard_sp"))
++				snprintf(line, sizeof(line), "*/15 * * * * service start_wallguard_policy >/dev/null 2>&1");
++			else
++				continue;
++			eval("cru", "a", name, line);
++		}
++		sh_write(SH_DIR "/cron", b);
++	}
++	free(old);
++	free(b);
++}
++
++static void sh_run_bg(const char *action);
++
++void wallguard_write_policy(void)
++{
++	struct sh_prof prof[24];
++	struct sh_svc s[SH_SVC_MAX];
++	struct tm tmv, *tm = NULL;
++	char *b = NULL, *cfg, *line, *save, *sched, *safe;
++	size_t len = 0, cap = 0;
++	int n, ex, found, ns, k;
++	uint32_t all = sh_all_bits(), keep = 0;
++	unsigned int anyflags;
++	time_t now = time(NULL);
++
++	n = sh_profiles(prof, 24, all);
++	ns = sh_svc_alloc(s);
++	sched = strdup(rjf_get(SH_JFFS "/sched", &ex));
++	safe = strdup(rjf_get(SH_JFFS "/safe", &ex));
++	if (localtime_r(&now, &tmv) && tmv.tm_year + 1900 >= 2024)
++		tm = &tmv;
++	for (k = 0; k < ns; k++)
++		keep |= 1u << s[k].bit;
++	anyflags = sh_flags_of(safe, "default");
++	sh_add(&b, &len, &cap, "# generated by rc (wallguard.c)\n");
++	if (nvram_match("wallguard_mode", "nx"))
++		sh_add(&b, &len, &cap, "mode nx\n");
++	/* a pause never lifts a blocked service */
++	sh_add(&b, &len, &cap, "keep %x\n", keep);
++	sh_add(&b, &len, &cap, "default %x %x\n", prof[0].mask | sh_svc_mask(s, ns, sched, "default", tm),
++	       sh_flags_of(safe, "default"));
++	cfg = strdup(rjf_get(SH_JFFS "/assign", &ex));
++#ifdef RTCONFIG_MULTILAN_CFG
++	/* review 2026-10-24 (Q-A-8): the network table is read once, on the first "net" line, not once per line */
++	MTLAN_T *pmtl = NULL;
++	size_t msz = 0;
++	int mread = 0;
++#endif
++	for (line = cfg ? strtok_r(cfg, "\n", &save) : NULL; line; line = strtok_r(NULL, "\n", &save)) {
++		char a[40], id[20];
++		unsigned char ea[6];
++		uint32_t m;
++		/* the address as ether_etoa() writes it, never the text parsed (ether_atoe() is lax) */
++		if (sscanf(line, "mac %39s %19s", a, id) == 2 && ether_atoe(a, ea) && ether_etoa(ea, a)) {
++			m = sh_mask_of(prof, n, id, &found);
++			if (found) {
++				unsigned int fl = sh_flags_of(safe, id);
++				anyflags |= fl;
++				sh_add(&b, &len, &cap, "mac %s %x %x\n", a, m | sh_svc_mask(s, ns, sched, id, tm), fl);
++			}
++		}
++#ifdef RTCONFIG_MULTILAN_CFG
++		else if (sscanf(line, "net %39s %19s", a, id) == 2) {
++			size_t i;
++			int idx = atoi(a);
++			m = sh_mask_of(prof, n, id, &found);
++			if (found && !mread) {
++				mread = 1;
++				if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))))
++					get_mtlan(pmtl, &msz);
++			}
++			if (found && pmtl) {
++				unsigned int fl = sh_flags_of(safe, id);
++				anyflags |= fl;
++				m |= sh_svc_mask(s, ns, sched, id, tm);
++				for (i = 0; i < msz; i++)
++					if (pmtl[i].enable && pmtl[i].sdn_t.sdn_idx == idx && pmtl[i].nw_t.subnet[0])
++						sh_add(&b, &len, &cap, "net %s/%u %x %x\n", pmtl[i].nw_t.subnet, pmtl[i].nw_t.prefixlen, m, fl);
++			}
++		}
++#endif
++	}
++#ifdef RTCONFIG_MULTILAN_CFG
++	if (pmtl)
++		FREE_MTLAN((void *)pmtl);
++#endif
++	free(cfg);
++	/* pauses (RAM only) */
++	{
++		FILE *f = fopen(SH_DIR "/pause", "r");
++		char pl[128], a[40];
++		long long t;
++		time_t now = time(NULL);
++		while (f && fgets(pl, sizeof(pl), f)) {
++			unsigned char ea[6];
++			if (sscanf(pl, "all %lld", &t) == 1 && t > now)
++				sh_add(&b, &len, &cap, "pause %lld\n", t);
++			else if (sscanf(pl, "mac %39s %lld", a, &t) == 2 && t > now && ether_atoe(a, ea) && ether_etoa(ea, a))
++				sh_add(&b, &len, &cap, "pausemac %s %lld\n", a, t);
++		}
++		if (f)
++			fclose(f);
++	}
++	if (b) {
++		sh_write(SH_DIR "/policy", b);
++		free(b);
++	}
++	sh_sched_cron(s, ns, sched);
++	/* the first profile asking for safe search: fetch the enforcement addresses now, not at 05:15 */
++	if (anyflags && !f_exists(SH_DIR "/safesearch"))
++		sh_run_bg("safe");
++	free(sched);
++	free(safe);
++}
++
++/* Reconcile the running dnsmasq with the switch (rw_dns_sync's shape): the option is
++   either in /etc/dnsmasq.conf or not; a disagreement is ONE restart_dnsmasq. */
++static void sh_dns_sync(void)
++{
++	FILE *f;
++	char l[256];
++	int live = 0, wanted = wallguard_enabled();
++
++	if ((f = fopen("/etc/dnsmasq.conf", "r")) == NULL)
++		return;
++	while (fgets(l, sizeof(l), f))
++		if (!strncmp(l, "wallguard-dir=", 14)) { live = 1; break; }
++	fclose(f);
++	if (live != wanted) {
++		logmessage("wallguard", "Wallguard %s - restarting dnsmasq", wanted ? "on" : "off");
++		/* what the restart_dnsmasq handler does, done here: a notify_rc() issued from inside
++		   the running restart_wallguard service waits on that same service and is dropped
++		   (metal, _r6: dnsmasq never restarted, no wallguard-dir) */
++#ifdef RTCONFIG_MULTILAN_CFG
++		stop_dnsmasq(ALL_SDN);
++		start_dnsmasq(ALL_SDN);
++#else
++		stop_dnsmasq();
++		start_dnsmasq();
++#endif
++	}
++}
++
++static void sh_run_bg(const char *action)
++{
++	char *argv[] = { "sh", SH_SCRIPT, (char *)action, NULL };
++	pid_t pid;
++
++	_eval(argv, ">/dev/null", 0, &pid);
++}
++
++void stop_wallguard(void)
++{
++	eval("cru", "d", "wallguard");
++	eval("cru", "d", "wallguard_ck");
++	{
++		char *old = read_whole_file(SH_DIR "/cron"), *p, *e, name[24];
++		for (p = old; p && *p; p = e ? e + 1 : NULL) {
++			e = strchr(p, '\n');
++			if (sscanf(p, "%23s", name) == 1 && !strncmp(name, "wallguard_", 10))
++				eval("cru", "d", name);
++		}
++		free(old);
++		unlink(SH_DIR "/cron");
++	}
++	if (f_exists(SH_SCRIPT) && access(SH_DIR, F_OK) == 0)
++		eval("sh", SH_SCRIPT, "fold");		/* bank the counters before the files go */
++	eval("rm", "-rf", SH_DIR "/lists", SH_DIR "/db", SH_DIR "/pending", SH_DIR "/policy", SH_DIR "/live.on", SH_RUN "/live", SH_RUN "/live.1");
++	sh_dns_sync();
++}
++
++void start_wallguard(void)
++{
++	struct passwd *pw;
++
++	if (!wallguard_enabled()) {
++		stop_wallguard();
++		return;
++	}
++	/* root's directory; dnsmasq, after dropping to nobody, writes only inside run/ */
++	if (reaper_secure_dir(SH_DIR, 0755) != 0 || !(pw = getpwnam("nobody")) ||
++	    reaper_secure_dir_for(SH_RUN, 0700, pw->pw_uid, pw->pw_gid) != 0) {
++		logmessage("wallguard", "Wallguard cannot set up " SH_DIR " - not started");
++		return;
++	}
++	sh_write_feeds();
++	sh_write_safe();
++	wallguard_write_policy();
++	eval("cru", "a", "wallguard", "15 5 * * * sh " SH_SCRIPT " update");
++	eval("cru", "a", "wallguard_ck", "*/15 * * * * sh " SH_SCRIPT " fold");
++	sh_dns_sync();
++	if (!f_exists(SH_DIR "/db"))
++		sh_run_bg("update");		/* first run or after a reboot: lists come down in the background */
++	else
++		sh_run_bg("build");		/* a list or rule change from the page */
++}
++
++/* page "Update now" / a changed subscription */
++void wallguard_update(void)
++{
++	if (!wallguard_enabled())
++		return;
++	sh_write_feeds();
++	sh_write_safe();
++	wallguard_write_policy();
++	sh_run_bg("update");
++}
++
++/* start_firewall (WAN up): a router that booted without internet has no table yet -
++   fetch the lists now. wallguard.sh's own lock turns a second trigger into a no-op.
++   2026-10-25 (release review W-1): nor does a table that holds My rules alone because every
++   download failed (wallguard.sh writes "pending"); a firewall restart within two minutes of
++   the last attempt does not start another. */
++void wallguard_on_firewall(void)
++{
++	struct stat st;
++
++	if (!wallguard_enabled() || !f_exists(SH_DIR "/feeds"))
++		return;
++	if (!f_exists(SH_DIR "/db"))
++		sh_run_bg("update");
++	else if (f_exists(SH_DIR "/pending") &&
++		 (stat(SH_DIR "/state", &st) != 0 || time(NULL) - st.st_mtime >= 120))
++		sh_run_bg("update");
++}
++
++/* the watchdog found the pinned USB store mounted (rc/reaper_usbmon.c, 2026-10-21): Wallguard's lists
++   may be on it - a router with no table yet builds from them at once, no internet needed */
++void wallguard_store_attached(void)
++{
++	if (wallguard_enabled() && !f_exists(SH_DIR "/db") && f_exists(SH_DIR "/feeds"))
++		sh_run_bg("restore");
++}
++
++/* My rules / allow changed: rebuild from the lists on disk, no download */
++void wallguard_rebuild(void)
++{
++	if (!wallguard_enabled())
++		return;
++	sh_write_safe();
++	sh_run_bg("build");
++}
++
++/* 2026-10-25: the feature was renamed Wallguard (owner: the earlier test name belongs to another ad-block
++ * project). A router that ran a test image under that name keeps its settings: the two nvram switches and the
++ * /jffs folder move to the new names once, at boot, right after /jffs is mounted and before anything starts
++ * (jffs2.c / ubifs.c). An old key's value wins over the new key's factory default. The downloaded-list cache in
++ * the USB store is not moved (it is fetched again). The old name is spelled in two parts so a rename sweep over
++ * the tree cannot rewrite this one place. */
++#define SH_LEGACY	"shr" "oud"
++void wallguard_migrate_legacy(const char *jffs)
++{
++	static const char *const keys[] = { "_enable", "_mode" };
++	char oldk[32], newk[32], olddir[64], newdir[64];
++	struct stat st;
++	int i, moved = 0;
++
++	for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++) {
++		const char *v;
++
++		snprintf(oldk, sizeof(oldk), SH_LEGACY "%s", keys[i]);
++		snprintf(newk, sizeof(newk), "wallguard%s", keys[i]);
++		if ((v = nvram_get(oldk)) == NULL)
++			continue;
++		nvram_set(newk, v);
++		nvram_unset(oldk);
++		moved++;
++	}
++	if (moved) {
++		nvram_commit();
++		logmessage("wallguard", "%d setting(s) carried over from the earlier test name", moved);
++	}
++
++	if (!jffs || !*jffs)
++		return;
++	snprintf(olddir, sizeof(olddir), "%s/" SH_LEGACY, jffs);
++	snprintf(newdir, sizeof(newdir), "%s/wallguard", jffs);
++	if (lstat(olddir, &st) != 0 || !S_ISDIR(st.st_mode))
++		return;				/* nothing there, or a link: never followed */
++	if (lstat(newdir, &st) == 0)
++		logmessage("wallguard", "%s left in place: %s already exists", olddir, newdir);
++	else if (rename(olddir, newdir) == 0)
++		logmessage("wallguard", "%s moved to %s", olddir, newdir);
++	else
++		logmessage("wallguard", "could not move %s to %s", olddir, newdir);
++}
+-- 
+2.25.1
+

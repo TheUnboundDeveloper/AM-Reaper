@@ -2,6 +2,10 @@
 # physically inside every staged image, per model, per variant.
 # Format:  <staged-path>|<literal string>|<min-count>     (>= min occurrences)
 #          <staged-path>|!<literal string>                (must be ABSENT)
+# Optional 4th field = the ONLY variant the line applies to (MCP or noMCP):
+#          <staged-path>|<literal string>|<min-count>|MCP  (rmcpd, the Advisor page and
+#          httpd's MCP-gated code are absent from noMCP by design - an untagged line for
+#          them fails every noMCP image; v3.3.7 CI, 2026-10-09)
 # Add a line whenever a field-critical fix ships; prune only when obsolete.
 #
 # v2.1.5/v2.1.7 -- PPPoE baby-jumbo MTU 1500 in the SHIPPED WAN page.
@@ -10,19 +14,23 @@
 # GPL lineage), so it installs the BASE WAN page = 2x "128, 1500"; the MSWAN
 # variant on the other four models has 4x. min=2 covers both; the forbidden
 # 1492 line is the real tripwire either way.
-www/Advanced_WAN_Content.asp|128, 1500|2
-www/Advanced_WAN_Content.asp|!128, 1492
 # v2.1.8 -- the 1508 WAN-MTU allowance is ROLLED BACK (owner field report: the
 # visible WAN-MTU box only shows on DHCP/static where 1508 is invalid; 1508 was
 # enterable + applyable). wan_mtu caps at 1500 again; PPPoE keeps 1500 with the
 # automatic backend +8. A 1508-capped page must never ship again:
-www/Advanced_WAN_Content.asp|!1280, 1508
 # v3.1.0 -- the first-boot box (Reaper_WiFiSetup.asp) is the security banner's
 # Wi-Fi target; it sets SSID + Wi-Fi key on every radio through its gated CGI and
-# fires the credential apply chained with restart_wireless. The stock Wireless
+# fires the credential apply chained with a REBOOT since v3.3.1 (was
+# restart_wireless;restart_sdn in v3.2.9, which could never create the main
+# network: closed init_apg -> check_mwl_convert builds it only at boot, and only
+# once x_Setting=1 - the CGI's log line proves httpd sets it). The stock Wireless
 # page must no longer be what the banner points at.
 www/Reaper_WiFiSetup.asp|reaper_wifisetup.cgi|1
-www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;restart_wireless|1
+www/Reaper_WiFiSetup.asp|saveNvram;restart_chpass;reboot|1
+www/Reaper_WiFiSetup.asp|!restart_wireless;restart_sdn
+usr/sbin/httpd|x_Setting=1; reboot follows the password apply|1
+# v3.3.1 -- the Network page points a box with no main network at the setup box.
+www/SDN.asp|rsdn_main_notice|1
 www/Reaper_WiFiSetup.asp|httpApi.chpass(|1
 usr/sbin/httpd|reaper_wifisetup.cgi|1
 usr/sbin/httpd|Reaper_WiFiSetup.asp|1
@@ -31,8 +39,6 @@ usr/sbin/httpd|!href="Advanced_Wireless_Content.asp"
 # v2.1.7 -- rename popup re-reads live custom_clientlist at save:
 www/client_function.js|nvramCharToAscii(["custom_clientlist"]|1
 # v2.1.7 -- DHCP leases page carries the unified Device Name column:
-www/Main_DHCPStatus_Content.asp|Device Name|1
-www/Main_DHCPStatus_Content.asp|fetchDeviceNames|2
 # 2026-08-06 -- Gatekeeper internet-only DNS carve-out (owner field report: a
 # DHCP-advertised LAN DNS (AdGuard) was sealed off by the bridge DROP, so an
 # internet-only device had no resolver = no usable internet). The generator's
@@ -64,7 +70,6 @@ usr/sbin/httpd|reaper_wifi_default|1
 sbin/rc|/jffs/rwarden/blocked_base|1
 # 2026-08-06 -- de-cloud: the stock TrendMicro "Security Update" auto-upgrade
 # section is removed from the firmware page (must never ship again).
-www/Advanced_FirmwareUpgrade_Content.asp|!secur_stab_setting
 # v2.6.2 -- shared REAPER_HOOK front chains (fixed layer order Warden ->
 # Gatekeeper -> rules engine): the generator must be compiled into rc, and
 # gkd must assert the front-chain jump, not just chain existence (gkd is
@@ -94,8 +99,31 @@ usr/sbin/httpd|reaper_cfg.cgi|1
 www/Reaper_Backup.asp|rbk_cx|1
 # v2.7.1 security review: per-boot http_id (rc) + same-host Referer check on
 # every Reaper CGI (httpd). Missing = the factory-constant CSRF token is back.
-sbin/rc|/tmp/.http_id_boot|1
+sbin/rc|/tmp/reaper/.http_id_boot|1
 usr/sbin/httpd|cross-site request refused|1
+# 2026-10-23 (CVE-2026-75779 class): httpd refuses a cross-site request to EVERY
+# authenticated CGI, not only the closed 38-entry Referer list. Missing = stock
+# CGIs run on a session cookie alone again.
+usr/sbin/httpd|Sec-Fetch-Site:|1
+usr/sbin/httpd|absent, Sec-Fetch-Site cross-site|1
+usr/sbin/httpd|Cross-site request refused.|1
+# 2026-10-23 Samba 4 log noise: CP850 iconv module shipped (dos charset), no Samba-3
+# parameters in the generated smb.conf, quotas compiled out of smbd.
+usr/lib/gconv/gconv-modules|IBM850//|1
+sbin/write_smb_conf|!use spnego = %s
+sbin/write_smb_conf|!auth methods = guest
+usr/lib/samba/libsmbd-base-samba4.so|!sys_path_to_bdev() failed
+# 2026-10-23 AiMesh cfg_server events: re_mac/new_re_mac/target_bssid must be a MAC or empty.
+usr/sbin/httpd|AiMesh onboarding lock request with a missing or malformed MAC ignored|1
+# 2026-10-23 pre-login register_app_cnonce.cgi (closed handler commits nvram) compiled out, as ASUS did in 40585.
+usr/sbin/httpd|!register_app_cnonce.cgi
+# 2026-10-23 ASUS DDNS (asuscomm) removed: rc refuses it, httpd has no unregister route.
+sbin/rc|ASUS DDNS is not supported on this firmware - choose another DDNS provider|1
+usr/sbin/httpd|!unreg_ASUSDDNS.cgi
+# 2026-10-23 Port Trigger: the userspace TRIGGER target ships (missing since 0b8cea213a, so a
+# Port Trigger rule made iptables-restore refuse the whole nat table).
+usr/lib/xtables/libipt_TRIGGER.so|trigger-type|1
+usr/lib/xtables/libipt_webstr.so|webstr|1
 # v2.7.2 -- Traffic Analyzer restore-proof history (rtrafd aligns its ring
 # cursors to the db's own stamp; missing = the NTP step wipes restored
 # month/day slots again) + the one-file full backup/restore (httpd archive
@@ -106,7 +134,25 @@ bin/rtrafd|ring cursors aligned to db stamp|1
 usr/sbin/httpd|REAPER-BACKUP 1|1
 usr/sbin/httpd|reaper_restore.cgi|1
 www/Reaper_Backup.asp|rbk_dl|1
-usr/sbin/reaper_diag|REAPER-DIAG v1.3.19|1
+usr/sbin/reaper_diag|REAPER-DIAG v1.3.51|1
+usr/sbin/reaper_diag|custom dnsmasq.conf: IN USE|1
+# v1.3.39 (2026-10-14): section 4c reads DNS Director per network (sdn_rl dnsf_idx against the nat
+# chain's rule for its bridge, counters only); section 10 resolves the shaped port like
+# hwqos_tm_ifname(); section 16 probes every gateway of a multipath default route
+usr/sbin/reaper_diag|4c. DNS DIRECTOR|1
+# v1.3.35 (2026-10-12): the sanitizer redacts a prefix that ends in "::", IPv6 reverse zones
+# and a DHCPv6 DUID; the tripwire counts IPv6 residue (test_diag_sanitizer.py runs the awk)
+usr/sbin/reaper_diag|[IP6-ARPA-|1
+usr/sbin/reaper_diag|residual IPv6 shapes|1
+# v1.3.36: the sanitizer is a pipeline of targeted stages; the client-names stage masks names and
+# domains clients write into DHCP/gatekeeper log lines, and the tripwire counts what it missed
+usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1
+usr/sbin/reaper_diag|residual client names|1
+# v1.3.38: section 15 reports the Runner 4-frag cap (the kernel half is gated by reaper_verify
+# section 28 on vmlinux) and the refused-packet lines; section 5 counts DoT upstreams by family
+usr/sbin/reaper_diag|reaper_tx_sg_max|1
+usr/sbin/reaper_diag|dot upstreams|1
+usr/sbin/reaper_diag|/proc/nvram/boardid|1
 # v3.1.7 -- the firewall table walker: binary + static witness rows + the
 # rc kick + rwatch 3g + diag 14g + the Rule Status tab + the MCP tool.
 # Missing = the Rule Status tab shows nothing and no red witness is ever logged.
@@ -126,6 +172,17 @@ usr/bin/reaper_fwsim|nothing listening|1
 # node onboarding and mesh heartbeats again.
 sbin/rc|AiMesh infrastructure (cfg_relist)|1
 bin/gkd|AiMesh onboarding active|1
+# 2026-10-15 -- AiMesh contracts (tests/test_aimesh_interop.py): webs_upgrade.sh
+# honours the mesh download-only "start_webs_upgrade 1" (stock ssl_webs_upgrade.sh);
+# webs_state_info uses Merlin's 4-field shape the stock pages split on "_"; the
+# firmware page uses the mesh path with a node paired; AiMesh.asp says AiMesh
+# starts once setup is done (x_Setting=0); httpd throttles the aimesh: onboarding
+# lines. Missing = a mesh upgrade reboots units mid-sequence, nodes report
+# "3.0.0.6.Reaper_v...", or a Reaper main router cannot manage its nodes' firmware.
+usr/sbin/webs_upgrade.sh|waiting for the AiMesh flash step|1
+usr/sbin/webs_update.sh|3006_102_8_Reaper_v|1
+www/AiMesh.asp|rams_setup_notice|1
+usr/sbin/httpd|(normal; the parent is still scored)|1
 # v2.7.3 -- signed update manifest (fail-closed verify in the check script)
 # + rwatch heals under the firewall fcntl lock via the rc applet.
 usr/sbin/webs_update.sh|manifest signature|1
@@ -163,7 +220,6 @@ www/Reaper_Firewall.asp|nicpt|1
 www/Reaper_Devices.asp|reserved_ip|1
 www/js/reaper_clock.js|visibilitychange|1
 www/Reaper_SecBanner.asp|data-now|1
-www/Advanced_Smart_Connect.asp|scWhereHint|1
 # v2.9.6 -- full-backup restore drains the TLS-buffered upload tail (the one
 # missing fputc that made every metal restore from v2.7.2 to v2.9.4 answer
 # "magic"); the card's message/pending divs are un-hidden with an explicit
@@ -299,8 +355,6 @@ sbin/rc|the check stays idle until IPv6 comes back|1
 # the installed menu tree (modules/, rule 20) must list the tab.
 www/Reaper_Failover.asp|reaper_dnshc_target|1
 www/Reaper_Failover.asp|start_apply.htm|1
-www/Advanced_System_Content.asp|!reaper_dnshc_target
-www/Advanced_System_Content.asp|!rdhcApply
 usr/sbin/httpd|Reaper_Failover.asp|1
 www/require/modules/menuTree.js|Reaper_Failover.asp|1
 # v3.1.1 -- the dashboard's rail clock keeps its crimson seconds. The span that
@@ -325,7 +379,23 @@ www/EN.dict|!Pass client addresses to the DNS server
 # itself at 100% because from there the router may already be writing). The
 # identifier proves the machinery shipped; without it the button silently goes
 # back to only hiding the overlay while the transfer runs on.
-www/Reaper_Firmware.asp|veilCancelable|1
+www/Reaper_Firmware.asp|!veilCancel(
+# 2026-10-04 (owner) -- no timed reveal of the firmware overlay's hatch: during
+# a download from the update server nothing can be dismissed (a Close there only
+# hid an update in progress); the hatch is a terminal-state Close or the upload
+# Cancel. The constant that armed the 25 s timer must stay gone.
+www/Reaper_Firmware.asp|!VEIL_ESCAPE_MS
+# 2026-10-04 (owner) -- Quagga is no longer built for the Reaper models (target.mak
+# QUAGGA=n): zebra/ripd shipped inert (quagga_enable default 0, no page sets it,
+# IPTV/VoIP WAN path only) with a vty password defaulting to "zebra" on every
+# interface. rc only knows this path when RTCONFIG_QUAGGA is compiled in.
+sbin/rc|!/etc/zebra.conf
+# 2026-10-04 -- chain-integrity invariant for the rules engine: apply.sh signs the
+# REAPER_FW* chains it built (md5 of `-S` into /tmp/reaper_fw/chainsig) and rwatch
+# 3f recomputes them; a two-tick mismatch is `rules-chain-drift`, healed by the
+# committed apply.sh under the lock, capped at two. Both halves live in rc.
+sbin/rc|chainsig|1
+sbin/rc|rules-chain-drift|1
 # v3.1.2 -- the dashboard's idle auto-logout must READ Administration > System >
 # "Logout after ..." and must never go back to a hardcoded constant. It shipped
 # from v1.4.7 to v3.1.1 as IDLE=900000 (15 min), so a router on the shipped
@@ -372,7 +442,7 @@ www/Main_ReaperDash.asp|function pollClientsDev|1
 sbin/rc|kernel has no '|1
 sbin/rc|probed alone in a scratch chain|1
 sbin/rc|ASUS anti-botnet blocklist|1
-sbin/rc|/tmp/reaper_nf_probe.rules|1
+sbin/rc|/tmp/reaper/reaper_nf_probe.rules|1
 usr/sbin/reaper_diag|kernel registry vs|1
 # v3.1.7 -- policy routing restores only a LIVE connmark code (a flow marked for
 # a code whose rule is gone is judged again instead of falling to the WAN), and
@@ -437,13 +507,1036 @@ usr/bin/reaper_fwsim|every candidate destination is in a destination set|1
 # the Dashboard's own rail marks the Dashboard item current.
 usr/sbin/httpd|dos_armed|1
 usr/bin/reaper_fwsim|DoS protection: the SECURITY guard is hooked on the WAN|1
-www/Main_ReaperDash.asp|href="/Main_ReaperDash.asp" class="on"|1
 # 2026-09-17 (field, re-cut) -- Policy Routing became FIRST-MATCH-WINS: a broad
 # source rule used to silently overwrite the verdict a specific ipset rule had
 # already set, because MARK does not terminate a chain and --set-xmark
 # overwrites. Every selector rule is now guarded on an unset mark. Rule Status
 # also names the stand-in addresses it walks with - a tester read one of them as
 # a real device on their network twice.
-sbin/rc|pbr_rule iptables -t mangle -A REAPER_PBR -m mark --mark 0x0/|1
-sbin/rc|pbr_rule ip6tables -t mangle -A REAPER_PBR -m mark --mark 0x0/|1
+# v3.3.4 (R07 second half): the selector rules target the NEW chain of their family ($C4/$C6), not the literal name.
+sbin/rc|pbr_rule iptables -t mangle -A $C4 -m mark --mark 0x0/|1
+sbin/rc|pbr_rule ip6tables -t mangle -A $C6 -m mark --mark 0x0/|1
 www/Reaper_Firewall.asp|wt_synth|1
+# v3.2.4 -- WireGuard source rules: the reply leg re-entered the tunnel. The
+# chain's connmark restore also ran on REPLY packets, so a reply got the flow's
+# code back and `lookup wgcN` (no LAN route under MULTILAN_CFG) sent it into
+# wgcN again. REAPER_PBR now opens with a REPLY-direction RETURN, and the walker
+# models --ctdir.
+sbin/rc|-m conntrack --ctdir REPLY -j RETURN|1
+usr/bin/reaper_fwsim|--ctdir|1
+# v3.2.8 -- static preamble puncturing: the rc applet (and its /sbin symlink,
+# which is what the rwatch tick and xstart run), the rwatch re-check, the
+# Settings-tab rows and the diag line. Nothing in stock ever set a pattern.
+sbin/rc|/tmp/reaper/reaper_punct.state|1
+sbin/reaper_punct|/tmp/reaper/reaper_punct.state|1
+sbin/rc|pidof reaper_punct|1
+www/Reaper_WiFiSettings.asp|@pslice|1
+www/Reaper_WiFiSettings.asp|restart_reaper_punct|1
+usr/sbin/httpd|_punct_st|1
+usr/sbin/reaper_diag|puncturing: setting=|1
+# v3.2.8 -- dynamic preamble puncturing: the controller (bin/rpunctd, started by rc
+# only while a radio's wlN_punct reads "dyn|..."), the applier's dynamic branch,
+# the rwatch crash backstop, the Settings rows, the Wireless Quality card, httpd's
+# state field and the diag line. Off unless a radio is set to Dynamic.
+bin/rpunctd|/tmp/reaper/reaper_punct.dyn.json|1
+bin/rpunctd|chanim_stats|1
+sbin/rc|rpunctd|1
+sbin/reaper_punct|/tmp/reaper/reaper_punct.dyn|1
+# v3.2.8 -- crawl 2026-09-26: the controller reconciles its belief with the applier's record
+# (F1); the front-chain narrowness comes from one header, FCNARROW_F is FORWARD's, emitted by
+# both generators in rc (F3); the Rule Status re-walk is a detached worker (F5).
+bin/rpunctd|no longer on the radio|1
+bin/rpunctd|not one - radio skipped|1
+sbin/rc|FCNARROW_F=|2
+usr/sbin/httpd|fwsim.run|1
+usr/lib/libshared.so|!wlcsm_bindfix
+sbin/rc|pidof rpunctd|1
+www/Reaper_WiFiSettings.asp|@pdyn|1
+www/Reaper_Wireless.asp|action=punct|1
+usr/sbin/httpd|_punct_dyn|1
+usr/sbin/reaper_diag|dynamic puncturing:|1
+# v3.2.8 -- rpunctd does no radio I/O while wlready != 1 (restart_wireless also stops
+# it first): GT-BE98 field report 2026-09-28, wl2 dongle died mid-restart_wireless.
+bin/rpunctd|radio reads paused|1
+# v3.2.8 -- hidden add-on anchors in the served menu tree (field: Skynet's installer
+# appends its tab after the stock firewall line, which Reaper had retired). The
+# retired stock lines stay as __HIDE__ entries so third-party installers find them.
+www/require/modules/menuTree.js|{url: "Advanced_Firewall_Content.asp", tabName: "__HIDE__"}|1
+www/require/modules/menuTree.js|{url: "Tools_Sysinfo.asp", tabName: "__HIDE__"}|1
+www/require/modules/menuTree.js|{url: "Advanced_FirmwareUpgrade_Content.asp", tabName: "__HIDE__"}|1
+www/require/modules/menuTree.js|{url: "Guest_network.asp", tabName: "__HIDE__"}|1
+# v3.2.8 -- wanduck line-switch hold-off (field: GT-BE98 fb + LAN-port WAN + USB tether
+# ping-ponged from boot; switch_wan_line restarts the line it leaves).
+sbin/rc|holding the next switch for up to|1
+# v3.2.8 -- CVE-2023-52340: net.ipv6.route.max_size raised to INT_MAX at boot (forged ICMPv6
+# Packet Too Big could fill the IPv6 route cache and stop neighbour discovery).
+sbin/rc|/proc/sys/net/ipv6/route/max_size|1
+# v3.2.8 -- firewall engine: the confirmed snapshot stages all eight lists before the
+# marker goes, and boot re-adopts unmarked snapshot files instead of blessing empty
+# nvram over them (backlog rfw-lastgood-snapshot).
+sbin/rc|lastgood marker was missing (an interrupted save)|1
+sbin/rc|the previous confirmed ruleset stays in place|1
+# v3.2.8 -- firewall engine: the three silent caps log, and the page refuses them at
+# save (backlog rfw-silent-caps).
+sbin/rc|the rest are IGNORED (split the group)|1
+sbin/rc|interfaces - the rest are IGNORED|1
+sbin/rc|more than %d zone policies|1
+www/Reaper_Firewall.asp|members.length>16|1
+# v3.2.8 -- diag v1.3.24: Wi-Fi drop settings (roaming, schedules, DFS, auth/PMF),
+# roamast/radar counts, RAM-store-beside-USB warning (backlog diag-wifi-drop-settings).
+# v3.2.8 -- Warden builds its chains with one iptables-restore --noflush payload per
+# stack, falling back to per-rule adds if a COMMIT is refused (backlog warden-restore-batch).
+sbin/rc|rebuild refused ($_e) - replaying rule by rule|1
+# v3.2.8 -- dashboard Internet card follows the PRIMARY WAN unit (field: a dual-WAN
+# fail-over showed Disconnected while the second line carried traffic).
+www/Main_ReaperDash.asp|function wanPick|1
+# v3.3.1 -- the shell's WAN pill (every page but the dashboard) follows it too.
+www/reaper_shell.asp|function wanUpPick|1
+# v3.3.1 -- minimum channel width on Auto (80 MHz floor on 5 and 6 GHz: "80/160" and
+# "80/160/320", each client uses what it supports within the picked width) + the radar
+# escape: the rc applet and its /sbin symlink, the lift record, the lift log line, the
+# rwatch backstop, httpd's state reader, the Settings row and the diag line.
+sbin/rc|minimum width could not be held|1
+sbin/rc|/tmp/reaper_bwfloor/escape|1
+sbin/rc|reaper_bwfloor is not running with a minimum width configured|1
+sbin/reaper_bwfloor|minimum width could not be held|1
+usr/sbin/httpd|/tmp/reaper_bwfloor/state|1
+www/Reaper_WiFiSettings.asp|floorStatus|1
+# v3.3.1 -- the floor's re-arm no longer restarts acsd2 when the radio already meets the
+# floor (metal 2026-10-01: the needless re-pick moved wl1 twice and dropped two clients).
+sbin/reaper_bwfloor|the channel picker takes it at its next restart|1
+# v3.3.1 -- receiver interference mitigation (wlN_rmit): the puncturing applier's second
+# pass and its state file, the rwatch backstop, httpd's result field, the Settings row
+# (posted on the live path, no wireless restart) and the diag line.
+sbin/reaper_punct|/tmp/reaper/reaper_wlmit.state|1
+sbin/rc|wl${_u}_rmit|1
+usr/sbin/httpd|_rmit_st|1
+www/Reaper_WiFiSettings.asp|mitStatus|1
+usr/sbin/reaper_diag|interference: mode=|1
+# v3.3.1 -- the dynamic puncturing confirmation scan also reads the neighbouring networks
+# and the PHY figures (the scan log line, the JSON detail the Wireless Quality card lists).
+bin/rpunctd|network(s) heard|1
+bin/rpunctd|scan_detail|1
+www/Reaper_Wireless.asp|scan_detail|1
+usr/sbin/reaper_diag|min width: on|1
+usr/sbin/reaper_diag|roamast kicks|1
+usr/sbin/reaper_diag|SDN access-time schedules on|1
+usr/sbin/reaper_diag|durable store is RAM although a USB disk is mounted|1
+# CVE delta 2026-09-29 -- pppd CVE-2026-85495 (LCP NAK overflow, ppp 2.5.4 port): each LCP
+# option type is processed once; the duplicate warning is the fix's only literal.
+usr/sbin/pppd|LCP: ignoring duplicate configuration option(s)|1
+# CVE delta 2026-09-29 -- Tor 0.4.9.13 (ten TROVE fixes); a stale configure would keep 0.4.9.12.
+usr/sbin/Tor|0.4.9.13|1
+# v3.3.1 -- the AiMesh node card on a box that is not routing (GT-BE19000 tester,
+# Access Point mode). The stock card counts networkmap rows whose isOnline is set,
+# and networkmap has no leases or conntrack to set it from on a bridging box, so
+# every node read 0. httpd now names the node each device hangs off ("via") and the
+# topology page overlays Reaper's store after every client-list rebuild.
+www/aimesh/aimesh_topology.html|function reaper_gen_client_list(){|1
+www/AiMesh.asp|var REAPER_HTTPID =|1
+usr/sbin/httpd|"node":%d,"via":"%s"}|1
+# v3.3.1 r6 -- dynamic puncturing gains two passive inputs: the radio's own PHY figures as a
+# second trigger that may only ask for a confirmation scan, and the station table (read with
+# -noreset: a plain read clears the counters bsd steers on) for a tie-breaker and a post-change
+# proof. A scan that loses a client stops scanning on that radio.
+bin/rpunctd|bs_data -noreset|1
+bin/rpunctd|PHY impairment above|1
+bin/rpunctd|client evidence|1
+bin/rpunctd|a client left during the confirmation scan|1
+# v3.3.1 r7 -- the PHY noise term is measured above the radio's own baseline (a 320 MHz channel
+# rests near -79 dBm); station windows are summed across the table's frequent resets.
+bin/rpunctd|baseline %ld dBm|1
+bin/rpunctd|MHz per packet|1
+# v3.3.2 -- a flash releases the USB volumes before it ejects them (RT-BE86U field report:
+# every flash path ran ejusb first, Entware and a dnsmasq logging to /opt kept the SSD busy
+# for ~40 s, the box flashed with a lazily-detached dirty volume, and the next boot mounted
+# it after dnsmasq had already failed). The applet must be in rc, httpd and the webs flash
+# script must call it before ejusb, watchdog must honour its flag, and a boot must clear the
+# rc_service it found pending (the same boot refused every notify_rc: rc_last:restart_upgrade).
+sbin/rc|flash: releasing USB volumes before the eject|1
+sbin/rc|/tmp/reaper/.reaper_usb_release|1
+usr/sbin/httpd|/sbin/reaper_usb_release|1
+usr/sbin/webs_upgrade.sh|/sbin/reaper_usb_release|1
+# v3.3.3 -- a GUI reboot raced the same way (services-stop in the background, unmount seconds
+# later): init's reboot/halt path runs the release first and logs this line.
+sbin/rc|reboot: releasing USB volumes before the unmount|1
+# v3.3.3 -- swap on the volume is the one holder a process sweep cannot clear; the release
+# turns it off last. And the soft-lockup panic (held at 0 since v3.3.3) is put back by the
+# watchdog once the box has settled, dropped again by rc/usb.c around every mount.
+sbin/rc|swapoff %s FAILED|1
+sbin/rc|soft-lockup panic armed|1
+sbin/rc|/tmp/reaper/.reaper_usb_mount_at|1
+# v3.3.3 -- the USB mount watchdog (rc/reaper_usbmon.c): a lost mount event is re-sent (never
+# for a partition mounted once since boot), an aborted flash gives the volumes back, a
+# disk-less bus on a box with a post-mount script is re-enumerated once.
+sbin/rc|sending its mount event again|1
+sbin/rc|/tmp/reaper/.reaper_usb_mounted_|1
+sbin/rc|never happened - giving them back|1
+sbin/rc|UNTESTED recovery|1
+# v3.3.2 -- the first-boot box (GT-BE98 field report): Chrome's saved-login autofill set the
+# Wi-Fi key to the router password (same form), the login name came prepopulated, and the
+# apply bounced back to the page after a few seconds instead of showing the reboot. The Wi-Fi
+# fields now sit outside the form, nothing is prepopulated, the login name is lowercase-only,
+# and the apply ends in the shell's REBOOTING overlay with the model's reboot time.
+www/Reaper_WiFiSetup.asp|id="reboot_overlay"|1
+www/Reaper_WiFiSetup.asp|autocomplete="new-password"|2
+www/Reaper_WiFiSetup.asp|oninput="lowerLogin(this)"|1
+www/Reaper_WiFiSetup.asp|!name="action_wait" value="0"
+www/Reaper_WiFiSetup.asp|!value="<% nvram_get("http_username"); %>"
+www/EN.dict|Apply & Reboot|1
+# v3.3.3 -- every stock client view on a box that is not routing (the Network page cards
+# and Clients tab, Parental Controls, the QoS pickers): the get_clientlist hook merges
+# Reaper's device store itself, with the network each device is on, instead of one
+# overlay per page (GT-BE19000 tester, Access Point mode).
+usr/sbin/httpd|"sdn":%d,"node":%d,"via":"%s"}|1
+usr/sbin/httpd|%s_ssid|1
+# v3.3.3 -- the USB boot chain (RT-BE86U field 2026-10-02, Entware/amtm on a USB SSD):
+# the pre-mount cap stops the whole process group (libshared, run_custom_script_bounded),
+# an EBUSY mount is waited for (rc, mount_r), a dnsmasq log-facility into a missing
+# directory is dropped instead of killing the resolver (rc, start_dnsmasq + watchdog),
+# and a soft lockup logs instead of panicking into a reboot loop (rc, init sysctl).
+usr/lib/libshared.so|did not finish in %d s - stopped it and everything it started|1
+sbin/rc|is busy (a disk check still running?)|1
+sbin/rc|/tmp/reaper/.reaper_dnsmasq_logdrop|1
+sbin/rc|/proc/sys/kernel/softlockup_panic|1
+# v3.3.3 -- br0 dnsmasq exited on "failed to send packet: Network is unreachable" (RT-BE96U
+# metal, every boot + WAN re-home: auto-WAN-port swaps br0's address, the IP_PKTINFO source is
+# no longer local, the kernel answers ENETUNREACH, the ASUS exit(0) fires) and the LAN had no
+# DNS/DHCP for ~20 s. Transient routing errnos now log and drop the one reply (dnsmasq,
+# send_from); every other errno keeps the exit.
+usr/sbin/dnsmasq|transient, reply dropped, not exiting|1
+# v3.3.3 -- dashboard Security Posture card (field "cut off in Safari", 2026-10-03): the
+# two-column grid used 1fr tracks, which floor at a row min-content, so the Wi-Fi
+# Encryption label pinned the first column and .card{overflow:hidden} cut the second
+# column tags under ~1500 px and on phones. The shipped page must carry the shrinkable
+# tracks and the 15 tooltip-enabled labels, and never the old 1fr pair.
+www/Main_ReaperDash.asp|repeat(2,minmax(0,1fr))|1
+www/Main_ReaperDash.asp|class="sub2 rtip"|15
+www/Main_ReaperDash.asp|!grid-template-columns:1fr 1fr
+# v3.3.3 -- the stock boot-time slabdbg() dump (closed rc/broadcom.o: meminfo, free,
+# slabinfo, bpm status, ~230 "dbg:" lines after start_services) sits behind the stock
+# dbg nvram flag; the gate logs one line when it is enabled, which is this marker.
+sbin/rc|slabdbg: nvram dbg=1, dumping memory statistics|1
+# v3.3.3 -- five efficiency fixes from the 2026-08-28 performance audit (2026-10-03):
+# the diag collector runs detached and the page starts/polls/fetches (P2), the Warden
+# stats poll reads one ipset header listing instead of forking per set (P13), the
+# Warden cache replay skips sets that are already populated (P9), rtrafd runs tmctl
+# and ping by fork+exec with a poll() deadline instead of a four-process shell wrapper,
+# and the fqdn set cache is rewritten to /jffs only when it changed (P14). The bondst
+# and clientlist nvram write guards (P35a / P30) leave no string to pin.
+usr/sbin/httpd|diag collector started detached|1
+www/Reaper_Diag.asp|'&action='+action|1
+www/Reaper_Diag.asp|req('status', 15000|1
+www/Reaper_Diag.asp|!x.timeout=180000
+sbin/rc|# stats: one ipset -t list for every set|1
+sbin/rc|already populated, skipped|1
+bin/rtrafd|did not answer in|1
+sbin/rc|# fqdn cache: rewrite only when changed|1
+www/Reaper_WiFiSettings.asp|.modal.anchor{|1
+usr/sbin/reaper_diag|hidden under a later mount|1
+# 2026-10-03 -- rpunctd: a differing chanspec read is held until the next read agrees (a
+# scan / background-DFS read reset the inventory + baseline ~6x a day); the held-read line:
+bin/rpunctd|waiting for a second read before monitoring afresh|1
+sbin/rc|retired setting has been removed from nvram|1
+usr/sbin/httpd|svystart|1
+www/Reaper_Survey.asp|svydata|1
+www/require/modules/menuTree.js|Reaper_Survey.asp|1
+usr/sbin/httpd|advanced_wireless_survey.asp|1
+usr/sbin/httpd|escanresults%s%s 2>&1|1
+www/Reaper_Survey.asp|svyradios|1
+www/Reaper_Survey.asp|r.home|1
+usr/sbin/httpd|wl -i %s dfs_status 2>/dev/null|1
+sbin/rc|tail -300 /tmp/syslog.log|1
+sbin/rc|DNS Health Check HOLD|1
+sbin/rc|!DTIM interval set to 1
+sbin/rc|slewed: the clock was already within a second|1
+www/Reaper_Survey.asp|chcards|1
+usr/sbin/reaper_diag|for _r in /jffs/syslog.log-1 /tmp/syslog.log-1|1
+sbin/rc|REAPER_PBR_N|1
+# v3.3.4 -- Flow Explorer destination names: the passive DNS name map (rdnsmapd + the shared
+# mmap table httpd probes in place) and the page that renders name over address.
+bin/rdnsmapd|RDM2|1
+usr/sbin/httpd|/tmp/reaper/dnsmap|1
+www/Reaper_Conn.asp|srvn|1
+sbin/rc|rdnsmapd|1
+# v3.3.4 -- the one-shot reverse backfill when Names is switched back on (PTR queries to dnsmasq; httpd flags the toggle).
+bin/rdnsmapd|in-addr|1
+usr/sbin/httpd|dnsmap.backfill|1
+# v3.3.4 -- Site Survey "Scan with channel move" (owner 2026-10-05): the two-step button, and the worker's
+# non-radar chanspec pick (36/80 or 149/80 from what the driver offers).
+www/Reaper_Survey.asp|svymove|1
+usr/sbin/httpd|chanspecs -b 5 -w 80|1
+usr/sbin/reaper_diag|hexdump -s 16 -n 8|1
+www/Reaper_Conn.asp|dside|1
+www/Reaper_Conn.asp|glideDetail|1
+usr/sbin/httpd|/svyback|1
+usr/sbin/httpd|through a background radar check|1
+usr/sbin/httpd|did not leave %.40s|1
+# v3.3.5 -- rtrafd paces its conntrack pass by the pass's own cost and the health probe
+# counts inside that pass (field: a LAN DHT crawler's ~10.7k entries cost a whole core).
+bin/rtrafd|to stay near|1
+# v3.3.6 -- a known WAN port is never bridged into the LAN again: stock auto-WAN-port re-bridged the
+# ISP port into br0 at every boot and link loss (owner, 2026-10-06); rc pins it, _eval refuses it.
+sbin/rc|pinned: it stays out of the LAN bridge|1
+usr/lib/libshared.so|refused to bridge the pinned WAN port|1
+# v3.4.2 -- the factory default is a fixed WAN port (Auto opt-in); on that path lldpd never binds a
+# WAN interface (owner, 2026-10-12). The default itself is pinned by test_factory_defaults_off.py.
+sbin/rc|skip binding the fixed WAN|1
+www/Reaper_Survey.asp|r.dfsl|1
+www/Reaper_WANPorts.asp|start_reaper_wanredetect|1
+www/Reaper_WANPorts.asp|is_special_lan(NV.wans_lanport)|1
+www/require/modules/menuTree.js|Reaper_WANPorts.asp|1
+www/require/modules/menuTree.js|!"Advanced_WANPort_Content.asp"
+usr/sbin/httpd|advanced_wanport_content.asp|1
+usr/sbin/httpd|Enterprise|1
+www/Reaper_WANPorts.asp|!var ETH_RAW = '
+www/Reaper_WANPorts.asp|function U(s)|1
+# audit 2026-10-07 (G1, G3): the pre-auth Instant Guard guest-enable and CTA rows and the
+# WPAD/proxy-autoconfig rows are compiled out of httpd; (G6) the WAN Ports page reads every
+# nvram value URL-encoded, so no raw nvram_get literal is left in it
+usr/sbin/httpd|!enable_ig_guest.cgi*
+usr/sbin/httpd|!get_cta_info.cgi*
+usr/sbin/httpd|!wpad.dat
+www/Reaper_WANPorts.asp|!'<% nvram_get(
+# IPv6 remediation 2026-10-07, phase 1 (audits/IPV6-COVERAGE-2026-10-07.md A4 A5 A7 A9 A10 A11):
+# the Gatekeeper captive redirect and the rules-engine intercepts have ip6tables twins, the
+# watchdog probes the v6 first hop and internet, SNMP binds udp6, DHCPv6 lease events file
+# the announced name, the Warden page marks IPv4-only feeds
+sbin/rc|ip6tables -t nat -N REAPER_GKN|1
+sbin/rc|REDIRECT --to-ports 80|1
+sbin/rc|ip6tables -t nat -N REAPER_FWN|1
+sbin/rc|-j DNAT --to-destination [%s]:%s|1
+sbin/rc|wan6-internet|1
+sbin/rc|udp6:[%s]:161|1
+sbin/rc|DNSMASQ_MAC|1
+bin/gkd|ip6tables -t nat -nL REAPER_GKN|1
+www/Reaper_Firewall.asp|ic_ip6|1
+www/Reaper_Warden.asp|v4only|3
+# IPv6 remediation phase 2 (A1 A2): the Flow Explorer lists IPv6 flows from conntrack
+# ("fam":6 rows, [addr]:port endpoints) and the passive DNS map keys every entry by a
+# 16-byte address (RDM2 layout; the backfill walks ip6.arpa and skips the router's own
+# IPv6 prefixes read from /proc/net/if_inet6)
+bin/rdnsmapd|/proc/net/if_inet6|1
+usr/sbin/httpd|"fam":6|1
+www/Reaper_Conn.asp|epStr|1
+# IPv6 remediation phase 3 (A3): the Devices page shows each device's IPv6 address
+# (neighbour cache + DHCPv6 lease bridge) and pins DHCPv6 reservations as host suffixes
+# in /jffs/reaper/dhcp6_static, which dnsmasq receives as dhcp-host=<MAC>,[::suffix]
+usr/sbin/httpd|"v6only":|1
+usr/sbin/httpd|/jffs/reaper/dhcp6_static|1
+sbin/rc|dhcp-host=%s,[%s]|1
+www/Reaper_Devices.asp|data-pin6|1
+# IPv6 remediation phases 4-5 (A6 A8): rtrafd labels, probes (ICMPv6) and counts IPv6-only
+# devices; rmcpd listens on the LAN's IPv6 address with an ip6tables fence twin and the
+# arming reply / Advisor page carry the IPv6 endpoint
+bin/rtrafd|"ip6":"%s"|1
+bin/rtrafd|ip6="%s"|1
+bin/rmcpd|ip6tables|1|MCP
+bin/rmcpd|IPv6 listener|1|MCP
+usr/sbin/httpd|"url6":|1|MCP
+www/Reaper_Advisor.asp|epUrl6|1|MCP
+# dual-stack review 2026-10-08 (rc/rdnshc.c + rc/reaper_fw.c): both faces of the watched resolver are probed,
+# a dead face is moved behind the others on its own, the DNS intercept gate closes per address family
+sbin/rc|stopped answering over |1
+sbin/rc|intercept gate CLOSED ($F)|1
+sbin/rc|/tmp/reaper/rdnshc.down4|1
+# 2026-10-08 reverse DNS across networks (rc/sdn.c): rev-server emitters + the restart on a network-set change
+sbin/rc|rev-server=%s,%s|1
+sbin/rc|so each one can name the others' devices|1
+# 2026-10-08 IPv6 device names (rc/rv6names.c + rc/sdn.c): the daemon and the per-bridge addn-hosts emitter (hostsdir= is refused by this -DNO_INOTIFY dnsmasq)
+sbin/rc|IPv6 device names on - |1
+sbin/rc|addn-hosts=%s|1
+# 2026-10-09 Dashboard Internet card IPv6 goes live: the poll re-reads wan_ipv6_network() and repaints through paintV6()
+www/Main_ReaperDash.asp|function paintV6|1
+www/Main_ReaperDash.asp|%3bwan_ipv6_network()|1
+# 2026-10-09 walker v1.10: stand-ins skip addresses devices hold (ARP, leases, reservations)
+usr/bin/reaper_fwsim|is in use on the LAN - LAN rows witness from|1
+usr/bin/reaper_fwsim|/var/lib/misc|1
+# 2026-10-09 audit V3: /tmp hardening - the kernel protections set at boot, the shared
+# helper (private directories, fresh files, script check), the private-directory guard
+# of the update check, and the diag's report on all of it (diag pins: v1.3.38 above)
+sbin/rc|/proc/sys/fs/protected_regular|1
+sbin/rc|/proc/sys/fs/protected_symlinks|1
+usr/lib/libshared.so|was not a private directory|1
+usr/lib/libshared.so|reaper: refusing to run %s|1
+usr/sbin/webs_update.sh|/tmp/reaper is not a private directory|1
+usr/sbin/webs_upgrade.sh|not owned by root - not flashing|1
+usr/sbin/reaper_diag|-- /tmp hardening --|1
+# 2026-10-09 audit V11 (owner): the app network installer is not shipped; rc refuses its actions
+sbin/rc|the app network installer is not part of this firmware|1
+usr/sbin/reaper_diag|dynamic settings: preset=|1
+# v3.3.9 -- hardware QoS never shapes a WAN VLAN's parent when that port also carries the LAN
+# (GT-BE98 family: vlan4094 on the eth1 switch trunk). rc refuses to arm and logs; the QoS page
+# shows RQOS_125 next to the engine choice.
+sbin/rc|also carries the LAN ports|1
+sbin/rc|hardware QoS not started: no port to shape|1
+www/Reaper_QoS.asp|rqos_trunknote|1
+# v3.4.0 -- navigation rail: every menu draws its own glyph in the shell, the same one the
+# dashboard rail draws (Gatekeeper, Warden, AI Advisor, System Info and IPv6 fell to the
+# circle-dot; Traffic Manager drew Traffic Analyzer's chart). Guard: tests/test_nav_icons.py.
+www/reaper/menu.js|menu_ReaperGK:|1
+www/reaper/menu.js|menu_Sysinfo:|1
+www/reaper/menu.js|menu_IPv6:|1
+# 2026-10-10 -- the dashboard's LAN name resolution check: rc/rdnshc.c asks the path LAN devices
+# resolve through once a minute and publishes reaper_landns_state; the dashboard turns the Internet
+# status amber and explains it in a tooltip; the DNS Failover page carries the switch. Guard:
+# tests/test_landns_check.py.
+sbin/rc|LAN name resolution FAILING|1
+sbin/rc|reaper_landns_state|1
+www/Main_ReaperDash.asp|reaper_landns_state|2
+www/Reaper_Failover.asp|reaper_landns_enable|2
+usr/sbin/reaper_diag|nvram get reaper_landns_state|1
+# 2026-10-10 -- Firewall / Policy Routing list saves travel in a POST body: as a GET query a list the
+# CGI accepts overran httpd's 10000-byte request line (400, handler never ran, the page kept a row
+# the router never stored). Guard: tests/test_fw_list_post.py.
+www/Reaper_Firewall.asp|function fwpost(q,body,cb){|1
+www/Reaper_VPNRouting.asp|function pbrcgi(q,cb,body){|1
+# 2026-10-10 -- cru adopts a crontab orphaned by a login-name change (crond skips a crontab whose
+# name is not in /etc/passwd; a rename without a reboot left every boot-registered job dead).
+# Guard: tests/test_cru_adopt.py.
+usr/sbin/cru|left under a login name that no longer exists|1
+# 2026-10-11 -- Samba 4 account enrollment ran before /var/lib/samba/private existed; smbpasswd
+# (secrets_init first) returned 1 silently, so the first Samba start of a boot left an empty passdb and
+# every SMB login refused. Dirs now precede enrollment and a failure is logged by account name.
+# Guard: tests/test_samba_enroll_dirs.py.
+sbin/rc|account enrollment failed for %s (smbpasswd returned an error)|1
+# 2026-10-11 -- the Internet status tooltip (amber LAN-names state, readings, colours) in the shell
+# header too, so every framed page matches the dashboard; the shared functions are verbatim copies.
+# Guard: tests/test_landns_check.py.
+www/reaper_shell.asp|reaper_landns_state|2
+www/reaper_shell.asp|function tipFill(){|1
+www/reaper_shell.asp|function paintWan(p){|1
+# v3.4.1 -- first boot writes the DST rule (time_zone_dstoff) from tz_db.json; the stock
+# default M3.2.0/2,M10.2.0/2 matches no zone (field 2026-10-11, US clock an hour behind).
+www/Main_Password.asp|/ajax/tz_db.json|1
+www/Main_Password.asp|tz_db[timeZoneObj.time_zone]|1
+# 2026-10-12 -- QIS for AiMesh only. QIS_default.cgi lands on "/" (never the stock wizard); wanduck
+# runs no first-use captive portal (x_Setting==0 stays only for AiMesh node discovery); the Reaper
+# palette is appended to the wizard's own stylesheet; the LAN-subnet landing goes to "/".
+# Guards: tests/test_qis_default_retired.py, test_wanduck_firstuse.py, test_qis_theme_append.py,
+# reaper_static_checks.py qis-no-entry.
+usr/sbin/httpd|QIS_default.cgi retired|1
+sbin/rc|reaper: no first-use captive|1
+www/mobile/css/qis.css|reaper_qis|1
+www/error_page.htm|new_lan_ip)+"/"|1
+www/updateSubnet.htm|new_lan_ip)+"/"|1
+www/error_page.htm|!QIS_wizard.htm
+www/updateSubnet.htm|!QIS_wizard.htm
+# 2026-10-12 (owner review of the themed add-node window): the search page carries its own progressive
+# wording (RAMS_1/2) and the prerequisites box (RAMS_3..9), 9 keys x 25 packs; the title column is centred.
+www/mobile/pages/amassearch_page.html|rqs_box|1
+www/mobile/pages/amassearch_page.html|rqs_list|1
+www/mobile/css/qis.css|.rqs_box{|1
+# 2026-10-13 -- the Bandwidth tab (Cloudflare's speed test, test rungs r9-r12 only) was removed the same day;
+# nothing of it ships: no page, no tab, no reaper_bw.cgi, no RBW_ strings, no reaper_bwtest / reaper_bwprobe.
+usr/sbin/httpd|!reaper_bw.cgi
+usr/sbin/httpd|!/usr/sbin/reaper_bwprobe
+www/require/modules/menuTree.js|!Reaper_Bandwidth.asp
+www/EN.dict|!Router vs client device
+# 2026-10-14 -- the radio readers (rpunctd, reaper_bwfloor, rchqd) are stopped before every rc
+# path that tears the radios down (net / allnet / net_and_phy / wps_enr, restart_wireless) and
+# started once wlready is 1; an armed chanim window is waited out. Owner RT-BE96U: restart_net
+# with them running trapped the wl1 + wl2 dongle firmware twice (two images), dead until a power
+# cycle. The predicate they share lives in libshared; each reader links it.
+sbin/rc|radio readers stopped for a wireless teardown|1
+usr/lib/libshared.so|reaper_wl_tearing_down|1
+bin/rpunctd|reaper_wl_quiet|1
+# the diag names a dead dongle (7) and counts the traps (19b)
+usr/sbin/reaper_diag|driver has no adapter|1
+usr/sbin/reaper_diag|dongle traps      :|1
+# 2026-10-15 -- P3 batch (tests/test_nasapps_settle.py, test_samba_wan_restart.py,
+# test_qos_card_chips.py, test_landns_tooltip_text.py): USB hotplug restarts the NAS apps once
+# per mount wave (rc stamps /tmp/reaper/nasapps.settle); the QoS cards' chip scheme (two
+# colours only - HW QoS's "Upload only" amber; Classful's optional download cap); the LAN name
+# check tooltip no longer points at a System Log that holds nothing. The Samba-on-WAN gate leaves no unique literal
+# in rc (its test covers it in source).
+sbin/rc|/tmp/reaper/nasapps.settle|1
+www/reaper/rp.css|rgba(236,231,219,.22)|1
+# Two-colour chips, token-free: the www install rewrites <#TOKEN#> to a numeric pack index
+# (<#RQOS_73#> stages as <#5300#>, and the number moves when the packs change), so a marker must
+# never quote a token. An uncoloured chip stages ending in `,''] - the pre-fix page had 4.
+www/Reaper_QoS.asp|!`,'']
+www/Reaper_QoS.asp|`,'warn']|4
+www/EN.dict|Optional download cap|1
+www/EN.dict|Problems and recoveries are recorded in the System Log.|1
+www/EN.dict|!Checked by the router once a minute. Details: System Log.
+# 2026-10-15 -- hostapd sends no AUTHORIZED update back for a disconnect the driver reported
+# (tests/test_hostapd_driver_ind.py): the "WLC_SCB_DEAUTHORIZE error (-30)" pairs from dhd.ko.
+usr/sbin/hostapd|reaper: driver-indicated disconnect of|1
+# 2026-10-15 -- hostapd logs "RADIUS: starting accounting session" only with an accounting server
+# configured (tests/test_hostapd_accounting_log.py); otherwise a debug line, out of syslog.
+usr/sbin/hostapd|local session %016llX started (no accounting server)|1
+# 2026-10-15 -- operation-mode step page (rung B/C, tests/test_mode_setup.py): Access Point, Media
+# Bridge and the return to Router run Reaper_ModeSetup.asp (the stock wizard's keys, Reaper's survey
+# engine for the parent); the MLO page's Get started goes to the Wireless console. Missing = a mode
+# change leaves the shell for the stock ASUS wizard again.
+www/Reaper_ModeSetup.asp|reaper_wifi.cgi?action=svystart&unit=a|1
+www/Advanced_OperationMode_Content.asp|/Reaper_ModeSetup.asp?mode=mb|1
+www/Advanced_OperationMode_Content.asp|!QIS_wizard.htm?flag=lanip
+www/SDN/mlo.js|!QIS_wizard.htm?flag=mlo
+# 2026-10-16 -- the AiMesh join of a factory box (tests/test_aimesh_wps_enrollee.py): Reaper ships
+# WPS off, and generate_wl_para nested stock's AiMesh-enrollee wps_mode arm inside wps_enable=="1",
+# so a factory Reaper box could not take part in the join's WPS step (field: ZenWiFi BQ16 node under
+# a GT-BE98 main router with MLO on). Missing = a factory Reaper box fails to join a mesh again.
+sbin/rc|WPS on for the AiMesh join of this factory box|1
+# 2026-10-16 -- channels fitted to the AiMesh nodes (tests/test_mesh_chanfit.py): rc/reaper_meshchan.c
+# reads what every node's radios can do from the AiMesh controller's own lists, keeps the result in
+# /jffs, excludes what a node cannot follow, and the minimum-width daemon re-picks ONE radio parked
+# outside that set (field: a BE96U's 5 GHz sat on 48/80, unusable by its AX92U node, for two hours);
+# diag v1.3.40 reports it. Missing = a mesh can lose its 5 GHz backhaul again without a word.
+sbin/rc|channels fitted to|1
+sbin/rc|a channel none of the AiMesh nodes can use|1
+sbin/rc|is a DFS channel after the existing exclusions|1
+usr/sbin/httpd|_chanfit_st|1
+www/Reaper_WiFiSettings.asp|key:"amas_chanfit"|1
+usr/sbin/reaper_diag|node fit:|1
+# 2026-10-17 -- Traffic Analyzer live latency/loss come from a 60 s window of probe results (not the open
+# 5-min bucket, whose fallback read a just-zeroed slot), a ping that cannot start is counted and logged,
+# and the page keys both tiles on a configured target (owner: tiles missing until the probe IP was re-applied).
+bin/rtrafd|latency probe could not start ping|1
+bin/rtrafd|"probe":{"set":%d|1
+www/Reaper_Traffic.asp|if(pr.set)|1
+# 2026-10-18 Traffic Analyzer guided page: the collector-off card, the honest pill (no data = "{}"), the Settings drawer
+www/Reaper_Traffic.asp|function collectorGate(){|1
+www/Reaper_Traffic.asp|setNoData(!d.wan)|2
+www/Reaper_Traffic.asp|id="setfly"|1
+# 2026-10-18 Firmware page: mesh nodes are compared by version key (verKey), not the display string - every node read Different version
+www/Reaper_Firmware.asp|function verKey(s){|1
+# 2026-10-18 -- node fit: a node that does the width needs the WHOLE channel (field: the owner AX92U lost 116-128
+# to radar lock-outs on a 30 min cycle and could not hold 100/160, which the 80 MHz cap rated usable); a channel a
+# node stops listing is held out 6 h after the last drop (/jffs/reaper_meshchan/nop.txt); flag 4 = a cleared DFS channel.
+sbin/rc|held out of the plan|1
+sbin/rc|/jffs/reaper_meshchan/nop.txt|1
+# 2026-10-19 security review (rwatch 3h): drift of /jffs scripts, configs, SSH keys, add-on files, cron and the
+# exposure settings against a baseline the operator accepted; advisory (one log line per change set, amber bar on
+# the dashboard, card on Firewall > Status), served by reaper_watch.cgi, baseline written with rjf_set.
+sbin/rc|$RV_TMP/review.json.tmp|1
+sbin/rc|security review: $_rn change(s) since the accepted baseline|1
+usr/sbin/httpd|reaper_watch.cgi|1
+usr/sbin/httpd|"rwatch":%d,"armed":%d,"error":"no report yet"|1
+usr/sbin/httpd|/jffs/reaper/review/baseline|1
+www/Reaper_Firewall.asp|/reaper_watch.cgi?|1
+www/Main_ReaperDash.asp|/reaper_watch.cgi?action=status|1
+# 2026-10-19 Warden threat domains: URLhaus/ThreatFox hostfiles -> address=/host/ lines in /tmp/rwarden/dns.conf,
+# included by every dnsmasq instance (conf-file=, main + SDN, only when the file exists), restart only on change,
+# per-feed keep-last-good, exemptions in /jffs/rwarden/dnsallow; stats carry dns/dns_n/dns_upd/dns_live.
+sbin/rc|/tmp/rwarden/dns.conf|2
+sbin/rc|rw_dexempt() {|1
+sbin/rc|threat domains: $DL loaded|1
+sbin/rc|service restart_dnsmasq|1
+usr/sbin/httpd|rwarden_dnsallow|1
+www/Reaper_Dreadwatch.asp|fd_basics|1
+www/Reaper_Warden.asp|!fd_urlhaus
+# 2026-10-19 login watch (rwatch 3h) + IPv6 SSH guard (rc/firewall.c): failed-login bursts per source from the
+# syslog cursor into the review card and the dashboard bar; the WAN-SSH IPv6 accept is preceded at both sites
+# by an xt_recent per-/64 limiter (5 new connections per 60 s, --update keeps a flood blocked).
+sbin/rc|_rv_auth() {|1
+sbin/rc|security review: $_n failed $_svc logins from $_ip|1
+sbin/rc|--name rw_ssh6 --mask ffff:ffff:ffff:ffff:: --update --seconds 60 --hitcount 5|1
+www/Reaper_Firewall.asp|rv_nlist|1
+www/Main_ReaperDash.asp|notices_n|1
+# 2026-10-19 Security Review posture row (Main_ReaperDash.asp paintReview: Disabled / No baseline amber, Baseline
+# green, Review red, from the cached report) + diag v1.3.43 review/threat-domain state lines and findings.
+www/Main_ReaperDash.asp|s_rv_tag|1
+www/Main_ReaperDash.asp|function paintReview(){|1
+usr/sbin/reaper_diag|security review   :|2
+usr/sbin/reaper_diag|threat domains    :|1
+# 2026-10-20 security review remediation: the session cookie carries SameSite=Lax from both
+# open emitters (httpd.c send_token_headers, web.c login_cgi); rdnsmapd ignores LAN-forged
+# replies (and says so once per ten minutes); Gatekeeper's quarantine sends a held device's
+# DNS to the sinkhole instance on port 5300, started by apply.sh from /tmp/gk/sink.conf.
+usr/sbin/httpd|SameSite=Lax|1
+bin/rdnsmapd|DNS replies ignored: a LAN source|1
+sbin/rc|/tmp/gk/sink.conf|1
+sbin/rc|--to-ports 5300|1
+sbin/rc|address=/#/|1
+bin/gkd|the DNS sinkhole for held devices is not running|1
+# 2026-10-20 reviewer feedback. Dreadwatch: dnsmasq knows reaper-nx= / reaper-hitlog=, rc generates the
+# counted list and the hit collector, httpd serves dns_status / dns_test, the page exists. Security
+# Review: the rules engine in the watchdog script, the accept log and per-item accept in httpd, the
+# card's per-row actions. WAN chart: rtrafd publishes each probe result, the page has a right axis.
+usr/sbin/dnsmasq|reaper-hitlog|1
+usr/sbin/dnsmasq|bad --reaper-nx: /domain/ only|1
+sbin/rc|reaper-nx=/|1
+sbin/rc|Dreadwatch hit collector|1
+sbin/rc|/tmp/dreadwatch/dns.hits|1
+usr/sbin/httpd|sh /tmp/rwarden/dns.sh stats|1
+www/Reaper_Dreadwatch.asp|dwStats|1
+sbin/rc|RV_RULES=/jffs/reaper/review/rules|1
+usr/sbin/httpd|/jffs/reaper/review/accept.log|1
+www/Reaper_Firewall.asp|function rvRulesRender(){|1
+www/Reaper_Firewall.asp|id="rv_rtbl"|1
+bin/rtrafd|last_us|1
+www/Reaper_Traffic.asp|raxis|1
+www/Reaper_Traffic.asp|latchart|1
+# 2026-10-20 the abuse.ch feed hosts (Fastly anycast, inside the USA country list) are seeded once into
+# the Warden whitelist beside www.ipdeny.com, so no feed, country or ban blocks the router's own lists.
+sbin/rc|151.101.2.49 151.101.66.49 151.101.130.49 151.101.194.49|1
+sbin/rc|/jffs/rwarden/.seed_abusech|1
+# 2026-10-20 r3 metal (the first diag of the reviewer-feedback build). The Gatekeeper sinkhole runs as
+# /tmp/gk/gksink, a symlink exec'd by that name, so rc's name-based dnsmasq restart no longer kills it;
+# rdnsmapd trusts the router's own upstream resolvers (the servers-file) - the owner's AdGuard on a VLAN,
+# reached through the router, was logged as forged; reaper_diag v1.3.44 guards the Dreadwatch pending count.
+sbin/rc|/tmp/gk/gksink|1
+bin/gkd|/tmp/gk/gksink|1
+bin/rdnsmapd|servers-file=|1
+bin/rdnsmapd|!(forged)
+# 2026-10-20 field (RT-BE88U): files written before v3.3.8's umask fix kept 0666 through every rewrite
+# (sshd_authkeys, VPN/HTTPS keys, rule lists) - a compromised non-root daemon could plant an SSH key.
+# libshared's sweep removes write-for-everyone under /jffs at every boot (ubifs.c / jffs2.c call it);
+# the Security Review reports a regression (_rv_ww, the card and the dashboard); diag v1.3.45 counts it.
+usr/lib/libshared.so|jffs: write access for all users removed from|1
+sbin/rc|reaper_jffs_perm_sweep|1
+sbin/rc|reaper_jffs_perm_report|1
+usr/lib/libshared.so|/tmp/reaper/jffs.sweep|1
+sbin/rc|writable by any user (first:|1
+www/Reaper_Firewall.asp|rv_wwrap|2
+www/Main_ReaperDash.asp|ww=j.ww|1
+usr/sbin/reaper_diag|/jffs world-write :|1
+# 2026-10-21 Encrypted DNS for devices: rednsd (the router's DNS-over-TLS server) is installed, rc writes
+# its config and drops 853 on non-LAN interfaces, DNS Director's DoT block also catches UDP 853, httpd
+# serves the status, the Warden menu's third tab exists and Dreadwatch's Coverage links to it.
+usr/sbin/rednsd|encrypted DNS for devices on %d address(es)|1
+usr/sbin/rednsd|/tmp/rednsd/rednsd.conf|1
+sbin/rc|generated by rc (encdns.c)|1
+sbin/rc|Encrypted DNS for devices waits for the router's certificate|1
+sbin/rc|-A INPUT ! -i br+ -p tcp --dport %d -j DROP|1
+sbin/rc|-A FORWARD -i br+ -p udp -m udp --dport 853 -j DNSFILTER_DOT|1
+usr/sbin/httpd|reaper_encdns.cgi|1
+www/Reaper_EncryptedDNS.asp|encProfile|1
+www/Reaper_Dreadwatch.asp|Reaper_EncryptedDNS.asp|1
+# 2026-10-21 Wallguard (ad & tracker blocker): wallguardc + wallguard.sh are installed, dnsmasq knows --wallguard-dir,
+# rc writes it into every dnsmasq conf while on, httpd serves the tab's CGI, the Warden menu's third tab
+# exists and Dreadwatch's Coverage and Encrypted DNS's How it works link to it.
+usr/sbin/wallguardc|usage: wallguardc explain --db DB|1
+usr/sbin/wallguard.sh|logger -t wallguard|1
+usr/sbin/dnsmasq|wallguard-dir|1
+sbin/rc|no list is subscribed - only My rules block|1
+sbin/rc|wallguard-dir=%s|1
+usr/sbin/httpd|reaper_wallguard.cgi|1
+www/Reaper_Wallguard.asp|shRows|1
+www/require/modules/menuTree.js|Reaper_Wallguard.asp|1
+www/Reaper_Dreadwatch.asp|Reaper_Wallguard.asp|1
+www/Reaper_EncryptedDNS.asp|Reaper_Wallguard.asp|1
+# 2026-10-21 field (v3.4.8): IPsec's /jffs/ca_files is root's alone - the boot sweep and rc_ipsec.c
+# make it 0700 with no group/other bits on its keys and scripts; the scripts are created fresh at 0700.
+usr/lib/libshared.so|ca_files made root-only (|1
+sbin/rc|reaper_private_dir|1
+# 2026-10-21 Wallguard phase 2: the blocked-services catalog is installed, wallguardc resolves the safe-search
+# hosts, wallguard.sh refreshes them and builds a profile's service list, dnsmasq loads the safe-search file,
+# rc reads the catalog and turns schedule edges into policy rewrites, httpd serves the catalog, the page
+# has the per-profile editor.
+usr/share/wallguard/services|Fortnite / Epic Games|1
+usr/sbin/wallguardc|getaddrinfo|1
+usr/sbin/wallguard.sh|https://www.google.com/supported_domains|1
+usr/sbin/wallguard.sh|safe) safesearch ;;|1
+usr/sbin/dnsmasq|safesearch|1
+sbin/rc|/usr/share/wallguard/services|1
+sbin/rc|service start_wallguard_policy >/dev/null 2>&1|1
+usr/sbin/httpd|/usr/share/wallguard/services|1
+www/Reaper_Wallguard.asp|shPaintEditor|2
+# 2026-10-21 Encrypted DNS > block encrypted DNS that goes around the router: the updater and both lists
+# are installed, rc writes the REAPER_EDNS chain (853 to anything, 443 to the DoH set) and its declaration,
+# reads the name list for dnsmasq, httpd serves the state and the update action, both pages carry it.
+usr/sbin/encdns.sh|ips/doh.txt|1
+usr/share/encdns/doh-names|cloudflare-dns.com|1
+usr/share/encdns/doh-seed|2606:4700:4700::1111|1
+sbin/rc|-A REAPER_EDNS -p tcp --dport 853 -j REJECT --reject-with tcp-reset|1
+sbin/rc|:REAPER_EDNS - [0:0]|1
+sbin/rc|/usr/share/encdns/doh-names|1
+usr/sbin/httpd|start_edns_doh|1
+www/Reaper_EncryptedDNS.asp|encDohUpdate|2
+www/Reaper_Dreadwatch.asp|NV.blk|1
+# 2026-10-21 Long-Term Storage rows for Wallguard / Dreadwatch / Encrypted DNS: the watchdog publishes the
+# store location, wallguard.sh keeps its lists on the pinned USB volume (table always in RAM) and appends
+# its blocked-lookup history, the Dreadwatch collector carries the same reader and appends its history,
+# rwatch restores Wallguard from the volume and writes the Encrypted DNS activity line, httpd reports the
+# new rows, the pages show them.
+sbin/rc|/tmp/reaper/store.base|1
+sbin/rc|# rstore_dir: begin|1
+sbin/rc|dhist() {|1
+sbin/rc|sh /usr/sbin/wallguard.sh restore|1
+sbin/rc|ednshist.log|1
+usr/sbin/wallguard.sh|# rstore_dir: begin|1
+usr/sbin/wallguard.sh|restore_build() {|1
+usr/sbin/wallguard.sh|lists.sum|1
+usr/sbin/httpd|edoh_bytes|1
+www/Reaper_Storage.asp|{k:'shl',|1
+www/Reaper_Wallguard.asp|shStoreLine|2
+www/Reaper_Dreadwatch.asp|histline|2
+# 2026-10-21 Wireless > Settings: switching Roaming Assistant off posts the 0 its hidden input carries
+www/Reaper_WiFiSettings.asp|hid.classList.contains("rssiNum")|1
+# 2026-10-21 Wireless > Settings: the change counter counts a schedule-grid edit and a shared row as Apply posts them
+www/Reaper_WiFiSettings.asp|classList.remove("show"); recount();|1
+# 2026-10-21 Dreadwatch: abuse.ch closed its keyless hostfiles (410) - free lists on CDNs, CSV/adblock/any-IPv4 parsing,
+# the failure names its HTTP status, CERT Polska + Threatview offered, cap 200000; the dead URL must never return
+sbin/rc|malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt|1
+sbin/rc|hole.cert.pl/domains/v2/domains_hosts.txt|1
+sbin/rc|the list host refuses it|1
+sbin/rc|!urlhaus.abuse.ch/downloads/hostfile
+www/Reaper_Dreadwatch.asp|fd_threatview|1
+# 2026-10-21 review: the store writer that never follows a link is installed and used by wallguard.sh,
+# the Dreadwatch collector and rwatch; the strict MAC check, the merge guard and the build lock ship
+usr/sbin/rstore|usage: rstore append|1
+usr/sbin/wallguard.sh|"$RS" put "$S" wallguard/lists|1
+usr/sbin/wallguard.sh|exec 8>"$D/build.lock"|1
+sbin/rc|rstore} append "$_b" dreadwatch blocked.log|1
+sbin/rc|/usr/sbin/rstore append "$BASE" - ednshist.log|1
+sbin/rc|/usr/sbin/rstore stamp|1
+usr/sbin/wallguardc|%s.%d.tmp|1
+# 2026-10-21 (owner: "fix them"): the older store writers go through rstore too - rwatch rings, syslog
+# mirror and incident dumps, rtrafd database and health log; the by-path appends are gone
+sbin/rc|rstore ring "$BASE" - devhist.log 5000|1
+sbin/rc|rstore append "$BASE" - syslog.mirror 8388608|1
+sbin/rc|rstore rmtree "$BASE" rwatch|1
+sbin/rc|!>> "$BASE/devhist.log
+bin/rtrafd|rtraf.db.new|1
+# 2026-10-21 a refused firmware upload says so: httpd logs it and keeps the note, the page reads the answer
+usr/sbin/httpd|firmware upgrade FAILED - %s; the router %s its current firmware|1
+usr/sbin/httpd|reaper_upg_fail|1
+www/Reaper_Firmware.asp|UpdateError|1
+www/Reaper_Firmware.asp|showLastRefusal|2
+# 2026-10-21 ThreatFox frozen into Reaper's Basics: the snapshot ships, rc reads it as a file feed, the row is gone
+usr/share/dreadwatch/threatfox-snapshot.txt|# ThreatFox snapshot|1
+sbin/rc|/usr/share/dreadwatch/threatfox-snapshot.txt|1
+www/Reaper_Dreadwatch.asp|!id="fd_threatfox"
+www/Reaper_Dreadwatch.asp|var DNS_BASICS = ['urlhaus','phish','c2','threatfox'];|1
+# 2026-10-22 ASUS DDNS + Let's Encrypt whitelisted once (router-traffic filter + US blocked stopped the certificate)
+sbin/rc|/jffs/rwarden/.seed_asusddns|1
+sbin/rc|/jffs/rwarden/.seed_letsencrypt|1
+sbin/rc|2606:4700:60:0:f53d:5624:85c7:3a2c|1
+# 2026-10-22 country lists: plain per-country list when ipdeny's aggregated one comes back empty
+sbin/rc|https://www.ipdeny.com/ipblocks/data/countries/%s.zone|1
+sbin/rc|https://www.ipdeny.com/ipv6/ipaddresses/blocks/%s.zone|1
+# 2026-10-22 Dreadwatch: limit filled in priority order (Basics first), 1,000,000 + memory guard, gzipped /jffs copy
+# (the "dnsmasq --test before install" gate of this date was replaced on 2026-10-24 by wallguardc's own check of the
+# compiled table - its marker lives in the RAM-dedupe block below)
+sbin/rc|RW_DPRIO=|1
+sbin/rc|RW_DNS_CAP=1000000|1
+sbin/rc|/jffs/rwarden/dns.nx.gz|1
+www/Reaper_Dreadwatch.asp|id="dwcap"|1
+# 2026-10-22 hard-coded never-block names -> one-time seeds of the operator's lists (Dreadwatch never-block, Wallguard allow)
+sbin/rc|/jffs/rwarden/.seed_dnsallow|1
+sbin/rc|/jffs/wallguard/.seed_allow|1
+# 2026-10-22 Reaper-native UI wave 0: QoS user-rules editor, httpd redirect list, SUP gaps, WAN overlay UPnP rows, menuTree fixes
+www/Reaper_QoS.asp|id="rulestbody"|1
+www/Reaper_QoS.asp|name="qos_rulelist"|1
+www/Reaper_QoS.asp|/ajax_qos_default.xml|1
+www/ajax_qos_default.xml|<qos_rule>|1
+usr/sbin/httpd|Reaper_**.asp|1
+usr/sbin/httpd|advanced_firmwareupgrade_content.asp|1
+usr/sbin/httpd|main_connstatus_content.asp|1
+www/Reaper_WANPorts.asp|!current_page: {v: 'Advanced_WANPort_Content.asp'}
+www/require/modules/menuTree.js|retArray.push("DNSDirector.asp")|1
+www/Reaper_QoS.asp|id="oh_preset"|1
+www/Reaper_QoS.asp|id="tqbody"|1
+www/Reaper_QoS.asp|name="qos_irates"|1
+www/Reaper_QoS.asp|name="qos_overhead"|1
+# 2026-10-22 Reaper-native UI wave 0: component kit + menu model
+www/reaper/menu.js|window.ReaperMenu|1
+www/reaper/menu.js|menu_Firewall:|1
+www/reaper/rp.css|.tswitch|1
+www/reaper/rp.js|rp.enhanceSelects|1
+www/reaper_shell.asp|/reaper/menu.js|1
+www/reaper_shell.asp|ReaperMenu.ICONS|1
+www/Main_ReaperDash.asp|ReaperMenu.rail()|1
+www/Reaper_QoS.asp|/reaper/rp.css|1
+www/Reaper_QoS.asp|function protoSync()|1
+www/Reaper_QoS.asp|rulePortCell(r)|2
+www/EN.dict|Protocol any ignores the port: choose TCP, UDP or TCP/UDP to match one.|1
+www/reaper/menu.js|index: 'menu_ReaperGK', when: routing|1
+www/reaper/menu.js|index: 'menu_ReaperWarden', when: routing|1
+www/Reaper_System.asp|function applyAll(){|1
+www/Reaper_System.asp|rp.chpass(post)|1
+www/Reaper_System.asp|name="restrict_rulelist" value="" disabled|1
+www/Reaper_System.asp|BROKEN[s.panel] = 1;|1
+www/Reaper_System.asp|setChk('t_acl', isOn(NV.enable_acc_restriction)|1
+www/Reaper_System.asp|!esc = rp.esc
+www/reaper/rp.js|var f = window.ReaperEsc;|1
+www/reaper/menu.js|T('Reaper_System.asp'|1
+www/reaper/menu.js|!Advanced_System_Content
+www/reaper/rp.js|rp.chpass = function(post){|1
+www/reaper/rp.js|rp.md5 = function(s){|1
+www/Main_ReaperDash.asp|data-go="Reaper_System.asp"|4
+www/EN.dict|Who can log in, how the router is reached, its clock and its hardware behaviour.|1
+www/reaper_shell.asp|markPage(page.split('?')[0]);|1
+www/reaper_shell.asp|function inMenu(base){|1
+# 2026-10-23 -- Reaper-native UI wave 1, part 2: Administration > Tweaks on the kit (Reaper_Tweaks.asp replaces
+# Tools_OtherSettings.asp; each change restarts what reads it, an all-zero conntrack value shows the defaults),
+# the menu points at the Reaper SNMP/Tweaks pages and the dead Notification tab is gone. Reaper_SNMP.asp is NOT
+# pinned: www/Makefile removes it (like the stock SNMP page) on the models built with SNMPD=n, and AUTODICT then
+# prunes its strings, so any SNMP marker would fail those images; test_reaper_snmp_tweaks.py covers it.
+www/Reaper_Tweaks.asp|S.push('restart_dnsmasq')|1
+www/Reaper_Tweaks.asp|a.some(function(x){ return x !== '0'; })|1
+www/Reaper_Tweaks.asp|name="ct_tcp_timeout" value="" disabled|1
+www/Reaper_Tweaks.asp|BROKEN[s.panel] = 1;|1
+www/reaper/menu.js|T('Reaper_Tweaks.asp'|1
+www/reaper/menu.js|!Tools_OtherSettings
+www/reaper/menu.js|!Advanced_Notification_Content
+www/EN.dict|Connection tracking, the Warden feed schedule and a few low-level network switches.|1
+# 2026-10-23 -- the crimson section frame (the look the stock skin gave the System page in _r20, until the page
+# joined reaper_native[]) is a static kit class now, used by System (5 tab bodies) and Tweaks: the _r20 hover fill, kept on.
+www/reaper/rp.css|.rframe{background:rgba(225,6,0,.22);border:1px solid rgba(225,6,0,.30)}|1
+www/Reaper_System.asp|<div class="tab rframe" id="tab_|5
+www/Reaper_Tweaks.asp|<div class="rframe">|1
+# 2026-10-23 -- System Log wave: the seven stock pages replaced by six Reaper pages (the "Security Update
+# Notification" login log folded into General Log), every table on the Routing page via reaper_pbr.cgi?action=routes,
+# the Wireless Log on its own get_wl_status endpoint, one shared sort comparator in the kit.
+www/Reaper_Log.asp|lastIndexOf('\n}')|1
+www/Reaper_Routes.asp|/reaper_pbr.cgi?action=routes|1
+www/Reaper_WLog.asp|return (new Function(src))();|1
+www/Reaper_Leases.asp|var leasearray = [];|1
+www/Reaper_IPv6.asp|var ipv6cfgarray = [[]]|1
+www/Reaper_PortFwd.asp|REAPER_GKN:|1
+www/ajax_reaper_wlstatus.asp|get_wl_status|1
+www/reaper/menu.js|T('Reaper_Log.asp'|1
+www/reaper/menu.js|!Main_Security_Change_Notification
+www/reaper/rp.js|rp.cmp = function(type)|1
+usr/sbin/httpd|ip -4 route show table all|1
+www/EN.dict|Every routing table on the router and the rules that decide which table a packet uses. Read-only.|1
+# 2026-10-23 -- _r25 field: rp.css?b=<tag> 404'd (do_file keeps the query); plain link + an httpd mime entry with
+# the 60 s cache for the kit stylesheet instead.
+usr/sbin/httpd|reaper/rp.css|1
+www/Reaper_Log.asp|<link rel="stylesheet" href="/reaper/rp.css">|1
+www/Reaper_System.asp|!rp.css?
+# 2026-10-23 -- Network Tools wave: Reaper_Analysis / Netstat / WOL / SmartConnect on the kit, the reaper_net.cgi
+# runner (validated target, argv built in httpd, execvp, one job, capped), and the stock SystemCmd / netool.cgi
+# paths limited to the stock command shapes (kept for the stock pages + ASUS app, owner 2026-10-23).
+www/Reaper_Analysis.asp|rp.net(HTTPID, params, cb)|1
+www/reaper/rp.js|x.open('POST', '/reaper_net.cgi', true)|1
+www/Reaper_Netstat.asp|tool=netstat&opts=|1
+www/Reaper_WOL.asp|var MAXB = 1000;|1
+www/Reaper_SmartConnect.asp|sv &= ~(1 << 6);|1
+www/reaper/menu.js|T('Reaper_SmartConnect.asp'|1
+www/reaper/menu.js|!Main_WOL_Content
+www/reaper/rp.js|rp.pingPresets = function(dl)|1
+usr/sbin/httpd|reaper_net.cgi|1
+usr/sbin/httpd|not a stock command shape|1
+www/EN.dict|Test reachability and name resolution from the router itself.|1
+www/Reaper_IPv6Setup.asp|'restart_net' + (FTP_ON ? ';restart_ftpd' : '')|1
+www/Reaper_IPv6Setup.asp|x.open('GET', '/update_IPv6state.asp', true);|1
+www/reaper/menu.js|T('Reaper_IPv6Setup.asp'|1
+usr/sbin/httpd|Reaper_IPv6Setup.asp|1
+
+# 2026-10-23 LAN/WAN wave -- Reaper_LAN / DNS / Routes static-route tab / Internet / IPTV / NAT / DDNS replace
+# the stock LAN + WAN menu pages (menu.js tabs, httpd SUP redirects + reaper_native[]); reaper_devices.cgi
+# set_reserve refuses network/broadcast/router addresses (same rule as the LAN page's DHCP tab).
+www/Reaper_LAN.asp|S.push('restart_ftpsamba', 'restart_mdns', 'restart_media');|1
+www/Reaper_LAN.asp|var MAXRES = 64;|1
+www/Reaper_DNS.asp|nvram_char_to_ascii(sdn_rl,sdn_rl)|1
+www/Reaper_DNS.asp|S.push('restart_wan_dns ' + u)|1
+www/Reaper_Routes.asp|var MAXBYTES = Math.min(1024, 1006 - 'sr_rulelist='.length);|1
+www/Reaper_Internet.asp|script = 'restart_wan_if'; wait = 5;|1
+www/Reaper_IPTV.asp|var pc = portConflict(R); if (pc){ msg(pc); return; }|1
+www/Reaper_IPTV.asp|return !a && !b ? '0' : (!a && b ? '3' : (a && !b ? '4' : '6'));|1
+www/Reaper_NAT.asp|function hostCheck(ip){|1
+www/Reaper_NAT.asp|var TABS = ['pf', 'pt', 'dmz', 'alg'];|1
+www/Reaper_DDNS.asp|function pollDdns(){|1
+www/reaper/menu.js|T('Reaper_LAN.asp'|1
+www/reaper/menu.js|T('Reaper_Internet.asp'|1
+www/reaper/menu.js|T('Reaper_NAT.asp'|1
+usr/sbin/httpd|Reaper_Internet.asp|1
+usr/sbin/httpd|Reaper_NAT.asp?tab=pt|1
+usr/sbin/httpd|Reaper_LAN.asp?tab=dhcp|1
+usr/sbin/httpd|address not reservable|1
+
+# 2026-10-24 VPN wave -- Reaper_VPNStatus / VPNDirector / VPNServer / VPNClient / Tor replace the ten stock VPN pages
+# (menu.js tabs, httpd SUP redirects + reaper_native[]); the ASUS VPN app, Instant Guard and the Fusion page no longer
+# ship and httpd bounces their URLs (reaper_gone[]); Director store refuses > 7999 B; PPTP client +mppe-128 refuses
+# PAP / CHAP / MS-CHAPv1.
+www/Reaper_VPNStatus.asp|function parseKV(text)|1
+www/Reaper_VPNStatus.asp|POLL_MS = 10000|1
+www/Reaper_VPNStatus.asp|nvram_char_to_ascii("","wgs1_enable")|1
+www/Reaper_VPNStatus.asp|nvram_char_to_ascii("","vpnc_state_t")|1
+www/Reaper_VPNStatus.asp|if (/key/i.test(k)) return;|1
+www/Reaper_VPNDirector.asp|rp.post(document.form, changed, 'restart_vpnrouting0', 5);|1
+www/Reaper_VPNDirector.asp|MAX_RULES = 199, MAX_BYTES = 7999|1
+www/Reaper_VPNDirector.asp|if (dup(f, editIdx)) return edmsg(|1
+www/Reaper_Tor.asp|rp.post(document.form, changed, 'restart_tor', 5);|1
+www/Reaper_Tor.asp|var MAXBYTES = 1006 - 'Tor_redir_list='.length;|1
+www/Reaper_Tor.asp|if (q('s_scope').value === 'list' && !LIST.length) return bad('s_scope'|1
+www/Reaper_VPNClient.asp|changed.vpn_client_unit = String(OU);|1
+www/Reaper_VPNClient.asp|S.push('restart_wgc ' + WU)|1
+www/Reaper_VPNClient.asp|var WG_AIPS_MAX = 1006 - 'wgc1_aips='.length;|1
+www/Reaper_VPNClient.asp|function crtParse(text)|1
+www/Reaper_VPNClient.asp|if (proto === 'pptp' && on && edited && enc !== '+mppe-128') enc = '+mppe-128';|1
+www/Reaper_VPNClient.asp|c.vpnc_clientlist = PL_EDITED ? plSer() : NV.vpnc_clientlist;|1
+www/Reaper_VPNServer.asp|function pollVpnStatus(){|1
+www/Reaper_VPNServer.asp|CCD_BYTES = 1006 - 'vpn_server1_ccd_val='.length|1
+www/Reaper_VPNServer.asp|WG_LIST_BYTES = 1006 - 'wgs1_c10_caips='.length|1
+www/Reaper_VPNServer.asp|c.pptpd_chap = PPFIX ? '2' : NV.pptpd_chap; c.pptpd_mppe = PPFIX ? '1' : NV.pptpd_mppe;|1
+www/Reaper_VPNServer.asp|rp.post(document.form, changed, S.join(';'), wait);|1
+www/Reaper_VPNServer.asp|!setTimeout(function(){ location.reload(); }, 20000)
+sbin/rc|Instant Guard: a saved profile still runs an IPsec server|1
+www/reaper/menu.js|T('Reaper_VPNStatus.asp'|1
+www/reaper/menu.js|T('Reaper_VPNServer.asp'|1
+www/reaper/menu.js|T('Reaper_VPNClient.asp'|1
+www/reaper/menu.js|T('Reaper_Tor.asp'|1
+usr/sbin/httpd|Reaper_VPNServer.asp?tab=ipsec|1
+usr/sbin/httpd|Reaper_VPNClient.asp?tab=wg|1
+usr/sbin/httpd|advanced_instant_guard.asp|1
+usr/sbin/httpd|advanced_vpnclientfusion_content.asp|1
+usr/sbin/httpd|vpndirector_rulelist of %u bytes refused (limit 7999)|1
+sbin/rc|refuse-mschap|1
+
+# 2026-10-24 Parental Controls -- Reaper_Parental replaces ParentalControl.asp (menu.js tab, httpd SUP redirect +
+# reaper_native[]); the four MULTIFILTER lists are rewritten together only after an edit, an empty schedule is '<'
+# (the block_device_internet CGI form), MULTIFILTER_MAC stays under the 1 KB nvram wall; rc/pc.c resets the
+# per-rule verdict (fftype) for every device (source-pinned by tests/test_reaper_parental.py, no binary literal).
+www/Reaper_Parental.asp|rp.post(document.form, changed, 'restart_firewall', 5);|1
+www/Reaper_Parental.asp|var MAC_BYTES = 1006 - 'MULTIFILTER_MAC='.length;|1
+www/Reaper_Parental.asp|return t.length ? t.join('<') : '<';|1
+www/Reaper_Parental.asp|if (!LEDITED) return;|1
+www/reaper/menu.js|T('Reaper_Parental.asp'|1
+www/reaper/menu.js|!T('ParentalControl.asp'
+usr/sbin/httpd|parentalcontrol.asp|1
+www/Reaper_Wallguard.asp|#Reaper_Parental.asp|1
+
+# 2026-10-24 page review fixes -- checks the stock pages made, restored on their Reaper pages before the stock
+# pages leave the image: firewall address / time / IPv6 rule validation, QoS limiter IP targets, System default-password
+# refusal, kit ping presets keys; httpd bounce keeps a query with & after a ?tab= target (build-scripts/tests/test_page_review_fixes.py).
+www/Reaper_Firewall.asp|function addrFam(s){|1
+www/Reaper_Firewall.asp|!function p4(v)
+www/Reaper_Firewall.asp|v6ok(lip)){alert(|1
+www/Reaper_System.asp|rp.md5(p1) === DEFAULT_PW_MD5|1
+www/Reaper_System.asp|!nvram_default_get("http_passwd")
+www/reaper/rp.js|e.ServiceIP1|1
+www/Reaper_QoS.asp|ReaperNames.byIp(mac, mac)|1
+usr/sbin/httpd|q=location.search;if(q&&s&&s.indexOf("?")>=0)|1
+www/Reaper_Internet.asp|if (!num(val('i_pmtu'), 128, 1500)) return rng('i_pmtu', 128, 1500);|1
+www/Reaper_Internet.asp|num(c.wan_mtu, 1280, 1500)|1
+www/Reaper_Internet.asp|!128, 1492
+www/Reaper_Internet.asp|!1280, 1508
+www/Reaper_Internet.asp|name="upnp_protect_svc"|1
+www/Reaper_Firmware.asp|!secur_stab_setting
+www/Reaper_Firmware.asp|/AiMesh_Node_FirmwareUpgrade.asp|1
+www/Reaper_Leases.asp|dev: r[r.length - 1]|1
+www/Reaper_SmartConnect.asp|/reaper_shell.asp#Reaper_WLog.asp|1
+
+# 2026-10-24 Dreadwatch RAM dedupe (backlog P1, owner): the threat list is ONE Wallguard-format table (wallguardc --subtree,
+# one list per feed) that every dnsmasq instance maps read-only + shared (dnsmasq/src/reaper_nx.c, --reaper-nx-db) in
+# place of reaper-nx= entries held once per instance plus the text include; rc compiles it, writes a two-line include
+# and rebuilds it from /jffs at boot; hit records carry the feed ids; httpd's self-test reads dns.first
+# (build-scripts/tests/test_reaper_nx.py, test_warden_dns.py).
+usr/sbin/dnsmasq|reaper-nx-db|1
+usr/sbin/dnsmasq|threat names mapped|1
+usr/sbin/wallguardc|build [--subtree] --out DB|1
+sbin/rc|reaper-nx-db=|1
+sbin/rc|/usr/sbin/wallguardc build --subtree|1
+sbin/rc|/tmp/reaper_nx/threat.db|1
+sbin/rc|/jffs/rwarden/dns.k.gz|1
+usr/sbin/httpd|/tmp/rwarden/dns.first|1
+
+# 2026-10-25 review fixes (the 2026-10-24 report: 1 HIGH + 3 MEDIUM): an apply is a POST (httpd refuses action_mode=apply
+# on a GET in update_variables and apply.cgi); the shell frames only .asp pages; the cross-site guard treats a header-less
+# browser request over plain HTTP as cross-site and reads the onboarding query decoded; Wallguard records the list entry a
+# lookup matched and fold keeps the 200 busiest names / devices (build-scripts/tests/test_apply_post_only.py,
+# test_xsite_cgi_guard.py, test_wallguard.py, test_wallguard_sh.py).
+usr/sbin/httpd|apply by GET refused|1
+usr/sbin/httpd|absent, plain HTTP browser|1
+usr/sbin/wallguard.sh|head -n 200|2
+www/reaper_shell.asp|m[1].indexOf('Reaper_')!==0|1
+
+# 2026-10-25 review fixes, part 2 (the 13 LOWs + 5 correctness items of the 2026-10-24 report): httpd masks the secret
+# field of the VPN / IPsec lists it serves and resolves the mask on apply (reaper_masked_list); rednsd retries over TCP
+# without blocking and never keeps root; encdns.sh validates and falls back to one add per entry; the Security Review
+# compares a Reaper cron line's command (_rv_cron_cmd); reaper_diag v1.3.47 (date -r); the gone-page bounce runs before
+# httpd's 404 (test_review_2026_10_24_fixes.py, test_rednsd.py, test_edns_block.py, test_rwatch_review.py, test_vpn_gone_pages.py).
+usr/sbin/httpd|reaper_masked_list|1
+usr/sbin/rednsd|no 'nobody' account|1
+usr/sbin/encdns.sh|ipset add -exist|1
+sbin/rc|_rv_cron_cmd|1
+sbin/rc|_rsj=/tmp/rednsd/run/status.json|1
+usr/sbin/reaper_diag|date -r /jffs/rwarden/dns.k.gz|1
+www/Reaper_VPNClient.asp|reaper_masked_list("vpnc_clientlist")|1
+www/Reaper_VPNServer.asp|reaper_masked_list("ipsec_profile_1")|1
+www/Reaper_SNMP.asp|nvram_match("v3_auth_passwd", "", "0")|1
+# 2026-10-25 PM: the review's performance items (REAPER-FIXES "review 2026-10-24", third table): the nightly update's
+# one-pass parse and counts, the detached boot rebuild, _nvs, the since-stamp guard, the encdns status readers, the
+# shell without jquery/state.js, the page polls
+sbin/rc|rw_dom() { awk 'function ok(d)|1
+sbin/rc|print i, c[i] }' $DN.k > $DN.kc|1
+sbin/rc|rebuilding the table from the /jffs copy in the background|1
+sbin/rc|_nvs() {|1
+sbin/rc|a stamp that exists is not re-offered|1
+usr/sbin/httpd|echo --; ipset list -t redns_doh6|1
+www/reaper_shell.asp|!/js/jquery.js
+www/reaper_shell.asp|!src="/state.js"
+www/reaper_shell.asp|setInterval(pollPills, 30000)|1
+www/Reaper_VPNClient.asp|POLL_T = setTimeout(poll, 10000);|2
+www/Reaper_Log.asp|load(false); }, 10000);|1
+# 2026-10-25 (owner): Security review - select several rows and act once (one ack_many request, one audit, one log line)
+usr/sbin/httpd|accepted-many|1
+www/Reaper_Firewall.asp|function rvAckMany(){|1
+www/Reaper_Firewall.asp|id="rv_bulk"|1
+# 2026-10-25 (owner): the Connections flow detail panel keeps its width on long names
+www/Reaper_Conn.asp|.dhd .chip{flex:0 0 auto;white-space:nowrap}|1
+www/Reaper_Conn.asp|function drow(k,v,full){|1
+# 2026-10-25 (field, Wireless Scheduler): backhaul parking holds the carriers up while an enabled client network is down
+sbin/rc|holding the backhaul carriers up|1
+# release review 2026-10-25: Wallguard fetches again when every list download failed at boot (pending mark, rc + rwatch),
+# keeps its RAM lists under a cap, writes history off the page's path; the encrypted-DNS address list refuses wide ranges
+usr/sbin/wallguard.sh|no block list could be downloaded|1
+usr/sbin/wallguard.sh|exec 6>&- 7>&- 8>&- 9>&-|1
+usr/sbin/wallguard.sh|the lists kept in RAM would pass|1
+sbin/rc|Wallguard has no block lists yet - fetching them|1
+usr/sbin/encdns.sh|max6=16384|1
+www/Reaper_EncryptedDNS.asp|<li class="caution">|1
+# 2026-10-26: rwatch takes write-for-everyone off /jffs/nvram files each tick (a stock binary re-adds it to asus_device_list)
+sbin/rc|removed write-for-everyone from /jffs/nvram|1
+# 2026-10-26: busybox 1.25 flock has no -w - Wallguard's build and fold locks poll -n (every table build was skipped)
+usr/sbin/wallguard.sh|lock_wait 8 300|1
+# 2026-10-26: the parking card reads amas_bh_state encoded (an apostrophe in the reason broke the page script)
+www/Reaper_Wireless.asp|nvram_char_to_ascii("", "amas_bh_state")|1
+# 2026-10-26: System Log Find/Exclude take comma lists; saved exclusions = the user's own logFilter.json (/jffs/reaper/logfilter)
+usr/sbin/httpd|reaper_logf.cgi|1
+usr/sbin/httpd|/jffs/reaper/logfilter|1
+www/Reaper_Log.asp|'/reaper_logf.cgi'|1
+www/Reaper_Log.asp|function lfSave(list, done){|1
+www/Reaper_Log.asp|id="excl"|1
+# 2026-10-26: Wallguard names Warden on a blocked list download, warns when a NAT rule sends DNS past the router, logs the table total
+usr/sbin/wallguard.sh|warden_why() {|1
+usr/sbin/wallguard.sh|for _c in $(nvram get rwarden_geo|1
+usr/sbin/wallguard.sh|dns_bypass() {|1
+usr/sbin/wallguard.sh|grep -o '"names":[0-9]*'|1
+www/Reaper_Wallguard.asp|id="bypasstext"|1
+www/Reaper_Wallguard.asp|f.warden && f.st !== 'ok'|1
+# 2026-10-26: Merlin carry - CA bundle (Mozilla 2026-10-21). (The miniupnpd MX fix has no image marker: our config.h
+# leaves UPNP_STRICT / DELAY_MSEARCH_RESPONSE off, so that code is not compiled; test_merlin_carry_2026_10_26.py guards the source.)
+# (the installed file keeps the PEM bodies only - rom/Makefile strips the name comments - so the markers are
+# a base64 line of Telia RSA TLS Root CA v3, which must be in, and of Atos TrustedRoot 2011, which must be out)
+rom/etc/ssl/certs/ca-certificates.crt|vx8F7Kmb4WATx3ije1id3KHxRE0TKmcNCbAQ57bvHFEYa4hR2l20VjVadExqOW+2ld99MbEiO+jR|1
+rom/etc/ssl/certs/ca-certificates.crt|!54rMVD6QUM+A1JX76LWC1BTFtqlVJVfbsVD2sGBkWXppzwO3bw2+yj5vdHLqqjAqc2K+SZFhyBH+
+# 2026-10-26: custom scripts keep their output and say when they fail; diag v1.3.51 section 13; System Log lines unwrapped
+usr/lib/libshared.so|/tmp/reaper/script-%s.log|1
+usr/sbin/reaper_diag|custom scripts (System > Enable JFFS custom scripts and configs)|1
+www/Reaper_Log.asp|white-space:pre;word-break:normal|1
+# 2026-10-26: Wallguard - removable built-in lists, your own sources with API options, write-only keys
+usr/sbin/wallguard.sh|json_names() {|1
+usr/sbin/wallguard.sh|data-binary = "@%s"|1
+usr/sbin/httpd|,"keys":[|1
+www/Reaper_Wallguard.asp|function shSrcOk(){|1
+# 2026-10-26: Wireless Log - one box per network in each radio, the main box titled with wlN.1_ssid
+www/Reaper_WLog.asp|function nets(i, d, list){|1
+# 2026-10-26: WAN 802.1Q switch only with rc_support mswan; other models are pointed to LAN > IPTV (field: GT-BE98)
+www/Reaper_Internet.asp|R.vlan = R.vlanp && sup('mswan');|1
+# 2026-10-26: Bastion tools independent - Dreadwatch runs (updater, collector, checkpoint) with Warden off
+sbin/rc|*/15 * * * * sh /tmp/rwarden/dns.sh fold|1
+www/Reaper_Dreadwatch.asp|!id="wardenoff"
+# 2026-10-26: translated labels that do not fit - one line, "...", whole text on hover (reaper/fit.js, shell + dashboard)
+www/reaper/fit.js|function fitContainers(doc, win, cand, todo) {|1
+www/reaper_shell.asp|RFIT.watch(f.contentDocument)|1
+# 2026-10-26: settings reach page scripts as safe JS literals (nvram_get_js; 337 reads moved off nvram_get)
+usr/sbin/httpd|nvram_get_js|1
+# 2026-10-27: Dreadwatch sources - removable built-in rows, your own sources (text list or API) fetched through wallguard.sh, write-only keys
+sbin/rc|rw_dsrc() {|1
+sbin/rc|/jffs/rwarden/dnssrc|1
+usr/sbin/wallguard.sh|FKEYS=$5; fetch|1
+usr/sbin/httpd|/jffs/rwarden/dnskeys|1
+www/Reaper_Dreadwatch.asp|function dwSrcOk(){|1
+www/Reaper_Dreadwatch.asp|lf.append('dnssrc', src);|1
+# 2026-10-27: backups - the settings file carries every Reaper feature (Wallguard, Dreadwatch sources, API keys, DNS, Encrypted DNS, ...) and restarts what it touched in one chain; the DDNS hostname is kept (rbk_make_cfg)
+usr/sbin/httpd|rwarden_dnskeys|1
+usr/sbin/httpd|wallguard_profiles|1
+usr/sbin/httpd|restart_wallguard;start_wallguard_update|1
+www/Reaper_Backup.asp|jsonBlob.size > 524288|1

@@ -1,0 +1,98 @@
+From 8f0791d22818d171761e097be095e38484d22f8b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 11 Oct 2026 12:03:40 -0400
+Subject: [PATCH] samba: make the Samba 4 runtime dirs before enrollment; log
+ an enrollment that fails
+
+start_samba() enrolled nobody and the acc_list accounts with smbpasswd
+before the block that creates /var/lib/samba/private. As root, Samba
+4.15's smbpasswd calls secrets_init() before anything else, which opens
+<private dir>/secrets.tdb, and returns 1 without a message when that
+directory is missing. /var is tmpfs, so on the first Samba start of every
+boot each enrollment failed silently, smbd created an empty
+/etc/samba/smbpasswd and every SMB login was refused until something
+restarted Samba (the syslog tell: "startsmbfilepwent_internal: file
+/etc/samba/smbpasswd did not exist. File successfully created." from
+smbd). The five mkdir_if_none move above the enrollment under
+RTCONFIG_SAMBA4; both SAMBA4 enrollment calls check system() and log the
+failure by account name, never the password. Field: RT-BE96U on the
+v3.4.0 test image. Lean: tests/test_samba_enroll_dirs.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c | 37 ++++++++++++++++++++++++++-----------
+ 1 file changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index b072536723..d9c1768487 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3609,6 +3609,22 @@ start_samba(void)
+ #endif
+ 
+ 	mkdir_if_none("/etc/samba");
++#if defined(RTCONFIG_SAMBA4)
++	/* reaper: the Samba 4 runtime dirs must exist BEFORE the smbpasswd enrollment
++	   below, not only before smbd. As root, smbpasswd opens <private dir>/secrets.tdb
++	   (secrets_init) before it touches the passdb and returns 1 without a message when
++	   that directory is missing. The dirs used to be made just before nmbd/smbd, so on
++	   the first Samba start of a boot (fresh tmpfs) every enrollment failed silently,
++	   smbd created an empty /etc/samba/smbpasswd and every SMB login was refused until
++	   a later restart (metal, RT-BE96U v3.4.0, 2026-10-11). private holds
++	   msg.sock/secrets.tdb; log/lib/cache are needed by nmbd/smbd too ("Failed to init
++	   messaging context" without them). */
++	mkdir_if_none("/var/run/samba");
++	mkdir_if_none("/var/log/samba");
++	mkdir_if_none("/var/lib/samba");
++	mkdir_if_none("/var/lib/samba/private");
++	mkdir_if_none("/var/cache/samba");
++#endif
+ 
+ 	unlink("/etc/smb.conf");
+ 	unlink("/etc/samba/smbpasswd");
+@@ -3628,7 +3644,8 @@ start_samba(void)
+ 	//system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
+ 	system("/usr/sbin/smbpasswd nobody \"\"");
+ #elif defined(RTCONFIG_SAMBA4)
+-	system("echo -e \"\n\n\" |/usr/bin/smbpasswd -c /etc/smb.conf -s -a nobody");
++	if (system("echo -e \"\n\n\" |/usr/bin/smbpasswd -c /etc/smb.conf -s -a nobody") != 0)
++		logmessage("Samba Server", "guest account enrollment failed (smbpasswd returned an error)");
+ #else
+ 	system("smbpasswd nobody \"\"");
+ #endif
+@@ -3724,7 +3741,14 @@ start_samba(void)
+ #else
+ 			snprintf(cmd, sizeof(cmd), "smbpasswd \"%s\" \"%s\"", suit_user, suit_passwd);
+ #endif
++#if defined(RTCONFIG_SAMBA4)
++			/* reaper: a silent smbpasswd failure here is an SMB login that is refused
++			   for no visible reason - say so (the name only; cmd carries the password). */
++			if (system(cmd) != 0)
++				logmessage("Samba Server", "account enrollment failed for %s (smbpasswd returned an error); SMB logins for it will be refused", char_user);
++#else
+ 			system(cmd);
++#endif
+ 
+ 			if(++i >= acc_num)
+ 				break;
+@@ -3740,16 +3764,7 @@ start_samba(void)
+ 	system("insmod tsmb");
+ 	system("tsmb-server -c /etc/smb.conf -B");
+ #elif defined(RTCONFIG_SAMBA36X) || defined(RTCONFIG_SAMBA4)
+-	mkdir_if_none("/var/run/samba");
+-#if defined(RTCONFIG_SAMBA4)
+-	/* reaper: Samba 4 also needs these runtime dirs (private holds msg.sock/secrets,
+-	   plus log/cache); the stock Samba-3.6-era path only made /var/run/samba, so without
+-	   them nmbd/smbd abort at "Failed to init messaging context". */
+-	mkdir_if_none("/var/log/samba");
+-	mkdir_if_none("/var/lib/samba");
+-	mkdir_if_none("/var/lib/samba/private");
+-	mkdir_if_none("/var/cache/samba");
+-#endif
++	mkdir_if_none("/var/run/samba");	/* SAMBA4: the full set is made above, before enrollment */
+ 
+ 	xstart("/usr/sbin/nmbd", "-D", "-s", "/etc/smb.conf");
+ 	snprintf(smbd_cmd, sizeof(smbd_cmd), "%s/smbd", "/usr/sbin");
+-- 
+2.25.1
+

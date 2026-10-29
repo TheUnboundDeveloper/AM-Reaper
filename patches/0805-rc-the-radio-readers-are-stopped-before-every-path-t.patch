@@ -1,0 +1,398 @@
+From 02aae35fdc71b90535771b398588ebf8bb9600ab Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 14 Oct 2026 09:43:13 -0400
+Subject: [PATCH] rc: the radio readers are stopped before every path that
+ tears the radios down
+
+rpunctd arms a 4 s chanim_stats window on every Dynamic radio each tick,
+reaper_bwfloor reads isup / chanspec / dfs_status every 15 s, rchqd reads
+chanim_stats every 10 s. restart_wireless() has stopped the first two since
+v3.2.8, but the net / allnet / net_and_phy / wps_enr branches tear the
+radios down without that and never drop wlready, so rpunctd's own guard
+was blind. Owner RT-BE96U, 2026-10-13 and 2026-10-14: a GUI IPv6 change ran
+restart_net and seven seconds into the teardown both Dynamic radios'
+firmware trapped (dhdpcie_checkdied, TRAP type 0x4 @ 0x80f084 on wl1 and
+wl2 alike); they answered "wl driver adapter not found" until a power
+cycle while every client sat on 2.4 GHz. wl0, which no reader touched,
+survived both times. reaper_wl_readers_stop() (the three stops, then a
+wait of REAPER_WL_WINDOW_MS + 600 ms when rpunctd was running, so an armed
+window closes before the teardown) and reaper_wl_readers_start() are
+called beside stop_acsd() / start_acsd() - the stock daemon of the same
+class, which stock already sequences - in every teardown branch and in
+restart_wireless(). shared/reaper_wlquiet.c: reaper_wl_tearing_down()
+(rc_service names a radio-stopping service, whole tokens) and
+reaper_wl_quiet() (that, or wlready != 1) are the readers' own check,
+keyed by rpunctd's radio_quiet(), bwfloor's tick and rchqd's tick. Metal:
+two restart_net on the owner box with Dynamic on, radios up, no trap, the
+new rpunctd paused on rc_service until the branch finished. Lean:
+tests/test_wl_readers_quiesce.py (the predicate host-compiled and run).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/lan.c                | 13 +++--
+ release/src/router/rc/rc.h                 |  6 +++
+ release/src/router/rc/reaper_bwfloor.c     |  8 +++
+ release/src/router/rc/services.c           | 49 ++++++++++++++++++
+ release/src/router/rchqd/rchqd.c           |  9 ++++
+ release/src/router/rpunctd/rpunctd.c       |  9 +++-
+ release/src/router/shared/Makefile         |  1 +
+ release/src/router/shared/reaper_wlquiet.c | 58 ++++++++++++++++++++++
+ release/src/router/shared/reaper_wlquiet.h | 15 ++++++
+ 9 files changed, 160 insertions(+), 8 deletions(-)
+ create mode 100644 release/src/router/shared/reaper_wlquiet.c
+ create mode 100644 release/src/router/shared/reaper_wlquiet.h
+
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index 8297ffc1ce..a5122d30e1 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -6678,11 +6678,11 @@ void restart_wireless(void)
+ 	 * dhdpcie_checkdied one second into a restart_wireless while rpunctd was
+ 	 * still running, and stayed dead until a reboot; the same restart with
+ 	 * static or no puncturing (no daemon) recovered. Started again below,
+-	 * once wlready is back to 1. */
+-	stop_rpunctd();
+-	/* reaper v3.3.1: the minimum-width watcher reads the radios too, and a teardown
+-	 * would count as "down" towards its radar escape - stop it with rpunctd */
+-	stop_reaper_bwfloor();
++	 * once wlready is back to 1. v3.3.1 added the minimum-width watcher (a
++	 * teardown would count as "down" towards its radar escape); 2026-10-14
++	 * made the three readers one unit, shared with the net / allnet /
++	 * net_and_phy / wps_enr branches, which waits out an armed window. */
++	reaper_wl_readers_stop();
+ #ifdef RTCONFIG_AMAS
+ 	nvram_set_int("amas_ready", 0);
+ #endif
+@@ -7122,8 +7122,7 @@ void restart_wireless(void)
+ 	nvram_set_int("wlready", 1);
+ 	timecheck();
+ #endif
+-	start_rpunctd();	/* reaper v3.2.8: stopped at the top; a no-op unless a radio is Dynamic */
+-	start_reaper_bwfloor();	/* reaper v3.3.1: stopped at the top; a no-op while every wlN_bwfloor is off */
++	reaper_wl_readers_start();	/* reaper v3.2.8 / 2026-10-14: stopped at the top; each a no-op unless configured */
+ 	file_unlock(lock);
+ #if defined(RTCONFIG_CONCURRENTREPEATER)
+ 	nvram_set_int("led_status", LED_RESTART_WL_DONE);
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 2eddfbd396..05be6cf4a1 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -2997,6 +2997,12 @@ extern void stop_rchqd(void);	/* reaper v1.6.1 passive channel-quality monitor *
+ extern void start_rchqd(void);
+ extern void stop_rpunctd(void);	/* reaper v3.2.8 dynamic preamble puncturing controller */
+ extern void start_rpunctd(void);
++/* 2026-10-14: the radio readers (rpunctd, reaper_bwfloor, rchqd) as one unit,
++ * stopped beside stop_acsd() in every rc path that tears the radios down and
++ * started beside start_acsd() once wlready is 1 (services.c) */
++#define REAPER_WL_WINDOW_MS	4000	/* >= rpunctd's RP_WINDOW_MS: an armed chanim window runs this long in the firmware */
++extern void reaper_wl_readers_stop(void);
++extern void reaper_wl_readers_start(void);
+ extern void stop_gk(void);	/* reaper v1.6.8 Gatekeeper device access control (rc/gatekeeper.c) */
+ extern void start_gk(void);
+ extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit */
+diff --git a/release/src/router/rc/reaper_bwfloor.c b/release/src/router/rc/reaper_bwfloor.c
+index 95c3f52b66..24406de90c 100644
+--- a/release/src/router/rc/reaper_bwfloor.c
++++ b/release/src/router/rc/reaper_bwfloor.c
+@@ -64,6 +64,7 @@
+  * not run for it), a fixed width, not an access point, an AiMesh node, 2.4 GHz.
+  */
+ #include "rc.h"
++#include <reaper_wlquiet.h>
+ #include <signal.h>
+ #include <stdarg.h>
+ #include <sys/stat.h>
+@@ -556,6 +557,13 @@ int reaper_bwfloor_main(int argc, char *argv[])
+ 		long now = up_s();
+ 		FILE *f;
+ 
++		/* 2026-10-14: no radio reads while rc tears the radios down. restart_net
++		 * and its siblings never drop wlready (see shared/reaper_wlquiet.c), and a
++		 * teardown must not count as "off-air" towards the radar escape either. */
++		if (reaper_wl_quiet()) {
++			sleep(2);
++			continue;
++		}
+ 		esc_load(e);
+ 		for (u = 0; u < BF_MAXU; u++) {
+ 			char ifn[IFNAMSIZ], res[64];
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 8face7686c..470a5b8ee6 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -8194,6 +8194,46 @@ start_rpunctd(void)
+ 	xstart("rpunctd");
+ }
+ 
++/* reaper 2026-10-14: the radio readers as one unit. rpunctd arms a 4 s
++ * chanim_stats window on every Dynamic radio each tick, reaper_bwfloor reads
++ * isup / chanspec / dfs_status every 15 s (and may restart acsd), rchqd reads
++ * chanim_stats every 10 s. None of them may touch a dongle that rc is in the
++ * middle of stopping: restart_wireless() has stopped the first two since
++ * v3.2.8, but the net / allnet / net_and_phy / wps_enr branches tear the
++ * radios down without that, and they never drop wlready, so rpunctd's own
++ * guard was blind. Owner RT-BE96U, 2026-10-13 and 2026-10-14: a GUI IPv6
++ * change ran restart_net, and 7 s into the teardown both Dynamic radios'
++ * firmware trapped (dhdpcie_checkdied, TRAP type 0x4 @ 0x80f084 on wl1 and
++ * wl2 alike); they answered "wl driver adapter not found" until a power
++ * cycle. wl0, which none of the readers touched, survived both times.
++ * Called right before stop_acsd() and right after start_acsd(): acsd is the
++ * stock daemon of the same class, and stock already sequences it against
++ * every teardown, so pairing with it keeps a future branch honest. */
++void
++reaper_wl_readers_stop(void)
++{
++	int armed = pids("rpunctd");
++
++	stop_rpunctd();
++	stop_reaper_bwfloor();
++	stop_rchqd();
++	if (armed) {
++		/* a window rpunctd armed just before the kill runs on in the firmware
++		 * for up to REAPER_WL_WINDOW_MS: let it close before the teardown */
++		logmessage("reaper", "radio readers stopped for a wireless teardown (waiting out an armed measurement window)");
++		usleep((REAPER_WL_WINDOW_MS + 600) * 1000);
++	} else
++		logmessage("reaper", "radio readers stopped for a wireless teardown");
++}
++
++void
++reaper_wl_readers_start(void)
++{
++	start_rpunctd();		/* no-op unless a radio is Dynamic */
++	start_reaper_bwfloor();	/* no-op while every wlN_bwfloor is off */
++	start_rchqd();		/* no-op unless rchq_enable, router mode */
++}
++
+ #ifdef RTCONFIG_REAPER_MCP
+ /* reaper v1.4.0: read-only LAN MCP advisor. This is the ONE deliberate inbound
+  * listener in an otherwise listener-free build, so it is fenced hard:
+@@ -18050,6 +18090,7 @@ script_allnet:
+ #if defined(RTCONFIG_BRCM_SMARTHAUL) || defined(RTCONFIG_QOSR1)
+ 			stop_qosmgmtd();
+ #endif
++			reaper_wl_readers_stop();	/* 2026-10-14: before the radios go down, as acsd */
+ 			stop_acsd();
+ #if defined(RTCONFIG_BCMWL6) && defined(RTCONFIG_WISP)
+ 			stop_wlcmon();
+@@ -18196,6 +18237,7 @@ script_allnet:
+ #ifdef CONFIG_BCMWL5
+ 			start_eapd();
+ 			start_acsd();
++			reaper_wl_readers_start();	/* 2026-10-14: the radios are up again (wlready 1 in start_lan) */
+ 			start_nas();
+ #elif defined RTCONFIG_RALINK
+ 			start_8021x();
+@@ -18332,6 +18374,7 @@ script_allnet:
+ #if defined(RTCONFIG_BRCM_SMARTHAUL) || defined(RTCONFIG_QOSR1)
+ 			stop_qosmgmtd();
+ #endif
++			reaper_wl_readers_stop();	/* 2026-10-14: before the radios go down, as acsd */
+ 			stop_acsd();
+ #if defined(RTCONFIG_BCMWL6) && defined(RTCONFIG_WISP)
+ 			stop_wlcmon();
+@@ -18451,6 +18494,7 @@ script_allnet:
+ #ifdef CONFIG_BCMWL5
+ 			start_eapd();
+ 			start_acsd();
++			reaper_wl_readers_start();	/* 2026-10-14: the radios are up again (wlready 1 in start_lan) */
+ 			start_nas();
+ #elif defined RTCONFIG_RALINK
+ 			start_8021x();
+@@ -18613,6 +18657,7 @@ script_allnet:
+ #if defined(RTCONFIG_BRCM_SMARTHAUL) || defined(RTCONFIG_QOSR1)
+ 			stop_qosmgmtd();
+ #endif
++			reaper_wl_readers_stop();	/* 2026-10-14: before the radios go down, as acsd */
+ 			stop_acsd();
+ #if defined(RTCONFIG_BCMWL6) && defined(RTCONFIG_WISP)
+ 			stop_wlcmon();
+@@ -18755,6 +18800,7 @@ script_allnet:
+ #ifdef CONFIG_BCMWL5
+ 			start_eapd();
+ 			start_acsd();
++			reaper_wl_readers_start();	/* 2026-10-14: the radios are up again (wlready 1 in start_lan) */
+ 			start_nas();
+ #elif defined RTCONFIG_RALINK
+ 			start_lan_wl();
+@@ -19457,6 +19503,7 @@ check_ddr_done:
+ #endif
+ 			start_eapd();
+ 			start_acsd();
++			reaper_wl_readers_start();	/* 2026-10-14: the radios are up again (wlready 1 in start_lan) */
+ 			start_nas();
+ 			start_wps();
+ #ifdef RTCONFIG_NOTIFICATION_CENTER
+@@ -21435,6 +21482,7 @@ check_ddr_done:
+ 				nvram_set(strcat_r(prefix, "mfp", tmp), "1");
+ 				nvram_unset("skip_init_run_wpas");
+ #ifdef RTCONFIG_HND_ROUTER_AX
++				reaper_wl_readers_stop();	/* 2026-10-14: before the radios go down, as acsd */
+ 				stop_acsd();
+ #if defined(RTCONFIG_BCMWL6) && defined(RTCONFIG_WISP)
+ 				stop_wlcmon();
+@@ -21447,6 +21495,7 @@ check_ddr_done:
+ 				lanaccess_wl();
+ 				start_nas();
+ 				start_wps();
++				reaper_wl_readers_start();	/* 2026-10-14: stopped above; this branch never restarts acsd */
+ #if defined(RTCONFIG_AMAS) && defined(RTCONFIG_VIF_ONBOARDING)
+ 				set_onboarding_vif_status();
+ #endif
+diff --git a/release/src/router/rchqd/rchqd.c b/release/src/router/rchqd/rchqd.c
+index bc48b5f080..8dc0fa3056 100644
+--- a/release/src/router/rchqd/rchqd.c
++++ b/release/src/router/rchqd/rchqd.c
+@@ -37,6 +37,7 @@
+ #include <bcmnvram.h>
+ #include <shutils.h>
+ #include <shared.h>
++#include <reaper_wlquiet.h>
+ 
+ #define RCHQ_DIR	"/tmp/reaper_chq"
+ #define RCHQ_LIVE	RCHQ_DIR "/live.json"
+@@ -197,6 +198,14 @@ int main(int argc, char **argv)
+ 			break;
+ 		}
+ 
++		/* 2026-10-14: no chanim_stats read while rc tears the radios down
++		 * (restart_net and its siblings never drop wlready; shared/reaper_wlquiet.c) */
++		if (reaper_wl_quiet()) {
++			for (s = 0; s < 2 && running; s++)
++				sleep(1);
++			continue;
++		}
++
+ 		/* reaper: nopkt "degraded" threshold is nvram-tunable (rchq_degraded),
+ 		 * re-read live each tick; falls back to the compiled default if unset
+ 		 * or out of range. */
+diff --git a/release/src/router/rpunctd/rpunctd.c b/release/src/router/rpunctd/rpunctd.c
+index 7be08198d0..cdeadfa2d9 100644
+--- a/release/src/router/rpunctd/rpunctd.c
++++ b/release/src/router/rpunctd/rpunctd.c
+@@ -62,6 +62,7 @@
+ #include <bcmnvram.h>
+ #include <shutils.h>
+ #include <shared.h>
++#include <reaper_wlquiet.h>
+ 
+ #include "punct_core.h"
+ 
+@@ -1218,10 +1219,16 @@ static void log_key(const char *t, char *k, size_t n)
+  * other quiet time: the radio is not proven up yet. An armed chanim window or
+  * a chanspec read into a dongle being reset is what the GT-BE98 field report
+  * (2026-09-28, dhdpcie_checkdied during restart_wireless) points at.
++ * 2026-10-14: restart_net and its siblings (allnet, net_and_phy, wps_enr)
++ * tear the radios down WITHOUT dropping wlready - owner RT-BE96U, twice: both
++ * Dynamic radios trapped 7 s into a restart_net and stayed dead until a
++ * power cycle. rc now stops this daemon first (reaper_wl_readers_stop); the
++ * shared reaper_wl_quiet() adds rc_service to this check for a start that
++ * lands inside such a run.
+  * 2 = wireless down (geometry is re-read after), 1 = applier waiting, 0 = go. */
+ static int radio_quiet(void)
+ {
+-	if (!nvram_match("wlready", "1")) return 2;
++	if (reaper_wl_quiet()) return 2;
+ 	if (pids(RP_APPLIER_NAME)) return 1;
+ 	return 0;
+ }
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 7f91f99473..509a86e6be 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -231,6 +231,7 @@ OBJS += reaper_dhcp6.o	# reaper 2026-10-07 IPv6 (A3): DHCPv6 reservation list, s
+ OBJS += reaper_resolv_order.o	# reaper 2026-10-08 dual-stack: order of a two-faced resolver in the DNS list (rc/rdnshc.c)
+ OBJS += reaper_revzone.o	# reaper 2026-10-08: reverse DNS across networks, <net>/<len> for rev-server (rc/sdn.c)
+ OBJS += reaper_v6names.o	# reaper 2026-10-08: IPv6 device names - lease parser + hosts renderer (rc/rv6names.c)
++OBJS += reaper_wlquiet.o	# reaper 2026-10-14: "rc is tearing the radios down" - one answer for rc, rpunctd, reaper_bwfloor, rchqd
+ OBJS += llist.o
+ ifeq ($(RTCONFIG_HNS),y)
+ OBJS += hns_utils.o
+diff --git a/release/src/router/shared/reaper_wlquiet.c b/release/src/router/shared/reaper_wlquiet.c
+new file mode 100644
+index 0000000000..d9f9c369aa
+--- /dev/null
++++ b/release/src/router/shared/reaper_wlquiet.c
+@@ -0,0 +1,58 @@
++/* reaper 2026-10-14: is rc tearing the radios down right now?
++ *
++ * The radio readers - rpunctd (arms a 4 s chanim_stats window on every Dynamic
++ * radio each tick), reaper_bwfloor (isup / chanspec / dfs_status every 15 s)
++ * and rchqd (chanim_stats every 10 s) - must not send a wl ioctl into a dongle
++ * that rc is in the middle of stopping. Owner RT-BE96U, 2026-10-13 and
++ * 2026-10-14: a GUI IPv6 change ran restart_net; seven seconds into the
++ * teardown both Dynamic radios' firmware trapped (dhdpcie_checkdied, TRAP type
++ * 0x4 @ 0x80f084, identical on wl1 and wl2) and they answered "wl driver
++ * adapter not found" until a power cycle; wl0, which none of the readers
++ * touched, survived both times. The GT-BE98 report of 2026-09-28 (a trap one
++ * second into a restart_wireless) is the same shape.
++ *
++ * rc stops the readers first (reaper_wl_readers_stop in services.c). This is
++ * the readers' own eye on the same thing, for a start that lands inside such a
++ * window: it keys on rc_service, which the net / allnet / net_and_phy /
++ * wps_enr branches hold for their whole run while never touching wlready, the
++ * flag restart_wireless drops and the readers already honour.
++ */
++#include <string.h>
++#include <bcmnvram.h>
++#include "reaper_wlquiet.h"
++
++/* every rc service that stops or restarts the radios; whole tokens of
++ * rc_service ("action_script", several joined by ';' or ' ') */
++static const char *const reaper_wl_teardown_svc[] = {
++	"restart_net", "restart_allnet", "restart_net_and_phy",
++	"restart_wireless", "restart_dsl_wireless", "restart_wps_enr",
++	"restart_nas", "restart_wlcconnect", "restart_modemscan",
++	NULL
++};
++
++int reaper_wl_tearing_down(void)
++{
++	const char *rs = nvram_safe_get("rc_service");
++	int i;
++
++	if (!*rs)
++		return 0;
++	for (i = 0; reaper_wl_teardown_svc[i]; i++) {
++		const char *svc = reaper_wl_teardown_svc[i];
++		size_t n = strlen(svc);
++		const char *p = rs;
++
++		while ((p = strstr(p, svc)) != NULL) {
++			if ((p == rs || p[-1] == ';' || p[-1] == ' ') &&
++			    (p[n] == 0 || p[n] == ';' || p[n] == ' '))
++				return 1;	/* restart_nas, never restart_nasapps */
++			p += n;
++		}
++	}
++	return 0;
++}
++
++int reaper_wl_quiet(void)
++{
++	return !nvram_match("wlready", "1") || reaper_wl_tearing_down();
++}
+diff --git a/release/src/router/shared/reaper_wlquiet.h b/release/src/router/shared/reaper_wlquiet.h
+new file mode 100644
+index 0000000000..0334576609
+--- /dev/null
++++ b/release/src/router/shared/reaper_wlquiet.h
+@@ -0,0 +1,15 @@
++/* reaper 2026-10-14: "is rc tearing the radios down right now?" - the one
++ * answer the radio readers (rpunctd, reaper_bwfloor, rchqd) and rc share.
++ * See reaper_wlquiet.c. */
++#ifndef REAPER_WLQUIET_H
++#define REAPER_WLQUIET_H
++
++/* 1 while rc_service names a service that stops or restarts the radios
++ * (restart_net, restart_allnet, restart_net_and_phy, restart_wireless, ...) */
++int reaper_wl_tearing_down(void);
++
++/* 1 when no radio ioctl should be sent: wlready is not 1, or rc is tearing
++ * the radios down (the branches that do so without ever dropping wlready) */
++int reaper_wl_quiet(void);
++
++#endif
+-- 
+2.25.1
+

@@ -63,7 +63,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned 2026-10-06: ubuntu-latest moves to 26.04 from 2026-10-19 (actions/runner-images#14748)
     timeout-minutes: 60
     steps:
       - name: Resolve tag, version and model
@@ -116,7 +116,7 @@ jobs:
           echo "model=$MODEL"     >> "$GITHUB_OUTPUT"
           echo "resolved: tag=$TAG version=$VERSION base=$BASE channel=$CHANNEL file-token='$FTOK' model=$MODEL"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ver.outputs.tag }}
 
@@ -311,6 +311,10 @@ jobs:
           # GT-BE19000 is prerelease-only until hardware has run an image:
           # the model builds and verifies, but nothing has proved it boots.
           case "$M" in GT-BE19000) pre="--prerelease" ;; esac
+          # BQ16: the same rule - onboarded 2026-10-01, no hardware has run an image.
+          case "$M" in BQ16) pre="--prerelease" ;; esac
+          # BQ16_PRO: the same rule - onboarded 2026-10-04, no hardware has run an image.
+          case "$M" in BQ16_PRO) pre="--prerelease" ;; esac
           # Honor an explicit prerelease input from BOTH workflow_dispatch and
           # workflow_call (public-build passes prerelease=true on a Dev publish).
           # On a tag push the input is empty, so this is a no-op there.
@@ -323,7 +327,7 @@ jobs:
             # of something else -- it has to be asked for. This matters most on
             # the public-build.yml hand-off: EXPECTED_VERSION is pinned, so once
             # a version has shipped, every later run on main would otherwise
-            # clobber five live releases with clean-room artifacts. On a `push`
+            # clobber every model's live release with clean-room artifacts. On a `push`
             # event inputs are empty, so that path is guarded too.
             if [ "${{ inputs.allow_republish }}" != "true" ]; then
               echo "::warning::release $TAG already exists — NOT overwriting it."

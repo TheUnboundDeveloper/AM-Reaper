@@ -1,0 +1,1899 @@
+From 19f0173aadea91c413ec4ac206883bedbd998350 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:06 -0400
+Subject: [PATCH] rednsd: DNS-over-TLS for the LAN, and the encrypted-DNS block
+ lists
+
+rednsd answers DNS-over-TLS on port 853 of the LAN bridges with the router's
+certificate and forwards to the local resolver, adding the client's address so
+Dreadwatch, Wallguard and DNS Director judge the real device. Connections,
+pending queries, file descriptors and write buffers are capped per device; it
+runs as nobody and exits on a certificate or bind error rather than loop.
+encdns.sh keeps the DoH resolver address sets for "Block encrypted DNS that
+goes around the router": the shipped seed plus a maintained list, validated as
+the kernel reads it - private, loopback, link-local and multicast ranges
+refused, nothing wider than IPv4 /24 or IPv6 /48, IPv6 capped at its set's
+size - cached on /jffs and replayed at boot. doh-names.txt: the DoH provider
+names answered NXDOMAIN while the block is on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rednsd/.gitignore    |    4 +
+ release/src/router/rednsd/Makefile      |   48 +
+ release/src/router/rednsd/doh-names.txt |   50 +
+ release/src/router/rednsd/encdns.sh     |  128 ++
+ release/src/router/rednsd/rednsd.c      | 1604 +++++++++++++++++++++++
+ 5 files changed, 1834 insertions(+)
+ create mode 100644 release/src/router/rednsd/.gitignore
+ create mode 100755 release/src/router/rednsd/Makefile
+ create mode 100755 release/src/router/rednsd/doh-names.txt
+ create mode 100644 release/src/router/rednsd/encdns.sh
+ create mode 100644 release/src/router/rednsd/rednsd.c
+
+diff --git a/release/src/router/rednsd/.gitignore b/release/src/router/rednsd/.gitignore
+new file mode 100644
+index 0000000000..dc5f837fcd
+--- /dev/null
++++ b/release/src/router/rednsd/.gitignore
+@@ -0,0 +1,4 @@
++# build outputs (review 2026-10-24, Q-A-12): the daemon, its object and the dependency file
++/rednsd
++*.o
++.*.depend
+diff --git a/release/src/router/rednsd/Makefile b/release/src/router/rednsd/Makefile
+new file mode 100755
+index 0000000000..c9cec0f470
+--- /dev/null
++++ b/release/src/router/rednsd/Makefile
+@@ -0,0 +1,48 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++# rednsd: Encrypted DNS for devices (DNS-over-TLS to the router). libc + OpenSSL 3.5
++# only - rc decides whether it runs and writes its config, so it links neither libnvram
++# nor libshared.
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/openssl/include
++# same exploit-mitigation set as rmcpd/rdnsmapd: a network-facing TLS listener
++CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
++LDFLAGS	= -L$(TOP)/openssl -lssl -lcrypto -ldl -pie -Wl,-z,relro,-z,now
++
++OBJS = rednsd.o
++
++all: rednsd
++
++rednsd: $(OBJS)
++	@echo " [rednsd] CC -o $@"
++	$(CC) -o $@ $(OBJS) $(LDFLAGS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rednsd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rednsd] Installing..."
++	install -D rednsd $(INSTALLDIR)/usr/sbin/rednsd
++	$(STRIP) $(INSTALLDIR)/usr/sbin/rednsd
++	install -D -m 0755 encdns.sh $(INSTALLDIR)/usr/sbin/encdns.sh
++	install -D -m 0644 doh-names.txt $(INSTALLDIR)/usr/share/encdns/doh-names
++	install -D -m 0644 doh-seed.txt $(INSTALLDIR)/usr/share/encdns/doh-seed
++
++%.o: %.c .%.depend
++	@echo " [rednsd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rednsd/doh-names.txt b/release/src/router/rednsd/doh-names.txt
+new file mode 100755
+index 0000000000..3a8f567928
+--- /dev/null
++++ b/release/src/router/rednsd/doh-names.txt
+@@ -0,0 +1,50 @@
++# Encrypted DNS > Block encrypted DNS that goes around the router (2026-10-21).
++# DNS-over-HTTPS / DNS-over-TLS provider host names a device must look up before it can encrypt
++# around the router. While the block is on the router answers each NXDOMAIN, with its subdomains
++# (dnsmasq address=/name/). A name the router itself uses as its DNS Privacy upstream is skipped.
++# One name per line; maintained with the firmware.
++dns.google
++dns.google.com
++8888.google
++cloudflare-dns.com
++one.one.one.one
++dns.quad9.net
++doh.opendns.com
++doh.familyshield.opendns.com
++doh.sandbox.opendns.com
++dns.umbrella.com
++dns.nextdns.io
++adguard-dns.com
++dns.adguard.com
++dns-family.adguard.com
++dns-unfiltered.adguard.com
++doh.cleanbrowsing.org
++dns.controld.com
++freedns.controld.com
++dns.mullvad.net
++doh.mullvad.net
++dns.sb
++dns0.eu
++dns.alidns.com
++doh.pub
++dns.pub
++doh.360.cn
++dns.twnic.tw
++doh.libredns.gr
++doh.ffmuc.net
++dns.switch.ch
++dns.digitale-gesellschaft.ch
++doh.dns4all.eu
++dns.njal.la
++dns.decloudus.com
++doh.applied-privacy.net
++doh.xfinity.com
++doh.la.ahadns.net
++doh.nl.ahadns.net
++dns.brahma.world
++doh.tiar.app
++dns.comss.one
++doh.safesurfer.io
++dns9.quad9.net
++dns10.quad9.net
++dns11.quad9.net
+diff --git a/release/src/router/rednsd/encdns.sh b/release/src/router/rednsd/encdns.sh
+new file mode 100644
+index 0000000000..5319cc5a8b
+--- /dev/null
++++ b/release/src/router/rednsd/encdns.sh
+@@ -0,0 +1,128 @@
++#!/bin/sh
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++#
++# encdns.sh - the address list behind Encrypted DNS > "Block encrypted DNS that goes around the
++# router" (2026-10-21). rc (rc/encdns.c) owns the switch, the firewall chain and the name list;
++# this keeps the two ipsets the chain matches HTTPS against.
++#   replay   load the shipped seed + the cached list into the sets when they are empty (boot,
++#            firewall restart - works before the WAN is up)
++#   update   fetch the maintained list, validate it, swap it in, cache it on /jffs
++# A failed download keeps what is loaded and the cached copy. Nothing here reads nvram.
++D=${EDNS_DIR:-/tmp/rednsd}
++J=${EDNS_JFFS:-/jffs/encdns}
++SEED=${EDNS_SEED:-/usr/share/encdns/doh-seed}
++URL=${EDNS_URL:-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt}
++S4=redns_doh
++S6=redns_doh6
++MAX=50000
++
++CURL='curl -fsSL --max-filesize 4194304 --retry 2 --max-time 60'
++if curl --proto-redir =https --version >/dev/null 2>&1; then
++  CURL="$CURL --proto =https --proto-redir =https"
++fi
++
++log() { logger -t encdns "$*" 2>/dev/null; }
++
++# keep IPv4 / IPv6 addresses and CIDRs only, one per line, lowercase, no duplicates; a regular
++# file only (never followed through a symlink). Review 2026-10-24 (S-A-7): the shape is checked the
++# way ipset will read it (v6 groups, prefix lengths), and a range that would take the LAN, loopback,
++# link-local, multicast or most of the internet with it is refused - the list comes from a third
++# party and is replayed from /jffs at every boot.
++# 2026-10-25 (release review E-1): every entry becomes an HTTPS refusal for the whole LAN, so a range wider
++# than one resolver site - IPv4 /24, IPv6 /48 - is refused (it was /8 and /20: one broad line upstream
++# would have cut HTTPS to a large part of the internet until the next good update). E-3: each family stops
++# at its set's size (IPv6 16384), so ipset restore never refuses the list for size and falls back to one
++# fork per address inside the firewall restart.
++clean() {
++  for f in "$@"; do [ -f "$f" ] && [ ! -L "$f" ] && cat "$f"; done | tr 'A-Z' 'a-z' | awk -v max="$MAX" -v max6=16384 '
++    function v4ok(s,   p) { split(s, p, /[.\/]/)
++      if (p[1] > 255 || p[2] > 255 || p[3] > 255 || p[4] > 255) return 0
++      if (p[5] != "" && (p[5] < 24 || p[5] > 32)) return 0
++      if (p[1] == 0 || p[1] == 10 || p[1] == 127 || p[1] >= 224) return 0
++      if ((p[1] == 169 && p[2] == 254) || (p[1] == 172 && p[2] >= 16 && p[2] <= 31) || (p[1] == 192 && p[2] == 168) || (p[1] == 100 && p[2] >= 64 && p[2] <= 127)) return 0
++      return 1 }
++    function v6ok(s,   a, na, h, g, i, dc, k, q, ng) { na = split(s, a, "/"); if (na > 2) return 0
++      if (na == 2 && (a[2] !~ /^[0-9]+$/ || a[2] < 48 || a[2] > 128)) return 0
++      h = a[1]; if (h !~ /^[0-9a-f:]+$/ || h ~ /:::/ || h ~ /^:[^:]/ || h ~ /[^:]:$/ || h ~ /^::/) return 0
++      dc = 0; q = h; while ((i = index(q, "::")) > 0) { dc++; q = substr(q, i + 2) }
++      if (dc > 1) return 0
++      g = split(h, k, ":"); ng = 0
++      for (i = 1; i <= g; i++) { if (k[i] == "") continue; if (length(k[i]) > 4) return 0; ng++ }
++      if ((dc == 0 && ng != 8) || (dc == 1 && ng > 7)) return 0
++      if (k[1] ~ /^f[cd]/ || k[1] ~ /^fe[89ab]/ || k[1] ~ /^ff/) return 0
++      return 1 }
++    { sub(/[ \t\r]*#.*/, ""); gsub(/^[ \t]+|[ \t\r]+$/, "") }
++    $0 == "" { next }
++    /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/ { if (!v4ok($0)) next; if (!seen[$0]++ && n++ < max) print; next }
++    /^[0-9a-f:]+(\/[0-9]+)?$/ { if (!v6ok($0)) next; if (!seen[$0]++ && n++ < max && n6++ < max6) print }'
++}
++
++# one family into one set: a temporary set, filled, swapped in, removed
++fill() {
++  set=$1 fam=$2 list=$3
++  tmp="${set}_t"
++  if [ "$fam" = 6 ]; then
++    ipset create -exist "$tmp" hash:net family inet6 maxelem 16384
++    pat=':'
++  else
++    ipset create -exist "$tmp" hash:net maxelem 65536
++    pat='^[0-9.]*(/[0-9]+)?$'
++  fi
++  ipset flush "$tmp"
++  # restore stops at the first line ipset rejects and nothing after it would load (review 2026-10-24
++  # S-A-7): then fill the set one entry at a time, as Warden's country lists are
++  if ! grep -E "$pat" "$list" | sed "s/^/add $tmp /" | ipset restore -! 2>/dev/null; then
++    ipset flush "$tmp"
++    grep -E "$pat" "$list" | while read -r a; do ipset add -exist "$tmp" "$a" 2>/dev/null; done
++  fi
++  ipset create -exist "$set" hash:net $( [ "$fam" = 6 ] && echo family inet6 ) maxelem $( [ "$fam" = 6 ] && echo 16384 || echo 65536 )
++  ipset swap "$tmp" "$set" && ipset destroy "$tmp"
++}
++
++entries() { ipset list -t "$1" 2>/dev/null | awk -F': ' '/^Number of entries/ { print $2 }'; }
++
++replay() {
++  [ "$(entries $S4)" -gt 0 ] 2>/dev/null && [ "$(entries $S6)" -gt 0 ] 2>/dev/null && return 0
++  clean "$SEED" "$J/doh.ips" > "$D/doh.load"
++  fill $S4 4 "$D/doh.load"
++  fill $S6 6 "$D/doh.load"
++  rm -f "$D/doh.load"
++}
++
++update() {
++  exec 9>"$D/doh.lock"
++  flock -n 9 || { log "an update is already running"; return 0; }
++  now=$(date +%s)
++  # shellcheck disable=SC2086
++  if $CURL -o "$D/doh.new" "$URL" 2>/dev/null && [ -s "$D/doh.new" ] && [ ! -L "$D/doh.new" ]; then
++    clean "$D/doh.new" > "$D/doh.fetched"
++    n=$(wc -l < "$D/doh.fetched" | tr -d ' ')
++  else
++    n=0
++  fi
++  rm -f "$D/doh.new"
++  if [ "${n:-0}" -gt 0 ]; then
++    clean "$SEED" "$D/doh.fetched" > "$D/doh.load"
++    fill $S4 4 "$D/doh.load"
++    fill $S6 6 "$D/doh.load"
++    mkdir -p "$J" && chmod 700 "$J"
++    cp "$D/doh.fetched" "$J/doh.ips.tmp" && mv "$J/doh.ips.tmp" "$J/doh.ips"
++    echo "ok $now $now $n" > "$D/doh.state"
++    log "encrypted-DNS address list updated: $n addresses"
++  else
++    prev=$(awk '{ print $2 }' "$D/doh.state" 2>/dev/null)	# the last good time stays
++    echo "failed ${prev:-0} $now $(wc -l < "$J/doh.ips" 2>/dev/null | tr -d ' ' || echo 0)" > "$D/doh.state"
++    log "encrypted-DNS address list: download failed, the previous list stays in use"
++    replay
++  fi
++  rm -f "$D/doh.fetched" "$D/doh.load"
++}
++
++mkdir -p "$D"
++case "$1" in
++  replay) replay ;;
++  update) update ;;
++  *) echo "usage: $0 replay|update" >&2; exit 2 ;;
++esac
+diff --git a/release/src/router/rednsd/rednsd.c b/release/src/router/rednsd/rednsd.c
+new file mode 100644
+index 0000000000..c5283aa22e
+--- /dev/null
++++ b/release/src/router/rednsd/rednsd.c
+@@ -0,0 +1,1604 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (C) 2026 the Reaper project maintainer
++// Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++/*
++ * rednsd - Encrypted DNS for devices (2026-10-21).
++ *
++ * The router's own DNS-over-TLS server (RFC 7858) for LAN and guest/VLAN devices. It
++ * terminates TLS and hands each query to the dnsmasq instance of the device's own
++ * network, over UDP from loopback, naming the device in the private EDNS0 option
++ * REAPER_EDNS_CLIENT (dnsmasq/src/edns0.c believes it from loopback only, records the
++ * device in Dreadwatch's hit log, and cuts it out before anything goes upstream). So
++ * every device lookup keeps all of the router's DNS policy - Dreadwatch, the cache, DNS
++ * Privacy upstream, each network's own settings - and is encrypted on the LAN too.
++ *
++ * Who may connect: only a peer inside a configured LAN/SDN subnet ("peer" lines), and
++ * not one DNS Director sends elsewhere ("deny-mac" / "deny-net", "allow-mac" overrides).
++ * A refused peer is closed before TLS, so Android's Automatic Private DNS falls back to
++ * plain DNS on port 53, where DNS Director and Gatekeeper apply as before.
++ *
++ * Shape: one process, poll(), non-blocking OpenSSL. Loads the certificate and binds as
++ * root, then runs as nobody; rc restarts it when the certificate changes. SIGHUP
++ * re-reads the peer and policy lines. Never logs a lookup. Writes a status file every
++ * 15 s, and at once on SIGUSR1, for the Encrypted DNS page.
++ *
++ * Config (rc writes /tmp/rednsd/rednsd.conf):
++ *   cert <path>  key <path>  [cabundle <path>]  [status <path>]
++ *   listen <addr> <port> [wan]
++ *   peer <addr>/<prefix> <upstream addr>[#port]
++ *   deny-mac <mac>  allow-mac <mac>  deny-net <addr>/<prefix>
++ */
++#define _GNU_SOURCE
++#include <arpa/inet.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <grp.h>
++#include <linux/neighbour.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include <netinet/in.h>
++#include <netinet/tcp.h>
++#include <poll.h>
++#include <pwd.h>
++#include <signal.h>
++#include <stdarg.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/prctl.h>
++#include <sys/resource.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <sys/uio.h>
++#include <syslog.h>
++#include <time.h>
++#include <unistd.h>
++
++#include <openssl/err.h>
++#include <openssl/pem.h>
++#include <openssl/rand.h>
++#include <openssl/ssl.h>
++#include <openssl/x509.h>
++#include <openssl/x509v3.h>
++
++#define REAPER_EDNS_CLIENT 65400	/* = dnsmasq EDNS0_OPTION_REAPER_CLIENT */
++
++#define MAX_LISTEN	32
++#define MAX_PEER	64
++#define MAX_MAC		256
++#define MAX_NET		32
++#define MAX_CONN	128
++#define PER_PEER	8
++#define MAX_INFLIGHT	16
++#define MAX_PENDING	(MAX_CONN * MAX_INFLIGHT)
++#define QMIN		12
++#define QMAX		4096		/* longest query accepted */
++#define RMAX		65535		/* longest answer */
++#define WBUF_MAX	(64 * 1024)	/* unsent answers per connection before it is dropped */
++#define HS_MS		5000
++#define IDLE_MS		30000
++#define UP_MS		4000
++#define TCP_RETRY_MS	1500
++#define STATUS_MS	15000
++#define EDNS_SIZE	1232
++
++typedef union {
++	struct sockaddr sa;
++	struct sockaddr_in in;
++	struct sockaddr_in6 in6;
++	struct sockaddr_storage ss;
++} sockaddr_u;
++
++struct net {
++	int family;
++	unsigned char addr[16];
++	int prefix;
++};
++
++struct peer {
++	struct net net;
++	sockaddr_u up;		/* the dnsmasq instance of this network, port 53 */
++};
++
++struct listener {
++	char addr[INET6_ADDRSTRLEN];
++	int port, wan, fd, err;
++};
++
++enum { C_FREE, C_HANDSHAKE, C_OPEN };
++
++struct conn {
++	int state, fd;
++	unsigned gen;
++	SSL *ssl;
++	sockaddr_u peer;
++	unsigned char mac[6];	/* the device, when the neighbour table knew it at accept (S-A-3) */
++	int has_mac;
++	const struct peer *net;
++	long long hs_deadline, last;
++	unsigned char rbuf[2 + QMAX];
++	size_t rlen;
++	unsigned char *wbuf;
++	size_t wlen, woff, wcap;
++	int inflight, want_write, closing;
++};
++
++struct pending {
++	int used;
++	int conn;
++	unsigned gen;
++	uint16_t client_id, up_id;
++	int added_opt;
++	sockaddr_u up;
++	long long deadline;
++	unsigned char *q;
++	size_t qlen;
++};
++
++#ifndef RED_TEST
++static
++#endif
++struct cfg {
++	char cert[256], key[256], cabundle[256], status[256];
++	struct listener listen[MAX_LISTEN];
++	int nlisten;
++	struct peer peer[MAX_PEER];
++	int npeer;
++	unsigned char deny_mac[MAX_MAC][6], allow_mac[MAX_MAC][6];
++	int ndeny_mac, nallow_mac;
++	struct net deny_net[MAX_NET];
++	int ndeny_net;
++} cfg;
++
++static struct conn conns[MAX_CONN];
++static struct pending pend[MAX_PENDING];
++static uint16_t idmap[65536];		/* upstream query ID -> pending slot + 1 */
++static int udp4 = -1, udp6 = -1;
++static SSL_CTX *ctx;
++static volatile sig_atomic_t got_term, got_hup, got_usr1;
++static const char *conf_path = "/tmp/rednsd/rednsd.conf";
++static long long started;
++static unsigned long long n_queries, n_ref_peer, n_ref_policy, n_ref_busy, n_hs_fail, n_servfail, n_conns_total;
++static char cert_json[2048] = "{}";
++
++/* ---- small helpers */
++
++static long long now_ms(void)
++{
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++}
++
++static void logmsg(int pri, const char *fmt, ...)
++{
++	static long long last;
++	static int burst;
++	long long t = now_ms();
++	va_list ap;
++
++	/* never more than 10 lines a minute, whatever goes wrong */
++	if (t - last > 60000) { last = t; burst = 0; }
++	if (++burst > 10)
++		return;
++	va_start(ap, fmt);
++	vsyslog(pri, fmt, ap);
++	va_end(ap);
++}
++
++static int set_nonblock(int fd)
++{
++	int fl = fcntl(fd, F_GETFL);
++	return fl < 0 ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
++}
++
++#ifndef RED_TEST
++static
++#endif
++int parse_net(const char *s, struct net *n)
++{
++	char buf[64], *slash;
++	int max;
++
++	if (strlen(s) >= sizeof(buf))
++		return -1;
++	strcpy(buf, s);
++	memset(n, 0, sizeof(*n));
++	if ((slash = strchr(buf, '/')))
++		*slash++ = 0;
++	if (inet_pton(AF_INET, buf, n->addr) == 1) {
++		n->family = AF_INET; max = 32;
++	} else if (inet_pton(AF_INET6, buf, n->addr) == 1) {
++		n->family = AF_INET6; max = 128;
++	} else
++		return -1;
++	n->prefix = slash ? atoi(slash) : max;
++	if (n->prefix < 0 || n->prefix > max)
++		return -1;
++	return 0;
++}
++
++static const unsigned char *sa_bytes(const sockaddr_u *a, int *family)
++{
++	if (a->sa.sa_family == AF_INET6 && IN6_IS_ADDR_V4MAPPED(&a->in6.sin6_addr)) {
++		*family = AF_INET;
++		return a->in6.sin6_addr.s6_addr + 12;
++	}
++	*family = a->sa.sa_family;
++	if (a->sa.sa_family == AF_INET)
++		return (const unsigned char *)&a->in.sin_addr;
++	return a->in6.sin6_addr.s6_addr;
++}
++
++#ifndef RED_TEST
++static
++#endif
++int net_match(const struct net *n, const sockaddr_u *a)
++{
++	int fam, bits, i;
++	const unsigned char *b = sa_bytes(a, &fam);
++
++	if (fam != n->family)
++		return 0;
++	bits = n->prefix;
++	for (i = 0; bits > 0; i++, bits -= 8) {
++		unsigned char m = bits >= 8 ? 0xff : (unsigned char)(0xff << (8 - bits));
++		if ((b[i] & m) != (n->addr[i] & m))
++			return 0;
++	}
++	return 1;
++}
++
++#ifndef RED_TEST
++static
++#endif
++int parse_mac(const char *s, unsigned char *m)
++{
++	unsigned v[6];
++	int i;
++
++	if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
++		return -1;
++	for (i = 0; i < 6; i++) {
++		if (v[i] > 255)
++			return -1;
++		m[i] = v[i];
++	}
++	return 0;
++}
++
++static int sa_from_str(const char *str, int port, sockaddr_u *a)
++{
++	char s[INET6_ADDRSTRLEN + 8], *hash;
++
++	/* "addr" or "addr#port" (dnsmasq's own notation) */
++	if (strlen(str) >= sizeof(s))
++		return -1;
++	strcpy(s, str);
++	if ((hash = strchr(s, '#'))) {
++		*hash++ = 0;
++		port = atoi(hash);
++		if (port <= 0 || port > 65535)
++			return -1;
++	}
++	memset(a, 0, sizeof(*a));
++	if (inet_pton(AF_INET, s, &a->in.sin_addr) == 1) {
++		a->in.sin_family = AF_INET;
++		a->in.sin_port = htons(port);
++		return 0;
++	}
++	if (inet_pton(AF_INET6, s, &a->in6.sin6_addr) == 1) {
++		a->in6.sin6_family = AF_INET6;
++		a->in6.sin6_port = htons(port);
++		return 0;
++	}
++	return -1;
++}
++
++static socklen_t sa_len(const sockaddr_u *a)
++{
++	return a->sa.sa_family == AF_INET ? sizeof(a->in) : sizeof(a->in6);
++}
++
++static int sa_same(const sockaddr_u *a, const sockaddr_u *b)
++{
++	if (a->sa.sa_family != b->sa.sa_family)
++		return 0;
++	if (a->sa.sa_family == AF_INET)
++		return a->in.sin_port == b->in.sin_port && a->in.sin_addr.s_addr == b->in.sin_addr.s_addr;
++	return a->in6.sin6_port == b->in6.sin6_port && !memcmp(&a->in6.sin6_addr, &b->in6.sin6_addr, 16);
++}
++
++/* ---- config */
++
++#ifndef RED_TEST
++static
++#endif
++int load_conf(const char *path, struct cfg *c, int policy_only)
++{
++	FILE *f = fopen(path, "r");
++	char line[512], a[256], b[256], d[32];
++	struct cfg keep;
++
++	if (!f)
++		return -1;
++	if (policy_only)
++		keep = *c;
++	memset(c, 0, sizeof(*c));
++	if (policy_only) {
++		memcpy(c->cert, keep.cert, sizeof(c->cert));
++		memcpy(c->key, keep.key, sizeof(c->key));
++		memcpy(c->cabundle, keep.cabundle, sizeof(c->cabundle));
++		memcpy(c->status, keep.status, sizeof(c->status));
++		memcpy(c->listen, keep.listen, sizeof(c->listen));
++		c->nlisten = keep.nlisten;
++	}
++	snprintf(c->status, sizeof(c->status), "%s", policy_only && *keep.status ? keep.status : "/tmp/rednsd/run/status.json");
++
++	while (fgets(line, sizeof(line), f)) {
++		int n;
++		a[0] = b[0] = d[0] = 0;
++		if (line[0] == '#' || line[0] == '\n')
++			continue;
++		if (!strncmp(line, "listen ", 7)) {
++			if (policy_only || c->nlisten >= MAX_LISTEN)
++				continue;
++			char la[INET6_ADDRSTRLEN];
++			n = sscanf(line + 7, "%45s %255s %31s", la, b, d);
++			if (n >= 2) {
++				struct listener *l = &c->listen[c->nlisten];
++				sockaddr_u t;
++				if (sa_from_str(la, 853, &t) || atoi(b) <= 0 || atoi(b) > 65535)
++					continue;
++				memcpy(l->addr, la, sizeof(l->addr));
++				l->port = atoi(b);
++				l->wan = n == 3 && !strcmp(d, "wan");
++				l->fd = -1;
++				c->nlisten++;
++			}
++		} else if (!strncmp(line, "peer ", 5)) {
++			if (c->npeer < MAX_PEER && sscanf(line + 5, "%63s %63s", a, b) == 2
++			    && !parse_net(a, &c->peer[c->npeer].net) && !sa_from_str(b, 53, &c->peer[c->npeer].up))
++				c->npeer++;
++		} else if (!strncmp(line, "deny-mac ", 9)) {
++			if (c->ndeny_mac < MAX_MAC && sscanf(line + 9, "%31s", a) == 1 && !parse_mac(a, c->deny_mac[c->ndeny_mac]))
++				c->ndeny_mac++;
++		} else if (!strncmp(line, "allow-mac ", 10)) {
++			if (c->nallow_mac < MAX_MAC && sscanf(line + 10, "%31s", a) == 1 && !parse_mac(a, c->allow_mac[c->nallow_mac]))
++				c->nallow_mac++;
++		} else if (!strncmp(line, "deny-net ", 9)) {
++			if (c->ndeny_net < MAX_NET && sscanf(line + 9, "%63s", a) == 1 && !parse_net(a, &c->deny_net[c->ndeny_net]))
++				c->ndeny_net++;
++		} else if (!policy_only && sscanf(line, "%31s %255s", d, a) == 2) {
++			if (!strcmp(d, "cert")) snprintf(c->cert, sizeof(c->cert), "%s", a);
++			else if (!strcmp(d, "key")) snprintf(c->key, sizeof(c->key), "%s", a);
++			else if (!strcmp(d, "cabundle")) snprintf(c->cabundle, sizeof(c->cabundle), "%s", a);
++			else if (!strcmp(d, "status")) snprintf(c->status, sizeof(c->status), "%s", a);
++		}
++	}
++	fclose(f);
++	return 0;
++}
++
++/* ---- who may connect */
++
++#ifndef RED_TEST
++static
++#endif
++const struct peer *peer_of(const struct cfg *c, const sockaddr_u *a)
++{
++	const struct peer *best = NULL;
++	int i;
++
++	/* the most specific subnet wins */
++	for (i = 0; i < c->npeer; i++)
++		if (net_match(&c->peer[i].net, a) && (!best || c->peer[i].net.prefix > best->net.prefix))
++			best = &c->peer[i];
++	return best;
++}
++
++#ifndef RED_TEST
++static
++#endif
++const char *arp_path = "/proc/net/arp";
++
++static int mac_v4(const sockaddr_u *a, unsigned char *mac)
++{
++	FILE *f = fopen(arp_path, "r");
++	char line[256], ip[64], hw[64], want[INET_ADDRSTRLEN];
++	unsigned flags;
++	int fam, found = 0;
++	const unsigned char *b = sa_bytes(a, &fam);
++
++	if (!f)
++		return -1;
++	inet_ntop(AF_INET, b, want, sizeof(want));
++	while (!found && fgets(line, sizeof(line), f))
++		if (sscanf(line, "%63s %*s %x %63s", ip, &flags, hw) == 3 && (flags & 2) && !strcmp(ip, want))
++			found = !parse_mac(hw, mac);
++	fclose(f);
++	return found ? 0 : -1;
++}
++
++static int mac_v6(const sockaddr_u *a, unsigned char *mac)
++{
++	struct { struct nlmsghdr nh; struct ndmsg nd; } req;
++	char buf[16384];
++	int fd, found = 0, done = 0;
++
++	if ((fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE)) < 0)
++		return -1;
++	memset(&req, 0, sizeof(req));
++	req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
++	req.nh.nlmsg_type = RTM_GETNEIGH;
++	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
++	req.nd.ndm_family = AF_INET6;
++	if (send(fd, &req, req.nh.nlmsg_len, 0) < 0) {
++		close(fd);
++		return -1;
++	}
++	while (!done) {
++		struct timeval tv = { 0, 300000 };
++		struct nlmsghdr *nh;
++		int len;
++		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++		if ((len = recv(fd, buf, sizeof(buf), 0)) <= 0)
++			break;
++		for (nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, (unsigned)len); nh = NLMSG_NEXT(nh, len)) {
++			struct ndmsg *nd;
++			struct rtattr *rta;
++			int rl;
++			const unsigned char *dst = NULL, *ll = NULL;
++			if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_ERROR) {
++				done = 1;
++				break;
++			}
++			nd = NLMSG_DATA(nh);
++			rl = nh->nlmsg_len - NLMSG_LENGTH(sizeof(*nd));
++			for (rta = (struct rtattr *)((char *)nd + NLMSG_ALIGN(sizeof(*nd))); RTA_OK(rta, rl); rta = RTA_NEXT(rta, rl)) {
++				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
++					dst = RTA_DATA(rta);
++				else if (rta->rta_type == NDA_LLADDR && RTA_PAYLOAD(rta) == 6)
++					ll = RTA_DATA(rta);
++			}
++			if (!found && dst && ll && !memcmp(dst, a->in6.sin6_addr.s6_addr, 16)) {
++				memcpy(mac, ll, 6);
++				found = 1;
++			}
++		}
++	}
++	close(fd);
++	return found ? 0 : -1;
++}
++
++/* 1 = this device may use the router's encrypted DNS */
++#ifndef RED_TEST
++static
++#endif
++int policy_allows(const struct cfg *c, const sockaddr_u *a)
++{
++	unsigned char mac[6];
++	int i, fam, have_mac = -1;
++
++	sa_bytes(a, &fam);
++	if (c->ndeny_mac || c->nallow_mac)
++		have_mac = fam == AF_INET ? mac_v4(a, mac) : mac_v6(a, mac);
++	if (have_mac == 0) {
++		for (i = 0; i < c->nallow_mac; i++)
++			if (!memcmp(c->allow_mac[i], mac, 6))
++				return 1;
++		for (i = 0; i < c->ndeny_mac; i++)
++			if (!memcmp(c->deny_mac[i], mac, 6))
++				return 0;
++	}
++	for (i = 0; i < c->ndeny_net; i++)
++		if (net_match(&c->deny_net[i], a))
++			return 0;
++	return 1;
++}
++
++/* ---- DNS message surgery: just enough to find and edit the OPT RR */
++
++static int skip_name(const unsigned char *m, size_t len, size_t *off)
++{
++	size_t o = *off;
++	int hops = 0;
++
++	while (o < len) {
++		unsigned char l = m[o];
++		if (l == 0) {
++			*off = o + 1;
++			return 0;
++		}
++		if ((l & 0xc0) == 0xc0) {
++			if (o + 2 > len || ++hops > 64)
++				return -1;
++			*off = o + 2;
++			return 0;
++		}
++		if (l & 0xc0)
++			return -1;
++		o += 1 + l;
++	}
++	return -1;
++}
++
++struct msginfo {
++	int has_opt, has_tsig;
++	size_t opt_start, opt_rdlen_at, opt_end;	/* the whole OPT RR, and where its RDLEN sits */
++};
++
++/* walk a message; 0 if well formed as far as we need */
++#ifndef RED_TEST
++static
++#endif
++int msg_scan(const unsigned char *m, size_t len, struct msginfo *mi)
++{
++	size_t o = 12;
++	unsigned i, qd, an, ns, ar;
++
++	memset(mi, 0, sizeof(*mi));
++	if (len < 12)
++		return -1;
++	qd = (m[4] << 8) | m[5];
++	an = (m[6] << 8) | m[7];
++	ns = (m[8] << 8) | m[9];
++	ar = (m[10] << 8) | m[11];
++	for (i = 0; i < qd; i++) {
++		if (skip_name(m, len, &o) || o + 4 > len)
++			return -1;
++		o += 4;
++	}
++	for (i = 0; i < an + ns + ar; i++) {
++		size_t start = o;
++		unsigned type, rdlen;
++		if (skip_name(m, len, &o) || o + 10 > len)
++			return -1;
++		type = (m[o] << 8) | m[o + 1];
++		rdlen = (m[o + 8] << 8) | m[o + 9];
++		if (o + 10 + rdlen > len)
++			return -1;
++		if (i >= an + ns && type == 41 && !mi->has_opt) {
++			mi->has_opt = 1;
++			mi->opt_start = start;
++			mi->opt_rdlen_at = o + 8;
++			mi->opt_end = o + 10 + rdlen;
++		}
++		if (i >= an + ns && type == 250)
++			mi->has_tsig = 1;
++		o += 10 + rdlen;
++	}
++	return o == len ? 0 : -1;
++}
++
++/* Remove every REAPER_EDNS_CLIENT option a device put in its own OPT RR - only rednsd
++   may name a device - then add ours. Returns the new length, or 0 if it will not fit. */
++#ifndef RED_TEST
++static
++#endif
++size_t add_client_opt(unsigned char *m, size_t len, size_t cap, const sockaddr_u *client, int *added_opt)
++{
++	struct msginfo mi;
++	unsigned char opt[4 + 17];
++	size_t olen, i, rdlen;
++	int fam;
++	const unsigned char *b = sa_bytes(client, &fam);
++
++	*added_opt = 0;
++	if (msg_scan(m, len, &mi))
++		return 0;
++	if (mi.has_tsig)	/* a signed query is forwarded untouched */
++		return len;
++
++	opt[0] = REAPER_EDNS_CLIENT >> 8;
++	opt[1] = REAPER_EDNS_CLIENT & 0xff;
++	opt[2] = 0;
++	if (fam == AF_INET) {
++		opt[3] = 5; opt[4] = 1; memcpy(opt + 5, b, 4); olen = 9;
++	} else {
++		opt[3] = 17; opt[4] = 2; memcpy(opt + 5, b, 16); olen = 21;
++	}
++
++	if (!mi.has_opt) {
++		/* a new OPT RR at the end: root name, type 41, class = UDP size, TTL 0 */
++		if (len + 11 + olen > cap)
++			return 0;
++		m[len] = 0;
++		m[len + 1] = 0; m[len + 2] = 41;
++		m[len + 3] = EDNS_SIZE >> 8; m[len + 4] = EDNS_SIZE & 0xff;
++		memset(m + len + 5, 0, 4);
++		m[len + 9] = olen >> 8; m[len + 10] = olen & 0xff;
++		memcpy(m + len + 11, opt, olen);
++		len += 11 + olen;
++		i = ((m[10] << 8) | m[11]) + 1;
++		m[10] = i >> 8; m[11] = i & 0xff;
++		*added_opt = 1;
++		return len;
++	}
++
++	/* strip any option of ours the device sent */
++	rdlen = (m[mi.opt_rdlen_at] << 8) | m[mi.opt_rdlen_at + 1];
++	for (i = 0; i + 4 <= rdlen; ) {
++		unsigned char *p = m + mi.opt_rdlen_at + 2 + i;
++		unsigned code = (p[0] << 8) | p[1], l = (p[2] << 8) | p[3];
++		if (i + 4 + l > rdlen)
++			return 0;
++		if (code == REAPER_EDNS_CLIENT) {
++			memmove(p, p + 4 + l, len - (size_t)(p + 4 + l - m));
++			rdlen -= 4 + l;
++			len -= 4 + l;
++			mi.opt_end -= 4 + l;
++		} else
++			i += 4 + l;
++	}
++	/* then insert ours at the end of the OPT RDATA */
++	if (len + olen > cap || rdlen + olen > 0xffff)
++		return 0;
++	memmove(m + mi.opt_end + olen, m + mi.opt_end, len - mi.opt_end);
++	memcpy(m + mi.opt_end, opt, olen);
++	rdlen += olen;
++	m[mi.opt_rdlen_at] = rdlen >> 8;
++	m[mi.opt_rdlen_at + 1] = rdlen & 0xff;
++	return len + olen;
++}
++
++/* drop the OPT RR from an answer to a device that sent none */
++#ifndef RED_TEST
++static
++#endif
++size_t strip_opt_rr(unsigned char *m, size_t len)
++{
++	struct msginfo mi;
++	unsigned ar;
++
++	if (msg_scan(m, len, &mi) || !mi.has_opt)
++		return len;
++	memmove(m + mi.opt_start, m + mi.opt_end, len - mi.opt_end);
++	len -= mi.opt_end - mi.opt_start;
++	ar = ((m[10] << 8) | m[11]) - 1;
++	m[10] = ar >> 8;
++	m[11] = ar & 0xff;
++	return len;
++}
++
++/* SERVFAIL for a query: header + question only */
++static size_t servfail(const unsigned char *q, size_t qlen, uint16_t id, unsigned char *out)
++{
++	size_t o = 12;
++
++	if (qlen < 12)
++		return 0;
++	if (((q[4] << 8) | q[5]) == 1 && !skip_name(q, qlen, &o) && o + 4 <= qlen)
++		o += 4;
++	else
++		o = 12;
++	memcpy(out, q, o);
++	out[0] = id >> 8;
++	out[1] = id & 0xff;
++	out[2] = (q[2] & 0x79) | 0x80;		/* QR, keep opcode + RD */
++	out[3] = 0x80 | 2;			/* RA, SERVFAIL */
++	out[4] = 0; out[5] = o > 12 ? 1 : 0;
++	memset(out + 6, 0, 6);
++	return o;
++}
++
++/* ---- connections */
++
++static int conn_index(struct conn *c) { return (int)(c - conns); }
++
++static void conn_close(struct conn *c)
++{
++	if (c->state == C_FREE)
++		return;
++	if (c->ssl) {
++		if (c->state == C_OPEN)
++			SSL_shutdown(c->ssl);
++		SSL_free(c->ssl);
++	}
++	if (c->fd >= 0)
++		close(c->fd);
++	free(c->wbuf);
++	c->ssl = NULL;
++	c->wbuf = NULL;
++	c->wcap = 0;
++	c->fd = -1;
++	c->state = C_FREE;
++	c->gen++;
++}
++
++static void conn_flush(struct conn *c)
++{
++	while (c->woff < c->wlen) {
++		int n = SSL_write(c->ssl, c->wbuf + c->woff, (int)(c->wlen - c->woff));
++		if (n > 0) {
++			c->woff += n;
++			continue;
++		}
++		switch (SSL_get_error(c->ssl, n)) {
++		case SSL_ERROR_WANT_WRITE:
++		case SSL_ERROR_WANT_READ:
++			c->want_write = 1;
++			return;
++		default:
++			c->closing = 1;
++			return;
++		}
++	}
++	c->wlen = c->woff = 0;
++	c->want_write = 0;
++}
++
++static void conn_send(struct conn *c, const unsigned char *m, size_t len)
++{
++	if (c->state != C_OPEN || c->closing)
++		return;
++	if (c->woff && c->woff == c->wlen)
++		c->wlen = c->woff = 0;
++	if (c->wlen + 2 + len > WBUF_MAX) {	/* a device that never reads */
++		c->closing = 1;
++		return;
++	}
++	if (c->wlen + 2 + len > c->wcap) {	/* grow in 4 KB steps, never past WBUF_MAX */
++		size_t ncap = (c->wlen + 2 + len + 4095) & ~(size_t)4095;
++		unsigned char *nb = realloc(c->wbuf, ncap > WBUF_MAX ? WBUF_MAX : ncap);
++		if (!nb) {
++			c->closing = 1;
++			return;
++		}
++		c->wbuf = nb;
++		c->wcap = ncap > WBUF_MAX ? WBUF_MAX : ncap;
++	}
++	c->wbuf[c->wlen] = len >> 8;
++	c->wbuf[c->wlen + 1] = len & 0xff;
++	memcpy(c->wbuf + c->wlen + 2, m, len);
++	c->wlen += 2 + len;
++	conn_flush(c);
++}
++
++/* ---- queries */
++
++static int pend_alloc(void)
++{
++	int i;
++	for (i = 0; i < MAX_PENDING; i++)
++		if (!pend[i].used)
++			return i;
++	return -1;
++}
++
++static void pend_free(struct pending *p)
++{
++	if (idmap[p->up_id] == (uint16_t)(p - pend) + 1)
++		idmap[p->up_id] = 0;
++	free(p->q);
++	memset(p, 0, sizeof(*p));
++}
++
++static void answer_to(struct pending *p, unsigned char *m, size_t len)
++{
++	struct conn *c = &conns[p->conn];
++
++	if (c->state == C_OPEN && c->gen == p->gen) {
++		m[0] = p->client_id >> 8;
++		m[1] = p->client_id & 0xff;
++		if (p->added_opt)
++			len = strip_opt_rr(m, len);
++		conn_send(c, m, len);
++		c->inflight--;
++		c->last = now_ms();
++	}
++	pend_free(p);
++}
++
++static void fail_query(struct pending *p)
++{
++	unsigned char out[QMAX + 64];
++	size_t n = servfail(p->q, p->qlen, p->client_id, out);
++
++	n_servfail++;
++	if (n) {
++		p->added_opt = 0;
++		answer_to(p, out, n);
++	} else {
++		struct conn *c = &conns[p->conn];
++		if (c->state == C_OPEN && c->gen == p->gen)
++			c->inflight--;
++		pend_free(p);
++	}
++}
++
++/* An answer too big for UDP is asked again over TCP from the local dnsmasq - without blocking the
++   loop (review 2026-10-24, S-A-2: the old blocking exchange let one device stall every other for
++   up to 3 s per truncated answer). One slot per retry: connect, send, read, hand the answer over;
++   a deadline closes a slow one and the query then fails as it would on a lost UDP answer. */
++#define MAX_TCPRE	8
++#define TCPRE_MS	(2 * TCP_RETRY_MS)
++struct tcpre {
++	int fd;			/* -1 = free */
++	int slot;		/* the pending query, by slot... */
++	uint16_t up_id;		/* ...and its upstream id, so a reused slot is told apart */
++	int sent;		/* the query has been written */
++	long long deadline;
++	unsigned char *buf;	/* 2 + answer */
++	size_t have, want;
++};
++static struct tcpre tre[MAX_TCPRE];
++
++static struct pending *tcpre_pending(const struct tcpre *r)
++{
++	struct pending *p = &pend[r->slot];
++	return (p->used && p->up_id == r->up_id) ? p : NULL;
++}
++
++static void tcpre_close(struct tcpre *r)
++{
++	if (r->fd >= 0)
++		close(r->fd);
++	free(r->buf);
++	r->buf = NULL;
++	r->fd = -1;
++}
++
++static void tcpre_start(struct pending *p)
++{
++	struct tcpre *r = NULL;
++	sockaddr_u src;
++	int i, fd;
++
++	for (i = 0; i < MAX_TCPRE; i++)
++		if (tre[i].fd < 0) {
++			r = &tre[i];
++			break;
++		}
++	if (!r || (fd = socket(p->up.sa.sa_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)) < 0) {
++		fail_query(p);
++		return;
++	}
++	memset(&src, 0, sizeof(src));
++	src.sa.sa_family = p->up.sa.sa_family;
++	if (src.sa.sa_family == AF_INET)
++		src.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	else
++		src.in6.sin6_addr = in6addr_loopback;
++	if (bind(fd, &src.sa, sa_len(&src)) || (connect(fd, &p->up.sa, sa_len(&p->up)) && errno != EINPROGRESS)
++	    || !(r->buf = malloc(2 + RMAX))) {
++		close(fd);
++		fail_query(p);
++		return;
++	}
++	r->fd = fd;
++	r->slot = (int)(p - pend);
++	r->up_id = p->up_id;
++	r->sent = 0;
++	r->have = r->want = 0;
++	r->deadline = now_ms() + TCPRE_MS;
++}
++
++/* the retry is over without an answer: fail the query if it still waits, free the slot */
++static void tcpre_fail(struct tcpre *r)
++{
++	struct pending *p = tcpre_pending(r);
++
++	tcpre_close(r);
++	if (p)
++		fail_query(p);
++}
++
++static void tcpre_io(struct tcpre *r, short ev)
++{
++	struct pending *p = tcpre_pending(r);
++	ssize_t n;
++
++	if (!p) {			/* the query timed out or its connection went away meanwhile */
++		tcpre_close(r);
++		return;
++	}
++	if (r->sent && (ev & POLLIN)) {
++		n = read(r->fd, r->buf + r->have, 2 + RMAX - r->have);
++		if (n <= 0) {
++			tcpre_fail(r);
++			return;
++		}
++		r->have += (size_t)n;
++		if (r->have >= 2) {
++			r->want = ((size_t)r->buf[0] << 8) | r->buf[1];
++			if (r->want < 12) {
++				tcpre_fail(r);
++				return;
++			}
++			if (r->have >= 2 + r->want) {
++				unsigned char *m = r->buf + 2;
++				if (m[0] == (p->up_id >> 8) && m[1] == (p->up_id & 0xff))
++					answer_to(p, m, r->want);
++				else
++					fail_query(p);
++				tcpre_close(r);
++			}
++		}
++		return;
++	}
++	if (ev & (POLLERR | POLLHUP | POLLNVAL)) {
++		tcpre_fail(r);
++		return;
++	}
++	if (!r->sent && (ev & POLLOUT)) {
++		unsigned char hdr[2];
++		struct iovec iov[2];
++
++		hdr[0] = (unsigned char)(p->qlen >> 8);
++		hdr[1] = (unsigned char)(p->qlen & 0xff);
++		iov[0].iov_base = hdr;
++		iov[0].iov_len = 2;
++		iov[1].iov_base = p->q;
++		iov[1].iov_len = p->qlen;
++		n = writev(r->fd, iov, 2);
++		if (n != (ssize_t)(2 + p->qlen)) {	/* loopback takes a 4 KB write whole */
++			tcpre_fail(r);
++			return;
++		}
++		r->sent = 1;
++	}
++}
++
++static void query_in(struct conn *c, unsigned char *m, size_t len)
++{
++	unsigned char q[QMAX + 64];
++	struct pending *p;
++	int slot, sock, tries;
++	uint16_t id;
++	size_t qlen;
++	int added = 0;
++
++	n_queries++;
++	/* a query: QR clear, opcode QUERY, one question */
++	if (len < QMIN || (m[2] & 0x80) || (m[2] & 0x78) || ((m[4] << 8) | m[5]) != 1) {
++		c->closing = 1;
++		return;
++	}
++	memcpy(q, m, len);
++	if (!(qlen = add_client_opt(q, len, sizeof(q), &c->peer, &added))) {
++		c->closing = 1;
++		return;
++	}
++	if ((slot = pend_alloc()) < 0) {
++		unsigned char out[QMAX + 64];
++		size_t n = servfail(m, len, (m[0] << 8) | m[1], out);
++		n_servfail++;
++		if (n)
++			conn_send(c, out, n);
++		return;
++	}
++	for (tries = 0; tries < 16; tries++) {
++		if (RAND_bytes((unsigned char *)&id, sizeof(id)) != 1)
++			id = (uint16_t)rand();
++		if (!idmap[id])
++			break;
++	}
++	if (idmap[id]) {
++		c->closing = 1;
++		return;
++	}
++	p = &pend[slot];
++	memset(p, 0, sizeof(*p));
++	if (!(p->q = malloc(qlen))) {
++		c->closing = 1;
++		return;
++	}
++	p->used = 1;
++	p->conn = conn_index(c);
++	p->gen = c->gen;
++	p->client_id = (m[0] << 8) | m[1];
++	p->up_id = id;
++	p->added_opt = added;
++	p->up = c->net->up;
++	p->deadline = now_ms() + UP_MS;
++	q[0] = id >> 8;
++	q[1] = id & 0xff;
++	memcpy(p->q, q, qlen);
++	p->qlen = qlen;
++	idmap[id] = slot + 1;
++	c->inflight++;
++
++	sock = p->up.sa.sa_family == AF_INET ? udp4 : udp6;
++	if (sock < 0 || sendto(sock, q, qlen, 0, &p->up.sa, sa_len(&p->up)) != (ssize_t)qlen)
++		fail_query(p);
++}
++
++static void upstream_in(int sock)
++{
++	static unsigned char ans[RMAX];
++	sockaddr_u from;
++	socklen_t fl;
++	ssize_t n;
++	struct pending *p;
++	int i;
++
++	for (i = 0; i < 64; i++) {
++		fl = sizeof(from);
++		n = recvfrom(sock, ans, sizeof(ans), MSG_DONTWAIT, &from.sa, &fl);
++		if (n < 12)
++			return;
++		{
++			uint16_t id = (ans[0] << 8) | ans[1];
++			if (!idmap[id])
++				continue;
++			p = &pend[idmap[id] - 1];
++		}
++		if (!p->used || !sa_same(&from, &p->up))
++			continue;	/* not from the instance we asked */
++		if (ans[2] & 0x02) {	/* TC: ask again over TCP, without blocking the loop */
++			tcpre_start(p);
++			continue;
++		}
++		answer_to(p, ans, (size_t)n);
++	}
++}
++
++static void conn_read(struct conn *c)
++{
++	for (;;) {
++		size_t need;
++		int n;
++
++		/* hand over every complete message while there is room in flight */
++		while (c->rlen >= 2 && c->inflight < MAX_INFLIGHT && !c->closing) {
++			need = (c->rbuf[0] << 8) | c->rbuf[1];
++			if (need < QMIN || need > QMAX) {
++				c->closing = 1;
++				return;
++			}
++			if (c->rlen < 2 + need)
++				break;
++			query_in(c, c->rbuf + 2, need);
++			memmove(c->rbuf, c->rbuf + 2 + need, c->rlen - 2 - need);
++			c->rlen -= 2 + need;
++			c->last = now_ms();
++		}
++		if (c->closing || c->inflight >= MAX_INFLIGHT || c->rlen >= sizeof(c->rbuf))
++			return;
++		n = SSL_read(c->ssl, c->rbuf + c->rlen, (int)(sizeof(c->rbuf) - c->rlen));
++		if (n > 0) {
++			c->rlen += n;
++			continue;
++		}
++		switch (SSL_get_error(c->ssl, n)) {
++		case SSL_ERROR_WANT_READ:
++			return;
++		case SSL_ERROR_WANT_WRITE:
++			c->want_write = 1;
++			return;
++		default:	/* closed or broken */
++			c->closing = 1;
++			return;
++		}
++	}
++}
++
++static void conn_handshake(struct conn *c)
++{
++	int r = SSL_do_handshake(c->ssl);
++
++	if (r == 1) {
++		c->state = C_OPEN;
++		c->last = now_ms();
++		conn_read(c);
++		return;
++	}
++	switch (SSL_get_error(c->ssl, r)) {
++	case SSL_ERROR_WANT_READ:
++		c->want_write = 0;
++		break;
++	case SSL_ERROR_WANT_WRITE:
++		c->want_write = 1;
++		break;
++	default:
++		n_hs_fail++;
++		c->closing = 1;
++	}
++}
++
++static void accept_on(struct listener *l)
++{
++	for (;;) {
++		sockaddr_u a;
++		socklen_t al = sizeof(a);
++		struct conn *c = NULL;
++		const struct peer *pr;
++		unsigned char mac[6];
++		int fd, i, same = 0, one = 1, has_mac, fam;
++
++		fd = accept4(l->fd, &a.sa, &al, SOCK_NONBLOCK | SOCK_CLOEXEC);
++		if (fd < 0)
++			return;
++		if (!(pr = peer_of(&cfg, &a))) {		/* not from the LAN or a guest/VLAN network */
++			n_ref_peer++;
++			close(fd);
++			continue;
++		}
++		if (!policy_allows(&cfg, &a)) {		/* DNS Director sends this device elsewhere */
++			n_ref_policy++;
++			close(fd);
++			continue;
++		}
++		/* review 2026-10-24 (S-A-3): the per-device cap counts the DEVICE - its MAC when the neighbour table
++		   knows it (an IPv6 host has as many addresses as it likes), its address otherwise */
++		sa_bytes(&a, &fam);
++		has_mac = (fam == AF_INET ? mac_v4(&a, mac) : mac_v6(&a, mac)) == 0;
++		for (i = 0; i < MAX_CONN; i++) {
++			if (conns[i].state == C_FREE) {
++				if (!c)
++					c = &conns[i];
++			} else if (has_mac && conns[i].has_mac) {
++				if (!memcmp(conns[i].mac, mac, 6))
++					same++;
++			} else {
++				int f1, f2;
++				const unsigned char *b1 = sa_bytes(&conns[i].peer, &f1), *b2 = sa_bytes(&a, &f2);
++				if (f1 == f2 && !memcmp(b1, b2, f1 == AF_INET ? 4 : 16))
++					same++;
++			}
++		}
++		if (!c) {	/* every slot taken: the longest-idle open connection makes room (S-A-3) rather than a refusal */
++			struct conn *v = NULL;
++			for (i = 0; i < MAX_CONN; i++)
++				if (conns[i].state == C_OPEN && !conns[i].inflight && conns[i].wlen == conns[i].woff
++				    && (!v || conns[i].last < v->last))
++					v = &conns[i];
++			if (v && now_ms() - v->last >= 1000) {
++				conn_close(v);
++				c = v;
++			}
++		}
++		if (!c || same >= PER_PEER) {
++			n_ref_busy++;
++			close(fd);
++			continue;
++		}
++		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
++		memset(&c->rbuf[0], 0, 2);
++		c->fd = fd;
++		c->peer = a;
++		c->has_mac = has_mac;
++		if (has_mac)
++			memcpy(c->mac, mac, 6);
++		c->net = pr;
++		c->rlen = c->wlen = c->woff = 0;
++		c->inflight = c->want_write = c->closing = 0;
++		c->hs_deadline = now_ms() + HS_MS;
++		c->last = now_ms();
++		if (!(c->ssl = SSL_new(ctx)) || SSL_set_fd(c->ssl, fd) != 1) {
++			if (c->ssl)
++				SSL_free(c->ssl);
++			c->ssl = NULL;
++			close(fd);
++			c->fd = -1;
++			continue;
++		}
++		SSL_set_accept_state(c->ssl);
++		c->state = C_HANDSHAKE;
++		n_conns_total++;
++		conn_handshake(c);
++	}
++}
++
++/* ---- TLS */
++
++static int alpn_cb(SSL *s, const unsigned char **out, unsigned char *outlen,
++		   const unsigned char *in, unsigned int inlen, void *arg)
++{
++	unsigned i = 0;
++
++	(void)s; (void)arg;
++	while (i < inlen) {
++		unsigned l = in[i];
++		if (i + 1 + l > inlen)
++			break;
++		if (l == 3 && !memcmp(in + i + 1, "dot", 3)) {
++			*out = in + i + 1;
++			*outlen = 3;
++			return SSL_TLSEXT_ERR_OK;
++		}
++		i += 1 + l;
++	}
++	return SSL_TLSEXT_ERR_NOACK;
++}
++
++static void json_str(char *out, size_t n, const char *s)
++{
++	size_t o = 0;
++
++	for (; *s && o + 7 < n; s++) {
++		unsigned char ch = (unsigned char)*s;
++		if (ch == '"' || ch == '\\') {
++			out[o++] = '\\';
++			out[o++] = ch;
++		} else if (ch < 0x20 || ch >= 0x7f)
++			o += snprintf(out + o, n - o, "\\u%04x", ch);
++		else
++			out[o++] = ch;
++	}
++	out[o] = 0;
++}
++
++static void cert_describe(void)
++{
++	FILE *f = fopen(cfg.cert, "r");
++	X509 *x = f ? PEM_read_X509(f, NULL, NULL, NULL) : NULL;
++	STACK_OF(X509) *chain = sk_X509_new_null();
++	GENERAL_NAMES *gens;
++	char names[1024] = "", cn[256] = "", issuer[256] = "", esc[600];
++	size_t o = 0;
++	int i, self = 0, trusted = 0;
++	long long not_after = 0;
++
++	if (!x) {
++		if (f)
++			fclose(f);
++		sk_X509_free(chain);
++		snprintf(cert_json, sizeof(cert_json), "{\"error\":1}");
++		return;
++	}
++	for (;;) {	/* the rest of the file is the chain */
++		X509 *y = PEM_read_X509(f, NULL, NULL, NULL);
++		if (!y)
++			break;
++		sk_X509_push(chain, y);
++	}
++	fclose(f);
++	ERR_clear_error();
++
++	if ((gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL))) {
++		for (i = 0; i < sk_GENERAL_NAME_num(gens) && i < 16; i++) {
++			GENERAL_NAME *g = sk_GENERAL_NAME_value(gens, i);
++			if (g->type == GEN_DNS) {
++				const char *s = (const char *)ASN1_STRING_get0_data(g->d.dNSName);
++				json_str(esc, sizeof(esc), s);
++				if (o + strlen(esc) + 4 < sizeof(names))
++					o += snprintf(names + o, sizeof(names) - o, "%s\"%s\"", o ? "," : "", esc);
++			}
++		}
++		GENERAL_NAMES_free(gens);
++	}
++	X509_NAME_get_text_by_NID(X509_get_subject_name(x), NID_commonName, cn, sizeof(cn));
++	if (X509_NAME_get_text_by_NID(X509_get_issuer_name(x), NID_organizationName, issuer, sizeof(issuer)) < 0)
++		X509_NAME_get_text_by_NID(X509_get_issuer_name(x), NID_commonName, issuer, sizeof(issuer));
++	self = X509_check_issued(x, x) == X509_V_OK;
++	{
++		const ASN1_TIME *na = X509_get0_notAfter(x);
++		struct tm tm;
++		if (na && ASN1_TIME_to_tm(na, &tm) == 1)
++			not_after = (long long)timegm(&tm);
++	}
++	/* publicly trusted = chains to the router's CA bundle */
++	if (!self && *cfg.cabundle && access(cfg.cabundle, R_OK) == 0) {
++		X509_STORE *st = X509_STORE_new();
++		X509_STORE_CTX *sc = X509_STORE_CTX_new();
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++		if (st && sc && X509_STORE_load_file(st, cfg.cabundle) == 1
++#else
++		if (st && sc && X509_STORE_load_locations(st, cfg.cabundle, NULL) == 1
++#endif
++		    && X509_STORE_CTX_init(sc, st, x, chain) == 1)
++			trusted = X509_verify_cert(sc) == 1;
++		X509_STORE_CTX_free(sc);
++		X509_STORE_free(st);
++		ERR_clear_error();
++	}
++	{
++		char ecn[300], eis[300];
++		json_str(ecn, sizeof(ecn), cn);
++		json_str(eis, sizeof(eis), issuer);
++		snprintf(cert_json, sizeof(cert_json),
++			 "{\"names\":[%s],\"cn\":\"%s\",\"issuer\":\"%s\",\"not_after\":%lld,\"self_signed\":%d,\"trusted\":%d}",
++			 names, ecn, eis, not_after, self, trusted);
++	}
++	sk_X509_pop_free(chain, X509_free);
++	X509_free(x);
++}
++
++static SSL_CTX *tls_setup(void)
++{
++	SSL_CTX *c = SSL_CTX_new(TLS_server_method());
++
++	if (!c)
++		return NULL;
++	SSL_CTX_set_min_proto_version(c, TLS1_2_VERSION);
++	SSL_CTX_set_options(c, SSL_OP_NO_RENEGOTIATION | SSL_OP_CIPHER_SERVER_PREFERENCE | SSL_OP_NO_COMPRESSION);
++	SSL_CTX_set_mode(c, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
++	SSL_CTX_set_session_cache_mode(c, SSL_SESS_CACHE_SERVER);
++	SSL_CTX_set_alpn_select_cb(c, alpn_cb, NULL);
++	if (SSL_CTX_use_certificate_chain_file(c, cfg.cert) != 1
++	    || SSL_CTX_use_PrivateKey_file(c, cfg.key, SSL_FILETYPE_PEM) != 1
++	    || SSL_CTX_check_private_key(c) != 1) {
++		SSL_CTX_free(c);
++		return NULL;
++	}
++	return c;
++}
++
++/* ---- status file for the page */
++
++static void write_status(const char *state)
++{
++	char tmp[300], lst[2048] = "";
++	size_t o = 0;
++	int i, open_conns = 0;
++	FILE *f;
++
++	for (i = 0; i < MAX_CONN; i++)
++		if (conns[i].state != C_FREE)
++			open_conns++;
++	for (i = 0; i < cfg.nlisten && o + 120 < sizeof(lst); i++)
++		o += snprintf(lst + o, sizeof(lst) - o, "%s{\"a\":\"%s\",\"p\":%d,\"wan\":%d,\"ok\":%d}",
++			      i ? "," : "", cfg.listen[i].addr, cfg.listen[i].port, cfg.listen[i].wan, cfg.listen[i].fd >= 0);
++	snprintf(tmp, sizeof(tmp), "%s.tmp", cfg.status);
++	/* the first writes happen as root, in a directory nobody owns: a fresh file only,
++	   never through a link someone left at the name */
++	unlink(tmp);
++	{
++		int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
++		if (fd < 0)
++			return;
++		if (!(f = fdopen(fd, "w"))) {
++			close(fd);
++			return;
++		}
++	}
++	fprintf(f, "{\"state\":\"%s\",\"pid\":%d,\"up\":%lld,\"listen\":[%s],\"conns\":%d,\"conns_total\":%llu,"
++		"\"queries\":%llu,\"refused_peer\":%llu,\"refused_policy\":%llu,\"refused_busy\":%llu,"
++		"\"hs_fail\":%llu,\"servfail\":%llu,\"cert\":%s}\n",
++		state, (int)getpid(), started ? (now_ms() - started) / 1000 : 0, lst, open_conns, n_conns_total,
++		n_queries, n_ref_peer, n_ref_policy, n_ref_busy, n_hs_fail, n_servfail, cert_json);
++	fclose(f);
++	rename(tmp, cfg.status);
++}
++
++/* ---- setup */
++
++static int bind_listener(struct listener *l)
++{
++	sockaddr_u a;
++	int fd, one = 1;
++
++	if (sa_from_str(l->addr, l->port, &a))
++		return -1;
++	if ((fd = socket(a.sa.sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
++		return -1;
++	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
++	if (a.sa.sa_family == AF_INET6)
++		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
++	/* a WAN or SDN address may come and go: bind it even if it is not up yet */
++	setsockopt(fd, IPPROTO_IP, IP_FREEBIND, &one, sizeof(one));
++	if (bind(fd, &a.sa, sa_len(&a)) || listen(fd, 64) || set_nonblock(fd)) {
++		l->err = errno;
++		close(fd);
++		return -1;
++	}
++	l->fd = fd;
++	return 0;
++}
++
++static int udp_socket(int family)
++{
++	sockaddr_u a;
++	int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++
++	if (fd < 0)
++		return -1;
++	memset(&a, 0, sizeof(a));
++	a.sa.sa_family = family;
++	/* from loopback: the only source dnsmasq believes the client option from */
++	if (family == AF_INET)
++		a.in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++	else
++		a.in6.sin6_addr = in6addr_loopback;
++	if (bind(fd, &a.sa, sa_len(&a))) {
++		close(fd);
++		return -1;
++	}
++	return fd;
++}
++
++static void drop_privileges(void)
++{
++	struct passwd *pw = getpwnam("nobody");
++	struct rlimit rl = { 512, 512 };
++
++	setrlimit(RLIMIT_NOFILE, &rl);
++	if (getuid() != 0)
++		return;
++	if (!pw) {	/* review 2026-10-24 (S-A-9): never keep root for want of the account */
++		logmsg(LOG_ERR, "rednsd: no 'nobody' account - stopping rather than serving as root");
++		exit(1);
++	}
++	if (setgroups(0, NULL) || setgid(pw->pw_gid) || setuid(pw->pw_uid)) {
++		logmsg(LOG_ERR, "rednsd: cannot drop to nobody, stopping");
++		exit(1);
++	}
++	prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
++}
++
++static void on_term(int s) { (void)s; got_term = 1; }
++static void on_hup(int s) { (void)s; got_hup = 1; }
++static void on_usr1(int s) { (void)s; got_usr1 = 1; }
++
++#ifndef RED_TEST
++int main(int argc, char **argv)
++{
++	int i, opt, foreground = 0, bound = 0;
++	long long next_status;
++	char pidfile[] = "/var/run/rednsd.pid";
++
++	while ((opt = getopt(argc, argv, "fc:")) != -1) {
++		if (opt == 'f') foreground = 1;
++		else if (opt == 'c') conf_path = optarg;
++	}
++	openlog("rednsd", LOG_PID, LOG_DAEMON);
++	if (load_conf(conf_path, &cfg, 0) || !*cfg.cert || !*cfg.key) {
++		logmsg(LOG_ERR, "rednsd: no usable configuration in %s", conf_path);
++		return 1;
++	}
++	signal(SIGPIPE, SIG_IGN);
++	signal(SIGTERM, on_term);
++	signal(SIGINT, on_term);
++	signal(SIGHUP, on_hup);
++	signal(SIGUSR1, on_usr1);	/* the page asks for fresh numbers */
++
++	if (!(ctx = tls_setup())) {
++		logmsg(LOG_ERR, "rednsd: cannot load the certificate %s / key %s", cfg.cert, cfg.key);
++		write_status("cert_error");
++		return 1;
++	}
++	cert_describe();
++	for (i = 0; i < cfg.nlisten; i++) {
++		if (bind_listener(&cfg.listen[i]) == 0)
++			bound++;
++		else
++			logmsg(LOG_WARNING, "rednsd: cannot listen on %s port %d: %s",
++			       cfg.listen[i].addr, cfg.listen[i].port, strerror(cfg.listen[i].err));
++	}
++	udp4 = udp_socket(AF_INET);
++	udp6 = udp_socket(AF_INET6);
++	if (!bound) {
++		write_status("bind_error");
++		return 1;
++	}
++	if (!foreground && daemon(0, 0))
++		return 1;
++	{
++		FILE *pf = fopen(pidfile, "w");
++		if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
++	}
++	drop_privileges();
++	for (i = 0; i < MAX_CONN; i++) {
++		conns[i].fd = -1;
++		conns[i].state = C_FREE;
++	}
++	for (i = 0; i < MAX_TCPRE; i++)
++		tre[i].fd = -1;
++	started = now_ms();
++	write_status("running");
++	next_status = now_ms() + STATUS_MS;
++	logmsg(LOG_NOTICE, "rednsd: encrypted DNS for devices on %d address(es)", bound);
++
++	while (!got_term) {
++		struct pollfd pfd[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE];
++		int map[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE], np = 0, timeout;
++		long long t = now_ms(), next = next_status;
++
++		if (got_hup) {
++			got_hup = 0;
++			if (load_conf(conf_path, &cfg, 1) == 0)
++				logmsg(LOG_NOTICE, "rednsd: peers and policy reloaded");
++			/* re-point open connections at their (possibly new) network */
++			for (i = 0; i < MAX_CONN; i++)
++				if (conns[i].state != C_FREE && !(conns[i].net = peer_of(&cfg, &conns[i].peer)))
++					conns[i].closing = 1;
++		}
++
++		/* timers: handshakes, idle connections, unanswered queries, slow TCP retries */
++		for (i = 0; i < MAX_PENDING; i++)
++			if (pend[i].used && pend[i].deadline <= t)
++				fail_query(&pend[i]);
++			else if (pend[i].used && pend[i].deadline < next)
++				next = pend[i].deadline;
++		for (i = 0; i < MAX_TCPRE; i++)
++			if (tre[i].fd >= 0 && tre[i].deadline <= t)
++				tcpre_fail(&tre[i]);
++			else if (tre[i].fd >= 0 && tre[i].deadline < next)
++				next = tre[i].deadline;
++		for (i = 0; i < MAX_CONN; i++) {
++			struct conn *c = &conns[i];
++			if (c->state == C_FREE)
++				continue;
++			if (c->state == C_HANDSHAKE && c->hs_deadline <= t) {
++				n_hs_fail++;
++				c->closing = 1;
++			}
++			if (c->state == C_OPEN && !c->inflight && c->wlen == c->woff && t - c->last >= IDLE_MS)
++				c->closing = 1;
++			if (c->closing) {
++				conn_close(c);
++				continue;
++			}
++			if (c->state == C_HANDSHAKE && c->hs_deadline < next)
++				next = c->hs_deadline;
++			if (c->state == C_OPEN && c->last + IDLE_MS < next)
++				next = c->last + IDLE_MS;
++		}
++		if (t >= next_status || got_usr1) {
++			got_usr1 = 0;
++			write_status("running");
++			next_status = t + STATUS_MS;
++		}
++
++		for (i = 0; i < cfg.nlisten; i++)
++			if (cfg.listen[i].fd >= 0) {
++				pfd[np].fd = cfg.listen[i].fd; pfd[np].events = POLLIN; map[np++] = -1 - i;
++			}
++		if (udp4 >= 0) { pfd[np].fd = udp4; pfd[np].events = POLLIN; map[np++] = -1000; }
++		if (udp6 >= 0) { pfd[np].fd = udp6; pfd[np].events = POLLIN; map[np++] = -1001; }
++		for (i = 0; i < MAX_TCPRE; i++)
++			if (tre[i].fd >= 0) {
++				pfd[np].fd = tre[i].fd; pfd[np].events = tre[i].sent ? POLLIN : POLLOUT; map[np++] = -2000 - i;
++			}
++		for (i = 0; i < MAX_CONN; i++) {
++			struct conn *c = &conns[i];
++			short ev = 0;
++			if (c->state == C_FREE)
++				continue;
++			if (c->want_write)
++				ev |= POLLOUT;
++			if (c->state == C_HANDSHAKE ? !c->want_write : c->inflight < MAX_INFLIGHT)
++				ev |= POLLIN;
++			/* ev may be 0 while the connection waits for answers: poll still
++			   reports a hang-up or an error, and nothing spins */
++			pfd[np].fd = c->fd; pfd[np].events = ev; map[np++] = i;
++		}
++		timeout = (int)(next - t);
++		if (timeout < 0) timeout = 0;
++		if (timeout > 1000) timeout = 1000;
++		if (poll(pfd, np, timeout) < 0 && errno != EINTR)
++			break;
++
++		for (i = 0; i < np; i++) {
++			if (!pfd[i].revents)
++				continue;
++			if (map[i] == -1000 || map[i] == -1001)
++				upstream_in(pfd[i].fd);
++			else if (map[i] <= -2000)
++				tcpre_io(&tre[-2000 - map[i]], pfd[i].revents);
++			else if (map[i] < 0)
++				accept_on(&cfg.listen[-1 - map[i]]);
++			else {
++				struct conn *c = &conns[map[i]];
++				if (c->state == C_HANDSHAKE)
++					conn_handshake(c);
++				else if (c->state == C_OPEN) {
++					if (c->want_write)
++						conn_flush(c);
++					if (!c->closing)
++						conn_read(c);
++				}
++				if (pfd[i].revents & (POLLERR | POLLNVAL | POLLHUP))
++					c->closing = 1;
++			}
++		}
++		/* answers that arrived may have made room for queued messages */
++		for (i = 0; i < MAX_CONN; i++)
++			if (conns[i].state == C_OPEN && !conns[i].closing && conns[i].rlen >= 2
++			    && conns[i].inflight < MAX_INFLIGHT)
++				conn_read(&conns[i]);
++	}
++
++	for (i = 0; i < MAX_CONN; i++)
++		conn_close(&conns[i]);
++	for (i = 0; i < MAX_TCPRE; i++)
++		tcpre_close(&tre[i]);
++	write_status("stopped");
++	logmsg(LOG_NOTICE, "rednsd: stopped");
++	return 0;
++}
++#endif
+-- 
+2.25.1
+

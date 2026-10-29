@@ -106,12 +106,15 @@ on:
         default: ''
       # Publishing is OPT-IN and takes effect on main or Dev (Dev = the beta
       # channel, published as a prerelease; only the stable on-router update
-      # manifest stays main-only). Left unticked (the default) the run builds,
+      # manifest stays main-only). On this 3006.102.8 line Dev-102.8 is the beta
+      # channel and main-102.8 the stable one (the line cannot share main with
+      # Dev's 3006.102.10 series); its manifest refresh still commits to main.
+      # Left unticked (the default) the run builds,
       # verifies and uploads its artifacts, and stops there -- no tag, no
       # release, nothing user-facing. Tick it only when you intend these
       # clean-room images to become the published ones.
       publish:
-        description: 'Publish a GitHub Release when the build succeeds (prerelease on Dev, stable on main)'
+        description: 'Publish a GitHub Release when the build succeeds (prerelease on Dev-102.8, stable on main-102.8)'
         type: boolean
         default: false
 
@@ -539,7 +542,7 @@ jobs:
   tag:
     name: Tag for release
     needs: build
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write          # job-scoped -- the build job stays contents: read
@@ -639,7 +642,7 @@ jobs:
   release:
     name: Publish
     needs: [build, tag]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     permissions:
       contents: write
     strategy:
@@ -676,7 +679,7 @@ jobs:
   refresh_manifest:
     name: Refresh update manifest
     needs: [tag, release]
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
+    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main-102.8' || github.ref == 'refs/heads/Dev' || github.ref == 'refs/heads/Dev-102.8') && inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write

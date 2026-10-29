@@ -1,0 +1,579 @@
+From 5db1f005f0951a8a1961775bc28a31e1594f0f7f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 18:40:19 -0400
+Subject: [PATCH] Wallguard/Dreadwatch sources: the API key inside the address
+ ($APIkey)
+
+Owner 2026-10-28: the second form of API source. Some suppliers take the key
+in the list's URL rather than in a request header, e.g.
+https://api.qfeeds.com/api?feed_type=malware_domains&api_token=$APIkey or
+https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt. A key
+field alone cannot say where in the URL it belongs, so the URL says it: the
+user types $APIkey at the point of insertion and saves the key as before.
+
+- wallguard.sh fetch (shared by both tools): a URL with $APIkey needs the
+  slot's saved key (99 without one, as a header source). Each $APIkey becomes
+  the key, %-encoded outside [A-Za-z0-9._~-]; the finished URL is written into
+  the same root-only 0600 curl config as url = "...", removed after the fetch,
+  and curl is called with no URL argument - the key is never in a command
+  line (awk reads it from its environment, readable by root only). A header
+  and $APIkey together both carry the key.
+- The one "$" a source URL may carry is $APIkey, and never in the host:
+  httpd sh_url(), rc sh_url_ok() (Wallguard) and Dreadwatch's update.sh
+  line check agree; any other "$" is refused as before.
+- Pages (Wallguard, Dreadwatch): one hint line under the form (RSHD_163, 25
+  packs, after RSHD_162); a URL with $APIkey is valid, needs a key (or keeps
+  the saved one) and is not cleared for lacking a header; its row shows API /
+  key saved.
+- Keys stay write-only in /jffs/wallguard/keys and /jffs/rwarden/dnskeys,
+  unchanged (src_keys_save keeps a key per live slot).
+
+Tests (lean): test_wallguard_sources.py (fetch under sh + busybox ash:
+encoding, query and path forms, both placeholders, no key -> 99, header +
+URL, 0600 + cleanup; httpd and rc validators share one URL table; page and
+packs) and test_dreadwatch_sources.py (update.sh end to end with a $APIkey
+source and a host-placeholder line that is skipped).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c               | 15 ++++++++++++---
+ release/src/router/rc/rwarden.c              |  5 ++++-
+ release/src/router/rc/wallguard.c            | 11 +++++++++--
+ release/src/router/wallguard/wallguard.sh    | 17 +++++++++++++----
+ release/src/router/www/BR.dict               |  1 +
+ release/src/router/www/CN.dict               |  1 +
+ release/src/router/www/CZ.dict               |  1 +
+ release/src/router/www/DA.dict               |  1 +
+ release/src/router/www/DE.dict               |  1 +
+ release/src/router/www/EN.dict               |  1 +
+ release/src/router/www/ES.dict               |  1 +
+ release/src/router/www/FI.dict               |  1 +
+ release/src/router/www/FR.dict               |  1 +
+ release/src/router/www/HU.dict               |  1 +
+ release/src/router/www/IT.dict               |  1 +
+ release/src/router/www/JP.dict               |  1 +
+ release/src/router/www/KR.dict               |  1 +
+ release/src/router/www/MS.dict               |  1 +
+ release/src/router/www/NL.dict               |  1 +
+ release/src/router/www/NO.dict               |  1 +
+ release/src/router/www/PL.dict               |  1 +
+ release/src/router/www/RO.dict               |  1 +
+ release/src/router/www/RU.dict               |  1 +
+ release/src/router/www/Reaper_Dreadwatch.asp | 14 +++++++++-----
+ release/src/router/www/Reaper_Wallguard.asp  | 12 ++++++++----
+ release/src/router/www/SL.dict               |  1 +
+ release/src/router/www/SV.dict               |  1 +
+ release/src/router/www/TH.dict               |  1 +
+ release/src/router/www/TR.dict               |  1 +
+ release/src/router/www/TW.dict               |  1 +
+ release/src/router/www/UK.dict               |  1 +
+ 31 files changed, 80 insertions(+), 19 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 9f3edd17685..8a8529f7a4f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -26219,15 +26219,23 @@ static int sh_ip(const char *s)
+ 	return inet_pton(AF_INET, s, b) == 1 || inet_pton(AF_INET6, s, b) == 1;
+ }
+ 
++/* 2026-10-28 (owner): "$APIkey" marks where a source's saved API key goes in its address - the only "$" a URL may
++ * carry, and never in the host (wallguard.sh fetch puts the key there, %-encoded, in its root-only curl config) */
+ static int sh_url(const char *u)
+ {
+-	size_t i;
++	size_t i, h;
+ 
+ 	if (strncmp(u, "https://", 8) || strlen(u) > 400)
+ 		return 0;
+-	for (i = 0; u[i]; i++)
++	h = 8 + strcspn(u + 8, "/?#");
++	for (i = 0; u[i]; i++) {
++		if (u[i] == '$' && i > h && !strncmp(u + i, "$APIkey", 7)) {
++			i += 6;
++			continue;
++		}
+ 		if ((unsigned char)u[i] <= ' ' || (unsigned char)u[i] > 0x7e || strchr("\"'`\\$<>", u[i]))
+ 			return 0;
++	}
+ 	return 1;
+ }
+ 
+@@ -26286,7 +26294,8 @@ static int sh_whole(const char *l, int n)
+ /* 2026-10-26 (owner): a custom source's options, after its URL, space-separated, each at most once:
+  *   name=<%-enc, 1..40>  fmt=list|json:<field>  method=get|post  body=<%-enc, 1..1024>  hdr=<header name>
+  * %-encoded values decode to printable ASCII; a name may not carry markup or quote characters (the page shows
+- * it as text anyway). The API key that goes with hdr= is never in this line (sh_keys_save, /jffs/wallguard/keys). */
++ * it as text anyway). The API key that goes with hdr= or with $APIkey in the URL (2026-10-28) is never in this line
++ * (sh_keys_save, /jffs/wallguard/keys). */
+ static int sh_hex(int c)
+ {
+ 	return isdigit(c) ? c - '0' : tolower(c) - 'a' + 10;
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 86df4671839..2aba1c90693 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -1547,7 +1547,10 @@ domains:
+ 	  "        'custom '[1-8])\n"
+ 	  "          case \"$DSEEN\" in *\" $_s \"*) continue ;; esac\n"
+ 	  "          case \"$_u\" in https://?*) ;; *) logger -t rwarden \"threat domains: your source $_s has no https:// address - skipped\"; continue ;; esac\n"
+-	  "          case \"$_u$_o\" in *[\\\"\\'\\`\\$\\<\\>\\\\]*) logger -t rwarden \"threat domains: your source $_s has characters that are not allowed - skipped\"; continue ;; esac\n"
++	  "          # 2026-10-28: the one \"$\" allowed is $APIkey after the host - where wallguard.sh puts the saved key\n"
++	  "          _uc=$(printf '%s' \"$_u\" | sed 's/[$]APIkey//g'); _uh=${_u#https://}; _uh=${_uh%%[/?#]*}\n"
++	  "          case \"$_uh\" in *[$]*) _uc='$' ;; esac\n"
++	  "          case \"$_uc$_o\" in *[\\\"\\'\\`\\$\\<\\>\\\\]*) logger -t rwarden \"threat domains: your source $_s has characters that are not allowed - skipped\"; continue ;; esac\n"
+ 	  "          case \"$_o\" in *[!A-Za-z0-9=%:._\\ -]*) logger -t rwarden \"threat domains: your source $_s has options that are not valid - skipped\"; continue ;; esac\n"
+ 	  "          DSEEN=\"$DSEEN$_s \"; echo \"custom$_s $_u $_o\" >> $TMP.cs ;;\n"
+ 	  "      esac\n"
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index d7443ecaf12..1a03363659a 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -88,15 +88,22 @@ static int sh_name_ok(const char *s)
+ 	return 1;
+ }
+ 
++/* the one "$" allowed is "$APIkey" after the host (2026-10-28, httpd's sh_url): where wallguard.sh puts the key */
+ static int sh_url_ok(const char *u)
+ {
+-	size_t i;
++	size_t i, h;
+ 
+ 	if (strncmp(u, "https://", 8) || strlen(u) > 400)
+ 		return 0;
+-	for (i = 0; u[i]; i++)
++	h = 8 + strcspn(u + 8, "/?#");
++	for (i = 0; u[i]; i++) {
++		if (u[i] == '$' && i > h && !strncmp(u + i, "$APIkey", 7)) {
++			i += 6;
++			continue;
++		}
+ 		if ((unsigned char)u[i] <= ' ' || u[i] == '"' || u[i] == '\'' || u[i] == '`' || u[i] == '\\' || u[i] == '$')
+ 			return 0;
++	}
+ 	return 1;
+ }
+ 
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index f208825b805..38e8f456ca5 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -11,7 +11,8 @@
+ #   $D/feeds    one subscribed list per line: <bit> <id> <url> <p|c|s> [options]  (p = preset, c = custom,
+ #               s = a profile's blocked services: a local file rc writes, url "-", never fetched;
+ #               options, custom only: name= fmt=list|json:<field> method=get|post body= hdr=<header>)
+-#   $J/keys     "<slot> <API key>" per custom source that sends one (root 0600; never in a command line)
++#   $J/keys     "<slot> <API key>" per custom source that sends one (root 0600; never in a command line) - the
++#               API key: in a header (hdr=) or inside the URL, where the URL says $APIkey (2026-10-28)
+ #   $D/safesearch  the search engines' enforcement names + addresses (safe search, phase 2)
+ #   $D/safe     names that are never blocked (router names, NTP, DDNS, DoT, list hosts)
+ #   $J/block    My rules: names to block (with subdomains)
+@@ -281,6 +282,9 @@ warden_why() {
+ # the names (a URL value is cut to its host; addresses are not names). Plain sources fetch as before.
+ # fetch <out> <url> <curl command> <options> <id>: 0 ok, 99 needs a key none is saved for, 98 no names in the
+ # answer's field, else curl's status.
++# 2026-10-28 (owner): the second form - the key inside the address. Each $APIkey in the URL (never in its host;
++# httpd and rc check that) becomes the saved key, %-encoded; the finished URL goes into the same root-only config
++# as url = "...", so the key is never in a command line (awk reads it from its environment, which only root sees).
+ pdec() {
+   printf '%s' "$1" | awk 'function hv(h,  i, v) { v = 0; h = tolower(h); for (i = 1; i <= 2; i++) v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1; return v }
+     { s = $0; o = ""; while ((i = index(s, "%")) > 0) { o = o substr(s, 1, i - 1) sprintf("%c", hv(substr(s, i + 1, 2))); s = substr(s, i + 3) } printf "%s", o s }'
+@@ -295,7 +299,8 @@ json_names() {
+   [ -s "$1" ] || return 98
+ }
+ fetch() {
+-  if [ -z "$4" ]; then
++  _uk=; case "$2" in *'$APIkey'*) _uk=1 ;; esac
++  if [ -z "$4" ] && [ -z "$_uk" ]; then
+     # shellcheck disable=SC2086
+     $3 -o "$1" "$2" 2>/dev/null; return
+   fi
+@@ -303,7 +308,7 @@ fetch() {
+   for _t in $4; do
+     case "$_t" in method=post) _m=post ;; body=*) _b=$(pdec "${_t#body=}") ;; hdr=*) _h=${_t#hdr=} ;; fmt=*) _f=${_t#fmt=} ;; esac
+   done
+-  if [ -n "$_h" ]; then
++  if [ -n "$_h" ] || [ -n "$_uk" ]; then
+     _kf=${FKEYS:-$J/keys}	# Dreadwatch's sources pass their own key file (the fetch action below)
+     [ -f "$_kf" ] && [ ! -L "$_kf" ] && _k=$(awk -v s="${5#custom}" '$1 == s { print $2; exit }' "$_kf")
+     case "$_k" in ''|*[!!-~]*|*[\"\'\`\\\$]*) return 99 ;; esac
+@@ -314,6 +319,10 @@ fetch() {
+     umask 077
+     : > "$_cf"
+     [ -n "$_h" ] && printf 'header = "%s: %s"\n' "$_h" "$_k" >> "$_cf"
++    [ -n "$_uk" ] && WGK=$_k awk -v u="$2" 'BEGIN { k = ENVIRON["WGK"]; for (i = 33; i < 127; i++) c[sprintf("%c", i)] = i
++      e = ""; for (i = 1; i <= length(k); i++) { x = substr(k, i, 1); if (x !~ /^[A-Za-z0-9._~-]$/) x = sprintf("%%%02X", c[x]); e = e x }
++      o = ""; while ((i = index(u, "$APIkey")) > 0) { o = o substr(u, 1, i - 1) e; u = substr(u, i + 7) }
++      printf "url = \"%s\"\n", o u }' >> "$_cf"
+     if [ "$_m" = post ]; then
+       printf '%s' "$_b" > "$_bf"
+       printf 'data-binary = "@%s"\n' "$_bf" >> "$_cf"
+@@ -321,7 +330,7 @@ fetch() {
+     fi
+   )
+   # shellcheck disable=SC2086
+-  $3 -K "$_cf" -o "$1" "$2" 2>/dev/null; _r=$?
++  if [ -n "$_uk" ]; then $3 -K "$_cf" -o "$1" 2>/dev/null; else $3 -K "$_cf" -o "$1" "$2" 2>/dev/null; fi; _r=$?
+   rm -f "$_cf" "$_bf"
+   [ "$_r" = 0 ] || return "$_r"
+   case "$_f" in json:?*) json_names "$1" "${_f#json:}" || return 98 ;; esac
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 406ca3174bd..ae4421f934f 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=As 8 fontes próprias estão em uso - exclua uma primeiro.
+ RSHD_160=Remover esta lista integrada da tabela? Você pode restaurá-la abaixo da tabela.
+ RSHD_161=API
+ RSHD_162=chave salva
++RSHD_163=Para colocar a chave no próprio endereço, digite $APIkey onde ela deve ficar (por exemplo https://example.com/feed?api_token=$APIkey); o roteador insere a chave salva a cada download, e o cabeçalho da chave pode ficar vazio.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index ec83a251a2a..f33c53fd1cf 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=8 个自己的来源已全部使用 - 请先删除一个。
+ RSHD_160=从表中移除此内置列表？可在表格下方恢复。
+ RSHD_161=API
+ RSHD_162=密钥已保存
++RSHD_163=要把密钥放在地址中，请在密钥应在的位置输入 $APIkey（例如 https://example.com/feed?api_token=$APIkey）；路由器每次下载时会填入已保存的密钥，API 密钥标头可留空。
+ RBST_00=Bastion
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 8da1f818b9f..62107b7740a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Všech 8 vlastních zdrojů je obsazeno - nejprve jeden odstraňte.
+ RSHD_160=Odebrat tento vestavěný seznam z tabulky? Pod tabulkou ho můžete obnovit.
+ RSHD_161=API
+ RSHD_162=klíč uložen
++RSHD_163=Chcete-li klíč vložit přímo do adresy, napište $APIkey na místo, kam patří (například https://example.com/feed?api_token=$APIkey); router při každém stahování doplní uložený klíč a hlavičku klíče můžete nechat prázdnou.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index a0ee3b54355..a77121de997 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Alle 8 egne kilder er i brug - slet en først.
+ RSHD_160=Fjern denne indbyggede liste fra tabellen? Du kan gendanne den under tabellen.
+ RSHD_161=API
+ RSHD_162=nøgle gemt
++RSHD_163=Skal nøglen stå i selve adressen, så skriv $APIkey der, hvor den hører til (f.eks. https://example.com/feed?api_token=$APIkey); routeren indsætter din gemte nøgle ved hver download, og nøgleheaderen kan stå tom.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 85d9a5276dc..59d6cb3a0ca 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Alle 8 eigenen Quellen sind belegt - löschen Sie zuerst eine.
+ RSHD_160=Diese integrierte Liste aus der Tabelle entfernen? Sie können sie unter der Tabelle wiederherstellen.
+ RSHD_161=API
+ RSHD_162=Schlüssel gespeichert
++RSHD_163=Gehört der Schlüssel in die Adresse, schreiben Sie $APIkey an die Stelle, an der er stehen soll (z. B. https://example.com/feed?api_token=$APIkey); der Router setzt bei jedem Download Ihren gespeicherten Schlüssel ein, der Schlüssel-Header kann leer bleiben.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 903f85cf559..ef4f66909a7 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=All 8 of your own sources are in use - delete one first.
+ RSHD_160=Remove this built-in list from the table? You can restore it below the table.
+ RSHD_161=API
+ RSHD_162=key saved
++RSHD_163=To put the key inside the address, type $APIkey where it belongs (for example https://example.com/feed?api_token=$APIkey); the router fills in your saved key at each download, and the key header can stay empty.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 67b0fefb7e5..7ecdaaa32c6 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Las 8 fuentes propias están en uso: elimine una primero.
+ RSHD_160=¿Quitar esta lista integrada de la tabla? Puede restaurarla debajo de la tabla.
+ RSHD_161=API
+ RSHD_162=clave guardada
++RSHD_163=Para poner la clave dentro de la dirección, escriba $APIkey donde debe ir (por ejemplo https://example.com/feed?api_token=$APIkey); el router inserta la clave guardada en cada descarga y la cabecera de la clave puede quedar vacía.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index cad028ec8fd..ebc781f8c0d 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Kaikki 8 omaa lähdettä ovat käytössä - poista ensin yksi.
+ RSHD_160=Poistetaanko tämä sisäänrakennettu luettelo taulukosta? Voit palauttaa sen taulukon alta.
+ RSHD_161=API
+ RSHD_162=avain tallennettu
++RSHD_163=Jos avain kuuluu itse osoitteeseen, kirjoita $APIkey sen paikalle (esimerkiksi https://example.com/feed?api_token=$APIkey); reititin lisää tallennetun avaimen jokaisella latauksella, ja avaimen otsake voi jäädä tyhjäksi.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 210c35d91b9..caad89ce40c 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Vos 8 sources sont utilisées - supprimez-en une d'abord.
+ RSHD_160=Retirer cette liste intégrée du tableau ? Vous pourrez la restaurer sous le tableau.
+ RSHD_161=API
+ RSHD_162=clé enregistrée
++RSHD_163=Pour placer la clé dans l’adresse, saisissez $APIkey à l’endroit voulu (par exemple https://example.com/feed?api_token=$APIkey) ; le routeur y insère votre clé enregistrée à chaque téléchargement, et l’en-tête de la clé peut rester vide.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 13f62319eec..48bf6930a6d 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Mind a 8 saját forrás foglalt - előbb töröljön egyet.
+ RSHD_160=Eltávolítja ezt a beépített listát a táblázatból? A táblázat alatt visszaállíthatja.
+ RSHD_161=API
+ RSHD_162=kulcs mentve
++RSHD_163=Ha a kulcs magába a címbe kerül, írja be a $APIkey jelölőt oda, ahová a kulcs tartozik (például https://example.com/feed?api_token=$APIkey); a router minden letöltéskor beírja a mentett kulcsot, a kulcs fejléce üresen maradhat.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 18c36313618..7e3e7cf0bb5 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Le 8 fonti tue sono tutte in uso: eliminane prima una.
+ RSHD_160=Rimuovere questo elenco integrato dalla tabella? Puoi ripristinarlo sotto la tabella.
+ RSHD_161=API
+ RSHD_162=chiave salvata
++RSHD_163=Per inserire la chiave nell’indirizzo, scrivi $APIkey nel punto in cui va (ad esempio https://example.com/feed?api_token=$APIkey); il router inserisce la chiave salvata a ogni download e l’intestazione della chiave può restare vuota.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 0a2b38da702..77156f342a5 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=独自のソース 8 件がすべて使用中です - 先に 1 件削
+ RSHD_160=この組み込みリストを表から削除しますか? 表の下から元に戻せます。
+ RSHD_161=API
+ RSHD_162=キー保存済み
++RSHD_163=キーをアドレス内に入れる場合は、キーが入る位置に $APIkey と入力してください（例: https://example.com/feed?api_token=$APIkey）。ダウンロードのたびにルーターが保存済みのキーを入れます。キーのヘッダーは空のままでかまいません。
+ RBST_00=Bastion
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index a743cd6484e..ee737d7e905 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=직접 만든 소스 8개가 모두 사용 중입니다 - 먼저 하나
+ RSHD_160=이 기본 목록을 표에서 제거하시겠습니까? 표 아래에서 복원할 수 있습니다.
+ RSHD_161=API
+ RSHD_162=키 저장됨
++RSHD_163=키를 주소 안에 넣으려면 키가 들어갈 자리에 $APIkey 를 입력하십시오(예: https://example.com/feed?api_token=$APIkey). 라우터가 다운로드할 때마다 저장된 키를 넣으며, 키 헤더는 비워 두어도 됩니다.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 56421dda55e..9816279650a 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Kesemua 8 sumber anda sedang digunakan - padam satu dahulu.
+ RSHD_160=Buang senarai terbina dalam ini daripada jadual? Anda boleh memulihkannya di bawah jadual.
+ RSHD_161=API
+ RSHD_162=kunci disimpan
++RSHD_163=Untuk meletakkan kunci di dalam alamat, taip $APIkey di tempat kunci itu sepatutnya (contohnya https://example.com/feed?api_token=$APIkey); penghala mengisi kunci yang disimpan pada setiap muat turun, dan pengepala kunci boleh dibiarkan kosong.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 1970371d845..e8e691be17c 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Alle 8 eigen bronnen zijn in gebruik - verwijder er eerst een.
+ RSHD_160=Deze ingebouwde lijst uit de tabel verwijderen? U kunt hem onder de tabel terugzetten.
+ RSHD_161=API
+ RSHD_162=sleutel opgeslagen
++RSHD_163=Hoort de sleutel in het adres zelf, typ dan $APIkey op de plek waar hij hoort (bijvoorbeeld https://example.com/feed?api_token=$APIkey); de router vult bij elke download uw opgeslagen sleutel in en de sleutelheader mag leeg blijven.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index d8356fc4240..f0ee9da70d6 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Alle 8 egne kilder er i bruk - slett en først.
+ RSHD_160=Fjerne denne innebygde listen fra tabellen? Du kan gjenopprette den under tabellen.
+ RSHD_161=API
+ RSHD_162=nøkkel lagret
++RSHD_163=Skal nøkkelen stå i selve adressen, skriver du $APIkey der den hører hjemme (for eksempel https://example.com/feed?api_token=$APIkey); ruteren setter inn den lagrede nøkkelen ved hver nedlasting, og nøkkelheaderen kan stå tom.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index d90a435772c..a5048226767 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Wszystkie 8 własnych źródeł jest zajętych - najpierw usuń jedno.
+ RSHD_160=Usunąć tę wbudowaną listę z tabeli? Możesz ją przywrócić pod tabelą.
+ RSHD_161=API
+ RSHD_162=klucz zapisany
++RSHD_163=Aby umieścić klucz w samym adresie, wpisz $APIkey w miejscu, w którym ma się znaleźć (na przykład https://example.com/feed?api_token=$APIkey); router przy każdym pobraniu wstawi zapisany klucz, a nagłówek klucza może pozostać pusty.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index d9a0a951204..4365801374d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Toate cele 8 surse proprii sunt folosite - ștergeți mai întâi una.
+ RSHD_160=Eliminați această listă integrată din tabel? O puteți restabili sub tabel.
+ RSHD_161=API
+ RSHD_162=cheie salvată
++RSHD_163=Pentru a pune cheia chiar în adresă, tastați $APIkey acolo unde trebuie să apară (de exemplu https://example.com/feed?api_token=$APIkey); routerul introduce cheia salvată la fiecare descărcare, iar antetul cheii poate rămâne gol.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index bd3a63bea2a..2a3940f8b9f 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Все 8 собственных источников заняты - с
+ RSHD_160=Убрать этот встроенный список из таблицы? Его можно восстановить под таблицей.
+ RSHD_161=API
+ RSHD_162=ключ сохранён
++RSHD_163=Чтобы поместить ключ прямо в адрес, введите $APIkey там, где он должен стоять (например, https://example.com/feed?api_token=$APIkey); при каждой загрузке роутер подставит сохранённый ключ, а заголовок ключа можно оставить пустым.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index 507c8d46ece..02f46641862 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -158,6 +158,7 @@ textarea{width:100%;height:120px;resize:vertical;font-family:ui-monospace,Consol
+       <label><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
+       <label><#RSHD_153#><input type="password" id="sf_key" maxlength="200" autocomplete="new-password"></label>
+     </div>
++    <div class="desc" style="margin:0 0 4px"><#RSHD_163#></div>
+     <div class="desc" id="sf_keyhint" style="margin:0 0 8px"></div>
+     <div class="srow"><button type="button" class="btng" id="sf_ok" onclick="dwSrcOk()"><#CTL_ok#></button><button type="button" class="btng" id="sf_cancel" onclick="dwSrcClose()"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
+   </div>
+@@ -308,6 +309,8 @@ function dwSrcLabel(s){ return s.name || dwSrcHost(s); }
+ function dwSrcBy(id){ var m = /^custom([1-8])$/.exec(id); return m ? DW.customs.filter(function(s){ return s.slot === +m[1]; })[0] || null : null; }
+ function dwLabel(id){ var s = dwSrcBy(id), tr = $('row_' + id); return s ? dwSrcLabel(s) : (tr ? tr.cells[0].textContent : id); }
+ function dwFeedName(id){ var s = dwSrcBy(id); return s ? dwSrcLabel(s) : id; }
++/* 2026-10-28 (owner): the key inside the address - $APIkey marks where it goes */
++function dwUrlKey(u){ return String(u || '').indexOf('$APIkey') >= 0; }
+ function dwHasKey(slot){ return DW.keyUpd[slot] ? DW.keyUpd[slot] !== '-' : !!DW.haskey[slot]; }
+ function dwBtn(label, fn){ var b = document.createElement('button'); b.type = 'button'; b.className = 'btng sm'; b.textContent = label; b.addEventListener('click', fn); return b; }
+ function dwParseSrc(slot, url, rest){
+@@ -362,9 +365,9 @@ function dwPaintSrc(){
+     var id = 'custom' + s.slot, tr = document.createElement('tr'), td = document.createElement('td');
+     tr.className = 'dwcust'; tr.id = 'row_' + id;
+     td.textContent = dwSrcLabel(s);
+-    if(s.hdr || s.fmt === 'json' || s.method === 'post'){
++    if(s.hdr || s.fmt === 'json' || s.method === 'post' || dwUrlKey(s.url)){
+       var api = document.createElement('span'); api.className = 'srcapi';
+-      api.textContent = `<#RSHD_161#>` + (s.hdr && dwHasKey(s.slot) ? ' \u00b7 ' + `<#RSHD_162#>` : ''); td.appendChild(api);
++      api.textContent = `<#RSHD_161#>` + ((s.hdr || dwUrlKey(s.url)) && dwHasKey(s.slot) ? ' \u00b7 ' + `<#RSHD_162#>` : ''); td.appendChild(api);
+     }
+     if(s.name){ var sp = document.createElement('span'); sp.className = 'sub'; sp.textContent = dwSrcHost(s); td.appendChild(sp); }
+     tr.appendChild(td);
+@@ -425,17 +428,18 @@ function dwSrcOk(){
+            body: $('sf_body').value.replace(/\r?\n/g, ' ').trim(), hdr: $('sf_hdr').value.trim()};
+   var key = $('sf_key').value.trim(), bad = false;
+   if(!s.slot || !s.name || s.name.length > 40 || /[<>&"'`\\]/.test(s.name)) bad = true;
+-  if(!/^https:\/\/[^\s"'`\\$<>]+$/.test(s.url) || s.url.length > 400) bad = true;
++  /* the one "$" allowed is $APIkey, after the host (2026-10-28) */
++  if(!/^https:\/\/[^\s"'`\\$<>]+$/.test(s.url.replace(/\$APIkey/g, '')) || /^https:\/\/[^\/?#]*\$/.test(s.url) || s.url.length > 400) bad = true;
+   if(s.fmt === 'json' && !/^[A-Za-z0-9_]{1,32}$/.test(s.field)) bad = true;
+   if(s.method === 'post' && (!/^[\x20-\x7e]*$/.test(s.body) || s.body.length > 1024)) bad = true;
+   if(s.hdr && !/^[A-Za-z0-9-]{1,40}$/.test(s.hdr)) bad = true;
+   if(key && (!/^[!-~]{1,200}$/.test(key) || /["'`\\$]/.test(key))) bad = true;
+   if(bad){ $('sf_msg').textContent = `<#RSHD_157#>`; return; }
+-  if(s.hdr && !key && !dwHasKey(s.slot)){ $('sf_msg').textContent = `<#RSHD_158#>`; return; }
++  if((s.hdr || dwUrlKey(s.url)) && !key && !dwHasKey(s.slot)){ $('sf_msg').textContent = `<#RSHD_158#>`; return; }
+   if(s.fmt !== 'json') s.field = '';
+   if(s.method !== 'post') s.body = '';
+   if(key) DW.keyUpd[s.slot] = key;
+-  else if(!s.hdr && dwHasKey(s.slot)) DW.keyUpd[s.slot] = '-';
++  else if(!s.hdr && !dwUrlKey(s.url) && dwHasKey(s.slot)) DW.keyUpd[s.slot] = '-';
+   if(srcEdit) DW.customs[DW.customs.indexOf(srcEdit)] = s; else DW.customs.push(s);
+   DW.customs.sort(function(a, b){ return a.slot - b.slot; });
+   dwSrcClose(); dwPaintSrc();
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 8085dc78c81..54398c46bcf 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -171,6 +171,7 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+       <label><#RSHD_152#><input type="text" id="sf_hdr" maxlength="40" placeholder="Auth-Key" autocomplete="off"></label>
+       <label><#RSHD_153#><input type="password" id="sf_key" maxlength="200" autocomplete="new-password"></label>
+     </div>
++    <div class="desc" style="margin:0 0 4px"><#RSHD_163#></div>
+     <div class="desc" id="sf_keyhint" style="margin:0 0 8px"></div>
+     <div class="row"><button type="button" class="btng" id="sf_ok"><#CTL_ok#></button><button type="button" class="btng" id="sf_cancel"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
+   </div>
+@@ -409,6 +410,8 @@ function shSrcLine(s){
+   if(s.hdr) o.push('hdr=' + s.hdr);
+   return o.join(' ');
+ }
++/* 2026-10-28 (owner): the key inside the address - $APIkey marks where it goes */
++function shUrlKey(u){ return String(u || '').indexOf('$APIkey') >= 0; }
+ function shHasKey(slot){ return cfg.keyUpd[slot] ? cfg.keyUpd[slot] !== '-' : !!cfg.haskey[slot]; }
+ function shParseConfig(j){
+   cfg = j; cfg.sel = {}; cfg.customs = []; cfg.hidden = {}; cfg.haskey = {}; cfg.keyUpd = {};
+@@ -558,7 +561,7 @@ function shPaintLists(){
+   rows.forEach(function(r){
+     var tr = document.createElement('tr'), td = document.createElement('td'), f = fd[r.id], s = src[r.id];
+     td.textContent = r.label;
+-    if(r.src && (r.src.hdr || r.src.fmt === 'json' || r.src.method === 'post')) td.appendChild(shEl('span', 'srcapi', `<#RSHD_161#>` + (r.src.hdr && shHasKey(r.src.slot) ? ' \u00b7 ' + `<#RSHD_162#>` : '')));
++    if(r.src && (r.src.hdr || r.src.fmt === 'json' || r.src.method === 'post' || shUrlKey(r.src.url))) td.appendChild(shEl('span', 'srcapi', `<#RSHD_161#>` + ((r.src.hdr || shUrlKey(r.src.url)) && shHasKey(r.src.slot) ? ' \u00b7 ' + `<#RSHD_162#>` : '')));
+     if(r.sub){ var sp = document.createElement('span'); sp.className = 'sub'; sp.textContent = r.sub; td.appendChild(sp); }
+     tr.appendChild(td);
+     var tc = document.createElement('td');
+@@ -809,17 +812,18 @@ function shSrcOk(){
+            body: $('sf_body').value.replace(/\r?\n/g, ' ').trim(), hdr: $('sf_hdr').value.trim()};
+   var key = $('sf_key').value.trim(), bad = false;
+   if(!s.slot || !s.name || s.name.length > 40 || /[<>&"'`\\]/.test(s.name)) bad = true;
+-  if(!/^https:\/\/[^\s"'`\\$<>]+$/.test(s.url) || s.url.length > 400) bad = true;
++  /* the one "$" allowed is $APIkey, after the host (2026-10-28) */
++  if(!/^https:\/\/[^\s"'`\\$<>]+$/.test(s.url.replace(/\$APIkey/g, '')) || /^https:\/\/[^\/?#]*\$/.test(s.url) || s.url.length > 400) bad = true;
+   if(s.fmt === 'json' && !/^[A-Za-z0-9_]{1,32}$/.test(s.field)) bad = true;
+   if(s.method === 'post' && (!/^[\x20-\x7e]*$/.test(s.body) || s.body.length > 1024)) bad = true;
+   if(s.hdr && !/^[A-Za-z0-9-]{1,40}$/.test(s.hdr)) bad = true;
+   if(key && (!/^[!-~]{1,200}$/.test(key) || /["'`\\$]/.test(key))) bad = true;
+   if(bad){ $('sf_msg').textContent = `<#RSHD_157#>`; return; }
+-  if(s.hdr && !key && !shHasKey(s.slot)){ $('sf_msg').textContent = `<#RSHD_158#>`; return; }
++  if((s.hdr || shUrlKey(s.url)) && !key && !shHasKey(s.slot)){ $('sf_msg').textContent = `<#RSHD_158#>`; return; }
+   if(s.fmt !== 'json') s.field = '';
+   if(s.method !== 'post') s.body = '';
+   if(key) cfg.keyUpd[s.slot] = key;
+-  else if(!s.hdr && shHasKey(s.slot)) cfg.keyUpd[s.slot] = '-';
++  else if(!s.hdr && !shUrlKey(s.url) && shHasKey(s.slot)) cfg.keyUpd[s.slot] = '-';
+   if(srcEdit) cfg.customs[cfg.customs.indexOf(srcEdit)] = s; else cfg.customs.push(s);
+   cfg.customs.sort(function(a, b){ return a.slot - b.slot; });
+   shSrcClose(); shPaintLists(); shPaintProfiles();
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 6e04b77afdc..b748d8792a1 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Vseh 8 lastnih virov je v uporabi - najprej enega izbrišite.
+ RSHD_160=Odstranim ta vgrajeni seznam iz tabele? Obnovite ga lahko pod tabelo.
+ RSHD_161=API
+ RSHD_162=ključ shranjen
++RSHD_163=Če naj bo ključ kar v naslovu, vnesite $APIkey na mesto, kamor sodi (na primer https://example.com/feed?api_token=$APIkey); usmerjevalnik ob vsakem prenosu vstavi shranjeni ključ, glava ključa pa lahko ostane prazna.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 18de0d4e47c..d094d19d235 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Alla 8 egna källor används - ta bort en först.
+ RSHD_160=Ta bort den här inbyggda listan från tabellen? Du kan återställa den under tabellen.
+ RSHD_161=API
+ RSHD_162=nyckel sparad
++RSHD_163=Ska nyckeln stå i själva adressen skriver du $APIkey där den hör hemma (till exempel https://example.com/feed?api_token=$APIkey); routern fyller i din sparade nyckel vid varje hämtning, och nyckelns header kan lämnas tom.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 07964499880..3a65fb039d3 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=ใช้แหล่งข้อมูลของคุณเอง
+ RSHD_160=นำรายการในตัวนี้ออกจากตารางหรือไม่ คุณกู้คืนได้ใต้ตาราง
+ RSHD_161=API
+ RSHD_162=บันทึกคีย์แล้ว
++RSHD_163=หากต้องการใส่คีย์ไว้ในที่อยู่ ให้พิมพ์ $APIkey ตรงตำแหน่งที่คีย์ต้องอยู่ (เช่น https://example.com/feed?api_token=$APIkey) เราเตอร์จะใส่คีย์ที่บันทึกไว้ทุกครั้งที่ดาวน์โหลด และเว้นส่วนหัวของคีย์ว่างไว้ได้
+ RBST_00=Bastion
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 88d209d50d8..3d8be175b05 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=8 kendi kaynağınızın tümü kullanımda - önce birini silin.
+ RSHD_160=Bu yerleşik liste tablodan kaldırılsın mı? Tablonun altından geri yükleyebilirsiniz.
+ RSHD_161=API
+ RSHD_162=anahtar kayıtlı
++RSHD_163=Anahtarı adresin içine koymak için anahtarın geleceği yere $APIkey yazın (örneğin https://example.com/feed?api_token=$APIkey); yönlendirici her indirmede kayıtlı anahtarınızı oraya koyar, anahtar başlığı boş kalabilir.
+ RBST_00=Bastion
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4cf088de823..cfcc5773381 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=8 個自己的來源已全部使用 - 請先刪除一個。
+ RSHD_160=從表中移除此內建清單？可在表格下方還原。
+ RSHD_161=API
+ RSHD_162=金鑰已儲存
++RSHD_163=若要把金鑰放在位址中，請在金鑰應在的位置輸入 $APIkey（例如 https://example.com/feed?api_token=$APIkey）；路由器每次下載時會填入已儲存的金鑰，金鑰標頭可留空。
+ RBST_00=Bastion
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 428ee98cae1..9d115710369 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -8905,4 +8905,5 @@ RSHD_159=Усі 8 власних джерел зайняті - спершу ви
+ RSHD_160=Прибрати цей вбудований список із таблиці? Його можна відновити під таблицею.
+ RSHD_161=API
+ RSHD_162=ключ збережено
++RSHD_163=Щоб вставити ключ просто в адресу, введіть $APIkey там, де він має стояти (наприклад, https://example.com/feed?api_token=$APIkey); під час кожного завантаження роутер підставить збережений ключ, а заголовок ключа можна залишити порожнім.
+ RBST_00=Bastion
+-- 
+2.25.1
+

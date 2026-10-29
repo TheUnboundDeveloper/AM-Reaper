@@ -1,8 +1,8 @@
 # AM-Reaper
 
-> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
-**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.6.1** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built from per-model branches of the same tree for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and, from v3.1.4, the **GT-BE19000** (BCM4916; metal validation owed on the siblings).
+**Security-hardened, de-clouded [Asuswrt-Merlin](https://github.com/RMerl/asuswrt-merlin.ng) for the ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x** — branded `reaper`. Newest published release: **v3.1.0** <!--@pubver--> (all five main models — see §"Current version" below); the source tree sits at **v3.6.2** <!--@treever-->. Primary, hardware-validated model is the **RT-BE96U**; also built for the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro** (BCM4916; metal validation owed on the siblings). From v3.6.0 two branches carry the same Reaper version: `Dev` builds the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on Asuswrt-Merlin 3006.102.10, and `Dev-102.8` builds the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8 until ASUS publishes a 102_40585-era GPL for them.
 
 The goal: harden the open-source userspace so that **only physical access** can compromise the device — eliminating remotely/LAN-reachable command injection, buffer overflows, format-string and auth-bypass bugs — remove cloud-coupled/AI-branded attack surface, and produce a flashable image that can be shared with other security-conscious BE-series owners.
 
@@ -69,7 +69,7 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
 ## Quick start
 
 - **Just want to flash it?** Flashable builds are **hosted right here on GitHub** — grab the image for your model from the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases) page, each with a `SHA256SUMS` file to verify the download. Every image ships with its complete corresponding source in this repo (`patches/` + `provenance/`); see [docs/SOURCE-AVAILABILITY.md](docs/SOURCE-AVAILABILITY.md). There are **two variants** — a **Standard** image and an **AI Advisor** (`…_MCP`) image that adds the optional MCP server (off by default). First non-stock flash needs `nvram set DOWNGRADE_CHECK_PASS=1` (see [docs/PROJECT.md](docs/PROJECT.md) § Installation); flash via *Administration → Firmware Upgrade*.
-- **Want to build it yourself without setting anything up?** Fork this repo and run the **[Build firmware from source](.github/workflows/public-build.yml)** workflow from the Actions tab in your fork. It builds the model you pick — or all six — in a clean room on GitHub's runners — pinned upstream base, pinned toolchains, this repo's published patch series, this repo's own build engine and QA gate — and hands you the `.pkgtb` plus a full provenance record as artifacts. No Linux box, no toolchain, no Broadcom SDK required. **[docs/CI-PUBLIC-BUILD.md](docs/CI-PUBLIC-BUILD.md)** explains what a run proves, which log messages are normal noise, and what the limits are.
+- **Want to build it yourself without setting anything up?** Fork this repo and run the **[Build firmware from source](.github/workflows/public-build.yml)** workflow from the Actions tab in your fork. It builds the model you pick — or all four the branch carries (`Dev` and `Dev-102.8` build four each) — in a clean room on GitHub's runners — pinned upstream base, pinned toolchains, this repo's published patch series, this repo's own build engine and QA gate — and hands you the `.pkgtb` plus a full provenance record as artifacts. No Linux box, no toolchain, no Broadcom SDK required. **[docs/CI-PUBLIC-BUILD.md](docs/CI-PUBLIC-BUILD.md)** explains what a run proves, which log messages are normal noise, and what the limits are.
 - **Want to build it yourself locally / contribute?** Read **[docs/DEV-SETUP.md](docs/DEV-SETUP.md)** — it walks you from fetching the upstream source + toolchains, applying `patches/`, through the build and verification (including every trap we hit). The AI Advisor is compiled in or out via the `RTCONFIG_REAPER_MCP` build flag.
 
 ## Base & status
@@ -81,11 +81,11 @@ Retained upstream originals kept for reference: `docs/README.proprietary` (the b
   [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases), for all five models
   (published 2026-09-08 <!--@pubdate-->). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on.
   Source rungs are cut more often than releases are published (many rungs — e.g. v2.6.1–v2.6.9, v2.7.0,
-  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.6.1** <!--@treever-->) is normally
+  v2.7.2 — exist in the patch series but were never published), so the source tree (**v3.6.2** <!--@treever-->) is normally
   ahead of this number. Every rung is built on the RT-BE96U and must pass the release gate (`reaper_verify`, the
   static checks and the patch-marker manifest) before it is cut; the maintainer's RT-BE96U runs each rung on metal,
   and the OpenSSL 3.5 move was validated there before its cut. The seven BCM4916 siblings are built
-  clean-room in CI from the same patch series plus their identity overlays (the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro also
+  clean-room in CI from their branch's patch series plus their identity overlays (the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro also
   carry a platform archive); on-metal validation is owed on them.
 
 ## Legal

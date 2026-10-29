@@ -25,7 +25,7 @@ internal quality, or deferred by decision.
 - [Waiting on field response](#waiting-on-field-response)
 - [Open bugs / under investigation](#open-bugs--under-investigation)
 - [UI / UX polish](#ui--ux-polish)
-- [Features to add](#features-to-add)
+- [Potential features to add](#potential-features-to-add)
 - [Documentation](#documentation)
 - [Code quality / deferred (with reason)](#code-quality--deferred-with-reason)
 - [Reported, investigated, closed as working-as-designed

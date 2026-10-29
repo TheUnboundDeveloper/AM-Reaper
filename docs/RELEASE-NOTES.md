@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.6.1** <!--@treever--> — `3006.102.8_Reaper_v3.6.1`. **No doubled menu after a language switch (the dashboard never opens inside the settings frame); English header labels are never cut and Firmware shows the Reaper version; DHCP manual assignment shows device names again; the Wireless Log stays inside the page.** Everything in v3.6.0 is included. See [`CHANGELOG.md`](CHANGELOG.md#v361--no-doubled-menu-after-a-language-switch-english-header-labels-whole-dhcp-reservation-names-wireless-log-width). |
+| **Current rung** | **v3.6.2** <!--@treever--> — `3006.102.8_Reaper_v3.6.2`. **Wallguard and Dreadwatch take an API key inside the source address (`$APIkey`); a source with a header key no longer follows redirects; Wallguard's "Add a source" drops the abuse.ch templates; a stricter MAC check.** Everything in v3.6.1 is included. See [`CHANGELOG.md`](CHANGELOG.md#v362--rt-be86u-keeps-5-ghz-after-a-guest-network-pro-save-api-keys-inside-a-source-address-review-fixes). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
@@ -825,7 +825,7 @@ entries in code.
 
 ## What's new in v3.1.5 — the security review lands, and the routing target is an interface again
 
-The full account, item by item, is in [`CHANGELOG.md`](CHANGELOG.md#v315--the-routing-target-is-an-interface-again) and the
+The full account, item by item, is in [`CHANGELOG.md`](CHANGELOG.md#v315--the-policy-routing-target-column-and-a-sixteen-item-security-review) and the
 review record in [`REAPER-FIXES.md`](REAPER-FIXES.md). In short:
 
 - **Six inherited components fixed:** netatalk CVE-2022-43634 (present, contrary to the 08-30 check; `SECURITY.md` corrected),

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.6.1** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,36 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.2 — RT-BE86U keeps 5 GHz after a Guest Network Pro save, API keys inside a source address, review fixes
+
+Everything in v3.6.1 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8. Two have an effect on one side only: the
+Surfshark handlers exist only on 3006.102.10, and the Wi-Fi driver gate is compiled only for the models in ASUS's own
+list (RT-BE86U in this fleet).
+
+- **RT-BE86U: the 5 GHz radio survives a Guest Network Pro save.** Field report (RT-BE86U, v3.6.0): saving a Guest
+  Network Pro network left the 5 GHz radio down about half the time - LED off, `wl1` "wl driver adapter not found" -
+  until a power cycle. On this model a wireless restart re-runs `init_nvram()`, and ASUS's closed
+  `reload_wl_check()` then reloads both Wi-Fi drivers live whenever `ed_thresh_reload` is set: on any difference in
+  the stored energy-detect values, not only on a change of ED mode. The drivers now stay loaded unless the ED mode
+  (`no_dy_ed_thresh_ctrl`) changed; either outcome is one log line.
+- **Wallguard and Dreadwatch: an API key inside the source address.** For suppliers that take the key in the URL,
+  type `$APIkey` where it goes (for example `https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt`)
+  and save the key as before. The fetch inserts it %-encoded through the root-only curl config, never on a command
+  line. `$APIkey` is the only `$` a source address may carry, and never in the host; keys stay write-only.
+- **Wallguard: no abuse.ch templates in "Add a source".** ThreatFox and URLhaus are threat feeds and stay in
+  Dreadwatch's templates; Wallguard's form loses its Template row.
+- **A source with its API key in a header no longer follows redirects.** curl sends custom headers on every request
+  it follows, to any host, so these fetches run with `max-redirs = 0`. A redirect fails with curl error 47, named in
+  the Wallguard and Dreadwatch logs. A key inside the address still follows redirects (it rides the first request).
+- **MAC address check: a separator out of place is refused.** `isValidMacAddress()` passed 12 hex digits followed by
+  a separator and anything after it (the stock loop stopped there unread). It now returns false. On 3006.102.10 the
+  AiMesh admin actions that take a node MAC rely on it alone (signed-in admin only); on 3006.102.8 Reaper's own
+  check stands there as well.
+- **Surfshark sign-in handlers off (3006.102.10).** `surfshark_login.cgi` and `surfshark_2fa.cgi`, new with GPL
+  102_40585, sign in to a third-party VPN service, and no shipped page calls them. They are compiled out, as the
+  Instant Guard handler was.
 
 ## v3.6.1 — no doubled menu after a language switch, English header labels whole, DHCP reservation names, Wireless Log width
 

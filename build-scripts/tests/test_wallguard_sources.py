@@ -36,6 +36,9 @@ FN = lift("pdec") + lift("json_names") + lift("fetch") + lift("feed_ok")
 check("pdec, json_names, fetch and feed_ok are in wallguard.sh", all(lift(f) for f in ("pdec", "json_names", "fetch", "feed_ok")))
 check("update() fetches through fetch() and names the two new reasons",
       'fetch "$L/$id.new" "$url" "$c" "$opt" "$id"; fr=$?' in sh and "none is saved for it" in sh and "held no names" in sh)
+check("a refused redirect (curl 47) is named in Wallguard's log and Dreadwatch's (review 2026-10-28, R-2)",
+      '47) why="not fetched - the server redirects' in sh and
+      "47) echo \\\"the server redirects, and a source that sends its API key in a header never follows a redirect" in rd("rc/rwarden.c"))
 check("every feeds reader takes the options field", sh.count("while read -r bit id url kind opt; do") == 4
       and "while read -r bit id url kind; do" not in sh)
 
@@ -121,6 +124,9 @@ for shell in shells:
         r = run('fetch "$W/out" "https://api.example/hosts.txt" "curl -fsSL" "hdr=Auth-Key" custom5; echo "rc=$?"', F_ANSWER=os.path.join(W, "answer.txt"))
         check(tag + ": a GET source sends only the header", "rc=0" in r.stdout and 'header = "Auth-Key: abc123"' in rf("last.cfg")
               and "data-binary" not in rf("last.cfg") and rf("out") == "example.org\n", (r.stdout, rf("last.cfg")))
+        # review 2026-10-28 (R-2): curl replays a custom header to any host it is redirected to
+        check(tag + ": a source that sends its key in a header never follows a redirect (max-redirs = 0)",
+              "max-redirs = 0" in rf("last.cfg"), rf("last.cfg"))
         # a plain source: exactly the old call
         reset()
         r = run('fetch "$W/out" "https://lists.example/hosts" "curl -fsSL --max-time 25" "" custom1; echo "rc=$?"', F_ANSWER=os.path.join(W, "answer.txt"))
@@ -130,6 +136,30 @@ for shell in shells:
         reset()
         r = run('fetch "$W/out" "https://api.example/v1/" "curl -fsSL" "method=post body=x hdr=Auth-Key" custom5; echo "rc=$?"', F_RC="22")
         check(tag + ": curl's failure status comes back, temp files removed", "rc=22" in r.stdout and os.listdir(KT) == [], (r.stdout, os.listdir(KT)))
+        # 2026-10-28 (owner): the key inside the address - $APIkey in the URL, no other option needed
+        open(os.path.join(J, "keys"), "w").write("6 Q7/k+y&1\n7 ABC123\n"); reset()
+        r = run("fetch \"$W/out\" 'https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt' \"curl -fsSL\" \"\" custom6; echo \"rc=$?\"",
+                F_ANSWER=os.path.join(W, "answer.txt"))
+        cfg, args = rf("last.cfg"), rf("curl.log")
+        check(tag + ": $APIkey in the URL: the key goes in, %-encoded, as the config's url; the command line has neither key nor URL",
+              "rc=0" in r.stdout and 'url = "https://threatfox-api.abuse.ch/v2/files/exports/Q7%2Fk%2By%261/hostfile.txt"' in cfg
+              and "Q7" not in args and "https://" not in args and " -K " in args and "header =" not in cfg, (r.stdout, cfg, args))
+        check(tag + ": a key only inside the URL still follows redirects (the key rides the first request only)",
+              "max-redirs" not in cfg, cfg)
+        check(tag + ": the URL-key config was 0600 and is gone", rf("last.cfg.mode").startswith("-rw-------") and os.listdir(KT) == [],
+              (rf("last.cfg.mode"), os.listdir(KT)))
+        reset()
+        r = run("fetch \"$W/out\" 'https://api.qfeeds.com/api?feed_type=malware_domains&api_token=$APIkey&x=$APIkey' \"curl -fsSL\" \"name=Q\" custom7; echo \"rc=$?\"",
+                F_ANSWER=os.path.join(W, "answer.txt"))
+        check(tag + ": a query-string key, every $APIkey replaced", "rc=0" in r.stdout and
+              'url = "https://api.qfeeds.com/api?feed_type=malware_domains&api_token=ABC123&x=ABC123"' in rf("last.cfg"), rf("last.cfg"))
+        reset()
+        r = run("fetch \"$W/out\" 'https://api.example/$APIkey/l' \"curl -fsSL\" \"\" custom3; echo \"rc=$?\"", F_ANSWER=os.path.join(W, "answer.txt"))
+        check(tag + ": $APIkey with no key saved for the slot -> 99, curl never called", "rc=99" in r.stdout and rf("curl.log") == "", r.stdout + rf("curl.log"))
+        open(os.path.join(J, "keys"), "w").write("6 HdrAndUrl\n"); reset()
+        r = run("fetch \"$W/out\" 'https://api.example/f/$APIkey' \"curl -fsSL\" \"hdr=X-Key\" custom6; echo \"rc=$?\"", F_ANSWER=os.path.join(W, "answer.txt"))
+        check(tag + ": a header and $APIkey together both carry the key", "rc=0" in r.stdout and 'header = "X-Key: HdrAndUrl"' in rf("last.cfg")
+              and 'url = "https://api.example/f/HdrAndUrl"' in rf("last.cfg"), rf("last.cfg"))
         # feed_ok
         r = run('feed_ok 20 custom1 https://x.example/l c "name=A fmt=list"; echo "a=$?"\n'
                 'feed_ok 1 hagezi_light https://x.example/l p "name=A"; echo "b=$?"\n'
@@ -142,6 +172,27 @@ for shell in shells:
 
 # ---- httpd validators
 CC = shutil.which("gcc") or shutil.which("cc")
+# 2026-10-28: the one "$" a source URL may carry is $APIkey, after the host
+URLKEY_GOOD = ["https://api.qfeeds.com/api?feed_type=malware_domains&api_token=$APIkey",
+               "https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt",
+               "https://a.example?k=$APIkey", "https://a.example/$APIkey$APIkey"]
+URLKEY_BAD = ["https://a.example/$HOME", "https://$APIkey.example/l", "https://a$APIkey/l", "https://a.example/l$APIke",
+              "https://a.example:$APIkey/l", "https://a.example/$(reboot)", "https://a.example/$APIkey`x`"]
+rcf = re.search(r"\nstatic int sh_url_ok\([^)]*\)\n\{.*?\n\}\n", rc, re.S)
+check("rc: sh_url_ok is there", bool(rcf))
+if CC and rcf:
+    w = tempfile.mkdtemp(prefix="wgrc_")
+    try:
+        c = os.path.join(w, "r.c")
+        open(c, "w").write('#include <stdio.h>\n#include <string.h>\n' + rcf.group(0) +
+                           'int main(int argc, char **argv) { int i; for (i = 1; i < argc; i++) printf("%d", sh_url_ok(argv[i])); printf("\\n"); return 0; }\n')
+        r = subprocess.run([CC, "-Wall", "-o", os.path.join(w, "r"), c], capture_output=True, text=True)
+        g = subprocess.run([os.path.join(w, "r")] + URLKEY_GOOD + ["https://a.example/l"], capture_output=True, text=True).stdout.strip() if r.returncode == 0 else ""
+        b = subprocess.run([os.path.join(w, "r")] + URLKEY_BAD, capture_output=True, text=True).stdout.strip() if r.returncode == 0 else ""
+        check("rc: sh_url_ok takes $APIkey after the host and refuses every other $ (httpd's rule)",
+              g == "1" * (len(URLKEY_GOOD) + 1) and b == "0" * len(URLKEY_BAD), (r.stderr[-400:], g, b))
+    finally:
+        shutil.rmtree(w, ignore_errors=True)
 def cfun(name):
     m = re.search(r"\nstatic int %s\([^)]*\)\n\{.*?\n\}\n" % name, web, re.S)
     return m.group(0) if m else ""
@@ -164,8 +215,8 @@ int main(int argc, char **argv) { char b[4096]; int i;
         if r.returncode == 0:
             good = ["oisd_small", "hidden oisd_small", "custom 1 https://a.example/l",
                     "custom 2 https://api.example/v1/ name=Threat%20Fox fmt=json:ioc method=post body=%7B%22q%22%3A1%7D hdr=Auth-Key",
-                    "custom 8 https://a.example/l fmt=list", "custom 3 https://a.example/l method=get"]
-            bad = ["hidden nope", "custom 9 https://a.example/l", "custom 1 http://a.example/l",
+                    "custom 8 https://a.example/l fmt=list", "custom 3 https://a.example/l method=get"] + ["custom 4 " + u for u in URLKEY_GOOD]
+            bad = ["custom 4 " + u for u in URLKEY_BAD] + ["hidden nope", "custom 9 https://a.example/l", "custom 1 http://a.example/l",
                    "custom 1 https://a.example/l name=", "custom 1 https://a.example/l name=%3Cb%3E",
                    "custom 1 https://a.example/l fmt=json:", "custom 1 https://a.example/l fmt=json:a.b",
                    "custom 1 https://a.example/l method=put", "custom 1 https://a.example/l hdr=Auth:Key",
@@ -185,6 +236,14 @@ check("httpd: keys are write-only (config lists slots, never values) and follow 
       '",\\"keys\\":["' in web and "sh_keys_save(get_cgi(\"keys\"))" in web and "live = src_custom_slots(listf);" in web)  # 2026-10-27: shared with Dreadwatch
 check("rc: a custom line's options reach the feeds file; a bad one is skipped and logged",
       '"%d custom%d %s c%s%s\\n"' in rc and "its options are not valid - skipped" in rc)
+page = rd("www/Reaper_Wallguard.asp")
+check("page: $APIkey - the hint line, a URL with it is valid (never in the host), it needs a key and keeps one, the row says API",
+      all(s in page for s in ("<#RSHD_163#>", "function shUrlKey(u){", ".test(s.url.replace(/\\$APIkey/g, ''))",
+                              "/^https:\\/\\/[^\\/?#]*\\$/.test(s.url)", "if((s.hdr || shUrlKey(s.url)) && !key && !shHasKey(s.slot)){",
+                              "else if(!s.hdr && !shUrlKey(s.url) && shHasKey(s.slot))", "r.src.method === 'post' || shUrlKey(r.src.url)")))
+packs = "BR CN CZ DA DE EN ES FI FR HU IT JP KR MS NL NO PL RO RU SL SV TH TR TW UK".split()
+miss = [pk for pk in packs if not re.search(r"^RSHD_162=.*\nRSHD_163=[^\n`]*\$APIkey[^\n`]*\$APIkey", rd("www/%s.dict" % pk), re.M)]
+check("RSHD_163 (the $APIkey hint) right after RSHD_162 in all 25 packs", not miss, miss)
 print("%d failure(s)" % len(fails))
 for f in fails: print("  " + f)
 sys.exit(1 if fails else 0)

@@ -73,6 +73,9 @@ it depends on) found no unauthenticated path to code execution, a settings chang
 factory defaults. Its one medium finding, in the opt-in IPv6 device names, and five low ones were fixed
 in v3.4.8; see [`docs/REAPER-FIXES.md`](docs/REAPER-FIXES.md).
 
+An adversarial review of all code pending for v3.4.9 on 2026-10-24 found one high, three medium and
+thirteen low findings; all were fixed in v3.4.9 (REAPER-FIXES.md, "review 2026-10-24").
+
 If any of these is upgraded it gets its own release and hardware validation rather than riding along
 with unrelated work — the versions are load-bearing for the features that use them.
 

@@ -1,0 +1,92 @@
+From 735243588ffcc477241b701b1e3181baadda68b2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 15 Oct 2026 14:47:45 -0400
+Subject: [PATCH] hostapd: no AUTHORIZED push back for a disconnect the driver
+ reported
+
+The kernel log carried "CFG80211-ERROR) wl_cfg80211_change_station : /
+WLC_SCB_DEAUTHORIZE error (-30)" right after hostapd logged a client as
+disassociated, most often when the router itself disconnected a client
+(a Roaming Assistant kick, for example). -30 is BCME_NOTFOUND: hostapd
+cleared AUTHORIZED in the driver for a client the driver had already
+removed. Broadcom's patch marks the case (WLAN_STA_DRIVER_IND) and already
+skips the station remove for it in ap_free_sta(). Under CONFIG_DRIVER_BRCM
+the flag push is skipped too, at all three sites: hostapd_notif_disassoc(),
+ap_free_sta(), and ieee802_1x_set_sta_authorized(.., 0), which the WPA
+authenticator reaches through WPA_PTK INITIALIZE on WPA_DISASSOC (found on
+metal after the first two). hostapd-initiated paths are unchanged. Metal
+(RT-BE96U): -30 lines 9 -> 1 per boot window (the one left is a
+boot-time association clean-up); a disconnected client re-associated with
+a fresh 4-way handshake and no error. Lean: test_hostapd_driver_ind.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../router_tools/hostapd/src/ap/drv_callbacks.c       | 11 ++++++++++-
+ .../router_tools/hostapd/src/ap/ieee802_1x.c          | 10 ++++++++++
+ .../opensource/router_tools/hostapd/src/ap/sta_info.c |  6 ++++++
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/drv_callbacks.c b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/drv_callbacks.c
+index 956cc9f93ae..b1172a44e41 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/drv_callbacks.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/drv_callbacks.c
+@@ -819,8 +819,17 @@ void hostapd_notif_disassoc(struct hostapd_data *hapd, const u8 *addr)
+ #ifdef CONFIG_DRIVER_BRCM
+ 	/* This disassoc notification is due to driver event */
+ 	sta->flags |= WLAN_STA_DRIVER_IND;
+-#endif /* CONFIG_DRIVER_BRCM */
++	/* reaper 2026-10-15: no flag push back to the driver for a disconnect it reported
++	 * itself - the same rule Broadcom applies to the station removal in ap_free_sta().
++	 * The firmware has already freed the station, so clearing AUTHORIZED reached
++	 * wl_cfg80211_change_station() -> WLC_SCB_DEAUTHORIZE on a station it no longer
++	 * had: "WLC_SCB_DEAUTHORIZE error (-30)" (BCME_NOTFOUND) in the kernel log, every
++	 * time the AP itself disconnected a client (a Roaming Assistant kick, for example). */
++	wpa_printf(MSG_DEBUG, "reaper: driver-indicated disconnect of " MACSTR
++		   " - no AUTHORIZED push to the driver", MAC2STR(sta->addr));
++#else
+ 	hostapd_set_sta_flags(hapd, sta);
++#endif /* CONFIG_DRIVER_BRCM */
+ 	wpa_auth_sm_event(sta->wpa_sm, WPA_DISASSOC);
+ 	sta->acct_terminate_cause = RADIUS_ACCT_TERMINATE_CAUSE_USER_REQUEST;
+ 	ieee802_1x_notify_port_enabled(sta->eapol_sm, 0);
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/ieee802_1x.c b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/ieee802_1x.c
+index 64c3b7a0e53..9b08a967523 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/ieee802_1x.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/ieee802_1x.c
+@@ -119,6 +119,16 @@ void ieee802_1x_set_sta_authorized(struct hostapd_data *hapd,
+ 			       HOSTAPD_LEVEL_DEBUG, "authorizing port");
+ 	} else {
+ 		ap_sta_set_authorized(hapd, sta, 0);
++#ifdef CONFIG_DRIVER_BRCM
++		/* reaper 2026-10-15: the WPA authenticator unauthorizes the port again
++		 * when hostapd_notif_disassoc() hands it WPA_DISASSOC (WPA_PTK INITIALIZE,
++		 * PSK/SAE/OWE). For a disconnect the driver reported (WLAN_STA_DRIVER_IND)
++		 * the firmware has already freed the station: no push - the third of the
++		 * pushes that ended in "WLC_SCB_DEAUTHORIZE error (-30)" (metal, _r3). */
++		if (sta->flags & WLAN_STA_DRIVER_IND)
++			res = 0;
++		else
++#endif /* CONFIG_DRIVER_BRCM */
+ 		res = hostapd_set_authorized(hapd, sta, 0);
+ 		hostapd_logger(hapd, sta->addr, HOSTAPD_MODULE_IEEE8021X,
+ 			       HOSTAPD_LEVEL_DEBUG, "unauthorizing port");
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/sta_info.c b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/sta_info.c
+index 4679d691f65..2c396fab458 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/sta_info.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/sta_info.c
+@@ -204,6 +204,12 @@ void ap_free_sta(struct hostapd_data *hapd, struct sta_info *sta)
+ 
+ 	/* just in case */
+ 	ap_sta_set_authorized(hapd, sta, 0);
++#ifdef CONFIG_DRIVER_BRCM
++	/* reaper 2026-10-15: not for a disconnect the driver reported (see
++	 * hostapd_notif_disassoc()) - the firmware no longer has the station, and the
++	 * remove below is skipped for the same reason */
++	if (!(sta->flags & WLAN_STA_DRIVER_IND))
++#endif /* CONFIG_DRIVER_BRCM */
+ 	hostapd_set_sta_flags(hapd, sta);
+ 
+ 	if (sta->flags & (WLAN_STA_WDS | WLAN_STA_MULTI_AP))
+-- 
+2.25.1
+

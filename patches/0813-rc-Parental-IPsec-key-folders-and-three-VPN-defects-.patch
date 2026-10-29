@@ -1,0 +1,315 @@
+From 6c8b2bba433585d08f195876adec2f0a0daf3247 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:14 -0400
+Subject: [PATCH] rc: Parental, IPsec key folders and three VPN defects found
+ with the native pages
+
+pc.c: config_daytime_string set fftype once before the device loop, so a device
+with no window after an "Internet only inside" device inherited its tail DROP
+(blocked all day); reset per device. rc_ipsec.c: /jffs/ca_files and strongSwan's
+private/ are root's alone (0700), enforced at boot and every IPsec start;
+scripts are created 0700 and run only through reaper_script_ok (they were
+rewritten 0777 and run as root on every start). vpn.c: bcrelay started for
+pptpd_broadcast "0" (the default); now only for 1 / "enable". vpnc_legacy.c:
+MPPE-128 refuses PAP, CHAP and MS-CHAPv1. wireguard.c: a peer switched off
+kept its policy rule until reboot.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/pc.c          |  4 ++
+ release/src/router/rc/rc_ipsec.c    | 82 ++++++++++++++++++++++-------
+ release/src/router/rc/vpn.c         |  6 ++-
+ release/src/router/rc/vpnc_legacy.c |  8 ++-
+ release/src/router/rc/wireguard.c   | 12 +++--
+ 5 files changed, 87 insertions(+), 25 deletions(-)
+
+diff --git a/release/src/router/rc/pc.c b/release/src/router/rc/pc.c
+index 3094dfdff6e..492ccd944f8 100644
+--- a/release/src/router/rc/pc.c
++++ b/release/src/router/rc/pc.c
+@@ -1139,6 +1139,10 @@ void config_daytime_string(pc_s *pc_list, FILE *fp, char *lan_if, char *logaccep
+ 	for(follow_pc = enabled_list; follow_pc != NULL; follow_pc = follow_pc->next){
+ 		const char *chk_type;
+ 		char follow_addr[18] = {0};
++		/* Reaper 2026-10-24: per device. Set once before this loop, the verdict of the previous device's last
++		   rule leaked into the next one: a device with no switched-on window listed after an allow-only (M)
++		   device got that device's tail DROP and lost the Internet around the clock. */
++		fftype = logdrop;
+ #ifdef RTCONFIG_AMAS
+ 		_dprintf("config_daytime_string\n");
+ 		if (strlen(follow_pc->mac) && amas_lib_device_ip_query(follow_pc->mac, lan_if, follow_addr)) {
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index a44beb800d5..eee6e9bc9d7 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -21,6 +21,31 @@
+ 
+ #define wan_prefix(unit, prefix)	snprintf(prefix, sizeof(prefix), "wan%d_", unit)
+ 
++/* reaper 2026-10-21 (field report on v3.4.8): stock wrote every script below 0777 and ran it
++ * as root - fopen("w") truncates the same inode, so a non-root service that had it open
++ * could write its own commands in between rc writing and running it - and left the IPsec
++ * private keys readable by everyone. Now the key folders are root's alone
++ * (reaper_private_dir: 0700, no group/other bits), every script is created fresh at 0700
++ * (reaper_fopen_new: unlink + O_EXCL|O_NOFOLLOW, never an inode someone holds) and run only
++ * when reaper_script_ok() agrees. rc, httpd's export / import and charon (as the uid-0
++ * admin, --with-user=admin) are the only users, all root. */
++#define IPSEC_PRIV_DIR	"/tmp/etc/ipsec.d/private"
++
++static void rc_ipsec_ca_dir_secure(void)
++{
++	mkdir(FILE_PATH_CA_ETC, 0700);
++	reaper_private_dir("/jffs/ca_files");
++	if (d_exists("/tmp/etc/ipsec.d")) {
++		mkdir(IPSEC_PRIV_DIR, 0700);
++		reaper_private_dir(IPSEC_PRIV_DIR);
++	}
++}
++
++static FILE *ipsec_script_new(const char *path)
++{
++	return reaper_fopen_new(path, 0700);
++}
++
+ void rc_ipsec_topology_set();
+ 
+ /*ike version : v1, v2, auto:ike*/
+@@ -745,7 +770,8 @@ void rc_ipsec_pki_gen_exec(uint32_t idx)
+         fclose(fp);
+         DBG(("to run %s in the background!\n", FILE_PATH_CA_GEN_SH));
+         //system("."FILE_PATH_CA_GEN_SH"&");
+-        _eval(argv, NULL, 0, NULL);
++        if (reaper_script_ok(FILE_PATH_CA_GEN_SH))
++            _eval(argv, NULL, 0, NULL);
+     }
+     return;
+ }
+@@ -918,20 +944,22 @@ int rc_ipsec_ca_fileidx_check()
+ 	argv[1] = FILE_PATH_CA_CHECK_SH;
+ 	argv[2] = NULL;
+     
+-    fp = fopen(FILE_PATH_CA_CHECK_SH, "w");
++    rc_ipsec_ca_dir_secure();
++    fp = ipsec_script_new(FILE_PATH_CA_CHECK_SH);
+     
+     sprintf(awk_cmd, "awk '{for ( x = 0; x < %d; x++ )"
+                      "{ if($1 == x\"_cliKey.pem\")"
+                      "{ print x}}}' %s > %s",CA_FILES_MAX_NUM,
+                       FILE_PATH_CA_PKI_TEMP, FILE_PATH_CA_TEMP);
++    if(NULL != fp)
+     fprintf(fp, "ls %s > %s\n%s\n", FILE_PATH_CA_ETC, 
+                                     FILE_PATH_CA_PKI_TEMP, awk_cmd);
+     if(NULL != fp){
+         fclose(fp);
+     }
+-	chmod(FILE_PATH_CA_CHECK_SH, 0777);
+     //system("."FILE_PATH_CA_CHECK_SH);
+-    _eval(argv, NULL, 0, NULL);
++    if (reaper_script_ok(FILE_PATH_CA_CHECK_SH))
++        _eval(argv, NULL, 0, NULL);
+ 	
+     fp = fopen(FILE_PATH_CA_TEMP, "r");
+     if(NULL == fp){
+@@ -1088,8 +1116,10 @@ int rc_ipsec_ca_gen()
+     FILE *fp = NULL;
+     int file_idx = 0;
+ 
+-    fp = fopen(FILE_PATH_CA_GEN_SH,"w");
++    rc_ipsec_ca_dir_secure();
++    fp = ipsec_script_new(FILE_PATH_CA_GEN_SH);
+     file_idx = rc_ipsec_ca_txt_parse();
++    if(NULL != fp)
+     fprintf(fp,"#%s\npki --gen --outform pem > "FILE_PATH_CA_ETC"%d_ca.pem \n"
+                "pki --self --in "FILE_PATH_CA_ETC"%d_ca.pem --dn \"%s\""
+                " --ca --outform pem > "FILE_PATH_CA_ETC"%d_asusCert.pem\n"
+@@ -1120,7 +1150,6 @@ int rc_ipsec_ca_gen()
+     if(NULL != fp){
+         fclose(fp);
+     }
+-	chmod(FILE_PATH_CA_GEN_SH, 0777);
+     /* hardening: write the export password to a 0600 file for the generated
+      * script's -password file: argument, so it is never a shell token. */
+     {
+@@ -1351,7 +1380,8 @@ void rc_ipsec_gen_cert(int skip_checking)
+     }
+     ipsec_strip_shell_meta(device_cn);
+ 
+-    fp = fopen(FILE_PATH_CA_ETC"generate.sh", "w");
++    rc_ipsec_ca_dir_secure();
++    fp = ipsec_script_new(FILE_PATH_CA_ETC"generate.sh");
+     if(NULL != fp){
+         fprintf(fp, "#!/bin/sh\n\n");
+         fprintf(fp, "pki --gen --size 2048 --outform pem > %s%s\n"
+@@ -1367,8 +1397,8 @@ void rc_ipsec_gen_cert(int skip_checking)
+                     );
+         fclose(fp);
+     }
+-    chmod(FILE_PATH_CA_ETC"generate.sh", 0777);
+-    system(FILE_PATH_CA_ETC"generate.sh");
++    (void)(reaper_script_ok(FILE_PATH_CA_ETC"generate.sh") && system(FILE_PATH_CA_ETC"generate.sh"));
++    rc_ipsec_ca_dir_secure();	/* the keys it just made are root's alone */
+     /* 0:nvram 1:openvpn 2:ipsec 3:usericon */
+     sync_profile_update_time(2);
+ 	if(check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_CERT_PEM)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_PRIVATE_KEY)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_CERT_PEM)){
+@@ -1386,7 +1416,8 @@ void rc_ipsec_ca_init( )
+ {
+     FILE *fp = NULL;
+ 
+-    fp = fopen(FILE_PATH_CA_ETC"ca_init.sh", "w");
++    rc_ipsec_ca_dir_secure();
++    fp = ipsec_script_new(FILE_PATH_CA_ETC"ca_init.sh");
+     if(NULL != fp){
+         fprintf(fp, "#!/bin/sh\n\n");
+         fprintf(fp, "cp -r %sasusCert.pem /tmp/etc/ipsec.d/cacerts/\n"
+@@ -1395,8 +1426,8 @@ void rc_ipsec_ca_init( )
+                     FILE_PATH_CA_ETC, FILE_PATH_CA_ETC, FILE_PATH_CA_ETC);
+         fclose(fp);
+     }
+-    chmod(FILE_PATH_CA_ETC"ca_init.sh", 0777);
+-    system(FILE_PATH_CA_ETC"ca_init.sh");
++    (void)(reaper_script_ok(FILE_PATH_CA_ETC"ca_init.sh") && system(FILE_PATH_CA_ETC"ca_init.sh"));
++    rc_ipsec_ca_dir_secure();	/* the copies in ipsec.d/private too */
+ }
+ 
+ void rc_ipsec_conf_default_init()
+@@ -2175,7 +2206,7 @@ void rc_ipsec_config_init(void)
+     memset((void *)&pre_samba_prof, 0, sizeof(pre_samba_prof));
+ 	if(!d_exists("/etc/ipsec.d") || !d_exists("/etc/strongswan.d"))
+ 		system("cp -rf /usr/etc/* /tmp/etc/");
+-    system("mkdir -p /jffs/ca_files");
++    rc_ipsec_ca_dir_secure();	/* reaper: was mkdir -p (0755, keys readable by everyone) */
+     /*ipsec.conf init*/    
+     rc_ipsec_conf_default_init();
+     rc_ipsec_psk_xauth_rw_init();
+@@ -2186,6 +2217,19 @@ void rc_ipsec_config_init(void)
+ #endif
+         )
+ 		rc_ipsec_set(IPSEC_INIT,PROF_ALL);
++#ifdef RTCONFIG_INSTANT_GUARD
++    /* reaper 2026-10-24 (VPN wave): Instant Guard's page and app no longer ship (ASUS account binding is
++       compiled out), but a saved profile still runs an IKEv2 server for accounts nobody can see or rotate
++       any more. Say so once per init; VPN Server > IPsec shows the leftover and removes it. The settings
++       themselves are not touched (owner rule: never overwrite a user's settings). */
++    if (nvram_get_int("ipsec_ig_enable")) {
++        const char *l1 = nvram_safe_get("ig_client_list"), *l2 = nvram_safe_get("ig_guest_client_list");
++        int n = 0;
++        for (; *l1; l1++) if (*l1 == '<') n++;
++        for (; *l2; l2++) if (*l2 == '<') n++;
++        logmessage("ipsec", "Instant Guard: a saved profile still runs an IPsec server for %d account(s); its app is gone - review it on VPN Server > IPsec", n);
++    }
++#endif
+     //rc_ipsec_secrets_set();
+     //rc_ipsec_conf_set();
+     /*ipsec pki shell script default generate*/
+@@ -2230,8 +2274,8 @@ void run_ipsec_firewall_scripts(void)
+ 	argv[1] = FILE_PATH_IPSEC_IPTABLES_RULE;
+ 	argv[2] = NULL;
+ 
+-	chmod(FILE_PATH_IPSEC_IPTABLES_RULE, 0777);
+-	_eval(argv, NULL, 0, NULL);
++	if (reaper_script_ok(FILE_PATH_IPSEC_IPTABLES_RULE))
++		_eval(argv, NULL, 0, NULL);
+ 	return;
+ }
+ 
+@@ -3050,12 +3094,12 @@ void rc_ipsec_set(ipsec_conn_status_t conn_status, ipsec_prof_type_t prof_type)
+ 	rc_ipsec_topology_set_XML();
+ #endif
+ 	_ipsec_export();
+-	if ((fp = fopen(FILE_PATH_IPSEC_SH, "w")) == NULL){
++	if ((fp = ipsec_script_new(FILE_PATH_IPSEC_SH)) == NULL){
+ 		DBG(("OPEN %s FAIL!!\n", FILE_PATH_IPSEC_SH));
+ 		return;
+ 	}
+ 
+-	if ((fp1 = fopen(FILE_PATH_IPSEC_IPTABLES_RULE, "w")) == NULL){
++	if ((fp1 = ipsec_script_new(FILE_PATH_IPSEC_IPTABLES_RULE)) == NULL){
+ 		DBG(("OPEN %s FAIL!!\n", FILE_PATH_IPSEC_IPTABLES_RULE));
+ 		return;
+ 	}
+@@ -3350,8 +3394,8 @@ void rc_ipsec_set(ipsec_conn_status_t conn_status, ipsec_prof_type_t prof_type)
+ 	reinit_hwnat(-1);
+ #endif
+ 	DBG(("rc_ipsec_down_stat<<<< CLI: 0x%x, SVR: 0x%x\n", cur_bitmap_en_p[PROF_CLI],cur_bitmap_en_p[PROF_SVR]));
+-	chmod(FILE_PATH_IPSEC_SH, 0777);
+-	_eval(argv, NULL, 0, NULL);
++	if (reaper_script_ok(FILE_PATH_IPSEC_SH))
++		_eval(argv, NULL, 0, NULL);
+ 	DBG(("rc_ipsec_down_stat<<<< CLI: 0x%x, SVR: 0x%x\n", cur_bitmap_en_p[PROF_CLI],cur_bitmap_en_p[PROF_SVR]));
+ 	run_ipsec_firewall_scripts();
+ #ifdef RTCONFIG_UPNPC_NEW
+diff --git a/release/src/router/rc/vpn.c b/release/src/router/rc/vpn.c
+index d3146975d46..f81f084f74b 100644
+--- a/release/src/router/rc/vpn.c
++++ b/release/src/router/rc/vpn.c
+@@ -277,8 +277,10 @@ void start_pptpd(void)
+ 	fprintf(fp, "localip %s\n"
+ 		"remoteip %s\n", lanip,
+ 		nvram_safe_get("pptpd_clients"));
+-	if (nvram_invmatch("pptpd_broadcast", "") &&
+-	    nvram_invmatch("pptpd_broadcast", "disable")) {
++	/* reaper 2026-10-24 (VPN wave, B-PPTP-1): the setting is 0 / 1 (defaults.c "0"; the stock page, the ASUS app
++	   and Reaper_VPNServer all write it so), yet this test started bcrelay for every value except "" and
++	   "disable" - the default "0" included. "enable" is honoured for a hand-set legacy value. */
++	if (nvram_get_int("pptpd_broadcast") || nvram_match("pptpd_broadcast", "enable")) {
+ 		fprintf(fp, "bcrelay %s,%s\n",
+ 			lan_ifname, "pptp[0-9]+");
+ 	}
+diff --git a/release/src/router/rc/vpnc_legacy.c b/release/src/router/rc/vpnc_legacy.c
+index d9a3629b2ee..4e9038c6591 100644
+--- a/release/src/router/rc/vpnc_legacy.c
++++ b/release/src/router/rc/vpnc_legacy.c
+@@ -158,10 +158,16 @@ legacy_start_vpnc(void)
+ 				    "require-mppe-56\n");
+ 		} else
+ 		if (nvram_match(strcat_r(prefix, "pptp_options_x", tmp), "+mppe-128")) {
++			/* reaper 2026-10-24 (VPN wave, B-VPNC-2): MPPE-128 only ever pairs with MS-CHAPv2; refuse the
++			   weaker authenticators explicitly so a server cannot talk us down (stock wrote only noauth /
++			   refuse-eap above). The page writes +mppe-128 on every new save. */
+ 			fprintf(fp, "nomppe-40\n"
+ 				    "nomppe-56\n"
+ 				    "require-mppe\n"
+-				    "require-mppe-128\n");
++				    "require-mppe-128\n"
++				    "refuse-pap\n"
++				    "refuse-chap\n"
++				    "refuse-mschap\n");
+ 		} else
+ 		if (nvram_match(strcat_r(prefix, "pptp_options_x", tmp), "")) {
+ 			fprintf(fp, "require-mppe-40\n"
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index b5c302342d4..865dc6be21f 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -1706,12 +1706,11 @@ void stop_wgs(int unit)
+ #endif
+ 	_wg_x_nf_del(ifname);
+ 
+-	/// delete priority rule
++	/// delete priority rule (reaper 2026-10-24, B-WGS-3: every peer, not only the enabled ones - the helper works
++	/// from the saved route file and is a no-op for a peer that never had one)
+ 	for (c_unit = 1; c_unit <= WG_SERVER_CLIENT_MAX; c_unit++)
+ 	{
+ 		snprintf(c_prefix, sizeof(c_prefix), "%sc%d_", prefix, c_unit);
+-		if (nvram_pf_get_int(c_prefix, "enable") == 0)
+-			continue;
+ 		_wg_server_ip_rule_del(c_prefix);
+ 	}
+ 
+@@ -2049,6 +2048,13 @@ void update_wgs_client(int s_unit, int c_unit)
+ 		_wg_server_gen_client_conf(s_prefix, c_prefix, c_path);
+ 		eval("qrencode", "-r", c_path, "-o", cp_path);
+ 	}
++	else
++	{
++		/* reaper 2026-10-24 (VPN wave, B-WGS-3): a peer switched off kept its "ip rule to <aips> lookup main"
++		   until reboot (nothing deleted it here, and stop_wgs / reload_wgs_ip_rule skip disabled peers). The
++		   helper reads the saved route file, so it runs before the route update rewrites that file. */
++		_wg_server_ip_rule_del(c_prefix);
++	}
+ 
+ 	// route update
+ 	_wg_server_route_update(ifname, c_prefix);
+-- 
+2.25.1
+

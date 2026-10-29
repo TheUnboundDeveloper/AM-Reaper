@@ -1,0 +1,95 @@
+From bf4305d721f1b91f055ddeeb264b53b3128158db Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 11 Oct 2026 12:03:37 -0400
+Subject: [PATCH] reaper_diag v1.3.34: the LAN name check in section 5
+
+One line - the switch, the state and how long, silent servers by role, a
+custom domain flagged, whether clients ask the router or DHCP-handed
+servers, rdnshc running - and a WARN finding per failing cause. The page
+pin follows the script.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 32 ++++++++++++++++++++++++--
+ release/src/router/www/Reaper_Diag.asp |  2 +-
+ 2 files changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index cfb50dec646..8c817f6aee7 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.33 (2026-10-09) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.34 (2026-10-10) - sanitized one-shot diagnostic bundle
+ #  Runs on ANY Reaper model (RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 /
+ #  GT-BE98_PRO) - radios, ports and features are discovered at runtime.
+ #
+@@ -72,6 +72,10 @@
+ #  Section 7 prints the dynamic-puncturing gain and interval rpunctd actually applies (a stored
+ #  0 means the preset's value, and used to print as a raw 0).
+ #
++#  v1.3.34 (2026-10-10): section 5 reports the dashboard's LAN name resolution check
++#  (rc/rdnshc.c): switch, state and how long, the silent servers by role, whether LAN
++#  devices ask the router or DHCP-handed servers, and a WARN finding per failing cause.
++#
+ #  TWO RULES FOR ANYONE ADDING A SECTION BELOW:
+ #    1. Never emit a container's CONTENTS when its SIZE answers the question.
+ #       ipset member lists are dumped with `ipset list -t` (header only) for
+@@ -86,7 +90,7 @@
+ #  are one-shot cats. Do not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.33"
++VER="REAPER-DIAG v1.3.34"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -597,6 +601,30 @@ if [ "$(nvram get reaper_dnshc_enable 2>/dev/null)" = 1 ] && [ -n "$HCT" ]; then
+   [ -e /tmp/reaper/rdnshc.down4 ] && finding INFO "DNS health check: the watched resolver answers over IPv6 only - its IPv4 face is held behind the other servers (see 5)"
+   [ -e /tmp/reaper/rdnshc.down6 ] && finding INFO "DNS health check: the watched resolver answers over IPv4 only - its IPv6 face is held behind the other servers (see 5)"
+ fi
++# v1.3.34 (2026-10-10): the dashboard's LAN name resolution check (rc/rdnshc.c landns_*).
++# State, how long, the cause and the silent servers BY ROLE (local / lan / ext-v4 /
++# ext-v6, port kept) - never an address; a custom probe domain is reported as custom.
++LDS="$(nvram get reaper_landns_state 2>/dev/null)"
++LDST="$(echo "$LDS" | awk '{print $1}')"; LDSEC="$(echo "$LDS" | awk '{print $2}')"; LDSIL="$(echo "$LDS" | awk '{print $3}')"
++ldrole() { _a="${1%%#*}"; _p=""; case "$1" in *#*) _p="#${1#*#}";; esac
++  case "$_a" in 127.*|::1) echo "local$_p";; 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|fd*|fc*) echo "lan$_p";; *:*) echo "ext-v6$_p";; *) echo "ext-v4$_p";; esac; }
++LDR=""
++if [ -n "$LDSIL" ] && [ "$LDSIL" != "-" ]; then
++  for u in $(echo "$LDSIL" | tr ',' ' '); do LDR="$LDR $(ldrole "$u")"; done
++fi
++LDDOM=default; [ -n "$(nvram get reaper_landns_domain 2>/dev/null)" ] && LDDOM=custom
++LDCLI=router; [ "$(nvram get dhcp_enable_x 2>/dev/null)" = 1 ] && [ -n "$(nvram get dhcp_dns1_x 2>/dev/null)$(nvram get dhcp_dns2_x 2>/dev/null)" ] && LDCLI=dhcp-handed
++LDRUN=no; ps w 2>/dev/null | grep -q '[r]dnshc' && LDRUN=yes
++echo "  LAN name check    : enable=$(nvram get reaper_landns_enable 2>/dev/null) state=${LDST:-none} for=${LDSEC:-0}s silent=${LDR:- none} domain=$LDDOM clients-ask=$LDCLI rdnshc-running=$LDRUN"
++if [ "$(nvram get reaper_landns_enable 2>/dev/null)" != 0 ]; then
++  case "$LDST" in
++    svc)   finding WARN "LAN name resolution: the router's DNS service is not answering LAN devices for ${LDSEC}s - dnsmasq down or not listening (see 5, 12)";;
++    fail)  if [ -n "$LDR" ]; then finding WARN "LAN name resolution: the router's DNS answers but no upstream resolves new names for ${LDSEC}s - silent:$LDR (see 5)"
++           else finding WARN "LAN name resolution: the router's DNS answers but does not resolve new names for ${LDSEC}s, although every upstream answers directly (see 5)"; fi;;
++    dfail) finding WARN "LAN name resolution: the DNS servers DHCP hands to LAN devices do not resolve new names for ${LDSEC}s - silent:$LDR (see 5, 4b)";;
++    "")    [ "$LDRUN" = no ] && [ "$(nvram get sw_mode 2>/dev/null)" = 1 ] && finding INFO "LAN name resolution check is on but rdnshc is not running - the dashboard shows no verdict (see 5)";;
++  esac
++fi
+ # v1.3.32: reverse DNS across networks (r24) and IPv6 device names (rc/rv6names.c). Counts only.
+ echo "  device names      : across-networks=$(nvram get reaper_dns_revshare 2>/dev/null) ipv6-names=$(nvram get reaper_dns_v6names 2>/dev/null) rv6names-running=$(ps w 2>/dev/null | grep -c '[r]v6names')"
+ for C in /etc/dnsmasq.conf /etc/dnsmasq-*.conf; do
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index dfe81434263..887d7d90937 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.33</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.34</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

@@ -1,0 +1,93 @@
+From ddaec5f39d179b6aadcab83c9d5f8489f65de9cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:51 -0400
+Subject: [PATCH] www: the Devices page refreshes on its own and reads presence
+ from live evidence
+
+Owner: online/offline did not change without a manual reload, and an iPhone
+behind an AiMesh node read Wired and stayed connected in airplane mode. The
+page fetched once; it now refreshes every 15 s while the tab is visible and
+never under the user's hands (an open dialog indexes D.devices, the inline
+rename commits on blur). The httpd side (rdev_collect and the fdb scans: a
+radio-port or backhaul sighting older than 90 s is no longer presence, an
+unlisted client behind a wireless backhaul reads Wi-Fi via that node, cabled
+devices on the router's own ports keep the bridge ageing) rides the
+security-review commit with the rest of web.c. The offline relative time no
+longer says "online" under 90 s.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Devices.asp | 40 +++++++++++++++++++++--
+ 1 file changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index bcdbb1b33d8..59bde0dea96 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -326,7 +326,10 @@ var L = {
+ };
+ function T(id){ return L[id] || ''; }
+ function ago(sec){
+-  if(sec < 90) return `<#RDEV_29#>`;
++  /* 2026-10-18: only OFFLINE rows call this. Under 90 s it used to say "online"
++     next to a grey dot; with last-seen now accurate a device that just left
++     lands here, so it reads "1 min ago" (same token, no new string). */
++  if(sec < 90) return '1 ' + `<#RDEV_62#>`;
+   if(sec < 3600) return Math.round(sec/60) + ' ' + `<#RDEV_62#>`;
+   if(sec < 172800) return Math.round(sec/3600) + ' ' + `<#RDEV_63#>`;
+   return Math.round(sec/86400) + ' ' + `<#RDEV_64#>`;
+@@ -361,11 +364,40 @@ function xAct(url, cb){
+   xGet(url + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){ if(cb) cb(j); });
+ }
+ 
+-function loadAll(){
+-  xGet('/reaper_dev.cgi?action=status&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
++/* 2026-10-18 (field: "online / offline status is not updating without a manual
++   page refresh"): the page fetched once and never again. It now refreshes every
++   POLL_MS while the tab is visible - never under the user's hands: an open
++   dialog acts on an INDEX into D.devices (a refresh would retarget it to another
++   device) and the inline rename commits on blur (a refresh would save a half-
++   typed name). The search box only filters, so a refresh redraws it and puts
++   the caret back. 24h traffic is a 5-minute series: refetched every 4th poll. */
++var POLL_MS = 15000, pollBusy = false, pollN = 0;
++function pollBlocked(){
++  if(document.hidden) return true;
++  if(document.getElementById('pin_ovl').className.indexOf('show') >= 0) return true;
++  var a = document.activeElement;
++  return !!(a && a.id !== 'q' && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));
++}
++function pollTick(){
++  if(pollBusy || !D || pollBlocked()) return;
++  pollBusy = true;
++  loadAll(true);
++}
++function loadAll(poll){
++  xGet('/reaper_dev.cgi?action=status' + (poll ? '&poll=1' : '') + '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
++    if(poll){
++      pollBusy = false;
++      /* a miss keeps the table; a dialog or edit opened while the request was
++         in flight wins over the refresh */
++      if(!j || pollBlocked()) return;
++    }
+     if(!j){ document.getElementById('rows').innerHTML = '<tr><td colspan="8" style="color:var(--danger)">'+esc(T('RDEV_65'))+'</td></tr>'; return; }
+     D = j;
++    var a = document.activeElement, keepQ = !!(a && a.id === 'q'), s0 = 0, s1 = 0;
++    if(keepQ){ s0 = a.selectionStart; s1 = a.selectionEnd; }
+     render();
++    if(keepQ){ var qi = document.getElementById('q'); qi.focus(); try{ qi.setSelectionRange(s0, s1); }catch(e){} }
++    if(poll && (++pollN % 4) !== 0) return;
+     /* enrich 24h traffic from the existing rtrafd feed - no C JSON parsing */
+     xGet('/reaper_traffic.cgi?f=m5', function(m){
+       TRAF = {};
+@@ -728,6 +760,8 @@ function devBoot(){
+   if (b) b.onclick = expGo;
+   fitPage();
+   loadAll();
++  setInterval(pollTick, POLL_MS);
++  document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollTick(); });
+ }
+ if(document.readyState !== 'loading') devBoot();
+ else document.addEventListener('DOMContentLoaded', devBoot);
+-- 
+2.25.1
+

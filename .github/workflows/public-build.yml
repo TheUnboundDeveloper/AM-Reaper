@@ -22,8 +22,9 @@ on:
         type: choice
         default: both
         options: [both, MCP, noMCP]
-      # Five models are selectable, all BCM4916, all with a completed green
-      # clean-room build as of 2026-08-10.
+      # Eight models are selectable, all BCM4916. The first five had a completed
+      # green clean-room build as of 2026-08-10; the GT-BE19000, BQ16 and BQ16_PRO
+      # joined later (see the model options below).
       #
       # RT-BE92U (BCM6765) was wired into this pipeline at v2.7.6 and RETIRED
       # from the roster after v3.1.2 (owner, 2026-09-10): upstream Merlin has
@@ -40,8 +41,8 @@ on:
       #
       # A sibling is the canon tree plus overlays/<MODEL>.patch (12-28 identity
       # files: banner, animated header, the pages referencing them, target.mak),
-      # plus overlays/GT-BE98-platform.tar.gz for GT-BE98 alone -- the pinned
-      # upstream carries router-sysdep for every other model but not that one.
+      # plus overlays/<MODEL>-platform.tar.gz for the models whose router-sysdep
+      # the pinned upstream does not carry (GT-BE98, GT-BE19000, BQ16, BQ16_PRO).
       #
       # The overlays are generated from the per-model branch tips. An earlier
       # generation read those branches from the WRONG place and silently carried
@@ -62,14 +63,14 @@ on:
       # repeat silently.
       #
       # 'all' fans out to every model on the roster. Combined with variant=both
-      # that is 10 concurrent jobs of ~1.5 h each -- within the 20-job limit for
+      # that is 16 concurrent jobs of ~1.5 h each -- within the 20-job limit for
       # public repos, and fail-fast is off below so one model dying does not
-      # cancel the other four.
+      # cancel the others.
       model:
         description: 'Model to build (all = every model)'
         type: choice
         default: RT-BE96U
-        # `all` is the six BCM4916 models x two variants = 12 jobs.
+        # `all` is the eight BCM4916 models x two variants = 16 jobs.
         # RT-BE92U is retired from the roster (see the note above) and is
         # deliberately not selectable here.
         # GT-BE19000 joined the roster 2026-09-12, once the three things a CI job
@@ -79,7 +80,19 @@ on:
         # router-sysdep.gt-be19000, exactly as it does not for GT-BE98.
         # It still publishes only as a prerelease (release.yml): the model builds and
         # verifies, but no hardware has run an image.
-        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98, GT-BE98_PRO, GT-BE19000, all]
+        # BQ16 (ZenWiFi, quad-band) joined 2026-10-01 under the same three conditions,
+        # from the ASUS GPL 102_39256 drop; prerelease-only until a unit has booted one.
+        # BQ16_PRO (ZenWiFi BQ16 Pro, 2.4/5/6/6) joined 2026-10-04 from its own 102_39256 drop
+        # and stock image; the same prerelease-only rule until a unit has booted one.
+        # From v3.6.0 (2026-10-27) GT-BE98, GT-BE19000, BQ16 and BQ16_PRO are NOT on
+        # this roster. The 3006.102.10 base is ASUS GPL 102_40585, and the newest GPL
+        # those four have is 102_39274 / 102_39256: the 40585 open source calls
+        # functions their older closed parts do not have (first stop: rc/init.c
+        # MISC_INFO_WIFI_GEN, run 40595696540). They stay on the 3006.102.8 base and
+        # build from the Dev-102.8 branch, with this line's Reaper changes backported,
+        # until ASUS publishes a 40585-era GPL for them. update-manifest lines are
+        # merged per model, so leaving them off here leaves their lines untouched.
+        options: [RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98_PRO, all]
       # Optional override of the pinned EXPECTED_VERSION (env block below).
       # Blank = the pin. This stays an ASSERTION either way: the patch series
       # sets EXTENDNO itself, so a value that does not match what the series
@@ -107,12 +120,14 @@ permissions:
   contents: read
 
 env:
-  # The base pin never moves. Upstream carry-forwards are cherry-picked into the
-  # patch series rather than rebased, so this stays constant across releases
-  # (provenance/manifest.json "base.note").
+  # The base pin moves only at a deliberate rebase onto a new upstream release
+  # (docs/GPL-MERGE.md); between rebases, upstream carry-forwards are cherry-picked
+  # into the patch series (provenance/manifest.json "base.note").
   UPSTREAM_REPO: https://github.com/RMerl/asuswrt-merlin.ng.git
-  BASE_TAG: 3006.102.8-beta2
-  BASE_COMMIT: a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3
+  # 2026-10-27: rebased onto Asuswrt-Merlin 3006.102.10 (GPL 102_40585). The commit is
+  # untagged upstream, so BASE_TAG is a label; the fetch is by BASE_COMMIT.
+  BASE_TAG: 3006.102.10-ca72a61f8bc
+  BASE_COMMIT: ca72a61f8bc5ef920e29d63d53d9864262208f0c
   TOOLCHAIN_REPO: https://github.com/RMerl/am-toolchains.git
   TOOLCHAIN_COMMIT: d1af80e6b6686a4edc680386c09a8361453dd5c1
   # NOTE: BUILD_BRANCH is deliberately NOT set here. ci/container_build.sh derives
@@ -134,7 +149,7 @@ env:
   # the version lives. The tag/release jobs read this same resolved value, so
   # an override propagates coherently if publishing.
   EXPECTED_VERSION: >-
-    ${{ inputs.version == '' && 'Reaper_v3.2.3'
+    ${{ inputs.version == '' && 'Reaper_v3.6.2'
     || startsWith(inputs.version, 'Reaper_') && inputs.version
     || startsWith(inputs.version, 'v') && format('Reaper_{0}', inputs.version)
     || format('Reaper_v{0}', inputs.version) }}
@@ -169,7 +184,7 @@ jobs:
       # the build job's checkout for why every checkout here needs one.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -180,7 +195,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           filter: blob:none
@@ -205,7 +220,7 @@ jobs:
     steps:
       - name: Restore toolchain cache
         id: cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -249,7 +264,7 @@ jobs:
       # model failing should not cancel eleven healthy ones an hour in.
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
         variant: ${{ inputs.variant == 'both' && fromJSON('["MCP","noMCP"]') || fromJSON(format('["{0}"]', inputs.variant)) }}
 
     steps:
@@ -298,7 +313,7 @@ jobs:
       - name: Checkout patch series and build scripts
         id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -316,7 +331,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: reaper
           fetch-depth: 1
@@ -357,9 +372,11 @@ jobs:
             if [ -f "${OS%.tar.gz}.sha256" ]; then echo "  ok   $OS ($(stat -c%s "$OS") bytes) + sha256"
             else echo "::error::$OS has no sha256 sidecar"; rc=1; fi
           fi
-          # The vendor WLCSM blob pair (stock 42015) reaches every model's
-          # router-sysdep.* from this archive; without it a sibling would build
-          # with the leaking libraries and nothing later would say so.
+          # The vendor WLCSM blob pair (stock 42015) reaches a model whose
+          # platform tree predates GPL 102_40585 from this archive (the models on
+          # this branch take the base's 40585 pair - container_build.sh decides by
+          # the model's spwenc.o); without it such a model would build with the
+          # leaking libraries and nothing later would say so.
           BL=reaper/overlays/wlcsm-42015-blobs.tar.gz
           if [ -f "$BL" ]; then
             if [ -f "${BL%.tar.gz}.sha256" ]; then echo "  ok   $BL ($(stat -c%s "$BL") bytes) + sha256"
@@ -368,7 +385,7 @@ jobs:
           exit $rc
 
       - name: Restore pinned toolchains
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/am-toolchains
           key: am-toolchains-${{ env.TOOLCHAIN_COMMIT }}-v1
@@ -380,6 +397,31 @@ jobs:
           ACTUAL="$(git -C "${GITHUB_WORKSPACE}/.cache/am-toolchains" rev-parse HEAD)"
           echo "expected $TOOLCHAIN_COMMIT"; echo "actual   $ACTUAL"
           [ "$ACTUAL" = "$TOOLCHAIN_COMMIT" ]
+
+      # One pull, retried, before anything runs the image. Docker Hub answers
+      # 401/500 transiently; on 2026-10-07 both RT-BE96U jobs lost the pull in
+      # the same second while the other 16 jobs got through. Fall back to the
+      # AWS ECR Public mirror of the Docker official images (same image and digest),
+      # retagged so the steps below run the local ubuntu:20.04 without pulling again.
+      - name: Pull the clean-room image
+        run: |
+          set -uo pipefail
+          IMG=ubuntu:20.04
+          MIRROR=public.ecr.aws/docker/library/ubuntu:20.04
+          for i in 1 2 3 4 5; do
+            docker pull -q "$IMG" && break
+            echo "::warning::docker pull $IMG failed (attempt $i/5)"
+            [ "$i" -lt 5 ] && sleep $((i * 15))
+          done
+          if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+            echo "::warning::Docker Hub unavailable; pulling $MIRROR"
+            for i in 1 2 3; do
+              docker pull -q "$MIRROR" && docker tag "$MIRROR" "$IMG" && break
+              [ "$i" -lt 3 ] && sleep $((i * 15))
+            done
+          fi
+          docker image inspect "$IMG" >/dev/null 2>&1 || { echo "::error::could not pull $IMG"; exit 1; }
+          echo "image: $(docker image inspect --format '{{index .RepoDigests 0}}' "$IMG")"
 
       # Safety net only: the local WSL flow builds without emulation (Samba
       # cross-compiles via cross-answers). Registering ARM binfmt on the host
@@ -405,15 +447,25 @@ jobs:
           fi
           echo "qemu-arm binfmt registered:"
           sed 's/^/  /' /proc/sys/fs/binfmt_misc/qemu-arm | head -4
-          docker run --rm -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+          docker run --rm --pull never --network host \
+            -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
             ubuntu:20.04 /usr/bin/qemu-arm-static --version | head -1 | sed 's/^/  container qemu: /'
 
+      # --network host: the container resolves names through the runner's own
+      # resolver instead of the one Docker synthesises for a bridged container.
+      # 2026-10-14 (run 38578920955): 17 of 18 build jobs passed; on the BQ16 MCP
+      # runner the host installed qemu-user-static at 14:22:50, then 9 s into this
+      # step every apt fetch in the container died with "Could not resolve
+      # 'archive.ubuntu.com'". Nothing in the build listens on a port, so the
+      # container needs no network namespace of its own; sharing the host's
+      # makes "the container resolves what the runner resolves" true by
+      # construction. container_build.sh keeps a bounded resolver probe as the
+      # fallback that names the cause instead of six "Unable to locate package".
       - name: Build in Ubuntu 20.04 clean room
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          docker pull -q ubuntu:20.04
-          docker run --rm \
+          docker run --rm --pull never --network host \
             -e UPSTREAM_REPO="$UPSTREAM_REPO" \
             -e BASE_TAG="$BASE_TAG" \
             -e BASE_COMMIT="$BASE_COMMIT" \
@@ -445,7 +497,7 @@ jobs:
 
       - name: Upload firmware
         if: success()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: firmware-${{ matrix.model }}-${{ matrix.variant }}
           path: out/*.pkgtb
@@ -455,7 +507,7 @@ jobs:
 
       - name: Upload build evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: evidence-${{ matrix.model }}-${{ matrix.variant }}
           path: |
@@ -545,7 +597,7 @@ jobs:
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.model }}" = "all" ]; then
-            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
+            MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98_PRO"
           else
             MODELS="${{ inputs.model }}"
           fi
@@ -598,7 +650,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98","GT-BE98_PRO","GT-BE19000"]') || fromJSON(format('["{0}"]', inputs.model)) }}
+        model: ${{ inputs.model == 'all' && fromJSON('["RT-BE96U","RT-BE86U","RT-BE88U","GT-BE98_PRO"]') || fromJSON(format('["{0}"]', inputs.model)) }}
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.version }}-${{ matrix.model }}
@@ -615,8 +667,8 @@ jobs:
   # still advertised the previous one and the router reported "up to date".
   # This job closes that gap by regenerating the discovery files from the
   # releases just published. It is a SINGLE writer on purpose: the release job
-  # is a per-model matrix, so refreshing inside it would race five commits to
-  # main. The concurrency group serializes it across overlapping runs too.
+  # is a per-model matrix, so refreshing inside it would race one commit per
+  # model to main. The concurrency group serializes it across overlapping runs too.
   #
   # ALWAYS WRITES TO MAIN, whichever branch was dispatched: the manifest lives
   # on main because that is the URL baked into every fielded router. A main
@@ -643,7 +695,7 @@ jobs:
       # job exists to close.
       - id: checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -659,7 +711,7 @@ jobs:
 
       - name: Retry checkout
         if: steps.checkout.outcome == 'failure'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -692,7 +744,7 @@ jobs:
           git show FETCH_HEAD:docs/CHANGELOG.md > /tmp/changelog-src.md
           export CHANGELOG=/tmp/changelog-src.md
           if [ "$MODELSEL" = "all" ]; then
-            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98 GT-BE98_PRO GT-BE19000"
+            export MODELS="RT-BE96U RT-BE86U RT-BE88U GT-BE98_PRO"
           else
             export MODELS="$MODELSEL"
           fi

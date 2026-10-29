@@ -1,9 +1,10 @@
 # Security Policy
 
-> **Doc status:** current as of **v3.1.6** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 This project exists to harden the RT-BE Series firmware — **RT-BE96U** (primary, hardware-validated)
-plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and **GT-BE19000** siblings
+plus the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, **GT-BE19000**, **ZenWiFi BQ16**
+and **ZenWiFi BQ16 Pro** siblings
 (BCM4916 / WiFi 7), so security reports are very welcome.
 
 ## Scope
@@ -40,7 +41,9 @@ Samba (SMB2/3, LAN-only), busybox udhcpc/ntpd, and the TLS stack — carries its
 | **wpa_supplicant 0.6.10** | WAN 802.1X configured | A 2010 release, used only for wired WAN authentication, and the build narrows it sharply: `CONFIG_EAP_MD5` is the only EAP method compiled, `CONFIG_NO_WPA` / `CONFIG_NO_WPA2` leave out the 4-way handshake, and `CONFIG_NO_CONFIG_BLOBS` / `CONFIG_NO_CONFIG_WRITE` the blob parser. That puts the era's headline advisories outside the compiled surface rather than merely unreachable - the KRACK set needs the handshake code, the EAP fragment-reassembly overflows need the TLS-based methods, and the P2P/WPS bugs need code this build does not contain. What remains is the EAPOL state machine, EAP-MD5 and the wired driver, exposed to whatever authenticator the WAN port is plugged into. MEDIUM when configured. |
 | **lighttpd 1.4.39** | Captive portal enabled | CVE-2018-25103 (folded-header use-after-free, pre-authentication on port 8083) fixed in v3.1.5. The rest of the 1.4.39-to-current delta is not backported; reachable only with the captive portal or Chillispot switched on. Three of the commonly cited later advisories were checked against this build and do not apply: `mod_extforward` is not compiled (CVE-2022-22707), CVE-2019-11072 was introduced after 1.4.39, and CVE-2018-19052 needs an alias whose target is a directory while every alias the portal emits points at a single file. |
 | **net-snmp 5.9.4.pre2** | SNMP with a read-write community | CVE-2022-44792 / -44793 fixed in v3.1.5 (a SET carrying a NULL varbind is rejected before dispatch). A read-only community never reached them. |
-| **Quagga 0.99.24** (zebra) | Dynamic routing enabled | CVE-2016-1245 (stack overflow in the IPv6 router-advertisement read path - `rtadv_recv_packet()` was handed `BUFSIZ` as the size of a 4096-byte buffer) fixed with the upstream 0.99.24.1 change. Only `lib`, `zebra` and `ripd` are built; ospfd and bgpd are vendored but not compiled. The rest of the 0.99.24-to-1.x delta is not backported, and zebra runs only with `quagga_enable` set. |
+
+**Quagga 0.99.24** (zebra, ripd), listed here until v3.3.4, is no longer built: it shipped inert with a
+default vty password, so the image carries none of it.
 
 A second review on 2026-09-12 (v3.1.5, adversarial, with a live-router observation) re-read each of these
 in code rather than by version, which is how the netatalk correction above was found. The same round
@@ -54,6 +57,24 @@ carried on their version alone: what the wpa_supplicant build actually compiles,
 lighttpd advisories reach this configuration. Both of those turned out narrower than the version
 string suggests, which is the same lesson the netatalk correction taught in the other direction -
 a version match is not a finding, and a version is not a clean bill of health either.
+
+A fourth pass on 2026-09-26 crawled everything changed since the second review, plus the inherited
+components against the fortnight's advisories. It backported strongSwan's 2026-09-07 batch to the
+vendored 6.0.4 - CVE-2026-78127 (payload enumerator leaked on a truncated log line, pre-authentication),
+CVE-2026-78135 (CREATE_CHILD_SA accepted before EAP completed) and CVE-2026-78133 (use-after-free after
+a failed multi-KE rekeying collision) - and the kernel's SipHash ordering of the inetpeer tree
+(CVE-2026-90110, reachable from the WAN with nothing enabled). OpenSSL's security release of
+2026-09-29 shipped in v3.2.9 as OpenSSL 3.5.9 (CVE-2026-84782, High); its 1.1.1 counterpart does not
+apply, because the image carries no 1.1.1 library - the closed components that still link the 1.1
+name reach 3.5 through the compatibility shim.
+
+A full review of v3.4.7 on 2026-10-20 (all Reaper code, plus the closed ASUS and Broadcom components
+it depends on) found no unauthenticated path to code execution, a settings change or a secret at
+factory defaults. Its one medium finding, in the opt-in IPv6 device names, and five low ones were fixed
+in v3.4.8; see [`docs/REAPER-FIXES.md`](docs/REAPER-FIXES.md).
+
+An adversarial review of all code pending for v3.4.9 on 2026-10-24 found one high, three medium and
+thirteen low findings; all were fixed in v3.4.9 (REAPER-FIXES.md, "review 2026-10-24").
 
 If any of these is upgraded it gets its own release and hardware validation rather than riding along
 with unrelated work — the versions are load-bearing for the features that use them.

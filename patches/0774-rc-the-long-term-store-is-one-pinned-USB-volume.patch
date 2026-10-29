@@ -1,0 +1,437 @@
+From 4a44598b65073a495be2347570b24c17535beac9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:47 -0400
+Subject: [PATCH] rc: the long-term store is one pinned USB volume
+
+Field (RT-BE86U, one SSD, two partitions): both partitions grew .reaper/ and
+reaper/, and the traffic history was split between them, because three
+resolvers each took "the first mounted volume" and the mount order changes
+per boot. The store is now a pinned volume (reaper_store_vid/vname): the
+watchdog adopts one on the upgrade path - the volume that holds the history,
+the most recently written when both do, after the box has settled - and keeps
+a last-seen stamp while it is mounted. A missing pinned volume is waited for
+(RAM meanwhile), never replaced by another. The Storage page lists the mounted
+volumes, the pin and its state; store_set takes vol=.
+
+The httpd side (store_status / store_set, rdev_store_base) and the two
+defaults rows ride the security-review commit with the rest of web.c and
+defaults.c; rtrafd's reaper_store.h include rides the rtrafd commit.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_usbmon.c     | 101 ++++++++++++
+ release/src/router/rc/watchdog.c          |   1 +
+ release/src/router/www/Reaper_Storage.asp | 191 ++++++++++++++++++++--
+ 3 files changed, 283 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_usbmon.c b/release/src/router/rc/reaper_usbmon.c
+index 5a59fa05547..4f9090c5b47 100644
+--- a/release/src/router/rc/reaper_usbmon.c
++++ b/release/src/router/rc/reaper_usbmon.c
+@@ -451,3 +451,104 @@ void reaper_usbmon_check(void)
+ 		usbmon_recover_bus();
+ 	}
+ }
++
++/* ---- 2026-10-18: the pinned long-term store (shared/reaper_store.h) ----
++ * Two jobs on the watchdog tick, every USBMON_EVERY_SECS:
++ *  1. ADOPT, once (the upgrade path): a box already set to USB before the pin
++ *     existed has reaper_store=usb and no reaper_store_vid. Pin the volume that
++ *     holds Reaper history - the most recently written one when several do (the
++ *     field box had history on both partitions) - by writing its store.id and
++ *     the nvram pin. Waits until the box has been up RSTORE_ADOPT_UP_SECS and no
++ *     mount has been active for RSTORE_ADOPT_QUIET_SECS, so a partition that is
++ *     still mounting is never passed over. No history anywhere: the only mounted
++ *     volume, else nothing (Reaper_Storage.asp asks). A box with a pin is never
++ *     touched, and reaper_store itself is never changed.
++ *  2. LAST SEEN: while the pin is mounted, keep "<epoch> <vid>" in /jffs at most
++ *     hourly (first write once the clock is sane), so the page can say when a
++ *     missing volume was last there. A tiny file, rewritten 24 times a day. */
++#include <reaper_store.h>
++#define RSTORE_ADOPT_UP_SECS	300
++#define RSTORE_ADOPT_QUIET_SECS	120
++#define RSTORE_SEEN_EVERY_SECS	3600
++
++static void rstore_adopt(unsigned long up)
++{
++	static int done = 0;
++	char buf[32], best[64] = "", only[64] = "", vdir[96], nid[24];
++	long best_t = 0;
++	int nvol = 0;
++	DIR *d;
++	struct dirent *e;
++
++	if (done || up < RSTORE_ADOPT_UP_SECS)
++		return;
++	if (f_read_string(REAPER_USB_MOUNT_STAMP, buf, sizeof(buf)) > 0
++	    && up < strtoul(buf, NULL, 10) + RSTORE_ADOPT_QUIET_SECS)
++		return;	/* a mount was active recently (or the stamp is ahead): let it finish */
++	if (reaper_usbmon_lock_busy("/var/lock/usb.lock"))
++		return;
++	if ((d = opendir(RSTORE_MNT)) == NULL)
++		return;
++	while ((e = readdir(d)) != NULL) {
++		long newest = 0;
++		if (!rstore_is_mount(RSTORE_MNT, e->d_name, 1))
++			continue;
++		snprintf(vdir, sizeof(vdir), RSTORE_MNT "/%s", e->d_name);
++		if (access(vdir, W_OK) != 0)
++			continue;
++		nvol++;
++		strlcpy(only, e->d_name, sizeof(only));
++		if (rstore_hist(vdir, &newest) && newest > best_t) {
++			best_t = newest;
++			strlcpy(best, e->d_name, sizeof(best));
++		}
++	}
++	closedir(d);
++	if (!best[0]) {
++		if (nvol != 1)
++			return;	/* nothing mounted yet, or several and none holds history */
++		strlcpy(best, only, sizeof(best));
++	}
++	snprintf(vdir, sizeof(vdir), RSTORE_MNT "/%s", best);
++	if (rstore_new_id(nid, sizeof(nid)) != 0 || rstore_write_id(vdir, nid) != 0) {
++		logmessage("reaper", "long-term storage: could not mark USB volume %s as the store - will retry", best);
++		return;
++	}
++	nvram_set("reaper_store_vid", nid);
++	nvram_set("reaper_store_vname", best);
++	nvram_commit();
++	rstore_seen_write(nid, (long)time(NULL));
++	done = 1;
++	logmessage("reaper", "long-term storage: USB volume %s is now the pinned store (%s); other volumes are no longer used",
++		best, best_t ? "it holds the most recent Reaper history" : "the only mounted volume");
++}
++
++void reaper_store_check(void)
++{
++	static unsigned long last = 0, seen_up = 0;
++	static int seen_once = 0;
++	unsigned long up = (unsigned long)uptime();
++	char vid[24], name[64];
++	time_t now;
++
++	if (up - last < USBMON_EVERY_SECS)
++		return;
++	last = up;
++	if (!nvram_match("reaper_store", "usb"))
++		return;
++	strlcpy(vid, nvram_safe_get("reaper_store_vid"), sizeof(vid));
++	if (!rstore_vid_ok(vid)) {
++		rstore_adopt(up);
++		return;
++	}
++	if (!rstore_find(RSTORE_MNT, 1, vid, name, sizeof(name), NULL, 0))
++		return;
++	if (strcmp(nvram_safe_get("reaper_store_vname"), name))
++		nvram_set("reaper_store_vname", name);	/* relabelled: keep the display name current */
++	now = time(NULL);
++	if (now > 1600000000 && (!seen_once || up - seen_up >= RSTORE_SEEN_EVERY_SECS)
++	    && rstore_seen_write(vid, (long)now) == 0) {
++		seen_once = 1;
++		seen_up = up;
++	}
++}
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index b1fb18433d9..9842ccde799 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -11994,6 +11994,7 @@ wdp:
+ 	dnsmasq_check();
+ 	reaper_softlockup_arm_check();	/* reaper v3.3.3 */
+ 	reaper_usbmon_check();		/* reaper v3.3.3: lost mount events, aborted flashes, a disk-less bus (rc/reaper_usbmon.c) */
++	reaper_store_check();		/* reaper 2026-10-18: pinned long-term store - adopt on upgrade, last seen */
+ #ifdef RTCONFIG_NEW_USER_LOW_RSSI
+ 	roamast_check();
+ #endif
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index ffcf3621112..027d3fb4fcc 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -5,7 +5,12 @@
+      Chooses a durable location (RAM / JFFS / USB) for opt-in history datasets;
+      writes nvram reaper_store + reaper_store_ds via reaper_dev.cgi (store_set),
+      derives rtraf_path for the traffic fold-in. No new store, no new daemon:
+-     the writer rides the rwatch cron tick (see rc/rwatch.c). -->
++     the writer rides the rwatch cron tick (see rc/rwatch.c).
++     2026-10-18 (field: two partitions both grew .reaper/ + reaper/): USB is a
++     PINNED volume, not "the first mounted one". store_status lists the mounted
++     volumes (vols[]) and the pin (pin.name/present/seen, state); store_set takes
++     vol= and the router writes .reaper/store.id there. A missing pinned volume
++     is waited for (RAM meanwhile), never replaced by another one. -->
+ <!DOCTYPE html>
+ <html lang="en">
+ <head>
+@@ -35,6 +40,7 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .pagehead h1{font-size:24px;font-weight:700}
+ .statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+ .statuspill.vol{color:var(--steel);border-color:var(--line-soft)}
++.statuspill.wait{color:var(--amber);border-color:rgba(224,169,59,.35)}
+ .lede{max-width:78ch;margin:6px 0 16px}
+ .lede b{color:var(--bone);font-weight:600}
+ .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+@@ -44,6 +50,24 @@ h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .fchip{font-size:11.5px;border:1px solid rgba(255,255,255,.14);border-radius:16px;padding:3px 12px;color:var(--bone-dim);cursor:pointer;user-select:none}
+ .fchip.on{border-color:var(--crimson-deep);color:var(--bone);background:rgba(225,6,0,.10)}
+ .health{margin-left:auto;font-size:11.5px}
++.volrow{margin:-2px 0 10px}
++.volchips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
++.fchip.vol{display:inline-flex;align-items:center;gap:7px}
++.fchip.vol.miss{border-style:dashed;border-color:rgba(224,169,59,.55);color:var(--amber)}
++.fchip.vol.miss.on{background:rgba(224,169,59,.08)}
++.vtag{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;border-radius:4px;padding:1px 6px;border:1px solid var(--line-soft);color:var(--steel)}
++.vtag.in{color:var(--jade);border-color:rgba(79,178,134,.35)}
++.volnote{margin:0 0 10px}
++.volnote .sub{display:block;margin-top:4px}
++.linkbtn{background:none;border:none;padding:0;font:inherit;color:var(--bone);border-bottom:1px solid var(--crimson-deep);cursor:pointer}
++.ovl{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:50;align-items:center;justify-content:center}
++.ovl.show{display:flex}
++.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;max-width:480px;width:92%}
++.modal h3{font-size:16px;margin-bottom:8px}
++.modal p{margin-bottom:10px}
++.modal b{color:var(--bone);font-weight:600}
++.mbtns{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
++.btn.ghost{background:none;border-color:rgba(255,255,255,.18);color:var(--bone-dim)}
+ .note{font-size:12px;color:var(--steel);line-height:1.55;margin-top:4px}
+ .note b{color:var(--bone-dim)}
+ .warn{color:var(--amber)}
+@@ -83,6 +107,11 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+     <span class="fchip stg" data-s="usb"><#RDST_05#></span>
+     <span class="health" id="health">&nbsp;</span>
+   </div>
++  <div class="tblbar volrow" id="vol_row" style="display:none">
++    <span class="lbl"><#RDST_79#></span>
++    <span class="volchips" id="vol_chips"></span>
++  </div>
++  <p class="note volnote" id="vol_note" style="display:none">&nbsp;</p>
+   <p class="note" id="loc_note">&nbsp;</p>
+ </div>
+ 
+@@ -119,6 +148,8 @@ td.dssince{color:var(--bone-dim);white-space:nowrap}
+   <span class="saved" id="saved" style="display:none">&nbsp;</span>
+ </div>
+ 
++<div class="ovl" id="mv_ovl"><div class="modal" id="mv_modal"></div></div>
++
+ <script src="/reaper_util.js"></script>
+ <script>
+ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';   /* CSRF token */
+@@ -127,9 +158,15 @@ var REAPER_HTTPID = '<% nvram_get("http_id"); %>';   /* CSRF token */
+    request) they moved to Reaper_USB.asp under USB Application, where the other
+    USB services live. This page keeps only the long-term store selection. */
+ /* store_set error keys (ek) -> localized text; raw j.error stays the fallback */
+-var SERR = { RDEVE_1:`<#RDEVE_1#>`, RDEVE_12:`<#RDEVE_12#>`, RDEVE_13:`<#RDEVE_13#>` };
++var SERR = { RDEVE_1:`<#RDEVE_1#>`, RDEVE_12:`<#RDEVE_12#>`, RDEVE_13:`<#RDEVE_13#>`,
++             RDEVE_16:`<#RDEVE_16#>`, RDEVE_17:`<#RDEVE_17#>`, RDEVE_18:`<#RDEVE_18#>` };
+ var S = null;                 /* store_status snapshot */
+ var loc = 'ram';              /* staged (unsaved) location */
++var selVol = '';              /* staged (unsaved) USB volume name ('' = none chosen) */
++/* the MISSING pinned volume's chip: its own value, because another mounted stick
++   can carry the same label and choosing that one must re-pin. '/' is never in a
++   label, so this cannot collide. Saving it sends no vol= (keep the pin). */
++var PINKEY = '/pin';
+ var dsOn = {};                /* staged (unsaved) per-dataset enable */
+ var xMode = 'off';            /* staged (unsaved) export mode: off|both|exportonly */
+ 
+@@ -144,6 +181,29 @@ function fmtDate(sec){
+   var d = new Date(sec*1000);
+   return d.toLocaleDateString();
+ }
++function fmtStamp(sec){
++  if(!sec) return '&mdash;';
++  var d = new Date(sec*1000);
++  return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
++}
++/* escape a dict template, then drop already-escaped HTML into its %1..%9 slots */
++function fillE(tpl, args){
++  return esc(tpl).replace(/%([1-9])/g, function(m, i){ var a = args[i - 1]; return (a === undefined) ? m : a; });
++}
++function vols(){ return (S && S.vols) || []; }
++function volByName(n){
++  var v = vols();
++  for(var i = 0; i < v.length; i++) if(v[i].name === n) return v[i];
++  return null;
++}
++/* the pinned volume when it is NOT mounted (the router is waiting for it) */
++function pinMissing(){ return (S && S.pin && S.pin.name && !S.pin.present) ? S.pin : null; }
++/* first choice on load: the pin; else the only mounted volume; else nothing */
++function initialVol(){
++  if(S && S.pin && S.pin.name) return S.pin.present ? S.pin.name : PINKEY;
++  var v = vols();
++  return (v.length === 1) ? v[0].name : '';
++}
+ 
+ /* dataset catalog (order = display order). key must match reaper_store_ds tokens.
+    cap strings mix a number (kept literal) with a tokenized noun (rule 24). */
+@@ -175,6 +235,7 @@ function loadStatus(){
+     if(!j){ document.getElementById('loc_note').innerHTML = '<span style="color:var(--danger)">' + esc(`<#RDST_33#>`) + '</span>'; return; }
+     S = j;
+     loc = (j.loc === 'jffs' || j.loc === 'usb') ? j.loc : 'ram';
++    selVol = initialVol();
+     dsOn = {};
+     (j.ds || '').split(',').forEach(function(t){ t = t.trim(); if(t) dsOn[t] = 1; });
+     xMode = (j.export_mode === 'storeonly' || j.export_mode === 'both' || j.export_mode === 'exportonly') ? j.export_mode : 'off';
+@@ -190,29 +251,51 @@ function render(){
+   });
+ 
+   var durable = (loc !== 'ram');
+-  var usbFail = (loc === 'usb' && S && !S.mounted);
++  var miss = pinMissing();
++  var selV = (loc === 'usb') ? volByName(selVol) : null;
++  /* staged USB choice that cannot collect right now: nothing chosen, or the
++     chosen volume is the pinned one and it is not mounted */
++  var usbFail = (loc === 'usb' && !selV);
++  var FREE = esc(`<#RDST_29#>`);
+ 
+-  /* health line */
++  /* health line - names the volume, so the user can always see where it goes */
+   var h = document.getElementById('health');
+   if(loc === 'ram'){ h.innerHTML = '<span style="color:var(--steel)">' + esc(`<#RDST_28#>`) + '</span>'; }
+-  else if(usbFail){ h.innerHTML = '<span style="color:var(--amber)">' + esc(`<#RDST_30#>`) + '</span>'; }
++  else if(loc === 'usb'){
++    if(selV) h.innerHTML = '<span style="color:var(--jade)">' + esc(selV.name) + '</span>' +
++                           (selV.free ? ' &middot; ' + fmtBytes(selV.free) + ' ' + FREE : '');
++    else if(miss && selVol === PINKEY) h.innerHTML = '<span style="color:var(--amber)">' + fillE(`<#RDST_97#>`, [esc(miss.name)]) + '</span>';
++    else if(!vols().length) h.innerHTML = '<span style="color:var(--amber)">' + esc(`<#RDST_30#>`) + '</span>';
++    else h.innerHTML = '<span style="color:var(--steel)">&mdash;</span>';
++  }
+   else {
+-    var label = (loc === 'jffs') ? `<#RDST_04#>` : `<#RDST_05#>`;
+-    var freeTx = (S && S.free) ? (fmtBytes(S.free) + ' ' + esc(`<#RDST_29#>`)) : '';
+-    h.innerHTML = '<span style="color:var(--jade)">' + esc(label) + '</span>' + (freeTx ? ' &middot; ' + freeTx : '');
++    var freeTx = (S && S.free && S.loc_eff === 'jffs') ? (fmtBytes(S.free) + ' ' + FREE) : '';
++    h.innerHTML = '<span style="color:var(--jade)">' + esc(`<#RDST_04#>`) + '</span>' + (freeTx ? ' &middot; ' + freeTx : '');
+   }
+ 
++  renderVols();
++
+   /* location note */
+   var ln = document.getElementById('loc_note');
+   ln.innerHTML = (loc === 'usb')
+       ? ('<b>' + esc(`<#RDST_24#>`) + '</b> ' + esc(`<#RDST_25#>`))
+       : (loc === 'jffs') ? esc(`<#RDST_26#>`) : esc(`<#RDST_27#>`);
+ 
+-  /* status pill */
++  /* status pill: the router's state for the SAVED setting (attaching = the
++     pinned volume has not mounted yet this boot; waiting = it has not come
++     back within the retry window). A staged, unsaved change previews as before. */
+   var pill = document.getElementById('pill');
+-  if(durable && !usbFail){ pill.className = 'statuspill'; pill.textContent = `<#RDST_37#>`; }
++  var st = (S && S.state && loc === S.loc) ? S.state
++         : (miss && loc === 'usb' && selVol === PINKEY) ? 'waiting'
++         : (durable && !usbFail ? 'collecting' : 'volatile');
++  if(st === 'collecting'){ pill.className = 'statuspill'; pill.textContent = `<#RDST_37#>`; }
++  else if(st === 'attaching'){ pill.className = 'statuspill wait'; pill.textContent = `<#RDST_88#>`; }
++  else if(st === 'waiting'){ pill.className = 'statuspill wait'; pill.textContent = `<#RDST_89#>`; }
+   else { pill.className = 'statuspill vol'; pill.textContent = `<#RDST_38#>`; }
+ 
++  /* Save needs a volume when USB is staged */
++  document.getElementById('saveBtn').disabled = (loc === 'usb' && !selVol);
++
+   /* dataset rows */
+   var el = '';
+   DSETS.forEach(function(ds){
+@@ -269,11 +352,99 @@ function render(){
+     : (esc(`<#RDST_58#>`) + probe + cfg);
+ }
+ 
++/* Volume row (USB only): one chip per mounted volume plus, when the pinned
++   volume is absent, a dashed chip for it - the wait is visible, not an error.
++   Handlers by container id (never a shared class - the .fchip clobber lesson). */
++function renderVols(){
++  var row = document.getElementById('vol_row'), note = document.getElementById('vol_note');
++  if(loc !== 'usb'){ row.style.display = 'none'; note.style.display = 'none'; return; }
++  row.style.display = ''; note.style.display = '';
++  var V = vols(), miss = pinMissing();
++  /* the name that is IN USE: only a mounted pin. A missing pin's label may be
++     worn by another stick, which is then just another volume to choose. */
++  var pinName = (S && S.pin && S.pin.present) ? S.pin.name : '';
++  var c = '';
++  if(miss)
++    c += '<span class="fchip vol miss' + (selVol === PINKEY ? ' on' : '') + '" data-v="' + PINKEY + '">' +
++         esc(miss.name) + ' &mdash; ' + esc(`<#RDST_82#>`) + '</span>';
++  V.forEach(function(v){
++    var tag = '';
++    if(v.name === pinName) tag = '<span class="vtag in">' + esc(`<#RDST_80#>`) + '</span>';
++    else if(v.hist) tag = '<span class="vtag">' + esc(`<#RDST_81#>`) + '</span>';
++    c += '<span class="fchip vol' + (v.name === selVol ? ' on' : '') + '" data-v="' + esc(v.name) + '">' +
++         esc(v.name) + tag + '</span>';
++  });
++  var box = document.getElementById('vol_chips');
++  box.innerHTML = c;
++  Array.prototype.forEach.call(box.querySelectorAll('.fchip'), function(n){
++    n.onclick = function(){ selVol = n.getAttribute('data-v'); render(); };
++  });
++
++  /* detail line for the staged choice */
++  var t = '', selV = volByName(selVol);
++  if(!V.length && !miss) t = '<span class="warn">' + esc(`<#RDST_95#>`) + '</span>';
++  else if(!selVol) t = '<span class="warn">' + esc(`<#RDST_85#>`) + '</span>';
++  else if(miss && selVol === PINKEY){
++    t = (S.state === 'attaching')
++      ? '<span class="warn">' + fillE(`<#RDST_86#>`, [esc(miss.name)]) + '</span>'
++      : '<span class="warn">' + fillE(`<#RDST_87#>`, [esc(miss.name), fmtStamp(miss.seen)]) + '</span>' +
++        ' <button class="linkbtn" id="to_jffs">' + esc(`<#RDST_96#>`) + '</button>';
++  } else if(selV){
++    var bits = [];
++    if(selV.fs) bits.push(esc(selV.fs));
++    if(selV.size) bits.push(fmtBytes(selV.size));
++    if(selV.free) bits.push(fmtBytes(selV.free) + ' ' + esc(`<#RDST_29#>`));
++    bits.push(selV.hist ? fillE(`<#RDST_83#>`, [fmtDate(selV.hist)]) : esc(`<#RDST_84#>`));
++    t = bits.join(' &middot; ');
++    if(S.pin && S.pin.name && selVol !== pinName && selV.hist)
++      t += '<span class="sub">' + fillE(`<#RDST_92#>`, [esc(selV.name), fmtDate(selV.hist)]) + '</span>';
++    else if(selVol === pinName && V.length > 1)
++      t += '<span class="sub">' + esc(`<#RDST_98#>`) + '</span>';
++  }
++  /* earlier-setup history on volumes that are neither the pin nor the choice */
++  V.forEach(function(v){
++    if(v.hist && v.name !== selVol && v.name !== pinName)
++      t += '<span class="sub">' + fillE(`<#RDST_94#>`, [esc(v.name)]) + '</span>';
++  });
++  note.innerHTML = t || '&nbsp;';
++  var tj = document.getElementById('to_jffs');
++  if(tj) tj.onclick = function(){ loc = 'jffs'; render(); };
++}
++
++/* moving the store to a different volume is confirmed: the old volume keeps
++   its history (never deleted here) and the page stops showing it */
++function openMove(){
++  var from = S.pin.name, to = selVol, v = volByName(to);
++  /* a missing pin says so: another stick may wear the same label */
++  var fromH = '<b>' + esc(from) + '</b>' + (S.pin.present ? '' : ' (' + esc(`<#RDST_82#>`) + ')');
++  var b = '<h3>' + fillE(`<#RDST_90#>`, ['<b>' + esc(to) + '</b>']) + '</h3>' +
++          '<p>' + fillE(`<#RDST_91#>`, ['<b>' + esc(to) + '</b>', fromH]) + '</p>';
++  if(v && v.hist) b += '<p class="note">' + fillE(`<#RDST_92#>`, [esc(to), fmtDate(v.hist)]) + '</p>';
++  b += '<div class="mbtns"><button class="btn ghost" id="mv_no">' + esc(`<#CTL_Cancel#>`) + '</button>' +
++       '<button class="btn" id="mv_yes">' + esc(`<#RDST_93#>`) + '</button></div>';
++  document.getElementById('mv_modal').innerHTML = b;
++  var o = document.getElementById('mv_ovl');
++  o.className = 'ovl show';
++  document.getElementById('mv_no').onclick = function(){ o.className = 'ovl'; };
++  document.getElementById('mv_yes').onclick = function(){ o.className = 'ovl'; doSave(); };
++}
++
+ function save(){
++  if(loc === 'usb'){
++    if(!selVol) return;
++    /* a different volume than the pin (the waiting chip and the mounted pin
++       itself are "stay") -> confirm the move */
++    if(S && S.pin && S.pin.name && selVol !== PINKEY && !(S.pin.present && selVol === S.pin.name)){ openMove(); return; }
++  }
++  doSave();
++}
++
++function doSave(){
+   var order = ['dev','traf','watch','chq','slog'];
+   var list = order.filter(function(k){ return dsOn[k]; }).join(',');
+   var btn = document.getElementById('saveBtn'); btn.disabled = true;
+   xGet('/reaper_dev.cgi?action=store_set&loc=' + encodeURIComponent(loc) +
++       (loc === 'usb' && selVol !== PINKEY ? '&vol=' + encodeURIComponent(selVol) : '') +
+        '&ds=' + encodeURIComponent(list) +
+        '&xmode=' + encodeURIComponent(xMode) +
+        '&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
+-- 
+2.25.1
+

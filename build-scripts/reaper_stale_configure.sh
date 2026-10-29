@@ -25,8 +25,8 @@
 #
 # USAGE:  reaper_stale_configure.sh [--check|--fix] [tree-root]
 #   --check (default) report only, exit 1 if anything is stale
-#   --fix             also remove <pkg>/Makefile + <pkg>/config.status so the
-#                     next build re-runs configure with the current flags
+#   --fix             also remove <pkg>/Makefile + <pkg>/config.status + <pkg>/stamp-h1
+#                     so the next build re-runs configure with the current flags
 # ============================================================================
 
 case "${1:-}" in
@@ -46,6 +46,14 @@ for cs in "$R"/*/config.status; do
   [ -f "$cs" ] || continue
   d=$(dirname "$cs"); pkg=$(basename "$d")
   [ -f "$d/configure" ] || continue
+  # 2026-10-27 (102.10 rebase): a package whose config.status is TRACKED ships
+  # pre-configured from upstream (LPRng); the build never runs its configure, so
+  # a rule edit cannot leave it stale - and clearing it deleted tracked files and
+  # re-ran a 2006 configure that writes SHELL="/bin/sh" (quotes included), which
+  # killed the build at LPRng/UTILS. A rebase re-dates every replayed commit, so
+  # after one, every configured package looks stale and this line is what keeps
+  # the over-broad re-configure harmless.
+  git ls-files --error-unmatch -- "release/src/router/$pkg/config.status" >/dev/null 2>&1 && continue
 
   cs_epoch=$(stat -c%Y "$cs" 2>/dev/null) || continue
   # Last commit whose diff to router/Makefile mentions this package. -G matches
@@ -60,8 +68,22 @@ for cs in "$R"/*/config.status; do
   echo "          configured $(date -d "@$cs_epoch" +%Y-%m-%d), rules changed $(date -d "@$chg" +%Y-%m-%d)"
   echo "          $subj"
   if [ "$MODE" = "--fix" ]; then
-    rm -f "$d/Makefile" "$d/config.status"
-    echo "          -> cleared Makefile + config.status; next build re-configures"
+    # v3.3.4 cut (2026-10-06): the router Makefile re-runs configure only when the
+    # package's stamp-h1 sentinel is missing (76 packages use one). Clearing the
+    # Makefile without it left expat-2.0.1 "configured" with no Makefile, and the
+    # build died "no makefile found". The sentinel goes with the rest.
+    rm -f "$d/Makefile" "$d/config.status" "$d/stamp-h1"
+    # 2026-10-27: some router/Makefile rules are keyed on a GENERATED configure
+    # (libcap-ng: `libcap-ng: libcap-ng/configure`, whose recipe runs autogen and
+    # configure together). With only the Makefile gone the configure target was
+    # still up to date, nothing re-ran it, and the build died "no makefile found"
+    # in libcap-ng. Every package source is tracked, so an untracked configure is
+    # a build product: removing it puts the package back to its cold-tree state.
+    if ! git ls-files --error-unmatch -- "release/src/router/$pkg/configure" >/dev/null 2>&1; then
+      rm -f "$d/configure"
+      echo "          -> also removed the generated configure (its rule regenerates it)"
+    fi
+    echo "          -> cleared Makefile + config.status + stamp-h1; next build re-configures"
   fi
 done
 
@@ -71,5 +93,5 @@ if [ "$found" -eq 0 ]; then
 fi
 echo "  stale-configure: $found package(s) flagged"
 [ "$MODE" = "--fix" ] && exit 0
-echo "  run with --fix, or: rm -f <pkg>/Makefile <pkg>/config.status"
+echo "  run with --fix, or: rm -f <pkg>/Makefile <pkg>/config.status <pkg>/stamp-h1"
 exit 1

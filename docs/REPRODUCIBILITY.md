@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -68,7 +68,7 @@ worked example (substitute any release from the manifest):
 # --- (a) Get the pinned upstream base -----------------------------------------
 git clone https://github.com/RMerl/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
-git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
+git checkout ca72a61f8bc          # 3006.102.10 for v3.6.0 and later; a7ebfa133a (3006.102.8-beta2) for v3.5.0 and older
 
 # --- (b) Apply this repo's published patches ----------------------------------
 git config user.email you@example.com && git config user.name reviewer
@@ -81,7 +81,7 @@ tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from th
 # overlays/wlcsm-42015-blobs.tar.gz; the series carries the swap for the RT-BE96U tree, a sibling
 # takes the two files over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 698 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 867 <!--@patchcount--> patches (through v2.8.8).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
@@ -136,10 +136,12 @@ reproduce. A *tree* hash is a pure function of file content. It is the right
 primitive for "did the same source come out," and it incidentally exposes nothing
 about our build host.
 
-**Why we cherry-pick upstream, never rebase.** When we carry forward an upstream
+**Why we cherry-pick upstream between rebases.** When we carry forward an upstream
 Asuswrt-Merlin update, we cherry-pick it onto our branch rather than moving our
-base. That keeps the base pinned at `a7ebfa133a` forever, so the reproduction
-recipe in §3 is identical for every release, past and future. (It is also why you
+base, so the reproduction recipe in §3 stays identical from release to release. A
+new upstream release is taken by a deliberate rebase: v3.6.0 moved the base from
+`a7ebfa133a` (3006.102.8-beta2) to `ca72a61f8bc` (3006.102.10) and regenerated the series;
+each release's manifest entry names its base. (It is also why you
 never have to "guess whether it's beta2" — the base is one fixed commit,
 documented in [`SOURCE-AVAILABILITY.md`](SOURCE-AVAILABILITY.md) and every release
 record.)

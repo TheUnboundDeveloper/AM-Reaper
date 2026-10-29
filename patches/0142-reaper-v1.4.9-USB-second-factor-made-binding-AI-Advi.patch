@@ -1,0 +1,352 @@
+From 146c9f87cd5073087247126a4deb99a2a8565110 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 12 Jul 2026 13:31:00 -0400
+Subject: [PATCH] reaper v1.4.9: USB second factor made binding + AI Advisor
+ lock-state UI fix (AI Advisor image)
+
+Make the enrolled USB key a binding third factor: usb_unenroll ("Remove USB key")
+now requires the enrolled stick to be physically present (rmcp_usb_find_key), kept
+independent of the 'provisioned' code gate so the deprovision-then-unenroll path
+cannot strip it either. A holder of the admin login + arming code alone can no longer
+remove the USB factor; a lost key can only be cleared by a factory reset / nvram wipe.
+
+Fix the Advisor page lock-state feedback: while a session is armed the page now
+re-polls reaper_mcp.cgi?action=status every ~5s, so pulling the USB key (or a session
+timeout/disarm) flips the card to "locked" within seconds instead of counting down a
+session the router already tore down. (The router-side teardown - fence rule removed +
+session file deleted - already fired on key removal; this closes the UI gap.)
+
+One new dict key (RADV_72) in all 25 dict files. httpd/web.c (do_reaper_mcp_cgi,
+#ifdef RTCONFIG_REAPER_MCP) + Reaper_Advisor.asp; both images built, noMCP unaffected
+(no Advisor).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf               |  2 +-
+ release/src/router/httpd/web.c            | 15 ++++++++++++++-
+ release/src/router/www/BR.dict            |  1 +
+ release/src/router/www/CN.dict            |  1 +
+ release/src/router/www/CZ.dict            |  1 +
+ release/src/router/www/DA.dict            |  1 +
+ release/src/router/www/DE.dict            |  1 +
+ release/src/router/www/EN.dict            |  1 +
+ release/src/router/www/ES.dict            |  1 +
+ release/src/router/www/FI.dict            |  1 +
+ release/src/router/www/FR.dict            |  1 +
+ release/src/router/www/HU.dict            |  1 +
+ release/src/router/www/IT.dict            |  1 +
+ release/src/router/www/JP.dict            |  1 +
+ release/src/router/www/KR.dict            |  1 +
+ release/src/router/www/MS.dict            |  1 +
+ release/src/router/www/NL.dict            |  1 +
+ release/src/router/www/NO.dict            |  1 +
+ release/src/router/www/PL.dict            |  1 +
+ release/src/router/www/RO.dict            |  1 +
+ release/src/router/www/RU.dict            |  1 +
+ release/src/router/www/Reaper_Advisor.asp | 14 ++++++++++++--
+ release/src/router/www/SL.dict            |  1 +
+ release/src/router/www/SV.dict            |  1 +
+ release/src/router/www/TH.dict            |  1 +
+ release/src/router/www/TR.dict            |  1 +
+ release/src/router/www/TW.dict            |  1 +
+ release/src/router/www/UK.dict            |  1 +
+ 28 files changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 576f79c89f0..f8c0754735e 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v1.4.8a
++EXTENDNO=Reaper_v1.4.9
+ 
+ RCNO=0
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 12ad43fddcb..72bbcb8299c 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -22284,10 +22284,23 @@ do_reaper_mcp_cgi(char *url, FILE *stream)
+ 		 * too, so a CSRF/stale-cookie POST cannot silently remove the USB key */
+ 		if (provisioned && !rmcp_require_code(stream, get_cgi("code"), now, lock_until))
+ 			return;
++		/* reaper v1.4.9: the USB key is BINDING. It can only be removed with the
++		 * ENROLLED stick physically inserted - a code-holder alone (even via the
++		 * deprovision-then-unenroll path, where 'provisioned' is already 0) cannot
++		 * strip the third factor. Kept independent of 'provisioned' on purpose. If
++		 * the stick is lost, a factory reset / nvram clear is the ONLY way to clear
++		 * this lock. */
++		if (nvram_get_int("rmcp_usb_enable") == 1) {
++			char kp[300];
++			if (rmcp_usb_find_key(nvram_safe_get("rmcp_usb_hash"), kp, sizeof(kp)) != 0) {
++				websWrite(stream, "{\"ok\":0,\"error\":\"insert the enrolled USB key to remove it - a lost key can only be cleared by a factory reset\"}");
++				return;
++			}
++		}
+ 		nvram_set("rmcp_usb_hash", "");
+ 		nvram_set("rmcp_usb_enable", "0");
+ 		nvram_commit();
+-		logmessage("rmcpd", "USB key 2nd factor removed (code-only arming)");
++		logmessage("rmcpd", "USB key 2nd factor removed (enrolled stick verified present)");
+ 		websWrite(stream, "{\"ok\":1}");
+ 		return;
+ 	}
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 34c5c632317..8c408b65b91 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 7288fbacbe0..05aa04908ab 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a3e84c7c3ac..60bd00e985a 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 1fb312488a9..c1d72497884 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 67563c930d3..3a9ccd9cdd3 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 56708160a47..db40ccdaffc 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 8669770e824..d74abfcddae 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index f026ed1d3bd..dc9d8dca025 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 4e77748b9b2..f6ff67adf5e 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 3d69a44d789..bfb6150e0bb 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 989c1df42e0..10f1e68cd1c 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 718206dad8f..715b4c83b2f 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index a65fe35fe37..ad488724dcc 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 8435622d67d..0efccd72e47 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index e683aef4082..a45183def3f 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 43e1bcfba97..4f09ea044dd 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 71c2680fca0..019b3a393a2 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 35113249ba3..8b9a248e653 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 8bee19bf795..821a18536c9 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/Reaper_Advisor.asp b/release/src/router/www/Reaper_Advisor.asp
+index 2d1d8802bad..02e92591b00 100644
+--- a/release/src/router/www/Reaper_Advisor.asp
++++ b/release/src/router/www/Reaper_Advisor.asp
+@@ -284,12 +284,22 @@ function buildSnip(url,tok){
+ }
+ function copySnip(){ var t=document.getElementById('snip').textContent; if(navigator.clipboard) navigator.clipboard.writeText(t); }
+ 
+-function startTicker(){ stopTicker(); ticker=setInterval(tick,1000); tick(); }
++var tickN=0;
++function startTicker(){ stopTicker(); tickN=0; ticker=setInterval(tick,1000); tick(); }
+ function stopTicker(){ if(ticker){clearInterval(ticker);ticker=null;} }
+ function tick(){
+   var left=endExpiry-Math.floor(Date.now()/1000);
+   document.getElementById('countdown').textContent=fmtLeft(left);
+-  if(left<=0){ stopTicker(); loadStatus(); }
++  if(left<=0){ stopTicker(); loadStatus(); return; }
++  /* reaper v1.4.9: re-poll the server every ~5s so a server-side session end
++     (USB key pulled, session timeout, or disarm) flips the UI to locked promptly
++     instead of counting down a session the router has already torn down. */
++  if((++tickN % 5)===0){
++    post('status').then(function(d){
++      if(!d.armed){ stopTicker(); setMsg('armMsg','<#RADV_72#>','err'); loadStatus(); }
++      else if(d.expiry){ endExpiry=d.expiry; }
++    });
++  }
+ }
+ 
+ loadStatus();
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 67a35f89bb6..83e651efecc 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index f430e3576cb..04c5abbab2f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 7ae73ef2902..7f17781cf63 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 68035e1acda..eef5472f2d5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index cc7d8b7c34f..ce9a8e750a0 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index ac262ea1754..575dcedfdd4 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -5685,3 +5685,4 @@ RQOS_112=No devices are capped yet. Add one below.
+ RQOS_113=Pick a device or enter a MAC address (AA:BB:CC:DD:EE:FF).
+ RQOS_114=Download and upload must each be at least 0.1 Mb/s.
+ RQOS_115=You can limit up to 32 devices.
++RADV_72=Session ended - the advisor is now locked.
+-- 
+2.25.1
+

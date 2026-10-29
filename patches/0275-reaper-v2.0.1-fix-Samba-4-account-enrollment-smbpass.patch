@@ -1,0 +1,65 @@
+From 93f16155d7742cb369537ba6a359aae0c6ec3ad9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 13:16:27 -0400
+Subject: [PATCH] reaper v2.0.1: fix Samba 4 account enrollment - smbpasswd
+ needs -c /etc/smb.conf
+
+Metal (owner RT-BE96U, v2.0.1): smbd started fine but NO login worked -> every
+session dropped to guest -> "Encryption is not supported for guest access".
+Root cause: /etc/samba/smbpasswd came up EMPTY on boot even though the account
+list has users. start_samba() enrolls accounts with `smbpasswd -s -a <user>`,
+but WITHOUT -c the tool uses Samba 4's compiled default config path
+(/etc/samba/smb.conf, per `smbd -b`), not this build's /etc/smb.conf -- so it
+wrote the passdb to the wrong place and smbd's own passdb (smb passwd file =
+/etc/samba/smbpasswd, read via `smbd -s /etc/smb.conf`) stayed empty. Result:
+account-mode shares (valid users = <acct>) rejected every login.
+
+Fix: pass `-c /etc/smb.conf` on all three SAMBA4 smbpasswd enrollment calls
+(nobody + PMS-account loop + acc_list loop) so entries land in the passdb smbd
+actually reads. Verified on metal: `smbpasswd -c /etc/smb.conf -a admin`
+populated /etc/samba/smbpasswd and the Windows `net use /user:admin` mounted the
+share. (SAMBA36X paths use the old `smbpasswd "user" "pass"` form and are
+untouched.)
+
+Completes the Samba 4 fix set: lib path (ld.so.conf) + runtime dirs +
+map-to-guest + this enrollment fix = SMB works out of the box.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 355b359bae0..2a88dd95974 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3520,7 +3520,7 @@ start_samba(void)
+ 	//system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
+ 	system("/usr/sbin/smbpasswd nobody \"\"");
+ #elif defined(RTCONFIG_SAMBA4)
+-	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
++	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a nobody");
+ #else
+ 	system("smbpasswd nobody \"\"");
+ #endif
+@@ -3562,7 +3562,7 @@ start_samba(void)
+ 					close(_pfd[1]);
+ 					dup2(_pfd[0], STDIN_FILENO);
+ 					close(_pfd[0]);
+-					execl("/usr/sbin/smbpasswd", "smbpasswd", "-s", "-a", char_user, (char *)NULL);
++					execl("/usr/sbin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1: Samba 4 needs the config path */
+ 					_exit(127);
+ 				} else if (_pid > 0) {
+ 					close(_pfd[0]);
+@@ -3654,7 +3654,7 @@ start_samba(void)
+ 						close(_pfd[1]);
+ 						dup2(_pfd[0], STDIN_FILENO);
+ 						close(_pfd[0]);
+-						execl("/usr/sbin/smbpasswd", "smbpasswd", "-s", "-a", char_user, (char *)NULL);
++						execl("/usr/sbin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1: Samba 4 needs the config path */
+ 						_exit(127);
+ 					} else if (_pid > 0) {
+ 						close(_pfd[0]);
+-- 
+2.25.1
+

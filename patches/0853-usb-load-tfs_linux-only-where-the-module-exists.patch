@@ -1,0 +1,35 @@
+From 9c1713342fb389371519e6a3005d82a36c6e4d18 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 15:47:51 -0400
+Subject: [PATCH] usb: load tfs_linux only where the module exists
+
+ASUS 40585 dropped the SDK gate around modprobe("tfs_linux"), but
+tfs_linux.ko ships only for the 5.15-kernel BE platforms. On the RT-BE96U
+(4.19) every USB start logged "can't load module tfs_linux" before tfat
+and tntfs loaded on their own. modprobe_q() checks for the .ko first.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/usb.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index f99c65eaa34..2d3c2317a82 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -847,7 +847,11 @@ void start_usb(int mode)
+ 			if(nvram_get_int("usb_fs_ntfs") == 1 ||
+ 				nvram_get_int("usb_fs_fat") == 1 ||
+ 				nvram_get_int("usb_fs_hfs") == 1){
+-					modprobe("tfs_linux");
++					/* Reaper 2026-10-27: 40585 dropped the SDK gate around this call;
++					 * tfs_linux.ko ships only for the 5.15-kernel BE platforms, so a
++					 * 4.19 one (RT-BE96U) logged a failed modprobe at every USB start.
++					 * modprobe_q() loads it only where the .ko exists. */
++					modprobe_q("tfs_linux");
+ 			}
+ #endif
+ 
+-- 
+2.25.1
+

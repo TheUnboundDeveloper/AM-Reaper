@@ -1,0 +1,89 @@
+From bac769978b898a3720727e2a61491b3fd23c0b1a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 10:53:54 -0400
+Subject: [PATCH] libovpn: the server-certificate repair runs on easyrsa3 where
+ the image stages it
+
+ASUS 40585 stages easyrsa3 (/rom/easy-rsa/easyrsa) on OpenSSL 3.x builds and no
+pkitool; upstream's first-time generation already uses it. Reaper's v3.1.1
+repair of a missing server leaf still ran /rom/easy-rsa/pkitool and would have
+failed on this image. On those builds it now imports the CA it holds into a
+fresh PKI (ca.crt, private/ca.key, index, serial, the CA dirs easyrsa checks),
+issues only the server leaf with gen-req + sign-req server, and leaves the
+request/key/certificate under the names the stage checks and the CA-verify read.
+The pkitool path stays for builds without OpenSSL 3.x. reaper_verify's ovpn-pki
+gate still pins pkitool and openssl-1.0.0.cnf - an adoption item for the lean
+repo.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/libovpn/openvpn_setup.c | 39 +++++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index f5f2cdc3c0a..de3c4be9be6 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -772,7 +772,8 @@ void ovpn_write_client_keys(ovpn_cconf_t *cconf, int unit) {
+ 
+ /* v3.1.1: rebuild ONLY the server leaf from the CA that is already present.
+  *
+- * Uses the firmware's own signing path (easy-rsa pkitool, -extensions server)
++ * Uses the firmware's own signing path (easyrsa3 on OpenSSL 3.x builds, pkitool
++ * otherwise - the x509-types/server extensions either way)
+  * rather than hand-rolled openssl, so the certificate carries the same
+  * extensions and subject conventions as one generated at first setup.
+  *
+@@ -805,6 +806,41 @@ static int ovpn_repair_server_cert(int unit)
+ 	if (!fp)
+ 		return -1;
+ 
++#if defined(RTCONFIG_OPENSSL30) || defined(RTCONFIG_OPENSSL35)
++	/* 40585: OpenSSL 3.x builds stage easyrsa3 (/rom/easy-rsa/easyrsa), not pkitool. The repair
++	 * imports the CA we already hold into a fresh PKI and issues only the server leaf there; the
++	 * same x509-types/server extensions a first-time generation gets. Output kept (v3.1.4). */
++	fprintf(fp, "#!/bin/sh\n");
++	fprintf(fp, "exec >\"%s\" 2>&1\n", logfile);
++	fprintf(fp, "EASYRSA=\"/rom/easy-rsa/easyrsa\"\n");
++	fprintf(fp, "export EASYRSA_PKI=\"%s/pki\"\n", rundir);
++	fprintf(fp, "export EASYRSA_BATCH=1\n");
++	fprintf(fp, "export EASYRSA_KEY_SIZE=2048\n");
++	fprintf(fp, "export EASYRSA_CERT_EXPIRE=3650\n");
++	fprintf(fp, "export EASYRSA_REQ_COUNTRY=\"TW\"\n");
++	fprintf(fp, "export EASYRSA_REQ_PROVINCE=\"TW\"\n");
++	fprintf(fp, "export EASYRSA_REQ_CITY=\"Taipei\"\n");
++	fprintf(fp, "export EASYRSA_REQ_ORG=\"ASUS\"\n");
++	fprintf(fp, "export EASYRSA_REQ_EMAIL=\"me@asusrouter.lan\"\n");
++	fprintf(fp, "export EASYRSA_REQ_OU=\"Home/Office\"\n");
++	/* a writable HOME for anything that still wants a RANDFILE (v3.1.5, R16) */
++	fprintf(fp, "export HOME=\"%s\"\n", rundir);
++	fprintf(fp, "rm -rf \"$EASYRSA_PKI\"\n");
++	fprintf(fp, "$EASYRSA init-pki\n");
++	/* the CA is only ever READ: copy it in, with what easyrsa checks for before it signs */
++	fprintf(fp, "cp %s/ca.crt \"$EASYRSA_PKI/ca.crt\"\n", rundir);
++	fprintf(fp, "cp %s/ca.key \"$EASYRSA_PKI/private/ca.key\"\n", rundir);
++	fprintf(fp, "chmod 0600 \"$EASYRSA_PKI/private/ca.key\"\n");
++	fprintf(fp, "mkdir -p \"$EASYRSA_PKI/issued\" \"$EASYRSA_PKI/certs_by_serial\" \"$EASYRSA_PKI/revoked/certs_by_serial\" \"$EASYRSA_PKI/revoked/private_by_serial\"\n");
++	fprintf(fp, "touch \"$EASYRSA_PKI/index.txt\"\n");
++	fprintf(fp, "openssl rand -hex 16 > \"$EASYRSA_PKI/serial\"\n");
++	fprintf(fp, "$EASYRSA gen-req server nopass\n");
++	fprintf(fp, "$EASYRSA sign-req server server\n");
++	/* the stage files the checks below read, under the names the pkitool path used */
++	fprintf(fp, "cp \"$EASYRSA_PKI/reqs/server.req\" %s/server.csr\n", rundir);
++	fprintf(fp, "cp \"$EASYRSA_PKI/private/server.key\" %s/server.key\n", rundir);
++	fprintf(fp, "cp \"$EASYRSA_PKI/issued/server.crt\" %s/server.crt\n", rundir);
++#else
+ 	fprintf(fp, "#!/bin/sh\n");
+ 	/* v3.1.4: keep what the tools say. Until now this script ran under
+ 	 * eval() with stdout and stderr discarded and was unlinked on the next
+@@ -839,6 +875,7 @@ static int ovpn_repair_server_cert(int unit)
+ 	fprintf(fp, "touch %s/index.txt\n", rundir);
+ 	fprintf(fp, "[ -s %s/serial ] || $OPENSSL rand -hex 16 > %s/serial\n", rundir, rundir);
+ 	fprintf(fp, "/rom/easy-rsa/pkitool --server server\n");
++#endif
+ 	fclose(fp);
+ 	chmod(script, 0700);
+ 	eval(script);
+-- 
+2.25.1
+

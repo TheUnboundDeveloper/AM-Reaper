@@ -28,7 +28,7 @@ drives it two ways.
 Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router source tree - pass release/src/router as
 argv[1] or REAPER_ROUTER_SRC).
 """
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 
 def skip(msg):
     print("SKIP: " + msg); sys.exit(77)
@@ -138,6 +138,7 @@ lan_ipaddr=192.168.50.1
 wan0_ifname=eth0
 wan0_proto=dhcp
 wan0_ipaddr=203.0.113.5
+wan0_nat_x=1
 https_lanport=8443
 misc_http_x=0
 misc_httpsport_x=8443
@@ -193,7 +194,7 @@ def w(name, text):
     return p
 
 def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT, tag="x", rule4=None, rule6=None,
-        lsntcp=None, lsnudp=None, wan="eth0"):
+        lsntcp=None, lsnudp=None, wan="eth0", used=None):
     # wan=None omits --wan so the walker derives the WAN interface from the nv
     # file exactly as the router does (dual WAN: the primary unit)
     args = [exe, "--save4", w(tag + ".v4", save4), "--addr", w(tag + ".addr", addr), "--members", w(tag + ".members", members),
@@ -210,6 +211,9 @@ def run(save4=SAVE4, save6=SAVE6, addr=ADDR, members=MEMBERS, nv=NV, witness=WIT
     # /proc/net format the router parses, so this exercises the real parser.
     if lsntcp is not None: args += ["--lsn-tcp", w(tag + ".ltcp", lsntcp)]
     if lsnudp is not None: args += ["--lsn-udp", w(tag + ".ludp", lsnudp)]
+    # v1.10: the addresses devices hold (ARP / leases on the router); any text,
+    # every IPv4 in it counts - so the real /proc/net/arp and lease shapes go in as-is
+    if used is not None: args += ["--used", w(tag + ".used", used)]
     p = subprocess.run(args, capture_output=True, text=True)
     try:
         with open(os.path.join(td, tag + ".json")) as f: j = json.load(f)
@@ -288,6 +292,13 @@ try:
     ids = [x["id"] for x in j["witnesses"]]
     check("gen: static rows resolved (A1, A3, A4, A5, H2 present)", all(i in ids for i in ("A1", "A3", "A4", "A5", "A9", "H2")), ids)
     x = wit(j, "A1"); check("gen: A1 green with no Gatekeeper MAC", x and x["state"] == "green" and " mac " not in x["witness"], x)
+    # 2026-10-04 (A1b, the masquerade witness): the same LAN->WAN flow must leave source-translated,
+    # judged on the POSTROUTING rule like F6, and the row is n/a - never red - while NAT is off.
+    x = wit(j, "A1b"); check("gen: A1b LAN->WAN is source-translated and names the POSTROUTING masquerade",
+          x and x["state"] == "green" and x["expect"] == "SNAT" and x["verdict"].startswith("source translated")
+          and "POSTROUTING" in x["rule"] and "MASQUERADE" in x["rule"], x)
+    j2, _, _ = run(witness=None, nv=NV.replace("wan0_nat_x=1\n", ""), tag="g1nat")
+    x = wit(j2, "A1b"); check("gen: A1b is n/a while NAT is off, never red", x and x["state"] == "na" and "NAT" in x["note"], x)
     x = wit(j, "A3"); check("gen: A3 resolved at the router", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)
     x = wit(j, "A8"); check("gen: A8 skeleton row present in router mode and green", x and x["state"] == "green", x)
     check("gen: port forwards produce B1/B2 rows per rule", "B1.1" in ids and "B2.1" in ids and "B1.2" in ids and "B2.2" in ids, ids)
@@ -297,6 +308,21 @@ try:
     x = wit(j, "A6a"); check("gen: WAN web management closed", x and x["expect"] == "DROP" and x["state"] == "green", x)
     x = wit(j, "A6c"); check("gen: WAN SSH closed (sshd_wan=0)", x and x["expect"] == "DROP" and x["state"] == "green" and x["witness"].endswith("tcp:22 NEW"), x)
     x = wit(j, "A1v6"); check("gen: IPv6 rows resolved from the br0 prefix", x and x["state"] == "green" and "2001:db8:50::23" in x["witness"], x)
+    # 2026-10-08 (walker v1.9): a 6in4/6to4/6rd box leaves over v6tun<unit>, and stock writes its
+    # LAN->WAN v6 accept against that device (`-i br0 -o v6tun0`). Modelled as the v4 face, A1v6
+    # walked past that rule to the tail DROP and showed a working tunnel red (owner's RT-BE96U, HE
+    # 6in4, 884 packets through the real rule). The v6 egress now follows ipv6_service the way
+    # shared/rtstate.c get_wan6_ifname() does; the v4 face is unchanged, and so is every box
+    # without a tunnel (second check: the same table is honestly red without the service).
+    save6_tun = SAVE6.replace("-A FORWARD -i br0 -j ACCEPT", "-A FORWARD -i br0 -o v6tun0 -j ACCEPT\n-A FORWARD -j DROP")
+    addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
+    j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
+    x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
+    check("v1.9 6in4: the walker reports itself as 1.10 (v1.10 = free stand-ins)", j6.get("ver") == "1.10", j6.get("ver"))
+    j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
+    x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
+    j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
+    x = wit(j6c, "A1"); check("v1.9 6in4: the v4 rows still leave over eth0", x and x["state"] == "green" and x["witness"].startswith("br0 ") and "eth0" in x["rule"], x)
     x = wit(j, "A10c"); check("gen: neighbour solicitation row present with V6 up", x and x["state"] == "green", x)
     check("gen: Warden rows present (E4a-c, E5, E8a, E9)", all(i in ids for i in ("E4a", "E4b", "E4c", "E5", "E8a", "E9")), ids)
     x = wit(j, "E9"); check("gen: E9 red when REAPER_WARDEN is absent while enabled (this table calls it WARDEN)", x and x["state"] == "red" and x["verdict"] == "missing", x)
@@ -363,6 +389,45 @@ try:
     ids = [x["id"] for x in j["witnesses"]]
     check("F1: no rows while the rules engine is disabled",
           not any(i.startswith("F1.") for i in ids), ids)
+
+    # F1 zones (v1.7, field 2026-09-29): record field 3 is the source zone and
+    # 5 the destination zone, and the emitter matches `-i` on the source
+    # zone. v1.6 aimed every in/fwd witness from br0, so the owner's VLAN52
+    # "in drop" rules were judged by the stock `-i br0 NEW ACCEPT` (false red)
+    # and a VLAN-only accept by the same rule (false green).
+    ZADDR = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
+    FWZONE = "reaper_fw_zone=<lan>br0>c<VLAN52>br55>c<wan>eth0>c<dmz>br99>c\n"
+    def zfwnv(rules):
+        return fwnv(rules) + FWZONE
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>drop>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z1")
+    x = wit(j, "F1.1")
+    check("F1 zone: an `in` rule on VLAN52 enters on br55 from its own subnet, aimed at the router's br55 address",
+          x and x["witness"].startswith("br55 10.20.0.123 -> 10.20.0.1 tcp:443"), x)
+    check("F1 zone: the owner's case - a VLAN drop rule is not judged by the LAN accept (green via the chain's DROP)",
+          x and x["expect"] == "DROP" and x["state"] == "green" and "-i br0" not in x["rule"], x)
+    check("F1 zone: the label names the zone when no source object is set",
+          x and "in VLAN52 web is drop" in x["feature"], x)
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>accept>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z2")
+    x = wit(j, "F1.1")
+    check("F1 zone neg: a VLAN accept rule the table does not keep is RED (v1.6 read it green off the br0 accept)",
+          x and x["expect"] == "ACCEPT" and x["state"] == "red", x)
+    keep = SAVE4.replace("-A INPUT -i br0 -m state --state NEW -j ACCEPT\n",
+                         "-A INPUT -i br55 -p tcp -m tcp --dport 443 -j ACCEPT\n-A INPUT -i br0 -m state --state NEW -j ACCEPT\n")
+    j, out, rc = run(save4=keep, addr=ZADDR, nv=zfwnv("<1>in>accept>VLAN52>>>>web>>>0>1>c"), witness=None, tag="f1z3")
+    x = wit(j, "F1.1")
+    check("F1 zone: the same accept is green once the table accepts it on br55",
+          x and x["state"] == "green" and "-i br55" in x["rule"], x)
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>in>drop>dmz>>>>web>>>0>1>c"), witness=None, tag="f1z4")
+    check("F1 zone: a zone with no live interface emits NO row - an absent segment is not a broken rule",
+          wit(j, "F1.1") is None, [i["id"] for i in j["witnesses"] if i["id"].startswith("F1")])
+    j, out, rc = run(addr=ZADDR, nv=zfwnv("<1>fwd>drop>lan>>VLAN52>>web>>>0>1>c"), witness=None, tag="f1z5")
+    x = wit(j, "F1.1")
+    check("F1 zone: a forward rule aims at .124 in its destination zone, entering on the source zone",
+          x and x["witness"].startswith("br0 192.168.50.123 -> 10.20.0.124 tcp:443") and "lan -> VLAN52" in x["feature"], x)
+    j, out, rc = run(addr=ZADDR, nv=fwnv("<1>in>drop>>>>>web>>>0>1>c"), witness=None, tag="f1z6")
+    x = wit(j, "F1.1")
+    check("F1 zone: a rule with no zone still enters on the LAN bridge (unchanged)",
+          x and x["witness"].startswith("br0 192.168.50.") and "in any web is drop" in x["feature"], x)
 
     # C7: the walker reads the live REAPER_PBR chain. The fixture's chain is
     # called PBR, so name it the way the router does.
@@ -533,6 +598,13 @@ try:
     check("wansrc: nothing claims it = the documented default, no note", j.get("wansrc") == "198.51.100.7" and j.get("wansrc_note") == "", (j.get("wansrc"), j.get("wansrc_note")))
     j, out, rc = run(save4=wsrc, nv=NV, members=MEMBERS + "rw_ban 198.51.100.7\n", witness=None, tag="ws4")
     check("wansrc: a set matched only on the DESTINATION side does not claim the source", j.get("wansrc") == "198.51.100.7", (j.get("wansrc"), j.get("wansrc_note")))
+    # 2026-09-29 (RT-BE86U field report): Warden emits one source rule per
+    # blocked country ahead of rw_threat; the picker's old 32-slot set list
+    # filled up first and rw_threat was never tested
+    cc = "".join("-A REAPER_WARDEN -m set --match-set rw_g_c%02d src -j RW_DROP\n" % i for i in range(40))
+    wcc = wsrc.replace("-A REAPER_WARDEN -m set --match-set rw_threat src", cc + "-A REAPER_WARDEN -m set --match-set rw_threat src")
+    j, out, rc = run(save4=wcc, nv=NV, members=MEMBERS + "rw_threat 198.51.100.7\n", witness=None, tag="ws5")
+    check("wansrc: 40 country sets ahead of rw_threat still leave rw_threat tested", j.get("wansrc") == "203.0.113.99", (j.get("wansrc"), j.get("wansrc_note")))
 
     # ---- the convergence pass (owner, 2026-09-16) ----
     # mode is a constant: the report is advisory by design
@@ -615,7 +687,37 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.6", j.get("ver") == "1.6", j.get("ver"))
+    check("pass2: walker is v1.10", j.get("ver") == "1.10", j.get("ver"))
+
+    # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
+    # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,
+    # which a pool of .2-.254 hands out like any other address.
+    j, out, rc = run(witness=None, tag="su0")
+    check("stand-in: an idle .123 stays .123 and the JSON says nothing", j.get("lanhost") == "192.168.50.123" and j.get("lanhost_note", "") == "", (j.get("lanhost"), j.get("lanhost_note")))
+    ARP = ("IP address       HW type     Flags       HW address            Mask     Device\n"
+           "192.168.50.123   0x1         0x2         02:00:5e:00:53:4f     *        br0\n"
+           "203.0.113.1      0x1         0x2         00:11:22:33:44:55     *        eth0\n")
+    j, out, rc = run(witness=None, used=ARP, tag="su1")
+    check("stand-in: a device on .123 (ARP) moves the LAN host to .124 and the JSON says why",
+          j.get("lanhost") == "192.168.50.124" and "192.168.50.123 is in use" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+    x = wit(j, "A1"); check("stand-in: A1 is witnessed from the free address", x and x["witness"].startswith("br0 192.168.50.124 "), x and x["witness"])
+    LEASES = ("1760000000 02:00:5e:00:53:4f 192.168.50.123 phone 01:02:00:5e:00:53:4f\n"
+              "1760000000 aa:bb:cc:dd:ee:01 192.168.50.124 tablet *\n")
+    j, out, rc = run(witness=None, used=LEASES, nv=NV + "dhcp_staticlist=<AA:BB:CC:00:00:01>192.168.50.125>>printer<\n", tag="su2")
+    check("stand-in: leases AND a reservation are skipped (.123/.124 leased, .125 reserved -> .126)", j.get("lanhost") == "192.168.50.126", j.get("lanhost"))
+    j, out, rc = run(witness=None, used="192.168.50.123\n", nv=NV + "dhcpres3_rl=<AA:BB:CC:00:00:02>192.168.50.124>>cam<\n", tag="su3")
+    check("stand-in: an SDN network's reservation list (dhcpresN_rl) is read too", j.get("lanhost") == "192.168.50.125", j.get("lanhost"))
+    j, out, rc = run(witness=None, used="192.168.50.123\n",
+                     addr=ADDR.replace("inet 192.168.50.1/24 brd", "inet 192.168.50.124/24 brd"), tag="su4")
+    check("stand-in: the router's own address is never a stand-in", j.get("lanhost") == "192.168.50.125", j.get("lanhost"))
+    G55 = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
+    j, out, rc = run(witness=None, addr=G55, used="10.20.0.123\n", tag="su5")
+    x = wit(j, "G2.1"); check("stand-in: a guest bridge's .123 in use moves that network's witness too", x and x["witness"].startswith("br55 10.20.0.124 "), x and x["witness"])
+    j, out, rc = run(witness=None, used=ARP, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", tag="su6")
+    check("stand-in: the admin allowlist still decides the LAN host (a real allowed client is the point there)",
+          j.get("lanhost") == "192.168.50.77" and "allowed client" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))
+    j, out, rc = run(witness=None, used="192.168.50.123 192.168.50.1234 10.1.2.3.4\n", tag="su7")
+    check("stand-in: the scanner takes whole dotted quads only (1234 and a 5-part token are not addresses)", j.get("lanhost") == "192.168.50.124", j.get("lanhost"))
 
     # multicast 224/4 is delivered locally: SSDP to 239.255.255.250 walks INPUT
     j, out, rc = run(witness=WIT + "T19|SSDP from the LAN reaches the router|4|br0|192.168.50.123|239.255.255.250|udp|1900|NEW|ACCEPT\n", tag="mc1")
@@ -965,7 +1067,8 @@ try:
     # ---------------- tier 2: the private fixtures ----------------
     fx = os.environ.get("REAPER_FW_FIXTURES", "")
     if not fx:
-        for cand in ("/mnt/c/Users/builder/AppData/Roaming/VSC/ASUS/audits/firewall-fixtures", os.path.expanduser("~/firewall-fixtures")):
+        import glob
+        for cand in sorted(glob.glob("/mnt/c/Users/*/AppData/Roaming/VSC/ASUS/audits/firewall-fixtures")) + [os.path.expanduser("~/firewall-fixtures")]:
             if os.path.isdir(cand): fx = cand; break
     f4 = os.path.join(fx, "rt-be96u-Reaper_v3.1.5_BETA-2026-09-13.iptables-save") if fx else ""
     if not fx or not os.path.isfile(f4):
@@ -985,7 +1088,7 @@ try:
         # na is 8 rows that need IPv6 the box does not have, plus H6, which is
         # n/a by construction (it states what a table walk cannot answer)
         check("fixture: at least 70 green, IPv6 rows n/a (no IPv6 on that box)", j["summary"]["green"] >= 70 and j["summary"]["na"] == 9, j["summary"])
-        x = wit(j, "A1"); check("fixture: A1 decided by SDN_FF#8 with the first allowed MAC", x and x["rule"] == "filter/SDN_FF#8 -i br0 -o eth0 -j ACCEPT" and "mac 00:00:5E:00:53:C0" in x["witness"], x)
+        x = wit(j, "A1"); check("fixture: A1 decided by SDN_FF#8 with the first allowed MAC", x and x["rule"] == "filter/SDN_FF#8 -i br0 -o eth0 -j ACCEPT" and re.search(r"\bmac [0-9A-F]{2}(?::[0-9A-F]{2}){5}\b", x["witness"]) is not None, x)  # the fixture's own MAC is private; only its presence is pinned
         x = wit(j, "A3"); check("fixture: A3 resolved through the DNS intercept to the off-segment filter", x and x["state"] == "green" and x["verdict"] == "DNAT 10.20.0.98:53 ACCEPT" and "REAPER_DNSV#1" in x["rule"], x)
         x = wit(j, "A4"); check("fixture: A4 dropped by the FORWARD tail", x and x["state"] == "green" and "filter/FORWARD#25 -j DROP" == x["rule"], x)
         x = wit(j, "A5"); check("fixture: A5 identity DNAT of port 80 is still a plain ACCEPT", x and x["state"] == "green" and x["verdict"] == "ACCEPT", x)

@@ -1,0 +1,96 @@
+From 788ed35175c465c188b5f36c266fcfcc1a6d9a5b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 17:31:00 -0400
+Subject: [PATCH] rc: keep the Wi-Fi drivers loaded on a wireless restart
+ unless the ED mode changed
+
+Field report 2026-10-28 (RT-BE86U, v3.6.0): saving Guest Network Pro (VLAN 52)
+left the 5 GHz radio down about half the time - LED off, wl1 "wl driver
+adapter not found", no hostapd for it, bcmvlan "Could not find Real Device
+wl1" - until a power cycle; 2.4 GHz always came back.
+
+On RT-BE86U (and the other models in the same stock #if list),
+restart_wireless() re-runs init_nvram() and then calls ASUS's closed
+reload_wl_check(), which reloads the Wi-Fi drivers (wl and dhd) when
+init_nvram() has set ed_thresh_reload - with the radios' daemons, VLAN
+devices and bridges still around. init_nvram() sets the flag on any
+difference in the stored energy-detect values since its last call, not only
+on a change of ED mode. The diag shows the reload mid-apply: wl0 re-attached
+at 09:12:35 (CSIMON re-init, "M2M usr already registered", wl0 rejoined br0
+as a new port) and "wl0: Memory leak of bytes 2048" (printed at detach); the
+dongle behind dhd.ko did not return.
+
+reaper_ed_reload_gate() runs right before reload_wl_check(): it keeps the
+stock reload when no_dy_ed_thresh_ctrl (the ED mode: first setup, an AiMesh
+node joining, ed_thresh_force) changed in this call, and otherwise clears the
+flag and logs it. The drivers are loaded at boot after init_nvram()
+(sysinit), so they already run with the current mode's values. It also clears
+a stale flag on the wps_reset branch, which skips init_nvram(). Gated by the
+same model list as the stock call; other models are unaffected.
+
+Test: build-scripts/tests/test_wl_reload_gate.py (lean).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/lan.c | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+index ac0c7ed873e..e579479ae61 100644
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -6663,12 +6663,43 @@ void start_fbwifi_config()
+ }
+ #endif
+ 
++#if defined(RTBE86U) || defined(RTBE92U) || defined(RTBE58U) || defined(TUFBE3600) || defined(RTBE58U_V2) || defined(TUFBE3600_V2) || defined(RTBE55) || defined(RTBE82U) || defined(TUFBE82) || defined(RTBE58U_PRO) || defined(RTCONFIG_MXL_826XX) || defined(RTBE58_GO) || defined(RPBE58)
++#define REAPER_ED_RELOAD_GATE
++/* reaper 2026-10-28 (field, RT-BE86U v3.6.0): on these models restart_wireless()
++ * re-runs init_nvram() and then calls ASUS's closed reload_wl_check(), which
++ * reloads the Wi-Fi drivers when init_nvram() has set ed_thresh_reload - set on
++ * any difference in the stored energy-detect values since the last call, not
++ * only a change of ED mode. On a long-configured box a Guest
++ * Network Pro save reloaded both drivers live (wl0 re-attached mid-apply); the
++ * 2.4 GHz radio (wl.ko) came back, the 5 GHz dongle (dhd.ko) about half the time
++ * stayed "wl driver adapter not found" with its LED off until a power cycle. The
++ * drivers are loaded at boot after init_nvram() (sysinit), so they already run
++ * with the current ED mode: reload only when that mode changed
++ * (no_dy_ed_thresh_ctrl - first setup, an AiMesh node joining, ed_thresh_force),
++ * as stock intends; otherwise keep them loaded. Also clears a flag left over from
++ * an earlier call (the wps_reset branch skips init_nvram()). */
++static void reaper_ed_reload_gate(int mode_old)
++{
++	if (!nvram_get_int("ed_thresh_reload"))
++		return;
++	if (mode_old != nvram_get_int("no_dy_ed_thresh_ctrl")) {
++		logmessage("reaper", "wireless restart: energy-detect mode changed - reloading the Wi-Fi drivers");
++		return;
++	}
++	nvram_set_int("ed_thresh_reload", 0);
++	logmessage("reaper", "wireless restart: Wi-Fi drivers kept loaded - the energy-detect mode is unchanged (a live driver reload can leave the 5 GHz radio down until a power cycle)");
++}
++#endif
++
+ void restart_wireless(void)
+ {
+ #ifdef RTCONFIG_WIRELESSREPEATER
+ 	char domain_mapping[64];
+ #endif
+ 	int lock = file_lock("wireless");
++#ifdef REAPER_ED_RELOAD_GATE
++	int ed_mode_old = nvram_get_int("no_dy_ed_thresh_ctrl");	/* reaper 2026-10-28: before init_nvram() below */
++#endif
+ 
+ #if defined(RTCONFIG_RALINK) && defined(RTCONFIG_AMAS_WDS)
+ 	char vif[64],prefix[sizeof("wlX_XXX")],word[16], *next, tmp[64];
+@@ -6845,6 +6876,7 @@ void restart_wireless(void)
+ 	}
+ 
+ #if defined(RTBE86U) || defined(RTBE92U) || defined(RTBE58U) || defined(TUFBE3600) || defined(RTBE58U_V2) || defined(TUFBE3600_V2) || defined(RTBE55) || defined(RTBE82U) || defined(TUFBE82) || defined(RTBE58U_PRO) || defined(RTCONFIG_MXL_826XX) || defined(RTBE58_GO) || defined(RPBE58)
++	reaper_ed_reload_gate(ed_mode_old);	/* reaper 2026-10-28 */
+ 	reload_wl_check();
+ #endif
+ 
+-- 
+2.25.1
+

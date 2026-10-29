@@ -1,0 +1,73 @@
+From 2fe50ce252dbf0bd6a61d92426c6387ae6faba1d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:54 -0400
+Subject: [PATCH] rc: SSH over IPv6 from the internet is rate-limited per /64
+
+The stock brute-force guard is IPv4-only; the IPv6 rule for a WAN-open SSH
+port was a plain accept at two sites. reaper_ssh6_guard() writes two
+-m recent rules ahead of that accept at both: the sixth new connection from
+one /64 inside 60 s is dropped (--update, so a flood keeps its own block
+fresh). xt_recent is built into this kernel. WAN only (sshd_enable 1 with
+the IPv6 firewall on); no switch.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall.c | 24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index e8fca62efab..872a4eb9964 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -5344,6 +5344,22 @@ static void reaper_write_extra_filter(FILE *fp)
+ 	}
+ }
+ 
++/* 2026-10-19: SSH over IPv6 from the internet had no brute-force guard at all -
++ * the stock protection server writes IPv4 chains only, and the IPv6 rule for a
++ * WAN-open SSH port was a plain accept, written twice (filter_setting and
++ * filter_setting2), so one helper serves both. Two `-m recent` rules ahead of
++ * that accept: the sixth NEW connection from one /64 inside 60 s is dropped,
++ * and --update keeps a continuing flood's entry fresh so it stays dropped.
++ * xt_recent is built into this kernel (no module order to get right before
++ * the restore). WAN only by construction - the caller only writes the v6
++ * accept when sshd_enable is 1 - and LAN SSH never meets it. No switch: it
++ * hardens an exposure the operator opted into. */
++static void reaper_ssh6_guard(FILE *fp6, int port, const char *logdrop)
++{
++	fprintf(fp6, "-A INPUT -p tcp -m tcp --dport %d -m conntrack --ctstate NEW -m recent --name rw_ssh6 --mask ffff:ffff:ffff:ffff:: --update --seconds 60 --hitcount 5 -j %s\n", port, logdrop);
++	fprintf(fp6, "-A INPUT -p tcp -m tcp --dport %d -m conntrack --ctstate NEW -m recent --name rw_ssh6 --mask ffff:ffff:ffff:ffff:: --set\n", port);
++}
++
+ void
+ filter_setting(int wan_unit, char *lan_if, char *lan_ip, char *logaccept, char *logdrop)
+ {
+@@ -6028,9 +6044,11 @@ TRACE_PT("writing Parental Control\n");
+ 			fprintf(fp, "-A INPUT -p tcp -m tcp --dport %d -j %s\n",
+ 				nvram_get_int("sshd_port") ? : 22, logaccept);
+ #ifdef RTCONFIG_IPV6
+-			if (ipv6_enabled() && nvram_match("ipv6_fw_enable", "1"))
++			if (ipv6_enabled() && nvram_match("ipv6_fw_enable", "1")) {
++				reaper_ssh6_guard(fp_ipv6, nvram_get_int("sshd_port") ? : 22, logdrop);	/* 2026-10-19: per-/64 limiter ahead of the accept */
+ 				fprintf(fp_ipv6, "-A INPUT -p tcp -m tcp --dport %d -j %s\n",
+ 					nvram_get_int("sshd_port") ? : 22, logaccept);
++			}
+ #endif
+ 		}
+ #endif
+@@ -7885,9 +7903,11 @@ TRACE_PT("writing Parental Control\n");
+ 			fprintf(fp, "-A INPUT -p tcp -m tcp --dport %d -j %s\n",
+ 				nvram_get_int("sshd_port") ? : 22, logaccept);
+ #ifdef RTCONFIG_IPV6
+-			if (ipv6_enabled() && nvram_match("ipv6_fw_enable", "1"))
++			if (ipv6_enabled() && nvram_match("ipv6_fw_enable", "1")) {
++				reaper_ssh6_guard(fp_ipv6, nvram_get_int("sshd_port") ? : 22, logdrop);	/* 2026-10-19: per-/64 limiter ahead of the accept */
+ 				fprintf(fp_ipv6, "-A INPUT -p tcp -m tcp --dport %d -j %s\n",
+ 					nvram_get_int("sshd_port") ? : 22, logaccept);
++			}
+ #endif
+ 		}
+ #endif
+-- 
+2.25.1
+

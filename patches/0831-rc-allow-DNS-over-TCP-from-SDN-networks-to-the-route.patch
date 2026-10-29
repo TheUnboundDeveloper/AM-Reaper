@@ -1,0 +1,37 @@
+From 9e1d9f80f31f2cdeec739b0c414ba4798798614b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:33 -0400
+Subject: [PATCH] rc: allow DNS over TCP from SDN networks to the router (IPv4,
+ and the same rule for IPv6)
+
+The IPv4 rule is carried from Asuswrt-Merlin (Eric Sauvageau), commit
+e26fc8f4d78, by dave14305, unchanged. Each SDN network's input chain accepted
+DNS over UDP before the rule that drops traffic to the router's main LAN
+address (when the network may not reach the router's services), but not over
+TCP, so truncated answers, large DNSSEC answers and TCP-only clients failed
+there. Reaper adds the same accept to the IPv6 chain, which had the same
+order and the same gap.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/firewall_sdn.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/release/src/router/rc/firewall_sdn.c b/release/src/router/rc/firewall_sdn.c
+index e07f7c65e16..858d5ada209 100644
+--- a/release/src/router/rc/firewall_sdn.c
++++ b/release/src/router/rc/firewall_sdn.c
+@@ -554,6 +554,10 @@ int update_SDN_iptables(const MTLAN_T *pmtl, const char *logdrop, const char *lo
+ 						fprintf(fp, "-A %s -i %s -p udp -m multiport --dports 53,547 -j %s\n", SDN_FILTER_INPUT_CHAIN, pmtl->nw_t.ifname, logaccept);
+ 					}
+ 
++					// DNS TCP port (reaper 2026-10-26: the IPv6 twin of Merlin e26fc8f4d78 - without it, TCP DNS to the
++					// router's main LAN address is dropped by the host-service rule below while UDP is let through)
++					fprintf(fp, "-A %s -i %s -p tcp --dport 53 -j %s\n", SDN_FILTER_INPUT_CHAIN, pmtl->nw_t.ifname, logaccept);
++
+ 					// access host service
+ 					if (!pmtl->sdn_t.ahs_sw && addr6[0] != '\0')
+ 					{
+-- 
+2.25.1
+

@@ -1,0 +1,1654 @@
+From 6efe7c01dc37ccb468997e78d3ef3f9a5cd8db98 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:01 -0400
+Subject: [PATCH] dnsmasq: Wallguard's lookup gate and one shared threat table
+ (--wallguard-dir, --reaper-nx-db)
+
+--wallguard-dir points every instance at Wallguard's compiled table (sorted
+64-bit name hashes + list masks, subtree bit, allow table), its policy file
+and its run/ folder. A query is judged after the router's own answers
+(address=, local=, Dreadwatch), on the UDP and TCP paths, and every name of an
+answer's CNAME chain is checked (CNAME cloaking; such answers are not cached).
+Verdicts: 0.0.0.0/:: or NXDOMAIN, safe-search answers, pauses, per-profile
+lists and blocked services, by MAC or network. A record names the list entry
+that matched, never the name as asked. --reaper-nx-db maps Dreadwatch's threat
+names from the same table format, read-only and shared by every instance
+(12 bytes a name once instead of ~54 in each). Both tables are validated
+(magic, version, counts, exact size) before use and re-stat'ed every 2 s; a
+missing or damaged table blocks nothing. rednsd's client-address option is
+believed only from loopback (edns0.c), so Encrypted DNS devices are judged by
+their real address.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/Makefile           |   2 +-
+ release/src/router/dnsmasq/src/dns-protocol.h |   1 +
+ release/src/router/dnsmasq/src/dnsmasq.h      |  14 +
+ release/src/router/dnsmasq/src/domain-match.c |  29 +-
+ release/src/router/dnsmasq/src/edns0.c        |  97 ++-
+ release/src/router/dnsmasq/src/forward.c      |  78 +-
+ release/src/router/dnsmasq/src/option.c       |  14 +
+ release/src/router/dnsmasq/src/reaper_nx.c    | 125 ++++
+ release/src/router/dnsmasq/src/rfc1035.c      |  14 +-
+ release/src/router/dnsmasq/src/wallguard.c    | 686 ++++++++++++++++++
+ release/src/router/dnsmasq/src/wallguard_db.h | 256 +++++++
+ 11 files changed, 1290 insertions(+), 26 deletions(-)
+ create mode 100644 release/src/router/dnsmasq/src/reaper_nx.c
+ create mode 100644 release/src/router/dnsmasq/src/wallguard.c
+ create mode 100644 release/src/router/dnsmasq/src/wallguard_db.h
+
+diff --git a/release/src/router/dnsmasq/Makefile b/release/src/router/dnsmasq/Makefile
+index 70309e784e1..a139632e63d 100644
+--- a/release/src/router/dnsmasq/Makefile
++++ b/release/src/router/dnsmasq/Makefile
+@@ -81,7 +81,7 @@ objs = cache.o rfc1035.o util.o option.o forward.o network.o \
+        dhcp-common.o outpacket.o radv.o slaac.o auth.o ipset.o pattern.o \
+        domain.o dnssec.o blockdata.o tables.o loop.o inotify.o \
+        poll.o rrfilter.o edns0.o arp.o crypto.o dump.o ubus.o \
+-       metrics.o domain-match.o nftset.o
++       metrics.o domain-match.o nftset.o wallguard.o reaper_nx.o
+ 
+ hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
+        dns-protocol.h radv-protocol.h ip6addr.h metrics.h
+diff --git a/release/src/router/dnsmasq/src/dns-protocol.h b/release/src/router/dnsmasq/src/dns-protocol.h
+index 43dddcfa039..e09fe0acca3 100644
+--- a/release/src/router/dnsmasq/src/dns-protocol.h
++++ b/release/src/router/dnsmasq/src/dns-protocol.h
+@@ -110,6 +110,7 @@
+ #define EDNS0_OPTION_NOMDEVICEID    65073 /* Nominum temporary assignment */
+ #define EDNS0_OPTION_NOMCPEID       65074 /* Nominum temporary assignment */
+ #define EDNS0_OPTION_UMBRELLA       20292 /* Cisco Umbrella temporary assignment */
++#define EDNS0_OPTION_REAPER_CLIENT  65400 /* reaper: local use - rednsd names the device, see edns0.c */
+ 
+ /* RFC-8914 extended errors, negative values are our definitions */
+ #define EDE_US_SERVFAIL    -2  /* SERVFAIL from usptream */
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index 26195281421..0c9f69ca756 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -807,6 +807,7 @@ struct dyndir {
+ struct frec {
+   struct frec_src {
+     union mysockaddr source;
++    union mysockaddr wallguard_client;	/* reaper 2026-10-21: the device rednsd named, else source */
+     union all_addr dest;
+     unsigned int iface, log_id, encode_bitmap, *encode_bigmap;
+     int fd;
+@@ -1184,6 +1185,8 @@ extern struct daemon {
+   time_t last_resolv;
+   char *servers_file;
+   char *reaper_hitlog;	/* reaper 2026-10-20: --reaper-hitlog, see reaper_hit() */
++  char *reaper_nx_db;	/* reaper 2026-10-24: --reaper-nx-db, the Dreadwatch table (reaper_nx.c) */
++  char *wallguard_dir;	/* reaper 2026-10-21: --wallguard-dir, see wallguard.c */
+   struct mx_srv_record *mxnames;
+   struct naptr *naptr;
+   struct txt_record *txt, *rr;
+@@ -1985,6 +1988,17 @@ int dnssec_server(struct server *server, char *keyname, int is_ds, int *firstp,
+ void mark_servers(int flag);
+ void cleanup_servers(void);
+ void reaper_hit(int first, union mysockaddr *client);	/* reaper 2026-10-20 */
++void reaper_hit_rec(const char *listed, const char *feeds, union mysockaddr *client);	/* reaper 2026-10-24 */
++/* reaper 2026-10-24: Dreadwatch's threat table (reaper_nx.c) */
++int reaper_nx_judge(time_t now, int matched, int first, char *name, unsigned int *flags, union mysockaddr *client);
++int reaper_nx_listed(const char *name);
++union mysockaddr *reaper_client(union mysockaddr *addr);	/* reaper 2026-10-21, edns0.c */
++/* reaper 2026-10-21: Wallguard (wallguard.c) */
++size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,	/* + int *ede (phase 2) */
++		     union mysockaddr *client, unsigned short qtype, time_t now, int *ede);
++int wallguard_cname_listed(const char *name);
++int wallguard_cname_verdict(union mysockaddr *client, time_t now);
++int wallguard_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now);
+ int add_update_server(int flags,
+ 		      union mysockaddr *addr,
+ 		      union mysockaddr *source_addr,
+diff --git a/release/src/router/dnsmasq/src/domain-match.c b/release/src/router/dnsmasq/src/domain-match.c
+index 715eff60b44..1ccaaa77317 100644
+--- a/release/src/router/dnsmasq/src/domain-match.c
++++ b/release/src/router/dnsmasq/src/domain-match.c
+@@ -793,21 +793,36 @@ int add_update_server(int flags,
+ #define REAPER_HIT_RATE 50
+ #define REAPER_HIT_MAX  (256 * 1024)
+ void reaper_hit(int first, union mysockaddr *client)
++{
++  struct server *s;
++
++  if (!daemon->reaper_hitlog || first < 0 || first >= daemon->serverarraysz)
++    return;
++  s = daemon->serverarray[first];
++  if (!(s->flags & SERV_REAPER_NX) || !s->domain)
++    return;
++  reaper_hit_rec(s->domain, "-", client);
++}
++
++/* reaper 2026-10-24: the record itself - "<epoch> <client> <listed domain> <feed ids>" - written for
++   the server-array entries above (feeds "-") and for the mapped table (reaper_nx.c). The listed
++   name is lower-cased: the collector takes [a-z0-9.-] only. */
++void reaper_hit_rec(const char *listed, const char *feeds, union mysockaddr *client)
+ {
+   static time_t win;
+   static int used;
+   static unsigned int dropped;
+-  struct server *s;
+   struct stat st;
+-  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + MAXDNAMESTR];
++  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + MAXDNAMESTR + 800], lst[MAXDNAMESTR + 1];
+   time_t now;
+   int fd, n = 0;
++  size_t i;
+ 
+-  if (!daemon->reaper_hitlog || first < 0 || first >= daemon->serverarraysz)
+-    return;
+-  s = daemon->serverarray[first];
+-  if (!(s->flags & SERV_REAPER_NX) || !s->domain)
++  if (!daemon->reaper_hitlog || !listed || !*listed)
+     return;
++  for (i = 0; i < sizeof(lst) - 1 && listed[i]; i++)
++    lst[i] = (listed[i] >= 'A' && listed[i] <= 'Z') ? listed[i] + 32 : listed[i];
++  lst[i] = 0;
+ 
+   now = time(NULL);
+   if (now != win)
+@@ -834,7 +849,7 @@ void reaper_hit(int first, union mysockaddr *client)
+     {
+       if (dropped)
+ 	n = snprintf(line, sizeof(line), "# dropped %u\n", dropped);
+-      n += snprintf(line + n, sizeof(line) - n, "%ld %s %s\n", (long)now, ip, s->domain);
++      n += snprintf(line + n, sizeof(line) - n, "%ld %s %s %s\n", (long)now, ip, lst, feeds ? feeds : "-");
+       if (n > 0 && (size_t)n < sizeof(line) && write(fd, line, n) == n)
+ 	dropped = 0;
+     }
+diff --git a/release/src/router/dnsmasq/src/edns0.c b/release/src/router/dnsmasq/src/edns0.c
+index 94881c2bc7a..f1ddb6efbc5 100644
+--- a/release/src/router/dnsmasq/src/edns0.c
++++ b/release/src/router/dnsmasq/src/edns0.c
+@@ -554,14 +554,103 @@ static size_t add_umbrella_opt(struct dns_header *header, size_t plen, size_t ou
+   return add_pseudoheader(header, plen, outlen, EDNS0_OPTION_UMBRELLA, (unsigned char *)&opt, u - (u8 *)&opt, 0, 1);
+ }
+ 
+-/* Set *check_subnet if we add a client subnet option, which needs to checked 
++/* reaper 2026-10-21: Encrypted DNS. rednsd (the router's own DNS-over-TLS server)
++   forwards each device's query over loopback, so dnsmasq sees 127.0.0.1. It names the
++   device in EDNS0_OPTION_REAPER_CLIENT (1 byte family, 1 = IPv4 / 2 = IPv6, then the
++   address) so reaper_hit() can record the device. The option is believed only from a
++   loopback source - a LAN host cannot send from 127.0.0.0/8 - and it is cut out of every
++   query whatever the source, so it never reaches an upstream server. Only that option
++   is touched: no OPT RR is added, nothing else in it changes. */
++static union mysockaddr reaper_real;
++static union mysockaddr *reaper_real_for;
++
++static int reaper_from_loopback(union mysockaddr *source)
++{
++  if (source->sa.sa_family == AF_INET)
++    return (ntohl(source->in.sin_addr.s_addr) >> 24) == 127;
++  if (source->sa.sa_family == AF_INET6)
++    return IN6_IS_ADDR_LOOPBACK(&source->in6.sin6_addr);
++  return 0;
++}
++
++static size_t reaper_take_client(struct dns_header *header, size_t plen, union mysockaddr *source)
++{
++  unsigned char *udp, *lenp, *data, *q, *end;
++  unsigned short rdlen, code, len;
++  int is_sign, i;
++
++  reaper_real_for = NULL;
++
++  if (!find_pseudoheader(header, plen, NULL, &udp, &is_sign, NULL) || is_sign)
++    return plen;
++
++  /* udp points at the CLASS field: CLASS(2) TTL(4) RDLEN(2) RDATA */
++  lenp = udp + 6;
++  data = lenp + 2;
++  rdlen = (lenp[0] << 8) | lenp[1];
++  end = ((unsigned char *)header) + plen;
++  if (data + rdlen > end)
++    return plen;
++
++  for (i = 0; i + 4 <= rdlen; )
++    {
++      q = data + i;
++      code = (q[0] << 8) | q[1];
++      len = (q[2] << 8) | q[3];
++      if (i + 4 + len > rdlen)
++	break;	/* malformed: leave it to the rest of dnsmasq */
++      if (code != EDNS0_OPTION_REAPER_CLIENT)
++	{
++	  i += 4 + len;
++	  continue;
++	}
++      if (reaper_from_loopback(source))
++	{
++	  if (len == 5 && q[4] == 1)
++	    {
++	      memset(&reaper_real, 0, sizeof(reaper_real));
++	      reaper_real.in.sin_family = AF_INET;
++	      memcpy(&reaper_real.in.sin_addr, q + 5, 4);
++	      reaper_real_for = source;
++	    }
++	  else if (len == 17 && q[4] == 2)
++	    {
++	      memset(&reaper_real, 0, sizeof(reaper_real));
++	      reaper_real.in6.sin6_family = AF_INET6;
++	      memcpy(&reaper_real.in6.sin6_addr, q + 5, 16);
++	      reaper_real_for = source;
++	    }
++	}
++      /* cut the option out; anything after it in the packet moves up */
++      memmove(q, q + 4 + len, end - (q + 4 + len));
++      rdlen -= 4 + len;
++      plen -= 4 + len;
++      end -= 4 + len;
++      lenp[0] = rdlen >> 8;
++      lenp[1] = rdlen & 0xff;
++    }
++
++  return plen;
++}
++
++/* The device a reaper_hit() should record: the one rednsd named for this query, else
++   the address the query came from. Tied to the very address object the caller passed to
++   add_edns0_config(), so a retry or another query never inherits it. */
++union mysockaddr *reaper_client(union mysockaddr *addr)
++{
++  return (addr && addr == reaper_real_for) ? &reaper_real : addr;
++}
++
++/* Set *check_subnet if we add a client subnet option, which needs to checked
+    in the reply. Set *cacheable to zero if we add an option which the answer
+    may depend on. */
+-size_t add_edns0_config(struct dns_header *header, size_t plen, size_t outlen, 
+-			union mysockaddr *source, time_t now, int *cacheable)    
++size_t add_edns0_config(struct dns_header *header, size_t plen, size_t outlen,
++			union mysockaddr *source, time_t now, int *cacheable)
+ {
+   *cacheable = 1;
+-  
++
++  plen = reaper_take_client(header, plen, source);
++
+   plen  = add_mac(header, plen, outlen, source, now, cacheable);
+   plen = add_dns_client(header, plen, outlen, source, now, cacheable);
+   
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index 93d3df1a9c1..0a84ad7661a 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -230,7 +230,9 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+     }
+   else if (gotname && (forward = lookup_frec(now, daemon->namebuff, (int)rrclass, (int)rrtype, -1, fwd_flags,
+ 					     FREC_CHECKING_DISABLED | FREC_AD_QUESTION | FREC_DO_QUESTION |
+-					     FREC_HAS_PHEADER | FREC_DNSKEY_QUERY | FREC_DS_QUERY | FREC_NO_CACHE)))
++					     FREC_HAS_PHEADER | FREC_DNSKEY_QUERY | FREC_DS_QUERY | FREC_NO_CACHE)) &&
++	   /* reaper 2026-10-21 Wallguard: join only an asker Wallguard judges alike, else forward on its own */
++	   (wallguard_merge_ok(&forward->frec_src.wallguard_client, reaper_client(udpaddr), now) || (forward = NULL, 0)))
+     {
+       struct frec_src *src;
+       unsigned int casediff = 0;
+@@ -365,6 +367,8 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+   /* new query */
+   if (!forward)
+     {
++      int nxm = 0;	/* reaper 2026-10-24: did the server search match (reaper_nx_judge) */
++
+       if (OPCODE(header) != QUERY)
+ 	{
+ 	  flags = F_RCODE;
+@@ -379,12 +383,12 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+ 	  goto reply;
+ 	}
+       
+-      if (lookup_domain(daemon->namebuff, gotname, &first, &last))
++      if ((nxm = lookup_domain(daemon->namebuff, gotname, &first, &last)))
+ 	{
+ 	  flags = is_local_answer(now, first, daemon->namebuff);
+ 	  /* reaper 2026-10-20: count a threat-list answer (first = the matched entry) */
+ 	  if (flags & F_NXDOMAIN)
+-	    reaper_hit(first, udpaddr);
++	    reaper_hit(first, reaper_client(udpaddr));
+ 	}
+       else
+ 	{
+@@ -392,6 +396,14 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+ 	  ede = EDE_NOT_READY;
+ 	  flags = 0;
+ 	}
++      /* reaper 2026-10-24 (Dreadwatch): the threat table judges where the --reaper-nx entries
++	 used to - after the server search, before any forward (reaper_nx.c) */
++      if (reaper_nx_judge(now, nxm, nxm ? first : -1, daemon->namebuff, &flags, reaper_client(udpaddr)))
++	{
++	  if (!nxm)
++	    first = last = 0;
++	  ede = (flags & F_NXDOMAIN) ? EDE_BLOCKED : EDE_UNSET;
++	}
+ 
+       /* don't forward A or AAAA queries for simple names, except the empty name */
+       if (!flags &&
+@@ -445,6 +457,7 @@ static void forward_query(int udpfd, union mysockaddr *udpaddr,
+       forward->stash_len = plen;
+       forward->frec_src.log_id = daemon->log_id;
+       forward->frec_src.source = *udpaddr;
++      forward->frec_src.wallguard_client = *reaper_client(udpaddr);	/* reaper 2026-10-21 Wallguard */
+       forward->frec_src.dest = *dst_addr;
+       forward->frec_src.iface = dst_iface;
+       forward->frec_src.next = NULL;
+@@ -736,7 +749,7 @@ static struct ipsets *domain_find_sets(struct ipsets *setlist, const char *domai
+ 
+ static size_t process_reply(struct dns_header *header, time_t now, struct server *server, size_t n, int check_rebind, 
+ 			    int no_cache, int cache_secure, int bogusanswer, int ad_reqd, int do_bit, int added_pheader, 
+-			    union mysockaddr *query_source, size_t outlen, int ede)
++			    union mysockaddr *query_source, union mysockaddr *wallguard_client, size_t outlen, int ede)
+ {
+   unsigned char *pheader, *sizep;
+   struct ipsets *ipsets = NULL, *nftsets = NULL;
+@@ -864,6 +877,18 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
+ 	{
+ 	  int rc = extract_addresses(header, n, daemon->namebuff, now, ipsets, nftsets, check_rebind, no_cache, cache_secure);
+ 
++	  /* reaper 2026-10-21 Wallguard: 3 = the CNAME chain reached a listed name. Nothing of it
++	     was cached; block it for this device (4) or pass it on uncached (0). */
++	  if (rc == 3)
++	    rc = wallguard_cname_verdict(wallguard_client, now) ? 4 : 0;
++
++	  if (rc == 4)
++	    {
++	      header->hb3 &= ~HB3_AA;
++	      SET_RCODE(header, NXDOMAIN);
++	      ede = EDE_BLOCKED;
++	    }
++
+ 	  if (rc != 0)
+ 	    {
+ 	      header->ancount = htons(0);
+@@ -1483,7 +1508,7 @@ void return_reply(time_t now, struct frec *forward, struct dns_header *header, s
+   if ((nn = process_reply(header, now, forward->sentto, (size_t)n, check_rebind, no_cache_dnssec, cache_secure, bogusanswer, 
+ 			  forward->flags & FREC_AD_QUESTION, forward->flags & FREC_DO_QUESTION, 
+ 			  !(forward->flags & FREC_HAS_PHEADER), &forward->frec_src.source,
+-			  daemon->edns_pktsz, ede)))
++			  &forward->frec_src.wallguard_client, daemon->edns_pktsz, ede)))
+     {
+       struct frec_src *src, *prev;
+       int do_trunc;
+@@ -1632,7 +1657,8 @@ void receive_query(struct listener *listen, time_t now)
+   int if_index = 0, auth_dns = 0, do_bit = 0;
+   unsigned int fwd_flags = 0;
+   int stale = 0, filtered = 0, ede = EDE_UNSET, do_forward = 0;
+-  int metric, fd; 
++  int wallguard_q = 0;	/* reaper 2026-10-21: a well-formed query Wallguard may judge */
++  int metric, fd;
+   struct blockdata *saved_question = NULL;
+ #ifdef HAVE_CONNTRACK
+   unsigned int mark = 0;
+@@ -1884,6 +1910,7 @@ void receive_query(struct listener *listen, time_t now)
+ #ifdef HAVE_AUTH
+       struct auth_zone *zone;
+ #endif
++      wallguard_q = 1;
+       log_query_mysockaddr((auth_dns ? F_NOERR | F_AUTH : 0 ) | F_QUERY | F_FORWARD, daemon->namebuff,
+ 			   &source_addr, NULL, type);
+       
+@@ -1987,16 +2014,27 @@ void receive_query(struct listener *listen, time_t now)
+       int cacheable;
+ 
+       n = add_edns0_config(header, n, daemon->edns_pktsz, &source_addr, now, &cacheable);
++
++      /* reaper 2026-10-21: Wallguard judges before the cache does (a cached answer is covered
++	 too), for the real device behind Encrypted DNS (reaper_client) */
++      if (daemon->wallguard_dir && wallguard_q &&
++	  (m = wallguard_answer(header, ((char *) header) + udp_size, (size_t)n, reaper_client(&source_addr), type, now, &ede)))
++	{
++	  /* ede: 15 Blocked for a block, none for a safe-search answer (phase 2) */
++	  metric = METRIC_DNS_LOCAL_ANSWERED;
++	}
++      else
++	{
+       saved_question = blockdata_alloc((char *) header, (size_t)n);
+ 
+       if (!cacheable)
+ 	fwd_flags |= FREC_NO_CACHE;
+ 
+-      m = answer_request(header, ((char *) header) + udp_size, (size_t)n, 
++      m = answer_request(header, ((char *) header) + udp_size, (size_t)n,
+ 			 dst_addr_4, netmask, now, fwd_flags & FREC_AD_QUESTION, do_bit, !cacheable, &stale, &filtered);
+-      
++
+       metric = stale ? METRIC_DNS_STALE_ANSWERED : METRIC_DNS_LOCAL_ANSWERED;
+-      
++
+       if (m == 0)
+ 	do_forward = 1;
+       else
+@@ -2010,6 +2048,7 @@ void receive_query(struct listener *listen, time_t now)
+ 	  else if (stale)
+ 	    ede = EDE_STALE;
+ 	}
++	}
+     }
+   
+   if (m != 0)
+@@ -2618,8 +2657,13 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 	      else if (auth_dns)
+ 		m = answer_auth(out_header, ((char *) out_header) + 65536, (size_t)size, now, &peer_addr, local_auth);
+ #endif
++	      /* reaper 2026-10-21: Wallguard, as on UDP */
++	      else if (daemon->wallguard_dir && gotname &&
++		       (m = wallguard_answer(out_header, ((char *) out_header) + 65536, (size_t)size,
++					  reaper_client(&peer_addr), qtype, now, &ede)))
++		;	/* ede set by the engine: 15 Blocked, or none for safe search */
+ 	      else
+-		m = answer_request(out_header, ((char *) out_header) + 65536, (size_t)size, 
++		m = answer_request(out_header, ((char *) out_header) + 65536, (size_t)size,
+ 				   dst_addr_4, netmask, now, ad_reqd, do_bit, !cacheable, &stale, &filtered);
+ 	    }
+ 	}
+@@ -2632,19 +2676,27 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 	  struct server *master;
+ 	  int start;
+ 	  int no_cache_dnssec = 0, cache_secure = 0, bogusanswer = 0;
++	  int nxm = 0;	/* reaper 2026-10-24: see the UDP path */
+ 
+ 	  /* save state of "cd" flag in query */
+ 	  checking_disabled = header->hb4 & HB4_CD;
+ 	  
+-	  if (lookup_domain(daemon->namebuff, gotname, &first, &last))
++	  if ((nxm = lookup_domain(daemon->namebuff, gotname, &first, &last)))
+ 	    {
+ 	      flags = is_local_answer(now, first, daemon->namebuff);
+ 	      /* reaper 2026-10-20: count a threat-list answer, as on UDP */
+ 	      if (flags & F_NXDOMAIN)
+-		reaper_hit(first, &peer_addr);
++		reaper_hit(first, reaper_client(&peer_addr));
+ 	    }
+ 	  else
+ 	    ede = EDE_NOT_READY;
++	  /* reaper 2026-10-24 (Dreadwatch): the threat table, as on UDP */
++	  if (reaper_nx_judge(now, nxm, nxm ? first : -1, daemon->namebuff, &flags, reaper_client(&peer_addr)))
++	    {
++	      if (!nxm)
++		first = last = 0;
++	      ede = (flags & F_NXDOMAIN) ? EDE_BLOCKED : EDE_UNSET;
++	    }
+ 	  
+ 	  if (!flags && ede == EDE_UNSET)
+ 	    {
+@@ -2761,7 +2813,7 @@ void tcp_request(int confd, time_t now, struct iovec *bigbuff,
+ 		      
+ 		      m = process_reply(out_header, now, serv, (unsigned int)m, 
+ 					option_bool(OPT_NO_REBIND) && !norebind, no_cache_dnssec, cache_secure, bogusanswer,
+-					ad_reqd, do_bit, !have_pseudoheader, &peer_addr, 65536, ede);
++					ad_reqd, do_bit, !have_pseudoheader, &peer_addr, reaper_client(&peer_addr), 65536, ede);
+ 
+ 		      /* process_reply() adds pheader itself */
+ 		      have_pseudoheader = 0; 
+diff --git a/release/src/router/dnsmasq/src/option.c b/release/src/router/dnsmasq/src/option.c
+index ce125ac1f22..9aab0323bef 100644
+--- a/release/src/router/dnsmasq/src/option.c
++++ b/release/src/router/dnsmasq/src/option.c
+@@ -204,6 +204,8 @@ struct myoption {
+ #define LOPT_RDNSS_WAR     392
+ #define LOPT_REAPER_NX     393	/* reaper 2026-10-20 (Dreadwatch) */
+ #define LOPT_REAPER_HITLOG 394
++#define LOPT_WALLGUARD_DIR    395	/* reaper 2026-10-21 (Wallguard) */
++#define LOPT_REAPER_NXDB   396	/* reaper 2026-10-24 (Dreadwatch table, reaper_nx.c) */
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -407,6 +409,8 @@ static const struct myoption opts[] =
+ 	{ "rdnss-war", 0, 0, LOPT_RDNSS_WAR },
+ 	{ "reaper-nx", 1, 0, LOPT_REAPER_NX },
+ 	{ "reaper-hitlog", 1, 0, LOPT_REAPER_HITLOG },
++	{ "wallguard-dir", 1, 0, LOPT_WALLGUARD_DIR },
++	{ "reaper-nx-db", 1, 0, LOPT_REAPER_NXDB },
+     { "leasequery", 2, 0, LOPT_LEASEQUERY },
+     { "log-malloc", 0, 0, LOPT_LOG_MALLOC },
+     { NULL, 0, 0, 0 }
+@@ -621,6 +625,8 @@ static struct {
+   { LOPT_RDNSS_WAR, OPT_RDNSS_WAR, NULL, gettext_noop("Workaround to flush RDNSS."), NULL },
+   { LOPT_REAPER_NX, ARG_DUP, "/<domain>/", gettext_noop("Answer NXDOMAIN for a threat-list domain (counted by --reaper-hitlog)."), NULL },
+   { LOPT_REAPER_HITLOG, ARG_ONE, "<path>", gettext_noop("Append one line per threat-list answer to this file."), NULL },
++  { LOPT_WALLGUARD_DIR, ARG_ONE, "<dir>", gettext_noop("Wallguard: block names on the compiled list in this directory."), NULL },
++  { LOPT_REAPER_NXDB, ARG_ONE, "<path>", gettext_noop("Dreadwatch: NXDOMAIN for the names in this compiled table (one copy mapped by every instance)."), NULL },
+   { 0, 0, NULL, NULL, NULL }
+ }; 
+ 
+@@ -2347,6 +2353,14 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+     case LOPT_REAPER_HITLOG: /* reaper 2026-10-20 */
+       daemon->reaper_hitlog = opt_string_alloc(arg);
+       break;
++
++    case LOPT_REAPER_NXDB: /* reaper 2026-10-24: Dreadwatch's table (reaper_nx.c) */
++      daemon->reaper_nx_db = opt_string_alloc(arg);
++      break;
++
++    case LOPT_WALLGUARD_DIR: /* reaper 2026-10-21: Wallguard (wallguard.c) */
++      daemon->wallguard_dir = opt_string_alloc(arg);
++      break;
+       
+     case 'm':  /* --mx-host */
+       {
+diff --git a/release/src/router/dnsmasq/src/reaper_nx.c b/release/src/router/dnsmasq/src/reaper_nx.c
+new file mode 100644
+index 00000000000..f790c109364
+--- /dev/null
++++ b/release/src/router/dnsmasq/src/reaper_nx.c
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++   Copyright (C) 2026 the Reaper project maintainer
++   Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++
++   reaper_nx.c - Dreadwatch's threat-domain table (2026-10-24).
++
++   The threat list used to reach dnsmasq as --reaper-nx=/host/ lines: one struct server per
++   name in EVERY instance (~54 bytes a name) plus the 21 MB text file in tmpfs, so with four
++   instances the same 683k names lived in RAM five times (~125 MB on the RT-BE96U; the 1 GB
++   RT-BE88U is the budget). Now rc compiles the list with wallguardc into one table in Wallguard's
++   format (wallguard_db.h: sorted 64-bit FNV-1a hashes with list bits, every entry covering its
++   subdomains) and every instance maps it read-only, MAP_SHARED: one physical copy for all of
++   them, ~12 bytes a name, no text copy. The list bits name the feeds (the table's list ids).
++
++   Semantics are the ones --reaper-nx had: NXDOMAIN for the listed name and its subdomains
++   (NOERR for a name dnsmasq knows locally, as address=/x/ does); one hit record per answer
++   (--reaper-hitlog, now with the feed ids); a name dnsmasq answers itself from a config entry
++   of equal or longer domain (local=, address=, an explicit server=/zone/) keeps that answer.
++   The judge runs where the server-array entries used to answer - forward.c, after
++   lookup_domain and before any forward - so the cache stays in front of it exactly as before
++   and rc still restarts dnsmasq when the list changes. A missing or damaged table blocks
++   nothing and is logged once: the resolver never fails over the block list. */
++#include "dnsmasq.h"
++#include "wallguard_db.h"
++#include <sys/mman.h>
++
++#define NX_RECHECK 2		/* seconds between stat()s of the table (Wallguard's cadence) */
++
++static struct {
++  struct wallguard_table t;		/* wallguard_db.h: the mapper Wallguard uses too (review 2026-10-24, Q-A-9) */
++  time_t checked;
++} nx;
++
++/* map the table, or pick up a new one rc renamed into place (mtime / inode change) */
++static void nx_map(time_t now)
++{
++  if (!daemon->reaper_nx_db || (nx.checked && now - nx.checked < NX_RECHECK))
++    return;
++  nx.checked = now;
++  switch (wallguard_table_refresh(&nx.t, daemon->reaper_nx_db))
++    {
++    case -1:
++      /* review 2026-10-24 (Q-A-3): rc rebuilds the table in the background at boot, so an instance can start before
++         it exists - that is not a fault and is not logged; a table that was mapped and then went away is */
++      my_syslog(LOG_WARNING, _("reaper-nx-db: %s is not there - the threat list blocks nothing until rc rebuilds it"), daemon->reaper_nx_db);
++      break;
++    case 1:
++      if (!nx.t.ok)
++	my_syslog(LOG_WARNING, _("reaper-nx-db: the threat table is damaged - blocking nothing until rc rebuilds it"));
++      else
++	my_syslog(LOG_INFO, _("reaper-nx-db: %u threat names mapped"), nx.t.v.nblock);
++      break;
++    }
++}
++
++/* The longest listed suffix of name, matched as --reaper-nx did: the name itself, or a listed
++   parent whose entry covers subdomains (every entry rc compiles does; the flag is honoured
++   anyway). An allow entry, should a table ever carry one, wins. Returns the suffix length
++   (0 = not listed); *bits = its list bits, *at = where the suffix starts inside name. */
++static size_t nx_longest(const char *name, uint32_t *bits, const char **at)
++{
++  size_t n = 0;
++
++  if (!nx.t.ok || wallguard_walk(&nx.t.v, name, bits, at, &n, 1) != WALLGUARD_LISTED)
++    return 0;
++  return n;
++}
++
++/* the feed ids behind a set of list bits, comma-joined ("-" when the table names none) */
++static void nx_feeds(uint32_t bits, char *out, size_t n)
++{
++  size_t len = 0;
++  int i;
++
++  out[0] = 0;
++  for (i = 0; i < WALLGUARD_LISTS && len + WALLGUARD_LISTNAME + 2 < n; i++)
++    if ((bits & (1u << i)) && nx.t.v.h->lists[i][0])
++      len += (size_t)snprintf(out + len, n - len, "%s%.*s", len ? "," : "", WALLGUARD_LISTNAME, nx.t.v.h->lists[i]);
++  if (!out[0])
++    strcpy(out, "-");
++}
++
++/* forward.c, right after the server-array search: matched = lookup_domain found an entry (first
++   is then its index; *flags = what is_local_answer made of it). A listed suffix longer than that
++   entry's domain turns the query into the --reaper-nx answer - the longest entry wins, as it did
++   when the names were entries themselves, whatever the shorter one was (address=, local=, a
++   zone's server=): NXDOMAIN - NOERR for a name dnsmasq knows locally, as address=/x/ does - and
++   one hit record naming the listed entry and its feeds. Returns 1 when it answered. */
++int reaper_nx_judge(time_t now, int matched, int first, char *name, unsigned int *flags, union mysockaddr *client)
++{
++  uint32_t bits = 0;
++  const char *at = NULL;
++  size_t ml;
++  char feeds[WALLGUARD_LISTS * (WALLGUARD_LISTNAME + 1) + 2];
++
++  if (!daemon->reaper_nx_db)
++    return 0;
++  nx_map(now);
++  if (!nx.t.ok)
++    return 0;
++  if (!(ml = nx_longest(name, &bits, &at)))
++    return 0;
++  if (matched && first >= 0 && first < daemon->serverarraysz &&
++      (size_t)daemon->serverarray[first]->domain_len >= ml)
++    return 0;			/* a config entry of equal or longer domain owns this name */
++  *flags = check_for_local_domain(name, now) ? F_NOERR : F_NXDOMAIN;
++  if (*flags & F_NXDOMAIN)
++    {
++      nx_feeds(bits, feeds, sizeof(feeds));
++      reaper_hit_rec(at, feeds, client);
++    }
++  return 1;
++}
++
++/* wallguard.c: a listed name is dnsmasq's own answer, so Dreadwatch keeps winning over Wallguard */
++int reaper_nx_listed(const char *name)
++{
++  uint32_t bits = 0;
++  const char *at = NULL;
++
++  if (!daemon->reaper_nx_db)
++    return 0;
++  nx_map(dnsmasq_time());
++  return nx_longest(name, &bits, &at) > 0;
++}
+diff --git a/release/src/router/dnsmasq/src/rfc1035.c b/release/src/router/dnsmasq/src/rfc1035.c
+index 633aa5b4566..5c75d9889c6 100644
+--- a/release/src/router/dnsmasq/src/rfc1035.c
++++ b/release/src/router/dnsmasq/src/rfc1035.c
+@@ -710,6 +710,7 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
+   (void)nftsets; /* unused */
+ #endif
+   int name_encoding, found = 0, ptr = 0;
++  int wallguard_listed = 0;	/* reaper 2026-10-21: a CNAME in the chain is on a Wallguard list */
+   int flags = RCODE(header) == NXDOMAIN ? F_NXDOMAIN : 0;
+ 
+   cache_start_insert();
+@@ -879,7 +880,14 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
+ 	      namep = p1;
+ 	      if (!extract_name(header, qlen, &p1, name, EXTR_NAME_EXTRACT, 0))
+ 		return 2;
+-	      
++
++	      /* reaper 2026-10-21 Wallguard: a CNAME-cloaked tracker. The reply is still
++		 checked to the end (rebind protection, ipsets); 3 is returned in place of
++		 cache_end_insert(), so nothing of this chain is cached, and process_reply()
++		 decides for the asking device. */
++	      if (daemon->wallguard_dir && !wallguard_listed && wallguard_cname_listed(name))
++		wallguard_listed = 1;
++
+ 	      if (qtype != T_CNAME)
+ 		goto cname_loop;
+ 
+@@ -1121,6 +1129,10 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
+   /* Don't cache replies from non-recursive nameservers, since we may get a 
+      reply containing a CNAME but not its target, even though the target 
+      does exist. */
++  /* reaper 2026-10-21 Wallguard: a listed CNAME chain is never cached (see the CNAME loop) */
++  if (wallguard_listed)
++    return 3;
++
+   if (!(header->hb4 & HB4_CD) &&
+       (header->hb4 & HB4_RA) &&
+       !no_cache_dnssec)
+diff --git a/release/src/router/dnsmasq/src/wallguard.c b/release/src/router/dnsmasq/src/wallguard.c
+new file mode 100644
+index 00000000000..ca2ed94a4c6
+--- /dev/null
++++ b/release/src/router/dnsmasq/src/wallguard.c
+@@ -0,0 +1,686 @@
++/* reaper 2026-10-21: Wallguard, the ad & tracker blocker (Warden > Wallguard).
++
++   --wallguard-dir=<dir> points every dnsmasq instance at one directory rc keeps:
++     db        the compiled block table (wallguard_db.h; built by wallguardc), mapped read-only -
++               one copy in memory for all instances, swapped by rename and picked up within
++               2 s: no restart, no cache flush
++     policy    which list bits each device / network gets, its safe-search flags, pauses,
++               the bits a pause never lifts (blocked services), the answer mode
++     safesearch the search engines' enforcement names and addresses (phase 2, 2026-10-21)
++     live.on   present and less than an hour old = record every lookup in run/live (RAM ring)
++   The directory is root's; dnsmasq, running as nobody, writes only in its run/ subdirectory:
++     run/hits     one line per blocked lookup (bounded like reaper_hit)
++     run/stats.N  this instance's counters (N = pid), rewritten every 15 s
++     run/live     the live view's ring (and run/live.1)
++
++   A query is checked before the cache is consulted, so a cached answer is covered too -
++   unless dnsmasq has its own answer for the name (address=, local=, Dreadwatch's threat
++   list, the DoH canaries): configuration always wins, and Dreadwatch counts its own hits.
++   A reply whose CNAME chain reaches a listed name is decided per asking device and never
++   cached. Missing or damaged files make Wallguard pass everything; it never fails closed. */
++
++#include "dnsmasq.h"
++#include "wallguard_db.h"
++
++#include <sys/mman.h>
++
++#define SH_PATH		256		/* rc's /tmp/wallguard + a leaf name */
++#define WALLGUARD_RECHECK	2		/* seconds between stat()s of db / policy */
++#define WALLGUARD_TTL	10		/* TTL of a blocked answer: a pause or an allow shows fast */
++#define WALLGUARD_HIT_RATE	50
++#define WALLGUARD_HIT_MAX	(512 * 1024)
++#define WALLGUARD_LIVE_MAX	(1024 * 1024)
++#define WALLGUARD_LIVE_AGE	3600
++#define WALLGUARD_STATS_EVERY 15
++#define WALLGUARD_NETS	64
++#define WALLGUARD_MACS	512
++/* phase 2 (2026-10-21): safe search. Policy flags per device / network / default: */
++#define WALLGUARD_F_SAFE		1	/* Google, Bing, DuckDuckGo SafeSearch */
++#define WALLGUARD_F_YT_MOD		2	/* YouTube Restricted Mode, moderate */
++#define WALLGUARD_F_YT_STRICT	4	/* YouTube Restricted Mode, strict (wins over moderate) */
++#define WALLGUARD_SAFE_NAMES	1024	/* Google's country domains x2 + the rest, with room */
++#define WALLGUARD_SAFE_ADDRS	8	/* per enforcement group */
++#define WALLGUARD_SAFE_TTL		300
++
++struct wallguard_net { int family; unsigned char addr[16]; int prefix; uint32_t mask; unsigned int flags; };
++struct wallguard_mac { unsigned char mac[6]; uint32_t mask; unsigned int flags; time_t pause; };
++/* a safe-search name -> its group: g Google, b Bing, d DuckDuckGo, y YouTube */
++struct wallguard_safe_name { uint64_t h; char g; };
++/* enforcement addresses by group; YouTube has two (y moderate, Y strict) */
++struct wallguard_safe_addr { char g; int family; union all_addr a; };
++
++static struct {
++  struct wallguard_table t;		/* wallguard_db.h: the block table (review 2026-10-24, Q-A-9: one mapper) */
++  time_t checked, pol_mtime, stats_at;
++  ino_t pol_ino;
++  off_t pol_size;
++  /* policy */
++  uint32_t def;
++  unsigned int def_flags;
++  uint32_t keep;			/* bits a pause never lifts: the blocked services */
++  int nx;				/* answer NXDOMAIN instead of 0.0.0.0 / :: */
++  time_t pause;
++  struct wallguard_net net[WALLGUARD_NETS];
++  int nnet;
++  struct wallguard_mac mac[WALLGUARD_MACS];
++  int nmac;
++  int live;
++  /* counters */
++  unsigned long queries, blocked, cname, list_hits[WALLGUARD_LISTS], safe;
++  /* the CNAME verdict hand-over from extract_addresses() to process_reply() */
++  uint32_t cname_bits;
++  char cname_name[MAXDNAME];
++} sh;
++
++static struct {
++  struct wallguard_safe_name name[WALLGUARD_SAFE_NAMES];
++  int nname;
++  struct wallguard_safe_addr addr[5 * WALLGUARD_SAFE_ADDRS];
++  int naddr;
++  time_t mtime;
++  ino_t ino;
++  off_t size;
++} ss;
++
++static void wallguard_path(char *buf, size_t n, const char *leaf)
++{
++  snprintf(buf, n, "%s/%s", daemon->wallguard_dir, leaf);
++}
++
++/* the only place dnsmasq writes: rc makes run/ nobody's, inside its own root directory */
++static void wallguard_run_path(char *buf, size_t n, const char *leaf)
++{
++  snprintf(buf, n, "%s/run/%s", daemon->wallguard_dir, leaf);
++}
++
++/* a record carries the name lowercased, and only a plain host name: a query name can hold
++   any byte (extract_name escapes only a few), and the records are read back by a script.
++   0 = do not record (the lookup is still answered as usual). */
++static int wallguard_clean(const char *name, char *out, size_t n)
++{
++  size_t i;
++
++  for (i = 0; name[i] && i + 1 < n; i++)
++    {
++      unsigned char c = (unsigned char)name[i];
++      if (c >= 'A' && c <= 'Z')
++	c += 32;
++      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_'))
++	return 0;
++      out[i] = (char)c;
++    }
++  out[i] = 0;
++  return i > 0 && !name[i];
++}
++
++static void wallguard_map(void)
++{
++  char p[SH_PATH];
++
++  wallguard_path(p, sizeof(p), "db");
++  if (wallguard_table_refresh(&sh.t, p) == 1 && !sh.t.ok)
++    my_syslog(LOG_WARNING, _("wallguard: the block table is damaged - passing everything until it is rebuilt"));
++}
++
++static int wallguard_mac_parse(const char *s, unsigned char *m)
++{
++  unsigned int v[6];
++  int i;
++
++  if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
++    return 0;
++  for (i = 0; i < 6; i++)
++    {
++      if (v[i] > 255)
++	return 0;
++      m[i] = (unsigned char)v[i];
++    }
++  return 1;
++}
++
++static void wallguard_policy(void)
++{
++  char p[SH_PATH], line[256], a[80];
++  struct stat st;
++  FILE *f;
++
++  wallguard_path(p, sizeof(p), "policy");
++  if (stat(p, &st) == -1)
++    {
++      sh.pol_mtime = 0;
++      sh.def = WALLGUARD_BITS;	/* no policy file: every list for everyone */
++      sh.def_flags = 0;
++      sh.keep = 0;
++      sh.nnet = sh.nmac = 0;
++      sh.pause = 0;
++      return;
++    }
++  /* rc replaces the file by rename, so a new inode tells two writes in one second apart */
++  if (st.st_mtime == sh.pol_mtime && st.st_ino == sh.pol_ino && st.st_size == sh.pol_size)
++    return;
++  if (!(f = fopen(p, "r")))
++    return;
++  sh.pol_mtime = st.st_mtime;
++  sh.pol_ino = st.st_ino;
++  sh.pol_size = st.st_size;
++  sh.def = WALLGUARD_BITS;
++  sh.def_flags = 0;
++  sh.keep = 0;
++  sh.nx = 0;
++  sh.pause = 0;
++  sh.nnet = sh.nmac = 0;
++  while (fgets(line, sizeof(line), f))
++    {
++      unsigned long m;
++      unsigned int fl = 0;
++      long long t;
++
++      if (sscanf(line, "default %lx %x", &m, &fl) >= 1)
++	{
++	  sh.def = (uint32_t)m & WALLGUARD_BITS;
++	  sh.def_flags = fl & 7;
++	}
++      else if (sscanf(line, "keep %lx", &m) == 1)
++	sh.keep = (uint32_t)m & WALLGUARD_BITS;
++      else if (!strncmp(line, "mode nx", 7))
++	sh.nx = 1;
++      else if (sscanf(line, "pause %lld", &t) == 1)
++	sh.pause = (time_t)t;
++      else if (sscanf(line, "net %79s %lx %x", a, &m, &fl) >= 2 && sh.nnet < WALLGUARD_NETS)
++	{
++	  struct wallguard_net *n = &sh.net[sh.nnet];
++	  char *slash = strchr(a, '/');
++	  int max;
++	  if (slash)
++	    *slash++ = 0;
++	  memset(n, 0, sizeof(*n));
++	  if (inet_pton(AF_INET, a, n->addr) == 1)
++	    n->family = AF_INET, max = 32;
++	  else if (inet_pton(AF_INET6, a, n->addr) == 1)
++	    n->family = AF_INET6, max = 128;
++	  else
++	    continue;
++	  n->prefix = slash ? atoi(slash) : max;
++	  if (n->prefix < 0 || n->prefix > max)
++	    continue;
++	  n->mask = (uint32_t)m & WALLGUARD_BITS;
++	  n->flags = fl & 7;
++	  sh.nnet++;
++	}
++      else if (sscanf(line, "mac %79s %lx %x", a, &m, &fl) >= 2 && sh.nmac < WALLGUARD_MACS)
++	{
++	  if (wallguard_mac_parse(a, sh.mac[sh.nmac].mac))
++	    {
++	      sh.mac[sh.nmac].mask = (uint32_t)m & WALLGUARD_BITS;
++	      sh.mac[sh.nmac].flags = fl & 7;
++	      sh.mac[sh.nmac].pause = 0;
++	      sh.nmac++;
++	    }
++	}
++      else if (sscanf(line, "pausemac %79s %lld", a, &t) == 2)
++	{
++	  unsigned char mac[6];
++	  int i;
++	  if (!wallguard_mac_parse(a, mac))
++	    continue;
++	  for (i = 0; i < sh.nmac && memcmp(sh.mac[i].mac, mac, 6); i++)
++	    ;
++	  if (i == sh.nmac)
++	    {
++	      if (sh.nmac >= WALLGUARD_MACS)
++		continue;
++	      memcpy(sh.mac[i].mac, mac, 6);
++	      sh.mac[i].mask = (uint32_t)~0u;	/* "no rule of its own" marker: falls through */
++	      sh.mac[i].flags = 0;
++	      sh.nmac++;
++	    }
++	  sh.mac[i].pause = (time_t)t;
++	}
++    }
++  fclose(f);
++}
++
++static void wallguard_stats(time_t now)
++{
++  char p[SH_PATH], t[SH_PATH + 8];
++  FILE *f;
++  int i;
++
++  sh.stats_at = now;
++  /* a TCP child inherits the parent's totals; its file would count them twice */
++  if (daemon->pipe_to_parent != -1)
++    return;
++  snprintf(p, sizeof(p), "%s/run/stats.%d", daemon->wallguard_dir, (int)getpid());
++  snprintf(t, sizeof(t), "%s.tmp", p);
++  if (!(f = fopen(t, "w")))
++    return;
++  fprintf(f, "%ld %lu %lu %lu", (long)now, sh.queries, sh.blocked, sh.cname);
++  for (i = 0; i < WALLGUARD_LISTS; i++)
++    fprintf(f, " %lu", sh.list_hits[i]);
++  fprintf(f, " %lu\n", sh.safe);
++  fclose(f);
++  rename(t, p);
++}
++
++static int wallguard_safe_cmp(const void *a, const void *b)
++{
++  uint64_t x = ((const struct wallguard_safe_name *)a)->h, y = ((const struct wallguard_safe_name *)b)->h;
++  return x < y ? -1 : x > y;
++}
++
++/* rc's wallguard.sh writes the file (root's directory, replaced by rename):
++     name <g|b|d|y> <host name>      a name answered for its group
++     addr <g|b|d|y|Y> <IPv4|IPv6>    an enforcement address (y moderate, Y strict)
++   A group without an address is never answered: safe search fails open, never closed. */
++static void wallguard_safe_load(void)
++{
++  char p[SH_PATH], line[320], g, w[256];
++  struct stat st;
++  FILE *f;
++
++  wallguard_path(p, sizeof(p), "safesearch");
++  if (stat(p, &st) == -1)
++    {
++      ss.nname = ss.naddr = 0;
++      ss.mtime = 0;
++      return;
++    }
++  if (st.st_mtime == ss.mtime && st.st_ino == ss.ino && st.st_size == ss.size)
++    return;
++  if (!(f = fopen(p, "r")))
++    return;
++  ss.mtime = st.st_mtime;
++  ss.ino = st.st_ino;
++  ss.size = st.st_size;
++  ss.nname = ss.naddr = 0;
++  while (fgets(line, sizeof(line), f))
++    {
++      if (sscanf(line, "name %c %255s", &g, w) == 2 && strchr("gbdy", g) && ss.nname < WALLGUARD_SAFE_NAMES)
++	{
++	  ss.name[ss.nname].h = wallguard_hash(w, strlen(w));
++	  ss.name[ss.nname].g = g;
++	  ss.nname++;
++	}
++      else if (sscanf(line, "addr %c %255s", &g, w) == 2 && strchr("gbdyY", g) && ss.naddr < 5 * WALLGUARD_SAFE_ADDRS)
++	{
++	  struct wallguard_safe_addr *x = &ss.addr[ss.naddr];
++	  x->g = g;
++	  if (inet_pton(AF_INET, w, &x->a.addr4) == 1)
++	    x->family = AF_INET, ss.naddr++;
++	  else if (inet_pton(AF_INET6, w, &x->a.addr6) == 1)
++	    x->family = AF_INET6, ss.naddr++;
++	}
++    }
++  fclose(f);
++  qsort(ss.name, ss.nname, sizeof(ss.name[0]), wallguard_safe_cmp);
++}
++
++/* the group a name is answered for, or 0 */
++static char wallguard_safe_group(const char *name)
++{
++  uint64_t h;
++  int lo = 0, hi = ss.nname - 1;
++
++  if (!ss.nname)
++    return 0;
++  h = wallguard_hash(name, strlen(name));
++  while (lo <= hi)
++    {
++      int mid = (lo + hi) / 2;
++      if (ss.name[mid].h == h)
++	return ss.name[mid].g;
++      if (ss.name[mid].h < h)
++	lo = mid + 1;
++      else
++	hi = mid - 1;
++    }
++  return 0;
++}
++
++/* once every WALLGUARD_RECHECK seconds: pick up a new table / policy, the live switch, stats */
++static void wallguard_tick(time_t now)
++{
++  char p[SH_PATH];
++  struct stat st;
++
++  if (now - sh.checked < WALLGUARD_RECHECK && sh.checked)
++    return;
++  sh.checked = now;
++  wallguard_map();
++  wallguard_policy();
++  wallguard_safe_load();
++  wallguard_path(p, sizeof(p), "live.on");
++  sh.live = stat(p, &st) == 0 && now - st.st_mtime < WALLGUARD_LIVE_AGE;
++  if (now - sh.stats_at >= WALLGUARD_STATS_EVERY)
++    wallguard_stats(now);
++}
++
++static int wallguard_net_match(const struct wallguard_net *n, const union mysockaddr *a)
++{
++  const unsigned char *b;
++  int bits = n->prefix, i;
++
++  if (a->sa.sa_family != n->family)
++    return 0;
++  b = n->family == AF_INET ? (const unsigned char *)&a->in.sin_addr : a->in6.sin6_addr.s6_addr;
++  for (i = 0; bits > 0; i++, bits -= 8)
++    {
++      unsigned char m = bits >= 8 ? 0xff : (unsigned char)(0xff << (8 - bits));
++      if ((b[i] & m) != (n->addr[i] & m))
++	return 0;
++    }
++  return 1;
++}
++
++/* Clocks: dnsmasq's `now` is uptime on this firmware (built with HAVE_BROKEN_RTC, "no-RTC"),
++   while pauses, records and the live switch are dates (rc and wallguard.sh write and read them
++   with date / time()). Wallguard therefore compares and stamps with time(NULL) and passes
++   dnsmasq's `now` only to find_mac(), whose ARP cache is kept in dnsmasq time.
++
++   The list bits this device gets (0 = nothing blocked: a Bypass profile) and its safe-search
++   flags. A device rule (by MAC) beats a network rule, which beats the default. A pause - for
++   everyone or this device - lifts every bit except the blocked services (sh.keep): pausing
++   to rescue a broken site never unblocks a child's games, and never lifts safe search. */
++static uint32_t wallguard_mask(union mysockaddr *client, time_t now, unsigned char *mac, int *have_mac,
++			    unsigned int *flags)
++{
++  time_t wall = time(NULL);
++  int i, paused = sh.pause > wall, found = 0;
++  uint32_t m = sh.def;
++  unsigned int fl = sh.def_flags;
++
++  *have_mac = 0;
++  if (client && sh.nmac && find_mac(client, mac, 1, now) == 6)
++    {
++      *have_mac = 1;
++      for (i = 0; i < sh.nmac; i++)
++	if (!memcmp(sh.mac[i].mac, mac, 6))
++	  {
++	    if (sh.mac[i].pause > wall)
++	      paused = 1;
++	    if (sh.mac[i].mask != (uint32_t)~0u)
++	      {
++		m = sh.mac[i].mask;
++		fl = sh.mac[i].flags;
++		found = 1;
++	      }
++	    break;
++	  }
++    }
++  if (!found && client)
++    for (i = 0; i < sh.nnet; i++)
++      if (wallguard_net_match(&sh.net[i], client))
++	{
++	  m = sh.net[i].mask;
++	  fl = sh.net[i].flags;
++	  break;
++	}
++  if (flags)
++    *flags = fl;
++  return paused ? (m & sh.keep) : m;
++}
++
++static void wallguard_addr_str(union mysockaddr *client, char *ip, size_t n)
++{
++  strcpy(ip, "-");
++  if (client && client->sa.sa_family == AF_INET)
++    inet_ntop(AF_INET, &client->in.sin_addr, ip, n);
++  else if (client && client->sa.sa_family == AF_INET6)
++    inet_ntop(AF_INET6, &client->in6.sin6_addr, ip, n);
++}
++
++/* ring = 1: past cap the file rolls to <leaf>.1 and the append goes on (the live view); ring = 0: past cap
++   nothing more is written until the collector folds it (the hit log) */
++static void wallguard_append(const char *leaf, size_t cap, const char *line, int n, int ring)
++{
++  char p[SH_PATH];
++  struct stat st;
++  int fd;
++
++  wallguard_run_path(p, sizeof(p), leaf);
++  if ((fd = open(p, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600)) == -1)
++    return;
++  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
++    {
++      if ((size_t)st.st_size >= cap && ring)
++	{
++	  /* the live ring: keep the newest half by starting over with the old one as live.1 */
++	  char q[SH_PATH];
++	  close(fd);
++	  char l1[24];
++	  snprintf(l1, sizeof(l1), "%s.1", leaf);
++	  wallguard_run_path(q, sizeof(q), l1);
++	  rename(p, q);
++	  if ((fd = open(p, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600)) == -1)
++	    return;
++	}
++      if ((size_t)st.st_size < cap || ring)
++	{
++	  ssize_t w = write(fd, line, (size_t)n);
++	  (void)w;
++	}
++    }
++  close(fd);
++}
++
++/* one record per blocked lookup: "epoch client bits reason mac name" - name is the LIST ENTRY the
++   lookup matched (review 2026-10-24, S-A-1), never the query as asked: the query is the asker's to
++   invent, and the folded counters would otherwise grow by one row per invented name */
++static void wallguard_hit(union mysockaddr *client, uint32_t bits, char reason, const char *name,
++		       const unsigned char *mac, int have_mac)
++{
++  static time_t win;
++  static int used;
++  static unsigned int dropped;
++  char ip[INET6_ADDRSTRLEN], m[18], line[96 + INET6_ADDRSTRLEN + MAXDNAME], nm[MAXDNAME];
++  int n = 0, i;
++  time_t now = time(NULL);	/* a record carries a date, not dnsmasq's uptime clock (see wallguard_mask) */
++
++  sh.blocked++;
++  if (reason == 'c')
++    sh.cname++;
++  for (i = 0; i < WALLGUARD_LISTS; i++)
++    if (bits & (1u << i))
++      sh.list_hits[i]++;
++  if (now != win)
++    {
++      win = now;
++      used = 0;
++    }
++  if (used >= WALLGUARD_HIT_RATE)
++    {
++      dropped++;
++      return;
++    }
++  if (!wallguard_clean(name, nm, sizeof(nm)))
++    return;
++  used++;
++  wallguard_addr_str(client, ip, sizeof(ip));
++  if (have_mac)
++    snprintf(m, sizeof(m), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
++  else
++    strcpy(m, "-");
++  if (dropped)
++    n = snprintf(line, sizeof(line), "# dropped %u\n", dropped);
++  n += snprintf(line + n, sizeof(line) - n, "%ld %s %x %c %s %s\n", (long)now, ip, bits, reason, m, nm);
++  if (n > 0 && (size_t)n < sizeof(line))
++    {
++      wallguard_append("hits", WALLGUARD_HIT_MAX, line, n, 0);
++      dropped = 0;
++    }
++}
++
++static void wallguard_live(union mysockaddr *client, unsigned short qtype, const char *name, char verdict)
++{
++  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + MAXDNAME], nm[MAXDNAME];
++  int n;
++
++  if (!sh.live || !wallguard_clean(name, nm, sizeof(nm)))
++    return;
++  wallguard_addr_str(client, ip, sizeof(ip));
++  /* a record carries a date, not dnsmasq's uptime clock (see wallguard_mask) */
++  n = snprintf(line, sizeof(line), "%ld %s %u %c %s\n", (long)time(NULL), ip, (unsigned int)qtype, verdict, nm);
++  if (n > 0 && (size_t)n < sizeof(line))
++    wallguard_append("live", WALLGUARD_LIVE_MAX, line, n, 1);
++}
++
++/* dnsmasq's own answer for this name - an address= or local= line (the LAN's zones, the
++   DoH canaries rc answers NXDOMAIN) or Dreadwatch's threat list (reaper-nx, which records
++   its own hit) - wins over the lists. Asked only for listed names, so it costs nothing on
++   the common path. */
++static int wallguard_config_answer(char *name, unsigned short qtype)
++{
++  int first, last, fl = qtype == T_A ? F_IPV4 : (qtype == T_AAAA ? F_IPV6 : 0);
++
++  return (lookup_domain(name, fl, &first, &last) &&
++    (daemon->serverarray[first]->flags & SERV_LITERAL_ADDRESS)) ||
++    reaper_nx_listed(name);	/* reaper 2026-10-24: the mapped threat table (reaper_nx.c) */
++}
++
++/* Safe search: a search engine's name, for a device whose profile asks for it, is answered
++   with the engine's enforcement addresses (A / AAAA; the other family NODATA so the device
++   cannot reach the unrestricted service over it) and HTTPS / SVCB with NODATA (no alternative
++   endpoint). 0 = not answered: not a safe-search name, not for this device, another record
++   type, or the group has no address yet (fails open). */
++static size_t wallguard_safe_answer(struct dns_header *header, char *limit, size_t qlen, union mysockaddr *client,
++				 unsigned short qtype, const char *name, time_t now)
++{
++  unsigned char mac[6], *p;
++  unsigned int fl = 0;
++  uint32_t m, bits = 0;
++  int have_mac, i, n = 0, any = 0, trunc = 0;
++  char g, want;
++
++  if (qtype != T_A && qtype != T_AAAA && qtype != 64 && qtype != 65)
++    return 0;
++  if (!(g = wallguard_safe_group(name)))
++    return 0;
++  m = wallguard_mask(client, now, mac, &have_mac, &fl);
++  if (g == 'y')
++    want = (fl & WALLGUARD_F_YT_STRICT) ? 'Y' : (fl & WALLGUARD_F_YT_MOD) ? 'y' : 0;
++  else
++    want = (fl & WALLGUARD_F_SAFE) ? g : 0;
++  if (!want)
++    return 0;
++  /* a block wins: YouTube blocked for this profile stays blocked, restricted or not */
++  if (sh.t.ok && wallguard_lookup(&sh.t.v, name, &bits) == WALLGUARD_LISTED && (bits & m))
++    return 0;
++  for (i = 0; i < ss.naddr; i++)
++    if (ss.addr[i].g == want)
++      any = 1;
++  if (!any || wallguard_config_answer((char *)name, qtype))
++    return 0;
++  setup_reply(header, F_NOERR, EDE_UNSET);
++  if (!(p = skip_questions(header, qlen)))
++    return 0;
++  if (qtype == T_A || qtype == T_AAAA)
++    for (i = 0; i < ss.naddr; i++)
++      if (ss.addr[i].g == want && ss.addr[i].family == (qtype == T_A ? AF_INET : AF_INET6) &&
++	  add_resource_record(header, limit, &trunc, sizeof(struct dns_header), &p, WALLGUARD_SAFE_TTL, NULL,
++			      qtype, C_IN, qtype == T_A ? "4" : "6", &ss.addr[i].a))
++	n++;
++  header->ancount = htons(n);
++  sh.safe++;
++  wallguard_live(client, qtype, name, 's');
++  return p - (unsigned char *)header;
++}
++
++/* Called for every query before the cache. Returns the length of an answer written into
++   header (blocked, or a safe-search answer), or 0 to carry on as usual; *ede = the
++   Extended DNS Error to attach (EDE 15 Blocked for a block, none for safe search). */
++size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
++		     union mysockaddr *client, unsigned short qtype, time_t now, int *ede)
++{
++  unsigned char mac[6], *p;
++  union all_addr addr;
++  uint32_t bits = 0, mask;
++  int have_mac, trunc = 0, r;
++  size_t sa;
++  char *name = daemon->namebuff;
++  const char *listed = name;	/* the list entry the name matched - what a record carries */
++
++  wallguard_tick(time(NULL));	/* the live switch's age and the stats stamp are dates */
++  sh.queries++;
++  *ede = EDE_UNSET;
++  if ((sa = wallguard_safe_answer(header, limit, qlen, client, qtype, name, now)))
++    return sa;
++  if (!sh.t.ok)
++    {
++      wallguard_live(client, qtype, name, '-');
++      return 0;
++    }
++  r = wallguard_lookup_at(&sh.t.v, name, &bits, &listed);
++  if (r == WALLGUARD_LISTED && wallguard_config_answer(name, qtype))
++    r = WALLGUARD_ALLOWED;
++  if (r != WALLGUARD_LISTED)
++    {
++      wallguard_live(client, qtype, name, r == WALLGUARD_ALLOWED ? 'a' : '-');
++      return 0;
++    }
++  mask = wallguard_mask(client, now, mac, &have_mac, NULL);
++  if (!(bits & mask))
++    {
++      wallguard_live(client, qtype, name, 'p');	/* listed, but not for this device */
++      return 0;
++    }
++  wallguard_hit(client, bits & mask, 'q', listed, mac, have_mac);
++  wallguard_live(client, qtype, name, 'b');
++  *ede = EDE_BLOCKED;
++
++  if (sh.nx)
++    setup_reply(header, F_NXDOMAIN, EDE_BLOCKED);
++  else if (qtype == T_A || qtype == T_AAAA)
++    setup_reply(header, qtype == T_A ? F_IPV4 : F_IPV6, EDE_BLOCKED);
++  else
++    setup_reply(header, F_NOERR, EDE_BLOCKED);	/* NODATA for every other type */
++  if (!(p = skip_questions(header, qlen)))
++    return 0;
++  if (!sh.nx && (qtype == T_A || qtype == T_AAAA))
++    {
++      memset(&addr, 0, sizeof(addr));
++      if (add_resource_record(header, limit, &trunc, sizeof(struct dns_header), &p, WALLGUARD_TTL, NULL,
++			      qtype, C_IN, qtype == T_A ? "4" : "6", &addr))
++	header->ancount = htons(1);
++    }
++  return p - (unsigned char *)header;
++}
++
++/* extract_addresses(): is this CNAME target on any list? Remembers it for the verdict. */
++int wallguard_cname_listed(const char *name)
++{
++  uint32_t bits = 0;
++  const char *listed = name;
++
++  if (!daemon->wallguard_dir || !sh.t.ok || wallguard_lookup_at(&sh.t.v, name, &bits, &listed) != WALLGUARD_LISTED)
++    return 0;
++  sh.cname_bits = bits;
++  snprintf(sh.cname_name, sizeof(sh.cname_name), "%s", listed);
++  return 1;
++}
++
++/* forward.c, before a duplicate query joins one already in flight: one reply serves every asker, and
++   the CNAME verdict is per device - so they may share it only when their masks agree (review
++   2026-10-21: a Bypass device got NXDOMAIN, or a filtered one the tracker, when they asked together;
++   with Encrypted DNS every device arrives from 127.0.0.1, so this was common) */
++int wallguard_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now)
++{
++  unsigned char mac[6];
++  int hm;
++
++  if (!daemon->wallguard_dir || !sh.t.ok)
++    return 1;
++  return wallguard_mask(a, now, mac, &hm, NULL) == wallguard_mask(b, now, mac, &hm, NULL);
++}
++
++/* process_reply(): block the listed chain for this device? (Either way it is not cached.) */
++int wallguard_cname_verdict(union mysockaddr *client, time_t now)
++{
++  unsigned char mac[6];
++  int have_mac;
++  uint32_t mask = wallguard_mask(client, now, mac, &have_mac, NULL);
++
++  if (!(sh.cname_bits & mask))
++    return 0;
++  wallguard_hit(client, sh.cname_bits & mask, 'c', sh.cname_name, mac, have_mac);
++  return 1;
++}
+diff --git a/release/src/router/dnsmasq/src/wallguard_db.h b/release/src/router/dnsmasq/src/wallguard_db.h
+new file mode 100644
+index 00000000000..d4ee23a5502
+--- /dev/null
++++ b/release/src/router/dnsmasq/src/wallguard_db.h
+@@ -0,0 +1,256 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (C) 2026 the Reaper project maintainer
++// Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++/*
++ * wallguard_db.h - the Wallguard block table (2026-10-21).
++ *
++ * ONE file format, shared by the compiler (release/src/router/wallguard/wallguardc.c) and the
++ * engine inside dnsmasq (release/src/router/dnsmasq/src/wallguard.c). The two copies of this
++ * header must stay byte-identical; build-scripts/tests/test_wallguard.py checks that.
++ *
++ * Layout (host byte order - built and read on the same router; 8-byte aligned):
++ *   struct wallguard_hdr
++ *   uint64_t block_hash[nblock]   sorted ascending
++ *   uint32_t block_mask[nblock]   list bits; WALLGUARD_SUBTREE = the entry covers subdomains
++ *   (pad to 8)
++ *   uint64_t allow_hash[nallow]   sorted ascending
++ *   uint32_t allow_flag[nallow]   WALLGUARD_SUBTREE or 0
++ *
++ * A name is hashed lowercased, without a trailing dot (64-bit FNV-1a). A lookup walks the
++ * name's label suffixes, full name first: an allow entry that matches (the full name, or a
++ * parent whose entry covers subdomains) allows the name outright; block entries that match
++ * the same way OR their list bits together. The caller blocks when those bits meet the
++ * asking device's profile mask. Bit 0 is "My rules"; bits 1..30 are subscribed lists.
++ */
++#ifndef WALLGUARD_DB_H
++#define WALLGUARD_DB_H
++
++#include <stdint.h>
++#include <string.h>
++#include <time.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/mman.h>
++
++#define WALLGUARD_MAGIC		"SHRD"
++#define WALLGUARD_VERSION		1
++#define WALLGUARD_LISTS		31		/* bits 0..30 */
++#define WALLGUARD_LISTNAME		24
++#define WALLGUARD_SUBTREE		0x80000000u
++#define WALLGUARD_BITS		0x7fffffffu
++#define WALLGUARD_MAX_NAMES	1000000u
++#define WALLGUARD_NAME_MAX		253
++
++struct wallguard_hdr {
++	char magic[4];				/* "SHRD" */
++	uint32_t version;			/* WALLGUARD_VERSION */
++	uint32_t nblock;
++	uint32_t nallow;
++	uint32_t nlists;			/* list names present (<= WALLGUARD_LISTS) */
++	uint32_t flags;				/* reserved, 0 */
++	uint64_t built;				/* epoch */
++	char lists[WALLGUARD_LISTS][WALLGUARD_LISTNAME];	/* index = bit; "" = unused */
++	uint32_t pad[2];
++};						/* 784 bytes */
++
++struct wallguard_view {
++	const struct wallguard_hdr *h;
++	const uint64_t *bhash;
++	const uint32_t *bmask;
++	const uint64_t *ahash;
++	const uint32_t *aflag;
++	uint32_t nblock, nallow;
++};
++
++#define WALLGUARD_ALIGN8(x)	(((x) + 7u) & ~(size_t)7u)
++
++static inline size_t wallguard_size(uint32_t nblock, uint32_t nallow)
++{
++	size_t s = sizeof(struct wallguard_hdr);
++	s += (size_t)nblock * 8u + (size_t)nblock * 4u;
++	s = WALLGUARD_ALIGN8(s);
++	s += (size_t)nallow * 8u + (size_t)nallow * 4u;
++	return s;
++}
++
++/* 0 = a well-formed table of exactly len bytes; the view then points into it */
++static inline int wallguard_view_of(const void *base, size_t len, struct wallguard_view *v)
++{
++	const struct wallguard_hdr *h = (const struct wallguard_hdr *)base;
++	const unsigned char *p = (const unsigned char *)base;
++	size_t off;
++
++	if (!base || len < sizeof(*h) || memcmp(h->magic, WALLGUARD_MAGIC, 4) || h->version != WALLGUARD_VERSION)
++		return -1;
++	if (h->nblock > WALLGUARD_MAX_NAMES || h->nallow > WALLGUARD_MAX_NAMES || h->nlists > WALLGUARD_LISTS)
++		return -1;
++	if (wallguard_size(h->nblock, h->nallow) != len)
++		return -1;
++	off = sizeof(*h);
++	v->h = h;
++	v->nblock = h->nblock;
++	v->nallow = h->nallow;
++	v->bhash = (const uint64_t *)(p + off);
++	off += (size_t)h->nblock * 8u;
++	v->bmask = (const uint32_t *)(p + off);
++	off = WALLGUARD_ALIGN8(off + (size_t)h->nblock * 4u);
++	v->ahash = (const uint64_t *)(p + off);
++	off += (size_t)h->nallow * 8u;
++	v->aflag = (const uint32_t *)(p + off);
++	return 0;
++}
++
++/* FNV-1a 64 over the lowercased bytes [s, s+n) */
++static inline uint64_t wallguard_hash(const char *s, size_t n)
++{
++	uint64_t h = 0xcbf29ce484222325ull;
++	size_t i;
++
++	for (i = 0; i < n; i++) {
++		unsigned char c = (unsigned char)s[i];
++		if (c >= 'A' && c <= 'Z')
++			c += 32;
++		h ^= c;
++		h *= 0x100000001b3ull;
++	}
++	return h;
++}
++
++/* index of key in a sorted array, or -1 */
++static inline long wallguard_find(const uint64_t *a, uint32_t n, uint64_t key)
++{
++	uint32_t lo = 0, hi = n;
++
++	while (lo < hi) {
++		uint32_t mid = lo + (hi - lo) / 2;
++		if (a[mid] < key)
++			lo = mid + 1;
++		else
++			hi = mid;
++	}
++	return (lo < n && a[lo] == key) ? (long)lo : -1;
++}
++
++#define WALLGUARD_PASS	0
++#define WALLGUARD_ALLOWED	1	/* an allow entry decided it */
++#define WALLGUARD_LISTED	2	/* *bits holds the list bits that match */
++
++/* The one label walk (review 2026-10-24, Q-A-9: Wallguard's lookup, Dreadwatch's and `wallguardc explain`
++   each had their own copy). Walks the name's label suffixes, full name first (trailing dots ignored):
++   an allow entry that matches allows the name outright; block entries that match either OR their
++   bits together (longest = 0: Wallguard - a name on two lists is on both) or stop at the first, longest
++   one (longest = 1: Dreadwatch - that entry names the hit). *at, when asked for, receives the listed
++   suffix that decided - the shortest one for longest = 0 - pointing into name, or name itself when
++   nothing did; *len its length. Records carry that entry rather than the query (S-A-1: the query name
++   is the asker's to invent, so a device could grow the counters without bound). */
++static inline int wallguard_walk(const struct wallguard_view *v, const char *name, uint32_t *bits,
++			      const char **at, size_t *len, int longest)
++{
++	size_t n = strlen(name);
++	const char *s = name;
++	int first = 1;
++	uint32_t acc = 0;
++
++	*bits = 0;
++	if (at)
++		*at = name;
++	if (len)
++		*len = 0;
++	if (!v || !v->h)
++		return WALLGUARD_PASS;
++	while (n && name[n - 1] == '.')
++		n--;
++	while (n > 0) {
++		uint64_t h = wallguard_hash(s, n);
++		long i;
++
++		if ((i = wallguard_find(v->ahash, v->nallow, h)) >= 0 && (first || (v->aflag[i] & WALLGUARD_SUBTREE)))
++			return WALLGUARD_ALLOWED;
++		if ((i = wallguard_find(v->bhash, v->nblock, h)) >= 0 && (first || (v->bmask[i] & WALLGUARD_SUBTREE))) {
++			acc |= v->bmask[i] & WALLGUARD_BITS;
++			if (at)
++				*at = s;
++			if (len)
++				*len = n;
++			if (longest)
++				break;
++		}
++		/* next label suffix */
++		{
++			const char *dot = memchr(s, '.', n);
++			if (!dot)
++				break;
++			n -= (size_t)(dot + 1 - s);
++			s = dot + 1;
++		}
++		first = 0;
++	}
++	*bits = acc;
++	return acc ? WALLGUARD_LISTED : WALLGUARD_PASS;
++}
++
++static inline int wallguard_lookup_at(const struct wallguard_view *v, const char *name, uint32_t *bits, const char **at)
++{
++	return wallguard_walk(v, name, bits, at, NULL, 0);
++}
++
++static inline int wallguard_lookup(const struct wallguard_view *v, const char *name, uint32_t *bits)
++{
++	return wallguard_walk(v, name, bits, NULL, NULL, 0);
++}
++
++/* A mapped table that a reader keeps and refreshes (Q-A-9: dnsmasq's Wallguard engine, its Dreadwatch
++   judge and wallguardc each had their own mapper). Tables are only ever replaced by rename, so a new
++   inode or mtime means a new table; the old mapping is dropped only once the new one is in place. */
++struct wallguard_table {
++	void *base;
++	size_t len;
++	struct wallguard_view v;
++	int ok;				/* the mapped table is well-formed */
++	time_t mtime;
++	ino_t ino;
++};
++
++static inline void wallguard_table_drop(struct wallguard_table *t)
++{
++	if (t->base && t->base != MAP_FAILED)
++		munmap(t->base, t->len);
++	t->base = NULL;
++	t->ok = 0;
++}
++
++/* 0 = unchanged (or still absent), 1 = (re)mapped - t->ok says whether it is well-formed,
++   -1 = a table that was mapped is gone (now dropped) */
++static inline int wallguard_table_refresh(struct wallguard_table *t, const char *path)
++{
++	struct stat st;
++	void *b;
++	int fd = open(path, O_RDONLY | O_CLOEXEC);
++
++	if (fd == -1) {
++		int had = t->base != NULL;
++		wallguard_table_drop(t);
++		t->mtime = 0;
++		return had ? -1 : 0;
++	}
++	if (fstat(fd, &st) == -1 || st.st_size <= 0 ||
++	    (st.st_mtime == t->mtime && st.st_ino == t->ino && t->base)) {
++		close(fd);
++		return 0;
++	}
++	b = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
++	close(fd);
++	if (b == MAP_FAILED)
++		return 0;
++	wallguard_table_drop(t);
++	t->base = b;
++	t->len = (size_t)st.st_size;
++	t->mtime = st.st_mtime;
++	t->ino = st.st_ino;
++	t->ok = wallguard_view_of(b, t->len, &t->v) == 0;
++	return 1;
++}
++
++#endif
+-- 
+2.25.1
+

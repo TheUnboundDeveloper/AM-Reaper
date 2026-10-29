@@ -1,6 +1,6 @@
 # Merging a new ASUS/Merlin GPL drop into the Reaper fork
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 A step-by-step developer guide for bringing a new upstream Asuswrt-Merlin (or raw
 ASUS GPL) source drop into the RT-BE96U "reaper" fork with the least pain.
@@ -12,7 +12,7 @@ inlined into 165 pages, do that refactor first (see "Appendix B").
 
 - **Branch:** `be96u-only` (local only, **never pushed** upstream)
 - **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`
-- **Upstream base of the current stack:** `a7ebfa133a` (the last real Asuswrt-Merlin commit; everything after it is reaper work)
+- **Upstream base of the current stack:** `ca72a61f8bc` (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; everything after it is reaper work; before v3.6.0 the base was `a7ebfa133a`, 3006.102.8-beta2)
 - **Models:** RT-BE96U (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 (BCM4916) (`release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000`)
 
 ---
@@ -33,9 +33,10 @@ to merge:
 
 Plus one special commit:
 
-- **Model strip** (`48b0698465`) - a mechanical 5,650-file / ~1M-line deletion of
-  the non-BE96U sibling models. It is currently the **first** commit on top of the
-  base. Treat it as **regenerable**, not something to hand-merge (section 6).
+- **Model strip** - a mechanical ~5,700-file deletion of the non-BE96U sibling
+  models; since the 2026-10-27 rebase it is the `lean:` commit near the **top** of the
+  stack (it was `48b0698465`, the first commit, before). Treat it as **regenerable**
+  (section 13), not something to hand-merge. It never enters the published series.
 
 The whole point of the refactor: layers 1-2 are conflict-free, so a merge is
 "rebase the ~75-commit stack and resolve the ~46 C files + maybe 3 CSS files."
@@ -98,7 +99,7 @@ Before merging, snapshot exactly what you carry so you can verify nothing is los
 
 ```sh
 cd /home/reaper/asuswrt-be96u
-BASE=a7ebfa133a
+BASE=ca72a61f8bc
 # the reaper stack (should be ~75 commits, oldest first)
 git log --oneline --reverse ${BASE}..HEAD
 # the C/H hardening surface (the real merge work - ~46 files)
@@ -125,7 +126,7 @@ git branch import/<ver> origin/import/<ver>     # a pristine, reaper-free base
 ```
 
 `import/<ver>` must have **no reaper commits** on it - it is the new pristine base
-you rebase onto. Sanity-check that `a7ebfa133a` is an ancestor of it (same
+you rebase onto. Sanity-check that `ca72a61f8bc` is an ancestor of it (same
 lineage); if ASUS re-based their history, find the new equivalent base commit and
 use that as `BASE` everywhere below.
 
@@ -133,7 +134,10 @@ use that as `BASE` everywhere below.
 
 ## 6. Step 2 - rebase the reaper stack (and drop the model strip in one command)
 
-The model strip (`48b0698465`) is the **first** reaper commit - a mechanical
+Since the 2026-10-27 rebase the strip is the `lean:` commit near the top of the stack:
+leave it out of the pick list and regenerate it after the replay (section 13). The
+rest of this section describes the original layout, where the model strip
+(`48b0698465`) was the **first** reaper commit - a mechanical
 5,650-file deletion of the non-BE96U sibling models
 (every non-BE96U `router-sysdep.*` directory + sibling
 dongle firmware and bootloader configs). It is **fully independent** of the reaper
@@ -308,7 +312,7 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 698 <!--@patchcount--> patches, `0563` = v3.2.3 <!--@treever-->,
+**Patch-series regeneration recipe (the series is now at 867 <!--@patchcount--> patches, `0563` = v3.6.2 <!--@treever-->,
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
 `a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
@@ -335,8 +339,8 @@ files — commit messages in the clone still carry the pre-scrub strings (patch 
 is the known instance) and must not re-enter the public series:**
 
 ```bash
-BASE=a7ebfa133a                      # last real upstream commit
-STRIP=$(git rev-parse 48b0698465)    # the optional model-strip commit (excluded)
+BASE=ca72a61f8bc                     # the upstream base (3006.102.10; a7ebfa133a before v3.6.0)
+STRIP=$(git log --format=%H --grep='^lean: re-apply the be96u-only tree removals' $BASE..HEAD)   # the model strip (excluded)
 
 # 1. format-patch with a pathspec that EXCLUDES docs/meta -> doc hunks are stripped
 #    from mixed commits (e.g. a version bump that also edits REAPER-FIXES.md) and
@@ -386,6 +390,93 @@ release.
   known-good stack; or `git checkout <tag> -- httpd/ www/` for just the theme layer.
 - **A bad flash:** ASUS Firmware Restoration + rescue mode (the `_loader.pkgtb` is
   recovery-only; never the flash target).
+
+---
+
+## 13. The 2026-10-27 rebase onto 3006.102.10 (`ca72a61f8bc`)
+
+What was done, so the next drop can reuse it. The stack was replayed from a
+worktree with `git rebase -i --onto ca72a61f8bc 48b0698465 gm-40585` and a hand-made
+pick list: 27 commits that were patch-id-identical to upstream (OpenSSL 3.5 shim,
+tzdata, tor, openvpn, miniupnpd and CA-bundle bumps, the wanduck CLOEXEC fix, ...)
+were left out, 4 picks became empty on the new base, 866 commits landed, 64
+conflicts were resolved by hand. A driver resolved the mechanical classes and
+stopped on the rest.
+
+Automatic classes, in this order:
+
+- **DELETED** - the path is absent from the pre-rebase tip: our deletion stands.
+- **TRIVIAL** - both sides identical once comments and whitespace are stripped:
+  upstream's text.
+- **VENDORED** - `openvpn/`, `dropbear/` (except `localoptions.h`): upstream's copy.
+- **DELETED-BYPRODUCT** - a tracked `prebuild/*.o` copy upstream no longer has: deleted.
+- **NETZERO** - our final tree equals the old base for the file: upstream's copy.
+- **UNSHIPPED** - a stock page a Reaper page replaces: upstream's copy.
+- **FINAL=UPSTREAM** - our final tree equals upstream for the file: upstream's copy.
+- **ADDITIVE** - ours is the base plus an edit: the edit is re-applied onto
+  upstream's text by normalized, unique anchors; refused when upstream changed the
+  anchored lines or already carries the inserted line (a double fix).
+- **Dictionaries** - rule D4 below. **tor** - ours (newer).
+
+Rules for the hand-resolved stops:
+
+- **D1** a double fix goes to upstream's text unless ours closes something
+  upstream's does not (then both, or ours).
+- **D2** mechanical differences follow upstream.
+- **D3** nothing is dropped silently: every stop is logged in `MERGE-NOTES-102.10.md`.
+- **D4** dictionaries: upstream's translation wins; ours where upstream still carries
+  the English string; keys only we have are appended; keys upstream removed go.
+
+After the replay, as separate commits: the model strip regenerated by set
+difference (paths in the old base and the new tree but not in the pre-rebase tip,
+plus upstream's new files inside directories the strip had removed whole); the
+unshipped / net-zero / final=upstream sweep; the fixup commits folded with
+`--autosquash`; the audit of section 7.
+
+Now upstream's text (ours dropped under D1): the wanduck line-switch hold-off, its
+nine defects and the fail-back counter reset (Merlin `7e156018afa`); the watchdog
+once-per-minute latches and the removal of the USB factory-test hook; the
+3006.102.10 carries (httpd `strstr` guards, the `/proc/mounts` `getline()` parser,
+IPsec `lan_netmask`, LLMNR, Time Machine, libdisk, minidlna); miniupnpd
+`--disable-pppconn`; the BCM6813 WAN PHY bounce; the `register_app_cnonce.cgi`
+removal; the AiMesh cfg-event MAC validation; the no-shell smbpasswd enrollment;
+the ookla argv builder; the ETag rework.
+
+Kept with upstream's (D1 exceptions): `wgs_client.png` stays no-cache; the httpd
+cache bust rides on upstream's ETag rework (build stamp in every ETag, no-cache for
+stylesheets and our scripts, no ETag for a rendered response whose text is not the
+file); our validation gates stay in front of upstream's closed `safe_do_system` /
+`safe_fork_do_system` helpers; both Hardware
+QoS implementations beside upstream's HW AQM (dormant: not for the BE models); the Samba enrollment failure
+log on upstream's `waitpid` status.
+
+Adopted as **v3.6.0** the same evening:
+
+- **libnvram / libwlcsm: the 40585 pair.** It is the 42015 pair (the netlink leak fix) plus a
+  caller check in `nvram_set()` that needs `check_allow_nvram_caller()` from the 40585
+  `spwenc.o`. Models whose platform archive carries an older `spwenc.o` (GT-BE98, GT-BE19000,
+  BQ16, BQ16 Pro) keep the 42015 pair: `ci/container_build.sh` decides from the model's own
+  `spwenc.o`.
+- **Fixups folded.** The four fixup commits were folded with `--autosquash`; three targets came out
+  empty and were dropped (C6 `asus_openssl_crypt`, H6/M2 IPsec profile parsing, the miniupnpd
+  2.3.10 carry - upstream carries all three). The tree was asserted identical before and after.
+- **A full regeneration reads all history.** The hidden-character scan of the regenerated series
+  found a zero-width space the dictionary merge had carried back from the old base into
+  `MS.dict` for 105 commits; the blob was rewritten in each (`filter-branch --index-filter`),
+  tree identical. A history rewrite changes the strip commit's hash: `build-scripts/patch_count.sh`
+  pins it and falls back to its subject (`lean: re-apply the be96u-only tree removals`).
+- **The series** is regenerated by the maintainer's `cut_rung.sh --rebase`: everything from
+  `BASE`, the strip commit left out, numbered from `0001` (855 patches for v3.6.0), replayed onto
+  a fresh `ca72a61f8bc` and asserted equal to the build commit.
+- **A warm build tree after a rebase.** `reaper_stale_configure.sh` compares committer dates, which
+  a rebase moves to the rebase day, so every configured package is flagged; it now skips a tracked
+  `config.status` (LPRng ships configured) and removes a generated `configure` with the Makefile
+  (libcap-ng's rule is keyed on it).
+- **Overlays** are re-proven against the new tree with `git apply --check` rather than regenerated
+  from the sibling branches, which stay on the old base until their next port: GT-BE98 Pro lost
+  three top-level `rc/prebuild/*.o` hunks (40585 stages `rc/prebuild/<MODEL>/` at build time),
+  RT-BE88U's `target.mak` hunk was regenerated onto upstream's new block.
+
 
 ---
 

@@ -1,0 +1,64 @@
+From 02227109cdb181251af0fa99e36a4107e4885792 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:27 -0400
+Subject: [PATCH] diag v1.3.50: the RAM-store warning counts only a /dev block
+ volume
+
+Section 5 warned that a store was in RAM when a mount under /tmp/mnt was not
+a USB volume; the platform's own defaults volume matched. Only a /dev block
+device mounted under /tmp/mnt counts now.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 8 +++++---
+ release/src/router/www/Reaper_Diag.asp | 2 +-
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 74ecb0dede9..22f2b09c85f 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,8 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.49 (2026-10-25) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.50 (2026-10-26) - sanitized one-shot diagnostic bundle
++#  v1.3.50 warns about a RAM store only when a real disk (a /dev block device) is mounted under /tmp/mnt -
++#  /tmp/mnt/defaults, the router's own flash partition, made it fire on every router.
+ #  v1.3.49 says in 5 when /jffs/configs/dnsmasq.conf replaces the generated config (add-on residue) and when a
+ #  local-port upstream in the live config has nothing listening (GT-BE98 ControlD report).
+ #  v1.3.48 does the same work with fewer processes: one nvram dump, one /proc walk, one pass for 19b's counts.
+@@ -167,7 +169,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.49"
++VER="REAPER-DIAG v1.3.50"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -1987,7 +1989,7 @@ esac
+ echo "  durable store     : $RS_BASE$( [ "$RS_BASE" = /tmp/reaper ] && echo ' (VOLATILE - lost at reboot)')"
+ # v1.3.24: a RAM store beside a mounted USB disk means the history a field report
+ # needs (the syslog mirror above all) is lost at the next reboot for no reason.
+-if [ "$RS_BASE" = /tmp/reaper ] && grep -q ' /tmp/mnt/' /proc/mounts 2>/dev/null; then
++if [ "$RS_BASE" = /tmp/reaper ] && awk '$1 ~ /^\/dev\// && $2 ~ /^\/tmp\/mnt\/./ { f = 1 } END { exit !f }' /proc/mounts 2>/dev/null; then
+   finding WARN "Reaper's durable store is RAM although a USB disk is mounted - log history is lost at every reboot; set the store to USB - see 17"
+ fi
+ echo "  datastore opt-ins : $(nvram get reaper_store_ds 2>/dev/null)"
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index efea6fd8e27..50a37b8fd15 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.49</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.50</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

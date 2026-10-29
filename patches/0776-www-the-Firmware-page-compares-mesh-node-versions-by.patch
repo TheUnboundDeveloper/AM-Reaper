@@ -1,0 +1,64 @@
+From 9628fc940b4be232f9a6d3e8502a9cce632ab480 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 16:58:50 -0400
+Subject: [PATCH] www: the Firmware page compares mesh-node versions by key,
+ not display string
+
+Field (four BQ16 nodes on the main router's build): every node was badged
+"Different version". renderNodes() tested the node's fwver
+("3.0.0.6.102.8_Reaper_v3.4.6_BETA") for the display form prettyVer() makes
+("Reaper v3.4.6"), which can never match. verKey() on both sides keys on the
+Reaper version and the beta flag; the MCP/noMCP variant and a test rung's _rN
+are not version differences; a non-Reaper string keys to '' (different, the
+stock-node case).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firmware.asp | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index 39cd44b4966..e0c4a8cf2ef 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -230,7 +230,11 @@ function openNode(ip){ window.open(nodeUrl(ip), '_blank', 'noopener'); }
+ 
+ function renderNodes(list){
+   var box = $id('nodeBox'), stat = $id('nodeStat'), html = '', shown = 0, i;
+-  var mine = prettyVer(EXTENDNO);
++  /* 2026-10-18 (field): compare version KEYS, not strings. This used to test the node's
++     fwver ("3.0.0.6.102.8_Reaper_v3.4.6_BETA") for the DISPLAY form prettyVer() makes
++     ("Reaper v3.4.6", a space where fwver has "_"), which can never match - every node,
++     same build or not, was badged Different version. */
++  var mine = verKey(EXTENDNO);
+   for(i = 0; i < list.length; i++){
+     var nd = list[i];
+     /* reaper 2026-08-13: entry 0 IS the CAP - that is the contract of
+@@ -243,7 +247,7 @@ function renderNodes(list){
+     var name = nd.ui_model_name || nd.model_name || nd.mac || '';
+     var fw = String(nd.fwver || '');
+     var on = String(nd.online || '') === '1';
+-    var diff = fw && mine && fw.indexOf(mine) === -1;
++    var diff = fw && mine && verKey(fw) !== mine;   /* a stock (non-Reaper) node keys to '' = different */
+     shown++;
+     html += '<div class="nd"><div class="ndl"><div class="ndn">' + esc(name) +
+             (diff ? ` <span class="badge"><#RFWU_38#></span>` : '') +
+@@ -326,6 +330,15 @@ function prettyVer(s){
+   var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
+   return m ? 'Reaper v' + m[1] : String(s||'');
+ }
++/* The part of a firmware string that says which Reaper build it is: the version and
++   whether it is a beta. EXTENDNO ("Reaper_v3.4.6_BETA_noMCP") and a node's fwver
++   ("3.0.0.6.102.8_Reaper_v3.4.6_BETA") key alike; the MCP/noMCP variant and a test
++   rung's _rN are not version differences. '' = not a Reaper build. */
++function verKey(s){
++  var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
++  if(!m) return '';
++  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : '');
++}
+ 
+ /* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
+    (readyState 4, status 0) AND then error/timeout - so a handler pair that both
+-- 
+2.25.1
+

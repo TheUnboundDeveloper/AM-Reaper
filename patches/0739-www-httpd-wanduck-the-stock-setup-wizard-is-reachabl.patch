@@ -1,0 +1,195 @@
+From b806df1810a2b82e3c9a4b1bf9e689540dee21f9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 13 Oct 2026 19:07:50 -0400
+Subject: [PATCH] www, httpd, wanduck: the stock setup wizard is reachable from
+ AiMesh add-node only
+
+Reaper has no first-boot wizard, yet four live paths still led into
+QIS_wizard.htm: the default CGI (QIS_default.cgi answers / now), wanduck's
+first-use captive redirect (every HTTP request on a box with x_Setting=0
+was answered with /QIS_default.cgi?flag=welcome, and the first-use "direct
+rule" held a connected box's NAT - both gone, kept as dead branches so the
+GPL merge diff stays small; a factory box is usable at once and stays
+discoverable as an AiMesh node), the LAN-subnet landing pages
+(error_page.htm and updateSubnet.htm land on the new address itself) and
+the dead menu_QIS entry in menuTree.js that the shell never rendered. The
+wizard stays for AiMesh add-node and node mode. Lean:
+tests/test_qis_default_retired.py, tests/test_wanduck_firstuse.py, the
+qis-no-entry static check.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c                | 26 ++++++--------
+ release/src/router/rc/wanduck.c               | 35 +++++++++++++------
+ release/src/router/www/error_page.htm         |  7 ++--
+ .../router/www/require/menuTrees/menuTree.js  | 11 ++----
+ release/src/router/www/updateSubnet.htm       |  7 ++--
+ 5 files changed, 45 insertions(+), 41 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index bbc12b1767d..7f38c8571e7 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -31433,22 +31433,16 @@ do_appGet_image_path_cgi(char *url, FILE *stream)
+ static void
+ do_qis_default(char *url, FILE *stream)
+ {
+-	char *flag;
+-	char redirect_url[128];
+-	flag = websGetVar(wp, "flag","");
+-	
+-	if(flag != NULL && strcmp(flag, "") != 0){
+-		snprintf(redirect_url, sizeof(redirect_url), "QIS_wizard.htm?flag=%s", flag);
+-		websRedirect(stream, redirect_url);
+-	}
+-	else
+-#if defined(MAPAC1300) || defined(MAPAC2200) || defined(MAPAC1750)
+-		websRedirect(stream, "QIS_wizard.htm");
+-#elif defined(VZWAC1300)
+-		websRedirect(stream, "index.asp");
+-#else
+-		websRedirect(stream, "QIS_wizard.htm?flag=welcome");
+-#endif
++	/* reaper 2026-10-12: QIS_default.cgi retired. Stock turned any ?flag= into
++	 * QIS_wizard.htm?flag=<x>, and no flag into ?flag=welcome - the whole stock
++	 * first-boot wizard, reachable after login from wanduck's first-use captive
++	 * redirect and from the LAN-subnet-change landing. Reaper keeps the wizard for
++	 * one flow only, AiMesh add-node, which aimesh_topology.html opens directly.
++	 * The wizard's own keep-alive POST to this endpoint (QIS_wizard.htm, while
++	 * x_Setting==0) ignores the reply, so the row stays in the handler table and
++	 * every caller lands on "/" (login, then the dashboard). */
++	_dprintf("reaper: QIS_default.cgi retired, redirecting to /\n");
++	websRedirect(stream, "/");
+ }
+ 
+ static void
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 62ec8491a6c..1660d789def 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -578,8 +578,15 @@ void get_related_nvram(){
+ #endif
+ 	if(nvram_match("x_Setting", "1"))
+ 		isFirstUse = 0;
+-	else
++	else {
+ 		isFirstUse = 1;
++		/* reaper 2026-10-12: the flag still gates the first-use DNS probe and autodet
++		 * (harmless), but the captive redirect to the stock wizard and the first-use
++		 * "direct rule" hold are gone - see the three reaper-marked sites below. A
++		 * factory box keeps x_Setting==0 only so it is discoverable as an AiMesh
++		 * node; it is usable at once and the dashboard banner reports its state. */
++		_dprintf("# wanduck: reaper: no first-use captive (x_Setting=0)\n");
++	}
+ #endif
+ 
+ 	nat_redirect_enable = nvram_get_int("nat_redirect_enable");
+@@ -2745,7 +2752,13 @@ void send_page(int wan_unit, int sfd, char *file_dest, char *url){
+ 	}
+ 
+ 	// TODO: Only send pages for the wan(0)'s state.
+-	if(isFirstUse){
++	/* reaper 2026-10-12: no first-use captive. Stock answered every HTTP request
++	 * on a box with x_Setting==0 with a redirect to /QIS_default.cgi?flag=welcome
++	 * (the stock first-boot wizard; ?flag=sitesurvey in repeater mode). Reaper has
++	 * no setup wizard: fall through to the configured-box branches below (the stock
++	 * no-internet page while the WAN is down, nothing otherwise). Kept as a dead
++	 * branch rather than deleted so the GPL merge diff stays small. */
++	if(0 && isFirstUse){
+ #ifdef RTCONFIG_WIRELESSREPEATER
+ 		if(sw_mode == SW_MODE_REPEATER || sw_mode == SW_MODE_HOTSPOT)
+ 			snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), "%s%s%s%s", "Connection: close\r\n", redirection, "/QIS_default.cgi?flag=sitesurvey", "\r\nContent-Type: text/html\r\n");
+@@ -3932,10 +3945,11 @@ _dprintf("wanduck(%d)(first detect start): state %d, state_old %d, changed %d, w
+ 		_dprintf("\n# Enable direct rule\n");
+ 		rule_setup = 1;
+ 	}
+-	else if(cross_state == CONNED && isFirstUse){
+-		_dprintf("\n#CONNED : Enable direct rule\n");
+-		rule_setup = 1;
+-	}
++	/* reaper 2026-10-12: stock also held the "direct rule" (every HTTP request
++	 * redirected to the router) on a CONNECTED box while x_Setting==0, to feed the
++	 * first-boot wizard. No wizard here: a factory box with a working WAN gets the
++	 * normal NAT rules. The removed arm was
++	 *   else if(cross_state == CONNED && isFirstUse){ rule_setup = 1; } */
+ 	else{ // CONNED at the first detect
+ #if defined(RTCONFIG_WPS_ALLLED_BTN)
+ 		if(nvram_match("AllLED", "1"))
+@@ -4847,12 +4861,11 @@ _dprintf("wanduck(%d)(all   end): state %d, state_old %d, changed %d, wan_state
+ 			}
+ #endif // RTCONFIG_DSL
+ 
+-			if(cross_state == DISCONN || isFirstUse){
++			/* reaper 2026-10-12: was "cross_state == DISCONN || isFirstUse" - the
++			 * first-use hold fed the stock wizard's captive redirect; see above. */
++			if(cross_state == DISCONN){
+ 				if(!rule_setup){
+-					if(isFirstUse)
+-						_dprintf("\n# LB: Enable direct rule(isFirstUse)\n");
+-					else
+-						_dprintf("\n# LB: Enable direct rule\n");
++					_dprintf("\n# LB: Enable direct rule\n");
+ 					rule_setup = 1;
+ 					set_link_internet(wan_unit, 1);
+ 				}
+diff --git a/release/src/router/www/error_page.htm b/release/src/router/www/error_page.htm
+index 3be9576bf44..8c28f2e6fa2 100644
+--- a/release/src/router/www/error_page.htm
++++ b/release/src/router/www/error_page.htm
+@@ -539,9 +539,10 @@ function detect_router(){
+ 		dataType: "script",
+ 		timeout: 5000,
+ 		success: function(){
+-			top.location.href = location_org.replace(header_info[0].host, new_lan_ip) 
+-				+ "/QIS_wizard.htm?flag=" 
+-				+ (function(){return (('<% nvram_get("x_Setting"); %>' === '0')?"welcome":"detect")})();
++			/* reaper 2026-10-12: land on the new address itself (login, then the
++			   dashboard). The stock target was the setup wizard, which Reaper does
++			   not have; an unknown flag there ran the whole first-boot wizard. */
++			top.location.href = location_org.replace(header_info[0].host, new_lan_ip)+"/";
+ 		},
+ 		error: function(){
+ 			setTimeout(detect_router, 1000);
+diff --git a/release/src/router/www/require/menuTrees/menuTree.js b/release/src/router/www/require/menuTrees/menuTree.js
+index 5a107efdb6b..cd22a8d71d2 100644
+--- a/release/src/router/www/require/menuTrees/menuTree.js
++++ b/release/src/router/www/require/menuTrees/menuTree.js
+@@ -18,14 +18,9 @@ define(function(){
+ 				]
+ 			}
+ 			*/
+-			{
+-				menuName: "<#QIS#>",
+-				index: "menu_QIS", 
+-				tab: [
+-					{url: "QIS_wizard.htm", tabName: "__HIDE__"},
+-					{url: "NULL", tabName: "__INHERIT__"}
+-				] 
+-			},
++			/* reaper 2026-10-12: the stock "Quick Internet Setup" entry (menu_QIS ->
++			   QIS_wizard.htm) is gone. The shell never rendered it (reaper_shell.asp
++			   skips menu_QIS) and the wizard is kept for AiMesh add-node only. */
+ 			/* ============================================================================================================ */
+ 			{
+ 				menuName: "<#menu5_1_1#>",
+diff --git a/release/src/router/www/updateSubnet.htm b/release/src/router/www/updateSubnet.htm
+index 75309666c78..c75d80e71f4 100644
+--- a/release/src/router/www/updateSubnet.htm
++++ b/release/src/router/www/updateSubnet.htm
+@@ -259,9 +259,10 @@ function detect_router(){
+ 		dataType: "script",
+ 		timeout: 5000,
+ 		success: function(){
+-			top.location.href = location_org.replace(header_info[0].host, new_lan_ip) 
+-				+ "/QIS_wizard.htm?flag=" 
+-				+ (function(){return (('<% nvram_get("x_Setting"); %>' === '0')?"welcome":"detect")})();
++			/* reaper 2026-10-12: land on the new address itself (login, then the
++			   dashboard). The stock target was the setup wizard, which Reaper does
++			   not have; an unknown flag there ran the whole first-boot wizard. */
++			top.location.href = location_org.replace(header_info[0].host, new_lan_ip)+"/";
+ 		},
+ 		error: function(){
+ 			setTimeout(detect_router, 1000);
+-- 
+2.25.1
+

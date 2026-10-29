@@ -1,0 +1,444 @@
+From 6b40d616b4a0d434008a6c7fdaaef287cc417f80 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 22 Aug 2026 13:09:48 -0400
+Subject: [PATCH] USB: format as ext4 / ext3 / ext2; fix NTFS and HFS+
+ formatting from the Reaper USB page
+
+e2fsprogs' mke2fs already ships in the image (its default profile is
+compiled in, so -t ext4 needs no /etc/mke2fs.conf) and the mount path has
+handled ext2/3/4 all along - only the format dispatch in rc/usb.c lacked
+the cases. Added: mke2fs -F -t <ext2|ext3|ext4> -m 1 -L <label>, whole
+device, same shape as the Tuxera tools. The mkfs.ext4 link is no longer
+gated on RTCONFIG_EXT4FS (hard-set n), matching the earlier fsck.ext4 fix.
+
+Field defect found on the way: Reaper_USB.asp posted "ntfs"/"hfs" where
+rc/usb.c only accepts the Tuxera names "tntfs"/"thfsplus" (the stock
+device-map/disk_format.asp uses those), so NTFS and HFS+ formatting from
+the Reaper page silently did nothing - the log said "w/o tool" and the disk
+was re-mounted untouched. Values corrected.
+
+Page: the selector lists FAT32, ext4, ext3, ext2 (+ NTFS / HFS+ when the
+Tuxera modules are present) with a one-line hint per choice (RDST_65-67,
+English in all 25 dicts).
+---
+ release/src/router/Makefile           |  4 ++--
+ release/src/router/rc/usb.c           | 20 ++++++++++++++++++++
+ release/src/router/www/BR.dict        |  3 +++
+ release/src/router/www/CN.dict        |  3 +++
+ release/src/router/www/CZ.dict        |  3 +++
+ release/src/router/www/DA.dict        |  3 +++
+ release/src/router/www/DE.dict        |  3 +++
+ release/src/router/www/EN.dict        |  3 +++
+ release/src/router/www/ES.dict        |  3 +++
+ release/src/router/www/FI.dict        |  3 +++
+ release/src/router/www/FR.dict        |  3 +++
+ release/src/router/www/HU.dict        |  3 +++
+ release/src/router/www/IT.dict        |  3 +++
+ release/src/router/www/JP.dict        |  3 +++
+ release/src/router/www/KR.dict        |  3 +++
+ release/src/router/www/MS.dict        |  3 +++
+ release/src/router/www/NL.dict        |  3 +++
+ release/src/router/www/NO.dict        |  3 +++
+ release/src/router/www/PL.dict        |  3 +++
+ release/src/router/www/RO.dict        |  3 +++
+ release/src/router/www/RU.dict        |  3 +++
+ release/src/router/www/Reaper_USB.asp | 26 +++++++++++++++++++++++---
+ release/src/router/www/SL.dict        |  3 +++
+ release/src/router/www/SV.dict        |  3 +++
+ release/src/router/www/TH.dict        |  3 +++
+ release/src/router/www/TR.dict        |  3 +++
+ release/src/router/www/TW.dict        |  3 +++
+ release/src/router/www/UK.dict        |  3 +++
+ 28 files changed, 120 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 8b852123d99..46450c5b2d0 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -5523,10 +5523,10 @@ ifneq ($(NO_MKTOOLS),y)
+ #	install -D e2fsprogs/misc/tune2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/tune2fs
+ 	ln -sf mke2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/mkfs.ext2
+ 	ln -sf mke2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/mkfs.ext3
+-ifeq ($(RTCONFIG_EXT4FS),y)
++# reaper v2.6.8: same as the fsck.ext4 note above - mke2fs handles ext4, the
++# link was only ever gated on RTCONFIG_EXT4FS (hard-set n).
+ 	ln -sf mke2fs $(INSTALLDIR)/e2fsprogs/usr/sbin/mkfs.ext4
+ endif
+-endif
+ else ifeq ($(RTCONFIG_EXT4FS),y)
+ 	install -D e2fsprogs/e2fsck/e2fsck $(INSTALLDIR)/e2fsprogs/usr/sbin/fsck.ext4
+ ifneq ($(NO_MKTOOLS),y)
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index f4719312ff2..04d2a8444c1 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -4738,6 +4738,16 @@ static void start_diskformat(char *port_path)
+ 		char *tntfs_cmd[] = {"mkntfs", "-F", "-L", disk_label, "-v", devpath, NULL };
+ 		char *thfsplus_cmd[] = { "newfs_hfs", "-v", disk_label, devpath, NULL };
+ #endif
++		/* reaper v2.6.8: ext2 / ext3 / ext4. e2fsprogs' mke2fs ships in the
++		 * image (its default profile is compiled in, so -t works without an
++		 * /etc/mke2fs.conf) and the mount path already handles all three
++		 * (ext4 driver, CONFIG_EXT4_USE_FOR_EXT2). -F: a whole device, not a
++		 * partition, same as the Tuxera tools above. -m 1: one percent
++		 * reserved for root instead of five - this is a data disk. Label max
++		 * is 16 for ext; the page caps it at 11 (the FAT limit), within that. */
++		char *ext2_cmd[] = { "mke2fs", "-F", "-t", "ext2", "-m", "1", "-L", disk_label, devpath, NULL };
++		char *ext3_cmd[] = { "mke2fs", "-F", "-t", "ext3", "-m", "1", "-L", disk_label, devpath, NULL };
++		char *ext4_cmd[] = { "mke2fs", "-F", "-t", "ext4", "-m", "1", "-L", disk_label, devpath, NULL };
+ 		// format partition.
+ 		snprintf(devpath, sizeof(devpath), "/dev/%s", di->device);
+ 		dbg("disk_format: prepare device %s ...\n", di->device);
+@@ -4764,6 +4774,16 @@ static void start_diskformat(char *port_path)
+ 		}
+ 		else
+ #endif
++		if (!strcmp(disk_system, "ext4") && f_exists("/usr/sbin/mke2fs")) {
++			cmd = ext4_cmd;
++		}
++		else if (!strcmp(disk_system, "ext3") && f_exists("/usr/sbin/mke2fs")) {
++			cmd = ext3_cmd;
++		}
++		else if (!strcmp(disk_system, "ext2") && f_exists("/usr/sbin/mke2fs")) {
++			cmd = ext2_cmd;
++		}
++		else
+ 		{
+ 			dbg("disk_format: Can't format [%s] as filesystem [%s] w/o tool.\n", devpath, disk_system);
+ 			logmessage("disk_format", "Can't format %s as filesystem %s w/o tool.", devpath, disk_system);
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index fabe827a65f..bb2f4b4db6a 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 2486ee4889a..7a58b540501 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index f8cbaae02d3..a21ebf1b9c2 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index 3e5400bed2b..da11875993b 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index e514746a085..84514e6442c 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index d4fb689e12b..1d2e3c2c243 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 3de85818af3..e7990f9aa8f 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index ee4ea66d6c1..a48e07832e6 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 49e81a5f1d6..17a5c96c892 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 47b41f97ffc..6216b314c5f 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 9090465459b..8f2cf53a740 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 303a057446b..2861aba2428 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index d62bab86bb9..811c894a227 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 5a58bf5410c..f872cafc030 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 04031142798..d309a768c6d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 7206272f2c3..a4956cf6a11 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index d1eff70f7c9..9892f7dfcd4 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 27ab7c99fe8..17d745d5579 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 966770545c1..22beb99de92 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/Reaper_USB.asp b/release/src/router/www/Reaper_USB.asp
+index a9000dc18bc..ac484d19a1c 100644
+--- a/release/src/router/www/Reaper_USB.asp
++++ b/release/src/router/www/Reaper_USB.asp
+@@ -63,6 +63,7 @@ h1,h2{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+ .fmtrow{display:none;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
+ .fmtrow select,.fmtrow input{background:#1c1c21;border:1px solid rgba(255,255,255,.14);border-radius:6px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
+ .fmtrow .flbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--steel)}
++.fmtrow .fshint{flex-basis:100%;font-size:11.3px;color:var(--steel);display:none}
+ </style>
+ </head>
+ <body>
+@@ -285,9 +286,15 @@ function renderDisks(){
+         '<div class="dkbar"><i style="width:' + pct + '%"></i></div>' +
+         '<span class="dkuse">' + fmtBytes(pu * 1024) + ' / ' + fmtBytes(ps * 1024) + '</span></div>';
+     });
+-    var fsOpts = '<option value="tfat">FAT32</option>';
+-    if(FS_NTFS) fsOpts += '<option value="ntfs">NTFS</option>';
+-    if(FS_HFS)  fsOpts += '<option value="hfs">HFS+</option>';
++    /* v2.6.8: ext4/ext3/ext2 (mke2fs ships in the image). Field fix in the
++       same change: this posted "ntfs"/"hfs" where rc/usb.c only accepts the
++       Tuxera names "tntfs"/"thfsplus" (see device-map/disk_format.asp), so
++       NTFS and HFS+ formatting from this page had silently done nothing -
++       the log said "w/o tool" and the disk was re-mounted untouched. */
++    var fsOpts = '<option value="tfat">FAT32</option>' +
++      '<option value="ext4">ext4</option><option value="ext3">ext3</option><option value="ext2">ext2</option>';
++    if(FS_NTFS) fsOpts += '<option value="tntfs">NTFS</option>';
++    if(FS_HFS)  fsOpts += '<option value="thfsplus">HFS+</option>';
+     out += '<div class="dk">' +
+       '<div class="dkhead"><span class="dkname">' + esc(name) + '</span>' +
+       '<span class="dkport">USB ' + esc(port) + '</span>' +
+@@ -304,6 +311,7 @@ function renderDisks(){
+       '<span class="flbl">' + esc(`<#RDST_47#>`) + '</span><input id="dklb_' + esc(port) + '" maxlength="11" value="USBDISK">' +
+       '<button class="btn2 danger" onclick="dkFormat(\'' + esc(port) + '\')">' + esc(`<#CTL_format#>`) + '</button>' +
+       '<button class="btn2" onclick="dkFmtRow(\'' + esc(port) + '\')">' + esc(`<#CTL_Cancel#>`) + '</button>' +
++      '<span class="note fshint" id="dkhint_' + esc(port) + '"></span>' +
+       '</div>' +
+       '<div class="dkstat" id="dkstat_' + esc(port) + '"></div>' +
+       '<div class="dklog" id="dklog_' + esc(port) + '"></div>' +
+@@ -324,6 +332,18 @@ function renderDisks(){
+ function dkFmtRow(port){
+   var r = document.getElementById('dkfmt_' + port);
+   if(r) r.style.display = (r.style.display === 'flex') ? 'none' : 'flex';
++  var s = document.getElementById('dkfs_' + port);
++  if(s && !s._hinted){ s._hinted = 1; s.onchange = function(){ dkFsHint(port); }; dkFsHint(port); }
++}
++/* which filesystem for what: say it next to the selector, not in a guide */
++function dkFsHint(port){
++  var s = document.getElementById('dkfs_' + port), h = document.getElementById('dkhint_' + port);
++  if(!s || !h) return;
++  var v = s.value, t = '';
++  if(v === 'ext4') t = `<#RDST_65#>`;
++  else if(v === 'ext3' || v === 'ext2') t = `<#RDST_66#>`;
++  else if(v === 'tfat') t = `<#RDST_67#>`;
++  h.textContent = t; h.style.display = t ? 'block' : 'none';
+ }
+ 
+ function boot(){ renderDisks(); loadStore(); }
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index a161a581764..0f5ebdd210e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 6cb98d6aa13..0bbc3a824b5 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 81120a03b44..78a39e7ac76 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index 3f1ae49b2cc..291808db65f 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 4ff5ee022ff..af15e66b4ab 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index d09f6a7d0a8..fc3eba922fd 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -6816,3 +6816,6 @@ RVR_57=Rules go live when you apply and are reverted automatically unless you ke
+ RVR_58=IPv6 is covered: a destination list matches its IPv6 addresses and a MAC rule follows the device on both families. If the chosen tunnel carries no IPv6, the selected IPv6 traffic is blocked rather than leaked around it.
+ RABT_42=series as of
+ RWDN_89=Prefixes loaded:
++RDST_65=ext4 - best choice for a disk that stays on the router (journaled, fast, large files). Not readable by Windows or macOS without extra software.
++RDST_66=ext3 / ext2 - older Linux formats. Pick ext4 unless something you own needs these.
++RDST_67=FAT32 - readable everywhere, but no file larger than 4 GB and no journal; use it for a disk you move between devices.
+-- 
+2.25.1
+

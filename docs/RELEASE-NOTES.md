@@ -1,13 +1,13 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.2.3** <!--@treever--> — `3006.102.8_Reaper_v3.2.3`. **Locked Settings cells say why, four-radio fixes, Warden and boot efficiency.** Every greyed control on the Wireless › Settings tab names its reason on hover; the four-radio tester's fixes land (numeric box width, the shared auto-channel options counted once, Extension Channel offering only real sidebands, the Fragmentation help) and *Set AP Isolated* moves to where isolation actually lives, the Network menu. Warden arms with the first firewall build instead of inside the boot sequence, init's idle wake sources are fixed, and four boot waits become polls. Built and verified locally as an RT-BE96U MCP test image before the cut. The series stands at **698 patches** (0695–0698 for v3.2.3); the OpenSSL 3.5 source and the vendor blob pair ship beside it as hash-pinned archives. |
-| **Newest published** | **v2.8.8** <!--@pubver--> (2026-08-28 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
-| **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
-| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), and from v3.1.4 the **GT-BE19000**, which builds and passes verification and publishes as a prerelease. |
+| **Current rung** | **v3.6.2** <!--@treever--> — `3006.102.10_Reaper_v3.6.2`. **RT-BE86U keeps its 5 GHz radio after a Guest Network Pro save; Wallguard and Dreadwatch take an API key inside the source address (`$APIkey`); a source with a header key no longer follows redirects; Wallguard's "Add a source" drops the abuse.ch templates; a stricter MAC check; the Surfshark sign-in handlers are off.** Everything in v3.6.1 is included. See [`CHANGELOG.md`](CHANGELOG.md#v362--rt-be86u-keeps-5-ghz-after-a-guest-network-pro-save-api-keys-inside-a-source-address-review-fixes). |
+| **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
+| **Base** | Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585 (upstream RMerl/asuswrt-merlin.ng, commit `ca72a61f8bc`) from v3.6.0 for the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro; 3006.102.8 before. The GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro stay on 3006.102.8 (built from the `Dev-102.8` branch) until ASUS publishes a 102_40585-era GPL for them |
+| **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
 | **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6 and **v2.8.8** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
 | **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
@@ -19,6 +19,542 @@
 > [`GPL-MERGE.md`](GPL-MERGE.md).
 
 ---
+
+## What's new in v3.4.8 — Dreadwatch, Security Review watch rules, the latency and loss chart
+
+**Dreadwatch (off by default).** Warden's threat-domain blocking has its own page, **Warden › Dreadwatch**,
+and now shows what it did: how many lookups it blocked, per feed, which names and which devices, and the
+most recent blocked lookups. The router's resolver records only the lookups it blocks — never ordinary ones —
+and the counts survive reboots. A **Test now** button proves the list is in force, and a coverage card says
+whether devices with their own DNS or Firefox's DNS-over-HTTPS can get around it. Warden must be on; its
+address feeds and countries can stay empty.
+
+**Security Review you can tune.** Watch rules decide what is hashed, what is only checked for existence and
+what is ignored, so files an add-on rewrites every hour stop filling the list. Each row can be accepted on its
+own, or turned into a rule with one click. Every acceptance and rules change is logged — on the card, in the
+system log and in `/jffs` — with who did it and what it covered. The rules survive firmware updates and travel
+with a settings backup.
+
+**Latency and loss chart.** With the latency probe on, the Traffic Analyzer draws latency and packet loss in
+their own chart under WAN throughput, on the live view as well as the history windows, each on its own axis.
+
+**Security fixes.** A full review of v3.4.7 found no unauthenticated way in at factory defaults; the one medium
+finding (in the opt-in IPv6 device names) and five low ones are fixed. A device held by Gatekeeper can no
+longer look names up through the router — every name points at the router, so the sign-in sheet still appears.
+Files that older firmware left writable by every user under `/jffs` (among them the SSH authorized keys and the
+VPN keys) lose that permission at every boot, and the Security Review lists any that gets it back. Detail in
+[`REAPER-FIXES.md`](REAPER-FIXES.md).
+
+**Smaller changes.** The abuse.ch feed hosts' addresses are added to Warden's whitelist once (removable), so a
+country block can never stop the router fetching its own lists; Diagnostics v1.3.45.
+
+## What's new in v3.4.7 — security review, threat domains, login watch
+
+**Security review (off by default).** On Firewall › Status you can switch on a review that watches the
+things router malware changes to survive: scripts and configuration files under `/jffs`, SSH keys, add-on
+files, cron entries, and the settings that expose the router to the internet. Press **Accept current state
+as baseline** once; from then on anything added, changed or removed is listed on that card, logged once, and
+shown on the dashboard (an amber bar and the Security Review row on the Security Posture card) until you
+accept the new state. Nothing is undone and no failure is declared — most changes are your own. After a
+reboot the first check can take up to 10 minutes. The same card lists bursts of failed SSH or web logins
+(ten or more from one source in five minutes). This is detection, not a wall: anyone with your admin login
+can accept a baseline, and every acceptance is logged.
+
+**Warden threat domains (off by default).** Warden can now block by name as well as by address: the
+URLhaus and ThreatFox lists from abuse.ch become names that every network on the router answers with
+"no such domain". Lists refresh with the nightly update, keep the previous download if a fetch fails, never
+block the feed hosts, your NTP, DDNS or DNS-over-TLS names, and you can list exemptions. Only devices that
+resolve through the router are covered.
+
+**SSH over IPv6 from the internet is rate-limited.** The stock brute-force guard only ever covered IPv4;
+with SSH open to the internet and IPv6 on, a sixth new connection from one /64 inside a minute is now
+dropped. No setting; LAN access is never limited.
+
+**Long-term storage on one USB volume.** A disk with two partitions could end up with history on both.
+The Storage page now shows which volume holds Reaper's history and keeps it there; a box upgraded with
+history already on a disk adopts the right volume by itself.
+
+**Smaller fixes.** Devices behind an AiMesh node show the right connection and go offline promptly, and the
+Devices page refreshes on its own; the Traffic Analyzer's latency and loss tiles stay put and the page says
+when the collector is off; the Firmware page no longer badges every mesh node "Different version"; the
+AiMesh channel fit treats an unknown DFS status as DFS and keeps a 160 MHz node's backhaul on a channel it
+can hold; Warden's country-list host is whitelisted once so the router's own downloads are never blocked;
+the front-chain watchdog names the rule it found; Diagnostics v1.3.41.
+
+## What's new in v3.4.6 — the channel picker follows the AiMesh nodes, portal passcodes, WAN link reset
+
+**AiMesh channel fit.** The 5 GHz channel picker stays on channels every mesh node can use; a radio found
+outside the plan is moved back, and the controller holds still while a node joins. On by default, inert
+without a node; switch on the Wireless page.
+
+**Guest portal passcodes.** A passcode of 16 or more characters could never match; the field now stops at
+15 and a longer stored value shows a hint.
+
+**10G fibre ONTs.** The WAN port is power-cycled at switch init so the link renegotiates before
+Energy-Efficient Ethernet goes off (ASUS's fix, via Asuswrt-Merlin 3006.102.10), plus the other hardening
+carried from that release.
+
+## What's new in v3.4.5 — Reaper routers as AiMesh nodes, mode changes in Reaper
+
+**A Reaper router as an AiMesh node.** A factory-fresh Reaper router could not be added to a mesh. Reaper
+keeps WPS switched off, and that also blocked the one WPS exchange a new node uses to receive the mesh's
+settings. The router now turns WPS on for that exchange only, while it is joining; your WPS setting stays
+off.
+
+**Changing the operation mode.** Switching to Access Point, Media Bridge or back to Router now runs a
+Reaper page instead of ASUS's setup wizard, and saves the same settings the wizard would. The MLO page's
+"Get started" button opens Reaper's Wireless settings. Repeater mode still uses the ASUS wizard.
+
+**QoS page.** The engine cards use two colours: green for what an engine does, amber for what it lacks.
+
+## What's new in v3.4.4 — AiMesh with a Reaper main router, cleaner Wi-Fi logs
+
+**AiMesh with a Reaper main router.** Upgrading the mesh from a Reaper main router could flash and reboot
+the main router before the nodes had their image, and nodes showed a garbled version. The router now
+follows AiMesh's own upgrade steps, nodes report the version correctly, and the firmware page can check
+and upgrade nodes again. On a router that has not finished setup, the AiMesh page explains that AiMesh
+starts once setup is done and links to it.
+
+**Cleaner Wi-Fi logs.** Two kinds of log lines were noise: `WLC_SCB_DEAUTHORIZE error (-30)` after a
+device left, and `RADIUS: starting accounting session` on every connection although RADIUS is not used.
+Neither meant anything was wrong, and both are gone.
+
+**Fewer restarts.** A USB disk with several partitions no longer restarts file sharing and the media
+server once per partition, and file sharing no longer restarts (dropping open files) every time the
+internet connection is renewed.
+
+**Smaller fixes.** The QoS page's engine cards describe each engine correctly, the header tooltip says
+what the System Log really holds, and Diagnostics v1.3.39 reports DNS Director per network.
+
+## What's new in v3.4.3 — dropped packets on IPv6 DNS-over-TLS fixed, radios no longer lost on a network restart
+
+**Dropped packets with IPv6 DNS-over-TLS.** If you used DNS-over-TLS with an IPv6 server through a 6in4
+tunnel, the router's network hardware dropped some of those packets and the log filled with
+`exceed max_sg_array 4` lines. The kernel now reshapes those packets before the hardware sees them. If you
+added the `max_skb_frags` workaround to `services-start`, remove it after this upgrade.
+
+**5 GHz and 6 GHz stay up through a network restart.** With Dynamic preamble puncturing on, changing an IPv6
+or LAN setting could crash the 5 GHz and 6 GHz radios: they looked enabled but broadcast nothing, every device
+fell back to 2.4 GHz, and only a power cycle brought them back. Reaper now pauses its radio monitors before any
+network restart, so the radios survive it.
+
+**Diagnostics v1.3.38** shows both: the hardware cap and its counters, DNS-over-TLS servers by family, a radio
+whose firmware is down, and any radio crash with the restart that preceded it.
+
+## What's new in v3.4.2 — the TCP-load hang fixed, a fixed WAN port at factory, the stock wizard closed, lldpd and OpenVPN security fixes
+
+This rung replaces the withdrawn v3.4.0 beta and includes everything in it.
+
+**The hang is fixed.** v3.4.0 could freeze or reboot under heavy TCP load because one of its kernel security
+fixes could deadlock on its own timer. That path now carries the guard the upstream kernel has.
+
+**Your WAN port stays yours.** A new or factory-reset router used to find its internet port by briefly joining
+every port to the LAN. The factory default is now the port labelled WAN, so the ISP port never becomes a LAN
+port; Auto-detect is still there on the WAN Ports page if you want it. An upgrade keeps whatever you chose.
+
+**Quieter DNS defaults.** Device names across networks, IPv6 device names and the LAN name resolution check
+now start switched off, like the rest of the DNS Failover page. Each is one click to turn on; an upgrade keeps
+your settings.
+
+**No more stock setup wizard.** Every remaining way into ASUS's first-run wizard is closed; a factory-fresh
+router goes straight to the login and the Dashboard. The one window Reaper keeps - adding an AiMesh node - now
+looks like the rest of Reaper and reads clearly in all 25 languages.
+
+**The clock is right from the first boot.** In a zone with daylight saving, the setup page now writes the
+correct DST rule for the zone you pick; before, a fresh router could run an hour behind from October.
+
+**Security fixes:** lldpd (the daemon AiMesh uses for wired topology) could be crashed by a crafted frame from
+the LAN (CVE-2026-46433); OpenVPN carries the 2.7.8 fixes (CVE-2026-88964, CVE-2026-84790); Samba's private
+directory is no longer world-writable.
+
+**Also:** IPv6 device names no longer flush the DNS cache every few minutes; Diagnostics v1.3.37 redacts IPv6
+prefixes, client names and domains more thoroughly; a boot without internet can write its incident bundle
+before the clock syncs; the LAN name check no longer slows its own cadence while an upstream is silent.
+
+## What's new in v3.4.0 — SMB login works on the first start, the LAN name check, the header tooltip on every page, five kernel CVE fixes
+
+**Shared folders: logging in works the first time.** On every boot - or the moment you switched the file server
+on - the router's SMB password list was created empty, so Windows and every other client was refused until
+something restarted Samba. Fixed: the accounts are enrolled before the server starts. If you had been working
+around it with a restart, there is nothing to undo.
+
+**The Internet status tells you when your devices cannot resolve names.** The router now checks, once a minute,
+whether a device on your LAN can look up a name the way your devices do. While that fails, the Internet dot and
+word on the Dashboard turn amber and a tooltip explains why (which servers went silent, for how long). Hover,
+tap or focus the WAN pill or the Internet card. The check is on by default; the switch and the probe domain are
+on the DNS Failover page, and the Diagnostics bundle reports it.
+
+**That tooltip is on every page now, not just the Dashboard.** The header on every other page shows the same box,
+the same readings and the same colours; an AP, repeater or bridge shows its mode there instead of a false
+"Disconnected".
+
+**Five kernel security fixes** (CVE-2023-52881, CVE-2024-47684, CVE-2024-50154, CVE-2023-6932, CVE-2024-50299),
+all low severity on this platform.
+
+**Also:** large host-list pastes on the Firewall and Policy Routing pages save correctly (they used to overflow
+the request and silently keep rows the router never stored); renaming the router login no longer stops the
+scheduled jobs until the next reboot; the navigation icons match between the Dashboard and the other pages;
+Diagnostics v1.3.34.
+
+## What's new in v3.3.9 — hardware QoS never shapes a shared LAN trunk, the ZenWiFi client list fills, one networkmap build on every model
+
+**GT-BE98 and GT-BE98 Pro owners: v3.3.8 could make your main router unusable; v3.3.9 fixes it.** If your
+internet cable is in the 2.5G WAN/LAN-1 jack and Hardware QoS is on, v3.3.8 applied the upload shaper to the
+switch that also carries LAN ports 2-4 and a wired AiMesh node: very high CPU, a crawling GUI, no internet, a
+node that would not rejoin. Reverting to v3.3.6 cured it, and so does v3.3.9: hardware QoS never shapes a port
+that also carries your LAN. On that jack it stays off (the QoS page says so); move the cable to the 10G WAN
+port to use hardware QoS, or use a software engine. Confirmed by the reporter on test images.
+
+**ZenWiFi BQ16 / BQ16 Pro: the client list works.** The Dashboard client counts, the stock client list and the
+AiMesh topology's per-node counts were empty on these two models since their first build (the Devices page
+was always right). The router read the client tracker's table with the wrong layout; it now matches.
+
+**GT-BE19000:** the clean room now builds it with the same client-tracker binary as every other model, so its
+client list will populate once a unit runs in router mode.
+
+## What's new in v3.3.8 — a kernel TCP race fixed, no world-writable files from rc, Traffic Analyzer tables to 50 rows, the sibling builds link again
+
+**This is the first image with the v3.3.7 changes.** The v3.3.7 build failed on four models and on every
+image without the AI Advisor, so there are no v3.3.7 images; everything listed under v3.3.7 below arrives
+with v3.3.8.
+
+**A kernel security fix (CVE-2026-43198).** A race when an IPv4 device connects to a router service that
+listens on both IPv4 and IPv6 could let the kernel use a connection before it was fully set up.
+
+**Files the router's services create are no longer writable by every user.** Until now they were, which let
+a non-root service change a file before the router read it back. If you run an add-on that writes into such a
+file as a non-root user, it now has to set its own permissions.
+
+**Traffic Analyzer.** Top Devices and Top Talkers each have a 10 / 20 / 30 / 50 rows selector, remembered in
+your browser, and the tables keep their layout as rows come and go.
+
+
+## What's new in v3.3.7 — IPv6 across the firmware, names across networks, a private /tmp, the app installer removed
+
+**IPv6 works throughout.** If your connection has IPv6 (native or a tunnel), the Dashboard, Devices,
+Connections, Traffic Analyzer, Gatekeeper, Service Intercept and the watchdog now see and handle it.
+The Dashboard's Internet card shows your IPv6 address as soon as it comes up, without a reload, and the
+client list shows each device's IPv6 address.
+
+**Device names across networks.** A DNS filter or log on one of your VLANs (AdGuard, Pi-hole) now sees
+main-LAN devices by name instead of by address, and the other way round - including devices that talk
+over IPv6. Guest networks are never included. Both are switches on the DNS Failover page, on by default.
+
+**DNS failover handles dual-stack resolvers.** A LAN DNS server with both an IPv4 and an IPv6 address
+is checked on both, and a face that stops answering is set aside on its own.
+
+**A firewall-wiping bug is gone.** Every time the dynamic DNS client stopped (each internet reconnect,
+each DDNS retry), a stock routine rebuilt the firewall from an old copy and silently dropped guest
+isolation, Gatekeeper, Warden and your rules. It no longer does.
+
+**Hardware QoS works on PPPoE.** On a PPPoE (or PPTP/L2TP) internet connection, Hardware QoS sorted
+traffic into its classes but never applied the upload limit, so nothing was actually prioritised. It
+now shapes the physical internet port. Set the upload speed a little below what your line delivers.
+
+**Security.** Your dynamic-DNS password no longer appears in the system log. The router's temporary
+files are now private to the router itself, so a compromised service cannot tamper with them. The ASUS
+app installer for USB add-ons (Download Master and similar) is removed: it downloaded over an
+unencrypted connection, and nothing else on the USB Application page changes. Site Survey exports open
+safely in a spreadsheet.
+
+Also: the Firewall page's Apply responds to the first click, the Devices page no longer cuts off its
+last column, Rule Status never uses a real device's address as a test address, and the diagnostics
+report covers all of the above.
+
+
+## What's new in v3.3.6 — the WAN port stays out of the LAN, WAN Ports replaces the Dual WAN tab, a quieter Traffic Analyzer, real Site Survey security names
+
+**Your internet port stays out of your local network.** With the WAN port on Auto (the factory
+setting), the router used to find the internet port by joining the candidate ports to your local
+network - at every boot and every time the internet link dropped - for about half a minute each time.
+v3.3.6 remembers the port once it has found it and never joins it to the local network again. If you
+move the cable, pick the new port or press **Detect again**.
+
+**WAN > WAN Ports** replaces the Dual WAN tab. It shows which port carries your internet connection,
+says plainly that Auto searches several ports even with Dual WAN off, and holds everything the Dual WAN
+tab held. It saves exactly what the old tab saved.
+
+**Traffic Analyzer no longer loads the router on a busy network** (for example a device holding
+thousands of connections open): it reads the connection table at a pace set by how long the read takes.
+
+**Site Survey** names each network's security the way your phone does (WPA2-Personal,
+WPA2/WPA3-Personal, WPA2-Enterprise ...) instead of showing many as WEP, says "0 networks" for an empty
+band instead of a refused scan, and keeps its column headings in view while you scroll.
+
+Also: three fixes from the 2026-10-06 security audit (a WireGuard client file needs a login, the name
+map listens to your LAN only, strongSwan 6.0.6 security fixes) and a smoother Flow Explorer detail
+panel.
+
+
+## What's new in v3.3.5 — an update keeps the DTIM Interval you set
+
+**Your DTIM Interval is yours again.** Updating to v3.3.4 from an earlier Reaper reset the DTIM
+Interval to 1 on every radio, even when you had set a different value (for example 3, which
+Apple recommends for battery life). v3.3.5 removes that: a firmware update never changes the DTIM
+Interval you have. A new or factory-reset router still starts at 1.
+
+If you ran v3.3.4, check Wireless > Wireless Settings. The system log line "DTIM interval set to
+1 ... (was N)" shows the value you had. Everything else in v3.3.5 is the same as v3.3.4, whose
+prerelease images have been withdrawn.
+
+
+## What's new in v3.3.4 — a real Site Survey, destination names in the Flow Explorer, Policy Routing rebuilds without a gap, the ZenWiFi BQ16 Pro joins
+
+**A real Site Survey.** Network Tools > WiFi Site Survey now lists every network each radio can
+hear, not just the first few channels, and tells you what each radio did: how many networks it
+found, or why it found none. Neighbouring networks are shown as one card per channel, with your
+router's channel marked. A 5 GHz radio on a radar channel cannot scan where it is; the new **Scan
+with channel move** button briefly moves it to a channel that can scan, lists the band, and moves it
+back. Its clients drop for the scan, and you confirm before it starts.
+
+**Names in the Flow Explorer.** System Log > Connections now shows the name a device looked up
+(for example `video.example.com`) above the address it connected to. The names come from the DNS
+answers your devices already receive; nothing extra is looked up. A **Names** switch on the page
+turns the feature off and deletes what was learned. In Advanced view the detail panel now follows
+you down the list.
+
+**Steadier connections.** Applying a Policy Routing change no longer drops traffic for a moment
+while the rules are rebuilt. A brief ISP outage no longer makes the router switch DNS servers back
+and forth. A router whose clock was already right at boot now reports it as synced, so VPN clients,
+scheduled jobs and add-ons start on time instead of waiting twenty minutes or more.
+
+**Under the hood.** The firewall checks its own rules and restores them if something changes them
+behind its back; the Diagnostics report reads a boot that rotated out of the live log and flags a
+clock that never synced; a stray file that could never run on this router is gone from the image;
+the DTIM Interval defaults to 1 on every radio; the Rule Status page now checks that LAN
+traffic leaves with the router's address; two misleading boot log lines are gone; the Wireless
+Settings schedule grid opens next to the row you clicked; the firmware page no longer shows buttons
+that do nothing; 94 more interface strings are translated in all 25 languages.
+
+**Known issue: check your DTIM Interval after updating.** The first boot of v3.3.4 over an earlier
+Reaper sets the DTIM Interval to 1 on every radio, replacing a value you chose (for example 3,
+which Apple recommends for battery life). The system log line "DTIM interval set to 1 ... (was N)"
+shows the old value. Set it again under Wireless > Wireless Settings; it is not changed after that.
+v3.3.5 removes this, and the v3.3.4 prerelease images were withdrawn.
+
+**New model: ZenWiFi BQ16 Pro** (BE30000). It builds and passes the same verification as the other
+models and publishes as a prerelease. No one has run it on hardware yet, so treat the first image
+as a test build.
+
+
+## What's new in v3.3.3 — USB volumes survive the boot order and a reboot, dnsmasq rides out a WAN re-home, client lists fill in Access Point mode, less background churn
+
+**USB drives at boot and reboot.** If a program on your USB drive is part of the LAN's DNS - an
+Entware setup whose dnsmasq log or config lives on the drive - the router no longer loses DNS and
+DHCP while the drive is still coming up at boot: the resolver starts without the missing file and
+is restarted with it once the drive is mounted. A drive whose first mount fails is tried again, a
+disk check that overruns is stopped cleanly instead of blocking the mount for good, and a reboot
+now stops the programs on the drive, turns off a swap file on it and unmounts it cleanly - the
+same fix v3.3.2 made for firmware flashes. A kernel safety that could turn a long stall on a slow
+USB disk into a silent reboot loop is held off through boot and every mount.
+
+**DNS during a WAN hiccup.** When the ISP link dropped and came back, the router's resolver could
+exit for about twenty seconds, taking LAN DNS and DHCP with it. It now rides the hiccup out.
+
+**Access Point mode.** On a router running as an access point, the Network page, Parental Controls
+and the QoS device pickers now list your clients; they were empty because those pages rely on
+DHCP data an access point does not have.
+
+**Snappier interface, quieter router.** The Diagnostics report no longer freezes the web interface
+while it is collected; the Warden page's status poll and the firewall rebuilds do far less work;
+the traffic collector spawns one process per query instead of four; a 230-line memory dump no
+longer lands in the system log on every boot. The dashboard's Security Posture card no longer cuts
+off its right column on a laptop-width window, the interface fits phone screens edge to edge, and
+the Warden list boxes stack on narrow screens.
+
+## What's new in v3.3.2 — a flash releases the USB volumes first, the setup box ends in the reboot screen, the ZenWiFi BQ16 joins
+
+**Firmware upgrades with a USB drive attached.** Upgrading used to unplug the USB drive in
+software while Entware, a dnsmasq writing its log to the drive and the traffic history were
+still using it. The unplug failed for about forty seconds, the router flashed anyway, and the
+drive came back dirty: on the next boot it mounted late, and anything that needed it at startup
+(an Entware-based DNS setup, for one) failed. A flash now stops those programs first, the way a
+normal reboot does - your `services-stop` script runs, then anything still using the drive is
+stopped - and unplugs a drive nothing is using. A router that has just been flashed also no
+longer refuses its first service restarts.
+
+**First boot.** The setup box shown after a factory reset no longer lets a browser's saved login
+fill the router password into the Wi-Fi password field. Nothing is filled in for you, the router
+login name is lowercase only, and the button now reads **Apply & Reboot**: after it, the page
+shows the same rebooting countdown as the Reboot button and returns to the login page when the
+router is back, instead of reloading itself while the router restarts.
+
+**New model: ZenWiFi BQ16 (BE25000).** The quad-band ZenWiFi BQ16 now builds from the same tree
+as the rest of the fleet, both variants. It is published only as a prerelease until a unit has
+run it; if you have one and can test, see the issue tracker.
+
+## What's new in v3.3.1 — a minimum channel width on Auto, one factory state, the setup box finishes the main network
+
+**Wireless.** A new per-radio switch on Wireless › Settings, **Minimum width on Auto**, keeps the
+automatic channel picker at 80 MHz or wider - "80/160 MHz" on 5 GHz, "80/160/320 MHz" on 6 GHz -
+instead of letting it narrow the whole channel to 40 or 20 MHz when part of it is busy. Those are
+the widths preamble puncturing works at, so the two pair: the picker keeps the wide channel and
+puncturing cuts the busy slice out of it, and the puncturing rows, locked on Auto bandwidth until
+now, open once the floor is on. Each client still uses what it supports within the width
+the radio is on. If the radio cannot hold it - after radar, or with no wide channel free - the floor
+is lifted for 30 minutes and re-arms by itself; the Settings cell says so. Off by default. Dynamic
+puncturing's confirmation scan now also uses the neighbouring networks it hears and each channel's
+noise and PHY error figures, and with a scan source an excluded slice is put back only after a scan
+agrees it is clean; the Wireless Quality card shows what the scan found. It now also watches the
+radio's own noise and error figures, which can reveal interference that never shows as busy
+time, and uses them to decide when a confirmation scan is worth running. After each change it
+checks whether your devices' speeds and retries got better or worse, and takes a slice back off
+if most of them got worse. A confirmation scan that loses a connected device stops all further
+scans on that radio, and the Active source no longer scans while the radio itself is busy. When
+the minimum width re-arms on a radio that is already wide, it no longer restarts the channel
+picker, so the channel stays put. A new **Interference mitigation** row exposes the radio driver's
+hardware adjacent-channel mitigation; in testing it did not improve speeds, so leave it on Driver
+default unless advised otherwise.
+
+**IPv6.** Stateful mode now also offers SLAAC, so devices without a DHCPv6 client (Android, most
+Linux VMs and containers) get an IPv6 address again. Devices that use DHCPv6 may now show a SLAAC
+address beside their lease.
+
+**DNS on a VLAN network.** A DNS server that lives on one of the router's VLAN (Guest Network Pro)
+networks and is set as the WAN DNS server is no longer routed out the WAN, which made every query
+to it time out.
+
+**First boot.** Every model now resets to the same state: admin/admin and open Wi-Fi, secured
+through the setup box. Units with a printed Wi-Fi key used to skip the box, which left the main
+network's card unclickable on the Network page. The box now reboots the router after saving (about
+three minutes) so the main network is created properly, and the Network page points to the box
+while it is missing.
+
+**Dual WAN.** The WAN pill at the top of every page follows the line that is carrying traffic after
+a fail-over, as the dashboard already did.
+
+**AiMesh in Access Point mode.** On a router set to Access Point, repeater or media-bridge mode, the
+AiMesh page's node cards showed no connected devices. They now list and count the devices on each
+node and on the router itself, from the same presence data the dashboard has used in those modes
+since v3.1.6. A router in normal routing mode is unchanged.
+
+## What's new in v3.3.0 — pppd, strongSwan and Tor security fixes, Gatekeeper and firewall restarts
+
+**Security.** pppd fixes CVE-2026-85495: a PPPoE peer on the WAN side could overrun a buffer before
+authentication by repeating a configuration option. If you connect over PPPoE, update. An MS-CHAP
+challenge that was too short is no longer read past its end. strongSwan takes the seven official
+patches from 2026-09-07 (certificate parsing and EAP identity binding) and Tor moves to 0.4.9.13;
+both are off unless you turned them on.
+
+**Gatekeeper.** Applying settings that restart the firewall (the System page, for one) while
+Gatekeeper was on could make two copies of Gatekeeper's rules collide. Its per-device rules came out
+in the wrong order and a VLAN network lost internet access for new connections until that network
+was restarted. Gatekeeper now waits for the firewall restart to finish.
+
+**Rule Status.** On a router blocking about 30 or more countries in Warden, the VPN-server and
+port-forward rows could show Unsuccessful because they were tested from an address the threat feed
+blocks. Only the report was wrong; real traffic was not affected.
+
+## What's new in v3.2.9 — OpenSSL 3.5.9, first-boot setup, Dual WAN backup, USB format
+
+**Security.** OpenSSL 3.5.9 fixes CVE-2026-84782 (High: a DTLS retransmission could disclose heap
+memory to the peer or crash) and five Low issues in CRL handling, QUIC and elliptic-curve timing.
+Also fixed: CVE-2023-52340 (forged IPv6 "packet too big" messages could fill the route cache and take
+IPv6 down) and CVE-2022-1304 (a crafted USB disk could crash the disk check).
+
+**First-boot setup box.** After a factory reset, setting up through the banner's box now leaves the
+main network usable on the Network page. Before, its card could not be opened until a guest network
+was added.
+
+**USB Format and Scan** act on the disk you picked (field report: Format did nothing), and a scan says
+when a FAT or exFAT disk cannot be checked.
+
+**Dual WAN.** When the backup line takes over, the Dashboard shows it as connected with its address,
+and the WAN LED lights red and white together (red alone while the backup is down).
+
+**Wireless.** Dynamic preamble puncturing no longer disturbs a radio restart (field report: a radio
+died until reboot). AiMesh "Ethernet Backhaul Mode" is renamed "Ethernet-Only Backhaul", which is
+what it does.
+
+**Firewall.** The rules engine refuses lists longer than it can apply instead of dropping the rest,
+and a save that fails for lack of space keeps your edits and the last good ruleset. Warden applies
+its rules in one batch. Rule Status now tests each rule from the zone it names.
+
+**Diagnostics** (v1.3.24) add roaming, scheduler, DFS and security settings and a warning when logs
+are kept in RAM while a USB disk is attached.
+
+## What's new in v3.2.8 — preamble puncturing, a Dual WAN that settles at boot, and add-ons find their menu again
+
+**Preamble puncturing (Wireless › Settings, 5 and 6 GHz, Wi-Fi 7 at 80 MHz or wider).** A radio can
+now exclude one slice of a wide channel from transmission and keep using the rest, instead of
+narrowing the whole channel because a neighbour sits inside it. Four modes per radio: **Off**
+(default), **Fixed channel**, **Follow channel** (survives automatic channel changes) and
+**Dynamic**. The slice applies live with no radio restart, the beacon advertises it, and Wi-Fi 6
+clients are narrowed by the driver where needed. Only the slices the driver accepts are offered;
+the primary is never punctured.
+
+**Dynamic mode** is a slow, conservative controller (`rpunctd`): it reads the radio's own
+carrier-sense counters without disturbing clients and switches a slice off only when it stays busy,
+the change is legal and the expected capacity gain is meaningful, then leaves it alone for the
+minimum interval. Sensitivity presets (Conservative by default, Balanced, Aggressive), three
+monitoring sources (Passive, plus optional short confirmation scans) and overrides for gain and hold.
+Every decision is one log line that says why; Wireless › Wireless Quality gains a card showing it.
+This is Reaper's own policy layer over the static control: Broadcom's dynamic puncturing is not in
+this SDK.
+
+**Add-ons.** Installers that register their page by editing the menu after a stock page (Skynet,
+MerlinAU, YazFi) now find that anchor again: the stock lines Reaper replaced are kept as hidden
+entries, and the add-on lands in the Addons section like every other. FlexQoS still cannot install:
+it requires Adaptive QoS, which Reaper does not carry.
+
+**Dual WAN settles at boot.** Switching lines restarts the line being left, and the stock watchdog
+allowed only about 6 s before the next switch while a LAN-port WAN needs 15–20 s to come back, so
+from boot the two lines could keep failing each other over. After a switch the next one now waits up
+to 30 s, ending as soon as the new line connects; a line that is really down still fails over.
+
+**WAN watchdog fixes.** Nine defects in the stock ASUS watchdog are fixed: a backup-line DNS check that
+could leave a stray copy of the watchdog running, a small leak on every check while on the backup, a
+ping target that could skip validation, and several bugs in the "no internet" redirect page's small
+web server, including idle connections that were never closed and could lock it up.
+
+**Firewall.** A rule placed ahead of Reaper's chains in FORWARD that matched only a port or an
+interface is no longer treated as safe; only a destination-specific rule is. Rule Status "Re-check
+now" runs in the background instead of stalling the admin pages.
+
+**Security.** strongSwan CVE-2026-78127, CVE-2026-78135 and CVE-2026-78133 (upstream 6.1.0 fixes; the
+IPsec server ships off) and kernel CVE-2026-90110 (inetpeer, reachable from the WAN).
+
+**Diagnostics** (v1.3.22, v1.3.23) report both puncturing modes, and for Dual WAN the mode, watchdog
+and probe settings, both units and the live default route, plus a finding when the log level is
+hiding the router's own WAN decisions; a hardware block names the SoC, clocks, board ID, LAN switch
+and radio chips.
+
+## What's new in v3.2.7 — Dual WAN fail-back fix
+
+**The primary WAN stays up after fail-back.** In Dual WAN fail-back mode, when the primary line
+recovered and the router switched back to it, a single slow check right after the switch was enough
+to fail over to the backup again and restart the primary connection. On PPPoE that showed as the
+primary WAN flapping until the backup cable was unplugged. The cause was a counter in the stock ASUS
+WAN watchdog that carried over from the fail-back wait; it is now cleared when the router returns to
+the primary. Failover itself is unchanged.
+
+## What's new in v3.2.6 — Asuswrt-Merlin 3006.102.9 carried
+
+**Upstream fixes and updates.** OpenVPN 2.7.7, amtm 7.0, Wireless Log fixes for Repeater and Media
+Bridge modes, and a System Log page that stops polling the router while auto-refresh is off, all from
+Asuswrt-Merlin 3006.102.9. Most of that release (OpenSSL 3.5, Tor with IPv6) was already in Reaper.
+
+**Current time zones.** The time-zone database was 2017 data. Places that changed their rules since
+(Mexico, Egypt, Greenland, Kazakhstan, Mongolia, Paraguay and others) now show the right local time
+wherever the router uses the database; US zones were already correct.
+
+**A weak OpenVPN server key is replaced, not used.** Diffie-Hellman parameters under 2048 bits are
+swapped for a built-in 2048-bit set. Before, 1024–2047-bit parameters were only warned about, and
+OpenSSL 3.5 can refuse them.
+
+## What's new in v3.2.5 — Samba and the Traffic Analyzer ship off
+
+**Nothing optional starts on its own.** A factory-reset or new router no longer runs an SMB file
+server the moment a disk is plugged in; turn sharing on under USB Application › Network Place. The
+Traffic Analyzer also starts off; switch it on from the Traffic page. An upgraded router keeps the
+settings it already has, so if sharing is on today and you do not use it, switch it off yourself.
+
+## What's new in v3.2.4 — a policy-routing rule to a WireGuard client brings the replies home
+
+**A source rule to a WireGuard client works.** Replies to a device routed through a WireGuard client
+went back into the tunnel instead of reaching the device, so the connection never completed.
+OpenVPN targets and VPN Director were unaffected. Replies now leave the policy-routing chain before
+its marks are restored and route normally. The reporter's confirmation on metal is still owed.
 
 ## What's new in v3.2.3 — locked Settings cells say why, four-radio fixes, Warden and boot efficiency
 
@@ -289,7 +825,7 @@ entries in code.
 
 ## What's new in v3.1.5 — the security review lands, and the routing target is an interface again
 
-The full account, item by item, is in [`CHANGELOG.md`](CHANGELOG.md#v315--the-routing-target-is-an-interface-again) and the
+The full account, item by item, is in [`CHANGELOG.md`](CHANGELOG.md#v315--the-policy-routing-target-column-and-a-sixteen-item-security-review) and the
 review record in [`REAPER-FIXES.md`](REAPER-FIXES.md). In short:
 
 - **Six inherited components fixed:** netatalk CVE-2022-43634 (present, contrary to the 08-30 check; `SECURITY.md` corrected),

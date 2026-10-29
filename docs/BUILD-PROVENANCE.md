@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v3.2.3** · 2026-09-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -20,18 +20,19 @@ re-checks every reproducible entry on each run.
 
 ```
   upstream base commit  ──(git am the published patches)──▶  source tree  ──(make)──▶  firmware image
-  3006.102.8-beta2                                          (tree hash)              (SHA-256, published)
-  a7ebfa133a
+  3006.102.10 (v3.6.0+)                                     (tree hash)              (SHA-256, published)
+  ca72a61f8bc
 ```
 
 Each link is pinned and independently checkable:
 
-1. **Base** — Asuswrt-Merlin `3006.102.8-beta2`, commit
-   `a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3`, from upstream
-   `RMerl/asuswrt-merlin.ng`. **This pin never moves.** Reaper changes ride the
-   [`patches/`](../patches) series; upstream carry-forwards (e.g. the Merlin
-   3006.102.8 update that became v2.1.2) are **cherry-picked, not rebased**, so
-   the base — and therefore this recipe — stays constant across releases.
+1. **Base** — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585), commit
+   `ca72a61f8bc5ef920e29d63d53d9864262208f0c`, from upstream
+   `RMerl/asuswrt-merlin.ng` (untagged upstream), from v3.6.0. Up to v3.5.0 the base was
+   `3006.102.8-beta2` (`a7ebfa133a`): the v3.6.0 cut rebased the stack and regenerated the
+   [`patches/`](../patches) series from the new base. Between rebases upstream carry-forwards
+   are **cherry-picked**, so the recipe stays constant; a release's own manifest entry names
+   the base its series applies to.
 2. **Patches** — the `patches/NNNN-*.patch` series, applied with
    `git am --keep-cr` (the `--keep-cr` matters: a few third-party files are
    CRLF and the series fails without it).
@@ -49,7 +50,7 @@ Each link is pinned and independently checkable:
 # 1. Get the pinned upstream base (includes the vendor blobs upstream ships)
 git clone https://github.com/RMerl/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
-git checkout a7ebfa133a          # 3006.102.8-beta2
+git checkout ca72a61f8bc         # 3006.102.10 (v3.6.0+; a7ebfa133a for v3.5.0 and older)
 
 # 2. Apply this repo's published patches for the release you want to verify
 #    (use the first <patch_count> patches from provenance/manifest.json)
@@ -69,7 +70,7 @@ git rev-parse HEAD:release/src/router
 #  -> must equal releases[].source_tree["release/src/router"] for that version
 
 # 4. Confirm the image you downloaded matches the published hash
-sha256sum RT-BE96U_3006_102.8_Reaper_<ver>_nand_squashfs.pkgtb
+sha256sum RT-BE96U_3006_102.10_Reaper_<ver>_nand_squashfs.pkgtb   # 3006_102.8 for v3.5.0 and older
 #  -> must equal releases[].images[].sha256
 ```
 
@@ -125,8 +126,8 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0698` <!--@patchcount--> (v3.2.3 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
-v2.8.8 <!--@pubver-->. The RT-BE86U /
+to `0867` <!--@patchcount--> (v3.6.2 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+v3.1.0 <!--@pubver-->. The RT-BE86U /
 RT-BE88U / GT-BE98 / GT-BE98 Pro images (published since v2.7.6) and, from v3.1.4,
 the GT-BE19000's are produced by
 porting the shared code onto each per-model branch (banner / target.mak / blob

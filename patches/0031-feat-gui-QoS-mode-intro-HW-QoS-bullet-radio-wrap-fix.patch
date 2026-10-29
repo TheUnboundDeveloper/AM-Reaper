@@ -1,0 +1,57 @@
+From 4e2e24f5c7aa9cbd3c7091917a4831ba06beee6e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 30 Jun 2026 05:56:58 -0400
+Subject: [PATCH] feat(gui): QoS mode intro + HW-QoS bullet/radio-wrap fix +
+ Smart Connect disclaimer
+
+QoS_EZQoS.asp:
+- add intro sentence above the QoS mode descriptions
+- add a Hardware QoS (Upload only) bullet to the mode list (hidden when unsupported)
+- keep the qos_type=10 radio glued to its label so the pair wraps to the next row together
+
+Advanced_Smart_Connect.asp:
+- show a band-steering disclaimer when Smart Connect is off (shared SSID -> device may
+  stay on a suboptimal band; set a device band preference or reconnect; separate SSIDs)
+- repeat the caveat in the disable confirmation dialog
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ release/src/router/www/Advanced_Smart_Connect.asp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Advanced_Smart_Connect.asp b/release/src/router/www/Advanced_Smart_Connect.asp
+index 8995f73b6e0..13778f8cd16 100644
+--- a/release/src/router/www/Advanced_Smart_Connect.asp
++++ b/release/src/router/www/Advanced_Smart_Connect.asp
+@@ -937,6 +937,9 @@ function setupSmartConnectToggle(){
+ 	else{
+ 		btn.value = 'Enable Smart Connect';
+ 		btn.title = 'Turn Smart Connect (band steering) back on for all radios';
++		// Surface the band-steering caveat while Smart Connect is off.
++		var disc = document.getElementById('scDisableDisclaimer');
++		if(disc) disc.style.display = '';
+ 		// Grey out the rule set: nothing on this page applies while Smart Connect is off.
+ 		var div = document.getElementById('bsd_steering_div');
+ 		if(div){
+@@ -950,7 +953,7 @@ function toggleSmartConnect(){
+ 	var setObj = {};
+ 
+ 	if(isSmartConnectEnabled()){
+-		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nWireless will restart.')){
++		if(!confirm('Disable Smart Connect?\n\nBand steering will be turned off and every Smart Connect control on this page is deactivated. Each radio (2.4 / 5 / 6 GHz) keeps broadcasting its current SSID independently.\n\nNote: if your radios share the same SSID, a device may stay on a less-than-optimal band (e.g. 2.4 GHz instead of 5 / 6 GHz). Set a preferred band on the device, or disconnect/reconnect to re-select; give each band its own SSID to make the choice explicit.\n\nWireless will restart.')){
+ 			return;
+ 		}
+ 		setObj['smart_connect_x'] = '0';
+@@ -1019,6 +1022,9 @@ function toggleSmartConnect(){
+ 			<div style="margin:10px 0 10px 5px;" class="splitLine"></div>
+ 			<div class="formfontdesc"><#smart_connect_hint#></div>
+ 			<div style="text-align:right;margin-top:-36px;padding-bottom:3px;"><input type="button" id="smartConnectToggle" class="button_gen" style="margin-right:8px;" value="Smart Connect" onClick="toggleSmartConnect();"><input type="button" class="button_gen" value="<#View_List#>" onClick="showClientlistModal()"></div>
++			<div id="scDisableDisclaimer" class="formfontdesc" style="display:none;color:#FFCC00;line-height:18px;margin:10px 5px;padding:8px 10px;border:1px solid #FFCC00;border-radius:4px;background:rgba(255,204,0,0.06);">
++				<b>Heads up &mdash; Smart Connect is off.</b> Band steering no longer moves your devices between the 2.4 / 5 / 6 GHz radios. If those radios share the same SSID, a device may stay connected to a less-than-optimal band (for example 2.4 GHz instead of 5 GHz or 6 GHz). Set a preferred band on the device itself if that option is available; if it is not, disconnect and reconnect to the Wi-Fi to let the device re-select the preferred band. To make the choice explicit, give each band its own separate SSID.
++			</div>
+ 			<div id="bsd_steering_div">
+ 				<table cellspacing="0" cellpadding="4" bordercolor="#6b8fa3" border="1" align="center" width="100%" class="FormTable" style="margin-top:10px">
+ 					<thead>
+-- 
+2.25.1
+

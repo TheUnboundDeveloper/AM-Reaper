@@ -1,0 +1,69 @@
+From 06cdfb338e5a648a3af286277df9055becf40e6e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 12:04:11 -0400
+Subject: [PATCH] www: LAN - a reservation's Host Name shows the device name
+ when it has none of its own
+
+Field report (owner and users): the host names in the DHCP manual
+assignment table were "wiped" by one of the last releases. Nothing was
+deleted. The stock page (gone since v3.4.9) showed each device's name
+from the client list beside its MAC, and a separate Host Name column
+(field 4 of dhcp_staticlist) that most people never filled; the native
+LAN page shows only that field, so the names seemed to vanish. They were
+still in custom_clientlist (Devices, Gatekeeper, the Gatekeeper export).
+
+Host Name = Name (owner): a reservation without its own host name now
+shows the device's name there in grey - the stock chain, nickname else
+the detected name, via ReaperNames (custom_clientlist seed + the live
+client list). A real host name still wins. Display only: nothing new is
+saved and the CSV export is unchanged.
+
+Checked in the shell (1920x1080, fabricated list): own host name shown
+plain; custom name and detected name grey; no name anywhere "-".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_LAN.asp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/Reaper_LAN.asp b/release/src/router/www/Reaper_LAN.asp
+index 76e6c8e8faf..b9716e655af 100644
+--- a/release/src/router/www/Reaper_LAN.asp
++++ b/release/src/router/www/Reaper_LAN.asp
+@@ -42,6 +42,7 @@
+ .note{display:none;font-size:12.5px;color:var(--amber);margin:6px 0 0;grid-column:1/-1}
+ .note a{color:var(--bone)}
+  .bwl-add input.host{width:170px}
++#restbody .dname{color:var(--steel)}
+ .bwl-add.bad input{border-color:var(--crimson)}
+ .csv{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+ .csv input[type=file]{display:none}
+@@ -365,15 +366,24 @@ section('p_res', 'dhcp', function(){
+   /* VPN Fusion policies bound to a reserved address (vpnc_dev_policy_list: activate>ip>dest>vpnc_idx>brif) */
+   F.vpnc_dev_policy_list.split('<').forEach(function(r){ var f = r.split('>'); if (f.length >= 4 && f[1]) POLICY_IPS[f[1]] = 1; });
+   resDraw();
++  ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ resDraw(); });
+ }, function(c){
+   c.dhcp_static_x = tog('t_static', NV.dhcp_static_x, '1', '0');
+   /* the list is re-serialised only once the user has edited it, so another writer's spelling is never "changed" */
+   c.dhcp_staticlist = RES_EDITED ? serRes(RES) : NV.dhcp_staticlist;
+ });
++/* 2026-10-28 (field report): the stock table showed each device's name beside its MAC, so with the host-name field
++   empty the native table read as names wiped. Host Name = Name (owner): a reservation without its own host name
++   shows the device's name (stock's chain: nickname, else the detected name) in grey. Display only - not saved. */
++function hostCell(r){
++  if (r.host) return hx(r.host);
++  var n = ReaperNames.byMac(r.mac, '');
++  return n ? '<span class="dname">' + hx(n) + '</span>' : '-';
++}
+ function resDraw(){
+   var h = '';
+   RES.slice().sort(function(a, b){ return ip2n(a.ip) - ip2n(b.ip); }).forEach(function(r){
+-    h += '<tr><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(r.ip) + '</td><td class="mono">' + hx(r.dns || '-') + '</td><td class="mono">' + hx(r.host || '-') +
++    h += '<tr><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(r.ip) + '</td><td class="mono">' + hx(r.dns || '-') + '</td><td class="mono">' + hostCell(r) +
+       '</td><td style="text-align:right;white-space:nowrap"><span class="link resedit" data-mac="' + hx(r.mac) + '">' + hx(`<#RLAN_33#>`) + '</span> <span class="bwldel" data-mac="' + hx(r.mac) + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
+   });
+   q('restbody').innerHTML = h || '<tr><td colspan="5" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
+-- 
+2.25.1
+

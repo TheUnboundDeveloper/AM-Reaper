@@ -1,0 +1,35 @@
+From 4ca12bbf29d2e6f94d85b3d6c0113531a2283693 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 9 Oct 2026 20:19:56 -0400
+Subject: [PATCH] rc: link the sibling prebuilt-compat shim again
+
+1df8e55262 dropped `OBJS += $(if $(wildcard reaper_chanlist_shim.c),...)` as dead
+(code audit 2026-10-07, B4). It is dead only on RT-BE96U: rc/reaper_chanlist_shim.c
+is supplied by the GT-BE98 overlay and the GT-BE19000, BQ16 and BQ16 Pro platform
+archives, and carries the stubs their closed rc objects lack (wl_scb,
+backup_eth_ob_log, is_wan_port_ext_switch). Without the line those four models
+fail to link rc - all eight of their v3.3.7 CI jobs died with undefined
+references to wl_scb (rc.c) and backup_eth_ob_log (watchdog.c).
+---
+ release/src/router/rc/Makefile | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 47ff2806422..f5204f44ad9 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -502,6 +502,11 @@ endif
+ 
+ ifeq ($(CONFIG_BCMWL5),y)
+ OBJS += init-broadcom.o wps-broadcom.o broadcom.o ate-broadcom.o
++# reaper: prebuilt-compat stubs (wl_scb, backup_eth_ob_log, is_wan_port_ext_switch) for the
++# siblings whose closed rc objects predate them - GT-BE98, GT-BE19000, BQ16, BQ16 Pro. The file
++# exists only on those trees (overlay or platform archive), never on RT-BE96U, so this line looks
++# dead from canon - it is not: without it those four fail to link rc (v3.3.7 CI, 2026-10-09).
++OBJS += $(if $(wildcard reaper_chanlist_shim.c),reaper_chanlist_shim.o)
+ ifeq ($(BUILD_NAME),$(filter $(BUILD_NAME),RP-AX56))
+ OBJS += rpmac.o
+ endif
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Contributor Dev Setup — RT-BE96U "reaper" hardened build
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 This is the **hard-won, known-good** setup for building and modifying this firmware. It exists because getting an Asuswrt-Merlin / Broadcom-HND tree to build is full of non-obvious traps; everything below is something that actually bit us. Follow it and you skip the trial-and-error.
 
@@ -8,7 +8,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 ## Ground rules (read first)
 
-- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The RT-BE96U is the hardware-validated model; the same tree also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** and **GT-BE19000** from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000`; the GT-BE19000 builds in a git worktree, see `build_gtbe19000.sh`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
+- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The RT-BE96U is the hardware-validated model; the 3006.102.10 tree (branch `Dev`) also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U** and **GT-BE98 Pro**, and the 3006.102.8 tree (branch `Dev-102.8`) the **GT-BE98**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**, each from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` / `bq16` / `bq16_pro`; the GT-BE19000, BQ16 and BQ16 Pro build in a git worktree, see `build_gtbe19000.sh`, `build_bq16.sh` and `build_bq16_pro.sh`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
 - **Never push.** All work stays on the local `be96u-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.
 - **Don't touch the blobs.** The Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, `hostapd`/`wpa_supplicant` Broadcom forks) are closed and driver-coupled. Harden the **open-source userspace** only; treat the blobs as documented residual risk.
 - **Legal:** the proprietary components (ASUS/Broadcom/Trend Micro/Tuxera) are licensed for ASUS hardware only — see [`README.proprietary`](README.proprietary). The GPL parts are GPL — publish changes if you redistribute.
@@ -23,7 +23,7 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    ```bash
    git clone https://github.com/RMerl/asuswrt-merlin.ng.git
    cd asuswrt-merlin.ng
-   git checkout 3006.102.8-beta2        # the base this fork was built on
+   git checkout ca72a61f8bc             # the base: Asuswrt-Merlin 3006.102.10 (untagged upstream)
    ```
    (Alternatively, ASUS's GPL release tarball for the RT-BE96U from <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 
@@ -44,8 +44,8 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    # building a sibling model? the vendor WLCSM blob pair (v3.1.8) is in
    # overlays/wlcsm-42015-blobs.tar.gz - copy libnvram.so and libwlcsm.so over that
    # model's router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies (CI does the same)
-   #   (plain `patch -p1` will NOT work: 4 patches carry git binary payloads —
-   #    fonts, logo, USB ring sprite — that `patch` cannot apply. Use git am.)
+   #   (plain `patch -p1` will NOT work: 18 patches carry git binary payloads —
+   #    fonts, logos, banners, sprites — that `patch` cannot apply. Use git am.)
    ```
    The patches touch only the shared open-source userspace (`release/src/router/{httpd,rc,shared,libovpn,snooper,urlfilterd,lltdc,wsdd2,infosvr,libcodb,…}`), so they apply cleanly to a stock upstream tree. **Making the tree be96u-only (removing the sibling-model artifacts) is optional and not required to build `rt-be96u`** — see [`../patches/README.md`](../patches/README.md).
 
@@ -157,7 +157,7 @@ cd /home/reaper/asuswrt-be96u/release/src-rt-5.04behnd.4916
 make rt-be96u            # NOTE: -j1 (see below)
 ```
 (For the sibling models, build the corresponding target from that model's branch —
-`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` — same recipe, same caveats.)
+`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` / `bq16` / `bq16_pro` — same recipe, same caveats.)
 
 The non-obvious parts:
 
@@ -179,10 +179,7 @@ The non-obvious parts:
 Format is **`.pkgtb`** (modern Broadcom NAND package), not the older `.trx`.
 
 ### Version label (`BUILDREV`)
-`release/src-rt/Makefile` defaults `BUILDREV` to `-reaper`, but it's `export`ed, so recursive sub-makes see it non-empty and flip to `-g<commit>`. Net effect: the image is labeled **`…_beta2-g<hash>`** matching the branch tip (which is great — it pins the exact commit). To force the `-reaper` brand instead, pass it on the command line:
-```bash
-make rt-be96u BUILDREV=-reaper
-```
+`release/src-rt/Makefile` defaults `BUILDREV` to **empty** and keeps it empty through the exported sub-makes; the brand and version come from `EXTENDNO` in `version.conf` (`EXTENDNO=Reaper_v<X>`). The image is therefore named **`<MODEL>_3006_<SERIALNO>_Reaper_v<X>…_nand_squashfs.pkgtb`** (`SERIALNO` from `version.conf`: `102.10` from v3.6.0), with no commit hash in the name. (Older trees defaulted `BUILDREV` to `-reaper`, which the export flipped to `-g<commit>`, giving `…_beta2-g<hash>` names.) The exact source is pinned by the provenance step instead, which records the source tree's hashes (`gen_provenance.sh`).
 > Edit the **real** `release/src-rt/Makefile`, not the per-platform `Makefile` (it's a symlink — editing through the link shows no git diff).
 
 ---
@@ -205,7 +202,7 @@ Per-file standalone compile is awkward here (the component Makefiles need the pl
 What "good" looks like:
 - `make` exits **0** and prints `Done! Image 96813GW has been built`.
 - **No NEW warnings at your edit sites.** ASUS code is noisy (lots of pre-existing `-Wformat`, unused-var, pointer-sign, `strncpy`-bound warnings) — diff against the baseline and make sure none of the warnings point at your lines.
-- The new `…_g<tip>_nand_squashfs.pkgtb` appears, and `strings fs/usr/lib/libshared.so | grep beta2-g…` matches the branch tip (proves your commit is baked in).
+- A new `…_Reaper_v<X>…_nand_squashfs.pkgtb` appears in `targets/<board>/` with a fresh timestamp, and the build's `reaper_verify` run ends with no FAIL (its `patch-markers` check proves the marked fixes are inside the staged image).
 
 > A full build is ~8–15 min at -j1. For a quick "does it still compile" loop, build once after a batch of edits rather than per-file.
 

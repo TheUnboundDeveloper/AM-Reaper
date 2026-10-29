@@ -1,0 +1,282 @@
+From dce68d827696ab2cbc72d7648e4491e5504e30e0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 19 Oct 2026 20:00:55 -0400
+Subject: [PATCH] shared: reaper_store.h, the pinned-volume helpers the store
+ commit includes
+
+---
+ release/src/router/shared/reaper_store.h | 262 +++++++++++++++++++++++
+ 1 file changed, 262 insertions(+)
+ create mode 100644 release/src/router/shared/reaper_store.h
+
+diff --git a/release/src/router/shared/reaper_store.h b/release/src/router/shared/reaper_store.h
+new file mode 100644
+index 00000000000..b431dd9b7a4
+--- /dev/null
++++ b/release/src/router/shared/reaper_store.h
+@@ -0,0 +1,262 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper 2026-10-18: the PINNED USB volume for long-term storage.
++ *
++ * Field report (RT-BE86U, one SSD, partitions "asus" + "asustor"): both
++ * partitions grew .reaper/ and reaper/, and the traffic history split in two.
++ * Every resolver (rtrafd, httpd, the rwatch tick) took "the first mounted
++ * /tmp/mnt entry" and created its folder there, and the mount order of two
++ * partitions is a race by stock design (one hotplug process each, whichever
++ * takes the usb lock first). Ordering the mounts would not fix it: a resolver
++ * that runs while only the wrong volume is up still picks it.
++ *
++ * So the volume is an IDENTITY, not a position: Reaper_Storage.asp (store_set
++ * vol=) writes a random id to <vol>/.reaper/store.id and the same id to nvram
++ * reaper_store_vid (reaper_store_vname = the label, for display). Every
++ * resolver uses ONLY the mounted volume whose id file matches; none of them
++ * creates a folder anywhere. Pinned volume absent = RAM until it returns; no
++ * other volume is ever substituted. The shell twin is rstore_base() in
++ * rc/rwatch.c - keep the two rules in lockstep.
++ *
++ * Header-only (static inline, libc only) so rtrafd, httpd and rc share one
++ * copy without a libshared link change, and the host test compiles it as is.
++ */
++#ifndef _REAPER_STORE_H_
++#define _REAPER_STORE_H_
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <dirent.h>
++#include <errno.h>
++#include <time.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++
++#define RSTORE_MNT		"/tmp/mnt"
++#define RSTORE_DIR		".reaper"
++#define RSTORE_ID		"store.id"
++#define RSTORE_LEGACY_DIR	"reaper"	/* rtrafd's pre-pin folder (no dot) */
++#define RSTORE_SEEN		"/jffs/reaper/store.seen"	/* "<epoch> <vid>": last time the pin was mounted */
++#define RSTORE_VID_HEX		16	/* id = 8 random bytes as hex */
++
++/* A volume label as stock names /tmp/mnt/<label>: non-empty, no '/', no
++ * leading '.', printable, short. Anything else is never a store. */
++static inline int rstore_name_ok(const char *n)
++{
++	const unsigned char *p;
++	size_t l;
++	if (!n || !n[0] || n[0] == '.') return 0;
++	l = strlen(n);
++	if (l > 63) return 0;
++	for (p = (const unsigned char *)n; *p; p++)
++		if (*p == '/' || *p < 0x20 || *p == 0x7f || *p == '"' || *p == '\\') return 0;
++	return 1;
++}
++
++static inline int rstore_vid_ok(const char *v)
++{
++	int i;
++	if (!v) return 0;
++	for (i = 0; v[i]; i++)
++		if (!((v[i] >= '0' && v[i] <= '9') || (v[i] >= 'a' && v[i] <= 'f'))) return 0;
++	return i == RSTORE_VID_HEX;
++}
++
++/* <root>/<name> is a mounted filesystem: a real mount has a different st_dev
++ * from tmpfs <root>. An eject can leave the bare mountpoint DIRECTORY behind
++ * (v2.1.7); writing into it would put "durable" history in RAM. need_mount=0
++ * is for the host test only (a temp tree has one st_dev). */
++static inline int rstore_is_mount(const char *root, const char *name, int need_mount)
++{
++	char p[160];
++	struct stat r, m;
++	if (!rstore_name_ok(name)) return 0;
++	if (snprintf(p, sizeof(p), "%s/%s", root, name) >= (int)sizeof(p)) return 0;
++	if (stat(root, &r) != 0 || stat(p, &m) != 0 || !S_ISDIR(m.st_mode)) return 0;
++	return need_mount ? (m.st_dev != r.st_dev) : 1;
++}
++
++/* <dir> exists as a real directory (lstat: a symlink planted on a shared
++ * volume must never redirect our writes) */
++static inline int rstore_dir_ok(const char *dir)
++{
++	struct stat st;
++	return lstat(dir, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
++/* read <voldir>/.reaper/store.id (no symlinks followed) into out; 0 = ok */
++static inline int rstore_read_id(const char *voldir, char *out, size_t len)
++{
++	char p[192];
++	char buf[40];
++	ssize_t n;
++	int fd;
++	out[0] = '\0';
++	if (snprintf(p, sizeof(p), "%s/" RSTORE_DIR, voldir) >= (int)sizeof(p) || !rstore_dir_ok(p)) return -1;
++	if (snprintf(p, sizeof(p), "%s/" RSTORE_DIR "/" RSTORE_ID, voldir) >= (int)sizeof(p)) return -1;
++	if ((fd = open(p, O_RDONLY | O_NOFOLLOW)) < 0) return -1;
++	n = read(fd, buf, sizeof(buf) - 1);
++	close(fd);
++	if (n <= 0) return -1;
++	buf[n] = '\0';
++	buf[strcspn(buf, "\r\n \t")] = '\0';
++	if (!rstore_vid_ok(buf)) return -1;
++	snprintf(out, len, "%s", buf);
++	return 0;
++}
++
++/* the mounted volume whose store.id == vid. Fills name (label) and base
++ * (<root>/<label>/.reaper) and returns 1; 0 = not mounted (or no pin). The
++ * base must be writable - a read-only remount is not a store. */
++static inline int rstore_find(const char *root, int need_mount, const char *vid,
++			      char *name, size_t nlen, char *base, size_t blen)
++{
++	DIR *d;
++	struct dirent *e;
++	int found = 0;
++	if (!rstore_vid_ok(vid) || (d = opendir(root)) == NULL) return 0;
++	while (!found && (e = readdir(d)) != NULL) {
++		char vol[160], id[40], b[176];
++		if (!rstore_is_mount(root, e->d_name, need_mount)) continue;
++		if (snprintf(vol, sizeof(vol), "%s/%s", root, e->d_name) >= (int)sizeof(vol)) continue;
++		if (rstore_read_id(vol, id, sizeof(id)) != 0 || strcmp(id, vid)) continue;
++		if (snprintf(b, sizeof(b), "%s/" RSTORE_DIR, vol) >= (int)sizeof(b)) continue;
++		if (access(b, W_OK) != 0) continue;
++		if (name) snprintf(name, nlen, "%s", e->d_name);
++		if (base) snprintf(base, blen, "%s", b);
++		found = 1;
++	}
++	closedir(d);
++	return found;
++}
++
++/* Reaper history on <voldir>: when it starts (oldest *.since, else the oldest
++ * data file's mtime); 0 = no history. newest (optional) = the latest data
++ * write, which adoption uses to pick between several volumes. Data files:
++ * .reaper/ (every dataset) and the legacy rtrafd folder; *.since are only
++ * first-collection stamps, so stamps without a data file are not history. */
++static inline long rstore_hist(const char *voldir, long *newest)
++{
++	static const char *const rstore_data_files[] = {
++		RSTORE_DIR "/devhist.log", RSTORE_DIR "/rtraf.db", RSTORE_DIR "/syslog.mirror",
++		RSTORE_DIR "/chqhist.log", RSTORE_DIR "/audit.log", RSTORE_LEGACY_DIR "/rtraf.db", NULL
++	};
++	static const char *const rstore_since_ds[] = { "dev", "traf", "watch", "chq", "slog", NULL };
++	char p[224];
++	struct stat st;
++	long first = 0, last = 0, since = 0;
++	int i;
++	for (i = 0; rstore_data_files[i]; i++) {
++		if (snprintf(p, sizeof(p), "%s/%s", voldir, rstore_data_files[i]) >= (int)sizeof(p)) continue;
++		if (lstat(p, &st) != 0 || !S_ISREG(st.st_mode)) continue;
++		if (!first || (long)st.st_mtime < first) first = (long)st.st_mtime;
++		if ((long)st.st_mtime > last) last = (long)st.st_mtime;
++	}
++	for (i = 0; rstore_since_ds[i]; i++) {
++		FILE *f;
++		long v = 0;
++		if (snprintf(p, sizeof(p), "%s/" RSTORE_DIR "/%s.since", voldir, rstore_since_ds[i]) >= (int)sizeof(p)) continue;
++		if (lstat(p, &st) != 0 || !S_ISREG(st.st_mode) || (f = fopen(p, "r")) == NULL) continue;
++		if (fscanf(f, "%ld", &v) != 1) v = 0;
++		fclose(f);
++		if (v > 0 && (!since || v < since)) since = v;
++	}
++	if (newest) *newest = last;
++	if (!last) return 0;	/* stamps alone are not history */
++	return since ? since : first;
++}
++
++/* a fresh id from the kernel RNG; 0 = ok */
++static inline int rstore_new_id(char *out, size_t len)
++{
++	unsigned char r[RSTORE_VID_HEX / 2];
++	int fd, i;
++	ssize_t n;
++	if (len < RSTORE_VID_HEX + 1) return -1;
++	if ((fd = open("/dev/urandom", O_RDONLY)) < 0) return -1;
++	n = read(fd, r, sizeof(r));
++	close(fd);
++	if (n != (ssize_t)sizeof(r)) return -1;
++	for (i = 0; i < (int)sizeof(r); i++)
++		snprintf(out + i * 2, 3, "%02x", r[i]);
++	return 0;
++}
++
++/* write <path> = <text> via tmp + rename, never following a symlink at the
++ * final name (O_NOFOLLOW on the tmp; rename replaces a planted link itself) */
++static inline int rstore_write_file(const char *path, const char *text, mode_t mode)
++{
++	char tmp[240];
++	int fd, ok;
++	size_t l = strlen(text);
++	if (snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, (int)getpid()) >= (int)sizeof(tmp)) return -1;
++	unlink(tmp);
++	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode)) < 0) return -1;
++	ok = (write(fd, text, l) == (ssize_t)l);
++	if (fsync(fd) != 0) ok = 0;
++	close(fd);
++	if (!ok || rename(tmp, path) != 0) { unlink(tmp); return -1; }
++	return 0;
++}
++
++/* pin <voldir>: create .reaper (0700) if needed and write store.id. The ONLY
++ * place a store folder is created. 0 = ok */
++static inline int rstore_write_id(const char *voldir, const char *vid)
++{
++	char d[192], p[208], txt[24];
++	if (!rstore_vid_ok(vid)) return -1;
++	if (snprintf(d, sizeof(d), "%s/" RSTORE_DIR, voldir) >= (int)sizeof(d)) return -1;
++	if (mkdir(d, 0700) != 0 && errno != EEXIST) return -1;
++	if (!rstore_dir_ok(d) || access(d, W_OK) != 0) return -1;
++	if (snprintf(p, sizeof(p), "%s/" RSTORE_ID, d) >= (int)sizeof(p)) return -1;
++	snprintf(txt, sizeof(txt), "%s\n", vid);
++	return rstore_write_file(p, txt, 0600);
++}
++
++/* rtrafd's pre-pin folder: move <voldir>/reaper/rtraf.db into .reaper/ on the
++ * PINNED volume only (same filesystem, so rename is atomic), never over a db
++ * that is already there; drop the folder if that leaves it empty. Any other
++ * volume's copy is left exactly as it is. 1 = moved */
++static inline int rstore_migrate_rtraf(const char *voldir)
++{
++	char from[208], to[208], dir[192];
++	struct stat st;
++	if (snprintf(from, sizeof(from), "%s/" RSTORE_LEGACY_DIR "/rtraf.db", voldir) >= (int)sizeof(from)
++	    || snprintf(to, sizeof(to), "%s/" RSTORE_DIR "/rtraf.db", voldir) >= (int)sizeof(to)
++	    || snprintf(dir, sizeof(dir), "%s/" RSTORE_LEGACY_DIR, voldir) >= (int)sizeof(dir))
++		return 0;
++	if (!rstore_dir_ok(dir) || lstat(from, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
++	if (lstat(to, &st) == 0) return 0;
++	if (rename(from, to) != 0) return 0;
++	rmdir(dir);	/* only succeeds when empty */
++	return 1;
++}
++
++/* last time the pinned volume was mounted, from RSTORE_SEEN; 0 = unknown or
++ * the record belongs to another pin */
++static inline long rstore_seen_read(const char *vid)
++{
++	FILE *f;
++	long t = 0;
++	char id[40] = "";
++	if ((f = fopen(RSTORE_SEEN, "r")) == NULL) return 0;
++	if (fscanf(f, "%ld %39s", &t, id) != 2) t = 0;
++	fclose(f);
++	return (t > 0 && vid && !strcmp(id, vid)) ? t : 0;
++}
++
++static inline int rstore_seen_write(const char *vid, long t)
++{
++	char txt[64];
++	mkdir("/jffs/reaper", 0700);
++	if (!rstore_dir_ok("/jffs/reaper")) return -1;
++	snprintf(txt, sizeof(txt), "%ld %s\n", t, vid);
++	return rstore_write_file(RSTORE_SEEN, txt, 0600);
++}
++
++#endif /* _REAPER_STORE_H_ */
+-- 
+2.25.1
+

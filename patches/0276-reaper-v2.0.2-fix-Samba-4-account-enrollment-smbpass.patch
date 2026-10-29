@@ -1,0 +1,120 @@
+From e095b010fd55eae5747038a5fabe4c159fddbf64 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 1 Aug 2026 13:59:23 -0400
+Subject: [PATCH] reaper v2.0.2: fix Samba 4 account enrollment (smbpasswd
+ path), clean share names, GUI login prompt
+
+ROOT CAUSE of "account-mode SMB never authenticates" (empty passdb every boot):
+start_samba() enrolls accounts via system("/usr/sbin/smbpasswd ...") but Samba 4
+installs smbpasswd to /usr/bin, not /usr/sbin. Every enrollment returned 127 (not
+found) and wrote nothing, so /etc/samba/smbpasswd was empty on every boot -> all
+account logins failed -> sessions fell to guest -> "Encryption is not supported for
+guest access". Supersedes 04d05c92a7 (that added -c to a path that did not exist).
+
+- rc/usb.c: repath the 3 SAMBA4 smbpasswd calls /usr/sbin -> /usr/bin (nobody, PMS
+  loop, acc_list loop). Only the RTCONFIG_SAMBA4 branches; SAMBA36X/#else untouched.
+- libdisk/write_smb_conf.c: account mode map to guest = Never (was Bad User) so an
+  uncredentialed client gets a login prompt instead of the guest-encryption error.
+  Share/guest mode (st_samba_mode 1/3) unchanged.
+- shared/defaults.c: smbd_simpler_naming default 1 (was 0) -> share names drop the
+  "(at DISK)" suffix when the folder name is unique across disks (collision-safe;
+  GUI toggle still lets users revert).
+- www/Advanced_AiDisk_samba.asp: remove dead inner-if that only called the removed
+  #smbv1_hint element.
+- version.conf: EXTENDNO Reaper_v2.0.1 -> Reaper_v2.0.2
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ release/src-rt/version.conf                      | 2 +-
+ release/src/router/libdisk/write_smb_conf.c      | 2 +-
+ release/src/router/rc/usb.c                      | 6 +++---
+ release/src/router/shared/defaults.c             | 2 +-
+ release/src/router/www/Advanced_AiDisk_samba.asp | 3 ---
+ 5 files changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/release/src-rt/version.conf b/release/src-rt/version.conf
+index 6e4696c66f2..466ebae29e7 100644
+--- a/release/src-rt/version.conf
++++ b/release/src-rt/version.conf
+@@ -4,6 +4,6 @@ KERNEL_VER_AM=$(subst .,,$(KERNEL_VER))
+ FS_VER_AM=$(subst .,,$(FS_VER))
+ 
+ SERIALNO=102.8
+-EXTENDNO=Reaper_v2.0.1
++EXTENDNO=Reaper_v2.0.2
+ 
+ RCNO=0
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index bf9b1f20047..48c06e3011f 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -386,7 +386,7 @@ int main(int argc, char *argv[])
+ 			){
+ 		fprintf(fp, "security = USER\n");
+ 		fprintf(fp, "guest ok = no\n");
+-		fprintf(fp, "map to guest = Bad User\n");
++		fprintf(fp, "map to guest = Never\n");
+ 	}
+ 	// share mode
+ 	else if(st_samba_mode == 1 || st_samba_mode == 3){
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 2a88dd95974..5ea9fcc7df2 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3520,7 +3520,7 @@ start_samba(void)
+ 	//system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -s -a nobody");
+ 	system("/usr/sbin/smbpasswd nobody \"\"");
+ #elif defined(RTCONFIG_SAMBA4)
+-	system("echo -e \"\n\n\" |/usr/sbin/smbpasswd -c /etc/smb.conf -s -a nobody");
++	system("echo -e \"\n\n\" |/usr/bin/smbpasswd -c /etc/smb.conf -s -a nobody");
+ #else
+ 	system("smbpasswd nobody \"\"");
+ #endif
+@@ -3562,7 +3562,7 @@ start_samba(void)
+ 					close(_pfd[1]);
+ 					dup2(_pfd[0], STDIN_FILENO);
+ 					close(_pfd[0]);
+-					execl("/usr/sbin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1: Samba 4 needs the config path */
++					execl("/usr/bin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1/v2.0.2: Samba 4 needs the config path; our samba4 installs it in /usr/bin */
+ 					_exit(127);
+ 				} else if (_pid > 0) {
+ 					close(_pfd[0]);
+@@ -3654,7 +3654,7 @@ start_samba(void)
+ 						close(_pfd[1]);
+ 						dup2(_pfd[0], STDIN_FILENO);
+ 						close(_pfd[0]);
+-						execl("/usr/sbin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1: Samba 4 needs the config path */
++						execl("/usr/bin/smbpasswd", "smbpasswd", "-c", "/etc/smb.conf", "-s", "-a", char_user, (char *)NULL);	/* reaper v2.0.1/v2.0.2: Samba 4 needs the config path; our samba4 installs it in /usr/bin */
+ 						_exit(127);
+ 					} else if (_pid > 0) {
+ 						close(_pfd[0]);
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index d498ad4cd36..919ab4265ce 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -5141,7 +5141,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 
+ #ifdef RTCONFIG_USB
+-	{ "smbd_simpler_naming", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "smbd_simpler_naming", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "smbd_protocol", "2", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* SAMBA36X: 0=SMB1,1=SMB2,2=SMB1+SMB2. SAMBA4: 1=SMB2,2=SMB2+SMB3(default),3=SMB3-only+encrypt */
+ #endif
+ 
+diff --git a/release/src/router/www/Advanced_AiDisk_samba.asp b/release/src/router/www/Advanced_AiDisk_samba.asp
+index 5f20c5de1cb..639285d32f2 100644
+--- a/release/src/router/www/Advanced_AiDisk_samba.asp
++++ b/release/src/router/www/Advanced_AiDisk_samba.asp
+@@ -79,9 +79,6 @@ function initial(){
+ 	var sambainfo = httpApi.hookGet("get_SambaInfo");
+ 	if(sambainfo != undefined && sambainfo != ""){
+ 		var vernums = sambainfo.replace("Version", "").trim().split(".");
+-		if(parseInt(vernums[0]) >= 3 && parseInt(vernums[1]) >= 6){
+-			$("#smbv1_hint").remove();
+-		}
+ 	}
+ 
+ 
+-- 
+2.25.1
+

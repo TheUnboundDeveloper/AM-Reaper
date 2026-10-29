@@ -63,7 +63,7 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned 2026-10-06: ubuntu-latest moves to 26.04 from 2026-10-19 (actions/runner-images#14748)
     timeout-minutes: 60
     steps:
       - name: Resolve tag, version and model
@@ -116,7 +116,7 @@ jobs:
           echo "model=$MODEL"     >> "$GITHUB_OUTPUT"
           echo "resolved: tag=$TAG version=$VERSION base=$BASE channel=$CHANNEL file-token='$FTOK' model=$MODEL"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ver.outputs.tag }}
 
@@ -150,7 +150,7 @@ jobs:
           # globs used the tag's version verbatim, so a beta tag looked for a
           # "*-REAPER-v3.1.2-beta/" folder that stage_release.ps1 never creates
           # and the in-tree route silently fell through to the artifact route.
-          imgs=(releases/*/*-REAPER-"$B"/"$M"_3006_102.8_Reaper_"$B""$FTOK"_*.pkgtb)
+          imgs=(releases/*/*-REAPER-"$B"/"$M"_3006_*_Reaper_"$B""$FTOK"_*.pkgtb)
           if [ ${#imgs[@]} -gt 0 ]; then
             d=$(dirname "${imgs[0]}")
             echo "== in-tree assets: $d ($M)"
@@ -275,7 +275,7 @@ jobs:
           pc=$(jq -r --arg v "$V" '(.releases[] | select(.version==$v) | .patch_count) // empty' provenance/manifest.json 2>/dev/null || true)
           {
             printf '\n---\n\n## Corresponding source & reproducibility\n\n'
-            printf 'The **%s** image for `%s` is built from this repository **at tag `%s`**: the pinned Asuswrt-Merlin base (`3006.102.8-beta2`, `a7ebfa133a`) plus the complete patch series. The tag freezes the exact source that produced it.\n\n' "$M" "$V" "$TAG"
+            printf 'The **%s** image for `%s` is built from this repository **at tag `%s`**: the pinned Asuswrt-Merlin base (`3006.102.10`, `ca72a61f8bc`) plus the complete patch series. The tag freezes the exact source that produced it.\n\n' "$M" "$V" "$TAG"
             if [ -n "$pc" ]; then
               printf -- '- **Patches:** [`patches/`](https://github.com/%s/tree/%s/patches) (`0001`-`%04d`)\n' "$REPO" "$TAG" "$pc"
             else
@@ -311,6 +311,10 @@ jobs:
           # GT-BE19000 is prerelease-only until hardware has run an image:
           # the model builds and verifies, but nothing has proved it boots.
           case "$M" in GT-BE19000) pre="--prerelease" ;; esac
+          # BQ16: the same rule - onboarded 2026-10-01, no hardware has run an image.
+          case "$M" in BQ16) pre="--prerelease" ;; esac
+          # BQ16_PRO: the same rule - onboarded 2026-10-04, no hardware has run an image.
+          case "$M" in BQ16_PRO) pre="--prerelease" ;; esac
           # Honor an explicit prerelease input from BOTH workflow_dispatch and
           # workflow_call (public-build passes prerelease=true on a Dev publish).
           # On a tag push the input is empty, so this is a no-op there.
@@ -323,7 +327,7 @@ jobs:
             # of something else -- it has to be asked for. This matters most on
             # the public-build.yml hand-off: EXPECTED_VERSION is pinned, so once
             # a version has shipped, every later run on main would otherwise
-            # clobber five live releases with clean-room artifacts. On a `push`
+            # clobber every model's live release with clean-room artifacts. On a `push`
             # event inputs are empty, so that path is guarded too.
             if [ "${{ inputs.allow_republish }}" != "true" ]; then
               echo "::warning::release $TAG already exists — NOT overwriting it."

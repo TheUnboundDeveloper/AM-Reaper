@@ -1,0 +1,54 @@
+From 66d50fd3a6b2390a58c34531aea70d47075034a7 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 11:47:10 -0400
+Subject: [PATCH] rc: multi_wan DNS check validates the address before the
+ shell again (H3/H4)
+
+Found by the loss audit: the merge took upstream's text for these lines and put
+the unvalidated upstream-supplied DNS token back into a doSystem() grep. Not
+compiled on the RT-BE96U (multi-WAN is off), restored for any build that turns it on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/multi_wan.c      | 4 ++--
+ release/src/router/rc/multi_wan_ipv6.c | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/multi_wan.c b/release/src/router/rc/multi_wan.c
+index 13531c2b343..2cf15ce8661 100644
+--- a/release/src/router/rc/multi_wan.c
++++ b/release/src/router/rc/multi_wan.c
+@@ -1851,7 +1851,7 @@ void mtwan_append_s46_resolvconf_ipv4(int wan_unit)
+ 				if (!is_valid_ip4(wan_dns)) {
+ 					continue;
+ 				}
+-				if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++				if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {	/* hardening H3: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 					fp = fopen("/tmp/resolv.conf", "a");
+ 					if(fp) {
+ 						fprintf(fp, "nameserver %s\n", wan_dns);
+@@ -1867,7 +1867,7 @@ void mtwan_append_s46_resolvconf_ipv4(int wan_unit)
+ 					if (!is_valid_ip4(wan_dns)) {
+ 						continue;
+ 					}
+-					if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++					if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {	/* hardening H3: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 						fp = fopen("/tmp/resolv.conf", "a");
+ 						if(fp) {
+ 							fprintf(fp, "nameserver %s\n", wan_dns);
+diff --git a/release/src/router/rc/multi_wan_ipv6.c b/release/src/router/rc/multi_wan_ipv6.c
+index a4d32843d88..1e11fe4be6b 100644
+--- a/release/src/router/rc/multi_wan_ipv6.c
++++ b/release/src/router/rc/multi_wan_ipv6.c
+@@ -406,7 +406,7 @@ void mtwan_append_s46_resolvconf_ipv6(int wan_unit)
+ 			if (!is_valid_ip6(wan_dns)) {
+ 				continue;
+ 			}
+-			if (doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {
++			if (is_valid_ip(wan_dns) > 0 && doSystem("cat /tmp/resolv.conf | grep %s", wan_dns)) {	/* hardening H4: only act on a validated IP, never let an upstream-supplied DNS token reach the shell */
+ 				fp = fopen("/tmp/resolv.conf", "a");
+ 				if(fp) {
+ 					fprintf(fp, "nameserver %s\n", wan_dns);
+-- 
+2.25.1
+

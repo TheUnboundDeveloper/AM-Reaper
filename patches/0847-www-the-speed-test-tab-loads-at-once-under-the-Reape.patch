@@ -1,0 +1,38 @@
+From 49dc51fd4b4fa89aa1226d62bb0ac7a430bd572e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 27 Oct 2026 11:35:35 -0400
+Subject: [PATCH] www: the speed-test tab loads at once under the Reaper shell
+
+ASUS 40585's AdaptiveQoS_InternetSpeed.asp waits up to 5 s (50 x 100 ms) for
+state.js to give FormTitle an inline height before it loads internet_speed.html.
+state.js computes that height from the stock menu, which the Reaper shell hides,
+so it is never set and the tab sat blank for the full 5 s (metal, gm40585 image).
+The wait now runs only while the stock menu is on screen to measure.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/AdaptiveQoS_InternetSpeed.asp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/www/AdaptiveQoS_InternetSpeed.asp b/release/src/router/www/AdaptiveQoS_InternetSpeed.asp
+index 41d59548673..df99ab46e8d 100644
+--- a/release/src/router/www/AdaptiveQoS_InternetSpeed.asp
++++ b/release/src/router/www/AdaptiveQoS_InternetSpeed.asp
+@@ -24,8 +24,13 @@ $(document).ready(function(){
+ function load_page(retryCount){
+ 	retryCount = retryCount || 0;
+ 	var formTitle = document.getElementById("FormTitle");
++	/* reaper 2026-10-27: wait for state.js to size FormTitle only while the stock menu is on screen to
++	   measure. Under the Reaper shell it is hidden, the height is never set, and the 40585 wait held
++	   the speed test blank for its full 5 s before loading. */
++	var mainMenu = document.getElementById("mainMenu");
++	var stockMenu = !!(mainMenu && mainMenu.clientHeight > 0);
+ 
+-	if(formTitle.style.height == "" && retryCount < 50){
++	if(stockMenu && formTitle.style.height == "" && retryCount < 50){
+ 		setTimeout(function(){ load_page(retryCount + 1); }, 100);
+ 		return;
+ 	}
+-- 
+2.25.1
+

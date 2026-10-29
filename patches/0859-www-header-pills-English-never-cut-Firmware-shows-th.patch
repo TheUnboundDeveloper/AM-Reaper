@@ -1,0 +1,256 @@
+From 2630a49ee94f7c739012c9b3281a0d7d5c4b5825 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 07:54:33 -0400
+Subject: [PATCH] www: header pills - English never cut, Firmware shows the
+ Reaper version
+
+Owner report: header words were cut in English. Measured on a 1920x1080
+canvas (and 1536 / 1366) in EN, RU, DE and FR through the language mock.
+
+- The Firmware pill shows the Reaper version alone (Reaper_v3.6.0); the
+  BETA tag keeps the pre-release mark and the whole string is on hover.
+- Each pill label, and the two translated values (WAN state, operating
+  mode), carry their English text in data-en. fit.js never cuts one below
+  that English width (capped at the text itself, so a short word is never
+  padded): English is the standard size, a longer translation gives way
+  down to it.
+- The pill strip (data-rfit-strip) drops pills from the end by what the
+  English sizes need, replacing the fixed 1700/1450/1280 breakpoints, so
+  English is never cut at any width and every language shows the same
+  pills.
+
+Result: 1920 - every language in full; 1536 and 1366 - English in full,
+RU/FR trimmed only where the word is longer than the English.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 31 +++++-----
+ release/src/router/www/reaper/fit.js       | 69 +++++++++++++++++++++-
+ release/src/router/www/reaper_shell.asp    | 24 ++++----
+ 3 files changed, 92 insertions(+), 32 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 39b46f0709a..513c5a97eec 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -377,15 +377,9 @@ main{min-width:0}
+ .cgline{flex:1;height:1px;background:var(--line-soft)}
+ 
+ /* ---------- responsive ---------- */
+-@media (max-width:1700px){
+-  .pills .pill:nth-child(n+6){display:none}   /* drop Mesh Nodes */
+-}
+-@media (max-width:1450px){
+-  .pills .pill:nth-child(n+5){display:none}   /* drop Clients */
+-}
+-@media (max-width:1280px){
+-  .pills .pill:nth-child(n+4){display:none}   /* drop Firmware */
+-}
++/* 2026-10-28 (owner): the desktop pill drops (Mesh Nodes at 1700, Clients at 1450, Firmware at 1280) are
++   fit.js's now (data-rfit-strip): it drops from the end by what the ENGLISH labels need, so English is never
++   cut and every language shows the same pills - a fixed width could not know the firmware string or the language */
+ @media (max-width:1180px){
+   .col8{grid-column:span 12}.col7{grid-column:span 12}
+   .col5{grid-column:span 7}.col4{grid-column:span 5}.col3{grid-column:span 4}
+@@ -556,13 +550,13 @@ main{min-width:0}
+   <main>
+     <header class="top">
+       <a class="brand" href="#" title="REAPER"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
+-      <div class="pills">
+-        <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+-        <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+-        <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+-        <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
+-        <div class="pill"><span class="k"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
+-        <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
++      <div class="pills" data-rfit-strip>
++        <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k" data-en="WAN"><#menu5_3#></span><span class="v" id="p_wan" data-en="Disconnected">&mdash;</span></div>
++        <div class="pill"><span class="k" data-en="Mode"><#DSL_Mode#></span><span class="v" id="i_opmode" data-en="Wireless Router">&mdash;</span></div>
++        <div class="pill"><span class="k" data-en="Uptime"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
++        <div class="pill"><span class="k" data-en="Firmware"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
++        <div class="pill"><span class="k" data-en="Clients"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
++        <div class="pill"><span class="k" data-en="Mesh Nodes"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+       <div class="spacer"></div>
+       <!-- v2.7.3: the owner's guide, one click from the landing page too -->
+@@ -1217,7 +1211,10 @@ function paintReview(){
+   try{
+     var fwstr = (SSI.firmver||'').replace(/\./g,'') + '.' + (SSI.buildno||'');
+     if(SSI.extendno && SSI.extendno!=='0') fwstr += '_'+cap(SSI.extendno);
+-    if(fwstr.length>2) setTxt('p_fw', fwstr);
++    /* 2026-10-28 (owner): the pill shows the Reaper version alone (Reaper_v3.6.0) - the base is on the
++       About page, the pre-release mark is the BETA tag - and the whole string on hover */
++    var fwshow = SSI.extendno && SSI.extendno!=='0' ? cap(SSI.extendno).replace(/_beta(?=_|$)/i,'') : fwstr;
++    if(fwstr.length>2){ setTxt('p_fw', fwshow); var fe=$id('p_fw'); if(fe) fe.title=fwstr; }
+     /* A beta build stamps EXTENDNO as <version>_beta (build-scripts/
+        _reaper_build_lib.sh), which is the same string the image filename is
+        built from - so the router and the .pkgtb on disk always agree about
+diff --git a/release/src/router/www/reaper/fit.js b/release/src/router/www/reaper/fit.js
+index 82719840af8..7c47e490486 100644
+--- a/release/src/router/www/reaper/fit.js
++++ b/release/src/router/www/reaper/fit.js
+@@ -67,6 +67,8 @@
+ 			if (prev) for (k in prev) el.style[k] = prev[k];
+ 			el.removeAttribute('data-rfit');
+ 		}
++		els = doc.querySelectorAll('[data-rfit-hid]');
++		for (i = 0; i < els.length; i++) { els[i].style.display = ''; els[i].removeAttribute('data-rfit-hid'); }
+ 		els = doc.querySelectorAll('span[data-rfit-wrap]');
+ 		for (i = 0; i < els.length; i++) {
+ 			el = els[i];
+@@ -83,13 +85,14 @@
+ 			SAVED.set(el, prev); el.setAttribute('data-rfit', '1');
+ 		}
+ 		el.style.whiteSpace = 'nowrap'; el.style.overflow = 'hidden'; el.style.textOverflow = 'ellipsis';
+-		el.style.minWidth = '0';
++		var fl = el.__rfitFl || 0;
++		el.style.minWidth = fl ? fl + 'px' : '0';
+ 		if (px) {
+ 			w = Math.floor(px);
+ 			if (cs.boxSizing !== 'border-box')	/* max-width then counts the content only */
+ 				w -= (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) +
+ 				     (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+-			el.style.maxWidth = Math.max(MINW, w) + 'px';
++			el.style.maxWidth = Math.max(MINW, fl, w) + 'px';
+ 			if (block) el.style.width = el.style.maxWidth;
+ 		}
+ 		if (block) el.style.display = 'block';
+@@ -119,6 +122,64 @@
+ 		c = CANVAS.getContext('2d'); c.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+ 		return c.measureText(t).width + 28 > el.clientWidth;	/* 28: the arrow and the padding */
+ 	}
++	/* 2026-10-28 (owner): a label that carries its English text in data-en (the header pills) is never cut below
++	   the width that English takes - English is the standard size, and only a longer translation gives way, down
++	   to that size. Measured in the label's own font, case and letter spacing; 0 = no floor. */
++	function enFloor(el) {
++		var en = el.getAttribute && el.getAttribute('data-en'), cs, c, t;
++		if (!en) return 0;
++		cs = el.ownerDocument.defaultView.getComputedStyle(el);
++		t = cs.textTransform === 'uppercase' ? en.toUpperCase() : en;
++		CANVAS = CANVAS || document.createElement('canvas');
++		c = CANVAS.getContext('2d'); c.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
++		return Math.ceil(c.measureText(t).width + (parseFloat(cs.letterSpacing) || 0) * t.length) + 2;
++	}
++	/* the floor is the English width, but never more than the text itself needs: a value whose reference is the
++	   longest English word ("Disconnected") must not pad a shorter one ("Connected") */
++	function floors(doc) {
++		var els = doc.querySelectorAll('[data-en]'), i, el, f;
++		for (i = 0; i < els.length; i++) { el = els[i]; el.style.minWidth = ''; }
++		for (i = 0; i < els.length; i++) {
++			el = els[i]; f = Math.min(enFloor(el), el.scrollWidth);
++			el.__rfitFl = f > 0 ? f : 0;
++			if (el.__rfitFl) el.style.minWidth = el.__rfitFl + 'px';
++		}
++	}
++	/* a strip of chips in priority order (data-rfit-strip: the header pills) shows as many as fit at their ENGLISH
++	   sizes, dropping from the end - so English is never cut, and a longer translation keeps the same chips and
++	   gives way inside them (fitContainers). A wrapping strip (phones) shows everything. */
++	function need(win, el) {
++		var cs = win.getComputedStyle(el), n = 0, k = 0, c;
++		for (c = el.firstElementChild; c; c = c.nextElementSibling) {
++			if (win.getComputedStyle(c).display === 'none') continue;
++			n += c.__rfitFl || Math.max(c.scrollWidth, c.getBoundingClientRect().width); k++;
++		}
++		return n + (parseFloat(cs.columnGap) || 0) * Math.max(0, k - 1) + (parseFloat(cs.paddingLeft) || 0) +
++			(parseFloat(cs.paddingRight) || 0) + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
++	}
++	function strips(doc) {
++		var win = doc.defaultView, ss = doc.querySelectorAll('[data-rfit-strip]'), i, s, p, pcs, room, c, vis, tot, gap;
++		for (i = 0; i < ss.length; i++) {
++			s = ss[i]; p = s.parentElement;
++			if (!p || !s.getClientRects().length || win.getComputedStyle(s).flexWrap === 'wrap') continue;
++			pcs = win.getComputedStyle(p); gap = parseFloat(pcs.columnGap) || 0;
++			room = p.clientWidth - (parseFloat(pcs.paddingLeft) || 0) - (parseFloat(pcs.paddingRight) || 0);
++			vis = 0;
++			for (c = p.firstElementChild; c; c = c.nextElementSibling) {
++				if (!c.getClientRects().length) continue;
++				vis++;
++				if (c !== s && win.getComputedStyle(c).flexGrow === '0') room -= c.getBoundingClientRect().width;
++			}
++			room -= gap * Math.max(0, vis - 1);
++			vis = []; for (c = s.firstElementChild; c; c = c.nextElementSibling) if (c.getClientRects().length) vis.push(c);
++			gap = parseFloat(win.getComputedStyle(s).columnGap) || 0;
++			tot = 0; for (c = 0; c < vis.length; c++) tot += need(win, vis[c]) + (c ? gap : 0);
++			while (vis.length > 1 && tot > room + 0.5) {
++				c = vis.pop(); tot -= need(win, c) + gap;
++				c.style.display = 'none'; c.setAttribute('data-rfit-hid', '1');
++			}
++		}
++	}
+ 
+ 	/* the content width of a table cell (what its own text and children need), for the column floor */
+ 	function cellNeed(doc, cell) {
+@@ -166,7 +227,7 @@
+ 							tgt = cellWrap(doc, el, el.clientWidth - (parseFloat(ecs.paddingLeft) || 0) - (parseFloat(ecs.paddingRight) || 0)); }
+ 					}
+ 					w = tgt.getBoundingClientRect().width;
+-					floor = MINW;
++					floor = Math.max(MINW, tgt.__rfitFl || 0);
+ 					if (cell && tbl && a.contains(tbl)) {
+ 						key = tbl; col = cell.cellIndex;
+ 						if (!floors.has(tbl)) floors.set(tbl, {});
+@@ -206,6 +267,8 @@
+ 		var win = doc.defaultView, all, i, el, cs, r, cand = [], todo = [], ln, over, w0;
+ 		if (!win || !doc.body) return;
+ 		reset(doc);
++		floors(doc);
++		strips(doc);
+ 		all = doc.body.getElementsByTagName('*');
+ 		for (i = 0; i < all.length && cand.length < CAP; i++) {
+ 			el = all[i];
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 42d4dd818d7..12dc1f8051f 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -225,9 +225,7 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+ #page_frame.veil{opacity:0;transition:none}
+ .mono{font-family:ui-monospace,'Cascadia Code',Consolas,monospace}
+ /* drop the lowest-priority pills before the header can clip at 1080p / 125% */
+-@media (max-width:1700px){ .pills .pill:nth-child(n+6){display:none} }
+-@media (max-width:1450px){ .pills .pill:nth-child(n+5){display:none} }
+-@media (max-width:1280px){ .pills .pill:nth-child(n+4){display:none} }
++/* 2026-10-28 (owner): the 1700/1450/1280 pill drops are fit.js's now (data-rfit-strip) - see Main_ReaperDash */
+ @media (max-width:1100px){ .pills .pill:nth-child(n+3){display:none} }
+ /* tablets (iPad / Windows tablet): drop the pills so the header always fits;
+    wide framed pages pan on the stage scrollbar (width-grow JS below) */
+@@ -307,17 +305,17 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+ <div class="app">
+   <header class="top">
+     <a class="brand" href="/Main_ReaperDash.asp" title="REAPER <#Reaper_c_dashboard#>"><img src="/images/RT-96U_REAPER_Header.png" alt="REAPER"></a>
+-    <div class="pills">
+-      <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k"><#menu5_3#></span><span class="v" id="p_wan">&mdash;</span></div>
+-      <div class="pill"><span class="k"><#DSL_Mode#></span><span class="v" id="i_opmode">&mdash;</span></div>
+-      <div class="pill"><span class="k"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
++    <div class="pills" data-rfit-strip>
++      <div class="pill tipa" id="p_wan_pill" tabindex="0" role="button" aria-describedby="ntip"><span class="dot" id="p_wan_dot"></span><span class="k" data-en="WAN"><#menu5_3#></span><span class="v" id="p_wan" data-en="Disconnected">&mdash;</span></div>
++      <div class="pill"><span class="k" data-en="Mode"><#DSL_Mode#></span><span class="v" id="i_opmode" data-en="Wireless Router">&mdash;</span></div>
++      <div class="pill"><span class="k" data-en="Uptime"><#General_x_SystemUpTime_itemname#></span><span class="v mono" id="p_uptime">&mdash;</span></div>
+       <!-- the BETA tag is the dashboard's (Main_ReaperDash.asp), and until now it
+            was ONLY the dashboard's: every other page is framed in this shell, so
+            a beta build announced itself on the landing page and nowhere else.
+            Same markup, same reveal rule, same dictionary key. -->
+-      <div class="pill"><span class="k"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
+-      <div class="pill"><span class="k"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
+-      <div class="pill"><span class="k"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
++      <div class="pill"><span class="k" data-en="Firmware"><#Reaper_c_firmware#></span><span class="v mono" id="p_fw">&mdash;</span><span class="btag" id="p_fwbeta" style="display:none"><#RFWU_56#></span></div>
++      <div class="pill"><span class="k" data-en="Clients"><#Full_Clients#></span><span class="v mono" id="p_clients">&mdash;</span></div>
++      <div class="pill"><span class="k" data-en="Mesh Nodes"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+     </div>
+     <span class="spacer"></span>
+     <!-- reaper: the header Dashboard button is GONE - the dashboard now owns the
+@@ -1083,8 +1081,10 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   /* firmware */
+   var fw=(<% nvram_get_js("firmver"); %>).replace(/\./g,'')+'.'+<% nvram_get_js("buildno"); %>;
+   var ext=<% nvram_get_js("extendno"); %>;
+-  if(ext && ext!=='0'){ ext=ext.charAt(0).toUpperCase()+ext.slice(1); fw+='_'+ext; }
+-  if(fw.length>2) $t('p_fw', fw);
++  var fwshow=fw;
++  if(ext && ext!=='0'){ ext=ext.charAt(0).toUpperCase()+ext.slice(1); fw+='_'+ext; fwshow=ext.replace(/_beta(?=_|$)/i,''); }
++  /* 2026-10-28 (owner): the Reaper version alone, as the dashboard; the whole string on hover */
++  if(fw.length>2){ $t('p_fw', fwshow); var _fe=$id('p_fw'); if(_fe) _fe.title=fw; }
+   /* tested against the RAW extendno, not the capitalised copy above: the build
+      stamps `<version>_beta` and the display string has already been through
+      charAt(0).toUpperCase(), which leaves the _beta suffix alone but there is no
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
@@ -22,10 +22,14 @@ GPL-covered portions of any Reaper build is, deterministically:
 
 1. **The upstream Asuswrt-Merlin source**, at the exact pinned base:
    - Repository: <https://github.com/RMerl/asuswrt-merlin.ng>
-   - Tag: `3006.102.8-beta2`
-   - Commit: **`a7ebfa133a`**
+   - Commit: **`ca72a61f8bc`** (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; untagged upstream)
+   - Up to v3.5.0 the base was tag `3006.102.8-beta2`, commit `a7ebfa133a`
+   - From v3.6.0 the GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro build from the `Dev-102.8`
+     branch on that older base (commit `a7ebfa133a`); that branch's copy of this file, patch series
+     and overlays are their corresponding source.
    - (Equivalently, ASUS's own GPL source tarball for the applicable RT-BE
-     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 — from
+     model — RT-BE96U / RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 /
+     ZenWiFi BQ16 / ZenWiFi BQ16 Pro — from
      <https://www.asus.com/support> provides the same GPL/Broadcom sources.)
 2. **The Reaper patch series** in [`../patches/`](../patches/) — the full set of
    `git format-patch` files that transform the pinned upstream tree into the
@@ -39,11 +43,37 @@ Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
 OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
-vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
-unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
-`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component) comes with
+the pinned base for the models it carries: ASUS's 102_40585 pair, unmodified. A model whose
+platform tree comes from an older ASUS GPL takes the pair from ASUS's public
+9.0.0.6.102_42015 firmware instead, shipped as `overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
-source for the GPL portions of the image.
+source for the GPL portions of the RT-BE96U image.
+
+**The sibling models** are that same tree plus up to three more inputs from
+[`../overlays/`](../overlays/), each SHA-256 pinned beside it and applied by the
+clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci/container_build.sh)):
+
+- **`<MODEL>.patch`** — every sibling. The model's identity overlay: its build
+  target in `target.mak`, its banner and animated header, and the pages that
+  reference them (11 to 25 files). Reaper-authored source, in `git format-patch`
+  form like the series.
+- **`<MODEL>-platform.tar.gz`** — GT-BE98, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16
+  Pro. The model's platform tree (`router-sysdep.<model>` and the model's files
+  under `release/src/router`), which the pinned base does not carry because these
+  models come from different ASUS GPL releases. It holds GPL source and the vendor's
+  prebuilt components, as ASUS published them in that model's GPL release.
+- **`uboot-rtl8372-*.tar.gz`** — the models whose boot loader drives a Realtek
+  RTL8372 switch (RT-BE86U, GT-BE98, GT-BE98 Pro, GT-BE19000). One prebuilt object,
+  `RTL_OBJS.o`, linked into u-boot. ASUS distributes it as an object file in its
+  boot-loader release, and Reaper has no source for it; it is carried unmodified.
+
+The RT-BE96U, RT-BE88U and both BQ16 models take no u-boot archive. With these
+applied, the reconstructed tree for a sibling is the complete corresponding source
+for the GPL portions of that model's image, in the same sense as above. The
+prebuilt components inside the platform and u-boot archives are vendor binaries,
+under the vendor notice in [`README.proprietary`](README.proprietary) and listed in
+[`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md).
 
 **Per-release verification.** [`BUILD-PROVENANCE.md`](BUILD-PROVENANCE.md) and the
 machine-readable [`../provenance/manifest.json`](../provenance/manifest.json) pin,
@@ -61,7 +91,9 @@ source with nothing added or omitted.
 > and [`../THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)). Pinning the exact
 > public upstream commit and shipping the GPL delta as patches provides the
 > complete corresponding source for the GPL parts **without** redistributing the
-> proprietary parts. GPL v2's obligation attaches to the GPL-covered work.
+> proprietary parts — apart from the few vendor files listed above that the
+> clean-room build cannot obtain from the pinned base, carried unmodified in
+> `overlays/`. GPL v2's obligation attaches to the GPL-covered work.
 
 ---
 
@@ -92,13 +124,13 @@ incorporate any change upstream. It is **not** conditioned on any future event.
 
 Reaper firmware images are **publicly hosted in this GitHub repository.** A
 flashable build for every model in the ASUS RT-BE Series (RT-BE96U / RT-BE86U /
-RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 joins at v3.1.4 as a prerelease) is published two ways:
-
-- the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
-  page — one per-model release per version (`v<version>-<MODEL>`), each carrying
-  both variants plus a `SHA256SUMS-<MODEL>-<version>.txt`, and
-- in-tree under [`../releases/`](../releases/)`<MODEL>/<MODEL>-REAPER-<version>/`
-  for direct file-tree browsing, with the same checksums.
+RT-BE88U / GT-BE98 / GT-BE98 Pro; the GT-BE19000 from v3.1.4, the ZenWiFi BQ16 from v3.3.2 and the
+ZenWiFi BQ16 Pro from v3.3.4, as prereleases) is published on
+the [**Releases**](https://github.com/TheUnboundDeveloper/AM-Reaper/releases)
+page — one per-model release per version (`v<version>-<MODEL>`), each carrying
+both variants plus a `SHA256SUMS-<MODEL>-<version>.txt`. The in-tree
+[`../releases/`](../releases/) folder holds only the firmware update check's
+manifest, not images.
 
 Each image is published **from the same repository as its complete corresponding
 source** (§1: the `patches/` series against the pinned upstream commit, plus

@@ -1,0 +1,219 @@
+From cd6b7ef40c1034e4bb33814cee2ff836c39bcc70 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 6 Jul 2026 15:53:05 -0400
+Subject: [PATCH] qos: Hardware QoS v2 - classful upload (qos_type=11)
+
+Per-class hardware upload QoS on the Runner egress TM, keeping the flow
+accelerator ON. Reuses the Traditional QoS classification engine
+unmodified: add_qos_rules() CONNMARK classes land in skb->mark bits
+[2:0], which are the Broadcom SKBMARK queue field (bcm_skb_defines.h)
+that the flow cache copies into the Runner flow entry at flow creation,
+steering accelerated flows into per-class WAN egress queues
+(class N -> qid N; unclassified -> qid 0; LAN/mcast class -> qid 6).
+
+start_hwqos_classful() programs PI2 AQM on qids 0-6 plus per-queue
+shaper caps from the qos_orates class ceil percentages of qos_obw
+(qid 0/6 capped at full OBW). No port-aggregate shaper exists in the
+egress TM, so the GUI note tells users to keep ceils summing ~100%
+for a strict total cap.
+
+- shared.h: IS_HWQOS_CLASSFUL() (qos_enable=1 && qos_type=11)
+- init-broadcom.c: classful exempted from fc_disable/runner_disable
+- qos.c: add_iQosRules dispatches classful -> add_qos_rules (rules
+  regenerate with every firewall mangle rebuild, so they survive
+  service restarts); start_iQos -> start_hwqos_classful()
+- rc.h: prototype
+- QoS_EZQoS.asp: radio value 11 below the v1 radio (same hwqos_support
+  gate), upload-only validation shared with type 10, classful desc
+  note, engine-switch lands on the T.QoS rules editor
+
+Steering mechanism verified against source (SKBMARK_GET_Q consumers in
+rdpa_mw_blog_parse.c); on-metal probe showed CLASSIFY/skb->priority is
+NOT honored on this platform, hence the mark-bits design. On-device
+validation pending: per-queue counters, SP service order across qids,
+and cap accuracy under load.
+---
+ release/src/router/rc/qos.c                   | 104 +++++++++++++++++-
+ release/src/router/rc/rc.h                    |   1 +
+ release/src/router/rc/sysdeps/init-broadcom.c |   8 +-
+ release/src/router/shared/shared.h            |   1 +
+ 4 files changed, 108 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index b25334c1384..56e9f8c290e 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -2714,10 +2714,14 @@ int add_iQosRules(char *pcWANIF)
+ 
+ 	if (pcWANIF == NULL || nvram_get_int("qos_type") == 1 || nvram_get_int("qos_type") == 8) return -1;
+ 
+-	/* HW QoS shapes in the hardware egress TM (no iptables/tc classification needed) */
++	/* Plain HW QoS shapes in the hardware egress TM (no iptables/tc classification
++	 * needed). Classful HW QoS DOES need the T.QoS classification rules: their
++	 * CONNMARK classes land in skb->mark bits [2:0] (= the Broadcom SKBMARK queue
++	 * field), which the flow cache copies into the Runner flow entry, steering
++	 * accelerated flows into the matching per-class egress queue. */
+ 	if (IS_HWQOS()) return -1;
+ 
+-	if (IS_TQOS()) {
++	if (IS_TQOS() || IS_HWQOS_CLASSFUL()) {
+ 		status = add_qos_rules(pcWANIF);
+ 	}
+ 	else if (IS_BW_QOS()) {
+@@ -2785,6 +2789,9 @@ int start_iQos(void)
+ 	else if (IS_HWQOS()) {
+ 		status = start_hwqos();
+ 	}
++	else if (IS_HWQOS_CLASSFUL()) {
++		status = start_hwqos_classful();
++	}
+ #endif
+ 
+ /* OPPO */
+@@ -3044,6 +3051,99 @@ int start_hwqos(void)
+ 	return 0;
+ }
+ 
++/*
++ * Hardware-accelerated classful QoS (upload).
++ *
++ * Extends start_hwqos() from one shaped queue to per-class egress queues on
++ * the WAN port. Classification reuses the Traditional QoS engine untouched:
++ * add_qos_rules() CONNMARKs each connection with its class (1..5 from rule
++ * prio 0..4 = highest..lowest; 6 = LAN/multicast) and restores it to
++ * skb->mark bits [2:0] on egress. Those bits are the Broadcom SKBMARK queue
++ * field (bcm_skb_defines.h), which the flow cache records into the Runner
++ * flow entry at flow-creation time, so hardware-accelerated flows egress
++ * through the queue matching their class: class N -> WAN egress qid N.
++ * Unclassified traffic (mark 0) uses qid 0.
++ *
++ * Each class queue gets PI2 AQM plus a shaper cap taken from the class ceil
++ * percentage in qos_orates ("rate-ceil,..." per prio, T.QoS format) applied
++ * to qos_obw; qid 0 and qid 6 are capped at the full qos_obw. The egress TM
++ * has no port-aggregate shaper, so strict aggregate control needs class
++ * ceils that sum to <= 100%.
++ *
++ * Like plain HW QoS this keeps the flow accelerator ENABLED (exempted from
++ * fc_disable/runner_disable in hnd_nat_ac_init()). Upload only: download
++ * egresses per-LAN/WLAN-port and cannot be aggregate-shaped here (use Cake).
++ * Ordering matters: setqdropalg rewrites the queue config and clears the
++ * shaper, so the drop algorithm MUST be programmed before the shaper.
++ */
++int start_hwqos_classful(void)
++{
++	FILE *f;
++	unsigned int obw, rate, ceil, cap;
++	int i, qid;
++	char *buf, *g, *p;
++	const char *wan_ifname = get_wan_ifname(wan_primary_ifunit());
++	const char *q;
++
++	obw = strtoul(nvram_safe_get("qos_obw"), NULL, 10);
++
++	/* same shell-safety guard as start_hwqos: wan_ifname is single-quoted in
++	 * the generated root script; reject anything that isn't a plain interface
++	 * name and fall back to an empty (inert) WANIF rather than emit it. */
++	for (q = wan_ifname; *q; q++) {
++		if (!((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
++		      (*q >= '0' && *q <= '9') || *q == '.' || *q == '_' || *q == '-')) {
++			wan_ifname = "";
++			break;
++		}
++	}
++
++	if ((f = fopen(qosfn, "w")) == NULL) return -2;
++
++	fprintf(f,
++		"#!/bin/sh\n"
++		"WANIF='%s'\n\n"
++		"case \"$1\" in\n"
++		"start)\n",
++		wan_ifname
++	);
++
++	/* class queues 1..5: PI2 + ceil% of OBW from qos_orates (prio order 0..4) */
++	g = buf = strdup(nvram_safe_get("qos_orates"));
++	for (i = 0; i < 5; ++i) {
++		if ((!g) || ((p = strsep(&g, ",")) == NULL)) break;
++		if (sscanf(p, "%u-%u", &rate, &ceil) != 2) continue;
++		qid = i + 1;
++		cap = (ceil >= 1 && ceil < 100) ? calc(obw, ceil) : obw;
++		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 4\n", qid);
++		if (cap > 0)
++			fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid %d --shapingrate %u\n", qid, cap);
++	}
++	free(buf);
++
++	/* qid 0 (unclassified) and qid 6 (LAN/multicast class): PI2 + full OBW cap */
++	fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid 0 --dropalg 4\n");
++	fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid 6 --dropalg 4\n");
++	if (obw > 0) {
++		fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid 0 --shapingrate %u\n", obw);
++		fprintf(f, "\ttmctl setqshaper --devtype 0 --if $WANIF --qid 6 --shapingrate %u\n", obw);
++	}
++
++	fprintf(f, "\t;;\nstop)\n");
++	for (qid = 0; qid <= 6; qid++) {
++		fprintf(f, "\ttmctl setqshaper  --devtype 0 --if $WANIF --qid %d --shapingrate 0\n", qid);
++		fprintf(f, "\ttmctl setqdropalg --devtype 0 --if $WANIF --qid %d --dropalg 0\n", qid);
++	}
++	fprintf(f, "\t;;\n*)\nesac\n");
++
++	fclose(f);
++	chmod(qosfn, 0755);
++	run_custom_script("qos-start", 120, "init", NULL);
++	eval((char *)qosfn, "start");
++
++	return 0;
++}
++
+ #if defined(BCM4912) || defined(RTCONFIG_HND_ROUTER_BE_4916)
+ 
+ #define QOS_MIN_QPKTS       8
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index e0a54369fee..6133c5cd2bd 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1943,6 +1943,7 @@ extern int start_cake(void);
+ extern int start_bcm_tm(void);
+ #endif
+ extern int start_hwqos(void);
++extern int start_hwqos_classful(void);
+ #endif
+ extern void set_codel_patch(void);
+ extern void remove_codel_patch(void);
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index 1b7eb339da1..87d9eeb3486 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -19278,11 +19278,11 @@ void hnd_nat_ac_init(int bootup)
+ {
+ 	int routing_mode = is_routing_enabled();
+ 
+-	// A.QOS/BCMTM/HWQOS : not to disable fc (both hardware QoS modes shape in the Runner TM)
+-	nvram_set_int("fc_disable", nvram_get_int("fc_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_RB_QOS() && !IS_BCMTM_QOS() && !IS_HWQOS()) ? 1 : 0);
++	// A.QOS/BCMTM/HWQOS(+classful) : not to disable fc (both hardware QoS modes shape in the Runner TM)
++	nvram_set_int("fc_disable", nvram_get_int("fc_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_RB_QOS() && !IS_BCMTM_QOS() && !IS_HWQOS() && !IS_HWQOS_CLASSFUL()) ? 1 : 0);
+ 
+-	// A.QOS/BCMTM/HWQOS : no need to disable runner
+-	nvram_set_int("runner_disable", nvram_get_int("runner_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_RB_QOS() && !IS_BCMTM_QOS() && !IS_HWQOS()) ? 1 : 0);
++	// A.QOS/BCMTM/HWQOS(+classful) : no need to disable runner
++	nvram_set_int("runner_disable", nvram_get_int("runner_disable_force") || (routing_mode && IS_NON_AQOS() && !IS_RB_QOS() && !IS_BCMTM_QOS() && !IS_HWQOS() && !IS_HWQOS_CLASSFUL()) ? 1 : 0);
+ 
+ #ifdef RTCONFIG_HND_ROUTER_BE_4916
+ 	/*
+diff --git a/release/src/router/shared/shared.h b/release/src/router/shared/shared.h
+index 380da41b69e..9ce3bae2e15 100644
+--- a/release/src/router/shared/shared.h
++++ b/release/src/router/shared/shared.h
+@@ -328,6 +328,7 @@ static inline char *wan_if_eth(void)
+ #define IS_CAKE_QOS()		(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 9)   // Cake QoS
+ #define IS_BCMTM_QOS()		(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 8)	// BCM Traffic Manager (PI2/WRED)
+ #define IS_HWQOS()		(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 10)  // Hardware QoS (Runner egress TM: PI2 AQM + shaper, keeps flow accelerator on)
++#define IS_HWQOS_CLASSFUL()	(nvram_get_int("qos_enable") == 1 && nvram_get_int("qos_type") == 11)  // Hardware QoS classful (T.QoS classification marks -> per-class Runner egress queues, accelerator on)
+ 
+ /* Guest network mark */
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
+-- 
+2.25.1
+

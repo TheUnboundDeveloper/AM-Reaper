@@ -61,7 +61,7 @@ with their own license files in-tree.
 The wider upstream tree contains many additional open-source packages under a mix
 of licenses: **GPL v2** (busybox, dnsmasq, iptables, hostapd, …), **GPL v3** (GNU
 **wget**, GNU **nano**), **LGPL v2.1** (**glib**, **avahi**, **libdaemon**, …), and
-**Apache-2.0** (**OpenSSL 3.5.8** — the TLS/crypto library since the OpenSSL 3.5 rung; carried
+**Apache-2.0** (**OpenSSL 3.5.9** — the TLS/crypto library since the OpenSSL 3.5 rung; carried
 exactly as Asuswrt-Merlin ships it, no Reaper source changes, built with `--api=1.1.1`; the small
 `openssl11-compat` forwarding shim that lets the closed ASUS binaries keep their OpenSSL 1.1 ABI is
 upstream Asuswrt-Merlin code by RSDNTWK, GPL v2 like the rest of the base), and BSD/MIT
@@ -90,6 +90,14 @@ in this repository. Per the upstream `README.proprietary`
 | ASUS closed prebuilt objects (auth/token core, `web_hook.o`, `spwenc`, …) | `release/src/router/{shared,httpd}/prebuild/` |
 | Trend Micro DPI (`tdts*.ko`, `libshn_*.so`, signed rule/cert material) | `release/src/router/bwdpi_source/prebuild/` |
 | Tuxera NTFS/exFAT kernel driver | `release/src/router/tuxera` (+ `ntfs-3g`) |
+| Realtek RTL8372 switch object (boot loader) | `release/src-rt-5.04behnd.4916/bootloaders/u-boot-2019.07/drivers/net/bcmbca/rtl8372/RTL_OBJS.o` |
 
-**These carry no redistribution grant.** This repository redistributes none of
-them; they are obtained by the builder from the upstream source / ASUS GPL drop.
+**These carry no redistribution grant.** The patch series redistributes none of
+them; a builder obtains them from the upstream source / ASUS GPL drop. The
+exceptions are the vendor files the clean-room build cannot get from the pinned
+base, carried unmodified and SHA-256 pinned in [`overlays/`](overlays/): the
+`libnvram.so` / `libwlcsm.so` pair from ASUS's public 9.0.0.6.102_42015 firmware
+(`wlcsm-42015-blobs.tar.gz`), the prebuilt components inside the sibling platform
+trees taken from each model's ASUS GPL release (`<MODEL>-platform.tar.gz`), and the
+Realtek object above (`uboot-rtl8372-*.tar.gz`). See
+[`docs/SOURCE-AVAILABILITY.md`](docs/SOURCE-AVAILABILITY.md) §1.

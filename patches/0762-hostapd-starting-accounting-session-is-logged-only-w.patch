@@ -1,0 +1,53 @@
+From 9e0977f492421da21a67561121ad79438d6f36e4 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 15 Oct 2026 14:08:24 -0400
+Subject: [PATCH] hostapd: "starting accounting session" is logged only with an
+ accounting server
+
+accounting_sta_start() logged "RADIUS: starting accounting session" at
+INFO for every authorized client before its acct_server test, so a router
+with no RADIUS configured logged a RADIUS line on each connection (490 in
+two logs on the owner box; nothing was sent, no RADIUS socket exists).
+With a server the line is unchanged; without one it is a debug line,
+"local session ... started (no accounting server)", below the default
+syslog level. The bookkeeping after it is untouched. Lean:
+test_hostapd_accounting_log.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../router_tools/hostapd/src/ap/accounting.c  | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/accounting.c b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/accounting.c
+index 28362d33c7e..2a39c10c3ab 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/accounting.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/broadcom/net/wl/impl103/main/components/opensource/router_tools/hostapd/src/ap/accounting.c
+@@ -226,10 +226,21 @@ void accounting_sta_start(struct hostapd_data *hapd, struct sta_info *sta)
+ 	if (sta->acct_session_started)
+ 		return;
+ 
+-	hostapd_logger(hapd, sta->addr, HOSTAPD_MODULE_RADIUS,
+-		       HOSTAPD_LEVEL_INFO,
+-		       "starting accounting session %016llX",
+-		       (unsigned long long) sta->acct_session_id);
++	/* reaper 2026-10-15: stock logged this at INFO for every authorized client
++	 * before the acct_server test below, so a box with no RADIUS configured put
++	 * "RADIUS: starting accounting session" in syslog on each connection (nothing
++	 * was sent). With a server: unchanged. Without one: debug level, worded for
++	 * what it is (the start time and the per-client counters below). */
++	if (hapd->conf->radius->acct_server)
++		hostapd_logger(hapd, sta->addr, HOSTAPD_MODULE_RADIUS,
++			       HOSTAPD_LEVEL_INFO,
++			       "starting accounting session %016llX",
++			       (unsigned long long) sta->acct_session_id);
++	else
++		hostapd_logger(hapd, sta->addr, HOSTAPD_MODULE_RADIUS,
++			       HOSTAPD_LEVEL_DEBUG,
++			       "local session %016llX started (no accounting server)",
++			       (unsigned long long) sta->acct_session_id);
+ 
+ 	os_get_reltime(&sta->acct_session_start);
+ 	sta->last_rx_bytes_hi = 0;
+-- 
+2.25.1
+

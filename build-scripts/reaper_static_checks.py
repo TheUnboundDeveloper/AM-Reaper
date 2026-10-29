@@ -590,9 +590,12 @@ def check_pbr_fwmark_regex(router):
 # a CGI that writes a weak auth mode or an unbounded key. Lock the contract:
 #   page   : exists, calls the CGI with http_id, uses httpApi.chpass, enforces
 #            the 8..63 key bound client-side, fires the exact action_script chain
+#            (ending in reboot since v3.3.1: the main network is built only at
+#            boot by closed init_apg -> check_mwl_convert, gated on x_Setting=1)
 #   web.c  : the CGI exists, gates BEFORE any nvram write, writes auth_mode_x
 #            only as "sae"/"psk2sae", enforces 8..63, turns Smart Connect on,
-#            commits, never restarts services itself, registered with do_auth
+#            sets x_Setting=1 before it commits (v3.3.1), commits,
+#            never restarts services itself, registered with do_auth
 #   inject : the banner CTA points at the page; the page is in reaper_skip[] and
 #            reaper_css_only[] (theme yes, bounce no) and NOT in reaper_banner_only[]
 #   dicts  : every pack carries the same RWFS_ set as EN; the page uses only those
@@ -610,7 +613,7 @@ def check_firstboot_wifi(router):
         ("/reaper_wifisetup.cgi", "page does not call reaper_wifisetup.cgi"),
         ("http_id=", "page does not send http_id to the CGI"),
         ("httpApi.chpass(", "page does not change the login password through httpApi.chpass"),
-        ('"saveNvram;restart_chpass;restart_wireless"', "page does not fire the saveNvram;restart_chpass;restart_wireless chain"),
+        ('"saveNvram;restart_chpass;reboot"', "page does not fire the saveNvram;restart_chpass;reboot chain (the main network is created only at boot)"),
         ('"saveNvram;restart_chpass"', "page has no password-only fallback apply (rule 28)"),
         ('current_page" value="Reaper_WiFiSetup.asp"', "form current_page is not the page itself"),
     ]:
@@ -618,6 +621,30 @@ def check_firstboot_wifi(router):
             bad.append(why)
     if not re.search(r"length\s*<\s*8\s*\|\|\s*v\.length\s*>\s*63", page):
         bad.append("page does not enforce the 8..63 Wi-Fi key bound client-side")
+    # v3.3.2 (GT-BE98 field report): a browser pairs a saved router login with the
+    # first visible password field in the SAME form, which was the Wi-Fi password -
+    # picking a saved login set the Wi-Fi key to the router password. The Wi-Fi
+    # inputs must sit outside the credential form, the two new-password fields
+    # must say so, nothing may be prepopulated, and the apply must end in the
+    # REBOOTING overlay with the model's reboot time, not a 0 s hidden-frame bounce.
+    fpos = page.find('<form method="post" name="form"')
+    if fpos < 0:
+        bad.append("page has no start_apply form")
+    else:
+        for wid in ('id="wifi_ssid"', 'id="wifi_psk"'):
+            wpos = page.find(wid)
+            if wpos < 0 or wpos > fpos:
+                bad.append("%s is inside the credential form (saved-login autofill can land in it)" % wid)
+    if len(re.findall(r'<input[^>]*autocomplete="new-password"', page)) != 2:
+        bad.append("the Wi-Fi key and the new login password are not both autocomplete=new-password")
+    if 'value="<% nvram_get("http_username"); %>"' in page:
+        bad.append("the login name is prepopulated from nvram (must start empty)")
+    if 'oninput="lowerLogin(this)"' not in page or '"^[a-z0-9][a-z0-9' not in page:
+        bad.append("the login name is not lowercase-only (lowerLogin + lowercase regex)")
+    if 'name="action_wait" value="<% get_default_reboot_time(); %>"' not in page:
+        bad.append("action_wait is not the model's reboot time (the hidden frame bounces back at 0)")
+    if 'id="reboot_overlay"' not in page or "/httpd_check.xml" not in page:
+        bad.append("the REBOOTING overlay (reboot_overlay + httpd_check.xml poll) is missing")
     if re.search(r"'[^'\n]*<#[A-Za-z_0-9]+#>[^'\n]*'", page):
         bad.append("a <#token#> sits inside a single-quoted JS string (rule 29)")
 
@@ -643,6 +670,12 @@ def check_firstboot_wifi(router):
             bad.append("CGI does not turn Smart Connect on")
         if "nvram_commit()" not in body:
             bad.append("CGI does not commit")
+        # v3.3.1: without x_Setting=1 the boot-time init_apg -> check_mwl_convert
+        # never builds the main network, a factory box keeps the lone DEFAULT
+        # sdn_rl row and the Network page's main card cannot be opened.
+        xs = body.find('nvram_set("x_Setting", "1")')
+        if xs < 0 or xs > body.find("nvram_commit()"):
+            bad.append("CGI does not set x_Setting=1 before its commit (the main network is never created)")
         if "notify_rc(" in body:
             bad.append("CGI restarts services itself (the page must chain the restart behind the password apply)")
     if not re.search(r'\{\s*"reaper_wifisetup\.cgi\*",[^\n]*do_reaper_wifisetup_cgi,\s*do_auth\s*\}', web):
@@ -822,7 +855,7 @@ def check_fw_beta_channel(router):
         if "<#%s#>" % k not in page:
             bad.append("Reaper_Firmware.asp: token %s not used" % k)
     dash = open(dash_p, encoding="utf-8", errors="replace").read()
-    if 'nvram_get("webs_state_channel")' not in dash:
+    if 'nvram_get_js("webs_state_channel")' not in dash:
         bad.append("Main_ReaperDash.asp: the update badge does not label a beta")
     npacks = 0
     for fn in sorted(os.listdir(www)):
@@ -1092,6 +1125,177 @@ def check_warden_outbound_log(router):
                   "tells all three apart", [])
 
 
+# -- 14. qis-no-entry: the stock QIS wizard is reachable from AiMesh only -------
+# 2026-10-12. ASUS's QIS_V3 wizard ships because the AiMesh add-node flow runs
+# inside it, and that is the ONLY flow Reaper keeps. Every other path into it was
+# closed: QIS_default.cgi lands on "/", wanduck runs no first-use captive portal,
+# the LAN-subnet-change landing goes to "/", the Instant Guard site-to-site flow
+# stays compiled out, the dead menu entry is gone, the ASUS "dashboard" bundle is
+# stripped at install, and the Reaper palette is appended to the wizard's own
+# stylesheet. A GPL merge, a sibling port or a new page can re-open any of them
+# with a green build; this check is the tripwire. The allow-list names every file
+# that may still carry the wizard's name today (dead references behind the retired
+# Network Map, the wizard's own install lines, comments); anything new fails.
+QIS_ALLOWED_FILES = {
+    "aimesh/aimesh_topology.html",          # THE AiMesh add-node entry
+    "Advanced_OperationMode_Content.asp",   # AiMesh node + Repeater only (sub-check 7 pins the flags)
+    "Makefile",                             # the wizard's own install lines
+    "reaper_qis.css",                       # the theme sheet's comment
+    "state.js", "start_apply.htm", "start_apply2.htm", "detect.js", "help.js",
+    "popup.js", "index.asp", "Restarting.asp", "Main_Password.asp",
+    "js/asus_policy.js", "js/https_redirect/https_redirect.js",
+    "require/modules/menuTree.js", "require/menuTrees/menuTree.js",
+    "require/menuTrees/menuTree_v4.js", "require/menuTrees/menuTree_GS.js",
+    "require/menuTrees/menuTree_BUSINESS.js", "require/menuTrees/menuTree_ROG.js",
+    "require/menuTrees/menuTree_TUF.js",
+    "device-map/router.asp", "device-map/internet.asp",
+}
+QIS_ALLOWED_DIRS = ("dashboard/", "sysdep/")
+QIS_SCAN_EXT = (".asp", ".htm", ".html", ".js", ".css")
+
+
+def _strip_c_comments(s):
+    """Drop /* */ and // comments: the reaper comments at the closed sites QUOTE
+    the removed stock code, and a literal grep would read them as the code."""
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.S)
+    return "\n".join(l for l in s.splitlines() if not l.lstrip().startswith("//"))
+
+
+def check_qis_entries(router):
+    www = os.path.join(router, "www")
+    bad = []
+
+    def rd(rel, code=False):
+        p = os.path.join(router, rel)
+        if not os.path.isfile(p):
+            bad.append("%s missing" % rel)
+            return ""
+        s = open(p, "r", encoding="utf-8", errors="replace").read()
+        return _strip_c_comments(s) if code else s
+
+    # -- 1. the LAN-subnet-change landing goes to "/" ------------------------
+    for rel in ("www/error_page.htm", "www/updateSubnet.htm"):
+        s = rd(rel)
+        if not s:
+            continue
+        if "QIS_wizard.htm" in s or "QIS_default.cgi" in s:
+            bad.append("%s: still sends the browser into the wizard after a "
+                       "LAN-subnet change" % rel)
+        if 'new_lan_ip)+"/";' not in s:
+            bad.append("%s: detect_router() does not land on the new address's /"
+                       % rel)
+
+    # -- 2. wanduck: no first-use captive, no first-use direct-rule hold ------
+    wd = rd("rc/wanduck.c", code=True)
+    if wd:
+        if "if(0 && isFirstUse){" not in wd:
+            bad.append("rc/wanduck.c: the first-use captive redirect branch is live "
+                       "again (every HTTP request on a factory box -> the stock wizard)")
+        if re.search(r"cross_state == CONNED && isFirstUse\)\s*\{", wd):
+            bad.append("rc/wanduck.c: the CONNED first-use direct-rule arm is back")
+        if "cross_state == DISCONN || isFirstUse" in wd:
+            bad.append("rc/wanduck.c: the load-balance first-use hold is back")
+        if "reaper: no first-use captive" not in wd:
+            bad.append("rc/wanduck.c: the init-site marker string is missing")
+
+    # -- 3. QIS_default.cgi lands on "/" ---------------------------------------
+    web = rd("httpd/web.c", code=True)
+    if web:
+        m = re.search(r"\ndo_qis_default\(char \*url, FILE \*stream\)\n\{(.*?)\n\}\n",
+                      web, re.S)
+        if not m:
+            bad.append("httpd/web.c: do_qis_default() not found")
+        else:
+            body = m.group(1)
+            if "QIS_wizard.htm" in body:
+                bad.append("httpd/web.c: do_qis_default() redirects into the wizard")
+            if 'websRedirect(stream, "/")' not in body:
+                bad.append("httpd/web.c: do_qis_default() does not land on /")
+        if '{ "QIS_default.cgi", "text/html"' not in web:
+            bad.append("httpd/web.c: the QIS_default.cgi row is gone (the wizard's "
+                       "keep-alive POST needs a 200 path)")
+
+    # -- 4. the Instant Guard site-to-site flow stays compiled out -------------
+    cfg_p = os.path.join(router, ".config")
+    if os.path.isfile(cfg_p):
+        cfg = open(cfg_p, "r", encoding="utf-8", errors="replace").read()
+        if re.search(r"^RTCONFIG_IG_SITE2SITE=y", cfg, re.M):
+            bad.append(".config: RTCONFIG_IG_SITE2SITE=y compiles ig_s2s_link.cgi, "
+                       "which meta-refreshes into QIS_wizard.htm?flag=site2site "
+                       "(an ASUS cloud ticket flow)")
+
+    # -- 5. no new www file names the wizard ----------------------------------
+    if os.path.isdir(www):
+        for dp, dns, fns in os.walk(www):
+            rel_dir = os.path.relpath(dp, www).replace(os.sep, "/")
+            rel_dir = "" if rel_dir == "." else rel_dir + "/"
+            if rel_dir.startswith(QIS_ALLOWED_DIRS):
+                dns[:] = []
+                continue
+            for fn in fns:
+                if not (fn.endswith(QIS_SCAN_EXT) or fn == "Makefile"):
+                    continue
+                rel = rel_dir + fn
+                try:
+                    data = open(os.path.join(dp, fn), "rb").read()
+                except OSError:
+                    continue
+                if b"QIS_wizard.htm" in data and rel not in QIS_ALLOWED_FILES:
+                    bad.append("www/%s names QIS_wizard.htm and is not on the "
+                               "allow-list (a new way into the stock wizard?)" % rel)
+        mt = rd("www/require/menuTrees/menuTree.js")
+        if mt and re.search(r'index:\s*"menu_QIS"', mt):
+            bad.append("www/require/menuTrees/menuTree.js: the menu_QIS entry is back")
+
+    # -- 7. rung B/C (2026-10-15): AP, Media Bridge and Router go to the native
+    # step page; the chooser may name the wizard only for Repeater and AiMesh
+    # Node; the MLO page's "Get started" goes to the Wireless console. mlo.js
+    # sits under sysdep/ (skipped by sub-check 5), so it is read here by name.
+    om = rd("www/Advanced_OperationMode_Content.asp", code=True)
+    if om:
+        for fl in sorted(set(re.findall(r"QIS_wizard\.htm\?flag=([A-Za-z0-9_]+)", om))):
+            if fl not in ("amasnode_page", "sitesurvey_rep", "sitesurvey_exp2", "sitesurvey_exp5"):
+                bad.append("www/Advanced_OperationMode_Content.asp: flag=%s goes to the stock "
+                           "wizard again (Reaper_ModeSetup.asp owns AP / Media Bridge / Router)" % fl)
+        for m in ("ap", "mb", "rt"):
+            if "/Reaper_ModeSetup.asp?mode=%s'" % m not in om:
+                bad.append("www/Advanced_OperationMode_Content.asp: no jump to "
+                           "Reaper_ModeSetup.asp?mode=%s" % m)
+    mlo = rd("www/sysdep/FUNCTION/SDN/SDN/mlo.js", code=True)
+    if mlo and "QIS_wizard.htm" in mlo:
+        bad.append("www/sysdep/FUNCTION/SDN/SDN/mlo.js: the MLO button goes to the stock wizard again")
+    if not os.path.isfile(os.path.join(www, "Reaper_ModeSetup.asp")):
+        bad.append("www/Reaper_ModeSetup.asp missing")
+    inj = rd("httpd/reaper_inject.c", code=True)
+    if inj and '"Reaper_ModeSetup.asp",' not in inj:
+        bad.append("httpd/reaper_inject.c: Reaper_ModeSetup.asp is not skip-listed "
+                   "(it would be bounced into the shell)")
+
+    # -- 6. install hooks: dashboard bundle stripped, theme sheet appended -----
+    mk = rd("www/Makefile")
+    if mk:
+        if "rm -rf $(INSTALLDIR)/www/dashboard" not in mk:
+            bad.append("www/Makefile: the ASUS dashboard bundle is no longer stripped")
+        if ('echo "" | cat - $(TOP)/www/reaper_qis.css >> '
+                '$(INSTALLDIR)/www/mobile/css/qis.css') not in mk:
+            bad.append("www/Makefile: reaper_qis.css is not appended to the wizard's qis.css")
+    sheet_p = os.path.join(www, "reaper_qis.css")
+    if not os.path.isfile(sheet_p):
+        bad.append("www/reaper_qis.css missing (the AiMesh wizard renders ASUS-blue)")
+    else:
+        raw = open(sheet_p, "rb").read()
+        if any(b >= 0x80 for b in raw):
+            bad.append("www/reaper_qis.css is not ASCII-only")
+        if b"007aff" in raw.lower():
+            bad.append("www/reaper_qis.css names the ASUS blue it exists to replace")
+
+    if bad:
+        return (False, "%d way(s) into the stock wizard outside AiMesh" % len(bad), bad)
+    return (True, "wizard reachable from AiMesh add-node only; QIS_default.cgi -> /, "
+                  "no first-use captive, subnet landing -> /, site2site off, "
+                  "dashboard stripped, theme sheet appended", [])
+
+
 # ---------------------------------------------------------------------------
 def main(argv):
     if len(argv) != 2:
@@ -1124,6 +1328,7 @@ def main(argv):
         ("fw-beta-channel",    check_fw_beta_channel(router)),
         ("wg-blog-proc",       check_wg_blog_proc(router)),
         ("warden-outbound-log", check_warden_outbound_log(router)),
+        ("qis-no-entry",       check_qis_entries(router)),
     ]
 
     npass = 0

@@ -1,8 +1,8 @@
 # Reaper firmware build scripts
 
-> **Doc status:** current as of **v3.1.5** · 2026-09-13 <!--@stamp-->
+> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
 
-The reusable toolkit that builds the Reaper images correctly across all six
+The reusable toolkit that builds the Reaper images correctly across all eight
 models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
 (WSL Ubuntu-20.04, user `reaper`); these scripts live at
 `/home/reaper/reaper_build/` on the build box — this folder is the tracked copy.
@@ -16,13 +16,15 @@ models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u
 | RT-BE88U      | `rt-be88u`     | `rt-be88u`  | RT-BE88U      | dual (2.4/5)     |
 | GT-BE98       | `gt-be98`      | `gt-be98`   | GT-BE98       | quad (2.4/5/5/6) |
 | GT-BE98 Pro   | `gt-be98-pro`  | `gt-be98_pro` | GT-BE98_PRO | quad (2.4/5/5/6) |
-| GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |   <!--@models-->
+| GT-BE19000    | `gt-be19000`   | `gt-be19000` | GT-BE19000   | tri  (2.4/5/6)   |
+| ZenWiFi BQ16  | `bq16`         | `bq16`       | BQ16         | quad (2.4/5/5/6) |
+| ZenWiFi BQ16 Pro | `bq16-pro`  | `bq16_pro`   | BQ16_PRO     | quad (2.4/5/6/6) |   <!--@models-->
 
 BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a
 whitelist) + a small per-model identity overlay (banner, `target.mak` block,
-`version.conf`, model-only www/blobs). All six models share PROFILE
-`96813GW`. The **GT-BE19000** builds in a git worktree (`REAPER_TREE`/`REAPER_TDIR`)
-and publishes as a prerelease. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
+`version.conf`, model-only www/blobs). All eight models share PROFILE
+`96813GW`. The **GT-BE19000**, the **BQ16** and the **BQ16 Pro** build in git worktrees (`REAPER_TREE`/`REAPER_TDIR`)
+and publish as prereleases. Every image is built in both **MCP** and **noMCP** variants; NAND-only.
 
 ## Files
 
@@ -32,13 +34,15 @@ and publishes as a prerelease. Every image is built in both **MCP** and **noMCP*
 | `_reaper_build_lib.sh`  | Build engine. `reaper_build()` runs both variants (flips `RTCONFIG_REAPER_MCP` off + `_noMCP` EXTENDNO for the 2nd, restores after), passes `FORCE=1` on both make passes, and runs `reaper_verify.sh` after each variant — **blocks ship on gate FAIL**. Also stamps the **channel** into EXTENDNO: `_BETA` unless the caller says `stable`, so a pre-release is named for what it is. Beta is the default deliberately — an image only becomes stable when Dev is merged, so forgetting the word can only ever label something too cautiously. `ship` never overwrites a ladder entry: identical content is left alone, different content is staged under the next free `_rN`. Sourced by every `build_<model>.sh`. |
 | `build_<model>.sh`      | Thin per-model launcher: sets BRANCH/TARGET/PREFIX/VARIANTS/SHIP_DIR then `source _reaper_build_lib.sh; reaper_build "$@"`. `VARIANTS` and `STORAGE` honour an environment override (`VARIANTS=MCP build_be96u.sh ship`), so a one-variant build needs no edit to a shared file. Args are order-free: `ship`, `stable`, `beta`. |
 | `port_sibling_v2.sh` *(maintainer tooling, outside this repo)* | Guarded overlay port: syncs the full shared diff from `be96u-only`, protects the per-model identity overlay, and aborts on wrong branch / base / banner-sha / BUILD_NAME / band mismatch. `port_sibling_v2.sh <MODEL> [--commit] [--version V]` (default dry-run). **Note (2026-08-05):** the port and the verify gate now share one `_port_protect.sh` classifier; the port syncs everything under `sysdep/FUNCTION/` (the shared, flag-keyed VPN/MSWAN/SDN pages that used to be skipped) and **aborts if any shared file still differs from canon after the commit**, and `reaper_verify` fails the build on a shared-parity miss. The only remaining manual step is the **dict supplement** (dicts stay per-model-protected): after a version port, `git checkout be96u-only -- www/*.dict` and re-check lockstep. |
-| `ci/build_one.sh`       | CI launcher: ONE model, ONE variant, no ship. Same shape the engine documents (set BRANCH/TARGET/PREFIX/VARIANTS/STORAGE, call `reaper_build`), because the interactive launchers carry a Windows `SHIP_DIR`. Handles **all six models** (a sibling is the canon tree plus `overlays/<MODEL>.patch`, applied by `container_build.sh` before this runs). It inherits `REAPER_BETA` from `container_build.sh`, which sets it **explicitly to 0 or 1** — never unset, or a clean-room build on main would inherit the engine's beta default and publish a release under a pre-release name. |
+| `ci/build_one.sh`       | CI launcher: ONE model, ONE variant, no ship. Same shape the engine documents (set BRANCH/TARGET/PREFIX/VARIANTS/STORAGE, call `reaper_build`), because the interactive launchers carry a Windows `SHIP_DIR`. Handles **all eight models** (a sibling is the canon tree plus `overlays/<MODEL>.patch`, applied by `container_build.sh` before this runs). It inherits `REAPER_BETA` from `container_build.sh`, which sets it **explicitly to 0 or 1** — never unset, or a clean-room build on main would inherit the engine's beta default and publish a release under a pre-release name. |
 | `ci/container_build.sh` | Runs inside the Ubuntu 20.04 container on a GitHub runner: recreates the documented environment (`/home/reaper/asuswrt-be96u`, `/home/reaper/reaper_build`, `/opt/toolchains`, uid-1001 `reaper`, `sh`→bash, python2), fetches the pinned base, applies the series with `git am --keep-cr`, asserts the `release/src/router` tree hash against `provenance/manifest.json`, then calls `ci/build_one.sh`. Driven by `.github/workflows/public-build.yml`; user-facing docs in `docs/CI-PUBLIC-BUILD.md`. |
 | `verify_markers.txt`    | Marker manifest read by `reaper_verify.sh` — one line per field-critical fix, proving it is physically inside every staged image. Previously build-box-only, which silently downgraded the CI gate from 19 checks to 18. |
-| `reaper_verify.sh`      | Post-build QA gate (it prints its own pass/warn/fail tally; 28 checks as of 2026-09-12 — the three newest: `banner-refs` reads every banner filename the staged pages reference and fails if any is not staged; `dongle-fw` fails if a model's expected dongle chips have no `rtecdc.bin` in the image, because the build skips a missing `sysdeps/<MODEL>/` silently; `dongle-model` fails if any staged `rtecdc.bin` does not embed the name of the model being built — Broadcom stamps it into every blob, so a sibling's or the other SKU's firmware is caught as identity, not just presence) on the staged fs + packaged image (per-model banner sha + no foreign/stale banner, SAMBA4 + no libiconv, httpd NEEDED closure, FIT model-id via `dumpimage`, MCP/noMCP purity, ARM ELF, www presence/markers, i18n dict lockstep, **shared-code parity vs the RT-BE96U canon**, and **rung-critical patch markers in the staged image** — the last two added 2026-08-05 to make a missed cross-model patch un-shippable). |
+| `reaper_verify.sh`      | Post-build QA gate (it prints its own pass/warn/fail tally: 37 results on an RT-BE96U MCP image as of 2026-10-20, some checks reporting one line per binary; the patch-marker check alone held 502 rules — the newest check, `no-private-keys`, runs `check_no_private_keys.py` over the whole staged rootfs and fails if any file holds PEM or PuTTY private-key material, because a key baked into the image is shared by every unit of the model; the three before it: `banner-refs` reads every banner filename the staged pages reference and fails if any is not staged; `dongle-fw` fails if a model's expected dongle chips have no `rtecdc.bin` in the image, because the build skips a missing `sysdeps/<MODEL>/` silently; `dongle-model` fails if any staged `rtecdc.bin` does not embed the name of the model being built — Broadcom stamps it into every blob, so a sibling's or the other SKU's firmware is caught as identity, not just presence) on the staged fs + packaged image (per-model banner sha + no foreign/stale banner, SAMBA4 + no libiconv, httpd NEEDED closure, FIT model-id via `dumpimage`, MCP/noMCP purity, ARM ELF, www presence/markers, i18n dict lockstep, **shared-code parity vs the RT-BE96U canon**, and **rung-critical patch markers in the staged image** — the last two added 2026-08-05 to make a missed cross-model patch un-shippable). |
 | `reaper_dongle_id.sh`   | **Radio-firmware identity, one table, three call sites.** `reaper_dongle_id.sh <MODEL> <rtecdc.bin>...` checks that every Broadcom dongle blob names the model it is being installed into (the name is stamped into each blob; GT-BE98 Pro's read `GT-BE98 PRO`). Called BEFORE the build by `_reaper_build_lib.sh` (local) and `ci/container_build.sh` (clean room) on `sysdeps/<MODEL>/`, so a wrong tree never gets a make, and AFTER it by `reaper_verify` 8d on every blob staged in the image. Added 2026-09-12 after the GT-BE19000AI tree's blob was staged for the non-AI board and passed every gate then in place: the wrong radio firmware does not degrade a radio, it locks the router out (ASUS recovery tool or manual reflash). |
 | `_port_protect.sh`      | **Single source of truth** for the shared-vs-per-model classification, sourced by BOTH `port_sibling_v2.sh` (what to sync) and `reaper_verify.sh` (what must never lag) so they can never disagree. `PP_SYNC_ANYWAY_RE` force-syncs `www/sysdep/FUNCTION/` (flag-keyed shared VPN/MSWAN/SDN/theme code); protects per-model art/blobs/dicts/version/target.mak and the model-unique **`*_REAPER_Header.{png,mp4}`** (banner + animated login/logout/set-password header, each copied per-model from `reaper-mockups` and re-pointed in the `PP_BANNER_REFS` pages); provides `pp_parity_check`. Added after the 2026-08-05 MSWAN `/sysdep/` gap shipped siblings without the PPPoE-1500 fix. **Watch-item:** `pp_parity_check` skips protected (cls 0) files — it catches "should've synced but didn't", not a shared file *wrongly* protected. Today the only shared zone under a protected path is `www/sysdep/FUNCTION/` (force-synced); if shared code is ever added under `sysdep/` *outside* `FUNCTION/`, or under the non-www `router/sysdep/`, add a matching `PP_SYNC_ANYWAY_RE` clause or it will silently not reach the siblings. |
 | `reaper_hiddencheck.py` | **Hidden-character scan** of new code: parses `.patch` files and checks only their ADDED lines (a plain file or directory is scanned whole). Fatal: bidirectional overrides, zero-width/format characters, control bytes, invalid UTF-8, look-alike letters inside identifiers in code files. Warnings: odd spaces, `eval`/`atob`/escape-run shapes in JS, lines over 2000 chars. Allowlist `.github/hidden-allowlist.txt` (vendored paths downgrade; `!` hard-allows generated autotools files). Runs in `cut_rung.sh` step 3b before the patches are installed, in `cut_fleet.sh` on the regenerated overlays, and in `repo-hygiene.yml` over the whole series. Stdlib only, Python 3.8+. |
+| `reaper_piicheck.py`    | **Personal-data scan** of everything the repo publishes (see "Personal data never enters this repo" below). Generic detectors on whole files and on the ADDED lines of Reaper-owned files in a patch; rule `pemkey` on the ADDED lines of every patch, vendored or not (a PEM private-key header; upstream test fixtures are the usual source and do not belong in the series); a private deny-list (`--denylist FILE` / `PII_DENYLIST`, never committed) on every line, matches reported without the value. Allowlist `.github/pii-allowlist.txt`. Runs in `repo-hygiene.yml` (deny-list required on pushes and same-repo PRs); host test `tests/test_piicheck.py`. Stdlib only, Python 3.8+. |
+| `check_no_private_keys.py` | **Image key gate** behind `reaper_verify` check 29: walks a staged rootfs and fails on any regular file holding private-key material (PEM header + body + END, or a PuTTY key file); a binary that only quotes the header text passes. `key-allowlist.txt` names the public self-test vectors some libraries compile in (GnuTLS's six, which Samba 4 brings along), by exact block sha256 and path glob - a different block in that file, or that block elsewhere, still fails. Paths and header types only, never contents. Host test `tests/test_no_private_keys.py`. Stdlib only, Python 3.8+. |
 
 ## Maintainer-only tooling (not in this repo)
 
@@ -131,10 +135,35 @@ resolves `<user>` generically and exports `WIN_ASUS_ROOT`; every launcher and
 Resolution order: an explicit `WINUSER` env var is honored as-is; otherwise it
 auto-detects the profile **folder** — the basename of `%USERPROFILE%` (validated
 against the ASUS mirror), then a scan of `/mnt/c/Users/*` for the mirror, then
-`builder` (the original build box) as last resort. It deliberately resolves the
+the unvalidated `%USERPROFILE%` guess as last resort. It deliberately resolves the
 profile *folder*, not `%USERNAME%`: the two can differ (e.g. login "Builder" but
 folder `C:\Users\builder`). Override on a different box with
-`WINUSER=<name> build_<model>.sh …`.
+`WINUSER=<name> build_<model>.sh …`. No developer's folder name is built into any
+script; `jscheck.py` and the private-fixture tier of `tests/test_fwsim.py` glob
+`/mnt/c/Users/*` the same way.
+
+## Personal data never enters this repo
+
+Tests, docs, examples and source comments use documentation values only: IPv4
+192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737); IPv6 2001:db8::/32
+(RFC 3849) or 3fff::/20 (RFC 9637); MAC 00:00:5e:00:53:xx (RFC 7042;
+02:00:5e:00:53:xx when a locally administered one is needed); host names under
+example.com/org/net. Never paste a value read off a real network - an address, a
+MAC, a host name, an account, a path with a profile name in it.
+
+`reaper_piicheck.py` enforces it in `repo-hygiene.yml` on every push and pull
+request: generic detectors (real-looking MACs, global IPv4/IPv6, OS-default host
+names, personal mailboxes, home paths, decodable credentials) plus a private
+deny-list of the maintainer's own identifiers, fed from the `PII_DENYLIST`
+repository secret and never stored here. `.github/pii-allowlist.txt` accepts
+public infrastructure and vendored upstream files only. Run it locally before a
+push with the private list: `python3 build-scripts/reaper_piicheck.py
+--denylist <private file> --require-denylist .`
+
+The same scan refuses private-key material on any added line of any patch,
+vendored packages included: a vendored package's test tree (OpenSSH `regress/`,
+net-snmp `testing/`) is dropped before the package is committed, not carried.
+And `reaper_verify` check 29 asserts the other end: no key file in the image.
 
 ## Key traps (see the project `build-sop` memory for the full ledger)
 

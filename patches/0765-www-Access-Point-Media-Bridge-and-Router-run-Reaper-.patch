@@ -1,0 +1,629 @@
+From 8c8045f0c22b6d0db9d5bff3a81b29de88583f0f Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 16 Oct 2026 14:42:58 -0400
+Subject: [PATCH] www: Access Point, Media Bridge and Router run Reaper's own
+ step page
+
+Changing the operation mode to Access Point, Media Bridge or back to
+Router sent the shell to the stock QIS wizard (QIS_wizard.htm flag=lanip,
+sitesurvey_mb, rtMode). Reaper_ModeSetup.asp?mode=ap|mb|rt replaces those
+three hand-offs and writes exactly what the stock QIS_V3 wizard writes on
+this platform (handler.js goTo.apMode / mbMode / rtMode; plugins.js
+setupWLCNvram, handle_mld_enable, getRestartService): sw_mode, wlc_*,
+cfg_master, the LAN step (DHCP or static), mld_enable, restart_all for
+Router and reboot otherwise. The Media Bridge parent list comes from the
+Site Survey engine (reaper_wifi.cgi). The page is skip-listed in
+reaper_inject.c: its own theme, top level, it ends in a restart. The
+chooser's WISP branch (sw_mode 6) is gone - RTCONFIG_WISP is unset on the
+roster. The MLO page's "Get started" opens the Wireless console instead
+of the wizard. Repeater and AiMesh Node still use the stock wizard.
+Strings RMOD_1..85 are in the packs commit. Lean: test_mode_setup.py,
+the qis-no-entry static check (sub-check 7), four markers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |   1 +
+ .../www/Advanced_OperationMode_Content.asp    |  12 +-
+ release/src/router/www/Reaper_ModeSetup.asp   | 524 ++++++++++++++++++
+ .../router/www/sysdep/FUNCTION/SDN/SDN/mlo.js |   3 +-
+ 4 files changed, 532 insertions(+), 8 deletions(-)
+ create mode 100755 release/src/router/www/Reaper_ModeSetup.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index fd596028fcc..3598690c77c 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -282,6 +282,7 @@ static const char *reaper_skip[] = {
+ 	   QIS_* pages are also matched by the prefix check in reaper_should_inject().) */
+ 	"Main_Password.asp",
+ 	"Reaper_WiFiSetup.asp",	/* v3.1.0 first-boot box: theme yes, bounce no - same as Main_Password */
++	"Reaper_ModeSetup.asp",	/* 2026-10-15 operation-mode step page: own theme, top-level (it ends in a reboot) */
+ 	"QIS_wizard.htm",
+ 	/* NOTE: Advanced_Wireless_Content.asp (state.js gate 3) moved to
+ 	   reaper_css_only[] on 2026-08-13 - it must still stay TOP-LEVEL, but a full
+diff --git a/release/src/router/www/Advanced_OperationMode_Content.asp b/release/src/router/www/Advanced_OperationMode_Content.asp
+index 24846c33ca8..e3eda7da4c7 100644
+--- a/release/src/router/www/Advanced_OperationMode_Content.asp
++++ b/release/src/router/www/Advanced_OperationMode_Content.asp
+@@ -414,29 +414,27 @@ function saveMode(){
+ 			confirmFlag = confirm(sdn_change_mode_hint.replace("#OPMODE", $("#apMode").find("label").html()));
+ 		}
+ 		if(confirmFlag){
+-			parent.location.href = '/QIS_wizard.htm?flag=lanip';
++			/* reaper 2026-10-15 (rung B): the native step page, not the stock wizard */
++			parent.location.href = '/Reaper_ModeSetup.asp?mode=ap';
+ 		}
+ 		return false;
+ 	}
+ 	else if(document.form.sw_mode.value == 4){
+-		parent.location.href = '/QIS_wizard.htm?flag=sitesurvey_mb';
++		parent.location.href = '/Reaper_ModeSetup.asp?mode=mb';	/* reaper rung B */
+ 		return false;
+ 	}
+ 	else if(document.form.sw_mode.value == 5){
+ 		parent.location.href = '/QIS_wizard.htm?flag=amasnode_page';
+ 		return false;
+ 	}
+-	else if(document.form.sw_mode.value == 6){
+-		parent.location.href = '/QIS_wizard.htm?flag=wispMode';
+-		return false;
+-	}
++	/* reaper rung B: the WISP branch (sw_mode 6) is gone - RTCONFIG_WISP is unset on the roster, its radio is never shown */
+ 	else{ // default router
+ 		let confirmFlag = true;
+ 		if(isSupport("mtlancfg") && sw_mode_orig == "3"){
+ 			confirmFlag = confirm(sdn_change_mode_hint.replace("#OPMODE", $("#routerMode").find("label").html()));
+ 		}
+ 		if(confirmFlag){
+-			parent.location.href = '/QIS_wizard.htm?flag=rtMode';
++			parent.location.href = '/Reaper_ModeSetup.asp?mode=rt';	/* reaper rung B */
+ 		}
+ 		return false;		
+ 	}
+diff --git a/release/src/router/www/Reaper_ModeSetup.asp b/release/src/router/www/Reaper_ModeSetup.asp
+new file mode 100755
+index 00000000000..338e2ddd857
+--- /dev/null
++++ b/release/src/router/www/Reaper_ModeSetup.asp
+@@ -0,0 +1,524 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<!--
++	Reaper_ModeSetup.asp - operation-mode step page (rung B of docs/backlog/qis-aimesh-only.md, 2026-10-15).
++
++	Replaces the stock wizard hand-off from Advanced_OperationMode_Content.asp for
++	Access Point, Media Bridge and the return to Router. Repeater and AiMesh Node
++	still go to the stock wizard. Entered as /Reaper_ModeSetup.asp?mode=ap|mb|rt.
++
++	WHAT IT WRITES is exactly what the stock QIS_V3 wizard writes on this
++	platform (bcmwifi + amas + mlo), read from www/sysdep/FUNCTION/QIS_V3/mobile/js:
++	  ap  handler.js goTo.apMode: sw_mode=3 wlc_psta=0 wlc_dpsta=0 mlo_rp=0 mlo_mb=0
++	      cfg_master=1, then the LAN step (lanDHCP / apply.lanStatic).
++	  mb  goTo.mbMode: sw_mode=3 wlc_psta=1 wlc_dpsta=0 cfg_master=0; the parent
++	      from plugins.js setupWLCNvram() folded by transformWLCObj() into wlc_*;
++	      generalObj (x_Setting w_Setting qis_Setting = 1); the LAN step.
++	  rt  goTo.rtMode: sw_mode=1 wlc_psta=0 wlc_dpsta=0 wlc_band="" mlo_rp=0 mlo_mb=0
++	      cfg_master=1 and, as the advSetting + mode-change branch does, the LAN
++	      back to static lan_ipaddr_rt / lan_netmask_rt with DNS cleared.
++	  mld_enable follows plugins.js handle_mld_enable(): RT/AP take the default on
++	      a mode change, MB forces 0.
++	  service: plugins.js getRestartService(): restart_all for a change to
++	      Router, reboot for every other mode change.
++	The AP flow does not run the wizard's Wi-Fi step: the router keeps its
++	networks (they live in the main SDN profile on this build). The Router flow
++	does not run the WAN wizard either: the WAN page owns WAN settings.
++
++	The stock wizard's parent password pre-check (start_wpasupp_qis) is a no-op
++	on a configured box: rc's wpasupp_qis sets every wpasN_reason to "completed"
++	unless x_Setting=0 or the box is already a client. So there is none here, and
++	the page says the password is only tried after the restart.
++
++	Parent list: Reaper's survey engine (reaper_wifi.cgi svystart / svydata, the
++	Site Survey page's backend), not restart_wlcscan + get_ap_info.
++
++	Save: one POST to applyapp.cgi, the endpoint httpApi.nvramSet uses for the
++	wizard. A reboot can cut the reply, so the overlay starts on success AND on
++	error (reaper-ui rule 47); nvramSet would call back on success only. Top-level, own theme: reaper_skip[] in httpd/reaper_inject.c.
++	i18n: RMOD_* plus reused stock tokens, only in backtick strings (rule 29).
++	ASCII only (rule 1).
++-->
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#menu5_6_1#></title>
++<script type="text/javascript" src="/js/jquery.js"></script>
++<script type="text/javascript" src="/js/httpApi.js"></script>
++<style>
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
++:root{
++  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
++  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
++  --crimson:#E10600; --crimson-deep:#B3000C;
++  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
++  --jade:#4FB286; --amber:#E0A93B;
++  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
++  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
++}
++*{box-sizing:border-box}
++html,body{margin:0;min-height:100%}
++body{font-family:var(--body);color:var(--bone-dim);background:var(--bg);
++  background-image:radial-gradient(1200px 500px at 18% -10%,rgba(225,6,0,.10),transparent 60%),
++    radial-gradient(100% 100% at 50% 40%,transparent 55%,rgba(0,0,0,.55) 100%);
++  -webkit-font-smoothing:antialiased;padding:26px 16px 60px}
++h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
++html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
++a{color:var(--bone-dim)} a:hover{color:var(--bone)}
++.wrap{max-width:720px;margin:0 auto}
++.eyebrow{font-family:var(--hdr);text-transform:uppercase;letter-spacing:.22em;font-size:11px;color:var(--steel)}
++.brand{display:flex;align-items:center;gap:10px;margin-bottom:22px}
++.brand .mark{font-family:var(--hdr);font-weight:700;font-size:18px;letter-spacing:.32em;color:var(--bone)}
++.brand .mark b{color:var(--crimson)}
++.brand .spacer{flex:1}
++.head h1{font-size:26px;font-weight:700;margin:4px 0 6px}
++.head p{margin:0 0 18px;font-size:13.5px;line-height:1.55}
++.from{display:inline-flex;align-items:center;gap:8px;font-family:var(--hdr);font-weight:600;font-size:12px;letter-spacing:.08em;
++  text-transform:uppercase;border:1px solid var(--line-soft);border-radius:999px;padding:5px 12px;background:var(--panel);color:var(--bone-dim);margin-bottom:18px}
++.from .arrow{color:var(--crimson)}
++.from .to{color:var(--bone)}
++.steps{display:flex;gap:6px;margin:0 0 16px;list-style:none;padding:0;flex-wrap:wrap}
++.steps li{flex:1 1 0;min-width:0;border-top:3px solid var(--line-soft);padding-top:7px;font-family:var(--hdr);font-weight:600;
++  font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.steps li.done{border-top-color:var(--jade);color:var(--bone-dim)}
++.steps li.cur{border-top-color:var(--crimson);color:var(--bone)}
++.panel{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:20px 22px;margin-bottom:16px}
++.panel h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px;overflow-wrap:anywhere}
++.panel .sub{font-size:12.5px;color:var(--steel);margin:2px 0 16px;line-height:1.55}
++.choice{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line-soft);border-radius:11px;background:var(--panel-2);
++  padding:13px 14px;margin-bottom:10px;cursor:pointer;transition:.15s}
++.choice:hover{border-color:var(--line)}
++.choice.sel{border-color:var(--crimson);background:linear-gradient(180deg,rgba(225,6,0,.08),var(--panel-2))}
++.choice input{margin:3px 0 0;accent-color:var(--crimson)}
++.choice .t{color:var(--bone);font-weight:600;font-size:13.5px}
++.choice .d{font-size:12.5px;line-height:1.5;margin-top:3px}
++.rec{font-family:var(--hdr);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--jade);margin-left:6px}
++.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:12px 14px;margin-top:6px}
++.fld label{display:block;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;font-family:var(--hdr);font-weight:600;color:var(--steel);margin-bottom:5px}
++.fld input,.fld select{width:100%;background:#0b0b0e;border:1px solid rgba(255,255,255,.10);border-radius:8px;color:var(--bone);
++  font:inherit;font-size:14px;padding:9px 11px}
++.fld input:focus,.fld select:focus{outline:none;border-color:var(--crimson)}
++.fld .opt{text-transform:none;letter-spacing:0;font-family:var(--body);font-weight:400}
++.fld.bad input{border-color:var(--amber)}
++.fld .err{font-size:11.5px;color:var(--amber);margin-top:4px}
++.showpw{display:flex;align-items:center;gap:7px;font-size:12.5px;margin-top:9px;cursor:pointer}
++.showpw input{accent-color:var(--crimson)}
++.fixed{display:none;margin:4px 0 6px 30px}
++.fixed.on{display:block}
++.svytools{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
++.svytools .state{font-size:12.5px;flex:1;min-width:160px}
++.svy{border:1px solid var(--line-soft);border-radius:11px;overflow:auto;max-height:430px}
++.svy .empty{padding:18px 14px;font-size:12.5px}
++.ap{display:grid;grid-template-columns:22px minmax(0,1fr) auto auto;gap:4px 12px;align-items:center;padding:11px 14px;
++  border-top:1px solid var(--line-soft);cursor:pointer;background:var(--panel-2)}
++.ap:first-child{border-top:0}
++.ap:hover{background:#17171c}
++.ap.sel{background:linear-gradient(90deg,rgba(225,6,0,.10),var(--panel-2))}
++.ap.off{cursor:not-allowed;opacity:.55}
++.ap input{accent-color:var(--crimson);margin:0}
++.ap .n{color:var(--bone);font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.ap .m{font-size:11.5px;color:var(--steel);grid-column:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.ap .band{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;border:1px solid var(--line-soft);border-radius:5px;padding:2px 7px;grid-row:1/span 2;grid-column:3}
++.bars{grid-row:1/span 2;grid-column:4;display:flex;gap:2px;align-items:flex-end;height:16px}
++.bars i{display:block;width:4px;background:rgba(255,255,255,.12);border-radius:1px}
++.bars i:nth-child(1){height:5px}.bars i:nth-child(2){height:8px}.bars i:nth-child(3){height:12px}.bars i:nth-child(4){height:16px}
++.bars.l1 i:nth-child(-n+1),.bars.l2 i:nth-child(-n+2),.bars.l3 i:nth-child(-n+3),.bars.l4 i:nth-child(-n+4){background:var(--jade)}
++.bars.weak i:nth-child(-n+1){background:var(--amber)}
++.manual{font-size:12.5px;margin-top:10px}
++.manual a{cursor:pointer;text-decoration:underline}
++.note{display:flex;gap:10px;border:1px solid var(--line-soft);border-left:3px solid var(--steel);border-radius:9px;background:#0b0b0e;
++  padding:10px 12px;font-size:12.5px;line-height:1.55;margin-top:14px}
++.note.warn{border-left-color:var(--amber)}
++.note b{color:var(--bone)}
++.review{width:100%;border-collapse:collapse;font-size:13px}
++.review th{text-align:left;font-family:var(--hdr);font-weight:600;font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;
++  color:var(--steel);padding:9px 12px 9px 0;vertical-align:top;width:34%;border-top:1px solid var(--line-soft)}
++.review td{padding:9px 0;color:var(--bone);border-top:1px solid var(--line-soft);line-height:1.5;overflow-wrap:anywhere}
++.review tr:first-child th,.review tr:first-child td{border-top:0}
++.tag{display:inline-block;font-family:var(--hdr);font-weight:600;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
++  border:1px solid;border-radius:5px;padding:2px 7px;margin:0 4px 4px 0}
++.tag.good{color:var(--jade);border-color:rgba(79,178,134,.35)}
++.tag.warn{color:var(--amber);border-color:rgba(224,169,59,.35)}
++.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
++.actions .spacer{flex:1}
++.btn{display:inline-block;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone);
++  font-family:var(--hdr);font-weight:600;font-size:13px;letter-spacing:.05em;border-radius:9px;
++  padding:10px 20px;cursor:pointer;transition:.15s;text-transform:uppercase;white-space:nowrap;text-decoration:none}
++.btn:hover{border-color:var(--line)}
++.btn.primary{background:linear-gradient(180deg,var(--crimson),var(--crimson-deep));border-color:transparent;color:#fff}
++.btn.primary:hover{filter:brightness(1.1)}
++.btn.ghost{background:transparent}
++.btn.sm{padding:7px 14px;font-size:12px}
++.btn[disabled]{opacity:.45;cursor:not-allowed;filter:none}
++.applying{position:fixed;inset:0;background:rgba(0,0,0,.84);display:none;z-index:60;place-items:center;padding:16px}
++.applying.show{display:grid}
++.abox{text-align:center;max-width:460px}
++.abox h2{font-size:22px;margin-bottom:10px;letter-spacing:.18em;text-transform:uppercase}
++.abox .count{font-family:var(--hdr);font-weight:700;font-size:44px;color:var(--crimson);margin:6px 0}
++.abox p{font-size:13px;line-height:1.6;margin:6px 0;overflow-wrap:anywhere}
++.abox .land{color:var(--bone)}
++.abox .btn{margin-top:14px;display:none}
++@media (max-width:560px){
++  body{padding-top:18px}
++  .head h1{font-size:22px}
++  .panel{padding:16px}
++  .steps li{font-size:10px;letter-spacing:.06em}
++  .review th{width:40%}
++  .fixed{margin-left:0}
++}
++</style>
++</head>
++<body>
++<div class="wrap">
++  <div class="brand">
++    <span class="mark">R<b>E</b>APER</span><span class="spacer"></span>
++    <button type="button" class="btn ghost sm" onclick="cancel()"><#CTL_Cancel#></button>
++  </div>
++  <div class="head">
++    <div class="eyebrow"><#menu5_6_1#></div>
++    <h1 id="title"></h1>
++    <p id="lead"></p>
++    <div class="from" id="fromto"></div>
++  </div>
++  <ol class="steps" id="steps"></ol>
++  <div id="body"></div>
++  <div class="actions" id="actions">
++    <button type="button" class="btn ghost" id="back" onclick="go(-1)"><#CTL_prev#></button>
++    <span class="spacer"></span>
++    <button type="button" class="btn primary" id="next" onclick="go(1)"><#CTL_next#></button>
++  </div>
++</div>
++
++<div class="applying" id="applying" role="alertdialog" aria-live="polite">
++  <div class="abox">
++    <h2 id="ov_t"></h2>
++    <div class="count" id="ov_c"></div>
++    <p id="ov_p"></p>
++    <p class="land" id="ov_l"></p>
++    <a class="btn primary" id="ov_go" href="/"></a>
++  </div>
++</div>
++
++<script>
++var NV = {
++  sw_mode: '<% nvram_get("sw_mode"); %>',
++  wlc_psta: '<% nvram_get("wlc_psta"); %>',
++  re_mode: '<% nvram_get("re_mode"); %>',
++  lan_ipaddr: '<% nvram_get("lan_ipaddr"); %>',
++  lan_hostname: '<% nvram_get("lan_hostname"); %>',
++  lan_ipaddr_rt: '<% nvram_default_get("lan_ipaddr_rt"); %>',
++  lan_netmask_rt: '<% nvram_default_get("lan_netmask_rt"); %>',
++  mld_enable: '<% nvram_get("mld_enable"); %>',
++  mld_default: '<% nvram_default_get("mld_enable"); %>',
++  wl11be: ['<% nvram_get("wl0_11be"); %>', '<% nvram_get("wl1_11be"); %>', '<% nvram_get("wl2_11be"); %>'],
++  reboot_s: parseInt('<% get_default_reboot_time(); %>', 10) || 150,
++  http_id: '<% nvram_get("http_id"); %>'
++};
++var T = {
++  rt:`<#RMOD_1#>`, ap:`<#RMOD_2#>`, mb:`<#RMOD_3#>`, rp:`<#RMOD_4#>`, node:`<#RMOD_80#>`,
++  stepParent:`<#RMOD_11#>`, stepPass:`<#RMOD_12#>`, stepAddr:`<#RMOD_13#>`, stepReview:`<#RMOD_14#>`
++};
++var FLOWS = {
++  ap: {title:`<#RMOD_5#>`, lead:`<#RMOD_8#>`, steps:['addr','review']},
++  mb: {title:`<#RMOD_6#>`, lead:`<#RMOD_9#>`, steps:['parent','pass','addr','review']},
++  rt: {title:`<#RMOD_7#>`, lead:`<#RMOD_10#>`, steps:['review']}
++};
++
++/* the mode the box is in now, read the way Advanced_OperationMode_Content.asp reads it */
++var CUR = (function(){
++  if (NV.re_mode === '1') return 'node';
++  if (NV.sw_mode === '1') return 'rt';
++  if (NV.sw_mode === '3') return NV.wlc_psta === '1' ? 'mb' : NV.wlc_psta === '2' ? 'rp' : 'ap';
++  if (NV.sw_mode === '2') return 'rp';
++  return 'rt';
++})();
++var q = location.search.match(/[?&]mode=(ap|mb|rt)(?:&|$)/);
++var MODE = q ? q[1] : '';
++var F = FLOWS[MODE], idx = 0;
++var HOST = (NV.lan_hostname || 'router').toLowerCase() + '.local';
++var st = {lan:'dhcp', ip:'', mask:'255.255.255.0', gw:'', dns1:'', dns2:'', pick:-1, man:false,
++          mssid:'', msec:'psk2', mband:'1', pw:''};
++var SVY = {state:'idle', aps:[], err:''}, POLL = null;
++
++function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
++function fmt(s){ var a=arguments, i=1; return String(s).replace(/%s/g,function(){ return i<a.length ? a[i++] : ''; }); }
++
++/* ---------- parent network: survey record -> the wlc_* values setupWLCNvram() writes ---------- */
++var BANDN = {2:'2.4 GHz', 5:'5 GHz', 6:'6 GHz'};
++function secMap(a){
++  var s = String(a.sec || ''), p = s.split(' + ').filter(function(x){return /Personal$/.test(x);})[0] || '';
++  if (s === '' || s === 'Open') return {auth:'open', crypto:'', wep:'0', pass:false};
++  if (s === 'OWE' || /^OWE( \+|$)/.test(s)) return {auth:'owe', crypto:'aes', wep:'0', pass:false};
++  if (/WPA3/.test(p) && /WPA2/.test(p)) return {auth:'psk2sae', crypto:'aes', wep:'0', pass:true};
++  if (/WPA3/.test(p))
++    return {auth:'sae', crypto:(a.phy >= 7 && NV.wl11be[a.unit] === '1') ? 'aes+gcmp256' : 'aes', wep:'0', pass:true};
++  if (/^WPA\/WPA2/.test(p)) return {auth:'pskpsk2', crypto:'aes', wep:'0', pass:true};
++  if (/WPA2/.test(p)) return {auth:'psk2', crypto:'aes', wep:'0', pass:true};
++  if (/^WPA-/.test(p)) return {auth:'psk', crypto:'aes', wep:'0', pass:true};
++  return null;	/* WEP, Enterprise-only, FILS, Unknown: not offered for a bridge */
++}
++function level(r){return r>=-55?4:r>=-65?3:r>=-75?2:1;}
++function parent(){
++  if (st.man){
++    var m = {open:{auth:'open',crypto:'',wep:'0',pass:false}, psk2:{auth:'psk2',crypto:'aes',wep:'0',pass:true},
++             psk2sae:{auth:'psk2sae',crypto:'aes',wep:'0',pass:true}, sae:{auth:'sae',crypto:'aes',wep:'0',pass:true}}[st.msec];
++    return {ssid:st.mssid, unit:parseInt(st.mband,10), band:BANDN[[2,5,6][st.mband]], bssid:'', sec:secLabel(st.msec), map:m};
++  }
++  var a = SVY.aps[st.pick]; if (!a) return null;
++  return {ssid:a.ssid, unit:a.unit, band:BANDN[a.band]||'', bssid:a.bssid, sec:a.sec, map:secMap(a)};
++}
++function secLabel(k){ return {open:`<#RMOD_81#>`, psk2:'WPA2-Personal', psk2sae:'WPA2/WPA3-Personal', sae:'WPA3-Personal'}[k]; }
++function needPass(){ var p=parent(); return !p || !p.map || p.map.pass; }
++
++function svyStart(){
++  SVY = {state:'scan', aps:[], err:''}; st.pick=-1; render();
++  $.ajax({url:'/reaper_wifi.cgi?action=svystart&unit=a&http_id='+encodeURIComponent(NV.http_id)+'&_='+Date.now(), dataType:'json', timeout:15000,
++    success:function(r){
++      if (!r || !r.ok){ SVY.state='err'; SVY.err=(r&&(r.err==='busy'||r.err==='busycap'))?`<#RMOD_77#>`:`<#RMOD_78#>`; render(); return; }
++      svyPoll();
++    },
++    error:function(){ SVY.state='err'; SVY.err=`<#RMOD_78#>`; render(); }});
++}
++function svyPoll(){
++  if (POLL) clearInterval(POLL);
++  POLL = setInterval(function(){
++    $.ajax({url:'/reaper_wifi.cgi?action=svydata&_='+Date.now(), dataType:'json', timeout:8000, success:function(d){
++      if (!d || !d.aps) return;
++      SVY.aps = d.aps.filter(function(a){ return !a.hidden && a.ssid; })
++                     .sort(function(x,y){ return (y.rssi||-127)-(x.rssi||-127); });
++      if (d.done){ clearInterval(POLL); POLL=null; SVY.state='done'; }
++      if (S()[idx]==='parent') render();
++    }});
++  }, 1500);
++}
++
++/* ---------- steps ---------- */
++function S(){ return F.steps.filter(function(s){ return s !== 'pass' || needPass(); }); }
++
++function render(){
++  var s = S(); if (idx >= s.length) idx = s.length-1;
++  document.getElementById('title').textContent = F.title;
++  document.getElementById('lead').textContent = F.lead;
++  document.getElementById('fromto').innerHTML = esc(T[CUR])+' <span class="arrow">&rarr;</span> <span class="to">'+esc(T[MODE])+'</span>';
++  var names = {parent:T.stepParent, pass:T.stepPass, addr:T.stepAddr, review:T.stepReview};
++  var ol = document.getElementById('steps');
++  ol.style.display = s.length < 2 ? 'none' : '';
++  ol.innerHTML = s.map(function(x,i){ return '<li class="'+(i<idx?'done':i===idx?'cur':'')+'">'+(i+1)+'. '+esc(names[x])+'</li>'; }).join('');
++  document.getElementById('body').innerHTML = ({parent:vParent, pass:vPass, addr:vAddr, review:vReview})[s[idx]]();
++  document.getElementById('back').style.visibility = idx ? 'visible' : 'hidden';
++  document.getElementById('next').textContent = idx === s.length-1 ? (MODE==='rt' ? `<#RMOD_71#>` : `<#RMOD_70#>`) : `<#CTL_next#>`;
++  sync();
++}
++
++function vParent(){
++  var rows, state;
++  if (SVY.state === 'scan' && !SVY.aps.length) rows = '<div class="empty">'+esc(`<#RMOD_19#>`)+'</div>';
++  else if (SVY.state === 'err') rows = '<div class="empty">'+esc(SVY.err)+'</div>';
++  else if (SVY.state === 'done' && !SVY.aps.length) rows = '<div class="empty">'+esc(`<#RMOD_79#>`)+'</div>';
++  else rows = SVY.aps.map(function(a,i){
++    var l = level(a.rssi), ok = !!secMap(a), sel = (st.pick===i && !st.man);
++    return '<label class="ap'+(sel?' sel':'')+(ok?'':' off')+'"'+(ok?'':' title="'+esc(`<#RMOD_82#>`)+'"')+'>'+
++      '<input type="radio" name="ap" '+(sel?'checked ':'')+(ok?'':'disabled ')+'onchange="pickAp('+i+')">'+
++      '<span class="n" title="'+esc(a.ssid)+'">'+esc(a.ssid)+'</span><span class="band">'+esc(BANDN[a.band]||'')+'</span>'+
++      '<span class="bars l'+l+(l===1?' weak':'')+'" title="'+a.rssi+' dBm"><i></i><i></i><i></i><i></i></span>'+
++      '<span class="m">'+esc(ok ? a.sec || `<#RMOD_81#>` : `<#RMOD_82#>`)+' &middot; ch '+esc(a.ch)+'</span></label>';
++  }).join('');
++  state = SVY.state === 'scan' ? `<#RMOD_19#>` : SVY.state === 'done' ? fmt(`<#RMOD_17#>`, SVY.aps.length) : '';
++  var p = parent(), weak = (!st.man && p && level(SVY.aps[st.pick].rssi) === 1);
++  return '<div class="panel"><h2>'+esc(`<#RMOD_15#>`)+'</h2><div class="sub">'+esc(`<#RMOD_16#>`)+'</div>'+
++    '<div class="svytools"><span class="state">'+esc(state)+'</span><button type="button" class="btn ghost" onclick="svyStart()"'+(SVY.state==='scan'?' disabled':'')+'>'+esc(`<#RMOD_18#>`)+'</button></div>'+
++    '<div class="svy">'+rows+'</div>'+
++    '<div class="manual"><a onclick="manual()">'+esc(`<#RMOD_20#>`)+'</a></div>'+
++    (st.man ? '<div class="grid" style="margin-top:12px">'+
++      '<div class="fld"><label>'+esc(`<#QIS_finish_wireless_item1#>`)+'</label><input id="mssid" maxlength="32" value="'+esc(st.mssid)+'" oninput="st.mssid=this.value;sync()"></div>'+
++      '<div class="fld"><label>'+esc(`<#RMOD_83#>`)+'</label><select onchange="st.mband=this.value;sync()">'+
++        ['0','1','2'].map(function(v){ return '<option value="'+v+'"'+(v===st.mband?' selected':'')+'>'+BANDN[[2,5,6][v]]+'</option>'; }).join('')+'</select></div>'+
++      '<div class="fld"><label>'+esc(`<#RMOD_21#>`)+'</label><select onchange="st.msec=this.value;render()">'+
++        ['psk2','psk2sae','sae','open'].map(function(v){ return '<option value="'+v+'"'+(v===st.msec?' selected':'')+'>'+esc(secLabel(v))+'</option>'; }).join('')+'</select></div>'+
++      '</div>' : '')+
++    (weak ? '<div class="note warn"><span>'+esc(fmt(`<#RMOD_22#>`, SVY.aps[st.pick].rssi))+'</span></div>' : '')+
++    '</div>';
++}
++function vPass(){
++  var p = parent() || {};
++  return '<div class="panel"><h2>'+esc(fmt(`<#RMOD_23#>`, p.ssid || ''))+'</h2>'+
++    '<div class="sub">'+esc(`<#RMOD_24#>`)+'</div>'+
++    '<div class="fld" style="max-width:380px"><label>'+esc(`<#RMOD_25#>`)+'</label><input id="pw" type="password" autocomplete="new-password" maxlength="64" value="'+esc(st.pw)+'" oninput="st.pw=this.value;sync()"><div class="err" id="pwerr"></div></div>'+
++    '<label class="showpw"><input type="checkbox" onchange="document.getElementById(\'pw\').type=this.checked?\'text\':\'password\'">'+esc(`<#QIS_show_pass#>`)+'</label>'+
++    '</div>';
++}
++function fld(k, lbl, ph){ return '<div class="fld" id="f_'+k+'"><label>'+lbl+'</label><input id="'+k+'" inputmode="decimal" placeholder="'+ph+'" value="'+esc(st[k])+'" oninput="st.'+k+'=this.value;sync()"><div class="err"></div></div>'; }
++function vAddr(){
++  return '<div class="panel"><h2>'+esc(`<#RMOD_27#>`)+'</h2><div class="sub">'+esc(`<#RMOD_28#>`)+'</div>'+
++    '<label class="choice'+(st.lan==='dhcp'?' sel':'')+'"><input type="radio" name="lan" '+(st.lan==='dhcp'?'checked':'')+' onchange="setLan(\'dhcp\')">'+
++      '<span><span class="t">'+esc(`<#RMOD_29#>`)+'</span><span class="rec">'+esc(`<#RMOD_30#>`)+'</span>'+
++      '<div class="d">'+fmt(esc(`<#RMOD_31#>`), '<b>http://'+esc(HOST)+'</b>')+'</div></span></label>'+
++    '<label class="choice'+(st.lan==='static'?' sel':'')+'"><input type="radio" name="lan" '+(st.lan==='static'?'checked':'')+' onchange="setLan(\'static\')">'+
++      '<span><span class="t">'+esc(`<#RMOD_32#>`)+'</span><div class="d">'+esc(`<#RMOD_33#>`)+'</div></span></label>'+
++    '<div class="fixed'+(st.lan==='static'?' on':'')+'"><div class="grid">'+
++      fld('ip', esc(`<#RMOD_34#>`), '192.168.1.2')+fld('mask', esc(`<#IPConnection_x_ExternalSubnetMask_itemname#>`), '255.255.255.0')+
++      fld('gw', esc(`<#RMOD_35#>`), '192.168.1.1')+fld('dns1', esc(`<#IPConnection_x_DNSServer1_itemname#>`), '192.168.1.1')+
++      fld('dns2', esc(`<#IPConnection_x_DNSServer2_itemname#>`)+' <span class="opt">'+esc(`<#RMOD_36#>`)+'</span>', '')+
++    '</div></div></div>';
++}
++function vReview(){
++  var rows = [], keep, off, note = '', p;
++  rows.push([`<#RMOD_42#>`, esc(T[MODE])]);
++  if (MODE === 'mb'){ p = parent(); rows.push([`<#RMOD_43#>`, esc(p.ssid)+(p.band?' &middot; '+esc(p.band):'')+' &middot; '+esc(p.sec || `<#RMOD_81#>`)]); }
++  if (MODE === 'rt'){
++    rows.push([`<#RMOD_44#>`, esc(fmt(`<#RMOD_46#>`, NV.lan_ipaddr_rt+' / '+NV.lan_netmask_rt))]);
++    rows.push([`<#RMOD_47#>`, esc(`<#RMOD_48#>`)]);
++  } else {
++    rows.push([`<#RMOD_44#>`, st.lan==='dhcp' ? esc(`<#RMOD_45#>`) : esc(st.ip.trim()+' / '+st.mask.trim()+' - '+`<#RMOD_35#>`+' '+st.gw.trim())]);
++  }
++  if (MODE === 'ap'){
++    keep = [`<#RMOD_51#>`, `<#RMOD_52#>`, `<#RMOD_53#>`];
++    off = [`<#RMOD_54#>`, `<#RMOD_55#>`, `<#RMOD_56#>`, `<#RMOD_57#>`, `<#RMOD_58#>`];
++  } else if (MODE === 'mb'){
++    keep = [`<#RMOD_52#>`];
++    off = [`<#RMOD_59#>`, `<#RMOD_60#>`, `<#RMOD_61#>`, `<#RMOD_55#>`, `<#RMOD_56#>`, `<#RMOD_57#>`, `<#RMOD_58#>`];
++  } else {
++    keep = [`<#RMOD_51#>`, `<#RMOD_53#>`];
++    off = [];
++  }
++  rows.push([`<#RMOD_49#>`, keep.map(function(k){ return '<span class="tag good">'+esc(k)+'</span>'; }).join('')]);
++  if (off.length) rows.push([`<#RMOD_50#>`, off.map(function(k){ return '<span class="tag warn">'+esc(k)+'</span>'; }).join('')]);
++  if (mldAfter() === '0' && NV.mld_enable === '1')
++    rows.push(['MLO', '<span class="tag warn">'+esc(`<#RMOD_62#>`)+'</span> '+esc(MODE==='mb' ? `<#RMOD_63#>` : `<#RMOD_64#>`)]);
++  if (MODE === 'ap') note = '<b>'+esc(`<#RMOD_65#>`)+'</b> '+esc(`<#RMOD_66#>`);
++  if (MODE === 'mb') note = '<b>'+esc(`<#RMOD_67#>`)+'</b> '+esc(`<#RMOD_68#>`);
++  if (MODE === 'rt') note = '<b>'+esc(`<#RMOD_65#>`)+'</b> '+esc(fmt(`<#RMOD_69#>`, NV.lan_ipaddr_rt.replace(/\.\d+$/, '.x')));
++  var mins = Math.max(1, Math.round(NV.reboot_s/60));
++  return '<div class="panel"><h2>'+esc(`<#RMOD_39#>`)+'</h2><div class="sub">'+esc(fmt(MODE==='rt' ? `<#RMOD_41#>` : `<#RMOD_40#>`, mins))+'</div>'+
++    '<table class="review">'+rows.map(function(r){ return '<tr><th>'+esc(r[0])+'</th><td>'+r[1]+'</td></tr>'; }).join('')+'</table>'+
++    '<div class="note"><span>'+note+'</span></div></div>';
++}
++
++/* ---------- input ---------- */
++function pickAp(i){ st.pick=i; st.man=false; render(); }
++function manual(){ st.man=true; st.pick=-1; render(); var e=document.getElementById('mssid'); if (e) e.focus(); }
++function setLan(v){ st.lan=v; render(); }
++var IPRE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
++function ip2n(s){ return s.split('.').reduce(function(a,b){ return (a*256)+parseInt(b,10); }, 0); }
++function okStatic(){
++  var bad = 0, need = {ip:1, mask:1, gw:1, dns1:1};
++  ['ip','mask','gw','dns1','dns2'].forEach(function(k){
++    var v = st[k].trim(), e = document.getElementById('f_'+k), msg = '';
++    if (v && !IPRE.test(v)) msg = `<#RMOD_37#>`;
++    else if (k === 'gw' && v && v === st.ip.trim()) msg = `<#RMOD_38#>`;
++    else if (k === 'gw' && v && IPRE.test(st.ip.trim()) && IPRE.test(st.mask.trim()) &&
++             ((ip2n(v) ^ ip2n(st.ip.trim())) & ip2n(st.mask.trim())) !== 0) msg = `<#RMOD_84#>`;
++    if (e){ e.classList.toggle('bad', !!msg); e.querySelector('.err').textContent = msg; }
++    if (msg || (!v && need[k])) bad++;
++  });
++  return !bad;
++}
++function sync(){
++  var s = S()[idx], ok = true;
++  if (s === 'parent'){ var p = parent(); ok = !!p && !!p.map && (st.man ? st.mssid.trim().length > 0 : true); }
++  if (s === 'pass'){
++    var n = st.pw.length, hex = /^[0-9a-fA-F]{64}$/.test(st.pw);
++    ok = (n >= 8 && n <= 63) || hex;
++    var e = document.getElementById('pwerr'); if (e) e.textContent = (n && !ok) ? `<#RMOD_26#>` : '';
++  }
++  if (s === 'addr' && st.lan === 'static') ok = okStatic();
++  document.getElementById('next').disabled = !ok;
++}
++function go(d){
++  var s = S();
++  if (d > 0 && idx === s.length-1) return apply();
++  idx = Math.max(0, Math.min(s.length-1, idx+d)); render(); window.scrollTo(0,0);
++  if (s[idx] === 'parent' && SVY.state === 'idle') svyStart();
++}
++function cancel(){ if (POLL) clearInterval(POLL); top.location.href = '/reaper_shell.asp#Advanced_OperationMode_Content.asp'; }
++
++/* ---------- the save: the stock wizard's keys for this mode ---------- */
++function mldAfter(){
++  if (NV.mld_enable === '') return null;		/* no MLO on this model */
++  if (MODE === 'mb') return '0';
++  return NV.mld_default || '0';
++}
++function postData(){
++  var d = {action_mode:'apply', rc_service:(MODE === 'rt') ? 'restart_all' : 'reboot'};
++  var m = mldAfter();
++  if (MODE === 'rt'){
++    d.sw_mode='1'; d.wlc_psta='0'; d.wlc_dpsta='0'; d.wlc_band=''; d.mlo_rp='0'; d.mlo_mb='0'; d.cfg_master='1';
++    d.lan_proto='static'; d.lan_dnsenable_x='1'; d.lan_ipaddr=NV.lan_ipaddr_rt; d.lan_netmask=NV.lan_netmask_rt;
++    d.lan_gateway=NV.lan_ipaddr_rt; d.lan_dns1_x=''; d.lan_dns2_x='';
++  } else {
++    if (MODE === 'ap'){ d.sw_mode='3'; d.wlc_psta='0'; d.wlc_dpsta='0'; d.mlo_rp='0'; d.mlo_mb='0'; d.cfg_master='1'; }
++    else {
++      var p = parent();
++      d.sw_mode='3'; d.wlc_psta='1'; d.wlc_dpsta='0'; d.cfg_master='0';
++      d.wlc_band=String(p.unit); d.wlc_ssid=p.ssid; d.wlc_ap_mac=p.bssid;
++      d.wlc_auth_mode=p.map.auth; d.wlc_crypto=p.map.crypto; d.wlc_wep=p.map.wep; d.wlc_wep_key=''; d.wlc_key='';
++      d.wlc_wpa_psk = p.map.pass ? st.pw : '';
++      d.x_Setting='1'; d.w_Setting='1'; d.qis_Setting='1';
++    }
++    if (st.lan === 'dhcp'){ d.lan_proto='dhcp'; d.lan_dnsenable_x='1'; }
++    else {
++      d.lan_proto='static'; d.lan_ipaddr=st.ip.trim(); d.lan_netmask=st.mask.trim(); d.lan_gateway=st.gw.trim();
++      d.lan_dnsenable_x='0'; d.lan_dns1_x=st.dns1.trim(); d.lan_dns2_x=st.dns2.trim();
++    }
++  }
++  if (m !== null && CUR !== MODE) d.mld_enable = m;
++  return d;
++}
++function landing(){
++  if (MODE === 'rt') return 'http://'+NV.lan_ipaddr_rt+'/';
++  if (st.lan === 'static') return 'http://'+st.ip.trim()+'/';
++  return 'http://'+HOST+'/';
++}
++function apply(){
++  if (POLL){ clearInterval(POLL); POLL = null; }
++  var nextb = document.getElementById('next'); nextb.disabled = true;
++  var url = landing(), shown = false;
++  var show = function(){
++    if (shown) return; shown = true;
++    document.getElementById('ov_t').textContent = MODE === 'rt' ? `<#RMOD_72#>` : `<#Reaper_c_rebooting#>`;
++    document.getElementById('ov_p').textContent = fmt(`<#RMOD_73#>`, T[MODE]);
++    document.getElementById('ov_l').textContent = fmt(MODE === 'rt' ? `<#RMOD_75#>` : `<#RMOD_74#>`, url);
++    var go = document.getElementById('ov_go'); go.href = url; go.textContent = fmt(`<#RMOD_76#>`, url.replace(/\/$/, ''));
++    document.getElementById('applying').classList.add('show');
++    var n = NV.reboot_s, c = document.getElementById('ov_c'); c.textContent = n;
++    var t = setInterval(function(){
++      n--; c.textContent = Math.max(n, 0);
++      if (n > 0) return;
++      clearInterval(t); c.style.display = 'none'; go.style.display = 'inline-block';
++      /* same address afterwards (back to Router at the default address): land like the shell's reboot */
++      if (url === 'http://'+location.host+'/') {
++        var p = setInterval(function(){
++          $.ajax({url:'/httpd_check.xml', cache:false, timeout:3000, success:function(){ clearInterval(p); location.href = '/'; }});
++        }, 3000);
++      }
++    }, 1000);
++  };
++  /* a reboot can cut the reply: the overlay starts either way (reaper-ui rule 47) */
++  $.ajax({url:'/applyapp.cgi', type:'POST', dataType:'json', timeout:20000,
++          data:encodeURIComponent(JSON.stringify(postData())), success:show, error:show});
++}
++
++/* ---------- entry ---------- */
++(function(){
++  if (!F || CUR === MODE || CUR === 'node'){
++    document.getElementById('title').textContent = `<#menu5_6_1#>`;
++    document.getElementById('lead').textContent = fmt(`<#RMOD_85#>`, T[CUR] || '');
++    document.getElementById('actions').style.display = 'none';
++    document.getElementById('fromto').style.display = 'none';
++    document.getElementById('steps').style.display = 'none';
++    return;
++  }
++  render();
++  if (S()[0] === 'parent') svyStart();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.js
+index 5c74784318d..f5dee4bc5b7 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.js
+@@ -222,7 +222,8 @@ function show_get_start_mlo(){
+ 			.unbind("click").click(function(e){
+ 				e = e || event;
+ 				e.stopPropagation();
+-				top.location.href = "/QIS_wizard.htm?flag=mlo";
++				/* reaper 2026-10-15 (rung C): MLO is set per radio in the Wireless console, not the stock wizard */
++				top.location.href = "/reaper_shell.asp#Reaper_WiFiSettings.asp";
+ 			}).appendTo($feature_desc_cntr);
+ 
+ 		return $container;
+-- 
+2.25.1
+

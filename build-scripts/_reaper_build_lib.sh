@@ -26,6 +26,10 @@ set -u
 # REAPER_TREE=/home/reaper/port/rt-be92u and REAPER_TDIR=.../targets/96765GW
 # (build_be92u.sh locally; ci/build_one.sh sets REAPER_TDIR in the clean room).
 R=${REAPER_TREE:-/home/reaper/asuswrt-be96u}
+# The image name carries the upstream firmware series from version.conf (SERIALNO
+# 102.10 -> "3006_102.10"). Read from the tree so a rebase moves it with the base;
+# until 2026-10-27 it was a literal 3006_102.8 in six places here.
+_rb_fwser() { echo "3006_$(sed -n 's/^SERIALNO=//p' "$R/release/src-rt/version.conf" 2>/dev/null | head -1)"; }
 P=$R/release/src-rt-5.04behnd.4916
 TDIR=${REAPER_TDIR:-$P/targets/96813GW}
 
@@ -147,7 +151,7 @@ _rb_variant() {   # $1 = MCP|noMCP
     # VARIANT must be passed explicitly: the generator's .config fallback
     # reads the PREVIOUS variant's config at stamp time (we run before make).
     echo "=== [$label] provenance stamp (patches=${_pc:--} series=${_sv:--} build=${_cv:--}) ==="
-    VARIANT="$label" PATCH_SERIES="$_sv" bash "$_gp" "$R" "$_pc" a7ebfa133ad7e5efc23ed6bb8ee912bc72fd00b3 \
+    VARIANT="$label" PATCH_SERIES="$_sv" bash "$_gp" "$R" "$_pc" ca72a61f8bc5ef920e29d63d53d9864262208f0c \
       || echo "    ! provenance stamp failed - the About page will show dashes"
   fi
 
@@ -227,7 +231,7 @@ _rb_variant() {   # $1 = MCP|noMCP
       else
         _decide="skip (pass1 rc=0, images fresh)"
         for _st in ${STORAGE:-nand}; do
-          _img="$TDIR/${PREFIX}_3006_102.8_${VER}$([ "$label" = noMCP ] && echo _noMCP)_${_st}_squashfs.pkgtb"
+          _img="$TDIR/${PREFIX}_$(_rb_fwser)_${VER}$([ "$label" = noMCP ] && echo _noMCP)_${_st}_squashfs.pkgtb"
           if [ ! -f "$_img" ]; then
             _decide="two-pass (no $_st image after pass1)"; break
           elif [ "$(stat -c %Y "$_img" 2>/dev/null || echo 0)" -lt "$_p1start" ]; then
@@ -318,7 +322,7 @@ reaper_ship() {   # $1 = VER
   for v in $VARIANTS; do tag=""; [ "$v" = "noMCP" ] && tag="_noMCP"
     for st in $STORAGE; do
       for suf in "_squashfs.pkgtb" "_squashfs_loader.pkgtb"; do
-        f="${PREFIX}_3006_102.8_${VER}${tag}_${st}${suf}"
+        f="${PREFIX}_$(_rb_fwser)_${VER}${tag}_${st}${suf}"
         [ -f "$TDIR/$f" ] || continue
         b=$(sha256sum "$TDIR/$f"|awk '{print $1}')
         df="$f"; have=""
@@ -333,15 +337,15 @@ reaper_ship() {   # $1 = VER
         # the tail), and it matches the _r1 that was placed here by hand on
         # 2026-09-09 - so the sequence continues instead of starting a second,
         # differently-spelled convention alongside the first.
-        for x in "$SHIP_DIR/$f" "$SHIP_DIR/${PREFIX}_3006_102.8_${VER}"_r*"${tag}_${st}${suf}"; do
+        for x in "$SHIP_DIR/$f" "$SHIP_DIR/${PREFIX}_$(_rb_fwser)_${VER}"_r*"${tag}_${st}${suf}"; do
           [ -e "$x" ] || continue
           [ "$b" = "$(sha256sum "$x"|awk '{print $1}')" ] && { have="$x"; break; }
         done
         if [ -n "$have" ]; then echo "  [identical, keep] $(basename "$have")"; continue; fi
         if [ -e "$SHIP_DIR/$f" ]; then
           n=1
-          while [ -e "$SHIP_DIR/${PREFIX}_3006_102.8_${VER}_r${n}${tag}_${st}${suf}" ]; do n=$((n+1)); done
-          df="${PREFIX}_3006_102.8_${VER}_r${n}${tag}_${st}${suf}"
+          while [ -e "$SHIP_DIR/${PREFIX}_$(_rb_fwser)_${VER}_r${n}${tag}_${st}${suf}" ]; do n=$((n+1)); done
+          df="${PREFIX}_$(_rb_fwser)_${VER}_r${n}${tag}_${st}${suf}"
           echo "  [COLLISION] $f is already on the ladder with DIFFERENT content"
           echo "              ladder sha: $(sha256sum "$SHIP_DIR/$f"|cut -c1-16)  new sha: $(echo "$b"|cut -c1-16)"
           echo "              shipping the new one as $df - decide which to keep, do not guess from the name"
@@ -490,7 +494,7 @@ reaper_build() {
       continue
     fi
     for st in $STORAGE; do
-      img="$TDIR/${PREFIX}_3006_102.8_${VER}${tag}_${st}_squashfs.pkgtb"
+      img="$TDIR/${PREFIX}_$(_rb_fwser)_${VER}${tag}_${st}_squashfs.pkgtb"
       if [ -f "$img" ]; then echo "  [OK] $v/$st  $(basename "$img")  sha:$(sha256sum "$img"|cut -c1-16)"
       else echo "  [MISSING] $v/$st  $(basename "$img")"; ok=0; fi
     done

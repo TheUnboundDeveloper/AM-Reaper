@@ -1,4 +1,4 @@
-From c950d8cf353dc47d663fd3b0d7d9b7a3bc971e21 Mon Sep 17 00:00:00 2001
+From b6384c8b367e5d4b38be7c39752e5eeaa39ece9d Mon Sep 17 00:00:00 2001
 From: reaper <theunbounddeveloper@outlook.com>
 Date: Sat, 27 Jun 2026 10:06:37 -0400
 Subject: [PATCH] rc_ipsec: eliminate IPsec command-injection + buffer
@@ -18,11 +18,11 @@ Local-only branch; not pushed.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- release/src/router/rc/rc_ipsec.c | 260 ++++++++++++++++++++++---------
- 1 file changed, 188 insertions(+), 72 deletions(-)
+ release/src/router/rc/rc_ipsec.c | 272 +++++++++++++++++++++----------
+ 1 file changed, 184 insertions(+), 88 deletions(-)
 
 diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
-index 257ffd7d73..1f58129b10 100644
+index ad01d315569..4112b6306a8 100644
 --- a/release/src/router/rc/rc_ipsec.c
 +++ b/release/src/router/rc/rc_ipsec.c
 @@ -6,6 +6,7 @@
@@ -33,7 +33,7 @@ index 257ffd7d73..1f58129b10 100644
  #include <sys/stat.h>
  #include <network_utility.h>
  #include "rc_ipsec.h"
-@@ -822,13 +823,82 @@ int rc_ipsec_ca_fileidx_available_get()
+@@ -952,10 +953,78 @@ int rc_ipsec_ca_fileidx_available_get()
  }
  
  /*return value : ca_file's index*/
@@ -112,57 +112,60 @@ index 257ffd7d73..1f58129b10 100644
 +    char *p_tmp = NULL, *p_buf = NULL;
      int file_idx = 0;
      /*ca index star from 0*/
--    sprintf(buf, "%s", nvram_safe_get("ca_manage_profile"));
-+    /* hardening: bound the copy so an over-long nvram value can't overflow buf */
-+    snprintf(buf, sizeof(buf), "%s", nvram_safe_get("ca_manage_profile"));
-     p_buf = &buf[0];
-    
-     file_idx = rc_ipsec_ca_fileidx_available_get();
-@@ -838,27 +908,22 @@ int rc_ipsec_ca_txt_parse()
+     snprintf(buf, sizeof(buf), "%s", nvram_safe_get("ca_manage_profile"));
+@@ -967,38 +1036,23 @@ int rc_ipsec_ca_txt_parse()
+         DBG(("ca files reach the maxmum numbers(%d)", file_idx));
          return file_idx;
      }
-  
+-
+-    size_t left;
+-
+-    /* Loop 1: copy into p12_pwd until '>' or NUL, bounded */
 -    p_tmp = (char *)&(ca_tab[file_idx].p12_pwd[0]);
--    while('>' != *p_buf){
--        *p_tmp = *p_buf;
--        p_tmp++;
+-    left = sizeof(ca_tab[file_idx].p12_pwd) - 1;
+-    while('>' != *p_buf && '\0' != *p_buf){
+-        if(left > 0){ *p_tmp++ = *p_buf; left--; }
 -        p_buf++;
 -    }
 -    *p_tmp = '\0';
--    
--    p_tmp = (char *)&(ca_tab[file_idx].ca_txt[0]);
--    while('>' != *(++p_buf)){
--        *p_tmp = *p_buf;
--        p_tmp++;
--    }
--    *p_tmp = '\0';
--
--    p_tmp = (char *)&(ca_tab[file_idx].san[0]);
--    while('\0' != *(++p_buf)){
--        *p_tmp = *p_buf;
--        p_tmp++;
--    }
--    *p_tmp = '\0';
++ 
 +    /* hardening: bounded copies (can't overflow the fixed struct fields) plus
 +     * sanitize the identity fields that later feed pki/openssl in ca_gen.
 +     * p12_pwd is left raw here; ca_gen hands it to openssl via a -password
 +     * file: argument so the password never reaches a shell. */
 +    p_buf = ipsec_copy_field(ca_tab[file_idx].p12_pwd,
 +                             sizeof(ca_tab[file_idx].p12_pwd), p_buf, '>');
-+    if('>' == *p_buf) p_buf++;
-+
+     if('>' == *p_buf) p_buf++;
+ 
+-    /* Loop 2: copy into ca_txt until '>' or NUL, bounded */
+-    p_tmp = (char *)&(ca_tab[file_idx].ca_txt[0]);
+-    left = sizeof(ca_tab[file_idx].ca_txt) - 1;
+-    while('>' != *p_buf && '\0' != *p_buf){
+-        if(left > 0){ *p_tmp++ = *p_buf; left--; }
+-        p_buf++;
+-    }
+-    *p_tmp = '\0';
 +    p_buf = ipsec_copy_field(ca_tab[file_idx].ca_txt,
 +                             sizeof(ca_tab[file_idx].ca_txt), p_buf, '>');
 +    ipsec_strip_shell_meta(ca_tab[file_idx].ca_txt); /* DN, embedded in "..." */
-+    if('>' == *p_buf) p_buf++;
-+
+     if('>' == *p_buf) p_buf++;
+ 
+-    /* Loop 3: copy into san until NUL, bounded */
+-    p_tmp = (char *)&(ca_tab[file_idx].san[0]);
+-    left = sizeof(ca_tab[file_idx].san) - 1;
+-    while('\0' != *p_buf){
+-        if(left > 0){ *p_tmp++ = *p_buf; left--; }
+-        p_buf++;
+-    }
+-    *p_tmp = '\0';
+-
 +    p_buf = ipsec_copy_field(ca_tab[file_idx].san,
 +                             sizeof(ca_tab[file_idx].san), p_buf, '\0');
 +    ipsec_strict_token(ca_tab[file_idx].san);        /* SAN, used unquoted */
      /*to re-parsing root CA cert for server,client cert*/
      p_tmp = (char *)&(ca_tab[file_idx].ca_cert[0]);
      p_buf = (char *)&(ca_tab[file_idx].ca_txt[0]);
-@@ -899,7 +964,7 @@ int rc_ipsec_ca_gen()
+@@ -1039,7 +1093,7 @@ int rc_ipsec_ca_gen()
                 "openssl pkcs12 -export -inkey %s%d_cliKey.pem "
                 " -in %s%d_cliCert.pem -name \"client Cert\" "
                 " -certfile %s%d_asusCert.pem -caname \"ASUS Root CA\""
@@ -171,7 +174,7 @@ index 257ffd7d73..1f58129b10 100644
                 FILE_PATH_CA_GEN_SH, file_idx, 
                 file_idx, ca_tab[file_idx].ca_txt,
                 file_idx,file_idx, file_idx, file_idx,
-@@ -908,11 +973,25 @@ int rc_ipsec_ca_gen()
+@@ -1048,11 +1102,25 @@ int rc_ipsec_ca_gen()
                 file_idx, ca_tab[file_idx].ca_cert, FILE_PATH_CA_ETC, file_idx,
                 FILE_PATH_CA_ETC, file_idx, FILE_PATH_CA_ETC, file_idx,
                 FILE_PATH_CA_ETC, file_idx, FILE_PATH_CA_ETC, file_idx,
@@ -198,26 +201,67 @@ index 257ffd7d73..1f58129b10 100644
      return file_idx;
  }
  
-@@ -952,56 +1031,82 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
+@@ -1092,65 +1160,82 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
  void rc_ipsec_cert_import(char *asus_cert, char *ipsec_cli_cert,
                            char *ipsec_cli_key, char *pks12)
  {
 -    char *p_file = NULL;
--    char cmd[SZ_BUF], tmp[SZ_MIN];
+-    char tmp[SZ_MIN];
 -    if(NULL != asus_cert){
--        memset(cmd, 0, sizeof(char) * SZ_BUF);
--        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/cacerts/", asus_cert);
--        system(cmd);
+-        safe_do_system("cp -r \"%s\" /tmp/etc/ipsec.d/cacerts/", asus_cert);
 -    }
 -    if(NULL != ipsec_cli_cert){
--        memset(cmd, 0, sizeof(char) * SZ_BUF);
--        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/certs/", ipsec_cli_cert);
--        system(cmd);
+-        safe_do_system("cp -r \"%s\" /tmp/etc/ipsec.d/certs/", ipsec_cli_cert);
 -    }
 -    if(NULL != ipsec_cli_key){
--        memset(cmd, 0, sizeof(char) * SZ_BUF);
--        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/private/", ipsec_cli_key);
--        system(cmd);
+-        safe_do_system("cp -r \"%s\" /tmp/etc/ipsec.d/private/", ipsec_cli_key);
+-    }
+-    if(NULL != pks12){
+-        const char *profile = nvram_safe_get("ca_manage_profile");
+-        if(NULL != profile){
+-            DBG(("pks12:%s", pks12));
+-            p_file = &tmp[0];
+-            memset(p_file, '\0', sizeof(char) * SZ_MIN);
+-            {
+-                size_t pks12_len = strlen(pks12);
+-                /* guard: underflow (<=4) and overflow into SZ_MIN buffer (>=SZ_MIN+4) */
+-                if (pks12_len <= 4 || (pks12_len - 4) >= SZ_MIN) {
+-                    DBG(("pks12 invalid length: %s\n", pks12));
+-                    return;
+-                }
+-                /* strip last 4 chars (.p12/.pfx), always NUL-terminated */
+-                snprintf(p_file, SZ_MIN, "%.*s", (int)(pks12_len - 4), pks12);
+-            }
+-            /* write password directly to file, avoiding shell interpretation */
+-            {
+-                char pwd_path[SZ_MIN + sizeof(FILE_PATH_CA_ETC) + 4];
+-                snprintf(pwd_path, sizeof(pwd_path), FILE_PATH_CA_ETC"%s.pwd", p_file);
+-                FILE *_f = fopen(pwd_path, "w");
+-                if (_f) { fprintf(_f, "%s\n", profile); fclose(_f); }
+-            }
+-            /* pass password as separate argv element to avoid shell metachar issues */
+-            {
+-                char in_path[SZ_BUF], out_path[SZ_BUF], pass_arg[SZ_BUF];
+-                snprintf(in_path,  sizeof(in_path),  "%s%s",                         FILE_PATH_CA_ETC, pks12);
+-                snprintf(out_path, sizeof(out_path), "/tmp/etc/ipsec.d/certs/%s.pem", p_file);
+-                snprintf(pass_arg, sizeof(pass_arg), "pass:%s",                       profile);
+-                char *argv_clcerts[] = {"openssl", "pkcs12", "-in", in_path, "-clcerts",
+-                                        "-out", out_path, "-password", pass_arg, NULL};
+-                DBG(("openssl pkcs12 -in %s -clcerts -out %s -password pass:***\n", in_path, out_path));
+-                _eval(argv_clcerts, NULL, 0, NULL);
+-
+-                snprintf(out_path, sizeof(out_path), "/tmp/etc/ipsec.d/cacerts/%s.pem", p_file);
+-                char *argv_cacerts[] = {"openssl", "pkcs12", "-in", in_path, "-cacerts",
+-                                        "-out", out_path, "-password", pass_arg, NULL};
+-                DBG(("openssl pkcs12 -in %s -cacerts -out %s -password pass:***\n", in_path, out_path));
+-                _eval(argv_cacerts, NULL, 0, NULL);
+-
+-                snprintf(out_path, sizeof(out_path), "/tmp/etc/ipsec.d/certs/%s.pem", p_file);
+-                char *argv_nodes[] = {"openssl", "pkcs12", "-in", in_path, "-out", out_path,
+-                                      "-nodes", "-password", pass_arg, NULL};
+-                DBG(("openssl pkcs12 -in %s -out %s -nodes -password pass:***\n", in_path, out_path));
+-                _eval(argv_nodes, NULL, 0, NULL);
+-            }
 +    char p_file[SZ_MIN];
 +    char in_path[SZ_BUF], out_path[SZ_BUF], pwd_path[SZ_BUF], pw_arg[SZ_BUF];
 +    char *pwd = NULL;
@@ -244,38 +288,7 @@ index 257ffd7d73..1f58129b10 100644
 +    if(base_len <= 4 || 0 != strcmp(pks12 + base_len - 4, ".p12")){
 +        logmessage("ipsec", "pkcs12 import rejected: bad filename");
 +        return;
-     }
--    if(NULL != pks12){
--        if(NULL != nvram_safe_get("ca_manage_profile")){
--            DBG(("pks12:%s", pks12));
--            p_file = &tmp[0];
--            memset(p_file, '\0', sizeof(char) * SZ_MIN);
--            strncpy(p_file, pks12, strlen(pks12) - 4); /*4 : strlen(p12)*/
--            sprintf(cmd, "echo %s > "FILE_PATH_CA_ETC"%s.pwd", 
--                    nvram_safe_get("ca_manage_profile"), p_file);
--            system(cmd);
--            memset(cmd, 0, sizeof(char) * SZ_BUF);
--            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -clcerts -out "
--                             "/tmp/etc/ipsec.d/certs/%s.pem -password pass:%s", 
--                             FILE_PATH_CA_ETC, pks12, p_file, 
--                             nvram_safe_get("ca_manage_profile"));
--            DBG((cmd));
--            system(cmd);
--            memset(cmd, 0, sizeof(char) * SZ_BUF);
--            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -cacerts -out "
--                             "/tmp/etc/ipsec.d/cacerts/%s.pem"
--                             " -password pass:%s",
--                             FILE_PATH_CA_ETC, pks12, p_file,
--                             nvram_safe_get("ca_manage_profile"));
--            DBG((cmd));
--            system(cmd);
--            memset(cmd, 0, sizeof(char) * SZ_BUF);
--            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -out "
--                    "/tmp/etc/ipsec.d/certs/%s.pem -nodes -password pass:%s",
--                     FILE_PATH_CA_ETC, pks12, p_file,
--                     nvram_safe_get("ca_manage_profile"));
--            DBG((cmd));
--            system(cmd);
++    }
 +    base_len -= 4;                          /* strip ".p12" */
 +    if(base_len >= sizeof(p_file))
 +        base_len = sizeof(p_file) - 1;
@@ -328,7 +341,7 @@ index 257ffd7d73..1f58129b10 100644
      return;
  }
  
-@@ -1070,6 +1175,17 @@ void rc_ipsec_gen_cert(int skip_checking)
+@@ -1221,6 +1306,17 @@ void rc_ipsec_gen_cert(int skip_checking)
      }else
          strlcpy(remote_id, ddns_name, sizeof(remote_id));
  

@@ -16,14 +16,16 @@ starts and comments contain apostrophes. A brace counter cannot read JavaScript.
 Usage:  jscheck.py <page.asp> [more.asp ...]
 Exit:   0 = every page parses, 1 = at least one does not, 77 = no JS engine.
 """
-import io, os, re, shutil, subprocess, sys, tempfile
+import glob, io, os, re, shutil, subprocess, sys, tempfile
 
 NODE = os.environ.get("REAPER_NODE") or shutil.which("node")
 if not NODE:
-    for c in ("/mnt/c/Users/builder/AppData/Roaming/VSC/node-v24.18.0-win-x64/node.exe",
-              "C:/Users/builder/AppData/Roaming/VSC/node-v24.18.0-win-x64/node.exe"):
-        if os.path.exists(c):
-            NODE = c
+    # a portable Windows node next to the project, under whichever profile folder holds it
+    for pat in ("/mnt/c/Users/*/AppData/Roaming/VSC/node-v*-win-x64/node.exe",
+                "C:/Users/*/AppData/Roaming/VSC/node-v*-win-x64/node.exe"):
+        found = sorted(glob.glob(pat))
+        if found:
+            NODE = found[-1]
             break
 if not NODE:
     print("jscheck: no node on PATH (set REAPER_NODE) - skipped")
@@ -31,7 +33,15 @@ if not NODE:
 
 def check(path):
     s = io.open(path, encoding="utf-8", errors="replace").read()
-    blocks = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", s, re.S | re.I)
+    # End tag as the HTML tokenizer sees it, not just `</script>`: a browser also
+    # closes the block at `</script >` or `</script foo="bar">`, so matching only
+    # the bare form would run the block body past the real end tag and hand the
+    # wrong text to node --check - a gate that fails OPEN on the page shape it
+    # exists to catch (CodeQL py/bad-tag-filter). Explicit alternation, not a
+    # lookahead, so CodeQL's regex model reads it; `</scriptfoo>` still does not
+    # match. Same end-tag grammar as reaper_static_checks.py SCRIPT_RE.
+    blocks = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script(?:>|[\s/][^>]*>)",
+                        s, re.S | re.I)
     if not blocks:
         print("ok   %s (no inline script)" % os.path.basename(path))
         return True

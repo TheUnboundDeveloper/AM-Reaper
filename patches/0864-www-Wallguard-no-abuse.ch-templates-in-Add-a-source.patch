@@ -1,0 +1,65 @@
+From 1e5dbdd0d2616e92e0ecc6c3d6e8f7d6c200be4a Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 28 Oct 2026 17:31:00 -0400
+Subject: [PATCH] www: Wallguard - no abuse.ch templates in "Add a source"
+
+Field request 2026-10-28: the Template pull-down offered abuse.ch ThreatFox
+and URLhaus. Those are threat-intelligence feeds and belong to Dreadwatch,
+which keeps the same two templates; Wallguard is the ad/tracker blocker.
+With them gone the pull-down had only "Your own list", so the whole Template
+row goes (select, SRC_TPL, its change handler, the reset in shSrcOpen). The
+RSHD_140..143 strings stay - Dreadwatch uses them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Wallguard.asp | 13 +------------
+ 1 file changed, 1 insertion(+), 12 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index cdf77fc4311..8085dc78c81 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -162,7 +162,6 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <!-- 2026-10-26 (owner): your own sources - a plain list, or a supplier's API (POST body, key header, JSON field) -->
+   <div class="srcform" id="srcform" style="display:none">
+     <div class="sfgrid">
+-      <label><#RSHD_140#><select id="sf_tpl"><option value=""><#RSHD_141#></option><option value="tfox"><#RSHD_142#></option><option value="uhaus"><#RSHD_143#></option></select></label>
+       <label><#RSHD_144#><input type="text" id="sf_name" maxlength="40" autocomplete="off"></label>
+       <label class="wide"><#RSHD_145#><input type="text" id="sf_url" maxlength="400" placeholder="https://" autocomplete="off"></label>
+       <label><#RSHD_146#><select id="sf_fmt"><option value="list"><#RSHD_147#></option><option value="json"><#RSHD_148#></option></select></label>
+@@ -383,12 +382,6 @@ function shSubscribed(){
+ /* 2026-10-26 (owner): your own sources. A lists line is "custom <slot> <https-url> [name= fmt=list|json:<field>
+    method=get|post body= hdr=<header>]" with %-encoded values; the API key never rides it (keys: write-only,
+    config reports only which slots have one). "hidden <preset>" is a built-in list removed from the table. */
+-var SRC_TPL = {
+-  tfox: {name: 'abuse.ch ThreatFox', url: 'https://threatfox-api.abuse.ch/api/v1/', fmt: 'json', field: 'ioc', method: 'post',
+-         body: '{"query":"get_iocs","days":7}', hdr: 'Auth-Key'},
+-  uhaus: {name: 'abuse.ch URLhaus', url: 'https://urlhaus-api.abuse.ch/v1/urls/recent/', fmt: 'json', field: 'host', method: 'get',
+-          body: '', hdr: 'Auth-Key'}
+-};
+ var srcEdit = null;
+ function shDec(v){ try{ return decodeURIComponent(v); }catch(e){ return v; } }
+ function shEnc(v){ return encodeURIComponent(v).replace(/[!'()*~]/g, function(c){ return '%' + c.charCodeAt(0).toString(16).toUpperCase(); }); }
+@@ -806,7 +799,7 @@ function shSrcFill(s){
+ function shSrcOpen(s){
+   if(!s && !shSrcFree()){ alert(`<#RSHD_159#>`); return; }
+   srcEdit = s || null;
+-  $('sf_tpl').value = ''; shSrcFill(s || {}); $('sf_msg').textContent = '';
++  shSrcFill(s || {}); $('sf_msg').textContent = '';
+   $('srcform').style.display = ''; shSrcShow(); $('sf_name').focus();
+ }
+ function shSrcClose(){ srcEdit = null; $('srcform').style.display = 'none'; $('sf_key').value = ''; }
+@@ -867,10 +860,6 @@ $('sf_ok').addEventListener('click', shSrcOk);
+ $('sf_cancel').addEventListener('click', shSrcClose);
+ $('sf_fmt').addEventListener('change', shSrcShow);
+ $('sf_method').addEventListener('change', shSrcShow);
+-$('sf_tpl').addEventListener('change', function(){
+-  var tp = SRC_TPL[this.value]; if(!tp) return;
+-  var keep = $('sf_key').value; shSrcFill(tp); $('sf_key').value = keep; shSrcShow();
+-});
+ $('livebtn').addEventListener('click', function(){ shLive(); });
+ $('ubdev').addEventListener('change', function(){ shUnbreak(); });
+ shPaint();
+-- 
+2.25.1
+

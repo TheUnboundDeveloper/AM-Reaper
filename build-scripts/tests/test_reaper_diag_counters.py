@@ -93,14 +93,15 @@ def p_snapshot_is_used(s):
 
 
 def p_panic_anchored(s):
-    m = re.search(r"panic/oops/oom[^\n]*", s)
+    # v1.3.48 (review 2026-10-24, Q-B-8): the 19b counters are ONE awk pass over $SNAP; the panic/oops/oom
+    # counter is its `/Kernel panic|Oops:|.../` clause (a case-insensitive test reads the lower-cased copy `l ~`)
+    m = re.search(r"(grep -[a-z]*i[a-z]*E '|l ~ |tolower\(\$0\) ~ )?/?([^/'\n]*[Kk]ernel panic[^/'\n]*)", s)
     if not m:
-        return "the panic/oops/oom line is gone"
-    line = m.group(0)
-    if re.search(r"grep -[a-z]*i[a-z]*E", line):
-        return ("the panic/oops/oom grep is case-insensitive again - the word "
+        return "the panic/oops/oom counter is gone"
+    if m.group(1):
+        return ("the panic/oops/oom test is case-insensitive again - the word "
                 "'oops' in any prose line matches")
-    if "Oops:" not in line:
+    if "Oops:" not in m.group(2):
         return ("the panic pattern no longer anchors on 'Oops:' - a bare "
                 "'Oops' matches prose")
     return None
@@ -159,6 +160,22 @@ def p_taint_decoded(s):
     return None
 
 
+def p_rotated_first(s):
+    # v1.3.28: the boot is in syslog.log-1 on any busy box; slog_files() must emit it
+    # ahead of the live file so the (order-preserving) snapshot starts at boot
+    i = s.find("slog_files() {")
+    j = s.find("\n}", i) if i >= 0 else -1
+    body = s[i:j] if i >= 0 and j > i else ""
+    # v1.3.29: the sources are one loop over the four candidates, rotated files first, each
+    # listed once by its resolved path; the live file is the last candidate in that list
+    a = body.find("syslog.log-1")
+    b = body.find("/tmp/syslog.log;")
+    if a < 0 or b < 0 or a > b:
+        return ("slog_files() does not emit syslog.log-1 ahead of the live file - a busy box "
+                "rotates the boot out of /tmp/syslog.log within ~25 min and every 19b count "
+                "then describes a window that starts after boot")
+
+
 PROPERTIES = [
     ("syslog sources collapsed with an order-preserving dedup", p_snapshot_deduped),
     ("lab command echoes dropped from the snapshot", p_snapshot_lab_filtered),
@@ -168,6 +185,7 @@ PROPERTIES = [
     ("conntrack figures all derive from one snapshot", p_conntrack_single_read),
     ("RW_FDROP is not probed as if it were a fault", p_no_rw_fdrop_probe),
     ("kernel taint rendered as flags", p_taint_decoded),
+    ("the rotated syslog is read ahead of the live file", p_rotated_first),
 ]
 
 
@@ -212,9 +230,12 @@ SCENARIOS = [
      "| grep -v 'rmcpd-lab: exec:' ", "", "rmcpd-lab"),
     ("SLF is not repointed at the snapshot",
      "\n  SLF=\"$SNAP\"", "", "SLF is not repointed"),
-    ("the panic grep goes case-insensitive again",
-     "grep -cE 'Kernel panic|Oops:|oom-killer",
-     "grep -ciE 'kernel panic|Oops|oom-killer", "case-insensitive"),
+    ("the panic test goes case-insensitive again",
+     "/Kernel panic|Oops:|oom-killer|Out of memory/ { c[20]++ }",
+     "l ~ /kernel panic|oops|oom-killer|out of memory/ { c[20]++ }", "case-insensitive"),
+    ("the panic pattern loses its 'Oops:' anchor",
+     "/Kernel panic|Oops:|oom-killer|Out of memory/ { c[20]++ }",
+     "/Kernel panic|Oops|oom-killer|Out of memory/ { c[20]++ }", "anchors on 'Oops:'"),
     ("'boots in span' is reintroduced",
      "  echo \"  syslogd starts    :",
      "  echo \"  boots in span     :", "boots in span"),
@@ -224,6 +245,9 @@ SCENARIOS = [
      "for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_ODROP",
      "for C in REAPER_WARDEN RW_OUT RW_SELF RW_DROP RW_FDROP RW_ODROP",
      "RW_FDROP is probed"),
+    ("the rotated syslog is dropped from the sources",
+     '  for _r in /jffs/syslog.log-1 /tmp/syslog.log-1 /jffs/syslog.log /tmp/syslog.log; do',
+     '  for _r in /jffs/syslog.log /tmp/syslog.log; do', "syslog.log-1"),
 ]
 
 print("\n== 2. reverting any one fix is caught ==")
@@ -268,8 +292,11 @@ SRCTXT = code_only(read(DIAG))
 LINES = SRCTXT.split("\n")
 
 PIPE = [ln.strip() for ln in LINES if '> "$SNAP"' in ln and "awk" in ln][0]
-PANIC = [ln.strip() for ln in LINES
-         if "panic/oops/oom" in ln and "grep -cE" in ln][0]
+# v1.3.48: the counters are one awk pass (CNTS) consumed by `set -- $CNTS; shift 18` and the echo line
+_c0 = next(i for i, l in enumerate(LINES) if l.strip().startswith('CNTS="$(awk'))
+_c1 = next(i for i in range(_c0, len(LINES)) if '"$SNAP" 2>/dev/null)"' in LINES[i])
+PANIC = "\n".join(LINES[_c0:_c1 + 1] + [l for l in LINES if l.strip().startswith("set -- $CNTS; shift 18")]
+                  + [l for l in LINES if "panic/oops/oom    :" in l])
 
 tmp = tempfile.mkdtemp(prefix="diagfix_")
 try:

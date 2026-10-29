@@ -1,0 +1,102 @@
+From 35518e9ed8a483638270dc70af77612aa42563c1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 25 Oct 2026 22:49:15 -0400
+Subject: [PATCH] samba: no removed options in smb.conf, no quota lookups, an
+ empty passdb at start
+
+Samba 4 logged "Unknown parameter use spnego" and, on every free-space query,
+"sys_path_to_bdev() failed" at level 0. write_smb_conf.c no longer writes
+`use spnego` (and `auth methods` in guest mode) on SAMBA4 builds; Samba is
+built --without-quotas (the router never sets quotas); usb.c starts
+/etc/samba/smbpasswd empty (0600) so its first enrollment does not log a
+"did not exist" line each start.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/libdisk/write_smb_conf.c      |  4 ++++
+ release/src/router/rc/usb.c                      | 13 +++++++++++++
+ release/src/router/samba-4.15.13/build-reaper.sh | 13 +++++++++++--
+ 3 files changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 48c06e3011f..3abcab549b9 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -392,7 +392,9 @@ int main(int argc, char *argv[])
+ 	else if(st_samba_mode == 1 || st_samba_mode == 3){
+ //#if defined(RTCONFIG_SAMBA3) && defined(RTCONFIG_SAMBA36X)
+ #if defined(RTCONFIG_SAMBA36X) || defined(RTCONFIG_SAMBA4)
++#if !defined(RTCONFIG_SAMBA4)	// reaper: removed in Samba 4 ("Unknown parameter"); map to guest below does the mapping
+ 		fprintf(fp, "auth methods = guest\n");
++#endif
+ 		fprintf(fp, "guest account = %s\n", nvram_get("http_username")? : "admin");
+ 		fprintf(fp, "map to guest = Bad User\n");
+ 		fprintf(fp, "guest ok = yes\n");
+@@ -444,7 +446,9 @@ int main(int argc, char *argv[])
+ #endif
+ 	}
+ 	fprintf(fp, "obey pam restrictions = no\n");
++#if !defined(RTCONFIG_SAMBA4)	// reaper: removed in Samba 4 ("Unknown parameter"); SPNEGO is always on there
+ 	fprintf(fp, "use spnego = %s\n", spnego? "yes" : "no");		// ASUS add
++#endif
+ 	fprintf(fp, "client use spnego = no\n");	// ASUS add
+ //	fprintf(fp, "client use spnego = yes\n");	// ASUS add
+ 	fprintf(fp, "disable spoolss = yes\n");		// ASUS add
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 46d8817ee77..f99c65eaa34 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3620,6 +3620,19 @@ start_samba(void)
+ 
+ 	unlink("/etc/smb.conf");
+ 	unlink("/etc/samba/smbpasswd");
++#if defined(RTCONFIG_SAMBA4)
++	/* reaper 2026-10-23: start the passdb empty (0600) rather than absent. With no file the
++	   first enrollment below makes it and smbpasswd logs "startsmbfilepwent_internal: file
++	   /etc/samba/smbpasswd did not exist. File successfully created." on every Samba start
++	   (/etc is tmpfs and the line above removes it). The smbpasswd backend reads an empty
++	   file as zero accounts; the enrollments append. */
++	mkdir_if_none("/etc/samba");
++	{
++		int pfd = open("/etc/samba/smbpasswd", O_WRONLY | O_CREAT | O_TRUNC, 0600);
++		if (pfd >= 0)
++			close(pfd);
++	}
++#endif
+ 
+ 	/* write samba configure file*/
+ 	system("/sbin/write_smb_conf");
+diff --git a/release/src/router/samba-4.15.13/build-reaper.sh b/release/src/router/samba-4.15.13/build-reaper.sh
+index 1ba307642c3..c2e5a3703a4 100644
+--- a/release/src/router/samba-4.15.13/build-reaper.sh
++++ b/release/src/router/samba-4.15.13/build-reaper.sh
+@@ -19,7 +19,9 @@ STAMP="$PKGDIR/.reaper-built"
+ # incremental rebuild re-runs whenever a patch is added/changed. A bare
+ # file-exists stamp could otherwise skip the build and reship a stale binary
+ # that still reports the Reaper vendor suffix WITHOUT the current CVE patches.
+-STAMP_SIG="$(cat "$PKGDIR"/reaper-patches/*.patch 2>/dev/null | sha256sum | awk '{print $1}')"
++# reaper 2026-10-23: the stamp also covers THIS script, so a configure-option change
++# (e.g. --without-quotas) rebuilds Samba instead of reshipping the cached binary.
++STAMP_SIG="$(cat "$PKGDIR/build-reaper.sh" "$PKGDIR"/reaper-patches/*.patch 2>/dev/null | sha256sum | awk '{print $1}')"
+ 
+ TC="$(ls -d /opt/toolchains/crosstools-arm_softfp-gcc-10.3*/usr/bin 2>/dev/null | head -1)"
+ SYSROOT="$(ls -d /opt/toolchains/crosstools-arm_softfp-gcc-10.3*/arm-buildroot-linux-gnueabi/sysroot 2>/dev/null | head -1)"
+@@ -102,7 +104,14 @@ CPPFLAGS="-I$STG/include" LDFLAGS="-L$STG/lib -Wl,-rpath-link,$STG/lib" \
+   --without-ad-dc --without-json --without-libarchive --without-acl-support \
+   --without-ldap --without-ads --without-pam --without-systemd --without-lttng \
+   --without-gettext --disable-python --disable-rpath --disable-rpath-install \
+-  --disable-warnings-as-errors --bundled-libraries=ALL --with-shared-modules='!vfs_snapper'
++  --disable-warnings-as-errors --bundled-libraries=ALL --with-shared-modules='!vfs_snapper' \
++  --without-quotas
++# reaper 2026-10-23: quotas off. waf auto-enabled them and smbd then logged
++# "sys_path_to_bdev() failed for path [.]" on disk-free queries - no share on this
++# router sits on a quota-capable block device. Hard-fail if waf turned them on anyway.
++if grep -q '^#define WITH_QUOTAS' bin/default/include/config.h; then
++  echo "[build-reaper] ERROR: WITH_QUOTAS still defined after --without-quotas - aborting"; exit 1
++fi
+ # Force system bison/flex in the waf cache (belt-and-suspenders atop PATH order).
+ sed -i "s#'[^']*bison'#'/usr/bin/bison'#g; s#'[^']*flex'#'/usr/bin/flex'#g" bin/c4che/default_cache.py
+ 
+-- 
+2.25.1
+

@@ -132,6 +132,8 @@ static FILE *LOG;
 #define eval(...) ((void)0)
 void logmessage(const char *tag, const char *fmt, ...) { va_list ap; va_start(ap, fmt); fprintf(LOG, "%s: ", tag); vfprintf(LOG, fmt, ap); fputc('\n', LOG); va_end(ap); fflush(LOG); }
 int check_if_dir_exist(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
+/* 2026-10-09: the scratch directory is made through shared/reaper_tmpsafe.c (test_tmp_hardening covers it) */
+int reaper_secure_dir(const char *p, mode_t m) { mkdir(p, m); return check_if_dir_exist(p) ? 0 : -1; }
 void rule_apply_checking(char *caller, int line, char *rule_path, int ret) { logmessage(caller, "apply rules error(%d)", line); }
 /* the real _eval forks, redirects stdout+stderr to path (">file"), execvp's argv */
 int _eval(char *const argv[], const char *path, int timeout, int *ppid) {

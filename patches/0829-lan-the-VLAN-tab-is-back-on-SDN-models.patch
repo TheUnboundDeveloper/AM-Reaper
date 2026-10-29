@@ -1,0 +1,71 @@
+From ae770ff4cfb798c6a9d7a2ddc1ccb39a0eddc174 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 26 Oct 2026 13:54:26 -0400
+Subject: [PATCH] lan: the VLAN tab is back on SDN models
+
+The 2026-10-23 LAN pass inverted stock's test: stock shows VLAN Switch and
+VLAN Profile (per-port access / trunk) with the multi-LAN configuration,
+not without it. The tab was hidden on every SDN model, the two pages were
+removed from the image and their URLs bounced to the Network page. The
+menu test is stock's again, the pages ship, and the bounce rows are gone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c | 2 --
+ release/src/router/www/Makefile          | 8 +++-----
+ release/src/router/www/reaper/menu.js    | 7 +++++--
+ 3 files changed, 8 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 25c54d77de8..252298d2939 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -253,8 +253,6 @@ static const struct reaper_page_row { const char *name, *to; int shipped; } reap
+ 	{ "advanced_vpnserver_content.asp", "Reaper_VPNServer.asp", 0 },
+ 	{ "advanced_vpnclient_content.asp", "Reaper_VPNClient.asp?tab=pptp", 0 },
+ 	{ "advanced_vpnclientfusion_content.asp", "Reaper_VPNClient.asp", 0 },
+-	{ "advanced_vlan_switch_content.asp", "SDN.asp", 0 },
+-	{ "advanced_vlan_profile_content.asp", "SDN.asp", 0 },
+ 	{ "advanced_multisubnet_content.asp", "Reaper_LAN.asp", 0 },
+ 	{ "main_connstatus_content.asp", "Reaper_Conn.asp", 0 },
+ 	{ "main_trafficmonitor_realtime.asp", "Reaper_Traffic.asp", 0 },
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index c61a26872c7..81ab1c1d1a9 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -1234,11 +1234,9 @@ endif
+ 	rm -rf $(INSTALLDIR)/www/dashboard
+ 
+ # reaper 2026-10-23 (LAN/WAN wave): stock pages the menu never shows on this build are not shipped -
+-# VLAN Switch / VLAN Profile appear only without MULTILAN_CFG (menu.js: !mtlancfg), Multi-Subnet only
+-# with TAGGED_BASED_VLAN. Gated per build so a model that does show them keeps them.
+-ifeq ($(RTCONFIG_MULTILAN_CFG),y)
+-	rm -f $(INSTALLDIR)/www/Advanced_VLAN_Switch_Content.asp $(INSTALLDIR)/www/Advanced_VLAN_Profile_Content.asp
+-endif
++# Multi-Subnet only with TAGGED_BASED_VLAN. Gated per build so a model that does show it keeps it.
++# 2026-10-26 (owner): the VLAN Switch / VLAN Profile pair ships again - stock shows it WITH MULTILAN_CFG (menu.js);
++# the stock SMART_HOME_MASTER_UI removal above still applies.
+ ifneq ($(RTCONFIG_TAGGED_BASED_VLAN),y)
+ 	rm -f $(INSTALLDIR)/www/Advanced_MultiSubnet_Content.asp
+ endif
+diff --git a/release/src/router/www/reaper/menu.js b/release/src/router/www/reaper/menu.js
+index 16fab80aa46..22a28e663f5 100755
+--- a/release/src/router/www/reaper/menu.js
++++ b/release/src/router/www/reaper/menu.js
+@@ -112,8 +112,11 @@
+         T('Reaper_DNS.asp', 'DNS', routing || (is('ap') && sup('dhcp_override'))),
+         T('Advanced_MultiSubnet_Content.asp', `<#menu5_2_2#>`, sup('tagged_based_vlan') && routing),
+         T('Reaper_IPTV.asp', 'IPTV', !sup('noiptv') && routing),
+-        T('Advanced_VLAN_Switch_Content.asp', 'VLAN', !sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb')),
+-        T('Advanced_VLAN_Profile_Content.asp', INH, !sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))]},
++        /* 2026-10-26 (owner): stock shows VLAN (per-port SDN profile, access / trunk) WITH mtlancfg - it excludes the pair
++           when `!mtlancfg || SMART_HOME_MASTER_UI`, and in Repeater / Media Bridge mode. This line had the test inverted
++           (2026-10-23), which hid the tab on every SDN model. */
++        T('Advanced_VLAN_Switch_Content.asp', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb')),
++        T('Advanced_VLAN_Profile_Content.asp', INH, sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))]},
+       {index: 'menu_WAN', label: `<#menu5_3#>`, when: routing, tabs: [
+         /* 2026-10-23 LAN/WAN wave: Reaper_Internet (+ the USB modem view), Reaper_NAT (port forwarding,
+            port trigger, DMZ, NAT passthrough), Reaper_DDNS (DDNS + certificate) */
+-- 
+2.25.1
+

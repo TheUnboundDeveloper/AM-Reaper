@@ -23,7 +23,7 @@ def check(name, cond, detail=""):
     print(("ok   " if cond else "FAIL ") + name)
     if not cond: fails.append(name + (" - " + str(detail)[:500] if detail else ""))
 
-check("the report is v1.3.51", 'VER="REAPER-DIAG v1.3.51"' in d)
+check("the report is v1.3.51", 'VER="REAPER-DIAG v1.3.52"' in d)
 i, j = d.find('sec "13. ADDONS / JFFS"'), d.find('echo "  entware:')
 check("section 13 found", 0 < i < j, (i, j))
 sec = d[i:j]

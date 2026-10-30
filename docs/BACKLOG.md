@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.6.2** · 2026-10-28 <!--@stamp-->
+> **Doc status:** current as of **v3.6.3** · 2026-10-30 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -37,41 +37,35 @@ internal quality, or deferred by decision.
 
 ## Waiting on field response
 
-*Solved and shipped in a cut or a successful test build; waiting on the reporter. One line each,
-highest priority first - what was fixed and what to ask the tester for is in the notes. A "still broken"
-answer moves the item back to Open bugs.*
+*Solved: shipped in a cut or a successful test build, or fixed in canon for the next cut;
+waiting on the reporter. One line each, highest priority first - what was fixed and what to ask
+the tester for is in the notes. A "still broken" answer moves the item back to Open bugs.*
 
 - **[P1] RT-BE86U: 5 GHz radio down after a Guest Network Pro save (live Wi-Fi driver reload)**
   ↳ notes: `be86u-5ghz-driver-reload.md`
-- **[P1] WAN 802.1Q switch did nothing on GT-BE98 (rebooted, came back off)**
-  ↳ notes: `wan-vlan-mswan.md`
-- **[P2] Reaper pages: settings written into page scripts without escaping**
-  ↳ notes: `nvram-get-js-escaping.md`
-- **[P2] firewall-start "not honoured": custom scripts kept no trace of failing**
-  ↳ notes: `custom-script-output.md`
-- **[P2] Translated labels wrap, spill, or push past their space** ↳ notes: `i18n-fit.md`
-- **[P2] Browsers kept old pages after a flash or a setting change (cache bust)**
-  ↳ notes: `httpd-cache-bust.md`
-- **[P2] Wallguard: removable built-in lists, your own sources, API sources**
-  ↳ notes: `wallguard-sources.md`
-- **[P2] Bastion tools independent: Dreadwatch no longer needs Warden**
-  ↳ notes: `bastion-independent.md`
 - **[P2] Header bar truncates English at 1080p** ↳ notes: `header-chip-truncation.md`
-- **[P2] Backups: the DDNS hostname lost, and the settings file blind to the newer tools**
-  ↳ notes: `backup-coverage.md`
 - **[P2] Doubled menu after a language switch (the dashboard inside the settings frame)**
   ↳ notes: `doubled-menu-language-switch.md`
 - **[P2] DHCP manual assignment: device names gone from the Host Name column**
   ↳ notes: `dhcp-reservation-names.md`
-- **[P3] The Warden menu is Bastion** ↳ notes: `bastion-menu.md`
-- **[P3] System Log: lines are not wrapped** ↳ notes: `system-log-filter.md`
-- **[P3] Wireless Log: one box per network** ↳ notes: `wireless-log-networks.md`
+- **[P2] Internet speed test after ASUS retired the old Ookla setup (2026-10-01)**
+  ↳ notes: `speedtest-embed-key-retired.md`
+- **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
+- **[P2] Wireless Log: device names lost, and every extra network called a guest network**
+  ↳ notes: `wireless-log-names-types.md`
 - **[P3] Wireless Log: client rows run past the page edge** ↳ notes: `wireless-log-overflow.md`
-- **[P3] Dreadwatch: removable built-in lists, your own sources, API sources**
-  ↳ notes: `dreadwatch-custom-feeds.md`
 - **[P3] Wallguard / Dreadwatch: an API key inside the source address (`$APIkey`)**
   ↳ notes: `wallguard-sources.md`
 - **[P3] Wallguard: abuse.ch templates in "Add a source"** ↳ notes: `wallguard-sources.md`
+- **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
+- **[P3] Internet Connection names the default WAN port, not the one in use**
+  ↳ notes: `internet-wan-port-label.md`
+- **[P3] System Info: `<i>off</i>` shown as text for a radio that is off**
+  ↳ notes: `sysinfo-radio-off-markup.md`
+- **[P3] HW QoS inert behind an ISP/IPTV profile** ↳ notes: `hwqos-isp-profile.md`
+- **[P3] Reaper QoS: no unsaved-changes cue** ↳ notes: `unsaved-changes-cue.md`
+- **[P3] DNS Director: pick the device from a list of connected devices**
+  ↳ notes: `dns-director-device-picker.md`
 
 ## Open bugs / under investigation
 
@@ -100,22 +94,9 @@ answer moves the item back to Open bugs.*
 - **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
   a PIN build.
   **[options written 2026-10-18; owner decision]** ↳ notes: `pin-strategy.md`
-- **[P2] LAN › DHCP: the manually assigned (bound) devices list is missing** (field, reported again 2026-10-26) — the
-  list renders on the owner's box (same format as stock); the user's case is not reproduced yet. **[not started; need the
-  user's screenshot + diag]**
-  ↳ notes: `dhcp-manual-list-missing.md`
 - **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing** (field, Russian users,
   2026-10-26) — the packs are in step (checked); long words: see the next entry; open: screenshots, the language switch.
   **[layout part built 2026-10-26 (below); rest not started]** ↳ notes: `russian-ui-layout.md`
-- **[P2] Wi-Fi start-up script fixes from GPL 40585** (Merlin review, 2026-10-26) — hndnvram.sh stops stacking a second
-  defaults mount (can swallow nvram commits), quoting, taskset hex; Merlin: an ASUS GPL change he has no details on.
-  **[owner investigating; not carried]** ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P2] Merge the whole 102_40585 GPL (rebase onto Merlin main)** (2026-10-26) — Merlin: pieces of a GPL are not
-  sustainable; brings AiMesh, the Ookla rework + quota (decide). Trial merge: ~200 real code hunks in ~30 files, the rest
-  mechanical; est. 85-90% complete with every fix kept, 60-70% clean first image. **[scheduled after the open bugs;
-  plan: bulk, code, checks, metal rungs]** ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P3] HW QoS inert behind an ISP/IPTV profile** — the WAN name is the virtual device there; take the port from
-  `wan_if_eth()` as Merlin f5334a33d23 does (the mswan half needs 40585). **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -125,10 +106,6 @@ answer moves the item back to Open bugs.*
 
 - **[P3] Loading/Restarting overlay: native redesign remainder** — 24 stock `confirm()` dialogs on 9
   pages. **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Reaper QoS: no unsaved-changes cue** (metal, 2026-10-22) — the × on a rule edits only the
-  page and nothing says Apply is still owed (the owner's first delete was never written). A
-  pending-changes bar on the Reaper pages that edit lists.
-  **[not started]** ↳ notes: `reaper-native-ui.md`
 
 ---
 
@@ -167,9 +144,9 @@ answer moves the item back to Open bugs.*
   MB) — every added file now competes with the slot; measure the staged image, then remove or
   deduplicate what ships (the 1.7 MB logo PNG, stock pages Reaper replaced, the OUI table shipped
   twice, unused modules, compression settings; Samba/Tor/speedtest/DLNA are owner calls).
-  **[2026-10-22: orphans removed in canon (1,978,368 B, headroom now ~2.7 MB); _r16 metal PASS: no
-  missing-file errors, Samba tools resolve every library; image re-encodes and owner-decision
-  features next]** ↳ notes: `image-size-hunt.md`
+  **[v3.6.2: rootfs 67,686,400 B, 1,769,472 B spare (the 40585 merge cost ~925 KB); three images
+  recompressed losslessly in canon 2026-10-29 (71 KB); the larger levers are owner calls]**
+  ↳ notes: `image-size-hunt.md`
 - **[P2] Encrypted DNS: split the block into two switches (DoT/DoQ on 853, DoH to known resolvers)**
   (owner, 2026-10-21) — new `reaper_dot_block`, each with its own counter; canaries and the DoH name
   list follow the DoH switch.
@@ -372,8 +349,6 @@ answer moves the item back to Open bugs.*
   **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
 - **B-5. [P1] Internet speed test fails on 10 Gbit/s links** — owner ruling: not chased.
   **[blocked — development]** ↳ notes: `speedtest-10g-links.md`
-- **B-6. [P2] Internet speed test may stop on 2026-10-01** — ASUS retires the Ookla setup Reaper
-  uses. **[blocked — GPL]** ↳ notes: `speedtest-embed-key-retired.md`
 - **B-7. [P3] Source to ask the vendors for** — ranked: ASUS-owned first (AiMesh, the httpd login
   check, networkmap); Broadcom's under NDA (ask for errata and docs); nine GPL-labelled modules
   shipped as prebuilt objects are the one licence-based ask.

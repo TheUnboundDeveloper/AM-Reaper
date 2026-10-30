@@ -58,6 +58,9 @@ out.rp = vis(Object.assign({}, base, {mode: 'rp'}));
 out.mb = vis(Object.assign({}, base, {mode: 'mb'}));
 out.wisp = vis(Object.assign({}, base, {mode: 'wisp'}));
 out.nodual = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {dualwan: 0})}));
+out.rtwlc = vis(Object.assign({}, base, {wlc_band: '1'}));   /* 2026-10-29: a router holding a wlc_band */
+out.rtwlcneg = vis(Object.assign({}, base, {wlc_band: '-1'}));   /* the field value (RT-BE88U, set up from scratch) */
+out.wispwlc = vis(Object.assign({}, base, {mode: 'wisp', wlc_band: '1'}));
 out.nomcp = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {reaper_mcp: 0})}));
 out.usbwan = vis(Object.assign({}, base, {wans_dualwan: 'usb none'}));
 out.novpn = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {openvpnd: 0, wireguard: 0, ipsec_srv: 0, pptpd: 0, vpnc: 0, tor: 0})}));   /* 2026-10-24 VPN wave */   /* USB primary, dual WAN not enabled (menuTree.js:743) */
@@ -100,6 +103,11 @@ if r.returncode == 0:
           and all("Reaper_Failover.asp" not in m["menu_Setting"] for m in (ap, rp, mb))
           and all(k in m for m in (ap, rp, mb) for k in ("menu_ReaperDevices", "menu_Sysinfo", "menu_Setting")), [m.get("menu_Setting") for m in (ap, rp, mb)])
     check("WAN Ports only with dual-WAN support", "Reaper_WANPorts.asp" in rt["menu_WAN"] and "Reaper_WANPorts.asp" not in o["nodual"]["menu_WAN"])
+    # 2026-10-29 (field, RT-BE88U): a router read wlc_band=-1, and a set wlc_band hid the tab
+    check("WAN Ports in router mode whatever wlc_band holds; WISP with a wireless uplink still hides it",
+          "Reaper_WANPorts.asp" in o["rtwlc"]["menu_WAN"] and "Reaper_WANPorts.asp" in o["rtwlcneg"]["menu_WAN"]
+          and "Reaper_WANPorts.asp" not in o["wispwlc"].get("menu_WAN", []),
+          [o["rtwlc"].get("menu_WAN"), o["rtwlcneg"].get("menu_WAN"), o["wispwlc"].get("menu_WAN")])
     check("Advisor only on MCP builds", "menu_ReaperAdvisor" in rt and "menu_ReaperAdvisor" not in o["nomcp"])
     # 2026-10-23 LAN/WAN wave: the USB modem view lives inside Reaper_Internet - no stock WAN or modem page is named
     # (this node half never ran before 2026-10-24: no node in WSL, no tree on the CI runner - the old expectation was stale)

@@ -1,0 +1,129 @@
+From 336297262981bf020a2da4408e9ebf512fde2dcc Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 09:47:55 -0400
+Subject: [PATCH] www: the WAN port in use on Internet Connection, the WAN
+ Ports tab in router mode, an off radio on System Info
+
+Field reports on v3.6.1.
+- RT-BE88U with the ISP cable on the 2.5G port: WAN > Internet Connection named the model's default
+  10G port. baseName() took ETH.wan, the default entry of the Ethernet WAN list; wanKey() now
+  resolves the port in use the way the WAN Ports page does (the pinned or detected port under Auto,
+  else the entry whose extra_settings match nvram) and falls back to ETH.wan.
+- Same router (router mode, set up from scratch): the WAN Ports tab was missing because wlc_band
+  held "-1"; state.js and reaper/menu.js hid the tab for any wlc_band. In router mode the dualwan
+  flag alone decides now; WISP, repeater, media bridge and AP keep the stock rule.
+- GT-BE98: System Info showed "<i>off</i>" as text for a radio that is off; wlCount() shows "off".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Internet.asp | 23 +++++++++++++++++++++-
+ release/src/router/www/Reaper_Sysinfo.asp  |  9 +++++++--
+ release/src/router/www/reaper/menu.js      |  4 +++-
+ release/src/router/www/state.js            |  5 ++++-
+ 4 files changed, 36 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Internet.asp b/release/src/router/www/Reaper_Internet.asp
+index f928b8148ec..f3e5bd64c13 100644
+--- a/release/src/router/www/Reaper_Internet.asp
++++ b/release/src/router/www/Reaper_Internet.asp
+@@ -350,7 +350,9 @@ NVU[1] = {
+ };
+ var NVG = {
+   wans_dualwan: U('<% nvram_char_to_ascii("","wans_dualwan"); %>'), wans_mode: U('<% nvram_char_to_ascii("","wans_mode"); %>'), wans_lanport: U('<% nvram_char_to_ascii("","wans_lanport"); %>'),
+-  wan_unit: U('<% nvram_char_to_ascii("","wan_unit"); %>'), autowan_enable: U('<% nvram_char_to_ascii("","autowan_enable"); %>'), switch_wantag: U('<% nvram_char_to_ascii("","switch_wantag"); %>'),
++  wan_unit: U('<% nvram_char_to_ascii("","wan_unit"); %>'), autowan_enable: U('<% nvram_char_to_ascii("","autowan_enable"); %>'),
++  autowan_detected_ifname: U('<% nvram_char_to_ascii("","autowan_detected_ifname"); %>'), reaper_wanport: U('<% nvram_char_to_ascii("","reaper_wanport"); %>'),
++  wan_ifname_x: U('<% nvram_char_to_ascii("","wan_ifname_x"); %>'), wans_extwan: U('<% nvram_char_to_ascii("","wans_extwan"); %>'), switch_wantag: U('<% nvram_char_to_ascii("","switch_wantag"); %>'),
+   switch_stb_x: U('<% nvram_char_to_ascii("","switch_stb_x"); %>'), bond_wan: U('<% nvram_char_to_ascii("","bond_wan"); %>'), fw_pt_pppoerelay: U('<% nvram_char_to_ascii("","fw_pt_pppoerelay"); %>'),
+   dns_delay_round: U('<% nvram_char_to_ascii("","dns_delay_round"); %>'), ipv6_s46_aftr: U('<% nvram_char_to_ascii("","ipv6_s46_aftr"); %>'), ipv6_s46_b4addr: U('<% nvram_char_to_ascii("","ipv6_s46_b4addr"); %>'),
+   ttl_inc_enable: U('<% nvram_char_to_ascii("","ttl_inc_enable"); %>'), ttl_spoof_enable: U('<% nvram_char_to_ascii("","ttl_spoof_enable"); %>'), upnp_pinhole_enable: U('<% nvram_char_to_ascii("","upnp_pinhole_enable"); %>'),
+@@ -416,9 +418,28 @@ function has(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
+ /* ---------- units: 0 / 1 (wans_dualwan order), USB as the modem view, 1xx Multi-Service WAN profiles ---------- */
+ function isProf(u){ return +u >= 100; }
+ function baseOf(u){ return isProf(u) ? Math.floor((+u - 100) / 10) : +u; }
++/* reaper 2026-10-29: the Ethernet WAN port in use, by the rule WAN Ports uses - with Auto on the pinned or
++   detected port, otherwise the entry whose extra_settings all match (stock get_ethwan_setting). ETH.wan is
++   only the model's default WAN port: an RT-BE88U on its 2.5G port was labelled "10G WAN/LAN" (field). */
++function wanKey(){
++  var k, k2, o, ok, det = NVG.autowan_detected_ifname, pin = NVG.reaper_wanport, ifn;
++  if (NVG.autowan_enable === '1'){
++    ifn = (pin !== '' && (det === '' || det === pin)) ? pin : det;
++    if (ifn !== '') for (k in ETH) if (has(ETH, k) && ETH[k] && ((ETH[k].extra_settings || {}).wan_ifname_x === ifn || ETH[k].ifname === ifn)) return k;
++    return '';
++  }
++  for (k in ETH){
++    if (!has(ETH, k) || !ETH[k]) continue;
++    o = ETH[k].extra_settings; ok = true;
++    if (o) for (k2 in o) if (has(o, k2) && (has(NVG, k2) ? NVG[k2] : '') !== String(o[k2])){ ok = false; break; }
++    if (ok) return k;
++  }
++  return '';
++}
+ function baseName(b){
+   var t = DW[b] || 'wan', k;
+   if (t === 'usb') return T.usb;
++  if (t === 'wan'){ k = wanKey(); if (k && ETH[k] && ETH[k].wan_name) return String(ETH[k].wan_name); }
+   if (t === 'wan' && ETH.wan && ETH.wan.wan_name) return String(ETH.wan.wan_name);
+   if (t === 'lan'){
+     for (k in ETH) if (has(ETH, k) && ETH[k] && ETH[k].wans_lanport === NVG.wans_lanport && ETH[k].wan_name) return String(ETH[k].wan_name);
+diff --git a/release/src/router/www/Reaper_Sysinfo.asp b/release/src/router/www/Reaper_Sysinfo.asp
+index 3349f0a14ce..2de7a5a0fc8 100644
+--- a/release/src/router/www/Reaper_Sysinfo.asp
++++ b/release/src/router/www/Reaper_Sysinfo.asp
+@@ -277,6 +277,11 @@ function $id(i){return document.getElementById(i);}
+ function txt(i,v){var e=$id(i); if(e) e.textContent=(v===''||v==null)?'-':v;}
+ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
+   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
++/* reaper 2026-10-29: httpd sysinfo.c answers a Wi-Fi client count with the literal markup "<i>off</i>"
++   when the radio is off (count -1). Show the word; every other value stays escaped. */
++function wlCount(v){
++  return /^<i>\s*off\s*<\/i>$/i.test(String(v)) ? '<span class="sub">'+esc(`<#RDSH_49#>`)+'</span>' : esc(v);
++}
+ function mb(n){ n=Number(n)||0; return n.toLocaleString()+' MB'; }
+ function pct(a,b){ b=Number(b)||0; return b>0?Math.max(0,Math.min(100,Number(a)/b*100)):0; }
+ 
+@@ -387,8 +392,8 @@ function renderSysinfo(t){
+   for(var i=0;i<WL.length;i++){
+     var a=parseArr(t,'wlc_'+WL[i].idx+'_arr');
+     if(!a) continue;
+-    rows+='<tr><td>'+esc(WL[i].label)+'</td><td class="num">'+esc(a[0])+
+-          '</td><td class="num">'+esc(a[1])+'</td><td class="num">'+esc(a[2])+'</td></tr>';
++    rows+='<tr><td>'+esc(WL[i].label)+'</td><td class="num">'+wlCount(a[0])+
++          '</td><td class="num">'+wlCount(a[1])+'</td><td class="num">'+wlCount(a[2])+'</td></tr>';
+   }
+   var w=$id('s_wl'); if(w) w.innerHTML = rows || '<tr><td colspan="4" class="sub">-</td></tr>';
+ }
+diff --git a/release/src/router/www/reaper/menu.js b/release/src/router/www/reaper/menu.js
+index 9f18cf7b33f..e4be0fdea8c 100644
+--- a/release/src/router/www/reaper/menu.js
++++ b/release/src/router/www/reaper/menu.js
+@@ -45,7 +45,9 @@
+     var is = function(){ for (var i = 0; i < arguments.length; i++) if (mode === arguments[i]) return true; return false; };
+     var routing = !is('rp', 'ap', 'mb');                      /* the modes that route: router / WISP */
+     var usbIndex = (' ' + (F.wans_dualwan || '') + ' ').split(' ').indexOf('usb') - 1;
+-    var dualWAN = (F.wlc_band || '') === '' && sup('dualwan');
++    /* reaper 2026-10-29: a router can hold a wlc_band ("-1" on an RT-BE88U set up from scratch); in router
++       mode only the dualwan flag decides (state.js dualWAN_support follows the same rule) */
++    var dualWAN = (is('rt') || (F.wlc_band || '') === '') && sup('dualwan');
+     var dw = (F.wans_dualwan || '').split(' '), dualwanEnabled = dw.length > 1 && dw[1] !== '' && dw[1] !== 'none';
+     var concurrep = sup('concurrep') && F.mlo_rp !== '1' && F.mlo_mb !== '1';
+     var rpRSSI = is('rp') && sup('user_low_rssi');            /* repeater with the stock RSSI tabs hidden */
+diff --git a/release/src/router/www/state.js b/release/src/router/www/state.js
+index 4d130acf4f6..bde264041a0 100644
+--- a/release/src/router/www/state.js
++++ b/release/src/router/www/state.js
+@@ -618,7 +618,10 @@ var dsl_support = isSupport("dsl");
+ var sfpp_support = isSupport("sfp+");
+ var vdsl_support = isSupport("vdsl");
+ var mswan_support = isSupport("mswan");
+-var dualWAN_support = (wlc_band != "") ? false : isSupport("dualwan");
++/* reaper 2026-10-29: wlc_band names the uplink band of a wireless client (repeater, media bridge, WISP),
++   but a router can hold one too - "-1" on an RT-BE88U set up from scratch in router mode (field) - and
++   that hid the WAN Ports (Dual WAN) tab. In router mode only the dualwan support flag decides. */
++var dualWAN_support = (wlc_band != "" && !isSwMode("rt")) ? false : isSupport("dualwan");
+ var noWAN_support = isSupport("nowan");
+ var mtwancfg_support = isSupport("mtwancfg");
+ var ruisp_support = isSupport("ruisp");
+-- 
+2.25.1
+

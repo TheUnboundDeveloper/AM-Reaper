@@ -15,7 +15,10 @@ WHAT IT DOES. Extracts hwqos_lan_port() and hwqos_tm_ifname() from rc/qos.c (bra
 compiles them on the host with stubs for nvram, d_exists and the WAN helpers, and checks that a
 WAN VLAN whose parent is a bridge member (a brport entry under a sysfs fixture) or is listed in
 lan_ifnames yields NO port, while the plain 10G WAN, a PPPoE VLAN on a dedicated port, and a VLAN
-whose parent shows no LAN signal still resolve as before. Then pins the wiring: both engines
+whose parent shows no LAN signal still resolve as before. 2026-10-29: behind an ISP / IPTV profile
+(hwqos_isp_profile()) the profile's vlanNNN / brvNNN device resolves to the global wan_ifname, which
+goes through the same refusal, and reaper_diag section 10 is run in sh on the same cases and must
+name the same port. Then pins the wiring: both engines
 refuse to arm on an empty port, the QoS page carries the note and reads wan0_ifname, RQOS_125 is
 in all 25 packs, and the markers pin the staged rc and page.
 
@@ -55,9 +58,11 @@ def extract(sig):
 
 lan = extract("static int hwqos_lan_port(const char *ifname)")
 fn = extract("static const char *hwqos_tm_ifname(int unit)")
+isp = extract("static int hwqos_isp_profile(int unit)")
 check("rc/qos.c defines hwqos_lan_port()", lan is not None)
 check("rc/qos.c defines hwqos_tm_ifname()", fn is not None)
-if lan is None or fn is None:
+check("rc/qos.c defines hwqos_isp_profile() (2026-10-29)", isp is not None)
+if lan is None or fn is None or isp is None:
     print("FAILED"); sys.exit(1)
 check("hwqos_tm_ifname() asks hwqos_lan_port() about the resolved parent and drops it",
       "hwqos_lan_port(buf)" in fn and "buf[0] = '\\0';" in fn)
@@ -82,23 +87,31 @@ HARNESS = r'''
 	     word[sizeof(word) - 1] = '\0', \
 	     next = strchr(next, ' '))
 enum { WAN_DISABLED, WAN_DHCP, WAN_STATIC, WAN_PPPOE, WAN_PPTP, WAN_L2TP };
+#define WAN_UNIT_FIRST 0
 static int g_proto; static const char *g_pppif, *g_physif, *g_lan;
+static const char *g_tag = "", *g_stb = "", *g_tagid = "", *g_wanif = "";
 static const char *get_wan_ifname(int unit) { (void)unit; return g_proto >= WAN_PPPOE ? g_pppif : g_physif; }
 static int get_wan_proto(char *prefix) { (void)prefix; return g_proto; }
 static char *nvram_safe_get(const char *k)
 {
 	if (!strcmp(k, "lan_ifnames")) return (char *)g_lan;
+	if (!strcmp(k, "switch_wantag")) return (char *)g_tag;
+	if (!strcmp(k, "switch_stb_x")) return (char *)g_stb;
+	if (!strcmp(k, "switch_wan0tagid")) return (char *)g_tagid;
 	return (char *)(strstr(k, "wan") && strstr(k, "ifname") ? g_physif : "");
 }
+/* shared.h wan_if_eth(): the global wan_ifname, else the board's WAN_IF_ETH (eth0 here) */
+static char *wan_if_eth(void) { return (char *)(*g_wanif ? g_wanif : "eth0"); }
 static char *strlcat_r(const char *a, const char *b, char *buf, size_t n) { snprintf(buf, n, "%s%s", a, b); return buf; }
 static int d_exists(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
 static void logmessage(const char *t, const char *fmt, ...) { (void)t; (void)fmt; }
 @@LAN@@
+@@ISP@@
 @@FN@@
 int main(int argc, char **argv)
 {
-	(void)argc;
 	g_proto = atoi(argv[1]); g_pppif = argv[2]; g_physif = argv[3]; g_lan = argv[4];
+	if (argc > 8) { g_tag = argv[5]; g_stb = argv[6]; g_tagid = argv[7]; g_wanif = argv[8]; }
 	printf("%s\n", hwqos_tm_ifname(0));
 	return 0;
 }
@@ -115,7 +128,7 @@ try:
     os.makedirs(os.path.join(sysnet, "eth0"))
     c = os.path.join(td, "t.c"); exe = os.path.join(td, "t")
     with open(c, "w") as f:
-        f.write(HARNESS.replace("@@LAN@@", lan).replace("@@FN@@", fn))
+        f.write(HARNESS.replace("@@LAN@@", lan).replace("@@ISP@@", isp).replace("@@FN@@", fn))
     p = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror",
                         '-DHWQOS_VLAN_CFG="%s"' % vlan, '-DHWQOS_SYSNET="%s"' % sysnet, "-o", exe, c],
                        capture_output=True, text=True)
@@ -136,6 +149,57 @@ try:
         check("a VLAN parent with no LAN signal at all still resolves (the refusal is signal-driven, not name-driven)",
               pick(1, "ppp0", "vlan4094", "eth2 eth3") == "eth1")
         check("a plain port never in the table is left as it is", pick(1, "ppp0", "eth0.v0", LAN98) == "eth0.v0")
+
+        # 2026-10-29: ISP / IPTV profile. wan0_ifname is the profile's vlanNNN / brvNNN (a vlanctl
+        # device or a bridge, never in the 802.1Q table); the port is the global wan_ifname.
+        def isp(proto, ppp, wan0, lan_list, tag, stb, tagid, wanif):
+            return subprocess.run([exe, str(proto), ppp, wan0, lan_list, tag, stb, tagid, wanif],
+                                  capture_output=True, text=True).stdout.strip()
+        LAN96 = "eth1 eth2 eth3 eth4 wl0 wl1 wl2"
+        check("ISP profile (WAN VLAN tag 6) on the 10G port: eth0 is shaped, not vlan6",
+              isp(1, "ppp0", "vlan6", LAN96, "movistar", "0", "6", "eth0") == "eth0")
+        check("ISP profile under PPPoE: the profile's port, not ppp0 and not the profile's VLAN",
+              isp(3, "ppp0", "vlan6", LAN96, "unifi_home", "0", "500", "eth0") == "eth0")
+        check("STB-port bridge profile (brvNNN, no tag): the port under it",
+              isp(1, "ppp0", "brv100", LAN96, "none", "1", "0", "eth0") == "eth0")
+        check("ISP profile with the WAN on the RT-BE88U 2.5G port: eth1 (global wan_ifname follows the port in use)",
+              isp(1, "ppp0", "vlan6", "eth2 eth3 eth4", "manual", "0", "6", "eth1") == "eth1")
+        check("ISP profile on the GT-BE98 2.5G WAN/LAN-1 jack (vlan4094 on the LAN trunk): NO port",
+              isp(1, "ppp0", "vlan6", LAN98, "manual", "0", "6", "vlan4094") == "")
+        check("ISP profile whose port is a LAN port with no VLAN hop is refused too",
+              isp(1, "ppp0", "vlan6", LAN98, "manual", "0", "6", "eth1") == "")
+        check("ISP profile with no global wan_ifname: the board's WAN_IF_ETH",
+              isp(1, "ppp0", "vlan6", LAN96, "manual", "0", "6", "") == "eth0")
+        check("a profile name with no STB port and no tag is not a profile: 802.1Q WAN resolves as before",
+              isp(1, "ppp0", "vlan101", LAN96, "none", "0", "0", "eth9") == "eth0")
+        check("a leftover tag with no profile set is not a profile",
+              isp(1, "ppp0", "eth0", LAN96, "", "0", "6", "eth9") == "eth0")
+
+        # reaper_diag section 10 resolves the port the same way (v1.3.52): run its block in sh
+        dpath = os.path.join(SRC, "others", "reaper_diag")
+        if os.path.isfile(dpath) and shutil.which("sh"):
+            dsrc = open(dpath, encoding="utf-8", errors="surrogateescape").read()
+            a = dsrc.find('QSRC="$WANIF"; QISP=""'); z = dsrc.find("\nQLOG=", a)
+            check("reaper_diag carries the ISP-profile block before QLOG", 0 < a < z)
+            if 0 < a < z:
+                blk = (dsrc[a:z].replace("/proc/net/vlan/config", vlan).replace("/sys/class/net/", sysnet + "/"))
+                def diag(wan0, lan_list, tag, stb, tagid, wanif):
+                    sh = ('nvram() { case "$2" in lan_ifnames) echo "$T_LAN";; switch_wantag) echo "$T_TAG";; '
+                          'switch_stb_x) echo "$T_STB";; switch_wan0tagid) echo "$T_TID";; wan_ifname) echo "$T_WIF";; esac; }\n'
+                          'WANIF="$T_W0"\n' + blk + '\n[ -n "$QREF" ] && echo "" || echo "$QPORT"\n')
+                    env = dict(os.environ, T_LAN=lan_list, T_TAG=tag, T_STB=stb, T_TID=tagid, T_WIF=wanif, T_W0=wan0)
+                    return subprocess.run(["sh", "-c", sh], capture_output=True, text=True, env=env).stdout.strip()
+                cases = [("eth0", LAN98, "", "", "", "eth0"), ("vlan4094", LAN98, "", "", "", "vlan4094"),
+                         ("vlan101", LAN98, "", "", "", "eth0"), ("vlan6", LAN96, "movistar", "0", "6", "eth0"),
+                         ("brv100", LAN96, "none", "1", "0", "eth0"), ("vlan6", "eth2 eth3 eth4", "manual", "0", "6", "eth1"),
+                         ("vlan6", LAN98, "manual", "0", "6", "vlan4094"), ("vlan6", LAN98, "manual", "0", "6", "eth1"),
+                         ("vlan6", LAN96, "manual", "0", "6", ""), ("vlan101", LAN96, "none", "0", "0", "eth9")]
+                bad = []
+                for w0, ll, tg, sb, ti, wi in cases:
+                    c_out = isp(1, "ppp0", w0, ll, tg, sb, ti, wi)
+                    d_out = diag(w0, ll, tg, sb, ti, wi)
+                    if c_out != d_out: bad.append((w0, tg, wi, c_out, d_out))
+                check("reaper_diag section 10 names the same port as rc on all %d DHCP cases" % len(cases), not bad, bad)
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
@@ -148,11 +212,14 @@ for eng in ("start_hwqos", "start_hwqos_classful"):
           "if (!*wan_ifname) {" in b and "hardware QoS not started: no port to shape" in b
           and b.find("if (!*wan_ifname) {") < b.find('fopen(qosfn, "w")'))
 page = open(os.path.join(SRC, "www", "Reaper_QoS.asp"), encoding="utf-8", errors="replace").read()
-check("QoS page: the note sits by the engine choice, hidden until wan0_ifname is a vlanNNNN device",
+check("QoS page: the note sits by the engine choice, shown only for the vlan4094 LAN-trunk jack",
       'id="rqos_trunknote"' in page and "<#RQOS_125#>" in page
       and "wanif:   <% nvram_get_js(\"wan0_ifname\"); %>" in page
-      and "/^vlan[0-9]+$/.test(NV.wanif)" in page
+      and "wanphy:  <% nvram_get_js(\"wan_ifname\"); %>" in page
+      and "NV.wanif === 'vlan4094' || NV.wanphy === 'vlan4094'" in page
       and page.find('id="modes"') < page.find('id="rqos_trunknote"'))
+check("QoS page: a manual 802.1Q tag or an ISP profile (any other vlanNNN WAN) no longer shows the trunk note",
+      "/^vlan[0-9]+$/.test(NV.wanif)" not in page)
 packs = [x for x in glob.glob(os.path.join(SRC, "www", "*.dict")) if not x.endswith("temp.dict")]
 miss = [os.path.basename(x) for x in packs if "RQOS_125=" not in open(x, encoding="utf-8", errors="replace").read()]
 check("RQOS_125 exists in all 25 language packs", len(packs) == 25 and not miss, miss)

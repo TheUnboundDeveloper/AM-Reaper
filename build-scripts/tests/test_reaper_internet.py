@@ -111,6 +111,40 @@ if os.path.exists(PI):
           "num(c.wan_vid, 2, 4094)" in t and "num(c.wan_dot1p, 0, 7)" in t and 'id="i_hb" maxlength="64"' in t and "c.wan_heartbeat_x.length > 64" in t)
     check("Internet: switching into v6plus / OCN / IPv6 Option resets the MAP rule first (s46reset.cgi), as stock",
           "xr.open('GET', '/s46reset.cgi', true);" in t)
+    # 2026-10-29 (field, RT-BE88U on its 2.5G port): the WAN was labelled with the model's default port ("10G WAN/LAN")
+    # while WAN Ports showed the 2.5G port in use. baseName now resolves the port in use by the WAN Ports / stock rule.
+    check("Internet: the WAN port label reads the keys that pick the port in use",
+          all('%s: U(\'<%% nvram_char_to_ascii("","%s"); %%>\')' % (k, k) in t
+              for k in ("autowan_enable", "autowan_detected_ifname", "reaper_wanport", "wan_ifname_x", "wans_extwan")))
+    a, b = t.find("function wanKey(){"), t.find("function unitName(")
+    hm = re.search(r"function has\(o, k\)\{[^\n]*\}", t)
+    node = shutil.which("node")
+    check("Internet: wanKey() sits before baseName()", 0 < a < t.find("function baseName(b){") < b and hm is not None)
+    if node and 0 < a < b and hm:
+        # RT-BE88U's list as httpd/web.c ej_get_ethernet_wan_list builds it (RTCONFIG_AUTO_WANPORT on)
+        eth = {"wan": {"wan_name": "10G WAN/LAN", "extra_settings": {"wan_ifname_x": "eth0", "autowan_enable": "0"}},
+               "2p5g": {"wan_name": "2.5G WAN/LAN1", "extra_settings": {"wan_ifname_x": "eth1", "autowan_enable": "0"}, "wans_lanport": "1"},
+               "sfp": {"wan_name": "10G SFP+", "extra_settings": {"wan_ifname_x": "eth9", "autowan_enable": "0"}, "wans_lanport": "9"}}
+        fixed = lambda ifn: {"autowan_enable": "0", "wan_ifname_x": ifn, "wans_lanport": "1"}
+        auto = lambda pin, det: {"autowan_enable": "1", "reaper_wanport": pin, "autowan_detected_ifname": det, "wan_ifname_x": "eth0"}
+        cases = [("field: fixed 2.5G (wans_dualwan 'wan none', wan_ifname_x eth1)", "wan none", fixed("eth1"), "2.5G WAN/LAN1"),
+                 ("fixed default port", "wan none", fixed("eth0"), "10G WAN/LAN"),
+                 ("fixed SFP+", "wan none", fixed("eth9"), "10G SFP+"),
+                 ("Auto, pinned 2.5G, nothing detected yet", "wan none", auto("eth1", ""), "2.5G WAN/LAN1"),
+                 ("Auto, detected port differs from the pin: the detected one", "wan none", auto("eth1", "eth0"), "10G WAN/LAN"),
+                 ("Auto, nothing pinned or detected: the default port", "wan none", auto("", ""), "10G WAN/LAN"),
+                 ("fixed, ifname in no entry: the default port", "wan none", fixed("eth7"), "10G WAN/LAN"),
+                 ("single-WAN lan on the combo port (lan path unchanged)", "lan none", fixed("eth0"), "2.5G WAN/LAN1"),
+                 ("USB primary", "usb none", fixed("eth0"), "USB")]
+        js = ("var out = [], T = {usb: 'USB'}, ETH = " + json.dumps(eth) + ", DW, NVG;\n" + hm.group(0) + "\n" + t[a:b] + "\n"
+              + "".join("DW = %s; NVG = %s; out.push(baseName(0));\n" % (json.dumps(dw.split()), json.dumps(nv)) for _, dw, nv, _w in cases)
+              + "console.log(JSON.stringify(out));\n")
+        r = subprocess.run([node, "-e", js], capture_output=True, text=True)
+        check("Internet: the port-label functions run under node", r.returncode == 0, r.stderr[-300:])
+        if r.returncode == 0:
+            got = json.loads(r.stdout.strip().splitlines()[-1])
+            for (name, _dw, _nv, want), g in zip(cases, got):
+                check("Internet: WAN port label - %s -> %s" % (name, want), g == want, g)
 
 if os.path.exists(PT):
     t = rd(PT); common("IPTV", t)

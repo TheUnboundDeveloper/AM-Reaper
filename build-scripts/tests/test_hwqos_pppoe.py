@@ -54,6 +54,7 @@ check("rc/qos.c defines hwqos_tm_ifname()", fn is not None)
 if fn is None:
     print("FAILED"); sys.exit(1)
 lan = extract("static int hwqos_lan_port(const char *ifname)") or ""
+isp = extract("static int hwqos_isp_profile(int unit)") or ""
 
 HARNESS = r'''
 #include <stdio.h>
@@ -74,6 +75,8 @@ HARNESS = r'''
 	     word[sizeof(word) - 1] = '\0', \
 	     next = strchr(next, ' '))
 enum { WAN_DISABLED, WAN_DHCP, WAN_STATIC, WAN_PPPOE, WAN_PPTP, WAN_L2TP };
+#define WAN_UNIT_FIRST 0
+static char *wan_if_eth(void) { return (char *)"eth0"; }	/* no ISP profile in this suite */
 static int g_proto; static const char *g_pppif, *g_physif;
 static const char *get_wan_ifname(int unit) { (void)unit; return g_proto >= WAN_PPPOE ? g_pppif : g_physif; }
 static int get_wan_proto(char *prefix) { (void)prefix; return g_proto; }
@@ -86,6 +89,7 @@ static char *strlcat_r(const char *a, const char *b, char *buf, size_t n) { snpr
 static int d_exists(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
 static void logmessage(const char *t, const char *fmt, ...) { (void)t; (void)fmt; }
 @@LAN@@
+@@ISP@@
 @@FN@@
 int main(int argc, char **argv)
 {
@@ -102,7 +106,7 @@ try:
         f.write("VLAN Dev name    | VLAN ID\nName-Type: VLAN_NAME_TYPE_RAW_PLUS_VID_NO_PAD\nvlan101        | 101  | eth0\n")
     sysnet = os.path.join(td, "sysnet"); os.makedirs(sysnet)
     c = os.path.join(td, "t.c"); exe = os.path.join(td, "t")
-    with open(c, "w") as f: f.write(HARNESS.replace("@@LAN@@", lan).replace("@@FN@@", fn))
+    with open(c, "w") as f: f.write(HARNESS.replace("@@LAN@@", lan).replace("@@ISP@@", isp).replace("@@FN@@", fn))
     p = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wextra", "-Werror", '-DHWQOS_VLAN_CFG="%s"' % vlan,
                         '-DHWQOS_SYSNET="%s"' % sysnet, "-o", exe, c],
                        capture_output=True, text=True)

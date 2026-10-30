@@ -1,0 +1,162 @@
+From 250ec0c24fd922400ed6739baf1a9c93c1e6f981 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 09:47:56 -0400
+Subject: [PATCH] rc, diag, www: hardware QoS shapes the port under an ISP /
+ IPTV profile
+
+Behind an ISP / IPTV profile (switch_wantag with an STB port or a WAN VLAN tag) the stock WAN
+code renames wan0_ifname to the profile's vlanNNN or brvNNN device, which tmctl refuses as it
+refuses ppp0, so hardware QoS shaped nothing for those users. hwqos_tm_ifname() now takes the port
+from wan_if_eth() there (the global wan_ifname, which follows the WAN port in use) - the
+resolution and predicate Asuswrt-Merlin f5334a33d23 gives the HW AQM path - and the existing
+VLAN-parent lookup and LAN-port refusal run on it (the GT-BE98 2.5G WAN/LAN-1 jack stays refused).
+reaper_diag section 10 resolves the same way (v1.3.52, version label on the Diagnostics page).
+Reaper_QoS.asp: the "rides a LAN trunk" note shows only for the vlan4094 jack; it named every VLAN
+WAN, including a manual 802.1Q tag on a dedicated port (this commit holds only that hunk of the
+page; the page's unsaved-changes hunks are in the next commit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 18 +++++++++++++-----
+ release/src/router/rc/qos.c            | 26 ++++++++++++++++++++++----
+ release/src/router/www/Reaper_Diag.asp |  2 +-
+ release/src/router/www/Reaper_QoS.asp  |  5 ++++-
+ 4 files changed, 40 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 23936d4c611..81d8f258e14 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.51 (2026-10-26) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.52 (2026-10-29) - sanitized one-shot diagnostic bundle
+ #  v1.3.51 reports each custom script in section 13: executable, line endings, how its last run ended and
+ #  whether its output was kept, with findings for a script that cannot run, failed, or sits outside /jffs/scripts.
+ #  v1.3.50 warns about a RAM store only when a real disk (a /dev block device) is mounted under /tmp/mnt -
+@@ -171,7 +171,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.51"
++VER="REAPER-DIAG v1.3.52"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -1309,9 +1309,17 @@ QE="$(nvram get qos_enable 2>/dev/null)"
+ # lan_ifnames is the LAN trunk (GT-BE98 2.5G WAN/LAN-1 = vlan4094 on eth1) and both hardware
+ # engines refuse to arm since v3.3.9 ("no port to shape"). Reading tmctl against the VLAN
+ # device itself returned rc=108 on every such box and said nothing about what was programmed.
+-QPORT="$WANIF"; QREF=""
+-QPAR="$(awk -F'|' -v d="$WANIF" 'NR>2 { gsub(/ /,"",$1); gsub(/ /,"",$3); if ($1==d) print $3 }' /proc/net/vlan/config 2>/dev/null)"
+-if [ -n "$QPAR" ] && [ "$QPAR" != "$WANIF" ]; then
++# v1.3.52: behind an ISP/IPTV profile (switch_wantag + an STB port or a WAN VLAN tag) wan0_ifname
++# is the profile's vlanNNN/brvNNN device; rc takes the port from the global wan_ifname instead
++# (qos.c hwqos_isp_profile(), first WAN only) and puts that port through the same LAN refusal.
++QSRC="$WANIF"; QISP=""
++if [ -n "$(nvram get switch_wantag 2>/dev/null)" ] && { [ "$(nvram get switch_stb_x 2>/dev/null)" -gt 0 ] 2>/dev/null || [ "$(nvram get switch_wan0tagid 2>/dev/null)" -gt 0 ] 2>/dev/null; }; then
++  QISP=yes; QSRC="$(nvram get wan_ifname 2>/dev/null)"; [ -z "$QSRC" ] && QSRC=eth0
++fi
++QPORT="$QSRC"; QREF=""
++QPAR="$(awk -F'|' -v d="$QSRC" 'NR>2 { gsub(/ /,"",$1); gsub(/ /,"",$3); if ($1==d) print $3 }' /proc/net/vlan/config 2>/dev/null)"
++[ -z "$QPAR" ] && [ -n "$QISP" ] && QPAR="$QSRC"
++if [ -n "$QPAR" ] && { [ "$QPAR" != "$QSRC" ] || [ -n "$QISP" ]; }; then
+   QPORT="$QPAR"
+   if [ -d "/sys/class/net/$QPAR/brport" ] || echo " $(nvram get lan_ifnames 2>/dev/null) " | grep -q " $QPAR "; then QREF=yes; fi
+ fi
+diff --git a/release/src/router/rc/qos.c b/release/src/router/rc/qos.c
+index 1ebffb95ccc..e779470c5b5 100644
+--- a/release/src/router/rc/qos.c
++++ b/release/src/router/rc/qos.c
+@@ -3222,17 +3222,35 @@ static int hwqos_lan_port(const char *ifname)
+ 			return 1;
+ 	return 0;
+ }
++/* reaper 2026-10-29: behind an ISP / IPTV profile (switch_wantag) the stock WAN
++ * code renames wan0_ifname to the profile's vlanNNN or brvNNN device (rc/init.c,
++ * "Set vlanXXX to wanX_ifname for IPTV feature"). tmctl refuses that device as it
++ * refuses ppp0, so hardware QoS was inert for every ISP-profile user. The port the
++ * profile rides on is the global wan_ifname (wan_if_eth()), which follows the WAN
++ * port in use on these boards - the resolution Asuswrt-Merlin f5334a33d23 gives
++ * the HW AQM path, with its predicate: the first WAN, a profile set, and an STB
++ * port or a WAN VLAN tag. The VLAN-parent lookup and the LAN-port refusal below
++ * still run on the result. */
++static int hwqos_isp_profile(int unit)
++{
++	return unit == WAN_UNIT_FIRST && *nvram_safe_get("switch_wantag")
++	    && (atoi(nvram_safe_get("switch_stb_x")) > 0 || atoi(nvram_safe_get("switch_wan0tagid")) > 0);
++}
+ static const char *hwqos_tm_ifname(int unit)
+ {
+ 	static char buf[IFNAMSIZ + 1];
+ 	char prefix[16], tmp[64];
+ 	const char *name = get_wan_ifname(unit);
+-	int proto;
++	int proto, isp = hwqos_isp_profile(unit);
+ 	FILE *f;
+ 
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", unit);
+ 	proto = get_wan_proto(prefix);
+-	if (proto == WAN_PPPOE || proto == WAN_PPTP || proto == WAN_L2TP) {
++	if (isp) {
++		const char *phys = wan_if_eth();
++		if (phys && *phys)
++			name = phys;
++	} else if (proto == WAN_PPPOE || proto == WAN_PPTP || proto == WAN_L2TP) {
+ 		const char *phys = nvram_safe_get(strlcat_r(prefix, "ifname", tmp, sizeof(tmp)));
+ 		if (*phys)
+ 			name = phys;
+@@ -3247,11 +3265,11 @@ static const char *hwqos_tm_ifname(int unit)
+ 			}
+ 		fclose(f);
+ 	}
+-	if (name && strcmp(buf, name)) {
++	if (name && (isp || strcmp(buf, name))) {
+ 		if (hwqos_lan_port(buf)) {
+ 			logmessage("qos", "hardware QoS not applied: WAN %s rides %s, which also carries the LAN ports - "
+ 					  "shaping it would throttle the wired LAN and a wired backhaul. "
+-					  "Use the 10G WAN port for hardware QoS, or a software engine on this jack.", name, buf);
++					  "Use the 10G WAN port for hardware QoS, or a software engine on this jack.", isp ? get_wan_ifname(unit) : name, buf);
+ 			buf[0] = '\0';
+ 		} else
+ 			logmessage("qos", "hardware QoS shapes %s, the port under %s", buf, get_wan_ifname(unit));
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 4a2105560ec..93c7ecdf45d 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.51</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.52</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+diff --git a/release/src/router/www/Reaper_QoS.asp b/release/src/router/www/Reaper_QoS.asp
+index 42ec390b1a6..4b510202fb0 100644
+--- a/release/src/router/www/Reaper_QoS.asp
++++ b/release/src/router/www/Reaper_QoS.asp
+@@ -335,6 +335,7 @@ var NV = {
+   enable:  <% nvram_get_js("qos_enable"); %>,
+   type:    <% nvram_get_js("qos_type"); %>,
+   wanif:   <% nvram_get_js("wan0_ifname"); %>,
++  wanphy:  <% nvram_get_js("wan_ifname"); %>,
+   obw:     <% nvram_get_js("qos_obw"); %>,
+   ibw:     <% nvram_get_js("qos_ibw"); %>,
+   orates:  decodeURIComponent('<% nvram_char_to_ascii("", "qos_orates"); %>'),
+@@ -352,7 +353,9 @@ var NV = {
+ };
+ /* 2026-10-10: a vlanNNNN WAN device = the external-switch jack whose trunk also carries the LAN
+  * (GT-BE98 family); rc/qos.c does not shape it - show the note next to the engine choice. */
+-if (/^vlan[0-9]+$/.test(NV.wanif)) { var _tn = document.getElementById('rqos_trunknote'); if (_tn) _tn.style.display = ''; }
++/* the LAN-trunk jack is vlan4094 (GT-BE98 family); a manual 802.1Q tag or an ISP profile on a
++   dedicated port is also a vlanNNN WAN and is shaped - the note named every VLAN WAN (2026-10-29) */
++if (NV.wanif === 'vlan4094' || NV.wanphy === 'vlan4094') { var _tn = document.getElementById('rqos_trunknote'); if (_tn) _tn.style.display = ''; }
+ 
+ /* ---------- mode model (qos_type 1/Adaptive is retired with the DPI stack) ---------- */
+ /* Chips, checked against rc 2026-10-15: every card names the accelerator first (hnd_nat_ac_init
+-- 
+2.25.1
+

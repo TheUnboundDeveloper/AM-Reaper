@@ -318,7 +318,7 @@ try:
     addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
     j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
     x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
-    check("v1.9 6in4: the walker reports itself as 1.10 (v1.10 = free stand-ins)", j6.get("ver") == "1.10", j6.get("ver"))
+    check("v1.9 6in4: the walker reports itself as 1.11 (v1.11 = policy-routed guest bridges)", j6.get("ver") == "1.11", j6.get("ver"))
     j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
     x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
     j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
@@ -687,7 +687,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.10", j.get("ver") == "1.10", j.get("ver"))
+    check("pass2: walker is v1.11", j.get("ver") == "1.11", j.get("ver"))
 
     # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
     # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,
@@ -778,6 +778,34 @@ try:
     x = wit(j, "G1.1"); check("linked SDN: guest isolation is a NOTE while any link exists", x and x["state"] == "na" and "linked" in x["note"], x)
     j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gl2")
     x = wit(j, "G1.1"); check("linked SDN neg: no links = the isolation row is judged as before", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+
+    # v1.11, 2026-10-30 field report: a guest network bound to an OpenVPN client
+    # from the Network page is policy-routed ("iif br55 lookup ovpnc3") with its
+    # Killswitch ("iif br55 prohibit") and no SDN_FF accept to the WAN BY DESIGN;
+    # G2 walked a WAN egress and went red at the FORWARD tail on a working box.
+    # The tester's own rule list, verbatim shape.
+    BOUND = ("0:\tfrom all lookup local\n20:\tfrom all lookup 8437\n100:\tfrom 10.13.104.73 lookup wgc1\n"
+             "1004:\tfrom all to 10.8.0.1 iif lo lookup wgc1\n1024:\tfrom all iif br55 lookup ovpnc3\n"
+             "9002:\tfrom all fwmark 0x20000/0xf0000 lookup ovpnc2\n12212:\tfrom all iif br55 prohibit\n"
+             "32766:\tfrom all lookup main\n32767:\tfrom all lookup default\n")
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=BOUND, tag="gp1")
+    x = wit(j, "G2.1"); check("policy-routed guest: G2 is a NOTE naming the rule, the table and the Killswitch rule",
+                              x and x["state"] == "na" and "ip rule 1024: lookup ovpnc3" in x["note"] and "rule 12212 (prohibit)" in x["note"], x)
+    x = wit(j, "G1.1"); check("policy-routed guest: isolation (G1) is still judged", x and x["state"] in ("green", "red") and x["expect"] == "DROP", x)
+    # (this synthetic table has a -m string rule on INPUT :53, so "judged" may be depends - just never n/a)
+    x = wit(j, "G4.1"); check("policy-routed guest: DNS at its gateway (G4) is still walked", x and x["state"] != "na" and x["expect"] == "RESOLVED", x)
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=BOUND.replace("12212:\tfrom all iif br55 prohibit\n", ""), tag="gp2")
+    x = wit(j, "G2.1"); check("policy-routed guest without a Killswitch: NOTE, and it claims no fail-closed rule",
+                              x and x["state"] == "na" and "ovpnc3" in x["note"] and "fails it closed" not in x["note"], x)
+    for tag, r4, why in (("gp3", "32766:\tfrom all lookup main\n", "no iif rule at all"),
+                         ("gp4", BOUND.replace("iif br55", "iif br56"), "the rules belong to another bridge"),
+                         ("gp5", "1024:\tfrom all iif br55 fwmark 0x20000/0xf0000 lookup ovpnc2\n", "a conditional (fwmark) rule sends only part of it"),
+                         ("gp6", "1024:\tfrom 10.20.0.5 iif br55 lookup ovpnc3\n", "a conditional (one source) rule sends only part of it"),
+                         ("gp7", "1024:\tfrom all iif br55 lookup main\n", "a lookup in main is the ordinary path")):
+        j, out, rc = run(addr=gaddr, nv=NV, witness=None, rule4=r4, tag=tag)
+        x = wit(j, "G2.1"); check("policy-routed guest neg (%s): G2 is walked as before" % why, x and x["state"] in ("green", "red") and x["expect"] == "ACCEPT", x)
+    j, out, rc = run(addr=gaddr, nv=NV, witness=None, tag="gp8")
+    x = wit(j, "G2.1"); check("policy-routed guest neg (no rule input at all): G2 is walked as before", x and x["state"] in ("green", "red") and x["expect"] == "ACCEPT", x)
 
     # DMZ: an intended exposure - A4 is a note, B6 witnesses the DMZ promise
     dmz = SAVE4.replace("-A VSERVER -s 198.51.100.0/24 -p udp -m udp --dport 5000 -j DNAT --to-destination 192.168.50.11:5000\n",

@@ -1,6 +1,6 @@
 # Building the firmware yourself, in GitHub Actions
 
-> **Doc status:** current as of **v3.6.3** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
 
 `.github/workflows/public-build.yml` builds a Reaper firmware image from source
 in a clean room, from public inputs only. You can run it in your own fork — you
@@ -313,7 +313,7 @@ If you see any of these, something is genuinely wrong and the job will fail:
 | Toolchains | `RMerl/am-toolchains` commit `d1af80e6b6686a4edc680386c09a8361453dd5c1` (crosstools gcc-10.3) |
 | Build OS | Ubuntu 20.04 container, non-root user `reaper` (uid 1001) |
 | GitHub Actions | every `uses:` is pinned to a full commit SHA with a `# vN.N.N` comment (`actions/checkout`, `actions/cache`, `actions/cache/restore`, `actions/upload-artifact`); `build-scripts/tests/test_workflow_pins.py` fails the hygiene run on a tag pin, and `.github/dependabot.yml` proposes bumps as pull requests. A major tag is a moving pointer that runs new code in the build job unseen - security review 2026-10-20, F-5. |
-| Reaper version built | `Reaper_v3.6.3` <!--@treever--> (patch series `0001`–`0916` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
+| Reaper version built | `Reaper_v3.6.4` <!--@treever--> (patch series `0001`–`0922` <!--@patchcount-->) — the pinned `EXPECTED_VERSION` in `public-build.yml`. A blank-version dispatch builds exactly this; the pin and the series move together, so if a newer rung has been exported without bumping the pin, a blank dispatch still builds the pinned one and a mismatched override fails the assertion. |
 
 The version is not something you choose — the patch series sets `EXTENDNO`
 itself. The workflow declares the version it expects (`EXPECTED_VERSION`) and

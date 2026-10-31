@@ -1,0 +1,164 @@
+From cc71ebaddb83d47ccc076145bac3a275d7c00038 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 20:09:27 -0400
+Subject: [PATCH] www: VPN Director fills the description from the picked
+ device; a device list on the DHCP reservation row (102.8 line)
+
+Field reports (v3.6.3, 2026-10-30).
+- Reaper_VPNDirector.asp: picking a device for the local field filled only its address. Its name
+  (the Devices page name, then the client list) now fills the description too, only while that
+  field is empty or still holds the last name filled in - never over typed text; characters the
+  description refuses are dropped and the name is cut at 32.
+- Reaper_LAN.asp (DHCP > manual assignment): stock's add row had a device pull-down that filled
+  MAC and address; this page had none. The MAC field now lists this LAN's connected devices that
+  hold no reservation yet, sorted by address; picking one fills the address (the same
+  only-while-empty-or-auto rule) and shows the device's name as the host-name placeholder - a
+  display hint, nothing extra is saved.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_LAN.asp         | 38 +++++++++++++++++--
+ release/src/router/www/Reaper_VPNDirector.asp | 17 ++++++++-
+ 2 files changed, 50 insertions(+), 5 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_LAN.asp b/release/src/router/www/Reaper_LAN.asp
+index b9716e655af..09eabe5ef78 100644
+--- a/release/src/router/www/Reaper_LAN.asp
++++ b/release/src/router/www/Reaper_LAN.asp
+@@ -117,12 +117,13 @@ table.classes td.mono{font-family:var(--mono)}
+     <div class="frow" id="r_static"><div class="fl"><#LANHostConfig_ManualDHCPEnable_itemname#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_static"><span class="track"></span></label></div></div>
+     <table class="classes"><thead><tr><th><#MAC_Address#></th><th><#IPConnection_ExternalIPAddress_itemname#></th><th><#RLAN_17#></th><th><#LANHostConfig_x_DDNSHostNames_itemname#></th><th></th></tr></thead><tbody id="restbody"></tbody></table>
+     <div class="bwl-add" id="resadd">
+-      <div class="f"><label><#MAC_Address#></label><input type="text" class="ip mono" id="a_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>
++      <div class="f"><label><#MAC_Address#></label><input type="text" class="ip mono" id="a_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" list="resclients"></div>
+       <div class="f"><label><#IPConnection_ExternalIPAddress_itemname#></label><input type="text" class="ip mono" id="a_ip" maxlength="15" autocomplete="off"></div>
+       <div class="f"><label><#RLAN_17#></label><input type="text" class="ip mono" id="a_dns" maxlength="15" autocomplete="off"></div>
+       <div class="f"><label><#LANHostConfig_x_DDNSHostNames_itemname#></label><input type="text" class="host mono" id="a_host" maxlength="32" autocomplete="off"></div>
+       <button type="button" class="btn small" id="resaddbtn"><#CTL_add#></button>
+     </div>
++    <datalist id="resclients"></datalist>
+     <div class="rbudget" id="resbudget"></div>
+     <div class="csv"><button type="button" class="btn small ghost" id="csvexp"><#btn_Export#> CSV</button><button type="button" class="btn small ghost" id="csvimpbtn"><#RLAN_18#></button><input type="file" id="csvfile" accept=".csv,text/csv"><span class="hint" style="margin:0"><#RLAN_19#></span></div>
+     <div class="msg" id="resmsg" style="margin-top:8px"></div>
+@@ -366,7 +367,7 @@ section('p_res', 'dhcp', function(){
+   /* VPN Fusion policies bound to a reserved address (vpnc_dev_policy_list: activate>ip>dest>vpnc_idx>brif) */
+   F.vpnc_dev_policy_list.split('<').forEach(function(r){ var f = r.split('>'); if (f.length >= 4 && f[1]) POLICY_IPS[f[1]] = 1; });
+   resDraw();
+-  ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(){ resDraw(); });
++  ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(cl){ resPickSet(cl); resDraw(); });
+ }, function(c){
+   c.dhcp_static_x = tog('t_static', NV.dhcp_static_x, '1', '0');
+   /* the list is re-serialised only once the user has edited it, so another writer's spelling is never "changed" */
+@@ -388,8 +389,37 @@ function resDraw(){
+   });
+   q('restbody').innerHTML = h || '<tr><td colspan="5" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
+   var b = q('resbudget'); b.textContent = RES.length + ' / ' + MAXRES; b.classList.toggle('hot', RES.length >= MAXRES);
++  resPickDraw();
+   dhcpHints();
+ }
++/* 2026-10-30 (field report): stock's add row had a device pull-down (setClientIP filled MAC + address); this one had
++   none. The MAC field now lists this LAN's networkmap devices that hold no reservation yet. Picking one fills the
++   address (only while that field is empty or still holds the last address filled in) and shows the device's name as
++   the host-name placeholder - Host Name = Name, display only, as in the table; nothing extra is saved. */
++var PICK = {}, AUTO_IP = '';
++function resPickSet(cl){
++  var ml = (cl && cl.maclist) || [];
++  PICK = {};
++  ml.forEach(function(mac){
++    var c = cl[mac], m = String(mac).toUpperCase(), ip = c && c.ip ? String(c.ip) : '';
++    if (!macOk(m) || !rp.v.ipv4(ip) || !inSub(ip, NV.lan_ipaddr, NV.lan_netmask) || ip === NV.lan_ipaddr) return;
++    PICK[m] = {ip: ip, name: ReaperNames.byMac(mac, '')};
++  });
++}
++function resPickDraw(){
++  var h = '';
++  Object.keys(PICK).sort(function(a, b){ return ip2n(PICK[a].ip) - ip2n(PICK[b].ip); }).forEach(function(m){
++    if (RES.some(function(r){ return r.mac === m; })) return;
++    h += '<option value="' + hx(m) + '">' + hx((PICK[m].name ? PICK[m].name + ' - ' : '') + PICK[m].ip) + '</option>';
++  });
++  q('resclients').innerHTML = h;
++}
++function resPick(){
++  var p = PICK[val('a_mac').toUpperCase()], ip = q('a_ip');
++  q('a_host').placeholder = p && p.name ? p.name : '';
++  if (ip.value && ip.value !== AUTO_IP) return;
++  ip.value = AUTO_IP = p ? p.ip : '';
++}
+ function resMsg(t){ var m = q('resmsg'); m.textContent = t || ''; m.classList.toggle('show', !!t); }
+ /* one reservation row, the stock checks (addRow_Group) plus: not the router's own address, multicast MAC refused */
+ function resCheck(r, list, lip, m){
+@@ -414,6 +444,7 @@ function resAdd(){
+   /* stock: adding a reservation turns manual assignment (and the DHCP server) on */
+   q('t_static').checked = true; q('t_dhcpon').checked = true;
+   ['a_mac', 'a_ip', 'a_dns', 'a_host'].forEach(function(id){ q(id).value = ''; });
++  AUTO_IP = ''; q('a_host').placeholder = '';
+   resDraw(); dirty();
+ }
+ function resDel(mac, edit){
+@@ -421,7 +452,7 @@ function resDel(mac, edit){
+   /* stock forced VPN Fusion support off here, so deleting a reservation never warned about its policy (B-DHCP-4) */
+   if (!edit && POLICY_IPS[r.ip] && !confirm(`<#RLAN_35#>`)) return;
+   RES = RES.filter(function(x){ return x.mac !== mac; }); RES_EDITED = true;
+-  if (edit){ q('a_mac').value = r.mac; q('a_ip').value = r.ip; q('a_dns').value = r.dns; q('a_host').value = r.host; q('a_mac').focus(); }
++  if (edit){ q('a_mac').value = r.mac; q('a_ip').value = r.ip; q('a_dns').value = r.dns; q('a_host').value = r.host; AUTO_IP = ''; resPick(); q('a_mac').focus(); }
+   resDraw(); dirty();
+ }
+ function csvExport(){
+@@ -750,6 +781,7 @@ function boot(){
+   on('applybtn', 'click', applyAll);
+   on('discardbtn', 'click', function(){ location.reload(); });
+   on('resaddbtn', 'click', resAdd);
++  on('a_mac', 'input', resPick);
+   on('csvexp', 'click', csvExport);
+   on('csvimpbtn', 'click', function(){ q('csvfile').click(); });
+   on('csvfile', 'change', function(){
+diff --git a/release/src/router/www/Reaper_VPNDirector.asp b/release/src/router/www/Reaper_VPNDirector.asp
+index 833b0c73a62..8f2c076ec03 100644
+--- a/release/src/router/www/Reaper_VPNDirector.asp
++++ b/release/src/router/www/Reaper_VPNDirector.asp
+@@ -234,14 +234,25 @@ function render(){
+   q('statetext').textContent = RULES.filter(function(r){ return r.f.length === 5 && r.f[0] === '1'; }).length + ' / ' + RULES.length;
+   q('statepill').className = 'pill' + (RULES.some(function(r){ return r.f.length === 5 && r.f[0] === '1'; }) ? ' on' : '');
+ }
++/* 2026-10-30 (field report): picking a device for the local field filled only its address. Its name now fills the
++   description too - only while that field is empty or still holds the last name filled in, never over typed text.
++   Characters the description refuses (descOk) are dropped from the name. */
++var CNAMES = {}, AUTO_DESC = '';
++function descClean(s){ return String(s || '').split('').filter(function(ch){ return descOk(ch); }).join('').trim().slice(0, 32); }
++function fillDesc(){
++  var d = q('r_desc');
++  if (d.value && d.value !== AUTO_DESC) return;
++  d.value = AUTO_DESC = CNAMES[val('r_local')] || '';
++}
+ function clearEd(){
+   ['r_desc', 'r_local', 'r_remote'].forEach(function(id){ q(id).value = ''; });
++  AUTO_DESC = '';
+   q('r_en').checked = true; q('r_iface').value = 'WAN'; editIdx = -1;
+   q('r_save').textContent = `<#CTL_add#>`; show('r_cancel', false); edmsg('');
+ }
+ function editRow(i){
+   var f = RULES[i].f;
+-  editIdx = i;
++  editIdx = i; AUTO_DESC = '';
+   q('r_iface').value = f[4]; if (q('r_iface').value !== f[4]) q('r_iface').selectedIndex = 0;
+   q('r_en').checked = f[0] === '1'; q('r_desc').value = f[1]; q('r_local').value = f[2]; q('r_remote').value = f[3];
+   q('r_save').textContent = `<#CTL_onlysave#>`; show('r_cancel', true); edmsg('');
+@@ -312,12 +323,14 @@ function boot(){
+   on('r_save', 'click', saveRule);
+   on('r_cancel', 'click', clearEd);
+   on('rtbody', 'click', tableClick);
++  on('r_local', 'input', fillDesc);
+   if (!ROUTING){ show('modehint', true); q('applybtn').disabled = true; }
+   /* client addresses for the local field (networkmap list, as stock's picker) */
+   try {
+     ReaperNames.refresh(CUSTOM_CL, function(cl){
+       var dl = q('clients'), ml = (cl && cl.maclist) || [], seen = {}, h = '';
+-      ml.forEach(function(mac){ var c = cl[mac]; if (!c || !c.ip || seen[c.ip]) return; seen[c.ip] = 1;
++      ml.forEach(function(mac){ var c = cl[mac], n; if (!c || !c.ip || seen[c.ip]) return; seen[c.ip] = 1;
++        n = descClean(ReaperNames.byMac(mac, '')); if (n) CNAMES[c.ip] = n;
+         h += '<option value="' + hx(c.ip) + '">' + hx(ReaperNames.byMac(mac, mac)) + '</option>'; });
+       dl.innerHTML = h;
+     });
+-- 
+2.25.1
+

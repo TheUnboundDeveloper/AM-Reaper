@@ -120,6 +120,11 @@ RAW = "\n".join([
     "Oct 11 09:00:09 dnsmasq-dhcp[4041]: DHCPACK(br0) 192.168.50.61 11:22:33:44:55:bb Linux",
     "  uname: Linux GT-BE98 4.19.294 #1 SMP PREEMPT aarch64 | 5523 admin S sw_devled",
     "Oct 11 09:00:10 dnsmasq-dhcp[4041]: DHCPACK(br0) 192.168.50.62 11:22:33:44:55:cc admin",
+    # 30-33: v1.3.53 address-shaped names that are not addresses
+    "Oct 30 12:18:33 kernel: Assigning idx[51] for wds1.1.1.52",
+    "\t\t\t\t\t\t\twds1.1.1.0",
+    "  engine            : v3.8.0 build 235  2243684 bytes  launcher=ookla_run",
+    "  ntp               : server=198.51.100.7 peer wds1 via 203.0.113.44",
 ])
 SLIST = "HOST\tMyNAS-01\n"
 
@@ -158,7 +163,7 @@ for (name, ok, out, err, errs), a in zip(pipeline(RAW), awks):
     tag = "[%s] " % name
     check(tag + "every stage runs", ok, errs)
     L = out.split("\n")
-    if len(L) < 30:
+    if len(L) < 34:
         check(tag + "the pipeline kept every line", False, len(L))
         continue
     check(tag + "a prefix ending in :: is tokenized", "[IP6-" in L[0] and "8cd0" not in L[0] and "2001" not in L[0], L[0])
@@ -204,6 +209,12 @@ for (name, ok, out, err, errs), a in zip(pipeline(RAW), awks):
           re.search(r"\[CLIENT-NAME-\d+\]$", L[27]) is not None and re.search(r"\[CLIENT-NAME-\d+\]$", L[29]) is not None, (L[27], L[29]))
     check(tag + "but not across the rest of the report (uname and ps lines keep Linux and admin)",
           "uname: Linux GT-BE98" in L[28] and "5523 admin S sw_devled" in L[28], L[28])
+    # v1.3.53
+    check(tag + "a WDS link's interface name stays readable",
+          L[30].endswith("for wds1.1.1.52") and L[31].endswith("wds1.1.1.0") and "[EXT-IP-" not in L[30] + L[31], (L[30], L[31]))
+    check(tag + "the speed-test engine's version stays readable", "v3.8.0 build 235" in L[32], L[32])
+    check(tag + "a public address beside a wds word is still tokenized",
+          "198.51.100.7" not in L[33] and "203.0.113.44" not in L[33] and L[33].count("[EXT-IP-") == 2, L[33])
     ordered = all(k in err for k in ("hostnames", "client names", "MAC addresses", "IPv6 addresses", "public IPv4"))
     check(tag + "the ledger carries every stage's lines, in stage order",
           ordered
@@ -233,10 +244,12 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.52"' in src)
+check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.53"' in src)
+check("10b prints the engine's version as 'X.Y.Z build N' (v1.3.53)",
+      '_ov="v${_ov%.*} build ${_ov##*.}"' in src and 'engine            : v$(grep' not in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.52|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.53|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
       and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
       and "usr/sbin/reaper_diag|residual client names|1" in mkr

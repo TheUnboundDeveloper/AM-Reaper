@@ -1,0 +1,57 @@
+From 760a691203948177b15eeb2c6176ced2367a8786 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 30 Oct 2026 21:25:03 -0400
+Subject: [PATCH] dnsmasq: keep CAP_NET_RAW for a servers-file only when the
+ process has it
+
+The first commit of this rung made an instance with a servers-file REQUIRE CAP_NET_RAW, so a
+dnsmasq started without root refused to run ("process is missing required capability NET_RAW"):
+the host suite test_dnsmasq_start.py starts the staged binary under qemu as an ordinary user
+with a servers-file and failed five checks. The router's instances start as root and were not
+affected. The demand is now made after capget(), only when the permitted set holds CAP_NET_RAW:
+a root-started instance keeps it for the server=<dns>@<tunnel> lines in its servers-file; an
+unprivileged start runs as before.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dnsmasq.c | 17 +++++++++--------
+ 1 file changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.c b/release/src/router/dnsmasq/src/dnsmasq.c
+index 284cb75d8d3..7440f10c622 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.c
++++ b/release/src/router/dnsmasq/src/dnsmasq.c
+@@ -518,14 +518,6 @@ int main (int argc, char **argv)
+     if (serv->interface[0] != 0)
+       need_cap_net_raw = 1;
+ 
+-  /* Reaper 2026-10-30: a servers-file is read only after the privileges are
+-     dropped, and it may name an interface (server=10.9.0.1@tun13 for an SDN
+-     network bound to a VPN client), so the loop above cannot see it. An
+-     instance doing DHCP keeps CAP_NET_RAW already (ping); this covers one
+-     that does not. */
+-  if (daemon->servers_file)
+-    need_cap_net_raw = 1;
+-
+   /* If we're doing Dbus or UBus, the above can be set dynamically,
+      (as can ports) so always (potentially) needed. */
+ #ifdef HAVE_DBUS
+@@ -568,6 +560,15 @@ int main (int argc, char **argv)
+ 
+   have_cap_chown = data->permitted & (1 << CAP_CHOWN);
+ 
++  /* Reaper 2026-10-30: a servers-file is read only after the privileges are
++     dropped, and it may name an interface (server=10.9.0.1@tun13 for an SDN
++     network bound to a VPN client), so the loop over daemon->servers above
++     cannot see it. Keep CAP_NET_RAW for such an instance when the process
++     has it (started as root, as on the router); an unprivileged start runs
++     as before instead of refusing. An instance doing DHCP keeps it already. */
++  if (daemon->servers_file && (data->permitted & (1 << CAP_NET_RAW)))
++    need_cap_net_raw = 1;
++
+   if (need_cap_net_admin && !(data->permitted & (1 << CAP_NET_ADMIN)))
+     fail = "NET_ADMIN";
+   else if (need_cap_net_raw && !(data->permitted & (1 << CAP_NET_RAW)))
+-- 
+2.25.1
+

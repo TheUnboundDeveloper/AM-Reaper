@@ -79,7 +79,7 @@ miss2 = [p for p in packs if not re.search(r"^RFW_384=.*%2", open(os.path.join(w
 check("RFW_384 carries %2 (the example path) in every pack", not miss2, miss2)
 dg = read("others/reaper_diag")
 check("reaper_diag v1.3.45 counts files and folders under /jffs in section 3, with a WARN finding",
-      'VER="REAPER-DIAG v1.3.52"' in dg and 'echo "  /jffs world-write : files=${JWF:-0} folders=${JWD:-0}' in dg
+      'VER="REAPER-DIAG v1.3.53"' in dg and 'echo "  /jffs world-write : files=${JWF:-0} folders=${JWD:-0}' in dg
       and "file(s) or folder(s) under /jffs are writable by any user, set since the last boot" in dg)
 # ---------------------------------------------------------------- 2026-10-21 field: IPsec's ca_files
 # ca_init.sh came back 0777 after the sweep: rc_ipsec.c wrote every root-run script 0777 and left the

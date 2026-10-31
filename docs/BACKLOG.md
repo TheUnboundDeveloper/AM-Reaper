@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.6.3** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -43,17 +43,13 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 
 - **[P1] RT-BE86U: 5 GHz radio down after a Guest Network Pro save (live Wi-Fi driver reload)**
   ↳ notes: `be86u-5ghz-driver-reload.md`
-- **[P2] Header bar truncates English at 1080p** ↳ notes: `header-chip-truncation.md`
-- **[P2] Doubled menu after a language switch (the dashboard inside the settings frame)**
-  ↳ notes: `doubled-menu-language-switch.md`
-- **[P2] DHCP manual assignment: device names gone from the Host Name column**
-  ↳ notes: `dhcp-reservation-names.md`
 - **[P2] Internet speed test after ASUS retired the old Ookla setup (2026-10-01)**
   ↳ notes: `speedtest-embed-key-retired.md`
 - **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
 - **[P2] Wireless Log: device names lost, and every extra network called a guest network**
   ↳ notes: `wireless-log-names-types.md`
-- **[P3] Wireless Log: client rows run past the page edge** ↳ notes: `wireless-log-overflow.md`
+- **[P2] Guest Network Pro: a network sent through a VPN from the Network page has no Internet**
+  ↳ notes: `sdn-vpn-binding-no-internet.md`
 - **[P3] Wallguard / Dreadwatch: an API key inside the source address (`$APIkey`)**
   ↳ notes: `wallguard-sources.md`
 - **[P3] Wallguard: abuse.ch templates in "Add a source"** ↳ notes: `wallguard-sources.md`
@@ -66,6 +62,14 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Reaper QoS: no unsaved-changes cue** ↳ notes: `unsaved-changes-cue.md`
 - **[P3] DNS Director: pick the device from a list of connected devices**
   ↳ notes: `dns-director-device-picker.md`
+- **[P3] VPN Director: picking a device does not fill the description**
+  ↳ notes: `vpn-director-device-picker.md`
+- **[P3] DHCP manual assignment: no device list when adding a reservation**
+  ↳ notes: `dhcp-reservation-device-picker.md`
+- **[P3] Diagnostics: the speed-test engine version and WDS link names masked as addresses**
+  ↳ notes: `diag-address-shaped-names.md`
+- **[P3] Rule Status: G2 reds a guest network sent through a VPN with its Kill Switch on**
+  ↳ notes: `rule-status-g2-vpn-guest.md`
 
 ## Open bugs / under investigation
 
@@ -75,15 +79,17 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   to prefer one node joins another; no Reaper change on that path found in the code.
   **[needs data]** ↳ notes: `aimesh-preferred-uplink.md`
 - **[P3] Review 2026-10-24: the owner-only decisions and the merges that would change behaviour**
-  (adversarial and quality agents over the whole pending delta) — decide: the hidden-input key lists
-  (Q-C1-11), the Wallguard / Encrypted DNS look on the kit stylesheet (Q-C2-12 CSS), the ten stock rail
-  glyphs and the firewall rail badge (Q-C2-8), refusing an all-zero WAN MAC (Q-C1-6), the `http_enable`
-  default (S-B-1), the Wireless Log 5 s default; merges left because they change behaviour: one request
-  helper with one timeout (Q-C1-7), the mask checks (Q-C1-6), the other sortable tables and the QoS /
-  firewall address rules (Q-C2-11). **[all security, correctness and performance items in canon for
-  _r36 2026-10-25; the flash items (comment strip, 82 unused tokens, kit helpers + 33 shared style
-  rules, Wallguard / Encrypted DNS closures) and the `vts_rulelist` bench (JFFS-stored, kept whole) done the
-  same night, unbuilt]** ↳ notes: `review-2026-10-24.md`
+  (adversarial and quality agents over the whole pending delta) — decided 2026-10-30, not yet coded: the
+  Internet page refuses an all-zero WAN MAC like Tor and LAN (Q-C1-6); Wireless Log refreshes every 10 s
+  by default, still paused while hidden; `http_enable` stays `2` (S-B-1); the ten stock rail glyphs and
+  the firewall rail badge go (Q-C2-8); Wallguard and Encrypted DNS move onto the kit stylesheet, keeping
+  their own layout (Q-C2-12 CSS). Still to decide: the hidden-input key lists (Q-C1-11). Merges left
+  because they change behaviour: one request helper with one timeout (Q-C1-7), the mask checks (Q-C1-6),
+  the other sortable tables and the QoS / firewall address rules (Q-C2-11). **[all security,
+  correctness and performance items in canon for _r36 2026-10-25; the flash items (comment strip, 82
+  unused tokens, kit helpers + 33 shared style rules, Wallguard / Encrypted DNS closures) and the
+  `vts_rulelist` bench (JFFS-stored, kept whole) done the same night, built as _r37, not flashed;
+  2026-10-30 decisions not started]** ↳ notes: `review-2026-10-24.md`
 - **[P2] AI Advisor arming code ord and lockout move to reset-proof `/data/reaper/advisor/`.
   **[plan written 2026-10-19, replaces the WPS-button plan; not scheduled]**
   ↳ notes: `advisor-arming-code-admin-reset.md`

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.6.3** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -46,6 +46,32 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.4 — Guest Network Pro through an OpenVPN client has Internet, Rule Status reads VPN routing, device pickers on VPN Director and DHCP reservations
+
+Everything in v3.6.3 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest Network Pro: a network sent through an OpenVPN client has Internet.** Field report (RT-BE86U, v3.6.3): a
+  Guest Network Pro network bound to an OpenVPN client from the Network page had no Internet, while a VPN Director
+  rule for the same subnet worked. Routing, firewall and NAT were right; the network's DNS was not. Its dnsmasq asks
+  the VPN's resolvers from the router itself, and nothing sent those queries into the tunnel (only the WireGuard path
+  installs that rule), so they left by the WAN, or down another tunnel whose resolver had the same address. Each
+  resolver is now bound to the client's tunnel in the network's servers file (`server=10.9.0.1@tun13`), and dnsmasq
+  keeps the capability that binding needs when it reads a servers file.
+- **Rule Status: a guest network sent through a VPN is a note, not a red G2.** Same report: the check went red at the
+  FORWARD tail for that network although its forwarding was right - its Internet path is the routing table its
+  `ip rule` selects, which the check does not read. The walker (v1.11) now reads each rule's input interface: a bridge
+  an unconditional rule sends to a table of its own is reported as policy-routed, with the rule, the table and its Kill
+  Switch partner named, and is not judged against the WAN path.
+- **VPN Director: picking a device fills the Description with its name.** Only while the field is empty or still
+  holds the last name filled in, never over typed text; characters the description refuses are dropped.
+- **LAN > DHCP: a device list when adding a reservation.** The MAC field offers this LAN's connected devices that
+  hold no reservation yet, name and address, sorted by address; picking one fills the address and shows the device's
+  name as the host-name placeholder. The stock add row had such a list; the Reaper page did not.
+- **Diagnostics v1.3.53: two address-shaped names stay readable.** The report's sanitizer masked the speed-test
+  engine's four-part version and a WDS link's interface name (`wds1.1.1.0`) as external addresses; the version
+  prints as "v3.8.0 build 235" and WDS names are kept.
 
 ## v3.6.3 — Wireless Log names and network types, hardware QoS behind an ISP profile, unsaved-changes cue, the speed test on 3006.102.8
 

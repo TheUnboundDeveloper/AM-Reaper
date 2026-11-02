@@ -68,7 +68,8 @@ out.novpn = vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {openvpnd: 0
 out.amas = {};
 [[1, 1, 'rt'], [1, 1, 'ap'], [1, 1, 'wisp'], [1, 1, 'rp'], [1, 0, 'rt'], [0, 1, 'rt'], [0, 0, 'rt'], [0, 0, 'rp']].forEach(function(c){
   var v = vis(Object.assign({}, base, {mode: c[2], ui: Object.assign({}, ALL, {amasRouter: c[0], amasNode: c[1]})}));
-  out.amas[c.join('/')] = ('menu_AiMesh' in v ? 'M' : '-') + ((v.menu_Wireless || []).indexOf('Advanced_Roaming_Block_Content.asp') !== -1 ? 'R' : '-');
+  /* 2026-10-31 native wave: the Roaming Block tab is the kit page now (same gate, aimeshRouterUI) */
+  out.amas[c.join('/')] = ('menu_AiMesh' in v ? 'M' : '-') + ((v.menu_Wireless || []).indexOf('Reaper_RoamBlock.asp') !== -1 ? 'R' : '-');
 });
 out.amas['noamas'] = 'menu_AiMesh' in vis(Object.assign({}, base, {ui: Object.assign({}, ALL, {amas: 0})})) ? 'M' : '-';
 out.rail = window.ReaperMenu.rail(base).filter(function(r){ return !r.section; }).map(function(r){ return r.index + ':' + r.page + ':' + (r.icon ? 1 : 0); });

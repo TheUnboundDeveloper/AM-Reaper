@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.6.4** <!--@treever--> — `3006.102.8_Reaper_v3.6.4`. **A Guest Network Pro network sent through an OpenVPN client has Internet again (its DNS now goes through the tunnel); Rule Status reads VPN routing instead of flagging such a network; VPN Director fills the description from the picked device; a device list on the DHCP reservation row; the diagnostics report keeps two address-shaped names readable.** Everything in v3.6.3 is included. See [`CHANGELOG.md`](CHANGELOG.md#v364--guest-network-pro-through-an-openvpn-client-has-internet-rule-status-reads-vpn-routing-device-pickers-on-vpn-director-and-dhcp-reservations). |
+| **Current rung** | **v3.6.5** <!--@treever--> — `3006.102.8_Reaper_v3.6.5`. **Seven more settings pages on the Reaper kit (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO, VLAN) with the stock ones gone; AiMesh and Network on their own stylesheet; AiMesh nodes exempt from every rule from one list; the WireGuard server reachable through Warden; header, phone-layout and pop-up fixes.** Everything in v3.6.4 is included. See [`CHANGELOG.md`](CHANGELOG.md#v365--seven-more-reaper-settings-pages-aimesh-and-network-on-their-own-stylesheet-aimesh-nodes-exempt-everywhere-wireguard-through-warden). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |

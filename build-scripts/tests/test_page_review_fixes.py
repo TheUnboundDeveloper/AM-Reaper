@@ -137,7 +137,9 @@ check("Wireless Quality: the parking state is read encoded and decoded, never ra
 # backwards on every SDN model
 MJ = rd(os.path.join(www, "reaper", "menu.js")); MK = rd(os.path.join(www, "Makefile"))
 check("LAN > VLAN: shown with mtlancfg (not without), the pages ship on MULTILAN_CFG builds and are not bounced to SDN.asp",
-      "T('Advanced_VLAN_Switch_Content.asp', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))" in MJ
+      # 2026-11-01: the tab may point at the kit page (Reaper_VLAN.asp, native wave) - same gate either way
+      any("T('%s', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))" % pg in MJ
+          for pg in ("Advanced_VLAN_Switch_Content.asp", "Reaper_VLAN.asp"))
       and "!sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI')" not in MJ
       and "ifeq ($(RTCONFIG_MULTILAN_CFG),y)\n\trm -f $(INSTALLDIR)/www/Advanced_VLAN_Switch_Content.asp" not in MK
       and '"advanced_vlan_switch_content.asp", "SDN.asp"' not in INJ and '"advanced_vlan_profile_content.asp", "SDN.asp"' not in INJ)

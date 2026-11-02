@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -45,6 +45,41 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.6.5 — seven more Reaper settings pages, AiMesh and Network on their own stylesheet, AiMesh nodes exempt everywhere, WireGuard through Warden
+
+Everything in v3.6.4 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Seven more settings pages on the Reaper kit, and the stock ones gone.** Wireless > WPS, WDS, Wireless MAC Filter,
+  RADIUS Setting, Roaming Block List and MLO, and LAN > VLAN (Switch and Profiles), are Reaper pages that keep the
+  stock settings and apply them the way stock does. The stock pages they replace no longer ship; their old addresses
+  open the new pages. The Roaming Block List is read from all three radios (stock read one and wrote three, so a list
+  that had drifted apart lost entries on the next save); MLO's "Add a Network" opens the Network page's own MLO
+  wizard; VLAN keeps a trunk that carries several VLANs as it is; RADIUS Setting shows which bands use the server.
+- **AiMesh and Network: their own stylesheet.** Both pages keep the stock layout and now link a Reaper stylesheet of
+  their own, with the same look (compared element by element); the router no longer injects one into them, and the
+  stock white / ROG / TUF themes of those pages are gone.
+- **AiMesh nodes are exempt everywhere, from one list.** Gatekeeper exempted AiMesh nodes; the firewall rules engine
+  (Service Intercept) and Policy Routing did not, so one broad rule could cut a node off. One shared list
+  (`reaper_aimesh`), refreshed from the router's AiMesh registry, is now honoured by Gatekeeper, the rules engine,
+  Policy Routing and the watchdog.
+- **Warden: the WireGuard server is reachable with country blocking or feeds on.** Field report (GT-BE98, v3.6.2): a
+  phone on mobile data could not reach the router's WireGuard server. Warden now lets UDP through to the listen ports
+  of the enabled WireGuard servers (WireGuard answers only peers it holds keys for) and re-applies when a server is
+  switched on or off or its port changes. OpenVPN and IPsec are not exempted.
+- **Header on a phone: Reboot and Logout hold still.** The ? / Reboot / Logout buttons are one group that fits beside
+  the logo or wraps whole; a live tile spilling past a phone screen no longer shrinks them and lets them spring back.
+- **Reaper pages fit a phone.** Under 680 px a settings row is one column and a data table scrolls sideways in its
+  own box with its headers whole; every kit page is the width of the screen at 402, 375 and 320 px. The dashboard's
+  phone strip matches the one on every other page.
+- **Pop-up panels open where you are looking.** Inside the Reaper frame a stock pop-up (the AiMesh client card, for
+  example) opened near the top of the page however far down it was scrolled; it now opens centred in the part of the
+  page on screen.
+- **DNS Director: device names on per-device rules.** The rule list shows the device's name beside its MAC.
+- **One MAC-vendor table in the image (3006.102.10).** The web pages' vendor table was a second copy of the
+  networkmap one (about 352 KB of flash, its accented names stripped); the web path now points at the networkmap
+  table. The 3006.102.8 GPL ships no networkmap table, so those models keep the web copy.
 
 ## v3.6.4 — Guest Network Pro through an OpenVPN client has Internet, Rule Status reads VPN routing, device pickers on VPN Director and DHCP reservations
 

@@ -93,6 +93,10 @@ try:
         elif name == "PPBR_BLOG_SKIP": val = '"%s"' % SKIP
         elif name == "PPBR_CACHE": val = '"%s/jffs"' % td
         defs.append("#define %s %s" % (name, val))
+    # 2026-11-01: the shared AiMesh node set's name comes from rc.h (rc/reaper_aimesh.c)
+    with open(os.path.join(os.path.dirname(pbr), "rc.h"), encoding="utf-8", errors="replace") as f:
+        m = re.search(r'^#define\s+REAPER_AIMESH_SET\s+("[^"]+")', f.read(), re.M)
+    if m: defs.append("#define REAPER_AIMESH_SET %s" % m.group(1))
     m = re.search(r"typedef struct \{\s*int enable;\s*char \*rulelist;[^}]*\} ppbr_cfg_t;", source)
     if not m: die("ppbr_cfg_t typedef not found")
     cfg_t = m.group(0)
@@ -264,9 +268,22 @@ int main(int argc, char **argv) {
           S.count("-m conntrack --ctdir REPLY -j RETURN") == 1
           and S.find("-F $C") < rep < S.find("--restore-mark"), "")
 
+    # 2026-11-01: an AiMesh node's own traffic is never policy-routed - the shared set is refreshed,
+    # created, and matched right after the REPLY RETURN, before any restore or mark
+    am = S.find("-m set --match-set reaper_aimesh src -j RETURN")
+    check("AiMesh nodes RETURN right after replies, ahead of every restore (one rule per family loop)",
+          S.count("-m set --match-set reaper_aimesh src -j RETURN") == 1 and rep < am < S.find("--restore-mark"), "")
+    check("the shared node set is refreshed and created before the chain is built",
+          0 <= S.find("[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync") < S.find("ipset create reaper_aimesh hash:mac -exist")
+          < S.find("-N $C"), "")
+
     # run with wgc1 present
     rc, T, FL, F = run(script, wg_up=True)
     check("wg up: script exits 0", rc == 0, T[-800:])
+    check("wg up: the node set is created and both families match it",
+          "ipset create reaper_aimesh hash:mac -exist" in T
+          and "iptables -t mangle -A REAPER_PBR_N -m set --match-set reaper_aimesh src -j RETURN" in T
+          and "ip6tables -t mangle -A REAPER_PBR_N -m set --match-set reaper_aimesh src -j RETURN" in T, T[-1200:])
     check("wg up: restores issued for both families",
           "iptables -t mangle -A REAPER_PBR_N -m connmark --mark 0x60000/0x000F0000 -j CONNMARK --restore-mark --nfmask 0x000F0000 --ctmask 0x000F0000" in T
           and "ip6tables -t mangle -A REAPER_PBR_N -m connmark --mark 0x20000/0x000F0000 -j CONNMARK --restore-mark" in T

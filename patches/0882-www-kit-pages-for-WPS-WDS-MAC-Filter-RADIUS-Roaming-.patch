@@ -1,0 +1,2566 @@
+From 127719dae0449532ee115755eeb5d25c714c2fae Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 2 Nov 2026 09:49:55 -0500
+Subject: [PATCH] www: kit pages for WPS, WDS, MAC Filter, RADIUS, Roaming
+ Block, MLO and VLAN; stock tabs unshipped
+
+Reaper-native UI, native wave. Seven kit pages take the menu slots of the stock Wireless and LAN
+tabs, with stock's nvram and stock's apply requests:
+- Reaper_WPS.asp, Reaper_WDS.asp, Reaper_MACFilter.asp, Reaper_RADIUS.asp (shows which bands use
+  the server), Reaper_RoamBlock.asp. The roaming block list is read from all three radios (stock
+  read wl0 only and wrote all three, so a list that had diverged lost entries on the next save);
+  only changed keys are posted; device names go in as text.
+- Reaper_MLO.asp (Wireless > MLO): the master switch, the MLO network list and the backhaul
+  editor; "Add a Network" opens the Network page's own MLO wizard (SDN.asp reaperOpenWizard(),
+  one-shot flag, cleared before use).
+- Reaper_VLAN.asp (LAN > VLAN): Switch and Profiles tabs in place of the two stock tabs; each
+  node's ports from get_cfg_clientlist capability 27 (an object keyed by port) and
+  /get_port_status.cgi; multi-VID trunks are kept as they are.
+- reaper/menu.js tabs, httpd reaper_native[] (+7), RNW_1..RNW_9 in the 25 language packs.
+- After the owner reviewed each page on the router the stock pages no longer ship: www/Makefile
+  removes Advanced_WWPS / WMode / ACL / WSecurity / Roaming_Block / VLAN_Switch / VLAN_Profile
+  and stops copying MLO.asp; httpd reaper_pagemap[] bounces each old URL to its kit page (8
+  shipped=0 rows). SDN/mlo.html stays (the Network page's app layout opens it).
+Other hunks in these files: www/Makefile also points www/ajax/ouiDB.json at networkmap's
+/usr/networkmap/ieee.oui.json where that table exists (one OUI table in the image instead of two,
+about 352 KB; a tree whose networkmap ships no table keeps the www copy) and drops the stock WHITE /
+ROG / TUF theme files of the AiMesh and Network pages; httpd/reaper_inject.c also lists AiMesh.asp,
+SDN.asp, SDN/sdn.html and SDN/mlo.html in reaper_own_theme[] (mode 2, no injected stylesheet), and
+SDN.asp links its own stylesheet - both part of the next commit.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/reaper_inject.c      |  42 ++
+ release/src/router/www/BR.dict                |   9 +
+ release/src/router/www/CN.dict                |   9 +
+ release/src/router/www/CZ.dict                |   9 +
+ release/src/router/www/DA.dict                |   9 +
+ release/src/router/www/DE.dict                |   9 +
+ release/src/router/www/EN.dict                |   9 +
+ release/src/router/www/ES.dict                |   9 +
+ release/src/router/www/FI.dict                |   9 +
+ release/src/router/www/FR.dict                |   9 +
+ release/src/router/www/HU.dict                |   9 +
+ release/src/router/www/IT.dict                |   9 +
+ release/src/router/www/JP.dict                |   9 +
+ release/src/router/www/KR.dict                |   9 +
+ release/src/router/www/MS.dict                |   9 +
+ release/src/router/www/Makefile               |  26 +-
+ release/src/router/www/NL.dict                |   9 +
+ release/src/router/www/NO.dict                |   9 +
+ release/src/router/www/PL.dict                |   9 +
+ release/src/router/www/RO.dict                |   9 +
+ release/src/router/www/RU.dict                |   9 +
+ release/src/router/www/Reaper_MACFilter.asp   | 226 +++++++++
+ release/src/router/www/Reaper_MLO.asp         | 311 ++++++++++++
+ release/src/router/www/Reaper_RADIUS.asp      | 163 ++++++
+ release/src/router/www/Reaper_RoamBlock.asp   | 190 +++++++
+ release/src/router/www/Reaper_VLAN.asp        | 480 ++++++++++++++++++
+ release/src/router/www/Reaper_WDS.asp         | 242 +++++++++
+ release/src/router/www/Reaper_WPS.asp         | 200 ++++++++
+ release/src/router/www/SL.dict                |   9 +
+ release/src/router/www/SV.dict                |   9 +
+ release/src/router/www/TH.dict                |   9 +
+ release/src/router/www/TR.dict                |   9 +
+ release/src/router/www/TW.dict                |   9 +
+ release/src/router/www/UK.dict                |   9 +
+ release/src/router/www/reaper/menu.js         |  18 +-
+ .../router/www/sysdep/FUNCTION/SDN/SDN.asp    |  18 +-
+ 36 files changed, 2131 insertions(+), 10 deletions(-)
+ create mode 100644 release/src/router/www/Reaper_MACFilter.asp
+ create mode 100644 release/src/router/www/Reaper_MLO.asp
+ create mode 100644 release/src/router/www/Reaper_RADIUS.asp
+ create mode 100644 release/src/router/www/Reaper_RoamBlock.asp
+ create mode 100644 release/src/router/www/Reaper_VLAN.asp
+ create mode 100644 release/src/router/www/Reaper_WDS.asp
+ create mode 100644 release/src/router/www/Reaper_WPS.asp
+
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 7b79381bbe4..2b1e89414da 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -74,6 +74,7 @@
+ #define REAPER_CSS_LINK \
+ 	"<link rel=\"stylesheet\" type=\"text/css\" href=\"/reaper/reaper_content.css\">"
+ 
++
+ /* SUP{} = superseded stock pages. A direct URL still resolves (the stock files
+  * stay byte-pristine on disk so a single menuTree line is the whole rollback),
+  * so redirect it to the native page that now owns that surface rather than let
+@@ -318,6 +319,15 @@ static const struct reaper_page_row { const char *name, *to; int shipped; } reap
+ 	 * aimesh_topology.html) opens this page, which www/Makefile has always removed; the diagnostics
+ 	 * report is Reaper's way to send one */
+ 	{ "advanced_feedback.asp", "Reaper_Diag.asp", 0 },
++	/* 2026-11-01 (owner review, native wave): the stock Wireless / LAN tabs the kit pages replace no longer ship */
++	{ "advanced_wwps_content.asp", "Reaper_WPS.asp", 0 },
++	{ "advanced_wmode_content.asp", "Reaper_WDS.asp", 0 },
++	{ "advanced_acl_content.asp", "Reaper_MACFilter.asp", 0 },
++	{ "advanced_wsecurity_content.asp", "Reaper_RADIUS.asp", 0 },
++	{ "advanced_roaming_block_content.asp", "Reaper_RoamBlock.asp", 0 },
++	{ "mlo.asp", "Reaper_MLO.asp", 0 },
++	{ "advanced_vlan_switch_content.asp", "Reaper_VLAN.asp", 0 },
++	{ "advanced_vlan_profile_content.asp", "Reaper_VLAN.asp?tab=pf", 0 },
+ 	{ "advanced_switchctrl_content.asp", "Reaper_LAN.asp?tab=switch", 1 },
+ 	{ "advanced_wireless_content.asp", "Reaper_WiFiSettings.asp", 1 },
+ 	{ "advanced_wadvanced_content.asp", "Reaper_WiFiSettings.asp", 1 },
+@@ -519,6 +529,13 @@ static const char *reaper_native[] = {
+ 	"Reaper_Netstat.asp",	/* Netstat */
+ 	"Reaper_WOL.asp",	/* Wake on LAN */
+ 	"Reaper_SmartConnect.asp",	/* Smart Connect Rule */
++	"Reaper_RoamBlock.asp",		/* Roaming Block List (native wave 2026-10-31) */
++	"Reaper_MACFilter.asp",		/* Wireless MAC Filter (native wave 2026-10-31) */
++	"Reaper_RADIUS.asp",		/* RADIUS Setting (native wave 2026-10-31) */
++	"Reaper_WDS.asp",		/* WDS (native wave 2026-10-31) */
++	"Reaper_WPS.asp",		/* WPS (native wave 2026-10-31) */
++	"Reaper_MLO.asp",		/* MLO (native wave 2026-11-01) */
++	"Reaper_VLAN.asp",		/* VLAN switch + profiles (native wave 2026-11-01) */
+ 	"Reaper_IPv6Setup.asp",	/* 2026-10-23: WAN > IPv6 (replaces Advanced_IPv6_Content + IPv61) */
+ 	"Reaper_LAN.asp",	/* 2026-10-23 LAN/WAN wave: LAN IP, DHCP, Switch, Multicast */
+ 	"Reaper_DNS.asp",	/* DNS Director, DHCP/WAN DNS, DoT client */
+@@ -565,6 +582,29 @@ static const char *reaper_css_only[] = {
+ 	NULL
+ };
+ 
++/* 2026-11-01 (owner: no stock UI, no injected theme): the AiMesh and Network pages keep the stock ASUS markup
++ * but carry their OWN Reaper stylesheet, linked as the last stylesheet in each page's <head>
++ * (reaper/reaper_content_aimesh.css, reaper/reaper_content_network.css - built from reaper_content.css, computed
++ * styles identical). httpd injects no stylesheet into them: they get the reaper-native treatment (link floor +
++ * shell bounce, mode 2). The Network page is SDN.asp plus the two documents of the network app it frames or
++ * opens; the aimesh/ parts AiMesh.asp loads are fragments with no </head>. Matched on the query-stripped path,
++ * whole components, case-insensitive - so another sdn.html (www/dashboard/pages/) never picks it up. */
++static const char *reaper_own_theme[] = { "AiMesh.asp", "SDN.asp", "SDN/sdn.html", "SDN/mlo.html", NULL };
++
++static int reaper_own_theme_page(const char *file)
++{
++	size_t n = strcspn(file, "?"), k;
++	int i;
++
++	for (i = 0; reaper_own_theme[i]; i++) {
++		k = strlen(reaper_own_theme[i]);
++		if (n >= k && strncasecmp(file + n - k, reaper_own_theme[i], k) == 0
++		    && (n == k || file[n - k - 1] == '/'))
++			return 1;
++	}
++	return 0;
++}
++
+ /* True when the (query-stripped) basename ends in .asp/.htm/.html. CGI
+  * endpoints also answer as text/html but emit tiny redirect stubs
+  * (login.cgi/login_v2.cgi meta-refresh, QIS_default.cgi, page_default.cgi);
+@@ -686,6 +726,8 @@ static int reaper_should_inject(struct mime_handler *h, const char *file)
+ 	for (i = 0; reaper_native[i]; i++)
+ 		if (strcasecmp(name, reaper_native[i]) == 0)
+ 			return 2;
++	if (reaper_own_theme_page(file))	/* AiMesh / Network: they link their own stylesheet */
++		return 2;
+ 
+ 
+ 	return 1;
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 35f97c5e9d3..bf2c846589e 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Para colocar a chave no próprio endereço, digite $APIkey onde ela dev
+ RBST_00=Bastion
+ RDWT_66=Aplicando as configurações do Dreadwatch…
+ RDWT_67=Como o Dreadwatch funciona
++RNW_1=Aceitar com a lista vazia bloquearia todos os dispositivos sem fio nesta banda. Adicione pelo menos um dispositivo ou escolha Rejeitar.
++RNW_2=Aceitar: somente os dispositivos da lista podem se conectar. Rejeitar: os dispositivos da lista não podem se conectar.
++RNW_3=Não está em uso agora: %1 nesta banda é %2. Um servidor RADIUS só é usado com WPA2-Enterprise ou WPA3-Enterprise.
++RNW_4=Em uso: %1 nesta banda é %2.
++RNW_5=Esta banda usa o canal automático. Os pares WDS precisam compartilhar um único canal fixo.
++RNW_6=O WDS liga o rádio deste roteador diretamente a outros pontos de acesso. Cada par deve listar o endereço MAC deste roteador, e as duas pontas precisam da mesma banda e do mesmo canal fixo.
++RNW_7=Para ativar o MLO, estas configurações de Wi-Fi serão alteradas:
++RNW_8="Adicione uma Rede" abre o assistente de MLO na página %1. Edite ou remova uma rede MLO por lá.
++RNW_9=Permitir todas as tags
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index cc185fa93ef..954b837c157 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=要把密钥放在地址中，请在密钥应在的位置输入 $APIkey
+ RBST_00=Bastion
+ RDWT_66=正在应用 Dreadwatch 设置…
+ RDWT_67=Dreadwatch 的工作原理
++RNW_1=列表为空时选择“允许模式”将阻止此频段上的所有无线设备。请至少添加一台设备，或选择“拒绝模式”。
++RNW_2=允许模式：只有列表中的设备可以连接。拒绝模式：列表中的设备无法连接。
++RNW_3=当前未使用：此频段的%1为 %2。RADIUS 服务器仅用于 WPA2-Enterprise 或 WPA3-Enterprise。
++RNW_4=使用中：此频段的%1为 %2。
++RNW_5=此频段使用自动信道。WDS 对端必须使用同一个固定信道。
++RNW_6=WDS 将本路由器的无线电直接连接到其他接入点。每个对端都必须列出本路由器的 MAC 地址，且两端需使用相同的频段和相同的固定信道。
++RNW_7=开启 MLO 时，将更改以下 Wi-Fi 设置：
++RNW_8="添加一个网络" 会在 %1 页面打开 MLO 向导。请在该页面编辑或删除 MLO 网络。
++RNW_9=允许所有标记
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 415536bbcf5..bb2354772fd 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Chcete-li klíč vložit přímo do adresy, napište $APIkey na místo,
+ RBST_00=Bastion
+ RDWT_66=Používá se nastavení Dreadwatch…
+ RDWT_67=Jak Dreadwatch funguje
++RNW_1=Režim Přijmout s prázdným seznamem by zablokoval všechna bezdrátová zařízení v tomto pásmu. Přidejte alespoň jedno zařízení nebo zvolte Odmítnout.
++RNW_2=Přijmout: připojit se mohou jen zařízení ze seznamu. Odmítnout: zařízení ze seznamu se připojit nemohou.
++RNW_3=Momentálně se nepoužívá: %1 v tomto pásmu je %2. Server RADIUS se používá jen s WPA2-Enterprise nebo WPA3-Enterprise.
++RNW_4=Používá se: %1 v tomto pásmu je %2.
++RNW_5=Toto pásmo používá automatický kanál. Protějšky WDS musí sdílet jeden pevný kanál.
++RNW_6=WDS propojuje rádio tohoto routeru přímo s jinými přístupovými body. Každý protějšek musí mít v seznamu MAC adresu tohoto routeru a obě strany potřebují stejné pásmo a stejný pevný kanál.
++RNW_7=Zapnutí MLO změní tato nastavení Wi-Fi:
++RNW_8="Přidat síť" otevře průvodce MLO na stránce %1. Síť MLO tam upravíte nebo odeberete.
++RNW_9=Povolit všechny značky
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index c9c2400c907..c01e6ede181 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Skal nøglen stå i selve adressen, så skriv $APIkey der, hvor den hø
+ RBST_00=Bastion
+ RDWT_66=Anvender Dreadwatch-indstillinger…
+ RDWT_67=Sådan fungerer Dreadwatch
++RNW_1=Accepter med en tom liste ville blokere alle trådløse enheder på dette bånd. Tilføj mindst én enhed, eller vælg Afvis.
++RNW_2=Accepter: kun enhederne på listen kan oprette forbindelse. Afvis: enhederne på listen kan ikke oprette forbindelse.
++RNW_3=Ikke i brug lige nu: %1 på dette bånd er %2. En RADIUS-server bruges kun med WPA2-Enterprise eller WPA3-Enterprise.
++RNW_4=I brug: %1 på dette bånd er %2.
++RNW_5=Dette bånd bruger automatisk kanal. WDS-modparter skal dele én fast kanal.
++RNW_6=WDS forbinder denne routers radio direkte med andre adgangspunkter. Hver modpart skal have denne routers MAC-adresse på sin liste, og begge ender skal bruge samme bånd og samme faste kanal.
++RNW_7=For at slå MLO til ændres disse Wi-Fi-indstillinger:
++RNW_8="Tilføj et netværk" åbner MLO-guiden på siden %1. Rediger eller fjern et MLO-netværk der.
++RNW_9=Tillad alle tags
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index 1c48eef7716..c469e0d3ef6 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Gehört der Schlüssel in die Adresse, schreiben Sie $APIkey an die Ste
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch-Einstellungen werden übernommen…
+ RDWT_67=So funktioniert Dreadwatch
++RNW_1=„Akzeptieren“ mit leerer Liste würde alle WLAN-Geräte in diesem Band sperren. Fügen Sie mindestens ein Gerät hinzu oder wählen Sie „Abweisen“.
++RNW_2=Akzeptieren: Nur die Geräte in der Liste können sich verbinden. Abweisen: Die Geräte in der Liste können sich nicht verbinden.
++RNW_3=Derzeit nicht in Gebrauch: %1 in diesem Band ist %2. Ein RADIUS-Server wird nur mit WPA2-Enterprise oder WPA3-Enterprise verwendet.
++RNW_4=In Gebrauch: %1 in diesem Band ist %2.
++RNW_5=Dieses Band verwendet die automatische Kanalwahl. WDS-Gegenstellen müssen einen festen Kanal gemeinsam nutzen.
++RNW_6=WDS verbindet das Funkmodul dieses Routers direkt mit anderen Access Points. Jede Gegenstelle muss die MAC-Adresse dieses Routers eintragen, und beide Seiten brauchen dasselbe Band und denselben festen Kanal.
++RNW_7=Zum Einschalten von MLO werden diese WLAN-Einstellungen geändert:
++RNW_8="Ein Netzwerk hinzufügen" öffnet den MLO-Assistenten auf der Seite %1. Dort wird ein MLO-Netzwerk bearbeitet oder entfernt.
++RNW_9=Alle Tags zulassen
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 8443dcfd4d1..6b9870caa0a 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=To put the key inside the address, type $APIkey where it belongs (for e
+ RBST_00=Bastion
+ RDWT_66=Applying Dreadwatch settings…
+ RDWT_67=How Dreadwatch works
++RNW_1=Accept with an empty list would block every wireless device on this band. Add at least one device, or choose Reject.
++RNW_2=Accept: only the devices in the list can connect. Reject: the devices in the list cannot connect.
++RNW_3=Not in use right now: %1 on this band is %2. A RADIUS server is used only with WPA2-Enterprise or WPA3-Enterprise.
++RNW_4=In use: %1 on this band is %2.
++RNW_5=This band uses the Auto channel. WDS peers must share one fixed channel.
++RNW_6=WDS links this router's radio directly to other access points. Each peer must list this router's MAC address, and both ends need the same band and the same fixed channel.
++RNW_7=To turn MLO on, these Wi-Fi settings change:
++RNW_8="Add a Network" opens the MLO wizard on the %1 page. Edit or remove an MLO network there.
++RNW_9=Allow all tags
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index b201919df0c..79bf378818d 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Para poner la clave dentro de la dirección, escriba $APIkey donde debe
+ RBST_00=Bastion
+ RDWT_66=Aplicando la configuración de Dreadwatch…
+ RDWT_67=Cómo funciona Dreadwatch
++RNW_1=Aceptar con la lista vacía bloquearía todos los dispositivos inalámbricos de esta banda. Añada al menos un dispositivo o elija Rechazar.
++RNW_2=Aceptar: solo los dispositivos de la lista pueden conectarse. Rechazar: los dispositivos de la lista no pueden conectarse.
++RNW_3=No se usa ahora: %1 en esta banda es %2. Un servidor RADIUS solo se usa con WPA2-Enterprise o WPA3-Enterprise.
++RNW_4=En uso: %1 en esta banda es %2.
++RNW_5=Esta banda usa el canal automático. Los pares WDS deben compartir un mismo canal fijo.
++RNW_6=WDS conecta la radio de este router directamente con otros puntos de acceso. Cada par debe incluir la dirección MAC de este router, y ambos extremos necesitan la misma banda y el mismo canal fijo.
++RNW_7=Para activar MLO, se cambiarán estos ajustes de Wi-Fi:
++RNW_8="Añadir una red" abre el asistente de MLO en la página %1. Edite o elimine allí una red MLO.
++RNW_9=Permitir todas las etiquetas
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index 746654b0196..bd2a50f7913 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Jos avain kuuluu itse osoitteeseen, kirjoita $APIkey sen paikalle (esim
+ RBST_00=Bastion
+ RDWT_66=Otetaan Dreadwatch-asetukset käyttöön…
+ RDWT_67=Miten Dreadwatch toimii
++RNW_1=Hyväksy tyhjällä luettelolla estäisi kaikki tämän taajuuden langattomat laitteet. Lisää vähintään yksi laite tai valitse Hylkää.
++RNW_2=Hyväksy: vain luettelon laitteet voivat muodostaa yhteyden. Hylkää: luettelon laitteet eivät voi muodostaa yhteyttä.
++RNW_3=Ei käytössä nyt: tämän taajuuden %1 on %2. RADIUS-palvelinta käytetään vain WPA2-Enterprise- tai WPA3-Enterprise-tilassa.
++RNW_4=Käytössä: tämän taajuuden %1 on %2.
++RNW_5=Tämä taajuus käyttää automaattista kanavaa. WDS-vastapuolten on käytettävä samaa kiinteää kanavaa.
++RNW_6=WDS yhdistää tämän reitittimen radion suoraan muihin tukiasemiin. Jokaisen vastapuolen luettelossa on oltava tämän reitittimen MAC-osoite, ja molemmissa päissä on oltava sama taajuus ja sama kiinteä kanava.
++RNW_7=MLO:n käyttöönotto muuttaa nämä Wi-Fi-asetukset:
++RNW_8="Lisää verkko" avaa MLO-ohjatun toiminnon sivulla %1. Muokkaa tai poista MLO-verkko siellä.
++RNW_9=Salli kaikki tunnisteet
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 3e46bca29ab..2c1c4bd9ab4 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Pour placer la clé dans l’adresse, saisissez $APIkey à l’endroit
+ RBST_00=Bastion
+ RDWT_66=Application des réglages de Dreadwatch…
+ RDWT_67=Comment fonctionne Dreadwatch
++RNW_1=Accepter avec une liste vide bloquerait tous les appareils sans fil de cette bande. Ajoutez au moins un appareil ou choisissez Rejeter.
++RNW_2=Accepter : seuls les appareils de la liste peuvent se connecter. Rejeter : les appareils de la liste ne peuvent pas se connecter.
++RNW_3=Inutilisé pour le moment : %1 sur cette bande est %2. Un serveur RADIUS n'est utilisé qu'avec WPA2-Enterprise ou WPA3-Enterprise.
++RNW_4=Utilisé : %1 sur cette bande est %2.
++RNW_5=Cette bande utilise le canal automatique. Les pairs WDS doivent partager un même canal fixe.
++RNW_6=Le WDS relie directement la radio de ce routeur à d'autres points d'accès. Chaque pair doit inscrire l'adresse MAC de ce routeur, et les deux extrémités doivent utiliser la même bande et le même canal fixe.
++RNW_7=Pour activer le MLO, ces réglages Wi-Fi seront modifiés :
++RNW_8="Ajouter un réseau" ouvre l'assistant MLO sur la page %1. Modifiez ou supprimez un réseau MLO depuis cette page.
++RNW_9=Autoriser toutes les balises
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 69662e62f5a..7575b0dd85a 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Ha a kulcs magába a címbe kerül, írja be a $APIkey jelölőt oda, a
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch-beállítások alkalmazása…
+ RDWT_67=Hogyan működik a Dreadwatch
++RNW_1=Elfogadás üres listával minden vezeték nélküli eszközt letiltana ezen a sávon. Adjon hozzá legalább egy eszközt, vagy válassza ezt: Elutasítás.
++RNW_2=Elfogadás: csak a listán szereplő eszközök csatlakozhatnak. Elutasítás: a listán szereplő eszközök nem csatlakozhatnak.
++RNW_3=Jelenleg nincs használatban: ezen a sávon a(z) %1 értéke %2. RADIUS-kiszolgáló csak WPA2-Enterprise vagy WPA3-Enterprise módban használatos.
++RNW_4=Használatban: ezen a sávon a(z) %1 értéke %2.
++RNW_5=Ez a sáv automatikus csatornát használ. A WDS-partnereknek ugyanazt a rögzített csatornát kell használniuk.
++RNW_6=A WDS közvetlenül összeköti a router rádióját más hozzáférési pontokkal. Minden partner listáján szerepelnie kell a router MAC-címének, és mindkét oldalon azonos sáv és azonos rögzített csatorna szükséges.
++RNW_7=Az MLO bekapcsolásához ezek a Wi-Fi-beállítások módosulnak:
++RNW_8=A(z) "Hálózat hozzáadása" megnyitja az MLO varázslót a(z) %1 oldalon. Az MLO hálózatot ott lehet szerkeszteni vagy törölni.
++RNW_9=Minden címke engedélyezése
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 6f65238a530..27bc03c8d6d 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Per inserire la chiave nell’indirizzo, scrivi $APIkey nel punto in cu
+ RBST_00=Bastion
+ RDWT_66=Applicazione delle impostazioni di Dreadwatch…
+ RDWT_67=Come funziona Dreadwatch
++RNW_1=Accetta con un elenco vuoto bloccherebbe tutti i dispositivi wireless su questa banda. Aggiungi almeno un dispositivo o scegli Rifiuta.
++RNW_2=Accetta: possono connettersi solo i dispositivi dell'elenco. Rifiuta: i dispositivi dell'elenco non possono connettersi.
++RNW_3=Non in uso al momento: %1 su questa banda è %2. Un server RADIUS viene usato solo con WPA2-Enterprise o WPA3-Enterprise.
++RNW_4=In uso: %1 su questa banda è %2.
++RNW_5=Questa banda usa il canale automatico. I peer WDS devono condividere un unico canale fisso.
++RNW_6=WDS collega la radio di questo router direttamente ad altri access point. Ogni peer deve includere l'indirizzo MAC di questo router ed entrambi i lati devono usare la stessa banda e lo stesso canale fisso.
++RNW_7=Per attivare MLO, verranno modificate queste impostazioni Wi-Fi:
++RNW_8="Aggiungi rete" apre la procedura guidata MLO nella pagina %1. Modifica o rimuovi lì una rete MLO.
++RNW_9=Consenti tutti i tag
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index d4cf8240e72..8f3fc2be493 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=キーをアドレス内に入れる場合は、キーが入る位置
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch の設定を適用しています…
+ RDWT_67=Dreadwatch の仕組み
++RNW_1=リストが空のまま「許可」にすると、この帯域のすべてのワイヤレスデバイスがブロックされます。少なくとも1台のデバイスを追加するか、「拒否」を選択してください。
++RNW_2=許可：リスト内のデバイスのみ接続できます。拒否：リスト内のデバイスは接続できません。
++RNW_3=現在は使用されていません：この帯域の%1は %2 です。RADIUS サーバーは WPA2-Enterprise または WPA3-Enterprise でのみ使用されます。
++RNW_4=使用中：この帯域の%1は %2 です。
++RNW_5=この帯域は自動チャンネルを使用しています。WDS の相手機器は同じ固定チャンネルを使用する必要があります。
++RNW_6=WDS は、このルーターの無線を他のアクセスポイントに直接接続します。各相手機器にこのルーターの MAC アドレスを登録し、両側で同じ帯域と同じ固定チャンネルを使用する必要があります。
++RNW_7=MLO をオンにすると、次の Wi-Fi 設定が変更されます:
++RNW_8="ネットワークを追加" で %1 ページの MLO ウィザードが開きます。MLO ネットワークの編集と削除もそのページで行います。
++RNW_9=すべてのタグを許可
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 8f1ec587a8f..b9e8137aefa 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=키를 주소 안에 넣으려면 키가 들어갈 자리에 $APIkey 
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch 설정 적용 중…
+ RDWT_67=Dreadwatch 작동 방식
++RNW_1=목록이 비어 있는 상태에서 “수락”을(를) 선택하면 이 대역의 모든 무선 장치가 차단됩니다. 장치를 하나 이상 추가하거나 “거부”을(를) 선택하세요.
++RNW_2=수락: 목록에 있는 장치만 연결할 수 있습니다. 거부: 목록에 있는 장치는 연결할 수 없습니다.
++RNW_3=현재 사용되지 않음: 이 대역의 %1은(는) %2입니다. RADIUS 서버는 WPA2-Enterprise 또는 WPA3-Enterprise에서만 사용됩니다.
++RNW_4=사용 중: 이 대역의 %1은(는) %2입니다.
++RNW_5=이 대역은 자동 채널을 사용합니다. WDS 상대 장치는 같은 고정 채널을 사용해야 합니다.
++RNW_6=WDS는 이 공유기의 무선을 다른 액세스 포인트에 직접 연결합니다. 각 상대 장치는 이 공유기의 MAC 주소를 목록에 추가해야 하며, 양쪽 모두 같은 대역과 같은 고정 채널을 사용해야 합니다.
++RNW_7=MLO를 켜면 다음 Wi-Fi 설정이 변경됩니다:
++RNW_8="네트워크 추가"을(를) 누르면 %1 페이지의 MLO 마법사가 열립니다. MLO 네트워크 편집과 삭제도 그 페이지에서 합니다.
++RNW_9=모든 태그 허용
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 1b4e3a7f786..a6734772239 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Untuk meletakkan kunci di dalam alamat, taip $APIkey di tempat kunci it
+ RBST_00=Bastion
+ RDWT_66=Menggunakan tetapan Dreadwatch…
+ RDWT_67=Bagaimana Dreadwatch berfungsi
++RNW_1=Terima dengan senarai kosong akan menyekat semua peranti wayarles pada jalur ini. Tambah sekurang-kurangnya satu peranti atau pilih Tolak.
++RNW_2=Terima: hanya peranti dalam senarai boleh bersambung. Tolak: peranti dalam senarai tidak boleh bersambung.
++RNW_3=Tidak digunakan sekarang: %1 pada jalur ini ialah %2. Pelayan RADIUS hanya digunakan dengan WPA2-Enterprise atau WPA3-Enterprise.
++RNW_4=Sedang digunakan: %1 pada jalur ini ialah %2.
++RNW_5=Jalur ini menggunakan saluran Auto. Rakan WDS mesti berkongsi satu saluran tetap.
++RNW_6=WDS menyambungkan radio penghala ini terus ke titik akses lain. Setiap rakan mesti menyenaraikan alamat MAC penghala ini, dan kedua-dua hujung memerlukan jalur yang sama dan saluran tetap yang sama.
++RNW_7=Untuk menghidupkan MLO, tetapan Wi-Fi ini akan diubah:
++RNW_8="Tambah Rangkaian" membuka wizard MLO pada halaman %1. Edit atau alih keluar rangkaian MLO di sana.
++RNW_9=Benarkan semua tag
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index 6a5fe5c9474..883296bd31b 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -195,7 +195,7 @@ ifeq ($(RTCONFIG_SMART_HOME_MASTER_UI), y)
+ 	rm -rf $(INSTALLDIR)/www/Advanced_VLAN_Switch_Content.asp
+ endif
+ ifeq ($(RTCONFIG_MLO), y)
+-	cp $(TOP)/www/sysdep/FUNCTION/SDN/MLO.asp $(INSTALLDIR)/www/MLO.asp
++	# reaper 2026-11-01: MLO.asp is not copied any more - Reaper_MLO.asp replaces it (httpd bounces /MLO.asp)
+ else
+ 	rm -rf $(INSTALLDIR)/www/SDN/mlo*
+ 	rm -rf $(INSTALLDIR)/www/images/New_ui/SDN/dark_theme/Image/mlo_desc.svg
+@@ -417,6 +417,15 @@ endif
+ 	# lex is left as it is, and the build never fails on it (build-scripts/tests/test_reaper_strip.py proves the tokens).
+ 	-python3 $(TOP)/tools/reaper_strip.py $(INSTALLDIR)/www || true
+ 	echo " WWW FOR $(BUILD_NAME)"
++	# reaper 2026-11-01: one OUI (MAC -> vendor) table. networkmap installs /usr/networkmap/ieee.oui.json
++	# (40,335 entries, UTF-8); www/ajax/ouiDB.json was the same table a second time (1.4 MB raw, ~310 KB of
++	# flash) with its accented names stripped by the minifier above. The pages only look a vendor up by OUI,
++	# so the web path is a link to networkmap's copy, made after the minifier so nothing rewrites the table
++	# through it. A tree whose networkmap ships no table (the 102.8 GPL) keeps the www copy.
++ifneq ($(wildcard $(TOP)/networkmap/db/ieee.oui.json),)
++	rm -f $(INSTALLDIR)/www/ajax/ouiDB.json
++	ln -sf ../../usr/networkmap/ieee.oui.json $(INSTALLDIR)/www/ajax/ouiDB.json
++endif
+ 
+ 	rm -rf $(INSTALLDIR)/www/images/New_ui/asustitle_ie6.png
+ ifneq ($(RTCONFIG_FANCTRL),y)
+@@ -1306,6 +1315,21 @@ endif
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_daily.asp
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_monthly.asp
+ 	rm -f $(INSTALLDIR)/www/Main_TrafficMonitor_settings.asp
++# reaper 2026-11-01 (owner review, native wave): the stock Wireless / LAN tabs the kit pages replace no longer
++# ship (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO, VLAN); httpd bounces each old URL (reaper_pagemap[]).
++	rm -f $(INSTALLDIR)/www/Advanced_WWPS_Content.asp
++	rm -f $(INSTALLDIR)/www/Advanced_WMode_Content.asp
++	rm -f $(INSTALLDIR)/www/Advanced_ACL_Content.asp
++	rm -f $(INSTALLDIR)/www/Advanced_WSecurity_Content.asp
++	rm -f $(INSTALLDIR)/www/Advanced_Roaming_Block_Content.asp
++	rm -f $(INSTALLDIR)/www/MLO.asp
++	rm -f $(INSTALLDIR)/www/Advanced_VLAN_Switch_Content.asp
++	rm -f $(INSTALLDIR)/www/Advanced_VLAN_Profile_Content.asp
++# reaper 2026-11-01 (owner): AiMesh and Network carry their own Reaper stylesheet, linked in each page; the stock
++# alternate themes those pages could switch to never load (theme forced empty), so they do not ship.
++	rm -f $(INSTALLDIR)/www/SDN/sdn_WHITE.css $(INSTALLDIR)/www/SDN/sdn_ROG.css $(INSTALLDIR)/www/SDN/sdn_TUF.css
++	rm -f $(INSTALLDIR)/www/SDN/mlo_WHITE.css $(INSTALLDIR)/www/SDN/mlo_ROG.css $(INSTALLDIR)/www/SDN/mlo_TUF.css
++	rm -f $(INSTALLDIR)/www/aimesh/aimesh_topology_WHITE.css $(INSTALLDIR)/www/aimesh/aimesh_system_settings_WHITE.css
+ 
+ # Legacy files no longer used by Asuswrt-Merlin
+ 	rm -rf $(INSTALLDIR)/www/tm.svg
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index 26451c4bd87..99c010149f3 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Hoort de sleutel in het adres zelf, typ dan $APIkey op de plek waar hij
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch-instellingen worden toegepast…
+ RDWT_67=Hoe Dreadwatch werkt
++RNW_1=Accepteren met een lege lijst zou alle draadloze apparaten op deze band blokkeren. Voeg minstens één apparaat toe of kies Weigeren.
++RNW_2=Accepteren: alleen de apparaten in de lijst kunnen verbinding maken. Weigeren: de apparaten in de lijst kunnen geen verbinding maken.
++RNW_3=Momenteel niet in gebruik: %1 op deze band is %2. Een RADIUS-server wordt alleen gebruikt met WPA2-Enterprise of WPA3-Enterprise.
++RNW_4=In gebruik: %1 op deze band is %2.
++RNW_5=Deze band gebruikt het automatische kanaal. WDS-tegenpartijen moeten één vast kanaal delen.
++RNW_6=WDS verbindt de radio van deze router rechtstreeks met andere access points. Elke tegenpartij moet het MAC-adres van deze router in de lijst hebben, en beide kanten hebben dezelfde band en hetzelfde vaste kanaal nodig.
++RNW_7=Om MLO in te schakelen, worden deze wifi-instellingen gewijzigd:
++RNW_8="Een gastennetwerk toevoegen" opent de MLO-wizard op de pagina %1. Bewerk of verwijder daar een MLO-netwerk.
++RNW_9=Alle tags toestaan
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index ff0ee01eb01..4cfdc09b6cb 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Skal nøkkelen stå i selve adressen, skriver du $APIkey der den hører
+ RBST_00=Bastion
+ RDWT_66=Bruker Dreadwatch-innstillinger…
+ RDWT_67=Slik fungerer Dreadwatch
++RNW_1=Godta med en tom liste ville blokkert alle trådløse enheter på dette båndet. Legg til minst én enhet, eller velg Avvis.
++RNW_2=Godta: bare enhetene i listen kan koble til. Avvis: enhetene i listen kan ikke koble til.
++RNW_3=Ikke i bruk nå: %1 på dette båndet er %2. En RADIUS-server brukes bare med WPA2-Enterprise eller WPA3-Enterprise.
++RNW_4=I bruk: %1 på dette båndet er %2.
++RNW_5=Dette båndet bruker automatisk kanal. WDS-motparter må dele én fast kanal.
++RNW_6=WDS kobler denne ruterens radio direkte til andre tilgangspunkter. Hver motpart må ha denne ruterens MAC-adresse i listen, og begge ender trenger samme bånd og samme faste kanal.
++RNW_7=For å slå på MLO endres disse Wi-Fi-innstillingene:
++RNW_8="Legg til et nettverk" åpner MLO-veiviseren på siden %1. Rediger eller fjern et MLO-nettverk der.
++RNW_9=Tillat alle tagger
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 5aff6cabcaf..ce9dbd1848f 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Aby umieścić klucz w samym adresie, wpisz $APIkey w miejscu, w który
+ RBST_00=Bastion
+ RDWT_66=Stosowanie ustawień Dreadwatch…
+ RDWT_67=Jak działa Dreadwatch
++RNW_1=Tryb Akceptuj z pustą listą zablokowałby wszystkie urządzenia bezprzewodowe w tym paśmie. Dodaj co najmniej jedno urządzenie lub wybierz Odrzuć.
++RNW_2=Akceptuj: połączyć się mogą tylko urządzenia z listy. Odrzuć: urządzenia z listy nie mogą się połączyć.
++RNW_3=Obecnie nieużywane: %1 w tym paśmie to %2. Serwer RADIUS jest używany tylko z WPA2-Enterprise lub WPA3-Enterprise.
++RNW_4=W użyciu: %1 w tym paśmie to %2.
++RNW_5=To pasmo używa kanału automatycznego. Urządzenia WDS muszą korzystać z jednego, stałego kanału.
++RNW_6=WDS łączy radio tego routera bezpośrednio z innymi punktami dostępowymi. Każde urządzenie musi mieć na liście adres MAC tego routera, a obie strony muszą używać tego samego pasma i tego samego stałego kanału.
++RNW_7=Włączenie MLO zmieni te ustawienia Wi-Fi:
++RNW_8="Dodaj sieć" otwiera kreator MLO na stronie %1. Tam można edytować lub usunąć sieć MLO.
++RNW_9=Zezwalaj na wszystkie znaczniki
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 31b90a6278d..5419e8fe90d 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Pentru a pune cheia chiar în adresă, tastați $APIkey acolo unde treb
+ RBST_00=Bastion
+ RDWT_66=Se aplică setările Dreadwatch…
+ RDWT_67=Cum funcționează Dreadwatch
++RNW_1=Acceptare cu o listă goală ar bloca toate dispozitivele wireless din această bandă. Adăugați cel puțin un dispozitiv sau alegeți Respingere.
++RNW_2=Acceptare: se pot conecta doar dispozitivele din listă. Respingere: dispozitivele din listă nu se pot conecta.
++RNW_3=Nu este folosit acum: %1 pe această bandă este %2. Un server RADIUS este folosit doar cu WPA2-Enterprise sau WPA3-Enterprise.
++RNW_4=În uz: %1 pe această bandă este %2.
++RNW_5=Această bandă folosește canalul automat. Partenerii WDS trebuie să folosească același canal fix.
++RNW_6=WDS conectează direct radioul acestui router la alte puncte de acces. Fiecare partener trebuie să aibă în listă adresa MAC a acestui router, iar ambele capete au nevoie de aceeași bandă și de același canal fix.
++RNW_7=Pentru a activa MLO, se vor modifica aceste setări Wi-Fi:
++RNW_8="Adăugați o rețea" deschide asistentul MLO pe pagina %1. Editați sau eliminați acolo o rețea MLO.
++RNW_9=Permite toate etichetele
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 92fd56e74e7..39da1b71d91 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Чтобы поместить ключ прямо в адрес, вве
+ RBST_00=Bastion
+ RDWT_66=Применение настроек Dreadwatch…
+ RDWT_67=Как работает Dreadwatch
++RNW_1=Режим «Принимать» с пустым списком заблокирует все беспроводные устройства в этом диапазоне. Добавьте хотя бы одно устройство или выберите «Отклонять».
++RNW_2=Принимать: подключаться могут только устройства из списка. Отклонять: устройства из списка не могут подключаться.
++RNW_3=Сейчас не используется: %1 в этом диапазоне — %2. Сервер RADIUS используется только с WPA2-Enterprise или WPA3-Enterprise.
++RNW_4=Используется: %1 в этом диапазоне — %2.
++RNW_5=В этом диапазоне выбран автоматический канал. Устройства WDS должны работать на одном фиксированном канале.
++RNW_6=WDS напрямую соединяет радиомодуль этого роутера с другими точками доступа. Каждое устройство должно внести в список MAC-адрес этого роутера, а обе стороны должны использовать один диапазон и один фиксированный канал.
++RNW_7=Для включения MLO будут изменены следующие настройки Wi-Fi:
++RNW_8="Добавить сеть" открывает мастер MLO на странице %1. Изменить или удалить сеть MLO можно там же.
++RNW_9=Разрешить все теги
+diff --git a/release/src/router/www/Reaper_MACFilter.asp b/release/src/router/www/Reaper_MACFilter.asp
+new file mode 100644
+index 00000000000..9b5c0088d17
+--- /dev/null
++++ b/release/src/router/www/Reaper_MACFilter.asp
+@@ -0,0 +1,226 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#menu5_1_4#></title>
++<!-- Reaper_MACFilter.asp - Wireless > Wireless MAC Filter (Reaper-native UI, native wave, 2026-10-31).
++     Replaces Advanced_ACL_Content.asp; same nvram, same apply. Per radio unit N (primary network only, as stock):
++       wlN_macmode      "disabled" | "allow" (Accept: only the list may join) | "deny" (Reject: the list may not)
++       wlN_maclist_x    "<MAC<MAC..." upper case, at most 64 (stock page cap)
++     Consumer: init-broadcom.c generate_wl_para turns the list into wlN_maclist for the driver ACL (wlconf, closed).
++     PROVEN on the owner's RT-BE96U (2026-10-31, lab): wl0_macmode=deny + a list, restart_wireless -> the driver
++     enforced it (wl macmode 1, the MAC loaded); the MAINFH apm row stayed "disabled" and did not overwrite the
++     wlN_ keys - so this page owns wlN_ as stock does. Guest Network Pro networks keep their own filter on the
++     Network (SDN) page. Apply = /applyapp.cgi with rc_service restart_wireless (stock), only changed keys.
++     Differences from stock, on purpose: every radio on one page (stock switched the global wl_unit through a
++     form post); changing Accept/Reject keeps the list (stock emptied it); Accept with an empty list is refused
++     (it would lock every wireless device out; stock refused it with a message about the login client); the page
++     reloads after the apply so the result shows (stock kept showing its local copy); names via ReaperNames, as
++     text. A band the router uses as its repeater uplink (Repeater / Media Bridge mode) is not editable (stock). -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.bwl-add input.mac{width:170px}
++.bwl-add select{min-width:240px;max-width:100%}
++.bwl-add.bad input{border-color:var(--crimson)}
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.off{opacity:.45;pointer-events:none}
++.listbox{margin-top:10px}
++.rtab td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:middle}
++.rtab td.mono{font-family:var(--mono)}
++.rtab td.name{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.frow select{min-width:200px}
++.panel.bad{border-color:var(--crimson)}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1><#menu5_1_4#></h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill warn chgpill" id="chgpill"><span class="dot"></span><span><#RADM_77#>: <b id="chgcount">0</b></span></span>
++  <button type="button" class="btn ghost" id="discardbtn" disabled><#Discard#></button>
++  <button type="button" class="btn primary" id="applybtn"><#CTL_apply#></button>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#DeviceSecurity11a_display1_sectiondesc#></div>
++<div class="rframe" id="bands"></div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc, U = rp.dec;
++var MAX = 64;                                        /* stock addRow(obj, 64) */
++var NB = [<% nvram_get_js("wl0_nband"); %>, <% nvram_get_js("wl1_nband"); %>, <% nvram_get_js("wl2_nband"); %>, <% nvram_get_js("wl3_nband"); %>];
++var IFN = <% nvram_get_js("wl_ifnames"); %>.trim().split(/\s+/).filter(Boolean);
++var SW_MODE = <% nvram_get_js("sw_mode"); %>, WLC_BAND = <% nvram_get_js("wlc_band"); %>;
++var NV = {
++  wl0_macmode: <% nvram_get_js("wl0_macmode"); %>, wl0_maclist_x: U('<% nvram_char_to_ascii("","wl0_maclist_x"); %>'),
++  wl1_macmode: <% nvram_get_js("wl1_macmode"); %>, wl1_maclist_x: U('<% nvram_char_to_ascii("","wl1_maclist_x"); %>'),
++  wl2_macmode: <% nvram_get_js("wl2_macmode"); %>, wl2_maclist_x: U('<% nvram_char_to_ascii("","wl2_maclist_x"); %>'),
++  wl3_macmode: <% nvram_get_js("wl3_macmode"); %>, wl3_maclist_x: U('<% nvram_char_to_ascii("","wl3_maclist_x"); %>')
++};
++var DEVS = [];
++
++/* the radios present, titled as the Wireless pages title them (5 / 6 GHz numbered when there are two) */
++var BANDS = (function(){
++  var out = [], n5 = 0, n6 = 0, c5 = NB.filter(function(b){ return b === '1'; }).length, c6 = NB.filter(function(b){ return b === '4'; }).length;
++  for (var u = 0; u < (IFN.length || 4) && u < 4; u++){   /* no wl_ifnames: every unit that reports a band */
++    var b = NB[u], t = '';
++    if (b === '2') t = '2.4 GHz';
++    else if (b === '1'){ n5++; t = c5 > 1 ? '5 GHz-' + n5 : '5 GHz'; }
++    else if (b === '4'){ n6++; t = c6 > 1 ? '6 GHz-' + n6 : '6 GHz'; }
++    if (t) out.push({u: u, title: t});
++  }
++  return out;
++})();
++function macs(s){ var out = [], seen = {}; String(s || '').split('<').forEach(function(m){ m = m.trim().toUpperCase(); if (rp.v.mac(m) && !seen[m]){ seen[m] = 1; out.push(m); } }); return out; }
++BANDS.forEach(function(b){
++  var mode = NV['wl' + b.u + '_macmode'];
++  b.mode0 = mode === 'allow' || mode === 'deny' ? mode : 'disabled';
++  b.list0 = macs(NV['wl' + b.u + '_maclist_x']).slice(0, MAX);
++  b.list = b.list0.slice();
++  /* Repeater / Media Bridge: the uplink band carries no clients of its own (stock hides the page for it) */
++  b.locked = (SW_MODE === '2' || SW_MODE === '4') && String(b.u) === WLC_BAND;
++});
++
++function msg(id, t){ var m = q(id); if (!m) return; m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; }
++function curMode(i){ return q('t_on' + i).checked ? q('s_mode' + i).value : 'disabled'; }
++function listChanged(b){ return b.list.join('<') !== b.list0.join('<'); }
++function changes(){
++  var ch = {};
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    var m = curMode(i);
++    if (m !== b.mode0) ch['wl' + b.u + '_macmode'] = m;
++    if (listChanged(b)) ch['wl' + b.u + '_maclist_x'] = b.list.map(function(x){ return '<' + x; }).join('');
++  });
++  return ch;
++}
++function dirty(){ rp.pill(rp.count(changes())); }
++
++function render(){
++  var h = '';
++  BANDS.forEach(function(b, i){
++    h += '<div class="panel" id="p' + i + '"><h2>' + hx(b.title) + '</h2>';
++    if (b.locked){ h += '<div class="sub">' + hx(`<#page_not_support_mode_hint#>`) + '</div></div>'; return; }
++    h += '<div class="togglerow"><label class="tswitch"><input type="checkbox" id="t_on' + i + '"><span class="track"></span></label><div>' + hx(`<#enable_macmode#>`) + '</div></div>' +
++      '<div class="listbox" id="lb' + i + '">' +
++      '<div class="frow"><div class="fl">' + hx(`<#FirewallConfig_MFMethod_itemname#>`) + '</div><div class="fc"><select id="s_mode' + i + '">' +
++        '<option value="allow">' + hx(`<#FirewallConfig_MFMethod_item1#>`) + '</option><option value="deny">' + hx(`<#FirewallConfig_MFMethod_item2#>`) + '</option></select></div>' +
++        '<div class="fh">' + hx(`<#RNW_2#>`) + '</div></div>' +
++      '<table class="rtab"><thead><tr><th>' + hx(`<#Clientlist_device#>`) + '</th><th>' + hx(`<#MAC_Address#>`) + '</th><th></th></tr></thead><tbody id="tb' + i + '"></tbody></table>' +
++      '<div class="bwl-add" id="ab' + i + '">' +
++        '<div class="f"><label>' + hx(`<#Clientlist_device#>`) + '</label><select id="pk' + i + '" title="' + hx(`<#select_wireless_MAC#>`) + '"><option value="">' + hx(`<#Select_menu_default#>`) + '</option></select></div>' +
++        '<div class="f"><label>' + hx(`<#MAC_Address#>`) + '</label><input type="text" class="mac mono" id="am' + i + '" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>' +
++        '<button type="button" class="btn small" id="ba' + i + '">' + hx(`<#CTL_add#>`) + '</button></div>' +
++      '<div class="rbudget" id="bg' + i + '"></div><div class="msg" id="am_msg' + i + '" style="margin-top:8px"></div>' +
++      '</div></div>';
++  });
++  q('bands').innerHTML = h;
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    q('t_on' + i).checked = b.mode0 !== 'disabled';
++    q('s_mode' + i).value = b.mode0 === 'deny' ? 'deny' : 'allow';   /* stock shows Accept for a disabled filter */
++    q('t_on' + i).addEventListener('change', function(){ draw(i); });
++    q('s_mode' + i).addEventListener('change', function(){ dirty(); });   /* the list stays (stock emptied it) */
++    q('ba' + i).addEventListener('click', function(){ add(i); });
++    q('am' + i).addEventListener('keydown', function(e){ if (e.key === 'Enter') add(i); });
++    q('am' + i).addEventListener('input', function(){ if (!rp.pick(q('pk' + i), rp.val('am' + i).toUpperCase())) q('pk' + i).value = ''; });
++    q('pk' + i).addEventListener('change', function(){ if (this.value){ q('am' + i).value = this.value; msg('am_msg' + i, ''); } });
++    q('tb' + i).addEventListener('click', function(e){ var t = e.target;
++      if (t && t.classList && t.classList.contains('bwldel')){ b.list.splice(+t.getAttribute('data-i'), 1); draw(i); } });
++    draw(i);
++  });
++}
++function draw(i){
++  var b = BANDS[i], h = '';
++  b.list.forEach(function(m, j){
++    h += '<tr><td class="name" data-m="' + hx(m) + '"></td><td class="mono">' + hx(m) + '</td>' +
++         '<td style="text-align:right"><span class="bwldel" data-i="' + j + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
++  });
++  q('tb' + i).innerHTML = h || '<tr><td colspan="3" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
++  var g = q('bg' + i); g.textContent = `<#List_limit#>` + ' ' + b.list.length + ' / ' + MAX; g.classList.toggle('hot', b.list.length >= MAX);
++  q('lb' + i).classList.toggle('off', !q('t_on' + i).checked);
++  q('p' + i).classList.remove('bad');
++  names(); pickDraw(i); dirty();
++}
++/* device names are client-chosen: text only */
++function names(){
++  Array.prototype.forEach.call(document.querySelectorAll('#bands td.name'), function(td){
++    var n = ReaperNames.byMac(td.getAttribute('data-m'), ''); td.textContent = n; td.title = n;
++  });
++}
++function pickDraw(i){
++  var b = BANDS[i], s = q('pk' + i), have = {};
++  if (!s) return;
++  b.list.forEach(function(m){ have[m] = 1; });
++  while (s.options.length > 1) s.remove(1);
++  DEVS.forEach(function(d){ if (have[d.mac]) return; var o = document.createElement('option'); o.value = d.mac; o.textContent = d.label; s.appendChild(o); });
++  if (!rp.pick(s, rp.val('am' + i).toUpperCase())) s.value = '';
++}
++/* wireless clients online now (networkmap isWL != 0), as the stock picker's 'wl' list */
++function devLoad(){
++  try {
++    ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(cl){
++      var ml = (cl && cl.maclist) || [], out = [];
++      ml.forEach(function(mac){ var c = cl[mac], m = String(mac).toUpperCase(), nm;
++        if (!c || !rp.v.mac(m) || String(c.isOnline) === '0' || !c.isWL || String(c.isWL) === '0') return;
++        nm = ReaperNames.byMac(mac, m);
++        out.push({mac: m, label: (nm !== m ? nm + ' - ' : '') + m}); });
++      out.sort(function(a, b){ return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1; });
++      DEVS = out; names(); BANDS.forEach(function(b, i){ if (!b.locked) pickDraw(i); });
++    });
++  } catch (e) {}
++}
++function add(i){
++  var b = BANDS[i], id = 'am_msg' + i;
++  msg(id, '');
++  var m = rp.val('am' + i).toUpperCase(), e = '';
++  if (b.list.length >= MAX) e = `<#JS_itemlimit1#>` + ' ' + MAX + ' ' + `<#JS_itemlimit2#>`;
++  else if (!m) e = `<#JS_fieldblank#>`;
++  else if (!rp.v.mac(m)) e = `<#IPConnection_x_illegal_mac#>`;
++  else if (b.list.indexOf(m) >= 0) e = `<#JS_duplicate#>`;
++  if (e){ msg(id, e); q('ab' + i).classList.add('bad'); setTimeout(function(){ q('ab' + i).classList.remove('bad'); }, 4000); return; }
++  b.list.push(m); q('am' + i).value = ''; draw(i);
++}
++
++function post(obj){
++  var x = new XMLHttpRequest(), a = [], k;
++  for (k in obj) a.push(encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]));
++  x.open('POST', '/applyapp.cgi', true); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded'); x.timeout = 150000;
++  x.send(a.join('&'));
++}
++function apply(){
++  msg('topmsg', '');
++  /* Accept with an empty list admits nobody: every wireless device on that band would be cut off */
++  var lock = -1;
++  BANDS.forEach(function(b, i){ if (lock < 0 && !b.locked && curMode(i) === 'allow' && !b.list.length) lock = i; });
++  if (lock >= 0){ q('p' + lock).classList.add('bad'); msg('topmsg', BANDS[lock].title + ': ' + `<#RNW_1#>`); q('am' + lock).focus(); return; }
++  var ch = changes();
++  if (!rp.count(ch)){ msg('topmsg', `<#RADM_63#>`); return; }
++  ch.action_mode = 'apply'; ch.rc_service = 'restart_wireless';
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  post(ch); setTimeout(function(){ location.reload(); }, 15000);
++}
++
++q('applybtn').addEventListener('click', apply);
++q('discardbtn').addEventListener('click', function(){ BANDS.forEach(function(b){ b.list = b.list0.slice(); }); msg('topmsg', ''); render(); });
++render(); devLoad();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_MLO.asp b/release/src/router/www/Reaper_MLO.asp
+new file mode 100644
+index 00000000000..a150060ccda
+--- /dev/null
++++ b/release/src/router/www/Reaper_MLO.asp
+@@ -0,0 +1,311 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; MLO</title>
++<!-- Reaper_MLO.asp - Wireless > MLO (Reaper-native UI, native wave, 2026-11-01).
++     Replaces MLO.asp (the SDN single-page app in an iframe: sdn.js, mlo.js, rwd_component.js); same nvram, same
++     requests, posted as stock httpApi.nvramSet does (url-encoded JSON to /applyapp.cgi, so httpd's own
++     wl_nband_to_wlx turns the 2g1_/5g1_/6g1_ band keys into wl<unit>_ keys):
++       MLO switch ON   mld_enable=1 + for every band present: <band>_11be=1, _crypto=aes+gcmp256, _radio=1,
++                       _timesched=0; rc_service "reboot;" (bcmwifi). The confirm lists the radios it turns on and the
++                       schedules it turns off, as stock does.
++       MLO switch OFF  mld_enable=0; every enabled MLO fronthaul network (apg mlo=2) goes off with it: a main network
++                       (MAINFH / MAINBH) by apm<N>_mlo=0 + its band list without MLO (stock get_mainfh_dut_list), any
++                       other by apg<N>_enable=0 + its sdn_rl row disabled; rc_service "reboot;".
++       Backhaul        the MLO backhaul network (sdn_rl type MLO, apg mlo=1): SSID (1-32 bytes) and Hide SSID ->
++                       apg<N>_ssid / apg<N>_hide_ssid, rc_service "restart_wireless;restart_sdn <idx>;". Stock re-sent
++                       all 15 apg<N>_ keys with 13 unchanged; only the two that change are sent here.
++     The list shows the networks stock lists: sdn_rl rows of type MLO with apg mlo 1 (backhaul, first) or 2 (fronthaul).
++     Add a Network hands off to the Network page's own MLO wizard (sdn.js Get_Wizard_MLO, the same wizard stock opens
++     here): a one-shot sessionStorage flag that SDN.asp reads once. A fronthaul network is edited on that page too.
++     Dead on this build and left out: the backhaul-band selector (RTCONFIG_MLO_BH_BAND off), the get-start popup and the
++     QIS mlo path (stock hard-wires both checks true). The backhaul password shows masked, with a Show button (stock
++     printed it in clear). Per-network client counts are not shown (stock: the whole client list per page load). -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.fv{font-family:var(--hdr);font-weight:600;color:var(--bone)}
++.fv.mono{font-family:var(--mono);font-weight:400}
++.frow input.ssid{width:280px}
++.tag{display:inline-block;font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
++  border:1px solid var(--line-soft);border-radius:6px;padding:2px 7px;color:var(--bone-dim)}
++.tag.on{color:var(--jade);border-color:rgba(79,178,134,.45)}
++.tleft{font-size:12px;color:var(--steel);margin-left:8px}
++td.acts{text-align:right;white-space:nowrap}
++.addrow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1><#WiFi_mlo_title#></h1>
++  </div>
++  <div class="spacer"></div>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#WiFi_mlo_Desc#></div>
++
++<div class="rframe">
++<div class="panel" id="p_main">
++  <div class="togglerow"><label class="tswitch"><input type="checkbox" id="t_mlo"><span class="track"></span></label><div>MLO</div></div>
++  <div class="hint" style="margin-top:6px"><#WiFi_mlo_switch_Hint#></div>
++  <div class="frow"><div class="fl"><#QKSet_wireless_webtitle#></div><div class="fc"><button type="button" class="btn small ghost" id="b_wifi"><#btn_go#></button></div></div>
++</div>
++
++<div class="panel" id="p_list">
++  <h2><#GuestNetwork_ProfileList#></h2>
++  <div class="sub" id="listsub"></div>
++  <table class="classes"><thead><tr><th><#QIS_finish_wireless_item1#></th><th>MLO</th><th><#Status_Str#></th><th></th></tr></thead>
++    <tbody id="mbody"><tr><td colspan="4" class="empty">&hellip;</td></tr></tbody></table>
++  <div class="addrow"><button type="button" class="btn primary small" id="b_add"><#GuestNetwork_ProfileAdd#></button><span class="msg" id="addmsg"></span></div>
++</div>
++
++<div class="panel" id="p_bh" style="display:none">
++  <h2><#AiMesh_WiFi_Backhaul#></h2>
++  <div class="frow"><div class="fl"><#QIS_finish_wireless_item1#></div><div class="fc"><input type="text" class="ssid" id="i_ssid" maxlength="32" autocomplete="off"></div></div>
++  <div class="frow"><div class="fl"><#WLANConfig11b_AuthenticationMethod_itemname#></div><div class="fc"><span class="fv">WPA3-Personal</span></div></div>
++  <div class="frow"><div class="fl"><#QIS_finish_wireless_item2#></div><div class="fc"><span class="fv mono" id="v_pwd">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</span>
++    <button type="button" class="btn small ghost" id="b_pwd"><#Clientlist_Show#></button></div></div>
++  <div class="frow"><div class="fl"><#WLANConfig11b_x_BlockBCSSID_itemname#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_hide"><span class="track"></span></label></div></div>
++  <div class="addrow"><button type="button" class="btn primary small" id="b_bh"><#CTL_apply#></button><span class="msg" id="bhmsg"></span></div>
++</div>
++</div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc, U = rp.dec;
++var UI = {}; try { UI = [<% get_ui_support(); %>][0] || {}; } catch (e) {}
++var MLD = <% nvram_get_js("mld_enable"); %> === '1';
++var SDN_RL = U('<% nvram_char_to_ascii("","sdn_rl"); %>');
++var WLNB = String(<% nvram_get_js("wlnband_list"); %>).toUpperCase().split('<').filter(Boolean);
++var WL = [
++  {radio: <% nvram_get_js("wl0_radio"); %>, ts: <% nvram_get_js("wl0_timesched"); %>},
++  {radio: <% nvram_get_js("wl1_radio"); %>, ts: <% nvram_get_js("wl1_timesched"); %>},
++  {radio: <% nvram_get_js("wl2_radio"); %>, ts: <% nvram_get_js("wl2_timesched"); %>},
++  {radio: <% nvram_get_js("wl3_radio"); %>, ts: <% nvram_get_js("wl3_timesched"); %>}
++];
++var NOW = parseInt('<% utctimestamp(); %>', 10) || 0;
++var REBOOT_WAIT = parseInt('<% get_default_reboot_time(); %>', 10) || 90;
++var SDN_PAGE = UI.sdn_mwl ? `<#Network#>` : `<#Guest_Network#>`;
++var MAINS = {MAINFH: 1, MAINBH: 1};
++
++/* the bands this box has, in stock's slot order (get_wl_unit_by_band: the slot's position in wlnband_list) */
++var SLOTS = ['2g1', '5g1', '5g2', '6g1', '6g2'].map(function(s){ return {key: s, unit: WLNB.indexOf(s.toUpperCase())}; })
++  .filter(function(s){ return s.unit >= 0; });
++function has(slot){ return SLOTS.some(function(s){ return s.key === slot; }); }
++function slotName(s){
++  if (s === '2g1') return '2.4 GHz';
++  var f = s.charAt(0) + ' GHz';
++  if (s.charAt(2) === '2') return f + '-2';
++  return has(s.substring(0, 2) + '2') ? f + '-1' : f;
++}
++/* stock wifi_band_options_cb: the band bits a band list may carry on this box */
++var BAND_BITS = (function(){
++  var b = 0;
++  if (has('2g1')) b |= 1;
++  if (has('5g2')) b |= 4 | 8; else if (has('5g1')) b |= 2;
++  if (has('6g2')) b |= 32 | 64; else if (has('6g1')) b |= 16;
++  return b;
++})();
++/* stock get_mainfh_dut_list(bits, false): the main network's band list once MLO is off */
++function mainDutNoMlo(bits){
++  var band = 0;
++  [1, 2, 4, 8, 16, 32, 64].forEach(function(v){ if (bits & v) band += v; });
++  if ((bits & 4) && !(bits & 2)) band += 2;
++  if ((bits & 64) && !(bits & 16)) band += 16;
++  if ((bits & 2) && !(band & 4)) band += 4;
++  if ((bits & 16) && !(band & 64)) band += 64;
++  if ((bits & 8) && bits > 8 && !(band & 2)) band += 2;
++  if ((bits & 32) && bits > 32 && !(band & 16)) band += 16;
++  return '<*>' + band + '>';
++}
++/* the band field of the first entry of a dut_list (<MAC>bands>ports ...) - stock mainfh_smart_connect.band_bitwise */
++function firstBands(dut){
++  var e = String(dut || '').split('<').filter(Boolean)[0];
++  return e ? (parseInt(e.split('>')[1], 10) || 0) : 0;
++}
++
++/* sdn_rl rows: idx>sdn_name>sdn_enable>vlan_idx>subnet_idx>apg_idx>... (sdn.js sdn_rl_attr order) */
++var ROWS = rp.list.parse(SDN_RL).map(function(r){ return {r: r, idx: r.f[0], name: r.f[1], on: r.f[2] === '1', apg: r.f[5]}; })
++  .filter(function(x){ return x.idx !== '0' && x.idx !== '' && +x.apg > 0; });
++var AP = {};          /* prefix+idx -> {enable, ssid, hide_ssid, mlo, dut_list, timesched, expiretime, disabled, security} */
++function pfx(x){ return MAINS[x.name] ? 'apm' : 'apg'; }
++var FIELDS = ['enable', 'ssid', 'hide_ssid', 'mlo', 'dut_list', 'timesched', 'expiretime', 'disabled', 'security'];
++
++function msg(id, t){ var m = q(id); m.textContent = t || ''; m.style.display = t ? (id === 'topmsg' ? 'block' : 'inline') : 'none'; }
++function appGet(keys, cb){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/appGet.cgi?hook=' + keys.map(function(k){ return 'nvram_char_to_ascii(' + k + ',' + k + ')'; }).join('%3B') + '&_=' + Date.now(), true);
++  x.timeout = 15000;
++  x.onload = function(){ var d = null; try { d = JSON.parse(x.responseText); } catch (e) {} cb(d); };
++  x.onerror = x.ontimeout = function(){ cb(null); };
++  x.send();
++}
++/* stock httpApi.nvramSet: url-encoded JSON (httpd decodes it and maps the band keys) */
++function nvSet(obj, cb){
++  var x = new XMLHttpRequest();
++  x.open('POST', '/applyapp.cgi', true);
++  x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
++  x.timeout = 45000;
++  x.onloadend = function(){ if (cb) cb(); };
++  x.send(encodeURIComponent(JSON.stringify(obj)));
++}
++function back(){ top.location.href = '/reaper_shell.asp#Reaper_MLO.asp'; }
++/* a reboot: the router's own reboot time, then wait for httpd to answer again */
++function rebooting(){
++  rp.applying(`<#Reaper_c_rebooting#>`, `<#AiMesh_System_Reboot_Hint#>`);
++  setTimeout(function(){
++    var tries = 0, t = setInterval(function(){
++      var c = new XMLHttpRequest(), done = false; c.open('GET', '/httpd_check.xml?_=' + Date.now(), true); c.timeout = 2500;
++      c.onload = function(){ if (done) return; done = true; if (c.status === 200){ clearInterval(t); back(); } };
++      try { c.send(); } catch (e) {}
++      if (++tries > 90){ clearInterval(t); top.location.href = '/'; }
++    }, 2000);
++  }, REBOOT_WAIT * 1000);
++}
++
++function mloRows(){
++  var bh = [], fh = [];
++  ROWS.forEach(function(x){
++    if (x.name !== 'MLO') return;
++    var a = AP[pfx(x) + x.apg]; if (!a) return;
++    if (a.mlo === '1') bh.push(x); else if (a.mlo === '2') fh.push(x);
++  });
++  return bh.concat(fh);      /* stock: the backhaul first */
++}
++function timeLeft(a){
++  if (a.timesched !== '2' || !NOW) return '';
++  var end = String(a.expiretime || '').split(',')[1];
++  if (!end || end.length !== 13) return '';
++  var s = Math.max(0, parseInt(end.substr(2, 10), 10) - NOW), h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60;
++  return `<#mssid_time_remaining#>` + ' ' + h + ':' + (m < 10 ? '0' : '') + m;
++}
++var selBh = null;
++function paintList(){
++  var rows = mloRows(), b = q('mbody');
++  if (!rows.length){ b.innerHTML = '<tr><td colspan="4" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>'; return; }
++  b.innerHTML = rows.map(function(x){
++    var a = AP[pfx(x) + x.apg], isBh = a.mlo === '1', on = x.on && a.disabled !== '1';
++    var left = on ? timeLeft(a) : '';
++    return '<tr><td class="name">' + hx(a.ssid) + '</td><td>' + (isBh ? hx(`<#AiMesh_WiFi_Backhaul#>`) : 'MLO') + '</td>' +
++      '<td><span class="tag' + (on ? ' on' : '') + '">' + hx(on ? `<#Status_Active#>` : `<#Status_Inactive#>`) + '</span>' +
++      (left ? '<span class="tleft">' + hx(left) + '</span>' : '') + '</td>' +
++      '<td class="acts"><button type="button" class="btn small ghost" data-idx="' + hx(x.idx) + '">' + hx(`<#CTL_modify#>`) + '</button></td></tr>';
++  }).join('');
++}
++function openBh(x){
++  var a = AP[pfx(x) + x.apg]; selBh = x;
++  q('i_ssid').value = a.ssid; q('t_hide').checked = a.hide_ssid === '1';
++  /* stock: the password is field 3 of the first security row (<band>auth>crypto>PWD>radius_idx) */
++  var sec = String(a.security || '').split('<')[1], pwd = sec ? (sec.split('>')[3] || '') : '';
++  q('v_pwd').dataset.pwd = pwd; q('v_pwd').innerHTML = '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;';
++  q('b_pwd').style.display = pwd ? '' : 'none';
++  msg('bhmsg', ''); q('p_bh').style.display = '';
++}
++
++/* --- the switch --- */
++function switchOn(){
++  var off = [], sched = [];
++  SLOTS.forEach(function(s){
++    var w = WL[s.unit] || {};
++    if (w.radio !== '1') off.push(slotName(s.key));
++    if (w.ts === '1') sched.push(slotName(s.key));
++  });
++  var lines = [];
++  if (off.length || sched.length){
++    lines.push(`<#RNW_7#>`);
++    if (off.length) lines.push('- ' + `<#WLANConfig11b_WirelessCtrl_button1name#>` + ' ' + off.join(', ') + ' ' + `<#Wireless_Radio#>`);
++    if (sched.length) lines.push('- ' + `<#WLANConfig11b_WirelessCtrl_buttonname#>` + ' ' + sched.join(', ') + ' ' + `<#menu5_1#>` + ' ' + `<#Time_Scheduling#>`);
++  }
++  lines.push(`<#AiMesh_System_Reboot_Hint#>`, `<#AiMesh_Are_U_Sure_Proceed#>`);
++  if (!confirm(lines.join('\n'))) return false;
++  var o = {action_mode: 'apply', rc_service: 'reboot;', mld_enable: '1'};
++  SLOTS.forEach(function(s){ o[s.key + '_11be'] = '1'; o[s.key + '_crypto'] = 'aes+gcmp256'; o[s.key + '_radio'] = '1'; o[s.key + '_timesched'] = '0'; });
++  nvSet(o); rebooting(); return true;
++}
++function switchOff(){
++  var fh = ROWS.filter(function(x){ var a = AP[pfx(x) + x.apg]; return x.on && a && a.mlo === '2'; });
++  if (!confirm((fh.length ? `<#WiFi_mlo_disable_Hint#>` + '\n' : '') + `<#AiMesh_System_Reboot_Hint#>`)) return false;
++  var o = {action_mode: 'apply', rc_service: 'reboot;', mld_enable: '0'}, rl = false;
++  fh.forEach(function(x){
++    var a = AP[pfx(x) + x.apg];
++    if (MAINS[x.name]){
++      o['apm' + x.apg + '_mlo'] = '0';
++      o['apm' + x.apg + '_dut_list'] = mainDutNoMlo(firstBands(a.dut_list) & BAND_BITS);
++    } else {
++      o['apg' + x.apg + '_enable'] = '0';
++      var f = x.r.f.slice(); f[2] = '0'; x.r = rp.list.row(f); rl = true;
++    }
++  });
++  if (rl) o.sdn_rl = rp.list.ser(rp.list.parse(SDN_RL).map(function(r){
++    var m = ROWS.filter(function(x){ return x.idx === r.f[0]; })[0]; return m ? m.r : r; }));
++  nvSet(o); rebooting(); return true;
++}
++
++function load(){
++  var keys = [];
++  ROWS.forEach(function(x){ FIELDS.forEach(function(f){ keys.push(pfx(x) + x.apg + '_' + f); }); });
++  if (!keys.length){ paintList(); return; }
++  appGet(keys, function(d){
++    if (!d){ msg('topmsg', `<#ALERT_OF_ERROR_System4#>`); q('mbody').innerHTML = ''; return; }
++    ROWS.forEach(function(x){
++      var a = {}; FIELDS.forEach(function(f){ a[f] = U(d[pfx(x) + x.apg + '_' + f] || ''); }); AP[pfx(x) + x.apg] = a;
++    });
++    paintList();
++  });
++}
++
++q('t_mlo').checked = MLD;
++q('listsub').textContent = rp.sub(`<#RNW_8#>`, SDN_PAGE);
++q('t_mlo').addEventListener('change', function(){
++  msg('topmsg', '');
++  var ok = this.checked ? switchOn() : switchOff();
++  if (!ok) this.checked = !this.checked;
++});
++q('b_wifi').addEventListener('click', function(){ top.location.href = '/reaper_shell.asp#Reaper_WiFiSettings.asp'; });
++q('b_add').addEventListener('click', function(){
++  /* SDN.asp opens its MLO wizard once for this flag (it checks the profile limit itself) */
++  try { sessionStorage.setItem('reaper_sdn_wizard', 'MLO'); } catch (e) {}
++  top.location.href = '/reaper_shell.asp#SDN.asp';
++});
++q('mbody').addEventListener('click', function(e){
++  var btn = e.target.closest && e.target.closest('button[data-idx]'); if (!btn) return;
++  var x = ROWS.filter(function(r){ return r.idx === btn.getAttribute('data-idx'); })[0]; if (!x) return;
++  if (AP[pfx(x) + x.apg].mlo === '1') openBh(x);
++  else top.location.href = '/reaper_shell.asp#SDN.asp';
++});
++q('b_pwd').addEventListener('click', function(){
++  var v = q('v_pwd'), shown = v.getAttribute('data-shown') === '1';
++  if (shown){ v.innerHTML = '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'; v.setAttribute('data-shown', '0'); }
++  else { v.textContent = v.dataset.pwd || ''; v.setAttribute('data-shown', '1'); }
++});
++q('b_bh').addEventListener('click', function(){
++  msg('bhmsg', '');
++  if (!selBh){ msg('bhmsg', `<#ALERT_OF_ERROR_System4#>`); return; }
++  var s = q('i_ssid').value, bytes = unescape(encodeURIComponent(s)).length;
++  if (!s.trim() || bytes > 32 || /[\x00-\x1f\x7f]/.test(s)){ msg('bhmsg', `<#RWFS_10#>`); q('i_ssid').focus(); return; }
++  var o = {action_mode: 'apply', rc_service: 'restart_wireless;restart_sdn ' + selBh.idx + ';'};
++  o['apg' + selBh.apg + '_ssid'] = s; o['apg' + selBh.apg + '_hide_ssid'] = q('t_hide').checked ? '1' : '0';
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  nvSet(o); setTimeout(function(){ location.reload(); }, 20000);
++});
++load();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_RADIUS.asp b/release/src/router/www/Reaper_RADIUS.asp
+new file mode 100644
+index 00000000000..7cc72a6a96f
+--- /dev/null
++++ b/release/src/router/www/Reaper_RADIUS.asp
+@@ -0,0 +1,163 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#menu5_1_5#></title>
++<!-- Reaper_RADIUS.asp - Wireless > RADIUS Setting (Reaper-native UI, native wave, 2026-10-31).
++     Replaces Advanced_WSecurity_Content.asp; same nvram, same apply. Per radio unit N (primary network):
++       wlN_radius_ipaddr   server address: IPv4, or IPv6 in router mode (stock); "" = none
++       wlN_radius_port     1-65535 (default 1812)
++       wlN_radius_key      shared secret, up to 64 printable ASCII, no leading / trailing double quote (stock)
++     Consumer: the prebuilt hostapd writer (rc/prebuild hostapd_config_be.o) reads them ONLY for a band whose
++     wlN_auth_mode_x is an Enterprise / 802.1X mode (wpa wpa2 wpawpa2 wpa3 wpa2wpa3 suite-b radius). No Reaper page
++     sets those modes today (Wireless Settings has no authentication control; setup forces WPA2/WPA3-Personal), so
++     each band shows whether its server is in use and why not - the owner asked for the page anyway (2026-10-31)
++     rather than deleting it. With Smart Connect grouping bands, rc copies the lead band's server to the others at
++     restart (init-broadcom.c). Guest Network Pro Enterprise networks keep their own servers (Network page).
++     Apply = /applyapp.cgi with rc_service restart_wireless (stock), only changed keys. Differences from stock: every
++     radio on one page (stock cycled the global wl_unit); a blank address is accepted (clears the server); port 0
++     refused (stock allowed it); the secret field starts masked with a show switch. -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.frow input.addr{width:300px} .frow input.port{width:96px} .frow input.key{width:300px}
++.bad{border-color:var(--crimson)!important;box-shadow:0 0 0 2px rgba(225,6,0,.25)}
++.use{font-size:12.5px;line-height:1.55;margin:0 0 10px;color:var(--steel)}
++.use.on{color:var(--jade)}
++.show{font-size:12px;color:var(--steel);display:inline-flex;align-items:center;gap:6px;cursor:pointer}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1><#menu5_1_5#></h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill warn chgpill" id="chgpill"><span class="dot"></span><span><#RADM_77#>: <b id="chgcount">0</b></span></span>
++  <button type="button" class="btn ghost" id="discardbtn" disabled><#Discard#></button>
++  <button type="button" class="btn primary" id="applybtn"><#CTL_apply#></button>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#WLANAuthentication11a_display1_sectiondesc#></div>
++<div class="rframe" id="bands"></div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc;
++var NB = [<% nvram_get_js("wl0_nband"); %>, <% nvram_get_js("wl1_nband"); %>, <% nvram_get_js("wl2_nband"); %>, <% nvram_get_js("wl3_nband"); %>];
++var IFN = <% nvram_get_js("wl_ifnames"); %>.trim().split(/\s+/).filter(Boolean);
++var SW_MODE = <% nvram_get_js("sw_mode"); %>, WLC_BAND = <% nvram_get_js("wlc_band"); %>;
++var V6 = SW_MODE === '1';                           /* stock: IPv6 address only in router mode (every Reaper model has IPv6) */
++var NV = {
++  wl0_auth_mode_x: <% nvram_get_js("wl0_auth_mode_x"); %>, wl0_radius_ipaddr: <% nvram_get_js("wl0_radius_ipaddr"); %>, wl0_radius_port: <% nvram_get_js("wl0_radius_port"); %>, wl0_radius_key: <% nvram_get_js("wl0_radius_key"); %>,
++  wl1_auth_mode_x: <% nvram_get_js("wl1_auth_mode_x"); %>, wl1_radius_ipaddr: <% nvram_get_js("wl1_radius_ipaddr"); %>, wl1_radius_port: <% nvram_get_js("wl1_radius_port"); %>, wl1_radius_key: <% nvram_get_js("wl1_radius_key"); %>,
++  wl2_auth_mode_x: <% nvram_get_js("wl2_auth_mode_x"); %>, wl2_radius_ipaddr: <% nvram_get_js("wl2_radius_ipaddr"); %>, wl2_radius_port: <% nvram_get_js("wl2_radius_port"); %>, wl2_radius_key: <% nvram_get_js("wl2_radius_key"); %>,
++  wl3_auth_mode_x: <% nvram_get_js("wl3_auth_mode_x"); %>, wl3_radius_ipaddr: <% nvram_get_js("wl3_radius_ipaddr"); %>, wl3_radius_port: <% nvram_get_js("wl3_radius_port"); %>, wl3_radius_key: <% nvram_get_js("wl3_radius_key"); %>
++};
++var ENT = {wpa: 1, wpa2: 1, wpawpa2: 1, wpa3: 1, wpa2wpa3: 1, 'suite-b': 1, radius: 1};
++var AUTH = {open: `<#CTL_open#>`, shared: 'Shared Key', psk: 'WPA-Personal', psk2: 'WPA2-Personal', pskpsk2: 'WPA/WPA2-Personal',
++  sae: 'WPA3-Personal', psk2sae: 'WPA2/WPA3-Personal', owe: 'Enhanced Open', openowe: 'Enhanced Open Transition',
++  wpa: 'WPA-Enterprise', wpa2: 'WPA2-Enterprise', wpawpa2: 'WPA/WPA2-Enterprise', wpa3: 'WPA3-Enterprise',
++  wpa2wpa3: 'WPA2/WPA3-Enterprise', 'suite-b': 'WPA3-Enterprise 192-bit', radius: 'Radius with 802.1x'};
++
++var BANDS = (function(){
++  var out = [], n5 = 0, n6 = 0, c5 = NB.filter(function(b){ return b === '1'; }).length, c6 = NB.filter(function(b){ return b === '4'; }).length;
++  for (var u = 0; u < (IFN.length || 4) && u < 4; u++){   /* no wl_ifnames: every unit that reports a band */
++    var b = NB[u], t = '';
++    if (b === '2') t = '2.4 GHz';
++    else if (b === '1'){ n5++; t = c5 > 1 ? '5 GHz-' + n5 : '5 GHz'; }
++    else if (b === '4'){ n6++; t = c6 > 1 ? '6 GHz-' + n6 : '6 GHz'; }
++    if (t) out.push({u: u, title: t, locked: (SW_MODE === '2' || SW_MODE === '4') && String(u) === WLC_BAND});
++  }
++  return out;
++})();
++function K(b, f){ return 'wl' + b.u + '_radius_' + f; }
++function msg(t){ var m = q('topmsg'); m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; }
++
++function render(){
++  var h = '';
++  BANDS.forEach(function(b, i){
++    h += '<div class="panel" id="p' + i + '"><h2>' + hx(b.title) + '</h2>';
++    if (b.locked){ h += '<div class="sub">' + hx(`<#page_not_support_mode_hint#>`) + '</div></div>'; return; }
++    var am = NV['wl' + b.u + '_auth_mode_x'], lab = AUTH[am] || am || '-', on = !!ENT[am];
++    h += '<div class="use' + (on ? ' on' : '') + '" id="use' + i + '"></div>' +
++      '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBIPAddr_itemname#>`) + '</div><div class="fc"><input type="text" class="addr mono" id="ip' + i + '" maxlength="39" autocomplete="off"></div></div>' +
++      '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBPortNumber_itemname#>`) + '</div><div class="fc"><input type="text" class="port mono" id="pt' + i + '" maxlength="5" autocomplete="off" placeholder="1812"></div></div>' +
++      '<div class="frow"><div class="fl">' + hx(`<#WLANAuthentication11a_ExAuthDBPassword_itemname#>`) + '</div><div class="fc"><input type="password" class="key mono" id="ky' + i + '" maxlength="64" autocomplete="new-password">' +
++        '<label class="show"><input type="checkbox" id="sk' + i + '">' + hx(`<#QIS_show_pass#>`) + '</label></div></div>' +
++      '</div>';
++    b.useText = rp.sub(on ? `<#RNW_4#>` : `<#RNW_3#>`, `<#WLANConfig11b_AuthenticationMethod_itemname#>`, lab);
++  });
++  q('bands').innerHTML = h;
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    q('use' + i).textContent = b.useText;
++    fill(b, i);
++    ['ip', 'pt', 'ky'].forEach(function(p){ q(p + i).addEventListener('input', function(){ this.classList.remove('bad'); dirty(); }); });
++    q('sk' + i).addEventListener('change', function(){ q('ky' + i).type = this.checked ? 'text' : 'password'; });
++  });
++  dirty();
++}
++function fill(b, i){ q('ip' + i).value = NV[K(b, 'ipaddr')]; q('pt' + i).value = NV[K(b, 'port')]; q('ky' + i).value = NV[K(b, 'key')]; }
++function changes(){
++  var ch = {};
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    var v = {ipaddr: q('ip' + i).value.trim(), port: q('pt' + i).value.trim(), key: q('ky' + i).value};
++    Object.keys(v).forEach(function(f){ if (v[f] !== NV[K(b, f)]) ch[K(b, f)] = v[f]; });
++  });
++  return ch;
++}
++function dirty(){ rp.pill(rp.count(changes())); }
++/* stock validators: address IPv4 (IPv6 in router mode), port range, secret printable ASCII without edge quotes */
++function validate(){
++  var err = '', el = null;
++  BANDS.forEach(function(b, i){
++    if (b.locked || err) return;
++    var ip = q('ip' + i).value.trim(), pt = q('pt' + i).value.trim(), ky = q('ky' + i).value;
++    if (ip && !rp.v.ipv4(ip) && !(V6 && rp.v.ipv6(ip))){ err = ip + ' ' + `<#JS_validip#>`; el = q('ip' + i); }
++    else if (!rp.v.int(pt, 1, 65535)){ err = `<#JS_validrange#>` + ' 1 ' + `<#JS_validrange_to#>` + ' 65535'; el = q('pt' + i); }
++    else if (/[^\x20-\x7e]/.test(ky)){ err = `<#JS_validstr2#>` + ' ' + ky.replace(/[\x20-\x7e]/g, '').slice(0, 8); el = q('ky' + i); }
++    else if (ky.charAt(0) === '"'){ err = `<#JS_validstr1#>` + ' ["]'; el = q('ky' + i); }
++    else if (ky.length && ky.charAt(ky.length - 1) === '"'){ err = `<#JS_validstr3#>` + ' ["]'; el = q('ky' + i); }
++    if (err) err = b.title + ': ' + err;
++  });
++  if (el){ el.classList.add('bad'); el.focus(); }
++  return err;
++}
++function post(obj){
++  var x = new XMLHttpRequest(), a = [], k;
++  for (k in obj) a.push(encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]));
++  x.open('POST', '/applyapp.cgi', true); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded'); x.timeout = 150000;
++  x.send(a.join('&'));
++}
++function apply(){
++  msg('');
++  var err = validate(); if (err){ msg(err); return; }
++  var ch = changes();
++  if (!rp.count(ch)){ msg(`<#RADM_63#>`); return; }
++  ch.action_mode = 'apply'; ch.rc_service = 'restart_wireless';
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  post(ch); setTimeout(function(){ location.reload(); }, 15000);
++}
++q('applybtn').addEventListener('click', apply);
++q('discardbtn').addEventListener('click', function(){ msg(''); render(); });
++render();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_RoamBlock.asp b/release/src/router/www/Reaper_RoamBlock.asp
+new file mode 100644
+index 00000000000..b3defa358fd
+--- /dev/null
++++ b/release/src/router/www/Reaper_RoamBlock.asp
+@@ -0,0 +1,190 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#WiFi_Roaming_Block_List#></title>
++<!-- Reaper_RoamBlock.asp - Wireless > Roaming Block List (Reaper-native UI, native wave, 2026-10-31).
++     Replaces Advanced_Roaming_Block_Content.asp; same nvram, same apply:
++       rast_static_cli_enable          "1" = the deny list is on (global)
++       wl0/1/2_rast_static_client      "<MAC<MAC..." upper case, at most 64 (the same list on every radio, as stock)
++     Consumer: the Roaming Assistant leaves the listed clients alone - no steering between AiMesh nodes; AiMesh
++     carries the keys to the nodes. Apply = /applyapp.cgi with rc_service restart_wireless (stock).
++     Differences from stock, on purpose: the list is read from all three radios (stock read wl0 only and wrote all
++     three, so a list that had diverged lost entries on the next save); only changed keys are posted; device names
++     come from ReaperNames (the user's own names, then networkmap) and go in as text, never markup; the picker
++     offers the wireless clients that are online now (stock: client_function.js dropdown). -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.bwl-add input.mac{width:170px}
++.bwl-add select{min-width:240px;max-width:100%}
++.bwl-add.bad input{border-color:var(--crimson)}
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.off{opacity:.45;pointer-events:none}
++#p_list{margin-top:10px}
++.rtab td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:middle}
++.rtab td.mono{font-family:var(--mono)}
++.rtab td.name{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1><#WiFi_Roaming_Block_List#></h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill warn chgpill" id="chgpill"><span class="dot"></span><span><#RADM_77#>: <b id="chgcount">0</b></span></span>
++  <button type="button" class="btn ghost" id="discardbtn" disabled><#Discard#></button>
++  <button type="button" class="btn primary" id="applybtn"><#CTL_apply#></button>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++
++<div class="rframe">
++<div class="panel" id="p_on">
++  <h2><#WiFi_Roaming_Block_List#></h2>
++  <div class="sub"><#Roaming_block_list_desc#></div>
++  <div class="togglerow"><label class="tswitch"><input type="checkbox" id="t_on"><span class="track"></span></label><div><#Roaming_block_list_enable#></div></div>
++  <div id="p_list">
++  <table class="rtab"><thead><tr><th><#Clientlist_device#></th><th><#MAC_Address#></th><th></th></tr></thead><tbody id="tbody"></tbody></table>
++  <div class="bwl-add" id="addbar">
++    <div class="f"><label><#Clientlist_device#></label><select id="s_pick" title="<#select_wireless_MAC#>"><option value=""><#Select_menu_default#></option></select></div>
++    <div class="f"><label><#MAC_Address#></label><input type="text" class="mac mono" id="a_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>
++    <button type="button" class="btn small" id="b_add"><#CTL_add#></button>
++  </div>
++  <div class="rbudget" id="budget"></div>
++  <div class="msg" id="addmsg" style="margin-top:8px"></div>
++  </div>
++</div>
++</div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc, U = rp.dec;
++var MAX = 64;                                        /* stock addRow(obj, 64); 64 x 18 B fits the key */
++var UNITS = [0, 1, 2];                               /* stock writes wl0/1/2 */
++var NV = {
++  rast_static_cli_enable: <% nvram_get_js("rast_static_cli_enable"); %>,
++  wl0_rast_static_client: U('<% nvram_char_to_ascii("","wl0_rast_static_client"); %>'),
++  wl1_rast_static_client: U('<% nvram_char_to_ascii("","wl1_rast_static_client"); %>'),
++  wl2_rast_static_client: U('<% nvram_char_to_ascii("","wl2_rast_static_client"); %>')
++};
++var LIST = [], DEVS = [];
++
++function macs(s){ var out = []; String(s || '').split('<').forEach(function(m){ m = m.trim().toUpperCase(); if (rp.v.mac(m)) out.push(m); }); return out; }
++/* the union of the three radios, in stock order (wl0 first), without duplicates */
++function load(){
++  var seen = {}, out = [];
++  UNITS.forEach(function(u){ macs(NV['wl' + u + '_rast_static_client']).forEach(function(m){ if (!seen[m]){ seen[m] = 1; out.push(m); } }); });
++  return out.slice(0, MAX);
++}
++function ser(){ return LIST.map(function(m){ return '<' + m; }).join(''); }
++var BASE = [];                                       /* the list as loaded (the union above) */
++function enOn(){ return NV.rast_static_cli_enable === '1'; }
++function listChanged(){ return LIST.join('<') !== BASE.join('<'); }
++/* the keys to post: the switch if it moved; the list, to every radio, only if the user changed it (a list that
++   had diverged across radios is shown merged, but is left alone until it is edited) */
++function changes(){
++  var ch = {};
++  if (q('t_on').checked !== enOn()) ch.rast_static_cli_enable = q('t_on').checked ? '1' : '0';
++  if (listChanged()){ var s = ser(); UNITS.forEach(function(u){ ch['wl' + u + '_rast_static_client'] = s; }); }
++  return ch;
++}
++function dirty(){ rp.pill((q('t_on').checked !== enOn() ? 1 : 0) + (listChanged() ? 1 : 0)); }
++function msg(id, t){ var m = q(id); m.textContent = t || ''; m.classList.toggle('show', !!t); m.style.display = t ? 'block' : 'none'; }
++
++function draw(){
++  var h = '';
++  LIST.forEach(function(m, i){
++    h += '<tr><td class="name" data-i="' + i + '"></td><td class="mono">' + hx(m) + '</td>' +
++         '<td style="text-align:right"><span class="bwldel" data-i="' + i + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
++  });
++  q('tbody').innerHTML = h || '<tr><td colspan="3" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
++  names();
++  var b = q('budget'); b.textContent = `<#List_limit#>` + ' ' + LIST.length + ' / ' + MAX; b.classList.toggle('hot', LIST.length >= MAX);
++  q('p_list').classList.toggle('off', !q('t_on').checked);
++  pickDraw(); dirty();
++}
++/* device names are client-chosen: text only */
++function names(){
++  Array.prototype.forEach.call(document.querySelectorAll('#tbody td.name'), function(td){
++    var m = LIST[+td.getAttribute('data-i')]; if (!m) return;
++    var n = ReaperNames.byMac(m, ''); td.textContent = n; td.title = n;
++  });
++}
++function pickDraw(){
++  var s = q('s_pick'), have = {};
++  LIST.forEach(function(m){ have[m] = 1; });
++  while (s.options.length > 1) s.remove(1);
++  DEVS.forEach(function(d){ if (have[d.mac]) return; var o = document.createElement('option'); o.value = d.mac; o.textContent = d.label; s.appendChild(o); });
++  if (!rp.pick(s, rp.val('a_mac').toUpperCase())) s.value = '';
++}
++/* wireless clients online now (networkmap isWL != 0), named the way every kit page names them */
++function devLoad(){
++  try {
++    ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>', function(cl){
++      var ml = (cl && cl.maclist) || [], out = [];
++      ml.forEach(function(mac){ var c = cl[mac], m = String(mac).toUpperCase(), nm;
++        if (!c || !rp.v.mac(m) || String(c.isOnline) === '0' || !c.isWL || String(c.isWL) === '0') return;
++        nm = ReaperNames.byMac(mac, m);
++        out.push({mac: m, label: (nm !== m ? nm + ' - ' : '') + m}); });
++      out.sort(function(a, b){ return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1; });
++      DEVS = out; names(); pickDraw();
++    });
++  } catch (e) {}
++}
++function add(){
++  msg('addmsg', '');
++  var m = rp.val('a_mac').toUpperCase(), e = '';
++  if (LIST.length >= MAX) e = `<#JS_itemlimit1#>` + ' ' + MAX + ' ' + `<#JS_itemlimit2#>`;
++  else if (!m) e = `<#JS_fieldblank#>`;
++  else if (!rp.v.mac(m)) e = `<#IPConnection_x_illegal_mac#>`;
++  else if (LIST.indexOf(m) >= 0) e = `<#JS_duplicate#>`;
++  if (e){ msg('addmsg', e); q('addbar').classList.add('bad'); setTimeout(function(){ q('addbar').classList.remove('bad'); }, 4000); return; }
++  LIST.push(m); q('a_mac').value = ''; draw();
++}
++
++/* the stock apply path: /applyapp.cgi -> validate_apply + notify_rc(restart_wireless) */
++function post(obj){
++  var x = new XMLHttpRequest(), b = [], k;
++  for (k in obj) b.push(encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]));
++  x.open('POST', '/applyapp.cgi', true); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded'); x.timeout = 150000;
++  x.send(b.join('&'));
++}
++function apply(){
++  msg('topmsg', '');
++  var ch = changes();
++  if (!rp.count(ch)){ msg('topmsg', `<#RADM_63#>`); return; }
++  ch.action_mode = 'apply'; ch.rc_service = 'restart_wireless';
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  post(ch); setTimeout(function(){ location.reload(); }, 15000);
++}
++
++q('t_on').checked = enOn();
++BASE = load(); LIST = BASE.slice();
++q('t_on').addEventListener('change', draw);
++q('b_add').addEventListener('click', add);
++q('a_mac').addEventListener('keydown', function(e){ if (e.key === 'Enter') add(); });
++q('a_mac').addEventListener('input', function(){ if (!rp.pick(q('s_pick'), rp.val('a_mac').toUpperCase())) q('s_pick').value = ''; });
++q('s_pick').addEventListener('change', function(){ if (this.value){ q('a_mac').value = this.value; msg('addmsg', ''); } });
++q('tbody').addEventListener('click', function(e){ var t = e.target;
++  if (t && t.classList && t.classList.contains('bwldel')){ LIST.splice(+t.getAttribute('data-i'), 1); draw(); } });
++q('applybtn').addEventListener('click', apply);
++q('discardbtn').addEventListener('click', function(){ q('t_on').checked = enOn(); LIST = BASE.slice(); msg('topmsg', ''); msg('addmsg', ''); draw(); });
++draw(); devLoad();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_VLAN.asp b/release/src/router/www/Reaper_VLAN.asp
+new file mode 100644
+index 00000000000..efd5eaf9b8e
+--- /dev/null
++++ b/release/src/router/www/Reaper_VLAN.asp
+@@ -0,0 +1,480 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; VLAN</title>
++<!-- Reaper_VLAN.asp - LAN > VLAN (Reaper-native UI, native wave, 2026-11-01).
++     Replaces Advanced_VLAN_Switch_Content.asp + Advanced_VLAN_Profile_Content.asp; same nvram, same requests, posted
++     as stock httpApi.nvramSet does (url-encoded JSON to /applyapp.cgi).
++     Switch tab: every AiMesh node that reports its Ethernet ports (get_cfg_clientlist capability 27, live
++       state from /get_port_status.cgi), each port All / Access (one VLAN network) / Trunk (all tags or one VID).
++       Apply = stock applyRule: every VLAN network's apg<N>_dut_list rewritten (lanport fields cleared, the Access ports
++       appended to their network's row for the node, nodes missing from the list added back as <MAC>>), vlan_trunklist
++       (<MAC>Lx#vid|all ...), rc_service restart_net_and_phy. A port stock locks stays All: the dual-WAN LAN port, the
++       WAN-aggregation port, LACP bonding ports, IPTV ports, an external-switch port, a live WAN port.
++     Profile tab: the vlan_rl rows with the networks bound to them.
++       Add = stock addRow_Group: a VLAN-only network (sdn_rl type Customized, a subnet with DHCP off, an open apg named
++       VLAN_<vid> with no Wi-Fi on any node), restart_wireless;restart_net_and_phy;.
++       Edit = vlan_rl (+ the VID swapped in vlan_trunklist), restart_net_and_phy;.
++       Delete = the network's sdn_rl / vlan_rl / subnet_rl / radius_list rows out, the same rows in the *_x lists,
++       apg<N>_enable=0, the VID out of vlan_trunklist, restart_net_and_phy; (+ restart_qos;restart_firewall; with QoS on).
++     Differences: rows this page does not change are written back byte for byte (stock re-serialised every list); a
++     trunk port that carries several VIDs keeps them (stock's one-VID select turned it into "all" on the next Apply);
++     deleting a VLAN row with no network removes it (stock threw); sdn_access_rl rows naming a deleted network go too. -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.nodehead{font-family:var(--hdr);font-weight:600;color:var(--bone);margin:14px 0 6px;display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
++.nodehead:first-child{margin-top:0}
++.nodehead .k{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
++.nodehead .mono{font-family:var(--mono);font-weight:400;font-size:12px;color:var(--bone-dim)}
++table.classes select{min-width:120px}
++.pst{font-size:12px}
++.pst.on{color:var(--jade)} .pst.warn{color:var(--amber)} .pst.off{color:var(--steel)}
++.lock{font-size:11.5px;color:var(--steel);display:block;margin-top:3px}
++.addrow{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
++.addrow .f{display:flex;flex-direction:column;gap:5px}
++.addrow label.k{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--steel)}
++.addrow input[type=text]{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:8px 10px;outline:none;width:96px}
++td.acts{text-align:right;white-space:nowrap}
++.btnrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_2#></div>
++    <h1>VLAN</h1>
++  </div>
++  <div class="spacer"></div>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++
++<div class="wins" id="wins">
++  <button type="button" class="win" data-t="sw" id="win_sw"><span class="cdot"></span>VLAN</button>
++  <button type="button" class="win" data-t="pf" id="win_pf"><span class="cdot"></span><#VALN_Profile#></button>
++</div>
++
++<div class="tab rframe" id="tab_sw">
++<div class="panel" id="p_sw">
++  <h2><#VALN_Switch_desc#></h2>
++  <div class="sub" id="swdesc"></div>
++  <div id="nodes"><div class="hint">&hellip;</div></div>
++  <div class="btnrow"><button type="button" class="btn primary" id="b_swapply"><#CTL_apply#></button><span class="msg" id="swmsg"></span></div>
++</div>
++</div>
++
++<div class="tab rframe" id="tab_pf">
++<div class="panel" id="p_pf">
++  <h2><#GuestNetwork_ProfileList#></h2>
++  <div class="sub" id="pfdesc"></div>
++  <table class="classes"><thead><tr><th><#QIS_finish_wireless_item1#></th><th><#WANVLANIDText#></th><th><#VLAN_port_iso#></th><th></th></tr></thead>
++    <tbody id="pbody"></tbody></table>
++  <div class="addrow">
++    <div class="f"><label class="k" for="i_vid"><#WANVLANIDText#></label><input type="text" id="i_vid" maxlength="4" inputmode="numeric" autocomplete="off" placeholder="3-4093"></div>
++    <label class="chk"><input type="checkbox" id="c_iso"><#VLAN_port_iso#></label>
++    <button type="button" class="btn primary small" id="b_add"><#CTL_add#></button><span class="msg" id="addmsg"></span>
++  </div>
++</div>
++<div class="panel" id="p_ed" style="display:none">
++  <h2><#CTL_modify#></h2>
++  <div class="frow"><div class="fl"><#QIS_finish_wireless_item1#></div><div class="fc"><span id="e_name"></span></div></div>
++  <div class="frow"><div class="fl"><#WANVLANIDText#></div><div class="fc"><input type="text" class="short" id="e_vid" maxlength="4" inputmode="numeric" autocomplete="off"></div></div>
++  <div class="frow"><div class="fl"><#VLAN_port_iso#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="e_iso"><span class="track"></span></label></div></div>
++  <div class="btnrow"><button type="button" class="btn primary small" id="b_edok"><#CTL_apply#></button><button type="button" class="btn small ghost" id="b_edcancel"><#CTL_Cancel#></button><span class="msg" id="edmsg"></span></div>
++</div>
++</div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc, U = rp.dec, L = rp.list;
++var UI = {}; try { UI = [<% get_ui_support(); %>][0] || {}; } catch (e) {}
++var NV = {
++  sdn_rl: U('<% nvram_char_to_ascii("","sdn_rl"); %>'), vlan_rl: U('<% nvram_char_to_ascii("","vlan_rl"); %>'),
++  subnet_rl: U('<% nvram_char_to_ascii("","subnet_rl"); %>'), radius_list: U('<% nvram_char_to_ascii("","radius_list"); %>'),
++  sdn_access_rl: U('<% nvram_char_to_ascii("","sdn_access_rl"); %>'), vlan_trunklist: U('<% nvram_char_to_ascii("","vlan_trunklist"); %>'),
++  wans_dualwan: <% nvram_get_js("wans_dualwan"); %>, wans_lanport: <% nvram_get_js("wans_lanport"); %>, bond_wan: <% nvram_get_js("bond_wan"); %>,
++  lacp_enabled: <% nvram_get_js("lacp_enabled"); %>, lacp_ifnames_x: <% nvram_get_js("lacp_ifnames_x"); %>, switch_stb_x: <% nvram_get_js("switch_stb_x"); %>,
++  iptv_stb_port: <% nvram_get_js("iptv_stb_port"); %>, iptv_voip_port: <% nvram_get_js("iptv_voip_port"); %>, iptv_bridge_port: <% nvram_get_js("iptv_bridge_port"); %>,
++  lan_ipaddr: <% nvram_get_js("lan_ipaddr"); %>, qos_enable: <% nvram_get_js("qos_enable"); %>, productid: <% nvram_get_js("productid"); %>
++};
++/* factory defaults the new VLAN-only subnet is built from (stock nvramDefaultGet) */
++var DEF = {
++  lan_ipaddr: '<% nvram_default_get("lan_ipaddr"); %>', lan_netmask: '<% nvram_default_get("lan_netmask"); %>', dhcp_lease: '<% nvram_default_get("dhcp_lease"); %>',
++  lan_domain: '<% nvram_default_get("lan_domain"); %>', dhcp_dns1_x: '<% nvram_default_get("dhcp_dns1_x"); %>', dhcp_dns2_x: '<% nvram_default_get("dhcp_dns2_x"); %>',
++  dhcp_wins_x: '<% nvram_default_get("dhcp_wins_x"); %>', dhcp_static_x: '<% nvram_default_get("dhcp_static_x"); %>'
++};
++var REBOOT_WAIT = parseInt('<% get_default_reboot_time(); %>', 10) || 90;
++var SDN_MAX = (!UI.MaxRule_SDN || UI.MaxRule_SDN === '0') ? 6 : (parseInt(UI.MaxRule_SDN, 10) - 1);   /* stock sdn_maximum */
++var SDN_PAGE = UI.sdn_mwl ? `<#Network#>` : `<#Guest_Network#>`;
++var TABS = ['sw', 'pf'];
++
++/* sdn_rl: idx>name>enable>vlan_idx>subnet_idx>apg_idx>... ; vlan_rl: vlan_idx>vid>isolation> */
++var SDN = L.parse(NV.sdn_rl), VLAN = L.parse(NV.vlan_rl);
++var APG = {};                  /* apg idx -> {ssid, dut} */
++var NODES = [];                /* cfg_clientlist entries (router first) */
++var PORTNODES = [];            /* nodes with a port table: {mac, model, alias, node, ports: [...]} */
++
++function msg(id, t){ var m = q(id); m.textContent = t || ''; m.style.display = t ? (id === 'topmsg' ? 'block' : 'inline') : 'none'; }
++function appGet(hooks, cb){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/appGet.cgi?hook=' + hooks.join('%3B') + '&_=' + Date.now(), true); x.timeout = 15000;
++  x.onload = function(){ var d = null; try { d = JSON.parse(x.responseText); } catch (e) {} cb(d); };
++  x.onerror = x.ontimeout = function(){ cb(null); };
++  x.send();
++}
++function getJSON(url, cb){
++  var x = new XMLHttpRequest(); x.open('GET', url, true); x.timeout = 10000;
++  x.onload = function(){ var d = null; try { d = JSON.parse(x.responseText); } catch (e) {} cb(d); };
++  x.onerror = x.ontimeout = function(){ cb(null); };
++  x.send();
++}
++function nvSet(obj, cb){
++  var x = new XMLHttpRequest();
++  x.open('POST', '/applyapp.cgi', true);
++  x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8'); x.timeout = 45000;
++  x.onloadend = function(){ if (cb) cb(); };
++  x.send(encodeURIComponent(JSON.stringify(obj)));
++}
++/* restart_net_and_phy drops every LAN link: the router's reboot time, then wait for httpd */
++function restarting(tab){
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  setTimeout(function(){
++    var tries = 0, t = setInterval(function(){
++      var c = new XMLHttpRequest(), done = false; c.open('GET', '/httpd_check.xml?_=' + Date.now(), true); c.timeout = 2500;
++      c.onload = function(){ if (done) return; done = true; if (c.status === 200){ clearInterval(t); top.location.href = '/reaper_shell.asp#Reaper_VLAN.asp?tab=' + tab; } };
++      try { c.send(); } catch (e) {}
++      if (++tries > 90){ clearInterval(t); top.location.href = '/'; }
++    }, 2000);
++  }, REBOOT_WAIT * 1000);
++}
++function vlanOf(idx){ return VLAN.filter(function(v){ return v.f[0] === idx; })[0]; }
++function freeIdx(used){ var n = 1; while (used.indexOf(String(n)) >= 0) n++; return String(n); }
++
++/* the VLAN networks stock offers (VLAN_Profile_select): every sdn row on a vlan_rl row, then every vlan_rl row no
++   network uses (by VID) as a bare VID */
++function profiles(){
++  var out = [];
++  SDN.forEach(function(r){
++    var v = vlanOf(r.f[3]); if (!v || r.f[0] === '0') return;
++    out.push({name: (APG[r.f[5]] || {}).ssid || '', vid: v.f[1], iso: v.f[2], apg: r.f[5], sdn: r.f[0]});
++  });
++  VLAN.forEach(function(v){
++    if (!out.some(function(p){ return p.vid === v.f[1]; })) out.push({name: v.f[1], vid: v.f[1], iso: v.f[2], apg: '', sdn: ''});
++  });
++  return out;
++}
++
++/* ---------------- Switch ---------------- */
++var RATE = {'10': '10 Mbps', '100': '100 Mbps', '1000': '1 Gbps', '2500': '2.5 Gbps', '5000': '5 Gbps', '10000': '10 Gbps'};
++var CAP = {WAN: 0, LAN: 1, WANLAN: 9, DUALWAN_SECONDARY_WAN: 29, DUALWAN_PRIMARY_WAN: 30};
++function cap(p, k){ return ((parseInt(p.cap, 10) || 0) & Math.pow(2, CAP[k])) !== 0; }
++/* stock get_bonding_ports (state.js), the ports LACP bonds per model */
++function bondingPorts(pid){
++  if (!UI.lacp) return [];
++  if (pid === 'GT-AC5300') return ['4', '3'];
++  if (pid === 'RT-AC86U' || pid === 'GT-AC2900') return ['4', '3'];
++  if (pid === 'XT8PRO' || pid === 'BT12' || pid === 'BM68') return ['2', '3'];
++  if (pid === 'BT10') return ['1', '2'];
++  if (pid === 'BQ16' || pid === 'BQ16_PRO') return ['3', '4'];
++  if (pid === 'GT-BE98' || pid === 'GT-BE98_PRO' || pid === 'GT-BE96' || /^(GT-BE19000|GT-BE19000AI|GT-BE96_AI)$/.test(NV.productid))
++    return NV.lacp_ifnames_x === 'eth0 eth3' ? ['0', '6'] : ['5', '6'];
++  return ['1', '2'];
++}
++function portName(p){ var n = p.label.substring(1); return p.label.charAt(0) === 'W' ? (n === '0' ? 'WAN' : 'WAN ' + n) : 'LAN ' + n; }
++/* why stock keeps a port at All ('' = free) */
++function lockOf(nd, p, cap0){
++  var idx = p.label.substring(1), d = p.d, node = nd.node;
++  if (cap0 && NV.wans_dualwan.indexOf('lan') >= 0 && NV.wans_lanport === idx) return `<#VLAN_port_DualWAN_note#>`;
++  if (cap0 && p.label === 'L4' && NV.bond_wan === '1') return `<#VLAN_port_binding_note#>`.replace('%@', `<#WANAggregation#>`);
++  var c5 = parseInt((node.capability || {})['5'], 10) || 0, cfg = (node.config || {}).link_aggregation || {};
++  if ((cap0 && NV.lacp_enabled === '1') || ((c5 & 1) && cfg.lacp_enabled === '1'))
++    if (bondingPorts(node.product_id).indexOf(idx) >= 0) return `<#VLAN_port_binding_note#>`.replace('%@', `<#NAT_lacp#>`);
++  if (cap0 && NV.switch_stb_x !== '0' && NV.switch_stb_x !== '' &&
++      (NV.iptv_stb_port.indexOf(idx) > 0 || NV.iptv_voip_port.indexOf(idx) > 0 || NV.iptv_bridge_port.indexOf(idx) > 0))
++    return `<#VLAN_port_binding_note#>`.replace('%@', `<#menu_dsl_iptv#>`);
++  if (cap(d, 'LAN') && cap(d, 'WANLAN') && String(d.ext_port_id) !== '-1' && d.ext_port_id !== undefined) return `<#VLAN_port_DualWAN_note#>`;
++  if (d.is_on === '1' && (cap(d, 'DUALWAN_SECONDARY_WAN') || cap(d, 'DUALWAN_PRIMARY_WAN'))) return `<#VLAN_port_binding_note#>`.replace('%@', `<#Ethernet_wan#>`);
++  return '';
++}
++/* each apg's dut_list rows {mac, wifiband, lanport}; nodes with a port table that are missing get <MAC>> back */
++var DUT = {};
++function buildDut(){
++  DUT = {};
++  profiles().forEach(function(p){
++    if (!p.apg || DUT[p.apg]) return;
++    var rows = String((APG[p.apg] || {}).dut || '').split('<').filter(Boolean).map(function(e){ var f = e.split('>'); return {mac: f[0], wifiband: f[1] || '', lanport: f[2] || ''}; });
++    PORTNODES.forEach(function(n){ if (!rows.some(function(r){ return r.mac === n.mac; })) rows.push({mac: n.mac, wifiband: '', lanport: ''}); });
++    DUT[p.apg] = rows;
++  });
++}
++function legacy(lbl){ return /^\d+$/.test(lbl) ? 'L' + lbl : lbl; }
++/* the mode / profile each port has now */
++function current(){
++  var prof = profiles();
++  PORTNODES.forEach(function(n){ n.ports.forEach(function(p){ p.mode = 'All'; p.prof = ''; }); });
++  Object.keys(DUT).forEach(function(apg){
++    var sdn = SDN.filter(function(r){ return r.f[5] === apg && r.f[3] !== '0'; })[0], v = sdn ? vlanOf(sdn.f[3]) : null;
++    DUT[apg].forEach(function(row){
++      var n = PORTNODES.filter(function(x){ return x.mac === row.mac; })[0]; if (!n) return;
++      row.lanport.split(',').filter(Boolean).forEach(function(lbl){
++        var p = n.ports.filter(function(x){ return x.label === legacy(lbl); })[0];
++        if (p){ p.mode = 'Access'; p.prof = v ? v.f[1] : ''; }
++      });
++    });
++  });
++  NV.vlan_trunklist.split('<').filter(Boolean).forEach(function(e){
++    var f = e.split('>'), n = PORTNODES.filter(function(x){ return x.mac === f[0]; })[0]; if (!n) return;
++    f.slice(1).filter(Boolean).forEach(function(pv){
++      var lbl = legacy(pv.split('#')[0]), p = n.ports.filter(function(x){ return x.label === lbl; })[0];
++      if (p){ p.mode = 'Trunk'; p.prof = pv.split('#')[1] || 'all'; }
++    });
++  });
++  return prof;
++}
++function profOptions(mode, cur, prof){
++  if (mode === 'All') return '<option value="0">' + hx(`<#Setting_factorydefault_value#>`) + '</option>';
++  var o = '';
++  if (mode === 'Trunk') o += '<option value="all">' + hx(`<#RNW_9#>` + ' (' + `<#Setting_factorydefault_value#>` + ')') + '</option>';
++  var have = false;
++  prof.forEach(function(p){
++    if (mode === 'Access' && !p.apg) return;
++    var text = p.apg ? p.name : '(' + p.vid + ')';
++    if (p.vid === cur) have = true;
++    o += '<option value="' + hx(p.vid) + '"' + (p.vid === cur ? ' selected' : '') + '>' + hx(text) + '</option>';
++  });
++  /* a trunk this page did not write (several VIDs): keep it as it is */
++  if (mode === 'Trunk' && cur && cur !== 'all' && !have) o += '<option value="' + hx(cur) + '" selected>(' + hx(cur) + ')</option>';
++  return o;
++}
++function paintSwitch(){
++  var prof = current(), box = q('nodes');
++  if (!PORTNODES.length){ box.innerHTML = '<div class="hint">' + hx(`<#IPConnection_VSList_Norule#>`) + '</div>'; q('b_swapply').disabled = true; return; }
++  box.innerHTML = PORTNODES.map(function(n, i){
++    var h = '<div class="nodehead"><span class="k">' + hx(i === 0 ? `<#AiMesh_Router#>` : `<#AiMesh_Node#>`) + '</span><span>' + hx(n.model) + '</span>' +
++      '<span class="mono">' + hx(n.mac) + '</span>' + (n.alias && n.alias !== n.model ? '<span>' + hx(n.alias) + '</span>' : '') + '</div>';
++    h += '<table class="classes"><thead><tr><th>LAN</th><th><#Status_Str#></th><th><#DSL_Mode#></th><th><#VALN_Profile#></th></tr></thead><tbody>';
++    n.ports.forEach(function(p){
++      var st = p.d.is_on === '1' ? 'on' : p.d.is_on === '2' ? 'warn' : 'off';
++      var stt = st === 'off' ? `<#Status_Unplugged#>` : (RATE[String(p.d.link_rate)] || (p.d.link_rate + ' Mbps'));
++      var sub = p.d.ui_display || RATE[String(p.d.max_rate)] || '';
++      var id = i + '_' + p.label;
++      h += '<tr><td class="name">' + hx(portName(p)) + (sub ? '<span class="lock">' + hx(sub) + '</span>' : '') + '</td>' +
++        '<td><span class="pst ' + st + '">' + hx(stt) + '</span></td>';
++      if (p.lock){
++        h += '<td><select disabled><option>' + hx(`<#All#>` + ' (' + `<#Setting_factorydefault_value#>` + ')') + '</option></select><span class="lock">' + hx(p.lock) + '</span></td>' +
++          '<td><select disabled>' + profOptions('All', '', prof) + '</select></td></tr>';
++      } else {
++        h += '<td><select data-m="' + id + '">' + ['All', 'Access', 'Trunk'].map(function(m){
++            return '<option value="' + m + '"' + (m === p.mode ? ' selected' : '') + '>' + hx(m === 'All' ? `<#All#>` + ' (' + `<#Setting_factorydefault_value#>` + ')' : m) + '</option>'; }).join('') + '</select></td>' +
++          '<td><select data-p="' + id + '"' + (p.mode === 'All' ? ' disabled' : '') + '>' + profOptions(p.mode, p.prof, prof) + '</select></td></tr>';
++      }
++    });
++    return h + '</tbody></table>';
++  }).join('');
++}
++function sel(attr, id){ return document.querySelector('select[data-' + attr + '="' + id + '"]'); }
++q('nodes').addEventListener('change', function(e){
++  var m = e.target.getAttribute('data-m'); if (!m) return;
++  var ps = sel('p', m), mode = e.target.value;
++  ps.innerHTML = profOptions(mode, '', profiles()); ps.disabled = mode === 'All';
++  msg('swmsg', '');
++});
++q('b_swapply').addEventListener('click', function(){
++  msg('swmsg', '');
++  var prof = profiles(), i, n;
++  /* stock collect_assigned_from_table_array: every router LAN port on VLAN cuts the LAN off the web page */
++  var cap0 = PORTNODES[0], lan0 = cap0 ? cap0.ports.filter(function(p){ return p.label.charAt(0) === 'L'; }) : [];
++  if (lan0.length && lan0.every(function(p){ var s = sel('m', '0_' + p.label); return s && s.value !== 'All'; }) && !confirm(`<#VLAN_eachport_assign#>`)) return;
++  for (i = 0; i < PORTNODES.length; i++){
++    n = PORTNODES[i];
++    var bad = n.ports.filter(function(p){ var s = sel('m', i + '_' + p.label), v = sel('p', i + '_' + p.label); return s && s.value === 'Access' && !(v && v.value && v.value !== '0'); })[0];
++    if (bad){ msg('swmsg', portName(bad) + ': ' + `<#VALN_Profile#>`); return; }
++  }
++  Object.keys(DUT).forEach(function(apg){ DUT[apg].forEach(function(r){ r.lanport = ''; }); });
++  var trunk = '';
++  PORTNODES.forEach(function(n, i){
++    var t = '';
++    n.ports.forEach(function(p){
++      var s = sel('m', i + '_' + p.label), v = sel('p', i + '_' + p.label); if (!s) return;
++      if (s.value === 'Access'){
++        prof.forEach(function(pp){
++          if (pp.vid !== v.value || !pp.apg || !DUT[pp.apg]) return;
++          DUT[pp.apg].forEach(function(r){ if (r.mac === n.mac) r.lanport = r.lanport ? r.lanport + ',' + p.label : p.label; });
++        });
++      } else if (s.value === 'Trunk') t += '>' + p.label + '#' + (v.value || 'all');
++    });
++    if (t) trunk += '<' + n.mac + t;
++  });
++  var o = {};
++  Object.keys(DUT).forEach(function(apg){ o['apg' + apg + '_dut_list'] = '<' + DUT[apg].map(function(r){ return [r.mac, r.wifiband, r.lanport].join('>'); }).join('<'); });
++  o.vlan_trunklist = trunk; o.action_mode = 'apply'; o.rc_service = 'restart_net_and_phy';
++  nvSet(o); restarting('sw');
++});
++
++/* ---------------- Profiles ---------------- */
++function trunkParse(s){
++  return String(s || '').split('<').filter(Boolean).map(function(e){ var f = e.split('>');
++    return {mac: f[0], ports: f.slice(1).filter(Boolean).map(function(pv){ return {lbl: pv.split('#')[0], vids: pv.split('#')[1] || ''}; })}; });
++}
++function trunkSer(t){ return t.filter(function(e){ return e.ports.length; }).map(function(e){ return '<' + e.mac + e.ports.map(function(p){ return '>' + p.lbl + '#' + p.vids; }).join(''); }).join(''); }
++function trunkMap(s, fn){
++  var t = trunkParse(s);
++  t.forEach(function(e){ e.ports = e.ports.map(function(p){
++    if (p.vids === 'all') return p;
++    var v = fn(p.vids.split(',')); return v.length ? {lbl: p.lbl, vids: v.join(',')} : null; }).filter(Boolean); });
++  return trunkSer(t);
++}
++function paintProfiles(){
++  var b = q('pbody');
++  if (!VLAN.length){ b.innerHTML = '<tr><td colspan="4" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>'; return; }
++  b.innerHTML = VLAN.map(function(v){
++    var names = SDN.filter(function(r){ return r.f[0] !== '0' && r.f[3] === v.f[0]; }).map(function(r){ return (APG[r.f[5]] || {}).ssid || ''; }).filter(Boolean);
++    return '<tr><td class="name">' + (names.length ? names.map(hx).join('<br>') : '--') + '</td><td class="mono">' + hx(v.f[1]) + '</td>' +
++      '<td>' + hx(v.f[2] === '1' ? `<#checkbox_Yes#>` : `<#checkbox_No#>`) + '</td>' +
++      '<td class="acts"><button type="button" class="btn small ghost" data-ed="' + hx(v.f[0]) + '">' + hx(`<#CTL_modify#>`) + '</button> ' +
++      '<button type="button" class="btn small ghost" data-del="' + hx(v.f[0]) + '">' + hx(`<#CTL_del#>`) + '</button></td></tr>';
++  }).join('');
++}
++function vidErr(v, self){
++  if (!rp.v.int(v, 3, 4093)) return `<#JS_validrange#>` + ' 3 ' + `<#JS_validrange_to#>` + ' 4093';
++  if (VLAN.some(function(r){ return r.f[1] === String(+v) && r.f[1] !== self; })) return `<#JS_duplicate#>`;
++  return '';
++}
++var edIdx = '';
++q('pbody').addEventListener('click', function(e){
++  var b = e.target.closest && e.target.closest('button'); if (!b) return;
++  if (b.hasAttribute('data-ed')){
++    var v = vlanOf(b.getAttribute('data-ed')); if (!v) return; edIdx = v.f[0];
++    var names = SDN.filter(function(r){ return r.f[0] !== '0' && r.f[3] === v.f[0]; }).map(function(r){ return (APG[r.f[5]] || {}).ssid || ''; }).filter(Boolean);
++    q('e_name').textContent = names.join(', ') || '--'; q('e_vid').value = v.f[1]; q('e_iso').checked = v.f[2] === '1';
++    msg('edmsg', ''); q('p_ed').style.display = ''; q('e_vid').focus();
++  } else if (b.hasAttribute('data-del')) del(b.getAttribute('data-del'));
++});
++q('b_edcancel').addEventListener('click', function(){ q('p_ed').style.display = 'none'; edIdx = ''; });
++q('b_edok').addEventListener('click', function(){
++  var v = vlanOf(edIdx); if (!v) return;
++  var nv = q('e_vid').value.trim(), err = vidErr(nv, v.f[1]); if (err){ msg('edmsg', err); q('e_vid').focus(); return; }
++  nv = String(+nv);
++  var old = v.f[1], rows = VLAN.map(function(r){ return r.f[0] === edIdx ? L.row([r.f[0], nv, q('e_iso').checked ? '1' : '0', '']) : r; });
++  var o = {action_mode: 'apply', rc_service: 'restart_net_and_phy;', vlan_rl: L.ser(rows)};
++  var t = trunkMap(NV.vlan_trunklist, function(a){ return a.map(function(x){ return x === old ? nv : x; }); });
++  if (t !== NV.vlan_trunklist) o.vlan_trunklist = t;
++  nvSet(o); restarting('pf');
++});
++q('b_add').addEventListener('click', function(){
++  msg('addmsg', '');
++  var vid = q('i_vid').value.trim(), err = vidErr(vid, null); if (err){ msg('addmsg', err); q('i_vid').focus(); return; }
++  vid = String(+vid);
++  if (SDN.filter(function(r){ return r.f[0] !== '0'; }).length >= SDN_MAX){ msg('addmsg', `<#AiMesh_Binding_Rule_Maxi#>`); return; }
++  var col = function(i){ return SDN.map(function(r){ return r.f[i]; }); };
++  var idx = freeIdx(col(0).concat(['0'])), sub = freeIdx(col(4)), apg = freeIdx(col(5)), vidx = freeIdx(VLAN.map(function(r){ return r.f[0]; }));
++  /* the subnet: <default LAN a.b>.<vid if 2-254 and free, else the first free 100-254>.<default LAN d> (stock) */
++  var d = DEF.lan_ipaddr.split('.'), used = [NV.lan_ipaddr.substr(0, NV.lan_ipaddr.lastIndexOf('.'))];
++  L.parse(NV.subnet_rl).forEach(function(r){ if (r.f[2]) used.push(r.f[2].substr(0, r.f[2].lastIndexOf('.'))); });
++  var net = '', k;
++  if (+vid >= 2 && +vid <= 254 && used.indexOf(d[0] + '.' + d[1] + '.' + vid) < 0) net = d[0] + '.' + d[1] + '.' + vid;
++  else for (k = 100; k < 255; k++){ net = d[0] + '.' + d[1] + '.' + k; if (used.indexOf(net) < 0) break; }
++  var sdnRow = L.row([idx, 'Customized', '1', vidx, sub, apg, '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', 'WEB', '0', '0', '0']);
++  var subRow = L.row([sub, 'br' + (+idx + 51), net + '.' + d[3], DEF.lan_netmask, '0', net + '.2', net + '.254', DEF.dhcp_lease, DEF.lan_domain,
++    DEF.dhcp_dns1_x + ',' + DEF.dhcp_dns2_x, DEF.dhcp_wins_x, DEF.dhcp_static_x, '', '', '', '', '', '', '', '', '', '']);
++  /* stock order: sdn rows by idx (row 0 first), vlan rows by vlan_idx, subnet rows in their network's order */
++  var sdnRows = SDN.slice(); sdnRows.push(sdnRow); sdnRows.sort(function(a, b){ return (+a.f[0]) - (+b.f[0]); });
++  var vRows = VLAN.slice(); vRows.push(L.row([vidx, vid, q('c_iso').checked ? '1' : '0', ''])); vRows.sort(function(a, b){ return (+a.f[0]) - (+b.f[0]); });
++  var owner = {}; SDN.forEach(function(r){ owner[r.f[4]] = +r.f[0]; });
++  var sRows = L.parse(NV.subnet_rl), at = sRows.length;
++  for (k = 0; k < sRows.length; k++) if ((owner[sRows[k].f[0]] || 0) > +idx){ at = k; break; }
++  sRows.splice(at, 0, subRow);
++  var o = {action_mode: 'apply', rc_service: 'restart_wireless;restart_net_and_phy;', sdn_rl: L.ser(sdnRows), vlan_rl: L.ser(vRows), subnet_rl: L.ser(sRows)};
++  var p = 'apg' + apg + '_';
++  o[p + 'enable'] = '1'; o[p + 'ssid'] = 'VLAN_' + vid; o[p + 'hide_ssid'] = '0'; o[p + 'security'] = ''; o[p + 'bw_limit'] = '<0>>';
++  o[p + 'timesched'] = '0'; o[p + 'sched'] = ''; o[p + 'expiretime'] = ''; o[p + 'ap_isolate'] = '0'; o[p + 'macmode'] = '0'; o[p + 'mlo'] = '';
++  o[p + 'maclist'] = ''; o[p + 'iot_max_cmpt'] = ''; o[p + '11be'] = '0';
++  o[p + 'dut_list'] = NODES.map(function(n){ return '<' + n.mac + '>0>'; }).join('');   /* stock get_dut_list("0"): no Wi-Fi on any node */
++  nvSet(o); restarting('pf');
++});
++function del(vidx){
++  if (!confirm(`<#VPN_Fusion_Delete_Alert#>`)) return;
++  var v = vlanOf(vidx); if (!v) return;
++  var s = SDN.filter(function(r){ return r.f[0] !== '0' && r.f[3] === vidx; })[0];
++  var o = {action_mode: 'apply', rc_service: 'restart_net_and_phy;'}, gone = function(list, test){
++    var rows = L.parse(list), keep = rows.filter(function(r){ return !test(r); }), out = rows.filter(test);
++    return {list: L.ser(keep), x: L.ser(out)}; };
++  var vr = gone(NV.vlan_rl, function(r){ return r.f[0] === vidx; });
++  var sr = gone(NV.sdn_rl, function(r){ return !!s && r.f[0] === s.f[0]; });
++  var nr = gone(NV.subnet_rl, function(r){ return !!s && s.f[4] !== '0' && r.f[0] === s.f[4]; });
++  var rr = gone(NV.radius_list, function(r){ return !!s && r.f[0] === s.f[0]; });
++  var ar = gone(NV.sdn_access_rl, function(r){ return !!s && (r.f[0] === s.f[0] || r.f[1] === s.f[0]); });
++  o.sdn_rl = sr.list; o.vlan_rl = vr.list; o.subnet_rl = nr.list; o.radius_list = rr.list; o.sdn_access_rl = ar.list;
++  o.sdn_rl_x = sr.x; o.vlan_rl_x = vr.x; o.subnet_rl_x = nr.x; o.radius_list_x = rr.x;
++  if (s) o['apg' + s.f[5] + '_enable'] = '0';
++  if (NV.vlan_trunklist !== '' && +v.f[1] > 1)
++    o.vlan_trunklist = vr.list === '' ? '' : trunkMap(NV.vlan_trunklist, function(a){ return a.filter(function(x){ return x !== v.f[1]; }); });
++  if (NV.qos_enable === '1') o.rc_service += 'restart_qos;restart_firewall;';
++  nvSet(o); restarting('pf');
++}
++
++/* ---------------- load ---------------- */
++function loadPorts(cb){
++  appGet(['get_cfg_clientlist()'], function(d){
++    var src = d && d.get_cfg_clientlist ? d.get_cfg_clientlist : d, arr = [], k;
++    if (Object.prototype.toString.call(src) === '[object Array]') arr = src;
++    else if (src) for (k in src) if (Object.prototype.hasOwnProperty.call(src, k) && src[k] && typeof src[k] === 'object') arr.push(src[k]);
++    NODES = arr.filter(function(n){ return n && n.mac; });
++    /* stock: a node shows when it reports LAN ports (capability 27) and is not a smart-home master (capability 4 bit 22).
++       lan_port is a JSON object keyed by port (rc.c check_lan_port_cap walks it with json_object_object_foreach), not an array */
++    var want = NODES.filter(function(n){
++      var c = n.capability || {}, lp = (c['27'] || {}).lan_port;
++      return lp && typeof lp === 'object' && Object.keys(lp).length > 0 && !((parseInt(c['4'], 10) || 0) & 4194304);
++    });
++    var left = want.length, got = {};
++    if (!left){ cb(); return; }
++    want.forEach(function(n){
++      getJSON('/get_port_status.cgi?node_mac=' + n.mac + '&_=' + Date.now(), function(r){
++        if (r && r.node_info && r.port_info && r.port_info[n.mac]) got[n.mac] = r.port_info[n.mac];
++        if (--left) return;
++        want.forEach(function(w){
++          var pi = got[w.mac]; if (!pi) return;
++          var ports = Object.keys(pi).filter(function(key){ return /^[WL]\d+$/.test(key); }).map(function(key){ return {label: key, d: pi[key]}; });
++          ports.sort(function(a, b){ var ca = a.label.charAt(0), cb2 = b.label.charAt(0); if (ca !== cb2) return ca === 'L' ? -1 : 1; return (+a.label.substring(1)) - (+b.label.substring(1)); });
++          PORTNODES.push({mac: w.mac, model: w.model_name || w.ui_model_name || '', alias: w.alias || '', node: w, ports: ports});
++        });
++        PORTNODES.forEach(function(nd, i){ nd.ports.forEach(function(p){ p.lock = lockOf(nd, p, i === 0); }); });
++        cb();
++      });
++    });
++  });
++}
++function loadApg(cb){
++  var keys = [];
++  SDN.forEach(function(r){ if (r.f[0] !== '0' && vlanOf(r.f[3]) && +r.f[5] > 0) ['ssid', 'dut_list'].forEach(function(f){ keys.push('apg' + r.f[5] + '_' + f); }); });
++  if (!keys.length){ cb(); return; }
++  appGet(keys.map(function(k){ return 'nvram_char_to_ascii(' + k + ',' + k + ')'; }), function(d){
++    if (!d){ msg('topmsg', `<#ALERT_OF_ERROR_System4#>`); cb(); return; }
++    SDN.forEach(function(r){ var a = r.f[5]; if (d['apg' + a + '_ssid'] !== undefined) APG[a] = {ssid: U(d['apg' + a + '_ssid'] || ''), dut: U(d['apg' + a + '_dut_list'] || '')}; });
++    cb();
++  });
++}
++
++q('swdesc').textContent = rp.fmt(`<#VALN_Switch_desc2#>`, `<#All#>` + ' (' + `<#Setting_factorydefault_value#>` + ')', 'Access', 'Trunk');
++q('pfdesc').textContent = `<#VALN_Profile_desc#>`.replace('$feature$', SDN_PAGE);
++rp.wins().forEach(function(w){ w.addEventListener('click', function(){ rp.tabShow(TABS, w.getAttribute('data-t'), 'rvlan_tab'); }); });
++rp.tabShow(TABS, rp.tabFirst('rvlan_tab', /[?&](tab)=(sw|pf)\b/, 'sw'), 'rvlan_tab');
++loadApg(function(){ paintProfiles(); loadPorts(function(){ buildDut(); paintSwitch(); }); });
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_WDS.asp b/release/src/router/www/Reaper_WDS.asp
+new file mode 100644
+index 00000000000..3935efd86f4
+--- /dev/null
++++ b/release/src/router/www/Reaper_WDS.asp
+@@ -0,0 +1,242 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; WDS</title>
++<!-- Reaper_WDS.asp - Wireless > WDS (Reaper-native UI, native wave, 2026-10-31).
++     Replaces Advanced_WMode_Content.asp; same nvram, same apply. Per radio unit N:
++       wlN_mode_x       "0" AP only | "1" WDS only | "2" Hybrid (AP + WDS)
++       wlN_wdsapply_x   "1" = bridge only to the listed peers, "0" = any peer (lazy WDS)
++       wlN_wdslist      "<MAC<MAC..." at most 4 (stock limit)
++     Consumer: init-broadcom.c (mode_x 1 -> wlN_mode=wds; wdsapply_x 1 -> wlN_wds = the list, lazywds 0; else
++     wds "", lazywds 1; mode_x 0 -> no WDS) -> wlconf/driver (closed). Apply = /applyapp.cgi with rc_service
++     restart_wireless (stock), only changed keys. Differences from stock, on purpose: every radio on one page (stock
++     cycled the global wl_unit); wlN_bw / channel / chanspec / nmode_x are NOT posted back (stock re-sent stale
++     copies of Wireless Settings' values); the peer picker uses Reaper's site survey (reaper_wifi.cgi svystart /
++     svydata - every radio incl. 6 GHz; stock used the prebuilt wl_scan_* handlers with no 6 GHz variant) and runs
++     only when asked (stock scanned on page load); MACs upper-cased; the long ASUS help text gave way to a short
++     note. A band the router uses as its repeater uplink is not editable (stock). -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.bwl-add input.mac{width:170px}
++.bwl-add select{min-width:260px;max-width:100%}
++.bwl-add.bad input{border-color:var(--crimson)}
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.off{opacity:.45;pointer-events:none}
++.listbox{margin-top:6px}
++.rtab td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:middle}
++.rtab td.mono{font-family:var(--mono)}
++.rtab td.name{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.own{font-size:12.5px;color:var(--steel);margin:-2px 0 10px}
++.own b{font-family:var(--mono);color:var(--bone);font-weight:400}
++.warnline{font-size:12.5px;color:var(--amber);line-height:1.55;margin:0 0 8px}
++.warnline a{color:var(--bone)}
++.svy{font-size:12px;color:var(--steel)}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1>WDS</h1>
++  </div>
++  <div class="spacer"></div>
++  <span class="pill warn chgpill" id="chgpill"><span class="dot"></span><span><#RADM_77#>: <b id="chgcount">0</b></span></span>
++  <button type="button" class="btn ghost" id="discardbtn" disabled><#Discard#></button>
++  <button type="button" class="btn primary" id="applybtn"><#CTL_apply#></button>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#RNW_6#></div>
++<div class="rframe" id="bands"></div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc, U = rp.dec;
++var MAX = 4;                                         /* stock addRow(obj, 4) */
++var HTTPID = <% nvram_get_js("http_id"); %>;
++var NB = [<% nvram_get_js("wl0_nband"); %>, <% nvram_get_js("wl1_nband"); %>, <% nvram_get_js("wl2_nband"); %>, <% nvram_get_js("wl3_nband"); %>];
++var IFN = <% nvram_get_js("wl_ifnames"); %>.trim().split(/\s+/).filter(Boolean);
++var SW_MODE = <% nvram_get_js("sw_mode"); %>, WLC_BAND = <% nvram_get_js("wlc_band"); %>;
++var NV = {
++  wl0_mode_x: <% nvram_get_js("wl0_mode_x"); %>, wl0_wdsapply_x: <% nvram_get_js("wl0_wdsapply_x"); %>, wl0_wdslist: U('<% nvram_char_to_ascii("","wl0_wdslist"); %>'),
++  wl0_hwaddr: <% nvram_get_js("wl0_hwaddr"); %>, wl0_chanspec: <% nvram_get_js("wl0_chanspec"); %>, wl0_channel: <% nvram_get_js("wl0_channel"); %>,
++  wl1_mode_x: <% nvram_get_js("wl1_mode_x"); %>, wl1_wdsapply_x: <% nvram_get_js("wl1_wdsapply_x"); %>, wl1_wdslist: U('<% nvram_char_to_ascii("","wl1_wdslist"); %>'),
++  wl1_hwaddr: <% nvram_get_js("wl1_hwaddr"); %>, wl1_chanspec: <% nvram_get_js("wl1_chanspec"); %>, wl1_channel: <% nvram_get_js("wl1_channel"); %>,
++  wl2_mode_x: <% nvram_get_js("wl2_mode_x"); %>, wl2_wdsapply_x: <% nvram_get_js("wl2_wdsapply_x"); %>, wl2_wdslist: U('<% nvram_char_to_ascii("","wl2_wdslist"); %>'),
++  wl2_hwaddr: <% nvram_get_js("wl2_hwaddr"); %>, wl2_chanspec: <% nvram_get_js("wl2_chanspec"); %>, wl2_channel: <% nvram_get_js("wl2_channel"); %>,
++  wl3_mode_x: <% nvram_get_js("wl3_mode_x"); %>, wl3_wdsapply_x: <% nvram_get_js("wl3_wdsapply_x"); %>, wl3_wdslist: U('<% nvram_char_to_ascii("","wl3_wdslist"); %>'),
++  wl3_hwaddr: <% nvram_get_js("wl3_hwaddr"); %>, wl3_chanspec: <% nvram_get_js("wl3_chanspec"); %>, wl3_channel: <% nvram_get_js("wl3_channel"); %>
++};
++var SSID = {};                                       /* bssid -> ssid from the last scan, for the list's name column */
++
++var BANDS = (function(){
++  var out = [], n5 = 0, n6 = 0, c5 = NB.filter(function(b){ return b === '1'; }).length, c6 = NB.filter(function(b){ return b === '4'; }).length;
++  for (var u = 0; u < (IFN.length || 4) && u < 4; u++){   /* no wl_ifnames: every unit that reports a band */
++    var b = NB[u], t = '';
++    if (b === '2') t = '2.4 GHz';
++    else if (b === '1'){ n5++; t = c5 > 1 ? '5 GHz-' + n5 : '5 GHz'; }
++    else if (b === '4'){ n6++; t = c6 > 1 ? '6 GHz-' + n6 : '6 GHz'; }
++    if (t) out.push({u: u, title: t, locked: (SW_MODE === '2' || SW_MODE === '4') && String(u) === WLC_BAND, aps: []});
++  }
++  return out;
++})();
++function macs(s){ var out = [], seen = {}; String(s || '').split('<').forEach(function(m){ m = m.trim().toUpperCase(); if (rp.v.mac(m) && !seen[m]){ seen[m] = 1; out.push(m); } }); return out; }
++BANDS.forEach(function(b){
++  var p = 'wl' + b.u + '_';
++  b.mode0 = /^[012]$/.test(NV[p + 'mode_x']) ? NV[p + 'mode_x'] : '0';
++  b.apply0 = NV[p + 'wdsapply_x'] === '1' ? '1' : '0';
++  b.list0 = macs(NV[p + 'wdslist']).slice(0, MAX); b.list = b.list0.slice();
++  b.auto = (NV[p + 'chanspec'] || NV[p + 'channel'] || '0') === '0';
++});
++function msg(id, t){ var m = q(id); if (!m) return; m.textContent = t || ''; m.style.display = t ? 'block' : 'none'; }
++function changes(){
++  var ch = {};
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    var p = 'wl' + b.u + '_', m = q('s_mode' + i).value, a = q('t_ap' + i).checked ? '1' : '0';
++    if (m !== b.mode0) ch[p + 'mode_x'] = m;
++    if (a !== b.apply0) ch[p + 'wdsapply_x'] = a;
++    if (b.list.join('<') !== b.list0.join('<')) ch[p + 'wdslist'] = b.list.map(function(x){ return '<' + x; }).join('');
++  });
++  return ch;
++}
++function dirty(){ rp.pill(rp.count(changes())); }
++
++function render(){
++  var h = '';
++  BANDS.forEach(function(b, i){
++    var p = 'wl' + b.u + '_';
++    h += '<div class="panel" id="p' + i + '"><h2>' + hx(b.title) + '</h2>' +
++      '<div class="own">' + hx(`<#MAC_Address#>`) + ': <b>' + hx(rp.v.mac(NV[p + 'hwaddr']) ? NV[p + 'hwaddr'].toUpperCase() : `<#Status_Inactive#>`) + '</b></div>';
++    if (b.locked){ h += '<div class="sub">' + hx(`<#page_not_support_mode_hint#>`) + '</div></div>'; return; }
++    if (b.auto) h += '<div class="warnline" id="aw' + i + '"></div>';
++    h += '<div class="frow"><div class="fl">' + hx(`<#WLANConfig11b_x_APMode_itemname#>`) + '</div><div class="fc"><select id="s_mode' + i + '">' +
++        '<option value="0">' + hx(`<#WLANConfig11b_x_APMode_option0#>`) + '</option><option value="1">' + hx(`<#WLANConfig11b_x_APMode_option1#>`) + '</option>' +
++        '<option value="2">' + hx(`<#WLANConfig11b_x_APMode_option2#>`) + '</option></select></div></div>' +
++      '<div class="listbox" id="lb' + i + '">' +
++      '<div class="togglerow"><label class="tswitch"><input type="checkbox" id="t_ap' + i + '"><span class="track"></span></label><div>' + hx(`<#WLANConfig11b_x_BRApply_itemname#>`) + '</div></div>' +
++      '<table class="rtab"><thead><tr><th>' + hx(`<#WLANConfig11b_RBRList_groupitemdesc#>`) + '</th><th>SSID</th><th></th></tr></thead><tbody id="tb' + i + '"></tbody></table>' +
++      '<div class="bwl-add" id="ab' + i + '">' +
++        '<div class="f"><label>' + hx(`<#AP_survey#>`) + '</label><select id="pk' + i + '" title="' + hx(`<#select_AP#>`) + '"><option value="">' + hx(`<#Select_menu_default#>`) + '</option></select></div>' +
++        '<button type="button" class="btn small" id="sv' + i + '">' + hx(`<#RSVY_1#>`) + '</button>' +
++        '<div class="f"><label>' + hx(`<#MAC_Address#>`) + '</label><input type="text" class="mac mono" id="am' + i + '" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>' +
++        '<button type="button" class="btn small" id="ba' + i + '">' + hx(`<#CTL_add#>`) + '</button></div>' +
++      '<div class="rbudget" id="bg' + i + '"></div><div class="svy" id="ss' + i + '"></div><div class="msg" id="am_msg' + i + '" style="margin-top:8px"></div>' +
++      '</div></div>';
++  });
++  q('bands').innerHTML = h;
++  BANDS.forEach(function(b, i){
++    if (b.locked) return;
++    if (b.auto){
++      var w = q('aw' + i), a = document.createElement('a');
++      w.textContent = `<#RNW_5#>` + ' ';
++      a.href = '/reaper_shell.asp#Reaper_WiFiSettings.asp'; a.target = '_top'; a.textContent = `<#menu5_1#>` + ' - ' + `<#Settings#>`;
++      w.appendChild(a);
++    }
++    q('s_mode' + i).value = b.mode0;
++    q('t_ap' + i).checked = b.apply0 === '1';
++    q('s_mode' + i).addEventListener('change', function(){ draw(i); });
++    q('t_ap' + i).addEventListener('change', function(){ draw(i); });
++    q('ba' + i).addEventListener('click', function(){ add(i); });
++    q('sv' + i).addEventListener('click', function(){ scan(i); });
++    q('am' + i).addEventListener('keydown', function(e){ if (e.key === 'Enter') add(i); });
++    q('pk' + i).addEventListener('change', function(){ if (this.value){ q('am' + i).value = this.value; msg('am_msg' + i, ''); } });
++    q('tb' + i).addEventListener('click', function(e){ var t = e.target;
++      if (t && t.classList && t.classList.contains('bwldel')){ b.list.splice(+t.getAttribute('data-i'), 1); draw(i); } });
++    draw(i);
++  });
++}
++function draw(i){
++  var b = BANDS[i], h = '';
++  b.list.forEach(function(m, j){
++    h += '<tr><td class="mono">' + hx(m) + '</td><td class="name" data-m="' + hx(m) + '"></td>' +
++         '<td style="text-align:right"><span class="bwldel" data-i="' + j + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
++  });
++  q('tb' + i).innerHTML = h || '<tr><td colspan="3" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
++  Array.prototype.forEach.call(q('tb' + i).querySelectorAll('td.name'), function(td){ var s = SSID[td.getAttribute('data-m')] || ''; td.textContent = s; td.title = s; });
++  var g = q('bg' + i); g.textContent = `<#List_limit#>` + ' ' + b.list.length + ' / ' + MAX; g.classList.toggle('hot', b.list.length >= MAX);
++  var m0 = q('s_mode' + i).value === '0';
++  q('lb' + i).classList.toggle('off', m0);           /* AP only: no WDS peers (stock disabled the same controls) */
++  pickDraw(i); dirty();
++}
++function pickDraw(i){
++  var b = BANDS[i], s = q('pk' + i), have = {};
++  b.list.forEach(function(m){ have[m] = 1; });
++  while (s.options.length > 1) s.remove(1);
++  b.aps.forEach(function(a){ if (have[a.mac]) return; var o = document.createElement('option'); o.value = a.mac; o.textContent = a.label; s.appendChild(o); });
++}
++/* Reaper's site survey for this radio: svystart, then svydata until done (the radio leaves its channel briefly) */
++function scan(i){
++  var b = BANDS[i], btn = q('sv' + i), x = new XMLHttpRequest();
++  btn.disabled = true; q('ss' + i).textContent = `<#RSVY_9#>` + '...';
++  x.open('GET', '/reaper_wifi.cgi?action=svystart&unit=' + b.u + '&http_id=' + encodeURIComponent(HTTPID) + '&_=' + Date.now(), true); x.timeout = 15000;
++  x.onload = function(){
++    var r = null; try { r = JSON.parse(x.responseText); } catch (e) {}
++    if (!r || !r.ok){ btn.disabled = false; q('ss' + i).textContent = (r && (r.err === 'busy' || r.err === 'busycap')) ? `<#RSVY_12#>` : `<#RSVY_11#>`; return; }
++    var tries = 0, t = setInterval(function(){
++      var y = new XMLHttpRequest();
++      y.open('GET', '/reaper_wifi.cgi?action=svydata&http_id=' + encodeURIComponent(HTTPID) + '&_=' + Date.now(), true); y.timeout = 8000;
++      y.onload = function(){
++        var d = null; try { d = JSON.parse(y.responseText); } catch (e) {}
++        if (d && d.done){
++          clearInterval(t); btn.disabled = false;
++          b.aps = (d.aps || []).filter(function(a){ return a && +a.unit === b.u && rp.v.mac(String(a.bssid || '')); }).map(function(a){
++            var mac = String(a.bssid).toUpperCase(), ss = a.hidden ? '(' + `<#RSVY_8#>` + ')' : String(a.ssid || '');
++            if (!a.hidden) SSID[mac] = ss;
++            return {mac: mac, label: ss + ' - ' + mac + (a.rssi !== undefined ? '  ' + a.rssi + ' dBm' : ''), rssi: +a.rssi || -999};
++          }).sort(function(p, r){ return r.rssi - p.rssi; });
++          q('ss' + i).textContent = `<#RSVY_10#>` + ': ' + b.aps.length;
++          draw(i);
++        } else if (++tries > 60){ clearInterval(t); btn.disabled = false; q('ss' + i).textContent = `<#RSVY_11#>`; }
++      };
++      y.send();
++    }, 1000);
++  };
++  x.onerror = x.ontimeout = function(){ btn.disabled = false; q('ss' + i).textContent = `<#RSVY_11#>`; };
++  x.send();
++}
++function add(i){
++  var b = BANDS[i], id = 'am_msg' + i;
++  msg(id, '');
++  var m = rp.val('am' + i).toUpperCase(), e = '';
++  if (b.list.length >= MAX) e = `<#JS_itemlimit1#>` + ' ' + MAX + ' ' + `<#JS_itemlimit2#>`;
++  else if (!m) e = `<#JS_fieldblank#>`;
++  else if (!rp.v.mac(m)) e = `<#IPConnection_x_illegal_mac#>`;
++  else if (b.list.indexOf(m) >= 0) e = `<#JS_duplicate#>`;
++  if (e){ msg(id, e); q('ab' + i).classList.add('bad'); setTimeout(function(){ q('ab' + i).classList.remove('bad'); }, 4000); return; }
++  b.list.push(m); q('am' + i).value = ''; draw(i);
++}
++function post(obj){
++  var x = new XMLHttpRequest(), a = [], k;
++  for (k in obj) a.push(encodeURIComponent(k) + '=' + encodeURIComponent(obj[k]));
++  x.open('POST', '/applyapp.cgi', true); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded'); x.timeout = 150000;
++  x.send(a.join('&'));
++}
++function apply(){
++  msg('topmsg', '');
++  var ch = changes();
++  if (!rp.count(ch)){ msg('topmsg', `<#RADM_63#>`); return; }
++  ch.action_mode = 'apply'; ch.rc_service = 'restart_wireless';
++  rp.applying(`<#Reaper_c_applying#>`, `<#RNT_62#>`);
++  post(ch); setTimeout(function(){ location.reload(); }, 15000);
++}
++q('applybtn').addEventListener('click', apply);
++q('discardbtn').addEventListener('click', function(){ BANDS.forEach(function(b){ b.list = b.list0.slice(); }); msg('topmsg', ''); render(); });
++render();
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/Reaper_WPS.asp b/release/src/router/www/Reaper_WPS.asp
+new file mode 100644
+index 00000000000..4af5760474e
+--- /dev/null
++++ b/release/src/router/www/Reaper_WPS.asp
+@@ -0,0 +1,200 @@
++<!-- SPDX-License-Identifier: GPL-2.0-only
++     Copyright (C) 2026 the Reaper project maintainer
++     Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. -->
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<meta name="reaper-native" content="1">
++<title>REAPER &mdash; <#menu5_1_2#></title>
++<!-- Reaper_WPS.asp - Wireless > WPS (Reaper-native UI, native wave, 2026-10-31).
++     Replaces Advanced_WWPS_Content.asp; same nvram, same requests:
++       wps_enable      "1"/"0"  -> /applyapp.cgi + restart_wireless (stock apply_new + restart_wireless)
++       wps_band_x      the WPS radio, 2.4 or 5 GHz (6 GHz cannot run WPS) -> /apply.cgi change_wps_unit, only while
++                       WPS is off (stock rule)
++       Start           /apply.cgi wps_apply: wps_band, wps_enable=1, wps_sta_pin (8 digits; "00000000" = push button)
++       Reset (OOB)     /apply.cgi wps_reset: rc reset_wps -> w_Setting=0 + restart_wireless; the WPS stack makes a new
++                       network name and key - so it asks first (stock did not)
++     Status: GET /WPS_info.xml (prebuilt ej_wps_info*): 13 <wps_info> fields, [0] state text, [1] configured Yes/No,
++     [7] AP PIN, [11] auth mode, [12] band. Stock pre-checks kept: enabling refuses a hidden network, WPA/WEP-only
++     authentication and a radio that is off; WPA3-Personal cannot run WPS. Differences: the client PIN must be the
++     8 digits the router accepts (stock also let 4 digits through, which httpd then dropped without a word); the
++     WPA3 hint works for a lone 5 GHz radio (stock's band-name switch missed it); one band request, not two. -->
++<link rel="stylesheet" href="/reaper/rp.css">
++<style>
++.msg{font-size:12.5px;color:var(--amber);display:none}
++.frow select{min-width:200px}
++.frow input.pin{width:130px}
++.fv{font-family:var(--hdr);font-weight:600;color:var(--bone)}
++.fv.mono{font-family:var(--mono);font-weight:400}
++.warnline{font-size:12.5px;color:var(--amber);line-height:1.55;margin:8px 0 0}
++/* dim the contents, never the panel: a translucent panel lets the page's crimson frame show through it */
++.off{pointer-events:none}
++.off>*{opacity:.45}
++.radios{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
++.radios label{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
++.spin{display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--crimson);animation:sp 1s linear infinite;margin-left:8px;vertical-align:middle}
++@keyframes sp{to{transform:rotate(360deg)}}
++</style>
++</head>
++<body>
++<script src="/reaper_util.js"></script>
++<script src="/reaper/rp.js"></script>
++
++<div class="syswrap">
++<div class="pagehead">
++  <div>
++    <div class="eyebrow"><#menu5_1#></div>
++    <h1><#menu5_1_2#></h1>
++  </div>
++  <div class="spacer"></div>
++</div>
++<div class="msg" id="topmsg" style="margin:-6px 0 12px"></div>
++<div class="hint" style="margin:-4px 0 14px"><#WLANConfig11b_display6_sectiondesc#></div>
++
++<div class="rframe">
++<div class="panel" id="p_main">
++  <div class="togglerow"><label class="tswitch"><input type="checkbox" id="t_on"><span class="track"></span></label><div><#WLANConfig11b_x_WPS_itemname#></div></div>
++  <div class="frow"><div class="fl"><#Current_band#></div><div class="fc"><select id="s_band"></select></div><div class="fh" id="bandhint"></div></div>
++  <div class="frow"><div class="fl"><#PPPConnection_x_WANLink_itemname#></div><div class="fc"><span class="fv" id="v_state">&mdash;</span><span class="spin" id="v_spin" style="display:none"></span></div></div>
++  <div class="frow"><div class="fl"><#wireless_configured#></div><div class="fc"><span class="fv" id="v_conf">&mdash;</span>
++    <button type="button" class="btn small ghost" id="b_reset" style="display:none"><#CTL_Reset_OOB#></button></div>
++    <div class="fh" id="resetdesc" style="display:none"><#WLANConfig11b_x_ResetWPS_desc#></div></div>
++  <div class="frow"><div class="fl"><#WLANConfig11b_x_DevicePIN_itemname#></div><div class="fc"><span class="fv mono" id="v_pin">&mdash;</span></div></div>
++  <div class="warnline" id="w_band" style="display:none"></div>
++</div>
++
++<div class="panel" id="p_add">
++  <div class="frow"><div class="fl"><#WLANConfig11b_x_WPSMode_itemname#></div><div class="fc radios">
++    <label><input type="radio" name="wps_method" value="0" checked><#WLANConfig11b_x_WPS_pushbtn#></label>
++    <label><input type="radio" name="wps_method" value="1"><#WLANConfig11b_x_WPSPIN_itemname#></label>
++    <input type="text" class="pin mono" id="i_pin" maxlength="9" inputmode="numeric" autocomplete="off" placeholder="12345670" style="display:none">
++    <button type="button" class="btn primary small" id="b_start"><#wps_start_btn#></button> <span class="msg" id="addmsg"></span>
++  </div></div>
++</div>
++</div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RNT_62#></p></div></div>
++
++<script>
++(function(){
++'use strict';
++var q = rp.q, hx = rp.esc;
++var NB = [<% nvram_get_js("wl0_nband"); %>, <% nvram_get_js("wl1_nband"); %>, <% nvram_get_js("wl2_nband"); %>, <% nvram_get_js("wl3_nband"); %>];
++var IFN = <% nvram_get_js("wl_ifnames"); %>.trim().split(/\s+/).filter(Boolean);
++var NV = {
++  wps_enable: <% nvram_get_js("wps_enable"); %>, wps_band_x: <% nvram_get_js("wps_band_x"); %>, wps_sta_pin: <% nvram_get_js("wps_sta_pin"); %>,
++  wl0_closed: <% nvram_get_js("wl0_closed"); %>, wl0_radio: <% nvram_get_js("wl0_radio"); %>, wl0_auth_mode_x: <% nvram_get_js("wl0_auth_mode_x"); %>, wl0_wep_x: <% nvram_get_js("wl0_wep_x"); %>,
++  wl1_closed: <% nvram_get_js("wl1_closed"); %>, wl1_radio: <% nvram_get_js("wl1_radio"); %>, wl1_auth_mode_x: <% nvram_get_js("wl1_auth_mode_x"); %>, wl1_wep_x: <% nvram_get_js("wl1_wep_x"); %>,
++  wl2_closed: <% nvram_get_js("wl2_closed"); %>, wl2_radio: <% nvram_get_js("wl2_radio"); %>, wl2_auth_mode_x: <% nvram_get_js("wl2_auth_mode_x"); %>, wl2_wep_x: <% nvram_get_js("wl2_wep_x"); %>
++};
++var ON = NV.wps_enable === '1';
++var poll = null;
++
++/* WPS radios: 2.4 and 5 GHz units (stock leaves 6 GHz out - rc never runs WPS there) */
++var BANDS = (function(){
++  var out = [], n5 = 0, c5 = NB.filter(function(b){ return b === '1'; }).length;
++  for (var u = 0; u < (IFN.length || 4) && u < 3; u++){
++    if (NB[u] === '2') out.push({u: u, title: '2.4 GHz'});
++    else if (NB[u] === '1'){ n5++; out.push({u: u, title: c5 > 1 ? '5 GHz-' + n5 : '5 GHz'}); }
++  }
++  return out;
++})();
++function band(){ var u = +q('s_band').value; return BANDS.filter(function(b){ return b.u === u; })[0] || BANDS[0]; }
++function msg(id, t){ var m = q(id); m.textContent = t || ''; m.style.display = t ? (id === 'addmsg' ? 'inline' : 'block') : 'none'; }
++/* why the chosen radio cannot run WPS ('' = it can); stock enableWPS() checks, in its order */
++function blocker(b){
++  var p = 'wl' + b.u + '_', am = NV[p + 'auth_mode_x'], wep = NV[p + 'wep_x'];
++  if (NV[p + 'closed'] === '1') return b.title + ': ' + `<#note_hide_SSID_WPS#>`;
++  if (/^(shared|psk|wpa|wpa2|wpawpa2)$/.test(am) || (am === 'open' && (wep === '1' || wep === '2'))) return b.title + ': ' + `<#note_auth_wpa_WPS#>`;
++  if (NV[p + 'radio'] === '0') return `<#note_turn_wifi_on_WPS#>`;
++  if (/^(sae|wpa3|suite-b)$/.test(am)) return b.title + ': ' + `<#wireless_JS_WPS_fail_WPA3P#>`;
++  return '';
++}
++function form(o){ var a = [], k; for (k in o) a.push(encodeURIComponent(k) + '=' + encodeURIComponent(o[k])); return a.join('&'); }
++function xpost(url, body, cb){
++  var x = new XMLHttpRequest();
++  x.open('POST', url, true); x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded'); x.timeout = 30000;
++  x.onloadend = function(){ if (cb) cb(); };
++  x.send(body);
++}
++function busy(t, after){ rp.applying(`<#Reaper_c_applying#>`, t || `<#RNT_62#>`); setTimeout(function(){ location.reload(); }, after || 12000); }
++
++function paint(){
++  var b = band(), why = blocker(b);
++  q('s_band').disabled = ON;
++  q('bandhint').textContent = ON ? `<#WLANConfig11b_x_WPSband_hint#>` : '';
++  var w = q('w_band'); w.textContent = why; w.style.display = why ? 'block' : 'none';
++  q('p_add').classList.toggle('off', !ON || !!why);
++}
++/* status: the prebuilt /WPS_info.xml, polled while the page is open */
++function status(){
++  var x = new XMLHttpRequest();
++  x.open('GET', '/WPS_info.xml?_=' + Date.now(), true); x.timeout = 8000;
++  x.onload = function(){
++    var d = x.responseXML, f = d ? d.getElementsByTagName('wps_info') : [], v = [], i;
++    for (i = 0; i < f.length; i++) v.push(f[i].textContent || '');
++    if (v.length < 13) return;
++    var st = ON ? v[0] : `<#wps_state_not_used#>`;
++    q('v_state').textContent = st;
++    q('v_spin').style.display = ON && v[0] === 'Start WPS Process' ? '' : 'none';
++    q('v_conf').textContent = v[1] === 'Yes' ? `<#checkbox_Yes#>` : v[1] === 'No' ? `<#checkbox_No#>` : v[1];
++    var canReset = ON && v[1] === 'Yes';
++    q('b_reset').style.display = canReset ? '' : 'none'; q('resetdesc').style.display = canReset ? '' : 'none';
++    q('v_pin').textContent = /^\d{4,8}$/.test(v[7]) ? v[7] : '-';
++  };
++  x.send();
++}
++/* client PIN: one space or hyphen in the middle allowed; 8 digits with a valid checksum (httpd takes nothing else) */
++function pinOk(s){
++  s = String(s || '').trim().replace(/^(\d{4})[ -](\d{4})$/, '$1$2');
++  if (!/^\d{8}$/.test(s)) return '';
++  var sum = 0, i; for (i = 0; i < 8; i++) sum += (+s.charAt(i)) * (i % 2 ? 1 : 3);
++  return sum % 10 === 0 ? s : '';
++}
++
++BANDS.forEach(function(b){ var o = document.createElement('option'); o.value = b.u; o.textContent = b.title; q('s_band').appendChild(o); });
++if (!rp.pick(q('s_band'), NV.wps_band_x) && BANDS.length) q('s_band').value = String(BANDS[0].u);
++q('t_on').checked = ON;
++
++q('t_on').addEventListener('change', function(){
++  msg('topmsg', '');
++  var want = this.checked, why = want ? blocker(band()) : '';
++  if (why){ this.checked = !want; msg('topmsg', why); return; }
++  xpost('/applyapp.cgi', form({wps_enable: want ? '1' : '0', action_mode: 'apply', rc_service: 'restart_wireless'}));
++  busy();
++});
++q('s_band').addEventListener('change', function(){
++  msg('topmsg', '');
++  if (ON){ rp.pick(this, NV.wps_band_x); msg('topmsg', `<#WLANConfig11b_x_WPSband_hint#>`); return; }
++  var u = this.value;
++  xpost('/apply.cgi', form({action_mode: 'change_wps_unit', action_script: '', action_wait: '1', current_page: 'Reaper_WPS.asp', next_page: '', wps_band: u}),
++    function(){ NV.wps_band_x = u; paint(); });
++  paint();
++});
++Array.prototype.forEach.call(document.querySelectorAll('input[name=wps_method]'), function(r){
++  r.addEventListener('change', function(){ q('i_pin').style.display = this.value === '1' && this.checked ? '' : 'none'; msg('addmsg', ''); });
++});
++q('b_start').addEventListener('click', function(){
++  msg('addmsg', '');
++  var b = band(), why = blocker(b); if (why){ msg('addmsg', why); return; }
++  var pbc = document.querySelector('input[name=wps_method]:checked').value === '0', pin = pbc ? '00000000' : pinOk(q('i_pin').value);
++  if (!pin){ msg('addmsg', `<#JS_InvalidPIN#>`); q('i_pin').focus(); return; }
++  xpost('/apply.cgi', form({action_mode: 'wps_apply', action_script: '', action_wait: '1', current_page: 'Reaper_WPS.asp', next_page: '',
++    wps_band: String(b.u), wps_enable: '1', wps_sta_pin: pin}), function(){ status(); });
++  q('v_state').textContent = 'Start WPS Process'; q('v_spin').style.display = '';
++});
++q('b_reset').addEventListener('click', function(){
++  if (!confirm(`<#WLANConfig11b_x_ResetWPS_desc#>`)) return;
++  xpost('/apply.cgi', form({action_mode: 'wps_reset', action_script: '', action_wait: '5', current_page: 'Reaper_WPS.asp', next_page: '', wps_band: String(band().u)}));
++  busy(`<#RNT_62#>`, 15000);
++});
++/* stock method default: a stored PIN that is not the PBC value means the PIN method was last used */
++if (pinOk(NV.wps_sta_pin) && NV.wps_sta_pin !== '00000000'){ document.querySelector('input[name=wps_method][value="1"]').checked = true; q('i_pin').style.display = ''; }
++paint(); status(); poll = setInterval(status, 3000);
++})();
++</script>
++</body>
++</html>
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index bcbdd60fa2a..2deeaa30346 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Če naj bo ključ kar v naslovu, vnesite $APIkey na mesto, kamor sodi (
+ RBST_00=Bastion
+ RDWT_66=Uveljavljanje nastavitev Dreadwatch…
+ RDWT_67=Kako deluje Dreadwatch
++RNW_1=Sprejmi s praznim seznamom bi blokiral vse brezžične naprave v tem pasu. Dodajte vsaj eno napravo ali izberite Zavrni.
++RNW_2=Sprejmi: povežejo se lahko samo naprave s seznama. Zavrni: naprave s seznama se ne morejo povezati.
++RNW_3=Trenutno se ne uporablja: %1 v tem pasu je %2. Strežnik RADIUS se uporablja samo z WPA2-Enterprise ali WPA3-Enterprise.
++RNW_4=V uporabi: %1 v tem pasu je %2.
++RNW_5=Ta pas uporablja samodejni kanal. Naprave WDS morajo uporabljati isti fiksni kanal.
++RNW_6=WDS neposredno poveže radio tega usmerjevalnika z drugimi dostopnimi točkami. Vsaka naprava mora imeti na seznamu naslov MAC tega usmerjevalnika, obe strani pa potrebujeta isti pas in isti fiksni kanal.
++RNW_7=Za vklop MLO se spremenijo te nastavitve Wi-Fi:
++RNW_8="Dodaj omrežje" odpre čarovnika MLO na strani %1. Omrežje MLO tam uredite ali odstranite.
++RNW_9=Dovoli vse oznake
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index d3ff15166b9..82440578471 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Ska nyckeln stå i själva adressen skriver du $APIkey där den hör he
+ RBST_00=Bastion
+ RDWT_66=Tillämpar Dreadwatch-inställningar…
+ RDWT_67=Så fungerar Dreadwatch
++RNW_1=Acceptera med en tom lista skulle blockera alla trådlösa enheter på det här bandet. Lägg till minst en enhet eller välj Avvisa.
++RNW_2=Acceptera: endast enheterna i listan kan ansluta. Avvisa: enheterna i listan kan inte ansluta.
++RNW_3=Används inte just nu: %1 på det här bandet är %2. En RADIUS-server används bara med WPA2-Enterprise eller WPA3-Enterprise.
++RNW_4=Används: %1 på det här bandet är %2.
++RNW_5=Det här bandet använder automatisk kanal. WDS-motparter måste dela en fast kanal.
++RNW_6=WDS kopplar den här routerns radio direkt till andra åtkomstpunkter. Varje motpart måste ha den här routerns MAC-adress i sin lista, och båda ändarna behöver samma band och samma fasta kanal.
++RNW_7=För att slå på MLO ändras dessa Wi-Fi-inställningar:
++RNW_8="Lägg till ett nätverk" öppnar MLO-guiden på sidan %1. Redigera eller ta bort ett MLO-nätverk där.
++RNW_9=Tillåt alla taggar
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 86a9c5c1545..65d5ffd815e 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=หากต้องการใส่คีย์ไว้ในท
+ RBST_00=Bastion
+ RDWT_66=กำลังใช้การตั้งค่า Dreadwatch…
+ RDWT_67=Dreadwatch ทำงานอย่างไร
++RNW_1=การเลือก ยอมรับ โดยที่รายการว่างจะบล็อกอุปกรณ์ไร้สายทั้งหมดในย่านความถี่นี้ เพิ่มอุปกรณ์อย่างน้อยหนึ่งเครื่อง หรือเลือก ปฏิเสธ
++RNW_2=ยอมรับ: เฉพาะอุปกรณ์ในรายการเท่านั้นที่เชื่อมต่อได้ ปฏิเสธ: อุปกรณ์ในรายการไม่สามารถเชื่อมต่อได้
++RNW_3=ยังไม่ได้ใช้งานในขณะนี้: %1 ของย่านความถี่นี้คือ %2 เซิร์ฟเวอร์ RADIUS ใช้เฉพาะกับ WPA2-Enterprise หรือ WPA3-Enterprise
++RNW_4=กำลังใช้งาน: %1 ของย่านความถี่นี้คือ %2
++RNW_5=ย่านความถี่นี้ใช้ช่องสัญญาณอัตโนมัติ อุปกรณ์ WDS ทุกตัวต้องใช้ช่องสัญญาณคงที่เดียวกัน
++RNW_6=WDS เชื่อมวิทยุของเราเตอร์นี้เข้ากับแอคเซสพอยต์อื่นโดยตรง อุปกรณ์แต่ละตัวต้องเพิ่มที่อยู่ MAC ของเราเตอร์นี้ไว้ในรายการ และทั้งสองฝั่งต้องใช้ย่านความถี่และช่องสัญญาณคงที่เดียวกัน
++RNW_7=การเปิด MLO จะเปลี่ยนการตั้งค่า Wi-Fi ต่อไปนี้:
++RNW_8="เพิ่มเครือข่าย" จะเปิดตัวช่วยตั้งค่า MLO ในหน้า %1 แก้ไขหรือลบเครือข่าย MLO ได้ที่หน้านั้น
++RNW_9=อนุญาตแท็กทั้งหมด
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index e7be364f72b..fe009e6b3e5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Anahtarı adresin içine koymak için anahtarın geleceği yere $APIkey
+ RBST_00=Bastion
+ RDWT_66=Dreadwatch ayarları uygulanıyor…
+ RDWT_67=Dreadwatch nasıl çalışır
++RNW_1=Boş bir listeyle Kabul Et seçeneği bu banttaki tüm kablosuz cihazları engeller. En az bir cihaz ekleyin veya Reddet seçeneğini belirleyin.
++RNW_2=Kabul Et: yalnızca listedeki cihazlar bağlanabilir. Reddet: listedeki cihazlar bağlanamaz.
++RNW_3=Şu anda kullanılmıyor: bu banttaki %1 değeri %2. RADIUS sunucusu yalnızca WPA2-Enterprise veya WPA3-Enterprise ile kullanılır.
++RNW_4=Kullanımda: bu banttaki %1 değeri %2.
++RNW_5=Bu bant Otomatik kanalı kullanıyor. WDS eşlerinin aynı sabit kanalı kullanması gerekir.
++RNW_6=WDS, bu yönlendiricinin radyosunu doğrudan diğer erişim noktalarına bağlar. Her eş bu yönlendiricinin MAC adresini listesine eklemeli ve iki uç da aynı bandı ve aynı sabit kanalı kullanmalıdır.
++RNW_7=MLO'yu açmak için şu Wi-Fi ayarları değiştirilecek:
++RNW_8="Ağ ekle", %1 sayfasında MLO sihirbazını açar. Bir MLO ağını orada düzenleyin veya kaldırın.
++RNW_9=Tüm etiketlere izin ver
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index 409afc2bb31..135e6840718 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=若要把金鑰放在位址中，請在金鑰應在的位置輸入 $API
+ RBST_00=Bastion
+ RDWT_66=正在套用 Dreadwatch 設定…
+ RDWT_67=Dreadwatch 的運作方式
++RNW_1=清單為空時選擇「允許模式」將封鎖此頻段上的所有無線裝置。請至少新增一台裝置，或選擇「拒絕模式」。
++RNW_2=允許模式：只有清單中的裝置可以連線。拒絕模式：清單中的裝置無法連線。
++RNW_3=目前未使用：此頻段的%1為 %2。RADIUS 伺服器僅用於 WPA2-Enterprise 或 WPA3-Enterprise。
++RNW_4=使用中：此頻段的%1為 %2。
++RNW_5=此頻段使用自動頻道。WDS 對端必須使用同一個固定頻道。
++RNW_6=WDS 會將本路由器的無線電直接連接到其他基地台。每個對端都必須列出本路由器的 MAC 位址，且兩端需使用相同的頻段與相同的固定頻道。
++RNW_7=開啟 MLO 時，將變更下列 Wi-Fi 設定：
++RNW_8="新增網路" 會在 %1 頁面開啟 MLO 精靈。請在該頁面編輯或移除 MLO 網路。
++RNW_9=允許所有標記
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 3da07c7a841..8f6169a3fe8 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9010,3 +9010,12 @@ RSHD_163=Щоб вставити ключ просто в адресу, введ
+ RBST_00=Bastion
+ RDWT_66=Застосування налаштувань Dreadwatch…
+ RDWT_67=Як працює Dreadwatch
++RNW_1=Режим «Прийняти» з порожнім списком заблокує всі бездротові пристрої в цьому діапазоні. Додайте принаймні один пристрій або виберіть «Відхилити».
++RNW_2=Прийняти: підключатися можуть лише пристрої зі списку. Відхилити: пристрої зі списку не можуть підключатися.
++RNW_3=Зараз не використовується: %1 у цьому діапазоні — %2. Сервер RADIUS використовується лише з WPA2-Enterprise або WPA3-Enterprise.
++RNW_4=Використовується: %1 у цьому діапазоні — %2.
++RNW_5=У цьому діапазоні вибрано автоматичний канал. Пристрої WDS мають працювати на одному фіксованому каналі.
++RNW_6=WDS напряму з’єднує радіомодуль цього роутера з іншими точками доступу. Кожен пристрій має внести до списку MAC-адресу цього роутера, а обидві сторони мають використовувати однаковий діапазон і однаковий фіксований канал.
++RNW_7=Для ввімкнення MLO буде змінено такі налаштування Wi-Fi:
++RNW_8="Додати мережу" відкриває майстер MLO на сторінці %1. Змінити або видалити мережу MLO можна там.
++RNW_9=Дозволити всі теги
+diff --git a/release/src/router/www/reaper/menu.js b/release/src/router/www/reaper/menu.js
+index e4be0fdea8c..a891d2d2eee 100644
+--- a/release/src/router/www/reaper/menu.js
++++ b/release/src/router/www/reaper/menu.js
+@@ -101,12 +101,13 @@
+       {section: `<#menu5#>`},
+       {index: 'menu_Wireless', label: `<#menu5_1#>`, when: !is('rp', 'mb'), tabs: [
+         T('Reaper_WiFiSettings.asp', `<#Settings#>`, !(rpRSSI && !concurrep)),
+-        T('Advanced_WWPS_Content.asp', `<#menu5_1_2#>`, !rpRSSI),
+-        T('Advanced_WMode_Content.asp', 'WDS', !sup('UI4') && !rpRSSI),
+-        T('Advanced_ACL_Content.asp', `<#menu5_1_4#>`, !sup('sdn_mainfh') && !rpRSSI),
+-        T('Advanced_WSecurity_Content.asp', `<#menu5_1_5#>`, !sup('sdn_mainfh') && !rpRSSI),
+-        T('Advanced_Roaming_Block_Content.asp', `<#WiFi_Roaming_Block_List#>`, aimeshRouterUI),
+-        T('MLO.asp', 'MLO', sup('mtlancfg') && sup('mlo')),
++        T('Reaper_WPS.asp', `<#menu5_1_2#>`, !rpRSSI),
++        T('Reaper_WDS.asp', 'WDS', !sup('UI4') && !rpRSSI),
++        T('Reaper_MACFilter.asp', `<#menu5_1_4#>`, !sup('sdn_mainfh') && !rpRSSI),
++        T('Reaper_RADIUS.asp', `<#menu5_1_5#>`, !sup('sdn_mainfh') && !rpRSSI),
++        /* 2026-10-31 native wave: the kit page; the stock page still ships (owner reviews before it goes) */
++        T('Reaper_RoamBlock.asp', `<#WiFi_Roaming_Block_List#>`, aimeshRouterUI),
++        T('Reaper_MLO.asp', 'MLO', sup('mtlancfg') && sup('mlo')),
+         T('Reaper_Wireless.asp', `<#RWIF_1#>`)]},
+       {index: 'menu_LAN', label: `<#menu5_2#>`, tabs: [
+         /* 2026-10-23 LAN/WAN wave: Reaper_LAN = LAN IP + DHCP + Switch + Multicast (tabs gated inside the page),
+@@ -119,8 +120,9 @@
+         /* 2026-10-26 (owner): stock shows VLAN (per-port SDN profile, access / trunk) WITH mtlancfg - it excludes the pair
+            when `!mtlancfg || SMART_HOME_MASTER_UI`, and in Repeater / Media Bridge mode. This line had the test inverted
+            (2026-10-23), which hid the tab on every SDN model. */
+-        T('Advanced_VLAN_Switch_Content.asp', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb')),
+-        T('Advanced_VLAN_Profile_Content.asp', INH, sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))]},
++        /* 2026-11-01 native wave: one kit page (Switch + Profiles tabs) for the two stock VLAN tabs, same gate; the stock
++           pages still ship until the owner reviews it */
++        T('Reaper_VLAN.asp', 'VLAN', sup('mtlancfg') && !sup('SMART_HOME_MASTER_UI') && !is('rp', 'mb'))]},
+       {index: 'menu_WAN', label: `<#menu5_3#>`, when: routing, tabs: [
+         /* 2026-10-23 LAN/WAN wave: Reaper_Internet (+ the USB modem view), Reaper_NAT (port forwarding,
+            port trigger, DMZ, NAT passthrough), Reaper_DDNS (DDNS + certificate) */
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+index 42a073dddbe..a836f0722ad 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+@@ -37,6 +37,20 @@ function reaperGrowFrame(ifr){
+ 		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
+ 	}catch(e){}
+ }
++/* reaper 2026-11-01: Reaper_MLO.asp's "Add a Network" lands here with a one-shot flag; once the network app has
++   loaded, open its own MLO wizard - the call stock MLO.asp's Add item makes (sdn.js show_popup_Wizard_Setting,
++   which checks the profile limit itself). Only the one known type; the flag is cleared before use. */
++function reaperOpenWizard(ifr){
++	var t=""; try{ t=sessionStorage.getItem("reaper_sdn_wizard")||""; sessionStorage.removeItem("reaper_sdn_wizard"); }catch(e){}
++	if(t!=="MLO") return;
++	var n=0, iv=setInterval(function(){
++		var w=null; try{ w=ifr.contentWindow; }catch(e){}
++		if(w && typeof w.show_popup_Wizard_Setting=="function" && w.sdn_all_rl_json && w.validator){
++			clearInterval(iv); try{ w.show_popup_Wizard_Setting("MLO"); }catch(e){}
++		}
++		else if(++n>40) clearInterval(iv);
++	}, 250);
++}
+ /* reaper v3.3.1: no main network yet -> point at the setup box. The main network
+    (MAINFH sdn_rl row) is created only at boot by the closed init_apg ->
+    check_mwl_convert, and only once x_Setting=1 in router or AP mode; until then
+@@ -70,10 +84,12 @@ function initial(){
+ 		if(curTheme != ""){
+ 			curTheme = "?current_theme=" + curTheme;
+ 		}
+-		var _sifr=document.getElementById("sdn_iframe"); _sifr.addEventListener("load", function(){ reaperGrowFrame(_sifr); }); _sifr.setAttribute("src", "/SDN/sdn.html" + curTheme);
++		var _sifr=document.getElementById("sdn_iframe"); _sifr.addEventListener("load", function(){ reaperGrowFrame(_sifr); reaperOpenWizard(_sifr); }); _sifr.setAttribute("src", "/SDN/sdn.html" + curTheme);
+ 	},((window.location.protocol == "https:") ? 1000 : 50));
+ }
+ </script>
++<!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content_network.css">
+ </head>
+ <body onload="initial();" onunLoad="return unload_body();" class="bg">
+ <div id="TopBanner"></div>
+-- 
+2.25.1
+

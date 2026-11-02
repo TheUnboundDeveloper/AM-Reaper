@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.6.4** · 2026-10-30 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -41,8 +41,6 @@ internal quality, or deferred by decision.
 waiting on the reporter. One line each, highest priority first - what was fixed and what to ask
 the tester for is in the notes. A "still broken" answer moves the item back to Open bugs.*
 
-- **[P1] RT-BE86U: 5 GHz radio down after a Guest Network Pro save (live Wi-Fi driver reload)**
-  ↳ notes: `be86u-5ghz-driver-reload.md`
 - **[P2] Internet speed test after ASUS retired the old Ookla setup (2026-10-01)**
   ↳ notes: `speedtest-embed-key-retired.md`
 - **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
@@ -50,9 +48,8 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   ↳ notes: `wireless-log-names-types.md`
 - **[P2] Guest Network Pro: a network sent through a VPN from the Network page has no Internet**
   ↳ notes: `sdn-vpn-binding-no-internet.md`
-- **[P3] Wallguard / Dreadwatch: an API key inside the source address (`$APIkey`)**
-  ↳ notes: `wallguard-sources.md`
-- **[P3] Wallguard: abuse.ch templates in "Add a source"** ↳ notes: `wallguard-sources.md`
+- **[P2] Only Gatekeeper knows AiMesh exists** ↳ notes: `aimesh-exempt-helper.md`
+- **[P2] Warden blocked the WireGuard server from mobile data** ↳ notes: `warden-wg-listen-port.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use**
   ↳ notes: `internet-wan-port-label.md`
@@ -70,8 +67,22 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   ↳ notes: `diag-address-shaped-names.md`
 - **[P3] Rule Status: G2 reds a guest network sent through a VPN with its Kill Switch on**
   ↳ notes: `rule-status-g2-vpn-guest.md`
+- **[P3] Header on an iPhone 17 (portrait): Restart and Log off bounce and resize**
+  ↳ notes: `header-buttons-bounce-mobile.md`
+- **[P3] DNS Director: per-device rules show only the MAC, not the device name**
+  ↳ notes: `dns-director-rule-names.md`
 
 ## Open bugs / under investigation
+
+- **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models (RT-BE96U, GT-AX6000
+  measured; SNB thread 98134)** — the host controller is a DWC_usb31 behind the UBUS fabric and the
+  firmware leaves every knob at its silicon default: the USB master has 4 fabric credits toward DDR
+  (PCIe 7-12), TX packet-count mode off, SS park mode on. A bulk-OUT transfer is the controller
+  reading memory, and a read holds its credit for the whole DRAM round trip.
+  **[2026-11-01: five reversible levers built as module parameters set from `reaper_usb3_*` nvram
+  (defaults untouched), test image _r13, held out of v3.6.5 until an A/B run shows one moves the
+  write number; runtime A/B script for any firmware; needs a 4912/4916 box with a UASP SSD]**
+  ↳ notes: `usb3-write-ceiling.md`
 
 *Not fixed yet — work still to start or finish.*
 
@@ -103,6 +114,15 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing** (field, Russian users,
   2026-10-26) — the packs are in step (checked); long words: see the next entry; open: screenshots, the language switch.
   **[layout part built 2026-10-26 (below); rest not started]** ↳ notes: `russian-ui-layout.md`
+- **[P2] MLO on: a soft restart sometimes leaves Wi-Fi accepting no devices until a power cycle**
+  (RT-BE96U, 2026-07 and 2026-10) — the link between the radio chips forms on every power-on but
+  not on every soft restart (1 of 6 post-flash boots); options: a boot-time check with a dashboard
+  warning and one capped retry, or a radio power cycle through the PCIe regulator if wired.
+  **[options offered 2026-11-01; owner call]** ↳ notes: `mlo-restart-radio-link.md`
+- **[P3] The main Wi-Fi's RADIUS server is set in two places** — the Network page keeps it in the
+  main network's profile, Wireless > RADIUS edits the per-radio copy; which one the router applies
+  decides whether the RADIUS page should point to the Network page.
+  **[needs data: the owner's RADIUS server test]** ↳ notes: `radius-two-stores.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -126,8 +146,11 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   `reaper_inject` and the stock JS/CSS.
   Owner 2026-10-23: every page, so the stock pages can go (1 GB RT-BE86U; the cutover frees flash,
   the RAM levers are in `ram-dedupe.md`).
-  **[waves 0 + 1 (System, SNMP, Tweaks) on metal; System Log group built 2026-10-23 (_r25); LAN + WAN
-  built 2026-10-23 (_r32, metal owed); next: VPN, Wireless]** ↳ notes: `reaper-native-ui.md` (plan + progress), `native-page-migration.md`
+  **[waves 0 + 1 (System, SNMP, Tweaks) on metal; System Log group (_r25), LAN + WAN (_r32) and VPN
+  (_r33) built 2026-10-23; Wireless (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO) and LAN > VLAN
+  owner-reviewed 2026-11-01 and their 8 stock pages removed (_r7); kit pages fit phones (_r5); AiMesh
+  and Network stay stock with their own stylesheets (v3.6.5); left: the cutover]**
+  ↳ notes: `reaper-native-ui.md` (plan + progress), `native-page-migration.md`
 - **[P3] Security review: watch more settings** (owner, 2026-10-23) — it compares 24 settings and
   hashes 3 lists; candidates: admin access and passwords (hash only), the second WAN, FTP / Samba /
   SNMP / VPN servers, DNS and DDNS, Reaper's own protections switched off, the update chain, open
@@ -146,12 +169,13 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   dnsmasq instance before that).
   **[proposed 2026-10-22; owner 2026-10-24: decide after the RAM item - now built, 3,000,000 names would be
   ~36 MB mapped once (about 650 MB across the old copies), so the limit itself is the lever to revisit]** ↳ notes: `dreadwatch-limit.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~1 MB of its flash slot** (68.4 of 69.5
-  MB) — every added file now competes with the slot; measure the staged image, then remove or
-  deduplicate what ships (the 1.7 MB logo PNG, stock pages Reaper replaced, the OUI table shipped
-  twice, unused modules, compression settings; Samba/Tor/speedtest/DLNA are owner calls).
-  **[v3.6.2: rootfs 67,686,400 B, 1,769,472 B spare (the 40585 merge cost ~925 KB); three images
-  recompressed losslessly in canon 2026-10-29 (71 KB); the larger levers are owner calls]**
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** (67.3 of
+  69.5 MB) — every added file competes with the slot; measure the staged image, then remove or
+  deduplicate what ships (the 1.7 MB logo PNG, unused modules, compression settings;
+  Samba/Tor/speedtest/DLNA are owner calls).
+  **[_r8 2026-11-01: rootfs 67,260,416 B, 2,195,456 B spare - the 8 replaced stock pages (36 KB)
+  and the second OUI table (352 KB) gone; next small one: the ROG/TUF theme files, unused on
+  non-ROG/TUF models (~7.5 KB, per model); the larger levers are owner calls]**
   ↳ notes: `image-size-hunt.md`
 - **[P2] Encrypted DNS: split the block into two switches (DoT/DoQ on 853, DoH to known resolvers)**
   (owner, 2026-10-21) — new `reaper_dot_block`, each with its own counter; canaries and the DoH name
@@ -179,7 +203,10 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P4] Advanced tier: TLS interception for URL-level inspection** — opt-in, router CA on every
   device; own threat model first.
   **[idea]** ↳ notes: `encrypted-dns.md`
-- **[P3] Wi-Fi VLANs: the two missing pieces.** **[project]** ↳ notes: `wifi-vlans-residual.md`
+- **[P3] Wi-Fi VLANs: the two missing pieces.**
+  **[project; since 2026-11-01 the LAN > VLAN page keeps an existing multi-VID trunk (stock reset
+  it); choosing several VIDs and the inter-VLAN ACL page not started]**
+  ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes:
   `staged-batch-changes.md`
@@ -232,8 +259,10 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   accepted, no change. **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
 - **[P2] The code-review MEDIUM/LOW tail, batch B.** **[owed: the two deferred items]** ↳ notes:
   `code-review-tail.md`
-- **[P2] Only Gatekeeper knows AiMesh exists** — wants one shared `reaper_aimesh_exempt()`.
-  **[owed — before a fourth enforcement surface]** ↳ notes: `aimesh-exempt-helper.md`
+- **[P3] AiMesh exemption cap: raise 64 to 256** — the shared node list keeps at most 64 MACs (about
+  16 tri-band nodes; a node is 3-5 MACs); past it a node's MACs are not exempt, logged. Only
+  Gatekeeper's table needs a cap; the shared set does not. One constant (`REAPER_AIMESH_MAX`) + the
+  parser test's cap case. **[owner: next release]** ↳ notes: `aimesh-exempt-cap.md`
 - **[P2] Network page: Delete does nothing on a main-network card** — development-based, not
   firmware-wide. ↳ notes: `sdn-mainfh-delete-dead.md`
 - **[P3] Second review of the v3.1.0–v3.1.5 code** — seven slices, reachability before any finding.

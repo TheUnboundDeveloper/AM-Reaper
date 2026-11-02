@@ -100,9 +100,11 @@ int main(int argc, char **argv)
           all(k in sup for k in ("advanced_instant_guard.asp", "advanced_multisubnet_content.asp",
                                  "advanced_vpnclientfusion_content.asp", "advanced_vpnserver_content.asp")))
     # 2026-10-26 (owner): the VLAN Switch / Profile pair is a live stock page again (stock shows it WITH mtlancfg) -
-    # no row may bounce it to SDN.asp
-    check("LAN > VLAN is not bounced: no SUP row for the VLAN Switch / Profile pages",
-          "advanced_vlan_switch_content.asp" not in sup and "advanced_vlan_profile_content.asp" not in sup)
+    # no row may bounce it to SDN.asp. 2026-11-01 (owner review): Reaper_VLAN.asp replaces the pair, which stopped
+    # shipping - both bounce to the kit page, still never to SDN.asp
+    check("LAN > VLAN bounces to the kit page (Switch / Profiles tab), never to SDN.asp",
+          sup.get("advanced_vlan_switch_content.asp") == "Reaper_VLAN.asp"
+          and sup.get("advanced_vlan_profile_content.asp") == "Reaper_VLAN.asp?tab=pf")
     nat = serve("Reaper_LAN.asp", PAGE)
     check("reaper-native page: the link floor and the small self-top bounce only (no SUP, no reaper_content.css, no banner)",
           "if(self===top){var rp=" in nat and "var SUP=" not in nat and "reaper_content.css" not in nat and "Reaper_SecBanner.asp" not in nat)

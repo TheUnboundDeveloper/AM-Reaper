@@ -1,0 +1,120 @@
+From e75c1ed7be74e71b0032238bf1ae4d2955d3e5a0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 2 Nov 2026 09:49:54 -0500
+Subject: [PATCH] rc: Warden lets traffic reach the enabled WireGuard servers'
+ listen ports
+
+Field report (GT-BE98, v3.6.2): with Warden's country blocking and feeds on, a phone on mobile
+data could not reach the router's WireGuard server - Warden dropped the inbound UDP before it got
+there. WireGuard answers only peers whose keys it holds, so its listen port needs no address
+filter in front of it.
+- rc/rwarden.c: apply.sh reads the listen ports of the ENABLED WireGuard servers (1-65535) and
+  REAPER_WARDEN returns UDP to those ports when the destination is the router itself (IPv4:
+  addrtype LOCAL; IPv6: the WAN address), after the manual ban list and before the country sets
+  and feeds. OpenVPN and IPsec are not exempted.
+- rc/services.c: restart_wgs re-runs Warden's apply.sh under the firewall lock, so switching a
+  server on or off or changing its port takes effect without a firewall rebuild.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c  | 43 ++++++++++++++++++++++++++++++++
+ release/src/router/rc/services.c |  8 ++++++
+ 2 files changed, 51 insertions(+)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 62a2d7a898e..438712fba08 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -694,6 +694,35 @@ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+  * by rule through _rt_add, i.e. exactly the old behaviour, and each rule that
+  * still fails is logged and counted as before. The jump into the shared front
+  * chains stays a separate insert (hook.sh, after the wrappers are restored). */
++/* 2026-11-01 (field, GT-BE98 v3.6.2): Warden dropped the WireGuard server's own handshakes from the
++ * internet. It drops by SENDER, and a phone on mobile data has a carrier address that changes all the time
++ * and can sit in a feed or a blocked country - the allow list (addresses) cannot follow it. So the listen
++ * port of every ENABLED server (wgs1..wgsN) is exempt, for packets addressed to the ROUTER only.
++ *
++ * WHY THAT IS SAFE: WireGuard answers nothing it cannot authenticate. A handshake initiation whose mac1 is
++ * not keyed to this server's public key is dropped without a reply, and a handshake completes only for a
++ * configured peer's static key; a sender without a peer key sees exactly what a closed port shows. Warden in
++ * front of it adds no protection there, only lockouts.
++ *
++ * WHAT STAYS FILTERED: everything else. The RETURN sits after the manual ban (a banned sender stays
++ * banned) and before the geo/feed drops; it matches UDP to that port with the ROUTER as destination
++ * (v4: addrtype LOCAL, current across WAN renewals; v6: the router's own addresses, as RW_OUT), so a
++ * port forward of the same number to a LAN host (FORWARD, not local) is filtered as before. Read when
++ * apply.sh runs: restart_firewall and restart_wgs both re-run it (services.c). This is the body; the
++ * unit list is emitted ahead of it (rw_gen_apply). */
++#define RW_SH_WGPORTS_BODY \
++  "; do\n" \
++  "  [ \"$(_nv wgs${_u}_enable)\" = \"1\" ] || continue\n" \
++  "  _p=\"$(_nv wgs${_u}_port)\"\n" \
++  "  case \"$_p\" in ''|*[!0-9]*) continue;; esac\n" \
++  "  [ \"$_p\" -ge 1 ] && [ \"$_p\" -le 65535 ] && WGPORTS=\"$WGPORTS $_p\"\n" \
++  "done\n"
++#ifdef WG_SERVER_MAX
++#define RW_WG_UNITS WG_SERVER_MAX
++#else
++#define RW_WG_UNITS 2		/* shared/vpn_utils.h WG_SERVER_MAX */
++#endif
++
+ #define RW_SH_BATCH_BEGIN \
+   "RWB=" RW_DIR "/batch; rm -f \"$RWB\".*\n" \
+   "_rwq() { _f=$1; shift; _l=''; for _a in \"$@\"; do case \"$_a\" in ''|*[!A-Za-z0-9_./:,+=@%-]*) _l=\"$_l \\\"$_a\\\"\";; *) _l=\"$_l $_a\";; esac; done; echo \"${_l# }\" >> \"$_f\"; }\n" \
+@@ -784,6 +813,14 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "WANIPS=\"$(_nv wan0_ipaddr) $(_nv wan1_ipaddr)\"\n"
+ 	  "V6WAN=\"$(_nv ipv6_wan_addr) $(_nv ipv6_rtr_addr)\"\n");
++	/* the enabled WireGuard servers' listen ports (RW_SH_WGPORTS_BODY) */
++	{
++		int u;
++		fputs("WGPORTS=\"\"\nfor _u in", f);
++		for (u = 1; u <= RW_WG_UNITS; u++)
++			fprintf(f, " %d", u);
++		fputs(RW_SH_WGPORTS_BODY, f);
++	}
+ 	/* reaper (v2.1.x, field: "block count doesn't track actual blocks"): the
+ 	 * live iptables packet counters are the ONLY source of "total blocked" and
+ 	 * "top blocked countries", but the teardown below destroys both chains - and
+@@ -1005,6 +1042,9 @@ static void rw_gen_apply(void)
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_allow src -j RETURN\n"
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_ban src -j RW_DROP\n"
+ 	  "iptables -A REAPER_WARDEN -s \"$LANNET\" -j RETURN\n");	/* Phase 3 #7: quoted, matching :395 */
++	/* WireGuard listen ports, to the router only (RW_SH_WGPORTS_BODY): after the ban, before geo/feeds */
++	fprintf(f,
++	  "for _p in $WGPORTS; do iptables -A REAPER_WARDEN -p udp --dport \"$_p\" -m addrtype --dst-type LOCAL -j RETURN; done\n");
+ 	rw_emit_country_rules(f, "iptables", "REAPER_WARDEN", "src", "RW_DROP", 0);
+ 	fprintf(f,
+ 	  "iptables -A REAPER_WARDEN -m set --match-set rw_threat src -j RW_DROP\n");
+@@ -1048,6 +1088,9 @@ static void rw_gen_apply(void)
+ 	  "ip6tables -A REAPER_WARDEN -s fe80::/10 -j RETURN\n"
+ 	  "ip6tables -A REAPER_WARDEN -s fc00::/7 -j RETURN\n"
+ 	  "[ -n \"$V6LAN\" ] && ip6tables -A REAPER_WARDEN -s \"$V6LAN\" -j RETURN\n");
++	/* WireGuard listen ports, to the router's own v6 addresses only (same list RW_OUT uses) */
++	fprintf(f,
++	  "for _p in $WGPORTS; do for w in $V6WAN; do [ -n \"$w\" ] && ip6tables -A REAPER_WARDEN -p udp --dport \"$_p\" -d \"$w\" -j RETURN; done; done\n");
+ 	rw_emit_country_rules(f, "ip6tables", "REAPER_WARDEN", "src", "RW_DROP", 1);
+ 	fprintf(f,
+ 	  "ip6tables -A REAPER_WARDEN -m set --match-set rw_threat6 src -j RW_DROP\n");
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index e1ea34214e6..c45ee5186fd 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -23853,6 +23853,14 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+ 			if (action & RC_SERVICE_STOP) stop_wgsall();
+ 			if (action & RC_SERVICE_START) start_wgsall();
+ 		}
++		/* reaper 2026-11-01: Warden exempts the ENABLED servers' listen ports (rwarden.c RW_SH_WGPORTS_BODY),
++		 * read when its apply.sh runs. Switching a server on/off or changing its port comes through here
++		 * without a firewall rebuild, so re-run it now - under the firewall lock, as start_firewall does. */
++		if (nvram_match("rwarden_enable", "1") && f_exists("/tmp/rwarden/apply.sh")) {
++			int wlock = file_lock("firewall");
++			(void)(reaper_script_ok("/tmp/rwarden/apply.sh") && system("sh /tmp/rwarden/apply.sh"));
++			file_unlock(wlock);
++		}
+ 	}
+ 	else if (strcmp(script, "wgsc") == 0) {
+ 		if (cmd[1]) {
+-- 
+2.25.1
+

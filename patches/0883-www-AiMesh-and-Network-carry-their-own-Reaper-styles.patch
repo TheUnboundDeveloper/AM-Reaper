@@ -1,0 +1,1215 @@
+From fae445b5357ed3851e0c411a49e891e75a969477 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 2 Nov 2026 09:49:56 -0500
+Subject: [PATCH] www: AiMesh and Network carry their own Reaper stylesheet
+
+Owner (2026-11-01): no stock theme and no injected one. AiMesh.asp and the Network page (SDN.asp
+and the two documents of the network app, SDN/sdn.html and SDN/mlo.html) keep the stock markup
+and link their own stylesheet as the last one in the head - reaper/reaper_content_aimesh.css and
+reaper/reaper_content_network.css, built from reaper_content.css (the rules those pages use).
+Computed styles compared element by element in the mock against the injected skin: AiMesh 2178
+and Network 1623 element states identical. `theme` is forced empty in AiMesh.asp, sdn.html and
+mlo.html, so the stock alternate themes never load (the previous commit stops shipping them and
+gives the four pages httpd mode 2).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/AiMesh.asp             |   4 +-
+ .../www/reaper/reaper_content_aimesh.css      | 550 +++++++++++++++++
+ .../www/reaper/reaper_content_network.css     | 559 ++++++++++++++++++
+ .../www/sysdep/FUNCTION/SDN/SDN/mlo.html      |   4 +-
+ .../www/sysdep/FUNCTION/SDN/SDN/sdn.html      |   4 +-
+ 5 files changed, 1118 insertions(+), 3 deletions(-)
+ create mode 100644 release/src/router/www/reaper/reaper_content_aimesh.css
+ create mode 100644 release/src/router/www/reaper/reaper_content_network.css
+
+diff --git a/release/src/router/www/AiMesh.asp b/release/src/router/www/AiMesh.asp
+index 93c9337eaff..fef2be19bc7 100644
+--- a/release/src/router/www/AiMesh.asp
++++ b/release/src/router/www/AiMesh.asp
+@@ -46,7 +46,7 @@ function getSafeTheme(paramName, allowedValues = ['WHITE', 'ROG', 'TUF', '']) {
+ 	return allowedValues.includes(safePrefix) ? safePrefix : "";
+ }
+ 
+-var theme = getSafeTheme("current_theme").toUpperCase();
++var theme = "";	/* reaper 2026-11-01: one theme - the Reaper stylesheet linked in the head; the stock WHITE/ROG/TUF variants are not shipped */
+ if(theme == "WHITE"){
+ 	$('link').filter("[href*='/aimesh/aimesh_topology.css']").after('<link rel="stylesheet" type="text/css" href="/aimesh/aimesh_topology_' + theme + '.css">');
+ }
+@@ -99,6 +99,8 @@ function change_tab(_index){
+ 	}
+ }
+ </script>
++<!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content_aimesh.css">
+ </head>
+ 
+ <body onload="initial();" onunLoad="return unload_body();" class="bg">
+diff --git a/release/src/router/www/reaper/reaper_content_aimesh.css b/release/src/router/www/reaper/reaper_content_aimesh.css
+new file mode 100644
+index 00000000000..09fdb0898b7
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_content_aimesh.css
+@@ -0,0 +1,550 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
++/* REAPER theme for the AiMesh page (AiMesh.asp and the aimesh/ parts it loads into itself).
++   These stay the stock ASUS pages; this file is their whole and only Reaper look. Each page links it
++   as the last stylesheet in its <head> (AiMesh.asp); httpd injects no stylesheet into them
++   (httpd/reaper_inject.c reaper_own_theme[]) and the stock alternate themes do not ship.
++   Built 2026-11-01 from reaper_content.css: every rule that can match anything this page renders,
++   in the same order, with its comments; rules for other pages left out. Computed styles were
++   compared old vs new on the rendered page: identical. Style this page HERE from now on.
++   The file name keeps the "reaper_content" prefix on purpose: reaper_shell.asp re-injects
++   reaper_content.css into a framed stock page that has no link[href*="reaper_content"].
++   RULE: pure ASCII only - the www packaging minifier strips non-ASCII bytes. */
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++/* ---------- 1. strip stock chrome / geometry ---------- */
++#TopBanner,#mainMenu,#subMenu,#footer,.banner1{display:none!important}
++html{scrollbar-width:thin;scrollbar-color:#E10600 #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:#E10600;border-radius:8px;border:2px solid #000}
++body,body.bg{background:#08080a!important;background-image:
++  radial-gradient(1100px 420px at 20% -12%,rgba(225,6,0,.08),transparent 60%)!important;
++  margin:0!important;padding:16px 20px!important;min-width:0!important;
++  font-family:'Inter','Segoe UI',system-ui,sans-serif}
++table.content{margin:0!important;width:100%!important}
++table.content>tbody>tr>td[width="17"]{display:none!important}
++table.content>tbody>tr>td:has(#mainMenu){display:none!important}
++/* ---------- 2. in-page tab strip: HIDDEN - the reaper shell renders the tabs
++   itself (from menuTree) above the frame, reliably for every page ---------- */
++#tabMenu,.submenuBlock{display:none!important}
++/* page title / description block: force visible as a defense against any
++   stock hide logic - these must always show at the top of the content */
++.formfonttitle,.formfontdesc{display:block!important;visibility:visible!important;opacity:1!important}
++div.container{display:block!important}
++/* ---------- 3. content panels ---------- */
++.FormTitle{background:linear-gradient(180deg,#141418,#0f0f12)!important;
++  border:1px solid rgba(255,255,255,.06)!important;border-radius:14px!important;
++  width:100%!important;max-width:1100px!important;box-shadow:none!important}
++.FormTitle>tbody>tr>td[bgcolor]{background:transparent!important}
++td[bgcolor="#4D595D"]{background:transparent!important}
++.formfonttitle{color:#ECE7DB!important;font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;
++  font-weight:600!important;letter-spacing:.08em!important;text-transform:uppercase!important;font-size:16px!important}
++.splitLine{background:none!important;border-bottom:1px solid rgba(225,6,0,.35)!important;height:1px!important}
++/* settings tables */
++.FormTable,.FormTable_table{background:#0c0c0f!important;border:1px solid rgba(255,255,255,.08)!important;
++  border-radius:8px!important;border-collapse:separate!important;border-spacing:0!important}
++.FormTable th,.FormTable_table th{background:#101014!important;color:#B7B1A4!important;
++  border-color:rgba(255,255,255,.06)!important;font-weight:500!important;text-shadow:none!important}
++.FormTable td,.FormTable_table td{background:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.06)!important}
++/* gradient lives on the ROW: multi-td header rows would restart the gradient
++   per cell (seen on QoS user rules) */
++.FormTable thead tr,.FormTable_table thead tr{
++  background:linear-gradient(90deg,rgba(225,6,0,.25),#141418)!important}
++.FormTable thead td,.FormTable_table thead td{
++  background:transparent!important;color:#ECE7DB!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;border-color:rgba(255,255,255,.08)!important}
++.hintstyle,.hintstyle:link,.hintstyle:visited{color:#ECE7DB!important}
++.hintstyle:hover{color:#E10600!important}
++/* ---------- 4. controls ---------- */
++input[type="text"],input[type="password"],input[type="number"],textarea,
++.input_3_table,.input_6_table,.input_12_table,.input_15_table,.input_18_table,
++.input_20_table,.input_22_table,.input_25_table,.input_30_table,.input_32_table,.input_option{
++  background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;
++  border-radius:6px!important;text-shadow:none!important}
++input[type="text"]:focus,input[type="password"]:focus,textarea:focus{border-color:rgba(225,6,0,.5)!important;outline:none!important}
++input:disabled,.client_input_text_disabled{background:#0c0c0f!important;color:#71767b!important}
++select{background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;border-radius:6px!important}
++input[type="radio"],input[type="checkbox"]{accent-color:#E10600!important}
++.button_gen,.button_gen_long,input.button_gen{background:linear-gradient(180deg,#1a1a1f,#101014)!important;
++  color:#ECE7DB!important;border:1px solid rgba(255,255,255,.14)!important;border-radius:8px!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;box-shadow:none!important}
++.button_gen:hover,.button_gen_long:hover{border-color:#E10600!important;color:#fff!important;
++  background:linear-gradient(180deg,#2a0507,#160204)!important}
++/* log viewer + misc text */
++textarea,.textarea_log,.textarea_log_table{background:#000!important;color:#B7B1A4!important;
++  font-family:Consolas,Monaco,monospace!important;border:1px solid rgba(255,255,255,.1)!important}
++a:link,a:visited{color:#E0A93B}
++a:hover{color:#E10600}
++/* ---------- 5. stock banner-offset shims ---------- */
++table#FormTitle{margin-top:0!important}
++table[bgcolor="#4d595d"],table[bgcolor="#4D595D"],td[bgcolor="#4d595d"]{background:transparent!important}
++/* state.js browser_compatibility() re-wraps the whole content cell in a div
++   with an inline margin-top:-140px AFTER load (tucks content under the stock
++   banner); important beats inline, attribute selector tracks the JS write */
++div[style*="margin-top:-140px"],div[style*="margin-top: -140px"]{margin-top:0!important}
++/* ---------- 6. per-page fixes ---------- */
++/* popup.js showLoading()/showLoadingBar() set inline overflow:hidden on the
++   html element; if the restore path stalls the framed page can never scroll
++   again (VPN Status symptom) - keep vertical scrolling available */
++html{overflow-y:auto!important}
++/* ...but the RWD SPA pages (SDN/MLO/AdGuard/Multi-WAN etc., body.body_rwd) are
++   auto-sized to their content by resize_iframe_height (rwd_component.js:
++   .container height + 30px bottom margin), so the injected body padding pushed
++   them a few px past that and forced a redundant inner scrollbar on top of the
++   shell's page scrollbar. Hide the inner one - the iframe already fits the
++   content and the 30px margin is the buffer. */
++html:has(.body_rwd){overflow-y:hidden!important}
++/* GameBoost Gear Accelerator ON/OFF toggle: labels overflow the 50px halves
++   with the wider Inter body font - condensed Rajdhani at a tighter size */
++.switch .container{font-family:'Rajdhani',system-ui,sans-serif!important}
++.switch .container div div{font-size:15px!important;letter-spacing:.02em}
++/* remaining stock chrome surfaces */
++tr[bgcolor="#4D595D"],tr[bgcolor="#4d595d"]{background:transparent!important}
++/* ---------- 7. recolor: stock blue accents -> reaper palette ----------
++   CONTROLS AND CHROME ONLY. Data visualizations keep their stock colors:
++   bandwidth-monitor gauges/needles/bars, speedtest dial + rainbow scale,
++   traffic charts, signal meters, CPU/RAM core colors, status greens. */
++/* scrollbars: the stock html::-webkit-* rules in form_style.css carry
++   !important and higher specificity than the section-1 pseudo rules, so
++   every page still showed the stock blue thumb - beat them here */
++html::-webkit-scrollbar{display:block!important;width:12px!important;height:12px!important;padding:0!important}
++html::-webkit-scrollbar-thumb{background-color:#E10600!important;border:2px solid #000!important;border-radius:8px!important}
++html::-webkit-scrollbar-track{background-color:#000!important}
++/* toggle switches - all three stock mechanisms. User choice: NEUTRAL GREY,
++   not crimson (an ON toggle in brand-red read as an alert/warning) */
++.switch input:checked~.container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++img.iphone_switch{filter:grayscale(1) brightness(.85)!important}
++/* selected pills / tab chips (AiProtection, Parental Controls, AiDisk) */
++.clicked{background-color:#E10600!important;box-shadow:0 0 6px rgba(225,6,0,.45)!important}
++.click:hover{background-color:rgba(225,6,0,.45)!important;box-shadow:none!important}
++.folderClicked{color:#E10600!important}
++/* dropdown suggestion lists + clickable rows: stock #3366FF hover */
++div[id$="_Block_PC"] div:hover,#ClientList_Block a:hover,#WDSAPList div:hover,
++.clientlist_dropdown div:hover,.clientlist_dropdown a:hover,
++.dns_server_list_dropdown div:hover,.dns_server_list_dropdown a:hover,
++#QoSList_Block div:hover,.table_clientlist_item:hover,
++.WL_MAC_Block div:hover,.WL_MAC_Block a:hover,
++.StatusClickHint_mouseover{background-color:#B3000C!important;color:#fff!important}
++/* buttons still on the stock blue gradient */
++.button_gen_touch,.titlebtn:hover,.button_gen_dis:hover,
++.confirm_button_gen_long_left:hover,.confirm_button_gen_long_right:hover{
++  background:linear-gradient(180deg,#2a0507,#160204)!important;
++  border-color:#E10600!important;color:#fff!important}
++.actionButtonOK{background-color:#E10600!important;color:#fff!important}
++.confirm_button:hover,.confirm_button:active{background:#B3000C!important}
++.statustext{color:#B7B1A4!important}
++.sub_title{color:#ECE7DB!important}
++.band_block{border-color:#E10600!important;color:#FFF!important}
++/* jquery-ui slider (network map and friends) */
++.ui-slider .ui-slider-range{background:#E10600!important}
++.ui-slider .ui-slider-handle{background:#ECE7DB!important;border-color:#E10600!important}
++/* popup containers on the stock blue-tinted gradient */
++.popup_container .popup_content_container{background:#0f0f12!important;border:1px solid rgba(225,6,0,.35)!important}
++/* InternetSpeed wraps the speedtest in a bare div#FormTitle with an inline
++   grey background */
++div#FormTitle{background-color:#0f0f12!important}
++/* ---------- 8. teal sweep: remaining stock teal/grey-green surfaces ----------
++   yellow hint/value text stays YELLOW by design - only the teal surfaces
++   behind text and entry fields go dark */
++/* entry fields section 4 missed */
++.input_macaddr_table,.devicepin,.top-input,.query_list,.textarea_ssh_table,
++.IPaddr,.IPaddr input,.input_option_left,.input_option optgroup,select optgroup{
++  background:#000!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.12)!important;text-shadow:none!important}
++/* dropdown list bodies (items were teal #576D73 / white #EFEFEF) */
++#QoSList_Block,#QoSList_Block div,.dns_server_list_dropdown,.dns_server_list_dropdown div,
++.clientlist_dropdown,.clientlist_dropdown div,
++div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
++  background-color:#0c0c0f!important;color:#ECE7DB!important}
++/* teal panels / containers */
++.MainContent,.content_bg,.list_bg,.block_bg,.tab_info_bg,.analysis_bg,.pop_div_bg,
++.qrcodepanel,.qrcodepanelpad,.eula_panel_container,.tm_title_bg,.aidisk1_table,
++.list_table,.textarea_bg,.FormTitle thead,.popup_bg,.popup_bar_bg,
++.s46_ports,.s46_ports_pf,.primary_wan_connected,.secondary_wan_connected,
++.single_wan_connected{background:#0f0f12!important}
++/* teal tab strips still drawn in-page */
++.tab,.tab_item,.tab_NW,.block_filter{background:#141418!important}
++.tab:hover,.tabClicked,.tab_item:hover,.tab_item_click,.block_filter_pressed,
++.vpnClientTitle_td_click{background:rgba(225,6,0,.22)!important}
++#sortable div table tr:hover{background:#2a0507!important}
++/* ---------- 9. network map: index.asp cards + device-map/* iframes ---------- */
++.NM_table{background-color:#0f0f12!important;border:1px solid rgba(255,255,255,.06)!important}
++[bgcolor="#444f53"],[bgcolor="#444F53"]{background:#141418!important}
++#iconInternet,#iconInternet_primary,#iconInternet_secondary,#iconRouter,#iconClient,
++#iconWebcam,#iconRemote,.iconPrinter,.iconmodem,
++.iconAMesh,.iconAMesh_dis{
++  filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)}
++.statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
++.table-header{background:#101014!important}
++.card_table td,.clientlist_content,.usericons_content,.client_upload_div,
++.clientlist_viewlist{background-color:#0f0f12!important}
++.nav li{background-color:#141418!important}
++.nav li:hover{background-color:#B3000C!important}
++.Tablehead,.Tabletitle td,.top-message,.top-message1,.top-messgae,.top-messgaea,
++.top-messgae1,.top-messgae2,.top-messgae3{background-color:#101014!important;color:#ECE7DB!important}
++.clients span,.style1{color:#ECE7DB!important}
++.input{background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important}
++.button{background:linear-gradient(180deg,#1a1a1f,#101014)!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.14)!important}
++.client_tag{background-color:#1a1a1f!important}
++.clientIcon,.clientIcon_clicked,.clientIcon_no_hover,.vendorIcon_no_hover,
++.client_canvasUserIcon,.imgUserIcon_card,.imgUserIcon_viewlist,
++.custom_icon_category .category_content div{background-color:#141418!important}
++.clientIcon:hover,.clientIcon.clicked,.imgUserIcon_card:hover,
++.custom_icon_list_bg .custom_icon_category .category_content div:hover{
++  background-color:rgba(225,6,0,.35)!important}
++.port_status_bg:before,.port_status_bg .label_W_bg:before{background:#141418!important}
++.usb_text,.status{color:#B7B1A4!important}
++/* v1.2.4a: the mounted-disk label (.usb_text.plugin) used white text on a heavy #000
++   text-shadow that read as a black box; bone text + a light shadow instead. */
++.usb_text.plugin{color:#ECE7DB!important;text-shadow:0 1px 2px rgba(0,0,0,.55)!important}
++/* ---------- 10. visual-audit fixes (113-page stock-vs-reaper review) ---------- */
++/* AiProtection event/activity cards + tables paint their grey fills via
++   INLINE style attributes, which the [bgcolor] rules never matched */
++[style*="background-color:#444f53"],[style*="background-color: #444f53"],
++[style*="background-color:#444F53"],[style*="background:#444f53"],
++[style*="background: #444f53"]{background-color:#141418!important}
++.edit_text_content,.edit_text_tool_combine_select,
++.edit_text_tool_combine_input{background:#000!important;color:#ECE7DB!important}
++/* ---------- 11. AiMesh (AiMesh.asp + device-map/amesh.asp) - own CSS bundle
++   (aimesh/aimesh_topology.css etc.), untouched by earlier sections.
++   Chrome/controls only: panels, tabs, buttons, dropdowns, radios; product
++   photos and the intro illustration stay stock ---------- */
++/* steel gradient buttons -> dark */
++.node_btn_control > div,.manage_btn{
++  background-image:linear-gradient(-180deg,#1d1d22 0%,#101014 100%)!important;
++  border:1px solid rgba(255,255,255,.14)!important}
++.node_btn_control > div:hover,.manage_btn:hover{
++  border-color:rgba(225,6,0,.7)!important;color:#fff!important}
++/* Clients / Network / Management category tabs */
++.category_bg{background-image:linear-gradient(#17171b 1%,#101014 100%)!important}
++.category_bg.clicked{background-image:linear-gradient(#3a0a0c 1%,#17171b 100%)!important}
++/* client-list All/Wired/Wireless tab strip */
++.client_tab_bg div.clicked{background-image:linear-gradient(#3a0a0c 1%,#17171b 100%)!important}
++/* grey hover slabs */
++.info_right,.jstree-default .jstree-hovered,
++.client_list_bg .client_action_bg > span:hover{background:#1b1b20!important}
++/* node dropdown */
++.custom_select_selected,.custom_pure_text{background-color:#141419!important;
++  border-color:rgba(255,255,255,.12)!important}
++.custom_select_items{background-color:#0d0d10!important}
++.custom_select_items div:hover{background-color:rgba(225,6,0,.15)!important}
++/* content slabs */
++.item_bg,.item_space,.backhaul_info .backhaul_bg{background-color:#141419!important}
++/* blue radio dot + optimize badge -> crimson */
++.custom_radio_label.checked:before{background-color:#E10600!important}
++.product_icon_container.optimize{background:linear-gradient(315deg,rgba(225,6,0,0) -2.81%,#E10600 42.25%,#7a0300 67.78%,rgba(122,3,0,0) 101.56%)!important}
++/* cyan svg sprite icons -> crimson (tab glyphs, connect-type badges).
++   NOT the node product images (.amesh_router_image_web = real photos) */
++.category_bg > div:before,
++[class*="client_connect_icon"],
++.amesh_each_router_icon_bg.amesh_router_icon{
++  filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)}
++/* the big steel content panels + node-list blue accents */
++#manage_block,#client_block{background-color:#101014!important}
++.card_block_bg{background:#141419!important;border:1px solid rgba(255,255,255,.08)!important}
++/* blue location_topology.svg node glyph in the tree -> crimson (filter the
++   whole <i>, the sprite may sit on the element or its :before; keep real
++   product photos untouched) */
++.jstree-themeicon.topology_icon:not(.cloud_product_icon){
++  filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)}
++#jstree::-webkit-scrollbar-thumb{background-color:#E10600!important}
++.common_content_bg{background:#141419!important}
++.jstree-clicked .product_icon_container{
++  border:1px solid #E10600!important;
++  box-shadow:0 0 2px 0 rgba(0,0,0,.6),0 0 2px 2px rgba(225,6,0,.35),0 0 4px 0 rgba(0,0,0,.2)!important}
++/* AiMesh top tabs (Topology / System Settings): the generic .clicked rule
++   painted a bright-red FILL; make them read as tabs with a maroon underline */
++.aimesh_tab > span{color:#B7B1A4!important;background:transparent!important;box-shadow:none!important}
++.aimesh_tab > span.clicked{color:#ECE7DB!important;background:transparent!important;box-shadow:none!important}
++.aimesh_tab > span.clicked:before{border-bottom:2px solid #B3000C!important}
++/* v1.4.7/1.4.9a: the location photo behind the router/node name -> the ASUS logo.
++   v1.4.9a extends the logo band DOWN behind the room selector so the dropdown sits
++   ON the image, its bottom landing a few px above the divider under the room row.
++   Painted as a ::before layer behind the (now transparent) icon/space/location rows
++   so NO content moves; the model name/MAC and the room dropdown render on top. */
++.primary_info_bg{position:relative}
++.primary_info_bg::before{content:"";position:absolute;left:0;right:0;top:0;
++  height:234px;   /* KNOB: raise toward / lower away from the divider under the room selector (target 2-5px above it) */
++  background:url("/images/RLogo.png") no-repeat center;background-size:100% 100%;
++  border-radius:4px 4px 0 0;z-index:0;pointer-events:none}
++.primary_info_bg > .icon_bg{height:176px!important;background:transparent!important;position:relative;z-index:1}
++.primary_info_bg > .icon_bg .translucent_bg{background:none!important;height:100%!important}
++.primary_info_bg > .item_space{background:transparent!important;position:relative;z-index:1}
++.primary_info_bg > .item_bg.location{background:transparent!important;position:relative;z-index:1}
++/* 2026-08-11: centre the model name over the MAC line. Stock right-aligns both
++   (.model_info_bg text-align:right, .model_name justify-content:flex-end) inside
++   a shrink-to-fit absolute box, so the two lines only line up on their right
++   edge - "RT-BE96U" (24px) is narrower than "MAC | 10:7C:..." (12px) and hangs
++   off to the right of it. Centring BOTH axes means whichever line is wider sets
++   the box and the other centres against it, so it also holds for a long model
++   name (GT-BE98_PRO) where the widths invert. The box stays pinned upper-right;
++   nothing moves but the alignment inside it. */
++.model_info_bg{text-align:center!important}
++.model_info_bg > .model_name{justify-content:center!important}
++/* ---------- 12. on-device review 2026-07-04: remaining stock surfaces ---------- */
++/* tableApi data tables (js/table/table.css: thead td #4D595D teal, th #1f2d35)
++   used by DHCP leases, Instant Guard Connection Status, Port Trigger list,
++   Network Analysis result, and other log/status pages */
++.tableApi_table{border-color:rgba(255,255,255,.08)!important}
++.tableApi_table thead td,.tableApi_table thead th{
++  background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important}
++.tableApi_table th{background-color:#101014!important;color:#B7B1A4!important}
++.tableApi_table td{background-color:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.08)!important}
++.tableApi_table td span{color:#FFCC00!important}
++.tableApi_table tr:nth-child(even) td{background-color:#101014!important}
++/* Network Map "View List" popup (device-map/clientlist.html): the client list
++   still rendered on stock teal */
++.clientlist_viewlist,.clientlist_viewlist td,.clientlist_viewlist th,
++.viewlist_content,.clientlist_view_block,#clientlist_viewlist_content,
++.viewlist_table,.viewlist_table td{
++  background-color:#0f0f12!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.08)!important}
++.clientlist_viewlist thead td,.viewlist_table thead td,.viewlist_table thead th{
++  background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important}
++/* ---------- 13. SDN / MLO SPA (www/SDN/sdn.css + mlo.css) - own bundle, not
++   covered by earlier sections. FOUNDATIONAL palette override: card/border
++   teal-grey #45535C -> dark, blue accents #2597FF/#2ED3F1/#00BFFF -> crimson,
++   section-label + selected states. Component-heavy SPA; VALIDATE ON DEVICE. */
++/* card / container surfaces + borders */
++.profile_item_container,.feature_desc_container,.cb_item_container,
++.client_container,.category_container,.bg_template_container,
++.item_scenarios_container,.VPN_list_container,.dns_list_container,
++.clientlist_container,.dhcp_rule_container,.bandwidth_item,
++.wizard_list_bg,.faq_link_bg,.main_content_container,.sub_content_container{
++  background-color:#141419!important;border-color:rgba(255,255,255,.10)!important}
++[style*="border: 1px solid #45535C"],[style*="border:1px solid #45535C"],
++[style*="border-bottom: 1px solid #45535C"]{border-color:rgba(255,255,255,.10)!important}
++/* blue accents -> crimson (selected borders, links, highlight text) */
++[style*="#2597FF"],[style*="#2597ff"]{border-color:#E10600!important;color:#E10600!important}
++.item_text_container .main_info,.gaming_profile_list_title,
++.sdn_section_title,.category_title,.feature_title{color:#ECE7DB!important}
++/* the blue section labels (MAIN NETWORK / GUEST NETWORK PRO / CHOOSE A DEFINED) */
++.title_text,.section_title,.list_title,.group_title{color:#B7B1A4!important}
++/* SPA toggle (was blue #2597FF) -> neutral grey, matching global toggle choice */
++.switch_bg.on,.sdn_switch.on,.switch_container.on,input.sdn_switch:checked~.switch_bar{
++  background-color:#6b6b72!important}
++/* cyan detail text #2ED3F1 */
++[style*="#2ED3F1"],[style*="#2ed3f1"]{color:#E0A93B!important}
++/* MLO page (mlo.css): cyan #00FBBD accent + banner */
++[style*="#00FBBD"],[style*="#00fbbd"]{color:#E0A93B!important}
++/* NB: SDN.asp + MLO.asp are also recolored at the BUNDLE level (www/SDN/
++   sdn.css + mlo.css hex values swapped) - that is authoritative; this section
++   is a backstop for inline styles / injected-CSS timing. */
++/* ---------- 14. on-device review round 2 (2026-07-04) ---------- */
++/* AiMesh right-panel client list icons: stock paints teal #596E74 on BOTH
++   .default_icon AND .user_icon tiles. Make both black (a real uploaded photo
++   still covers the tile, so black only shows around device-type glyph icons -
++   which is the wanted "black around the red icon" look). */
++.client_list_bg .client_icon_bg.default_icon,
++.client_list_bg .client_icon_bg.user_icon{background-color:#000!important}
++/* ---------- 15. Phase-B migration: recolors relocated from now-pristine stock
++   CSS (form_style.css, index_style.css). The stock files revert to upstream; the
++   reaper look for the selectors NOT already covered by earlier sections lives
++   here. Body/.banner1/.menu are already themed or hidden (section 1). ---------- */
++/* index_style.css: the .content wrapper carried a repeating middown_bg.png texture;
++   neutralize it to the theme base. .tab border was stock light-blue #8AA6BE. */
++table.content{background-image:none!important;background-color:#08080a!important}
++.tab{border:1px solid rgba(225,6,0,.30)!important}
++/* ---------- 16. Phase-B migration: device-map/clientlist.css + device-map.css
++   appended reaper block relocated here (those files revert to pristine). Client
++   icon tiles are already dark via section 9; these are the selectors section 9/12
++   did not cover: red device/vendor glyphs + the "View List" modal (.RT skin). ---------- */
++.clientlist_viewlist i[class^='type'],.clientlist_viewlist i[class*=' type'],.clientlist_viewlist i[class^='vendor-icon'],.clientlist_viewlist i[class*=' vendor-icon']{background-color:#E10600!important}
++.clientlist_viewlist .client_icon>div{background-color:#000!important;border-color:#330000!important;box-shadow:none!important}
++.clientlist_viewlist .card,.clientlist_viewlist .card.client_list .table,
++.clientlist_viewlist.RT .card.client_list .table,.clientlist_viewlist .card.client_list table,
++.client_info_detail_block,.client_info,.card-body,.card-header{background-color:#0f0f12!important;color:#ECE7DB!important}
++.clientlist_viewlist .card.client_list table,.client_list .mac-repeat{background-color:#0c0c0f!important}
++.segmented_picker,.segmented_picker_option{background:#141418!important;color:#B7B1A4!important}
++.segmented_picker_option.active{background:#2a0507!important;color:#ECE7DB!important}
++.input-client-name,.clientlist_viewlist.RT .input-client-name{background:#000!important;color:#ECE7DB!important;border-color:rgba(255,255,255,.14)!important}
++.ipMethodTag,.clientlist_viewlist.RT .ipMethodTag{background-color:#2a2a30!important;color:#ECE7DB!important}
++.card-header .arrow_icon,.clientlist_viewlist.RT .arrow_icon{background-color:#ECE7DB!important}
++.clientlist_viewlist .btn-export{background:#E10600!important;color:#fff!important}
++/* ---------- 17-19. SDN/MLO SPA bundle migration (2026-07-05) ----------
++   Recolors relocated from the now-pristine SPA bundle files (RWD_UI/
++   rwd_component.css, SDN/sdn.css, SDN/mlo.css). The httpd serve-time filter
++   injects this stylesheet into sdn.html/mlo.html AFTER their base bundle links
++   (before </head>), so these !important rules win. The runtime theme-variant
++   injection (rwd_component_<theme>.css / sdn_<theme>.css) is gated on
++   current_theme in {WHITE,ROG,TUF}; RT-BE96U runs the default (empty) theme, so
++   no variant CSS loads to override this. Selectors+values are the exact reaper
++   hex-swap that was on-device-validated as the bundle edit; supersedes the
++   section-13 backstop for the SPA. VALIDATE ON DEVICE after the next flash. */
++/* 17. SPA migration: RWD_UI/rwd_component.css (SDN/MLO + RWD_UI pages) */
++:root, :host{--icon-color:#B7B1A4!important}
++.profile_setting_item{background-color:rgb(20, 20, 25)!important}
++.profile_setting_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_setting_item > .title, .profile_setting_two_item .title{color:rgb(183 177 164)!important}
++.profile_setting_item > .title a:link, .profile_setting_two_item .title a:link{color:rgb(183 177 164)!important}
++.profile_setting_item.nowrap.more_item .input_container{color:rgb(183 177 164)!important}
++.profile_setting_two_item{background-color:rgb(20, 20, 25)!important}
++.profile_setting_two_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_title_item{color:rgba(183, 177, 164, 0.87)!important}
++.profile_title_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_btn_container{border:1px solid rgb(225 6 0)!important}
++.profile_btn_container:hover{background-color:rgb(225 6 0)!important}
++.category_slide_title{background-color:rgb(20, 20, 25)!important;color:rgba(183, 177, 164, 0.87)!important}
++.category_slide_title.expand{background:rgba(225, 6, 0, 0.1)!important}
++.category_slide_title > .title_cntr:before{border-top:3px solid rgba(183, 177, 164, 0.87)!important;border-right:3px solid rgba(183, 177, 164, 0.87)!important}
++.popup_bg{background-color:#2A2A30!important}
++.hidden_mask{background:rgb(42, 42, 48)!important}
++.popup_container .popup_content_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600!important}
++.popup_container .popup_content_container .category_slide_title.expand{background:rgba(225, 6, 0, 0.1)!important}
++.customize_alert .action_btn_container .ok, .customize_alert.confirm .action_btn_container .ok{border:1px solid rgb(69 69 75)!important;color:rgb(183 177 164)!important}
++.del_profile .desc{color:rgb(183 177 164)!important}
++.del_profile .action_btn_container .del{border:1px solid rgb(69 69 75)!important;color:rgb(183 177 164)!important}
++.del_profile .action_btn_container .cancel, .customize_alert.confirm .action_btn_container .cancel{background:rgb(225 6 0)!important}
++.textInput, .custom_select_container, .textareaInput{border:1px solid rgba(113, 118, 123, 0.4)!important}
++.custom_select_container .select_options_container, .custom_select_container .select_and_search_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600!important}
++.custom_select_container .select_options_container div.selected{color:rgb(225, 6, 0)!important}
++.custom_select_container .select_options_container div.selected:before{border-top:2px solid rgb(225, 6, 0)!important;border-right:2px solid rgb(225, 6, 0)!important}
++.custom_select_container .select_options_container div:hover{background:rgba(183, 177, 164, 0.2)!important}
++.custom_select_container .select_options_container div.disabled{color:rgba(183, 177, 164, 0.6)!important}
++.custom_select_container .select_options_container::-webkit-scrollbar-track, .textareaInput::-webkit-scrollbar-track{border:4px solid rgb(42, 42, 48)!important;background-color:rgb(42, 42, 48)!important}
++.custom_select_container .select_options_container::-webkit-scrollbar-thumb, .textareaInput::-webkit-scrollbar-thumb{background-color:rgb(42, 42, 48)!important;border:2px solid rgb(42, 42, 48)!important}
++.icon_switch.off{background:rgba(113, 118, 123, 1)!important}
++.icon_switch.on{background:#6B6B72!important}
++.icon_switch:before{background:rgb(42 42 48)!important}
++.icon_checkbox{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.icon_checkbox.clicked{background-color:rgb(225, 6, 0)!important;border:1px solid rgb(225, 6, 0)!important}
++.icon_checkbox.closed:before, .icon_checkbox.closed:after{background-color:rgb(183 177 164)!important}
++.icon_checkbox.clicked.disabled{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.icon_checkbox.clicked.disabled:before{border-top:2px solid rgb(183 177 164)!important;border-right:2px solid rgb(183 177 164)!important}
++.rwd_icon_radio{border:1px solid rgb(183 177 164)!important}
++.rwd_icon_radio.clicked, .rwd_icon_radio.disabled{border:2px solid rgb(225 6 0)!important}
++.rwd_icon_radio.clicked:before, .rwd_icon_radio.disabled:before{background-color:rgb(225 6 0)!important}
++.rwd_icon_radio.disabled{border:2px solid #45454B!important}
++.rwd_icon_radio.disabled:before{background-color:#45454B!important}
++.icon_more{border:1px solid rgb(225 6 0)!important}
++.icon_more:hover{background-color:rgb(225 6 0)!important}
++.switch_text_container > .switch_text_item{color:rgb(183 177 164)!important;border:1px solid rgba(113, 118, 123, 0.4)!important}
++.switch_text_container > .switch_text_item:last-child{border-right:1px solid rgba(113, 118, 123, 0.4)!important}
++.switch_text_container > .switch_text_item.selected{background-color:rgb(225 6 0)!important;border-color:rgb(225 6 0 / 20%)!important}
++.cb_icon{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.cb_icon.clicked{background-color:rgb(225, 6, 0)!important;border:1px solid rgb(225, 6, 0)!important}
++.error_hint_container{background:#141419!important}
++.error_hint_container > .action_cntr > .ok{color:#E10600!important}
++.profile_setting_item.radio_item .title{color:rgba(183, 177, 164, 0.87)!important}
++.profile_setting_item.radio_item .title a:link{color:rgba(183, 177, 164, 0.87)!important}
++.rwd_radio_container{border:1px solid rgba(183,177,164,0.4)!important;color:rgba(183,177,164,0.6)!important}
++.rwd_radio_options_container .rwd_radio_container .rwd_icon_radio{border:1px solid rgba(183,177,164,0.4)!important}
++.rwd_radio_options_container .rwd_radio_container.selected{border:1px solid rgb(225, 6, 0)!important}
++.rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio{border:1px solid rgb(225, 6, 0)!important}
++.rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio:before{background-color:rgb(225, 6, 0)!important}
++@media (max-width: 575px){
++	.popup_bg{background:#141419!important}
++	.popup_container .popup_content_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419!important}
++	.popup_container .custom_select_container .select_options_container, .popup_container .custom_select_container .select_and_search_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419!important}
++}
++.client_container .client_icon_container.default_icon, .client_container .client_icon_container.user_icon, .client_container .client_icon_container.vendor_icon{background-color:#2a2a30!important}
++.client_content_container .conn_type.LAN{background-color:#B7B1A4!important}
++.feature_desc_container .title{color:rgb(225, 6, 0)!important}
++.btn_back_container{color:rgb(225, 6, 0)!important}
++.gaming_profile_list_title{color:rgb(183, 177, 164)!important}
++.sdn_gaming_client_container{background:linear-gradient(135deg, #B3000C, #db0a2c)!important}
++.profile_setting_item .title span.mlo_band{color:#E0A93B!important}
++.checkbox_option.mlo_band .option_text:after{color:#E0A93B!important}
++/* ---------- 20. VPN Server page + Network Analysis (v1.2.3) ---------- */
++/* Advanced_VPNServer_Content.asp is a thin wrapper whose vpns_iframe loads the
++   VPNS_V2 SPA (/VPN/vpns.html). The wrapper injects THIS stylesheet into that
++   nested frame (see the page's reaperThemeFrame), so the SPA's rwd_component
++   classes are already themed by section 17; these cover the wrapper chrome +
++   the SPA's top-level containers that section 17 does not. */
++.rwd_iframe{width:100%!important;border:0!important;background:transparent!important;display:block!important}
++body.bg,.container.no_highlights,.content_container{background:transparent!important}
++.function_desc_container,.hidden_static_text{color:#B7B1A4!important}
++.svr_list_title_container,.svr_list_title,.title{color:#ECE7DB!important}
++/* ---------- 21. VPN Server + VPN Client SPA server-list cards (v1.2.4) ----------
++   vpns.html / vpnc.html inject this file into their nested iframe. The shared
++   RWD_UI classes are themed by section 17; these are the vpns/vpnc-SPECIFIC
++   server-list + card classes still on stock teal/blue (#32393B/#1E2A41/#667881/
++   #248DFF). VPN-specific selectors only (svr_*, add_acc, banner_*) so nothing
++   bleeds onto other RWD_UI pages. AUTH-GATED - validate on device. */
++.svr_list_title,.svr_list_num,.svr_type_text{color:#ECE7DB!important}
++.svr_type_title{color:#B7B1A4!important}
++/* detail-panel toggles (Network Place (Samba) Support, etc.) are the class-toggled
++   .switch (not the input-based one) and turned BLUE (#248DFF) on -> neutral grey
++   per standing rule 11. Scoped to the VPN-SPA row classes so nothing else bleeds. */
++.profile_setting_item .switch.on,.switch_item .switch.on{background:#6B6B72!important}
++.profile_setting_item .switch.off,.switch_item .switch.off{background:#45454B!important}
++#svgContainer,#tableContainer{margin-left:auto!important;margin-right:auto!important}
++/* ---------- 22. VPN SPA palette sweep + nested-frame CSS 404 fix (v1.6.4) ----------
++   The reaperThemeFrame hook in the two VPN wrapper pages requested this file
++   with a ?t= cache-bust query; httpd 404s querystringed static paths, so the
++   hook NEVER loaded this file into vpnc.html (which has no head close tag, so
++   serve-time injection cannot reach it either) - sections 20-21 never rendered
++   there. Owner-confirmed live 2026-07-19 (devtools: 404 + stock blue button).
++   Fixed by dropping the query in both wrappers; these rules cover the stock
++   blues and cyan the GPL 102_39995 SPA carries beyond sections 20-21.
++   AUTH-GATED - validate on device. */
++/* primary action buttons (stock 0091FF / 0085FF) */
++.action_container .btn_container,.del_profile .action_btn_container .del,
++.customize_alert .action_btn_container .ok{background:#E10600!important;color:#fff!important}
++/* checked checkbox / selected radio + option card: selection accent */
++.checkbox.on{background-color:#E10600!important;box-shadow:0 0 0 1.5px rgba(225,6,0,.7)!important}
++.radio_options_container .radio_container.selected,
++.btn_options_container .btn_container.selected{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon:before{background-color:#E10600!important}
++/* text input focus ring */
++.textInput:focus,.textareaInput:focus{box-shadow:0 0 3px rgba(225,6,0,.6)!important;border-color:rgba(225,6,0,.6)!important}
++/* dropdown selected option + its check chevron */
++.custom_select_container .select_options_container div.selected{color:#E10600!important}
++.custom_select_container .select_options_container div.selected:before{border-color:#B7B1A4!important}
++/* connected-ok status text reads jade, not stock blue */
++.svr_item_container.internet,
++.svr_item_container.active .svr_item_sub_info .vpn_status,
++.svr_item_container.internet.connected .svr_item_sub_info,
++.wan_status_container.connected .connect_status_text{color:#4FB286!important}
++/* the small title indicator bar above "Internet" */
++.wan_status_container .connect_title:before{border-top-color:#E10600!important}
++/* ---------- v1.6.6b overflow fixes (bugs C + D) ---------- */
++/* BUG C: WAN-page "DNS List" flyout (#dns_list_Block.clientlist_viewlist) inherits
++   the stock device-map.css rule (position:absolute; margin-top:-920px; height:auto;
++   overflow:auto) tuned for the short device-map list. The tall six-category WAN DNS
++   list grows past the viewport and height:auto defeats its own overflow, so the lower
++   rows are clipped/unreachable. Re-anchor it to the viewport with a real inner scroll. */
++#dns_list_Block.clientlist_viewlist{
++  position:fixed!important;
++  top:50%!important;left:50%!important;
++  margin-top:0!important;margin-left:0!important;
++  transform:translate(-50%,-50%)!important;
++  max-height:88vh!important;overflow-y:auto!important}
++/* static-DHCP client picker (LAN > DHCP Server, owner-directed v1.7.4). The
++   Manually-Assigned-IP dropdown (#ClientList_Block_PC) inherits .clientlist_dropdown
++   (device-map.css:990): position:absolute + height:auto + overflow-y:auto - height:auto
++   defeats its own overflow, and the shell frame auto-sizes to BODY height only, so a
++   DOWNWARD list grows past the frame and clips. The first fix escaped the clip by
++   centering it in the viewport (position:fixed), which detached it far from the button
++   (owner-reported on v1.7.3 metal). FIX: anchor it to its own input cell and open it
++   UPWARD - the list then overlays the already-rendered DHCP config above the input, so
++   the frame never has to grow (no clip) and it sits right on the pull-arrow. Capped
++   height + inner scroll for long client lists. Scoped via :has() to this page's unique
++   static-lease MAC input; ~20 other pages share the id and keep their stock anchoring. */
++body:has(input[name="dhcp_staticmac_x_0"]) td:has(> input[name="dhcp_staticmac_x_0"]){
++  position:relative!important}
++body:has(input[name="dhcp_staticmac_x_0"]) #ClientList_Block_PC.clientlist_dropdown{
++  position:absolute!important;
++  top:auto!important;
++  bottom:100%!important;          /* open upward, directly above the input/button */
++  left:0!important;
++  margin:0 0 4px 0!important;
++  max-height:260px!important;
++  overflow-y:auto!important;
++  z-index:1000!important}
++/* BUG D: Network Map status iframe (#statusframe) is pinned to 760px but the inner
++   clients.asp document (client rows + tall NM min-heights) is taller and has no inner
++   scroll region, so the iframe's own scrollbar stacks against the page scrollbar = a
++   persistent double/stray bar. Give the client list its own scroll so the iframe stops
++   overflowing (reaper_content.css is loaded inside the statusframe document). */
++#client_list_Block{max-height:600px!important;overflow-y:auto!important;overflow-x:hidden!important}
+diff --git a/release/src/router/www/reaper/reaper_content_network.css b/release/src/router/www/reaper/reaper_content_network.css
+new file mode 100644
+index 00000000000..06560b9a60c
+--- /dev/null
++++ b/release/src/router/www/reaper/reaper_content_network.css
+@@ -0,0 +1,559 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper. */
++/* REAPER theme for the Network page (SDN.asp, the network app it frames, /SDN/sdn.html, and the MLO
++   view that app opens, /SDN/mlo.html).
++   These stay the stock ASUS pages; this file is their whole and only Reaper look. Each page links it
++   as the last stylesheet in its <head> (SDN.asp, SDN/sdn.html and SDN/mlo.html); httpd injects no stylesheet into them
++   (httpd/reaper_inject.c reaper_own_theme[]) and the stock alternate themes do not ship.
++   Built 2026-11-01 from reaper_content.css: every rule that can match anything this page renders,
++   in the same order, with its comments; rules for other pages left out. Computed styles were
++   compared old vs new on the rendered page: identical. Style this page HERE from now on.
++   The file name keeps the "reaper_content" prefix on purpose: reaper_shell.asp re-injects
++   reaper_content.css into a framed stock page that has no link[href*="reaper_content"].
++   RULE: pure ASCII only - the www packaging minifier strips non-ASCII bytes. */
++@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
++@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
++@font-face{font-family:'Inter';font-weight:500;font-display:swap;src:url('/fonts/inter-500.woff2') format('woff2')}
++/* ---------- 1. strip stock chrome / geometry ---------- */
++#TopBanner,#mainMenu,#subMenu,#footer,.banner1{display:none!important}
++html{scrollbar-width:thin;scrollbar-color:#E10600 #000}
++::-webkit-scrollbar{width:12px;height:12px}
++::-webkit-scrollbar-track{background:#000}
++::-webkit-scrollbar-thumb{background:#E10600;border-radius:8px;border:2px solid #000}
++body,body.bg{background:#08080a!important;background-image:
++  radial-gradient(1100px 420px at 20% -12%,rgba(225,6,0,.08),transparent 60%)!important;
++  margin:0!important;padding:16px 20px!important;min-width:0!important;
++  font-family:'Inter','Segoe UI',system-ui,sans-serif}
++table.content{margin:0!important;width:100%!important}
++table.content>tbody>tr>td[width="17"]{display:none!important}
++table.content>tbody>tr>td:has(#mainMenu){display:none!important}
++/* ---------- 2. in-page tab strip: HIDDEN - the reaper shell renders the tabs
++   itself (from menuTree) above the frame, reliably for every page ---------- */
++#tabMenu,.submenuBlock{display:none!important}
++div.container{display:block!important}
++/* ---------- 3. content panels ---------- */
++.FormTitle{background:linear-gradient(180deg,#141418,#0f0f12)!important;
++  border:1px solid rgba(255,255,255,.06)!important;border-radius:14px!important;
++  width:100%!important;max-width:1100px!important;box-shadow:none!important}
++.FormTitle>tbody>tr>td[bgcolor]{background:transparent!important}
++td[bgcolor="#4D595D"]{background:transparent!important}
++.splitLine{background:none!important;border-bottom:1px solid rgba(225,6,0,.35)!important;height:1px!important}
++/* settings tables */
++.FormTable,.FormTable_table{background:#0c0c0f!important;border:1px solid rgba(255,255,255,.08)!important;
++  border-radius:8px!important;border-collapse:separate!important;border-spacing:0!important}
++.FormTable th,.FormTable_table th{background:#101014!important;color:#B7B1A4!important;
++  border-color:rgba(255,255,255,.06)!important;font-weight:500!important;text-shadow:none!important}
++.FormTable td,.FormTable_table td{background:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.06)!important}
++/* gradient lives on the ROW: multi-td header rows would restart the gradient
++   per cell (seen on QoS user rules) */
++.FormTable thead tr,.FormTable_table thead tr{
++  background:linear-gradient(90deg,rgba(225,6,0,.25),#141418)!important}
++.FormTable thead td,.FormTable_table thead td{
++  background:transparent!important;color:#ECE7DB!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;border-color:rgba(255,255,255,.08)!important}
++.hintstyle,.hintstyle:link,.hintstyle:visited{color:#ECE7DB!important}
++.hintstyle:hover{color:#E10600!important}
++/* ---------- 4. controls ---------- */
++input[type="text"],input[type="password"],input[type="number"],textarea,
++.input_3_table,.input_6_table,.input_12_table,.input_15_table,.input_18_table,
++.input_20_table,.input_22_table,.input_25_table,.input_30_table,.input_32_table,.input_option{
++  background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;
++  border-radius:6px!important;text-shadow:none!important}
++input[type="text"]:focus,input[type="password"]:focus,textarea:focus{border-color:rgba(225,6,0,.5)!important;outline:none!important}
++input:disabled,.client_input_text_disabled{background:#0c0c0f!important;color:#71767b!important}
++select{background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important;border-radius:6px!important}
++input[type="radio"],input[type="checkbox"]{accent-color:#E10600!important}
++.button_gen,.button_gen_long,input.button_gen{background:linear-gradient(180deg,#1a1a1f,#101014)!important;
++  color:#ECE7DB!important;border:1px solid rgba(255,255,255,.14)!important;border-radius:8px!important;
++  font-family:'Rajdhani','Oswald',system-ui,sans-serif!important;font-weight:600!important;
++  letter-spacing:.08em!important;text-shadow:none!important;box-shadow:none!important}
++.button_gen:hover,.button_gen_long:hover{border-color:#E10600!important;color:#fff!important;
++  background:linear-gradient(180deg,#2a0507,#160204)!important}
++/* log viewer + misc text */
++textarea,.textarea_log,.textarea_log_table{background:#000!important;color:#B7B1A4!important;
++  font-family:Consolas,Monaco,monospace!important;border:1px solid rgba(255,255,255,.1)!important}
++a:link,a:visited{color:#E0A93B}
++a:hover{color:#E10600}
++/* ---------- 5. stock banner-offset shims ---------- */
++table#FormTitle{margin-top:0!important}
++table[bgcolor="#4d595d"],table[bgcolor="#4D595D"],td[bgcolor="#4d595d"]{background:transparent!important}
++/* state.js browser_compatibility() re-wraps the whole content cell in a div
++   with an inline margin-top:-140px AFTER load (tucks content under the stock
++   banner); important beats inline, attribute selector tracks the JS write */
++div[style*="margin-top:-140px"],div[style*="margin-top: -140px"]{margin-top:0!important}
++/* ---------- 6. per-page fixes ---------- */
++/* popup.js showLoading()/showLoadingBar() set inline overflow:hidden on the
++   html element; if the restore path stalls the framed page can never scroll
++   again (VPN Status symptom) - keep vertical scrolling available */
++html{overflow-y:auto!important}
++/* ...but the RWD SPA pages (SDN/MLO/AdGuard/Multi-WAN etc., body.body_rwd) are
++   auto-sized to their content by resize_iframe_height (rwd_component.js:
++   .container height + 30px bottom margin), so the injected body padding pushed
++   them a few px past that and forced a redundant inner scrollbar on top of the
++   shell's page scrollbar. Hide the inner one - the iframe already fits the
++   content and the 30px margin is the buffer. */
++html:has(.body_rwd){overflow-y:hidden!important}
++/* GameBoost Gear Accelerator ON/OFF toggle: labels overflow the 50px halves
++   with the wider Inter body font - condensed Rajdhani at a tighter size */
++.switch .container{font-family:'Rajdhani',system-ui,sans-serif!important}
++.switch .container div div{font-size:15px!important;letter-spacing:.02em}
++/* remaining stock chrome surfaces */
++tr[bgcolor="#4D595D"],tr[bgcolor="#4d595d"]{background:transparent!important}
++/* ---------- 7. recolor: stock blue accents -> reaper palette ----------
++   CONTROLS AND CHROME ONLY. Data visualizations keep their stock colors:
++   bandwidth-monitor gauges/needles/bars, speedtest dial + rainbow scale,
++   traffic charts, signal meters, CPU/RAM core colors, status greens. */
++/* scrollbars: the stock html::-webkit-* rules in form_style.css carry
++   !important and higher specificity than the section-1 pseudo rules, so
++   every page still showed the stock blue thumb - beat them here */
++html::-webkit-scrollbar{display:block!important;width:12px!important;height:12px!important;padding:0!important}
++html::-webkit-scrollbar-thumb{background-color:#E10600!important;border:2px solid #000!important;border-radius:8px!important}
++html::-webkit-scrollbar-track{background-color:#000!important}
++/* toggle switches - all three stock mechanisms. User choice: NEUTRAL GREY,
++   not crimson (an ON toggle in brand-red read as an alert/warning) */
++.switch input:checked~.container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++img.iphone_switch{filter:grayscale(1) brightness(.85)!important}
++/* selected pills / tab chips (AiProtection, Parental Controls, AiDisk) */
++.clicked{background-color:#E10600!important;box-shadow:0 0 6px rgba(225,6,0,.45)!important}
++.click:hover{background-color:rgba(225,6,0,.45)!important;box-shadow:none!important}
++.folderClicked{color:#E10600!important}
++/* dropdown suggestion lists + clickable rows: stock #3366FF hover */
++div[id$="_Block_PC"] div:hover,#ClientList_Block a:hover,#WDSAPList div:hover,
++.clientlist_dropdown div:hover,.clientlist_dropdown a:hover,
++.dns_server_list_dropdown div:hover,.dns_server_list_dropdown a:hover,
++#QoSList_Block div:hover,.table_clientlist_item:hover,
++.WL_MAC_Block div:hover,.WL_MAC_Block a:hover,
++.StatusClickHint_mouseover{background-color:#B3000C!important;color:#fff!important}
++/* buttons still on the stock blue gradient */
++.button_gen_touch,.titlebtn:hover,.button_gen_dis:hover,
++.confirm_button_gen_long_left:hover,.confirm_button_gen_long_right:hover{
++  background:linear-gradient(180deg,#2a0507,#160204)!important;
++  border-color:#E10600!important;color:#fff!important}
++.actionButtonOK{background-color:#E10600!important;color:#fff!important}
++.confirm_button:hover,.confirm_button:active{background:#B3000C!important}
++.statustext{color:#B7B1A4!important}
++.sub_title{color:#ECE7DB!important}
++.band_block{border-color:#E10600!important;color:#FFF!important}
++/* jquery-ui slider (network map and friends) */
++.ui-slider .ui-slider-range{background:#E10600!important}
++.ui-slider .ui-slider-handle{background:#ECE7DB!important;border-color:#E10600!important}
++/* popup containers on the stock blue-tinted gradient */
++.popup_container .popup_content_container{background:#0f0f12!important;border:1px solid rgba(225,6,0,.35)!important}
++/* InternetSpeed wraps the speedtest in a bare div#FormTitle with an inline
++   grey background */
++div#FormTitle{background-color:#0f0f12!important}
++/* ---------- 8. teal sweep: remaining stock teal/grey-green surfaces ----------
++   yellow hint/value text stays YELLOW by design - only the teal surfaces
++   behind text and entry fields go dark */
++/* entry fields section 4 missed */
++.input_macaddr_table,.devicepin,.top-input,.query_list,.textarea_ssh_table,
++.IPaddr,.IPaddr input,.input_option_left,.input_option optgroup,select optgroup{
++  background:#000!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.12)!important;text-shadow:none!important}
++/* dropdown list bodies (items were teal #576D73 / white #EFEFEF) */
++#QoSList_Block,#QoSList_Block div,.dns_server_list_dropdown,.dns_server_list_dropdown div,
++.clientlist_dropdown,.clientlist_dropdown div,
++div[id$="_Block_PC"],div[id$="_Block_PC"] div,div[id$="_Block_PC"] a{
++  background-color:#0c0c0f!important;color:#ECE7DB!important}
++/* teal panels / containers */
++.MainContent,.content_bg,.list_bg,.block_bg,.tab_info_bg,.analysis_bg,.pop_div_bg,
++.qrcodepanel,.qrcodepanelpad,.eula_panel_container,.tm_title_bg,.aidisk1_table,
++.list_table,.textarea_bg,.FormTitle thead,.popup_bg,.popup_bar_bg,
++.s46_ports,.s46_ports_pf,.primary_wan_connected,.secondary_wan_connected,
++.single_wan_connected{background:#0f0f12!important}
++/* teal tab strips still drawn in-page */
++.tab,.tab_item,.tab_NW,.block_filter{background:#141418!important}
++.tab:hover,.tabClicked,.tab_item:hover,.tab_item_click,.block_filter_pressed,
++.vpnClientTitle_td_click{background:rgba(225,6,0,.22)!important}
++#sortable div table tr:hover{background:#2a0507!important}
++/* ---------- 9. network map: index.asp cards + device-map/* iframes ---------- */
++.NM_table{background-color:#0f0f12!important;border:1px solid rgba(255,255,255,.06)!important}
++[bgcolor="#444f53"],[bgcolor="#444F53"]{background:#141418!important}
++#iconInternet,#iconInternet_primary,#iconInternet_secondary,#iconRouter,#iconClient,
++#iconWebcam,#iconRemote,.iconPrinter,.iconmodem,
++.iconAMesh,.iconAMesh_dis{
++  filter:grayscale(1) sepia(1) hue-rotate(-50deg) saturate(3) brightness(.95)}
++.statusbody,.NM_radius_bottom_container{background:#0f0f12!important}
++.table-header{background:#101014!important}
++.card_table td,.clientlist_content,.usericons_content,.client_upload_div,
++.clientlist_viewlist{background-color:#0f0f12!important}
++.nav li{background-color:#141418!important}
++.nav li:hover{background-color:#B3000C!important}
++.Tablehead,.Tabletitle td,.top-message,.top-message1,.top-messgae,.top-messgaea,
++.top-messgae1,.top-messgae2,.top-messgae3{background-color:#101014!important;color:#ECE7DB!important}
++.clients span,.style1{color:#ECE7DB!important}
++.input{background:#000!important;color:#ECE7DB!important;border:1px solid rgba(255,255,255,.12)!important}
++.button{background:linear-gradient(180deg,#1a1a1f,#101014)!important;color:#ECE7DB!important;
++  border:1px solid rgba(255,255,255,.14)!important}
++.client_tag{background-color:#1a1a1f!important}
++.clientIcon,.clientIcon_clicked,.clientIcon_no_hover,.vendorIcon_no_hover,
++.client_canvasUserIcon,.imgUserIcon_card,.imgUserIcon_viewlist,
++.custom_icon_category .category_content div{background-color:#141418!important}
++.clientIcon:hover,.clientIcon.clicked,.imgUserIcon_card:hover,
++.custom_icon_list_bg .custom_icon_category .category_content div:hover{
++  background-color:rgba(225,6,0,.35)!important}
++.usb_text,.status{color:#B7B1A4!important}
++/* v1.2.4a: the mounted-disk label (.usb_text.plugin) used white text on a heavy #000
++   text-shadow that read as a black box; bone text + a light shadow instead. */
++.usb_text.plugin{color:#ECE7DB!important;text-shadow:0 1px 2px rgba(0,0,0,.55)!important}
++/* ---------- 10. visual-audit fixes (113-page stock-vs-reaper review) ---------- */
++/* AiProtection event/activity cards + tables paint their grey fills via
++   INLINE style attributes, which the [bgcolor] rules never matched */
++[style*="background-color:#444f53"],[style*="background-color: #444f53"],
++[style*="background-color:#444F53"],[style*="background:#444f53"],
++[style*="background: #444f53"]{background-color:#141418!important}
++.edit_text_content,.edit_text_tool_combine_select,
++.edit_text_tool_combine_input{background:#000!important;color:#ECE7DB!important}
++/* ---------- 11. AiMesh (AiMesh.asp + device-map/amesh.asp) - own CSS bundle
++   (aimesh/aimesh_topology.css etc.), untouched by earlier sections.
++   Chrome/controls only: panels, tabs, buttons, dropdowns, radios; product
++   photos and the intro illustration stay stock ---------- */
++/* client-list All/Wired/Wireless tab strip */
++.client_tab_bg div.clicked{background-image:linear-gradient(#3a0a0c 1%,#17171b 100%)!important}
++/* grey hover slabs */
++.info_right,.jstree-default .jstree-hovered,
++.client_list_bg .client_action_bg > span:hover{background:#1b1b20!important}
++/* node dropdown */
++.custom_select_selected,.custom_pure_text{background-color:#141419!important;
++  border-color:rgba(255,255,255,.12)!important}
++/* the big steel content panels + node-list blue accents */
++#manage_block,#client_block{background-color:#101014!important}
++#jstree::-webkit-scrollbar-thumb{background-color:#E10600!important}
++/* ---------- 12. on-device review 2026-07-04: remaining stock surfaces ---------- */
++/* tableApi data tables (js/table/table.css: thead td #4D595D teal, th #1f2d35)
++   used by DHCP leases, Instant Guard Connection Status, Port Trigger list,
++   Network Analysis result, and other log/status pages */
++.tableApi_table{border-color:rgba(255,255,255,.08)!important}
++.tableApi_table thead td,.tableApi_table thead th{
++  background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important}
++.tableApi_table th{background-color:#101014!important;color:#B7B1A4!important}
++.tableApi_table td{background-color:#0c0c0f!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.08)!important}
++.tableApi_table td span{color:#FFCC00!important}
++.tableApi_table tr:nth-child(even) td{background-color:#101014!important}
++/* Network Map "View List" popup (device-map/clientlist.html): the client list
++   still rendered on stock teal */
++.clientlist_viewlist,.clientlist_viewlist td,.clientlist_viewlist th,
++.viewlist_content,.clientlist_view_block,#clientlist_viewlist_content,
++.viewlist_table,.viewlist_table td{
++  background-color:#0f0f12!important;color:#ECE7DB!important;
++  border-color:rgba(255,255,255,.08)!important}
++.clientlist_viewlist thead td,.viewlist_table thead td,.viewlist_table thead th{
++  background:linear-gradient(180deg,#2a0507,#141418)!important;color:#ECE7DB!important}
++/* ---------- 13. SDN / MLO SPA (www/SDN/sdn.css + mlo.css) - own bundle, not
++   covered by earlier sections. FOUNDATIONAL palette override: card/border
++   teal-grey #45535C -> dark, blue accents #2597FF/#2ED3F1/#00BFFF -> crimson,
++   section-label + selected states. Component-heavy SPA; VALIDATE ON DEVICE. */
++/* card / container surfaces + borders */
++.profile_item_container,.feature_desc_container,.cb_item_container,
++.client_container,.category_container,.bg_template_container,
++.item_scenarios_container,.VPN_list_container,.dns_list_container,
++.clientlist_container,.dhcp_rule_container,.bandwidth_item,
++.wizard_list_bg,.faq_link_bg,.main_content_container,.sub_content_container{
++  background-color:#141419!important;border-color:rgba(255,255,255,.10)!important}
++[style*="border: 1px solid #45535C"],[style*="border:1px solid #45535C"],
++[style*="border-bottom: 1px solid #45535C"]{border-color:rgba(255,255,255,.10)!important}
++/* blue accents -> crimson (selected borders, links, highlight text) */
++[style*="#2597FF"],[style*="#2597ff"]{border-color:#E10600!important;color:#E10600!important}
++.item_text_container .main_info,.gaming_profile_list_title,
++.sdn_section_title,.category_title,.feature_title{color:#ECE7DB!important}
++/* the blue section labels (MAIN NETWORK / GUEST NETWORK PRO / CHOOSE A DEFINED) */
++.title_text,.section_title,.list_title,.group_title{color:#B7B1A4!important}
++/* selected/active profile + Add-a-Network highlight (was blue) */
++.profile_item_container.clicked,.profile_item_container.selected,
++.cb_item_container.clicked,.add_profile_container:hover{
++  border-color:#E10600!important;box-shadow:0 0 6px rgba(225,6,0,.35)!important}
++/* SPA toggle (was blue #2597FF) -> neutral grey, matching global toggle choice */
++.switch_bg.on,.sdn_switch.on,.switch_container.on,input.sdn_switch:checked~.switch_bar{
++  background-color:#6b6b72!important}
++/* cyan detail text #2ED3F1 */
++[style*="#2ED3F1"],[style*="#2ed3f1"]{color:#E0A93B!important}
++/* MLO page (mlo.css): cyan #00FBBD accent + banner */
++[style*="#00FBBD"],[style*="#00fbbd"]{color:#E0A93B!important}
++.mlo_banner_bg,.mlo_intro_bg{background-color:#141419!important}
++/* NB: SDN.asp + MLO.asp are also recolored at the BUNDLE level (www/SDN/
++   sdn.css + mlo.css hex values swapped) - that is authoritative; this section
++   is a backstop for inline styles / injected-CSS timing. */
++/* ---------- 14. on-device review round 2 (2026-07-04) ---------- */
++/* AiMesh right-panel client list icons: stock paints teal #596E74 on BOTH
++   .default_icon AND .user_icon tiles. Make both black (a real uploaded photo
++   still covers the tile, so black only shows around device-type glyph icons -
++   which is the wanted "black around the red icon" look). */
++.client_list_bg .client_icon_bg.default_icon,
++.client_list_bg .client_icon_bg.user_icon{background-color:#000!important}
++/* GameBoost "Game Priority" (#game_priority_enable) + "GearUP" (#gearup_enable)
++   wide ON/OFF sliders: the page-local .switch mechanism relies on the ::after
++   knob covering the inactive table-cell label, but auto table layout lets both
++   labels collapse to one side of the knob (third regression of this toggle).
++   Print the state ON the knob itself and hide the cell labels entirely -
++   deterministic regardless of table geometry. */
++#game_priority_enable ~ .container,#gearup_enable ~ .container{background:#1a1a1f!important}
++#game_priority_enable:checked ~ .container,#gearup_enable:checked ~ .container{background:linear-gradient(180deg,#6b6b72,#45454b)!important}
++#game_priority_enable ~ .container div div,#gearup_enable ~ .container div div{display:none!important}
++#game_priority_enable ~ .container::after,#gearup_enable ~ .container::after{content:'OFF'!important;box-sizing:border-box!important;background-color:#2a2a30!important;border:1px solid rgba(255,255,255,.18)!important;color:#ECE7DB!important;font-family:'Rajdhani',system-ui,sans-serif!important;font-size:15px!important;font-weight:600!important;letter-spacing:.06em!important;text-align:center!important;line-height:38px!important}
++#game_priority_enable:checked ~ .container::after,#gearup_enable:checked ~ .container::after{content:'ON'!important}
++/* ---------- 15. Phase-B migration: recolors relocated from now-pristine stock
++   CSS (form_style.css, index_style.css). The stock files revert to upstream; the
++   reaper look for the selectors NOT already covered by earlier sections lives
++   here. Body/.banner1/.menu are already themed or hidden (section 1). ---------- */
++/* index_style.css: the .content wrapper carried a repeating middown_bg.png texture;
++   neutralize it to the theme base. .tab border was stock light-blue #8AA6BE. */
++table.content{background-image:none!important;background-color:#08080a!important}
++.tab{border:1px solid rgba(225,6,0,.30)!important}
++/* ---------- 16. Phase-B migration: device-map/clientlist.css + device-map.css
++   appended reaper block relocated here (those files revert to pristine). Client
++   icon tiles are already dark via section 9; these are the selectors section 9/12
++   did not cover: red device/vendor glyphs + the "View List" modal (.RT skin). ---------- */
++.clientlist_viewlist i[class^='type'],.clientlist_viewlist i[class*=' type'],.clientlist_viewlist i[class^='vendor-icon'],.clientlist_viewlist i[class*=' vendor-icon']{background-color:#E10600!important}
++.clientlist_viewlist .client_icon>div{background-color:#000!important;border-color:#330000!important;box-shadow:none!important}
++.clientlist_viewlist .card,.clientlist_viewlist .card.client_list .table,
++.clientlist_viewlist.RT .card.client_list .table,.clientlist_viewlist .card.client_list table,
++.client_info_detail_block,.client_info,.card-body,.card-header{background-color:#0f0f12!important;color:#ECE7DB!important}
++.clientlist_viewlist .card.client_list table,.client_list .mac-repeat{background-color:#0c0c0f!important}
++.segmented_picker,.segmented_picker_option{background:#141418!important;color:#B7B1A4!important}
++.segmented_picker_option.active{background:#2a0507!important;color:#ECE7DB!important}
++.input-client-name,.clientlist_viewlist.RT .input-client-name{background:#000!important;color:#ECE7DB!important;border-color:rgba(255,255,255,.14)!important}
++.ipMethodTag,.clientlist_viewlist.RT .ipMethodTag{background-color:#2a2a30!important;color:#ECE7DB!important}
++.card-header .arrow_icon,.clientlist_viewlist.RT .arrow_icon{background-color:#ECE7DB!important}
++.clientlist_viewlist .btn-export{background:#E10600!important;color:#fff!important}
++/* ---------- 17-19. SDN/MLO SPA bundle migration (2026-07-05) ----------
++   Recolors relocated from the now-pristine SPA bundle files (RWD_UI/
++   rwd_component.css, SDN/sdn.css, SDN/mlo.css). The httpd serve-time filter
++   injects this stylesheet into sdn.html/mlo.html AFTER their base bundle links
++   (before </head>), so these !important rules win. The runtime theme-variant
++   injection (rwd_component_<theme>.css / sdn_<theme>.css) is gated on
++   current_theme in {WHITE,ROG,TUF}; RT-BE96U runs the default (empty) theme, so
++   no variant CSS loads to override this. Selectors+values are the exact reaper
++   hex-swap that was on-device-validated as the bundle edit; supersedes the
++   section-13 backstop for the SPA. VALIDATE ON DEVICE after the next flash. */
++/* 17. SPA migration: RWD_UI/rwd_component.css (SDN/MLO + RWD_UI pages) */
++:root, :host{--icon-color:#B7B1A4!important}
++.function_desc_container:before{background:#2A2A30!important;background:-webkit-linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%, #45454B 100%)!important;background:-o-linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%, #45454B 100%)!important;background:linear-gradient(#2A2A30 0%, #2A2A30 20%, #45454B 80%,#45454B 100%)!important}
++.profile_list_container .title_container{color:#B7B1A4!important}
++.profile_list_container .horizontal_line{background-color:rgba(183, 177, 164, 0.2)!important}
++.profile_item_container{background:rgb(42, 42, 48)!important}
++.profile_item_container.selected{background:linear-gradient(0deg, rgba(225, 6, 0, 0.1), rgba(225, 6, 0, 0.1)), rgb(42 42 48)!important;border-color:rgba(225, 6, 0, 0.4)!important}
++.item_tag_container > .item_tag{background:rgb(42 42 48)!important;border:1px solid #E10600!important}
++.profile_setting_container .setting_content_container{background:rgb(42, 42, 48)!important}
++.profile_setting_item{background-color:rgb(20, 20, 25)!important}
++.profile_setting_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_setting_item > .title, .profile_setting_two_item .title{color:rgb(183 177 164)!important}
++.profile_setting_item > .title a:link, .profile_setting_two_item .title a:link{color:rgb(183 177 164)!important}
++.profile_setting_item.nowrap.more_item .input_container{color:rgb(183 177 164)!important}
++.profile_setting_two_item{background-color:rgb(20, 20, 25)!important}
++.profile_setting_two_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_title_item{color:rgba(183, 177, 164, 0.87)!important}
++.profile_title_item:before{border-bottom:1px solid rgba(183, 177, 164, 0.2)!important}
++.profile_title_item.setting_item span{color:rgb(183 177 164)!important}
++.profile_title_item.setting_item span a{color:rgb(183 177 164)!important}
++.profile_title_item.setting_item{background-color:rgb(20, 20, 25)!important}
++.profile_btn_container{border:1px solid rgb(225 6 0)!important}
++.profile_btn_container:hover{background-color:rgb(225 6 0)!important}
++.category_slide_title{background-color:rgb(20, 20, 25)!important;color:rgba(183, 177, 164, 0.87)!important}
++.category_slide_title.expand{background:rgba(225, 6, 0, 0.1)!important}
++.category_slide_title > .title_cntr:before{border-top:3px solid rgba(183, 177, 164, 0.87)!important;border-right:3px solid rgba(183, 177, 164, 0.87)!important}
++.action_container .btn_container{background:rgb(225, 6, 0)!important;border:1px outset rgba(225, 6, 0, 0.2)!important;box-shadow:0px 2px 3px 0px rgb(20 20 25 / 5%)!important}
++.action_container .btn_container.cancel{border:1px solid rgb(69 69 75)!important;color:rgb(183 177 164)!important}
++.popup_bg{background-color:#2A2A30!important}
++.hidden_mask{background:rgb(42, 42, 48)!important}
++.popup_container .popup_content_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600!important}
++.popup_container.mobile_view .popup_content_container{background:rgb(20 20 25 / 30%)!important}
++.popup_container .popup_content_container .category_slide_title.expand{background:rgba(225, 6, 0, 0.1)!important}
++.customize_alert .action_btn_container .ok, .customize_alert.confirm .action_btn_container .ok{border:1px solid rgb(69 69 75)!important;color:rgb(183 177 164)!important}
++.del_profile .desc{color:rgb(183 177 164)!important}
++.del_profile .action_btn_container .del{border:1px solid rgb(69 69 75)!important;color:rgb(183 177 164)!important}
++.del_profile .action_btn_container .cancel, .customize_alert.confirm .action_btn_container .cancel{background:rgb(225 6 0)!important}
++.textInput, .custom_select_container, .textareaInput{border:1px solid rgba(113, 118, 123, 0.4)!important}
++.custom_select_container .select_options_container, .custom_select_container .select_and_search_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)), linear-gradient(0deg, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), #E10600!important}
++.custom_select_container .select_options_container div.selected{color:rgb(225, 6, 0)!important}
++.custom_select_container .select_options_container div.selected:before{border-top:2px solid rgb(225, 6, 0)!important;border-right:2px solid rgb(225, 6, 0)!important}
++.custom_select_container .select_options_container div:hover{background:rgba(183, 177, 164, 0.2)!important}
++.custom_select_container .select_options_container div.disabled{color:rgba(183, 177, 164, 0.6)!important}
++.custom_select_container .select_options_container::-webkit-scrollbar-track, .textareaInput::-webkit-scrollbar-track{border:4px solid rgb(42, 42, 48)!important;background-color:rgb(42, 42, 48)!important}
++.custom_select_container .select_options_container::-webkit-scrollbar-thumb, .textareaInput::-webkit-scrollbar-thumb{background-color:rgb(42, 42, 48)!important;border:2px solid rgb(42, 42, 48)!important}
++.icon_switch.off{background:rgba(113, 118, 123, 1)!important}
++.icon_switch.on{background:#6B6B72!important}
++.icon_switch:before{background:rgb(42 42 48)!important}
++.icon_checkbox{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.icon_checkbox.clicked{background-color:rgb(225, 6, 0)!important;border:1px solid rgb(225, 6, 0)!important}
++.icon_checkbox.closed:before, .icon_checkbox.closed:after{background-color:rgb(183 177 164)!important}
++.icon_checkbox.clicked.disabled{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.icon_checkbox.clicked.disabled:before{border-top:2px solid rgb(183 177 164)!important;border-right:2px solid rgb(183 177 164)!important}
++.rwd_icon_radio{border:1px solid rgb(183 177 164)!important}
++.rwd_icon_radio.clicked, .rwd_icon_radio.disabled{border:2px solid rgb(225 6 0)!important}
++.rwd_icon_radio.clicked:before, .rwd_icon_radio.disabled:before{background-color:rgb(225 6 0)!important}
++.rwd_icon_radio.disabled{border:2px solid #45454B!important}
++.rwd_icon_radio.disabled:before{background-color:#45454B!important}
++.icon_more{border:1px solid rgb(225 6 0)!important}
++.icon_more:hover{background-color:rgb(225 6 0)!important}
++.switch_text_container > .switch_text_item{color:rgb(183 177 164)!important;border:1px solid rgba(113, 118, 123, 0.4)!important}
++.switch_text_container > .switch_text_item:last-child{border-right:1px solid rgba(113, 118, 123, 0.4)!important}
++.switch_text_container > .switch_text_item.selected{background-color:rgb(225 6 0)!important;border-color:rgb(225 6 0 / 20%)!important}
++.cb_icon{box-shadow:0px 1px 2px 0px rgb(20 20 25 / 12%)!important;border:1px solid rgba(183, 177, 164, 0.4)!important}
++.cb_icon.clicked{background-color:rgb(225, 6, 0)!important;border:1px solid rgb(225, 6, 0)!important}
++.error_hint_container{background:#141419!important}
++.error_hint_container > .action_cntr > .ok{color:#E10600!important}
++.profile_setting_item.radio_item .title{color:rgba(183, 177, 164, 0.87)!important}
++.profile_setting_item.radio_item .title a:link{color:rgba(183, 177, 164, 0.87)!important}
++.rwd_radio_container{border:1px solid rgba(183,177,164,0.4)!important;color:rgba(183,177,164,0.6)!important}
++.rwd_radio_options_container .rwd_radio_container .rwd_icon_radio{border:1px solid rgba(183,177,164,0.4)!important}
++.rwd_radio_options_container .rwd_radio_container.selected{border:1px solid rgb(225, 6, 0)!important}
++.rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio{border:1px solid rgb(225, 6, 0)!important}
++.rwd_radio_options_container .rwd_radio_container.selected .rwd_icon_radio:before{background-color:rgb(225, 6, 0)!important}
++@media (max-width: 575px){
++	.profile_item_container, .profile_item_container.selected{background:#141419!important;border-color:rgb(42, 42, 48)!important}
++	.item_tag_container > .item_tag{background:#141419!important}
++	.action_container .btn_container.delete{border:1px solid rgba(183, 177, 164, 0.4)!important}
++	.popup_bg{background:#141419!important}
++	.popup_container .popup_content_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419!important}
++	.popup_container .custom_select_container .select_options_container, .popup_container .custom_select_container .select_and_search_container{background:linear-gradient(0deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.1)), linear-gradient(0deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.25)), #141419!important}
++}
++/* 18. SPA migration: SDN/sdn.css */
++.profile_item_container.profile_list .bottom_info{color:#B7B1A4!important}
++.profile_item_container.feature_desc{border:1px solid #2a2a30!important}
++.profile_item_container.feature_desc:hover{border:1px solid #2a2a30!important}
++.profile_item_container.type_scenarios:hover{border:1px solid #E10600!important}
++.item_scenarios_container > .title{color:#B7B1A4!important}
++.item_scenarios_container > .title:before{border-bottom:1px solid #2a2a30!important}
++.status_info .conn_type.WiFi, .status_info .conn_type.WiFi7, .status_info .conn_type.WiFi_offline, .status_info .conn_type.LAN{background-color:#B7B1A4!important}
++.profile_setting.Get_Start > .title, .profile_setting.Scenarios > .title{color:rgb(225, 6, 0)!important}
++.bandwidth_item > .BW_icon{background-color:#B7B1A4!important}
++.setting_subtab_container > .subtab_item{color:rgba(183, 177, 164, 0.87)!important}
++.setting_subtab_container > .subtab_item.selected:before{border-bottom:3px solid rgb(225, 6, 0)!important}
++.node_content_container > .node_info > .node_sub_info{color:rgb(183, 177, 164)!important}
++.node_sub_info span::after{background-color:rgb(183, 177, 164)!important}
++.dns_list_container.ping .item_container .service span{color:rgb(183, 177, 164)!important}
++.bg_template_container::-webkit-scrollbar-track, .manual_dhcp_list_container::-webkit-scrollbar-track{background-color:rgb(42, 42, 48)!important}
++.bg_template_container::-webkit-scrollbar-thumb, .manual_dhcp_list_container::-webkit-scrollbar-thumb{background-color:rgb(42, 42, 48)!important}
++.bg_template_container .bg_upload_image{border:2px dashed #7F7A70!important}
++.bg_template_container .bg_upload_image:before{color:#7F7A70!important}
++.FWF_portal_cntr .action_container .btn_container, .MB_portal_cntr .action_container .btn_container{background:rgb(225, 6, 0)!important}
++.FWF_change_bg, .MB_change_bg{border:1px solid #2a2a30!important}
++.manual_dhcp_list_container .dhcp_rule_container{border:1px solid #2a2a30!important}
++.VPN_list_container .title, .macfilter_list_container .title{color:#B7B1A4!important}
++.client_container .client_icon_container.default_icon, .client_container .client_icon_container.user_icon, .client_container .client_icon_container.vendor_icon{background-color:#2a2a30!important}
++.manual_dhcp .client_content_container .sub_info:before{border-top:1px solid #2a2a30!important}
++.client_content_container > .sub_info > div{color:#B7B1A4!important}
++.client_content_container .sub_info > div:not(:first-child):before{border-left:1px solid #7F7A70!important}
++.manual_dhcp .client_content_container .client_mac{color:#B7B1A4!important}
++.client_content_container .conn_type.LAN{background-color:#B7B1A4!important}
++.feature_desc_container .title{color:rgb(225, 6, 0)!important}
++.feature_desc_container .wizard_list_bg:before{border-bottom:1px solid #2a2a30!important}
++.feature_desc_container .faq_link_bg:before{border-bottom:1px solid #2a2a30!important}
++.qrcode_btn{background-color:#B7B1A4!important}
++.export_btn_container > .export_btn{color:rgb(183, 177, 164)!important}
++.export_btn_container > .export_btn .btn_text:before{background-color:#B7B1A4!important}
++.btn_back_container{color:rgb(225, 6, 0)!important}
++.gaming_action_container > div.gaming_btn_cancel{color:rgb(183, 177, 164)!important}
++.gaming_profile_list_title{color:rgb(183, 177, 164)!important}
++.gaming_profile_list_cntr .profile_info .profile_title, .gaming_profile_list_cntr .profile_info .profile_text{color:rgb(183, 177, 164)!important}
++.sdn_gaming_client_container{background:linear-gradient(135deg, #B3000C, #db0a2c)!important}
++.profile_setting_item .title span.mlo_band{color:#E0A93B!important}
++.checkbox_option.mlo_band .option_text:after{color:#E0A93B!important}
++/* 19. SPA migration: SDN/mlo.css */
++.feature_desc_container .introduce_hint{color:#E0A93B!important}
++.mlo_config_container{border:1px solid #2a2a30!important}
++.config_item_container:not(:first-child):before{border-top:1px solid #2a2a30!important}
++.config_item_container .dropdown_select{background:#2a2a30!important}
++.config_item_container .help_icon{background-color:#B7B1A4!important}
++/* ---------- 20. VPN Server page + Network Analysis (v1.2.3) ---------- */
++/* Advanced_VPNServer_Content.asp is a thin wrapper whose vpns_iframe loads the
++   VPNS_V2 SPA (/VPN/vpns.html). The wrapper injects THIS stylesheet into that
++   nested frame (see the page's reaperThemeFrame), so the SPA's rwd_component
++   classes are already themed by section 17; these cover the wrapper chrome +
++   the SPA's top-level containers that section 17 does not. */
++.rwd_iframe{width:100%!important;border:0!important;background:transparent!important;display:block!important}
++body.bg,.container.no_highlights,.content_container{background:transparent!important}
++.function_desc_container,.hidden_static_text{color:#B7B1A4!important}
++.server_list_container,.profile_setting_container{background:#0c0c0f!important;
++  border:1px solid rgba(255,255,255,.08)!important;border-radius:10px!important}
++.svr_list_title_container,.svr_list_title,.title{color:#ECE7DB!important}
++/* ---------- 21. VPN Server + VPN Client SPA server-list cards (v1.2.4) ----------
++   vpns.html / vpnc.html inject this file into their nested iframe. The shared
++   RWD_UI classes are themed by section 17; these are the vpns/vpnc-SPECIFIC
++   server-list + card classes still on stock teal/blue (#32393B/#1E2A41/#667881/
++   #248DFF). VPN-specific selectors only (svr_*, add_acc, banner_*) so nothing
++   bleeds onto other RWD_UI pages. AUTH-GATED - validate on device. */
++.svr_list_title,.svr_list_num,.svr_type_text{color:#ECE7DB!important}
++.svr_type_title{color:#B7B1A4!important}
++/* detail-panel toggles (Network Place (Samba) Support, etc.) are the class-toggled
++   .switch (not the input-based one) and turned BLUE (#248DFF) on -> neutral grey
++   per standing rule 11. Scoped to the VPN-SPA row classes so nothing else bleeds. */
++.profile_setting_item .switch.on,.switch_item .switch.on{background:#6B6B72!important}
++.profile_setting_item .switch.off,.switch_item .switch.off{background:#45454B!important}
++#svgContainer,#tableContainer{margin-left:auto!important;margin-right:auto!important}
++/* ---------- 22. VPN SPA palette sweep + nested-frame CSS 404 fix (v1.6.4) ----------
++   The reaperThemeFrame hook in the two VPN wrapper pages requested this file
++   with a ?t= cache-bust query; httpd 404s querystringed static paths, so the
++   hook NEVER loaded this file into vpnc.html (which has no head close tag, so
++   serve-time injection cannot reach it either) - sections 20-21 never rendered
++   there. Owner-confirmed live 2026-07-19 (devtools: 404 + stock blue button).
++   Fixed by dropping the query in both wrappers; these rules cover the stock
++   blues and cyan the GPL 102_39995 SPA carries beyond sections 20-21.
++   AUTH-GATED - validate on device. */
++/* primary action buttons (stock 0091FF / 0085FF) */
++.action_container .btn_container,.del_profile .action_btn_container .del,
++.customize_alert .action_btn_container .ok{background:#E10600!important;color:#fff!important}
++/* checked checkbox / selected radio + option card: selection accent */
++.checkbox.on{background-color:#E10600!important;box-shadow:0 0 0 1.5px rgba(225,6,0,.7)!important}
++.radio_options_container .radio_container.selected,
++.btn_options_container .btn_container.selected{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon{border-color:rgba(225,6,0,.6)!important}
++.radio_options_container .radio_container.selected .radio_icon:before{background-color:#E10600!important}
++/* text input focus ring */
++.textInput:focus,.textareaInput:focus{box-shadow:0 0 3px rgba(225,6,0,.6)!important;border-color:rgba(225,6,0,.6)!important}
++/* dropdown selected option + its check chevron */
++.custom_select_container .select_options_container div.selected{color:#E10600!important}
++.custom_select_container .select_options_container div.selected:before{border-color:#B7B1A4!important}
++/* connected-ok status text reads jade, not stock blue */
++.svr_item_container.internet,
++.svr_item_container.active .svr_item_sub_info .vpn_status,
++.svr_item_container.internet.connected .svr_item_sub_info,
++.wan_status_container.connected .connect_status_text{color:#4FB286!important}
++/* the small title indicator bar above "Internet" */
++.wan_status_container .connect_title:before{border-top-color:#E10600!important}
++.feature_desc .title{color:#ECE7DB!important}
++/* ---------- v1.6.6b overflow fixes (bugs C + D) ---------- */
++/* BUG C: WAN-page "DNS List" flyout (#dns_list_Block.clientlist_viewlist) inherits
++   the stock device-map.css rule (position:absolute; margin-top:-920px; height:auto;
++   overflow:auto) tuned for the short device-map list. The tall six-category WAN DNS
++   list grows past the viewport and height:auto defeats its own overflow, so the lower
++   rows are clipped/unreachable. Re-anchor it to the viewport with a real inner scroll. */
++#dns_list_Block.clientlist_viewlist{
++  position:fixed!important;
++  top:50%!important;left:50%!important;
++  margin-top:0!important;margin-left:0!important;
++  transform:translate(-50%,-50%)!important;
++  max-height:88vh!important;overflow-y:auto!important}
++/* static-DHCP client picker (LAN > DHCP Server, owner-directed v1.7.4). The
++   Manually-Assigned-IP dropdown (#ClientList_Block_PC) inherits .clientlist_dropdown
++   (device-map.css:990): position:absolute + height:auto + overflow-y:auto - height:auto
++   defeats its own overflow, and the shell frame auto-sizes to BODY height only, so a
++   DOWNWARD list grows past the frame and clips. The first fix escaped the clip by
++   centering it in the viewport (position:fixed), which detached it far from the button
++   (owner-reported on v1.7.3 metal). FIX: anchor it to its own input cell and open it
++   UPWARD - the list then overlays the already-rendered DHCP config above the input, so
++   the frame never has to grow (no clip) and it sits right on the pull-arrow. Capped
++   height + inner scroll for long client lists. Scoped via :has() to this page's unique
++   static-lease MAC input; ~20 other pages share the id and keep their stock anchoring. */
++body:has(input[name="dhcp_staticmac_x_0"]) td:has(> input[name="dhcp_staticmac_x_0"]){
++  position:relative!important}
++body:has(input[name="dhcp_staticmac_x_0"]) #ClientList_Block_PC.clientlist_dropdown{
++  position:absolute!important;
++  top:auto!important;
++  bottom:100%!important;          /* open upward, directly above the input/button */
++  left:0!important;
++  margin:0 0 4px 0!important;
++  max-height:260px!important;
++  overflow-y:auto!important;
++  z-index:1000!important}
++/* BUG D: Network Map status iframe (#statusframe) is pinned to 760px but the inner
++   clients.asp document (client rows + tall NM min-heights) is taller and has no inner
++   scroll region, so the iframe's own scrollbar stacks against the page scrollbar = a
++   persistent double/stray bar. Give the client list its own scroll so the iframe stops
++   overflowing (reaper_content.css is loaded inside the statusframe document). */
++#client_list_Block{max-height:600px!important;overflow-y:auto!important;overflow-x:hidden!important}
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
+index 229a49c61e5..0c98be13b90 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/mlo.html
+@@ -14,6 +14,8 @@
+ <script type="text/javascript" src="/RWD_UI/rwd_component.js"></script>
+ <script type="text/javascript" src="/SDN/sdn.js"></script>
+ <script type="text/javascript" src="/SDN/mlo.js"></script>
++<!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content_network.css">
+ </head>
+ <style>
+ .sdn_popup_bg #loadingBlock {
+@@ -42,7 +44,7 @@ function getSafeTheme(paramName, allowedValues = ['WHITE', 'ROG', 'TUF', '']) {
+ 	let safePrefix = rawValue.toUpperCase().match(/^[A-Z0-9_]*/)[0];
+ 	return allowedValues.includes(safePrefix) ? safePrefix : "";
+ }
+-var theme = getSafeTheme("current_theme", ['WHITE', 'ROG', 'GT', 'TUF', '']).toUpperCase();
++var theme = "";	/* reaper 2026-11-01: one theme - the Reaper stylesheet linked in the head; the stock WHITE/ROG/TUF variants are not shipped */
+ if(theme == "GT") theme = "ROG";
+ var app_control = {
+ 	"type": (function(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+index 6406679000b..c2645409966 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+@@ -12,6 +12,8 @@
+ <script type="text/javascript" src="/general.js"></script>
+ <script type="text/javascript" src="/RWD_UI/rwd_component.js"></script>
+ <script type="text/javascript" src="/SDN/sdn.js"></script>
++<!-- reaper 2026-11-01: this page's Reaper theme - last stylesheet in the head, where httpd used to inject it -->
++<link rel="stylesheet" type="text/css" href="/reaper/reaper_content_network.css">
+ </head>
+ <script>
+ const PAGE_CONTAINER = "sdn";
+@@ -35,7 +37,7 @@ function getSafeTheme(paramName, allowedValues = ['WHITE', 'ROG', 'TUF', '']) {
+ 	let safePrefix = rawValue.toUpperCase().match(/^[A-Z0-9_]*/)[0];
+ 	return allowedValues.includes(safePrefix) ? safePrefix : "";
+ }
+-var theme = getSafeTheme("current_theme", ['WHITE', 'ROG', 'GT', 'TUF', '']).toUpperCase();
++var theme = "";	/* reaper 2026-11-01: one theme - the Reaper stylesheet linked in the head; the stock WHITE/ROG/TUF variants are not shipped */
+ if(theme == "GT") theme = "ROG";
+ var app_control = {
+ 	"type": (function(){
+-- 
+2.25.1
+

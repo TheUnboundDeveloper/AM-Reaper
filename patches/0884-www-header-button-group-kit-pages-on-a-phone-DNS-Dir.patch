@@ -1,0 +1,327 @@
+From 704c094b319effaccc2e00e33f998830b10c9abe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 2 Nov 2026 09:49:57 -0500
+Subject: [PATCH] www: header button group, kit pages on a phone, DNS Director
+ names, pop-up panels centred in the shell
+
+- Header (owner, iPhone 17 portrait): ? / Reboot / Logout are one group (.acts, data-rfit-keep)
+  on the dashboard and in the shell. It fits beside the logo or wraps whole, and fit.js never
+  squeezes it for another element's overflow - on the dashboard the clipping ancestor is the page
+  body, so a live tile spilling past a phone screen shrank the two buttons and they sprang back on
+  the next pass. Under 430 px the group takes its own row.
+- Phones: rp.css ends with a 680 px block (settings rows in one column, data tables pan in their
+  own box, tighter padding) and fit.js leaves the headers of a panning table whole; all 32 kit
+  pages are screen width at 402, 375 and 320 px in the mock. The dashboard's phone strip matches
+  the shell's (language row and group headings hidden, About mark only, logo capped at 28 px).
+- DNS Director: per-device rules show the device name beside the MAC (the user's names, then the
+  rule's own name; set as text).
+- Pop-up panels (owner: the AiMesh client card opened near the top of the page): form.js
+  adjust_panel_block_top() placed a panel at the framed page's scrollTop, which is always 0 inside
+  reaper_shell. In the shell it now centres the panel in the slice of the page the user can see,
+  read through the shell's synchronous reaperAnchorNow() (reaper_shell.asp); the stock path
+  outside the shell is unchanged.
+Other hunk: Main_ReaperDash.asp's WPS and MLO rows open the kit pages of the earlier commit.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 41 +++++++++++++++++-----
+ release/src/router/www/Reaper_DNS.asp      | 20 ++++++++---
+ release/src/router/www/form.js             | 18 ++++++++++
+ release/src/router/www/reaper/fit.js       |  8 +++++
+ release/src/router/www/reaper/rp.css       | 19 ++++++++++
+ release/src/router/www/reaper_shell.asp    | 17 +++++++++
+ 6 files changed, 111 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 513c5a97eec..4779284f67e 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -212,6 +212,9 @@ main{min-width:0}
+ @keyframes fwpulse{0%,100%{box-shadow:0 0 0 0 rgba(225,6,0,0)}50%{box-shadow:0 0 0 3px rgba(225,6,0,.14)}}
+ .dot{width:8px;height:8px;border-radius:50%;background:var(--jade);box-shadow:0 0 0 3px rgba(79,178,134,.15);flex:0 0 auto}
+ .spacer{flex:1}
++/* 2026-10-31 (owner, iPhone 17 portrait): the header's ? / Reboot / Logout as one fixed group - its width comes
++   from its own labels only, so it either fits beside the logo or wraps whole, at a given screen width every time */
++.acts{display:flex;align-items:center;gap:inherit;flex:0 0 auto}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11px;
+   padding:8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);color:var(--bone-dim);cursor:pointer;transition:.15s;white-space:nowrap;flex:0 0 auto}
+ .btn:hover{color:var(--bone);border-color:var(--line)}
+@@ -395,18 +398,31 @@ main{min-width:0}
+   .top{flex-wrap:wrap}
+   .pills{flex-wrap:wrap;overflow:visible}
+   .rail{position:sticky;top:0;height:auto;width:100%;flex-direction:row;align-items:center;
+-    justify-content:flex-start;gap:4px;padding:8px 10px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line-soft)}
+-  .railclock{padding:0 10px 0 0;text-align:left}
+-  .railclock .rc-time{font-size:16px} .railclock .rc-date{display:none}
++    justify-content:flex-start;gap:4px;padding:6px 8px;overflow-x:auto;-webkit-overflow-scrolling:touch;
++    border-right:0;border-bottom:1px solid var(--line-soft)}
++  .railclock{padding:0 8px 0 0;text-align:left}
++  .railclock .rc-time{font-size:15px} .railclock .rc-date{display:none}
++  /* 2026-10-31: the same strip the shell draws (reaper_shell.asp, 680px): the language row and the group
++     headings were hidden there but not here, so the dashboard strip showed GENERAL, a two-line ADVANCED
++     SETTINGS and a LANGUAGE: row whose select was squashed to nothing; the About tile keeps only its mark.
++     Strip padding, item height, the active-item bar (under the icon) and the logo use the shell's numbers
++     too, so the strip and header do not change size between the dashboard and every other page; the
++     logo is capped at the row (it was 319 px at 36 px high and pushed a 320 px phone 13 px wide) */
++  .railclock{flex:0 0 auto}
++  .rail .raillang,.grp{display:none}   /* .rail: the base .raillang rule sits below this block */
++  .railabout{margin-top:0;padding:0 0 0 6px;border-top:0;position:static;flex:0 0 auto;background:transparent}
++  .railabout>span:last-child{display:none}
+   .nav{flex-direction:row;width:auto}
+   .nav a .nl{display:none}
+-  .nav a{padding:0 10px}
+-  .nav a.on::before{left:8px;right:8px;top:0;bottom:auto;width:auto;height:2px}
++  .nav a{padding:0 9px;height:38px}
++  .nav a.on::before{left:8px;right:8px;top:auto;bottom:0;width:auto;height:2px}
+   .top{gap:12px;padding:10px 14px}
+-  .brand img{height:36px}
++  .brand{min-width:0}
++  .brand img{height:28px;max-width:100%}
+   .pills{order:3;width:100%}
+   .pills .pill:nth-child(n+3){display:flex}
+   .spacer{display:none}
++  .acts{margin-left:auto}
+   .wrap{padding:14px}
+   .wanip{font-size:24px}
+ }
+@@ -415,6 +431,11 @@ main{min-width:0}
+   .cbig .n{font-size:36px}
+   .pills .pill{flex:1 1 calc(50% - 5px)}
+   .btn{flex:1 1 auto}
++  /* the header group takes its own row and Reboot / Logout split it evenly (basis 0: the width never depends on
++     the label or on what else is on the row); a label longer than its half is cut by CSS, whole on hover */
++  .acts{flex:1 1 100%}
++  .acts .btn{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis}
++  .acts #btn_guide{flex:0 0 auto}
+ }
+ .langsel{font-family:var(--hdr);font-weight:700;letter-spacing:.05em;font-size:11px;text-transform:uppercase;
+   padding:7px 8px 7px 30px;border-radius:8px;border:1px solid var(--line);cursor:pointer;flex:0 0 auto;
+@@ -559,10 +580,14 @@ main{min-width:0}
+         <div class="pill"><span class="k" data-en="Mesh Nodes"><#Reaper_c_mesh_nodes#></span><span class="v mono" id="p_mesh">0</span></div>
+       </div>
+       <div class="spacer"></div>
++      <!-- 2026-10-31: ? / Reboot / Logout are one group (.acts) that wraps as a unit and that fit.js never squeezes
++           (data-rfit-keep), so their place and size cannot follow the live values on a phone -->
++      <div class="acts" data-rfit-keep>
+       <!-- v2.7.3: the owner's guide, one click from the landing page too -->
+       <a class="btn" id="btn_guide" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="text-decoration:none">?</a>
+       <button class="btn" id="btn_reboot"><#BTN_REBOOT#></button>
+       <button class="btn crit" id="btn_logout"><#t1Logout#></button>
++      </div>
+     </header>
+ 
+     <div class="wrap">
+@@ -671,13 +696,13 @@ main{min-width:0}
+               <div><div class="name"><#RDSH_13#></div><div class="sub2 rtip" id="s_ssh_sub">&mdash;</div></div></div><span class="tag ok" id="s_ssh_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Internet.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3v18M4 8l8-5 8 5"/></svg></div>
+               <div><div class="name">UPnP</div><div class="sub2 rtip" id="s_upnp_sub">&mdash;</div></div></div><span class="tag ok" id="s_upnp_tag">&mdash;</span></div>
+-            <div class="srow" data-go="Advanced_WWPS_Content.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
++            <div class="srow" data-go="Reaper_WPS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></div>
+               <div><div class="name">WPS</div><div class="sub2 rtip" id="s_wps_sub">&mdash;</div></div></div><span class="tag ok" id="s_wps_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_QoS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg></div>
+               <div><div class="name"><#EzQoS_type_QoS#></div><div class="sub2 rtip" id="s_qos_sub">&mdash;</div></div></div><span class="tag ok" id="s_qos_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_Firewall.asp?t=general"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12h6"/></svg></div>
+               <div><div class="name"><#RDSH_14#></div><div class="sub2 rtip" id="s_dos_sub">&mdash;</div></div></div><span class="tag ok" id="s_dos_tag">&mdash;</span></div>
+-            <div class="srow" data-go="MLO.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
++            <div class="srow" data-go="Reaper_MLO.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0"/><circle cx="12" cy="17" r="1.5"/></svg></div>
+               <div><div class="name"><#RDSH_15#></div><div class="sub2 rtip" id="s_mlo_sub">&mdash;</div></div></div><span class="tag ok" id="s_mlo_tag">&mdash;</span></div>
+             <div class="srow" data-go="Reaper_DNS.asp"><div class="l"><div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div>
+               <div><div class="name"><#RDSH_16#></div><div class="sub2 rtip" id="s_dnsr_sub">&mdash;</div></div></div><span class="tag ok" id="s_dnsr_tag">&mdash;</span></div>
+diff --git a/release/src/router/www/Reaper_DNS.asp b/release/src/router/www/Reaper_DNS.asp
+index e3c53a64e06..2cbc501eefc 100644
+--- a/release/src/router/www/Reaper_DNS.asp
++++ b/release/src/router/www/Reaper_DNS.asp
+@@ -40,6 +40,7 @@
+ .bwl-add input.ip{width:170px} .bwl-add input.host{width:200px} .bwl-add input.port{width:80px}
+ .bwl-add.bad input{border-color:var(--crimson)}
+ table.classes td.mono{font-family:var(--mono)}
++table.classes td.ddnm{color:var(--bone);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .link{color:var(--bone-dim);text-decoration:underline;cursor:pointer}
+ </style>
+ </head>
+@@ -151,7 +152,7 @@ table.classes td.mono{font-family:var(--mono)}
+     <h2><#RDNS_26#></h2>
+     <div class="sub"><#RDNS_27#></div>
+     <div class="secerr"><#RADM_78#></div>
+-    <table class="classes"><thead><tr><th><#MAC_Address#></th><th><#RDNS_23#></th><th></th></tr></thead><tbody id="ddtbody"></tbody></table>
++    <table class="classes"><thead><tr><th><#Clientlist_device#></th><th><#MAC_Address#></th><th><#RDNS_23#></th><th></th></tr></thead><tbody id="ddtbody"></tbody></table>
+     <div class="bwl-add" id="ddadd">
+       <div class="f"><label><#Clientlist_device#></label><select id="s_ddpick"><option value=""><#Select_menu_default#></option></select></div>
+       <div class="f"><label><#MAC_Address#></label><input type="text" class="ip mono" id="a_ddmac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off"></div>
+@@ -474,13 +475,24 @@ section('p_ddcl', 'dd', function(){
+ function ddDraw(){
+   var h = '';
+   DDL.forEach(function(r, i){
+-    h += '<tr><td class="mono">' + hx(r.mac) + '</td><td><select class="ddrow" data-i="' + i + '"></select></td><td style="text-align:right"><span class="bwldel" data-i="' + i + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
++    h += '<tr><td class="ddnm" data-i="' + i + '"></td><td class="mono">' + hx(r.mac) + '</td><td><select class="ddrow" data-i="' + i + '"></select></td><td style="text-align:right"><span class="bwldel" data-i="' + i + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
+   });
+-  q('ddtbody').innerHTML = h || '<tr><td colspan="3" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
++  q('ddtbody').innerHTML = h || '<tr><td colspan="4" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
+   Array.prototype.forEach.call(document.querySelectorAll('#ddtbody select.ddrow'), function(s){ modeOpts(s, DDL[+s.getAttribute('data-i')].mode); });
+   var b = q('ddbudget'); b.textContent = DDL.length + ' / ' + DD_MAX; b.classList.toggle('hot', DDL.length >= DD_MAX);
++  ddNames();
+   ddPickDraw();
+ }
++/* 2026-10-31 (owner): each rule shows its device's name beside the MAC - the user's own name (custom_clientlist,
++   kept for an offline device) or the live networkmap name via ReaperNames, then the name a stock-era rule carries;
++   blank only when none exists. Client-chosen text: set as textContent, never markup. Re-run once names load. */
++function ddNames(){
++  Array.prototype.forEach.call(document.querySelectorAll('#ddtbody td.ddnm'), function(td){
++    var r = DDL[+td.getAttribute('data-i')]; if (!r) return;
++    var nm = ReaperNames.byMac(r.mac, '') || r.name || '';
++    td.textContent = nm; td.title = nm;
++  });
++}
+ /* 2026-10-30 (owner): pick the device from the connected ones - picking fills the MAC box, typing one still
+    works, and ddAdd() checks either the same way. A device that already has a rule is left out. Names come
+    from the clients themselves, so they go in as text, never markup. */
+@@ -500,7 +512,7 @@ function ddPickLoad(){
+         nm = ReaperNames.byMac(mac, m);
+         out.push({mac: m, label: (nm !== m ? nm + ' - ' : '') + m + (c.ip ? ' (' + c.ip + ')' : '')}); });
+       out.sort(function(a, b){ return a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1; });
+-      DD_DEVS = out; ddPickDraw();
++      DD_DEVS = out; ddNames(); ddPickDraw();
+     });
+   } catch (e) {}
+ }
+diff --git a/release/src/router/www/form.js b/release/src/router/www/form.js
+index 5cd2f3ff601..dbbada37261 100644
+--- a/release/src/router/www/form.js
++++ b/release/src/router/www/form.js
+@@ -115,6 +115,24 @@ function adjust_TM_eula_height(_objID) {
+ 	}
+ }
+ function adjust_panel_block_top(_objID, _offsetHeight) {
++	/* reaper 2026-11-01 (owner, AiMesh client card "opens near the top of the page"): inside reaper_shell.asp this
++	   page never scrolls - the shell grows its frame to the content and the browser window scrolls instead - so
++	   the scrollTop below is always 0 and every panel landed at the top of the page wherever the user was. The
++	   shell publishes the slice of this page the user can see as --rv-top / --rv-h on <html> (reaper_shell.asp,
++	   anchorNow). Centre the panel in that slice; a panel taller than the slice starts at its top plus the
++	   caller's offset. Measured against the panel's containing block (the AiMesh card is appended next to the
++	   client panel, not to <body>). Outside the shell the variables are absent and the stock code runs. */
++	try { if (window.parent !== window && typeof parent.reaperAnchorNow === "function") parent.reaperAnchorNow(); } catch (e) {}
++	const rvEl = document.getElementById(_objID);
++	const rvS = document.documentElement.style;
++	const rvTop = parseFloat(rvS.getPropertyValue("--rv-top")), rvH = parseFloat(rvS.getPropertyValue("--rv-h"));
++	if (rvEl && !isNaN(rvTop) && !isNaN(rvH)) {
++		const cb = rvEl.offsetParent;
++		const cbTop = (cb && getComputedStyle(cb).position !== "static") ? cb.getBoundingClientRect().top + (window.pageYOffset || 0) : 0;
++		const want = rvTop + Math.max(_offsetHeight, (rvH - rvEl.offsetHeight) / 2);
++		rvEl.style.setProperty("top", Math.round(want - cbTop) + "px", "important");
++		return;
++	}
+ 	const getScrollTop = () => {
+ 		if(isSupport("UI4")){
+ 			return top.document.querySelector("article.main-content").scrollTop;
+diff --git a/release/src/router/www/reaper/fit.js b/release/src/router/www/reaper/fit.js
+index 7c47e490486..6d549ac9049 100644
+--- a/release/src/router/www/reaper/fit.js
++++ b/release/src/router/www/reaper/fit.js
+@@ -204,10 +204,18 @@
+ 		for (i = 0; i < cand.length; i++) {
+ 			el = cand[i];
+ 			if (!el.isConnected || !el.getClientRects().length) continue;
++			/* 2026-10-31 (owner, iPhone 17 portrait): a group marked data-rfit-keep (the header's ? / Reboot / Logout)
++			   is never squeezed for some other element's overflow. On the dashboard the nearest clipping ancestor of
++			   the header is the page body, so any live tile that spilled past a phone screen for a moment shrank the
++			   two buttons, and they sprang back on the next pass - the bounce. Its own CSS sizes and cuts it. */
++			if (el.closest && el.closest('[data-rfit-keep]')) continue;
+ 			/* an item its page says must not shrink (flex-shrink 0 in a flex row: a data value) is left whole */
+ 			if (el.parentElement && /flex/.test(win.getComputedStyle(el.parentElement).display) &&
+ 			    win.getComputedStyle(el).flexShrink === '0') continue;
+ 			a = clipAncestor(win, el); if (!a || a.scrollWidth - a.clientWidth <= 1) continue;
++			/* 2026-10-31 (owner, phones): a table that rp.css shows as a sideways-scrolling block under 680 px pans
++			   by design - its headers are never cut to squeeze it into the phone */
++			if (a.tagName === 'TABLE' && win.getComputedStyle(a).display === 'block') continue;
+ 			if (!groups.has(a)) groups.set(a, []);
+ 			groups.get(a).push(el);
+ 		}
+diff --git a/release/src/router/www/reaper/rp.css b/release/src/router/www/reaper/rp.css
+index 0edd39be446..cc3af03a419 100755
+--- a/release/src/router/www/reaper/rp.css
++++ b/release/src/router/www/reaper/rp.css
+@@ -242,3 +242,22 @@ table.classes tr.dim td{color:var(--steel)}
+ .edmsg.show{display:block}
+ .bwl-add input.ip{width:150px}
+ .kv .k{color:var(--steel)}
++
++/* phones (owner, 2026-10-31): the shell gives a framed page the full screen width under 680 px, and the
++   two-column settings row could not shrink below 200 + 22 + 160 px plus the padding round it - so the shell
++   widened the frame and every native page panned sideways. Under 680 px a row stacks its label over its
++   control, and the body and panel padding tighten. Last in the file, so it wins over the base rules above. */
++@media (max-width:680px){
++  body{padding:14px 12px 48px}
++  .panel{padding:14px 14px}
++  .frow{grid-template-columns:minmax(0,1fr);gap:6px}
++  .frow .fh{margin-top:0}
++  /* a data table with more columns than a phone holds scrolls sideways in its own box (only table.classes: a
++     table shown as a block shrinks to its content, so a short list would stop filling its panel). It lays out
++     at its narrowest, so its headers keep to one line; fit.js leaves them whole (the table pans, nothing is cut) */
++  table.classes{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
++  table.classes th{white-space:nowrap}
++  table.classes td.empty{text-align:left}   /* centred across the scroll width, it ran past the screen */
++  /* an add-row field never runs wider than the panel (a picker is as wide as its longest option) */
++  .bwl-add .f,.bwl-add input,.bwl-add select{max-width:100%}
++}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 12dc1f8051f..b7fc521150c 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -61,6 +61,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .top .brand{display:flex;align-items:center;flex:0 0 auto;text-decoration:none}
+ .top .brand img{height:34px;width:auto;display:block;border:0}
+ .top .spacer{flex:1}
++/* 2026-10-31 (owner, iPhone 17 portrait): ? / Reboot / Logout as one fixed group, as on the dashboard - it fits
++   beside the logo or wraps whole, so the buttons hold their place and size at a given screen width */
++.top .acts{display:flex;align-items:center;gap:inherit;flex:0 0 auto}
+ /* live status pills - identical to the dashboard header */
+ .pills{display:flex;gap:8px;flex-wrap:nowrap;min-width:0;overflow:hidden}
+ /* 2026-10-26: a chip may shrink; its label gives way first, then its value (a translated mode name), each cut with
+@@ -246,6 +249,7 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+   .top .brand{margin-right:auto;min-width:0}
+   .top .spacer{display:none}
+   .top .brand img{height:28px;max-width:100%}
++  .top .acts{margin-left:auto}
+   .rail{grid-column:1;grid-row:2;position:sticky;top:0;z-index:290;height:auto;width:100%;
+     flex-direction:row;align-items:center;gap:4px;padding:6px 8px;overflow-x:auto;
+     -webkit-overflow-scrolling:touch;border-right:0;border-bottom:1px solid var(--line-soft)}
+@@ -260,6 +264,13 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+   .stage{grid-column:1;grid-row:3;min-height:calc(100vh - 110px)}
+   #tabbar{padding:8px 10px 0}
+ }
++/* narrow phones: the header group takes its own row, Reboot / Logout split it evenly (basis 0: the width never
++   depends on the label or on what else is on the row); a longer label is cut by CSS, whole on hover */
++@media (max-width:430px){
++  .top .acts{flex:1 1 100%}
++  .top .acts .btn{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;text-align:center}
++  .top .acts #btn_guide{flex:0 0 auto}
++}
+ </style>
+ </head>
+ <body>
+@@ -324,9 +335,12 @@ a.item .cnt{font-size:11px;color:var(--steel);margin-left:4px}
+          it, as it always has. -->
+     <!-- v2.7.3: the owner's guide, one click from every page (backlog "surface
+          REAPER-GUIDE.md in the UI") -->
++    <!-- 2026-10-31: one group (.acts) that wraps as a unit and that fit.js never squeezes (data-rfit-keep) -->
++    <div class="acts" data-rfit-keep>
+     <a class="btn" id="btn_guide" href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="text-decoration:none">?</a>
+     <button class="btn" type="button" id="btn_reboot"><#BTN_REBOOT#></button>
+     <button class="btn crit" type="button" id="btn_logout"><#t1Logout#></button>
++    </div>
+   </header>
+   <aside class="rail" id="rail">
+     <div class="railclock"><div class="rc-time" id="rc_time">--:--:--</div><div class="rc-date" id="rc_date">&mdash;</div></div>
+@@ -826,6 +840,9 @@ var RV_CSS_NATIVE = RV_CSS
+     }catch(e){}
+   }
+   window.reaperAnchorOverlays=anchor;
++  /* 2026-11-01: synchronous too - form.js adjust_panel_block_top() places a panel the moment it opens and must
++     not read a slice that is one animation frame stale (or never refreshed, in a tab that paints no frames) */
++  window.reaperAnchorNow=anchorNow;
+   f.addEventListener('load', function(){
+     try{
+       var d=f.contentDocument;
+-- 
+2.25.1
+

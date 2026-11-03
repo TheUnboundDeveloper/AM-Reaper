@@ -1,8 +1,8 @@
 # Reaper Firmware — Installation & Rollback Guide
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
-**Applies to:** Reaper (Asuswrt‑Merlin 3006.102.8 fork), current release **v3.1.0** <!--@pubver--> (`3006.102.8_Reaper_v3.1.0`) — the newest **published** release, available for all five main models on [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases); newer rungs sit beside it as `_BETA` pre-releases — for the **ASUS RT‑BE96U** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BE96U specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, **GT‑BE98 Pro**, **GT‑BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
+**Applies to:** Reaper (Asuswrt‑Merlin fork: the 3006.102.10 base from v3.6.0 for the RT‑BE96U, RT‑BE86U, RT‑BE88U and GT‑BE98 Pro; 3006.102.8 for the GT‑BE98, GT‑BE19000, BQ16 and BQ16 Pro, and for every model before v3.6.0), current release **v3.1.0** <!--@pubver--> (`3006.102.8_Reaper_v3.1.0`) — the newest **published** release, available for all five main models on [Releases](https://github.com/TheUnboundDeveloper/AM-Reaper/releases); newer rungs sit beside it as `_BETA` pre-releases — for the **ASUS RT‑BE96U** (Broadcom BCM4916, WiFi 7). This guide is written for the RT‑BE96U specifically; Reaper also ships for the sibling BCM4916 models **RT‑BE86U**, **RT‑BE88U**, **GT‑BE98**, **GT‑BE98 Pro**, **GT‑BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**, and the **same flash and rollback procedure below applies to each — using that model's own image**.
 **Status:** user‑facing. The Web UI install path (§3), the factory reset and the rollback are the paths this project uses on every release. Items marked **⚠ VERIFY ON UNIT** — the rescue‑mode details and any anti‑rollback gate — are stated from general ASUS/Merlin behaviour; confirm them on your own unit before relying on them.
 
 > **Read first — flash only the image built for your exact model.** These instructions cover the RT‑BE96U; if you have a sibling model (RT‑BE86U / RT‑BE88U / GT‑BE98 / GT‑BE98 Pro / GT‑BE19000 / ZenWiFi BQ16 / ZenWiFi BQ16 Pro) follow the same steps with that model's image. Flashing an image built for a different model/SoC can brick the router. Do **not** cross‑flash between models. Always keep a stock ASUS firmware file **for your exact model** on hand before you begin (your rollback/rescue image).
@@ -15,7 +15,7 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 
 | File | What it is |
 |------|-----------|
-| `RT-BE96U_3006_102.8_<EXTENDNO>_nand_squashfs.pkgtb` | The **AI Advisor** firmware (includes the optional MCP server). |
+| `RT-BE96U_3006_<series>_<EXTENDNO>_nand_squashfs.pkgtb` (`<series>`: `102.10` from v3.6.0; `102.8` on the GT‑BE98, GT‑BE19000, BQ16 and BQ16 Pro) | The **AI Advisor** firmware (includes the optional MCP server). |
 | — with `_BETA` in `<EXTENDNO>` | A **pre-release** from the `Dev` or `Dev-102.8` branch. Same install steps; less testing behind it. The router reports the same string on the dashboard and the About page, so you can always check which channel the firmware you are running came from. A release carries no marker. |
 | `RT-BE96U_..._noMCP_...pkgtb` | The **Standard** firmware: the same image **without** the AI Advisor / MCP server compiled in (choose this if you don’t want the MCP feature present at all). |
 | `..._loader.pkgtb` | **Recovery loader only** — used in Rescue Mode, *not* a normal firmware. Don’t flash this from the Web UI as your firmware. |
@@ -41,7 +41,7 @@ Reaper ships two build variants. A recovery loader image is produced by every bu
 
 ## 3. Install — normal path (Web UI)
 
-1. Log into the router (default LAN IP is typically `192.168.1.1`; **⚠ VERIFY ON UNIT**).
+1. Log into the router (the factory LAN address on these models is `192.168.50.1`).
 2. Go to **Administration → Firmware Upgrade**.
 3. **Manual firmware upload** → select `RT-BE96U_..._nand_squashfs.pkgtb` (the standard or noMCP firmware, **not** the `_loader`).
 4. Upload and let it flash. **Do not touch power.** The router writes the image and reboots on its own (this can take several minutes).

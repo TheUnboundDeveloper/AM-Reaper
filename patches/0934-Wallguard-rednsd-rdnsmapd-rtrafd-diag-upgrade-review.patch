@@ -1,0 +1,260 @@
+From b9d6892f74f7a34ecee3a1c8e56dc801c28c0683 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 12:15:47 -0500
+Subject: [PATCH] Wallguard, rednsd, rdnsmapd, rtrafd, diag, upgrade: review
+ fixes (2026-11-03) (102.8 line)
+
+- Wallguard: a download is parsed by wallguardc before it replaces the list in use, and refused
+  (the previous copy stays) when it holds no names, or mostly unreadable lines with under a
+  quarter of the names the copy in use gave. unbreak takes digits only.
+- rednsd: when every slot is taken, the oldest connection still in its TLS handshake makes room;
+  the pid file is opened with O_NOFOLLOW.
+- rdnsmapd re-checks the DNS header after the UDP trim; rtrafd drops an implausible save stamp.
+- libipt_TRIGGER refuses negative ports.
+- reaper_diag redacts WireGuard keys and PSKs, IPsec profiles, client lists, security strings and
+  SSH keys; section 19 leaves out the lab daemon's command echo.
+- The firmware download is fetched and verified in /tmp/reaper, then moved to /tmp/linux.trx.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../extensions/libipt_TRIGGER.c               |  4 +--
+ release/src/router/others/reaper_diag         |  7 +++--
+ release/src/router/rdnsmapd/rdnsmapd.c        |  2 ++
+ release/src/router/rednsd/rednsd.c            | 18 ++++++++++-
+ .../rom/webs_scripts/reaper_webs_upgrade.sh   | 19 +++++++-----
+ release/src/router/rtrafd/rtrafd.c            |  5 +++
+ release/src/router/wallguard/wallguard.sh     | 31 +++++++++++++++++++
+ 7 files changed, 74 insertions(+), 12 deletions(-)
+
+diff --git a/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c b/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
+index 8d9a4a7ad88..48134d5be54 100644
+--- a/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
++++ b/release/src/router/iptables-1.4.x/extensions/libipt_TRIGGER.c
+@@ -63,7 +63,7 @@ parse_ports(const char *arg, u_int16_t *ports)
+ 	int port;
+ 
+ 	port = atoi(arg);
+-	if (port == 0 || port > 65535)
++	if (port <= 0 || port > 65535)	/* review 2026-11-03: a negative value wrapped to a u16 port */
+ 		xtables_error(PARAMETER_PROBLEM, "Port range `%s' invalid\n", arg);
+ 
+ 	dash = strchr(arg, '-');
+@@ -73,7 +73,7 @@ parse_ports(const char *arg, u_int16_t *ports)
+ 		int maxport;
+ 
+ 		maxport = atoi(dash + 1);
+-		if (maxport == 0 || maxport > 65535)
++		if (maxport <= 0 || maxport > 65535)
+ 			xtables_error(PARAMETER_PROBLEM,
+ 				   "Port range `%s' invalid\n", dash+1);
+ 		if (maxport < port)
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 13250f8c102..547314a1c04 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -323,7 +323,9 @@ awk -F= '
+     if (length(v) < 5) next
+     if (v ~ /^[0-9]+$/ && length(v) < 6) next
+     cls=""
+-    if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass/) cls="SEC"
++    # review 2026-11-03 (D-4): and WireGuard private keys and peer PSKs, IPsec profiles (their PSK), the
++    # user>password client lists, AiMesh guest security strings and SSH keys
++    if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass|_priv$|_ppsk|ipsec_profile_|_clientlist$|_security$|sshd_authkeys/) cls="SEC"
+     else if (k ~ /username|_user$|_account|http_username|login_name/) cls="USR"
+     else if (k ~ /_ssid$/) cls="SSID"
+     else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username/) cls="HOST"
+@@ -2080,7 +2082,8 @@ sec "18. KERNEL LOG (tail)"
+ dmesg 2>/dev/null | tail -120 | sed 's/^/  /'
+ 
+ sec "19. SYSLOG (tail)"
+-tail -150 /tmp/syslog.log 2>/dev/null | sed 's/^/  /'
++# review 2026-11-03: the lab daemon's echo of each command it ran is the operator's own input - left out, as in 19b
++tail -150 /tmp/syslog.log 2>/dev/null | grep -vF 'rmcpd-lab: exec:' | sed 's/^/  /'
+ 
+ sec "19b. SYSLOG HISTORY (churn, noise profile, lineage - counts and pseudonyms only)"
+ SLF="$(slog_files | tr '\n' ' ')"
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index 3106a5dde2d..1693a56fc33 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -458,6 +458,8 @@ static void rdm_parse(const uint8_t *p, int n, void *map, uint32_t now)
+ 	ul = (p[l4 + 4] << 8) | p[l4 + 5];		/* trim Ethernet padding */
+ 	if (ul >= 8 && l4 + ul < n)
+ 		n = l4 + ul;
++	if (dns + 12 > n)	/* review 2026-11-03: the trimmed datagram must still hold the DNS header */
++		return;
+ 	q = p + dns;
+ 	/* QR set, opcode 0, TC clear, RCODE 0, QDCOUNT 1, ANCOUNT >= 1 */
+ 	if (!(q[2] & 0x80) || (q[2] & 0x7a) || (q[3] & 0x0f) || q[4] != 0 || q[5] != 1)
+diff --git a/release/src/router/rednsd/rednsd.c b/release/src/router/rednsd/rednsd.c
+index c5283aa22ef..e77acaaf33e 100644
+--- a/release/src/router/rednsd/rednsd.c
++++ b/release/src/router/rednsd/rednsd.c
+@@ -1149,6 +1149,18 @@ static void accept_on(struct listener *l)
+ 			if (v && now_ms() - v->last >= 1000) {
+ 				conn_close(v);
+ 				c = v;
++			} else if (same < PER_PEER) {	/* review 2026-11-03 (D-2): else the oldest connection still in its
++				   TLS handshake, once it has had 500 ms - connections that never send a ClientHello no
++				   longer hold every slot until their handshake deadline (none is closed for a newcomer
++				   the per-device cap refuses anyway) */
++				struct conn *h = NULL;
++				for (i = 0; i < MAX_CONN; i++)
++					if (conns[i].state == C_HANDSHAKE && (!h || conns[i].hs_deadline < h->hs_deadline))
++						h = &conns[i];
++				if (h && now_ms() + HS_MS - h->hs_deadline >= 500) {
++					conn_close(h);
++					c = h;
++				}
+ 			}
+ 		}
+ 		if (!c || same >= PER_PEER) {
+@@ -1468,7 +1480,11 @@ int main(int argc, char **argv)
+ 	if (!foreground && daemon(0, 0))
+ 		return 1;
+ 	{
+-		FILE *pf = fopen(pidfile, "w");
++		/* review 2026-11-03: never through a link planted at the pid file's name */
++		int pfd = open(pidfile, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
++		FILE *pf = pfd >= 0 ? fdopen(pfd, "w") : NULL;
++		if (!pf && pfd >= 0)
++			close(pfd);
+ 		if (pf) { fprintf(pf, "%d\n", (int)getpid()); fclose(pf); }
+ 	}
+ 	drop_privileges();
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+index bf5a5872103..8572c6e2950 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_upgrade.sh
+@@ -28,12 +28,15 @@
+ 
+ LOG=/tmp/webs_upgrade.log
+ FW=/tmp/linux.trx
++# review 2026-11-03: the download lands in Reaper's root-only directory and is checked there; it is moved onto
++# the stock flash path only once its size and hash match (nothing in /tmp sees a half-written image)
++DL=/tmp/reaper/webs_fw.trx
+ WGET_LOG=/tmp/fwget_log
+ 
+ fail() {
+ 	echo "---- ABORT: $1 ----" >> "$LOG"
+ 	logger -t REAPER_UPGRADE "abort: $1"
+-	rm -f "$FW"
++	rm -f "$FW" "$DL"
+ 	nvram set webs_state_error=$2
+ 	nvram set webs_state_upgrade=1
+ 	exit 0
+@@ -52,7 +55,8 @@ fi
+ # the image 0666 - writable by any process between the hash check and the flash.
+ # 022 keeps it root-writable only (the private-file check below relies on it).
+ umask 022
+-rm -f "$FW" "$WGET_LOG"
++rm -f "$FW" "$DL" "$WGET_LOG"
++( umask 077; mkdir -p /tmp/reaper )
+ 
+ url=$(nvram get webs_state_url)
+ sha=$(nvram get webs_state_sha256 | tr 'A-F' 'a-f')
+@@ -103,16 +107,16 @@ fi
+ echo "---- downloading $base ----" >> "$LOG"
+ logger -t REAPER_UPGRADE "downloading $base"
+ # GNU wget; --output-file feeds ej_get_fwdl_percent (the page's progress bar)
+-/usr/sbin/wget -t 2 -T 30 --output-file="$WGET_LOG" "$url" -O "$FW"
+-if [ "$?" != "0" ] || [ ! -s "$FW" ]; then
++/usr/sbin/wget -t 2 -T 30 --output-file="$WGET_LOG" "$url" -O "$DL"
++if [ "$?" != "0" ] || [ ! -s "$DL" ]; then
+ 	fail "download failed" 1
+ fi
+ 
+-if [ -n "$size" ] && [ "$(wc -c < "$FW")" != "$size" ]; then
+-	fail "size mismatch (got $(wc -c < "$FW") want $size)" 3
++if [ -n "$size" ] && [ "$(wc -c < "$DL")" != "$size" ]; then
++	fail "size mismatch (got $(wc -c < "$DL") want $size)" 3
+ fi
+ 
+-got=$(sha256sum "$FW" | cut -d' ' -f1)
++got=$(sha256sum "$DL" | cut -d' ' -f1)
+ if [ "$got" != "$sha" ]; then
+ 	fail "sha256 mismatch (got $got want $sha)" 3
+ fi
+@@ -122,6 +126,7 @@ logger -t REAPER_UPGRADE "sha256 verified"
+ # /tmp. It was removed above and written by this root shell, so it must still
+ # be a root-owned regular file nobody else can write - the hash checked above
+ # is then the content that gets flashed.
++mv -f "$DL" "$FW" || fail "the verified image could not be moved to the flash path" 3
+ fw_ls=$(ls -ln "$FW" 2>/dev/null)
+ case "$fw_ls" in
+ 	-????-??-?\ *) ;;
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index cba3fbfde73..83ce8db2c95 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -2530,6 +2530,11 @@ static int db_load(const char *path)
+ 	 * to net_slot() -> netname[negative] out-of-bounds write. Reject any header
+ 	 * whose nnet is out of range. */
+ 	if (h.nnet < 0 || h.nnet > NNET) { fclose(o); return -1; }
++	/* review 2026-11-03: the save stamp sets the ring cursors (db_align). A stamp past 2100, or more than a
++	 * day ahead of a clock that is already set, is no save time: the history loads, the stamp does not */
++	if (h.saved < 0 || h.saved > 4102444800LL ||
++	    (clock_sane(time(NULL)) && h.saved > (int64_t)time(NULL) + 86400))
++		h.saved = 0;
+ 	nnet = h.nnet;
+ 	memcpy(netname, h.netname, sizeof(netname));
+ 	memcpy(cli, h.cli, sizeof(cli));
+diff --git a/release/src/router/wallguard/wallguard.sh b/release/src/router/wallguard/wallguard.sh
+index d96479243d6..e9cf20733c1 100644
+--- a/release/src/router/wallguard/wallguard.sh
++++ b/release/src/router/wallguard/wallguard.sh
+@@ -209,6 +209,35 @@ lock_wait() {
+   return 0
+ }
+ 
++# review 2026-11-03 (D-1): an HTTP 200 answer is not yet a list. The download is parsed alone, by the same
++# parser the table uses, and refused (the previous copy stays) when it holds no names, or when most of its
++# lines are not list lines AND it carries under a quarter of the names the copy in use gave - an error or
++# login page served as 200. A list that only shrinks, or one with many cosmetic rules, still passes.
++# Prints why on a refusal, nothing when the list is taken.
++list_gate() {
++  _gj=$D/gate.json; _gd=$D/gate.db
++  rm -f "$_gj" "$_gd"
++  if ! "$SC" build --out "$_gd" --stats "$_gj" --list "1:$1:$2" >/dev/null 2>&1; then
++    rm -f "$_gj" "$_gd"; echo "the download could not be parsed as a list"; return 1
++  fi
++  _g=$(awk -v id="$1" '
++    function num(s, k) { if (match(s, "\"" k "\":[0-9]+")) return substr(s, RSTART + length(k) + 3, RLENGTH - length(k) - 3) + 0; return 0 }
++    FNR == 1 { f++ }
++    { n = split($0, part, /\{"bit":/)
++      for (j = 2; j <= n; j++) if (index(part[j], "\"id\":\"" id "\"")) {
++        if (f == 1) { nm = num(part[j], "names"); bad = num(part[j], "unsupported") + num(part[j], "invalid") }
++        else old = num(part[j], "names") } }
++    END { printf "%d %d %d\n", nm, bad, old }' "$_gj" $( [ -f "$D/build.json" ] && echo "$D/build.json") 2>/dev/null)
++  rm -f "$_gj" "$_gd"
++  # shellcheck disable=SC2086
++  set -- $_g
++  [ "${1:-0}" -gt 0 ] 2>/dev/null || { echo "the answer held no names a list can carry (an error page, or the list changed format)"; return 1; }
++  if [ "${2:-0}" -gt "$1" ] && [ "${3:-0}" -gt 0 ] && [ $(( $1 * 4 )) -lt "$3" ]; then
++    echo "the answer looks like no list: $2 lines it cannot read against $1 names, where the copy in use gave $3"; return 1
++  fi
++  return 0
++}
++
+ build() {
+   # one build at a time (rc's background rebuilds, Unbreak's Allow, the update): two at once wrote the
+   # same table file (review 2026-10-21); waits, so the later rule change still lands
+@@ -389,6 +418,7 @@ update() {
+       old=0; [ -f "$L/$id" ] && [ ! -L "$L/$id" ] && old=$(wc -c < "$L/$id")
+       [ $(( $(ram_lists) - old + $(wc -c < "$L/$id.new") )) -gt "$LCAP" ] &&
+         why="not taken, the lists kept in RAM would pass $((LCAP / 1048576)) MB (Long-Term Storage can keep them on USB)"
++      [ -z "$why" ] && why=$(list_gate "$id" "$L/$id.new")
+     else
+       if [ -z "$why" ]; then
+         why="download failed"
+@@ -634,6 +664,7 @@ stats() {
+ 
+ unbreak() {
+   dev=$1; mins=${2:-15}
++  case "$mins" in ''|*[!0-9]*|??????*) mins=15 ;; esac	# review 2026-11-03: shell arithmetic below - digits only, whoever calls
+   fold
+   awk -v dev="$dev" -v since="$(( $(date +%s) - mins * 60 ))" -v re="$NAMERE" '
+     NF == 6 && $1 >= since && ($2 == dev || $5 == dev) && $6 ~ re { c[$6]++; t[$6] = $1; b[$6] = $3 }
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -37,102 +37,55 @@ internal quality, or deferred by decision.
 
 ## Waiting on field response
 
-*Solved and shipped in a cut or a successful test build; waiting on the reporter. One line each,
-highest priority first - what was fixed and what to ask the tester for is in the notes. A "still broken"
-answer moves the item back to Open bugs.*
+*Solved: shipped in a cut or a successful test build, or fixed in canon for the next cut;
+waiting on the reporter. One line each, highest priority first - what was fixed and what to ask
+the tester for is in the notes. A "still broken" answer moves the item back to Open bugs.*
 
-- **[P1] Pre-build review 2026-10-21: root wrote into the USB store by path; Wallguard MAC check let
-  a command through**
-  ↳ notes: `review-2026-10-21.md`
-- **[P1] Dreadwatch threat domains: both feeds return HTTP 410**
-  ↳ notes: `dreadwatch-abusech-410.md`
-- **[P1] Test images _r8-_r10 could not be flashed and nothing said so**
-  ↳ notes: `review-2026-10-21.md`
-- **[P1] DDNS certificate stuck on "Unknown or processing..." or blank**
-  ↳ notes: `ddns-cert-warden.md`
-- **[P1] Dreadwatch: the name limit cut alphabetically, so a large optional list pushed out Reaper's
-  Basics**
-  ↳ notes: `dreadwatch-limit.md`
-- **[P1] RAM: the Dreadwatch name list is held in RAM five times** ↳ notes: `ram-dedupe.md`
-- **[P1] Wallguard never builds its table - stuck on "The lists are downloading"**
-  ↳ notes: `wallguard.md`
-- **[P1] WAN 802.1Q switch did nothing on GT-BE98 (rebooted, came back off)**
-  ↳ notes: `wan-vlan-mswan.md`
-- **[P2] Reviewer feedback: Dreadwatch, Security Review rules, latency & loss chart**
-  ↳ notes: `reviewer-feedback-2026-10-20.md`
-- **[P2] Files under /jffs left writable by every user** ↳ notes: `jffs-world-writable.md`
-- **[P2] IPsec's /jffs/ca_files: root-run scripts 0777, private keys readable by everyone**
-  ↳ notes: `ipsec-ca-files-perms.md`
-- **[P2] Wallguard — ad & tracker blocker, phases 1 + 2**
-  ↳ notes: `wallguard.md`, `release-review-2026-10-25.md`
-- **[P2] Warden threat domains on/off did not take effect until the next dnsmasq restart**
-  ↳ notes: `wallguard.md`
-- **[P2] Encrypted DNS for devices — Step A** ↳ notes: `encrypted-dns.md`
-- **[P2] Encrypted DNS: block encrypted DNS that goes around the router**
-  ↳ notes: `encrypted-dns.md`, `release-review-2026-10-25.md`
-- **[P2] Wi-Fi Settings: Roaming Assistant cannot be switched off**
-  ↳ notes: `roamast-apply-inactive.md`
-- **[P2] Long-Term Storage rows: Wallguard lists on USB, Wallguard / Dreadwatch blocked lookups,
-  Encrypted DNS activity**
-  ↳ notes: `wallguard.md`
-- **[P2] Older store writers followed links too (rwatch device / channel / syslog history and
-  incident dumps, httpd audit log, rtrafd database and health log)**
-  ↳ notes: `review-2026-10-21.md`
-- **[P2] Hard-coded never-block names could not be removed (Dreadwatch, Wallguard)**
-  ↳ notes: `visible-exemptions.md`
-- **[P2] Wireless Scheduler: the SSID is not broadcast when the schedule turns Wi-Fi back on**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
-- **[P2] AiMesh parking card dead: the on/off button stuck on "-"**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
-- **[P2] AiMesh backhaul parking loops: park, "client network is down", release, every ~70 s**
-  ↳ notes: `wifi-scheduler-ssid-not-broadcast.md`
-- **[P2] LAN > VLAN (per-port access / trunk) missing on every SDN model**
-  ↳ notes: `lan-vlan-tab.md`
-- **[P2] Upstream carries from Asuswrt-Merlin (Eric Sauvageau), 2026-10-26**
-  ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P2] Wallguard says why it cannot work** ↳ notes: `wallguard-why.md`
-- **[P2] Reaper pages: settings written into page scripts without escaping**
-  ↳ notes: `nvram-get-js-escaping.md`
-- **[P2] firewall-start "not honoured": custom scripts kept no trace of failing**
-  ↳ notes: `custom-script-output.md`
-- **[P2] Translated labels wrap, spill, or push past their space** ↳ notes: `i18n-fit.md`
-- **[P2] Browsers kept old pages after a flash or a setting change (cache bust)**
-  ↳ notes: `httpd-cache-bust.md`
-- **[P2] Wallguard: removable built-in lists, your own sources, API sources**
-  ↳ notes: `wallguard-sources.md`
-- **[P2] Bastion tools independent: Dreadwatch no longer needs Warden**
-  ↳ notes: `bastion-independent.md`
+- **[P2] Internet speed test after ASUS retired the old Ookla setup (2026-10-01)**
+  ↳ notes: `speedtest-embed-key-retired.md`
+- **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
+- **[P2] Wireless Log: device names lost, and every extra network called a guest network**
+  ↳ notes: `wireless-log-names-types.md`
+- **[P2] Guest Network Pro: a network sent through a VPN from the Network page has no Internet**
+  ↳ notes: `sdn-vpn-binding-no-internet.md`
 - **[P2] Only Gatekeeper knows AiMesh exists** ↳ notes: `aimesh-exempt-helper.md`
-- **[P3] Wi-Fi Settings: a Time Scheduling edit could drop out of Apply; a shared row counted
-  twice**
-  ↳ notes: `roamast-apply-inactive.md`
-- **[P3] Samba log noise: "Unknown parameter use spnego" and "sys_path_to_bdev() failed"**
-  ↳ notes: `samba-log-noise.md`
-- **[P3] Sort the Devices and Gatekeeper lists** ↳ notes: `devices-gatekeeper-sort.md`
-- **[P3] Security review: select several rows and act once**
-  ↳ notes: `security-review-bulk-select.md`
-- **[P3] Connections: the flow detail panel stretches on long names**
-  ↳ notes: `conn-detail-panel-long-names.md`
-- **[P3] Gatekeeper device list: wrong connection type for some devices**
-  ↳ notes: `gatekeeper-connection-type.md`
-- **[P3] AiMesh: the "feedback" link after a failed node join goes nowhere**
-  ↳ notes: `aimesh-feedback-dead-link.md`
-- **[P3] /jffs/nvram/asus_device_list turns world-writable again after boot**
-  ↳ notes: `jffs-world-writable.md`
-- **[P3] Wallguard: the HaGeZi Threat Intelligence preset could never load** ↳ notes: `wallguard.md`
-- **[P3] Diag: "store is RAM although a USB disk is mounted" on every router**
-  ↳ notes: `reaper-diag-counters.md`
-- **[P3] Security Review card: clear ways to accept, add and remove** ↳ notes: `security-review.md`
-- **[P3] System Log: Find / Exclude lists and saved exclusions** ↳ notes: `system-log-filter.md`
-- **[P3] USB Application: opening a sub-page from the main menu leaves its tab unhighlighted**
-  ↳ notes: `usb-app-tab-highlight.md`
-- **[P3] The Warden menu is Bastion** ↳ notes: `bastion-menu.md`
-- **[P3] System Log: lines are not wrapped** ↳ notes: `system-log-filter.md`
-- **[P3] Wireless Log: one box per network** ↳ notes: `wireless-log-networks.md`
+- **[P2] Warden blocked the WireGuard server from mobile data** ↳ notes: `warden-wg-listen-port.md`
+- **[P2] Encrypted DNS block: no AiMesh exemption** ↳ notes: `edns-aimesh-exempt.md`
+- **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing**
+  ↳ notes: `russian-ui-layout.md`
+- **[P2] Security review (2026-11-03): kernel privilege checks, root-only files and keys,
+  a page token on every save** ↳ notes: `security-review-2026-11-03.md`
+- **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
+- **[P3] Internet Connection names the default WAN port, not the one in use**
+  ↳ notes: `internet-wan-port-label.md`
+- **[P3] System Info: `<i>off</i>` shown as text for a radio that is off**
+  ↳ notes: `sysinfo-radio-off-markup.md`
+- **[P3] HW QoS inert behind an ISP/IPTV profile** ↳ notes: `hwqos-isp-profile.md`
+- **[P3] Reaper QoS: no unsaved-changes cue** ↳ notes: `unsaved-changes-cue.md`
+- **[P3] DNS Director: pick the device from a list of connected devices**
+  ↳ notes: `dns-director-device-picker.md`
+- **[P3] VPN Director: picking a device does not fill the description**
+  ↳ notes: `vpn-director-device-picker.md`
+- **[P3] DHCP manual assignment: no device list when adding a reservation**
+  ↳ notes: `dhcp-reservation-device-picker.md`
+- **[P3] Diagnostics: the speed-test engine version and WDS link names masked as addresses**
+  ↳ notes: `diag-address-shaped-names.md`
+- **[P3] Rule Status: G2 reds a guest network sent through a VPN with its Kill Switch on**
+  ↳ notes: `rule-status-g2-vpn-guest.md`
 - **[P3] Header on an iPhone 17 (portrait): Restart and Log off bounce and resize**
   ↳ notes: `header-buttons-bounce-mobile.md`
 - **[P3] DNS Director: per-device rules show only the MAC, not the device name**
   ↳ notes: `dns-director-rule-names.md`
+- **[P3] Bastion help links open the top of the guide** ↳ notes: `warden-help-anchor.md`
+- **[P3] Dreadwatch and Wallguard: each list's address on its row**
+  ↳ notes: `feed-list-addresses.md`
+- **[P3] Bastion page texts that contradict the code** ↳ notes: `bastion-page-texts.md`
+- **[P3] Warden: the IPv6 LAN exemption covers only the main LAN prefix**
+  ↳ notes: `warden-v6-guest-prefix.md`
+- **[P3] Wallguard's DNS-bypass banner misses VPN Director's Exclusive DNS**
+  ↳ notes: `wallguard-bypass-vpndirector.md`
+- **[P3] Gatekeeper: the waiting page never showed with an HTTPS-only web interface**
+  ↳ notes: `gk-https-only-waiting-page.md`
 
 ## Open bugs / under investigation
 
@@ -142,67 +95,32 @@ answer moves the item back to Open bugs.*
   (PCIe 7-12), TX packet-count mode off, SS park mode on. A bulk-OUT transfer is the controller
   reading memory, and a read holds its credit for the whole DRAM round trip.
   **[2026-11-01: five reversible levers built as module parameters set from `reaper_usb3_*` nvram
-  (defaults untouched), test image _r13, held out of v3.6.5 until an A/B run shows one moves the
-  write number; runtime A/B script for any firmware; needs a 4912/4916 box with a UASP SSD]**
+  (defaults untouched); in v3.7.0, off unless a key is set; owed: an A/B run that shows one moves
+  the write number; runtime A/B script for any firmware; needs a 4912/4916 box with a UASP SSD]**
   ↳ notes: `usb3-write-ceiling.md`
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P2] Header bar truncates English at 1080p** (owner, 2026-10-27, v3.6.0) — chip labels and values end in
-  "..." at 1920 px (fine at 1440p); English must fit the 1080p canvas. **[open]** ↳ notes: `header-chip-truncation.md`
-- **[P2] Backups: the DDNS hostname lost, and the settings file blind to the newer tools** (field
-  report + owner, 2026-10-27) — both files blanked `ddns_hostname_x` (stock's asuscomm step; a no-ip
-  name came back empty, its login restored); the settings file carried nothing of Wallguard or
-  Dreadwatch's sources, and no switch added since Warden. Now: hostname kept; every Reaper feature
-  carried, API keys included; per-box items stay router-settings only; a coverage test fails on an
-  unplaced option.
-  **[built in canon 2026-10-27, unbuilt - next rung; owed on metal: a full and a settings restore]**
-  ↳ notes: `backup-coverage.md`
 - **[P3] Review 2026-10-24: the owner-only decisions and the merges that would change behaviour**
-  (adversarial and quality agents over the whole pending delta) — decide: the hidden-input key lists
-  (Q-C1-11), the Wallguard / Encrypted DNS look on the kit stylesheet (Q-C2-12 CSS), the ten stock rail
-  glyphs and the firewall rail badge (Q-C2-8), refusing an all-zero WAN MAC (Q-C1-6), the `http_enable`
-  default (S-B-1), the Wireless Log 5 s default; merges left because they change behaviour: one request
-  helper with one timeout (Q-C1-7), the mask checks (Q-C1-6), the other sortable tables and the QoS /
-  firewall address rules (Q-C2-11). **[all security, correctness and performance items in canon for
-  _r36 2026-10-25; the flash items (comment strip, 82 unused tokens, kit helpers + 33 shared style
-  rules, Wallguard / Encrypted DNS closures) and the `vts_rulelist` bench (JFFS-stored, kept whole) done the
-  same night, unbuilt]** ↳ notes: `review-2026-10-24.md`
+  (adversarial and quality agents over the whole pending delta) — decided 2026-10-30, not yet coded: the
+  Internet page refuses an all-zero WAN MAC like Tor and LAN (Q-C1-6); Wireless Log refreshes every 10 s
+  by default, still paused while hidden; `http_enable` stays `2` (S-B-1); the ten stock rail glyphs and
+  the firewall rail badge go (Q-C2-8); Wallguard and Encrypted DNS move onto the kit stylesheet, keeping
+  their own layout (Q-C2-12 CSS). Still to decide: the hidden-input key lists (Q-C1-11). Merges left
+  because they change behaviour: one request helper with one timeout (Q-C1-7), the mask checks (Q-C1-6),
+  the other sortable tables and the QoS / firewall address rules (Q-C2-11). **[all security,
+  correctness and performance items in canon for _r36 2026-10-25; the flash items (comment strip, 82
+  unused tokens, kit helpers + 33 shared style rules, Wallguard / Encrypted DNS closures) and the
+  `vts_rulelist` bench (JFFS-stored, kept whole) done the same night, built as _r37, not flashed;
+  2026-10-30 decisions not started]** ↳ notes: `review-2026-10-24.md`
 - **[P2] AI Advisor arming code ord and lockout move to reset-proof `/data/reaper/advisor/`.
   **[plan written 2026-10-19, replaces the WPS-button plan; not scheduled]**
   ↳ notes: `advisor-arming-code-admin-reset.md`
-- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
-  monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
-  flows); feasible only as an on-demand measure for the selected connection, TCP only.
-  **[researched 2026-10-18; not scheduled]** ↳ notes: `conn-packet-loss.md`
-- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
-  a PIN build.
-  **[options written 2026-10-18; owner decision]** ↳ notes: `pin-strategy.md`
-- **[P2] LAN › DHCP: the manually assigned (bound) devices list is missing** (field, reported again 2026-10-26) — the
-  list renders on the owner's box (same format as stock); the user's case is not reproduced yet. **[not started; need the
-  user's screenshot + diag]**
-  ↳ notes: `dhcp-manual-list-missing.md`
-- **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing** (field, Russian users,
-  2026-10-26) — the packs are in step (checked); long words: see the next entry; open: screenshots, the language switch.
-  **[layout part built 2026-10-26 (below); rest not started]** ↳ notes: `russian-ui-layout.md`
-- **[P2] Wi-Fi start-up script fixes from GPL 40585** (Merlin review, 2026-10-26) — hndnvram.sh stops stacking a second
-  defaults mount (can swallow nvram commits), quoting, taskset hex; Merlin: an ASUS GPL change he has no details on.
-  **[owner investigating; not carried]** ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P2] Merge the whole 102_40585 GPL (rebase onto Merlin main)** (2026-10-26) — Merlin: pieces of a GPL are not
-  sustainable; brings AiMesh, the Ookla rework + quota (decide). Trial merge: ~200 real code hunks in ~30 files, the rest
-  mechanical; est. 85-90% complete with every fix kept, 60-70% clean first image. **[scheduled after the open bugs;
-  plan: bulk, code, checks, metal rungs]** ↳ notes: `merlin-40585-review-2026-10-26.md`
-- **[P3] HW QoS inert behind an ISP/IPTV profile** — the WAN name is the virtual device there; take the port from
-  `wan_if_eth()` as Merlin f5334a33d23 does (the mswan half needs 40585). **[not started]** ↳ notes: `merlin-40585-review-2026-10-26.md`
 - **[P2] MLO on: a soft restart sometimes leaves Wi-Fi accepting no devices until a power cycle**
   (RT-BE96U, 2026-07 and 2026-10) — the link between the radio chips forms on every power-on but
   not on every soft restart (1 of 6 post-flash boots); options: a boot-time check with a dashboard
   warning and one capped retry, or a radio power cycle through the PCIe regulator if wired.
   **[options offered 2026-11-01; owner call]** ↳ notes: `mlo-restart-radio-link.md`
-- **[P3] The main Wi-Fi's RADIUS server is set in two places** — the Network page keeps it in the
-  main network's profile, Wireless > RADIUS edits the per-radio copy; which one the router applies
-  decides whether the RADIUS page should point to the Network page.
-  **[needs data: the owner's RADIUS server test]** ↳ notes: `radius-two-stores.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -210,12 +128,11 @@ answer moves the item back to Open bugs.*
 
 ## UI / UX polish
 
-- **[P3] Loading/Restarting overlay: native redesign remainder** — 24 stock `confirm()` dialogs on 9
-  pages. **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Reaper QoS: no unsaved-changes cue** (metal, 2026-10-22) — the × on a rule edits only the
-  page and nothing says Apply is still owed (the owner's first delete was never written). A
-  pending-changes bar on the Reaper pages that edit lists.
-  **[not started]** ↳ notes: `reaper-native-ui.md`
+- **[P3] Reaper pages: the polishing redesign and formatting pass** (owner, 2026-11-02) — every
+  settings page is now converted to a Reaper page; the polish has not started. It includes the
+  browser's own `confirm()` / `alert()` boxes, still on 32 of the 62 Reaper pages (about 103 and 75
+  calls; four pages use the themed `reaperConfirm`).
+  **[not started]** ↳ notes: `loading-overlay-redesign.md`
 
 ---
 
@@ -232,8 +149,8 @@ answer moves the item back to Open bugs.*
   the RAM levers are in `ram-dedupe.md`).
   **[waves 0 + 1 (System, SNMP, Tweaks) on metal; System Log group (_r25), LAN + WAN (_r32) and VPN
   (_r33) built 2026-10-23; Wireless (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO) and LAN > VLAN
-  owner-reviewed 2026-11-01 and their 8 stock pages removed (_r7); kit pages fit phones (_r5); AiMesh
-  and Network stay stock with their own stylesheets (2026-11-01, canon); left: the cutover]**
+  owner-reviewed 2026-11-01; in v3.6.5 their 8 stock pages are gone, the kit pages fit phones, and
+  AiMesh and Network stay stock with their own stylesheets; left: the cutover]**
   ↳ notes: `reaper-native-ui.md` (plan + progress), `native-page-migration.md`
 - **[P3] Security review: watch more settings** (owner, 2026-10-23) — it compares 24 settings and
   hashes 3 lists; candidates: admin access and passwords (hash only), the second WAN, FTP / Samba /
@@ -244,13 +161,6 @@ answer moves the item back to Open bugs.*
   reaper_dot_srv, the country list and custom feeds hashed; a setting the accepted baseline predates is adopted into
   it silently with one log line (`test_rwatch_review.py`). The rest (admin access, second WAN, servers, DNS/DDNS,
   the update chain, open Wi-Fi) not started]** ↳ notes: `security-review-coverage.md`
-- **[P3] Dreadwatch: removable built-in lists, your own sources, API sources** (owner, 2026-10-23 /
-  2026-10-27: Wallguard's sources on Dreadwatch) — every built-in row removable (Basics too) with
-  Restore; up to 8 sources of your own, a text list at an https address or an API (POST body, key
-  header, JSON field) fetched through `wallguard.sh fetch`; keys write-only in /jffs/rwarden/dnskeys;
-  one table id per source, after the built-in lists.
-  **[built in canon 2026-10-27, unbuilt - next rung; owed on metal: a real abuse.ch Auth-Key]**
-  ↳ notes: `dreadwatch-custom-feeds.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** (owner,
   2026-10-22) — a Long-Term Storage row "Dreadwatch lists" (USB only, like Wallguard's): each list's
   download and the compiled copy on the volume through `rstore`, restored after a reboot without
@@ -260,13 +170,15 @@ answer moves the item back to Open bugs.*
   dnsmasq instance before that).
   **[proposed 2026-10-22; owner 2026-10-24: decide after the RAM item - now built, 3,000,000 names would be
   ~36 MB mapped once (about 650 MB across the old copies), so the limit itself is the lever to revisit]** ↳ notes: `dreadwatch-limit.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~1 MB of its flash slot** (68.4 of 69.5
-  MB) — every added file now competes with the slot; measure the staged image, then remove or
-  deduplicate what ships (the 1.7 MB logo PNG, stock pages Reaper replaced, the OUI table shipped
-  twice, unused modules, compression settings; Samba/Tor/speedtest/DLNA are owner calls).
-  **[2026-10-22: orphans removed in canon (1,978,368 B, headroom now ~2.7 MB); _r16 metal PASS: no
-  missing-file errors, Samba tools resolve every library; image re-encodes and owner-decision
-  features next]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** (67.3 of
+  69.5 MB) — every added file competes with the slot; measure the staged image, then remove or
+  deduplicate what ships (the 1.7 MB logo PNG, unused modules, compression settings;
+  Samba/Tor/speedtest/DLNA are owner calls).
+  **[v3.6.5: rootfs 67,260,416 B, 2,195,456 B spare - the 8 replaced stock pages (36 KB), the
+  second OUI table (352 KB) and the Network / AiMesh white, ROG and TUF themes gone; next small one:
+  the remaining ROG/TUF theme files (RWD_UI, week schedule), unused on non-ROG/TUF models (per
+  model); the larger levers are owner calls]**
+  ↳ notes: `image-size-hunt.md`
 - **[P2] Encrypted DNS: split the block into two switches (DoT/DoQ on 853, DoH to known resolvers)**
   (owner, 2026-10-21) — new `reaper_dot_block`, each with its own counter; canaries and the DoH name
   list follow the DoH switch.
@@ -294,10 +206,12 @@ answer moves the item back to Open bugs.*
   device; own threat model first.
   **[idea]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.**
-  **[project; since 2026-11-01 the LAN > VLAN page keeps an existing multi-VID trunk (stock reset
+  **[project; since v3.6.5 the LAN > VLAN page keeps an existing multi-VID trunk (stock reset
   it); choosing several VIDs and the inter-VLAN ACL page not started]**
   ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
+- **[P3] DNS rewrites on a page** (forum, 2026-11-02) — local names for LAN VMs and containers,
+  wildcards included, without editing `dnsmasq.conf.add` over SSH.
+  **[not started]** ↳ notes: `dns-rewrites-page.md`
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes:
   `staged-batch-changes.md`
 - **[P3] Mimic — hardware port mirror to an external IDS** (WAN Ports page, every wired port,
@@ -388,6 +302,24 @@ answer moves the item back to Open bugs.*
 - **[P3] WireGuard server starts before NTP sync** — the clients wait for `ntp_ready` and retry from
   cron; the server does not. Investigate gating it the same way. **[working as intended]** 
   ↳ notes: `wgs-start-before-ntp.md`
+- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
+  a PIN build.
+  **[deferred]** ↳ notes: `pin-strategy.md`
+- **[P3] The main Wi-Fi's RADIUS server is set in two places** — the Network page keeps it in the
+  main network's profile, Wireless > RADIUS edits the per-radio copy; which one the router applies
+  decides whether the RADIUS page should point to the Network page.
+  **[deferred]** ↳ notes: `radius-two-stores.md`
+- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
+  monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
+  flows); feasible only as an on-demand measure for the selected connection, TCP only.
+  **[deferred]** ↳ notes: `conn-packet-loss.md`
+- **[P2] AiMesh: the preferred uplink node is ignored** (field report, BQ16, v3.5.0) — a node set
+  to prefer one node joins another; no Reaper change on that path found in the code.
+  **[deferred]** ↳ notes: `aimesh-preferred-uplink.md`
+- **[P3] 3006.102.8 line: three lean gaps** — its `provenance/manifest.json` v3.6.x entries name
+  `3006.102.10`; `repo-hygiene.yml` does not run on `Dev-102.8`; two suites check 102.10-only
+  spellings and default to the 102.10 tree.
+  **[not started]** ↳ notes: `lean-102-8-gaps.md`
 
 ---
 
@@ -417,6 +349,8 @@ answer moves the item back to Open bugs.*
   ↳ notes: `wad-warden-self-drop-failure.md`
 - **Firewall rule negation — not building.**
   ↳ notes: `wad-firewall-rule-negation.md`
+- **Unbound on the router — not building** (owner, 2026-11-02).
+  ↳ notes: `unbound-resolver.md`
 - **`dig` on the Network Tools page — declined.**
   ↳ notes: `wad-dig-network-tools.md`
 - **DNS-rebind warnings for names a LAN filter blocks** — use NXDOMAIN blocking.
@@ -474,8 +408,6 @@ answer moves the item back to Open bugs.*
   **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
 - **B-5. [P1] Internet speed test fails on 10 Gbit/s links** — owner ruling: not chased.
   **[blocked — development]** ↳ notes: `speedtest-10g-links.md`
-- **B-6. [P2] Internet speed test may stop on 2026-10-01** — ASUS retires the Ookla setup Reaper
-  uses. **[blocked — GPL]** ↳ notes: `speedtest-embed-key-retired.md`
 - **B-7. [P3] Source to ask the vendors for** — ranked: ASUS-owned first (AiMesh, the httpd login
   check, networkmap); Broadcom's under NDA (ask for errata and docs); nine GPL-labelled modules
   shipped as prebuilt objects are the one licence-based ask.

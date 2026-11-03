@@ -70,6 +70,15 @@ NAT4 = """-N REAPER_FWHC
 -A VSERVER -p udp -m udp --dport 5353 -j DNAT --to-destination 192.168.50.9:5353
 """
 NAT6 = "-A REAPER_FWHC6 -i br0 -p udp -m udp --dport 53 -j DNAT --to-destination [2001:db8::98]:53\n"
+NAT4VPN = """-N DNSVPN5
+-N VSERVER
+-A PREROUTING -p tcp -m tcp --dport 53 -j DNSVPN5
+-A PREROUTING -p udp -m udp --dport 53 -j DNSVPN5
+-A PREROUTING -d 203.0.113.9/32 -j VSERVER
+-A DNSVPN5 -s 192.168.50.40/32 -j RETURN
+-A DNSVPN5 -s 192.168.50.30/32 -j DNAT --to-destination 10.64.0.1
+-A VSERVER -p tcp -m tcp --dport 8080 -j DNAT --to-destination 192.168.50.9:80
+"""
 
 shells = [["sh"]] + ([["busybox", "ash"]] if shutil.which("busybox") else [])
 work = tempfile.mkdtemp(prefix="wgwhy_")
@@ -115,6 +124,12 @@ try:
         os.utime(os.path.join(D, "bypass"), (0, 0))
         r = run(shell, 'D="%s"\n%secho "[$(dns_bypass)]"\n' % (D, DB))
         check(tag + ": no DNAT rule -> empty", r.stdout.strip() == "[]", r.stdout)
+        # 2026-11-02: VPN Director's Exclusive DNS - the DNAT sits in a chain a port-53 rule jumps to, without --dport
+        open(os.path.join(work, "nat4"), "w").write(NAT4VPN)
+        os.utime(os.path.join(D, "bypass"), (0, 0))
+        r = run(shell, 'D="%s"\n%secho "[$(dns_bypass)]"\n' % (D, DB))
+        check(tag + ": a DNAT inside a chain a port-53 rule jumps to (VPN Director Exclusive DNS) is reported; a DNAT in a chain nothing on 53 jumps to is not",
+              r.stdout.strip() == "[10.64.0.1 ]", (r.stdout, r.stderr))
 finally:
     shutil.rmtree(work, ignore_errors=True)
 

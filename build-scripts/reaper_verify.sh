@@ -591,6 +591,21 @@ else
   fail "diag-version" "the Diagnostics page says '$_dgp' but the script it runs is '$_dgs' -- the page and its own report would contradict each other; re-pin the literal in www/Reaper_Diag.asp"
 fi
 
+# ---- 28b. the kernel banner names no build machine (review 2026-11-03, E-10) ----
+# /proc/version and the first dmesg line read "Linux version X (user@host)" from KBUILD_BUILD_USER/HOST; unset,
+# the kernel takes the build host's own user and machine name. The build library exports reaper@reaper; this
+# checks the vmlinux built in this pass. The banner itself is never printed here.
+_kbv="$P/kernel/linux-4.19/vmlinux"
+if [ ! -f "$_kbv" ]; then
+  warn "kernel-banner" "no vmlinux at $_kbv -- the kernel banner could not be checked"
+else
+  _kb=$(grep -ao 'Linux version [^ ]* ([^)]*)' "$_kbv" | head -1)
+  case "$_kb" in
+    *"(reaper@reaper)") pass "kernel-banner" "vmlinux banner names reaper@reaper (no build machine)" ;;
+    *) fail "kernel-banner" "vmlinux banner does not name reaper@reaper -- KBUILD_BUILD_USER/HOST did not reach the kernel build (banner not printed)" ;;
+  esac
+fi
+
 # ---- 28. the Runner 4-frag transmit cap is in the kernel that was built ----
 # 2026-10-14: the Runner's CPU-TX path drops a non-GSO skb with more than 4 page
 # frags (closed bdmf; GT-BE98 field 2026-10-14, IPv6 DoT through a 6in4 tunnel,

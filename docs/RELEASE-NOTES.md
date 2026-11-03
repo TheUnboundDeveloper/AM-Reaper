@@ -1,16 +1,16 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.6.5** <!--@treever--> — `3006.102.8_Reaper_v3.6.5`. **Seven more settings pages on the Reaper kit (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO, VLAN) with the stock ones gone; AiMesh and Network on their own stylesheet; AiMesh nodes exempt from every rule from one list; the WireGuard server reachable through Warden; header, phone-layout and pop-up fixes.** Everything in v3.6.4 is included. See [`CHANGELOG.md`](CHANGELOG.md#v365--seven-more-reaper-settings-pages-aimesh-and-network-on-their-own-stylesheet-aimesh-nodes-exempt-everywhere-wireguard-through-warden). |
+| **Current rung** | **v3.7.0** <!--@treever--> — `3006.102.8_Reaper_v3.7.0`. **A security-review rung: privilege checks in the kernel, root-only files and keys, a page token on every save, secrets out of page source and hardened binaries; USB 3 write levers (off by default); each built-in list's address on the Dreadwatch and Wallguard rows.** Everything in v3.6.5 is included. See [`CHANGELOG.md`](CHANGELOG.md#v370--security-review-kernel-privilege-checks-root-only-files-and-keys-a-page-token-on-every-save-hardened-binaries-usb-3-write-levers-list-addresses-on-the-dreadwatch-and-wallguard-rows). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |
 | **Images** | Two variants per model — **with** or **without** the AI Advisor (§2) |
-| **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6 and **v2.8.8** (newest). Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
-| **Prior full-fleet releases** | **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
+| **Rungs without images** | Many intermediate rungs were cut (or folded into the next cut) without a published full-fleet image — including v2.5.8–v2.5.9, v2.6.1–v2.6.9, v2.7.0, v2.7.2 and v2.7.4–v2.7.5. **Published full-fleet:** v2.4.9, v2.5.3, v2.5.7, v2.6.0, v2.7.1, v2.7.3, v2.7.6, v2.8.8 and **v3.1.0** (newest); later rungs appear as `_BETA` pre-releases. Every rung from v2.5.4 on is built on RT-BE96U, both variants; open items that need a second box or a reporter are listed in [`BACKLOG.md`](BACKLOG.md). |
+| **Prior full-fleet releases** | **v2.8.8**, **v2.7.6**, **v2.7.3**, **v2.7.1**, **v2.6.0**, **v2.5.7**, **v2.5.3**, **v2.4.9** |
 
 > A security-hardened, rebranded, de-clouded build of Asuswrt-Merlin for the
 > RT-BE96U. This document is the release summary; the exhaustive security detail

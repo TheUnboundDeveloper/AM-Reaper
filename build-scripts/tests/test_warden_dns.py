@@ -125,6 +125,7 @@ def lifted_array(csrc, name, macros):
 
 rw = read("rc/rwarden.c")
 macros = macros_of(rw)
+macros.update(macros_of(read("shared/reaper_lists.h")))  # 2026-11-02: the built-in list addresses live in shared/reaper_lists.h
 for k in ("RW_DNS_CONF", "RW_DNS_CACHE", "RW_DNS_LEGACY", "RW_DNS_UPD", "RW_DNS_FEEDS", "RW_HITS", "RW_CACHE",
           "RW_NX_DB", "RW_DNS_KGZ", "RW_DNS_KSUM", "RW_DNS_COUNT", "RW_DNS_FIRST", "RW_DIDS_STR"):
     ok(k in macros, "rwarden.c defines %s" % k)

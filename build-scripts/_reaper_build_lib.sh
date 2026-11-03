@@ -164,6 +164,10 @@ _rb_variant() {   # $1 = MCP|noMCP
   # would read it and believe the protection was already in place.
   rm -f .config "$R/release/src/router/config_${TARGET}" \
         "$R"/release/src/router/zlib/stamp-h1
+  # review 2026-11-03 (E-10): the kernel banner (/proc/version, the first dmesg line) takes the build user and host
+  # from these; unset, it carried the build machine's own name into every image. reaper_verify checks the
+  # result (kernel-banner).
+  export KBUILD_BUILD_USER=reaper KBUILD_BUILD_HOST=reaper
   echo "=== [$label] make $TARGET pass1 (regen; may die at setprofile, -j${REAPER_JOBS}) $(date) ==="
   # Pass 1 is silenced because it is EXPECTED to die at setprofile. On a cold
   # tree that is a problem: the samba crypto chain (zlib/gmp/nettle/gnutls) is
@@ -483,6 +487,7 @@ reaper_build() {
     # make ran, so skip the image check - a stale image from an earlier build
     # must not be verified and shipped in its place. Any other code keeps the
     # old path (image check, postmortem, verify).
+    _vstart=$(date +%s)	# 2026-11-03: an image older than this run is not this run's image (see [STALE] below)
     _rb_variant "$v"; _vrc=$?
     if [ "$_vrc" -eq 77 ]; then
       echo "  [ABORT] $PREFIX $v -- pre-build gate refused this variant; no image was built"; ok=0
@@ -491,7 +496,10 @@ reaper_build() {
     fi
     for st in $STORAGE; do
       img="$TDIR/${PREFIX}_3006_102.8_${VER}${tag}_${st}_squashfs.pkgtb"
-      if [ -f "$img" ]; then echo "  [OK] $v/$st  $(basename "$img")  sha:$(sha256sum "$img"|cut -c1-16)"
+      # 2026-11-03: a make that failed left the PREVIOUS image in place, and it was reported [OK], verified and
+      # called BUILD OK (review _r2 build: rc failed, the _r1 image passed every gate). Built by this run, or not OK.
+      if [ -f "$img" ] && [ "$(stat -c %Y "$img")" -ge "$_vstart" ]; then echo "  [OK] $v/$st  $(basename "$img")  sha:$(sha256sum "$img"|cut -c1-16)"
+      elif [ -f "$img" ]; then echo "  [STALE] $v/$st  $(basename "$img") -- not rebuilt by this run (the make failed?)"; ok=0
       else echo "  [MISSING] $v/$st  $(basename "$img")"; ok=0; fi
     done
     # deep post-build QA gate (reaper_verify): fail-closed on packaging defects

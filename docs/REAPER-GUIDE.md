@@ -1,12 +1,12 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary, hardware-validated) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.6.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.0 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
-This guide is written for someone who will install and run the firmware: technically literate, not a developer. Everything in it comes from the project's own documentation, changelog, backlog and the text on the pages themselves. Where the project itself says something is not yet confirmed on hardware, this guide says so too.
+This guide is written for someone who will install and run the firmware: technically literate, not a developer. Everything in it comes from the project's own documentation, changelog, backlog and the text on the pages themselves.
 
 ---
 
@@ -60,19 +60,10 @@ This guide is written for someone who will install and run the firmware: technic
      - 4.2.7 [Examples](#427-examples)
      - 4.2.8 [Limits and gotchas](#428-limits-and-gotchas)
    - 4.3 [Bastion](#43-bastion)
-     - 4.3.1 [Setting it up](#431-setting-it-up)
-     - 4.3.2 [The order it decides in](#432-the-order-it-decides-in)
-     - 4.3.3 [Threat feeds](#433-threat-feeds)
-     - 4.3.4 [Countries](#434-countries)
-     - 4.3.5 [Your own lists](#435-your-own-lists)
-     - 4.3.6 [Direction, and filtering the router itself](#436-direction-and-filtering-the-router-itself)
-     - 4.3.7 [Reading the statistics](#437-reading-the-statistics)
-     - 4.3.7a ["I never see any outbound blocks"](#437a-i-never-see-any-outbound-blocks)
-     - 4.3.8 [Examples](#438-examples)
-     - 4.3.9 [Limits and gotchas](#439-limits-and-gotchas)
-     - 4.3.10 [Dreadwatch](#4310-dreadwatch)
-     - 4.3.11 [Wallguard](#4311-wallguard)
-     - 4.3.12 [Encrypted DNS](#4312-encrypted-dns)
+     - 4.3.1 [Warden](#431-warden)
+     - 4.3.2 [Dreadwatch](#432-dreadwatch)
+     - 4.3.3 [Wallguard](#433-wallguard)
+     - 4.3.4 [Encrypted DNS](#434-encrypted-dns)
    - 4.4 [Policy Routing](#44-policy-routing)
      - 4.4.1 [How it works](#441-how-it-works)
      - 4.4.2 [The page](#442-the-page)
@@ -157,7 +148,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.1 What it keeps
 
-- **Everything Asuswrt-Merlin ships** for this platform that is not cloud-coupled: user scripts (firewall/services events), cron, custom service configs, Entware via `amtm`, `nano`, NTP, SNMP (SNMPv3 only, see below), OpenVPN client and server, WireGuard, IPsec/strongSwan (built and staged from v2.5.3 onward; the server side is confirmed on hardware, a client tunnel is still owed confirmation), VPN Director, DNS Director, Cake SQM, Tor, ipset, USB sharing (Samba 4 SMB3, vsftpd, minidlna, AFP). The stock traffic statistics collector is retired; the Traffic Analyzer (4.7) keeps the history.
+- **Everything Asuswrt-Merlin ships** for this platform that is not cloud-coupled: user scripts (firewall/services events), cron, custom service configs, Entware via `amtm`, `nano`, NTP, SNMP (SNMPv3 only, see below), OpenVPN client and server, WireGuard, IPsec/strongSwan (built and staged from v2.5.3 onward), VPN Director, DNS Director, Cake SQM, Tor, ipset, USB sharing (Samba 4 SMB3, vsftpd, minidlna, AFP). The stock traffic statistics collector is retired; the Traffic Analyzer (4.7) keeps the history.
 - **AiMesh.** It has been retained because no suitable open-source replacement is known, and replacing it would require a compatible implementation on every mesh node. The AiMesh config-sync and discovery services ship as closed vendor binaries and could not be source-audited.
 - **The closed Broadcom blobs**, unmodified (see 1.5).
 
@@ -175,7 +166,7 @@ Reaper is distributed as a patch series applied to the public Asuswrt-Merlin sou
 
 ### 1.3 What it adds
 
-In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, Warden threat and country blocking, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
+In short: two hardware QoS engines that keep the flow accelerator on, a native Traffic Analyzer, a native firewall rules engine, Gatekeeper device access control, the Bastion menu (Warden threat and country blocking, Dreadwatch DNS threat blocking, the Wallguard ad and tracker blocker, Encrypted DNS for devices), an advisory Security Review, Policy Routing, a Device Identity Manager, a live Connections explorer with destination names, wireless channel diagnostics, Wi-Fi 7 preamble puncturing (static or dynamic) with a minimum channel width on Auto and an optional receiver interference-mitigation setting, a one-click sanitized diagnostics report, a native firmware page with a verified one-click update, long-term storage with analytics export, Reaper-native settings pages across most of the menu (3), and (in one of the two builds) a read-only LAN-only AI Advisor. Each gets its own section in part 4.
 
 Secure factory defaults: WPS is off, UPnP is off, the scheduled firmware check is off, and remote web admin, SSH, WAN ping, FTP, DLNA, DDNS, guest networks, SNMP, custom-script execution, remote logging and IPv6 all default off; no Telnet server ships at all. From v3.2.5 the SMB file server and the Traffic Analyzer collector also default off. From v3.4.2 the internet port is the port labelled WAN with automatic port detection off, so the provider's port is never bridged into the LAN, and every switch on the DNS Failover page starts off. Section 8 lists every factory default. The admin session logs out after 30 idle minutes (Administration → System → *Logout after*; 0 turns it off), on Reaper's own pages as on the stock ones.
 
@@ -207,9 +198,9 @@ This section is the one to read before you flash and again after you have been r
 
 ### 2.1 Supported models and the right file
 
-- **RT-BE96U** — primary model; every release is built and validated on this hardware.
-- **RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro** — built from per-model branches of the same tree, from the same patch series. Each is published with both variants. On-metal validation of each release on the siblings is owed and is done by field testers; the project is honest that the primary model gets tested first.
-- **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
+- **RT-BE96U** — primary model; every rung is built first for it.
+- **RT-BE86U, RT-BE88U, GT-BE98 Pro** (3006.102.10 line) and **GT-BE98** (3006.102.8 line) — built from per-model branches of their line's tree, from that line's patch series. Each is published with both variants.
+- **GT-BE19000** — joined the fleet at v3.1.4. The same BCM4916 silicon and NAND layout as the RT-BE96U, built from its own per-model branch on the 3006.102.8 line and published as a **prerelease**: it is in the clean-room CI matrix and the `all` fan-out, but it does not land as a standard release until field testers have run it.
 - **ZenWiFi BQ16** (BE25000, quad-band 2.4/5/5/6 GHz, v3.3.2) and **ZenWiFi BQ16 Pro** (BE30000, quad-band 2.4/5/6/6 GHz, v3.3.4) — built from the ASUS 102_39256 GPL drop with radio firmware taken from the matching stock image, and published as **prereleases** on the same terms as the GT-BE19000. The BQ16 Pro carries the BQ16's header art until its own is drawn.
 
 **Two base lines (from v3.6.0).** The RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro are built on Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585); their file names say `3006_102.10`. The GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro stay on 3006.102.8 (`3006_102.8`): ASUS has not published a 40585-era GPL for them, and their closed components cannot link against the newer source. Both lines carry the same Reaper changes and the same version number; the four move to 3006.102.10 once ASUS publishes their GPL.
@@ -326,9 +317,9 @@ A USB disk is the right place for anything that grows: it has the most space and
 - **ext4 — recommended** for a disk that stays on the router: journaled, fast, large files. Not readable by Windows or macOS without extra software.
 - **ext3 / ext2** — older Linux formats; pick ext4 unless something you own needs these.
 - **FAT32** — readable everywhere, but **no file larger than 4 GB and no journal**; use it for a disk you move between devices, not for the store.
-- **NTFS / HFS+** — available; formatting these from the Reaper page had never worked before v2.6.8 (the disk came back untouched). Fixed, pending confirmation.
+- **NTFS / HFS+** — available; formatting these from the Reaper page had never worked before v2.6.8 (the disk came back untouched).
 
-The ext4/ext3/ext2 options arrived in v2.6.8 and are also pending a round trip on a spare stick. The USB health scan runs a real `e2fsck` on ext4.
+The ext4/ext3/ext2 options arrived in v2.6.8. The USB health scan runs a real `e2fsck` on ext4.
 
 **Timing.** USB drives mount roughly 40–50 seconds into boot. The Traffic collector waits for the store to appear (retrying for up to 15 minutes), restores the saved history, and never overwrites a database it did not first load; it also parks itself if the store vanishes during a firmware flash and re-attaches when it returns. The dashboard re-polls USB status for the first 90 seconds after load so the tiles fill in on their own.
 
@@ -474,7 +465,7 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 
 ## 3. The dashboard and navigation
 
-**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time. Since v3.4.9 the settings pages for System (with SNMP and Tweaks), LAN, WAN, VPN and Parental Controls, and the System Log group (log, wireless log, leases, routes, port forwards, IPv6, analysis, netstat, wake on LAN), are Reaper-native; LAN › VLAN keeps the stock VLAN Switch and VLAN Profile pages on models with guest/VLAN networks.
+**After login you land on the dashboard** (`Main_ReaperDash.asp`). It replaced the stock Network Map, which is retired. Everything else in the interface opens inside the **app shell**: a header, a left navigation rail, and a framed content area that loads either a Reaper-native page or a stock Asuswrt page with the Reaper theme applied at serve time. Since v3.4.9 the settings pages for System (with SNMP and Tweaks), LAN, WAN, VPN and Parental Controls, and the System Log group (log, wireless log, leases, routes, port forwards, IPv6, analysis, netstat, wake on LAN), are Reaper-native. Since v3.6.5 so are Wireless › WPS, WDS, Wireless MAC Filter, RADIUS Setting, Roaming Block List and MLO, and LAN › VLAN (Switch and Profiles tabs, on models with guest/VLAN networks): they keep the stock settings and apply them the way stock does, the stock pages they replace no longer ship, and the old addresses open the new pages. The Roaming Block List is read from all three radios; MLO's *Add a Network* opens the Network page's MLO wizard; RADIUS Setting shows which bands use the server. **AiMesh** and **Network** keep the stock layout and link a Reaper stylesheet of their own.
 
 **Dashboard cards**
 
@@ -488,11 +479,12 @@ Do not enable remote (WAN) web administration or WAN SSH. The real-world attacks
 **Navigation**
 
 - The **left rail** is identical on every page. At the top is a live 24-hour router-time clock; above the "General" heading is the **Language** selector (all 25 languages; the active language is shown selected and English can always be chosen). Menu entries are the stock sections plus Reaper's own (Devices, Gatekeeper, Bastion, AI Advisor on the MCP build). Installed **addons** (amtm, Diversion, scMerlin and the like) are gathered into one dedicated **Addons** section at the end of the rail (v2.7.5) instead of being scattered through the stock menus. It behaves like every other menu entry: clicking it **opens the first installed addon page**, and the rest appear as tabs across the top. Until v3.1.2 it was the one rail item that did not navigate — it unfolded a sub-list instead, which read as the menu misbehaving. An add-on registers its page by inserting a line into the menu tree after the stock page it extends; since v3.2.8 the stock lines Reaper retired (the firewall, wireless, firmware, backup, Sysinfo, QoS, statistics and connections pages) are kept as hidden anchors, so an installer written for stock Merlin, Skynet among them, still lands its tab in the Addons section. An external "Help & Support" link opens in a new tab. At the foot of the rail a small **scythe mark** opens the About page; it stays at the bottom of the window while a long menu scrolls beneath it.
-- **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch / Wallguard / Encrypted DNS under Bastion; USB Disks as the first tab of USB Application; Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
+- **Tabs** run across the top of pages that have them (QoS / QoS Diagnostics under Traffic Manager; Warden / Dreadwatch / Wallguard / Encrypted DNS under Bastion; USB Disks as the last tab of USB Application (v3.4.9); Long-Term Storage and Data Export under System Log; Diagnostics and Firmware under Administration; Policy Routing next to VPN Director under VPN).
+- **Unsaved changes.** A Reaper page that keeps your edits until Apply or Save says so: *Unsaved changes: N* and a **Discard** button (QoS, Policy Routing, WAN Ports, Wallguard and Dreadwatch as well since v3.6.3).
 - Every page lands scrolled to the top. The admin session logs itself out after the idle time set under Administration → System → *Logout after* (**30 minutes** at factory; 0 turns it off). Before v3.1.2 the dashboard used a fixed 15 minutes whatever that setting said.
-- **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. (The backlog notes that a few stock overlays still centre on the shell viewport rather than the whole window; that is cosmetic.)
-- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The sign-in, set-password and logout screens show an animated model header that plays once.
-- **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width; stock pages framed in the shell still pan sideways until each is replaced by a native one.
+- **Overlays.** An apply, reboot or firmware flash puts up a full-screen veil that locks the header and rail; it shows an elapsed-time heartbeat so a stalled operation looks different from a working one, and on the firmware page a Close button appears on any terminal state. After a firmware flash the page polls for the router's return and sends you back to sign-in. A stock pop-up panel inside the frame (the AiMesh client card, for example) opens centred in the part of the page on screen, however far down it is scrolled (v3.6.5).
+- **Theme.** The Reaper look (matte black, crimson, jade and amber accents) is applied to stock pages by a web-server filter. It is always on: the switch that turned it off left Administration → Tweaks in v2.5.9, because Reaper's own pages, and the stock pages it replaces, depend on it. The AiMesh and Network pages are the exception: since v3.6.5 they link a Reaper stylesheet of their own with the same look, the router injects nothing into them, and their stock white / ROG / TUF themes are gone. The sign-in, set-password and logout screens show an animated model header that plays once.
+- **Tablets** are supported (the frame pans horizontally when a page is wider than the column). **Phones** get a first fit since v3.1.0: below 680 px the rail collapses into a sticky strip of icons under the header and the page takes the full width. Since v3.6.5 every Reaper page fits the screen at 402, 375 and 320 px: a settings row is one column and a data table scrolls sideways in its own box with its headers whole, and the header's ? / Reboot / Logout buttons are one group that fits beside the logo or wraps whole.
 
 ---
 
@@ -599,6 +591,7 @@ Because an explicit rule beats an Egress default, which beats a Zone policy, you
 - **Direction decides what a rule can see.** An **Inbound** rule sees only traffic addressed to the router itself (DNS, DHCP, the admin page), so its destination is always one of the router's own addresses. To keep one network away from another, use **Forwarded**. An Inbound "home → kids: Drop" rule does not isolate anything; it can only match the router's kids-side address, which is how it ends up blocking the kids network's DNS and DHCP.
 - **Objects that overlap act as both.** If a `home` subnet object also covers the kids range (a `/16` where a `/24` was meant, say), every kids device is also "home" and matches rules written for home. Keep each network's object to exactly that network. A red Rule Status row whose rule column names one of your own rules is the usual first sign.
 - **An empty source or destination means "anything". A named object that currently resolves to nothing is not the same thing** — that rule is left out entirely rather than becoming a rule that matches everything. A domain object that has not resolved yet, or an emptied group, therefore fails to a missing rule, never to an unintended block.
+- **AiMesh nodes are exempt (v3.6.5).** Traffic a paired node sends itself skips the Inbound and Forwarded rules and every Service Intercept, so one broad rule cannot cut a node off. The node list is the shared `reaper_aimesh` set, refreshed from the router's AiMesh registry each time the rules apply and on every watchdog tick; Gatekeeper and Policy Routing read the same set. Devices connected *through* a node are not exempt.
 
 #### 4.1.4 Objects
 
@@ -751,9 +744,9 @@ The Action badge distinguishes the source of each entry, and for Warden it disti
 | `DROP` / `ACCEPT` | the stock firewall or the rules engine |
 | `WARDEN` | Warden blocked something **coming in** |
 | `WARDEN-OUT` | Warden blocked something on your network **reaching out** to a flagged address |
-| `WARDEN-SELF` | Warden blocked **the router itself** reaching out (see 4.3) |
+| `WARDEN-SELF` | Warden blocked **the router itself** reaching out (see 4.3.1.8) |
 
-Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.
+Those three carry distinct prefixes in the system log as well (`REAPER-WARDEN`, `REAPER-WARDEN-OUT`, `REAPER-WARDEN-SELF`), so they can be told apart there too. If you are looking for outbound blocks and seeing none, that is usually not a fault — see 4.3.1.11.1.11.
 
 #### 4.1.13 Limits, and things deliberately not built
 
@@ -828,8 +821,6 @@ Enforcement follows onto every network the router runs. Creating, editing or del
 
 The waiting-room page works on an isolated guest network for an *unknown* device. An **approved** device on that network still cannot reach the router's pages — again, that is what *Access Intranet: off* means, and it is not a Gatekeeper decision. Devices on guest networks do get their hostnames.
 
-All of the multi-network work is pending confirmation on a router that actually runs a guest network.
-
 #### 4.2.6 Reading the status
 
 The page shows one of four states, and it is designed never to claim it is protecting you when it is not:
@@ -864,6 +855,7 @@ the sign-in page on the admin port, which keeps its usual login lock (see the li
 - The grandfathering step refuses to overwrite its list if that list is ever too large to load, and logs instead of failing quietly.
 - Before v2.5.0, Block and quarantine were enforced only on the main LAN. That is fixed, and a quarantined device on a guest network now also gets the waiting page.
 - A device's state is keyed on its hardware address, so it follows the device across address changes — but not across a deliberate address change by the device.
+- **AiMesh nodes are never held.** Gatekeeper exempts every paired node; since v3.6.5 it reads the node list from the same shared `reaper_aimesh` set as the rules engine and Policy Routing (4.1.3).
 - **A held device can still reach the admin sign-in page.** That is the lockout escape hatch: a computer that
   was asleep when Gatekeeper was enabled must be able to log in and turn it off. The page keeps the usual
   five-attempts lock. Everything else from a held device - your LAN, the internet, name lookups beyond the
@@ -871,298 +863,714 @@ the sign-in page on the admin port, which keeps its usual login lock (see the li
 
 ### 4.3 Bastion
 
-**The Bastion menu** holds Reaper's four blocking layers, one tab each: **Warden** (addresses - threat feeds, countries and your own lists; this section), **Dreadwatch** (threat domains, 4.3.10), **Wallguard** (ads and trackers, 4.3.11) and **Encrypted DNS** (DNS-over-TLS for your devices, 4.3.12). Earlier versions called the whole menu Warden, after its first tab; the tabs themselves are unchanged. **Each tab is a separate tool with its own switch** - turn on any one, any combination or all four; none needs another to be on.
+**The Bastion menu** holds Reaper's four blocking tools, one tab each: **Warden | Dreadwatch | Wallguard | Encrypted DNS**. Earlier versions called the whole menu Warden, after its first tab; the tabs are unchanged. **Each tool has its own switch and works on its own**: turn on any one, any combination or all four. All four are **off at the factory**.
 
-**Warden - what it is.** An opt-in **threat and geo firewall**. It drops traffic to and from known-malicious IP ranges (public reputation feeds), countries you select, and addresses you specify — enforced in-kernel with `ipset` across IPv4 and IPv6, at near-zero cost per packet. **Off by default.** Blocking by host name at the resolver is Dreadwatch, on the second tab (4.3.10).
+They work at three different layers, and that decides what each one can and cannot see:
 
-**When to use it.** Any router with a public WAN address that you would like to stop answering the constant background scanning; a household that wants to refuse whole countries it never talks to; anyone who keeps their own blocklist.
+| Tool | Decides on | Where it acts | What a blocked device gets | Switch (nvram) | Default |
+|---|---|---|---|---|---|
+| **Warden** (4.3.1) | IP addresses: threat feeds, countries, your own lists | the firewall: chains `REAPER_WARDEN`, `RW_OUT`, `RW_SELF`, kernel `ipset` sets | the packet is dropped, no answer | `rwarden_enable` | `0` (off) |
+| **Dreadwatch** (4.3.2) | host names on threat lists | inside the router's DNS resolver (dnsmasq), every network | NXDOMAIN ("no such name") | `rwarden_dns` | `0` (off) |
+| **Wallguard** (4.3.3) | host names on ad, tracker and service lists, per device | inside the router's DNS resolver, every network | `0.0.0.0` / `::` (or NXDOMAIN, your choice) | `wallguard_enable` | `0` (off) |
+| **Encrypted DNS** (4.3.4), server half | nothing: it carries lookups | `rednsd`, a DNS-over-TLS server on port 853 | - | `reaper_dot_srv` | `0` (off) |
+| **Encrypted DNS**, block half | port 853, port 443 to known DoH resolvers, DoH provider names | the firewall chain `REAPER_EDNS` and the resolver | a refused connection; NXDOMAIN for the provider names | `reaper_doh_block` | `0` (off) |
 
-**What it is not.** A noise-reduction layer, not a complete defence. It decides on **addresses**, so a VPN, a proxy or a compromised host in an allowed country walks straight past it. Use it to shrink your exposure, not as a sole control.
+**Which tool for which job.**
 
-#### 4.3.1 Setting it up
+| You want to | Use | Notes |
+|---|---|---|
+| Stop the internet's background scanning and known-bad addresses reaching the router and your forwarded services | Warden, threat feeds, Direction *Inbound only* | Works for every protocol, not just web traffic |
+| Refuse traffic from or to whole countries | Warden, Country blocking | Review the list first (4.3.1.6) |
+| Stop an infected device reaching a known command-and-control address | Warden, Direction *Both directions* | Address-based; complements Dreadwatch |
+| Stop devices resolving malware, phishing and command-and-control names | Dreadwatch | Same answer for every device; Wallguard profiles cannot lift it |
+| Block ads, trackers and telemetry | Wallguard | Per-device profiles, Unbreak, Why? |
+| Different filtering per device or per guest network; block TikTok at bedtime; force safe search | Wallguard profiles (4.3.3.5, 4.3.3.6) | |
+| Let devices encrypt their DNS and still be filtered | Encrypted DNS, server half | Add DNS-over-TLS upstream on LAN › DNS for the hop to the internet |
+| Stop devices going around the router with their own encrypted DNS | Encrypted DNS, block half, plus DNS Director *Router* | |
+| Stop devices using another plain DNS server | DNS Director (LAN › DNS), not Bastion | Global mode *Router* |
+| Cut one LAN device off completely | Gatekeeper (4.2) | Warden's manual block list also can (4.3.1.7) |
+| Allow or deny by port, schedule or object | Firewall rules (4.1.3) | |
 
-1. Tick the **threat feeds** you want: FireHOL Level 1, Feodo Tracker (botnet command-and-control), Spamhaus DROP, DShield top attackers. They merge into one de-duplicated set, so overlapping feeds never double-block or slow matching.
-2. Optionally add up to **eight custom feeds**: a name, an HTTPS list URL, and an optional IPv6 list URL.
-3. Choose **countries** from the searchable checklist. Review that list before enabling — see 4.3.4.
-4. Choose the **direction** (4.3.6).
-5. Add any **whitelist** and **manual block** entries, one address or CIDR per line (4.3.5).
-6. Decide on **Log dropped packets**, the statistics options, and whether to **also filter the router itself** (4.3.6).
-7. **Save & Apply**, then press **Update feeds now** for the first fetch. Afterwards feeds refresh on the schedule in Administration → Tweaks (default 04:30 daily).
+**The order a connection meets them.** For traffic passing through or into the router, Reaper's layers run in a fixed order in the shared front chains: **Warden first**, then **Gatekeeper** (4.2), then the **Firewall rules engine** (4.1). A packet Warden drops never reaches the other two, so **a Firewall Allow rule cannot re-admit a Warden drop**; use Warden's whitelist for that. DNS Director's rules for port 853 and the Encrypted DNS block (`REAPER_EDNS`) sit after the front chains, among the stock firewall's own forward rules. Traffic the router itself starts meets only `RW_SELF` (Warden's router-traffic filter, if switched on) ahead of the rules engine's output chain.
 
-#### 4.3.2 The order it decides in
+**The order a DNS lookup meets them.** A lookup a device sends to the router (plain DNS on port 53, or over Encrypted DNS, which hands it to the same resolver) passes through:
 
-This is worth understanding, because it is what determines whether Warden can inconvenience you, and it answers most "why was this blocked / not blocked" questions. Traffic entering the Warden chain is tested in this order, and the **first match wins**:
+1. **Wallguard safe search** (only for a device whose profile has it): a search engine's name is answered with its restricted address.
+2. **Wallguard's lists** - checked before the resolver's cache, so a cached answer is covered too. If the resolver has its own answer for the name (your LAN's local names, an `address=` line, a DoH provider name or browser canary answered by the Encrypted DNS block, or a Dreadwatch threat name), Wallguard stands aside and that answer is given.
+3. The resolver's **cache**.
+4. **Dreadwatch** - a listed name, or a name under it, is answered NXDOMAIN and counted.
+5. Forwarded upstream (your WAN DNS servers, or DNS-over-TLS upstream if switched on under LAN › DNS).
+6. On the way back, **Wallguard checks every name in the reply's CNAME chain** (hidden trackers) for the device that asked.
+
+A lookup that never reaches the router's resolver passes through none of this. That is the one limit all the DNS tools share.
+
+**Living with the rest of the router.**
+
+- **DNS Director** (LAN › DNS) decides *which* resolver a device uses. A device it sends to another server (a per-device rule, a guest-network profile or the global mode) is answered by that server, so Dreadwatch and Wallguard do not see its lookups; Encrypted DNS refuses it, so it stays on plain DNS where DNS Director applies. Global mode **Router** sends every device's port-53 lookups to the router and rejects DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to anything else; that is the setting that makes the DNS tools cover everything.
+- **A LAN AdGuard Home or Pi-hole.** If devices ask the Pi-hole and the Pi-hole forwards to the router, both filter, but the router sees one device (the Pi-hole) for all of them: Wallguard profiles cannot tell devices apart and Dreadwatch counts everything under the Pi-hole's address. If the Pi-hole forwards straight to the internet, the router sees none of those lookups and Dreadwatch and Wallguard do nothing for them. If a DNS Director rule or a Service Intercept rule (4.1.8) redirects port 53 to the Pi-hole, Wallguard's page shows a banner naming the address the lookups go to; it names the server a router VPN client in *Exclusive* DNS mode sends lookups to as well. Pick one place to filter; if you keep the Pi-hole, set its upstream to the router so Dreadwatch still applies.
+- **VPN.** A device running its own VPN app resolves through the VPN: no DNS tool sees it, and Warden sees only the VPN server's address. A router VPN client that is set to send its clients' DNS to the VPN provider takes those lookups past the resolver as well. Warden's whitelist must cover any VPN server you reach from a blocked country with the router-traffic filter on (4.3.1.8). Warden exempts the listen ports of enabled **WireGuard** servers; OpenVPN and IPsec servers are not exempted, so a client connecting from a blocked country or a listed address is dropped.
+- **Policy Routing** (4.4) and Firewall FQDN objects learn addresses from the resolver's answers. A name Wallguard or Dreadwatch blocks is answered by the router itself and never resolves, so it adds nothing to those lists either.
+- **Gatekeeper** (4.2): Warden runs before it. A device Gatekeeper holds or blocks is answered by Gatekeeper's own sinkhole resolver and cannot use Encrypted DNS.
+- **AiMesh**: nodes are devices on your LAN, so Warden's LAN exemption covers them like any other LAN device. The Encrypted DNS block never refuses a node's own traffic: it skips the shared AiMesh node list, as Gatekeeper, the rules engine and Policy Routing do. Devices connected through a node use the main router's resolver like any other LAN device.
+
+**Shared pieces.**
+
+- Warden and Dreadwatch share one **list updater** and its schedule (Administration › Tweaks, **Warden feed update schedule**, `rwarden_sched`; empty = 04:30 daily), and the **Save block statistics** and **Reset interval** settings on the Warden page. With Warden off, the updater fetches only Dreadwatch's lists. Wallguard updates at 05:15 daily; the Encrypted DNS block's address list at 05:25.
+- **Backups.** The Reaper settings file (2.5) carries all four tools' settings, lists, sources and API keys.
+- **Security Review** (the dashboard's Security Posture card) reports a protection switched off like any other change.
+
+**What is kept where.**
+
+| Tool | Settings | Downloaded data | Counters |
+|---|---|---|---|
+| Warden | nvram `rwarden_*`; whitelist, manual blocks and custom feeds in `/jffs/rwarden/allow`, `ban`, `cfeeds` | kernel sets in RAM; cache `/jffs/rwarden/sets.ipset` | `/jffs/rwarden/counters` (Long-Term Storage: locked to JFFS) |
+| Dreadwatch | nvram `rwarden_dns`, `rwarden_dns_feeds`; `/jffs/rwarden/dnsallow`, `dnssrc`, `dnskeys` (root only) | table `/tmp/reaper_nx/threat.db` (RAM); compressed copy `/jffs/rwarden/dns.k.gz` | `/jffs/rwarden/dns.counters` (RAM if statistics saving is off); optional history on Long-Term Storage |
+| Wallguard | nvram `wallguard_enable`, `wallguard_mode`; `/jffs/wallguard/` (`lists`, `block`, `allow`, `allow24`, `profiles`, `assign`, `services`, `sched`, `safe`, `keys`) | lists in RAM `/tmp/wallguard/lists` or on a USB volume; table `/tmp/wallguard/db` (RAM, always) | RAM, copied to `/jffs/wallguard/counters` at most hourly; optional history on Long-Term Storage |
+| Encrypted DNS | nvram `reaper_dot_srv`, `reaper_doh_block` | DoH address list `/jffs/encdns/doh.ips` | totals in RAM; optional activity log on Long-Term Storage |
+
+Long-Term Storage (4.11) has a row for each optional history: **Wallguard block lists** (USB only), **Wallguard blocked lookups**, **Dreadwatch blocked lookups**, **Encrypted DNS activity**, and the **Encrypted DNS blocked-address list** (locked to JFFS).
+
+<a id="43-warden"></a>
+#### 4.3.1 Warden
+
+##### 4.3.1.1 What it is, and when to use it
+
+Warden is an opt-in **address firewall**. It drops traffic to and from IP ranges on public threat feeds, ranges assigned to countries you select, and addresses you list yourself. It is enforced in the kernel with `ipset` sets on IPv4 and IPv6; one set lookup decides however long the lists are. **Off by default** (`rwarden_enable` `0`).
+
+**Use it** on a router with a public WAN address, to stop answering the constant background scanning; to refuse whole countries you never deal with; to stop an infected LAN device reaching known command-and-control addresses (Direction *Both*); or to keep your own block list.
+
+**What it is not.** It decides on addresses only. A VPN, a proxy or a compromised host in an allowed country passes it; a malicious site on a shared CDN address is not on an IP feed. Treat it as a way to shrink exposure, not as a complete defence. Blocking by host name is Dreadwatch (4.3.2).
+
+##### 4.3.1.2 Setting it up
+
+1. Switch on **Warden** at the top of the tab.
+2. Tick the **Threat feeds** you want (4.3.1.5). FireHOL Level 1 alone is the usual start.
+3. Optionally add **Custom feeds**: up to eight lists of your own.
+4. Tick countries under **Country blocking** (4.3.1.6). Review the list before you save.
+5. Choose the **Direction** (4.3.1.8): *Inbound only* to start.
+6. Add **Whitelist** and **Manual block list** entries, one address or CIDR per line (4.3.1.7).
+7. Decide on **Log dropped packets**, **Also filter the router itself** and the statistics settings.
+8. Press **Save & Apply**, then **Update feeds now** for the first download. Afterwards the lists refresh on the schedule in Administration › Tweaks (default 04:30 daily).
+
+At boot, Warden arms at the first firewall build after the WAN comes up (the log says `boot: Warden arms at the first firewall build (WAN up)`), loading the last downloaded sets from `/jffs`, so a router that boots without internet still enforces the previous lists.
+
+##### 4.3.1.3 The page, control by control
+
+| Control | What it does |
+|---|---|
+| **Warden** switch and status pill | On/off (`rwarden_enable`). The pill reads *Enforcing* or *Disabled*. |
+| Warning banner | The "noise-reduction layer, not a complete security measure" caveat. The × hides it in this browser. |
+| *Protection is live but not persistent* banner | `/jffs` is off or read-only: blocking works, but the feed cache and counters cannot be saved. |
+| Tiles | **Blocked packets** (since the date under the country table), **Last feed update**, **Feeds enabled** (built-in and custom), **Countries blocked** (amber with *N country list(s) empty* when a selected country has no addresses loaded), **Protocols** (IPv4, or IPv4 · IPv6 when IPv6 rules are active). |
+| **Top blocked countries** | The five source countries with the most drops, a breakdown strip (below) and a *Live* pill that is green while the chains are armed. Refreshes every 30 seconds. |
+| **Threat feeds** | FireHOL Level 1, Feodo Tracker (botnet C2), Spamhaus DROP, DShield top attackers. Rows marked *IPv4 only* have no IPv6 list. |
+| **Country blocking** | A searchable checklist of 89 countries (**Filter countries** searches name or code). Tick to block, untick and save to unblock. |
+| **Threat domains** card | A link to Dreadwatch, which blocks names; it is a separate tool. |
+| **Custom feeds** | **Add feed** adds a row: **Name**, **List URL (https)**, **IPv6 list URL (optional)**; **Remove** deletes it. Up to 8. |
+| **Direction** | *Inbound only* or *Both directions* (`rwarden_dir`, default `in`). |
+| **Also filter the router itself** | Applies the destination checks to connections the router starts (`rwarden_self`, default `0`). Switching it on shows *Read this before turning it on*. |
+| **Log dropped packets** | Writes a kernel log line before each inbound or outbound drop (`rwarden_log`, default `0`). |
+| **Save block statistics** | Keeps the counters on internal flash across reboots, restarts and upgrades (`rwarden_stats_save`, default `1`). Off: counts since the last firewall rebuild only. Also governs Dreadwatch's counters. |
+| **Reset interval** | Never / 24 Hours / 7 Days / 1 Month / 3 Months (`rwarden_reset`, default `off`): clears the saved counts when the period has passed. Also governs Dreadwatch's counters. |
+| **Manual block list** / **Whitelist (never block)** | One IPv4 or IPv6 address or CIDR per line (4.3.1.7). |
+| **Save & Apply** | Stores the lists, applies the settings and rebuilds the rules. |
+| **Update feeds now** | Saves, then downloads every selected feed and country list (and Dreadwatch's lists) at once. |
+| **How Warden works** / **What the block count means** | Reference cards. |
+
+##### 4.3.1.4 The order it decides in
+
+This order answers most "why was this blocked / not blocked" questions. Traffic entering `REAPER_WARDEN` (from `INPUT` and `FORWARD`) is tested in this order; **the first match decides**:
 
 | # | Test | Result |
 |---|---|---|
-| 1 | Loopback traffic | **exempt** |
-| 2 | DHCP (ports 67/68, and 546/547 for IPv6) | **exempt** |
-| 3 | Established and related connections | **exempt** |
-| 4 | Outbound checks, if direction includes them | see below |
-| 5 | Source is in your **whitelist** | **exempt** |
-| 6 | Source is in your **manual block list** | **dropped** |
-| 7 | Source is on your **LAN** | **exempt** |
-| 8 | Source is in a blocked **country** | **dropped** |
-| 9 | Source is in a **threat feed** | **dropped** |
+| 1 | Arrived on loopback | exempt |
+| 2 | DHCP (UDP 67/68; IPv6 546/547) | exempt |
+| 3 | Part of an established connection | exempt |
+| 4 | *Both directions only:* the destination checks (`RW_OUT`, below) | dropped if the destination is listed, otherwise continue |
+| 5 | Source is on the **Whitelist** | exempt |
+| 6 | Source is on the **Manual block list** | **dropped** |
+| 7 | Source is on your LAN (IPv4: the LAN subnet; IPv6: link-local `fe80::/10`, ULA `fc00::/7`, the LAN's delegated prefix, and the global prefix of every other LAN-side network, guest and VLAN networks included) | exempt |
+| 8 | UDP to the listen port of an enabled WireGuard server, addressed to the router | exempt |
+| 9 | Source is in a blocked **country** | **dropped** |
+| 10 | Source is on a **threat feed** | **dropped** |
 
-Four things follow from that order, and they are the four that matter:
+The destination checks at step 4 run in this order: destination is loopback, the LAN or one of the router's own WAN addresses → skip the rest of step 4; destination on the Whitelist → skip; on the Manual block list, in a blocked country or on a feed → dropped.
 
-- **Your LAN is exempt (step 7) before any feed or country is consulted (steps 8–9).** No feed and no country block can cut off a device on your own network. This is the property that makes the feature safe to leave on.
-- **Established connections are exempt (step 3) before everything.** Enabling Warden, or a feed update, does not sever the session you are configuring it from.
-- **Your manual block list is checked at step 6, *before* the LAN exemption.** That is deliberate — it is how you block a local device — but it means **a manual block entry that covers a LAN range will block that LAN device**, and the LAN shield will not save it. This is the one way to shut yourself out with Warden. Whitelist entries (step 5) beat manual blocks, so a whitelist entry is the way back.
-- **Outbound is evaluated at step 4, before the source exemptions.** It has to be: on outbound traffic your own LAN host is the *source*, so if the whitelist were consulted first, any whitelist entry covering your LAN would silently disable outbound blocking for the whole network. It used to, and that was a real defect; the outbound tests now sit in their own chain ahead of the source tests.
+What follows from the order:
 
-Countries are evaluated *before* the feeds (step 8 before 9). That is why per-country counts are meaningful and the feed counter carries only what no country matched.
+- **Your LAN is exempt (step 7) before any feed or country is consulted.** No feed and no country can cut off a device on your network. Guest and VLAN networks use private ranges, which are stripped from every feed and country list (4.3.1.5), so no list can hold them either.
+- **Established connections are exempt (step 3).** Enabling Warden or a feed update does not cut the session you are working in.
+- **The Manual block list (step 6) comes before the LAN exemption.** That is how you block a LAN device, and it means **a manual entry covering your LAN blocks your LAN**. It is the one way to lock yourself out with Warden. A Whitelist entry (step 5) beats it and is the way back.
+- **Outbound is checked at step 4, before the source exemptions.** On outbound traffic your own device is the source, so if the Whitelist came first, an entry covering the LAN would switch outbound blocking off for the whole network.
+- **WireGuard (step 8)** sits after the manual block list and before countries and feeds. A phone on mobile data has a carrier address that changes and can sit in a feed or a blocked country; WireGuard answers nothing it cannot authenticate, so the exemption opens nothing to strangers. A banned sender stays banned, and a port forward of the same number to a LAN host is still filtered. OpenVPN and IPsec servers are not exempted.
+- **Countries are checked before feeds.** Both drop; the order only decides which counter counts the packet, so per-country counts are real and the feed counter holds what no country matched.
 
-#### 4.3.3 Threat feeds
+##### 4.3.1.5 Threat feeds and custom feeds
 
-The four built-in feeds merge into one set. **FireHOL Level 1 already contains Spamhaus DROP, DShield and Feodo**, so ticking those alongside it is largely redundant — Spamhaus still adds value for its IPv6 list, the others add little.
+| Feed | Source | IPv6 |
+|---|---|---|
+| FireHOL Level 1 | `raw.githubusercontent.com/firehol/blocklist-ipsets/.../firehol_level1.netset` | no |
+| Feodo Tracker (botnet C2) | `feodotracker.abuse.ch/downloads/ipblocklist.txt` | no |
+| Spamhaus DROP | `www.spamhaus.org/drop/drop.txt` and `dropv6.txt` | yes |
+| DShield top attackers | `raw.githubusercontent.com/firehol/blocklist-ipsets/.../dshield.netset` | no |
 
-**Custom feeds** are HTTPS only. The URL may not contain quotes, spaces or `@`; the router follows no redirect down to plain HTTP, and caps the download size.
+All selected feeds and custom feeds merge into **one de-duplicated set** (`rw_threat` / `rw_threat6`, up to 524,288 entries each), so overlap costs nothing. **FireHOL Level 1 already contains Spamhaus DROP, DShield and Feodo**; ticking them as well adds little, except Spamhaus's IPv6 list.
 
-**Every list is filtered before it is loaded.** Private, loopback and reserved ranges are stripped from all of them — feeds, countries, IPv4 and IPv6 alike. This is not a nicety: FireHOL Level 1 legitimately contains `192.168.0.0/16`, `10.0.0.0/8` and `127.0.0.0/8`, because it is documented for use on a WAN interface only. Ingesting those unfiltered is precisely what caused an early Warden release to take an entire network offline at 04:30. A careless or hostile list can no longer blackhole your own network.
+**Every list is filtered before it is loaded.** Private, loopback, link-local, CGNAT (`100.64.0.0/10`), multicast and reserved ranges are removed from every feed and country list, IPv4 and IPv6. FireHOL Level 1 contains `10.0.0.0/8`, `192.168.0.0/16` and `127.0.0.0/8` on purpose (it is meant for a WAN interface); loaded unfiltered, it once took a whole network offline. A careless or hostile list cannot block your own network.
 
-Feeds are cached to the router's internal flash, so a router that boots with no internet still enforces the last good download. If `/jffs` is unavailable or read-only, a banner says protection is live but not persistent.
+**Custom feeds.** Up to 8, each a **Name** (up to 24 characters: letters, digits, space, `.`, `_`, `-`), an **https** address of up to 200 characters with no quotes, spaces or `@`, and an optional IPv6 list address. The router pulls every IPv4 address or CIDR out of the file (any text format works) and loads them into the same set, so they appear in the same counters. Only add lists you trust: whatever they contain is dropped.
 
-#### 4.3.4 Countries
+**How a download behaves.** Every fetch is https only, including redirects, and capped at 32 MB. Built-in feeds get 2 retries of up to 40 s; custom feeds 1 retry of up to 15 s, so eight unreachable custom feeds cost about 4 minutes at most. The merged set is rebuilt from the feeds that arrived in that run; **a feed that fails while others succeed is missing from the set until its next good download**. If every feed fails, the previous set stays and the log says `feed update: no feed produced data (all fetches failed)`. A second update started while one runs is skipped (`feed update already in progress`).
 
-Country lists come from ipdeny (`www.ipdeny.com`, `51.15.12.186`) and refresh with the feeds. Warden downloads ipdeny's compact (aggregated) list for each country; if that file arrives empty, as all of them did on 22 October 2026, it loads ipdeny's plain list for the same country instead (same coverage, more entries) and the log names the countries it did that for. A download that fails outright is not retried there; the country keeps its last good copy.
+##### 4.3.1.6 Countries
 
-**The ipdeny address is in your whitelist.** It is added once, the first time Warden starts on a release that carries it. ipdeny is hosted in France, so with France selected and **Also filter the router itself** on (4.3.6), the router would block its own country-list downloads: every fetch times out, the 15-minute country budget runs out, and any country added after that never loads. You can delete the entry; it is never put back. If you do, keep France unselected or the router-traffic filter off.
+Country lists come from ipdeny (`www.ipdeny.com`) and refresh with the feeds. Each country has its own set (`rw_g_<cc>`, IPv6 `rw_g6_<cc>`, code in lower case; up to 262,144 entries each) and its own rule, which is what makes per-country counts possible.
 
-After each update the system log names every selected country that is enforcing nothing (`geo: selected but NO data loaded, NOT blocked: ...`), and a failed fetch says whether the country still has its previous list or has none at all.
+Warden downloads ipdeny's aggregated list for each country; if that file arrives empty, it loads ipdeny's plain list for the same country instead (same coverage, more entries) and the log names the countries it did that for. A download that fails keeps the country's previous set. Each fetch gets 1 retry of up to 20 s, and the whole country loop has a **15-minute budget**: fetches past it are not attempted that run (`geo: update time budget (900 s) ran out`). North Korea publishes no IPv6 list; it is not fetched.
 
-**Review the list before you enable it.** Blocking a country you actually depend on — a VPN exit, a CDN edge, a game server region, a mail provider — will cut off services in a way that is hard to attribute later, because the failure looks like the remote service being down.
+After each update the log names every selected country that is blocking nothing (`geo: selected but NO data loaded, NOT blocked: ...`), and a failed fetch says whether the country kept its previous list or has none. On the page, **Countries blocked** turns amber with *N country list(s) empty*. **Take that warning seriously: an empty set blocks nothing.**
 
-The status card shows **Countries blocked**, and an amber *N country list(s) empty* warning if a selected country has no addresses loaded. Take that warning seriously: an empty set blocks nothing, so the country you think you have blocked is open.
+**Review the list before you save.** Blocking a country you depend on (a VPN exit, a CDN edge, a game server region, a mail provider) breaks services in a way that looks like the remote service being down.
 
-To remove a country, Ctrl-click to deselect it in the multi-select.
+**The ipdeny address is in your whitelist.** ipdeny is hosted in France. With France blocked and **Also filter the router itself** on, the router would block its own country downloads, every fetch would time out and countries added after that would never load. So `51.15.12.186` is added to the Whitelist once (4.3.1.7). If you delete it, keep France unblocked or the router-traffic filter off.
 
-#### 4.3.5 Your own lists
+##### 4.3.1.7 Whitelist and manual block list
 
-Both boxes take one IPv4 or IPv6 address or CIDR per line.
+Both boxes take one IPv4 or IPv6 address or CIDR per line. Both are checked on the source of incoming traffic and, with *Both directions*, on the destination of outgoing traffic.
 
-- **Whitelist** — checked before everything except the built-in exemptions. Use it for anything you must never lose: a remote management address, a monitoring host, a VPN peer, a business partner in an otherwise blocked country.
-- **Manual blocks** — checked before the LAN exemption, so this is the sharpest tool on the page. It will block a LAN device if you tell it to.
+- **Whitelist (never block)** beats the Manual block list, countries and feeds. Use it for anything you must never lose: a remote management address, a monitoring host, a VPN peer, a partner in an otherwise blocked country. You do not need a whitelist entry for your LAN; step 7 already exempts it.
+- **Manual block list** beats the LAN exemption (4.3.1.4). Entries that are single addresses (bare, `/32` or `/128`) also have their existing connections cut when you apply; a range only stops new connections.
 
-**Entries the router adds for you.** Two sets of addresses are put into the whitelist once, the first time Warden starts on a release that carries them, so no feed, country or manual block can cut the router off from its own lists: the country-list host `51.15.12.186` (4.3.4), and from v3.4.8 the four addresses abuse.ch's feed hosts answer from — `151.101.2.49`, `151.101.66.49`, `151.101.130.49` and `151.101.194.49`. `urlhaus.abuse.ch`, `threatfox.abuse.ch` and `feodotracker.abuse.ch` are all served by the Fastly CDN, which hands out one of those four depending on where the lookup comes from, and Fastly's range sits in the United States country list. They are shared CDN addresses, so the entries exempt whatever else Fastly serves from them too; a feed listing one of them would have been a false positive that took out a large part of the web. One more is added only once you use the feature that needs it: with the Let's Encrypt certificate on, the Let's Encrypt server `172.65.32.248` and `2606:4700:60:0:f53d:5624:85c7:3a2c`. It is in the United States country list, and with **Filter the router's own traffic** on and the United States blocked, the certificate stayed at *Unknown or processing...* forever. It is added the next time DDNS starts, so it is in place before the first request. (ASUS DDNS, `asuscomm.com`, is not supported from v3.4.9; a saved ASUS DDNS setup is turned off at the first boot with a system-log line, so its server entry is no longer added.) Each address is added only if it is missing (bare, `/32` or `/128`); nothing you entered is changed or reordered, and the system log names what was added. Delete any of them and it is never put back (if you delete a DDNS or certificate entry while **Filter the router's own traffic** is on, the system log warns once per boot that updates and renewals can fail) — the one-time marker is kept in `/jffs/rwarden`, so it survives reboots and firmware updates. Only erasing `/jffs`, which also clears your lists, starts it over.
+**Invalid entries are refused on save**, with a message naming them, and nothing is saved. Fix the named line and save again.
 
-**Invalid entries are refused on save**, with a message naming them. The whole save is rejected rather than silently accepting what it could parse. An earlier version stripped offending characters instead — which turned `192.168.1.*` into `192.168.1.` and left people believing a subnet was whitelisted when nothing was. If a save is refused, fix the named line; do not assume the rest went in.
+**Entries the router adds once.** So that no feed, country or manual block can cut the router off from its own lists and services, these addresses are added to the Whitelist the first time Warden starts on a release that carries them (the log line reads `whitelist: added ... once - remove it on the Warden page if not wanted`):
 
-#### 4.3.6 Direction, and filtering the router itself
+| Address | Why |
+|---|---|
+| `51.15.12.186` | `www.ipdeny.com`, the country lists (France) |
+| `151.101.2.49`, `151.101.66.49`, `151.101.130.49`, `151.101.194.49` | the abuse.ch feed hosts (Feodo Tracker), served by Fastly from the United States list. These are shared CDN addresses: the entries exempt whatever else Fastly serves from them |
+| `172.65.32.248`, `2606:4700:60:0:f53d:5624:85c7:3a2c` | Let's Encrypt, added only once the Let's Encrypt certificate is switched on (the next time DDNS starts) |
 
-**Direction** has two settings. **Inbound only** protects the router and blocks unsolicited arrivals. **Both directions** additionally stops LAN devices *reaching* flagged addresses, which is what catches a device that is already compromised and calling home. ("Outbound only" was removed in v2.5.0 because it produced rules identical to Both.)
+Each address is added only if it is missing; nothing you entered is changed or reordered. **Delete any of them and it is never put back**: the one-time markers live in `/jffs/rwarden`, so they survive reboots and upgrades. Only erasing `/jffs` starts over. If you delete the Let's Encrypt entries while **Also filter the router itself** is on, the log warns once per boot that renewals can fail. GitHub (FireHOL, DShield) and Spamhaus are not added; whitelist them if you block the country they are served from with the router-traffic filter on.
 
-**Also filter the router itself** (off by default) applies the same blocking to connections the router *starts*.
+##### 4.3.1.8 Direction, and filtering the router itself
 
-It cannot lock you out. Management traffic is inbound to the router and its replies carry a LAN destination, both of which are exempt, so the web interface and SSH stay reachable and the toggle stays revocable. DNS resolvers and time servers are exempted automatically — a router with a dead clock fails TLS everywhere, which would look like a total outage. List download hosts are **not** exempted automatically; the country-list host and the abuse.ch feed hosts are covered by the whitelist entries the router adds (4.3.5). Any other threat feed or custom feed hosted in a country you block needs its own whitelist entry, or its update fails and the previous copy stays in use.
+**Direction.** *Inbound only* drops listed sources: unsolicited arrivals at the router and at forwarded services. *Both directions* also drops LAN devices' traffic **to** listed destinations, which is what catches a device that is already compromised and calling home. (An older *Outbound only* setting produced the same rules as *Both* and was removed; a stored `out` is read as `both`.)
 
-It *can* stop the router reaching a feed source, DDNS or a VPN peer if a list happens to cover them. That failure is to stale data, and it is logged.
+**Also filter the router itself** (off by default) runs the destination checks on connections the router starts (`RW_SELF`, on `OUTPUT`). It cannot lock you out: management traffic arrives from the LAN and its replies go to a LAN address, both exempt, so the web interface and SSH stay reachable and the switch stays revocable. Built-in exemptions: established connections, loopback, the LAN and the router's own WAN addresses, the upstream DNS servers the resolver uses, and NTP (UDP 123), because a dead clock breaks TLS everywhere.
 
-Drops here always go to the system log with the `REAPER-WARDEN-SELF` prefix, whatever the logging setting, and the self-monitor reports them as `warden-self-drop`. **That is the feature working, not a fault.** The log line is most of the value: malware with full control of the router can unhook these rules, so treat this as a speed bump and a detection signal rather than containment.
+It **can** stop the router reaching a list server, DDNS, a certificate authority or a VPN server if a blocked country or list covers it. Updates then fail and the previous data stays in use. The addresses in 4.3.1.7 are whitelisted for that reason; any other list host or service in a blocked country needs its own Whitelist entry. Wallguard names this case on its Lists table (*blocked by Warden (FR)*, 4.3.3.13).
 
-#### 4.3.7 Reading the statistics
+Drops here **always** go to the log with the prefix `REAPER-WARDEN-SELF`, whatever **Log dropped packets** says, and the self-monitor reports them as `warden-self-drop`. That is the feature working. Malware with full control of the router can remove these rules, so treat this as a speed bump and a detection signal, not containment.
 
-The status card shows **Enforcing** or **Disabled**, the last feed update, which feeds are on, and the counts — **Countries / Threat feeds / Manual blocks / Unclassified**, plus prefixes loaded.
+##### 4.3.1.9 Logging
 
-**Blocked packets** and **Top blocked countries** refresh every 30 seconds. The figure counts packets, not connection attempts: a retried SYN or a retransmitted outbound packet counts again. The total is broken out by bucket so that `total = countries + feeds + manual (+ unclassified)`; from v3.2.2 every bucket is read from one snapshot of the firewall tables, so they add up exactly. *Unclassified* is non-zero only on a statistics store written before those buckets existed. The counter never matches the log viewer: the log is a rotating 400-line view, gated on *Log dropped packets*, and a burst can drop lines; the card under *How Warden works* says so on the page.
+With **Log dropped packets** on, each drop writes a kernel log line: `REAPER-WARDEN` for inbound, `REAPER-WARDEN-OUT` for outbound. `REAPER-WARDEN-SELF` is always on. In Firewall › Logging (4.1.12) they show as the `WARDEN`, `WARDEN-OUT` and `WARDEN-SELF` badges. Logging is useful while tuning and noisy if left on; the counters work without it.
 
-Totals are saved to internal flash every 15 minutes, and on every path that would otherwise lose them, so they survive reboots, firewall rebuilds and upgrades. **Turning Warden off resets the counters.**
+##### 4.3.1.10 Reading the statistics
 
-Blocking a single address severs its live connections immediately — a newly blocked address is dropped at once, because the hardware flow cache is flushed on apply.
+**Blocked packets** is every packet Warden dropped (inbound, outbound and the router's own, IPv4 and IPv6) since the date shown in the breakdown strip. The strip under **Top blocked countries** shows:
 
-#### 4.3.7a "I never see any outbound blocks"
+| Item | Meaning |
+|---|---|
+| *Countries:* / *Threat feeds:* / *Manual blocks:* | Drops by each rule group; they add up to the total |
+| *Unclassified:* | Shown only for counts saved by an older firmware, before the groups existed |
+| *Prefixes loaded:* | Country ranges loaded, all selected countries together |
+| *Threat entries:* | Entries in the merged feed set against its limit (`n / 524,288`); entries past the limit are not loaded |
+| *Counting since* / *Since the last firewall rebuild* | The window the counts cover (the second when **Save block statistics** is off) |
 
-This comes up often enough to be worth stating plainly: **an empty outbound log
-is the normal case, not evidence that something is broken.**
+- It counts **packets, not connection attempts**: a scanner retries each SYN and a LAN device retries a blocked destination, so one attempt can add dozens.
+- The log is a different view: one line per drop, only while logging is on, in a rotating buffer that drops lines under a burst. The counter is always the larger and the reliable figure.
+- Counts are banked to `/jffs/rwarden/counters` every 15 minutes (only when something new was dropped) and on every apply, so they survive reboots, rebuilds and upgrades. **Turning Warden off resets them.**
+- *Stats unavailable - retrying* on the *Live* pill means the status request timed out (a firewall restart was holding the counter lock); the page keeps polling.
 
-Inbound blocks are constant because the internet supplies a steady stream of
-unsolicited traffic to block. An *outbound* block needs something on your own
-network to reach out to a flagged address, which on a healthy network may not
-happen for weeks. Silence is the expected reading.
+##### 4.3.1.11 "I never see any outbound blocks"
 
-There are four different reasons the log can be quiet, and they used to look
-identical from the outside. Since v3.1.2 the router reports which one applies —
-look in the system log for a line tagged `rwatch` beginning `Warden outbound:`.
-It is written once whenever the state changes, so it says one of:
+**An empty outbound log is the normal case.** Inbound blocks are constant because the internet supplies a steady stream of unsolicited traffic. An outbound block needs a device on your network to reach for a listed address, which on a healthy network may not happen for weeks.
+
+The self-monitor says which state applies, in a log line tagged `rwatch` beginning `Warden outbound:`, written whenever the state changes:
 
 | What it says | What to do |
 |---|---|
-| *not filtering outbound* | Direction is set to Inbound only. Set it to Both if you want outbound filtering. |
-| *armed but NOT logging* | Outbound blocking is on but logging is off. Turn on logging while you investigate. |
-| *armed and logging* | It is working. The count of blocks so far is on the same line — if it is 0, nothing has matched. |
-| *the RW_ODROP chain is ABSENT* | A real fault. The chain should exist whenever direction is out/both; report it. |
+| *not filtering outbound - Direction is inbound only* | Set Direction to *Both directions* if you want outbound filtering. |
+| *armed but NOT logging* | Outbound blocking works; switch on **Log dropped packets** while you investigate. |
+| *armed and logging (prefix REAPER-WARDEN-OUT)* | It is working. The count for this statistics window is on the same line; 0 means nothing has matched. |
+| *armed; whether it is logging could not be read this tick* | A busy moment; the next tick says. |
+| *enabled for out/both but the RW_ODROP chain is ABSENT* | A fault: the chain should exist. Report it with the diagnostics report (2.10). |
 
-To confirm it end to end rather than wait, use the **Catch a device calling
-home** example below and browse to an address you know is in a feed you have
-enabled. Blocked outbound entries appear in the system log with the
-`REAPER-WARDEN-OUT` prefix and as a `WARDEN-OUT` badge in Firewall → Logging.
+To confirm it end to end, use **Catch a device calling home** below and connect from a LAN device to an address you know is on a feed you have enabled.
 
-#### 4.3.8 Examples
+##### 4.3.1.12 Examples
 
-**Stop the background scanning, change nothing else.** Tick FireHOL Level 1, leave countries empty, direction Inbound only, logging off. This is the lowest-risk useful configuration: nothing on your LAN is affected, and the router stops answering the internet's constant probing.
+**Stop the background scanning, change nothing else.** FireHOL Level 1, no countries, *Inbound only*, logging off. Nothing on the LAN is affected.
 
-**Refuse a set of countries you never deal with.** Select them, keep direction Inbound only to start with, and watch *Top blocked countries* for a week before considering Both. If a service breaks, the country list is the first thing to check.
+**Refuse countries you never deal with.** Tick them, keep *Inbound only*, and watch **Top blocked countries** for a week before considering *Both directions*. If a service breaks, check the country list first.
 
-**Catch a device calling home.** Direction **Both**, FireHOL Level 1 plus Feodo Tracker. An infected LAN device reaching a known command-and-control address is now dropped on the way out, and logged.
+**Catch a device calling home.** *Both directions*, FireHOL Level 1 plus Feodo Tracker. A LAN device reaching a listed command-and-control address is dropped and, with logging on, logged as `REAPER-WARDEN-OUT`.
 
-**Keep one address reachable through a country block.** Put it in the **whitelist**. Whitelist beats country and feed, and beats a manual block too.
+**Keep one address reachable through a country block.** Put it on the Whitelist.
 
-**Block one local device outright.** Put its address in **manual blocks**. Remember this is the one entry type that overrides the LAN exemption — which is why it works, and why a careless CIDR here is the way to cut off your own network.
+**Block one LAN device outright.** Put its address on the Manual block list. Gatekeeper (4.2) does the same by MAC address, which survives a changed IP address.
 
-#### 4.3.9 Limits and gotchas
+**Reach your WireGuard server from anywhere with countries blocked.** Nothing to do: enabled WireGuard servers' ports are exempt (step 8).
 
-- **A whitelist entry covering your LAN is not needed** and never was — the LAN exemption at step 7 already covers it. Historically the page said the opposite in one place and the guidance in another; the exemption is in the chain and you can see it.
-- Threat and country sets are created with a cap of 524,288 entries. The count against that cap is shown in the blocked-hits breakdown on the page.
-- The feed hosts are **not** exempted from the router-self filter (4.3.6) by any built-in rule: abuse.ch (Feodo, and the Dreadwatch lists in 4.3.10) and the country-list host are reached over the router's own traffic. Their addresses are put in your whitelist instead (4.3.5); if you delete those entries, keep their countries unblocked or the router-traffic filter off. GitHub (FireHOL, DShield) and Spamhaus are not added — whitelist them if you block the country they are served from.
-- Eight custom feeds at the default timeouts can add roughly 16 minutes to an update window. A per-feed timeout is still owed.
-- North Korea publishes no IPv6 zone; the nightly update no longer logs a failed fetch for it (v2.6.1).
-- The country cache is replayed per set, members only, and **an empty live set never overwrites a good cache entry** (v2.5.9). That fixed country lists coming up empty after a reboot. Pending reporter confirmation on the first boot after upgrading from an older cache.
-- The self-monitor watches for your LAN address or `127.0.0.1` appearing in any block set, and if it finds one it logs a critical line and re-applies the rules. It is a backstop against exactly the class of failure described in 4.3.3, not something you should ever see fire.
+##### 4.3.1.13 Troubleshooting
 
-#### 4.3.10 Dreadwatch
+| Symptom | Cause | Fix |
+|---|---|---|
+| A website or service stopped working after enabling Warden | Its address is in a blocked country or on a feed (with *Both directions*) | Log dropped packets on, look for `REAPER-WARDEN-OUT` with the destination; whitelist it or untick the country |
+| **Countries blocked** amber, *N country list(s) empty*; log `geo: selected but NO data loaded, NOT blocked` | The country's list never downloaded | **Update feeds now**; if it persists, read the `rwarden` lines (`geo v4 fetch FAILED for <cc>`). With the router-traffic filter on, check that `51.15.12.186` is still whitelisted |
+| Log `geo: update time budget (900 s) ran out` | Too many countries, or the list host is slow | The rest load on the next run; select fewer countries |
+| **Last feed update** stays *Never* / old; log `threat feed fetch FAILED` | The router cannot reach the feed host | Check the WAN; with the router-traffic filter on, look for `REAPER-WARDEN-SELF` lines naming the feed host and whitelist it |
+| Save refused with a list of entries | They are not valid addresses or CIDRs (for example `192.168.1.*`) | Correct them; nothing was saved |
+| Log `rwarden_allow: N invalid entries IGNORED` | A list written outside the page holds invalid entries | Open the page and save the list again |
+| A remote VPN user cannot connect | OpenVPN and IPsec are not exempted; their address is in a blocked country or feed | Whitelist them, or use WireGuard |
+| DDNS updates or the Let's Encrypt certificate stop | Router-traffic filter on, the service's address in a blocked country | Restore the whitelist entry (4.3.1.7) or switch the filter off |
+| `REAPER-WARDEN-SELF` lines / `warden-self-drop` in the self-monitor | The router reached for a listed address | Read the destination: a known service (whitelist it) or something to investigate |
+| Log `Warden chain REAPER_WARDEN is STILL missing after a re-apply` | The apply script is failing | Run `/tmp/rwarden/apply.sh` over SSH and read its output; send the diagnostics report |
 
-**What it is.** DNS threat blocking, on its own tab next to Warden (**Bastion › Dreadwatch**, v3.4.8; before that a card on the Warden page called *Threat domains*). Everything above blocks by **address**, with `ipset` drops; Dreadwatch blocks by **name**, at the router's resolver: host names on free threat lists (malware-distribution sites, phishing, command-and-control and more; see the table below) are answered NXDOMAIN, together with every name under them. Two enforcement points, so two pages, each with its own feeds, status and counters. **Off by default.**
+##### 4.3.1.14 Limits
 
-**Independent of Warden.** Dreadwatch has its own switch and works with Warden on or off. The two share the list updater and its schedule (set on the Warden page), **Save block statistics** and the **Reset interval** (both on the Warden page, whether or not Warden is on); with Warden off the updater fetches only Dreadwatch's lists. Turning Warden off no longer stops Dreadwatch or clears its counters.
+- Addresses only; see 4.3.1.1. A connection to a listed **name** on a clean address is Dreadwatch's job.
+- A feed that fails while others succeed is missing until its next good download (4.3.1.5).
+- A range, country or feed entry blocks new connections; connections established before the entry was loaded run until they close. Single addresses on the Manual block list are cut at once.
+- Threat set: 524,288 entries per address family; each country set: 262,144.
+- Router-originated traffic is filtered only with **Also filter the router itself**; testing from the router's own shell with it off shows no blocking, by design.
+- The self-monitor checks every few minutes that neither the router's LAN address nor `127.0.0.1` is in a block set; if one is, it logs a critical line and re-applies. It is a backstop, not something you should see.
 
-**Setting it up.** Switch on **Block threat domains**, tick the lists you want in the **Feeds** table (**Reaper's Basics**, the first row, is ticked once it is on), add anything that must never be blocked to **Never block these names**, then **Save & Apply**. The first save fetches the lists by itself; **Update feeds now** fetches again at any time, and afterwards they refresh with Warden's feeds (default 04:30 daily).
+<a id="4310-dreadwatch"></a>
+#### 4.3.2 Dreadwatch
 
-**The lists** — all free, no account or key. The first row, **Reaper's Basics**, is one switch for the URLhaus mirror, Phishing, Command-and-control and the bundled ThreatFox snapshot together (ticked at the factory): the row shows their names, blocks and newest download added up, and *failed* if any one of them failed. The other lists have a row each. Every built-in row, Basics included, can be removed from the table (**Delete** on its row: the list is no longer fetched and its names leave the list); *Removed built-in lists* under the table brings it back. A selection saved by an older build that had only URLhaus on shows as Basics on, and the next save turns on the whole bundle.
+##### 4.3.2.1 What it is, and when to use it
 
-| Feed | What it lists | About | Default |
+Dreadwatch blocks **host names on threat lists** at the router's resolver: malware-distribution sites, phishing, command-and-control and more. A lookup for a listed name, or any name under it, is answered **NXDOMAIN**, so the device never gets an address to connect to. It applies to every device that uses the router for DNS, on the main network and on every guest and VLAN network, and every blocked lookup is counted. **Off by default** (`rwarden_dns` `0`).
+
+**Use it** on any network where devices use the router for DNS. It complements Warden: Warden blocks addresses, Dreadwatch blocks names, and a malicious site on a shared CDN address can only be blocked by name. It also complements Wallguard: Dreadwatch's answer is the same for every device, and no Wallguard profile, Bypass included, lifts it.
+
+**When it does nothing.** Devices that do not ask the router: a device or browser with its own encrypted DNS provider, a device with a hard-coded DNS server, a device on a VPN, and devices behind a LAN resolver that does not forward to the router (4.3, *Living with the rest of the router*). The **Coverage** card says which gaps are open on your network.
+
+Dreadwatch has its own switch and works with Warden on or off. It shares Warden's list updater and schedule, **Save block statistics** and **Reset interval** (4.3, *Shared pieces*).
+
+##### 4.3.2.2 Setting it up
+
+1. Switch on **Block threat domains** at the top of the tab.
+2. In the **Feeds** table, keep **Reaper's Basics** ticked and tick any optional list you want.
+3. Add anything that must never be blocked to **Never block these names**.
+4. **Save & Apply.** A save that changes anything fetches the lists at once; afterwards they refresh with Warden's schedule (default 04:30 daily). **Update feeds now** fetches again at any time.
+5. Press **Test now**: *Blocked: ... was answered NXDOMAIN* means the list is in force.
+
+##### 4.3.2.3 The built-in lists
+
+All are free and need no account or key. Each built-in row shows the address its list is downloaded from, as a link under the row's name (shortened; the full address on hover), so you can open the list in a new tab and read it before you tick it. The Basics row shows its three downloaded lists; the ThreatFox snapshot has no address because it ships inside the firmware, and the row says so.
+
+| Row | Lists | Source | Default |
 |---|---|---|---|
-| URLhaus (malware-filter mirror) | malware-distribution hosts; built from abuse.ch URLhaus by the malware-filter project, twice daily | 1,800 | Basics |
-| Phishing (malware-filter) | phishing hosts from OpenPhish, PhishTank and PhishStats, twice daily | 28,000 | Basics |
-| Command-and-control (C2IntelFeeds) | Cobalt Strike command-and-control domains; *fronting* entries (legitimate CDNs and services) are never taken | 50 | Basics |
-| Cryptojacking and mining (Prigent Crypto) | browser-mining and mining-pool names; may catch crypto sites | 11,500 | off |
-| Ransomware (Blocklist Project) | ransomware hosts; not updated since July 2026 | 1,900 | off |
-| CERT Polska | phishing and fraud domains aimed at Poland, from Poland's national CERT | 125,000 | off |
-| Threatview | high-confidence threat domains, daily | 250 | off |
-| ThreatFox snapshot (abuse.ch, 21 October 2026) | botnet command and payload hosts **as of that date**: abuse.ch closed its free downloads, so Reaper carries that last free list inside the firmware; it does not update and will age | 30,800 | Basics |
+| **Reaper's Basics** (malware sites, phishing, command-and-control) | URLhaus (mirror) | `malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt` | on |
+| | Phishing | `malware-filter.gitlab.io/malware-filter/phishing-filter-hosts.txt` | on |
+| | Command-and-control (C2IntelFeeds) | `raw.githubusercontent.com/drb-ra/C2IntelFeeds/master/feeds/domainC2s.csv` | on |
+| | ThreatFox snapshot (abuse.ch, 21 October 2026) | bundled with the firmware | on |
+| **Cryptojacking and mining (Prigent Crypto)** | browser-mining and mining-pool names; can catch cryptocurrency sites | `v.firebog.net/hosts/Prigent-Crypto.txt` | off |
+| **Ransomware hosts (Blocklist Project)** | ransomware hosts | `blocklistproject.github.io/Lists/ransomware.txt` | off |
+| **Phishing and fraud domains aimed at Poland (CERT Polska)** | about 125,000 names from Poland's national CERT | `hole.cert.pl/domains/v2/domains_hosts.txt` | off |
+| **High-confidence threat domains (Threatview)** | threat domains, high-confidence feed | `threatview.io/Downloads/DOMAIN-High-Confidence-Feed.txt` | off |
 
-abuse.ch closed the free URLhaus and ThreatFox downloads in October 2026 (both answer HTTP 410; a free abuse.ch account key is now required). URLhaus comes from the mirror above; ThreatFox is the snapshot described in the table, part of Basics, frozen at 21 October 2026. For a much larger free threat list, tick **HaGeZi Threat Intelligence** in Wallguard (4.3.11), which handles millions of names.
+**Reaper's Basics** is one switch for its four lists; the row shows their names, blocks and newest download added up, and *failed* if any one failed. The factory selection is `rwarden_dns_feeds` `urlhaus phish c2 threatfox`. A selection saved by an older build that had only some of the four shows as Basics on, and the next save turns on all four.
 
-**Your own sources.** **Add a source** adds up to 8 lists of your own, https only, in either form:
-- a **text list** at a web address: hosts files, plain names, Adblock `||name^`, CSV (`name,what`) or dnsmasq lines (`address=/name/`, `server=/name/`, `local=/name/`);
-- a supplier's **API**: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). The *abuse.ch ThreatFox* and *URLhaus* templates fill in everything except your key, so a free abuse.ch account key brings both back as live lists. A supplier that takes the key **inside the address** instead (`https://example.com/feed?api_token=$APIkey`, or abuse.ch's `https://threatfox-api.abuse.ch/v2/files/exports/$APIkey/hostfile.txt`) needs only that address, with `$APIkey` typed where the key goes, and your key: the router puts the key there at each download (never in the host name).
+In C2IntelFeeds, entries marked as domain *fronting* name legitimate CDNs and services; they are never taken.
 
-Each source has its own row, tick, figures and state; **Modify** edits it and **Delete** removes it with its download. The key stays on the router in `/jffs/rwarden/dnskeys`, readable by root only, and is never shown again (the row says *key saved*); it reaches curl in a root-only file, never on a command line. Both backup files carry the sources and the key (2.5). A source that needs a key it does not have is not fetched, and its row and the log say so. Your sources fill the name limit after the built-in lists, and a source's own host is never blocked. The fetch is Wallguard's (4.3.11), so a source behaves the same on both tabs.
+**abuse.ch.** abuse.ch closed its free URLhaus and ThreatFox downloads in October 2026; they now need a free abuse.ch account key. URLhaus comes from the mirror above. **ThreatFox is a snapshot of its last free list (21 October 2026, about 30,800 names), carried inside the firmware: it does not update and will age.** With an abuse.ch key, the **abuse.ch ThreatFox** and **abuse.ch URLhaus** templates under **Add a source** bring both back as live lists (4.3.2.4). For a much larger free threat list, tick **HaGeZi Threat Intelligence** in Wallguard (4.3.3.3).
 
-**How it runs.** Each feed keeps its previous download if a fetch fails, so one feed's outage never shrinks the list; a failure is logged with its cause (the HTTP status, or *no answer* with curl's exit code). A list may be in hosts form (any IPv4 address before the name), plain names, Adblock `||name^`, CSV or dnsmasq lines (`address=/name/...`). The names are normalised (lower case, one host per line, nothing without a dot or longer than the 253 characters DNS allows) and filtered through the never-block names. Each name is counted once, under the first list that carries it, and a name whose parent is already listed is dropped, because the parent already blocks every subdomain. The list then fills up to **1,000,000 names** in priority order: Reaper's Basics first, then the optional lists in table order, then your own sources. A list that grows suddenly can only crowd out the lists below it, never Basics. If the limit is reached, the log and a line under the table name the lists that were partly left out. The list is compiled into one table (`/tmp/reaper_nx/threat.db`, 12 bytes a name) that every dnsmasq instance — the main one and each guest or VLAN network's own — maps from the same file, so the names are held once in RAM however many networks the router runs. The router lowers the limit for a run if the list would otherwise take more than a quarter of the memory available at that moment. The compiler checks every new table before it replaces the old one, and a list that fails the check is never installed. A listed name and its subdomains are answered NXDOMAIN, exactly like an `address=/name/` with no address, except that the answer is marked as Dreadwatch's and counted; where one of the router's own DNS entries covers a longer name, that entry wins, as it would between two `address=` lines. The feeds list is kept gzip-compressed in `/jffs/rwarden/dns.k.gz`, and the table is rebuilt from it at boot, in the background: the resolver starts at once and picks the table up within two seconds of its arrival, so the list is in force about 15 to 20 seconds after DNS comes up (until then listed names resolve). The log says when the rebuild starts. **A changed list restarts dnsmasq once**, at the end of the update, so its cache forgets answers given before the change; an unchanged list does nothing, and the self-monitor's loopback-DNS check tolerates that one restart.
+**Removing a row.** Every built-in row, Basics included, has **Delete**: the list is no longer fetched and its names leave the table. *Removed built-in lists:* under the table lists them with **Restore**.
 
-**What is counted.** The resolver itself records every NXDOMAIN it answers from the list: the time, the address of the device that asked, the list entry that matched (a lookup of `a.b.bad.example` is recorded as `bad.example`) and the feed that carries it. Only blocked lookups are recorded, never ordinary ones, and nothing goes to the system log per lookup. Records are collected every 15 minutes and each time the page refreshes, into counters kept in `/jffs/rwarden/dns.counters`, so they survive reboots and upgrades. To keep a flood from costing anything, the resolver keeps at most 50 records a second and at most 256 KB between collections; anything beyond that is counted as **Not recorded** rather than lost silently.
+##### 4.3.2.4 Your own sources (lists and APIs)
 
-**Reading the page.**
+**Add a source** opens a form; up to **8** sources. The form is Wallguard's, and the download goes through Wallguard's fetcher, so a source behaves the same on both tabs.
 
-- **Tiles** — *Blocked lookups* since the counters were last reset, *Names on the list*, *Devices that tried*, *List updated*, and *Not recorded* when there are any.
-- **Feeds** — per feed: on or off, how many of its names are on the list after the never-block exemptions, how many lookups it blocked, the last good download and its state (*ok*, *failed, previous download kept*, or for a source of yours, that it needs its API key); **Delete** removes a row (above). A name both feeds list counts for both, so the feed figures can add up to more than the total.
-- **Most-blocked names** and **Devices that looked up blocked names** — the top 100 of each, with when each was last seen and, for a name, its feed; a device is shown by its name on the Devices page where the router knows one.
-- **Recent blocked lookups** — the newest 100 of up to 500 kept in memory (cleared at reboot).
-- **Test now** asks the router's resolver for a name on the list and reports whether the answer was NXDOMAIN. The test lookup is counted too, as *this router (self-test)*.
-- **Reset counters** clears the counters and the recent list. Turning Dreadwatch or Warden off clears them as well.
-- **Coverage** — whether DNS Director sends every LAN device's lookups to this router, and whether Firefox's DNS-over-HTTPS is switched off on this network (the canary domain answers NXDOMAIN). Its last line is the remedy for encrypted DNS, linked to LAN › DNS (DNS Privacy now lives there, not on the WAN page).
+| Field | Use |
+|---|---|
+| **Template** | *Your own list (a web address)*, *abuse.ch ThreatFox - API, needs your Auth-Key*, *abuse.ch URLhaus - API, needs your Auth-Key*. A template fills every field except the key. |
+| **Name** | Up to 40 characters, no quotes or `< > &`. |
+| **Address (https://)** | Up to 400 characters, https only. |
+| **Answer format** | *A list (hosts, domains, `\|\|name^` or dnsmasq lines)*, or *JSON*. |
+| **JSON field that holds the names** | For JSON: letters, digits or `_`. A URL in that field is cut to its host; IP addresses are skipped. |
+| **Request** | GET or POST (hidden under **Request · API key header ›** until needed). |
+| **Request body (sent with POST)** | Up to 1,024 printable characters; a body starting with `{` or `[` is sent as JSON. |
+| **API key header** | The header name the supplier wants (abuse.ch: `Auth-Key`). |
+| **API key** | Your key, up to 200 characters, no spaces or quotes. |
 
-**Encrypt at the router, not on each device.** A device set to a named encrypted DNS provider (Secure DNS in Chrome, Edge or Firefox set to a provider, Android Private DNS set to a provider host name, iCloud Private Relay) resolves over DNS-over-HTTPS or DNS-over-TLS straight to that provider, so its lookups never reach this router and Dreadwatch cannot block them. Keep the encryption, but move it to the router: turn on **DNS-over-TLS** under **WAN › Internet Connection › DNS Privacy Protocol** and leave devices on their automatic DNS setting. Lookups are then encrypted from the router to the provider and still pass through Dreadwatch. This does not lower privacy on the LAN: the router already handles every unencrypted lookup. The *automatic* settings are fine as they are: Chrome and Edge upgrade to encrypted DNS only when the system resolver is a known public provider (the router is not), and Android's *Automatic* Private DNS falls back to the router. To encrypt the hop from the device to the router as well, switch on **Encrypted DNS** (4.3.12); the Coverage card shows whether it is on and links to its tab.
+A plain list accepts hosts files (any IPv4 address before the name), plain names, Adblock `||name^`, CSV (`name,description`) and dnsmasq lines (`address=/name/`, `server=/name/`, `local=/name/`).
 
-If the page says *Counting is not active yet*, the resolver is still running a list built by v3.4.7, before counting existed. Blocking works; counting starts with the next list update (**Update feeds now** does it at once).
+**A key inside the address.** For a supplier that takes the key in the URL, type `$APIkey` where the key goes (for example `https://example.com/feed?api_token=$APIkey`) and leave the header empty; the router puts your saved key there at each download. `$APIkey` is accepted only after the host name.
 
-Never blocked, each with its subdomains: everything in **Never block these names**, plus names that come from your own settings (your NTP servers, your DDNS name, your DNS-over-TLS servers, your LAN domain, the hosts of your own sources) and the local zones `.local`, `.arpa` and `.lan`. From 22 October 2026 the names the router needs are **entries in that box**, not built into the firmware: the feed and list hosts (`abuse.ch`, `ipdeny.com`, `github.com`, `githubusercontent.com`, `spamhaus.org`, `malware-filter.gitlab.io`, `v.firebog.net`, `blocklistproject.github.io`, `hole.cert.pl`, `threatview.io`), `asus.com`, `asuscomm.com` and `pool.ntp.org`. They are added once, the first time Warden starts on a release that carries this, and the system log names them. Remove any you don't trust; it is never put back. A built-in exemption would outlive a list host that is later compromised, or a lapsed domain bought by someone else. Removing a list host's entry means Dreadwatch can block that host if a list names it, and the next update of that list may then fail. Blocking applies to the name a device asks for, not to the names an answer points on to, so a CDN name such as `p2.shared.global.fastly.net` never needs an entry.
+**Where keys are kept.** In `/jffs/rwarden/dnskeys`, readable by root only. The page never shows a key again: the row says *API · key saved*, and leaving the key box empty on **Modify** keeps the saved key. A key reaches the download tool in a root-only file, never on a command line. A source that sends its key in a header never follows a redirect (the log says to give its final address). Both backup files carry the sources and keys (2.5).
 
-Limits, stated plainly:
+Each source has its own row with a tick, figures and state; **Modify** edits it, **Delete** removes it with its download and key. A source that needs a key it does not have is not fetched; its row and the log say so. A source's own host is never blocked. Your sources fill the name limit after the built-in lists (4.3.2.6).
 
-- Only devices that use **this router** for DNS are covered. DNS-over-HTTPS in a browser or app, a device with its own DNS server, or a VPN that carries DNS all bypass it — unless DNS Director is set to force the router; the Coverage card shows which applies. A filtering upstream such as AdGuard or Pi-hole sees nothing of this list; put it there too if that is where your clients resolve.
-- The device counted is the address that asked **this router**. A LAN resolver that forwards to the router (a Pi-hole, for example) is counted as one device for all of its clients. A lookup over IPv6 is counted under the device's IPv6 address.
-- It is a name block, not an address block: a connection to a bare IP address is Warden's IP layer's job (4.3.3), not this one's.
-- The lists are time-boxed (entries expire after days to months), so the list shrinks as well as grows.
-- The lists are reached over the router's own traffic. CERT Polska (Poland) and Threatview (France) each sit on one server: if Warden blocks that country (4.3.4) or the router-self filter is on (4.3.6), put the list host's addresses in Warden's whitelist (4.3.5) or that feed reports *failed - no answer*. The default lists are on global CDNs and are not affected.
-- A firmware downgrade to v3.4.7 does not inherit the v3.4.8 list: that release rebuilds its own at its first feed update.
+##### 4.3.2.5 Never block these names
 
-#### 4.3.11 Wallguard
+One name per line; each entry also covers its subdomains. A line that is not a valid host name refuses the whole save.
 
-**What it is.** The router's own **ad and tracker blocker**, on its own tab: **Bastion › Wallguard**. It does what Pi-hole or AdGuard Home do, but inside the router's resolver, for every device on every network, with nothing to install or set up on the devices. Block lists (or your own rules) name the advertising, tracking and telemetry hosts; a lookup for one of them is answered `0.0.0.0` (or NXDOMAIN, your choice) instead of the real address, so the ad or tracker never loads. **Off by default.**
+Never blocked, with their subdomains:
 
-**How to use it** (the tab shows the same steps):
+- everything in **Never block these names**;
+- names from your own settings: the LAN domain, your DDNS name, your NTP servers, your DNS-over-TLS upstream servers, and the hosts of your own sources;
+- the local zones `local`, `arpa` and `lan`.
 
-1. Switch on **Block ads and trackers** at the top of the tab and save. One balanced list, **HaGeZi Normal**, is ticked to start with; the lists download in the background and blocking starts as soon as the first table is built (the pill reads *Waiting for lists* until then).
-2. Choose lists under **Lists**. Lighter lists (HaGeZi Light, OISD Small) break fewer sites; stricter ones (HaGeZi Pro, Pro++) block more and break more. **HaGeZi Threat Intelligence** adds malware and phishing domains (HaGeZi's *Medium* variant, about 435,000 names: the full list is past the 1,000,000-name limit on its own). A built-in list you never want to see can be **removed** from the table (Delete on its row); *Removed built-in lists* under the table brings it back. **Add a source** adds up to 8 of your own (https only): hosts files, plain domain lists, AdGuard/ABP-style `||name^` lists and dnsmasq lines all work. A supplier that serves its data only through an **API** (abuse.ch, for example) works too: set the request to POST with the body its documentation gives, the **API key header** (abuse.ch: `Auth-Key`) and your key, and choose **JSON** with the field that holds the names (a URL there is cut to its host; addresses are skipped). A supplier that takes the key **inside the address** instead (`https://example.com/feed?api_token=$APIkey`) needs only that address, with `$APIkey` typed where the key goes, and your key: the router puts the key there at each download (never in the host name). The key stays on the router in `/jffs/wallguard/keys`, readable by root only, is never shown again (the row says *key saved*) and travels with both backup files (2.5); a source that needs a key it does not have is not fetched, and its row and the log say so. Save — DNS keeps running while the lists download.
-3. If a site or app stops working, open **Unbreak**, pick the device, and allow the name it was refused in the last 15 minutes — for **24 hours** or **always**.
-4. Under **Profiles**, give devices or whole guest/VLAN networks a profile of their own: **Bypass** for gear that must not be filtered (a work laptop, a smart TV that breaks), a stricter profile for a child's tablet. *Default* applies to every device without one.
-5. **Why?** shows which list or rule decides a name, per profile, and what the router answers right now. **Pause** switches blocking off for everyone or one device for 5 minutes, an hour or until 06:00; it switches itself back on.
-6. **Edit** a profile to block services such as TikTok or Roblox for it, limit that to bedtimes or homework hours, and switch on safe search.
+**Entries the router adds once.** The names the router needs are entries in the box, not built into the firmware: `abuse.ch`, `ipdeny.com`, `pool.ntp.org`, `asuscomm.com`, `asus.com`, `github.com`, `githubusercontent.com`, `spamhaus.org`, `malware-filter.gitlab.io`, `v.firebog.net`, `blocklistproject.github.io`, `hole.cert.pl` and `threatview.io`. They are added the first time Warden or Dreadwatch starts on a release that carries this, and the log names them. Remove any you do not trust; it is never put back. A built-in exemption would outlive a list host that is later compromised, or a lapsed domain someone else buys. If you remove a list host, Dreadwatch can block it when a list names it, and that list's next update can fail.
 
-**My rules.** *Always block* and *Never block* take one name per line; a name covers its subdomains. *Never block* beats every list. A name allowed from Unbreak for 24 hours is listed under the boxes with its expiry and drops out by itself.
+**What an exemption can do.** It removes list entries equal to it or under it. It cannot carve a subdomain out of a listed parent: if `example.com` is listed, exempting `www.example.com` does nothing; exempt `example.com`. Blocking applies to the name a device asks for, not to the names an answer points on to, so a CDN name such as `p2.shared.global.fastly.net` never needs an entry.
 
-**Blocked services, schedules and safe search (per profile).** **Edit** on a profile's row opens its editor:
-- **Blocked services** — tick services by name (social media, video & streaming, games, messaging, shopping, dating, AI chat; about 45, the domains maintained with the firmware in `/usr/share/wallguard/services`). The profile then blocks every name of those services, with their subdomains, without you knowing the domains. A service a list does not cover fully is topped up with *Always block*. Up to 13 profiles can block services (each gets a list bit of its own); Bypass never blocks anything.
-- **Schedule** — *Always blocked*, or *Blocked only at these times*: up to 8 time ranges per profile, each with its days, from and to. A range that ends before it starts runs past midnight (21:00 to 07:00 on school nights is one range); "allowed only 16:00–18:00" is the range 18:00 to 16:00. The schedule switches the profile's **blocked services** only — its ad lists and safe search stay on. The router follows its own clock and time zone; until the clock is set after a boot, the services stay blocked. To take a device off the internet entirely at bedtime, use **Parental Controls › Time Scheduling** (blocks the device at the firewall), which the editor links to.
-- **Safe search** — *Google, Bing and DuckDuckGo SafeSearch* On, and *YouTube Restricted Mode* Moderate or Strict. For that profile's devices the router answers those sites' names with the addresses the providers run for enforced safe search (Google's `forcesafesearch.google.com`, `strict.bing.com`, `safe.duckduckgo.com`, YouTube's `restrictmoderate` / `restrict.youtube.com`), so the setting cannot be switched off in the browser; their HTTPS records are answered empty so a browser cannot learn another way in. The addresses are looked up at each list update (Google's country domains from Google's own list) and the previous ones kept if a lookup fails; until the first lookup succeeds, searches are not restricted and the editor says so. A profile with YouTube in its blocked services keeps YouTube blocked — a block always wins.
+##### 4.3.2.6 How a list becomes the table
 
-A **pause** never lifts a profile's blocked services or safe search: pausing to rescue a broken site does not unblock games. **Unbreak** shows a name that only a profile's blocked services refused as *Blocked service (profile)* without an Allow button — an allow would apply to everyone; untick the service in the profile instead. **Why?** names the profile whose services block a name.
+At each update:
 
-**How it runs.** The chosen lists compile (`wallguardc`) into **one table** that every DNS server on the router — the main network and each guest/VLAN network — maps into memory and shares: one million names take about 12 MB once, not once per network. A list update swaps the table in place; each resolver picks it up within two seconds without restarting, so DNS and DHCP never drop and the cache is kept. Only switching Wallguard on or off restarts the resolvers. The lists are fetched daily at 05:15 and by **Update lists now**, over https with the certificate checked, at most 32 MB per list; a download that fails keeps the previous copy (the list's state says so). The table holds up to 1,000,000 names; when full, names that only later lists carry are left out and the tab says so. Lists and the table live in RAM (`/tmp/wallguard`); your choices, rules and profiles are kept in `/jffs/wallguard` and survive a reboot.
+1. Each selected list is downloaded (https, certificate checked, at most 16 MB for a built-in list, 32 MB for your own source) and parsed into host names: lower case, one per line, dropped if it has no dot or a last label that does not start with a letter. A list that fails, or downloads but holds no usable names, **keeps its previous download** (that previous copy is held in RAM, so it covers failures after the first good download since the last boot). The log gives the cause: the HTTP status, or *no answer* with curl's exit code.
+2. The names are merged in **priority order**: Reaper's Basics (URLhaus, Phishing, Command-and-control, ThreatFox), then the optional lists in table order, then your sources in slot order. Each name is kept once; a name whose parent is already on the list is dropped (the parent covers it); names longer than 253 characters are dropped.
+3. The never-block names are removed.
+4. The list fills up to **1,000,000 names** in that order, so a list that grows suddenly can only push out the lists below it, never Basics. If the router's free memory at that moment would not hold the list in a quarter of it, the limit is lowered for that run. The log (`the 1000000-name limit ... left out N names from the lowest-priority lists`) and a line under the table name the lists that were partly left out.
+5. The list is compiled into one table, `/tmp/reaper_nx/threat.db` (about 12 bytes a name), which every dnsmasq instance (main network and each guest or VLAN network) maps from the same file, so it is held once in RAM. The compiler checks every new table before it replaces the old one; a table that fails the check is never installed (`the new list failed wallguardc's own check - the list in use stays`).
+6. **A changed list restarts the resolver once**, at the end of the update, so its cache forgets answers given before the change. An unchanged list restarts nothing.
 
-**Lists on a USB volume.** The downloaded lists live in RAM and come down again after every restart, so after a reboot Wallguard blocks nothing until the WAN is up and the lists have downloaded. Tick **Wallguard block lists** on System Log › Long-Term Storage (4.11) with the location set to USB storage, and each list moves to `<volume>/.reaper/wallguard/lists` when it downloads. After a restart the table is built from those copies about 30 seconds after the volume mounts, with no internet needed. The **table itself always stays in RAM**: the volume is read only while a table is built, never during lookups, so a stick that is pulled, sleeps or fails cannot stop DNS. Each list's SHA-256 is recorded on `/jffs` when it downloads, and a copy that no longer matches (changed through the file share) is not used. If the volume is missing when a table has to be rebuilt (a rule change), the table in use stays and the log says so; the next download goes to RAM until the volume is back. The Lists card says where the lists are kept. Large lists are the reason this is USB only: internal flash has no room for them.
+The log summarises each run: `threat domains: N loaded (urlhaus ..., phish ...); X never-block, Y covered by a listed parent, list changed - dnsmasq restarts`.
 
-**What it checks.**
-- The name asked **and every parent name**: a list entry for `example.com` blocks `ads.example.com` too when the list marks it so (`||example.com^`, `*.example.com`, and *Always block*).
-- **Hidden trackers (CNAME cloaking):** a site's own name that is only an alias for a tracker's name is caught by checking every name in the answer's CNAME chain; such answers are never cached, so each device's lookup is checked against its own profile. The *Hidden trackers caught* tile counts them.
-- **Which device asked:** by MAC address for a device with a profile, otherwise by the network it is on; devices using Encrypted DNS (4.3.12) are recognised by their real address.
-- Names the router itself depends on are **entries in your Never block box**, added once the first time Wallguard starts on a release that carries this (22 October 2026), so you can remove any of them: everything under asus.com, asusrouter.com and asuscomm.com (the ASUS DDNS name and its Let's Encrypt certificate), Warden's and Dreadwatch's feed hosts (abuse.ch, spamhaus.org, www.ipdeny.com, iplists.firehol.org), the safe-search enforcement hosts (blocking one breaks safe search for profiles that use it), GitHub (lists and the firmware check), the time servers pool.ntp.org, time.google.com and time.cloudflare.com, and the hosts of the preset lists. A removed entry is never put back. Names from your own settings stay automatic: your NTP servers, DDNS name and LAN domain, your VPN clients' server names, your DNS-over-TLS servers, and the hosts of lists you added yourself.
-- **The router's own answers win.** A name the router answers itself — your LAN's local names, an `address=` line (including the DoH canary names the router answers NXDOMAIN so browsers keep their automatic DNS), or one of Dreadwatch's threat names — gets that answer, not Wallguard's. A threat name on both lists is therefore answered and counted by Dreadwatch.
+**At boot** the table is rebuilt from the compressed copy `/jffs/rwarden/dns.k.gz` in the background (`threat domains: rebuilding the table from the /jffs copy in the background`). The resolver starts at once and picks the table up within two seconds of it appearing; the list is in force about 15 to 20 seconds after DNS starts, and until then listed names resolve.
 
-**Privacy.** Only **blocked** lookups are recorded, and a record names the **list entry** the lookup matched (`doubleclick.net`, say), not the name as asked: the counters, *Most-blocked names*, *Devices with the most blocked lookups* and Unbreak come from those, so they show the entries that block, and Allow in Unbreak allows that entry. The counters keep the 200 busiest names and the 200 busiest devices. The **Live view** is the only place names as asked, and lookups that were not blocked, appear: it is started by hand, kept in memory only, never saved, and switches itself off after an hour.
+A listed name and its subdomains are answered NXDOMAIN. If the router's own configuration has an entry for an equal or longer name (a local name, an `address=` line), that entry's answer wins.
 
-**Alongside the rest of Warden.** Dreadwatch (4.3.10) keeps blocking threat names with NXDOMAIN whatever Wallguard's profiles say, Bypass included, and counts them on its own page. DNS Director decides **which** resolver a device uses: a device it sends to another DNS server is not filtered by Wallguard. Encrypted DNS (4.3.12) brings encrypted lookups to the router, where Wallguard filters them.
+##### 4.3.2.7 Reading the page
 
-**Limits, stated plainly.**
-- Only devices that use this router for DNS are covered. A browser or app using its own encrypted DNS provider, a hard-coded DNS server, or a VPN that carries DNS all go around it — DNS Director set to *Router* closes the plain-DNS route, Encrypted DNS (4.3.12) the encrypted one.
-- It blocks by name. Ads served from the same host name as the content (YouTube video ads, some streaming apps) cannot be told apart by name and are not blocked; nor are cosmetic page elements.
-- A LAN resolver that forwards to the router (a Pi-hole, for example) is one device for all of its clients.
-- Regular-expression and cosmetic list lines are skipped (counted per list in the build summary).
-- Blocked services and safe search work at the router's DNS like the rest: an app or browser with its own encrypted DNS, or a VPN, goes around them (Encrypted DNS, 4.3.12, and DNS Director close those routes). A service that also runs on a shared cloud host or plain IP addresses may keep partly working. YouTube's restrictions are Google's own and follow Google's rules for what Restricted Mode hides.
+| Part | What it shows |
+|---|---|
+| Pill | *Enforcing* when the switch is on, the resolver uses the list and it holds names; otherwise *Disabled*. |
+| **Blocked lookups** | Blocked lookups since the counters were last reset (*Counted since* under **Test now**). |
+| **Names on the list** | Names in the table now. |
+| **Devices that tried** | The number of devices that looked up a listed name. The counters keep the 100 busiest, so the tile reads *100+* beyond that; the device table below lists the top 20. |
+| **List updated** | The last successful list build. |
+| **Not recorded** | Shown only when non-zero: blocked lookups the resolver blocked but did not record (see below). |
+| **Feeds** table | Per row: tick; **Names** (its names on the list after the exemptions; a name on two lists counts for both, so the rows can add up to more than the total); **Blocked** (lookups it blocked); **Last good download**; **State**: *ok*, *failed, previous download kept*, *off*, or, for a source of yours, *This source sends an API key - type the key.* |
+| Status line | *N names blocked at the resolver, updated ...*, or *Not loaded yet ...*, or *List built (N names) but dnsmasq is not using it yet ...*. Below it, where the blocked-lookup history is kept (Long-Term Storage). |
+| **Most-blocked names** | The top 20 list entries by blocks, with their feed and when last seen. |
+| **Devices that looked up blocked names** | The top 20 devices, by the name on the Devices page where known. |
+| **Recent blocked lookups** | The newest 100 of up to 500 kept in RAM (cleared at reboot). |
+| **Test now** | Asks the router's resolver for one name on the list; the answer must be NXDOMAIN. The test lookup is counted, as *this router (self-test)*. |
+| **Reset counters** | Clears the counters and the recent list (log: `Dreadwatch counters reset by the operator`). |
+| **Coverage** | Whether DNS Director sends every device's lookups to the router; whether Firefox's DoH canary answers NXDOMAIN; the gaps that are never covered (other DoH clients, VPNs); the remedy for encrypted DNS (LAN › DNS › DNS-over-TLS); whether Encrypted DNS for devices is on; whether encrypted DNS around the router is blocked; Wallguard, with a link. |
 
-#### 4.3.12 Encrypted DNS
+**What is counted.** The resolver records each NXDOMAIN it gives from the list: the time, the device that asked, the **list entry** that matched (a lookup of `a.b.bad.example` is recorded as `bad.example`) and its feed. Only blocked lookups are recorded, and nothing goes to the system log per lookup. A device using Encrypted DNS is recorded by its own address. The records are collected every 15 minutes and on each page refresh (every 30 seconds while the page is open). The resolver keeps at most 50 records a second and 256 KB between collections; the rest is counted as **Not recorded**. The counters keep the 100 busiest names and the 100 busiest devices, in `/jffs/rwarden/dns.counters` (in RAM if **Save block statistics** is off), and follow Warden's **Reset interval**. **Turning Dreadwatch off clears them**; turning Warden off does not.
 
-**What it is.** The router's own **DNS-over-TLS server** for your devices (port 853), on its own tab: **Bastion › Encrypted DNS**. A device that encrypts its DNS to an outside provider never reaches the router, so Dreadwatch, DNS Director and Gatekeeper cannot see or block its lookups. With this on, devices encrypt to the **router** instead: the lookup is encrypted on your network, answered by the router's resolver with all of its rules, and sent on encrypted by DNS Privacy if you use it. Nobody has to turn encryption off for filtering to work. **Off by default.**
+*Counting is not active yet* means the resolver is running a list built before counting existed; blocking works, and counting starts with the next list update (**Update feeds now**).
 
-**How to use it** (the tab shows the same steps, filled in with your certificate's name and the router's address):
+##### 4.3.2.8 Encrypt at the router, not on each device
 
-1. Switch on **Encrypted DNS for devices** at the top of the tab and save.
-2. Check the **Certificate** card. *Trusted* works for every kind of device. *Self-signed* works only for Android phones on the *Automatic* setting — add a certificate (below) for everything else.
-3. Set up each kind of device:
-   - **Android 9 or later** — Settings › Network & internet › Private DNS. **Automatic** is right for phones: Android tries encrypted DNS to the router and uses it, and on other networks it carries on as normal. Choose **Private DNS provider hostname** with the certificate's name only on a device that **never leaves this network** (a TV box): that setting applies on every network, and away from home, where port 853 is closed, Android then has no DNS at all.
-   - **iPhone, iPad, Mac** — enter your home Wi-Fi names on the tab, download the profile and install it (iPhone/iPad: Settings › General › VPN & Device Management; Mac: System Settings › Privacy & Security › Profiles). The profile switches encrypted DNS on **only on those Wi-Fi networks** and talks to the router's LAN address, so it also works when the router sits behind another router. It is not signed, so the device shows it as *Unverified*.
-   - **Linux (systemd-resolved)** — on a computer that stays on this network, `DNS=<router LAN address>#<certificate name>` and `DNSOverTLS=yes` in `/etc/systemd/resolved.conf`, then restart systemd-resolved. On a laptop that travels, set it for this network only, in its network manager — the same away-from-home rule as Android.
-   - **Windows 11 and web browsers** — they set up encrypted DNS as DNS-over-HTTPS, which the router does not offer. Leave them on their automatic setting; they then use the router's plain DNS, which Dreadwatch filters.
-4. **Stop devices going around the router:** in **DNS Director**, set the global mode to **Router**. Plain DNS from every device is then answered by the router, and DNS-over-TLS (TCP **and** UDP 853, so DNS-over-QUIC too) to any other server is rejected.
+A device set to a **named** encrypted DNS provider (Secure DNS in Chrome, Edge or Firefox set to a provider, Android Private DNS set to a provider host name, iCloud Private Relay) sends its lookups straight to that provider, past Dreadwatch. Keep the encryption but move it to the router:
+
+- for the hop from the router to the internet, switch on **Encrypt upstream DNS** under **LAN › DNS › DNS-over-TLS** and leave devices on their automatic DNS setting;
+- for the hop from the device to the router, switch on **Encrypted DNS for devices** (4.3.4).
+
+The *automatic* settings are fine as they are: Chrome and Edge upgrade to encrypted DNS only when the system resolver is a known public provider (the router is not), and Android's *Automatic* Private DNS falls back to the router. To stop devices that are set to a named provider, use **Block encrypted DNS that goes around the router** (4.3.4.6).
+
+##### 4.3.2.9 Examples
+
+**Threat blocking for the whole house.** Switch on, keep Basics, save, **Test now**. Set DNS Director's global mode to *Router* so devices with their own DNS server are covered too.
+
+**Add ThreatFox live with your abuse.ch key.** **Add a source**, Template *abuse.ch ThreatFox - API, needs your Auth-Key*, paste the key, OK, **Save & Apply**. The row reads *API · key saved* and fills after the fetch. Untick or delete the bundled snapshot only if you want; both can run.
+
+**A list blocks a site you need.** Find the entry in **Most-blocked names** or **Recent blocked lookups**, add it (or its parent) to **Never block these names**, save.
+
+##### 4.3.2.10 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| **Test now** says *Not blocked* | The list is not in the resolver yet | **Update feeds now**; check the status line |
+| **Test now**: *No list is loaded yet* | No list has downloaded | **Update feeds now**; read the `rwarden: threat domains:` log lines |
+| *Blocked* on Test now, but nothing counted from devices | Devices resolve elsewhere | Read **Coverage**; DNS Director *Router*; 4.3.2.8 |
+| A row reads *failed, previous download kept*; log `threat domains: <id> fetch FAILED (no answer, curl exit ...)` | The list host cannot be reached | Check the WAN. CERT Polska (Poland) and Threatview (France) each sit on one server: with Warden blocking that country and **Also filter the router itself** on, whitelist the host's address in Warden |
+| Log `fetch FAILED (HTTP 401/403/410: the list host refuses it)` | The host refuses the download, or wants a key | For your source, check the key (**Modify**) |
+| Row says *This source sends an API key - type the key.* | No key saved for a source that sends one | **Modify**, type the key |
+| Log `the server redirects, and a source that sends its API key in a header never follows a redirect` | The address redirects | Use the final address |
+| Line under the table: *The name limit was reached ...* | The selected lists exceed 1,000,000 names (or the memory-lowered limit) | Untick a large optional list |
+| Log `nothing fetched and no earlier list - threat domains block nothing until a list downloads` | First update failed | Fix the WAN, **Update feeds now** |
+| Log `reaper-nx-db: ... is not there - the threat list blocks nothing until rc rebuilds it` | The table went missing while the resolver ran | **Update feeds now** |
+
+##### 4.3.2.11 Limits
+
+- Only lookups that reach the router's resolver (4.3.2.1).
+- The device counted is the address that asked the router. A LAN resolver forwarding to the router counts as one device; a lookup over IPv6 counts under the device's IPv6 address.
+- Names, not addresses: a connection to a bare IP address is Warden's job.
+- The lists are time-boxed upstream (entries expire), so the list shrinks as well as grows. The bundled ThreatFox snapshot does not update.
+- After a reboot, a list that fails its first download of the session has no previous copy in RAM and leaves the table at that update; the next good download brings it back.
+- A firmware downgrade to v3.4.7 does not inherit the list; that release builds its own at its first update.
+
+<a id="4311-wallguard"></a>
+#### 4.3.3 Wallguard
+
+##### 4.3.3.1 What it is, and when to use it
+
+Wallguard is the router's own **ad and tracker blocker**: what Pi-hole or AdGuard Home do, inside the router's resolver, for every device on every network, with nothing to install on the devices. Block lists name advertising, tracking and telemetry hosts; a lookup for one is answered `0.0.0.0` (or NXDOMAIN, your choice), so the ad or tracker never loads. Profiles give devices or guest networks different lists, blocked services (TikTok, Roblox and others), schedules and safe search. **Off by default** (`wallguard_enable` `0`).
+
+**Use it** to remove ads and tracking for the whole house; to give a child's devices stricter filtering, bedtime service blocks and enforced safe search; to exempt a work laptop. **Do not expect it** to remove ads served from the same host name as the content (YouTube video ads, some streaming apps) or page elements; it blocks by name only. It sees only lookups that reach the router (4.3, *Living with the rest of the router*); the page shows a banner when a firewall rule sends devices' DNS elsewhere.
+
+##### 4.3.3.2 Setting it up
+
+1. Switch on **Block ads and trackers** and press **Save & Apply**. One balanced list, **HaGeZi Normal**, is subscribed the first time. The lists download in the background; the pill reads *Waiting for lists* until the first table is built, then *Blocking*.
+2. Choose lists under **Lists** (4.3.3.3) and press **Save & Apply**. A list with no downloaded copy yet (newly ticked, or ticked again after it was removed) is downloaded then, in the background, and the table is rebuilt; otherwise a save only rebuilds the table from the lists already downloaded. The daily update at 05:15 fetches every list again.
+3. If a site or app breaks, open **Unbreak**, pick the device and allow the name (4.3.3.7).
+4. Under **Profiles**, give devices or guest networks a profile of their own (4.3.3.5).
+5. **Edit** a profile to block services, set a schedule and switch on safe search (4.3.3.6).
+
+##### 4.3.3.3 Lists
+
+| List | Character (page wording) | Downloaded from |
+|---|---|---|
+| HaGeZi Light | light - very few false blocks | `raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/light.txt` |
+| HaGeZi Normal | balanced - recommended (subscribed at first switch-on) | `.../adblock/multi.txt` |
+| HaGeZi Pro | strict | `.../adblock/pro.txt` |
+| HaGeZi Pro++ | very strict - some sites may break | `.../adblock/pro.plus.txt` |
+| OISD Small | light - very few false blocks | `small.oisd.nl` |
+| OISD Big | balanced - recommended | `big.oisd.nl` |
+| StevenBlack Unified | balanced - recommended | `raw.githubusercontent.com/StevenBlack/hosts/master/hosts` |
+| AdGuard DNS filter | balanced - recommended | `adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt` |
+| HaGeZi Threat Intelligence (Medium) | malware and phishing domains (about 435,000 names; the full list is past the size limits) | `.../adblock/tif.medium.txt` |
+
+Each built-in row shows the address its list is downloaded from, as a link under the list's name (shortened; the full address on hover), so you can open a list in a new tab and read it before you tick it. One balanced list is usually enough; lists overlap heavily, and a second list of the same kind adds little.
+
+**The table's columns.** Tick (subscribed); **Names** (names this list adds that no list above it already has); **Blocked** (blocked lookups this list matched; a lookup on two lists counts for both); **Last good download**; **State**: *ok*, *failed, previous copy kept*, *not downloaded yet*, or *blocked by Warden (FR / ban list / threat feed)* when Warden's router-traffic filter drops the list's server (hover for the address). Under the table: *N names in the table, built ...*, and *The table is full (1,000,000 names)* when it is.
+
+**Delete** removes a built-in list from the table; *Removed built-in lists:* brings it back with **Restore**. **Update lists now** downloads every subscribed list now.
+
+**Your own sources.** **Add a source**: up to 8, with the same form, formats, API options, `$APIkey` rule and key handling as Dreadwatch (4.3.2.4), without the Template row. Keys are kept in `/jffs/wallguard/keys` (root only) and are never shown again. Wallguard's list compiler also accepts `*.name` (name and subdomains) and `@@||name^` exception lines. **An exception line allows**: in any list, or in a source made only of such lines (an allowlist by address), it lets that name and its subdomains through for every device and every profile, like **Never block**. Dreadwatch ignores `@@` lines; its only exemption is its own Never block list. Hosts-file and plain-name lines block exactly that name; `||name^`, `*.name` and dnsmasq lines block the name and its subdomains. Regular-expression and cosmetic (`##`) lines are skipped and counted.
+
+##### 4.3.3.4 My rules, and the names never blocked
+
+**Always block** and **Never block**: one name per line; a name covers its subdomains. **Never block beats everything**, every list and Always block included, at any level: never-blocking `example.com` allows `ads.example.com` even if a list names it. A name allowed from Unbreak for 24 hours is listed under the boxes as *Allowed for 24 hours* with its expiry and drops out by itself. A rule change takes effect within seconds of **Save & Apply** (the table is rebuilt from the lists on disk, no download).
+
+**Entries the router adds once.** The names the router depends on are entries in your **Never block** box, added the first time Wallguard starts on a release that carries this, so you can remove any of them: `asus.com`, `asusrouter.com`, `asuscomm.com`, `abuse.ch`, `spamhaus.org`, `www.ipdeny.com`, `iplists.firehol.org`, the safe-search hosts `forcesafesearch.google.com`, `strict.bing.com`, `safe.duckduckgo.com`, `restrict.youtube.com` and `restrictmoderate.youtube.com` (blocking one breaks safe search for profiles that use it), `github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com`, `pool.ntp.org`, `time.google.com`, `time.cloudflare.com`, and the hosts of the built-in lists (`small.oisd.nl`, `big.oisd.nl`, `adguardteam.github.io`). A removed entry is never put back.
+
+Never blocked automatically: your DDNS name, NTP servers and LAN domain, the server names of the router's OpenVPN and WireGuard clients, your DNS-over-TLS upstream servers, and the hosts of your own sources.
+
+##### 4.3.3.5 Profiles, devices and networks
+
+A **profile** is a set of lists. The **Profiles** table has one row per profile and one column per subscribed list plus **My rules**; a tick means that profile blocks with that list.
+
+- **Default** applies to every device without a profile of its own. Until you change its row it uses every subscribed list and My rules.
+- **Bypass** blocks nothing (no lists, no services, no safe search). Use it for equipment that must not be filtered.
+- **Add profile** creates one with **My rules** only ticked: tick the lists it should use.
+- **Services and safe search** shows a summary and **Edit** (4.3.3.6). **Remove** deletes a profile and its assignments.
+
+**Devices and networks** assigns a profile: pick a device (by name and MAC) or a guest/VLAN network, pick the profile, **Assign**. A device rule beats a network rule, which beats Default. The main network cannot be assigned as a whole; its devices use Default unless assigned.
+
+How the device is recognised: by MAC address, looked up from the address that asked; a device whose MAC the router cannot find gets its network's profile or Default. A **network** rule matches the network's IPv4 subnet, so a device on that network asking over IPv6 gets Default unless it has a device rule. Devices using Encrypted DNS are recognised by their real address. The router applies up to 22 profiles of your own.
+
+Changes to profiles and assignments take effect within seconds of **Save & Apply**; no list is downloaded.
+
+##### 4.3.3.6 Blocked services, schedules and safe search
+
+**Edit** on a profile's row opens its editor.
+
+- **Blocked services**: tick services by name, in seven groups: Social media, Video & streaming, Games, Messaging, Shopping, Dating, AI chat (45 services; their domains are maintained with the firmware in `/usr/share/wallguard/services`). The profile then blocks every domain of those services with their subdomains. A service a list does not cover fully can be topped up with **Always block**. Up to **13 profiles** can block services (each gets a list slot of its own); the editor says when the limit is reached. Bypass never blocks anything.
+- **Schedule for the blocked services**: *Always blocked*, or *Blocked only at these times*: up to 8 time ranges, each with its days, **from** and **to**. A range that ends before it starts runs past midnight (21:00 to 07:00 on school nights is one range, counted from the day it starts); "allowed only 16:00-18:00" is the range 18:00 to 16:00; a range whose start equals its end is the whole day. The schedule switches **the blocked services only**; the profile's lists and safe search stay on. The router follows its own clock and time zone, and **until the clock is set after a boot, the services stay blocked**. To take a device off the internet entirely at bedtime, use Parental Controls › Time Scheduling (the editor links to it).
+- **Safe search**: *Google, Bing and DuckDuckGo SafeSearch* (On/Off) and *YouTube Restricted Mode* (Off / Moderate / Strict). For that profile's devices, the router answers those sites' names (Google's country domains included, from Google's own list) with the addresses the providers run for enforced safe search (`forcesafesearch.google.com`, `strict.bing.com`, `safe.duckduckgo.com`, `restrictmoderate.youtube.com` / `restrict.youtube.com`), and answers their HTTPS/SVCB records empty so a browser cannot learn another way in. The setting cannot be switched off in the browser. The addresses are looked up through the router at each list update (and at once when a profile first asks for safe search); a failed lookup keeps the previous ones. **Until the first lookup succeeds, searches are not restricted**, and the editor says so. A profile with YouTube among its blocked services keeps YouTube blocked: a block wins.
+
+A **pause** never lifts a profile's blocked services or safe search. **Unbreak** shows a name that only a profile's blocked services refused as *Blocked service (profile)* with no Allow button (an allow would apply to everyone); untick the service in the profile instead. **Why?** names the profile whose services block a name.
+
+##### 4.3.3.7 Pause, Unbreak and Why?
+
+- **Pause**: pick *Everyone* or a device, then *5 minutes*, *1 hour* or *Until 06:00* (by your browser's clock), and **Pause**; **Resume** ends it early. A pause lifts the lists and My rules, not blocked services, safe search or Dreadwatch. Pauses are held in RAM: a reboot ends them, and they end by themselves. While everyone is paused the pill reads *Paused* and a banner gives the end time.
+- **Unbreak**: pick the device that has a problem. The table lists the names Wallguard refused it in the last 15 minutes (from the newest 500 blocked records), with **Allow 24 h** and **Always allow**. *Always allow* adds the list entry to **Never block**; *Allow 24 h* adds it to the 24-hour list. The entry shown is the **list entry** that matched (`doubleclick.net`, not the full name asked), so the allow covers its subdomains. Several names in a row usually belong to one service; allow them one at a time.
+- **Why?**: type a name and **Check**. It says *Blocked by:* the lists or rules that hold it (or *Allowed by a Never block entry or a list exception*, or *Not on any list*), then, for each profile, whether it is blocked for that profile, and *The router answers:* what the router answers right now (an address, `nxdomain` or `none`).
+
+##### 4.3.3.8 What it checks, and how it answers
+
+- **The name asked and every parent name**, for entries that cover subdomains (4.3.3.3).
+- **Before the cache**, so a cached answer is covered and a pause or an allow shows at once.
+- **Hidden trackers (CNAME cloaking)**: a site's own name that is an alias for a tracker's name is caught by checking every name in the reply's CNAME chain, for the device that asked. Such answers are never cached. The **Hidden trackers caught** tile counts them.
+- **The router's own answers win**: a name the router answers itself (local names, an `address=` line, the DoH provider names and browser canaries answered by the Encrypted DNS block, or a Dreadwatch threat name) gets that answer. A threat name on both is answered and counted by Dreadwatch.
+- **The answer**: **Blocked answer** below the Profiles card chooses *0.0.0.0 (fastest, recommended)* (`wallguard_mode` `null`, the default: `0.0.0.0` for IPv4, `::` for IPv6, an empty answer for other record types) or *NXDOMAIN* (`nx`). Blocked answers carry a 10-second lifetime and the Extended DNS Error code *Blocked*. Changing the mode applies with **Save & Apply**.
+
+##### 4.3.3.9 How it runs
+
+- **One table for every network.** The lists compile (`wallguardc`) into one table, `/tmp/wallguard/db`, which every resolver on the router maps and shares: one million names take about 12 MB once, not once per network. The table holds up to **1,000,000 names**; when full, My rules and the earlier lists win and names only later lists carry are left out (the page and each list's figures say so).
+- **No DNS interruption.** A new table is swapped in and each resolver picks it up within two seconds, without a restart: DNS and DHCP keep running and the cache is kept. Only switching Wallguard on or off restarts the resolvers (log: `Wallguard on - restarting dnsmasq`). A missing or damaged table makes Wallguard pass everything; it never fails closed.
+- **Downloads.** Daily at 05:15 and by **Update lists now**: https with the certificate checked, at most 32 MB per list (built-in lists: 2 retries, up to 90 s; your sources: 1 retry, up to 25 s). A failed download keeps the previous copy. The lists held in RAM together stay under 96 MB, and nothing is downloaded while less than 160 MB of memory is available; both cases are logged and shown as the list's state. One update runs at a time.
+- **At boot**, the lists come down again in the background once the internet is up (from a USB volume without internet, 4.3.3.10). Until the first table is built, nothing on the lists is blocked. If every download fails (a boot before the WAN is up), the table holds My rules only; the router fetches again when the WAN comes up and the self-monitor retries every 10 minutes (`Wallguard has no block lists yet - fetching them`).
+- **Where things live**: 4.3, *What is kept where*.
+
+##### 4.3.3.10 Lists on a USB volume
+
+Downloaded lists live in RAM and come down again after every restart. Tick **Wallguard block lists** on System Log › Long-Term Storage (4.11) with the location set to USB storage, and each list moves to `<volume>/.reaper/wallguard/lists` when it downloads. After a restart the table is built from those copies once the router's USB watchdog sees the volume mounted, with no internet needed.
+
+- **The table always stays in RAM.** The volume is read only while a table is built, never during lookups, so a stick that is pulled, sleeps or fails cannot stop DNS.
+- Each list's SHA-256 is recorded on `/jffs` when it downloads; a copy that no longer matches (changed through the file share) is not used (log: `list ... on the USB volume does not match its last download - not used`).
+- If the volume is missing when a table must be rebuilt (a rule change), the table in use stays and the log says so; downloads go to RAM until the volume is back.
+- The Lists card says where the lists are kept. This is USB only because internal flash has no room for lists of this size.
+
+##### 4.3.3.11 Counters, live view and privacy
+
+| Tile / card | Meaning |
+|---|---|
+| **Lookups** | Every lookup the resolvers have handled since they last started |
+| **Blocked** | Blocked lookups recorded since the counters were last reset |
+| **Blocked share** | Blocked as a percentage of Lookups, since the resolvers last started |
+| **Names on the lists** | Names in the current table |
+| **Hidden trackers caught** | CNAME-cloaked trackers blocked since the last reset |
+| **Most-blocked names** / **Devices with the most blocked lookups** | The top 50 of each; the counters keep the 200 busiest names and devices |
+| **Live view** | Every lookup as it happens (newest 150 shown, refreshed every 3 s), with its verdict: *blocked*, *allowed by a rule*, *listed, not for this device*, *passed*, *safe search* |
+
+**Privacy.** Only **blocked** lookups are recorded, and a record names the **list entry** that matched (`doubleclick.net`), not the name as asked. The counters, the top lists and Unbreak come from those records. The resolver keeps at most 50 records a second and 512 KB between collections; the rest is counted, not recorded. The **Live view** is the only place names as asked, and lookups that were not blocked, appear: **Start live view** starts it (only while Wallguard is on), it is kept in RAM only, never saved, and switches itself off after an hour (*N min left*).
+
+Records are collected every 15 minutes and on each page refresh; the counters are copied to `/jffs/wallguard/counters` at most hourly. **Reset counters** (in **How it works**) clears them. With **Wallguard blocked lookups** ticked on Long-Term Storage, every record is also appended to `<store>/wallguard/blocked.log` (rolled to `.1` past 16 MB on USB, 2 MB on JFFS); on USB, anyone with access to the volume's share can read it.
+
+##### 4.3.3.12 Examples
+
+**Ads off for the house.** Switch on, keep HaGeZi Normal, save. Check after a few minutes that the pill reads *Blocking*.
+
+**A child's tablet.** **Add profile** "Kids"; tick HaGeZi Pro and My rules in its row; **Edit**: tick TikTok, Roblox and YouTube, schedule *Blocked only at these times*, school nights 21:00 to 07:00; Safe search On, YouTube Strict. **Assign** the tablet to Kids. **Save & Apply**.
+
+**A work laptop that must not be filtered.** Assign it to **Bypass**. Dreadwatch still applies to it.
+
+**A guest network with lighter filtering.** Add a profile with HaGeZi Light only and assign the guest network to it.
+
+**A shopping site's checkout breaks.** **Unbreak**, pick the device, **Allow 24 h** on the name that appeared when it broke; if that fixes it, **Always allow**.
+
+##### 4.3.3.13 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Pill stays *Waiting for lists* | The first download has not finished | Check the WAN; **Update lists now**; read `wallguard:` log lines |
+| Banner *Devices' DNS lookups are sent straight to ... by a firewall rule* | A Service Intercept rule (4.1.8) or DNS Director sends port 53 elsewhere | Remove the redirect, or accept that Wallguard cannot filter those devices |
+| Wallguard on, nothing blocked | Devices resolve elsewhere, or only My rules are loaded | **Why?** with a listed name; check the banner and the Lists states; log `no block list could be downloaded - only My rules are blocked` |
+| A newly ticked list stays *not downloaded yet* | Its download failed (the list's *State* and the log `wallguard` say why), or the internet was down | Check the connection, then **Update lists now** |
+| A list reads *blocked by Warden (FR)* | Warden's router-traffic filter drops the list's server | Whitelist the address shown (hover) in Warden, change that block, or untick the list |
+| A list reads *failed, previous copy kept* | The host cannot be reached, or refuses | Log `list <id>: download failed`; for your source check its address and key |
+| Log `not fetched, less than 160 MB of memory available` | Low memory at update time | Fewer lists; free memory |
+| Log `not taken, the lists kept in RAM would pass 96 MB` | Too many large lists in RAM | Fewer lists, or keep them on USB (4.3.3.10) |
+| A site or app stopped working | A list blocks a name it needs | **Unbreak** (4.3.3.7) |
+| Safe search not applied | The device has another profile; the enforcement addresses are not looked up yet; or the browser uses its own encrypted DNS | **Why?**; **Update lists now**; Encrypted DNS block (4.3.4.6) |
+| A blocked service still partly works | It also runs on shared cloud hosts or plain IP addresses, or the schedule is off now | Top up with **Always block**; check the schedule and the router's clock |
+| Log `another block table build is still running - this one was skipped` | Two builds at once (several saves in a row) | Save again after a minute |
+| Log (dnsmasq) `wallguard: the block table is damaged - passing everything until it is rebuilt` | A damaged table | **Update lists now** |
+
+##### 4.3.3.14 Limits
+
+- Only lookups that reach the router's resolver. A browser or app with its own encrypted DNS, a hard-coded DNS server, or a VPN go around it; DNS Director *Router* closes the plain-DNS route, the Encrypted DNS block (4.3.4.6) the encrypted one.
+- By name only: ads served from the content's own host, and page elements, are not blocked.
+- A LAN resolver forwarding to the router is one device for all its clients.
+- Blocked services can leak where a service uses shared cloud hosts or plain IP addresses. YouTube's restrictions are Google's own and follow Google's rules for what Restricted Mode hides.
+- Up to 22 profiles of your own; up to 13 of them with blocked services; up to 8 schedule ranges per profile.
+
+<a id="4312-encrypted-dns"></a>
+#### 4.3.4 Encrypted DNS
+
+##### 4.3.4.1 What it is: two halves
+
+The tab has two independent switches.
+
+- **Encrypted DNS for devices** (`reaper_dot_srv`, off by default) makes the router a **DNS-over-TLS server** (port 853, `rednsd`) for your devices. A device that encrypts its DNS to an outside provider never reaches the router, so Dreadwatch, Wallguard, DNS Director and Gatekeeper cannot see or block its lookups. With this on, devices encrypt to the router instead: the lookup is encrypted on your network, answered by the router's resolver with all its rules, and sent on encrypted if DNS-over-TLS upstream is on.
+- **Block encrypted DNS that goes around the router** (`reaper_doh_block`, off by default) stops devices encrypting their DNS to outside providers, so their lookups come to the router.
+
+**Use the server half** when devices should keep encrypted DNS and still be filtered. **Use the block half** when devices or browsers set to their own provider are going around Dreadwatch and Wallguard, typically together with DNS Director global mode *Router*.
+
+##### 4.3.4.2 Setting up the router as a DoT server
+
+1. Switch on **Encrypted DNS for devices** and press **Save & Apply**. The pill reads *Running*.
+2. Check the **Certificate** card. *Trusted* works for every kind of device. *Self-signed* works only for Android phones on the *Automatic* setting.
+3. Set up each kind of device (4.3.4.4).
+4. **Stop devices going around the router:** in DNS Director, set the global mode to *Router*. Plain DNS from every device is then answered by the router, and DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to any other server are rejected.
 5. **Check it works:** *Connected now* rises as devices connect, and Android shows Private DNS as connected.
-6. **Stop devices going around the router altogether:** switch on **Block encrypted DNS that goes around the router** (below).
+6. To stop devices going around the router altogether, switch on **Block encrypted DNS that goes around the router** (4.3.4.6).
 
-**Certificates.** It serves the certificate the router's web interface serves (`/etc/cert.pem`), so anything set up under **WAN › DDNS** works: Let's Encrypt for your DDNS provider's name or your own domain, or a certificate you uploaded. *Trusted* means it chains to the router's public CA bundle. A self-signed or privately issued certificate is accepted by Android's *Automatic* setting only, because that setting does not check the name. A renewed or newly uploaded certificate restarts the server, which re-reads it.
+##### 4.3.4.3 Certificates
 
-**How it runs.** `rednsd` listens on the main LAN address (IPv4 and IPv6), on each guest/VLAN network's address, and — when the WAN address is public — on the WAN address for devices **on this network** that look the certificate's name up (the name resolves to the WAN address; the connection still arrives through the LAN bridge). It accepts a connection only from a LAN or guest/VLAN subnet and drops port 853 on every other interface while it runs. Each lookup goes to the DNS server of the device's **own** network over the router's loopback, tagged with the device's address in a private field that the router's resolver reads (only from the router itself), uses for Dreadwatch's per-device counts, and removes before anything leaves the router. Answers too large for UDP are fetched again over TCP. Nothing is logged per lookup; the counters are totals since it last started. The server starts as root to bind port 853 and load the key, then runs as `nobody`; the self-monitor restarts it if it stops while switched on.
+The server uses the certificate the router's web interface uses (`/etc/cert.pem`, `/etc/key.pem`), so anything set up under **WAN › DDNS** works: Let's Encrypt for your DDNS name or your own domain, or an uploaded certificate. The **Certificate** card shows **Name to use** (your DDNS name when the certificate covers it, otherwise its first plain name), **Issued by**, **Valid until** and the state:
 
-**What it respects.**
-- **DNS Director:** a device it sends to another DNS server (per device, per guest network, or globally) is refused before the TLS handshake. Android's *Automatic* setting then falls back to plain DNS, where DNS Director applies; a device set to the hostname setting fails instead. Devices set to *Router* or *No filtering* are served.
-- **Gatekeeper:** a held or blocked device cannot reach port 853 at all and gets the sinkhole as before.
-- **Limits:** 128 connections, 8 per device, 16 lookups in flight per connection; a connection that does not finish TLS in 5 s, or sits idle for 30 s, is closed.
+| State | Meaning |
+|---|---|
+| *Trusted: devices can use it by name.* | It chains to the router's public CA bundle |
+| *Self-signed: only Android's Automatic setting can use it.* | Add a Let's Encrypt or uploaded certificate under WAN › DDNS |
+| *Not publicly trusted* | Issued by a private authority; devices that check the name refuse it |
+| *Expired* | Renew it under WAN › DDNS |
 
-**Limits, stated plainly.**
-- The WAN-address route needs the public address on this router. Behind another router (double NAT) the certificate's name points at the outer router; Android's *Automatic* setting and the Apple profile still work, the hostname settings do not.
-- DNS-over-HTTPS (Windows 11, browsers' own secure-DNS providers) is not offered.
+Android's *Automatic* setting does not check the name, which is why it accepts any certificate. A renewed or newly uploaded certificate restarts the server, which reads it again. Without a trusted certificate, the Android hostname line, the Apple profile and the Linux lines are replaced by *needs a trusted certificate*.
+
+##### 4.3.4.4 Setting up devices
+
+The tab fills these steps with your certificate's name and the router's LAN address.
+
+- **Android 9 or later**: Settings › Network & internet › Private DNS. **Automatic** is right for phones: encrypted to the router on this network, normal elsewhere. Choose **Private DNS provider hostname** with the certificate's name only on a device that **never leaves this network** (a TV box): that setting applies on every network, and away from home, where port 853 is closed, Android has no DNS at all.
+- **iPhone, iPad, Mac**: enter your home Wi-Fi names (prefilled from the router's radios, comma-separated), **Download the Apple profile** and install it (iPhone/iPad: Settings › General › VPN & Device Management; Mac: System Settings › Privacy & Security › Profiles). The profile switches encrypted DNS on **only on those Wi-Fi networks** and connects to the router's LAN address, so it also works behind another router. It is not signed, so the device shows it as *Unverified*.
+- **Linux (systemd-resolved)**: on a computer that stays on this network, add `DNS=<router LAN address>#<certificate name>` and `DNSOverTLS=yes` to `/etc/systemd/resolved.conf` and restart systemd-resolved. On a laptop that travels, set it for this network only, in its network manager.
+- **Windows 11 and web browsers**: they set up encrypted DNS as DNS-over-HTTPS, which the router does not offer. Leave them on their automatic setting; they then use the router's plain DNS, which Dreadwatch and Wallguard filter.
+
+##### 4.3.4.5 How the server runs and what it respects
+
+- **Where it answers** (the card of that name): the main LAN address (IPv4 and IPv6), each guest/VLAN network's address, and, when the WAN address is public, the WAN address *for devices on this network that look the name up* (the certificate's name resolves to the WAN address; the connection still arrives through the LAN bridge). An address marked *could not listen here* is held by something else. It accepts a connection only from a LAN or guest/VLAN subnet, and port 853 is dropped on every other interface (WAN, VPN) while it runs.
+- **Each lookup** goes to the resolver of the device's **own** network over the router's loopback, tagged with the device's address in a private field the resolver reads (only from the router itself) and removes before anything leaves the router. Dreadwatch, Wallguard profiles, the cache, DNS-over-TLS upstream and each guest network's settings apply exactly as for plain DNS, and Dreadwatch and Wallguard record the device itself. Answers too large for UDP are fetched again over TCP.
+- **DNS Director**: a device it sends to another DNS server (per device, per guest network, or by the global mode) is refused before the TLS handshake. Android's *Automatic* setting then falls back to plain DNS, where DNS Director applies; a device on the hostname setting fails instead. Devices set to *Router* or *No filtering* are served.
+- **Gatekeeper**: a held or blocked device cannot use it and keeps plain DNS, where Gatekeeper's rules apply.
+- **Limits**: 128 connections, 8 per device, 16 lookups in flight per connection, TLS 1.2 or later; a connection that does not finish its handshake in 5 s, or sits idle for 30 s, is closed.
+- **Logging**: nothing per lookup. The tiles are totals since it last started: **Connected now**, **Lookups answered**, **Refused** (not from a LAN subnet, refused by DNS Director, or over a limit). The **Encrypted DNS activity** row on Long-Term Storage writes one summary line per self-monitor tick.
+- It starts as root to open port 853 and read the key, then runs as `nobody`. The self-monitor restarts it if it stops while switched on (`rednsd is not running with Encrypted DNS on - starting it`), but not after a certificate or listen error, which the page shows.
+
+##### 4.3.4.6 Block encrypted DNS that goes around the router
+
+A card on the same tab, switch **Refuse outside encrypted DNS for every device**. With it on, devices on the main network and every guest/VLAN network cannot encrypt their DNS to an outside provider; IPv4 and IPv6:
+
+- **DNS-over-TLS and DNS-over-QUIC**: TCP and UDP 853 to any server are refused (TCP with a reset). The router's own Encrypted DNS is not affected: devices reach it on the router itself.
+- **DNS-over-HTTPS**: HTTPS (TCP and UDP 443) to the known public DoH resolvers' addresses is refused, TCP with a reset, so a browser gives up at once instead of waiting. The addresses are in the sets `redns_doh` and `redns_doh6`: a built-in list of the major resolvers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, NextDNS, CleanBrowsing, Control D, Mullvad and others) is always loaded, and HaGeZi's maintained encrypted-DNS address list (`raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt`) is added daily at 05:25, at once the first time the router is online with the block on, and by **Update list now**. Each entry is checked before it is loaded: private, loopback, link-local and multicast ranges and any range wider than an IPv4 `/24` or IPv6 `/48` are refused, because each entry refuses HTTPS for the whole network. The list is kept in `/jffs/encdns/doh.ips` so it applies from boot; a failed download keeps the previous list.
+- **The DoH providers' host names** a device looks up first (`dns.google`, `cloudflare-dns.com`, `dns.quad9.net`, `doh.opendns.com`, `dns.nextdns.io` and about 40 more, with their subdomains; maintained with the firmware in `/usr/share/encdns/doh-names`) are answered NXDOMAIN. A name the router itself uses as its DNS-over-TLS upstream is never on it.
+- **The browser canaries** `use-application-dns.net`, `mask.icloud.com` / `mask-h2.icloud.com` and `_dns.resolver.arpa` are answered NXDOMAIN, so Firefox's automatic DoH and iCloud Private Relay stand down. Without the block, **Prevent client auto DoH** on LAN › DNS decides this (*Auto* answers them when DNS-over-TLS upstream or DNS Director's global mode is on).
+
+Switching the block on or off restarts the resolvers once and rebuilds the firewall; list updates restart nothing. Devices set to **No filtering** in DNS Director are exempt. A Firewall rules-engine Allow rule is evaluated first and can let such traffic through.
+
+##### 4.3.4.7 How devices react to the block
+
+- An **automatic** setting (Chrome, Edge, Firefox, Windows, Android *Automatic*) falls back to the router's DNS by itself.
+- A device set to **one named outside provider** (Android *Private DNS provider hostname* set to a provider, a browser set to one provider with no fallback) has **no DNS** until it is set back to automatic or to the router's Encrypted DNS. The card says so.
+- To let one device keep its own encrypted DNS, set it to **No filtering** in DNS Director.
+
+**Not stopped:** an encrypted DNS server on an address not on the list (self-hosted, a new provider), VPNs and proxies, and anything a Firewall Allow rule lets through first.
+
+##### 4.3.4.8 Reading the page
+
+| Part | Meaning |
+|---|---|
+| Pill, banner | *Running* or *Off*; when switched on but not running, the banner says why: *waiting for the router's certificate*, *the certificate could not be loaded*, *no address to listen on* |
+| **Connected now** / **Lookups answered** / **Refused** | 4.3.4.5 |
+| **Certificate**, **Where it answers** | 4.3.4.3, 4.3.4.5. *This router's WAN address is private* appears behind another router |
+| **Devices** | 4.3.4.4 |
+| **Resolver addresses on the list** | IPv4 plus IPv6 entries in the DoH address sets |
+| **Provider names not answered** | Names answered NXDOMAIN |
+| **DNS-over-TLS / QUIC refused**, **DNS-over-HTTPS refused** | Refused **packets** since the last firewall rebuild (not connections) |
+| List line | *List updated ... (N addresses)*, *The last list update failed; the list from ... stays in use*, or *The list has not been downloaded yet; the built-in addresses are in use* |
+
+##### 4.3.4.9 Examples
+
+**Encrypted and filtered phones.** Let's Encrypt on your DDNS name (WAN › DDNS); switch on Encrypted DNS for devices; leave Android on *Automatic*; install the Apple profile on iPhones. Dreadwatch's Coverage card then shows Encrypted DNS as on, and the phones appear by their own address in Dreadwatch and Wallguard.
+
+**Close every route around the filters.** DNS Director global mode *Router*, Encrypted DNS for devices on, the block on. Then set any device with a named Private DNS provider back to *Automatic*.
+
+**One device keeps its own provider.** DNS Director, per-device rule *No filtering* for that device.
+
+##### 4.3.4.10 Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| A device does not connect | Self-signed certificate (only Android *Automatic* works); DNS Director sends the device elsewhere (refused on purpose) | Add a trusted certificate; check DNS Director |
+| *Not running: waiting for the router's certificate*; log `Encrypted DNS for devices waits for the router's certificate` | The web interface has no certificate yet | Set one up under WAN › DDNS, or wait for it to be generated |
+| An address marked *could not listen here* | Another service holds port 853 there | Stop that service |
+| A phone has no internet away from home | Android set to *Private DNS provider hostname* | Use *Automatic* on phones |
+| The hostname works at home but not behind a second router | Double NAT: the name points at the outer router | Android *Automatic* or the Apple profile, which use the LAN address |
+| A phone or browser has no DNS after the block was switched on | It is set to one named outside provider | Set it to automatic or to the router's Encrypted DNS, or DNS Director *No filtering* |
+| The block's list shows only the built-in addresses; log `encrypted-DNS address list: download failed, the previous list stays in use` | The list host cannot be reached | **Update list now**; check that `raw.githubusercontent.com` is reachable from the router |
+| A browser still bypasses with the block on | Its DoH server's address is not on the list | Report the provider; DNS Director per-device rules or a Firewall rule can block it meanwhile |
+
+##### 4.3.4.11 Limits
+
+- The WAN-address route needs the public address on this router. Behind another router, Android *Automatic* and the Apple profile still work; the hostname settings do not.
+- DNS-over-HTTPS is not offered by the router (Windows 11 and browsers use plain DNS to it).
 - Guest/VLAN networks are served over IPv4.
-- Flow Explorer's destination names are learned from plain DNS replies on the LAN; lookups made over Encrypted DNS do not add names there.
-
-**Block encrypted DNS that goes around the router.** A card on the same tab, with its own switch (`reaper_doh_block`, **off by default**). With it on, devices on the main network and on every guest/VLAN network can no longer encrypt their DNS to an outside provider, so their lookups reach the router, where Wallguard, Dreadwatch, DNS Director and Gatekeeper apply. IPv4 and IPv6:
-- **DNS-over-TLS and DNS-over-QUIC** (TCP and UDP 853) to any server are refused — the router's own Encrypted DNS is not affected (devices reach it on the router itself).
-- **DNS-over-HTTPS** (TCP and UDP 443) to the public DoH resolvers' addresses is refused with a reset, so a browser gives up at once instead of waiting. The address list is HaGeZi's encrypted-DNS IP list, fetched daily at 05:25 over https (and by **Update list now**), validated line by line, swapped in without touching the firewall rules and kept on `/jffs` so it applies from boot; a failed download keeps the previous list. A built-in set of the major resolvers' addresses (Cloudflare, Google, Quad9, OpenDNS, AdGuard, NextDNS, CleanBrowsing, Control D, Mullvad; IPv4 and IPv6) is always loaded under it.
-- **The DoH providers' host names** a device must look up first (`dns.google`, `cloudflare-dns.com`, `dns.quad9.net`, `doh.opendns.com`, `dns.nextdns.io` and about 40 more, with their subdomains) are answered NXDOMAIN by the router; a name the router itself uses as its DNS Privacy upstream is never listed.
-- **The browser canaries** (`use-application-dns.net`, `mask.icloud.com`, `_dns.resolver.arpa`) are answered whatever the WAN page's *Prevent client auto DoH* says, so Firefox and iCloud Private Relay stand down by themselves.
-
-How devices react: an **automatic** setting (Chrome, Edge, Firefox, Windows, Android *Automatic*) falls back to the router's DNS silently. A device set to **one named outside provider** (Android *Private DNS provider hostname*, a browser set to a specific provider with no fallback) has no DNS until it is set back to automatic or to this router's Encrypted DNS — the card says so. To let one device keep its own encrypted DNS, set it to **No filtering** in DNS Director: such devices are exempt. The card counts the addresses on the list, the names answered NXDOMAIN, and the connections refused on 853 and on 443.
-
-Not stopped, stated plainly: an encrypted DNS server on an address that is not on the list (a self-hosted one, a new provider), VPNs and proxies, and anything an **Allow** rule in the firewall's rules engine lets through first. Switching the block on or off restarts DNS (one dnsmasq restart) and the firewall; list updates restart nothing.
+- Flow Explorer's destination names are learned from plain DNS replies; lookups made over Encrypted DNS add no names there.
+- The block covers known resolvers only (4.3.4.7).
 
 ### 4.4 Policy Routing
 
@@ -1294,7 +1702,7 @@ Selector **Source IP** (or **Object**), target **Block**. A hard stop that does 
 - **Rules live on the router's internal flash** (`/jffs`), not in the stock settings backup — use **Download full backup** or **Export settings** on **Administration → Backup & Restore** (2.5). Twenty rules and more save without trouble.
 - **Add rules from a device that is not itself being routed** by the rule you are testing.
 - **To check what actually loaded**, the rules appear as routing-policy entries and a marking chain on the router; if something is not behaving, the system log names any rule that was skipped and why.
-- All of v2.6.7 (WireGuard targets, IPv6, apply-and-confirm, the `/jffs` move) and the v2.6.9 address lists are **pending on-metal confirmation**; the WireGuard and IPv6 legs need a WireGuard client and an IPv6 line to test.
+- **AiMesh nodes are never policy-routed (v3.6.5).** A node's own traffic skips the marking chain, from the shared `reaper_aimesh` set (4.1.3), so a broad source or destination rule cannot send a node down a tunnel or into a Block.
 
 ### 4.5 QoS (Traffic Manager)
 
@@ -1399,8 +1807,9 @@ Saturate your upload with a large backup or file send, and watch the live column
 
 - **Strict priority only.** The per-class "Weighted (WRR)" option was removed in v2.5.4: the hardware's egress scheduler on these ethernet ports cannot actually create a weighted queue, so every class silently ran strict-priority anyway. The page now describes the classes as what they are. Any remaining text mentioning a weighted pool refers to that removed option.
 - **802.1p and 802.1Q are not required** and are not read by this engine. Classification is internal to the router's forwarding path. WAN VLAN tagging is only for ISPs that mandate a tag for link-up; 802.1p priority is not honoured across the ISP boundary anyway.
-- Classes were served in **inverted priority order** until v2.5.4. The fix is confirmed at the queue-configuration level on the RT-BE96U; drain behaviour under sustained classified load is still owed a test.
-- On a **GT-BE98**, the v2.5.4 queue rebuild could be rejected by the traffic manager, taking all IPv4 off the air while IPv6 still worked. v2.6.0 made the rebuild transactional: on rejection the queues are restored to the stock layout and a log line says the priority correction was not applied. Worst case is now the old priority order, never no internet. Pending reporter confirmation.
+- Classes were served in **inverted priority order** until v2.5.4.
+- On a **GT-BE98**, the v2.5.4 queue rebuild could be rejected by the traffic manager, taking all IPv4 off the air while IPv6 still worked. v2.6.0 made the rebuild transactional: on rejection the queues are restored to the stock layout and a log line says the priority correction was not applied. Worst case is now the old priority order, never no internet.
+- **An ISP / IPTV profile (v3.6.3).** With an ISP profile (`switch_wantag`) and an STB port or a WAN VLAN tag, the WAN device is the profile's VLAN interface, which the traffic manager refuses; both hardware engines now shape the physical port under it, as Asuswrt-Merlin's HW AQM does (Eric "Merlin" Sauvageau). A port that also carries the LAN is still refused (next item), and the QoS page's "LAN trunk" note shows only for the GT-BE98 family's shared jack.
 - **PPPoE, PPTP and L2TP lines (v3.3.7).** Both hardware engines shape the physical port the session rides on (an ISP VLAN is resolved to its parent port), not the `ppp0` interface, which has no hardware queues; earlier images shaped nothing on these lines. The shaper then counts PPPoE's 8-byte header, so set the upload a little under the line rate. The system log names the port each engine shapes.
 - **A port that also carries the LAN is never shaped (v3.3.9).** On the GT-BE98 family the 2.5G WAN/LAN-1 jack is a VLAN on the switch trunk that also carries LAN 2–4 and a wired AiMesh backhaul; shaping that trunk at the upload rate made the router unusable on v3.3.8. When the resolved port is a bridge member or a LAN port, both hardware engines refuse to arm with one log line, and the QoS page says so beside the engine choice. Use Cake on that layout, or move the WAN to a dedicated WAN port.
 - **Leftover settings from a previous mode stay in place, inert.** Switching from classful to type 10 leaves the classful keys set. They do nothing, but they can make a perfectly healthy type-10 configuration look like a broken classful one when you go looking.
@@ -1480,7 +1889,6 @@ Other details worth knowing:
 - A device with no IPv4 traffic shows a blank address until the network map names it.
 - A device-name mis-attribution is possible when a DHCP lease is reused by an offline device's address, and a negligible byte undercount when a duplicate row is folded away. Both are accepted trade-offs.
 - A store that attaches before the clock is set used to have the current month or day wiped — the "Month tab resets after a firmware update" symptom. Slot ageing is now driven by absolute time and nothing is aged while the clock is still unset.
-- IPv6 per-device attribution and the one-year totals for IPv6 devices on a USB store are pending field confirmation.
 - **Top Devices and Top Talkers show 10, 20, 30 or 50 rows** (v3.3.8), chosen per table and remembered in the browser; the collector keeps 64 top-talker slots.
 - **A busy connection table does not cost a CPU core (v3.3.6).** The collector paces its pass over the connection table by its own measured cost (about 3 % of one core, every 2 to 30 seconds) and logs a line when the pace changes; every rate uses the measured interval.
 - In Access Point, repeater or media-bridge mode the collector is deliberately idle: it accounts from the connection tracking table, which a bridging box never populates. Since v3.2.0 the page says so and names the mode instead of staying blank.
@@ -1548,7 +1956,7 @@ Filter chips: All, Online, Offline, Unnamed, Reserved, Randomized, Blocked. Sear
 
 ### 4.9 Connections
 
-**What it is.** A live **flow explorer** drawn from the Runner flow accelerator. **Quick Look** (the default) lists device name, local IP, remote IP:port, an internal/external badge, protocol and TCP state. **Advanced** shows, per flow, whether it is forwarded in hardware or by the CPU (with a real per-flow percentage split), egress queue and QoS class, DSCP, live rate, total bytes and true age; summary cards show how many flows are accelerated and the overall hardware-versus-CPU split; filters narrow to accelerated or CPU-path flows; a **Pause** control freezes the view. Polling (500 ms – 4 s) runs only while the page is open; the stock connection page is retained as a fallback.
+**What it is.** A live **flow explorer** drawn from the Runner flow accelerator. **Quick Look** (the default) lists device name, local IP, remote IP:port, an internal/external badge, protocol and TCP state. **Advanced** shows, per flow, whether it is forwarded in hardware or by the CPU (with a real per-flow percentage split), egress queue and QoS class, DSCP, live rate, total bytes and true age; summary cards show how many flows are accelerated and the overall hardware-versus-CPU split; filters narrow to accelerated or CPU-path flows; a **Pause** control freezes the view. Polling (500 ms – 4 s) runs only while the page is open. The stock connection page no longer ships (v3.4.9); its address opens this one.
 
 **Destination names.** Since v3.3.4 the Destination column shows a name over the address: a LAN destination by its
 device name (the router's own addresses as *This router*), an external one by the name the device asked DNS for. The names
@@ -1726,7 +2134,7 @@ transmits it, so there is nothing to save there.
 
 Turn parking on and the 2.4 and 5 GHz carriers are taken off the air whenever this router is the
 AiMesh primary, no node is paired, and no search or onboarding is running. The moment you press
-**Search** or **Add node** on the Network Map they come back within five seconds, so a node can
+**Search** or **Add node** on the AiMesh page they come back within five seconds, so a node can
 find and join them; if the search ends without a node, they park again. A paired mesh is never
 parked and a radio you have switched off is never touched. The daemon never parks 6 GHz by hand,
 but with MLO enabled the three carriers are one link set: parking one drops them all, and the
@@ -1748,7 +2156,7 @@ the value you already have. Raise it on the Wi-Fi Settings page if you prefer lo
 
 These share the **Storage** page under System Log.
 
-**Long-Term Storage** — choose the durable **Location** (RAM only / Internal (JFFS) / USB storage) and toggle each **dataset** (device history and action audit, traffic history, rwatch incident dumps, channel-quality history, syslog mirror; Warden is locked to JFFS). Four more rows: **Wallguard block lists** (USB only; the lists move off RAM and come back from the volume after a restart; the block table stays in RAM, see 4.3.11), **Wallguard blocked lookups** and **Dreadwatch blocked lookups** (every blocked lookup, time, device and name, appended each time the feature collects its records; `<store>/wallguard/blocked.log` and `<store>/dreadwatch/blocked.log`, rolled to `.1` past 16 MB on USB or 2 MB on JFFS), and **Encrypted DNS activity** (one line per watchdog tick while Encrypted DNS or its block is on: devices connected, lookups answered and refused by the router's DoT server, outside DoT and DoH refused, addresses on the block list; `<store>/ednshist.log`, rolled to `.1` past 4 MB; the router's DoT server still never records a lookup). The **Encrypted DNS blocked-address list** row is locked to JFFS like Warden's: the firewall loads it at boot, before any USB volume is mounted. Blocked-lookup history shows which device asked for which blocked name and when; on USB anyone with access to the volume's file share can read it (the page says so). Every write into the store (and Wallguard's read of its stored lists) goes through `/usr/sbin/rstore`, which never follows a link: a USB store is a volume other people can write - in guest share mode the firmware maps share guests to the admin account - so a file or folder they plant there cannot redirect the router's writes onto its own files. Wallguard checks a stored list's SHA-256 on a copy in RAM and builds from that copy. The table shows written size, size cap and **Collecting since** per dataset; the health line reports free space and falls back to RAM if no writable USB volume is attached. Once a durable location is collecting, each device gains a timeline (first seen, renames, reservations, offline spans, cumulative traffic). See 2.6 for the filesystem and USB guidance. *(The page's intro line still says policy "always lives in nvram"; since v2.6.3–v2.6.9 the Reaper lists live on `/jffs` — see 2.4.)*
+**Long-Term Storage** — choose the durable **Location** (RAM only / Internal (JFFS) / USB storage) and toggle each **dataset** (device history and action audit, traffic history, rwatch incident dumps, channel-quality history, syslog mirror; Warden is locked to JFFS). Four more rows: **Wallguard block lists** (USB only; the lists move off RAM and come back from the volume after a restart; the block table stays in RAM, see 4.3.3.10), **Wallguard blocked lookups** and **Dreadwatch blocked lookups** (every blocked lookup, time, device and name, appended each time the feature collects its records; `<store>/wallguard/blocked.log` and `<store>/dreadwatch/blocked.log`, rolled to `.1` past 16 MB on USB or 2 MB on JFFS), and **Encrypted DNS activity** (one line per watchdog tick while Encrypted DNS or its block is on: devices connected, lookups answered and refused by the router's DoT server, outside DoT and DoH refused, addresses on the block list; `<store>/ednshist.log`, rolled to `.1` past 4 MB; the router's DoT server still never records a lookup). The **Encrypted DNS blocked-address list** row is locked to JFFS like Warden's: the firewall loads it at boot, before any USB volume is mounted. Blocked-lookup history shows which device asked for which blocked name and when; on USB anyone with access to the volume's file share can read it (the page says so). Every write into the store (and Wallguard's read of its stored lists) goes through `/usr/sbin/rstore`, which never follows a link: a USB store is a volume other people can write - in guest share mode the firmware maps share guests to the admin account - so a file or folder they plant there cannot redirect the router's writes onto its own files. Wallguard checks a stored list's SHA-256 on a copy in RAM and builds from that copy. The table shows written size, size cap and **Collecting since** per dataset; the health line reports free space and falls back to RAM if no writable USB volume is attached. Once a durable location is collecting, each device gains a timeline (first seen, renames, reservations, offline spans, cumulative traffic). See 2.6 for the filesystem and USB guidance. Policy (rules and lists) is not a dataset here: the Reaper lists live on `/jffs` (2.4).
 
 **Data export** (mode control here; destination on **Administration → Data Export**) — per-device connection-health metrics (round-trip latency, jitter, loss, TCP connection count and state, throughput, online state). Modes: **Off** (nothing retained or sent), **Store only** (history on the router, nothing leaves), **Store + Export**, **Export only**. Any mode other than Off turns on the **Health probe**, which can also be enabled on its own for the live view and **Preview payload**. Targets: Splunk HEC, Datadog, Dynatrace, Elastic, generic HTTP/JSON, OpenTelemetry, TLS syslog (push), or a **Prometheus** OpenMetrics scrape endpoint (pull, bearer token required). TLS verification is on by default; the API token is stored masked and kept out of process lists and logs; an option hashes device MACs before they leave. **Test connection** and **Preview payload** show exactly what will go out. The probe is light enough to leave on (spread across ticks, at most 16 pings per tick, skipped while the link is saturated; default interval 60 s); the exporter refuses to push a snapshot older than three minutes, so a crashed collector never masquerades as live data. Not included by choice: wireless RSSI/PHY metrics and TCP retransmit counts.
 
@@ -1756,7 +2164,7 @@ These share the **Storage** page under System Log.
 
 ### 4.12 USB Disks
 
-The first tab of **USB Application**: each attached disk with its partitions, usage and a badge on the one that **holds the long-term store**; a **health scan** (a real `e2fsck` on ext4, with a pass/fail verdict and the check log; the result stays on screen); **Format** with a volume label and a filesystem selector (ext4 / ext3 / ext2 / FAT32 / NTFS / HFS+, with a one-line hint per choice — see 2.6); and **Safely remove** (eject), which now requires the anti-forgery token. Formatting permanently erases the disk and asks first. Formatting logs to `/tmp/disk_format/<dev>.log`. The format confirmation dialog is still stock-styled (backlog, cosmetic). Samba shares are named for their folder (`reaper`), with "(at DISK)" added only when two disks hold a folder of the same name.
+The last tab of **USB Application** (v3.4.9; it was the first): each attached disk with its partitions, usage and a badge on the one that **holds the long-term store**; a **health scan** (a real `e2fsck` on ext4, with a pass/fail verdict and the check log; the result stays on screen); **Format** with a volume label and a filesystem selector (ext4 / ext3 / ext2 / FAT32 / NTFS / HFS+, with a one-line hint per choice — see 2.6); and **Safely remove** (eject), which now requires the anti-forgery token. Formatting permanently erases the disk and asks first. Formatting logs to `/tmp/disk_format/<dev>.log`. The format confirmation dialog is still stock-styled (backlog, cosmetic). Samba shares are named for their folder (`reaper`), with "(at DISK)" added only when two disks hold a folder of the same name.
 
 ### 4.13 Diagnostics
 
@@ -2043,8 +2451,8 @@ running on the Wireless Quality page, and those refuse while a survey runs.
 <a id="wan-ports"></a>
 ### 4.19 WAN Ports
 
-**WAN → WAN Ports** replaces the stock Dual WAN tab (the stock page redirects here and is left unchanged in the
-firmware). It saves the same settings the stock page saves, so a configuration made on either page reads back
+**WAN → WAN Ports** replaces the stock Dual WAN tab (the stock page no longer ships since v3.4.9; its address
+opens this one). In router mode the tab shows whenever the model supports Dual WAN (v3.6.3). It saves the same settings the stock page saves, so a configuration made on either page reads back
 the same on the other.
 
 - **Internet port** — the port the internet cable is in, or **Auto**. The factory default is the port
@@ -2066,7 +2474,8 @@ the same on the other.
 - **Load Balance rules** — up to 64 source/destination pairs pinned to one connection (each address is an IP,
   IP/netmask or `all`) and the ISP profile per connection.
 
-The IPTV, Switch Control and WAN connection pages are unchanged.
+IPTV (LAN → IPTV), Switch Control and the Internet Connection page are separate pages; Internet Connection names
+the WAN port actually in use, resolved the way this page resolves it (v3.6.3).
 
 ## 5. Efficiency and good practice
 
@@ -2095,26 +2504,32 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | Gatekeeper shows **Arming** for minutes after boot | Log `gatekeeper` | Normal for the several-minute boot-stabilisation window; it arms when the bridge is up. If it never leaves Arming, read the log. |
 | 46th+ approved device stays Pending (old images) | Log `gatekeeper: device list migrated …`; diag §14b | Upgrade to v2.6.3 or later; the list moves to `/jffs` (2.4). |
 | "Internet only" device has no working internet | Gatekeeper; DHCP's advertised DNS | If your DNS server is on the LAN, it must itself be an approved (full) device in Gatekeeper (4.2). |
-| Unknown device on a guest network gets a hung page instead of "awaiting approval" | Log `gatekeeper`; `SDN_FI` admit rule | Fixed in v2.6.5 (pending confirmation); requires an isolated SDN to reproduce. |
+| Unknown device on a guest network gets a hung page instead of "awaiting approval" | Log `gatekeeper`; `SDN_FI` admit rule | Fixed in v2.6.5; requires an isolated SDN to reproduce. |
 | Whole LAN lost the internet right after a Warden feed update | Log `rwarden`, `rwatch` canary CRITICAL | Fixed since v1.8.8 (private ranges are stripped); `rwatch` re-applies rules and logs if your LAN IP ever matches a block set. Check custom feeds for private ranges; they are stripped too. |
 | Warden blocks total is large but the country table is near zero | Warden count bar (Countries / Threat feeds / Manual / Unclassified) | Not a fault: before v2.5.0 feeds were credited first. Now countries are evaluated first; expect a kink in history at that version. |
-| Warden country tile is amber "N country list(s) empty" after a reboot | Warden; log `rwarden: cache restore for set …`; `ipset -t list rw_g_<cc>` | Press **Update feeds now**. v2.5.9 fixed the per-set cache replay; pending confirmation on the first boot after upgrading an old cache. |
-| Dreadwatch is on but shows no blocked lookups | Bastion › Dreadwatch: **Test now**, the Coverage card; log `rwarden: threat domains:` | Press **Test now**. *Blocked* means the list works and no device has looked up a listed name through this router — or they resolve elsewhere (Coverage), typically a device set to its own encrypted DNS provider: move the encryption to the router (4.3.10, *Encrypt at the router*). *Not blocked* means the list is not loaded yet: **Update feeds now**. *Counting is not active yet*: the next list update starts it (4.3.10). |
-| Wallguard: safe search or YouTube Restricted Mode not applied | Bastion › Wallguard: the profile's **Edit** (a warning under *Safe search*), **Why?** | The device has another profile (Devices and networks), the enforcement addresses have not been looked up yet (warning: they come with the next list update, or **Update lists now**), or the browser uses its own encrypted DNS (4.3.12). |
+| Warden country tile is amber "N country list(s) empty" after a reboot | Warden; log `rwarden: cache restore for set …`; `ipset -t list rw_g_<cc>` | Press **Update feeds now**. v2.5.9 fixed the per-set cache replay. |
+| Dreadwatch is on but shows no blocked lookups | Bastion › Dreadwatch: **Test now**, the Coverage card; log `rwarden: threat domains:` | Press **Test now**. *Blocked* means the list works and no device has looked up a listed name through this router — or they resolve elsewhere (Coverage), typically a device set to its own encrypted DNS provider: move the encryption to the router (4.3.2.8, *Encrypt at the router*). *Not blocked* means the list is not loaded yet: **Update feeds now**. *Counting is not active yet*: the next list update starts it (4.3.2.7). |
+| Wallguard: safe search or YouTube Restricted Mode not applied | Bastion › Wallguard: the profile's **Edit** (a warning under *Safe search*), **Why?** | The device has another profile (Devices and networks), the enforcement addresses have not been looked up yet (warning: they come with the next list update, or **Update lists now**), or the browser uses its own encrypted DNS (4.3.4.6). |
 | Wallguard: a blocked service still works on a schedule | The profile's schedule, the router's time (System Log › General) | Outside the schedule's ranges the service is allowed by design; check the days and that the range is not reversed. A wrong router time zone moves every range. |
-| Wallguard: a site or app stopped working | Bastion › Wallguard: **Unbreak**, pick the device | Allow the name it was refused for 24 hours or always (4.3.11). Several names in a row usually belong to one service; allow them one at a time. A device that must never be filtered: give it the **Bypass** profile. |
+| Wallguard: a site or app stopped working | Bastion › Wallguard: **Unbreak**, pick the device | Allow the name it was refused for 24 hours or always (4.3.3.7). Several names in a row usually belong to one service; allow them one at a time. A device that must never be filtered: give it the **Bypass** profile. |
 | Wallguard: a rule change does not take effect after the USB stick was removed | Bastion › Wallguard: the line under *Lists*; the system log (`wallguard`) | The lists live on the USB volume (Long-Term Storage, *Wallguard block lists*) and it is not mounted: the table in use stays rather than lose those names. Reattach the volume, or **Update lists now** to download into RAM. |
-| Wallguard is on but nothing is blocked | Bastion › Wallguard: the pill, *Lists*, **Why?** with a listed name | *Waiting for lists*: the first download has not finished — the WAN must be up; **Update lists now**. A list in state *failed*: its host cannot be reached. *Why?* says blocked but the device still shows ads: it resolves elsewhere (its own encrypted DNS, a VPN) or the ads share the content's host name (4.3.11, Limits). |
-| Encrypted DNS: a device does not connect | Bastion › Encrypted DNS: the state banner, *Refused*, the Certificate and *Where it answers* cards | *Self-signed* on the Certificate card: only Android's *Automatic* setting works — add a Let's Encrypt or uploaded certificate (4.3.12). A device DNS Director sends elsewhere is refused on purpose. *Not running: waiting for the router's certificate*: the web interface has no certificate yet. An address marked *could not listen here*: another service holds port 853 there. |
-| A phone or browser has no DNS after *Block encrypted DNS that goes around the router* was switched on | The device's Private DNS / secure-DNS setting | It is set to one named outside provider, which the block refuses on purpose. Set it to automatic (Android *Automatic*, the browser's default) or to the router's Encrypted DNS; or exempt the device with DNS Director *No filtering* (4.3.12). |
+| Wallguard is on but nothing is blocked | Bastion › Wallguard: the pill, *Lists*, **Why?** with a listed name | *Waiting for lists*: the first download has not finished — the WAN must be up; **Update lists now**. A list in state *failed*: its host cannot be reached. *Why?* says blocked but the device still shows ads: it resolves elsewhere (its own encrypted DNS, a VPN) or the ads share the content's host name (4.3.3.14). |
+| Encrypted DNS: a device does not connect | Bastion › Encrypted DNS: the state banner, *Refused*, the Certificate and *Where it answers* cards | *Self-signed* on the Certificate card: only Android's *Automatic* setting works — add a Let's Encrypt or uploaded certificate (4.3.4.3). A device DNS Director sends elsewhere is refused on purpose. *Not running: waiting for the router's certificate*: the web interface has no certificate yet. An address marked *could not listen here*: another service holds port 853 there. |
+| A phone or browser has no DNS after *Block encrypted DNS that goes around the router* was switched on | The device's Private DNS / secure-DNS setting | It is set to one named outside provider, which the block refuses on purpose. Set it to automatic (Android *Automatic*, the browser's default) or to the router's Encrypted DNS; or exempt the device with DNS Director *No filtering* (4.3.4.7). |
 | *Block encrypted DNS*: the list shows only the built-in addresses | Encrypted DNS card: the list line; log `encdns:` | The first download runs once the router is online and then daily at 05:25; *failed* keeps the previous list. **Update list now**; check that raw.githubusercontent.com is reachable from the router. |
-| Encrypted DNS: a phone has no internet away from home | The phone's Private DNS setting | It is set to *Private DNS provider hostname*, which applies on every network; the router (rightly) cannot be reached from outside. Use *Automatic* on phones (4.3.12). |
-| Encrypted DNS: the hostname works at home on Wi-Fi but not behind a second router | Encrypted DNS: the WAN-address note | Double NAT: the name points at the outer router. Use Android's *Automatic* setting or the Apple profile, which connect to the LAN address (4.3.12). |
+| Encrypted DNS: a phone has no internet away from home | The phone's Private DNS setting | It is set to *Private DNS provider hostname*, which applies on every network; the router (rightly) cannot be reached from outside. Use *Automatic* on phones (4.3.4.4). |
+| Encrypted DNS: the hostname works at home on Wi-Fi but not behind a second router | Encrypted DNS: the WAN-address note | Double NAT: the name points at the outer router. Use Android's *Automatic* setting or the Apple profile, which connect to the LAN address (4.3.4.11). |
 | Dreadwatch shows a *Not recorded* tile | Bastion › Dreadwatch | More than 50 blocked lookups a second, typically one device retrying a blocked name in a loop. Blocking is unaffected; the records beyond the limit are counted, not kept. The *Devices* card shows which device. |
+| Wallguard: a newly ticked list stays *not downloaded yet* after **Save** | Bastion › Wallguard, the list's *State*; log `wallguard` | Save downloads a list that has no copy yet; if it still reads *not downloaded yet*, that download failed and the State says why. Check the internet connection, then **Update lists now** (4.3.3.2). |
+| Wallguard: a list reads *blocked by Warden (…)* | Bastion › Wallguard, the list's *State* (hover for the address) | Warden's router-traffic filter drops the list's server. Whitelist that address on the Warden tab, or untick the list (4.3.1.8). |
+| Wallguard shows a banner that devices' DNS lookups are sent straight to another address | Bastion › Wallguard; Firewall › Service Intercept; LAN › DNS › DNS Director; a VPN client in *Exclusive* DNS mode with VPN Director rules | A port-53 redirect sends lookups past the router's resolver, so Wallguard and Dreadwatch never see them. Remove the redirect, or point that server's upstream at the router (4.3). |
+| A remote OpenVPN or IPsec user cannot connect while Warden blocks countries or uses feeds | Warden with **Log dropped packets** on; log `REAPER-WARDEN` | Only enabled WireGuard servers' listen ports are exempt. Whitelist the user's address, or connect through WireGuard (4.3.1.13). |
+| Dreadwatch or Wallguard: a source of your own says it sends an API key but no key is saved | The source's **Modify** | Enter the key there; it is stored write-only and never shown again (4.3.2.4). |
 | Dashboard shows an amber bar: *N unreviewed change(s) to scripts, cron entries or exposure settings* | Firewall › Status, the Security review card; log `rwatch: security review:` | The self-monitor found a difference from the baseline you accepted (2.9). Read the list: your own change → **Accept**; a script, cron entry or forward you did not make → treat it as a compromise and check the diagnostics report. Nothing has been undone. |
 | Security Review row is amber *Baseline* after a reboot; the review card says *no report yet* | Dashboard; Firewall › Status, the Security review card | Not a fault: the report lives in RAM, and the first check after a boot waits out the 5-minute boot grace and the next five-minute tick — up to 10 minutes. The row turns green (or red) on its own. |
 | `rwatch: security review: N failed ssh logins from <address>` and a notice on the review card | Firewall › Status, the Security review card; `/jffs/security_recored.log`; the dropbear lines in the system log | A password-guessing run. Over IPv4 the stock guard locks the source after its own threshold; over IPv6 from the internet the router now allows 5 new SSH connections a minute per /64 (2.9). If you do not need SSH from the internet, set SSH to LAN only on the Administration page — the notice is information, nothing has been undone. |
 | `rwatch: FAILURE detected: front-chain-drift` about 8 minutes after every boot, with an incident dump each time | Log `rwatch` line `rule(s) ahead of the Reaper hook ...` (names the rule); `iptables -S FORWARD` | A `firewall-start` / `nat-start` script or an add-on inserts a broad `ACCEPT` at position 1 — typically a VPN helper's interface rule. Make it insert after `REAPER_HOOK` / `REAPER_HOOK_F` (2.9). Listing `ACCEPT` in `front_exempt` does nothing. |
+| A phone on mobile data cannot reach the router's WireGuard server while Warden blocks countries or uses feeds | Firmware version; Warden page | Fixed in v3.6.5: Warden lets UDP through to the listen port of each enabled WireGuard server (packets to the router only) and re-applies when a server is switched on or off or its port changes. OpenVPN and IPsec servers are not exempted (4.3.1.13). |
 | Router itself cannot reach feeds / DDNS / a VPN peer with Warden's self filter on | Log `REAPER-WARDEN-SELF`; `rwatch: FAILURE detected: warden-self-drop` | That is the feature reporting. The log names the destination; whitelist it or turn the self filter off. |
 | Policy Routing dropdown is empty / a domain rule matches nothing | Log `reaper_pbr`; `ipset list rwfw_<list>` | Fixed in v2.5.9 (token and shared object layer). Check the list has resolved; lists fill from the router's own resolver, so a client on its own DNS or DoH does not feed them. |
 | Some routing mark rules missing after a reboot | Log `rwatch: policy routing: N of M mark rule(s) live — re-applying` | Self-heals within two minutes (v2.6.9); no action needed unless the line repeats forever. |
@@ -2122,20 +2537,21 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 | LAN throughput dropped after adding a routing rule | Policy Routing page: the WireGuard note under the rules table; log on apply | A destination-list or MAC rule to WireGuard bypasses acceleration for the LAN (4.4). Use a source rule, or an OpenVPN target. |
 | A source rule to a WireGuard client still goes out the WAN, while the same rule to OpenVPN works | Diag §14d (bypass *new/pre/pending*, `table wgcN` route count, last handshake, per-rule packets); log `reaper_pbr: … skip-bypass …` / `blog skip table full`; from the device, `traceroute` to a public address | The accelerator, not the rule, is carrying the flow (4.4.9). A *pending* bypass or a full table means the flow was never diverted; upgrade to v3.1.7 (the bypass is installed when the client starts and a changed target no longer keeps stale verdicts), free a slot if the table is full, and check the client's Allowed IPs cover the destination. |
 | A device behind a source rule to a WireGuard client gets no replies at all | Policy Routing page; firmware version | Fixed in v3.2.4: replies were routed back into the tunnel (4.4.9). Upgrade. |
+| An AiMesh node drops off after adding a broad firewall, Service Intercept or Policy Routing rule | Firmware version; Firewall → Rule Status | Fixed in v3.6.5: the rules engine, Service Intercept and Policy Routing skip a paired node's own traffic, as Gatekeeper does (4.1.3). A node that joins after the rules were applied is exempt within one watchdog tick (5 minutes). |
 | A firewall rule blocks a network's own DNS or DHCP at the router | Firewall → Rule Status: the red row's rule column; Rules tab: the rule's direction; Objects: the subnet values | Usually an Inbound rule meant to separate two networks, or two subnet objects that overlap (4.1.3). Change the rule to Forwarded and narrow the object. |
 | IPv4 stopped working entirely, IPv6 fine, QoS Classful on | Log `hwqos: setqcfg qid N … REJECTED` / `class queues restored …`; QoS Diagnostics queues 1–5 | v2.6.0 makes the rebuild transactional. A `FATAL` line means even the bare recreate failed — report it with a diag. |
 | Games/consoles cannot open ports or connect with UPnP on | Log `IGD desc` lines (which description the console fetched); Firewall Status exposure card | IGD:1 is advertised by default (v2.4.6) and the upstream "all traffic through UPnP" patch is reverted (v2.5.8). If you enabled IPv6 pinholes, IGD:2 is served — that configuration broke the PS5. |
 | UPnP mappings stop working hours after boot | UPnP page vs actual forwarding | Fixed v2.3.5 (the daemon is genuinely restarted on firewall rebuilds). Do not "optimise" that restart away. |
 | PPPoE set to 1500 runs at 1492 | `grep -i "up with MTU" /tmp/syslog.log` | `MTU 1492 (requested >1492; peer declined RFC 4638)` means your provider declined; nothing to fix on the router. Both MTU and MRU must be above 1492 (they move together). Not the LAN Jumbo Frame setting. |
-| No internet after a router reboot until the ONT is power-cycled (PPPoE) | Log `rwatch` bounce line | v2.5.5 re-dials once after the 300 s boot grace when all three probes fail (`reaper_wanbounce_enable`, on by default). The tester capture during the fault is still owed. |
+| No internet after a router reboot until the ONT is power-cycled (PPPoE) | Log `rwatch` bounce line | v2.5.5 re-dials once after the 300 s boot grace when all three probes fail (`reaper_wanbounce_enable`, on by default). |
 | Firmware page frozen during a flash | — | Since v2.3.3 the poll chain is one-shot and the overlay has a Close on errors. If an old image: wait for the router, then End Task the tab. |
 | Mesh node shows a blank page with a cycling URL after flashing Reaper | Node's own firmware page | Fixed v2.4.6 (theming stands aside on a node). A node already stuck must be updated from the main router's AiMesh flow. |
 | "Search for node" finds nothing | Log `aimesh:` drop-reason lines | The two silent gates are now logged; recent reports say discovery works. A new Reaper node must be factory-reset on this firmware first. |
-| USB format "did nothing", log says "w/o tool" | Log `disk_format`; `/tmp/disk_format/<dev>.log` | NTFS/HFS+ dispatch fixed in v2.6.8 (pending confirmation). Prefer ext4 for a disk that stays in the router. |
+| USB format "did nothing", log says "w/o tool" | Log `disk_format`; `/tmp/disk_format/<dev>.log` | NTFS/HFS+ dispatch fixed in v2.6.8. Prefer ext4 for a disk that stays in the router. |
 | Traffic history gone after a reboot or flash | Long-Term Storage page; USB mounted? | Choose JFFS or USB (RAM is volatile). Since v2.1.5/v2.1.9 the collector waits for the USB store and never overwrites a database it did not load; `rtraf.db.prev` is the at-risk copy. |
-| Devices page lists a Wi-Fi device as Wired | Devices | Fixed v1.9.4 (bridge table) and v2.4.2 (mesh clients); a wireless-backhaul *node* is fixed v2.5.9, pending confirmation on a real mesh. |
+| Devices page lists a Wi-Fi device as Wired | Devices | Fixed v1.9.4 (bridge table) and v2.4.2 (mesh clients); a wireless-backhaul *node* is fixed v2.5.9. |
 | Device names keep reverting | Devices; stock client list | Fixed v2.1.9 (three root causes). Existing duplicates self-heal on the first reboot. |
-| Speed test dies partway through | Adaptive QoS → Internet Speed | Counter fixes in v2.4.5/v2.5.4; pending a multi-run confirmation. A genuine outage still fails on the real timeout. |
+| Speed test dies partway through | Traffic Manager → Internet Speed | Counter fixes in v2.4.5/v2.5.4. A genuine outage still fails on the real timeout. |
 | Reaper settings import reports rejections | Log `reaper_cfg: settings imported: N flag(s), M list(s), K rejected` | The rejected entries failed the same validation as typing them; fix them on the page. Firewall/routing lists still need Apply + Keep. |
 | Diag report tripwire says "review before sharing" | The report's ledger | Something still looked like a public address, MAC or e-mail. Read the file and redact by hand before attaching it. |
 | Login loop or credential page rejects everything after a factory reset | — | Fixed v2.1.5 / v2.2.0 / v2.3.5; the forced first-boot page and its gates were removed altogether in v2.9.1 (2.3). Power-cycle and log in with the new credentials. |
@@ -2162,8 +2578,10 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 - **Accelerator / Runner / flow cache** — the Broadcom hardware forwarding path. Reaper's hardware QoS engines keep it on; Cake and Traditional QoS turn it off; a WireGuard Policy Routing rule can bypass it for some or all LAN traffic.
 - **Apply and Keep / commit-confirm** — the two-step change on the Firewall and Policy Routing pages: changes go live at once and revert on their own unless you press Keep within the auto-revert timer (2.7).
 - **Auto-revert timer** — 15–3600 seconds, default 60, never off; set on the Firewall Rules tab.
+- **Bastion** — the menu holding Warden, Dreadwatch, Wallguard and Encrypted DNS (4.3); since v3.6.0 none of the four needs another switched on.
 - **Egress default** — a per-device rule for traffic leaving toward the internet only (Firewall → Egress).
 - **Fail-closed** — an enabled VPN client whose **Killswitch** is on: traffic routed to it, by VPN Director or a Policy Routing rule, is *blocked* while the tunnel is down rather than let out the WAN. With the Killswitch off, or the client switched off, it falls back to the WAN (v3.1.5 matches VPN Director on the switched-off case).
+- **Encrypted DNS** — the router's DNS-over-TLS server for the LAN's devices (`rednsd`, port 853), with an optional block on encrypted DNS that goes around the router (4.3.4).
 - **FINDINGS** — the verdict block at the top of the diagnostics report.
 - **Front chain (`REAPER_HOOK_*`)** — the single shared chain at the head of INPUT/FORWARD/OUTPUT into which Warden, Gatekeeper and the rules engine register, in that fixed order.
 - **Gatekeeper** — device access control; states are Pending, Full access, Internet only, Guest (timed), Blocked.
@@ -2195,8 +2613,8 @@ The IPTV, Switch Control and WAN connection pages are unchanged.
 - **Security review** — the self-monitor's advisory drift check (2.9): `/jffs` scripts, configs and SSH keys, add-on files, cron entries and the exposure settings, compared against a baseline you accepted on the Firewall page's Status tab; amber dashboard bar and one log line per change set, nothing undone. Watch rules set what is hashed, checked for existence only or ignored; every acceptance is logged.
 - **SDN / Guest Network Pro** — ASUS's per-network profiles (guest, IoT, VLAN). Gatekeeper enforces on every one; the Traffic Analyzer labels each by name and VLAN.
 - **Warden** — the threat-feed, country and manual IP blocking layer.
-- **Wallguard** — the router's ad and tracker blocker (4.3.11): block lists compiled into one table every resolver on the router shares, with per-device profiles, Unbreak and Why?.
-- **Dreadwatch** — Warden's DNS counterpart (4.3.10): threat host names answered NXDOMAIN at the router's resolver, with per-feed, per-name and per-device counts of what it blocked.
+- **Wallguard** — the router's ad and tracker blocker (4.3.3): block lists compiled into one table every resolver on the router shares, with per-device profiles, Unbreak and Why?.
+- **Dreadwatch** — Warden's DNS counterpart (4.3.2): threat host names answered NXDOMAIN at the router's resolver, with per-feed, per-name and per-device counts of what it blocked.
 - **Zone policy** — the default action between two zones; the weakest statement in the firewall engine, overridden by Egress defaults and explicit rules.
 
 ---
@@ -2274,13 +2692,13 @@ apply a ruleset, the firewall reverts unless you press Keep in time (2.7). The l
 `reaper_fw_zpol`, `reaper_fw_nat`, `reaper_fw_edef`) and `reaper_fw_err` start empty; the confirmed
 lists themselves live on `/jffs` (2.4).
 
-**Warden** (4.3) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_self` `0` (the
+**Warden** (4.3.1) — `rwarden_enable` `0`, `rwarden_dir` `in` (inbound only), `rwarden_self` `0` (the
 router's own connections are not filtered), `rwarden_log` `0`, `rwarden_stats_save` `1` (block counts
 are saved to flash), `rwarden_reset` `off` (the counters are never zeroed on a schedule; `24h`, `7d`,
-`30d` and `90d` are the choices), `rwarden_dns` `0` (Dreadwatch, 4.3.10: off until you switch it
+`30d` and `90d` are the choices), `rwarden_dns` `0` (Dreadwatch, 4.3.2: off until you switch it
 on) and `rwarden_dns_feeds` `urlhaus phish c2 threatfox` (all four lists selected once it is on). The list keys (`rwarden_feeds`, `rwarden_cfeeds`, `rwarden_geo`,
 `rwarden_ban`) and `rwarden_sched` (feed schedule; empty = 04:30 daily) start empty, and the whitelist
-(`rwarden_allow`) holds only the five list-host addresses the router adds once (4.3.5), so a freshly
+(`rwarden_allow`) holds only the five list-host addresses the router adds once (4.3.1.7), so a freshly
 enabled Warden blocks nothing until you choose feeds or countries. `rwarden_lastupd` is
 the time of the last feed update, empty until the first.
 
@@ -2438,9 +2856,9 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | URL filter, keyword filter, network services filter | Off | `url_enable_x` `0`, `keyword_enable_x` `0`, `fw_lw_enable_x` `0` |
 | Reaper rules engine, Warden, Gatekeeper, Policy Routing | Off (8.2) | `reaper_fw_enable`, `rwarden_enable`, `gk_enable`, `reaper_pbr_enable` |
 | Dreadwatch (DNS threat blocking) | Off | `rwarden_dns` `0` |
-| Wallguard (ad and tracker blocking, 4.3.11) | Off; blocked answer `0.0.0.0` | `wallguard_enable` `0`, `wallguard_mode` `null` |
-| Encrypted DNS (DNS-over-TLS server for devices, 4.3.12) | Off | `reaper_dot_srv` `0` |
-| Block encrypted DNS that goes around the router (4.3.12) | Off | `reaper_doh_block` `0` |
+| Wallguard (ad and tracker blocking, 4.3.3) | Off; blocked answer `0.0.0.0` | `wallguard_enable` `0`, `wallguard_mode` `null` |
+| Encrypted DNS (DNS-over-TLS server for devices, 4.3.4) | Off | `reaper_dot_srv` `0` |
+| Block encrypted DNS that goes around the router (4.3.4.6) | Off | `reaper_doh_block` `0` |
 | Security review | Off | `rwatch_review` `0` |
 | Parental controls | Off | `MULTIFILTER_ALL` `0` |
 
@@ -2535,17 +2953,16 @@ log carries a timestamp at each step (`factory reset: begin` … `nvram erased, 
 Some stock ASUS pages are still inside the firmware image but are **not reachable from the menu**.
 They are not hidden bugs, and they are not doing anything. They were left in place rather than
 deleted because each still shares state or code with something Reaper does use. This section lists
-them, so that finding one by typing its address does not look like a discovery.
+them, so that finding one by typing its address does not look like a discovery. Since v3.4.9 most
+stock pages a Reaper page replaces no longer ship at all; their addresses open the Reaper page.
 
 ### 9.1 The stock firmware-update page
 
-`Advanced_FirmwareUpgrade_Content.asp` is present, and **absent from the menu**. Reaper's own
-Firmware page (4.14) replaces it.
-
-It is kept because the two share NVRAM state. Reaper's page reuses the stock update variables —
-`webs_state_update`, `webs_state_info`, `webs_state_url`, `webs_state_flag`, `webs_state_error`,
-`webs_state_upgrade`, `webs_state_sha` — rather than inventing parallel ones. The stock page is the
-other reader of that state.
+`Advanced_FirmwareUpgrade_Content.asp` no longer ships (v3.4.9); its address opens Reaper's own
+Firmware page (4.14), which replaces it. It is listed here because Reaper's page reuses the stock
+update variables — `webs_state_update`, `webs_state_info`, `webs_state_url`, `webs_state_flag`,
+`webs_state_error`, `webs_state_upgrade`, `webs_state_sha` — rather than inventing parallel ones, so
+those keys are still present.
 
 The automatic check it used to drive is off (`firmware_check_enable` `0`, see 8.1), because it
 queried ASUS. Reaper checks its own GitHub release manifest instead, over HTTPS with certificate
@@ -2564,8 +2981,8 @@ nothing left to talk to.
 
 What replaces them, and what does not:
 
-- **Malicious-site and threat blocking** — Warden (4.3), using public IP threat feeds and country
-  blocks, and Dreadwatch (4.3.10), which answers known malware and botnet host names with NXDOMAIN at
+- **Malicious-site and threat blocking** — Warden (4.3.1), using public IP threat feeds and country
+  blocks, and Dreadwatch (4.3.2), which answers known malware and botnet host names with NXDOMAIN at
   the router's resolver and counts what it blocked. Both work on addresses and names rather than on
   inspected content, and neither needs a cloud service.
 - **Per-device access control** — Gatekeeper (4.2).
@@ -2580,8 +2997,8 @@ What replaces them, and what does not:
 The stock Quick Internet Setup page (`QIS_wizard.htm`) remains in the image. From v3.4.2
 nothing leads into them: the default setup address sends you to the dashboard, the first-use redirect
 while the WAN is down is gone, the landing after a LAN subnet change goes to the dashboard, and the menu
-entry is removed. The one part still used is the **AiMesh add-node** window (Network Map → AiMesh →
-Add node), which shares those files; it carries the Reaper look and its own wording in all 25 languages.
+entry is removed. The one part still used is the **AiMesh add-node** window (AiMesh → Add node), which
+shares those files; it carries the Reaper look and its own wording in all 25 languages.
 
 ### 9.4 Why they were not simply deleted
 

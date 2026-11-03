@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -68,7 +68,7 @@ worked example (substitute any release from the manifest):
 # --- (a) Get the pinned upstream base -----------------------------------------
 git clone https://github.com/RMerl/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
-git checkout a7ebfa133a           # tag 3006.102.8-beta2 — the pin never moves
+git checkout a7ebfa133a           # tag 3006.102.8-beta2, the base of the 3006.102.8 line
 
 # --- (b) Apply this repo's published patches ----------------------------------
 git config user.email you@example.com && git config user.name reviewer
@@ -77,23 +77,17 @@ git am --keep-cr /path/to/AM-Reaper/patches/[0-9]*.patch
 # 129 MB as a patch. It ships as a hash-pinned archive; unpack it after the series is applied:
 sha256sum -c /path/to/AM-Reaper/overlays/openssl-3.5-source.sha256   # run in that overlays/ dir
 tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from the tree root
-# From v3.1.8 the vendor WLCSM blob pair (libnvram.so + libwlcsm.so, ASUS stock 42015) ships as
-# overlays/wlcsm-42015-blobs.tar.gz; the series carries the swap for the RT-BE96U tree, a sibling
-# takes the two files over its router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
+# The vendor WLCSM blob pair (libnvram.so + libwlcsm.so) sits outside the hashed tree: the
+# 3006.102.10 base carries ASUS's 40585 pair; a model whose platform tree predates it (every
+# 3006.102.8 model) takes ASUS stock 42015's pair from overlays/wlcsm-42015-blobs.tar.gz over its
+# router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 928 <!--@patchcount--> patches (through v2.8.8).
+#   fails without it. This applies all 936 <!--@patchcount--> patches (through v3.7.0 <!--@treever-->).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router
-#   expected after all 541 patches (v2.7.7):
-#                         1c7e12e7e62dbee5e9b880931d86ce2c7c9abd3e
-#   (this value is releases[].source_tree_from_series["release/src/router"])
-#
-#   For the newest PUBLISHED release, v2.7.6, apply the first 535 instead:
-#                         3852ad7a46b7110fe2fa0a61a903208d961a7927
-#   The 535-patch replay was verified clean on 2026-08-24 — `git am --keep-cr`
-#   returned 0 and the only diff against the build commit was vendored *.md
-#   files, exactly as described below.
+#   expected: releases[].source_tree_from_series["release/src/router"] of the
+#   manifest entry whose patch_count is the number of patches you applied.
 #
 #   Two hashes are recorded per release. source_tree is the tree of the commit
 #   the firmware was built from; source_tree_from_series is what this replay
@@ -105,6 +99,10 @@ git rev-parse HEAD:release/src/router
 #   To check an EARLIER release instead, apply only its patch_count patches:
 #     ls patches/[0-9]*.patch | head -406 | xargs git am --keep-cr   # v2.3.7
 #     ls patches/[0-9]*.patch | head -325 | xargs git am --keep-cr   # v2.1.5
+#   The 3006.102.10 line's series was regenerated from ca72a61f8bc at v3.6.0, so there
+#   an entry before v3.6.0 names its own `base` (a7ebfa133a) and a `series_ref`: take
+#   patches/ from that commit of this repository. On the 3006.102.8 line every earlier
+#   release is a prefix of the current series.
 
 # --- (d) Confirm the image you downloaded is the published one ----------------
 sha256sum RT-BE96U_3006_102.8_Reaper_v2.1.2_nand_squashfs.pkgtb
@@ -136,17 +134,20 @@ reproduce. A *tree* hash is a pure function of file content. It is the right
 primitive for "did the same source come out," and it incidentally exposes nothing
 about our build host.
 
-**Why we cherry-pick upstream, never rebase.** When we carry forward an upstream
+**Why we cherry-pick upstream between rebases.** When we carry forward an upstream
 Asuswrt-Merlin update, we cherry-pick it onto our branch rather than moving our
-base. That keeps the base pinned at `a7ebfa133a` forever, so the reproduction
-recipe in §3 is identical for every release, past and future. (It is also why you
+base, so the reproduction recipe in §3 stays identical from release to release. A
+new upstream release is taken by a deliberate rebase: v3.6.0 moved the 3006.102.10 line
+from `a7ebfa133a` (3006.102.8-beta2) to `ca72a61f8bc` (3006.102.10) and regenerated its
+series; the 3006.102.8 line stays on `a7ebfa133a`. Each release's manifest entry names its
+base. (It is also why you
 never have to "guess whether it's beta2" — the base is one fixed commit,
 documented in [`SOURCE-AVAILABILITY.md`](SOURCE-AVAILABILITY.md) and every release
 record.)
 
 **Why the patches keep upstream authorship.** The carry-forward patches
 (`0291`–`0309` for v2.1.2) are upstream work; their `From:` lines are the original
-Asuswrt-Merlin authors (Eric Sauvageau, dave14305, …), not us. We deliberately do
+Asuswrt-Merlin authors (Eric "Merlin" Sauvageau, dave14305, …), not us. We deliberately do
 not rewrite that — attributing their work to ourselves would be dishonest, and
 the authorship is irrelevant to the tree-hash reproduction anyway.
 
@@ -213,9 +214,9 @@ exclusion strips. Compare your replay against this column, never against
 
 | Release | Base | Patches | `release/src/router` tree hash (from the series) | Published |
 |---|---|---|---|---|
-| v2.4.3 | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | not yet |
+| v2.4.3 | `a7ebfa133a` | `0001`–`0428` | `81025000fb194ea9b9a289418f07028a691a5fb1` | no — source rung |
 | v2.4.2 | `a7ebfa133a` | `0001`–`0426` | `1c8c908a0a7c14b12419a3720f9d5b2007b068a7` | no — folded into v2.4.3 |
-| v2.4.1 | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | not yet |
+| v2.4.1 | `a7ebfa133a` | `0001`–`0424` | `1db8fe150ac99c2adc17041d696666cf0dc299c6` | no — source rung |
 | v2.3.7 | `a7ebfa133a` | `0001`–`0406` | `7f48393d768d564fe8dbb5722fcfa26a8e6f6181` | ✅ all five models |
 | v2.3.6 | `a7ebfa133a` | `0001`–`0399` | `3740a7192671ec39854d96f8383e202b46599e90` | no |
 | v2.3.5 | `a7ebfa133a` | `0001`–`0397` | `a8b2d10782a78668a5fba30f53b61d5f0735ccec` | no |
@@ -234,9 +235,8 @@ The image SHA-256s are in the release's `SHA256SUMS-*.txt`. They are **also**
 supposed to be in the manifest, but in practice are populated only for
 v2.1.0–v2.1.5, v2.3.1 and v2.4.3 — so treat the `SHA256SUMS` file attached to a
 release as the authoritative image record, and do not infer from an empty `images`
-list that a release never shipped. The newest published release is **v2.7.6** (all
-five main models, 2026-08-24); later source rungs (**v2.7.7**, and the many
-unpublished v2.5.x–v2.7.x rungs) are built for the RT-BE96U only, both variants, and their
-image hashes may be recorded in the manifest — but those are locally built artifacts, not
-published downloads. The published images come from the CI
+list that a release never shipped. The newest published release is **v3.1.0** <!--@pubver-->
+(all five main models, 2026-09-08 <!--@pubdate-->); later rungs appear as `_BETA` pre-releases
+or stay source rungs, and image hashes the manifest records for a source rung are locally
+built artifacts, not published downloads. The published images come from the CI
 clean-room run and get their own `SHA256SUMS-*.txt` per model at publish time.

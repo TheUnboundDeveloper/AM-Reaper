@@ -16,7 +16,8 @@ kept: the AiMesh node wizard's GET to the CAP's cfg_onboarding.cgi (no re_mac in
 Review 2026-10-24 (S-B-1, S-B-2): over plain HTTP a browser sends NEITHER header to a private
 address, so "no header passes" left the HTTP listener (the shipped default serves both) open;
 the guard now treats a header-less request from a browser (Mozilla/ User-Agent) on the plain-HTTP
-listener as cross-site, curl and HTTPS unchanged. And the onboarding exemption read the raw query
+listener as cross-site, curl and HTTPS unchanged (review 2026-11-03 A-1: HTTPS too - a same-origin
+request always carries Sec-Fetch-Site or a Referer). And the onboarding exemption read the raw query
 text, so a percent-encoded key (%72e_mac) slipped past it while init_cgi() decoded it; it now
 decides on the query decoded the same way.
 
@@ -199,8 +200,9 @@ EXPECT = {
     "ref_host_prefix": 1, "ref_host_in_query": 1, "ref_userinfo": 1, "ipv6_same": 0,
     "ipv6_other": 1, "host_case": 0, "sfs_case": 1, "aimesh_conncap": 0, "aimesh_conncap_noref": 0,
     "aimesh_lock_refused": 1, "aimesh_post_refused": 1,
-    # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts and HTTPS as before
-    "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 0,
+    # review 2026-10-24 S-B-1: plain HTTP, a browser with neither header is cross-site; scripts as before
+    # review 2026-11-03 A-1: and on HTTPS too (a browser without Fetch Metadata whose Referer a page suppressed)
+    "http_browser_no_headers": 1, "http_browser_no_headers_post": 1, "https_browser_no_headers": 1,
     "http_browser_same_ref": 0, "http_browser_self_ref": 0, "http_browser_sfs_same_origin": 0,
     "http_no_ua_no_headers": 0, "http_script_no_headers": 0, "http_browser_page_not_cgi": 0,
     # review 2026-10-24 S-B-2: the exemption sees what init_cgi() sees

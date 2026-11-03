@@ -56,7 +56,7 @@ diag = read("others/reaper_diag")
 for want in ('#define GK_SINK_CONF GK_DIR "/sink.conf"', '#define GK_SINK_PID  GK_DIR "/sink.pid"', '#define GK_SINK_PORT "5300"',
              "static void gk_gen_sink(const char *gkifs)", '"pid-file=" GK_SINK_PID "\\n"', '"port=" GK_SINK_PORT "\\n"',
              '"bind-dynamic\\n"', '"except-interface=lo\\n"', '"no-resolv\\n"', '"no-hosts\\n"', '"no-poll\\n"',
-             '"cache-size=0\\n"', '"local-ttl=0\\n"', '"address=/#/%s\\n"', '"log-facility=/dev/null\\n"',
+             '"cache-size=0\\n"', '"local-ttl=0\\n"', '"address=/#/%s\\n"', '"log-facility=" GK_DIR "/sink.log\\n"',	# review 2026-11-03: /dev/null was fchown()ed to nobody
              'chmod(GK_SINK_CONF ".tmp", 0600);', 'rename(GK_SINK_CONF ".tmp", GK_SINK_CONF)'):
     check("gatekeeper.c sink conf: %s" % want, want in src)
 check("the sinkhole port is not mDNS (5353) and not the resolver (53)", '"5353"' not in src and 'GK_SINK_PORT "53"' not in src)

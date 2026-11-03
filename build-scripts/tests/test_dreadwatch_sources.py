@@ -70,6 +70,7 @@ def lift_body(body, macros):
         elif m.group(3) is not None: text += c_unescape(macros.get(m.group(3), ""))
     return text
 macros = macros_of(rw)
+macros.update(macros_of(rd("shared/reaper_lists.h")))  # 2026-11-02: the built-in list addresses live in shared/reaper_lists.h
 at = rw.find("# ---- threat domains")
 block = lift_body(rw[rw.rfind("fputs(", 0, at) + 6:rw.find(", f);", at)], macros)
 SPLIT = 'if [ "$(_nv rwarden_dns)" = 1 ]; then\n'

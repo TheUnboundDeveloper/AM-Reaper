@@ -1,6 +1,6 @@
 # Source Availability & Written Offer (GPL v2 & v3)
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 This document is how **Reaper** satisfies the "complete corresponding source"
 obligation of the GNU General Public License — **version 2** for the base and the
@@ -43,13 +43,14 @@ Applying the patch series to the pinned upstream commit reproduces the Reaper
 source tree byte-for-byte under `release/src/router` (verified with
 `git am --keep-cr`, plus the hash-pinned `overlays/openssl-3.5-source.tar.gz` for the
 OpenSSL 3.5 source tree; see [`../patches/README.md`](../patches/README.md)). The
-vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component, taken
-unmodified from ASUS's public 9.0.0.6.102_42015 firmware) ships beside it as
-`overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned, for every model's platform tree. That
+vendor's own `libnvram.so`/`libwlcsm.so` pair (a closed Broadcom component) is carried
+unmodified: ASUS's 102_40585 pair, which the 3006.102.10 base carries, or, for a model whose
+platform tree comes from an older ASUS GPL (every 3006.102.8 model), the pair from ASUS's
+public 9.0.0.6.102_42015 firmware, shipped as `overlays/wlcsm-42015-blobs.tar.gz`, hash-pinned. That
 reconstructed tree, built per `DEV-SETUP.md`, is the complete corresponding
 source for the GPL portions of the RT-BE96U image.
 
-**The sibling models** are that same tree plus up to three more inputs from
+**The sibling models** are that same tree plus up to four more inputs from
 [`../overlays/`](../overlays/), each SHA-256 pinned beside it and applied by the
 clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci/container_build.sh)):
 
@@ -66,6 +67,9 @@ clean-room build ([`../build-scripts/ci/container_build.sh`](../build-scripts/ci
   RTL8372 switch (RT-BE86U, GT-BE98, GT-BE98 Pro, GT-BE19000). One prebuilt object,
   `RTL_OBJS.o`, linked into u-boot. ASUS distributes it as an object file in its
   boot-loader release, and Reaper has no source for it; it is carried unmodified.
+- **`hndnvram-40585.sh`** — the 3006.102.8 line only (v3.6.3). The Wi-Fi start-up script
+  from ASUS GPL 102_40585 (Asuswrt-Merlin `d7c6a53e440`), carried as published and swapped in over the
+  known older copy in those models' platform trees.
 
 The RT-BE96U, RT-BE88U and both BQ16 models take no u-boot archive. With these
 applied, the reconstructed tree for a sibling is the complete corresponding source

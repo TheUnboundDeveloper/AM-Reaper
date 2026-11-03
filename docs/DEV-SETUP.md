@@ -1,6 +1,6 @@
 # Contributor Dev Setup — RT-BE96U "reaper" hardened build
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 This is the **hard-won, known-good** setup for building and modifying this firmware. It exists because getting an Asuswrt-Merlin / Broadcom-HND tree to build is full of non-obvious traps; everything below is something that actually bit us. Follow it and you skip the trial-and-error.
 
@@ -8,8 +8,8 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
 
 ## Ground rules (read first)
 
-- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The RT-BE96U is the hardware-validated model; the 3006.102.10 tree (branch `Dev`) also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U** and **GT-BE98 Pro**, and the 3006.102.8 tree (branch `Dev-102.8`) the **GT-BE98**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**, each from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` / `bq16` / `bq16_pro`; the GT-BE19000, BQ16 and BQ16 Pro build in a git worktree, see `build_gtbe19000.sh`, `build_bq16.sh` and `build_bq16_pro.sh`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
-- **Never push.** All work stays on the local `be96u-only` branch. `origin` points at the upstream/mirror — do **not** `git push`.
+- **Primary target is the RT-BE96U.** Built from `release/src-rt-5.04behnd.4916`, model `rt-be96u` (Broadcom BCM4916 / WiFi 7). The 3006.102.10 tree (branch `Dev`) also builds the sibling BCM4916 models **RT-BE86U**, **RT-BE88U** and **GT-BE98 Pro**, and the 3006.102.8 tree (branch `Dev-102.8`) the **GT-BE98**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro**, each from per-model branches (`make rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000` / `bq16` / `bq16_pro`; the GT-BE19000, BQ16 and BQ16 Pro build in a git worktree, see `build_gtbe19000.sh`, `build_bq16.sh` and `build_bq16_pro.sh`). This guide walks the RT-BE96U path; the sibling builds are the same recipe with a different target.
+- **Never push.** All work stays on the local canon branch (`be96u-only`; `be96u-102.8` for the 3006.102.8 line). `origin` points at the upstream/mirror — do **not** `git push`.
 - **Don't touch the blobs.** The Broadcom WiFi drivers and prebuilt objects (`wl`/`dhd`, `eapd`, `acsd`, `networkmap`, `wlceventd`, `cfg_mnt`, `spwenc`, `hostapd`/`wpa_supplicant` Broadcom forks) are closed and driver-coupled. Harden the **open-source userspace** only; treat the blobs as documented residual risk.
 - **Legal:** the proprietary components (ASUS/Broadcom/Trend Micro/Tuxera) are licensed for ASUS hardware only — see [`README.proprietary`](README.proprietary). The GPL parts are GPL — publish changes if you redistribute.
 
@@ -41,10 +41,12 @@ This is the **hard-won, known-good** setup for building and modifying this firmw
    git am --keep-cr /path/to/AM-Reaper/patches/*.patch   # preserves authorship + messages
    # then the OpenSSL 3.5 source, which is too large for a patch (verify the sha256 first):
    tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz
-   # building a sibling model? the vendor WLCSM blob pair (v3.1.8) is in
-   # overlays/wlcsm-42015-blobs.tar.gz - copy libnvram.so and libwlcsm.so over that
-   # model's router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies (CI does the same)
-   #   (plain `patch -p1` will NOT work: 18 patches carry git binary payloads —
+   # building a sibling model? the 3006.102.10 base carries ASUS's 40585 WLCSM blob pair;
+   # a model whose platform tree predates it (every 3006.102.8 model) takes libnvram.so and
+   # libwlcsm.so from overlays/wlcsm-42015-blobs.tar.gz into router-sysdep.<model>/
+   # {wlan/nvram,wlcsm}/prebuilt/ (CI does the same; on the 3006.102.8 line CI also swaps in
+   # overlays/hndnvram-40585.sh over the known older copy of that script, v3.6.3)
+   #   (plain `patch -p1` will NOT work: 20 patches (v3.6.5) carry git binary payloads —
    #    fonts, logos, banners, sprites — that `patch` cannot apply. Use git am.)
    ```
    The patches touch only the shared open-source userspace (`release/src/router/{httpd,rc,shared,libovpn,snooper,urlfilterd,lltdc,wsdd2,infosvr,libcodb,…}`), so they apply cleanly to a stock upstream tree. **Making the tree be96u-only (removing the sibling-model artifacts) is optional and not required to build `rt-be96u`** — see [`../patches/README.md`](../patches/README.md).
@@ -179,7 +181,7 @@ The non-obvious parts:
 Format is **`.pkgtb`** (modern Broadcom NAND package), not the older `.trx`.
 
 ### Version label (`BUILDREV`)
-`release/src-rt/Makefile` defaults `BUILDREV` to **empty** and keeps it empty through the exported sub-makes; the brand and version come from `EXTENDNO` in `version.conf` (`EXTENDNO=Reaper_v<X>`). The image is therefore named **`<MODEL>_3006_<SERIALNO>_Reaper_v<X>…_nand_squashfs.pkgtb`** (`SERIALNO` from `version.conf`: `102.10` from v3.6.0), with no commit hash in the name. (Older trees defaulted `BUILDREV` to `-reaper`, which the export flipped to `-g<commit>`, giving `…_beta2-g<hash>` names.) The exact source is pinned by the provenance step instead, which records the source tree's hashes (`gen_provenance.sh`).
+`release/src-rt/Makefile` defaults `BUILDREV` to **empty** and keeps it empty through the exported sub-makes; the brand and version come from `EXTENDNO` in `version.conf` (`EXTENDNO=Reaper_v<X>`). The image is therefore named **`<MODEL>_3006_<SERIALNO>_Reaper_v<X>…_nand_squashfs.pkgtb`** (`SERIALNO` from `version.conf`: `102.10` on the 3006.102.10 line from v3.6.0, `102.8` on the 3006.102.8 line), with no commit hash in the name. (Older trees defaulted `BUILDREV` to `-reaper`, which the export flipped to `-g<commit>`, giving `…_beta2-g<hash>` names.) The exact source is pinned by the provenance step instead, which records the source tree's hashes (`gen_provenance.sh`).
 > Edit the **real** `release/src-rt/Makefile`, not the per-platform `Makefile` (it's a symlink — editing through the link shows no git diff).
 
 ---

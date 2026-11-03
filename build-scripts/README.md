@@ -1,10 +1,11 @@
 # Reaper firmware build scripts
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 The reusable toolkit that builds the Reaper images correctly across all eight
 models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u`
-(WSL Ubuntu-20.04, user `reaper`); these scripts live at
+(WSL Ubuntu-20.04, user `reaper`; branch `be96u-only`, the 3006.102.10 line); the 3006.102.8
+line's canon is the worktree `/home/reaper/wt-102.8` (branch `be96u-102.8`). These scripts live at
 `/home/reaper/reaper_build/` on the build box — this folder is the tracked copy.
 
 ## Models / branches
@@ -20,7 +21,9 @@ models (all BCM4916). Canonical build clone lives at `/home/reaper/asuswrt-be96u
 | ZenWiFi BQ16  | `bq16`         | `bq16`       | BQ16         | quad (2.4/5/5/6) |
 | ZenWiFi BQ16 Pro | `bq16-pro`  | `bq16_pro`   | BQ16_PRO     | quad (2.4/5/6/6) |   <!--@models-->
 
-BE96U is canonical. Siblings = the BE96U shared tree (full diff, **not** a
+RT-BE86U, RT-BE88U and GT-BE98 Pro are on the 3006.102.10 line with the RT-BE96U; GT-BE98,
+GT-BE19000, BQ16 and BQ16 Pro are on the 3006.102.8 line. BE96U is canonical on each line.
+Siblings = their line's BE96U shared tree (full diff, **not** a
 whitelist) + a small per-model identity overlay (banner, `target.mak` block,
 `version.conf`, model-only www/blobs). All eight models share PROFILE
 `96813GW`. The **GT-BE19000**, the **BQ16** and the **BQ16 Pro** build in git worktrees (`REAPER_TREE`/`REAPER_TDIR`)

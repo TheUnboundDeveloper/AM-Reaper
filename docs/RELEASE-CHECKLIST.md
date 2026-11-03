@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.4.8** · 2026-10-20 <!--@stamp-->
+> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -11,15 +11,18 @@ order. Replace `vX.Y.Z` throughout with the version you are cutting.
 **The split to keep in your head:** everything in phases 1–6 needs the firmware
 source, so it can only happen locally. Everything from phase 8 needs only the
 published inputs (`patches/` + `overlays/`), which is why CI can do it. The
-sibling port sits firmly in the first group — it needs canon *and* the seven
-sibling branches at once, and neither is on GitHub.
+sibling port sits firmly in the first group — it needs canon *and* its line's
+sibling branches at once, and neither is on GitHub. The two lines (3006.102.10 on
+`Dev`, 3006.102.8 on `Dev-102.8`) each run this list for the same version.
 
 ---
 
 ## Phase 1 — Preconditions
 
-- [ ] Canon clone is on `be96u-only` with **no uncommitted tracked changes**
-      `git -C /home/reaper/asuswrt-be96u status --short --untracked-files=no`
+- [ ] Canon is on its line's branch with **no uncommitted tracked changes** —
+      `be96u-only` in `/home/reaper/asuswrt-be96u`, `be96u-102.8` in the worktree
+      `/home/reaper/wt-102.8`:
+      `git -C <canon> status --short --untracked-files=no`
 - [ ] The rung is **already committed on canon**, including the `version.conf`
       bump — `EXTENDNO=Reaper_vX.Y.Z`. `cut_fleet.sh` refuses to run otherwise.
 - [ ] The previous rung's sibling commits are **in the hub** (phase 6 of last
@@ -53,8 +56,9 @@ wsl -d Ubuntu-20.04 -u reaper -- \
   --version vX.Y.Z
 ```
 
-This runs, in the only safe order: `cut_rung.sh` → port the seven siblings
-(RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, BQ16, BQ16 Pro) → **then** the overlays. Order is not negotiable — regenerating overlays before
+This runs, in the only safe order: `cut_rung.sh` → port the line's siblings
+(RT-BE86U, RT-BE88U and GT-BE98 Pro from `be96u-only`; GT-BE98, GT-BE19000, BQ16 and
+BQ16 Pro from `be96u-102.8`) → **then** the overlays. Order is not negotiable — regenerating overlays before
 the port writes an overlay that *reverts* the rung on every sibling, and it
 applies cleanly, so nothing downstream would catch it.
 
@@ -62,7 +66,7 @@ applies cleanly, so nothing downstream would catch it.
       is **gapless**
 - [ ] The full-series **replay passed** — `EXTENDNO` matches and the only diff
       vs canon HEAD is `*.md`
-- [ ] All seven ports report **`post-commit parity: 0 unsynced shared files`**
+- [ ] Every port reports **`post-commit parity: 0 unsynced shared files`**
 - [ ] Dicts committed per model and **lockstep** (one line count across all 25)
 - [ ] The **overlay identity gate passes** at the end
 
@@ -115,10 +119,10 @@ the overlay.
 
 ```bash
 git -C /home/reaper/asuswrt-be96u push hub \
-  be96u-only rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000 bq16 bq16-pro
+  be96u-only be96u-102.8 rt-be86u rt-be88u gt-be98 gt-be98-pro gt-be19000 bq16 bq16-pro
 ```
 
-- [ ] Canon **and all seven ported branches** are in the bare hub
+- [ ] Both canon branches **and every ported branch** are in the bare hub
 
 > Do not skip it. `cut_fleet.sh` moves each local sibling ref onto `hub/<branch>`
 > when the local is behind. If this rung's sibling commits never reach the hub,
@@ -133,7 +137,7 @@ git -C /home/reaper/asuswrt-be96u push hub \
 
 Choose one:
 
-- [ ] **Via PR into `main`** (recommended for any rung touching `patches/`) —
+- [ ] **Via PR into `main`** (`main-102.8` for the 3006.102.8 line; recommended for any rung touching `patches/`) —
       this is the only way `patch-apply-check` and `verify-provenance` run.
 - [ ] **Straight to `main`** — faster, but runs **only `repo-hygiene`**. Both
       other checks are pull-request gated on `patches/**` and
@@ -149,26 +153,27 @@ Choose one:
 **Actions → Build firmware from source → Run workflow**
 
 - [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 8 <!--@fleetjobs--> jobs,
-      ~1.5 h each — four models on this branch; the other four build from `Dev-102.8`)
+      ~1.5 h each — the four models of this branch's line; the other four build from the
+      other line's branch, `Dev` or `Dev-102.8`)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.
 - [ ] `publish` = **unchecked** for this first run
 
-Publishing needs **two** gates: the branch must be `main` **or** `Dev`, **and**
-`publish` must be ticked. So a dispatch with the box clear builds and verifies
+Publishing needs **two** gates: the branch must be `main` **or** `Dev` (`main-102.8` **or**
+`Dev-102.8` on the 3006.102.8 line), **and** `publish` must be ticked. So a dispatch with the box clear builds and verifies
 without shipping anything.
 
 **The branch also chooses the channel, and the channel is in the filename.**
-`Dev` builds are stamped `_BETA` (`..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb`)
-and published as a pre-release; `main` builds carry no marker. Nothing to tick —
+`Dev` and `Dev-102.8` builds are stamped `_BETA` (`..._Reaper_v3.1.2_BETA_nand_squashfs.pkgtb`)
+and published as a pre-release; `main` and `main-102.8` builds carry no marker. Nothing to tick —
 it follows the branch. `release.yml` refuses to publish an image whose name
 disagrees with its tag's channel, so a mislabelled asset cannot reach users.
 
 Watch for:
 
 - [ ] **Overlay identity gate** passes (seconds, before the matrix — it gates the
-      build, so a bad overlay costs seconds instead of 16 × 1.5 h)
+      build, so a bad overlay costs seconds instead of a full matrix × 1.5 h)
 - [ ] `EXPECTED_VERSION` assertion passes after the series applies
 - [ ] Series tree matches `provenance/manifest.json`
 - [ ] Packaging/verify gate passes for every model × variant — including the
@@ -192,7 +197,7 @@ Watch for:
 
 ## Phase 10 — Publish
 
-- [ ] Re-dispatch `public-build.yml` from `main` with **`publish` ticked**
+- [ ] Re-dispatch `public-build.yml` from `main` (`main-102.8`) with **`publish` ticked**
 
   *or*, to ship a build you already have green without rebuilding:
 

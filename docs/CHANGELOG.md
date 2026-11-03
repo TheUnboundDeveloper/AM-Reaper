@@ -1,17 +1,19 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
 per-release summary in [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
-From v3.6.0 the firmware line is `3006.102.10_Reaper_v<X>`, built on the Asuswrt-Merlin
-3006.102.10 base (ASUS GPL 102_40585); v1.0 - v3.5.0 are the `3006.102.8_Reaper_v<X>` line on the
-3006.102.8 base. All are for the ASUS RT-BE Series (BCM4916 platform).
-The RT-BE96U is the primary, hardware-validated model; the **RT-BE86U**,
+From v3.6.0 there are two firmware lines with the same Reaper version: `3006.102.10_Reaper_v<X>`
+on the Asuswrt-Merlin 3006.102.10 base (ASUS GPL 102_40585) for the RT-BE96U, RT-BE86U, RT-BE88U
+and GT-BE98 Pro, and `3006.102.8_Reaper_v<X>` on the 3006.102.8 base for the GT-BE98, GT-BE19000,
+ZenWiFi BQ16 and BQ16 Pro; v1.0 - v3.5.0 are the 3006.102.8 line for every model. All are for the
+ASUS RT-BE Series (BCM4916 platform).
+The RT-BE96U is the primary model; the **RT-BE86U**,
 **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, from v3.1.4 the **GT-BE19000** and from v3.3.2
-the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of the same tree. See `RELEASE-NOTES.md` for each release's validation status.
+the **ZenWiFi BQ16** (BE25000) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000) are built from per-model branches of their line's tree. See `RELEASE-NOTES.md` for each release's summary.
 
 Throughout this document, you will see references to AI and MCP functionality. Reaper is 
 distributed in two distinct build variants. The MCP-enabled build includes a custom Model 
@@ -46,6 +48,51 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.0 — security review: kernel privilege checks, root-only files and keys, a page token on every save, hardened binaries; USB 3 write levers; list addresses on the Dreadwatch and Wallguard rows
+
+Everything in v3.6.5 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **A full code review of the firmware, its kernel and a surface pass over the closed programs.** The fixes below are
+  its outcome; the items it did not change are listed with their reasons in the review record. Highest priorities fixed 
+  first, more to come.
+- **Kernel: privileged interfaces answer only privileged callers.** The kernel's nvram channel, the multicast-snooping
+  control, the packet-flow device and the `/proc` command consoles refuse a process without administrator rights, and
+  the lengths they read are bounded by what was sent. Five stable fixes for the 4.19 kernel: CVE-2023-42752,
+  CVE-2024-36904, CVE-2024-56631, CVE-2024-41012 and CVE-2024-47685. Port trigger, the URL / keyword filter and the
+  repeater-mode DNS redirect get locking, bounds and copy fixes.
+- **Files, keys and folders are no longer open to every process on the router.** The kernel nvram file, device nodes,
+  lock and mount folders, the Wi-Fi and AiMesh configuration files, certificates and keys (also after a restore),
+  PPPoE / PPTP / L2TP and WireGuard credentials, SSH keys, the USB share-permission files and several working folders
+  are root-only or read-only for others. The kernel log and kernel addresses are readable by root only. A new file
+  that names no mode is created 0644, not 0666.
+- **Every settings save carries the page's token.** A save from the web pages now carries the per-boot request token
+  that every Reaper page already used, and a browser request without it is refused; the ASUS app and scripts are not
+  affected. If a page ever saves nothing, the system log says `apply without the page token refused`.
+- **Secrets stay out of page source.** RADIUS shared secrets, the WPS PIN and the MLO network's password are no longer
+  written into the pages; the PIN and the password are read when you press Show.
+- **Hardened builds.** httpd, rc, infosvr and dnsmasq are position-independent with full RELRO; httpd, infosvr and
+  dnsmasq are also built with FORTIFY.
+- **Web interface fixes.** The browser cross-site refusal also covers the HTTPS port and the WAN-detection and scan
+  pages; the IPsec certificate upload sets only its own setting; byte-range downloads are answered as ranges; the
+  firmware download is checked in a private folder before it is used; the password change no longer writes the new
+  password to a temporary file.
+- **Gatekeeper's waiting page with an HTTPS-only web interface.** A held device's web check reached a closed port, so
+  the waiting page never showed. The router now runs a plain-HTTP instance for that page only; every other request to
+  it is sent to HTTPS.
+- **Wallguard keeps a good list when a provider answers with an error page.** A download is parsed before it replaces
+  the list in use; one with no names, or mostly lines that are not a list, is refused and the previous copy kept.
+- **Encrypted DNS: one host can no longer hold every connection slot** with connections that never finish the TLS
+  handshake.
+- **The Windows Network Map no longer lists the router.** Its responder (LLTD) is not started.
+- **The kernel banner names no build machine** (`/proc/version` reads `reaper@reaper`).
+- **USB 3 write-speed levers, off by default.** Five module parameters set from the `reaper_usb3_*` settings, for
+  A/B tests of the write speed on BCM4912 / BCM4916 models; nothing changes unless one is set.
+- **Dreadwatch and Wallguard show each built-in list's address on its row**, so a list can be read before it is
+  ticked. Save downloads a list ticked for the first time. The DNS-bypass banner also recognises VPN Director's
+  Exclusive DNS. Warden exempts the IPv6 prefix of every LAN network, Encrypted DNS exempts AiMesh nodes, and the
+  Dreadwatch device counters list the 100 busiest devices.
 
 ## v3.6.5 — seven more Reaper settings pages, AiMesh and Network on their own stylesheet, AiMesh nodes exempt everywhere, WireGuard through Warden
 

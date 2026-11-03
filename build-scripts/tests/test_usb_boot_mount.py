@@ -442,7 +442,7 @@ if "start_dnsmasq(0);" not in watchdog[i_call - 2000:i_call]:
 ok("rc/watchdog.c: the restart targets the main LAN instance")
 
 # order: the sysctl follows the stock panic_on_oops write
-i_oops = init.index('f_write_string("/proc/sys/kernel/panic_on_oops", "3", 0, 0);')
+i_oops = init.index('f_write_string("/proc/sys/kernel/panic_on_oops", "1", 0, 0);')	# 1 since review 2026-11-03 (a switch; "3" read as a delay)
 i_sl = init.index("/proc/sys/kernel/softlockup_panic")
 if not (i_oops < i_sl < i_oops + 1500):
     die("rc/init.c: softlockup_panic is not written beside panic_on_oops")

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 What is left to do, one or two lines per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -50,6 +50,11 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   ↳ notes: `sdn-vpn-binding-no-internet.md`
 - **[P2] Only Gatekeeper knows AiMesh exists** ↳ notes: `aimesh-exempt-helper.md`
 - **[P2] Warden blocked the WireGuard server from mobile data** ↳ notes: `warden-wg-listen-port.md`
+- **[P2] Encrypted DNS block: no AiMesh exemption** ↳ notes: `edns-aimesh-exempt.md`
+- **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing**
+  ↳ notes: `russian-ui-layout.md`
+- **[P2] Security review (2026-11-03): kernel privilege checks, root-only files and keys,
+  a page token on every save** ↳ notes: `security-review-2026-11-03.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use**
   ↳ notes: `internet-wan-port-label.md`
@@ -71,6 +76,16 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   ↳ notes: `header-buttons-bounce-mobile.md`
 - **[P3] DNS Director: per-device rules show only the MAC, not the device name**
   ↳ notes: `dns-director-rule-names.md`
+- **[P3] Bastion help links open the top of the guide** ↳ notes: `warden-help-anchor.md`
+- **[P3] Dreadwatch and Wallguard: each list's address on its row**
+  ↳ notes: `feed-list-addresses.md`
+- **[P3] Bastion page texts that contradict the code** ↳ notes: `bastion-page-texts.md`
+- **[P3] Warden: the IPv6 LAN exemption covers only the main LAN prefix**
+  ↳ notes: `warden-v6-guest-prefix.md`
+- **[P3] Wallguard's DNS-bypass banner misses VPN Director's Exclusive DNS**
+  ↳ notes: `wallguard-bypass-vpndirector.md`
+- **[P3] Gatekeeper: the waiting page never showed with an HTTPS-only web interface**
+  ↳ notes: `gk-https-only-waiting-page.md`
 
 ## Open bugs / under investigation
 
@@ -80,15 +95,12 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   (PCIe 7-12), TX packet-count mode off, SS park mode on. A bulk-OUT transfer is the controller
   reading memory, and a read holds its credit for the whole DRAM round trip.
   **[2026-11-01: five reversible levers built as module parameters set from `reaper_usb3_*` nvram
-  (defaults untouched), test image _r13, held out of v3.6.5 until an A/B run shows one moves the
-  write number; runtime A/B script for any firmware; needs a 4912/4916 box with a UASP SSD]**
+  (defaults untouched); in v3.7.0, off unless a key is set; owed: an A/B run that shows one moves
+  the write number; runtime A/B script for any firmware; needs a 4912/4916 box with a UASP SSD]**
   ↳ notes: `usb3-write-ceiling.md`
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P2] AiMesh: the preferred uplink node is ignored** (field report, BQ16, v3.5.0) — a node set
-  to prefer one node joins another; no Reaper change on that path found in the code.
-  **[needs data]** ↳ notes: `aimesh-preferred-uplink.md`
 - **[P3] Review 2026-10-24: the owner-only decisions and the merges that would change behaviour**
   (adversarial and quality agents over the whole pending delta) — decided 2026-10-30, not yet coded: the
   Internet page refuses an all-zero WAN MAC like Tor and LAN (Q-C1-6); Wireless Log refreshes every 10 s
@@ -104,25 +116,11 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] AI Advisor arming code ord and lockout move to reset-proof `/data/reaper/advisor/`.
   **[plan written 2026-10-19, replaces the WPS-button plan; not scheduled]**
   ↳ notes: `advisor-arming-code-admin-reset.md`
-- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
-  monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
-  flows); feasible only as an on-demand measure for the selected connection, TCP only.
-  **[researched 2026-10-18; not scheduled]** ↳ notes: `conn-packet-loss.md`
-- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
-  a PIN build.
-  **[options written 2026-10-18; owner decision]** ↳ notes: `pin-strategy.md`
-- **[P2] Russian: switching the GUI to Russian changes and duplicates parts of it; word spacing** (field, Russian users,
-  2026-10-26) — the packs are in step (checked); long words: see the next entry; open: screenshots, the language switch.
-  **[layout part built 2026-10-26 (below); rest not started]** ↳ notes: `russian-ui-layout.md`
 - **[P2] MLO on: a soft restart sometimes leaves Wi-Fi accepting no devices until a power cycle**
   (RT-BE96U, 2026-07 and 2026-10) — the link between the radio chips forms on every power-on but
   not on every soft restart (1 of 6 post-flash boots); options: a boot-time check with a dashboard
   warning and one capped retry, or a radio power cycle through the PCIe regulator if wired.
   **[options offered 2026-11-01; owner call]** ↳ notes: `mlo-restart-radio-link.md`
-- **[P3] The main Wi-Fi's RADIUS server is set in two places** — the Network page keeps it in the
-  main network's profile, Wireless > RADIUS edits the per-radio copy; which one the router applies
-  decides whether the RADIUS page should point to the Network page.
-  **[needs data: the owner's RADIUS server test]** ↳ notes: `radius-two-stores.md`
 - **[P3] Update-manifest signature stays inert (R09)** — accepted trade.
   **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -130,8 +128,11 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 
 ## UI / UX polish
 
-- **[P3] Loading/Restarting overlay: native redesign remainder** — 24 stock `confirm()` dialogs on 9
-  pages. **[owed: the confirm() pass]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Reaper pages: the polishing redesign and formatting pass** (owner, 2026-11-02) — every
+  settings page is now converted to a Reaper page; the polish has not started. It includes the
+  browser's own `confirm()` / `alert()` boxes, still on 32 of the 62 Reaper pages (about 103 and 75
+  calls; four pages use the themed `reaperConfirm`).
+  **[not started]** ↳ notes: `loading-overlay-redesign.md`
 
 ---
 
@@ -148,8 +149,8 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   the RAM levers are in `ram-dedupe.md`).
   **[waves 0 + 1 (System, SNMP, Tweaks) on metal; System Log group (_r25), LAN + WAN (_r32) and VPN
   (_r33) built 2026-10-23; Wireless (WPS, WDS, MAC Filter, RADIUS, Roaming Block, MLO) and LAN > VLAN
-  owner-reviewed 2026-11-01 and their 8 stock pages removed (_r7); kit pages fit phones (_r5); AiMesh
-  and Network stay stock with their own stylesheets (v3.6.5); left: the cutover]**
+  owner-reviewed 2026-11-01; in v3.6.5 their 8 stock pages are gone, the kit pages fit phones, and
+  AiMesh and Network stay stock with their own stylesheets; left: the cutover]**
   ↳ notes: `reaper-native-ui.md` (plan + progress), `native-page-migration.md`
 - **[P3] Security review: watch more settings** (owner, 2026-10-23) — it compares 24 settings and
   hashes 3 lists; candidates: admin access and passwords (hash only), the second WAN, FTP / Samba /
@@ -173,9 +174,10 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   69.5 MB) — every added file competes with the slot; measure the staged image, then remove or
   deduplicate what ships (the 1.7 MB logo PNG, unused modules, compression settings;
   Samba/Tor/speedtest/DLNA are owner calls).
-  **[_r8 2026-11-01: rootfs 67,260,416 B, 2,195,456 B spare - the 8 replaced stock pages (36 KB)
-  and the second OUI table (352 KB) gone; next small one: the ROG/TUF theme files, unused on
-  non-ROG/TUF models (~7.5 KB, per model); the larger levers are owner calls]**
+  **[v3.6.5: rootfs 67,260,416 B, 2,195,456 B spare - the 8 replaced stock pages (36 KB), the
+  second OUI table (352 KB) and the Network / AiMesh white, ROG and TUF themes gone; next small one:
+  the remaining ROG/TUF theme files (RWD_UI, week schedule), unused on non-ROG/TUF models (per
+  model); the larger levers are owner calls]**
   ↳ notes: `image-size-hunt.md`
 - **[P2] Encrypted DNS: split the block into two switches (DoT/DoQ on 853, DoH to known resolvers)**
   (owner, 2026-10-21) — new `reaper_dot_block`, each with its own counter; canaries and the DoH name
@@ -204,10 +206,12 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   device; own threat model first.
   **[idea]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wi-Fi VLANs: the two missing pieces.**
-  **[project; since 2026-11-01 the LAN > VLAN page keeps an existing multi-VID trunk (stock reset
+  **[project; since v3.6.5 the LAN > VLAN page keeps an existing multi-VID trunk (stock reset
   it); choosing several VIDs and the inter-VLAN ACL page not started]**
   ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Unbound beside the existing resolver path.** **[project]** ↳ notes: `unbound-resolver.md`
+- **[P3] DNS rewrites on a page** (forum, 2026-11-02) — local names for LAN VMs and containers,
+  wildcards included, without editing `dnsmasq.conf.add` over SSH.
+  **[not started]** ↳ notes: `dns-rewrites-page.md`
 - **[P3] Staged ("batch") changes — one save, minimal restarts.** **[project]** ↳ notes:
   `staged-batch-changes.md`
 - **[P3] Mimic — hardware port mirror to an external IDS** (WAN Ports page, every wired port,
@@ -298,6 +302,24 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] WireGuard server starts before NTP sync** — the clients wait for `ntp_ready` and retry from
   cron; the server does not. Investigate gating it the same way. **[working as intended]** 
   ↳ notes: `wgs-start-before-ntp.md`
+- **[P2] Research no PIN point** - Look into setting a new pin point or fully diverging from
+  a PIN build.
+  **[deferred]** ↳ notes: `pin-strategy.md`
+- **[P3] The main Wi-Fi's RADIUS server is set in two places** — the Network page keeps it in the
+  main network's profile, Wireless > RADIUS edits the per-radio copy; which one the router applies
+  decides whether the RADIUS page should point to the Network page.
+  **[deferred]** ↳ notes: `radius-two-stores.md`
+- **[P2] Add Packet Loss to connection tab** — Investigate if packet loss can be recorded or
+  monitored on the connections tab by connection. No per-flow counter exists (hardware-forwarded
+  flows); feasible only as an on-demand measure for the selected connection, TCP only.
+  **[deferred]** ↳ notes: `conn-packet-loss.md`
+- **[P2] AiMesh: the preferred uplink node is ignored** (field report, BQ16, v3.5.0) — a node set
+  to prefer one node joins another; no Reaper change on that path found in the code.
+  **[deferred]** ↳ notes: `aimesh-preferred-uplink.md`
+- **[P3] 3006.102.8 line: three lean gaps** — its `provenance/manifest.json` v3.6.x entries name
+  `3006.102.10`; `repo-hygiene.yml` does not run on `Dev-102.8`; two suites check 102.10-only
+  spellings and default to the 102.10 tree.
+  **[not started]** ↳ notes: `lean-102-8-gaps.md`
 
 ---
 
@@ -327,6 +349,8 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
   ↳ notes: `wad-warden-self-drop-failure.md`
 - **Firewall rule negation — not building.**
   ↳ notes: `wad-firewall-rule-negation.md`
+- **Unbound on the router — not building** (owner, 2026-11-02).
+  ↳ notes: `unbound-resolver.md`
 - **`dig` on the Network Tools page — declined.**
   ↳ notes: `wad-dig-network-tools.md`
 - **DNS-rebind warnings for names a LAN filter blocks** — use NXDOMAIN blocking.

@@ -116,6 +116,7 @@ if CC and sys.platform.startswith("linux"):
 #include "reaper_inject.h"
 char *nvram_get(const char *n) { (void)n; return "1"; }
 int nvram_match(const char *n, const char *v) { (void)n; (void)v; return 0; }
+int reaper_req_authed = 0;	/* httpd.c (review 2026-11-03, B-1): unauthenticated here, so no token hook is written */
 static const char *BODY;
 static void out(char *file, FILE *f) { (void)file; fputs(BODY, f); }
 int main(int argc, char **argv)

@@ -39,8 +39,8 @@ check("update() fetches through fetch() and names the two new reasons",
 check("a refused redirect (curl 47) is named in Wallguard's log and Dreadwatch's (review 2026-10-28, R-2)",
       '47) why="not fetched - the server redirects' in sh and
       "47) echo \\\"the server redirects, and a source that sends its API key in a header never follows a redirect" in rd("rc/rwarden.c"))
-check("every feeds reader takes the options field", sh.count("while read -r bit id url kind opt; do") == 4
-      and "while read -r bit id url kind; do" not in sh)
+check("every feeds reader takes the options field", sh.count("while read -r bit id url kind opt; do") >= 4
+      and "while read -r bit id url kind; do" not in sh)	# 5 readers since 2026-11-02 (Save syncs a new list)
 
 FAKE = r'''#!/bin/sh
 # fake curl: record the arguments and the -K config, answer from $F_ANSWER

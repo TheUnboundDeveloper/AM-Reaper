@@ -1,6 +1,6 @@
 # Merging a new ASUS/Merlin GPL drop into the Reaper fork
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 A step-by-step developer guide for bringing a new upstream Asuswrt-Merlin (or raw
 ASUS GPL) source drop into the RT-BE96U "reaper" fork with the least pain.
@@ -10,10 +10,10 @@ is applied at serve time from one httpd hook, so the stock pages are pristine an
 fast-forward cleanly. If you are reading this on a fork that still has the theme
 inlined into 165 pages, do that refactor first (see "Appendix B").
 
-- **Branch:** `be96u-only` (local only, **never pushed** upstream)
-- **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`
+- **Branch:** `be96u-only` for the 3006.102.10 line, `be96u-102.8` for the 3006.102.8 line (local only, **never pushed** upstream)
+- **Build clone (authoritative):** `/home/reaper/asuswrt-be96u` on WSL `Ubuntu-20.04`, user `reaper`; the 3006.102.8 line is its worktree `/home/reaper/wt-102.8`
 - **Upstream base of the current stack:** `ca72a61f8bc` (Asuswrt-Merlin 3006.102.10, ASUS GPL 102_40585; everything after it is reaper work; before v3.6.0 the base was `a7ebfa133a`, 3006.102.8-beta2)
-- **Models:** RT-BE96U (primary) + RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro / GT-BE19000 (BCM4916) (`release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98` / `gt-be98_pro` / `gt-be19000`)
+- **Models:** RT-BE96U (primary), RT-BE86U, RT-BE88U and GT-BE98 Pro on the 3006.102.10 line; GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro on the 3006.102.8 line (all BCM4916, `release/src-rt-5.04behnd.4916`; targets `make rt-be96u` / `rt-be86u` / `rt-be88u` / `gt-be98_pro` / `gt-be98` / `gt-be19000` / `bq16` / `bq16_pro`)
 
 ---
 
@@ -312,9 +312,9 @@ router.
 - Sync the lean repo (`REAPER-FIXES.md`, `patches/` = `git format-patch` of the
   hardening commits, and this guide), then push **the lean repo only**.
 
-**Patch-series regeneration recipe (the series is now at 885 <!--@patchcount--> patches, `0563` = v3.6.5 <!--@treever-->,
+**Patch-series regeneration recipe (the series is now at 893 <!--@patchcount--> patches, through v3.7.0 <!--@treever-->,
 appended + full-replay verified — `git am --keep-cr` of the series onto a fresh
-`a7ebfa133a` worktree returned `AM_EXIT=0` and reproduced `release/src/router` with the
+worktree of the base returned `AM_EXIT=0` and reproduced `release/src/router` with the
 only differences being vendored `*.md` files the pathspec
 deliberately excludes. **Cutting a rung is now one command — `cut_rung.sh` (maintainer tooling, kept outside this repo)** — which does the export, identity normalization, gapless check, full-series replay, provenance update, overlay-overlap check, CI pin and PII scan in order; the manual recipe below is what it automates, kept for when something needs doing by hand.
 It was 535 at v2.7.6; 528 at v2.7.3; 424 at v2.4.1; 406 at v2.3.7; 379 at v2.3.3; 374 at v2.3.1, repaired + replay-verified 2026-08-09; 325 at v2.1.5 (322 under the pre-repair numbering);

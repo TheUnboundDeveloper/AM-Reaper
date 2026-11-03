@@ -1,0 +1,234 @@
+From 1e3868a7afc0619d434518697fe14f34dd6f6e07 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 12:14:30 -0500
+Subject: [PATCH] rc, kernel: USB 3 write-speed levers as module parameters,
+ all off by default
+
+USB 3 writes run at about half of reads on the BCM4912 / BCM6813 family (field report: the
+RT-BE96U measured at roughly half its read rate on writes). The host controller is a DWC_usb31
+behind the UBUS fabric, and nothing in the firmware programs its global registers or the USB
+master's fabric credits. Five levers, each a module parameter of bcm_bca_usb_xhci; unset = the
+hardware default:
+- ubus_credits: UBUS route credits of the USB master toward the DDR path;
+- txthr_cnt / txthr_burst: the GTXTHRCFG packet-count threshold and burst for bulk-OUT;
+- parkmode_off: GUCTL1 PARKMODE_DISABLE_SS;
+- rd_attr: the GSBUSCFG0 read attributes.
+They are applied before the xHCI driver starts the controller, only when the core identifies as
+DWC_usb31, and each change is logged with the old and the new value. rc/usb.c passes them from the
+nvram keys reaper_usb3_* (digits only) to insmod and switches the UBUS dynamic clock (ubus4_dcm)
+live. Nothing changes until a key is set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bus/usb/impl1/bcm_bca_usb_xhci.c          | 108 ++++++++++++++++++
+ release/src/router/rc/usb.c                   |  44 ++++++-
+ 2 files changed, 148 insertions(+), 4 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
+index 3d1a28d1def..92a456bb017 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/bus/usb/impl1/bcm_bca_usb_xhci.c
+@@ -46,6 +46,7 @@ written consent.
+ 
+ #include <pmc_usb.h>
+ #include <board.h>
++#include <bcm_ubus4.h>	/* reaper: UBUS route credits of the USB master */
+ #include "bcm_bca_usb_utils.h"
+ #include "bcmtypes.h"
+ 
+@@ -64,6 +65,112 @@ struct bcm_bca_xhci_data {
+     struct platform_device *xhci;
+ };
+ 
++/* ---------------------------------------------------------------------------
++ * reaper 2026-11-01: USB 3 writes run at about half of reads on the BCM4912 / BCM6813 family
++ * (RT-BE96U field report; SNBForums thread 98134: RT-BE96U and GT-AX6000 measured at ~170-190 MB/s
++ * writes against ~350-380 MB/s reads, RT-BE92U and RT-AX88U balanced). The host controller here is
++ * a DWC_usb31 (GSNPSID 0x3331xxxx) behind the UBUS fabric, and nothing in the firmware programs its
++ * global registers or the USB master's fabric credits - every value is a silicon default.
++ *
++ * The levers below stay OFF (hardware defaults) unless a module parameter asks otherwise; rc passes
++ * them from nvram (reaper_usb3_*), so each can be A/B tested with a reboot and no new build:
++ *   ubus_credits   UBUS route credits of the USB master toward BIU (the DDR path). Default 4 on this
++ *                  family, while PCIe masters get 7-12 and DMA 10. A bulk-OUT transfer is the
++ *                  controller READING memory, and a read holds its credit for the whole DRAM round
++ *                  trip; a write releases it on acceptance - the one asymmetry that matches "writes
++ *                  half, reads fine".
++ *   txthr_cnt      GTXTHRCFG packet-count mode (UsbTxPktCntSel): the host waits until txthr_cnt
++ *   txthr_burst    packets sit in the TX FIFO before it starts a bulk-OUT burst and caps the burst at
++ *                  txthr_burst packets. The vendor documents it as the cure for a TX FIFO underrun
++ *                  when the system bus is slower than the USB. The SuperSpeed bulk FIFO (TxFIFO6)
++ *                  holds 8 packets, so txthr_cnt <= 8 and <= txthr_burst (databook: host mode).
++ *   parkmode_off   GUCTL1 PARKMODE_DISABLE_SS - the dwc3 "parkmode-disable-ss" quirk.
++ *   rd_attr        GSBUSCFG0 read attributes (DESRDREQINFO / DATRDREQINFO), 0 = device type (the
++ *                  default), 2 = normal non-cacheable.
++ * All writes happen here, before the xHCI driver starts the controller (no traffic), and only when
++ * the core identifies as DWC_usb31. Every applied change is logged with the old and new value.
++ * ------------------------------------------------------------------------- */
++static int ubus_credits = 0;
++static int txthr_cnt = 0;
++static int txthr_burst = 0;
++static bool parkmode_off = 0;
++static int rd_attr = -1;
++module_param(ubus_credits, int, S_IRUGO);
++module_param(txthr_cnt, int, S_IRUGO);
++module_param(txthr_burst, int, S_IRUGO);
++module_param(parkmode_off, bool, S_IRUGO);
++module_param(rd_attr, int, S_IRUGO);
++
++/* REAPER_USB3_PURE_BEGIN - plain C, no kernel types: build-scripts/tests/test_usb3_tx_knobs.py compiles this block on the host */
++#define RP_DWC31_ID                   0x3331u
++#define RP_GTXTHRCFG_PKTCNTSEL        (1u << 26)
++#define RP_GTXTHRCFG_PKTCNT(n)        (((unsigned int)(n) & 0x1fu) << 21)
++#define RP_GTXTHRCFG_BURST(n)         (((unsigned int)(n) & 0x1fu) << 16)
++#define RP_GUCTL1_PARKMODE_DISABLE_SS (1u << 17)
++#define RP_SS_TXFIFO_PKTS             8	/* TxFIFO6 on this core: 1041 x 8 B = eight 1 KiB packets */
++static int rp_dwc31_is(unsigned int gsnpsid)
++{
++    return (gsnpsid >> 16) == RP_DWC31_ID;
++}
++static int rp_txthr_valid(int cnt, int burst)
++{
++    return cnt >= 1 && burst >= 1 && burst <= 16 && cnt <= burst && cnt <= RP_SS_TXFIFO_PKTS;
++}
++static unsigned int rp_txthr_value(unsigned int cur, int cnt, int burst)
++{
++    return (cur & ~(RP_GTXTHRCFG_PKTCNT(0x1f) | RP_GTXTHRCFG_BURST(0x1f)))
++           | RP_GTXTHRCFG_PKTCNTSEL | RP_GTXTHRCFG_PKTCNT(cnt) | RP_GTXTHRCFG_BURST(burst);
++}
++static unsigned int rp_rdattr_value(unsigned int cur, int attr)
++{
++    return (cur & 0x00ffffffu) | (((unsigned int)attr & 0xfu) << 28) | (((unsigned int)attr & 0xfu) << 24);
++}
++/* REAPER_USB3_PURE_END */
++
++/* offsets inside the "xhci-gbl" block (= DWC3 global registers from 0xc100) */
++#define RP_GBL_GSBUSCFG0 0x00
++#define RP_GBL_GTXTHRCFG 0x08
++#define RP_GBL_GUCTL1    0x1c
++#define RP_GBL_GSNPSID   0x20
++
++static void reaper_usb3_tune(struct platform_device *pdev, volatile void __iomem *gbl)
++{
++    volatile uint32_t *reg;
++    uint32_t id, v, n;
++
++    if (!ubus_credits && !txthr_cnt && !txthr_burst && !parkmode_off && rd_attr < 0)
++        return;
++    id = *(volatile uint32_t *)(gbl + RP_GBL_GSNPSID);
++    if (!rp_dwc31_is(id)) {
++        dev_info(&pdev->dev, "usb3 tuning skipped: controller id 0x%08x is not a DWC_usb31\n", id);
++        return;
++    }
++    if (ubus_credits > 0) {
++        if (ubus_master_set_token_credits(UBUS_PORT_ID_USB, UBUS_PORT_ID_BIU, ubus_credits) == 0)
++            dev_info(&pdev->dev, "usb3 tuning: UBUS credits USB->BIU set to %d\n", ubus_credits);
++    }
++    if (txthr_cnt || txthr_burst) {
++        if (rp_txthr_valid(txthr_cnt, txthr_burst)) {
++            reg = (volatile uint32_t *)(gbl + RP_GBL_GTXTHRCFG);
++            v = *reg; n = rp_txthr_value(v, txthr_cnt, txthr_burst); *reg = n;
++            dev_info(&pdev->dev, "usb3 tuning: GTXTHRCFG 0x%08x -> 0x%08x (packet-count mode, %d packets, burst %d)\n",
++                     v, n, txthr_cnt, txthr_burst);
++        } else
++            dev_info(&pdev->dev, "usb3 tuning: txthr_cnt=%d txthr_burst=%d rejected (1 <= cnt <= burst <= 16, cnt <= %d)\n",
++                     txthr_cnt, txthr_burst, RP_SS_TXFIFO_PKTS);
++    }
++    if (parkmode_off) {
++        reg = (volatile uint32_t *)(gbl + RP_GBL_GUCTL1);
++        v = *reg; n = v | RP_GUCTL1_PARKMODE_DISABLE_SS; *reg = n;
++        dev_info(&pdev->dev, "usb3 tuning: GUCTL1 0x%08x -> 0x%08x (SuperSpeed park mode off)\n", v, n);
++    }
++    if (rd_attr >= 0 && rd_attr <= 15) {
++        reg = (volatile uint32_t *)(gbl + RP_GBL_GSBUSCFG0);
++        v = *reg; n = rp_rdattr_value(v, rd_attr); *reg = n;
++        dev_info(&pdev->dev, "usb3 tuning: GSBUSCFG0 0x%08x -> 0x%08x (read attributes %d)\n", v, n, rd_attr);
++    }
++}
++
+ extern bool usb_enable;
+ extern bool usb3_enable;
+ 
+@@ -177,6 +284,7 @@ static int bcm_bca_usb_xhci_probe(struct platform_device *pdev)
+         /* adjust csr timeout to be shorted than ubus timeout */
+         regaddr = (uint32_t *)(xhci_gbl + USB_XHCI_GBL_GUCTL4);
+         *regaddr = CSR_TIMEOUT_VAL;
++        reaper_usb3_tune(pdev, xhci_gbl);	/* reaper: optional write-speed levers, before xhci starts */
+     }
+     
+     res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "usb-xhci");
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index 2d3c2317a82..9796c8efbc6 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -292,6 +292,23 @@ void modify_rxchain(char *action)
+ }
+ #endif
+ 
++/* REAPER_USB3_PARAM_BEGIN - reaper 2026-11-01: one "name=value" insmod argument from an nvram key, digits only
++ * (an nvram value is operator input and becomes a module parameter; a space would smuggle a second one) */
++static int reaper_usb3_param(char *buf, size_t len, const char *param, const char *nv)
++{
++	const char *v = nvram_get(nv);
++	size_t l;
++
++	if (!v || !*v)
++		return 0;
++	l = strlen(v);
++	if (l > 5 || strspn(v, "0123456789") != l)
++		return 0;
++	snprintf(buf, len, "%s=%s", param, v);
++	return 1;
++}
++/* REAPER_USB3_PARAM_END */
++
+ void add_usb_host_modules(void)
+ {
+ #if defined(RTCONFIG_USB_XHCI)
+@@ -339,13 +356,31 @@ void add_usb_host_modules(void)
+ 	modprobe(USBCORE_MOD);
+ 
+ #ifdef RTCONFIG_HND_ROUTER_AX
+-	eval("insmod",
++	{
++		/* reaper 2026-11-01: USB 3 write-speed levers (bcm_bca_usb_xhci.c reaper_usb3_tune). Each nvram
++		 * key is passed only when set and numeric, so an unset box keeps the hardware defaults. */
++		char *argv[10], p1[32], p2[32], p3[32], p4[32], p5[32];
++		int n = 0;
++		argv[n++] = "insmod";
+ #if defined(BCM4912) || defined(BCM6756) || defined(BCM6855) || defined(BCM6813) || defined(BCM6765) || defined(BCM6766) || defined(BCM6764)
+-		"bcm_bca_usb"
++		argv[n++] = "bcm_bca_usb";
+ #else
+-		"bcm_usb"
++		argv[n++] = "bcm_usb";
+ #endif
+-		, (nvram_get_int("usb_usb3") == 1) ? "usb3_enable=1" : "usb3_enable=0");
++		argv[n++] = (nvram_get_int("usb_usb3") == 1) ? "usb3_enable=1" : "usb3_enable=0";
++#if defined(BCM4912) || defined(BCM6813)
++		if (reaper_usb3_param(p1, sizeof(p1), "ubus_credits", "reaper_usb3_credits")) argv[n++] = p1;
++		if (reaper_usb3_param(p2, sizeof(p2), "txthr_cnt", "reaper_usb3_txthr_cnt")) argv[n++] = p2;
++		if (reaper_usb3_param(p3, sizeof(p3), "txthr_burst", "reaper_usb3_txthr_burst")) argv[n++] = p3;
++		if (reaper_usb3_param(p4, sizeof(p4), "parkmode_off", "reaper_usb3_parkoff")) argv[n++] = p4;
++		if (reaper_usb3_param(p5, sizeof(p5), "rd_attr", "reaper_usb3_rdattr")) argv[n++] = p5;
++		/* the UBUS dynamic clock (ubus4_dcm) is system-wide and switchable live; "0" = full clock always */
++		if (nvram_match("reaper_usb3_dcm", "0"))
++			f_write_string("/sys/module/ubus4_dcm/parameters/enable", "0", 0, 0);
++#endif
++		argv[n] = NULL;
++		_eval(argv, NULL, 0, NULL);
++	}
+ #endif
+ 
+ #if defined(RTCONFIG_USB_XHCI)
+@@ -771,6 +806,7 @@ int modem_data_main(int argc, char *argv[]){
+ #endif // RTCONFIG_USB_MODEM
+ 
+ // mode: 0, no usb host/modem; 1, all usb host/modem; 2, usb host.
++
+ void start_usb(int mode)
+ {
+ 	char param[32];
+-- 
+2.25.1
+

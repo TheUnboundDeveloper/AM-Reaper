@@ -1,6 +1,6 @@
 # RT-BE96U "reaper" — Hardened Build Fix List
 
-> **Doc status:** current as of **v3.5.0** · 2026-10-26 <!--@stamp-->
+> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
 
 > ⚠️ **Coordinated-disclosure notice.** Many fixes below live in the ASUS/Merlin-authored
 > userspace that is **shared source common to other Broadcom HND Asuswrt-Merlin models**,
@@ -22,11 +22,11 @@
 
 Custom hardened build of Asuswrt-Merlin for the **ASUS RT-BE96U**.
 
-- **Base version:** 3006.102.8_beta2
-- **Custom version string:** the base-firmware security hardening catalogued here landed in **v1.0** and is carried through the current **v2.7.6** source rung (newest published **v2.7.3**). Most later versions added features and de-cloud removals rather than new *stock-firmware* findings, with two exceptions: **C6b**, a `libpasswd/passwd.c` twin of C6 that surfaced during ASUS PSIRT coordination on 2026-07-23, was class-fixed and **built + shipped in v1.7.5** (2026-07-24); and **v2.0.0**'s inherited-code audit (AUDIT-2) surfaced and fixed fresh *stock-firmware* findings in the ASUS/Merlin-authored userspace — a stored-XSS chain from a device-supplied DHCP hostname into several admin views, a USB volume-label root command-injection at auto-mount, and an IPsec-profile CGI stack overflow — the first new base-firmware findings since C6b; the security work since v1.0 — post-feature injection re-audits, the v1.4.3 / v1.4.4 security-review remediation of Reaper-introduced changes, v1.4.5 exploit-mitigation build hardening (FORTIFY + stack-protector-strong + PIE + full-RELRO on the Reaper daemons), the injection-safe design of the v1.5.0 network-diagnostics tools (fixed-argument exec, never a shell), the **v1.6.0** defense-in-depth pass on the Reaper daemons (CR/LF + dotted-quad validation of the Advisor session-file client value, `lan_ifname` validation before the boot-sweep `iptables` call, plus a `popen` fd/child-leak fix and full allocation-NULL hardening in `rmcpd`/`rtrafd`), the **v1.7.1** remediation of the post-Gatekeeper audit round (2026-07-21 — Wireless-diagnostics CSRF guard, Gatekeeper device-list race + MAC validation, and related hardening), the **v1.7.5** class-closure of C6 across every `openssl passwd` sink (**C6b**, ASUS PSIRT case 1006563), the **v1.8.0a** Reaper Warden threat/geo firewall + Samba **4.15.13a** CVE-2025-9640 backport, the large multi-agent **audit-remediation arc** (73 verified findings closed across v1.8.2–v1.8.6), the v1.8.7/v1.8.8 Warden IPv6 + anti-lockout hardening plus the default-on `rwatch` health watchdog, and the **v2.0.0** two-audit security milestone (a full re-review of all Reaper-authored code and of the inherited ASUS/Merlin open source, every finding fixed with no critical or high left open) — is summarized in [`CHANGELOG.md`](CHANGELOG.md). The v1.0 image details below are the record of when these base-firmware fixes shipped.
+- **Base version:** 3006.102.8_beta2 (`a7ebfa133a`) through v3.5.0. From v3.6.0 the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro are on Asuswrt-Merlin 3006.102.10 (`ca72a61f8bc`, ASUS GPL 102_40585); the GT-BE98, GT-BE19000, ZenWiFi BQ16 and BQ16 Pro stay on 3006.102.8_beta2. Both lines carry every fix listed here.
+- **Custom version string:** the base-firmware security hardening catalogued here landed in **v1.0** and is carried through the current **v3.7.0** <!--@treever--> source rung. Most later versions added features and de-cloud removals rather than new *stock-firmware* findings, with two exceptions: **C6b**, a `libpasswd/passwd.c` twin of C6 that surfaced during ASUS PSIRT coordination on 2026-07-23, was class-fixed and **built + shipped in v1.7.5** (2026-07-24); and **v2.0.0**'s inherited-code audit (AUDIT-2) surfaced and fixed fresh *stock-firmware* findings in the ASUS/Merlin-authored userspace — a stored-XSS chain from a device-supplied DHCP hostname into several admin views, a USB volume-label root command-injection at auto-mount, and an IPsec-profile CGI stack overflow — the first new base-firmware findings since C6b; the security work since v1.0 — post-feature injection re-audits, the v1.4.3 / v1.4.4 security-review remediation of Reaper-introduced changes, v1.4.5 exploit-mitigation build hardening (FORTIFY + stack-protector-strong + PIE + full-RELRO on the Reaper daemons), the injection-safe design of the v1.5.0 network-diagnostics tools (fixed-argument exec, never a shell), the **v1.6.0** defense-in-depth pass on the Reaper daemons (CR/LF + dotted-quad validation of the Advisor session-file client value, `lan_ifname` validation before the boot-sweep `iptables` call, plus a `popen` fd/child-leak fix and full allocation-NULL hardening in `rmcpd`/`rtrafd`), the **v1.7.1** remediation of the post-Gatekeeper audit round (2026-07-21 — Wireless-diagnostics CSRF guard, Gatekeeper device-list race + MAC validation, and related hardening), the **v1.7.5** class-closure of C6 across every `openssl passwd` sink (**C6b**, ASUS PSIRT case 1006563), the **v1.8.0a** Reaper Warden threat/geo firewall + Samba **4.15.13a** CVE-2025-9640 backport, the large multi-agent **audit-remediation arc** (73 verified findings closed across v1.8.2–v1.8.6), the v1.8.7/v1.8.8 Warden IPv6 + anti-lockout hardening plus the default-on `rwatch` health watchdog, and the **v2.0.0** two-audit security milestone (a full re-review of all Reaper-authored code and of the inherited ASUS/Merlin open source, every finding fixed with no critical or high left open) — is summarized in [`CHANGELOG.md`](CHANGELOG.md). The v1.0 image details below are the record of when these base-firmware fixes shipped.
 - **Branch:** `be96u-only` (local only — never pushed upstream)
 - **Release:** **v1.0 (2026-07-07).** Image sha256 `fa95b1d417b1ef6b075281b5c435e39fa9a6cf9c3ced2ea4263f8069e7f4f5f5` (loader `e0be733645272bd61291a29c0d1d694622b5a8bba65e30a349478b80eb04f165`). Contents: hardening rounds 1-4 + round-3 injection pass + avahi CVE backport + T1-T4 latent hardening + the v1.0 pre-release audit fixes, plus both Hardware QoS engines and the Reaper UI. The predecessor image `b81e482c` was flashed to the physical RT-BE96U 2026-07-05 and ran clean; v1.0's QoS + UI additions were validated on metal through 2026-07-07.
-- **Build target / applicable model:** at v1.0, **RT-BE96U only** — the tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware. *(Currency note: the sibling BCM4916 models — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro, and from v3.1.4 the GT-BE19000 — are built from per-model branches; the five-model fleet has been published since **v2.7.3**, both variants each (through the public clean-room CI pipeline). Because these fixes are in shared source, every model carries them; RT-BE96U remains the primary, hardware-validated build.)* The "Model" column reflects what this build delivers.
+- **Build target / applicable model:** at v1.0, **RT-BE96U only** — the tree was stripped to the RT-BE96U (`release/src-rt-5.04behnd.4916`). The fixes below live in the ASUS/Merlin-authored userspace, most of which is **shared source common to other Broadcom HND Asuswrt-Merlin models** — so the same flaws exist on those models running stock firmware. *(Currency note: the sibling BCM4916 models — RT-BE86U / RT-BE88U / GT-BE98 / GT-BE98 Pro, from v3.1.4 the GT-BE19000, from v3.3.2 the ZenWiFi BQ16 and from v3.3.4 the ZenWiFi BQ16 Pro — are built from per-model branches; the five-model fleet has been published since **v2.7.3**, both variants each (through the public clean-room CI pipeline). Because these fixes are in shared source, every model carries them; RT-BE96U remains the primary build.)* The "Model" column reflects what this build delivers.
 
 > Scope note: a few items are present in the source but **not compiled/active** in the RT-BE96U build (gated off by config). They were fixed defensively where cheap, and are flagged below.
 
@@ -673,7 +673,7 @@ intended count, a full bypass table exits 2 with the cause logged, a geo object 
 their rule with the reason, and a group of four objects expands into its two usable members. The per-fix
 hardware items are in `BACKLOG.md`.
 
-## Vulnerability and CVE audit 2026-10-06 — remediation (in canon, unreleased)
+## Vulnerability and CVE audit 2026-10-06 — remediation (shipped by v3.3.9)
 
 The v3.3.4 end-to-end audit (internal report) ranked unauthenticated takeover or settings change first.
 Nothing CRITICAL at factory defaults and no unauthenticated settings-change path; the items below were
@@ -690,7 +690,7 @@ Compile check so far: the daemon on the host with `-Wall -Wextra`; the ARM build
 Metal owed: a logged-out request for the credential file returns the login page and the page still shows it
 when logged in; Flow Explorer names still populate; the IPsec server is unchanged (off by default).
 
-## Code review 2026-10-07 — remediation (in canon, unreleased)
+## Code review 2026-10-07 — remediation (shipped by v3.3.9)
 
 A v3.3.6 review of vulnerabilities, dead code and syntax (internal report) found nothing CRITICAL, HIGH or
 MEDIUM and no unauthenticated path to a privilege gain in Reaper code. Every item was re-verified in code
@@ -707,7 +707,7 @@ before it changed; two dead-code items were withdrawn by that check.
 Checks: host suites, static checks and the WAN Ports parity harness pass; verify markers forbid the removed
 rows in the staged httpd. Metal owed: the removed URLs return the login page when logged out.
 
-## Field pass 2026-10-08 — the IPv6 tunnel window (in canon, unreleased)
+## Field pass 2026-10-08 — the IPv6 tunnel window (shipped by v3.3.9)
 
 The maintainer's RT-BE96U ran its first IPv6 day over a 6in4 tunnel. One Apply on the IPv6 page left the
 firewall half-built and the hour that followed exposed three defects in the watchdog and the Rule Status
@@ -740,7 +740,7 @@ flushed `REAPER_FWF` is rebuilt by the watchdog within ten minutes after the two
 row is green on the tunnel; the tunnel note appears once when the broker's end is unreachable; the Devices
 page shows its last column whole.
 
-## Field pass 2026-10-09 (in canon, unreleased)
+## Field pass 2026-10-09 (shipped by v3.3.9)
 
 | # | Sev | Item | Decision | What landed |
 |---|---|---|---|---|
@@ -1012,3 +1012,19 @@ over 1 KB is kept whole (1,125 bytes written, read back equal, restored) and the
 | `miniupnpd*/minissdp.c` | Asuswrt-Merlin `da326375b16` (Thomas Bernard): `MX: 0` is invalid (CVE-2026-107159). Not reachable in this build (`UPNP_STRICT` / `DELAY_MSEARCH_RESPONSE` off). | `test_merlin_carry_2026_10_26.py` |
 | `router-sysdep.rt-be96u/urlfilterd/filter.c` | Asuswrt-Merlin `d7c6a53e440` (ASUS GPL 102_40585): the payload offset is checked against the captured length and the search runs on a bounded NUL-terminated copy. Not reachable (urlfilterd is not started). | `test_merlin_carry_2026_10_26.py` |
 | router `Makefile` | Asuswrt-Merlin `9e53d766f86`: OpenSSL 3.5 configure without the deprecated `no-ssl2`. | `test_merlin_carry_2026_10_26.py` |
+
+## v3.6.0 – v3.6.5 — security-relevant changes (2026-10-27 to 2026-11-02)
+
+Both lines carry each item unless the row names one. The user-facing account is in [`CHANGELOG.md`](CHANGELOG.md).
+
+| Area | Change | Version |
+|---|---|---|
+| `httpd/web.c` | `nvram_get_js`: a setting written into a page script is escaped, so a value holding `'` or `\` can no longer end a script string early on Reaper pages. | v3.6.0 |
+| `libnvram` / `libwlcsm` (3006.102.10 line) | ASUS's 102_40585 pair: the same netlink socket-leak fix as the 42015 pair, plus ASUS's caller check in `nvram_set()` for `sshd_enable`, `sshd_port`, `sshd_pass`, `sshd_authkeys` and `ookla_quota`. The 3006.102.8 line keeps the 42015 pair. | v3.6.0 |
+| `rc/wallguard.c`, `rc/rwarden.c`, `wallguard/wallguard.sh` | Wallguard and Dreadwatch API keys are write-only (`/jffs/wallguard/keys`, `/jffs/rwarden/dnskeys`, root 0600) and reach curl only through a root-only config file, never a command line. A key inside a source address (`$APIkey`) is inserted %-encoded the same way and is the only `$` an address may carry, never in the host. A source whose key rides in a header runs with `max-redirs = 0`, because curl repeats custom headers to any host it is redirected to. | v3.6.0, v3.6.2 |
+| `isValidMacAddress()` (web pages) | Twelve hex digits followed by a separator and anything after it were accepted; the check now returns false. On 3006.102.10 the AiMesh admin actions that take a node MAC rely on it alone; on 3006.102.8 Reaper's own check stands there as well. | v3.6.0, v3.6.2 |
+| `httpd/web.c` (3006.102.10 line) | `surfshark_login.cgi` and `surfshark_2fa.cgi` (new with GPL 102_40585, sign-in to a third-party VPN service, called by no shipped page) are compiled out, as the Instant Guard handler was. | v3.6.2 |
+| `httpd` | Every ETag carries the build; stylesheets and Reaper scripts answer `Cache-Control: no-cache`; a page with server-side values gets no ETag, so a browser never serves a cached page holding old settings. | v3.6.0 |
+| `others/reaper_diag` | v1.3.53: the report's sanitizer no longer masks the speed-test engine version and WDS interface names as external addresses (`v3.8.0 build 235`, `wds1.1.1.0` print as they are). | v3.6.4 |
+| `rc/reaper_aimesh.c`, `rc/reaper_fw.c`, `rc/reaper_pbr.c`, `rc/gatekeeper.c`, `rc/rwatch.c` | One shared AiMesh node set (`reaper_aimesh`, hash:mac), refreshed from the router's AiMesh registry when each consumer applies and on every watchdog tick and swapped in under a lock: the rules engine (Inbound, Forwarded, Service Intercept) and Policy Routing skip a node's own traffic, as Gatekeeper already did. Clients behind a node are not exempt. | v3.6.5 |
+| `rc/rwarden.c` | **Deliberate exposure change.** Warden lets UDP through to the listen port of each *enabled* WireGuard server, for packets addressed to the router only, and re-applies when a server is switched on or off or its port changes. WireGuard answers only peers whose keys it holds. OpenVPN and IPsec are not exempted. | v3.6.5 |

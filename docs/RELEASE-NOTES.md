@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.7.0** <!--@treever--> — `3006.102.8_Reaper_v3.7.0`. **A security-review rung: privilege checks in the kernel, root-only files and keys, a page token on every save, secrets out of page source and hardened binaries; USB 3 write levers (off by default); each built-in list's address on the Dreadwatch and Wallguard rows.** Everything in v3.6.5 is included. See [`CHANGELOG.md`](CHANGELOG.md#v370--security-review-kernel-privilege-checks-root-only-files-and-keys-a-page-token-on-every-save-hardened-binaries-usb-3-write-levers-list-addresses-on-the-dreadwatch-and-wallguard-rows). |
+| **Current rung** | **v3.7.1** <!--@treever--> — `3006.102.8_Reaper_v3.7.1`. **CVE-2026-98432 and four more CVE fixes (DHCP client, WireGuard, kernel, a 102.8-line web route); USB Application, Media Server, Samba and FTP on Reaper pages (the stock pages no longer ship); login no longer opens a blank page; refused SMB logins are logged.** Everything in v3.7.0 is included. See [`CHANGELOG.md`](CHANGELOG.md#v371--kernel-wireguard-and-dhcp-client-cve-fixes-usb-application-media-server-samba-and-ftp-on-reaper-pages-no-blank-page-after-login-refused-smb-logins-logged). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |

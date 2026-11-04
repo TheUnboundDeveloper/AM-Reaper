@@ -296,9 +296,11 @@ check("V11: the per-disk app starter only refreshes lists where the refresher ex
       "[ -x /usr/sbin/app_update.sh ]" in rd("rom/apps_scripts/asusrouter"))
 wmk = rd("www/Makefile")
 check("V11: ASUS's developer test form for the installer is not shipped", "rm -f $(INSTALLDIR)/www/apps_test.asp" in wmk)
-# the USB Application hub is NOT the installer: the dashboard rail and eight USB pages link to it
-check("V11: the USB Application hub page stays - no Reaper rule removes it, and the menu model still lists it",
-      "rm -f $(INSTALLDIR)/www/APP_Installation.asp" not in wmk and "T('APP_Installation.asp'" in rd("www/reaper/menu.js"))
+# the USB Application hub is NOT the installer: since 2026-11-03 it is the kit page Reaper_USBApps.asp, and the stock
+# APP_Installation.asp (which the dashboard rail and eight stock USB pages link to) bounces there
+check("V11: the USB Application hub is Reaper_USBApps.asp in the menu model, and the stock hub's URL bounces to it",
+      "T('Reaper_USBApps.asp'" in rd("www/reaper/menu.js")
+      and '{ "app_installation.asp", "Reaper_USBApps.asp", 0 }' in rd("httpd/reaper_inject.c"))
 
 # ---------------------------------------------------------------- 6. V5
 mk = rd("www/Makefile")

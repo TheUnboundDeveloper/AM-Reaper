@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,35 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.1 — kernel, WireGuard and DHCP-client CVE fixes; USB Application, Media Server, Samba and FTP on Reaper pages; no blank page after login; refused SMB logins logged
+
+Everything in v3.7.0 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **CVE-2026-98432: the kernel's IPv4 TCP handshake could read memory it had already freed.** A connection attempt
+  carrying IP options, raced against a resent one, let the kernel build its reply from options the new connection
+  had already freed: a crash or kernel memory corruption, from anyone who can reach a TCP port on the router. The
+  options are now freed only once nothing can still read them, as upstream does. The 4.19 kernel gets no upstream
+  fix, so it is carried here.
+- **Four more fixes from a check of every CVE published in the last 90 days.** The WAN DHCP client no longer crashes
+  on a reply shorter than its own headers, which anyone on your ISP's network segment could send (CVE-2026-88833).
+  WireGuard checks the handshake key when it accepts a response, so one handshake can no longer give two sessions
+  (CVE-2026-99059). The kernel sets a socket's timestamp flag only under the socket's lock (CVE-2026-98276). On
+  GT-BE98, GT-BE19000, BQ16 and BQ16 Pro the configuration-upload address is no longer served: ASUS fixed it
+  (CVE-2026-19386) in firmware newer than the components those models are built from, and nothing in Reaper uses it.
+- **USB Application, Media Server, Network Place (Samba) Share and FTP Share are Reaper pages.** The USB Application
+  page shows one card per USB service with its state, and the disks with their size and use. The Samba and FTP pages
+  hold the server settings, guest or anonymous access, the accounts and each folder's rights in one place; turning on
+  FTP access from the Internet asks first, and FTP over TLS cannot be combined with anonymous login. The Media Server
+  page sets the DLNA and iTunes servers and their media folders, picked from the disks, and shows the scan status.
+  Deleting a folder asks you to type DELETE, because it removes every file in it. The stock pages no longer ship;
+  their old addresses open the new pages.
+- **No more blank page after login.** When a page's background request was the last one refused before you logged
+  in, login opened that request's address as a page - often the security banner's text, which shows as a white
+  screen. Login now returns only to a page your browser opened, or to the dashboard.
+- **A refused SMB login is in the system log**, with the user, the client's address and the reason (a wrong password
+  reads `NT_STATUS_WRONG_PASSWORD`). Successful logins are not logged.
 
 ## v3.7.0 — security review: kernel privilege checks, root-only files and keys, a page token on every save, hardened binaries; USB 3 write levers; list addresses on the Dreadwatch and Wallguard rows
 

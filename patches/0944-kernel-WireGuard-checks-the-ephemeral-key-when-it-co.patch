@@ -1,0 +1,42 @@
+From 505483bd54b5516471b6f229659eaf7c3004f7c5 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 20:14:12 -0500
+Subject: [PATCH] kernel: WireGuard checks the ephemeral key when it consumes a
+ response (CVE-2026-99059) (102.8 line)
+
+Backport of upstream d0305f8d9002 ("wireguard: noise: reject response consumption after
+intermediate initiation"). A response processed twice around a new initiation could copy stale
+state back and derive a second session from one handshake; under the write lock the handshake's
+ephemeral key is now compared with the one the response was computed against, as well as the
+state.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../kernel/linux-4.19/net/wireguard/noise.c            | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/wireguard/noise.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/wireguard/noise.c
+index baf455e21e7..2985bc7b7da 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/wireguard/noise.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/wireguard/noise.c
+@@ -753,10 +753,14 @@ wg_noise_handshake_consume_response(struct message_handshake_response *src,
+ 
+ 	/* Success! Copy everything to peer */
+ 	down_write(&handshake->lock);
+-	/* It's important to check that the state is still the same, while we
+-	 * have an exclusive lock.
++	/* It's important to check that the state is still the same, and that
++	 * the ephemeral key is still the one of the initiation this response
++	 * answers, while we have an exclusive lock (reaper: CVE-2026-99059,
++	 * upstream d0305f8d9002).
+ 	 */
+-	if (handshake->state != state) {
++	if (handshake->state != state ||
++	    crypto_memneq(handshake->ephemeral_private, ephemeral_private,
++			  NOISE_PUBLIC_KEY_LEN)) {
+ 		up_write(&handshake->lock);
+ 		goto fail;
+ 	}
+-- 
+2.25.1
+

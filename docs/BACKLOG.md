@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.0** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -40,6 +40,8 @@ internal quality, or deferred by decision.
 waiting on the reporter. One line each, highest priority first - what was fixed and what to ask
 the tester for is in the notes. A "still broken" answer moves the item back to Open bugs.*
 
+- **[P1] CVE-2026-98432: IPv4 TCP handshake use-after-free (kernel backport)** ↳ notes: `cve-2026-98432.md`
+- **[P1] CVE check 2026-11-03: DHCP client, WireGuard, socket timestamp, 102.8 config upload** ↳ notes: `cve-check-2026-11-03.md`
 - **[P2] Internet speed test after ASUS retired the old Ookla setup** ↳ notes: `speedtest-embed-key-retired.md`
 - **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
 - **[P2] Wireless Log: device names lost, every extra network called a guest network** ↳ notes: `wireless-log-names-types.md`
@@ -49,6 +51,8 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Encrypted DNS block: no AiMesh exemption** ↳ notes: `edns-aimesh-exempt.md`
 - **[P2] Russian GUI: parts of it change and duplicate; word spacing** ↳ notes: `russian-ui-layout.md`
 - **[P2] Security review (2026-11-03): kernel privilege checks, root-only files, page token** ↳ notes: `security-review-2026-11-03.md`
+- **[P2] USB Application, Media Server, Samba and FTP on Reaper pages** ↳ notes: `usb-native-wave.md`
+- **[P2] Login opened a blank page (the security banner's text)** ↳ notes: `login-landing-blank-page.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use** ↳ notes: `internet-wan-port-label.md`
 - **[P3] System Info: `<i>off</i>` shown as text for a radio that is off** ↳ notes: `sysinfo-radio-off-markup.md`
@@ -67,6 +71,7 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Warden: the IPv6 LAN exemption covers only the main LAN prefix** ↳ notes: `warden-v6-guest-prefix.md`
 - **[P3] Wallguard's DNS-bypass banner misses VPN Director's Exclusive DNS** ↳ notes: `wallguard-bypass-vpndirector.md`
 - **[P3] Gatekeeper: the waiting page never showed with an HTTPS-only GUI** ↳ notes: `gk-https-only-waiting-page.md`
+- **[P3] Samba: a refused login left no line in the system log** ↳ notes: `smb-refused-login-log.md`
 
 ## Open bugs / under investigation
 

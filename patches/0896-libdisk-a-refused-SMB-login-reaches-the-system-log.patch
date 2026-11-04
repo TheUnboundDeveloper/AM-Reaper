@@ -1,0 +1,40 @@
+From fc001801a4563cda8cf5e75453c32eec588a788b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Tue, 3 Nov 2026 18:42:53 -0500
+Subject: [PATCH] libdisk: a refused SMB login reaches the system log
+
+Samba 4 logs authentication in its auth_audit class, a refusal at level 2 and a success at 3;
+smb.conf set log level 0, so a wrong password left no line anywhere (field report). For Samba 4:
+log level = 0 auth_audit:2 and logging = syslog@2 file. Each refused login is in the system log
+with the user, the client address and the reason; successful logins and everything else stay as
+before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/libdisk/write_smb_conf.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 3abcab549b9..91d373d12d6 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -377,7 +377,16 @@ int main(int argc, char *argv[])
+ 	fprintf(fp, "printing = bsd\n");
+ 	fprintf(fp, "printcap name = /dev/null\n");
+ 	fprintf(fp, "log file = %s\n", SAMBA_LOG);
++#if defined(RTCONFIG_SAMBA4)
++	/* reaper 2026-11-03 (owner: a wrong SMB password left no trace): Samba logs authentication in the auth_audit
++	 * class, a refusal at level 2 and a success at 3 (auth/auth_log.c). Raise that class to 2 and send levels
++	 * 0..2 to syslog: every refused login is in the system log with the user, the client address and the reason;
++	 * successful logins and everything else stay at level 0 as before. `logging` replaces the deprecated `syslog`. */
++	fprintf(fp, "log level = 0 auth_audit:2\n");
++	fprintf(fp, "logging = syslog@2 file\n");
++#else
+ 	fprintf(fp, "log level = 0\n");
++#endif
+ 	fprintf(fp, "max log size = 5\n");
+ 
+ 	// account mode
+-- 
+2.25.1
+

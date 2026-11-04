@@ -33,7 +33,7 @@ OUR = ['reaper_shell.asp', 'Main_ReaperDash.asp', 'Reaper_Traffic.asp', 'Reaper_
        # Added 2026-10-23 with the System Log wave (RLOG_ tokens, all inside backticks in JS).
        'Reaper_Log.asp', 'Reaper_WLog.asp', 'Reaper_Leases.asp', 'Reaper_IPv6.asp', 'Reaper_Routes.asp', 'Reaper_PortFwd.asp',
        # Added 2026-10-23 with the Network Tools wave (RNT_ tokens).
-       'Reaper_Analysis.asp', 'Reaper_Netstat.asp', 'Reaper_WOL.asp', 'Reaper_SmartConnect.asp', 'Reaper_RoamBlock.asp', 'Reaper_MACFilter.asp', 'Reaper_RADIUS.asp', 'Reaper_WDS.asp', 'Reaper_WPS.asp', 'Reaper_MLO.asp', 'Reaper_VLAN.asp', 'Reaper_IPv6Setup.asp', 'Reaper_LAN.asp', 'Reaper_DNS.asp', 'Reaper_Internet.asp',
+       'Reaper_Analysis.asp', 'Reaper_Netstat.asp', 'Reaper_WOL.asp', 'Reaper_SmartConnect.asp', 'Reaper_RoamBlock.asp', 'Reaper_MACFilter.asp', 'Reaper_RADIUS.asp', 'Reaper_WDS.asp', 'Reaper_WPS.asp', 'Reaper_MLO.asp', 'Reaper_VLAN.asp', 'Reaper_USBApps.asp', 'Reaper_MediaServer.asp', 'Reaper_Samba.asp', 'Reaper_FTP.asp', 'Reaper_IPv6Setup.asp', 'Reaper_LAN.asp', 'Reaper_DNS.asp', 'Reaper_Internet.asp',
        'Reaper_IPTV.asp', 'Reaper_NAT.asp', 'Reaper_DDNS.asp', 'Reaper_VPNStatus.asp', 'Reaper_VPNDirector.asp',
        'Reaper_VPNServer.asp', 'Reaper_VPNClient.asp', 'Reaper_Tor.asp', 'Reaper_Parental.asp',
        # Added 2026-08-20 with v2.5.6's Policy Routing page - the same LANGCOVERAGE

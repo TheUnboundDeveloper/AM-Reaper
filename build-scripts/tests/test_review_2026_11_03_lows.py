@@ -18,9 +18,9 @@ Each fix is pinned by the text it added and, where one existed, the text it repl
                 re-check; rtrafd save stamp bound; libipt_TRIGGER negative ports; diag section 19 drops the
                 lab exec echo; firmware download checked in /tmp/reaper before it reaches /tmp/linux.trx;
                 wallguard unbreak minutes digits-only.
-  kernel        E-6 ipt_TRIGGER lock held across lookup+use, flush frees only what it cancelled (checkentry
-                STILL flushes - removing it would let a deleted trigger stay open while traffic refreshes
-                it); ct NULL; E-8 bcm_mcast CAP_SYS_ADMIN; E-9 xt_webstr per-CPU state, bounded scan,
+  kernel        E-6 ipt_TRIGGER lock held across lookup+use, flush frees only what it cancelled (2026-11-06:
+                checkentry no longer flushes everything - a per-rule reference closes a deleted trigger's ports
+                at once and keeps the others' through any table replace); ct NULL; E-8 bcm_mcast CAP_SYS_ADMIN; E-9 xt_webstr per-CPU state, bounded scan,
                 linear-data length (v4 and v6); dnsmq copy_from_user; proc_cmd terminator; xhci
                 ubus_credits upper bound.
 Exit 0 pass, 1 fail, 77 skipped (no router source tree - argv[1] / REAPER_ROUTER_SRC).
@@ -357,7 +357,10 @@ else:
     check("E-6: trigger_dnat returns when there is no conntrack entry, before the lookup",
           0 <= dn.find("if (ct == NULL)") < dn.find("LIST_FIND"))
     ce = nocomment(func(tg, "static int checkentry("))
-    check("checkentry still flushes (deliberate: see the docstring)", "trigger_flush();" in ce)
+    # 2026-11-06 (E-6 follow-up): the whole-list flush is gone - a removed rule still closes its ports, through a
+    # per-rule reference (checkentry takes it, destroy drops it); test_kernel_round_2026_11_06.py runs that code
+    check("checkentry takes the rule's reference instead of flushing every trigger",
+          "trigger_flush();" not in ce and "trig_rule_get(info)" in ce and ".destroy = destroy," in tg)
 
 if fails:
     print("\n%d FAILED:" % len(fails)); [print("  " + f) for f in fails]; sys.exit(1)

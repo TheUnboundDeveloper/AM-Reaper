@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.2** · 2026-11-05 <!--@stamp-->
+> **Doc status:** current as of **v3.7.3** · 2026-11-06 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -56,6 +56,9 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Login opened a blank page (the security banner's text)** ↳ notes: `login-landing-blank-page.md`
 - **[P2] Audit Findings pass 2026-11-05: endpoint tokens, pre-login fixes, temp files, permissions, removals** ↳ notes: `audit-findings-2026-11-05.md`
 - **[P2] Let's Encrypt via DNS: a trusted certificate without DDNS or port 80** ↳ notes: `letsencrypt-dns.md`
+- **[P2] Audit Findings pass 2026-11-06: kernel round, port trigger, lighttpd PIE/FORTIFY, /tmp and /var folders, unreachable stock pages** ↳ notes: `audit-findings-2026-11-06.md`
+- **[P2] Wallguard: Advanced rules in AdGuard Home syntax, with per-device rules (`$client=`)** ↳ notes: `wallguard-client-rules.md`
+- **[P2] Encrypted DNS block: Chrome's Secure DNS (Cloudflare) got through** ↳ notes: `edns-chrome-cloudflare.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use** ↳ notes: `internet-wan-port-label.md`
 - **[P3] System Info: `<i>off</i>` shown as text for a radio that is off** ↳ notes: `sysinfo-radio-off-markup.md`
@@ -79,6 +82,7 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Rule Status: C3 red for a working WireGuard server forwarded to the router's own address** ↳ notes: `fwsim-c3-self-dnat.md`
 - **[P3] Devices: "no lease / private address" rows for MLO link addresses** ↳ notes: `devices-pseudo-mlo-rows.md`
 - **[P3] System Info: capabilities shown as tokens, removed features listed** ↳ notes: `sysinfo-capability-names.md`
+- **[P3] Rule Status: every "reaches the WAN" row red with the Encrypted DNS block on** ↳ notes: `fwsim-wandst-doh.md`
 
 ## Open bugs / under investigation
 
@@ -98,15 +102,12 @@ private review report and the finding ID in it; review reports are never publish
 
 - **[P2] Owed router checks for the 2026-11-03 fixes: a save on each kind of page, a held device's waiting page** **[owed]** ↳ report: `review-2026-11-03` (Still owed)
 - **[P2] Vendor security reports to send (all three drafted)** **[owner]** ↳ notes: `vendor-reports-owed.md`
-- **[P2] Kernel: the next stable-fix round (CVE-2024-26921, ipset, net/sched)** **[deferred: own port and soak]** ↳ report: `review-2026-11-03` E-5
 - **[P3] Review 2026-10-28: AiMesh add-node on 3006.102.10 and a header-key list source on a router** **[owed]** ↳ report: `review-2026-10-28`
 - **[P3] Boot chain: the image-signature key** **[owner call]** ↳ report: `review-2026-11-03` E-12
-- **[P3] Hardened-build flags for lighttpd and libwebapi** **[lighttpd RELRO done 2026-11-05; PIE/FORTIFY and the closed libwebapi deferred]** ↳ report: `review-2026-11-03` F-4
+- **[P3] Hardened-build flags for the closed libwebapi** **[lighttpd RELRO, PIE and FORTIFY in v3.7.3; libwebapi is closed code]** ↳ report: `review-2026-11-03` F-4
 - **[P3] Unused closed programs to remove after a consumer check** **[owner call]** ↳ report: `review-2026-11-03` F-11
-- **[P3] Security Review card: the world-writable check covers `/jffs` and the store only** **[store added 2026-11-05; /tmp and /var deferred]** ↳ report: `review-2026-11-03` C-8
-- **[P3] Port trigger: each firewall rebuild drops live trigger sessions (needs a per-rule generation)** **[deferred]** ↳ report: `review-2026-11-03` E-6
 - **[P3] Mount options `nosuid,nodev` on `/tmp`, `/var` and `/jffs`** **[owner call]** ↳ report: `review-2026-11-03` (owner decisions)
-- **[P3] About 40 stock pages no menu reaches are still served** **[with the native-UI cutover]** ↳ report: `review-2026-11-03` B-6
+- **[P3] About 30 stock pages no menu reaches are still served** **[8 removed in v3.7.3; the rest with the native-UI cutover]** ↳ report: `review-2026-11-03` B-6
 - **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call: conflicts with the Devices page's pseudo-MLO mapping]** ↳ notes: `audit-findings-2026-11-05.md`
 - **[P3] AI Advisor: one connection at a time; pin the client by default** **[owner call]** ↳ report: `review-2026-11-03` D-6
 - **[P3] jQuery Mobile 1.4.5 (end of life) ships for the AiMesh add-node wizard** **[with the wizard rewrite]** ↳ report: `review-2026-11-03` B-4
@@ -132,13 +133,14 @@ private review report and the finding ID in it; review reports are never publish
 - **[P2] Encrypted DNS Step B: DNS-over-HTTPS on the router** **[planned in outline]** ↳ notes: `encrypted-dns.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
+- **[P2] GT-BE98: move onto GPL 102.40585 (gnuton's prebuilts) via the line unification** **[not started; after Dev-unify CI]** ↳ notes: `gt-be98-gpl-40585.md`
+- **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed 2026-11-06; not started]** ↳ notes: `pbr-asn-objects.md`
 - **[P3] Security review: watch more settings** **[part done 2026-10-24; the rest not started]** ↳ notes: `security-review-coverage.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
 - **[P3] Diag: flag a replacing `/jffs/configs/dnsmasq.conf` and a dead local DNS upstream** **[diag half in v3.4.9; rdnshc half not done]** ↳ notes: `controld-leftover-dnsmasq-conf.md`
 - **[P3] Encrypted DNS: Flow Explorer names for DoT clients** **[deferred]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wi-Fi VLANs: several VIDs per network and the inter-VLAN ACL page** **[not started]** ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Wallguard: one AdGuard-style rules box with per-device rules (`$client=`)** **[not started]** ↳ notes: `wallguard-client-rules.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Mimic: hardware port mirror to an external IDS** **[owed: flow and restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`

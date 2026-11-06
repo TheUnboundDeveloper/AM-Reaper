@@ -177,7 +177,9 @@ try:
                 'cru() { [ "$1" = l ] && cat "$CRU_FILE"; return 0; }\n' + NVS)
         tail = ('\nRV_JFFS="%s"\nRV_TMP="%s"\nRV_BASE="%s"\n%s\n_rv_run\n' % (jffs, tmpd, base, extra))
         sp = os.path.join(work, "run.sh"); open(sp, "w").write(head + block + tail)
-        env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""))
+        # RV_WWT_ROOTS: the /tmp + /var folder check (2026-11-06, C-8) must not read the host's own /tmp here
+        env = dict(os.environ, NVDIR=nvd, LOGF=logf, CRU_FILE=cruf, LC_ALL="C", PATH=binp + os.pathsep + os.environ.get("PATH", ""),
+                   RV_WWT_ROOTS=os.path.join(work, "no-wwt-root"))
         cmd = [shell, sp] if shell != "busybox" else [BB, "ash", sp]
         p = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=work, timeout=60)
         if p.returncode != 0:
@@ -408,8 +410,8 @@ finally:
     shutil.rmtree(work, ignore_errors=True)
 ok('"RV_AUTH_N=10\\n"' in rw and "_rv_auth() {" in rw and "grep -v 'rmcpd-lab' $_win" in rw and "tail -n 50 $RV_TMP/review.auth" in rw,
    "rwatch.c: the login watch has its threshold, ignores the lab daemon's echo and caps the notices file")
-ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
-   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20)")
+ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwt\\\\\\":%d,\\\\\\"wwt_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
+   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20), then the /tmp,/var folder count and first path (2026-11-06, C-8)")
 
 # ---- 3. pins in source
 i_heal = rw.index('"HEALGRACE=300\\n"'); i_entry = rw.index('"[ \\"$1\\" = review ] && { _rv_run; exit 0; }\\n"')

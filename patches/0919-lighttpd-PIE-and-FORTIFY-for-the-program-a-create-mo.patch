@@ -1,0 +1,69 @@
+From 0a97161ea53c779338d8243c5ae76317c87aa0c1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:32 -0500
+Subject: [PATCH] lighttpd: PIE and FORTIFY for the program, a create mode for
+ its debug log
+
+- preconfigure-script-hnd: -O2 -D_FORTIFY_SOURCE=2 -fPIE for every object (libtool adds -fPIC to
+  the module objects after it, so the modules stay PIC); -pie only on the lighttpd program's own
+  link line, set in src/Makefile after configure, and configure fails if that line is not found.
+  Full RELRO stays.
+- src/log.c: the debug log was opened with O_CREAT and no mode (FORTIFY refuses that); it is
+  created 0600.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../lighttpd-1.4.39/preconfigure-script-hnd     | 17 ++++++++++++++---
+ release/src/router/lighttpd-1.4.39/src/log.c    |  2 +-
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd b/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
+index f5587fef63e..e346196e830 100755
+--- a/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
++++ b/release/src/router/lighttpd-1.4.39/preconfigure-script-hnd
+@@ -15,11 +15,17 @@ echo $cur_dir
+ PCRE_VER=8.31
+ 
+ ####	Set compiler variable ####
+-export CFLAGS="-I$cur_dir/../pcre-$PCRE_VER -I$uclib_inc -I$srcbase_dir/include -I$srcbase_dir/shared/bcmwifi/include -I$cur_dir/../sqlite -I$cur_dir/../curl-7.21.7/include -I$router_sysdep_dir/nvram${BCMEX}${EX7} -I$router_dir/shared -I$router_dir/libpasswd -DHAVE_OPENSSL_SSL_H=1 -DHAVE_LIBSSL=1 -DEMBEDDED_EANBLE=1"
++# reaper 2026-11-06 (audit F-4): hardening flags, see the note above LDFLAGS - set BEFORE the CFLAGS that
++# expands them (the first cut set it after: -pie without -fPIE gave a TEXTREL binary)
++CFLAGS_REAPER_HARDEN="-O2 -D_FORTIFY_SOURCE=2 -fPIE"
++export CFLAGS="-I$cur_dir/../pcre-$PCRE_VER -I$uclib_inc -I$srcbase_dir/include -I$srcbase_dir/shared/bcmwifi/include -I$cur_dir/../sqlite -I$cur_dir/../curl-7.21.7/include -I$router_sysdep_dir/nvram${BCMEX}${EX7} -I$router_dir/shared -I$router_dir/libpasswd -DHAVE_OPENSSL_SSL_H=1 -DHAVE_LIBSSL=1 -DEMBEDDED_EANBLE=1 $CFLAGS_REAPER_HARDEN"
+ export LIBS="-L$uclib -L$router_dir/shared -lshared -L$router_sysdep_dir/nvram${BCMEX}${EX7} -lnvram -L$router_sysdep_dir/wlcsm${EXHND} -lwlcsm -L$router_dir/libpasswd -lpasswd -lpthread  -L$router_dir/openssl -lcrypto -lssl -L$router_dir/curl-7.21.7/lib/.libs -lcurl -L$router_dir/libxml2/.libs -lxml2 -lpthread -dl"
+ #export LDFLAGS="-L$uclib -ldl -L$cur_dir/../pcre-$PCRE_VER/.libs -lpcre -L$cur_dir/../libxml2/.libs -lxml2 -lm -L$router_dir/openssl -L$cur_dir/../curl-7.21.7/lib/.libs"
+-# reaper 2026-11-05 (audit F-4): full RELRO for the binary and its modules (PIE/FORTIFY not taken: libtool links
+-# the modules -shared from the same flags, and the configure CFLAGS carry no -O for FORTIFY)
++# reaper 2026-11-05 (audit F-4): full RELRO for the binary and its modules.
++# reaper 2026-11-06 (audit F-4): PIE and FORTIFY as well. -O2 (FORTIFY needs an -O; this CFLAGS never had one, so
++# configure added none) -D_FORTIFY_SOURCE=2 -fPIE for every object: libtool appends -fPIC when it compiles the
++# mod_*.so objects and the last of the two wins, so the modules stay PIC. -pie goes on the lighttpd program's
++# own link line only (lighttpd_LDFLAGS, set after configure below) - never on the -shared module links.
+ export LDFLAGS="-Wl,-z,relro,-z,now -L$cur_dir/../pcre-$PCRE_VER/.libs -lpcre -L$cur_dir/../libxml2/.libs -lxml2 -lm -L$router_dir/openssl -L$cur_dir/../curl-7.21.7/lib/.libs"
+ 
+ USB=`cat ../.config |grep "RTCONFIG_USB=y"`
+@@ -83,3 +89,8 @@ $CONFIGURE --prefix=/usr \
+ --without-bzip2 \
+ --enable-shared \
+ --disable-static
++_rc=$?
++# reaper 2026-11-06 (audit F-4): the program is linked -pie; its modules are not (see above)
++[ $_rc -eq 0 ] && sed -i 's/^lighttpd_LDFLAGS = -export-dynamic$/lighttpd_LDFLAGS = -export-dynamic -pie/' src/Makefile
++[ $_rc -eq 0 ] && grep -q '^lighttpd_LDFLAGS = -export-dynamic -pie$' src/Makefile || { echo "lighttpd: -pie not set in src/Makefile" >&2; [ $_rc -ne 0 ] || _rc=1; }
++exit $_rc
+diff --git a/release/src/router/lighttpd-1.4.39/src/log.c b/release/src/router/lighttpd-1.4.39/src/log.c
+index 2bccc0dc428..206fe806d9a 100755
+--- a/release/src/router/lighttpd-1.4.39/src/log.c
++++ b/release/src/router/lighttpd-1.4.39/src/log.c
+@@ -725,7 +725,7 @@ void dprintf_impl(const char* file,const char* func, size_t line, int enable, co
+ 	        debug_log_downsizing();
+ 	    }
+ 
+-        int nfd = open(LIGHTTPD_DEBUG_LOG_FILE_PATH, O_WRONLY | O_APPEND | O_CREAT);
++        int nfd = open(LIGHTTPD_DEBUG_LOG_FILE_PATH, O_WRONLY | O_APPEND | O_CREAT, 0600);	/* reaper 2026-11-06: the mode was missing (garbage bits on create); FORTIFY refuses it */
+ 
+         dprintf(nfd, WHERESTR, ts, file, func, line);
+         va_start(ap, fmt);
+-- 
+2.25.1
+

@@ -318,7 +318,7 @@ try:
     addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
     j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
     x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
-    check("v1.9 6in4: the walker reports itself as 1.12 (v1.12 = a DNAT from one router address to another is the router)", j6.get("ver") == "1.12", j6.get("ver"))
+    check("v1.9 6in4: the walker reports itself as 1.13 (v1.13 = more WAN-destination candidates)", j6.get("ver") == "1.13", j6.get("ver"))
     j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
     x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
     j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
@@ -549,7 +549,7 @@ try:
                      .replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
                      nv=wgnv, witness=None, tag="c3d")
     x = wit(j, "C3"); check("C3: forwarded to the router's own address but nothing accepts it: red", x and x["state"] == "red", x)
-    check("the simulator reports version 1.12", '"1.12"' in json.dumps(j), str(j)[:200])
+    check("the simulator reports version 1.13", '"1.13"' in json.dumps(j), str(j)[:200])
 
     # D5 - the escape hatch. Gatekeeper enforcement is FORWARD-side; a rule
     # that reached INPUT would lock the admin out of their own router.
@@ -628,6 +628,34 @@ try:
     wcc = wsrc.replace("-A REAPER_WARDEN -m set --match-set rw_threat src", cc + "-A REAPER_WARDEN -m set --match-set rw_threat src")
     j, out, rc = run(save4=wcc, nv=NV, members=MEMBERS + "rw_threat 198.51.100.7\n", witness=None, tag="ws5")
     check("wansrc: 40 country sets ahead of rw_threat still leave rw_threat tested", j.get("wansrc") == "203.0.113.99", (j.get("wansrc"), j.get("wansrc_note")))
+
+    # THE WAN WITNESS DESTINATION. 2026-11-06 (owner box, walker 1.12): the
+    # Encrypted DNS block put every public resolver in redns_doh and firehol
+    # put both documentation addresses in rw_threat, so all six candidates were
+    # claimed, the fallback 1.1.1.1:443 hit the DoH reject and 27 "reaches the
+    # WAN" rows went red on a working box. v1.13 goes on to ordinary addresses.
+    wed = SAVE4.replace(":WARDEN - [0:0]\n", ":WARDEN - [0:0]\n:REAPER_EDNS - [0:0]\n") \
+               .replace("-A FORWARD -i br0 -o eth0 -p tcp -m multiport --dports 25,465",
+                        "-A FORWARD -i br0 -j REAPER_EDNS\n-A FORWARD -i br0 -o eth0 -p tcp -m multiport --dports 25,465") \
+               .replace("-A RW_DROP -j DROP\n", "-A RW_DROP -j DROP\n"
+                        "-A REAPER_EDNS -p tcp -m tcp --dport 443 -m set --match-set redns_doh dst -j REJECT --reject-with tcp-reset\n"
+                        "-A REAPER_EDNS -m set --match-set rw_threat dst -j DROP\n")
+    six = "".join("redns_doh %s\n" % c for c in ("1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222")) + \
+          "rw_threat 198.51.100.7\nrw_threat 203.0.113.99\n"
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + six, witness=None, tag="wd1")
+    check("wandst: all six old candidates claimed (DoH block + bogons) = the next, ordinary address is used and noted",
+          j.get("wandst") == "17.0.0.1" and "1.1.1.1" in j.get("wandst_note", ""), (j.get("wandst"), j.get("wandst_note")))
+    x = wit(j, "A1"); check("wandst: 'LAN host reaches the WAN' is green again, witnessed to 17.0.0.1 (was red at REAPER_EDNS)",
+          x and x["state"] == "green" and "17.0.0.1" in x["witness"], x)
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + six + "rw_threat 17.0.0.1\nrw_threat 20.0.0.1\n", witness=None, tag="wd2")
+    check("wandst: further claims step on down the list", j.get("wandst") == "151.101.0.1", (j.get("wandst"), j.get("wandst_note")))
+    allten = six + "".join("rw_threat %s\n" % c for c in ("17.0.0.1", "20.0.0.1", "151.101.0.1", "193.0.6.139"))
+    j, out, rc = run(save4=wed, nv=NV, members=MEMBERS + allten, witness=None, tag="wd3")
+    check("wandst neg: every candidate claimed = 1.1.1.1 and the note says every (an honest red stays possible)",
+          j.get("wandst") == "1.1.1.1" and "every candidate" in j.get("wandst_note", ""), (j.get("wandst"), j.get("wandst_note")))
+    x = wit(j, "A1"); check("wandst neg: ...and that row is still red at the DoH reject", x and x["state"] == "red" and "REAPER_EDNS" in x["rule"], x)
+    j, out, rc = run(save4=wed, nv=NV, witness=None, tag="wd4")
+    check("wandst: nothing claims 1.1.1.1 = the documented default, no note", j.get("wandst") == "1.1.1.1" and j.get("wandst_note") == "", (j.get("wandst"), j.get("wandst_note")))
 
     # ---- the convergence pass (owner, 2026-09-16) ----
     # mode is a constant: the report is advisory by design
@@ -710,7 +738,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.12", j.get("ver") == "1.12", j.get("ver"))
+    check("pass2: walker is v1.13", j.get("ver") == "1.13", j.get("ver"))
 
     # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
     # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,

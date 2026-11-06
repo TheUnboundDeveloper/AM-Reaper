@@ -117,7 +117,8 @@ mk = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 check("markers pin the sweep in libshared and rc, the review line, both pages and the diag line",
       all(w in mk for w in ("usr/lib/libshared.so|jffs: write access for all users removed from|1", "sbin/rc|reaper_jffs_perm_sweep|1",
                             "sbin/rc|writable by any user (first:|1", "www/Reaper_Firewall.asp|rv_wwrap|2",
-                            "www/Main_ReaperDash.asp|ww=j.ww|1", "usr/sbin/reaper_diag|/jffs world-write :|1")))
+                            # 2026-11-06: the dashboard sums /jffs and the /tmp,/var folders (C-8): ww=(j.ww||0)+(j.wwt||0)
+                            "www/Main_ReaperDash.asp|ww=(j.ww|1", "usr/sbin/reaper_diag|/jffs world-write :|1")))
 
 # ---------------------------------------------------------------- the fixture
 def mk_tree(base):
@@ -244,7 +245,8 @@ else:
         tmpd = os.path.join(td, "rv"); os.mkdir(tmpd)
         script = os.path.join(td, "ww.sh")
         with open(script, "w", newline="\n") as fh:
-            fh.write("RV_TMP=%s\nlogger() { shift 2; echo \"$*\" >> $RV_TMP/syslog; }\n" % tmpd
+            # RV_WWT_ROOTS: the /tmp + /var folder check (2026-11-06, C-8) has its own test; not the host's /tmp here
+            fh.write("RV_TMP=%s\nRV_WWT_ROOTS=%s/no-wwt-root\nlogger() { shift 2; echo \"$*\" >> $RV_TMP/syslog; }\n" % (tmpd, td)
                      # 2026-11-05 (audit): the scanned set is $_wr (/jffs, plus a long-term store base off /jffs)
                      + fn_ww.replace("_wr=/jffs;", "_wr=%s;" % root2) + "\n" + fn_json + "\n"
                      + "_rv_ww\n_rv_json 1 < /dev/null > $RV_TMP/review.json\n")

@@ -1,0 +1,204 @@
+From 03c6e8bfa3e008a756efcb43f23e6a91c1c3b424 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:33 -0500
+Subject: [PATCH] Security Review: /tmp and /var folders; rc makes Samba's and
+ Stubby's folders 0755
+
+- The world-writable check also lists folders under /tmp and /var that any user may write and that
+  are not sticky: two levels, symlinked folders not followed, nothing under the USB mount points.
+  Its own count and text on the Firewall > Status card and the dashboard bar (these are made at
+  every start, so the /jffs wording 'the next reboot removes it' would be wrong).
+- The first read of a router found six, all made 0777 by rc at every start through mkdir_if_none
+  (it forces 0777): /etc/samba, /var/run, /var/log, /var/lib and /var/cache samba, and
+  /etc/stubby. Only root uses them (smbd, nmbd and stubby are started by rc as root, rc writes
+  their configs); rc now takes each to 0755 right after making it - Samba's own install mode. The
+  helper itself (45 callers, USB share folders among them) is unchanged.
+Main_ReaperDash.asp also carries the clock fix of the UI commit (fixed-width digit cells).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c             | 25 +++++++++++++++++++---
+ release/src/router/rc/sdn.c                |  1 +
+ release/src/router/rc/services.c           |  1 +
+ release/src/router/rc/usb.c                |  7 ++++++
+ release/src/router/www/Main_ReaperDash.asp |  9 +++++---
+ release/src/router/www/Reaper_Firewall.asp |  6 ++++++
+ 6 files changed, 43 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index bf81015d7f3..01e5c9e41da 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -261,7 +261,7 @@ static void rwatch_gen(void)
+ 	  "# line is whatever was typed): backslash and quote escaped, control bytes stripped by the\n"
+ 	  "# caller; the page renders with textContent only. Changes first, baseline rows after, 200 max.\n"
+ 	  "_rv_json() {\n"
+-	  "  awk -F'\t' -v armed=\"$1\" -v ts=\"$(date +%s)\" -v AUTHF=\"$RV_TMP/review.auth\" -v WWF=\"$RV_TMP/review.ww\" '\n"
++	  "  awk -F'\t' -v armed=\"$1\" -v ts=\"$(date +%s)\" -v AUTHF=\"$RV_TMP/review.auth\" -v WWF=\"$RV_TMP/review.ww\" -v WWT=\"$RV_TMP/review.wwt\" '\n"
+ 	  "    function esc(s) { gsub(/\\\\/, \"\\\\\\\\&\", s); gsub(/\"/, \"\\\\\\\\&\", s); return s }\n"
+ 	  "    function item() { return \"{\\\"t\\\":\\\"\" $2 \"\\\",\\\"k\\\":\\\"\" esc($3) \"\\\",\\\"st\\\":\\\"\" $1 \"\\\",\\\"v\\\":\\\"\" esc($4) \"\\\"}\" }\n"
+ 	  "    $2==\"T\" { tr=1; next }\n"
+@@ -284,7 +284,9 @@ static void rwatch_gen(void)
+ 	   * _rv_ww - its own fields, because the pages word notices_n as failed logins */
+ 	  "      ww=0; wp=\"\"\n"
+ 	  "      if ((getline line < WWF) > 0) { split(line, f, \" \"); if (f[1]==\"ww\") { ww=f[2]+0; wp=substr(line, length(f[1]) + length(f[2]) + 3) } }\n"
+-	  "      printf \"],\\\"notices_n\\\":%d,\\\"ww\\\":%d,\\\"ww_p\\\":\\\"%s\\\"}\\n\", m, ww, esc(wp)\n"
++	  "      wwt_n=0; wwt_s=\"\"\n"
++	  "      if ((getline line < WWT) > 0) { split(line, f, \" \"); if (f[1]==\"wwt\") { wwt_n=f[2]+0; wwt_s=substr(line, length(f[1]) + length(f[2]) + 3) } }\n"
++	  "      printf \"],\\\"notices_n\\\":%d,\\\"ww\\\":%d,\\\"ww_p\\\":\\\"%s\\\",\\\"wwt\\\":%d,\\\"wwt_p\\\":\\\"%s\\\"}\\n\", m, ww, esc(wp), wwt_n, esc(wwt_s)\n"
+ 	  "    }'\n"
+ 	  "}\n"
+ 	  /* 2026-10-20 (field, RT-BE88U): rc removes write-for-everyone from every file and
+@@ -296,6 +298,12 @@ static void rwatch_gen(void)
+ 	   * firmware's busybox find has no -type, -perm or -xdev (r1 metal: a find-based
+ 	   * first version read 0 with a 0666 file planted); -a includes the hidden files,
+ 	   * the 9th mode character is the other-write bit, a trailing t/T is sticky. */
++	  /* 2026-11-06 (audit C-8): folders under /tmp and /var that any user may write and that lack the
++	   * sticky bit (review 2026-11-03 C-1: a nobody process could hold rc's lock, redirect a mount or plant
++	   * a file a root daemon trusts). Folders only - stock files there churn. Two levels; a symlinked
++	   * folder is not followed and nothing under /tmp/mnt (the USB mount points) is listed, so a USB disk
++	   * is never walked. Own count (wwt): stock creates these at every start, so the /jffs wording
++	   * ("the next reboot removes it") would be wrong. RV_WWT_ROOTS is for the tests. */
+ 	  "_rv_ww() {\n"
+ 	  /* 2026-11-05 (audit): closed programs write these 0666 (nt_center's pid file, the diag databases); nothing
+ 	   * but root (their owner) reads them - other-write comes off on every tick. And the long-term store base
+@@ -312,6 +320,17 @@ static void rwatch_gen(void)
+ 	  "  else\n"
+ 	  "    rm -f $RV_TMP/review.ww $RV_TMP/ww.said\n"
+ 	  "  fi\n"
++	  "  for _r in ${RV_WWT_ROOTS:-/tmp /var}; do [ -d \"$_r\" ] || continue; echo \"$_r:\"; ls -lan \"$_r/\"; for _d in \"$_r\"/*; do [ -d \"$_d\" ] && [ ! -L \"$_d\" ] && [ \"$_d\" != \"$_r/mnt\" ] && { echo \"$_d:\"; ls -lan \"$_d/\"; }; done; done 2>/dev/null | awk '/^\\/.*:$/ { d=substr($0, 1, length($0)-1); next } ($1 ~ /^d.......w/ && $1 !~ /[tT]$/) { n=$0; for (i=1;i<=8;i++) sub(/^[^ ]+ +/, \"\", n); if (n==\".\" || n==\"..\") next; print d \"/\" n }' | head -n 100 > $RV_TMP/wwt.lst\n"
++	  "  _tn=$(wc -l < $RV_TMP/wwt.lst | tr -d ' ')\n"
++	  "  if [ \"${_tn:-0}\" -gt 0 ]; then\n"
++	  "    _tp=$(head -n 1 $RV_TMP/wwt.lst | tr -d '\\000-\\037\\177')\n"
++	  "    printf 'wwt %s %s\\n' \"$_tn\" \"$_tp\" > $RV_TMP/review.wwt\n"
++	  "    [ \"$_tn\" = \"$(cat $RV_TMP/wwt.said 2>/dev/null)\" ] || logger -t rwatch \"security review: $_tn folder(s) under /tmp or /var are writable by any user and not sticky (first: $_tp) - a compromised non-root service could place or replace files there; they are created that way at every start\"\n"
++	  "    echo \"$_tn\" > $RV_TMP/wwt.said\n"
++	  "  else\n"
++	  "    rm -f $RV_TMP/review.wwt $RV_TMP/wwt.said\n"
++	  "  fi\n"
++	  "  rm -f $RV_TMP/wwt.lst\n"
+ 	  "  rm -f $RV_TMP/ww.lst\n"
+ 	  "  return 0\n"
+ 	  "}\n"
+@@ -355,7 +374,7 @@ static void rwatch_gen(void)
+ 	  "  return 0\n"
+ 	  "}\n"
+ 	  "_rv_run() {\n"
+-	  "  if [ \"$(_nv rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
++	  "  if [ \"$(_nv rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.wwt $RV_TMP/wwt.said $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
+ 	  "  _rv_inv > $RV_TMP/review.inv.tmp 2>/dev/null && mv -f $RV_TMP/review.inv.tmp $RV_TMP/review.inv || return 0\n"
+ 	  "  _rv_auth\n"
+ 	  "  _rv_ww\n"
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index 6939213f1b3..afa3092fc32 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -388,6 +388,7 @@ void _start_sdn_stubby(const MTLAN_T *pmtl, char *config_file, const size_t path
+ 	unlink(buf);
+ 
+ 	mkdir_if_none("/etc/stubby");
++	chmod("/etc/stubby", 0755);	/* reaper 2026-11-06: mkdir_if_none forces 0777; rc writes the configs, stubby runs as root */
+ 
+ 	// create /etc/stubby/stubby-<subnet_idx>.yml
+ 	snprintf(config_file, path_len, "/etc/stubby/stubby-%d.yml", pmtl->nw_t.idx);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 567f2d7aba1..7b0aca6820c 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -2806,6 +2806,7 @@ void start_stubby(void)
+ 	stop_stubby();
+ 
+ 	mkdir_if_none("/etc/stubby");
++	chmod("/etc/stubby", 0755);	/* reaper 2026-11-06: mkdir_if_none forces 0777; rc writes the configs, stubby runs as root */
+ 
+ 	if ((fp = fopen(stubby_config, "w")) == NULL)
+ 		return;
+diff --git a/release/src/router/rc/usb.c b/release/src/router/rc/usb.c
+index ad99fd5df04..edafc2bd3e6 100644
+--- a/release/src/router/rc/usb.c
++++ b/release/src/router/rc/usb.c
+@@ -3692,6 +3692,13 @@ start_samba(void)
+ 	   0700 (secrets.tdb, the messaging sockets) and never re-checks it, so hold it there
+ 	   on every start. /var is tmpfs: nothing of a user's is touched. */
+ 	chmod("/var/lib/samba/private", 0700);
++	/* reaper 2026-11-06 (Security Review, /tmp and /var check): mkdir_if_none forces 0777; only root uses
++	   these (smbd/nmbd run as root, rc writes the configs), and 0755 is Samba's own install mode */
++	chmod("/etc/samba", 0755);
++	chmod("/var/run/samba", 0755);
++	chmod("/var/log/samba", 0755);
++	chmod("/var/lib/samba", 0755);
++	chmod("/var/cache/samba", 0755);
+ #endif
+ 
+ 	unlink("/etc/smb.conf");
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 928408fc425..1f8c2c9fbfd 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -90,6 +90,8 @@ main{min-width:0}
+    in-file usage check and the dashboard clock lost its red seconds while every other
+    page, drawn by reaper_shell.asp, kept them (owner report 2026-09-07). */
+ .railclock .rc-sec{color:var(--crimson)}
++/* fixed digit cells (js/reaper_clock.js): Rajdhani has no tabular figures; .62em = widest digit .542em + the .07em tracking */
++.railclock .rc-time .rd{display:inline-block;width:.62em;text-align:center;letter-spacing:0;font-weight:inherit}
+ .railclock .rc-date{font-family:var(--hdr);font-weight:600;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--steel);margin-top:4px}
+ /* reaper 2026-08-17: STICKY, so the signet stays reachable no matter how long
+    the rail gets. margin-top:auto alone pins it to the foot of the RAIL, and the
+@@ -509,10 +511,11 @@ main{min-width:0}
+       /* the posture row paints from this same report (paintReview lives in the main block) */
+       window.RVJ=j; if(typeof paintReview==='function')paintReview();
+       /* drift needs an accepted baseline; a failed-login burst (notices_n) does not */
+-      var u=(j&&j.ok&&j.armed)?(j.unreviewed||0):0, nn=(j&&j.ok)?(j.notices_n||0):0, ww=(j&&j.ok)?(j.ww||0):0, t=[];
++      var u=(j&&j.ok&&j.armed)?(j.unreviewed||0):0, nn=(j&&j.ok)?(j.notices_n||0):0, ww=(j&&j.ok)?(j.ww||0):0, wwt=(j&&j.ok)?(j.wwt||0):0, t=[];
+       if(u>0)t.push(`<#RDSH_104#>`.replace('%1',u));
+       if(nn>0)t.push(`<#RDSH_106#>`.replace('%1',nn));
+       if(ww>0)t.push(`<#RDSH_117#>`.replace('%1',ww));
++      if(wwt>0)t.push(`<#RDSH_119#>`.replace('%1',wwt));
+       if(t.length){txt.textContent=t.join(' - ');bar.className='rvb on';}
+       else bar.className='rvb';
+     };
+@@ -525,7 +528,7 @@ main{min-width:0}
+ 
+   <!-- LEFT RAIL (always expanded; menu mirrors the current firmware) -->
+   <aside class="rail">
+-    <div class="railclock"><div class="rc-time" id="rc_time">--:--:--</div><div class="rc-date" id="rc_date">&mdash;</div></div>
++    <div class="railclock"><div class="rc-time" id="rc_time"><b class="rd">-</b><b class="rd">-</b>:<b class="rd">-</b><b class="rd">-</b>:<b class="rd">-</b><b class="rd">-</b></div><div class="rc-date" id="rc_date">&mdash;</div></div>
+     <script>var RP_CLK={seed:"<% uptime(); %>",dw:[`<#date_Sun_itemdesc#>`,`<#date_Mon_itemdesc#>`,`<#date_Tue_itemdesc#>`,`<#date_Wed_itemdesc#>`,`<#date_Thu_itemdesc#>`,`<#date_Fri_itemdesc#>`,`<#date_Sat_itemdesc#>`],mo:[`<#Reaper_c_mon_0#>`,`<#Reaper_c_mon_1#>`,`<#Reaper_c_mon_2#>`,`<#Reaper_c_mon_3#>`,`<#Reaper_c_mon_4#>`,`<#Reaper_c_mon_5#>`,`<#Reaper_c_mon_6#>`,`<#Reaper_c_mon_7#>`,`<#Reaper_c_mon_8#>`,`<#Reaper_c_mon_9#>`,`<#Reaper_c_mon_10#>`,`<#Reaper_c_mon_11#>`]};</script><script src="/js/reaper_clock.js"></script>
+     <div class="raillang"><span class="raillbl"><#Reaper_c_language#>:</span><select class="raillangsel" id="select_lang" title="<#Reaper_c_language#>" aria-label="<#Reaper_c_language#>"></select></div>
+ 
+@@ -1213,7 +1216,7 @@ function paintReview(){
+     /* no report yet: after a boot the first check can take up to 10 minutes -
+        a baseline on disk keeps the Baseline word, amber until it is checked */
+     if(!j||!j.ok){ if(j&&j.armed){ set(`<#RDSH_108#>`,'warn',`<#RDSH_116#>`); } else { set(`<#RDSH_109#>`,'warn',`<#RDSH_114#>`); } return; }
+-    var u=j.armed?(j.unreviewed||0):0, nn=j.notices_n||0, ww=j.ww||0;
++    var u=j.armed?(j.unreviewed||0):0, nn=j.notices_n||0, ww=(j.ww||0)+(j.wwt||0);	/* + /tmp, /var folders (C-8) */
+     if(u>0||nn>0||ww>0){
+       var p=[]; if(u>0)p.push(`<#RDSH_112#>`.replace('%1',u)); if(nn>0)p.push(`<#RDSH_115#>`.replace('%1',nn)); if(ww>0)p.push(`<#RDSH_118#>`.replace('%1',ww));
+       set(`<#RDSH_105#>`,'danger',p.join(' - ')); return;
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index cecb1d4e982..7eed0ab6699 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -276,6 +276,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+     <p class="note hidden" id="rv_trunc"><#RFW_354#></p>
+     <div id="rv_nwrap" class="hidden"><p class="note"><b><#RFW_360#></b></p><ul class="rvn" id="rv_nlist"></ul></div>
+     <div id="rv_wwrap" class="hidden"><p class="note" id="rv_ww"></p></div>
++    <div id="rv_wwtwrap" class="hidden"><p class="note" id="rv_wwt"></p></div>
+     <p class="note"><#RFW_336#></p>
+     <p class="note"><#RFW_364#></p>
+     <!-- 2026-10-20 (reviewer: /jffs churn made every run noise; accepts must be logged):
+@@ -1674,6 +1675,11 @@ function rvRender0(j){
+     $('rv_ww').textContent=`<#RFW_384#>`.replace('%1',j.ww).replace('%2',j.ww_p||'');
+     $('rv_wwrap').classList.remove('hidden');
+   }
++  /* 2026-11-06 (audit C-8): folders under /tmp and /var - created that way at every start */
++  if(j.wwt>0){
++    $('rv_wwt').textContent=`<#RFW_410#>`.replace('%1',j.wwt).replace('%2',j.wwt_p||'');
++    $('rv_wwtwrap').classList.remove('hidden');
++  }
+ }
+ /* 2026-10-26 (owner): every action works on the ticked rows through ONE bar (a single row is one tick) - the
+    per-row buttons that repeated the bar are gone. Accept folds the rows into the baseline (only against an
+-- 
+2.25.1
+

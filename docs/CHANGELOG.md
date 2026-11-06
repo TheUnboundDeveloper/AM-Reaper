@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.2** · 2026-11-05 <!--@stamp-->
+> **Doc status:** current as of **v3.7.3** · 2026-11-06 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,39 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.3 — Wallguard takes AdGuard Home rule lists; Chrome's Secure DNS no longer slips past the Encrypted DNS block; kernel CVE fixes; port trigger keeps live sessions
+
+Everything in v3.7.2 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Advanced rules in Wallguard.** A new box on the Wallguard page takes an AdGuard Home rule list as it is, up to
+  40,000 characters: `||name^` blocks a name and its subdomains, `|name|` that name only, `@@` allows, and
+  `$important`, `$client=` (an address, a MAC or a device's name), `$ctag=` (a Wallguard profile), `$dnstype=`,
+  `$dnsrewrite=`, wildcards and `/regex/` all work. A rule for some devices applies to those devices only, and a
+  block is never put on a name the router itself needs. After Save the page shows how many rules are in use and lists
+  every line it could not use, with the reason. Invisible characters pasted with a list (zero-width spaces, byte-order
+  marks) are removed and counted; a device's name in `$client=` can also be its DHCP reservation name.
+- **Chrome's Secure DNS no longer gets past the Encrypted DNS block.** With the router's own DNS Privacy set to a
+  Cloudflare family or security name, the block left all of `cloudflare-dns.com` open, so Chrome's "Secure DNS:
+  Cloudflare" still worked. The provider name now stays blocked and only the router's own DoT name answers, and the
+  built-in address list adds Chrome's Cloudflare endpoint and the missing IPv6 addresses of Firefox's.
+- **Kernel CVE fixes.** CVE-2024-26921 (IP fragment reassembly kept a socket reference, ported to this 4.19 kernel),
+  CVE-2023-4207 (the fw packet classifier) and CVE-2023-4623 (the HFSC scheduler), both use-after-free.
+- **Port trigger keeps live sessions.** Any firewall change, such as Warden or Gatekeeper updating its rules, used to
+  close every open trigger port, which dropped game and VoIP sessions. Each trigger rule now keeps its own ports; a
+  rule you remove still closes its ports at once.
+- **Security Review watches /tmp and /var folders** that any user could write. The router made six of them that way
+  at every start (Samba's and Encrypted DNS's working folders); they are now created writable by root only, so the
+  review no longer reports them after a flash.
+- **The lighttpd web server is built position-independent with FORTIFY checks**, and its debug log is created
+  readable by root only.
+- **Eight stock pages that nothing reached are gone** (old access-point list and scan pages, the WAN auto-detect page,
+  three AiProtection mobile pages and the old device list). Their addresses open the matching Reaper page.
+- **Rule Status:** with the Encrypted DNS block on, the "reaches the Internet" rows no longer all read red; the
+  checker now finds a test address that no block list holds.
+- **AiMesh** shows a node location such as "First Floor" as typed, and the **clocks** on the dashboard and the top bar
+  no longer jitter as the seconds change.
 
 ## v3.7.2 — 279 kernel fixes and a High in the Wi-Fi 7 frame parser; CVE fixes in dnsmasq, netatalk and more; Let's Encrypt without DDNS; DNS rewrites in Wallguard; FTP passthrough off by default
 

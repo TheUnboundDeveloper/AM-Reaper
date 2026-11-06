@@ -34,7 +34,8 @@ def check(name, cond, detail=""):
     if not cond: fails.append(name + (" - " + str(detail)[:400] if detail else ""))
 
 src = open(INJ, encoding="utf-8").read()
-rows = re.findall(r'\{ "([a-z0-9_.]+)",\s*"([^"]+)",\s*([01]) \}', src[src.index("reaper_pagemap[] = {"):])
+# 2026-11-06: page names may carry '-' (device-map/clients-listview.asp, audit B-6)
+rows = re.findall(r'\{ "([a-z0-9_.-]+)",\s*"([^"]+)",\s*([01]) \}', src[src.index("reaper_pagemap[] = {"):])
 check("reaper_pagemap[] parses (one table, ~69 rows)", len(rows) >= 60, len(rows))
 check("no second copy of the map: no SUP literal and no reaper_gone[] table left in the source",
       '\\"advanced_' not in src and "reaper_gone[] = {" not in src and "static const char REAPER_BLOCK[]" not in src)

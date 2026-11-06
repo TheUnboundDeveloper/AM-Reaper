@@ -62,7 +62,7 @@ check("firewall: REAPER_EDNS declared in all four filter headers, called beside 
 check("dnsmasq: the DoH names are included in the main and every guest instance; the canaries follow the switch",
       sv.count("reaper_edns_dns_conf()") == 1 and sd.count("reaper_edns_dns_conf()") == 1
       and "if ((n == 1) || edns_block_enabled() ||" in sv and "if ((n == 1) || edns_block_enabled() ||" in sd)
-check("rc: the router's own DNS Privacy upstream names are never answered NXDOMAIN", "edns_router_upstream(s)" in ec)
+check("rc: the router's own DNS Privacy upstream names are never answered NXDOMAIN", "(up = edns_router_upstream(s)) == 1" in ec)
 check("defaults: off (reaper_doh_block 0)", '{ "reaper_doh_block", "0", CKN_STR1' in read("shared/defaults.c"))
 web = read("httpd/web.c")
 check("CGI: the block's state rides the status, and 'Update list now' runs in rc's background",
@@ -160,6 +160,76 @@ else:
             check("[%s] logged the update and the failure" % tag,
                   "address list updated: 7 addresses" in open(os.path.join(work, "logger.out")).read()
                   and "download failed, the previous list stays in use" in open(os.path.join(work, "logger.out")).read())
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+# ---------------------------------------------------------------- the DoH name file, run (2026-11-06, metal _r4)
+# With DNS Privacy on family.cloudflare-dns.com the block once dropped the whole cloudflare-dns.com entry, so
+# chrome.cloudflare-dns.com (Chrome "Secure DNS: Cloudflare") resolved for every device. The parent stays blocked;
+# only the router's own names are carved out (server=/<host>/# - the longer match wins in dnsmasq, proven on 2.93).
+CC = shutil.which("gcc") or shutil.which("cc")
+if not CC:
+    print("note: no C compiler - the name-file run is skipped")
+else:
+    a, z = ec.find("static int edns_router_upstream"), ec.find("/* end of start_firewall")
+    check("rc: the router's names under a blocked parent are carved out, the parent stays",
+          0 < a < z and "static char *edns_router_carve(" in ec and "b = edns_router_carve(b, &len, s);" in ec)
+    STUB = r'''#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <ctype.h>
+#include <stdarg.h>
+#define RED_DIR "."
+#define EDNS_NAMES "names.txt"
+#define EDNS_CONF "doh.conf"
+static const char *RL;
+static char *nvram_safe_get(const char *k) { (void)k; return (char *)RL; }
+static int edns_block_enabled(void) { return 1; }
+static int reaper_secure_dir(const char *d, int m) { (void)d; (void)m; return 0; }
+static int reaper_write_changed(const char *p, const char *b, size_t n, int m)
+{ FILE *f = fopen(p, "w"); (void)m; if (!f) return -1; fwrite(b, 1, n, f); fclose(f); return 0; }
+static int _vstrsep(char *buf, const char *sep, ...)
+{ va_list ap; char **p; int n = 0; va_start(ap, sep); while ((p = va_arg(ap, char **))) { if (!buf) break; *p = strsep(&buf, sep); n++; } va_end(ap); return n; }
+#define vstrsep(buf, sep, args...) _vstrsep(buf, sep, args, NULL)
+'''
+    MAIN = r'''
+int main(int c, char **v)
+{
+	const char *r;
+	FILE *f;
+	int ch;
+	(void)c;
+	RL = v[1];
+	if (!(r = reaper_edns_dns_conf()))
+		return 2;
+	if (!(f = fopen(r, "r")))
+		return 3;
+	while ((ch = fgetc(f)) != EOF)
+		putchar(ch);
+	fclose(f);
+	return 0;
+}
+'''
+    work = tempfile.mkdtemp(prefix="edns_carve_")
+    try:
+        open(os.path.join(work, "h.c"), "w").write(STUB + ec[a:z] + MAIN)
+        open(os.path.join(work, "names.txt"), "w").write("cloudflare-dns.com\ndns.google  # comment\n\n")
+        r = subprocess.run([CC, "-std=gnu99", "-O2", "-Wall", "-Werror", "-o", os.path.join(work, "h"), os.path.join(work, "h.c")],
+                           capture_output=True, text=True)
+        check("name-file harness builds from rc/encdns.c", r.returncode == 0, r.stderr[-600:])
+        if r.returncode == 0:
+            def conf(rl):
+                return subprocess.run([os.path.join(work, "h"), rl], capture_output=True, text=True, cwd=work).stdout
+            fam = "<1.1.1.3>853>family.cloudflare-dns.com><1.0.0.3>853>family.cloudflare-dns.com>"
+            check("router on family.cloudflare-dns.com: the parent stays blocked, the router's name carved out once",
+                  conf(fam) == "address=/cloudflare-dns.com/\nserver=/family.cloudflare-dns.com/#\naddress=/dns.google/\n", conf(fam))
+            check("router on dns.google itself: that exact name is left out, nothing carved",
+                  conf("<8.8.8.8>853>dns.google>") == "address=/cloudflare-dns.com/\n", conf("<8.8.8.8>853>dns.google>"))
+            check("a host name with a character outside [A-Za-z0-9.-] is never written into the dnsmasq file",
+                  conf("<1.1.1.3>853>x/y.cloudflare-dns.com>") == "address=/cloudflare-dns.com/\naddress=/dns.google/\n",
+                  conf("<1.1.1.3>853>x/y.cloudflare-dns.com>"))
+            check("no DNS Privacy servers: every name blocked", conf("") == "address=/cloudflare-dns.com/\naddress=/dns.google/\n", conf(""))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

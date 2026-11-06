@@ -1,0 +1,63 @@
+From 020815d51fcee5a10f22937deea514de4ebf6463 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 6 Nov 2026 17:29:49 -0500
+Subject: [PATCH] reaper_fwsim 1.13: more WAN-destination candidates when the
+ usual ones are blocked (102.8 line)
+
+With the Encrypted DNS block on, every public resolver the walker used as its internet-side
+witness was in the DoH set, and the documentation addresses were in Warden's threat set (bogons),
+so the picker fell back to its first candidate and every 'reaches the WAN' row read red, decided
+by the DoH reject on a working router. The list goes on with ordinary allocated, globally routed
+addresses held by different operators, none a resolver (Apple, Microsoft, Fastly, RIPE NCC). They
+come after the old six, so a router that found a free one before keeps the same witness text. No
+packet is sent to any of them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 20 +++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index 6d36d2ec837..454c6ade8f2 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -47,7 +47,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.12"
++#define FWSIM_VER	"1.13"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -1669,12 +1669,24 @@ static const char *wansrc_pick(int fam)
+  * first, so a box that does not block it keeps the fixtures' exact witness
+  * text; the alternatives are other public resolvers and the documentation
+  * ranges. Same non-bypass argument as the source: a row that MEANS "to a
+- * blocked destination" names its own address and never uses this. */
++ * blocked destination" names its own address and never uses this.
++ *
++ * 2026-11-06 (v1.13, owner box, 27 reds at REAPER_EDNS#4): with the
++ * Encrypted DNS block on, ALL four resolvers sit in redns_doh, and the
++ * firehol feed puts both documentation addresses in rw_threat - every
++ * candidate was claimed, the fallback 1.1.1.1:443 was rejected by the DoH
++ * block and every "reaches the WAN" row read red on a working box. So the
++ * list goes on with ordinary addresses: allocated, globally routed, held by
++ * different operators in different countries, none a resolver (Apple
++ * 17/8, Microsoft 20/8, Fastly 151.101/16, RIPE NCC 193.0.6.139). They
++ * come AFTER the first six, so every box that found a free one before
++ * keeps the same witness text. No packet is ever sent to any of them. */
+ static char wandst_why[120];
+ static const char *wandst_pick(void)
+ {
+-	static const char *c4[] = { "1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222", "198.51.100.7", "203.0.113.99" };
+-	const int nc = 6;
++	static const char *c4[] = { "1.1.1.1", "9.9.9.9", "8.8.8.8", "208.67.222.222", "198.51.100.7", "203.0.113.99",
++				    "17.0.0.1", "20.0.0.1", "151.101.0.1", "193.0.6.139" };
++	const int nc = (int)(sizeof(c4) / sizeof(c4[0]));
+ 	struct fw *fw = &fw4; char *why = wandst_why;
+ 	int ci;
+ 	struct addr a;
+-- 
+2.25.1
+

@@ -52,7 +52,8 @@ LISTS = {"gk_rl", "reaper_pbr_rulelist", "reaper_fw_obj", "reaper_fw_grp", "reap
 # not nvram: a /jffs file or the Warden list store, named in the table
 STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rdev_dhcp6",
          "rwatch_rules", "rlog_filter", "wallguard_lists", "wallguard_block", "wallguard_allow", "wallguard_profiles",
-         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys"}
+         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys",
+         "wallguard_adv"}	# 2026-11-06: Advanced rules (/jffs/wallguard/adv)
 FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "amas_bh_park": "AiMesh: this mesh's backhaul", "amas_chanfit": "AiMesh: this mesh's node channels",
     "firmware_check_hour": "spread per router (one shared minute would hit the manifest host at once)",

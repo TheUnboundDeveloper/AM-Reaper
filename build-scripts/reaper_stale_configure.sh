@@ -51,11 +51,23 @@ for cs in "$R"/*/config.status; do
   # Last commit whose diff to router/Makefile mentions this package. -G matches
   # the diff text, so a rule edit for THIS package is what trips it.
   chg=$(git log -1 --format='%ct' -G"\b${pkg}\b" -- release/src/router/Makefile 2>/dev/null)
+  subj=""
+  # 2026-11-06: the package's own preconfigure-script* counts too - that is where its CFLAGS/LDFLAGS
+  # live. The 2026-11-05 lighttpd full-RELRO edit was made there, this check looked at router/Makefile
+  # only, and every local image after it still shipped the 2026-10-27 lighttpd (ET_EXEC, no BIND_NOW);
+  # a clean CI tree configures fresh. Newest of the script's last commit and its file time (an
+  # uncommitted edit is just as stale).
+  for pc in "$d"/preconfigure-script*; do
+    [ -f "$pc" ] || continue
+    for v in $(git log -1 --format='%ct' -- "release/src/router/$pkg/${pc##*/}" 2>/dev/null) $(stat -c%Y "$pc" 2>/dev/null); do
+      if [ "$v" -gt "${chg:-0}" ]; then chg=$v; subj="$pkg/${pc##*/} changed"; fi
+    done
+  done
   [ -n "$chg" ] || continue
   [ "$chg" -gt "$cs_epoch" ] || continue
 
   found=$((found+1))
-  subj=$(git log -1 --format='%h %s' -G"\b${pkg}\b" -- release/src/router/Makefile 2>/dev/null | cut -c1-88)
+  [ -n "$subj" ] || subj=$(git log -1 --format='%h %s' -G"\b${pkg}\b" -- release/src/router/Makefile 2>/dev/null | cut -c1-88)
   echo "  [STALE] $pkg"
   echo "          configured $(date -d "@$cs_epoch" +%Y-%m-%d), rules changed $(date -d "@$chg" +%Y-%m-%d)"
   echo "          $subj"
@@ -65,6 +77,15 @@ for cs in "$R"/*/config.status; do
     # Makefile without it left expat-2.0.1 "configured" with no Makefile, and the
     # build died "no makefile found". The sentinel goes with the rest.
     rm -f "$d/Makefile" "$d/config.status" "$d/stamp-h1"
+    # 2026-11-06: and its build objects. Automake objects depend on their sources, not on the flags, so a
+    # re-configure with new CFLAGS relinked the 2026-10-27 lighttpd objects under the new LDFLAGS (-pie
+    # over non-PIC code = TEXTREL, no FORTIFY). Only git-ignored products go (*.o *.lo *.la *.a and
+    # .libs/), all of them together - a tracked prebuilt is never touched.
+    _objs=$(git ls-files --others --ignored --exclude-standard -- "release/src/router/$pkg" 2>/dev/null \
+            | grep -E '\.(o|lo|la|a)$|/\.libs/' | grep -c .)
+    git ls-files -z --others --ignored --exclude-standard -- "release/src/router/$pkg" 2>/dev/null \
+      | grep -zE '\.(o|lo|la|a)$|/\.libs/' | xargs -0 -r rm -f --
+    echo "          -> removed $_objs build object(s) so they compile with the new flags"
     echo "          -> cleared Makefile + config.status + stamp-h1; next build re-configures"
   fi
 done

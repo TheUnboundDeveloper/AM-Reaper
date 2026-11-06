@@ -126,7 +126,8 @@ if r.returncode == 0:
             "0/0/rp": "M-", "noamas": "-"}   # 0/0/rp: menuTree has no mode test without amasRouter (Wireless is gone in rp, so no R)
     check("AiMesh menu (M) and Roaming Block tab (R) follow menuTree.js, router-and-node models included",
           o["amas"] == want, {k: (o["amas"].get(k), v) for k, v in want.items() if o["amas"].get(k) != v})
-    check("Firewall carries its badge flag in the tree", any("menu_Firewall" == m for m in rt))
+    check("Firewall is in the tree; the dead rail badge flag is gone (Q-C2-8, 2026-11-05)", any("menu_Firewall" == m for m in rt)
+          and "badge" not in t and "fwred" not in t)
     check("rail: every visible menu has a first page and an icon; the dashboard is a top-level page",
           all(x.split(":")[2] == "1" and x.split(":")[1] for x in o["rail"]) and "menu_Index:Main_ReaperDash.asp:1" in o["rail"], o["rail"][:6])
     check("rail opens a real page, never an inherit-only one (the old __HIDE__-first problem)",

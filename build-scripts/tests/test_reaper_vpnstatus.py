@@ -89,7 +89,7 @@ check("Status: links to the server / client pages by tab", all(x in S for x in (
 
 # ---- Reaper_VPNDirector ----
 check("Director: posts vpndirector_rulelist only when edited, restart_vpnrouting0 wait 5 (stock script)",
-      'name="vpndirector_rulelist" value="" disabled' in D and "if (EDITED) c.vpndirector_rulelist = ser(RULES);" in D
+      'name="vpndirector_rulelist"' not in D and "if (EDITED) c.vpndirector_rulelist = ser(RULES);" in D
       and "rp.post(document.form, changed, 'restart_vpnrouting0', 5);" in D and "rp.post(" not in D[D.find("function boot()"):])
 check("Director: stock record format kept, unedited rows written back byte for byte",
       "var f = [q('r_en').checked ? '1' : '0', val('r_desc'), val('r_local'), val('r_remote'), q('r_iface').value]" in D
@@ -113,7 +113,7 @@ check("Director: malformed records (not five fields) shown dimmed, deletable, ne
 
 # ---- Reaper_Tor ----
 check("Tor: posts only the changed Tor_* keys, restart_tor wait 5",
-      all('name="%s" value="" disabled' % k in R for k in ("Tor_enable", "Tor_socksport", "Tor_transport", "Tor_dnsport", "Tor_redir_list"))
+      all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % k, R[R.rfind("<script>"):]) for k in ("Tor_enable", "Tor_socksport", "Tor_transport", "Tor_dnsport", "Tor_redir_list")) and 'name="Tor_' not in R
       and "rp.post(document.form, changed, 'restart_tor', 5);" in R and "rp.post(" not in R[R.find("function boot()"):]
       and "function keep(id, nv, now){ return snap(id) === INIT[id] ? nv : now; }" in R)
 check("Tor: ports 1-65535, distinct (B-TOR-3); device scope with an empty list refused (B-TOR-2)",
@@ -151,7 +151,7 @@ for name, rep in (("Advanced_VPNStatus", "Reaper_VPNStatus.asp"), ("Advanced_VPN
 pf = os.path.join(HERE, "ui_parity", "Advanced_TOR_Content.json")
 if os.path.exists(pf):
     cov = [k for k, v in json.load(open(pf, encoding="utf-8"))["fields"].items() if v == "covered"]
-    check("parity: every covered Tor key is a hidden input of Reaper_Tor.asp", cov and all('name="%s"' % k in R for k in cov), cov)
+    check("parity: every covered Tor key is named in Reaper_Tor.asp's script (rp.changed posts it)", cov and all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % k, R[R.rfind("<script>"):]) for k in cov), cov)
 
 node = shutil.which("node")
 if node:

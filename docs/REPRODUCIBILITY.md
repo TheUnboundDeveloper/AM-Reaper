@@ -1,6 +1,6 @@
 # Verifying a Reaper Build — a Guide for Reviewers
 
-> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.2** · 2026-11-05 <!--@stamp-->
 
 This document explains, for someone who does not trust us and shouldn't have to,
 how to confirm that a published Reaper firmware image was built from exactly the
@@ -82,7 +82,7 @@ tar -xzf /path/to/AM-Reaper/overlays/openssl-3.5-source.tar.gz         # from th
 # 3006.102.8 model) takes ASUS stock 42015's pair from overlays/wlcsm-42015-blobs.tar.gz over its
 # router-sysdep.<model>/{wlan/nvram,wlcsm}/prebuilt/ copies, as CI does.
 #   --keep-cr matters: a few third-party files are CRLF and the series
-#   fails without it. This applies all 946 <!--@patchcount--> patches (through v3.7.1 <!--@treever-->).
+#   fails without it. This applies all 962 <!--@patchcount--> patches (through v3.7.2 <!--@treever-->).
 
 # --- (c) Hash the corresponding source and compare ----------------------------
 git rev-parse HEAD:release/src/router

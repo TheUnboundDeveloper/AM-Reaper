@@ -52,7 +52,7 @@ LISTS = {"gk_rl", "reaper_pbr_rulelist", "reaper_fw_obj", "reaper_fw_grp", "reap
 # not nvram: a /jffs file or the Warden list store, named in the table
 STORE = {"rwarden_ban", "rwarden_allow", "rwarden_dnsallow", "rwarden_dnssrc", "rwarden_dnskeys", "rdev_dhcp6",
          "rwatch_rules", "rlog_filter", "wallguard_lists", "wallguard_block", "wallguard_allow", "wallguard_profiles",
-         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_keys"}
+         "wallguard_assign", "wallguard_services", "wallguard_sched", "wallguard_safe", "wallguard_rewrite", "wallguard_keys"}
 FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "amas_bh_park": "AiMesh: this mesh's backhaul", "amas_chanfit": "AiMesh: this mesh's node channels",
     "firmware_check_hour": "spread per router (one shared minute would hit the manifest host at once)",
@@ -63,6 +63,7 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "reaper_pbr_active": "state", "reaper_pbr_armed": "state", "reaper_pbr_err": "state",
     "reaper_fwsig_override": "one-shot confirm, cleared by its consumer", "reaper_upg_fail": "state",
     "rwarden_lastupd": "state",
+    "reaper_ledns_state": "state", "reaper_ledns_err": "state", "reaper_ledns_when": "state",
     "reaper_store": "this router's USB store", "reaper_store_ds": "this router's USB store",
     "reaper_store_vid": "this router's USB volume pin", "reaper_store_vname": "this router's USB volume pin",
     "rtraf_path": "a USB path on this router",
@@ -71,7 +72,7 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
 }
 STOCK = {   # stock keys whose default Reaper changed: the router settings carry them like any stock setting
     "ASUS_EULA", "ASUS_NEW_EULA", "computer_name", "dns_norebind", "enable_samba", "enable_samba_tuxera",
-    "http_dut_redir", "message_loglevel", "qos_enable", "smbd_cpage", "smbd_cset", "smbd_enable", "st_max_user",
+    "http_dut_redir", "message_loglevel", "nf_ftp", "qos_enable", "smbd_cpage", "smbd_cset", "smbd_enable", "st_max_user",
     "upnp_pinhole_enable", "wrs_cc_enable", "wrs_mals_enable", "wrs_protect_enable", "x_Setting",
 }
 PREFIX = ("reaper_", "rwarden_", "wallguard_", "gk_", "rwatch_", "rtraf_", "rmcp_", "rchq_", "rconn_", "rdev_", "rlog_",
@@ -94,11 +95,12 @@ check("every carried nvram key exists in defaults.c (a typo would carry nothing)
       not (carried - STORE - all_keys), sorted(carried - STORE - all_keys))
 fields = re.findall(r'\{ "([a-z]+)", SH_JFFS "/\1", sh_chk_[a-z]+ \}', web)
 check("every Wallguard settings file (sh_files) is in the settings file",
-      len(fields) == 8 and all("wallguard_" + f in carried for f in fields), fields)
+      len(fields) == 9 and all("wallguard_" + f in carried for f in fields), fields)   # 2026-11-05: + rewrite (DNS rewrites)
 check("the Wallguard page's save and the import share sh_files", "for (i = 0; i < SH_NFILES; i++) {" in web
       and "char *v = get_cgi((char *)sh_files[i].field);" in web and "static const struct { const char *field, *file; int (*check)(char *); } F[]" not in web)
 sect_rst = {"wallguard": "restart_wallguard;start_wallguard_update", "dns": "restart_dnsmasq;restart_rdnshc", "encdns": "restart_rednsd",
-            "watch": "restart_rwatch", "traffic": "restart_rtraf", "export": "restart_rexport", "misc": "restart_upnp"}
+            "watch": "restart_rwatch", "traffic": "restart_rtraf", "export": "restart_rexport", "misc": "restart_upnp",
+            "cert": "restart_reaper_ledns"}
 check("an import restarts each section's service, in ONE notify_rc", all(v in web for v in sect_rst.values())
       and "rcfg_restart(touch_gk, touch_warden, dw_any, touch);" in web and 'if (touch_gk) notify_rc("restart_gk");' not in web)
 check("an import commits every section that writes nvram (pbr / fw keep their own Keep)",
@@ -136,6 +138,7 @@ if CC and region and tbl and all(fns):
 #include <unistd.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
+#include <reaper_rewrite.h>	/* 2026-11-05: Wallguard's DNS rewrite check (sh_chk_rewrite) */
 /* the router's /jffs is the working directory (router A exports, router B imports) */
 #define SH_JFFS "./wallguard"
 #define SH_LIST_MAX 16384
@@ -188,7 +191,7 @@ int main(int argc, char **argv) {
         c = os.path.join(w, "t.c")
         open(c, "w").write(STUB + region + "\n" + fns[0] + fns[1] + tbl.group(0) + "".join(fns[2:]) + MAIN)
         exe = os.path.join(w, "t")
-        r = subprocess.run([CC, "-Wall", "-Wno-unused-function", "-o", exe, c], capture_output=True, text=True)
+        r = subprocess.run([CC, "-Wall", "-Wno-unused-function", "-I", os.path.join(SRC, "shared"), "-o", exe, c], capture_output=True, text=True)
         check("the region compiles on its own", r.returncode == 0, r.stderr[-1500:])
         if r.returncode == 0:
             A, B = os.path.join(w, "A"), os.path.join(w, "B")
@@ -198,6 +201,7 @@ int main(int argc, char **argv) {
             fa = lambda rel, v: open(os.path.join(A, rel), "w").write(v)
             fa("wallguard/lists", "hagezi_normal\nhidden oisd_small\ncustom 2 https://api.example/v1/ name=TFox fmt=json:ioc hdr=Auth-Key\n")
             fa("wallguard/block", "ads.example\n")
+            fa("wallguard/rewrite", "nas.home.arpa 192.168.50.20\nlab.test fd00::3 sub\nwww.home.arpa nas.home.arpa\n")
             fa("wallguard/profiles", "kids 7fffffff Kids\n")
             fa("wallguard/keys", "2 WgKEY-1\n")
             fa("rwarden/dnssrc", "hidden basics\ncustom 1 https://lists.example/hosts.txt name=My%20list\noff 1\n")
@@ -228,6 +232,7 @@ int main(int argc, char **argv) {
             check("import: every exported value was taken", puts and all(v == "0" for v in puts.values()), {k: v for k, v in puts.items() if v != "0"})
             check("import: Wallguard's files and Dreadwatch's sources come back as written",
                   rb("wallguard/lists") == ra("wallguard/lists") and rb("wallguard/block") == ra("wallguard/block")
+                  and rb("wallguard/rewrite") == ra("wallguard/rewrite")
                   and rb("wallguard/profiles") == ra("wallguard/profiles") and rb("rwarden/dnssrc") == ra("rwarden/dnssrc")
                   and rb("rwarden/ban") in (ra("rwarden/ban"), ra("rwarden/ban").rstrip("\n")),
                   [rb("wallguard/lists"), rb("rwarden/dnssrc")])
@@ -239,8 +244,9 @@ int main(int argc, char **argv) {
             # refusals: nothing written
             bad = {"wallguard_block": "not a name!\n", "rwarden_dnssrc": "custom 9 https://x.example/l\n",
                    "reaper_export_url": 'https://x.example/"q', "wallguard_keys": "2 has space", "reaper_dot_srv": "1;reboot",
-                   "wallguard_lists": "custom 1 http://plain.example/\n"}
-            before = {rel: rb(rel) for rel in ("wallguard/block", "rwarden/dnssrc", "wallguard/keys", "wallguard/lists")}
+                   "wallguard_lists": "custom 1 http://plain.example/\n",
+                   "wallguard_rewrite": "nas.home.arpa 192.168.50.20,1.2.3.4\n"}   # a comma would split a host-record
+            before = {rel: rb(rel) for rel in ("wallguard/block", "rwarden/dnssrc", "wallguard/keys", "wallguard/lists", "wallguard/rewrite")}
             r = subprocess.run([exe, "import"], cwd=B, input="".join("%s=%s\n" % (k, v.encode().hex()) for k, v in bad.items()), capture_output=True, text=True)
             puts = dict(l.split()[1:3] for l in r.stdout.split("\n") if l.startswith("PUT "))
             check("import: a bad value in any store is refused", len(puts) == len(bad) and all(v == "-1" for v in puts.values()), puts)

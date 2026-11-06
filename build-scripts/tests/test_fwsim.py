@@ -318,7 +318,7 @@ try:
     addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
     j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
     x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
-    check("v1.9 6in4: the walker reports itself as 1.11 (v1.11 = policy-routed guest bridges)", j6.get("ver") == "1.11", j6.get("ver"))
+    check("v1.9 6in4: the walker reports itself as 1.12 (v1.12 = a DNAT from one router address to another is the router)", j6.get("ver") == "1.12", j6.get("ver"))
     j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
     x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
     j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
@@ -528,6 +528,29 @@ try:
     x = wit(j, "C2"); check("C2: green once OVPNSF exists", x and x["state"] == "green", x)
     x = wit(j, "C4"); check("C4: green once WGSF exists", x and x["state"] == "green", x)
 
+    # C3 (v1.12, field GT-BE98 v3.7.1): a port forward of the WireGuard port to the router's OWN LAN address,
+    # then WGSI's accept, is the router reaching itself - green, the DNAT still shown in the verdict. A DNAT to
+    # another LAN host, or no accept after it, stays red.
+    wgnv = NV.replace("wgs_enable=0", "wgs_enable=1")
+    wgi = vpnf.replace(":WGSF - [0:0]\n", ":WGSF - [0:0]\n:WGSI - [0:0]\n").replace("-A INPUT -j DROP\n", "-A INPUT -j WGSI\n-A INPUT -j DROP\n", 1) \
+              .replace("-A INPUT_ICMP -p icmp -j ACCEPT\n", "-A INPUT_ICMP -p icmp -j ACCEPT\n-A WGSI -p udp -m udp --dport 51820 -j ACCEPT\n", 1)
+    fwd = "-A VSERVER -p tcp -m tcp --dport 443 -j DNAT --to-destination 192.168.50.10:8443\n"
+    j, out, rc = run(save4=wgi, nv=wgnv, witness=None, tag="c3a")
+    x = wit(j, "C3"); check("C3: WGSI accept, no port forward: green", x and x["state"] == "green" and "DNAT" not in x.get("verdict", ""), x)
+    j, out, rc = run(save4=wgi.replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
+                     nv=wgnv, witness=None, tag="c3b")
+    x = wit(j, "C3")
+    check("C3: a forward of the WireGuard port to the router's own LAN address, then WGSI accept: green, the DNAT still in the verdict",
+          x and x["state"] == "green" and "DNAT 192.168.50.1:51820" in x.get("verdict", ""), x)
+    j, out, rc = run(save4=wgi.replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.10:51820\n"),
+                     nv=wgnv, witness=None, tag="c3c")
+    x = wit(j, "C3"); check("C3: the WireGuard port forwarded to another LAN host: red (the router's server never sees it)", x and x["state"] == "red", x)
+    j, out, rc = run(save4=wgi.replace("-A WGSI -p udp -m udp --dport 51820 -j ACCEPT\n", "")
+                     .replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
+                     nv=wgnv, witness=None, tag="c3d")
+    x = wit(j, "C3"); check("C3: forwarded to the router's own address but nothing accepts it: red", x and x["state"] == "red", x)
+    check("the simulator reports version 1.12", '"1.12"' in json.dumps(j), str(j)[:200])
+
     # D5 - the escape hatch. Gatekeeper enforcement is FORWARD-side; a rule
     # that reached INPUT would lock the admin out of their own router.
     j, out, rc = run(save4=gk, nv=NV.replace("gk_enable=0", "gk_enable=1"), witness=None, tag="d5a")
@@ -687,7 +710,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.11", j.get("ver") == "1.11", j.get("ver"))
+    check("pass2: walker is v1.12", j.get("ver") == "1.12", j.get("ver"))
 
     # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
     # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,

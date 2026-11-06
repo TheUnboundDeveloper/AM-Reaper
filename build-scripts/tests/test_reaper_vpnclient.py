@@ -71,11 +71,13 @@ mf = T[T.find('<form method="post" name="form"'):]; mf = mf[:mf.find("</form>")]
 hid = re.findall(r'<input type="hidden" name="([A-Za-z0-9_]+)" value="([^"]*)"( disabled)?>', mf)
 loose = [n for n, v, d in hid if n not in PLUMB and not d]
 check("every setting input starts disabled (only changed keys post)", hid and not loose, loose)
-order = [n for n, v, d in hid]
-ovk = [i for i, n in enumerate(order) if (n.startswith("vpn_client_") and n != "vpn_client_unit") or n.startswith("vpn_crt_client_")]
-wgk = [i for i, n in enumerate(order) if n.startswith("wgc_") and n != "wgc_unit"]
-check("vpn_client_unit precedes the vpn_client_* / vpn_crt_client_* inputs and wgc_unit the wgc_* inputs (httpd web.c:4396 reads the unit ahead of the fields)",
-      order.index("vpn_client_unit") < min(ovk) and order.index("wgc_unit") < min(wgk) and max(ovk) < order.index("wgc_unit"))
+# Q-C1-11 (2026-11-05): the form no longer lists the keys; httpd validate_apply walks router_defaults and looks each name
+# up in the post, so the unit is applied ahead of its fields by router_defaults order, whatever order the post has
+DEFS = open(os.path.join(SRC, "shared", "defaults.c"), encoding="utf-8", errors="replace").read()
+dpos = lambda n: DEFS.find('{ "%s",' % n)
+check("router_defaults lists vpn_client_unit before vpn_client_if and wgc_unit before wgc_enable (validate_apply reads the unit first)",
+      0 <= dpos("vpn_client_unit") < dpos("vpn_client_if") and 0 <= dpos("wgc_unit") < dpos("wgc_enable"))
+check("the form keeps only the apply inputs; the keys are created by rp.changed (Q-C1-11)", not [n for n, v, d in hid if n not in PLUMB])
 check("posts only the diff, nothing on load; untouched Apply says nothing changed",
       "var c = collect(), changed = diff(c)" in T and "if (!n){ msg(`<#RADM_63#>`); return; }" in T
       and "function keep(id, nv, now){ return snap(id) === INIT[id] ? nv : now; }" in T

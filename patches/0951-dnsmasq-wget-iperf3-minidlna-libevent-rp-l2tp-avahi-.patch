@@ -1,0 +1,650 @@
+From 9113972fc7daf5ce15d3b5bfbe1223ef2f9b46ff Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:45 -0500
+Subject: [PATCH] dnsmasq, wget, iperf3, minidlna, libevent, rp-l2tp, avahi,
+ Samba: CVE fixes (102.8 line)
+
+- dnsmasq: CVE-2026-93008 (find_soa on a subdomain), -93009 (DHCPv6 FQDN off by one), -93011
+  (DNSSEC name buffer), -93007 (TCP slots kept for DNSSEC), from upstream.
+- wget 1.25.0: CVE-2026-15146, -58470, -58471, -58472, from upstream.
+- iperf3 3.1.3: JSON_read refuses a length of 0 or over 1 MiB (CVE-2023-38403, CVE-2026-71218);
+  the server refuses parallel streams, length and window outside the client limits
+  (CVE-2026-71217).
+- minidlna: the TiVo SortOrder parser stops before its order arrays fill (CVE-2023-47430).
+- libevent evdns: the name terminator is bounded (CVE-2026-63387). rp-l2tp: [len], not [len+1]
+  (CVE-2026-96891). avahi: CVE-2021-3468 (a client that hangs up).
+- avahi wide-area off (enable-wide-area=no, rc/timemachine.c here, rc/services.c in the Let's
+  Encrypt commit): CVE-2024-52615 / -52616 are in code that no longer runs; REAPER-FIXES.md T11
+  says so.
+- Samba 4: Spotlight (rpc_server:mdssvc) disabled, 3 CVEs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../avahi/avahi-daemon/simple-protocol.c      |  6 +++
+ release/src/router/dnsmasq/src/dnsmasq.c      | 33 ++++++++++-----
+ release/src/router/dnsmasq/src/dnsmasq.h      |  3 +-
+ release/src/router/dnsmasq/src/dnssec.c       | 21 +++++-----
+ release/src/router/dnsmasq/src/rfc1035.c      |  2 +-
+ release/src/router/dnsmasq/src/rfc3315.c      |  2 +-
+ release/src/router/iperf3/src/iperf_api.c     | 17 ++++++++
+ release/src/router/libdisk/write_smb_conf.c   |  4 ++
+ release/src/router/libevent-2.0.21/evdns.c    |  6 ++-
+ release/src/router/minidlna/tivo_commands.c   |  9 +++++
+ release/src/router/rc/timemachine.c           |  4 +-
+ release/src/router/rp-l2tp/tunnel.c           |  2 +-
+ release/src/router/wget/src/convert.c         | 31 ++++++++++----
+ release/src/router/wget/src/ftp-basic.c       | 40 +++++++++++++++++++
+ release/src/router/wget/src/http.c            | 35 +++++++++++-----
+ release/src/router/wget/src/url.c             | 20 ++++++----
+ 16 files changed, 185 insertions(+), 50 deletions(-)
+
+diff --git a/release/src/router/avahi/avahi-daemon/simple-protocol.c b/release/src/router/avahi/avahi-daemon/simple-protocol.c
+index 3e0ebb11444..ffd4503b80f 100644
+--- a/release/src/router/avahi/avahi-daemon/simple-protocol.c
++++ b/release/src/router/avahi/avahi-daemon/simple-protocol.c
+@@ -424,6 +424,12 @@ static void client_work(AvahiWatch *watch, AVAHI_GCC_UNUSED int fd, AvahiWatchEv
+         }
+     }
+ 
++    /* reaper: a hung-up client with nothing left to read made the daemon spin (CVE-2021-3468) */
++    if (events & AVAHI_WATCH_HUP) {
++        client_free(c);
++        return;
++    }
++
+     c->server->poll_api->watch_update(
+         watch,
+         (c->outbuf_length > 0 ? AVAHI_WATCH_OUT : 0) |
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.c b/release/src/router/dnsmasq/src/dnsmasq.c
+index 7440f10c622..cd11f5fb080 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.c
++++ b/release/src/router/dnsmasq/src/dnsmasq.c
+@@ -140,6 +140,9 @@ int main (int argc, char **argv)
+       /* one char flag per possible RR in answer section (may get extended). */
+       daemon->rr_status_sz = 64;
+       daemon->rr_status = safe_malloc(sizeof(*daemon->rr_status) * daemon->rr_status_sz);
++      /* Increase TCP process slots by half, and reserve the extra for validation-to-tcp use only. */
++      daemon->dnssec_tcp_slot_reserved = daemon->max_procs/2;
++      daemon->max_procs += daemon->dnssec_tcp_slot_reserved;
+     }
+ #endif
+   
+@@ -427,7 +430,8 @@ int main (int argc, char **argv)
+ 
+       daemon->tcp_pids = safe_malloc(daemon->max_procs*sizeof(pid_t));
+       daemon->tcp_pipes = safe_malloc(daemon->max_procs*sizeof(int));
+-
++      daemon->tcp_type = safe_malloc(daemon->max_procs);
++      
+       for (i = 0; i < daemon->max_procs; i++)
+ 	daemon->tcp_pipes[i] = -1;
+     }
+@@ -1661,7 +1665,11 @@ static void async_event(int pipe, time_t now)
+ 		  
+ 		  /* tcp_pipes == -1 && tcp_pids == 0 required to free slot */
+ 		  if (daemon->tcp_pipes[i] == -1)
+-		    daemon->metrics[METRIC_TCP_CONNECTIONS]--;
++		    {
++		      if (daemon->tcp_type[i])
++			 daemon->dnssec_tcp_slot_reserved++;
++		      daemon->metrics[METRIC_TCP_CONNECTIONS]--;
++		    }
+ 		}
+ 	break;
+ 	
+@@ -1905,7 +1913,7 @@ static void set_dns_listeners(void)
+   struct serverfd *serverfdp;
+   struct listener *listener;
+   struct randfd_list *rfl;
+-  int i;
++  int i, j;
+   
+   for (serverfdp = daemon->sfds; serverfdp; serverfdp = serverfdp->next)
+     poll_listen(serverfdp->fd, POLLIN);
+@@ -1919,8 +1927,8 @@ static void set_dns_listeners(void)
+     poll_listen(rfl->rfd->fd, POLLIN);
+   
+   /* check to see if we have free tcp process slots. */
+-  for (i = daemon->max_procs - 1; i >= 0; i--)
+-    if (daemon->tcp_pids[i] == 0 && daemon->tcp_pipes[i] == -1)
++  for (j = 0, i = daemon->max_procs - 1; i >= 0; i--)
++    if (daemon->tcp_pids[i] == 0 && daemon->tcp_pipes[i] == -1 && ++j > daemon->dnssec_tcp_slot_reserved)
+       break;
+ 
+   for (listener = daemon->listeners; listener; listener = listener->next)
+@@ -1947,7 +1955,7 @@ static void check_dns_listeners(time_t now)
+   struct serverfd *serverfdp;
+   struct listener *listener;
+   struct randfd_list *rfl;
+-  int i;
++  int i, j;
+   
+   /* Note that handling events here can create or destroy fds and
+      render the result of the last poll() call invalid. Once
+@@ -1972,7 +1980,11 @@ static void check_dns_listeners(time_t now)
+ 	      daemon->tcp_pipes[i] = -1;	
+ 	      /* tcp_pipes == -1 && tcp_pids == 0 required to free slot */
+ 	      if (daemon->tcp_pids[i] == 0)
+-		daemon->metrics[METRIC_TCP_CONNECTIONS]--;
++		{
++		  daemon->metrics[METRIC_TCP_CONNECTIONS]--;
++		  if (daemon->tcp_type[i])
++		    daemon->dnssec_tcp_slot_reserved++;
++		}
+ 	    }
+ 	  return;
+ 	}
+@@ -2012,8 +2024,8 @@ static void check_dns_listeners(time_t now)
+      at least one a poll() time, that we still do.
+      There may be more waiting connections after
+      poll() returns then free process slots. */
+-  for (i = daemon->max_procs - 1; i >= 0; i--)
+-    if (daemon->tcp_pids[i] == 0 && daemon->tcp_pipes[i] == -1)
++  for (j = 0,i = daemon->max_procs - 1; i >= 0; i--)
++    if (daemon->tcp_pids[i] == 0 && daemon->tcp_pipes[i] == -1 && ++j > daemon->dnssec_tcp_slot_reserved)
+       break;
+ 
+   if (i >= 0)
+@@ -2176,6 +2188,7 @@ static void do_tcp_connection(struct listener *listener, time_t now, int slot)
+ 
+ 	  daemon->tcp_pids[slot] = p;
+ 	  daemon->tcp_pipes[slot] = pipefd[0];
++	  daemon->tcp_type[slot] = 0;
+ 	  daemon->metrics[METRIC_TCP_CONNECTIONS]++;
+ 	  if (daemon->metrics[METRIC_TCP_CONNECTIONS] > daemon->max_procs_used)
+ 	    daemon->max_procs_used = daemon->metrics[METRIC_TCP_CONNECTIONS];
+@@ -2297,6 +2310,8 @@ int swap_to_tcp(struct frec *forward, time_t now, int status, struct dns_header
+ 	  /* i holds index of free slot */
+ 	  daemon->tcp_pids[i] = p;
+ 	  daemon->tcp_pipes[i] = pipefd[0];
++	  daemon->tcp_type[i] = 1;
++	  daemon->dnssec_tcp_slot_reserved--;
+ 	  daemon->metrics[METRIC_TCP_CONNECTIONS]++;
+ 	  if (daemon->metrics[METRIC_TCP_CONNECTIONS] > daemon->max_procs_used)
+ 	    daemon->max_procs_used = daemon->metrics[METRIC_TCP_CONNECTIONS];
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index 0c9f69ca756..e90ec5aff32 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -1304,6 +1304,7 @@ extern struct daemon {
+   int    fd_save;          /*      "        "        */
+   pid_t *tcp_pids;
+   int *tcp_pipes;
++  char *tcp_type;
+   int pipe_to_parent;
+   int numrrand;
+   struct randfd *randomsocks;
+@@ -1363,7 +1364,7 @@ extern struct daemon {
+   /* file for packet dumps. */
+   int dumpfd;
+ #endif
+-  int max_procs;
++  int max_procs, dnssec_tcp_slot_reserved;
+   uint max_procs_used;
+ } *daemon;
+ 
+diff --git a/release/src/router/dnsmasq/src/dnssec.c b/release/src/router/dnsmasq/src/dnssec.c
+index 71c9bac1fb4..21025975b17 100644
+--- a/release/src/router/dnsmasq/src/dnssec.c
++++ b/release/src/router/dnsmasq/src/dnssec.c
+@@ -486,7 +486,6 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
+       int i, wire_len, sig_len;
+       const struct nettle_hash *hash;
+       void *ctx;
+-      char *name_start;
+       u32 nsigttl, ttl, orig_ttl;
+ 
+       failflags &= ~DNSSEC_FAIL_NOSIG;
+@@ -576,13 +575,13 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
+ 	  if (!extract_name(header, plen, &p, name, EXTR_NAME_EXTRACT, 10)) 
+ 	    return STAT_BOGUS;
+ 
+-	  name_start = name;
+-	  
+ 	  /* if more labels than in RRsig name, hash *.<no labels in rrsig labels field>  4035 5.3.2 */
+ 	  /* If the name is already the wildcard, we're not going to change it. */
+ 	  if (labels < name_labels &&
+-	      !(name_labels - labels == 1 && name_start[0] == '*' && name_start[1] == '.'))
++	      !(name_labels - labels == 1 && name[0] == '*' && name[1] == '.'))
+ 	    {
++	      char *name_start = name;
++
+ 	      for (j = name_labels - labels; j != 0; j--)
+ 		{
+ 		  while (*name_start != '.' && *name_start != 0)
+@@ -595,11 +594,13 @@ static int validate_rrset(time_t now, struct dns_header *header, size_t plen, in
+ 		*wildcard_offset_out = name_start - name + 1;
+ 	      
+ 	      name_start--;
+-	      *name_start = '*';	      
++	      *name_start = '*';
++	      /* move our name to the start of the buffer to avoid pathalogical cases over-running the end in to_wire(). */
++	      memmove(name, name_start, strlen(name_start) + 1);	      
+ 	    }
+-	  
+-	  wire_len = to_wire(name_start);
+-	  hash->update(ctx, (unsigned int)wire_len, (unsigned char *)name_start);
++
++	  wire_len = to_wire(name);
++	  hash->update(ctx, (unsigned int)wire_len, (unsigned char *)name);
+ 	  hash->update(ctx, 4, p); /* class and type */
+ 	  hash->update(ctx, 4, (unsigned char *)&nsigttl);
+ 
+@@ -1687,11 +1688,13 @@ static int prove_non_existence_nsec3(struct dns_header *header, size_t plen, uns
+       
+       wildcard--;
+       *wildcard = '*';
++      /* move our name to the start of the buffer to avoid pathalogical cases over-running the end in to_wire(). */
++      memmove(name, wildcard, strlen(wildcard) + 1);
+       
+       if (dec_counter(validate_counter, NULL))
+ 	return DNSSEC_FAIL_WORK;
+       
+-      if ((digest_len = hash_name(wildcard, &digest, hash, salt, salt_len, iterations)) == 0)
++      if ((digest_len = hash_name(name, &digest, hash, salt, salt_len, iterations)) == 0)
+ 	return DNSSEC_FAIL_NONSEC;
+       
+       if (!check_nsec3_coverage(header, plen, digest_len, digest, type, workspace1, workspace2, nsecs, nsec_count, NULL, 1))
+diff --git a/release/src/router/dnsmasq/src/rfc1035.c b/release/src/router/dnsmasq/src/rfc1035.c
+index 5c75d9889c6..596148e2142 100644
+--- a/release/src/router/dnsmasq/src/rfc1035.c
++++ b/release/src/router/dnsmasq/src/rfc1035.c
+@@ -560,7 +560,7 @@ static int find_soa(struct dns_header *header, size_t qlen, char *name, int *sub
+ 	  soa_len = strlen(daemon->workspacename);
+ 
+ 	  /* SOA must be for the name we're interested in. */
+-	  if (soa_len <= name_len && memcmp(daemon->workspacename, name + name_len - soa_len, soa_len) == 0)
++	  if (hostname_issubdomain(daemon->workspacename, name) != 0)
+ 	    {
+ 	      int prefix = name_len - soa_len;
+ 	      
+diff --git a/release/src/router/dnsmasq/src/rfc3315.c b/release/src/router/dnsmasq/src/rfc3315.c
+index 2f7c98ad3df..c415dae1edd 100644
+--- a/release/src/router/dnsmasq/src/rfc3315.c
++++ b/release/src/router/dnsmasq/src/rfc3315.c
+@@ -504,7 +504,7 @@ static int dhcp6_no_relay(struct state *state, int msg_type, unsigned char *inbu
+  
+        state->fqdn_flags &= ~0x04;
+ 
+-       if (len != 0 && len < 255)
++       if (len >= 1 && len < 255)
+ 	 {
+ 	   unsigned char *pp, *op = opt6_ptr(opt, 1);
+ 	   char *pq = daemon->dhcp_buff;
+diff --git a/release/src/router/iperf3/src/iperf_api.c b/release/src/router/iperf3/src/iperf_api.c
+index b62b59437a6..900dd0f8896 100755
+--- a/release/src/router/iperf3/src/iperf_api.c
++++ b/release/src/router/iperf3/src/iperf_api.c
+@@ -1423,6 +1423,18 @@ get_parameters(struct iperf_test *test)
+ 	if ((j_p = cJSON_GetObjectItem(j, "no_fq_socket_pacing")) != NULL)
+ 	    iperf_set_no_fq_socket_pacing(test, 1);
+ 	
++	/* reaper: the server took these from the client unchecked (CVE-2026-71217); same limits the client enforces */
++	if (test->num_streams < 1 || test->num_streams > MAX_STREAMS) {
++	    i_errno = IENUMSTREAMS;
++	    r = -1;
++	} else if (test->settings->blksize < 0 || test->settings->blksize > MAX_BLOCKSIZE ||
++		   (test->protocol->id == Pudp && test->settings->blksize > MAX_UDP_BLOCKSIZE)) {
++	    i_errno = test->protocol->id == Pudp ? IEUDPBLOCKSIZE : IEBLOCKSIZE;
++	    r = -1;
++	} else if (test->settings->socket_bufsize < 0 || test->settings->socket_bufsize > MAX_TCP_BUFFER) {
++	    i_errno = IEBUFSIZE;
++	    r = -1;
++	}
+ 	if (test->sender && test->protocol->id == Ptcp && has_tcpinfo_retransmits())
+ 	    test->sender_has_retransmits = 1;
+ 	cJSON_Delete(j);
+@@ -1687,6 +1699,11 @@ JSON_read(int fd)
+      */
+     if (Nread(fd, (char*) &nsize, sizeof(nsize), Ptcp) >= 0) {
+ 	hsize = ntohl(nsize);
++	/* reaper (CVE-2023-38403, CVE-2026-71218): the length is the peer's; 0xffffffff made the
++	 * calloc(hsize+1) below wrap to 0 bytes and the read overflow it. Bound it as iperf 3.14 does
++	 * (its limit is 8 KiB for parameters; results with many streams run larger, so 1 MiB here). */
++	if (hsize == 0 || hsize > 1024 * 1024)
++	    return NULL;
+ 	/* Allocate a buffer to hold the JSON */
+ 	str = (char *) calloc(sizeof(char), hsize+1);	/* +1 for trailing null */
+ 	if (str != NULL) {
+diff --git a/release/src/router/libdisk/write_smb_conf.c b/release/src/router/libdisk/write_smb_conf.c
+index 5c2fb3761b9..c152530ac52 100644
+--- a/release/src/router/libdisk/write_smb_conf.c
++++ b/release/src/router/libdisk/write_smb_conf.c
+@@ -490,6 +490,10 @@ int main(int argc, char *argv[])
+ 	fprintf(fp, "client use spnego = no\n");	// ASUS add
+ //	fprintf(fp, "client use spnego = yes\n");	// ASUS add
+ 	fprintf(fp, "disable spoolss = yes\n");		// ASUS add
++#if defined(RTCONFIG_SAMBA4)
++	/* reaper: Spotlight RPC (mdssvc) off: no share enables Spotlight; closes CVE-2023-34966/34967/34968 */
++	fprintf(fp, "rpc_server:mdssvc = disabled\n");
++#endif
+ 	fprintf(fp, "host msdfs = no\n");		// ASUS add
+ 	fprintf(fp, "strict allocate = no\n");		// ASUS add
+ //	fprintf(fp, "mangling method = hash2\n");	// ASUS add
+diff --git a/release/src/router/libevent-2.0.21/evdns.c b/release/src/router/libevent-2.0.21/evdns.c
+index 9e5a0f2b776..55d70056e9c 100644
+--- a/release/src/router/libevent-2.0.21/evdns.c
++++ b/release/src/router/libevent-2.0.21/evdns.c
+@@ -1634,7 +1634,11 @@ dnsname_to_labels(u8 *const buf, size_t buf_len, off_t j,
+ 	/* the labels must be terminated by a 0. */
+ 	/* It's possible that the name ended in a . */
+ 	/* in which case the zero is already there */
+-	if (!j || buf[j-1]) buf[j++] = 0;
++	if (!j || buf[j-1]) {
++		if (j + 1 > (off_t)buf_len)	/* reaper: bound the terminator too (CVE-2026-63387) */
++			goto overflow;
++		buf[j++] = 0;
++	}
+ 	return j;
+  overflow:
+ 	return (-2);
+diff --git a/release/src/router/minidlna/tivo_commands.c b/release/src/router/minidlna/tivo_commands.c
+index d4ab1570415..b5c2046741a 100644
+--- a/release/src/router/minidlna/tivo_commands.c
++++ b/release/src/router/minidlna/tivo_commands.c
+@@ -428,6 +428,15 @@ SendContainer(struct upnphttp *h, const char *objectID, int itemStart, int itemC
+ 			while( item != NULL )
+ 			{
+ 				int reverse=0;
++				/* reaper (CVE-2023-47430): SortOrder comes from the TiVo request and each key appends up
++				 * to 12 bytes to order[96]/order2[96]; stop taking keys while room remains for one more
++				 * key plus the fixed tail ("TITLE DESC, DETAIL_ID DESC" = 26). */
++				if( strlen(order) + 12 + 27 > sizeof(order) ||
++				    strlen(order2) + 12 + 27 > sizeof(order2) )
++				{
++					DPRINTF(E_WARN, L_TIVO, "SortOrder too long, ignoring the rest\n");
++					break;
++				}
+ 				if( *item == '!' )
+ 				{
+ 					reverse = 1;
+diff --git a/release/src/router/rc/timemachine.c b/release/src/router/rc/timemachine.c
+index 5e4bceb08cc..6c00db35522 100644
+--- a/release/src/router/rc/timemachine.c
++++ b/release/src/router/rc/timemachine.c
+@@ -63,7 +63,7 @@ int generate_afp_config(char *mpname)
+ 
+ 	/* Set [Global] configuration */
+ 	fprintf(fp, "[Global]\n");
+-	fprintf(fp, "uam list = uams_dhx.so,uams_dhx2.so\n");
++	fprintf(fp, "uam list = uams_dhx2.so\n");	/* reaper: DHX1 dropped (CVE-2026-44053); every Time Machine Mac speaks DHX2 */
+ 	fprintf(fp, "save password = no\n");
+ 	fprintf(fp, "vol dbpath = %s/%s\n", mpname, CNID_DIR_NAME);
+ 	//fprintf(fp, "server quantum = 32000\n");
+@@ -175,7 +175,7 @@ int generate_avahi_config()
+ 
+ 	/* Set [wide-area] configuration */
+ 	fprintf(fp, "\n[wide-area]\n");
+-	fprintf(fp, "enable-wide-area=yes\n");
++	fprintf(fp, "enable-wide-area=no\n");	/* reaper: .local only; unicast DNS-SD unused (CVE-2024-52615/52616) */
+ 
+ 	/* Set [rlimits] configuration */
+ 	fprintf(fp, "\n[rlimits]\n");
+diff --git a/release/src/router/rp-l2tp/tunnel.c b/release/src/router/rp-l2tp/tunnel.c
+index d55f78fd007..5c41d0035b4 100644
+--- a/release/src/router/rp-l2tp/tunnel.c
++++ b/release/src/router/rp-l2tp/tunnel.c
+@@ -1441,7 +1441,7 @@ tunnel_set_params(l2tp_tunnel *tunnel,
+ 
+     if (len >= MAX_HOSTNAME) len = MAX_HOSTNAME-1;
+     memcpy(tunnel->peer_hostname, val, len);
+-    tunnel->peer_hostname[len+1] = 0;
++    tunnel->peer_hostname[len] = 0;	/* reaper: was [len+1], one byte past the array (CVE-2026-96891) */
+     DBG(l2tp_db(DBG_TUNNEL, "%s: Peer host name is '%s'\n",
+                            l2tp_debug_tunnel_to_str(tunnel), tunnel->peer_hostname));
+ 
+diff --git a/release/src/router/wget/src/convert.c b/release/src/router/wget/src/convert.c
+index 2e5bc22b02e..d1cbab88f0b 100644
+--- a/release/src/router/wget/src/convert.c
++++ b/release/src/router/wget/src/convert.c
+@@ -36,6 +36,7 @@ as that of the covered work.  */
+ #include <unistd.h>
+ #include <errno.h>
+ #include <assert.h>
++#include <intprops.h>
+ #include "convert.h"
+ #include "url.h"
+ #include "recur.h"
+@@ -1178,21 +1179,37 @@ html_quote_string (const char *s)
+ {
+   const char *b = s;
+   char *p, *res;
+-  int i;
++  size_t i;
++  int ok;
+ 
+   /* Pass through the string, and count the new size.  */
+-  for (i = 0; *s; s++, i++)
++  for (i = 0; *s; s++)
+     {
+       if (*s == '&')
+-        i += 4;                 /* `amp;' */
++        ok = INT_ADD_OK (i, 4, &i);     /* `amp;' */
+       else if (*s == '<' || *s == '>')
+-        i += 3;                 /* `lt;' and `gt;' */
++        ok = INT_ADD_OK (i, 3, &i);     /* `lt;' and `gt;' */
+       else if (*s == '\"')
+-        i += 5;                 /* `quot;' */
++        ok = INT_ADD_OK (i, 5, &i);     /* `quot;' */
+       else if (*s == ' ')
+-        i += 4;                 /* #32; */
++        ok = INT_ADD_OK (i, 4, &i);     /* #32; */
++      else
++        ok = INT_ADD_OK (i, 1, &i);
++
++      if (!ok)
++        {
++          DEBUGP (("Overflow detected in html_quote_string().\n"));
++          abort();
++        }
+     }
+-  res = xmalloc (i + 1);
++
++  if (!INT_ADD_OK (i, 1, &i))
++    {
++      DEBUGP (("Overflow detected in html_quote_string().\n"));
++      abort();
++    }
++
++  res = xmalloc (i);
+   s = b;
+   for (p = res; *s; s++)
+     {
+diff --git a/release/src/router/wget/src/ftp-basic.c b/release/src/router/wget/src/ftp-basic.c
+index 8f7d19c16cf..9c7bba1c5a0 100644
+--- a/release/src/router/wget/src/ftp-basic.c
++++ b/release/src/router/wget/src/ftp-basic.c
+@@ -623,10 +623,19 @@ ftp_pasv (int csock, ip_address *addr, int *port)
+   int nwritten, i;
+   uerr_t err;
+   unsigned char tmp[6];
++  ip_address peer_addr;
+ 
+   assert (addr != NULL);
+   assert (port != NULL);
+ 
++  /* Remember who we are talking to on the control connection, so that
++     the address returned in the PASV response can be checked below.
++     Accepting an arbitrary server-supplied address would let a
++     malicious FTP server redirect our data connection to any host of
++     its choosing (SSRF).  */
++  if (!socket_ip_address (csock, &peer_addr, ENDPOINT_PEER))
++    return FTPINVPASV;
++
+   xzero (*addr);
+ 
+   /* Form the request.  */
+@@ -677,6 +686,16 @@ ftp_pasv (int csock, ip_address *addr, int *port)
+   memcpy (IP_INADDR_DATA (addr), tmp, 4);
+   *port = ((tmp[4] << 8) & 0xff00) + tmp[5];
+ 
++  /* Reject the response if the advertised address does not match the
++     control connection's peer.  */
++  if (peer_addr.family != AF_INET
++      || memcmp (IP_INADDR_DATA (addr), IP_INADDR_DATA (&peer_addr), 4) != 0)
++    {
++      xzero (*addr);
++      *port = 0;
++      return FTPINVPASV;
++    }
++
+   return FTPOK;
+ }
+ 
+@@ -692,10 +711,19 @@ ftp_lpsv (int csock, ip_address *addr, int *port)
+   uerr_t err;
+   unsigned char tmp[16];
+   unsigned char tmpprt[2];
++  ip_address peer_addr;
+ 
+   assert (addr != NULL);
+   assert (port != NULL);
+ 
++  /* Remember who we are talking to on the control connection, so that
++     the address returned in the LPSV response can be checked below.
++     Accepting an arbitrary server-supplied address would let a
++     malicious FTP server redirect our data connection to any host of
++     its choosing (SSRF).  */
++  if (!socket_ip_address (csock, &peer_addr, ENDPOINT_PEER))
++    return FTPINVPASV;
++
+   xzero (*addr);
+ 
+   /* Form the request.  */
+@@ -842,6 +870,18 @@ ftp_lpsv (int csock, ip_address *addr, int *port)
+       DEBUGP (("*port is: %d\n", *port));
+     }
+ 
++  /* Reject the response if the advertised address does not match the
++     control connection's peer.  */
++  if (peer_addr.family != addr->family
++      || memcmp (IP_INADDR_DATA (addr), IP_INADDR_DATA (&peer_addr),
++                 af == 4 ? 4 : 16) != 0)
++    {
++      xzero (*addr);
++      *port = 0;
++      xfree (respline);
++      return FTPINVPASV;
++    }
++
+   xfree (respline);
+   return FTPOK;
+ }
+diff --git a/release/src/router/wget/src/http.c b/release/src/router/wget/src/http.c
+index 07af1867d64..ea2e591b217 100644
+--- a/release/src/router/wget/src/http.c
++++ b/release/src/router/wget/src/http.c
+@@ -914,6 +914,7 @@ parse_content_range (const char *hdr, wgint *first_byte_ptr,
+                      wgint *last_byte_ptr, wgint *entity_length_ptr)
+ {
+   wgint num;
++  char *end;
+ 
+   /* Ancient versions of Netscape proxy server, presumably predating
+      rfc2068, sent out `Content-Range' without the "bytes"
+@@ -932,27 +933,39 @@ parse_content_range (const char *hdr, wgint *first_byte_ptr,
+     }
+   if (!c_isdigit (*hdr))
+     return false;
+-  for (num = 0; c_isdigit (*hdr); hdr++)
+-    num = 10 * num + (*hdr - '0');
+-  if (*hdr != '-' || !c_isdigit (*(hdr + 1)))
++
++  errno = 0;
++  num = strtol(hdr, &end, 10);
++  if (errno == ERANGE)
++    return false;
++  hdr = end;
++
++  if (*hdr++ != '-' || !c_isdigit (*hdr))
+     return false;
+   *first_byte_ptr = num;
+-  ++hdr;
+-  for (num = 0; c_isdigit (*hdr); hdr++)
+-    num = 10 * num + (*hdr - '0');
+-  if (*hdr != '/')
++
++  errno = 0;
++  num = strtol(hdr, &end, 10);
++  if (errno == ERANGE)
++    return false;
++  hdr = end;
++
++  if (*hdr++ != '/')
+     return false;
+   *last_byte_ptr = num;
+-  if (!(c_isdigit (*(hdr + 1)) || *(hdr + 1) == '*'))
++  if (!(c_isdigit (*hdr) || *hdr == '*'))
+     return false;
+   if (*last_byte_ptr < *first_byte_ptr)
+     return false;
+-  ++hdr;
+   if (*hdr == '*')
+     num = -1;
+   else
+-    for (num = 0; c_isdigit (*hdr); hdr++)
+-      num = 10 * num + (*hdr - '0');
++    {
++      errno = 0;
++      num = strtol(hdr, NULL, 10);
++      if (errno == ERANGE)
++        return false;
++    }
+   *entity_length_ptr = num;
+   if ((*entity_length_ptr <= *last_byte_ptr) && *entity_length_ptr != -1)
+     return false;
+diff --git a/release/src/router/wget/src/url.c b/release/src/router/wget/src/url.c
+index 2f27c48a433..7e7a3cea077 100644
+--- a/release/src/router/wget/src/url.c
++++ b/release/src/router/wget/src/url.c
+@@ -1603,7 +1603,7 @@ convert_fname (char *fname)
+   const char *from_encoding = opt.encoding_remote;
+   const char *to_encoding = opt.locale;
+   iconv_t cd;
+-  size_t len, done, inlen, outlen;
++  size_t len, inlen, outlen;
+   char *s;
+   const char *orig_fname;
+ 
+@@ -1625,7 +1625,6 @@ convert_fname (char *fname)
+   inlen = strlen (fname);
+   len = outlen = inlen * 2;
+   converted_fname = s = xmalloc (outlen + 1);
+-  done = 0;
+ 
+   for (;;)
+     {
+@@ -1633,7 +1632,7 @@ convert_fname (char *fname)
+       if (iconv (cd, (ICONV_CONST char **) &fname, &inlen, &s, &outlen) == 0
+           && iconv (cd, NULL, NULL, &s, &outlen) == 0)
+         {
+-          *(converted_fname + len - outlen - done) = '\0';
++          *s = '\0';
+           iconv_close (cd);
+           DEBUGP (("Converted file name '%s' (%s) -> '%s' (%s)\n",
+                    orig_fname, from_encoding, converted_fname, to_encoding));
+@@ -1656,10 +1655,17 @@ convert_fname (char *fname)
+         }
+       else if (errno == E2BIG) /* Output buffer full */
+         {
+-          done = len;
+-          len = outlen = done + inlen * 2;
+-          converted_fname = xrealloc (converted_fname, outlen + 1);
+-          s = converted_fname + done;
++          size_t used = s - converted_fname;
++          size_t newlen = used + inlen * 2 + 1;
++
++          /* Ensure we actually grow the buffer */
++          if (newlen <= len)
++            newlen = len * 2;
++
++          converted_fname = xrealloc (converted_fname, newlen + 1);
++          len = newlen;
++          s = converted_fname + used;
++          outlen = len - used;
+         }
+       else /* Weird, we got an unspecified error */
+         {
+-- 
+2.25.1
+

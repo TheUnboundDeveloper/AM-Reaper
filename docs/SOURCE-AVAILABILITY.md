@@ -225,3 +225,27 @@ path Reaper itself is installed. Reaper neither requires nor withholds any signi
 key. (The stock ASUS bootloader's own signature handling is a vendor property of
 the hardware, unchanged by Reaper — Reaper adds no cryptographic restriction on
 user-built firmware.)
+
+## 6. Third-party components Reaper modifies
+
+GPL v2 §2(a) asks that a modified file carry a notice saying it was changed and when. Every file Reaper changes
+carries a comment naming Reaper and the date of the change beside the changed lines, and every change is a
+commit in the patch series ([`../patches/`](../patches/)). This table is the overview: which third-party
+programs Reaper ships modified, the upstream release each is based on, and what kind of change Reaper makes.
+Per-change detail is in [`CHANGELOG.md`](CHANGELOG.md) and [`REAPER-FIXES.md`](REAPER-FIXES.md).
+
+| Component | Upstream base in the image | Reaper's changes |
+|---|---|---|
+| Linux kernel | 4.19.294 (Broadcom BSP 5.04) | Security fixes backported from later 4.19.y stable releases (the 4.19 branch is end-of-life), privilege checks on Broadcom netlink and `/proc` interfaces, and build-configuration changes (unused protocols and modules off) |
+| dnsmasq | 2.93 | Reaper's Wallguard and Dreadwatch lookup engines, an EDNS option that carries the asking device's address from Encrypted DNS, and hardening of the files it writes |
+| strongSwan | 6.0.4 | Fixes backported from strongSwan 6.0.5-era releases: EAP-PEAP/TTLS, rekey collisions, PKCS#5/#7 parsing, RADIUS and SIM/AKA length checks, constant-time RSA, X.509 NameConstraints |
+| inadyn | 2.10.0 (as ASUS ships it) | Log lines redact credentials and tokens (`log_redact()`) |
+| miniupnpd | 2.3.11 | Logs the User-Agent a UPnP client sends (bounded, cut at the first control character), to diagnose clients that fail to map a port |
+| net-snmp | 5.9.4 | A SET with an empty (NULL) value no longer crashes the agent |
+| libcodb | as ASUS ships it | SQL built with `%Q` quoting throughout |
+| Tor | 0.4.9.13 | No source change: updated to the upstream release that carries its security fixes (Tor is off unless switched on) |
+| vsftpd | 3.x as ASUS ships it | Not modified (the FTP server is off unless switched on) |
+
+The table lists the components a full code review on 2026-11-03 identified with their bases; it records what
+Reaper changed, not a hunk-by-hunk comparison with each upstream release. Components that ship unmodified apart
+from ASUS's own changes are covered by section 1 and the ASUS GPL source.

@@ -57,6 +57,17 @@ for f, arg in (("rc/ubifs.c", "UBIFS_MNT_DIR"), ("rc/jffs2.c", '"/jffs"')):
     i, j = s.find("\tsetup_jffs_dirs();\n"), s.find("reaper_jffs_perm_sweep(%s);" % arg)
     check("%s sweeps right after setup_jffs_dirs() (after the mount, before any service or user script)" % f,
           i >= 0 and j > i and s[i:j].count("\n") <= 4, (i, j))
+# 2026-11-05 (_r11 metal): the USB long-term store sweep was handed the whole published text, "<base>\n,<datasets>,\n",
+# found no such folder and changed nothing - 10 entries stayed 0666 on an ext4 store. It must get the base line alone.
+um, rsh = read("rc/reaper_usbmon.c"), read("shared/reaper_store.h")
+pub = um[um.find("static void rstore_publish(void)"):]
+pub = pub[:pub.find("\n}\n")]
+check("the published store text is two lines (so the base must be cut out of it)",
+      'return snprintf(out, len, "%s\\n,%s,\\n", base, d) < (int)len;' in rsh)
+check("usbmon sweeps the store base line only: copy, cut at the first newline, then sweep; never the raw text",
+      "reaper_jffs_perm_sweep(txt)" not in pub
+      and re.search(r'strlcpy\(sb, txt, sizeof\(sb\)\);\s*sb\[strcspn\(sb, "\\n"\)\] = \'\\0\';\s*reaper_jffs_perm_sweep\(sb\);', pub) is not None
+      and pub.find("if (usb && !had_usb) {") < pub.find("reaper_jffs_perm_sweep(sb);"), pub[-700:])
 check("reaper_jfile.c: the walker never follows a link, stays on one device, keeps sticky dirs, touches files and dirs only",
       "lstat(path, &st) != 0 || st.st_dev != dev" in jf and "(S_ISREG(st.st_mode) || S_ISDIR(st.st_mode)) && (st.st_mode & S_IWOTH)" in jf
       and "!(S_ISDIR(st.st_mode) && (st.st_mode & S_ISVTX))" in jf and "(st.st_mode & 07777) & ~S_IWOTH" in jf and "depth >= 32" in jf)
@@ -234,7 +245,8 @@ else:
         script = os.path.join(td, "ww.sh")
         with open(script, "w", newline="\n") as fh:
             fh.write("RV_TMP=%s\nlogger() { shift 2; echo \"$*\" >> $RV_TMP/syslog; }\n" % tmpd
-                     + fn_ww.replace("ls -lanR /jffs ", "ls -lanR %s " % root2) + "\n" + fn_json + "\n"
+                     # 2026-11-05 (audit): the scanned set is $_wr (/jffs, plus a long-term store base off /jffs)
+                     + fn_ww.replace("_wr=/jffs;", "_wr=%s;" % root2) + "\n" + fn_json + "\n"
                      + "_rv_ww\n_rv_json 1 < /dev/null > $RV_TMP/review.json\n")
         def run():
             return subprocess.run([SH, script], capture_output=True, text=True)
@@ -249,7 +261,15 @@ else:
         check("review.json parses and carries ww=5 and the first path as ww_p, beside notices_n",
               jj.get("ww") == 5 and jj.get("ww_p", "").startswith(root2 + "/") and "notices_n" in jj, jj)
         sl = open(os.path.join(tmpd, "syslog")).read().splitlines() if os.path.exists(os.path.join(tmpd, "syslog")) else []
-        check("one syslog line names the count and the first path", len(sl) == 1 and "security review: 5 file(s) or folder(s) under /jffs are writable by any user (first: %s/" % root2 in sl[0], sl)
+        check("one syslog line names the count and the first path", len(sl) == 1 and "security review: 5 file(s) or folder(s) under /jffs or the long-term store are writable by any user (first: %s/" % root2 in sl[0], sl)
+        # 2026-11-05 (audit C-8): a long-term store on a USB volume ($BASE off /jffs) is scanned too
+        sb = os.path.join(td, "store"); os.mkdir(sb); open(os.path.join(sb, "old.log"), "w").close(); os.chmod(os.path.join(sb, "old.log"), 0o666)
+        r_st = subprocess.run([SH, "-c", "BASE=%s; . %s" % (sb, script)], capture_output=True, text=True)
+        check("a USB long-term store base is in the scan (a 0666 file there counts)",
+              open(os.path.join(tmpd, "review.ww")).read().startswith("ww 6 "), (r_st.stderr, open(os.path.join(tmpd, "review.ww")).read()))
+        os.remove(os.path.join(sb, "old.log"))
+        subprocess.run([SH, script], capture_output=True, text=True)   # back to the 5-entry baseline, its count already said
+        open(os.path.join(tmpd, "syslog"), "w").write(sl[0] + "\n")
         run()
         sl = open(os.path.join(tmpd, "syslog")).read().splitlines()
         check("the same count on the next tick logs nothing more", len(sl) == 1, sl)

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.2** · 2026-11-05 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.1 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.2 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -925,7 +925,7 @@ A lookup that never reaches the router's resolver passes through none of this. T
 |---|---|---|---|
 | Warden | nvram `rwarden_*`; whitelist, manual blocks and custom feeds in `/jffs/rwarden/allow`, `ban`, `cfeeds` | kernel sets in RAM; cache `/jffs/rwarden/sets.ipset` | `/jffs/rwarden/counters` (Long-Term Storage: locked to JFFS) |
 | Dreadwatch | nvram `rwarden_dns`, `rwarden_dns_feeds`; `/jffs/rwarden/dnsallow`, `dnssrc`, `dnskeys` (root only) | table `/tmp/reaper_nx/threat.db` (RAM); compressed copy `/jffs/rwarden/dns.k.gz` | `/jffs/rwarden/dns.counters` (RAM if statistics saving is off); optional history on Long-Term Storage |
-| Wallguard | nvram `wallguard_enable`, `wallguard_mode`; `/jffs/wallguard/` (`lists`, `block`, `allow`, `allow24`, `profiles`, `assign`, `services`, `sched`, `safe`, `keys`) | lists in RAM `/tmp/wallguard/lists` or on a USB volume; table `/tmp/wallguard/db` (RAM, always) | RAM, copied to `/jffs/wallguard/counters` at most hourly; optional history on Long-Term Storage |
+| Wallguard | nvram `wallguard_enable`, `wallguard_mode`; `/jffs/wallguard/` (`lists`, `block`, `allow`, `allow24`, `profiles`, `assign`, `services`, `sched`, `safe`, `rewrite`, `keys`) | lists in RAM `/tmp/wallguard/lists` or on a USB volume; table `/tmp/wallguard/db` (RAM, always) | RAM, copied to `/jffs/wallguard/counters` at most hourly; optional history on Long-Term Storage |
 | Encrypted DNS | nvram `reaper_dot_srv`, `reaper_doh_block` | DoH address list `/jffs/encdns/doh.ips` | totals in RAM; optional activity log on Long-Term Storage |
 
 Long-Term Storage (4.11) has a row for each optional history: **Wallguard block lists** (USB only), **Wallguard blocked lookups**, **Dreadwatch blocked lookups**, **Encrypted DNS activity**, and the **Encrypted DNS blocked-address list** (locked to JFFS).
@@ -1051,7 +1051,7 @@ Both boxes take one IPv4 or IPv6 address or CIDR per line. Both are checked on t
 | `151.101.2.49`, `151.101.66.49`, `151.101.130.49`, `151.101.194.49` | the abuse.ch feed hosts (Feodo Tracker), served by Fastly from the United States list. These are shared CDN addresses: the entries exempt whatever else Fastly serves from them |
 | `172.65.32.248`, `2606:4700:60:0:f53d:5624:85c7:3a2c` | Let's Encrypt, added only once the Let's Encrypt certificate is switched on (the next time DDNS starts) |
 
-Each address is added only if it is missing; nothing you entered is changed or reordered. **Delete any of them and it is never put back**: the one-time markers live in `/jffs/rwarden`, so they survive reboots and upgrades. Only erasing `/jffs` starts over. If you delete the Let's Encrypt entries while **Also filter the router itself** is on, the log warns once per boot that renewals can fail. GitHub (FireHOL, DShield) and Spamhaus are not added; whitelist them if you block the country they are served from with the router-traffic filter on.
+Each address is added only if it is missing; nothing you entered is changed or reordered. **Delete any of them and it is never put back**: the one-time markers live in `/jffs/rwarden`, so they survive reboots and upgrades. Only erasing `/jffs` starts over. If you delete the Let's Encrypt entries while **Also filter the router itself** is on, the log warns once per boot that renewals can fail. GitHub (FireHOL, DShield) and Spamhaus are not added; whitelist them if you block the country they are served from with the router-traffic filter on. Let's Encrypt via DNS (4.3.4.3) adds nothing here: it lets its DNS provider's API and Let's Encrypt through only for the length of each request.
 
 ##### 4.3.1.8 Direction, and filtering the router itself
 
@@ -1306,7 +1306,7 @@ The *automatic* settings are fine as they are: Chrome and Edge upgrade to encryp
 
 ##### 4.3.3.1 What it is, and when to use it
 
-Wallguard is the router's own **ad and tracker blocker**: what Pi-hole or AdGuard Home do, inside the router's resolver, for every device on every network, with nothing to install on the devices. Block lists name advertising, tracking and telemetry hosts; a lookup for one is answered `0.0.0.0` (or NXDOMAIN, your choice), so the ad or tracker never loads. Profiles give devices or guest networks different lists, blocked services (TikTok, Roblox and others), schedules and safe search. **Off by default** (`wallguard_enable` `0`).
+Wallguard is the router's own **ad and tracker blocker**: what Pi-hole or AdGuard Home do, inside the router's resolver, for every device on every network, with nothing to install on the devices. Block lists name advertising, tracking and telemetry hosts; a lookup for one is answered `0.0.0.0` (or NXDOMAIN, your choice), so the ad or tracker never loads. Profiles give devices or guest networks different lists, blocked services (TikTok, Roblox and others), schedules and safe search. **DNS rewrites** answer names of your choice with your own addresses, on and off alike (4.3.3.14). **Off by default** (`wallguard_enable` `0`).
 
 **Use it** to remove ads and tracking for the whole house; to give a child's devices stricter filtering, bedtime service blocks and enforced safe search; to exempt a work laptop. **Do not expect it** to remove ads served from the same host name as the content (YouTube video ads, some streaming apps) or page elements; it blocks by name only. It sees only lookups that reach the router (4.3, *Living with the rest of the router*); the page shows a banner when a firewall rule sends devices' DNS elsewhere.
 
@@ -1348,6 +1348,8 @@ Each built-in row shows the address its list is downloaded from, as a link under
 
 Never blocked automatically: your DDNS name, NTP servers and LAN domain, the server names of the router's OpenVPN and WireGuard clients, your DNS-over-TLS upstream servers, and the hosts of your own sources.
 
+To answer a name with an address of your own rather than block or allow it, use **DNS rewrites** (4.3.3.14).
+
 ##### 4.3.3.5 Profiles, devices and networks
 
 A **profile** is a set of lists. The **Profiles** table has one row per profile and one column per subscribed list plus **My rules**; a tick means that profile blocks with that list.
@@ -1384,7 +1386,7 @@ A **pause** never lifts a profile's blocked services or safe search. **Unbreak**
 - **The name asked and every parent name**, for entries that cover subdomains (4.3.3.3).
 - **Before the cache**, so a cached answer is covered and a pause or an allow shows at once.
 - **Hidden trackers (CNAME cloaking)**: a site's own name that is an alias for a tracker's name is caught by checking every name in the reply's CNAME chain, for the device that asked. Such answers are never cached. The **Hidden trackers caught** tile counts them.
-- **The router's own answers win**: a name the router answers itself (local names, an `address=` line, the DoH provider names and browser canaries answered by the Encrypted DNS block, or a Dreadwatch threat name) gets that answer. A threat name on both is answered and counted by Dreadwatch.
+- **The router's own answers win**: a name the router answers itself (local names, a device's DHCP name, a DNS rewrite (4.3.3.14), an `address=` line, the DoH provider names and browser canaries answered by the Encrypted DNS block, or a Dreadwatch threat name) gets that answer. A threat name on both is answered and counted by Dreadwatch.
 - **The answer**: **Blocked answer** below the Profiles card chooses *0.0.0.0 (fastest, recommended)* (`wallguard_mode` `null`, the default: `0.0.0.0` for IPv4, `::` for IPv6, an empty answer for other record types) or *NXDOMAIN* (`nx`). Blocked answers carry a 10-second lifetime and the Extended DNS Error code *Blocked*. Changing the mode applies with **Save & Apply**.
 
 ##### 4.3.3.9 How it runs
@@ -1447,6 +1449,32 @@ Records are collected every 15 minutes and on each page refresh; the counters ar
 | A site or app stopped working | A list blocks a name it needs | **Unbreak** (4.3.3.7) |
 | Safe search not applied | The device has another profile; the enforcement addresses are not looked up yet; or the browser uses its own encrypted DNS | **Why?**; **Update lists now**; Encrypted DNS block (4.3.4.6) |
 | A blocked service still partly works | It also runs on shared cloud hosts or plain IP addresses, or the schedule is off now | Top up with **Always block**; check the schedule and the router's clock |
+| A DNS rewrite does not answer | The table was not saved; the device resolves elsewhere (banner); the device asked with the LAN domain added; or an alias points at a name the router does not answer | **Why?** shows *The router answers:*; save; add the name with the LAN domain; give the alias's target a rewrite with an address |
+| Log `DNS rewrites: N row(s) left out` | A row in `/jffs/wallguard/rewrite` (edited by hand, or restored) is unreadable, repeats an alias, or points an alias at another alias | Remove or correct that row on the page and save |
+
+##### 4.3.3.14 DNS rewrites
+
+The **DNS rewrites** card, under My rules, answers names with an address or another name you choose: local names for servers, virtual machines and containers (`nas.home.arpa`, `*.k8s.lan`), or another address for an outside name. AdGuard Home calls these DNS rewrites; Pi-hole calls them local DNS records. Rewrites apply **on every network** (the main LAN, guest and VLAN networks) and **whether or not Wallguard is switched on**. No list, pause or profile changes them.
+
+Type the **Name** and the **Answer**, tick **Subdomains too** if wanted, and press **Add rewrite** (or Enter). **Delete** removes a row. **Save & Apply** applies the table.
+
+| Answer | Subdomains too | The router answers | Written as |
+|---|---|---|---|
+| An IPv4 or IPv6 address | off | the name only; a reverse lookup of the address returns the name | `host-record=name,address` |
+| An IPv4 or IPv6 address | on | the name and every name under it (`lab.test` also answers `a.b.lab.test`) | `address=/name/address` |
+| Another name (an alias) | not available | the name only: a CNAME to the other name, with that name's addresses | `cname=name,other` |
+
+- **What a rewrite does not give is answered empty.** A name rewritten to an IPv4 address only gets an empty AAAA answer (and the reverse), and its HTTPS records are empty too, so no answer from outside can carry another address past the rewrite. To answer both families, add the name twice, once with each address. (The router adds `local=/name/` for each name; dnsmasq would otherwise send those lookups upstream.)
+- **Subdomains of an exact rewrite** are looked up as usual (`server=/*.name/#`): rewriting `example.com` leaves `www.example.com` alone. A name inside a **Subdomains too** row (`kid.lab.test` under `lab.test`) answers its own address and leaves everything else (its subdomains, the other family) to the row above.
+- **`*.name`** typed in the Name box (AdGuard Home's spelling) is read as the name with **Subdomains too**. Unlike AdGuard Home, the name itself is answered as well.
+- **Aliases** work only for a name the router answers itself: one of your devices (its DHCP name) or a rewrite with an address. The resolver ignores an alias to an outside name. An alias cannot point at another alias, and a name that has an address cannot also be an alias; the page refuses both. The resolver will not start on a repeated alias or an alias loop, so the router leaves out any such row it finds in the file (log `DNS rewrites: N row(s) left out ...`).
+- **Names**: lower-case letters, digits, `-` and `_`; labels of up to 63 characters, 253 in all; a name of digits and dots only is refused (it is a mistyped address). A one-label name such as `nas` is allowed, but devices usually ask with the LAN domain added, so add `nas.<LAN domain>` as well. The page takes up to 200 rows.
+- **The lists never block a rewritten name.** A rewrite wins over every block list, My rules, pauses and profiles, and so does any name the router answers from its own records (a device's DHCP name, `/etc/hosts`). For an exact rewrite this covers that name only; its subdomains are still checked against the lists.
+- **Applying a change restarts the resolvers once** (a second or two; log `DNS rewrites changed - restarting dnsmasq`). Saving the page with the table unchanged does not.
+- **Where it is kept**: `/jffs/wallguard/rewrite`, one row per line (`<name> <answer>` or `<name> <answer> sub`). The router writes `/tmp/wallguard/rewrite.conf` from it at every resolver start and includes it in every resolver. The settings file (2.5) carries it with the other Wallguard files.
+- **Lines of your own** in `/jffs/configs/dnsmasq.conf.add` still work beside the table. Do not define the same alias in both places: the resolver refuses to start on a repeated alias.
+
+**Example: a lab of containers.** Add `nas.home.arpa` → `192.168.50.20`; `*.k8s.lan` → `192.168.50.40` (every service name under `k8s.lan` reaches the ingress); `plex.home.arpa` → `nas.home.arpa` (an alias). Save. **Why?** with `grafana.k8s.lan` shows *The router answers: 192.168.50.40*.
 | Log `another block table build is still running - this one was skipped` | Two builds at once (several saves in a row) | Save again after a minute |
 | Log (dnsmasq) `wallguard: the block table is damaged - passing everything until it is rebuilt` | A damaged table | **Update lists now** |
 
@@ -1481,16 +1509,26 @@ The tab has two independent switches.
 
 ##### 4.3.4.3 Certificates
 
-The server uses the certificate the router's web interface uses (`/etc/cert.pem`, `/etc/key.pem`), so anything set up under **WAN › DDNS** works: Let's Encrypt for your DDNS name or your own domain, or an uploaded certificate. The **Certificate** card shows **Name to use** (your DDNS name when the certificate covers it, otherwise its first plain name), **Issued by**, **Valid until** and the state:
+The server uses the certificate the router's web interface uses (`/etc/cert.pem`, `/etc/key.pem`), so anything set up under **WAN › DDNS** works: Let's Encrypt for your DDNS name, **Let's Encrypt via DNS** for a name in a domain you control (no DDNS needed, below), or an uploaded certificate. The **Certificate** card shows **Name to use** (your DDNS name when the certificate covers it, otherwise its first plain name), **Issued by**, **Valid until** and the state:
 
 | State | Meaning |
 |---|---|
 | *Trusted: devices can use it by name.* | It chains to the router's public CA bundle |
-| *Self-signed: only Android's Automatic setting can use it.* | Add a Let's Encrypt or uploaded certificate under WAN › DDNS |
+| *Self-signed: only Android's Automatic setting can use it.* | Add a Let's Encrypt (with DDNS, or via DNS) or uploaded certificate under WAN › DDNS |
 | *Not publicly trusted* | Issued by a private authority; devices that check the name refuse it |
 | *Expired* | Renew it under WAN › DDNS |
 
 Android's *Automatic* setting does not check the name, which is why it accepts any certificate. A renewed or newly uploaded certificate restarts the server, which reads it again. Without a trusted certificate, the Android hostname line, the Apple profile and the Linux lines are replaced by *needs a trusted certificate*.
+
+**Let's Encrypt via DNS (no DDNS, no open port).** Under WAN › DDNS, set **Certificate** to *Let's Encrypt via DNS (no DDNS)*, pick the DNS provider that hosts your domain (Cloudflare, deSEC or DuckDNS), enter a name in that domain and the provider's API token, and Apply. The router writes a temporary TXT record through the provider's API and Let's Encrypt checks that record, so nothing reaches the router from the Internet and the name does not have to point at the router. A phone connects to the router's LAN address and only checks that the certificate carries the name. The request takes about two minutes. The page shows *Requesting the certificate*, then *Issued* with the date, or the error the request ended with. The certificate is installed as the router's imported certificate and a daily check renews it about 30 days before it expires. The web interface uses a new certificate after you next sign in; Encrypted DNS restarts with it at once.
+
+| Provider | Token | Name |
+|---|---|---|
+| Cloudflare | An API token with *Zone / DNS / Edit* and *Zone / Zone / Read* for the zone | Any name in a zone on your account |
+| deSEC | A token from *Token management* | A free `name.dedyn.io`, or a name in your own domain hosted there |
+| DuckDNS | The account token | A name ending in `.duckdns.org` |
+
+The token is never shown on the page again; leave the field empty to keep it, and enter the new provider's token when you change provider. Choosing another certificate switches the feature off and deletes its working folder `/jffs/.le_dns` (the Let's Encrypt account key and acme.sh's copy of the token); the certificate already installed stays until the one you chose replaces it. With Warden's **Also filter the router itself** on, the provider's API and Let's Encrypt are let through for the length of each request and closed again; the log names them.
 
 ##### 4.3.4.4 Setting up devices
 
@@ -1545,7 +1583,7 @@ Switching the block on or off restarts the resolvers once and rebuilds the firew
 
 ##### 4.3.4.9 Examples
 
-**Encrypted and filtered phones.** Let's Encrypt on your DDNS name (WAN › DDNS); switch on Encrypted DNS for devices; leave Android on *Automatic*; install the Apple profile on iPhones. Dreadwatch's Coverage card then shows Encrypted DNS as on, and the phones appear by their own address in Dreadwatch and Wallguard.
+**Encrypted and filtered phones.** Let's Encrypt on your DDNS name, or Let's Encrypt via DNS on a name in your own domain (WAN › DDNS, 4.3.4.3); switch on Encrypted DNS for devices; leave Android on *Automatic*; install the Apple profile on iPhones. Dreadwatch's Coverage card then shows Encrypted DNS as on, and the phones appear by their own address in Dreadwatch and Wallguard.
 
 **Close every route around the filters.** DNS Director global mode *Router*, Encrypted DNS for devices on, the block on. Then set any device with a named Private DNS provider back to *Automatic*.
 
@@ -2667,7 +2705,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 105** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 113** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -2753,6 +2791,11 @@ On `ram`, history is lost at reboot; point it at JFFS or USB to keep it. The exp
 `reaper_export_index`, `reaper_export_source`, `reaper_export_metrics` and
 `reaper_export_scrape_token` empty.
 
+**Let's Encrypt via DNS** (4.3.4.3) — `reaper_ledns_enable` `0` (off until you choose it as the
+certificate under WAN › DDNS), `reaper_ledns_provider` `cf`, `reaper_ledns_domain` and
+`reaper_ledns_token` empty. `reaper_ledns_state`, `reaper_ledns_err` and `reaper_ledns_when` start
+empty: they are the last request's state, written by the router for the page.
+
 **Self-monitor** (2.9, 4.13) — `rwatch_enable` **`1`**, `rwatch_iv` `5` minutes, `rwatch_review` `0` (the
 security review, Firewall › Status: off until you switch it on; its watch rules file starts empty, so
 the built-in defaults apply),
@@ -2834,7 +2877,7 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | IPTV / VLAN tagging | None | `switch_wantag` `none` |
 | UPnP | Off; when on: secure mode, external ports 1024 and up, IPv6 pinholes off, announcements every 900 s, the router's VPN and SSH ports protected | `upnp_enable` `0`, `upnp_secure` `1`, `upnp_min_port_ext` `1024`, `upnp_pinhole_enable` `0`, `upnp_ssdp_interval` `900`, `upnp_protect_svc` `1` |
 | Port forwarding, port triggering, DMZ | Off, off, none | `vts_enable_x` `0`, `autofw_enable_x` `0`, `dmz_ip` empty |
-| NAT passthrough | PPTP, L2TP and IPsec on; RTSP, H.323, SIP and PPPoE relay off | `fw_pt_pptp`, `fw_pt_l2tp`, `fw_pt_ipsec` `1`; `fw_pt_rtsp`, `fw_pt_h323`, `fw_pt_sip`, `fw_pt_pppoerelay` `0` |
+| NAT passthrough | PPTP, L2TP and IPsec on; FTP, RTSP, H.323, SIP and PPPoE relay off. A protocol helper (ALG) works only on its own ports while its switch is on; FTP and PPTP addressed to the router itself (its FTP server, a forwarded FTP port, its PPTP server) always get theirs | `fw_pt_pptp`, `fw_pt_l2tp`, `fw_pt_ipsec` `1`; `nf_ftp`, `fw_pt_rtsp`, `fw_pt_h323`, `fw_pt_sip`, `fw_pt_pppoerelay` `0` |
 | NAT loopback | On | `nat_redirect_enable` `1` |
 | DDNS | Off | `ddns_enable_x` `0` |
 | DNS rebind protection | Off | `dns_norebind` `0` |

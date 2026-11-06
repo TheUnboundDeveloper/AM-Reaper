@@ -83,12 +83,12 @@ check("LAN: tab conditions copied from menu.js (DHCP, Switch in every mode, Mult
 
 # ---- Reaper_DNS ----
 check("DNS: WAN servers per unit (wan0_/wan1_ via httpd validate_instance), restart_wan_dns <unit>",
-      'name="wan0_dns1_x"' in D and 'name="wan1_dns1_x"' in D and "S.push('restart_wan_dns ' + u)" in D)
+      "var p = 'wan' + u + '_';" in D and "c[p + 'dns1_x'] = txt('i_d1' + u, NV[p + 'dns1_x'])" in D and "S.push('restart_wan_dns ' + u)" in D)
 check("DNS: DoT client restarts stubby; switching it also refreshes resolv + dnsmasq",
       "S.push('restart_stubby')" in D and "if (has('dnspriv_enable') && S.indexOf('restart_wan_dns 0') < 0) S.push('restart_wan_dns 0');" in D)
 check("DNS: dnsmasq options and client DNS restart dnsmasq, DNS Director restart_dnsfilter",
       "S.push('restart_dnsmasq')" in D and "if (dd) S.push('restart_dnsfilter');" in D)
-check("DNS: carries the rows moved off the DHCP page", all('name="%s"' % n in D for n in ("dhcp_dns1_x", "dhcp_dns2_x", "dhcp_wins_x", "dhcpd_dns_router", "ipv6_dns1_x")))
+check("DNS: carries the rows moved off the DHCP page", all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % n, D[D.rfind("<script>"):]) for n in ("dhcp_dns1_x", "dhcp_dns2_x", "dhcp_wins_x", "dhcpd_dns_router", "ipv6_dns1_x")))
 check("DNS: dhcp_dns2_x and the IPv4 custom servers validated (B-DHCP-1, B-DNSD-1); duplicate MAC refused (B-DNSD-2)",
       "has('dhcp_dns2_x') && c.dhcp_dns2_x && !unicast(c.dhcp_dns2_x)" in D and "if (has(k) && c[k] && !unicast(c[k]))" in D
       and "DDL.some(function(r){ return r.mac === mac; })" in D)
@@ -103,7 +103,7 @@ check("DNS: hnd rule list split in 255-char chunks, unedited chunks kept", "s.su
 check("Routes: the read-only view is kept (reaper_pbr.cgi routes, local table folded)",
       "'/reaper_pbr.cgi?action=routes&http_id=' + encodeURIComponent(HTTPID)" in R and "if (t === 'local' && !showLocal) return;" in R)
 check("Routes: editor posts sr_enable_x / sr_rulelist only when changed, restart_net after a confirm",
-      'name="sr_enable_x" value="" disabled' in R and 'name="sr_rulelist" value="" disabled' in R
+      "sr_enable_x" in R[R.rfind("<script>"):] and "sr_rulelist" in R[R.rfind("<script>"):] and 'name="sr_' not in R
       and "if (!confirm(`<#RRTE_" in R and "rp.post(document.form, ch, 'restart_net', 10);" in R)
 check("Routes: the nvram size limit is shown and enforced (B-SR-1); host bits refused (B-SR-2); serialised from the model (B-SR-3)",
       "var MAXBYTES = Math.min(1024, 1006 - 'sr_rulelist='.length);" in R and "srSer(SR.concat([r])).length > MAXBYTES" in R
@@ -132,7 +132,7 @@ for name, rep in (("Advanced_LAN_Content", "Reaper_LAN.asp"), ("Advanced_DHCP_Co
 pf = os.path.join(HERE, "ui_parity", "Advanced_DHCP_Content.json")
 if os.path.exists(pf):
     moved = [k for k, v in json.load(open(pf, encoding="utf-8"))["fields"].items() if "moved to Reaper_DNS.asp" in v]
-    check("parity: every DHCP field marked moved is on Reaper_DNS.asp", moved and all('name="%s"' % k in D for k in moved), moved)
+    check("parity: every DHCP field marked moved is on Reaper_DNS.asp", moved and all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % k, D[D.rfind("<script>"):]) for k in moved), moved)
 
 node = shutil.which("node")
 if node:

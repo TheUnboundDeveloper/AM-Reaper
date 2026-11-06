@@ -632,6 +632,10 @@ www/Reaper_Firewall.asp|members.length>16|1
 # v3.2.8 -- Warden builds its chains with one iptables-restore --noflush payload per
 # stack, falling back to per-rule adds if a COMMIT is refused (backlog warden-restore-batch).
 sbin/rc|rebuild refused ($_e) - replaying rule by rule|1
+# 2026-11-05 code-review batch B -- Gatekeeper builds REAPER_GKF/GKI/GKN the same way, one
+# restore per stack and table (filter, nat), per-rule replay if refused; Warden and Gatekeeper
+# tear down ONCE per arm (tests/test_batchB_2026_11_05.py).
+sbin/rc|_gk_commit 6 ip6tables nat|1
 # v3.2.8 -- dashboard Internet card follows the PRIMARY WAN unit (field: a dual-WAN
 # fail-over showed Disconnected while the second line carried traffic).
 www/Main_ReaperDash.asp|function wanPick|1
@@ -1293,7 +1297,7 @@ www/reaper/menu.js|index: 'menu_ReaperGK', when: routing|1
 www/reaper/menu.js|index: 'menu_ReaperWarden', when: routing|1
 www/Reaper_System.asp|function applyAll(){|1
 www/Reaper_System.asp|rp.chpass(post)|1
-www/Reaper_System.asp|name="restrict_rulelist" value="" disabled|1
+www/Reaper_System.asp|c.restrict_rulelist = aclSerialize();|1
 www/Reaper_System.asp|BROKEN[s.panel] = 1;|1
 www/Reaper_System.asp|setChk('t_acl', isOn(NV.enable_acc_restriction)|1
 www/Reaper_System.asp|!esc = rp.esc
@@ -1313,7 +1317,7 @@ www/reaper_shell.asp|function inMenu(base){|1
 # prunes its strings, so any SNMP marker would fail those images; test_reaper_snmp_tweaks.py covers it.
 www/Reaper_Tweaks.asp|S.push('restart_dnsmasq')|1
 www/Reaper_Tweaks.asp|a.some(function(x){ return x !== '0'; })|1
-www/Reaper_Tweaks.asp|name="ct_tcp_timeout" value="" disabled|1
+www/Reaper_Tweaks.asp|c.ct_tcp_timeout = (t === SEEN.tcp) ? NV.ct_tcp_timeout : t;|1
 www/Reaper_Tweaks.asp|BROKEN[s.panel] = 1;|1
 www/reaper/menu.js|T('Reaper_Tweaks.asp'|1
 www/reaper/menu.js|!Tools_OtherSettings
@@ -1326,10 +1330,13 @@ www/Reaper_System.asp|<div class="tab rframe" id="tab_|5
 www/Reaper_Tweaks.asp|<div class="rframe">|1
 # 2026-10-23 -- System Log wave: the seven stock pages replaced by six Reaper pages (the "Security Update
 # Notification" login log folded into General Log), every table on the Routing page via reaper_pbr.cgi?action=routes,
-# the Wireless Log on its own get_wl_status endpoint, one shared sort comparator in the kit.
+# the Wireless Log on its own get_wl_status endpoint (JSON since 2026-11-05, B-5), one shared sort comparator in the kit.
 www/Reaper_Log.asp|lastIndexOf('\n}')|1
 www/Reaper_Routes.asp|/reaper_pbr.cgi?action=routes|1
-www/Reaper_WLog.asp|return (new Function(src))();|1
+www/Reaper_WLog.asp|var o = JSON.parse(txt), by = function(n){|1
+www/Reaper_WLog.asp|!new Function
+www/ajax_reaper_wlstatus.asp|get_wl_status_json|1
+usr/sbin/httpd|get_wl_status_json|1
 www/Reaper_Leases.asp|var leasearray = [];|1
 www/Reaper_IPv6.asp|var ipv6cfgarray = [[]]|1
 www/Reaper_PortFwd.asp|REAPER_GKN:|1
@@ -1452,7 +1459,7 @@ www/Reaper_Internet.asp|if (!num(val('i_pmtu'), 128, 1500)) return rng('i_pmtu',
 www/Reaper_Internet.asp|num(c.wan_mtu, 1280, 1500)|1
 www/Reaper_Internet.asp|!128, 1492
 www/Reaper_Internet.asp|!1280, 1508
-www/Reaper_Internet.asp|name="upnp_protect_svc"|1
+www/Reaper_Internet.asp|put(c, 'upnp_protect_svc', 't_protect', chk('t_protect'));|1
 www/Reaper_Firmware.asp|!secur_stab_setting
 www/Reaper_Firmware.asp|/AiMesh_Node_FirmwareUpgrade.asp|1
 www/Reaper_Leases.asp|dev: r[r.length - 1]|1
@@ -1700,3 +1707,18 @@ www/EN.dict|Deleting a folder removes it and every file in it from the disk.|1
 usr/sbin/httpd|Sec-Fetch-Dest:|1
 sbin/write_smb_conf|log level = 0 auth_audit:2|1
 sbin/write_smb_conf|logging = syslog@2 file|1
+# 2026-11-05 UI audit (owner-approved review items): the WAN MAC clone check refuses 00:00:00:00:00:00 (Q-C1-6); the
+# Wireless Log polls every 10 s by default; the ten stock-only rail glyphs and the dead firewall rail badge are gone
+# (Q-C2-8); rp.changed creates the hidden input of a changed key, so the kit pages carry no key lists (Q-C1-11);
+# Wallguard and Encrypted DNS are on rp.css (Q-C2-12)
+www/Reaper_Internet.asp|rp.v.macUnicast(c.wan_hwaddr_x)) return bad('i_mac', T.eMac);|1
+www/Reaper_WLog.asp|r1 !== '5' ? r1 : '10'|1
+www/reaper/menu.js|!menu_AiCloud:
+www/reaper/menu.js|!fwred
+www/reaper_shell.asp|!setFwBadge
+www/Main_ReaperDash.asp|!setFwBadge
+www/reaper/rp.js|if (!el){ el = document.createElement('input'); el.type = 'hidden'; el.name = k; form.appendChild(el); }|1
+www/Reaper_VPNServer.asp|!value="" disabled>
+www/Reaper_Wallguard.asp|<link rel="stylesheet" href="/reaper/rp.css">|1
+www/Reaper_EncryptedDNS.asp|<link rel="stylesheet" href="/reaper/rp.css">|1
+www/Reaper_Wallguard.asp|!class="btng

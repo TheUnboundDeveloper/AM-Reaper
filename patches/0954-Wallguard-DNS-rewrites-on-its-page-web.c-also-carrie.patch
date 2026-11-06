@@ -1,0 +1,1228 @@
+From 8cfc547ce896c4edc5cc2d63ed97158fe7276f88 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:48 -0500
+Subject: [PATCH] Wallguard: DNS rewrites on its page; web.c also carries the
+ audit and page fixes (102.8 line)
+
+- DNS rewrites, the AdGuard Home / Pi-hole feature Wallguard lacked: a table on the Wallguard
+  page, a name to an address or another name, kept in the Wallguard store and written as a dnsmasq
+  conf-file (shared/reaper_rewrite.h): address= / host-record= with local= so other record types
+  are not forwarded, server=/*.name/# for exact names, and CNAME rows checked for duplicates and
+  loops (either stops dnsmasq). One dnsmasq restart on a change, SDN instances included. Wallguard
+  no longer blocks a name the router answers itself. The rewrite file is in the config backup.
+- httpd/web.c also carries: the Let's Encrypt via DNS page data; blocking_request.cgi no longer
+  served (the last pre-login nvram write in open code); the traffic, Wi-Fi and QoS CGIs require
+  the page token; a pre-login request body is drained only up to its length; get_multifilter_info
+  no longer leaks its scratch arrays (Merlin f3118f48d1); Devices folds pseudo-MLO link addresses
+  into their device from the AiMesh client list whether MLO is on or off; the Connections lookup
+  sorts the conntrack table once, outside the lock; the Wireless Log status as JSON.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/wallguard.c  |  19 +-
+ release/src/router/httpd/web.c              | 253 ++++++++++++++++++--
+ release/src/router/rc/sdn.c                 |   6 +
+ release/src/router/rc/wallguard.c           |  72 +++++-
+ release/src/router/shared/reaper_rewrite.h  | 233 ++++++++++++++++++
+ release/src/router/www/Reaper_Wallguard.asp | 190 +++++++++------
+ 6 files changed, 673 insertions(+), 100 deletions(-)
+ create mode 100644 release/src/router/shared/reaper_rewrite.h
+
+diff --git a/release/src/router/dnsmasq/src/wallguard.c b/release/src/router/dnsmasq/src/wallguard.c
+index ca2ed94a4c6..5fd3112a112 100644
+--- a/release/src/router/dnsmasq/src/wallguard.c
++++ b/release/src/router/dnsmasq/src/wallguard.c
+@@ -15,7 +15,8 @@
+ 
+    A query is checked before the cache is consulted, so a cached answer is covered too -
+    unless dnsmasq has its own answer for the name (address=, local=, Dreadwatch's threat
+-   list, the DoH canaries): configuration always wins, and Dreadwatch counts its own hits.
++   list, the DoH canaries; since 2026-11-05 also its own records - a DNS rewrite, /etc/hosts,
++   a device's DHCP name): configuration always wins, and Dreadwatch counts its own hits.
+    A reply whose CNAME chain reaches a listed name is decided per asking device and never
+    cached. Missing or damaged files make Wallguard pass everything; it never fails closed. */
+ 
+@@ -532,9 +533,19 @@ static int wallguard_config_answer(char *name, unsigned short qtype)
+ {
+   int first, last, fl = qtype == T_A ? F_IPV4 : (qtype == T_AAAA ? F_IPV6 : 0);
+ 
+-  return (lookup_domain(name, fl, &first, &last) &&
+-    (daemon->serverarray[first]->flags & SERV_LITERAL_ADDRESS)) ||
+-    reaper_nx_listed(name);	/* reaper 2026-10-24: the mapped threat table (reaper_nx.c) */
++  struct crec *c = NULL;
++
++  if ((lookup_domain(name, fl, &first, &last) &&
++       (daemon->serverarray[first]->flags & SERV_LITERAL_ADDRESS)) ||
++      reaper_nx_listed(name))	/* reaper 2026-10-24: the mapped threat table (reaper_nx.c) */
++    return 1;
++  /* reaper 2026-11-05: the router's own records for the name - a DNS rewrite (host-record=, cname=),
++     /etc/hosts, a device's DHCP name - are the operator's answer as well; a cached upstream answer
++     for the same name is not */
++  while ((c = cache_find_by_name(c, name, dnsmasq_time(), F_IPV4 | F_IPV6 | F_CNAME)))
++    if (c->flags & (F_HOSTS | F_DHCP | F_CONFIG))
++      return 1;
++  return 0;
+ }
+ 
+ /* Safe search: a search engine's name, for a device whose profile asks for it, is answered
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 640188cf575..e676a642735 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -53,6 +53,7 @@
+ #include "reaper_store_io.h"	/* 2026-10-21: no-follow writes into it (the audit ring) */
+ #include "reaper_dnsmap.h"	/* reaper: passive DNS name map (rdnsmapd) for the Flow Explorer */
+ #include "reaper_lists.h"	/* reaper 2026-11-02: Dreadwatch / Wallguard built-in list addresses for the page rows */
++#include "reaper_rewrite.h"	/* reaper 2026-11-05: Wallguard's DNS rewrites - the same checks as rc */
+ #include <dirent.h>
+ #include <sys/statvfs.h>	/* reaper v1.9.1: Storage tab free-space reporting (do_reaper_dev_cgi store_status) */
+ #if !defined(__GLIBC__) && !defined(__UCLIBC__) && !defined(MUSL_LIBC)/* musl */
+@@ -1394,6 +1395,116 @@ ej_nvram_get_js(int eid, webs_t wp, int argc, char_t **argv)
+ 	return ret;
+ }
+ 
++#ifdef RTCONFIG_BCMWL6
++/* reaper 2026-11-05 (review 2026-11-03 B-5): get_wl_status as ONE JSON object for Reaper_WLog.asp, which JSON.parses
++ * it instead of running it as code (new Function). The stock producer (sysdeps/web-broadcom-am.c) is unchanged -
++ * Main_WStatus_Content.asp and ajax_wificlients.asp still evaluate its JS - so its text is captured and rewritten:
++ * `[var ]NAME = VALUE;` becomes "NAME":VALUE, a string keeps its bytes (the producer's \' \" \\ escapes undone, then " \ < > & DEL and
++ * control bytes written as JSON escapes), a comma before ] is dropped. Text of any other shape (a token the producer
++ * never writes) is refused: the reply is {} - no data, never a guess. o needs 6 * strlen(s) + 3 bytes. */
++static int
++reaper_wl_json(const char *s, char *o)
++{
++	const unsigned char *p = (const unsigned char *)s;
++	int first = 1;
++
++	*o++ = '{';
++	for (;;) {
++		int depth = 0, comma = 0;
++		char prev = '[';	/* '[' after an opening bracket, ',' after a comma, 'v' after a value */
++
++		while (isspace(*p)) p++;
++		if (!*p)
++			break;
++		if (!strncmp((const char *)p, "var ", 4))
++			for (p += 4; *p == ' '; p++);
++		if (!isalpha(*p) && *p != '_')
++			return -1;
++		if (!first)
++			*o++ = ',';
++		first = 0;
++		*o++ = '"';
++		while (isalnum(*p) || *p == '_')
++			*o++ = *p++;
++		*o++ = '"';
++		*o++ = ':';
++		while (*p == ' ') p++;
++		if (*p++ != '=')
++			return -1;
++		do {
++			while (isspace(*p)) p++;
++			if (*p == ',') {
++				if (prev != 'v')
++					return -1;
++				comma = 1; prev = ','; p++;
++			} else if (*p == ']') {
++				if (!depth)
++					return -1;
++				comma = 0; depth--; prev = 'v'; *o++ = *p++;	/* a pending comma before ] is dropped */
++			} else if (*p == '[' || *p == '"') {
++				if (prev == 'v')
++					return -1;
++				if (comma)
++					*o++ = ',';
++				comma = 0;
++				if (*p == '[') {
++					depth++; prev = '['; *o++ = *p++;
++					continue;
++				}
++				*o++ = '"';
++				for (p++; *p != '"'; p++) {
++					unsigned char c = *p;
++
++					if (!c)
++						return -1;
++					if (c == '\\') {
++						if (!p[1] || !strchr("'\"\\", p[1]))
++							return -1;
++						c = *++p;
++					}
++					if (c == '"' || c == '\\') {
++						*o++ = '\\'; *o++ = c;
++					} else if (c < 0x20 || c == 0x7f || c == '<' || c == '>' || c == '&')
++						o += sprintf(o, "\\u%04x", c);
++					else
++						*o++ = c;
++				}
++				*o++ = '"'; p++; prev = 'v';
++			} else
++				return -1;
++		} while (depth);
++		while (*p == ' ') p++;
++		if (*p++ != ';')
++			return -1;
++	}
++	*o++ = '}';
++	*o = 0;
++	return 0;
++}
++
++/* <% get_wl_status_json(); %> - ajax_reaper_wlstatus.asp (the stock producer lives in sysdeps/web-broadcom-am.c) */
++static int
++ej_wl_status_json(int eid, webs_t wp, int argc, char_t **argv)
++{
++	char *txt = NULL, *out = NULL;
++	size_t len = 0;
++	FILE *m;
++	int ret;
++
++	if ((m = open_memstream(&txt, &len)) == NULL)
++		return websWrite(wp, "{}");
++	ej_wl_status_array(eid, m, argc, argv);
++	fclose(m);
++	if (txt && (out = malloc(6 * len + 16)) != NULL && reaper_wl_json(txt, out) == 0)
++		ret = websWrite(wp, "%s", out);
++	else
++		ret = websWrite(wp, "{}");
++	free(out);
++	free(txt);
++	return ret;
++}
++#endif
++
+ 
+ /* This will return properly encoded HTML entities - required
+    for retrieving stored certs/keys.
+@@ -3312,8 +3423,11 @@ static void do_html_post_and_get(char *url, FILE *stream, int len, char *boundar
+ 	if (fgets(post_buf, MIN(len+1, sizeof(post_buf)), stream)){
+ 		len -= strlen(post_buf);
+ 
+-		while (len--)
+-			(void)fgetc(stream);
++		/* 2026-11-05 audit (inherited pre-auth gap): stop at the end of the stream - a forged Content-Length of
++		   ~2^31 used to spin this loop ~2e9 fgetc() calls past EOF and hold the single-threaded GUI (login.cgi
++		   comes here before any login) */
++		while (len-- > 0 && fgetc(stream) != EOF)
++			;
+ 	}
+ 	strlcpy(post_json_buf, post_buf, sizeof(post_json_buf));
+ 
+@@ -10084,6 +10198,10 @@ finish:
+ 			}
+ 		}
+ 	}
++	/* reaper: the three scratch arrays were never released (leak per request; Merlin f3118f48d1) */
++	json_object_put(ruleIdxArray);
++	json_object_put(statusArray);
++	json_object_put(timeArray);
+ 	return have_data;
+ }
+ #ifdef RTCONFIG_PERMISSION_MANAGEMENT
+@@ -22733,7 +22851,7 @@ do_reaper_qos_stats_cgi(char *url, FILE *stream)
+ 		 * the other popen()ing Reaper readers (it had no http_id check). */
+ 		char *hid = get_cgi("http_id");
+ 		char *hwant = nvram_safe_get("http_id");
+-		if (!hid || !hwant[0] || strcmp(hid, hwant) != 0) {
++		if (!hid || !hwant[0] || strcmp(hid, hwant) != 0 || !reaper_referer_ok()) {	/* 2026-11-05 audit A-6: + same-site */
+ 			websWrite(stream, "{\"enabled\":0,\"error\":\"auth\"}");
+ 			return;
+ 		}
+@@ -23051,6 +23169,43 @@ static int rconn_is_rtr6(const struct in6_addr *rt, int n, const struct in6_addr
+ 	return 0;
+ }
+ 
++/* v2.1.3 (Quick Look): one conntrack TCP row (original tuple, network order) - the state each fcache flow is
++ * matched to. Batch B (2026-11-05, code review 2026-08-18): the match used to be a linear scan of the whole table
++ * PER FLOW - O(flows x conntrack), up to 300000 rows (ct_max) times every Runner flow, once a second while the page
++ * is open, inside the single-flight lock. The table is now sorted once by (s, sp, d, dp, ix) and each flow does
++ * two binary searches. `ix` is the row's line order in /proc/net/nf_conntrack: the scan took the FIRST row that
++ * matched either direction, and the lowest ix of the two lookups is that same row, so every "st" is unchanged. */
++struct rc_ctst { uint32_t s, d; unsigned sp, dp; int ix; char st[16]; };
++
++static int rconn_ct_cmp(const void *pa, const void *pb)
++{
++	const struct rc_ctst *a = pa, *b = pb;
++
++	if (a->s != b->s) return a->s < b->s ? -1 : 1;
++	if (a->sp != b->sp) return a->sp < b->sp ? -1 : 1;
++	if (a->d != b->d) return a->d < b->d ? -1 : 1;
++	if (a->dp != b->dp) return a->dp < b->dp ? -1 : 1;
++	return a->ix < b->ix ? -1 : a->ix > b->ix;
++}
++
++/* the lowest-ix row whose original tuple is s:sp -> d:dp, or NULL (v sorted by rconn_ct_cmp) */
++static const struct rc_ctst *rconn_ct_find(const struct rc_ctst *v, int n, uint32_t s, unsigned sp, uint32_t d, unsigned dp)
++{
++	struct rc_ctst k;
++	int lo = 0, hi = n;
++
++	k.s = s; k.sp = sp; k.d = d; k.dp = dp; k.ix = -1;	/* below every real ix: the lower bound is the first */
++	while (lo < hi) {
++		int mid = lo + (hi - lo) / 2;
++
++		if (rconn_ct_cmp(&v[mid], &k) < 0) lo = mid + 1;
++		else hi = mid;
++	}
++	if (lo < n && v[lo].s == s && v[lo].sp == sp && v[lo].d == d && v[lo].dp == dp)
++		return &v[lo];
++	return NULL;
++}
++
+ /* reaper v2.0.6: Connections / Flow Explorer feed for Reaper_Conn.asp. Read-only;
+  * no request input is parsed. Streams every Runner flow-cache entry from
+  * /proc/fcache/nflist as JSON rows (the page groups them by nf_conn and computes
+@@ -23067,8 +23222,8 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 	int nbrs = 0;
+ 	struct in_addr ia;
+ 	int first, cf;
+-	/* v2.1.3 (Quick Look): conntrack TCP-state table, matched to each flow below */
+-	struct rc_ctst { uint32_t s, d; unsigned sp, dp; char st[16]; } *ctv = NULL;
++	/* v2.1.3 (Quick Look): conntrack TCP-state table, matched to each flow below (struct rc_ctst above) */
++	struct rc_ctst *ctv = NULL;
+ 	int ctn = 0, ctcap = 0;
+ 	struct rdm_ent *rdm = NULL;	/* v3.3.4: the passive DNS name map, when the switch is on */
+ 	uint32_t rdm_now = (uint32_t)time(NULL);
+@@ -23206,12 +23361,23 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 				ctv[ctn].s = inet_aton(cs, &a) ? a.s_addr : 0;
+ 				ctv[ctn].d = inet_aton(cd, &a) ? a.s_addr : 0;
+ 				ctv[ctn].sp = csp; ctv[ctn].dp = cdp;
++				ctv[ctn].ix = ctn;	/* batch B: line order - the linear scan's tie-break */
+ 				strlcpy(ctv[ctn].st, stw, sizeof(ctv[ctn].st));
+ 				ctn++;
+ 			}
+ 			fclose(ctf);
+ 		}
+ 	}
++	/* batch B (2026-11-05): sorted once here, outside the lock, so the lock window below pays O(log n) per flow.
++	 * WHY THE CONNTRACK READ IS OUTSIDE THE LOCK (code review 2026-08-18 asked): the lock single-flights the
++	 * Runner's /proc/fcache/nflist and nothing else - that surface is the one in the family that wedged the box
++	 * under concurrent readers. /proc/net/nf_conntrack is the kernel's ordinary seq_file, read under RCU and safe
++	 * for any number of concurrent readers; nothing in it is shared with nflist, and the two are separate
++	 * snapshots whichever order they are taken in. It is also needed when the lock is NOT won: the IPv6 rows
++	 * below come from it and are emitted either way. Taking it under the lock would only make the lock window
++	 * longer, and a contended tick (empty flows[]) more likely. */
++	if (ctn > 1)
++		qsort(ctv, (size_t)ctn, sizeof(*ctv), rconn_ct_cmp);
+ 
+ 	/* single-flight the /proc/fcache/nflist read (pre-release audit 2026-08-02):
+ 	 * this Runner accelerator surface is the same family as the shelved wifi-accel
+@@ -23266,19 +23432,19 @@ do_reaper_conn_cgi(char *url, FILE *stream)
+ 			reaper_ip_strip_zeros(sip); reaper_ip_strip_zeros(dip);
+ 			sipn = 0; if (inet_aton(sip, &ia)) sipn = ntohl(ia.s_addr);
+ 
+-			/* match this flow's 5-tuple to the conntrack table (either direction) */
++			/* match this flow's 5-tuple to the conntrack table (either direction): batch B - two lookups in the sorted
++			 * table; the row with the lower ix is the one a front-to-back scan met first */
+ 			{
+ 				struct in_addr sa, da;
+ 				uint32_t sN = inet_aton(sip, &sa) ? sa.s_addr : 0;
+ 				uint32_t dN = inet_aton(dip, &da) ? da.s_addr : 0;
+-				int k;
+-				for (k = 0; k < ctn; k++) {
+-					if ((ctv[k].s == sN && ctv[k].sp == (unsigned)sp && ctv[k].d == dN && ctv[k].dp == (unsigned)dp) ||
+-					    (ctv[k].d == sN && ctv[k].dp == (unsigned)sp && ctv[k].s == dN && ctv[k].sp == (unsigned)dp)) {
+-						cstate = ctv[k].st;
+-						break;
+-					}
+-				}
++				const struct rc_ctst *fw = rconn_ct_find(ctv, ctn, sN, (unsigned)sp, dN, (unsigned)dp);
++				const struct rc_ctst *rv = rconn_ct_find(ctv, ctn, dN, (unsigned)dp, sN, (unsigned)sp);
++
++				if (fw && (!rv || fw->ix < rv->ix))
++					cstate = fw->st;
++				else if (rv)
++					cstate = rv->st;
+ 			}
+ 
+ 			/* v3.3.4: the remote end's name from the passive DNS map (the LAN end is
+@@ -23388,6 +23554,14 @@ do_reaper_traffic_cgi(char *url, FILE *stream)
+ 	 * already parsed it into the cgi table - read the window name from there.
+ 	 * Matched against the fixed allowlist so the served path is one of five
+ 	 * literals, never request-controlled. */
++	/* 2026-11-05 audit A-6: behind the page token + same-site check like every Reaper CGI */
++	{
++		int why = reaper_gate();
++		if (why != RGATE_OK) {
++			reaper_gate_deny(stream, why, "RTRF");
++			return;
++		}
++	}
+ 	fp = get_cgi("f");
+ 	if (fp) {
+ 		for (i = 0; wins[i]; i++) {
+@@ -25086,8 +25260,8 @@ do_reaper_wifi_cgi(char *url, FILE *stream)
+ 	 * because it popen()s 'wl chanspec' per radio - a token-free status was CSRF
+ 	 * subprocess-amplification (pre-release audit 2026-08-02). Every mutating
+ 	 * action (capstart/capstop/scanstart/scanstop/chqset) is gated. */
+-	if (strcmp(act, "capdata") != 0 && strcmp(act, "svydata") != 0 &&
+-	    strcmp(act, "scandata") != 0 && strcmp(act, "chq") != 0) {
++	/* 2026-11-05 audit A-6: behind the page token + same-site check like every Reaper CGI - the file reads too (capdata/svydata/scandata/chq were exempt) */
++	{
+ 		char *hid = get_cgi("http_id");
+ 		char *want = nvram_safe_get("http_id");
+ 		if (!hid || !want[0] || strcmp(hid, want) != 0 || !reaper_referer_ok()) {
+@@ -26661,6 +26835,22 @@ static int sh_chk_assign(char *l)
+ 	return sh_idchars(id);	/* "bypass" is allowed here */
+ }
+ 
++/* 2026-11-05 (owner): a DNS rewrite, "<name> <answer> [sub]" (shared/reaper_rewrite.h, rc reads it with the
++   same rules). Stored lower case in its plain form, single spaces - never longer than the line sent. */
++static int sh_chk_rewrite(char *l)
++{
++	struct rrw r;
++	char *c;
++	size_t n = strlen(l);
++
++	for (c = l; *c; c++)
++		*c = (char)tolower((unsigned char)*c);
++	if (!rrw_parse(l, &r))
++		return 0;
++	snprintf(l, n + 1, "%s %s%s", r.name, r.ans, r.sub ? " sub" : "");
++	return 1;
++}
++
+ /* JSON string of a file's text: fw_json_frag's escaping contract (review 2026-10-24, Q-B-9: this was a fourth one;
+    `<>&` arrive as < etc. - S-B-4 - and the parsed value is the same) */
+ /* 2026-10-27: Wallguard's settings files and the check every line must pass. The page's save and the settings
+@@ -26675,6 +26865,7 @@ static const struct sh_file sh_files[] = {
+ 	{ "services", SH_JFFS "/services", sh_chk_services },
+ 	{ "sched", SH_JFFS "/sched", sh_chk_sched },
+ 	{ "safe", SH_JFFS "/safe", sh_chk_safe },
++	{ "rewrite", SH_JFFS "/rewrite", sh_chk_rewrite },	/* 2026-11-05: DNS rewrites */
+ };
+ #define SH_NFILES ((int)(sizeof(sh_files) / sizeof(sh_files[0])))
+ 
+@@ -26879,6 +27070,9 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ 		sh_json_file(stream, SH_JFFS "/sched");
+ 		websWrite(stream, ",\"safe\":");
+ 		sh_json_file(stream, SH_JFFS "/safe");
++		/* 2026-11-05: DNS rewrites */
++		websWrite(stream, ",\"rewrite\":");
++		sh_json_file(stream, SH_JFFS "/rewrite");
+ 		websWrite(stream, ",\"catalog\":[");
+ 		if ((f = fopen(SH_CATALOG, "r"))) {
+ 			char cl[2048];
+@@ -28710,6 +28904,7 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "wallguard", "wallguard_allow", SH_LIST_MAX }, { "wallguard", "wallguard_profiles", SH_LIST_MAX },
+ 	{ "wallguard", "wallguard_assign", SH_LIST_MAX }, { "wallguard", "wallguard_services", SH_LIST_MAX },
+ 	{ "wallguard", "wallguard_sched", SH_LIST_MAX }, { "wallguard", "wallguard_safe", SH_LIST_MAX },
++	{ "wallguard", "wallguard_rewrite", SH_LIST_MAX },	/* 2026-11-05: DNS rewrites */
+ 	{ "wallguard", "wallguard_keys", 8 * 220 + 1 },
+ 	/* DNS: strict order, no cache, reverse sharing, IPv6 names, the LAN DNS check, the health check */
+ 	{ "dns",    "reaper_dns_strict", 2  }, { "dns",    "reaper_dns_nocache", 2 },
+@@ -28733,6 +28928,9 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "export", "reaper_export_source", 129 }, { "export", "reaper_export_interval", 33 },
+ 	{ "export", "reaper_export_metrics", 257 }, { "export", "reaper_export_maskmac", 9 },
+ 	{ "export", "reaper_export_tlsverify", 9 },
++	/* 2026-11-05: Let's Encrypt by DNS validation - the switch, provider, name and API token (rc/reaper_ledns.c) */
++	{ "cert",   "reaper_ledns_enable", 2 }, { "cert",   "reaper_ledns_provider", 9 },
++	{ "cert",   "reaper_ledns_domain", 254 }, { "cert",   "reaper_ledns_token", 201 },
+ 	/* the Advisor's client pin, port and timeout (in force at its next start) */
+ 	{ "advisor", "rmcp_client",    33   }, { "advisor", "rmcp_port",      9   },
+ 	{ "advisor", "rmcp_timeout",   9    },
+@@ -28842,7 +29040,8 @@ static int rcfg_put(int i, const char *v)
+ 			return -1;
+ 		return rw_list_set(ln, v) == 0 ? 0 : -1;
+ 	}
+-	if (!strcmp(nv, "reaper_export_url") || !strcmp(nv, "reaper_export_token") || !strcmp(nv, "reaper_export_scrape_token")) {
++	if (!strcmp(nv, "reaper_export_url") || !strcmp(nv, "reaper_export_token") || !strcmp(nv, "reaper_export_scrape_token")
++	 || !strcmp(nv, "reaper_ledns_token")) {
+ 		/* a URL or a token: printable, no space, quote, backslash, backtick, $ or <> */
+ 		if (!rcfg_ok(v, rcfg_flags[i].max) || strpbrk(v, " \"'`\\$<>"))
+ 			return -1;
+@@ -28862,11 +29061,13 @@ static int rcfg_put(int i, const char *v)
+ #define RCFG_T_TRAF	0x20
+ #define RCFG_T_EXPORT	0x40
+ #define RCFG_T_MISC	0x80
++#define RCFG_T_CERT	0x100	/* 2026-11-05: Let's Encrypt by DNS validation */
+ static unsigned rcfg_touch_bit(const char *s)
+ {
+ 	static const struct { const char *s; unsigned b; } T[] = {
+ 		{ "pbr", 0 }, { "fw", 0 }, { "wallguard", RCFG_T_WG }, { "dns", RCFG_T_DNS }, { "encdns", RCFG_T_ENC },
+ 		{ "watch", RCFG_T_WATCH }, { "traffic", RCFG_T_TRAF }, { "export", RCFG_T_EXPORT }, { "misc", RCFG_T_MISC },
++		{ "cert", RCFG_T_CERT },
+ 	};
+ 	int i;
+ 
+@@ -28890,6 +29091,7 @@ static void rcfg_restart(int gk, int warden, int dw, unsigned t)
+ 	RCFG_SVC(t & RCFG_T_WATCH, "restart_rwatch");
+ 	RCFG_SVC(t & RCFG_T_TRAF, "restart_rtraf");
+ 	RCFG_SVC(t & RCFG_T_EXPORT, "restart_rexport");
++	RCFG_SVC(t & RCFG_T_CERT, "restart_reaper_ledns");
+ 	RCFG_SVC(t & RCFG_T_MISC, nvram_match("rchq_enable", "1") ? "restart_upnp;start_rchqd" : "restart_upnp;stop_rchqd");
+ #undef RCFG_SVC
+ 	if (*s)
+@@ -30652,13 +30854,21 @@ static void rdev_scan_wl(struct rdev *v, int *n, int mlo_on)
+ 					 * mlo_active 0 and prints no such line, so the fold silently
+ 					 * stopped and the device showed as two rows. cfg_mnt still
+ 					 * carries the mapping as mld_mac. */
+-					if (mlo_on && rdev_is_rand(mac) &&
++					/* 2026-11-05 (owner metal, _r8): with MLO switched OFF, Wi-Fi 7 clients still
++					 * associate PSEUDO_MLO_CAP under a per-link randomized MAC (A6:..:9D:E1 for
++					 * A4:..:9D:5C, 7A:..:8A:27 for 78:..:8A:27) and cfg_mnt maps them as mld_mac
++					 * all the same - the gate below kept them as "unnamed / private / no lease"
++					 * rows. The cfg_mnt mapping is a cached file read, so it is asked whatever the
++					 * MLO switch says; the per-station sta_info probe stays MLO-on only, and the
++					 * device is marked MLO only while MLO is on. */
++					if (rdev_is_rand(mac) &&
+ 					    (rdev_amesh_mld_of(mac, mld, sizeof(mld)) ||
+-					     rdev_sta_mld(tok, mac, mld, sizeof(mld))) && mld[0] &&
++					     (mlo_on && rdev_sta_mld(tok, mac, mld, sizeof(mld)))) && mld[0] &&
+ 					    strcasecmp(mld, mac) != 0) {
+ 						idx = rdev_find(v, n, mld);
+ 						if (idx < 0) continue;
+-						v[idx].mlo = 1;
++						if (mlo_on)
++							v[idx].mlo = 1;
+ 					} else {
+ 						idx = rdev_find(v, n, mac);
+ 						if (idx < 0) continue;
+@@ -40447,7 +40657,9 @@ struct mime_handler mime_handlers[] =
+ 	{ "findasus.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_findasus_cgi, do_auth },
+ 	{ "find_device.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, do_auth },
+ #endif
++#if 0	/* 2026-11-05 audit A-4: the only pre-auth nvram write left in open code (MULTIFILTER_TMP_T), and nothing reads it */
+ 	{ "blocking_request.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_blocking_request_cgi, NULL },
++#endif
+ 	{ "blocking.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_blocking_cgi, do_auth },
+ 	{ "get_timezone.cgi", "text/html", no_cache_IE7, do_html_post_and_get, do_get_timezone_cgi, do_auth },
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI)
+@@ -55483,6 +55695,7 @@ struct ej_handler ej_handlers[] = {
+ 	{ "get_custom_settings", ej_get_custom_settings},
+ #ifdef RTCONFIG_BCMWL6
+ 	{ "get_wl_status", ej_wl_status_array},
++	{ "get_wl_status_json", ej_wl_status_json},	/* reaper B-5: Reaper_WLog.asp */
+ #endif
+ 	{ "radio_status", ej_radio_status},
+ 	{ "asus_sysinfo", ej_sysinfo},
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index edec3221ddb..31354a5f785 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -857,6 +857,12 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 				wallguard_write_policy();	/* this network's subnet may have changed */
+ 			}
+ 		}
++		/* 2026-11-05: Wallguard's DNS rewrites answer on this network too */
++		{
++			const char *rw = reaper_wallguard_rewrite_conf();
++			if (rw)
++				fprintf(fp, "conf-file=%s\n", rw);
++		}
+ 		/* 2026-10-21: the encrypted-DNS block's DoH provider names, here too */
+ 		{
+ 			const char *ec = reaper_edns_dns_conf();
+diff --git a/release/src/router/rc/wallguard.c b/release/src/router/rc/wallguard.c
+index c8548abf731..c40b0161efe 100644
+--- a/release/src/router/rc/wallguard.c
++++ b/release/src/router/rc/wallguard.c
+@@ -17,6 +17,11 @@
+  *
+  * nvram: wallguard_enable (0), wallguard_mode (null | nx). Lists download in the background; a
+  * list update never restarts dnsmasq - only switching Wallguard on or off does, once.
++ *
++ * 2026-11-05 (owner): DNS rewrites. /jffs/wallguard/rewrite ("<name> <answer> [sub]", the page's
++ * table) becomes SH_RW_CONF, which every dnsmasq instance includes whether or not Wallguard is on
++ * (services.c, sdn.c); shared/reaper_rewrite.h turns the rows into address= / host-record= / cname=
++ * lines. Saving a changed table restarts dnsmasq once, from the same place the switch does.
+  */
+ #include <rc.h>
+ #include <shared.h>
+@@ -27,6 +32,7 @@
+ #include <arpa/inet.h>
+ #include <sys/stat.h>
+ #include <reaper_lists.h>	/* 2026-11-02: the preset addresses, shared with httpd */
++#include <reaper_rewrite.h>	/* 2026-11-05: DNS rewrites - the same checks as httpd */
+ #ifdef RTCONFIG_MULTILAN_CFG
+ #include "mtlan_utils.h"
+ #endif
+@@ -743,21 +749,75 @@ void wallguard_write_policy(void)
+ 	free(safe);
+ }
+ 
++/* ---- DNS rewrites (2026-11-05, owner): the table on the page, /jffs/wallguard/rewrite, as the dnsmasq
++   include every instance reads (address= / host-record= / cname=, shared/reaper_rewrite.h). Written by
++   tmp + rename, root 0644; no rows = no file, so no include line. 1 = its text changed. */
++#define SH_RW_CONF	SH_DIR "/rewrite.conf"
++#define SH_RW_MAX	(128 * 1024)
++static int sh_rw_write(int quiet)
++{
++	char *in, *out, *old;
++	int ex, skipped = 0, changed;
++	size_t n;
++
++	in = strdup(rjf_get(SH_JFFS "/rewrite", &ex));
++	if (!in || !(out = malloc(SH_RW_MAX))) {
++		free(in);
++		return 0;
++	}
++	n = rrw_conf(ex > 0 ? in : "", out, SH_RW_MAX, &skipped);
++	old = read_whole_file(SH_RW_CONF);
++	if (!n) {
++		changed = old != NULL;
++		unlink(SH_RW_CONF);
++	} else {
++		changed = !old || strcmp(old, out) != 0;
++		if (changed && (reaper_secure_dir(SH_DIR, 0755) != 0 || reaper_write_changed(SH_RW_CONF, out, n, 0644) != 0)) {
++			logmessage("wallguard", "DNS rewrites: " SH_RW_CONF " could not be written - rewrites are off");
++			unlink(SH_RW_CONF);
++			changed = old != NULL;
++		}
++	}
++	if (changed && !quiet && skipped)
++		logmessage("wallguard", "DNS rewrites: %d row(s) left out - unreadable, or an alias that repeats a name or points at another alias", skipped);
++	free(old);
++	free(out);
++	free(in);
++	return changed;
++}
++
++/* the include line every dnsmasq instance gets while there is at least one rewrite (services.c, sdn.c) -
++   whether or not Wallguard is on. Written fresh here, so a boot or a network restart uses the table. */
++const char *reaper_wallguard_rewrite_conf(void)
++{
++	sh_rw_write(1);
++	return f_exists(SH_RW_CONF) ? SH_RW_CONF : NULL;
++}
++
+ /* Reconcile the running dnsmasq with the switch (rw_dns_sync's shape): the option is
+-   either in /etc/dnsmasq.conf or not; a disagreement is ONE restart_dnsmasq. */
++   either in /etc/dnsmasq.conf or not; a disagreement is ONE restart_dnsmasq.
++   2026-11-05: so are the DNS rewrites - a changed table, or an include that is missing / no longer
++   wanted, is the same one restart. */
+ static void sh_dns_sync(void)
+ {
+ 	FILE *f;
+ 	char l[256];
+-	int live = 0, wanted = wallguard_enabled();
++	int live = 0, wanted = wallguard_enabled(), inc = 0, rw = sh_rw_write(0);
+ 
+ 	if ((f = fopen("/etc/dnsmasq.conf", "r")) == NULL)
+ 		return;
+-	while (fgets(l, sizeof(l), f))
+-		if (!strncmp(l, "wallguard-dir=", 14)) { live = 1; break; }
++	while (fgets(l, sizeof(l), f)) {
++		if (!strncmp(l, "wallguard-dir=", 14))
++			live = 1;
++		else if (!strcmp(l, "conf-file=" SH_RW_CONF "\n"))
++			inc = 1;
++	}
+ 	fclose(f);
+-	if (live != wanted) {
+-		logmessage("wallguard", "Wallguard %s - restarting dnsmasq", wanted ? "on" : "off");
++	if (live != wanted || rw || inc != f_exists(SH_RW_CONF)) {
++		if (live != wanted)
++			logmessage("wallguard", "Wallguard %s - restarting dnsmasq", wanted ? "on" : "off");
++		else
++			logmessage("wallguard", "DNS rewrites changed - restarting dnsmasq");
+ 		/* what the restart_dnsmasq handler does, done here: a notify_rc() issued from inside
+ 		   the running restart_wallguard service waits on that same service and is dropped
+ 		   (metal, _r6: dnsmasq never restarted, no wallguard-dir) */
+diff --git a/release/src/router/shared/reaper_rewrite.h b/release/src/router/shared/reaper_rewrite.h
+new file mode 100644
+index 00000000000..873e628e7cc
+--- /dev/null
++++ b/release/src/router/shared/reaper_rewrite.h
+@@ -0,0 +1,233 @@
++/*
++ * reaper 2026-11-05: Wallguard DNS rewrites (Bastion > Wallguard), shared by httpd and rc.
++ *
++ * The operator's rewrites live in /jffs/wallguard/rewrite, one per line:
++ *     <name> <answer>          the name itself only
++ *     <name> <answer> sub      the name and every name under it
++ * The answer is an IPv4 address, an IPv6 address, or another name (an alias, the name itself only).
++ * httpd checks each line with rrw_parse() before it is written (the page's save and a settings-file
++ * import); rc reads the file again at every dnsmasq start and turns it into dnsmasq lines with
++ * rrw_conf(), checking each line once more - the file can be edited by hand.
++ *
++ * What each row becomes (every dnsmasq instance includes the result, guest networks too):
++ *     name + address + sub   address=/name/address      the name and its subdomains
++ *     name + address         host-record=name,address   the name only (and its reverse lookup)
++ *     name + other name      cname=name,other           the name only; the other name must be one the
++ *                                                        router answers itself (a device or a rewrite)
++ * plus, once per name with an address, local=/name/ (the record types not given - AAAA of an IPv4-only
++ * rewrite, HTTPS - are answered empty, never forwarded) and, for a name without subdomains,
++ * server=/ *.name/# (its subdomains are looked up as usual). A name under a name-and-subdomains row gets
++ * neither: what it does not give itself is that row's.
++ * dnsmasq refuses to START on a duplicate alias or an alias loop, which would take DNS down for every
++ * network - so rrw_conf() drops, never emits: an alias that is also an address row, an alias given
++ * twice, an alias pointing at itself or at another alias (no chains, so no loops). Everything is
++ * written from checked characters only (no comma, slash, space or newline can reach a line).
++ */
++#ifndef REAPER_REWRITE_H
++#define REAPER_REWRITE_H
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <arpa/inet.h>
++
++#define RRW_MAX		512	/* rows read from the file */
++#define RRW_NAME	254	/* 253 + NUL */
++#define RRW_A		1
++#define RRW_AAAA	2
++#define RRW_CNAME	3
++
++struct rrw { char name[RRW_NAME], ans[RRW_NAME]; int type, sub; };
++
++/* a DNS name as the page stores it: lower case, labels of 1-63 [a-z0-9_-] that neither start nor end
++   with "-", 1-253 characters, no leading or trailing dot; a single label ("nas") is allowed. Not
++   digits and dots only (an address, or a mistyped one such as 1.2.3 or 01.2.3.4) and not "localhost". */
++static inline int rrw_name_ok(const char *s)
++{
++	size_t n = strlen(s), i, lab = 0;
++
++	if (n < 1 || n > 253 || s[0] == '.' || s[n - 1] == '.' || s[n - 1] == '-' || strspn(s, "0123456789.") == n)
++		return 0;
++	for (i = 0; i < n; i++) {
++		char c = s[i];
++		if (c == '.') {
++			if (!lab || s[i - 1] == '-')
++				return 0;
++			lab = 0;
++			continue;
++		}
++		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_'))
++			return 0;
++		if (c == '-' && !lab)
++			return 0;
++		if (++lab > 63)
++			return 0;
++	}
++	return strcmp(s, "localhost") != 0;
++}
++
++/* one line "<name> <answer> [sub]" (spaces or tabs between, nothing after) -> *r. 1 = a valid
++   rewrite. Upper case is refused here: httpd lowers the line first. */
++static inline int rrw_parse(const char *line, struct rrw *r)
++{
++	char buf[RRW_NAME * 2 + 16], *tok[4], *save = NULL, *t;
++	unsigned char b[16];
++	int n = 0;
++
++	memset(r, 0, sizeof(*r));
++	if (!line || strlen(line) >= sizeof(buf))
++		return 0;
++	strcpy(buf, line);
++	for (t = strtok_r(buf, " \t\r\n", &save); t; t = strtok_r(NULL, " \t\r\n", &save)) {
++		if (n == 4)
++			return 0;
++		tok[n++] = t;
++	}
++	if (n < 2 || n > 3 || strlen(tok[0]) >= RRW_NAME || strlen(tok[1]) >= RRW_NAME)
++		return 0;
++	if (n == 3) {
++		if (strcmp(tok[2], "sub"))
++			return 0;
++		r->sub = 1;
++	}
++	strcpy(r->name, tok[0]);
++	strcpy(r->ans, tok[1]);
++	if (!rrw_name_ok(r->name))
++		return 0;
++	if (inet_pton(AF_INET, r->ans, b) == 1)
++		r->type = RRW_A;
++	else if (strchr(r->ans, ':') && strspn(r->ans, "0123456789abcdef:.") == strlen(r->ans) && inet_pton(AF_INET6, r->ans, b) == 1)
++		r->type = RRW_AAAA;
++	else if (rrw_name_ok(r->ans) && strcmp(r->ans, r->name) && !r->sub)
++		r->type = RRW_CNAME;		/* an alias covers the name only */
++	else
++		return 0;
++	return 1;
++}
++
++/* the dnsmasq lines for the rewrites in text, into out (NUL-terminated). Returns the bytes written,
++   0 = nothing to include. *skipped = valid-looking rows left out: unreadable lines, aliases that
++   would stop dnsmasq starting (see the top), duplicates are dropped silently. */
++static inline size_t rrw_conf(const char *text, char *out, size_t max, int *skipped)
++{
++	struct rrw *r;
++	char *copy, *line, *save = NULL;
++	size_t o = 0;
++	int n = 0, i, j, bad = 0;
++
++	if (skipped)
++		*skipped = 0;
++	if (!out || max < 2)
++		return 0;
++	*out = 0;
++	if (!text || !*text || !(r = calloc(RRW_MAX, sizeof(*r))))
++		return 0;
++	if (!(copy = strdup(text))) {
++		free(r);
++		return 0;
++	}
++	for (line = strtok_r(copy, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
++		while (*line == ' ' || *line == '\t' || *line == '\r')
++			line++;
++		if (!*line || *line == '#')
++			continue;
++		if (n == RRW_MAX || !rrw_parse(line, &r[n])) {
++			bad++;
++			continue;
++		}
++		for (j = 0; j < n; j++)		/* the same row twice */
++			if (!strcmp(r[j].name, r[n].name) && !strcmp(r[j].ans, r[n].ans) && r[j].sub == r[n].sub)
++				break;
++		if (j == n)
++			n++;
++	}
++	free(copy);
++
++	/* aliases, in two passes: first the ones that may stand at all (no address row of the same name, the
++	   first of a repeated alias), then - among those only, so a row dropped in the first pass cannot take
++	   a good one with it - any alias whose target is another alias (a chain; a loop drops every member) */
++	for (i = 0; i < n; i++) {
++		if (r[i].type != RRW_CNAME)
++			continue;
++		for (j = 0; j < n; j++)
++			if (j != i && !strcmp(r[j].name, r[i].name) && (r[j].type != RRW_CNAME || j < i))
++				break;
++		if (j < n)
++			r[i].type = -RRW_CNAME;		/* dropped, first pass */
++	}
++	for (i = 0; i < n; i++) {
++		if (r[i].type != RRW_CNAME)
++			continue;
++		for (j = 0; j < n; j++)
++			if (j != i && (r[j].type == RRW_CNAME || r[j].type == -RRW_CNAME * 2) && !strcmp(r[j].name, r[i].ans))
++				break;
++		if (j < n)
++			r[i].type = -RRW_CNAME * 2;	/* dropped, second pass (still an alias for its peers' test) */
++	}
++
++	for (i = 0; i < n; i++) {
++		char l[RRW_NAME * 2 + 32];
++		int len;
++
++		if (r[i].type < 0) {
++			bad++;
++			continue;
++		}
++		if (r[i].type == RRW_CNAME) {
++			len = snprintf(l, sizeof(l), "cname=%s,%s\n", r[i].name, r[i].ans);
++		} else if (r[i].sub)
++			len = snprintf(l, sizeof(l), "address=/%s/%s\n", r[i].name, r[i].ans);
++		else
++			len = snprintf(l, sizeof(l), "host-record=%s,%s\n", r[i].name, r[i].ans);
++		if (len <= 0 || (size_t)len >= sizeof(l) || o + (size_t)len + 1 > max) {
++			n = i;			/* out of room: the rows not written get no lines below either */
++			break;
++		}
++		memcpy(out + o, l, (size_t)len + 1);
++		o += (size_t)len;
++	}
++
++	/* once per name with an address: local=/name/ makes the router answer the record types it was not given
++	   (an IPv4-only rewrite answers AAAA, and HTTPS / SVCB, empty - no outside answer can lead around it;
++	   dnsmasq 2.86+ would forward them). For a name without subdomains, server=/ *.name/# hands its
++	   subdomains back to the usual servers - unless a name-and-subdomains row above it covers them. */
++	for (i = 0; i < n; i++) {
++		char l[RRW_NAME * 2 + 32];
++		int len, k, covered = 0;
++
++		if (r[i].type != RRW_A && r[i].type != RRW_AAAA)
++			continue;
++		for (j = 0; j < i; j++)
++			if ((r[j].type == RRW_A || r[j].type == RRW_AAAA) && !strcmp(r[j].name, r[i].name))
++				break;
++		if (j < i)
++			continue;		/* this name's lines are written */
++		/* covered = 1: the name has a name-and-subdomains row of its own; 2: one above it covers it (its own
++		   rows answer what they give, the rest - subdomains, the other family - is the row above's) */
++		for (k = 0; k < n && covered != 1; k++) {
++			size_t a = strlen(r[i].name), b = strlen(r[k].name);
++			if ((r[k].type != RRW_A && r[k].type != RRW_AAAA) || !r[k].sub)
++				continue;
++			if (!strcmp(r[i].name, r[k].name))
++				covered = 1;
++			else if (a > b + 1 && r[i].name[a - b - 1] == '.' && !strcmp(r[i].name + a - b, r[k].name))
++				covered = 2;
++		}
++		if (covered == 2)
++			continue;
++		if (covered)
++			len = snprintf(l, sizeof(l), "local=/%s/\n", r[i].name);
++		else
++			len = snprintf(l, sizeof(l), "local=/%s/\nserver=/*.%s/#\n", r[i].name, r[i].name);
++		if (len <= 0 || (size_t)len >= sizeof(l) || o + (size_t)len + 1 > max)
++			break;
++		memcpy(out + o, l, (size_t)len + 1);
++		o += (size_t)len;
++	}
++	free(r);
++	if (skipped)
++		*skipped = bad;
++	return o;
++}
++
++#endif /* REAPER_REWRITE_H */
+diff --git a/release/src/router/www/Reaper_Wallguard.asp b/release/src/router/www/Reaper_Wallguard.asp
+index 15a27ffdb98..16cdec1285c 100644
+--- a/release/src/router/www/Reaper_Wallguard.asp
++++ b/release/src/router/www/Reaper_Wallguard.asp
+@@ -8,48 +8,27 @@
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="reaper-native" content="1">
+ <title>REAPER &mdash; <#RSHD_00#></title>
++<link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+-@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
+-@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+-:root{
+-  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
+-  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+-  --crimson:#E10600; --crimson-deep:#B3000C;
+-  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+-  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+-}
+-*{box-sizing:border-box;margin:0}
+-html,body{background:var(--bg)}
+-body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
+-h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-a{color:var(--bone)}
+-.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
+-.pagehead h1{font-size:24px;font-weight:700}
++/* page-specific rules only (review 2026-10-24 Q-C2-12, 2026-11-05): fonts, tokens, base, head, buttons, pills and the
++   applying overlay come from /reaper/rp.css; below is this page's own layout in rp.css's tokens and look */
++body{font-size:13.5px;line-height:1.55}
+ .pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
+-.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+-.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
+-.statuspill.warn{color:var(--amber);border-color:rgba(224,169,59,.4)}
+ .mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
+-.lede{max-width:78ch;margin:6px 0 16px}
+-.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
+-.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.lede{max-width:78ch;margin:-8px 0 18px}
++.tg{position:relative;width:42px;height:22px;border-radius:999px;background:#26262b;border:1px solid var(--line-soft);cursor:pointer;flex:0 0 42px;transition:.15s}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6a6f75;transition:.15s}
+ .tg.on{background:#33333a}
+ .tg.on::after{left:21px;background:var(--bone)}
+-.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(224,169,59,.10),rgba(224,169,59,.03));border:1px solid rgba(224,169,59,.35);border-radius:14px;padding:14px 18px;margin-bottom:18px;color:var(--bone-dim)}
+ .warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
+-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
+-.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 18px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
+ .stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
+-.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+-.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:18px}
++.card>h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:84ch}
+-.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
+-.duo .card{margin:0}
+ ol.steps{margin:10px 0 2px;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:13px;max-width:86ch}
+ ol.steps li{color:var(--bone-dim);padding-left:4px}
+ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+@@ -65,11 +44,11 @@ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+ .sfgrid .wide{grid-column:1/-1}
+ .sfmore{font-size:12px;color:var(--bone-dim);text-decoration:underline;cursor:pointer}
+ .sfmore:hover{color:var(--bone)}
+-.srcapi{font-family:var(--hdr);font-size:10px;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(224,169,59,.4);border-radius:8px;padding:0 6px;margin-left:6px}
++.srcapi{font-family:var(--hdr);font-size:10px;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(224,169,59,.35);border-radius:8px;padding:0 6px;margin-left:6px}
+ .tbl td.acts{white-space:nowrap;text-align:right}
+-.tbl td.acts .btng{margin-left:6px}
++.tbl td.acts .btn{margin-left:6px}
+ .tbl td.num,.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
+-.tbl td.mono{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;word-break:break-all}
++.tbl td.mono{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+ .tbl td.dim,.dim{color:var(--steel)}
+ .tbl td.empty{text-align:center;color:var(--steel);padding:18px}
+ .st-ok{color:var(--jade)} .st-failed,.st-missing{color:var(--amber)} .st-new{color:var(--steel)}
+@@ -79,21 +58,17 @@ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+ .srcurl:hover{color:var(--bone);text-decoration:underline}
+ label.ck{position:relative;display:inline-flex;align-items:center;cursor:pointer}
+ label.ck input{position:absolute;opacity:0;width:0;height:0}
+-label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:var(--panel-2);display:inline-block;position:relative}
++label.ck .box{width:18px;height:18px;border-radius:5px;border:1px solid rgba(255,255,255,.2);background:#000;display:inline-block;position:relative}
+ label.ck input:checked + .box{border-color:var(--crimson-deep);background:rgba(225,6,0,.18)}
+ label.ck input:checked + .box::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid var(--crimson);border-width:0 2px 2px 0;transform:rotate(45deg)}
+ label.ck input:disabled + .box{opacity:.35}
+-select,textarea,input[type="text"],input[type="password"],input[type="time"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px}
+-textarea{width:100%;height:110px;resize:vertical;font-family:ui-monospace,Consolas,monospace;line-height:1.5}
++select,textarea,input[type="text"],input[type="password"],input[type="time"]{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:7px 10px;outline:none}
++select:focus,textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type="time"]:focus{border-color:var(--line)}
++textarea{width:100%;height:110px;resize:vertical;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+ .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
+ .row input[type="text"]{flex:1;min-width:200px}
+-.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
+-.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
+-.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
+-.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 14px;cursor:pointer}
+-.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
+-.btng.sm{padding:4px 9px;font-size:10.5px}
+-.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:84ch}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px}
++.card ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:84ch}
+ .card li{padding-left:16px;position:relative}
+ .card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
+ .result{margin-top:10px;font-size:12.5px}
+@@ -108,19 +83,15 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ .day.on{color:var(--bone);border-color:var(--crimson-deep);background:rgba(225,6,0,.16)}
+ .desc.warn{color:var(--amber)}
+ .v-s{color:var(--jade)}
+-.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
+-.applying.show{display:flex}
+-.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
+-.applying h3{font-size:16px;margin-bottom:6px}
+-.applying p{font-size:12px;color:var(--bone-dim)}
+ </style>
+ </head>
+ <body>
++<div class="syswrap">
+ 
+ <div class="pagehead">
+   <h1><#RSHD_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#433-wallguard" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+   <span class="ver"><#RSHD_01#></span>
+-  <span class="statuspill off" id="pill"><#RSHD_03#></span>
++  <span class="statuspill" id="pill"><#RSHD_03#></span>
+   <span class="mastertg"><#RSHD_06#> <span class="tg" id="tgon"></span></span>
+ </div>
+ <p class="lede"><#RSHD_07#></p>
+@@ -178,9 +149,9 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+     <div id="sf_morew" style="margin:0 0 10px"><a href="#" class="sfmore" id="sf_more"><#RSHD_150#> &middot; <#RSHD_152#> &rsaquo;</a></div>
+     <div class="desc" style="margin:0 0 4px"><#RSHD_163#></div>
+     <div class="desc" id="sf_keyhint" style="margin:0 0 8px"></div>
+-    <div class="row"><button type="button" class="btng" id="sf_ok"><#CTL_ok#></button><button type="button" class="btng" id="sf_cancel"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
++    <div class="row"><button type="button" class="btn ghost" id="sf_ok"><#CTL_ok#></button><button type="button" class="btn ghost" id="sf_cancel"><#CTL_Cancel#></button><span class="dim" id="sf_msg"></span></div>
+   </div>
+-  <div class="row"><button type="button" class="btng" data-act="addsrc"><#RSHD_138#></button><button type="button" class="btng" data-act="update"><#RSHD_36#></button><span class="dim" id="buildline"></span></div>
++  <div class="row"><button type="button" class="btn ghost" data-act="addsrc"><#RSHD_138#></button><button type="button" class="btn ghost" data-act="update"><#RSHD_36#></button><span class="dim" id="buildline"></span></div>
+   <div class="desc" id="storeline" style="margin-top:8px"></div>
+ </div>
+ 
+@@ -193,25 +164,45 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+   <div class="desc" id="allow24box" style="display:none"><b><#RSHD_42#>:</b> <span id="allow24"></span></div>
+ </div>
+ 
++<!-- 2026-11-05 (owner): DNS rewrites - names answered with an address or another name, on every network -->
++<div class="card">
++  <h2><#RSHD_164#></h2>
++  <div class="desc"><#RSHD_165#></div>
++  <table class="tbl"><thead><tr><th><#RSHD_166#></th><th><#RSHD_167#></th><th style="width:120px"><#RSHD_168#></th><th style="width:80px"></th></tr></thead><tbody id="rwbody"></tbody></table>
++  <div class="row">
++    <input type="text" id="rw_name" maxlength="255" placeholder="nas.home.arpa" aria-label="<#RSHD_166#>" autocomplete="off">
++    <input type="text" id="rw_ans" maxlength="253" placeholder="192.168.50.20" aria-label="<#RSHD_167#>" autocomplete="off">
++    <label class="ck"><input type="checkbox" id="rw_sub"><span class="box"></span></label><span><#RSHD_168#></span>
++    <button type="button" class="btn ghost" data-act="addrw"><#RSHD_169#></button>
++  </div>
++  <div class="desc warn" id="rw_msg" style="margin:0 0 8px"></div>
++  <ul>
++    <li><#RSHD_170#></li>
++    <li><#RSHD_171#></li>
++    <li><#RSHD_172#></li>
++    <li><#RSHD_173#></li>
++  </ul>
++</div>
++
+ <div class="card">
+   <h2><#RSHD_43#></h2>
+   <div class="desc"><#RSHD_44#></div>
+   <table class="tbl"><thead id="profhead"></thead><tbody id="profbody"></tbody></table>
+   <div class="pedit" id="pedit"></div>
+-  <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btng" data-act="addprof"><#RSHD_47#></button></div>
++  <div class="row"><input type="text" id="newprof" maxlength="30" placeholder="<#RSHD_48#>"><button type="button" class="btn ghost" data-act="addprof"><#RSHD_47#></button></div>
+   <h3 style="font-size:12.5px;margin-top:14px"><#RSHD_50#></h3>
+   <table class="tbl"><thead><tr><th><#RSHD_51#> / <#RSHD_52#></th><th><#RSHD_53#></th><th style="width:80px"></th></tr></thead><tbody id="assignbody"></tbody></table>
+   <div class="row">
+     <select id="newtarget" style="min-width:240px"></select>
+     <select id="newpid"></select>
+-    <button type="button" class="btng" data-act="addasg"><#RSHD_54#></button>
++    <button type="button" class="btn ghost" data-act="addasg"><#RSHD_54#></button>
+   </div>
+ </div>
+ 
+ <div class="actions" style="margin-bottom:16px">
+   <span class="dim"><#RSHD_87#></span>
+   <select id="mode"><option value="null"><#RSHD_88#></option><option value="nx"><#RSHD_89#></option></select>
+-  <button class="btn" data-act="save"><#RWDN_28#></button>
++  <button class="btn primary" data-act="save"><#RWDN_28#></button>
+ </div>
+ 
+ <div class="duo">
+@@ -220,14 +211,14 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+     <div class="row">
+       <select id="ptarget" style="min-width:200px"></select>
+       <select id="pmins"><option value="5"><#RSHD_58#></option><option value="60"><#RSHD_59#></option><option value="six"><#RSHD_60#></option></select>
+-      <button type="button" class="btng" data-act="pause"><#RSHD_56#></button>
+-      <button type="button" class="btng" data-act="resume"><#RSHD_61#></button>
++      <button type="button" class="btn ghost" data-act="pause"><#RSHD_56#></button>
++      <button type="button" class="btn ghost" data-act="resume"><#RSHD_61#></button>
+     </div>
+     <ul id="pauses"></ul>
+   </div>
+   <div class="card">
+     <h2><#RSHD_68#></h2>
+-    <div class="row"><input type="text" id="whyname" placeholder="<#RSHD_69#>"><button type="button" class="btng" data-act="why"><#RSHD_70#></button></div>
++    <div class="row"><input type="text" id="whyname" placeholder="<#RSHD_69#>"><button type="button" class="btn ghost" data-act="why"><#RSHD_70#></button></div>
+     <div class="result" id="whyres"></div>
+   </div>
+ </div>
+@@ -253,7 +244,7 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+ <div class="card">
+   <h2><#RSHD_78#></h2>
+   <div class="desc"><#RSHD_79#></div>
+-  <div class="row"><button type="button" class="btng" id="livebtn"><#RSHD_80#></button><span class="dim" id="liveleft"></span></div>
++  <div class="row"><button type="button" class="btn ghost" id="livebtn"><#RSHD_80#></button><span class="dim" id="liveleft"></span></div>
+   <table class="tbl" id="livetbl" style="display:none"><thead><tr><th><#RDWT_21#></th><th><#RDWT_19#></th><th><#RDWT_16#></th><th><#RSHD_26#></th></tr></thead><tbody id="livebody"></tbody></table>
+ </div>
+ 
+@@ -266,10 +257,12 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+     <li><#RSHD_94#></li>
+     <li><#RSHD_99#></li>
+   </ul>
+-  <div style="margin-top:10px"><button type="button" class="btng sm" data-act="reset"><#RDWT_28#></button></div>
++  <div style="margin-top:10px"><button type="button" class="btn ghost small" data-act="reset"><#RDWT_28#></button></div>
++</div>
++
+ </div>
+ 
+-<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RSHD_97#></p></div></div>
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RSHD_97#></p></div></div>
+ 
+ <iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
+ <form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+@@ -292,6 +285,8 @@ label.chip{gap:7px;padding:5px 11px 5px 7px;border:1px solid var(--line-soft);bo
+    (/jffs/wallguard via reaper_wallguard.cgi action=save). Report, pause, Why?, Unbreak and the
+    live view: reaper_wallguard.cgi, behind the http_id gate. Everything the router reports is
+    rendered with textContent.
++   2026-11-05 (owner): DNS rewrites - the table under My rules, saved with the rest as "rewrite"
++   (/jffs/wallguard/rewrite, "<name> <answer> [sub]"); the router's checks are shared/reaper_rewrite.h.
+    Review 2026-10-24 (Q-C2-12): one closure, no page globals; the buttons are wired below (data-act +
+    one delegated listener), never with inline on*= attributes. */
+ var HID = <% nvram_get_js("http_id"); %>;
+@@ -334,7 +329,7 @@ function shRows(id, rows, cols, fill){
+   if(!rows.length){ var tr = document.createElement('tr'), td = shCell(tr, `<#RDWT_23#>`, 'empty'); td.colSpan = cols; tb.appendChild(tr); return; }
+   rows.forEach(function(r){ var tr = document.createElement('tr'); fill(tr, r); tb.appendChild(tr); });
+ }
+-function shBtn(label, fn, sm){ var b = document.createElement('button'); b.type = 'button'; b.className = 'btng' + (sm ? ' sm' : ''); b.textContent = label; b.addEventListener('click', fn); return b; }
++function shBtn(label, fn, sm){ var b = document.createElement('button'); b.type = 'button'; b.className = 'btn ghost' + (sm ? ' small' : ''); b.textContent = label; b.addEventListener('click', fn); return b; }
+ function shCk(checked, disabled, onchange){
+   var l = document.createElement('label'), i = document.createElement('input'), s = document.createElement('span');
+   l.className = 'ck'; i.type = 'checkbox'; i.checked = !!checked; i.disabled = !!disabled; if(onchange) i.addEventListener('change', onchange); s.className = 'box';
+@@ -457,6 +452,30 @@ function shParseConfig(j){
+     var m = /^([a-z0-9_]{1,16}) ([0-7])$/.exec(l.trim()); if(m && +m[2]) cfg.saf[m[1]] = +m[2];
+   });
+   cfg.cat = j.catalog || []; cfg.svcbits = j.svcbits || {}; cfg.ss = j.ss || {};
++  cfg.rw = [];
++  String(j.rewrite || '').split('\n').forEach(function(l){
++    var m = /^(\S+) (\S+)( sub)?$/.exec(l.trim()), t = m ? rwType(m[1], m[2], !!m[3]) : '';
++    if(t) cfg.rw.push({n: m[1], a: m[2], s: m[3] ? 1 : 0, t: t});
++  });
++}
++/* 2026-11-05 (owner): DNS rewrites. The same rules as the router (shared/reaper_rewrite.h): a name of lower-case
++   labels (1-63 of a-z 0-9 _ -, no - at either end), up to 253 characters; the answer an IPv4 or IPv6 address
++   (t 4 / 6) or another name (t c, an alias: the name itself only, never an alias of an alias). */
++var RW_MAX = 200;
++function rwName(s){
++  if(!s || s.length > 253 || s === 'localhost' || /^[0-9.]+$/.test(s)) return false;
++  return s.split('.').every(function(l){ return /^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$/.test(l); });
++}
++function rwV4(s){ return /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/.test(s); }
++function rwV6(s){
++  if(!/^[0-9a-f:.]+$/.test(s) || s.indexOf(':') < 0 || s.length > 45) return false;
++  try{ new URL('http://[' + s + ']/'); return true; }catch(e){ return false; }
++}
++function rwType(n, a, sub){
++  if(!rwName(n)) return '';
++  if(rwV4(a)) return '4';
++  if(rwV6(a)) return '6';
++  return (rwName(a) && a !== n && !sub) ? 'c' : '';
+ }
+ function shEl(tag, cls, text){ var e = document.createElement(tag); if(cls) e.className = cls; if(text != null) e.textContent = text; return e; }
+ function shProfName(pid){
+@@ -562,7 +581,36 @@ function shPaint(){
+   $('allow').value = String(cfg.allow || '');
+   var a24 = String(cfg.allow24 || '').split('\n').map(function(l){ var p = l.split(' '); return p[1] ? p[1] + ' (' + shWhen(+p[0]) + ')' : ''; }).filter(function(x){ return x; });
+   $('allow24box').style.display = a24.length ? '' : 'none'; $('allow24').textContent = a24.join(', ');
+-  shPaintLists(); shPaintProfiles(); shPaintAssign(); shPaintTargets(); shPaintPauses();
++  shPaintLists(); shPaintProfiles(); shPaintAssign(); shPaintTargets(); shPaintPauses(); shPaintRewrites();
++}
++function shPaintRewrites(){
++  shRows('rwbody', cfg.rw, 4, function(tr, r){
++    shCell(tr, r.n, 'mono');
++    var ta = shCell(tr, r.a, 'mono');
++    if(r.t === 'c') ta.appendChild(shEl('span', 'sub', `<#RSHD_176#>`));
++    var tc = document.createElement('td'); tc.appendChild(shCk(r.s, true)); tr.appendChild(tc);
++    var tx = shCell(tr, '', 'acts');
++    tx.appendChild(shBtn(`<#CTL_del#>`, function(){ cfg.rw = cfg.rw.filter(function(q){ return q !== r; }); shPaintRewrites(); }, 1));
++  });
++}
++/* one row from the inputs; "*.name" (AdGuard Home's spelling) is the name with its subdomains */
++function shAddRewrite(){
++  if(!cfg) return;
++  var n = $('rw_name').value.trim().toLowerCase().replace(/\.$/, ''), a = $('rw_ans').value.trim().toLowerCase().replace(/\.$/, '');
++  var sub = $('rw_sub').checked, msg = $('rw_msg'), t;
++  if(n.indexOf('*.') === 0){ n = n.slice(2); sub = true; }
++  if(!(t = rwType(n, a, sub))){ msg.textContent = `<#RSHD_174#>`; return; }
++  var s = t === 'c' ? 0 : (sub ? 1 : 0);
++  if(!cfg.rw.some(function(r){ return r.n === n && r.a === a && r.s === s; })){
++    if(cfg.rw.length >= RW_MAX){ msg.textContent = `<#RSHD_177#>`; return; }
++    /* what the router would drop: an alias for a name that has another answer, or one that chains to an alias */
++    if(cfg.rw.some(function(r){ return t === 'c' ? (r.n === n || (r.t === 'c' && (r.n === a || r.a === n))) : (r.t === 'c' && r.n === n); })){
++      msg.textContent = `<#RSHD_175#>`; return;
++    }
++    cfg.rw.push({n: n, a: a, s: s, t: t});
++  }
++  $('rw_name').value = ''; $('rw_ans').value = ''; $('rw_sub').checked = false; msg.textContent = '';
++  shPaintRewrites(); $('rw_name').focus();
+ }
+ function shPaintLists(){
+   var tb = $('listbody'), src = {}, fd = {};
+@@ -696,10 +744,10 @@ function shRender(j){
+   stat = (j && j.ok) ? j : null;
+   var on = NV.on === '1', built = !!(stat && stat.build), pill = $('pill'), bt = '';
+   var pausedAll = cfg && (cfg.pause || []).some(function(x){ return x.t === 'all'; });
+-  if(!on){ pill.className = 'statuspill off'; pill.textContent = `<#RSHD_03#>`; }
++  if(!on){ pill.className = 'statuspill'; pill.textContent = `<#RSHD_03#>`; }
+   else if(!built){ pill.className = 'statuspill warn'; pill.textContent = `<#RSHD_05#>`; bt = `<#RSHD_08#>`; }
+   else if(pausedAll){ pill.className = 'statuspill warn'; pill.textContent = `<#RSHD_04#>`; }
+-  else { pill.className = 'statuspill'; pill.textContent = `<#RSHD_02#>`; }
++  else { pill.className = 'statuspill ok'; pill.textContent = `<#RSHD_02#>`; }
+   if(pausedAll) cfg.pause.forEach(function(x){ if(x.t === 'all') bt = `<#RSHD_09#>`.replace('%1', shWhen(x.until)); });
+   /* the live view records only while Wallguard runs (metal, _r5: it could be started with Wallguard off) */
+   $('livebtn').disabled = !on && !liveTimer;
+@@ -861,7 +909,8 @@ function shPayload(){
+   var sch = []; Object.keys(cfg.sch).forEach(function(k){ if(pids[k] && cfg.svc[k]) cfg.sch[k].forEach(function(w){ sch.push(k + ' ' + w.d.toString(16) + ' ' + w.a + ' ' + w.z); }); });
+   var saf = Object.keys(cfg.saf).filter(function(k){ return pids[k] && cfg.saf[k]; }).map(function(k){ return k + ' ' + cfg.saf[k]; });
+   return {action: 'save', lists: lists.join('\n'), keys: keys.join('\n'), block: $('block').value, allow: $('allow').value, profiles: prof.join('\n'), assign: asg.join('\n'),
+-          services: svc.join('\n'), sched: sch.join('\n'), safe: saf.join('\n')};
++          services: svc.join('\n'), sched: sch.join('\n'), safe: saf.join('\n'),
++          rewrite: cfg.rw.map(function(r){ return r.n + ' ' + r.a + (r.s ? ' sub' : ''); }).join('\n')};
+ }
+ /* what Save writes, a typed API key reduced to "set" (the key itself stays in cfg only) */
+ function shSnap(){
+@@ -886,7 +935,7 @@ function shSave(){
+   });
+ }
+ /* the page's controls (were inline onclick= / onchange= attributes) */
+-var ACT = {update: function(){ shAct('update'); }, addsrc: function(){ shSrcOpen(null); }, addprof: shAddProfile, addasg: shAddAssign, save: shSave,
++var ACT = {update: function(){ shAct('update'); }, addsrc: function(){ shSrcOpen(null); }, addprof: shAddProfile, addasg: shAddAssign, save: shSave, addrw: shAddRewrite,
+            pause: shPause, resume: shResume, why: shWhy, reset: shReset};
+ document.addEventListener('click', function(e){
+   var b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+@@ -900,10 +949,11 @@ $('sf_method').addEventListener('change', shSrcShow);
+ $('sf_more').addEventListener('click', function(e){ e.preventDefault(); srcMore = true; shSrcShow(); $('sf_method').focus(); });
+ $('livebtn').addEventListener('click', function(){ shLive(); });
+ $('ubdev').addEventListener('change', function(){ shUnbreak(); });
++['rw_name', 'rw_ans'].forEach(function(id){ $(id).addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); shAddRewrite(); } }); });
+ shPaint();
+ /* 2026-10-30: Save writes the lists, profiles, assignments and schedules edited here - say when that is owed
+    (the baseline is taken each time the router's config is loaded, in shConfig) */
+-ReaperPending.watch({at: document.querySelector('[data-act="save"]'), btnClass: 'btng', snap: shSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
++ReaperPending.watch({at: document.querySelector('[data-act="save"]'), btnClass: 'btn ghost', snap: shSnap, label: `<#RADM_77#>`, discard: `<#Discard#>`});
+ ReaperNames.refresh(NV.clients, function(){ shConfig(shStatus); });
+ /* review 2026-10-24 (Q-C2-4): no poll while the tab is hidden; a tab that comes back polls at once */
+ setInterval(function(){ if(!document.hidden) shStatus(); }, 15000);
+-- 
+2.25.1
+

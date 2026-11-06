@@ -1,0 +1,1327 @@
+From 8984264dd1e4dc68778920525486eba9f28b6bfe Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:52 -0500
+Subject: [PATCH] www: System Info names capabilities, Wireless Log as JSON,
+ kit pages cleaned up (102.8 line)
+
+- System Info shows the capabilities by name; tokens with no meaning on this firmware are hidden.
+- Wireless Log refreshes every 10 s by default, not while its tab is hidden, and parses a JSON
+  status (ajax_reaper_wlstatus.asp) instead of evaluating text.
+- The Internet page checks the WAN MAC with rp.v.macUnicast (all-zero and group addresses
+  refused).
+- The kit pages' settings forms hold only the apply inputs; rp.changed creates the input of a
+  field the form lacks. The posted fields of every page are unchanged.
+- The menu draws only its own menus' glyphs; the firewall rail badge is gone from the model, the
+  shell and the dashboard.
+- Encrypted DNS uses the shared stylesheet (Wallguard too, in its own commit), keeping its own
+  layout and its switch style.
+- Analytics, Devices, Traffic, Mode Setup, Survey and Wireless send the page token with their CGI
+  calls.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp    | 18 +---
+ release/src/router/www/Reaper_Analytics.asp   |  2 +-
+ release/src/router/www/Reaper_DNS.asp         | 37 +-------
+ release/src/router/www/Reaper_Devices.asp     |  2 +-
+ .../src/router/www/Reaper_EncryptedDNS.asp    | 83 ++++++-----------
+ release/src/router/www/Reaper_IPTV.asp        | 57 +-----------
+ release/src/router/www/Reaper_IPv6Setup.asp   | 36 +-------
+ release/src/router/www/Reaper_Internet.asp    | 81 +----------------
+ release/src/router/www/Reaper_LAN.asp         | 30 +------
+ release/src/router/www/Reaper_Log.asp         |  5 +-
+ release/src/router/www/Reaper_ModeSetup.asp   |  2 +-
+ release/src/router/www/Reaper_Parental.asp    |  7 +-
+ release/src/router/www/Reaper_Routes.asp      |  3 +-
+ release/src/router/www/Reaper_SNMP.asp        | 10 +--
+ release/src/router/www/Reaper_Survey.asp      |  4 +-
+ release/src/router/www/Reaper_Sysinfo.asp     | 29 +++++-
+ release/src/router/www/Reaper_System.asp      | 48 +---------
+ release/src/router/www/Reaper_Tor.asp         |  6 +-
+ release/src/router/www/Reaper_Traffic.asp     |  5 +-
+ release/src/router/www/Reaper_Tweaks.asp      |  8 +-
+ release/src/router/www/Reaper_VPNClient.asp   | 61 +------------
+ release/src/router/www/Reaper_VPNDirector.asp |  2 +-
+ release/src/router/www/Reaper_VPNServer.asp   | 89 +------------------
+ release/src/router/www/Reaper_WLog.asp        | 18 ++--
+ release/src/router/www/Reaper_WOL.asp         |  2 +-
+ release/src/router/www/Reaper_Wireless.asp    |  6 +-
+ .../src/router/www/ajax_reaper_wlstatus.asp   |  2 +-
+ release/src/router/www/reaper/menu.js         | 24 ++---
+ release/src/router/www/reaper/rp.js           | 19 ++--
+ release/src/router/www/reaper_shell.asp       | 28 +-----
+ 30 files changed, 115 insertions(+), 609 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 84c0c35c076..928408fc425 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -135,14 +135,6 @@ main{min-width:0}
+ .nav a svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.7}
+ .nav a{overflow:hidden}
+ .nav a .nl{font-family:var(--hdr);font-weight:600;letter-spacing:.03em;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+-/* Firewall rail badge - the count of promises that are NOT holding. Kept
+-   identical to reaper_shell.asp's copy (standing rule 6: the rail lives in two
+-   files and is synced by hand). Hidden at zero: a standing "0" teaches people to
+-   stop looking at the place the number appears. Numerals only, so no dict key. */
+-.nav a .nbadge{display:none;margin-left:auto;flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
+-  background:var(--crimson);color:#fff;font-family:var(--hdr);font-weight:700;font-size:10.5px;letter-spacing:.02em;
+-  line-height:18px;text-align:center}
+-.nav a .nbadge.on{display:inline-block}
+ /* 2026-09-17 field: this rail is static and this page IS the Dashboard, so its own
+    item carries the current marker here (the shell marks the framed page for the
+    others). Same look as a.item.on in reaper_shell.asp - standing rule 6. */
+@@ -546,8 +538,7 @@ main{min-width:0}
+         if (r.section){ h += (open ? '</nav>' : '') + '<div class="grp">' + esc(r.section) + '</div><nav class="nav">'; open = true; continue; }
+         top = (r.page === 'Main_ReaperDash.asp');
+         h += '<a href="' + (top ? '/' + esc(r.page) : '/reaper_shell.asp#' + esc(r.page)) + '"' + (top ? ' class="on"' : '')
+-          + '><span class="ni">' + r.icon + '</span><span class="nl">' + esc(r.label) + '</span>'
+-          + (r.badge === 'fwred' ? '<span class="nbadge" data-fwred></span>' : '') + '</a>';
++          + '><span class="ni">' + r.icon + '</span><span class="nl">' + esc(r.label) + '</span></a>';
+       }
+       if (open) h += '</nav>';
+       document.currentScript.insertAdjacentHTML('beforebegin', h);
+@@ -1895,13 +1886,6 @@ function pollWit(){
+ }
+ pollWit(); setInterval(pollWit, 60000);
+ 
+-/* the rail badge's setter, matching reaper_shell.asp's. ADVISORY (owner,
+-   2026-09-16): the badge is never lit - a count on the menu is an alarm, and
+-   the walker's rows are information. The element and its CSS stay (standing
+-   rule 6: the rail exists twice and is synced by hand) so both pages keep the
+-   same shape; the setter is a no-op on both. */
+-function setFwBadge(red){}
+-
+ /* ---- Security posture: refresh on the clock, not on a page reload ----------
+    THE PROBLEM. Every row in the posture card comes from SSI, which is a
+    server-rendered snapshot of ~20 nvram keys taken when the page was built. Open
+diff --git a/release/src/router/www/Reaper_Analytics.asp b/release/src/router/www/Reaper_Analytics.asp
+index 2477884e19a..8a25586a30d 100644
+--- a/release/src/router/www/Reaper_Analytics.asp
++++ b/release/src/router/www/Reaper_Analytics.asp
+@@ -326,7 +326,7 @@ function preview(b){
+   var box = $('previewBox');
+   if(!box.classList.contains('hidden')){ box.classList.add('hidden'); return; }
+   if(!(C && C.hprobe)){ box.textContent = `<#RANL_48#>`; box.classList.remove('hidden'); return; }
+-  xhr('GET', '/reaper_traffic.cgi?f=health', function(j){
++  xhr('GET', '/reaper_traffic.cgi?f=health&http_id=' + encodeURIComponent(REAPER_HTTPID), function(j){
+     var txt;
+     if(j && j.devices && j.devices.length){ try{ txt = JSON.stringify(j, null, 2); }catch(e){ txt = (j && j._raw) || '{}'; } }
+     else { txt = `<#RANL_49#>`; }
+diff --git a/release/src/router/www/Reaper_DNS.asp b/release/src/router/www/Reaper_DNS.asp
+index 2cbc501eefc..b0f9681c1f3 100644
+--- a/release/src/router/www/Reaper_DNS.asp
++++ b/release/src/router/www/Reaper_DNS.asp
+@@ -178,41 +178,8 @@ table.classes td.ddnm{color:var(--bone);max-width:240px;overflow:hidden;text-ove
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <!-- per-unit names: httpd validate_instance writes wan<N>_* straight from these (web.c "wan" branch), no wan_unit -->
+-  <input type="hidden" name="wan0_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="wan0_dns1_x" value="" disabled>
+-  <input type="hidden" name="wan0_dns2_x" value="" disabled>
+-  <input type="hidden" name="wan1_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="wan1_dns1_x" value="" disabled>
+-  <input type="hidden" name="wan1_dns2_x" value="" disabled>
+-  <input type="hidden" name="dns_fwd_local" value="" disabled>
+-  <input type="hidden" name="dns_norebind" value="" disabled>
+-  <input type="hidden" name="dnssec_enable" value="" disabled>
+-  <input type="hidden" name="dnssec_check_unsigned_x" value="" disabled>
+-  <input type="hidden" name="dns_priv_override" value="" disabled>
+-  <input type="hidden" name="dnspriv_enable" value="" disabled>
+-  <input type="hidden" name="dnspriv_profile" value="" disabled>
+-  <input type="hidden" name="dnspriv_rulelist" value="" disabled>
+-  <input type="hidden" name="dhcp_dns1_x" value="" disabled>
+-  <input type="hidden" name="dhcp_dns2_x" value="" disabled>
+-  <input type="hidden" name="dhcpd_dns_router" value="" disabled>
+-  <input type="hidden" name="ipv6_dns1_x" value="" disabled>
+-  <input type="hidden" name="dhcp_wins_x" value="" disabled>
+-  <input type="hidden" name="dnsfilter_enable_x" value="" disabled>
+-  <input type="hidden" name="dnsfilter_mode" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom1" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom2" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom3" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom61" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom62" value="" disabled>
+-  <input type="hidden" name="dnsfilter_custom63" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist1" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist2" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist3" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist4" value="" disabled>
+-  <input type="hidden" name="dnsfilter_rulelist5" value="" disabled>
+-  <input type="hidden" name="sdn_rl" value="" disabled>
++  <!-- the settings: one hidden input per changed key, added at Apply by rp.changed (reaper/rp.js). Per-unit names:
++       httpd validate_instance writes wan<N>_* straight from them (web.c "wan" branch), no wan_unit -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index fcad4950aed..576acfed1c4 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -403,7 +403,7 @@ function loadAll(poll){
+     if(keepQ){ var qi = document.getElementById('q'); qi.focus(); try{ qi.setSelectionRange(s0, s1); }catch(e){} }
+     if(poll && (++pollN % 4) !== 0) return;
+     /* enrich 24h traffic from the existing rtrafd feed - no C JSON parsing */
+-    xGet('/reaper_traffic.cgi?f=m5', function(m){
++    xGet('/reaper_traffic.cgi?f=m5&http_id=' + encodeURIComponent(REAPER_HTTPID), function(m){
+       TRAF = {};
+       if(m && m.clients){
+         Object.keys(m.clients).forEach(function(k){
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+index e6dea201707..51e25e982aa 100644
+--- a/release/src/router/www/Reaper_EncryptedDNS.asp
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -8,49 +8,29 @@
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="reaper-native" content="1">
+ <title>REAPER &mdash; <#RENC_00#></title>
++<link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+-@font-face{font-family:'Rajdhani';font-weight:600;font-display:swap;src:url('/fonts/rajdhani-600.woff2') format('woff2')}
+-@font-face{font-family:'Rajdhani';font-weight:700;font-display:swap;src:url('/fonts/rajdhani-700.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:400;font-display:swap;src:url('/fonts/inter-400.woff2') format('woff2')}
+-@font-face{font-family:'Inter';font-weight:600;font-display:swap;src:url('/fonts/inter-600.woff2') format('woff2')}
+-:root{
+-  --bg:#08080a; --panel:#0f0f12; --panel-2:#141418;
+-  --line:rgba(225,6,0,.16); --line-soft:rgba(255,255,255,.06);
+-  --crimson:#E10600; --crimson-deep:#B3000C;
+-  --bone:#ECE7DB; --bone-dim:#B7B1A4; --steel:#71767b;
+-  --jade:#4FB286; --amber:#E0A93B; --danger:#FF3B30;
+-  --hdr:'Rajdhani','Oswald',system-ui,sans-serif;
+-  --body:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+-}
+-*{box-sizing:border-box;margin:0}
+-html,body{background:var(--bg)}
+-body{font-family:var(--body);color:var(--bone-dim);font-size:13.5px;line-height:1.55;padding:20px 22px 48px}
+-h1,h2,h3{font-family:var(--hdr);letter-spacing:.04em;color:var(--bone);margin:0}
+-a{color:var(--bone)}
+-.pagehead{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:4px;max-width:1120px}
+-.pagehead h1{font-size:24px;font-weight:700}
++/* page-specific rules only (review 2026-10-24 Q-C2-12, 2026-11-05): fonts, tokens, base, head, buttons, pills and the
++   applying overlay come from /reaper/rp.css; below is this page's own layout in rp.css's tokens and look */
++body{font-size:13.5px;line-height:1.55}
+ .pagehead .ver{font-size:11px;color:var(--steel);letter-spacing:.1em;text-transform:uppercase}
+-.statuspill{font-family:var(--hdr);font-weight:600;font-size:11px;letter-spacing:.1em;text-transform:uppercase;border-radius:20px;padding:4px 12px;border:1px solid var(--line);color:var(--jade)}
+-.statuspill.off{color:var(--steel);border-color:var(--line-soft)}
+ .mastertg{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--bone)}
+-.lede{max-width:78ch;margin:6px 0 16px}
+-.tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;flex:0 0 40px}
+-.tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
++.lede{max-width:78ch;margin:-8px 0 18px}
++.tg{position:relative;width:42px;height:22px;border-radius:999px;background:#26262b;border:1px solid var(--line-soft);cursor:pointer;flex:0 0 42px;transition:.15s}
++.tg::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6a6f75;transition:.15s}
+ .tg.on{background:#33333a}
+ .tg.on::after{left:21px;background:var(--bone)}
+-.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(217,164,65,.10),rgba(217,164,65,.03));border:1px solid rgba(217,164,65,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;max-width:1120px;color:var(--bone-dim)}
++.warnbanner{display:none;gap:12px;align-items:flex-start;background:linear-gradient(180deg,rgba(224,169,59,.10),rgba(224,169,59,.03));border:1px solid rgba(224,169,59,.35);border-radius:14px;padding:14px 18px;margin-bottom:18px;color:var(--bone-dim)}
+ .warnbanner svg{width:20px;height:20px;flex:0 0 20px;stroke:var(--amber);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;margin-top:1px}
+-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 16px;max-width:1120px}
+-.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:12px 16px}
++.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 18px}
++.stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:12px 16px}
+ .stat .n{font-family:var(--hdr);font-weight:700;font-size:24px;color:var(--bone);font-variant-numeric:tabular-nums}
+ .stat .l{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--steel)}
+-.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:16px 18px;margin-bottom:16px;max-width:1120px}
+-.card>h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
++.card{background:var(--panel);border:1px solid var(--line-soft);border-radius:14px;padding:18px 20px;margin-bottom:18px}
++.card>h2{font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;margin-bottom:4px;padding-bottom:8px;border-bottom:1px solid var(--line-soft)}
+ .card .desc{font-size:12px;color:var(--steel);margin:8px 0 12px;max-width:80ch}
+ /* 2026-10-25 (release review E-2): the one way the block takes a device's DNS away - said before the switch is used */
+ .card li.caution{color:var(--amber);font-weight:600}
+-.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:16px;margin-bottom:16px;max-width:1120px}
+-.duo .card{margin:0}
+ ol.steps{margin:10px 0 2px;padding-left:22px;display:flex;flex-direction:column;gap:8px;font-size:13px;max-width:84ch}
+ ol.steps li{color:var(--bone-dim);padding-left:4px}
+ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+@@ -58,42 +38,33 @@ ol.steps li::marker{font-family:var(--hdr);font-weight:700;color:var(--crimson)}
+ .dev{border-top:1px solid var(--line-soft);padding:12px 2px}
+ .dev:first-of-type{border-top:none}
+ .dev h3{font-size:13.5px;margin-bottom:4px}
+-.dev p{font-size:12.5px;max-width:84ch}
++.dev p{font-size:12.5px;max-width:84ch;margin:0}
+ .dev .need{color:var(--amber);font-size:12px;margin-top:6px}
+ .dev .need::first-letter{text-transform:uppercase}
+-code,.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--bone);background:var(--panel-2);border:1px solid var(--line-soft);border-radius:5px;padding:1px 6px;word-break:break-all}
+-pre.mono{display:block;padding:8px 12px;margin-top:8px;white-space:pre-wrap}
+-input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:12.5px;padding:6px 10px;width:100%;max-width:520px;margin:8px 0}
++code,.mono{font-family:var(--mono);font-size:12px;color:var(--bone);background:var(--panel-2);border:1px solid var(--line-soft);border-radius:5px;padding:1px 6px;word-break:break-all}
++pre.mono{display:block;padding:8px 12px;margin:8px 0 0;white-space:pre-wrap}
++input[type="text"]{background:#000;border:1px solid var(--line-soft);border-radius:8px;color:var(--bone);font-family:var(--body);font-size:13px;padding:7px 10px;width:100%;max-width:520px;margin:8px 0;outline:none}
++input[type="text"]:focus{border-color:var(--line)}
+ .kv{display:grid;grid-template-columns:minmax(120px,max-content) 1fr;gap:6px 16px;font-size:12.5px;margin-top:8px}
+-.kv .k{color:var(--steel)}
+ .kv .v{color:var(--bone);word-break:break-all}
+ .certstate{margin-top:10px;font-size:12.5px}
+ .certstate.good{color:var(--jade)} .certstate.bad{color:var(--amber)}
+-.card ul{list-style:none;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
++.card ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
+ .card li{padding-left:16px;position:relative}
+ .card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
+ .card li.good::before{background:var(--jade)}
+ .card li.gap::before{background:var(--amber)}
+ .card li .dim{color:var(--steel)}
+-.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px;max-width:1120px}
+-.btn{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone);background:linear-gradient(180deg,rgba(225,6,0,.28),rgba(225,6,0,.10));border:1px solid var(--crimson-deep);border-radius:8px;padding:9px 18px;cursor:pointer}
+-.btn:hover{background:linear-gradient(180deg,rgba(225,6,0,.42),rgba(225,6,0,.16))}
+-.btng{font-family:var(--hdr);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:12px;color:var(--bone-dim);background:transparent;border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:9px 18px;cursor:pointer}
+-.btng:hover{color:var(--bone);border-color:rgba(255,255,255,.3)}
+-.btng:disabled{opacity:.4;cursor:default}
+-.applying{display:none;position:fixed;inset:0;background:rgba(4,4,6,.72);z-index:50;align-items:center;justify-content:center}
+-.applying.show{display:flex}
+-.applying .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px 34px;text-align:center;max-width:340px}
+-.applying h3{font-size:16px;margin-bottom:6px}
+-.applying p{font-size:12px;color:var(--bone-dim)}
++.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:4px}
+ </style>
+ </head>
+ <body>
++<div class="syswrap">
+ 
+ <div class="pagehead">
+   <h1><#RENC_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#434-encrypted-dns" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+   <span class="ver"><#RENC_01#></span>
+-  <span class="statuspill off" id="pill"><#RENC_05#></span>
++  <span class="statuspill" id="pill"><#RENC_05#></span>
+   <span class="mastertg"><#RENC_02#> <span class="tg" id="tgdot"></span></span>
+ </div>
+ <p class="lede"><#RENC_03#></p>
+@@ -148,7 +119,7 @@ input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);b
+     <h3><#RENC_18#></h3>
+     <p><#RENC_19#></p>
+     <input type="text" id="ssids" placeholder="<#RENC_20#>" aria-label="<#RENC_20#>">
+-    <div><button type="button" class="btng" id="appledl"><#RENC_21#></button></div>
++    <div><button type="button" class="btn ghost" id="appledl"><#RENC_21#></button></div>
+     <div class="need" id="d_apple_need" style="display:none"><#RENC_26#></div>
+   </div>
+   <div class="dev">
+@@ -173,7 +144,7 @@ input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);b
+     <div class="stat"><div class="n" id="b_853">-</div><div class="l"><#RENC_55#></div></div>
+     <div class="stat"><div class="n" id="b_443">-</div><div class="l"><#RENC_56#></div></div>
+   </div>
+-  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 10px"><button type="button" class="btng" id="b_upd"><#RENC_57#></button><span class="dim" id="b_feed"></span></div>
++  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 10px"><button type="button" class="btn ghost" id="b_upd"><#RENC_57#></button><span class="dim" id="b_feed"></span></div>
+   <ul>
+     <li><#RENC_61#></li>
+     <li class="caution"><#RENC_62#></li>
+@@ -183,7 +154,7 @@ input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);b
+ </div>
+ 
+ <div class="actions">
+-  <button class="btn" data-act="save"><#RWDN_28#></button>
++  <button class="btn primary" data-act="save"><#RWDN_28#></button>
+ </div>
+ 
+ <div class="card" style="margin-top:16px">
+@@ -197,7 +168,9 @@ input[type="text"]{background:var(--panel-2);border:1px solid var(--line-soft);b
+   </ul>
+ </div>
+ 
+-<div class="applying" id="applying"><div class="box"><h3><#Reaper_c_applying#></h3><p><#RENC_48#></p></div></div>
++</div>
++
++<div class="applying" id="applying"><div class="abox"><h2 id="ap_t"><#Reaper_c_applying#></h2><p id="ap_p"><#RENC_48#></p></div></div>
+ 
+ <iframe name="hidden_frame" id="hidden_frame" style="display:none" width="0" height="0"></iframe>
+ <form method="post" name="form" action="/start_apply.htm" target="hidden_frame">
+@@ -261,7 +234,7 @@ function encPickName(c){
+ function encRender(j){
+   var st = j && j.st, running = !!(j && j.running && st && st.state === 'running');
+   var pill = $('pill');
+-  pill.className = 'statuspill' + (running ? '' : ' off');
++  pill.className = 'statuspill' + (running ? ' ok' : '');
+   pill.textContent = running ? `<#RENC_04#>` : `<#RENC_05#>`;
+   var why = $('why'), wt = '';
+   if(NV.on === '1' && !running){
+diff --git a/release/src/router/www/Reaper_IPTV.asp b/release/src/router/www/Reaper_IPTV.asp
+index c37285348c3..bfcac4a7424 100644
+--- a/release/src/router/www/Reaper_IPTV.asp
++++ b/release/src/router/www/Reaper_IPTV.asp
+@@ -142,59 +142,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="10">
+-  <input type="hidden" name="switch_wantag" value="" disabled>
+-  <input type="hidden" name="switch_stb_x" value="" disabled>
+-  <input type="hidden" name="switch_wan0tagid" value="" disabled>
+-  <input type="hidden" name="switch_wan0prio" value="" disabled>
+-  <input type="hidden" name="switch_wan1tagid" value="" disabled>
+-  <input type="hidden" name="switch_wan1prio" value="" disabled>
+-  <input type="hidden" name="switch_wan2tagid" value="" disabled>
+-  <input type="hidden" name="switch_wan2prio" value="" disabled>
+-  <input type="hidden" name="wan10_proto" value="" disabled>
+-  <input type="hidden" name="wan10_dhcpenable_x" value="" disabled>
+-  <input type="hidden" name="wan10_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_username" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_idletime" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_mtu" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_mru" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_service" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_ac" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_options_x" value="" disabled>
+-  <input type="hidden" name="wan10_pptp_options_x" value="" disabled>
+-  <input type="hidden" name="wan10_ipaddr_x" value="" disabled>
+-  <input type="hidden" name="wan10_netmask_x" value="" disabled>
+-  <input type="hidden" name="wan10_gateway_x" value="" disabled>
+-  <input type="hidden" name="wan10_dns1_x" value="" disabled>
+-  <input type="hidden" name="wan10_dns2_x" value="" disabled>
+-  <input type="hidden" name="wan10_auth_x" value="" disabled>
+-  <input type="hidden" name="wan10_pppoe_passwd" value="" disabled>
+-  <input type="hidden" name="wan11_proto" value="" disabled>
+-  <input type="hidden" name="wan11_dhcpenable_x" value="" disabled>
+-  <input type="hidden" name="wan11_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_username" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_idletime" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_mtu" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_mru" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_service" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_ac" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_options_x" value="" disabled>
+-  <input type="hidden" name="wan11_pptp_options_x" value="" disabled>
+-  <input type="hidden" name="wan11_ipaddr_x" value="" disabled>
+-  <input type="hidden" name="wan11_netmask_x" value="" disabled>
+-  <input type="hidden" name="wan11_gateway_x" value="" disabled>
+-  <input type="hidden" name="wan11_dns1_x" value="" disabled>
+-  <input type="hidden" name="wan11_dns2_x" value="" disabled>
+-  <input type="hidden" name="wan11_auth_x" value="" disabled>
+-  <input type="hidden" name="wan11_pppoe_passwd" value="" disabled>
+-  <input type="hidden" name="dr_enable_x" value="" disabled>
+-  <input type="hidden" name="bond_wan" value="" disabled>
+-  <input type="hidden" name="lacp_enabled" value="" disabled>
+-  <input type="hidden" name="lacp_ifnames_x" value="" disabled>
+-  <input type="hidden" name="wans_dualwan" value="" disabled>
+-  <input type="hidden" name="autowan_enable" value="" disabled>
+-  <input type="hidden" name="wan_ifname_x" value="" disabled>
+-  <input type="hidden" name="wan_unit" value="" disabled>
+-  <input type="hidden" name="wan_dot1q" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+@@ -596,9 +544,6 @@ function applyAll(){
+   else lines.push(T.cNet);
+   lines.push(T.cGo);
+   if (!confirm(lines.join('\n\n'))) return;
+-  for (k in changed) if (has(changed, k) && !f.querySelector('input[name="' + k + '"]')){
+-    x = document.createElement('input'); x.type = 'hidden'; x.name = k; x.disabled = true; f.appendChild(x);
+-  }
+   rp.applying(T.applying, reboot ? T.apReboot : T.apNet);
+   function go(){
+     if (reboot){
+diff --git a/release/src/router/www/Reaper_IPv6Setup.asp b/release/src/router/www/Reaper_IPv6Setup.asp
+index 1eb994dceb8..ce02a639a24 100644
+--- a/release/src/router/www/Reaper_IPv6Setup.asp
++++ b/release/src/router/www/Reaper_IPv6Setup.asp
+@@ -133,41 +133,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="30">
+-  <input type="hidden" name="ipv6_service" value="" disabled>
+-  <input type="hidden" name="ipv6_ifdev" value="" disabled>
+-  <input type="hidden" name="ipv6_accept_defrtr" value="" disabled>
+-  <input type="hidden" name="ipv6_dhcp_pd" value="" disabled>
+-  <input type="hidden" name="ipv6_dhcp6c_release" value="" disabled>
+-  <input type="hidden" name="ipv6_relay" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_v4end" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_addr" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_addrlen" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_peer" value="" disabled>
+-  <input type="hidden" name="ipv6_6rd_dhcp" value="" disabled>
+-  <input type="hidden" name="ipv6_6rd_prefix" value="" disabled>
+-  <input type="hidden" name="ipv6_6rd_prefixlen" value="" disabled>
+-  <input type="hidden" name="ipv6_6rd_router" value="" disabled>
+-  <input type="hidden" name="ipv6_6rd_ip4size" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_mtu" value="" disabled>
+-  <input type="hidden" name="ipv6_tun_ttl" value="" disabled>
+-  <input type="hidden" name="ipv6_ipaddr" value="" disabled>
+-  <input type="hidden" name="ipv6_prefix_len_wan" value="" disabled>
+-  <input type="hidden" name="ipv6_gateway" value="" disabled>
+-  <input type="hidden" name="ipv6_rtr_addr" value="" disabled>
+-  <input type="hidden" name="ipv6_prefix" value="" disabled>
+-  <input type="hidden" name="ipv6_prefix_length" value="" disabled>
+-  <input type="hidden" name="ipv6_prefix_s" value="" disabled>
+-  <input type="hidden" name="ipv6_prefix_length_s" value="" disabled>
+-  <input type="hidden" name="ipv6_rtr_addr_s" value="" disabled>
+-  <input type="hidden" name="ipv6_autoconf_type" value="" disabled>
+-  <input type="hidden" name="ipv6_dhcp_start" value="" disabled>
+-  <input type="hidden" name="ipv6_dhcp_end" value="" disabled>
+-  <input type="hidden" name="ipv6_dhcp_lifetime" value="" disabled>
+-  <input type="hidden" name="ipv6_dnsenable" value="" disabled>
+-  <input type="hidden" name="ipv6_dns1" value="" disabled>
+-  <input type="hidden" name="ipv6_dns2" value="" disabled>
+-  <input type="hidden" name="ipv6_dns3" value="" disabled>
+-  <input type="hidden" name="ipv6_radvd" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Internet.asp b/release/src/router/www/Reaper_Internet.asp
+index f3e5bd64c13..0d47c3862f2 100644
+--- a/release/src/router/www/Reaper_Internet.asp
++++ b/release/src/router/www/Reaper_Internet.asp
+@@ -226,78 +226,7 @@
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+   <input type="hidden" name="wan_unit" value="" disabled>
+-  <input type="hidden" name="wan_proto" value="" disabled>
+-  <input type="hidden" name="wan_enable" value="" disabled>
+-  <input type="hidden" name="wan_nat_x" value="" disabled>
+-  <input type="hidden" name="wan_upnp_enable" value="" disabled>
+-  <input type="hidden" name="wan_dhcpenable_x" value="" disabled>
+-  <input type="hidden" name="wan_ipaddr_x" value="" disabled>
+-  <input type="hidden" name="wan_netmask_x" value="" disabled>
+-  <input type="hidden" name="wan_gateway_x" value="" disabled>
+-  <input type="hidden" name="wan_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="wan_dns1_x" value="" disabled>
+-  <input type="hidden" name="wan_dns2_x" value="" disabled>
+-  <input type="hidden" name="wan_auth_x" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_username" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_auth" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_idletime" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_mtu" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_mru" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_service" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_ac" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_hostuniq" value="" disabled>
+-  <input type="hidden" name="wan_pptp_options_x" value="" disabled>
+-  <input type="hidden" name="wan_ppp_echo" value="" disabled>
+-  <input type="hidden" name="wan_ppp_echo_interval" value="" disabled>
+-  <input type="hidden" name="wan_ppp_echo_failure" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_options_x" value="" disabled>
+-  <input type="hidden" name="wan_vendorid" value="" disabled>
+-  <input type="hidden" name="wan_clientid" value="" disabled>
+-  <input type="hidden" name="wan_clientid_type" value="" disabled>
+-  <input type="hidden" name="wan_heartbeat_x" value="" disabled>
+-  <input type="hidden" name="wan_vpndhcp" value="" disabled>
+-  <input type="hidden" name="wan_hostname" value="" disabled>
+-  <input type="hidden" name="wan_hwaddr_x" value="" disabled>
+-  <input type="hidden" name="wan_dhcp_qry" value="" disabled>
+-  <input type="hidden" name="wan_mtu" value="" disabled>
+-  <input type="hidden" name="wan_dhcpfilter_enable" value="" disabled>
+-  <input type="hidden" name="wan_dot1q" value="" disabled>
+-  <input type="hidden" name="wan_vid" value="" disabled>
+-  <input type="hidden" name="wan_dot1p" value="" disabled>
+-  <input type="hidden" name="wan_s46_dslite_mode" value="" disabled>
+-  <input type="hidden" name="wan_pppoe_passwd" value="" disabled>
+-  <input type="hidden" name="dns_delay_round" value="" disabled>
+-  <input type="hidden" name="ipv6_s46_aftr" value="" disabled>
+-  <input type="hidden" name="ipv6_s46_b4addr" value="" disabled>
+-  <input type="hidden" name="ttl_inc_enable" value="" disabled>
+-  <input type="hidden" name="ttl_spoof_enable" value="" disabled>
+-  <input type="hidden" name="bond_wan" value="" disabled>
+-  <input type="hidden" name="upnp_pinhole_enable" value="" disabled>
+-  <input type="hidden" name="upnp_secure" value="" disabled>
+-  <input type="hidden" name="upnp_protect_svc" value="" disabled>
+-  <input type="hidden" name="upnp_min_port_int" value="" disabled>
+-  <input type="hidden" name="upnp_max_port_int" value="" disabled>
+-  <input type="hidden" name="upnp_min_port_ext" value="" disabled>
+-  <input type="hidden" name="upnp_max_port_ext" value="" disabled>
+-  <input type="hidden" name="fw_pt_pppoerelay" value="" disabled>
+-  <input type="hidden" name="switch_wantag" value="" disabled>
+-  <input type="hidden" name="switch_stb_x" value="" disabled>
+-  <input type="hidden" name="wans_dualwan" value="" disabled>
+-  <input type="hidden" name="wans_mode" value="" disabled>
+-  <input type="hidden" name="autowan_enable" value="" disabled>
+-  <input type="hidden" name="wan_ifname_x" value="" disabled>
+-  <input type="hidden" name="modem_android" value="" disabled>
+-  <input type="hidden" name="modem_autoapn" value="" disabled>
+-  <input type="hidden" name="modem_enable" value="" disabled>
+-  <input type="hidden" name="modem_apn" value="" disabled>
+-  <input type="hidden" name="modem_dialnum" value="" disabled>
+-  <input type="hidden" name="modem_user" value="" disabled>
+-  <input type="hidden" name="modem_pass" value="" disabled>
+-  <input type="hidden" name="modem_authmode" value="" disabled>
+-  <input type="hidden" name="modem_pincode" value="" disabled>
+-  <input type="hidden" name="modem_ttlsid" value="" disabled>
+-  <input type="hidden" name="Dev3G" value="" disabled>
+-  <input type="hidden" name="modem_mtu" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+@@ -829,8 +758,8 @@ function validate(c, changed){
+   if (has(c, 'wan_clientid') && !strOk(c.wan_clientid)) return bad('i_clientid', T.eStr);
+   if (has(c, 'wan_heartbeat_x') && (c.wan_heartbeat_x.length > 64 || !strOk(c.wan_heartbeat_x))) return bad('i_hb', T.eStr);
+   if (has(c, 'wan_hostname') && c.wan_hostname !== '' && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(c.wan_hostname)) return bad('i_host', T.eHost);
+-  /* stock check_hwaddr_flag: six hex pairs, unicast */
+-  if (has(c, 'wan_hwaddr_x') && c.wan_hwaddr_x !== '' && !(rp.v.mac(c.wan_hwaddr_x) && /^.[02468aceACE]/.test(c.wan_hwaddr_x))) return bad('i_mac', T.eMac);
++  /* six hex pairs, unicast, not all-zero: the kit's rule, as Tor and LAN (stock check_hwaddr_flag took 00:00:00:00:00:00) */
++  if (has(c, 'wan_hwaddr_x') && c.wan_hwaddr_x !== '' && !rp.v.macUnicast(c.wan_hwaddr_x)) return bad('i_mac', T.eMac);
+   /* stock: checked when the row shows and either nvram held a value or one was typed */
+   if (has(c, 'wan_mtu') && CTL.wan_mtu === 'i_mtu' && (n.mtu !== '' || c.wan_mtu !== '') && !num(c.wan_mtu, 1280, 1500)) return rng('i_mtu', 1280, 1500);
+   if (has(c, 'wan_vid')){
+@@ -932,10 +861,6 @@ function applyAll(){
+   var f = document.form;
+   if (unitKeys || has(changed, 'wan_upnp_enable')){ f.wan_unit.disabled = false; f.wan_unit.value = UNIT; }
+   rp.applying(T.applying, reboot ? T.apReboot : (unitKeys ? T.apWan : T.apFw));
+-  /* rp.changed skips a name the form has no input for: give every extra key (extra_settings varies by model) one */
+-  for (k in changed) if (has(changed, k) && !f.querySelector('input[name="' + k + '"]')){
+-    x = document.createElement('input'); x.type = 'hidden'; x.name = k; x.disabled = true; f.appendChild(x);
+-  }
+   function go(){
+     if (reboot){
+       rp.post(f, changed, script, wait, false);
+diff --git a/release/src/router/www/Reaper_LAN.asp b/release/src/router/www/Reaper_LAN.asp
+index 5aeb3044b10..f498b3b8d80 100644
+--- a/release/src/router/www/Reaper_LAN.asp
++++ b/release/src/router/www/Reaper_LAN.asp
+@@ -167,35 +167,7 @@ table.classes td.mono{font-family:var(--mono)}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="lan_hostname" value="" disabled>
+-  <input type="hidden" name="lan_domain" value="" disabled>
+-  <input type="hidden" name="lan_proto" value="" disabled>
+-  <input type="hidden" name="lan_ipaddr" value="" disabled>
+-  <input type="hidden" name="lan_netmask" value="" disabled>
+-  <input type="hidden" name="lan_ipaddr_rt" value="" disabled>
+-  <input type="hidden" name="lan_netmask_rt" value="" disabled>
+-  <input type="hidden" name="lan_gateway" value="" disabled>
+-  <input type="hidden" name="lan_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="lan_dns1_x" value="" disabled>
+-  <input type="hidden" name="lan_dns2_x" value="" disabled>
+-  <input type="hidden" name="https_crt_gen" value="" disabled>
+-  <input type="hidden" name="dhcp_enable_x" value="" disabled>
+-  <input type="hidden" name="dhcp_start" value="" disabled>
+-  <input type="hidden" name="dhcp_end" value="" disabled>
+-  <input type="hidden" name="dhcp_lease" value="" disabled>
+-  <input type="hidden" name="dhcp_gateway_x" value="" disabled>
+-  <input type="hidden" name="dhcpd_querylog" value="" disabled>
+-  <input type="hidden" name="dhcp_static_x" value="" disabled>
+-  <input type="hidden" name="dhcp_staticlist" value="" disabled>
+-  <input type="hidden" name="jumbo_frame_enable" value="" disabled>
+-  <input type="hidden" name="lan_stp" value="" disabled>
+-  <input type="hidden" name="lacp_enabled" value="" disabled>
+-  <input type="hidden" name="lacp_ifnames_x" value="" disabled>
+-  <input type="hidden" name="mr_enable_x" value="" disabled>
+-  <input type="hidden" name="mr_igmp_ver" value="" disabled>
+-  <input type="hidden" name="mr_qleave_x" value="" disabled>
+-  <input type="hidden" name="emf_enable" value="" disabled>
+-  <input type="hidden" name="udpxy_enable_x" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Log.asp b/release/src/router/www/Reaper_Log.asp
+index 9ab246cb05a..2a3efd1a102 100644
+--- a/release/src/router/www/Reaper_Log.asp
++++ b/release/src/router/www/Reaper_Log.asp
+@@ -120,10 +120,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="restart_logger">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="log_ipaddr" value="" disabled>
+-  <input type="hidden" name="log_port" value="" disabled>
+-  <input type="hidden" name="message_loglevel" value="" disabled>
+-  <input type="hidden" name="log_level" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ <form method="post" name="clearform" action="/apply.cgi" target="hidden_frame">
+   <input type="hidden" name="current_page" value="Reaper_Log.asp">
+diff --git a/release/src/router/www/Reaper_ModeSetup.asp b/release/src/router/www/Reaper_ModeSetup.asp
+index 284fcc1d17b..92f7acf9b27 100755
+--- a/release/src/router/www/Reaper_ModeSetup.asp
++++ b/release/src/router/www/Reaper_ModeSetup.asp
+@@ -290,7 +290,7 @@ function svyStart(){
+ function svyPoll(){
+   if (POLL) clearInterval(POLL);
+   POLL = setInterval(function(){
+-    $.ajax({url:'/reaper_wifi.cgi?action=svydata&_='+Date.now(), dataType:'json', timeout:8000, success:function(d){
++    $.ajax({url:'/reaper_wifi.cgi?action=svydata&http_id='+encodeURIComponent(NV.http_id)+'&_='+Date.now(), dataType:'json', timeout:8000, success:function(d){
+       if (!d || !d.aps) return;
+       SVY.aps = d.aps.filter(function(a){ return !a.hidden && a.ssid; })
+                      .sort(function(x,y){ return (y.rssi||-127)-(x.rssi||-127); });
+diff --git a/release/src/router/www/Reaper_Parental.asp b/release/src/router/www/Reaper_Parental.asp
+index 6d7ce229f76..e8370de969a 100644
+--- a/release/src/router/www/Reaper_Parental.asp
++++ b/release/src/router/www/Reaper_Parental.asp
+@@ -149,12 +149,7 @@ input[type="time"]{background:#000;border:1px solid var(--line-soft);border-radi
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="MULTIFILTER_ALL" value="" disabled>
+-  <input type="hidden" name="MULTIFILTER_BLOCK_ALL" value="" disabled>
+-  <input type="hidden" name="MULTIFILTER_ENABLE" value="" disabled>
+-  <input type="hidden" name="MULTIFILTER_MAC" value="" disabled>
+-  <input type="hidden" name="MULTIFILTER_DEVICENAME" value="" disabled>
+-  <input type="hidden" name="MULTIFILTER_MACFILTER_DAYTIME_V2" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Routes.asp b/release/src/router/www/Reaper_Routes.asp
+index f5f1bc87bce..8cb7dca7a82 100644
+--- a/release/src/router/www/Reaper_Routes.asp
++++ b/release/src/router/www/Reaper_Routes.asp
+@@ -113,8 +113,7 @@ table.classes td.mono{font-family:var(--mono)}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="10">
+-  <input type="hidden" name="sr_enable_x" value="" disabled>
+-  <input type="hidden" name="sr_rulelist" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_SNMP.asp b/release/src/router/www/Reaper_SNMP.asp
+index b91d5e050aa..e6bd0fab4b2 100644
+--- a/release/src/router/www/Reaper_SNMP.asp
++++ b/release/src/router/www/Reaper_SNMP.asp
+@@ -77,15 +77,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="snmpd_enable" value="" disabled>
+-  <input type="hidden" name="snmpd_wan" value="" disabled>
+-  <input type="hidden" name="sysName" value="" disabled>
+-  <input type="hidden" name="sysLocation" value="" disabled>
+-  <input type="hidden" name="sysContact" value="" disabled>
+-  <input type="hidden" name="v3_auth_type" value="" disabled>
+-  <input type="hidden" name="v3_auth_passwd" value="" disabled>
+-  <input type="hidden" name="v3_priv_type" value="" disabled>
+-  <input type="hidden" name="v3_priv_passwd" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Survey.asp b/release/src/router/www/Reaper_Survey.asp
+index fb73dfdca0f..ca7382895e9 100644
+--- a/release/src/router/www/Reaper_Survey.asp
++++ b/release/src/router/www/Reaper_Survey.asp
+@@ -298,7 +298,7 @@ function svyPoll(){
+   if(POLL) return;
+   var tick=function(){
+     var x=new XMLHttpRequest(), done=false;
+-    x.open("GET","/reaper_wifi.cgi?action=svydata&_="+Date.now(),true);
++    x.open("GET","/reaper_wifi.cgi?action=svydata"+reaperTok()+"&_="+Date.now(),true);
+     x.onreadystatechange=function(){
+       if(x.readyState!==4||done) return; done=true;
+       try{DATA=JSON.parse(x.responseText);}catch(e){}
+@@ -485,7 +485,7 @@ window.svyStart=svyStart; window.svyMove=svyMove; window.svyStop=svyStop; window
+ fetchStatus(function(){
+   /* a survey from an earlier visit is still on disk: show it */
+   var x=new XMLHttpRequest(), done=false;
+-  x.open("GET","/reaper_wifi.cgi?action=svydata&_="+Date.now(),true);
++  x.open("GET","/reaper_wifi.cgi?action=svydata"+reaperTok()+"&_="+Date.now(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||done) return; done=true;
+     try{ var d=JSON.parse(x.responseText); if(d&&d.aps&&d.aps.length){ DATA=d; svyRender(); } }catch(e){}
+diff --git a/release/src/router/www/Reaper_Sysinfo.asp b/release/src/router/www/Reaper_Sysinfo.asp
+index 2de7a5a0fc8..5293c4b4db2 100644
+--- a/release/src/router/www/Reaper_Sysinfo.asp
++++ b/release/src/router/www/Reaper_Sysinfo.asp
+@@ -306,9 +306,32 @@ function pct(a,b){ b=Number(b)||0; return b>0?Math.max(0,Math.min(100,Number(a)/
+   var mc=(SI.cpu||'').match(/Cores:\s*([0-9]+)/);
+   window.NCORE = mc ? Number(mc[1]) : 0;
+   txt('s_cores', NCORE || '');
+-  /* rc_support is a space-separated blob of feature tokens; as chips it is at
+-     least scannable. Sorted, because the firmware's own order is arbitrary. */
+-  var caps=(SI.caps||'').split(/\s+/).filter(Boolean).sort();
++  /* rc_support is a space-separated blob of feature tokens. 2026-11-05 (owner): shown by NAME, and only the
++     features Reaper offers - a token with no entry here is not shown: build markers (bcmhnd, nandflash, ...),
++     stock-only hooks, and the ASUS app / telemetry / EULA / ASUS-update tokens (app, appnet, analytics, eula,
++     update), which the firmware still sets for closed programs (AiMesh reads rc_support) but Reaper does not
++     use. Names are the menus' own strings where one exists, so they follow the language; protocols and
++     brands stay as written. Several tokens may name one feature: one chip each. */
++  var CAPN={
++    wifi7:'Wi-Fi 7', mlo:'MLO', mumimo:'MU-MIMO', ofdma:'OFDMA', wpa3:'WPA3', 'wpa3-e':'WPA3-Enterprise',
++    owe_trans:`<#Wireless_Encryption_OWE#>`, smart_connect_v2:`<#smart_connect#>`, amas:'AiMesh',
++    mssid:`<#Guest_Network#>`, mtlancfg:`<#GuestNetwork_PRO_title#>`, captivePortal:`<#Captive_Portal#>`, cp_freewifi:`<#Captive_Portal#>`,
++    dualwan:`<#dualwan#>`, wanbonding:`<#WANAggregation#>`, mswan:`<#multiservice_WAN#>`, lacp:'LACP', ipv6:'IPv6',
++    modem:`<#menu5_4_4#>`, manual_stb:`<#menu_dsl_iptv#>`, movistarTriple:`<#menu_dsl_iptv#>`,
++    openvpnd:'OpenVPN', pptpd:'PPTP', ipsec_srv:'IPsec', wireguard:'WireGuard', vpnc:`<#vpnc_title#>`, vpn_fusion:`<#vpnc_title#>`, tor:'Tor',
++    gatekeeper:`<#RGK_00#>`, warden:`<#RWDN_00#>`, PARENTAL2:`<#Parental_Control#>`, dnsfilter:`<#Reaper_c_dns_director#>`,
++    dnspriv:'DNS-over-TLS', dnssec:'DNSSEC', letsencrypt:"Let's Encrypt", HTTPS:'HTTPS', ssh:'SSH',
++    cake:'CAKE', igd2:'UPnP IGD 2', media:`<#UPnPMediaServer#>`, printer:`<#Network_Printer_Server#>`, timemachine:`<#TimeMach#>`,
++    snmp:'SNMP', ntpd:`<#LANHostConfig_x_NTPServer_itemname#>`, reboot_schedule:`<#RADM_53#>`, iperf3:'iperf3',
++    ookla:`<#InternetSpeed#>`, switchctrl:`<#Switch_itemname#>`,
++    reaper_traffic:`<#traffic_monitor#>`, reaper_devices:`<#RDEV_00#>`, reaper_storage:`<#RDST_00#>`, reaper_mcp:`<#Reaper_c_ai_advisor#>`,
++    rwatch:`<#RFW_329#>`
++  };
++  var tok=(SI.caps||'').split(/\s+/), seen={}, caps=[];
++  /* Wi-Fi 6 only where the router is not Wi-Fi 7 (a Wi-Fi 7 router lists both) */
++  if(tok.indexOf('wifi7')<0) CAPN['11AX']='Wi-Fi 6';
++  tok.forEach(function(c){ var n=Object.prototype.hasOwnProperty.call(CAPN,c)?String(CAPN[c]).trim():''; if(n && !seen[n]){ seen[n]=1; caps.push(n); } });
++  caps.sort(function(a,b){ return a.localeCompare(b); });
+   var cel=$id('s_caps');
+   if(cel) cel.innerHTML = caps.length ? caps.map(function(c){return '<span>'+esc(c)+'</span>';}).join('') : '-';
+ })();
+diff --git a/release/src/router/www/Reaper_System.asp b/release/src/router/www/Reaper_System.asp
+index d7b3a4f3464..6f7449d979f 100644
+--- a/release/src/router/www/Reaper_System.asp
++++ b/release/src/router/www/Reaper_System.asp
+@@ -239,53 +239,7 @@ table.classes{max-width:760px}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="http_enable" value="" disabled>
+-  <input type="hidden" name="http_lanport" value="" disabled>
+-  <input type="hidden" name="https_lanport" value="" disabled>
+-  <input type="hidden" name="http_autologout" value="" disabled>
+-  <input type="hidden" name="misc_http_x" value="" disabled>
+-  <input type="hidden" name="misc_httpport_x" value="" disabled>
+-  <input type="hidden" name="misc_httpsport_x" value="" disabled>
+-  <input type="hidden" name="enable_acc_restriction" value="" disabled>
+-  <input type="hidden" name="http_client" value="" disabled>
+-  <input type="hidden" name="http_clientlist" value="" disabled>
+-  <input type="hidden" name="restrict_rulelist" value="" disabled>
+-  <input type="hidden" name="sshd_enable" value="" disabled>
+-  <input type="hidden" name="sshd_port" value="" disabled>
+-  <input type="hidden" name="sshd_pass" value="" disabled>
+-  <input type="hidden" name="sshd_forwarding" value="" disabled>
+-  <input type="hidden" name="sshd_authkeys" value="" disabled>
+-  <input type="hidden" name="shell_timeout" value="" disabled>
+-  <input type="hidden" name="time_zone" value="" disabled>
+-  <input type="hidden" name="time_zone_dst" value="" disabled>
+-  <input type="hidden" name="time_zone_dstoff" value="" disabled>
+-  <input type="hidden" name="ntp_server0" value="" disabled>
+-  <input type="hidden" name="ntp_server1" value="" disabled>
+-  <input type="hidden" name="ntpd_enable" value="" disabled>
+-  <input type="hidden" name="ntpd_server_redir" value="" disabled>
+-  <input type="hidden" name="dns_probe" value="" disabled>
+-  <input type="hidden" name="dns_probe_content" value="" disabled>
+-  <input type="hidden" name="dns_probe_host" value="" disabled>
+-  <input type="hidden" name="wandog_enable" value="" disabled>
+-  <input type="hidden" name="wandog_target" value="" disabled>
+-  <input type="hidden" name="AllLED" value="" disabled>
+-  <input type="hidden" name="btn_ez_radiotoggle" value="" disabled>
+-  <input type="hidden" name="btn_ez_mode" value="" disabled>
+-  <input type="hidden" name="turbo_mode" value="" disabled>
+-  <input type="hidden" name="pwrsave_mode" value="" disabled>
+-  <input type="hidden" name="pagecache_ratio" value="" disabled>
+-  <input type="hidden" name="usb_idle_enable" value="" disabled>
+-  <input type="hidden" name="usb_idle_timeout" value="" disabled>
+-  <input type="hidden" name="usb_idle_exclude" value="" disabled>
+-  <input type="hidden" name="usb_usb3" value="" disabled>
+-  <input type="hidden" name="plc_sleep_enabled" value="" disabled>
+-  <input type="hidden" name="reboot_schedule_enable" value="" disabled>
+-  <input type="hidden" name="reboot_schedule" value="" disabled>
+-  <input type="hidden" name="reboot_schedule_type" value="" disabled>
+-  <input type="hidden" name="reboot_schedule_month" value="" disabled>
+-  <input type="hidden" name="jffs2_scripts" value="" disabled>
+-  <input type="hidden" name="nat_redirect_enable" value="" disabled>
+-  <input type="hidden" name="captcha_enable" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Tor.asp b/release/src/router/www/Reaper_Tor.asp
+index 975b0eba78b..659f38639a5 100644
+--- a/release/src/router/www/Reaper_Tor.asp
++++ b/release/src/router/www/Reaper_Tor.asp
+@@ -96,11 +96,7 @@ table.classes td.mono{font-family:var(--mono);font-size:12px}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="Tor_enable" value="" disabled>
+-  <input type="hidden" name="Tor_socksport" value="" disabled>
+-  <input type="hidden" name="Tor_transport" value="" disabled>
+-  <input type="hidden" name="Tor_dnsport" value="" disabled>
+-  <input type="hidden" name="Tor_redir_list" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index bf6190d55bf..1864f2ecbe5 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -457,6 +457,7 @@ function netTitle(br){
+   return p.join(' - ');
+ }
+ var curWin = 'live', liveTimer = null, pollMs = 1000, curStore = 'RAM';
++var RTRAF_HID = <% nvram_get_js("http_id"); %>;	/* 2026-11-05 audit A-6: reaper_traffic.cgi takes the page token */
+ /* reading pill mirrors the SELECTED window label + the store location (was hardcoded 'Live');
+    it also carries the no-response marker when polls stop answering, so a dead
+    collector/session reads as stalled instead of silently rendering nothing new */
+@@ -503,7 +504,7 @@ function portName(p,proto){ if(PORTS[p]) return PORTS[p]+' ('+p+')'; if(p>=6881&
+    than render zeros. Returns the XHR so the live loop can watchdog it. */
+ function getJSON(f, cb){
+   var x=new XMLHttpRequest();
+-  x.open('GET','/reaper_traffic.cgi?f='+f+'&_='+Date.now(),true);
++  x.open('GET','/reaper_traffic.cgi?f='+f+'&http_id='+encodeURIComponent(RTRAF_HID)+'&_='+Date.now(),true);
+   x.timeout=Math.max(3000, 2*pollMs+2000);
+   x.onloadend=function(){ var d=null;
+     if(x.status===200){ try{d=JSON.parse(x.responseText);}catch(e){} }
+@@ -1062,7 +1063,7 @@ function applySettings(){
+ }
+ function exportJSON(){
+   var win = curWin==='live'?'m5':curWin;
+-  window.open('/reaper_traffic.cgi?f='+win, '_blank');
++  window.open('/reaper_traffic.cgi?f='+win+'&http_id='+encodeURIComponent(RTRAF_HID), '_blank');
+ }
+ function faqOpen(){ setClose(); document.getElementById('flyout').className='flyout open'; document.getElementById('scrim').className='scrim open'; }
+ function faqClose(){ document.getElementById('flyout').className='flyout'; document.getElementById('scrim').className='scrim'; }
+diff --git a/release/src/router/www/Reaper_Tweaks.asp b/release/src/router/www/Reaper_Tweaks.asp
+index 7fe94fec150..99b3dceef04 100644
+--- a/release/src/router/www/Reaper_Tweaks.asp
++++ b/release/src/router/www/Reaper_Tweaks.asp
+@@ -79,13 +79,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="rwarden_sched" value="" disabled>
+-  <input type="hidden" name="ct_max" value="" disabled>
+-  <input type="hidden" name="ct_tcp_timeout" value="" disabled>
+-  <input type="hidden" name="ct_udp_timeout" value="" disabled>
+-  <input type="hidden" name="http_dut_redir" value="" disabled>
+-  <input type="hidden" name="ipv6_ns_drop" value="" disabled>
+-  <input type="hidden" name="dhcpd_send_wpad" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_VPNClient.asp b/release/src/router/www/Reaper_VPNClient.asp
+index caa7e6c0e8c..4318097b994 100644
+--- a/release/src/router/www/Reaper_VPNClient.asp
++++ b/release/src/router/www/Reaper_VPNClient.asp
+@@ -256,66 +256,7 @@ input[type=file]{display:none}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="vpn_client_unit" value="" disabled>
+-  <input type="hidden" name="vpn_clientx_eas" value="" disabled>
+-  <input type="hidden" name="vpn_client_desc" value="" disabled>
+-  <input type="hidden" name="vpn_client_if" value="" disabled>
+-  <input type="hidden" name="vpn_client_proto" value="" disabled>
+-  <input type="hidden" name="vpn_client_addr" value="" disabled>
+-  <input type="hidden" name="vpn_client_port" value="" disabled>
+-  <input type="hidden" name="vpn_client_bridge" value="" disabled>
+-  <input type="hidden" name="vpn_client_nat" value="" disabled>
+-  <input type="hidden" name="vpn_client_fw" value="" disabled>
+-  <input type="hidden" name="vpn_client_adns" value="" disabled>
+-  <input type="hidden" name="vpn_client_rgw" value="" disabled>
+-  <input type="hidden" name="vpn_client_gw" value="" disabled>
+-  <input type="hidden" name="vpn_client_enforce" value="" disabled>
+-  <input type="hidden" name="vpn_client_userauth" value="" disabled>
+-  <input type="hidden" name="vpn_client_username" value="" disabled>
+-  <input type="hidden" name="vpn_client_password" value="" disabled>
+-  <input type="hidden" name="vpn_client_useronly" value="" disabled>
+-  <input type="hidden" name="vpn_client_ncp_ciphers" value="" disabled>
+-  <input type="hidden" name="vpn_client_hmac" value="" disabled>
+-  <input type="hidden" name="vpn_client_digest" value="" disabled>
+-  <input type="hidden" name="vpn_client_verb" value="" disabled>
+-  <input type="hidden" name="vpn_client_comp" value="" disabled>
+-  <input type="hidden" name="vpn_client_reneg" value="" disabled>
+-  <input type="hidden" name="vpn_client_connretry" value="" disabled>
+-  <input type="hidden" name="vpn_client_tlsremote" value="" disabled>
+-  <input type="hidden" name="vpn_client_cn" value="" disabled>
+-  <input type="hidden" name="vpn_client_custom3" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_static" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_ca" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_crt" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_key" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_crl" value="" disabled>
+-  <input type="hidden" name="vpn_crt_client_extra" value="" disabled>
+-  <input type="hidden" name="wgc_unit" value="" disabled>
+-  <input type="hidden" name="wgc_enable" value="" disabled>
+-  <input type="hidden" name="wgc_desc" value="" disabled>
+-  <input type="hidden" name="wgc_nat" value="" disabled>
+-  <input type="hidden" name="wgc_fw" value="" disabled>
+-  <input type="hidden" name="wgc_enforce" value="" disabled>
+-  <input type="hidden" name="wgc_priv" value="" disabled>
+-  <input type="hidden" name="wgc_mtu" value="" disabled>
+-  <input type="hidden" name="wgc_addr" value="" disabled>
+-  <input type="hidden" name="wgc_dns" value="" disabled>
+-  <input type="hidden" name="wgc_ppub" value="" disabled>
+-  <input type="hidden" name="wgc_psk" value="" disabled>
+-  <input type="hidden" name="wgc_aips" value="" disabled>
+-  <input type="hidden" name="wgc_ep_addr" value="" disabled>
+-  <input type="hidden" name="wgc_ep_port" value="" disabled>
+-  <input type="hidden" name="wgc_alive" value="" disabled>
+-  <input type="hidden" name="vpnc_proto" value="" disabled>
+-  <input type="hidden" name="vpnc_heartbeat_x" value="" disabled>
+-  <input type="hidden" name="vpnc_pppoe_username" value="" disabled>
+-  <input type="hidden" name="vpnc_pppoe_passwd" value="" disabled>
+-  <input type="hidden" name="vpnc_pptp_options_x" value="" disabled>
+-  <input type="hidden" name="vpnc_dnsenable_x" value="" disabled>
+-  <input type="hidden" name="vpnc_defroute_x" value="" disabled>
+-  <input type="hidden" name="vpnc_auto_conn" value="" disabled>
+-  <input type="hidden" name="vpnc_clientlist" value="" disabled>
+-  <input type="hidden" name="vpnc_pptp_options_x_list" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ <!-- the stock OpenVPN instance switch: apply.cgi change_vpn_client_unit stores the unit httpd uses for vpn_client_custom3 and
+      answers with a redirect to current_page (httpd/web.c:14053, websRedirect in the hidden frame reloads this page) -->
+diff --git a/release/src/router/www/Reaper_VPNDirector.asp b/release/src/router/www/Reaper_VPNDirector.asp
+index 8f2c076ec03..fc9187a6d56 100644
+--- a/release/src/router/www/Reaper_VPNDirector.asp
++++ b/release/src/router/www/Reaper_VPNDirector.asp
+@@ -115,7 +115,7 @@ table.classes td.en{width:70px}
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <input type="hidden" name="vpndirector_rulelist" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_VPNServer.asp b/release/src/router/www/Reaper_VPNServer.asp
+index 610122b0a31..fdcfa4b4096 100644
+--- a/release/src/router/www/Reaper_VPNServer.asp
++++ b/release/src/router/www/Reaper_VPNServer.asp
+@@ -359,92 +359,9 @@ img.qr{background:#fff;padding:6px;border-radius:8px;max-width:240px;display:blo
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="">
+   <input type="hidden" name="action_wait" value="5">
+-  <!-- OpenVPN group: httpd maps vpn_server_* / vpn_crt_server_* onto the unit named by vpn_server_unit, which must come first (web.c validate_apply) -->
+-  <input type="hidden" name="vpn_server_unit" value="" disabled>
+-  <input type="hidden" name="vpn_serverx_start" value="" disabled>
+-  <input type="hidden" name="vpn_serverx_clientlist" value="" disabled>
+-  <input type="hidden" name="vpn_server_if" value="" disabled>
+-  <input type="hidden" name="vpn_server_proto" value="" disabled>
+-  <input type="hidden" name="vpn_server_port" value="" disabled>
+-  <input type="hidden" name="vpn_server_userpass_auth" value="" disabled>
+-  <input type="hidden" name="vpn_server_igncrt" value="" disabled>
+-  <input type="hidden" name="vpn_server_hmac" value="" disabled>
+-  <input type="hidden" name="vpn_server_digest" value="" disabled>
+-  <input type="hidden" name="vpn_server_sn" value="" disabled>
+-  <input type="hidden" name="vpn_server_nm" value="" disabled>
+-  <input type="hidden" name="vpn_server_ip6" value="" disabled>
+-  <input type="hidden" name="vpn_server_nat6" value="" disabled>
+-  <input type="hidden" name="vpn_server_sn6" value="" disabled>
+-  <input type="hidden" name="vpn_server_dhcp" value="" disabled>
+-  <input type="hidden" name="vpn_server_r1" value="" disabled>
+-  <input type="hidden" name="vpn_server_r2" value="" disabled>
+-  <input type="hidden" name="vpn_server_local" value="" disabled>
+-  <input type="hidden" name="vpn_server_remote" value="" disabled>
+-  <input type="hidden" name="vpn_server_local6" value="" disabled>
+-  <input type="hidden" name="vpn_server_remote6" value="" disabled>
+-  <input type="hidden" name="vpn_server_pdns" value="" disabled>
+-  <input type="hidden" name="vpn_server_ncp_ciphers" value="" disabled>
+-  <input type="hidden" name="vpn_server_verb" value="" disabled>
+-  <input type="hidden" name="vpn_server_ccd" value="" disabled>
+-  <input type="hidden" name="vpn_server_c2c" value="" disabled>
+-  <input type="hidden" name="vpn_server_ccd_excl" value="" disabled>
+-  <input type="hidden" name="vpn_server_ccd_val" value="" disabled>
+-  <input type="hidden" name="vpn_server_client_access" value="" disabled>
+-  <input type="hidden" name="vpn_server_tls_keysize" value="" disabled>
+-  <input type="hidden" name="vpn_server_custom3" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_ca" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_crt" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_key" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_dh" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_crl" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_static" value="" disabled>
+-  <input type="hidden" name="vpn_crt_server_extra" value="" disabled>
+-  <!-- WireGuard group: wgs_unit first, then wgs_* (-> wgs1_*), then wgsc_unit and wgsc_* (-> wgs1_c<N>_*); web.c:4786-4805 -->
+-  <input type="hidden" name="wgs_unit" value="" disabled>
+-  <input type="hidden" name="wgs_enable" value="" disabled>
+-  <input type="hidden" name="wgs_lanaccess" value="" disabled>
+-  <input type="hidden" name="wgs_addr" value="" disabled>
+-  <input type="hidden" name="wgs_port" value="" disabled>
+-  <input type="hidden" name="wgs_alive" value="" disabled>
+-  <input type="hidden" name="wgs_dns" value="" disabled>
+-  <input type="hidden" name="wgs_nat6" value="" disabled>
+-  <input type="hidden" name="wgs_psk" value="" disabled>
+-  <input type="hidden" name="wgs_priv" value="" disabled>
+-  <input type="hidden" name="wgs_pub" value="" disabled>
+-  <input type="hidden" name="wgsc_unit" value="" disabled>
+-  <input type="hidden" name="wgsc_enable" value="" disabled>
+-  <input type="hidden" name="wgsc_name" value="" disabled>
+-  <input type="hidden" name="wgsc_addr" value="" disabled>
+-  <input type="hidden" name="wgsc_aips" value="" disabled>
+-  <input type="hidden" name="wgsc_caips" value="" disabled>
+-  <input type="hidden" name="wgsc_priv" value="" disabled>
+-  <input type="hidden" name="wgsc_pub" value="" disabled>
+-  <input type="hidden" name="wgsc_psk" value="" disabled>
+-  <!-- IPsec group -->
+-  <input type="hidden" name="ipsec_server_enable" value="" disabled>
+-  <input type="hidden" name="ipsec_profile_1" value="" disabled>
+-  <input type="hidden" name="ipsec_profile_2" value="" disabled>
+-  <input type="hidden" name="ipsec_client_list_1" value="" disabled>
+-  <input type="hidden" name="ipsec_client_list_2" value="" disabled>
+-  <input type="hidden" name="ipsec_block_intranet" value="" disabled>
+-  <input type="hidden" name="ipsec_ig_enable" value="" disabled>
+-  <input type="hidden" name="ig_client_list" value="" disabled>
+-  <input type="hidden" name="ig_guest_client_list" value="" disabled>
+-  <!-- PPTP group -->
+-  <input type="hidden" name="pptpd_enable" value="" disabled>
+-  <input type="hidden" name="pptpd_ms_network" value="" disabled>
+-  <input type="hidden" name="pptpd_broadcast" value="" disabled>
+-  <input type="hidden" name="pptpd_chap" value="" disabled>
+-  <input type="hidden" name="pptpd_mppe" value="" disabled>
+-  <input type="hidden" name="pptpd_dns1" value="" disabled>
+-  <input type="hidden" name="pptpd_dns2" value="" disabled>
+-  <input type="hidden" name="pptpd_wins1" value="" disabled>
+-  <input type="hidden" name="pptpd_wins2" value="" disabled>
+-  <input type="hidden" name="pptpd_mtu" value="" disabled>
+-  <input type="hidden" name="pptpd_mru" value="" disabled>
+-  <input type="hidden" name="pptpd_clients" value="" disabled>
+-  <input type="hidden" name="pptpd_clientlist" value="" disabled>
+-  <input type="hidden" name="pptpd_sr_rulelist" value="" disabled>
++  <!-- the settings: one hidden input per changed key, added at Apply by rp.changed (reaper/rp.js). httpd maps
++       vpn_server_* / vpn_crt_server_* onto vpn_server_unit, wgs_* onto wgs_unit (-> wgs1_*), wgsc_* onto wgsc_unit
++       (-> wgs1_c<N>_*); validate_apply reads them in router_defaults order, not POST order -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_WLog.asp b/release/src/router/www/Reaper_WLog.asp
+index 2a123bc0f68..19d8a9f2600 100644
+--- a/release/src/router/www/Reaper_WLog.asp
++++ b/release/src/router/www/Reaper_WLog.asp
+@@ -144,13 +144,10 @@ function bandNames(){
+   base.forEach(function(b, i){ if (!b){ out[i] = 'Radio ' + i; return; } seen[b] = (seen[b] || 0) + 1; out[i] = n[b] > 1 ? b + '-' + seen[b] : b; });
+   return out;
+ }
+-/* the endpoint is JS assignments; run them inside a function so nothing lands on window */
++/* the endpoint is one JSON object (httpd get_wl_status_json: the stock arrays by name) - parsed, never run */
+ function parse(txt){
+-  var src = 'var dataarray0, dataarray1, dataarray2, dataarray3, wificlients0, wificlients1, wificlients2, wificlients3,' +
+-    ' dfs_statusarray0, dfs_statusarray1, dfs_statusarray2, dfs_statusarray3;\n' + txt +
+-    '\n;return {d: [dataarray0, dataarray1, dataarray2, dataarray3], c: [wificlients0, wificlients1, wificlients2, wificlients3],' +
+-    ' f: [dfs_statusarray0, dfs_statusarray1, dfs_statusarray2, dfs_statusarray3]};';
+-  return (new Function(src))();
++  var o = JSON.parse(txt), by = function(n){ return [0, 1, 2, 3].map(function(i){ return o[n + i]; }); };
++  return {d: by('dataarray'), c: by('wificlients'), f: by('dfs_statusarray')};
+ }
+ var COLS = [
+   {k: 'name', h: `<#RLOG_49#>`, t: 'text'}, {k: 'ip', h: `<#RLOG_51#>`, t: 'ip'}, {k: 'mac', h: `<#RLOG_52#>`, t: 'text'},
+@@ -263,7 +260,6 @@ function load(){
+ function schedule(){
+   if (timer){ clearInterval(timer); timer = null; }
+   var r = parseInt(q('s_rate').value, 10) || 0;
+-  try { localStorage.setItem('rwlog_rate', String(r)); } catch (e) {}
+   if (r) timer = setInterval(function(){ if (!document.hidden) load(); }, r * 1000);
+ }
+ /* the closed driver dump: URI-encoded text with \xNN runs and \n escapes; on demand only */
+@@ -286,8 +282,12 @@ q('radios').addEventListener('click', function(e){
+   try { localStorage.setItem('rwlog_sort', JSON.stringify(SORT)); } catch (e2) {}
+   draw();
+ });
+-try { var r0 = localStorage.getItem('rwlog_rate'); if (r0 !== null) q('s_rate').value = r0; else q('s_rate').value = '5'; } catch (e) { q('s_rate').value = '5'; }
+-q('s_rate').addEventListener('change', schedule);
++/* 10 s unless the user picked a rate; only a pick is stored. The old page stored 'rwlog_rate' on every load, so its
++   '5' (the old default) says nothing - any other old value was a choice and is kept */
++try { var r0 = localStorage.getItem('rwlog_refresh'), r1 = localStorage.getItem('rwlog_rate');
++  q('s_rate').value = r0 !== null ? r0 : (r1 !== null && r1 !== '5' ? r1 : '10'); } catch (e) {}
++if (!q('s_rate').value) q('s_rate').value = '10';
++q('s_rate').addEventListener('change', function(){ try { localStorage.setItem('rwlog_refresh', q('s_rate').value); } catch (e) {} schedule(); });
+ q('b_refresh').addEventListener('click', load);
+ q('b_drv').addEventListener('click', driver);
+ document.addEventListener('visibilitychange', function(){ if (!document.hidden && timer) load(); });
+diff --git a/release/src/router/www/Reaper_WOL.asp b/release/src/router/www/Reaper_WOL.asp
+index e6ad095d8ca..3efebbc27a2 100644
+--- a/release/src/router/www/Reaper_WOL.asp
++++ b/release/src/router/www/Reaper_WOL.asp
+@@ -78,7 +78,7 @@
+   <input type="hidden" name="action_mode" value="apply">
+   <input type="hidden" name="action_script" value="saveNvram">
+   <input type="hidden" name="action_wait" value="1">
+-  <input type="hidden" name="wollist" value="" disabled>
++  <!-- settings fields: added by rp.changed at Apply -->
+ </form>
+ 
+ <script>
+diff --git a/release/src/router/www/Reaper_Wireless.asp b/release/src/router/www/Reaper_Wireless.asp
+index 4542e54aca8..e0075b0db3b 100644
+--- a/release/src/router/www/Reaper_Wireless.asp
++++ b/release/src/router/www/Reaper_Wireless.asp
+@@ -479,7 +479,7 @@ function capPoll(){
+   if(CAPPOLL) return;
+   CAPPOLL=setInterval(function(){
+     var x=new XMLHttpRequest();
+-    x.open("GET","/reaper_wifi.cgi?action=capdata&_="+Date.now(),true);
++    x.open("GET","/reaper_wifi.cgi?action=capdata"+reaperTok()+"&_="+Date.now(),true);
+     x.onreadystatechange=function(){
+       if(x.readyState!==4) return;
+       CSV=x.responseText||"";
+@@ -670,7 +670,7 @@ function scanPoll(){
+   SCANPOLL=setInterval(function(){
+     if((++ka % 25)===0) keepSessionAlive();      /* ~every 50s */
+     var x=new XMLHttpRequest();
+-    x.open("GET","/reaper_wifi.cgi?action=scandata&_="+Date.now(),true);
++    x.open("GET","/reaper_wifi.cgi?action=scandata"+reaperTok()+"&_="+Date.now(),true);
+     x.onreadystatechange=function(){
+       if(x.readyState!==4) return;
+       try{SCANDATA=JSON.parse(x.responseText);}catch(e){SCANDATA=null;}
+@@ -857,7 +857,7 @@ function chqPoll(){
+   if(CHQPOLL) return;
+   var tick=function(){
+     var x=new XMLHttpRequest();
+-    x.open("GET","/reaper_wifi.cgi?action=chq&_="+Date.now(),true);
++    x.open("GET","/reaper_wifi.cgi?action=chq"+reaperTok()+"&_="+Date.now(),true);
+     x.onreadystatechange=function(){
+       if(x.readyState!==4) return;
+       var d=null; try{d=JSON.parse(x.responseText);}catch(e){}
+diff --git a/release/src/router/www/ajax_reaper_wlstatus.asp b/release/src/router/www/ajax_reaper_wlstatus.asp
+index 3a733de6a8b..00c9d8112ae 100644
+--- a/release/src/router/www/ajax_reaper_wlstatus.asp
++++ b/release/src/router/www/ajax_reaper_wlstatus.asp
+@@ -1 +1 @@
+-<% get_wl_status(); %>
++<% get_wl_status_json(); %>
+diff --git a/release/src/router/www/reaper/menu.js b/release/src/router/www/reaper/menu.js
+index 98a07e5e488..8058eddd48d 100644
+--- a/release/src/router/www/reaper/menu.js
++++ b/release/src/router/www/reaper/menu.js
+@@ -144,7 +144,7 @@
+         T('Reaper_VPNServer.asp', `<#BOP_isp_heart_item#>`, sup('openvpnd') || sup('wireguard') || sup('ipsec_srv') || sup('pptpd')),
+         T('Reaper_VPNClient.asp', `<#vpnc_title#>`, sup('openvpnd') || sup('wireguard') || sup('vpnc')),
+         T('Reaper_Tor.asp', 'Tor', sup('tor'))]},
+-      {index: 'menu_Firewall', label: `<#menu5_5#>`, when: routing, badge: 'fwred', tabs: [T('Reaper_Firewall.asp', `<#RFW_0#>`)]},
++      {index: 'menu_Firewall', label: `<#menu5_5#>`, when: routing, tabs: [T('Reaper_Firewall.asp', `<#RFW_0#>`)]},
+       {index: 'menu_Setting', label: `<#menu5_6#>`, tabs: [
+         T('Advanced_OperationMode_Content.asp', `<#menu5_6_1#>`, !sup('swmode_switch') && !sup('lyra_hide')),
+         T('Reaper_System.asp', `<#menu5_6_2#>`), T('Reaper_Failover.asp', `<#RDHC_28#>`, routing),
+@@ -179,7 +179,7 @@
+       for (j = 0; j < m.tabs.length; j++){ t = m.tabs[j]; if (t.when) tabs.push({url: t.url, tabName: t.label}); }
+       if (!tabs.length) continue;
+       tabs.push({url: 'NULL', tabName: '__INHERIT__'});
+-      list.push({menuName: m.label, index: m.index, tab: tabs, badge: m.badge || ''});
++      list.push({menuName: m.label, index: m.index, tab: tabs});
+     }
+     return {list: list, exclude: {menus: function(){ return []; }, tabs: function(){ return []; }}};
+   }
+@@ -197,7 +197,7 @@
+         if (!first && m.tab[j].tabName !== '__INHERIT__') first = m.tab[j].url;
+       }
+       if (!first) first = pages[0];
+-      out.push({index: m.index, label: m.menuName, page: first, pages: pages, icon: ICONS[m.index] || ICONS._default, badge: m.badge});
++      out.push({index: m.index, label: m.menuName, page: first, pages: pages, icon: ICONS[m.index] || ICONS._default});
+     }
+     return out;
+   }
+@@ -207,12 +207,8 @@
+   menu_Index:          '<svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+   menu_AiMesh:         '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.7l3 8M16.3 7.7l-3 8M8 6h8"/></svg>',
+   menu_GuestNetwork:   '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>',
+-  menu_AiProtection:   '<svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>',
+   menu_ParentalControl:'<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="2.5"/><circle cx="16" cy="9" r="2"/><path d="M4 19a5 5 0 0 1 10 0M13 19a4 4 0 0 1 7-3"/></svg>',
+-  /* reaper 2026-10-10: Traffic Manager is menu_QoS on stock trees and
+-     menu_BandwidthMonitor on Reaper's (Reaper_QoS.asp); both draw the bars the
+-     dashboard uses. The line chart belongs to Traffic Analyzer alone. */
+-  menu_QoS:            '<svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg>',
++  /* Traffic Manager (Reaper_QoS.asp) draws the bars the dashboard uses; the line chart belongs to Traffic Analyzer alone */
+   menu_BandwidthMonitor:'<svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg>',
+   menu_TrafficAnalyzer:'<svg viewBox="0 0 24 24"><path d="M3 16l5-6 4 4 5-7 4 5"/></svg>',
+   /* reaper 2026-10-10: the Reaper menus menuTrees/menuTree.js adds had no key here
+@@ -222,24 +218,16 @@
+   menu_ReaperAdvisor:  '<svg viewBox="0 0 24 24"><path d="M12 3a5 5 0 0 1 5 5c0 2-1 3-2 4s-1 2-1 3H10c0-1 0-2-1-3S7 10 7 8a5 5 0 0 1 5-5z"/><path d="M10 20h4"/></svg>',
+   menu_Sysinfo:        '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>',
+   menu_IPv6:           '<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M9 14h.01M12 12v3M15 11v4"/></svg>',
+-  /* stock menus a model may still show (exclude.menus() decides); none is on the
+-     dashboard rail, each gets its own glyph so nothing falls to _default */
+-  menu_NewDashboard:   '<svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-5"/></svg>',
+-  menu_UU:             '<svg viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></svg>',
+-  menu_TencentAcceleration:'<svg viewBox="0 0 24 24"><path d="M5 6l6 6-6 6M13 6l6 6-6 6"/></svg>',
+-  menu_SMS:            '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
+-  menu_GameBoost:      '<svg viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="9" rx="4"/><path d="M8 12v-2M7 12h2M15.5 12h.01M18 13.5h.01"/></svg>',
+-  menu_OpenNAT:        '<svg viewBox="0 0 24 24"><path d="M7 8l-4 4 4 4M17 8l4 4-4 4M14 6l-4 12"/></svg>',
++  /* review 2026-10-24 Q-C2-8 (owner 2026-11-05): only the menus the model above emits have a glyph; an add-on
++     naming a stock index (menu_AiCloud, menu_QoS ...) draws _default */
+   menu_APP:            '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14"/></svg>',
+   menu_ReaperDevices:  '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>',
+   /* same puzzle-piece glyph Main_ReaperDash.asp draws for its addon rail group,
+      so an addon looks identical on the dashboard and inside the shell */
+   menu_Addons:         '<svg viewBox="0 0 24 24"><path d="M10 4h4v3a2 2 0 0 0 2 2h3v4h-3a2 2 0 0 0-2 2v3h-4v-3a2 2 0 0 0-2-2H5V9h3a2 2 0 0 0 2-2z"/></svg>',
+-  menu_AiCloud:        '<svg viewBox="0 0 24 24"><path d="M7 17a4 4 0 0 1 .6-8 5 5 0 0 1 9.6 1.4A3.5 3.5 0 0 1 17 17z"/></svg>',
+   menu_Wireless:       '<svg viewBox="0 0 24 24"><path d="M4 9a12 12 0 0 1 16 0M7 12a8 8 0 0 1 10 0M10 15a4 4 0 0 1 4 0"/><circle cx="12" cy="18" r="1"/></svg>',
+   menu_LAN:            '<svg viewBox="0 0 24 24"><rect x="3" y="10" width="18" height="8" rx="2"/><path d="M7 10V6h10v4"/></svg>',
+   menu_WAN:            '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18"/><path d="M16 4l4 2-2 4"/></svg>',
+-  menu_Alexa_IFTTT:    '<svg viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4z"/></svg>',
+   menu_VPN:            '<svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 9v6M9 12h6"/></svg>',
+   menu_Firewall:       '<svg viewBox="0 0 24 24"><path d="M4 5h16v6c0 5-4 8-8 9-4-1-8-4-8-9z"/><path d="M4 9h16M9 5v4M15 5v4"/></svg>',
+   menu_Setting:        '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>',
+diff --git a/release/src/router/www/reaper/rp.js b/release/src/router/www/reaper/rp.js
+index 5399b83041a..d5e0f8536ba 100644
+--- a/release/src/router/www/reaper/rp.js
++++ b/release/src/router/www/reaper/rp.js
+@@ -12,9 +12,9 @@
+  *   rp.enhanceSelects(root)       the centred custom <select> (markup: <div class="selwrap"><select class="sel">)
+  *   rp.rebuildOptions(sel, list)  swap a select's options, keep the value if still offered
+  *   rp.applying(title, text)      show the applying overlay (markup: #applying .abox > h2#ap_t + p#ap_p)
+- *   rp.post(form, fields, script, wait, reloadAfter)   fill hidden inputs and submit the standard
+- *                                 start_apply.htm form; reloads the page after wait+5 s
+- *   rp.changed(form, fields)      enable only the hidden inputs listed (the "changed fields only" pattern)
++ *   rp.post(form, fields, script, wait, reloadAfter)   post fields through the standard start_apply.htm
++ *                                 form; reloads the page after wait+5 s
++ *   rp.changed(form, fields)      enable / create one hidden input per field (the "changed fields only" pattern)
+  *   rp.tips(root)                 native title on any .rtip the language clipped
+  *   rp.pingPresets(datalist)      fill a <datalist> with the bundled ping/DNS presets (/ajax/DNS_List.json)
+  *   rp.cmp(type)                  comparator for sortable lists: 'ip' (IPv4 by octet, IPv6/other after,
+@@ -136,12 +136,15 @@
+     if (text && rp.q('ap_p')) rp.q('ap_p').textContent = text;
+     o.className = 'applying show';
+   };
+-  /* enable exactly the hidden inputs named in fields (a map name -> value); every other hidden
+-     nvram input stays disabled so only changed settings are posted */
++  /* post exactly the fields named (a map name -> value): each one's hidden input is enabled and set, and created
++     here when the form has none (review 2026-10-24 Q-C1-11: the pages no longer list their keys as disabled hidden
++     inputs). Every other setting input stays disabled, so only the changed settings are posted */
+   rp.changed = function(form, fields){
+-    var k;
+-    for (k in fields){ if (!Object.prototype.hasOwnProperty.call(fields, k) || !form[k]) continue;
+-      form[k].disabled = false; form[k].value = fields[k]; }
++    var k, el;
++    for (k in fields){ if (!Object.prototype.hasOwnProperty.call(fields, k)) continue;
++      el = form.elements.namedItem(k);
++      if (!el){ el = document.createElement('input'); el.type = 'hidden'; el.name = k; form.appendChild(el); }
++      el.disabled = false; el.value = fields[k]; }
+   };
+   rp.post = function(form, fields, script, wait, reloadAfter){
+     rp.changed(form, fields || {});
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index b7fc521150c..39bb3d884f9 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -94,15 +94,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--crimson) #000}
+ .ntip b{color:var(--bone);font-weight:600}
+ .ntip .ok b{color:var(--jade)} .ntip .warn b{color:var(--amber)} .ntip .bad b{color:var(--danger)}
+ .ntip .dim{color:var(--steel)}
+-/* Rail badge: the count of firewall promises that are NOT holding, carried on
+-   the Firewall item so it is visible from every page rather than only from the
+-   one page a user would have to already be on to learn it. Hidden entirely at
+-   zero - an empty badge is noise, and "no badge" is the state that should read
+-   as nothing to do. Numerals only, so it needs no dictionary key. */
+-.nbadge{display:none;margin-left:auto;flex:0 0 auto;min-width:18px;height:18px;padding:0 5px;border-radius:9px;
+-  background:var(--crimson);color:#fff;font-family:var(--hdr);font-weight:700;font-size:10.5px;letter-spacing:.02em;
+-  line-height:18px;text-align:center}
+-.nbadge.on{display:inline-block}
+ .btn{font-family:var(--hdr);font-weight:600;letter-spacing:.07em;text-transform:uppercase;font-size:11px;
+   padding:8px 16px 8px 13px;border-radius:8px;border:1px solid var(--line-soft);background:var(--panel);
+   color:var(--bone-dim);cursor:pointer;transition:.15s;text-decoration:none;display:inline-block;line-height:normal;white-space:nowrap;flex:0 0 auto}
+@@ -674,9 +665,7 @@ function buildRail(menuTree){
+     else if(isTopLevelPage(furl))  /* own chrome: navigate, never frame */
+       h+='<a class="item" href="/'+esc(furl)+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+     else
+-      h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span>'
+-        + (m.index==='menu_Firewall' ? '<span class="nbadge" data-fwred></span>' : '')
+-        + '</a>';
++      h+='<a class="item" href="/reaper_shell.asp#'+esc(furl)+'" data-page="'+esc(furl)+'" data-pages="'+esc(pages.join('|'))+'">'+ic+'<span class="rtip">'+esc(m.menuName)+'</span></a>';
+   }
+   if(sp.addons.length){
+     /* 2026-09-10 (owner): the Addons root was the ONE rail item that did not
+@@ -721,10 +710,6 @@ function buildRail(menuTree){
+     });
+   }
+ 
+-  /* the rail exists only now, so a firewall reading that already arrived has
+-     had nowhere to go until this point - see FW_RED */
+-  if(typeof FW_RED!=='undefined' && FW_RED!=null) setFwBadge(FW_RED);
+-
+   var initial=(location.hash||'').replace('#','');
+   /* no target (e.g. post-login redirect to bare reaper_shell.asp - the #hash
+    * never reaches the server): land on the dashboard, not the network map */
+@@ -1018,17 +1003,6 @@ function railFromModel(addons){
+   }catch(e){ go(null); }
+ })();
+ 
+-/* ---- Firewall rail badge -----------------------------------------------------
+-   Until 2026-09-16 this carried the walker's red count on every page and
+-   polled the witness report once a minute for it. ADVISORY now (owner's
+-   decision): the walker's rows are information, not an alarm, and a number
+-   on the menu is an alarm - so the badge is never lit and the poll is gone.
+-   The element and the CSS above stay so the rail keeps its shape and
+-   railFallback()'s re-apply call still has a setter to call. Read the report
+-   on the Firewall page's Rule Status tab or the dashboard's posture card. */
+-var FW_RED=null;
+-function setFwBadge(red){ FW_RED=red; }
+-
+ window.addEventListener("hashchange",function(){var p=(location.hash||"").replace("#","");if(p)loadPage(p);});
+ 
+ /* language selector: shown_language_css() emits the localized <dd><a id=CODE>Name</a>
+-- 
+2.25.1
+

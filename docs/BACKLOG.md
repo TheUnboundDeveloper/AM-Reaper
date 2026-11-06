@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.1** · 2026-11-03 <!--@stamp-->
+> **Doc status:** current as of **v3.7.2** · 2026-11-05 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -42,6 +42,7 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 
 - **[P1] CVE-2026-98432: IPv4 TCP handshake use-after-free (kernel backport)** ↳ notes: `cve-2026-98432.md`
 - **[P1] CVE check 2026-11-03: DHCP client, WireGuard, socket timestamp, 102.8 config upload** ↳ notes: `cve-check-2026-11-03.md`
+- **[P1] CVE audit 2026-11-03: the hostapd High, 24 Mediums, 279 kernel fixes and the kernel config cleanup** ↳ notes: `cve-audit-fixes-2026-11-04.md`
 - **[P2] Internet speed test after ASUS retired the old Ookla setup** ↳ notes: `speedtest-embed-key-retired.md`
 - **[P2] Wi-Fi start-up script fixes from GPL 40585** ↳ notes: `hndnvram-defaults-mount.md`
 - **[P2] Wireless Log: device names lost, every extra network called a guest network** ↳ notes: `wireless-log-names-types.md`
@@ -53,6 +54,8 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Security review (2026-11-03): kernel privilege checks, root-only files, page token** ↳ notes: `security-review-2026-11-03.md`
 - **[P2] USB Application, Media Server, Samba and FTP on Reaper pages** ↳ notes: `usb-native-wave.md`
 - **[P2] Login opened a blank page (the security banner's text)** ↳ notes: `login-landing-blank-page.md`
+- **[P2] Audit Findings pass 2026-11-05: endpoint tokens, pre-login fixes, temp files, permissions, removals** ↳ notes: `audit-findings-2026-11-05.md`
+- **[P2] Let's Encrypt via DNS: a trusted certificate without DDNS or port 80** ↳ notes: `letsencrypt-dns.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use** ↳ notes: `internet-wan-port-label.md`
 - **[P3] System Info: `<i>off</i>` shown as text for a radio that is off** ↳ notes: `sysinfo-radio-off-markup.md`
@@ -72,6 +75,10 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Wallguard's DNS-bypass banner misses VPN Director's Exclusive DNS** ↳ notes: `wallguard-bypass-vpndirector.md`
 - **[P3] Gatekeeper: the waiting page never showed with an HTTPS-only GUI** ↳ notes: `gk-https-only-waiting-page.md`
 - **[P3] Samba: a refused login left no line in the system log** ↳ notes: `smb-refused-login-log.md`
+- **[P3] Wallguard: DNS rewrites on the page (local names, as in AdGuard Home and Pi-hole)** ↳ notes: `dns-rewrites-page.md`
+- **[P3] Rule Status: C3 red for a working WireGuard server forwarded to the router's own address** ↳ notes: `fwsim-c3-self-dnat.md`
+- **[P3] Devices: "no lease / private address" rows for MLO link addresses** ↳ notes: `devices-pseudo-mlo-rows.md`
+- **[P3] System Info: capabilities shown as tokens, removed features listed** ↳ notes: `sysinfo-capability-names.md`
 
 ## Open bugs / under investigation
 
@@ -90,37 +97,21 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 private review report and the finding ID in it; review reports are never published.*
 
 - **[P2] Owed router checks for the 2026-11-03 fixes: a save on each kind of page, a held device's waiting page** **[owed]** ↳ report: `review-2026-11-03` (Still owed)
-- **[P2] Vendor security reports to send (two drafted, one to write)** **[owner]** ↳ notes: `vendor-reports-owed.md`
+- **[P2] Vendor security reports to send (all three drafted)** **[owner]** ↳ notes: `vendor-reports-owed.md`
 - **[P2] Kernel: the next stable-fix round (CVE-2024-26921, ipset, net/sched)** **[deferred: own port and soak]** ↳ report: `review-2026-11-03` E-5
-- **[P2] Code review 2026-08-18 tail, batch B: two deferred items** **[owed]** ↳ report: `CODE-REVIEW-2026-08-18` · notes: `code-review-tail.md`
-- **[P3] Review 2026-10-24: owner decisions not yet coded, Q-C1-11 to decide, behaviour-changing merges** **[decided 2026-10-30; not coded]** ↳ report: `review-2026-10-24` · notes: `review-2026-10-24.md`
 - **[P3] Review 2026-10-28: AiMesh add-node on 3006.102.10 and a header-key list source on a router** **[owed]** ↳ report: `review-2026-10-28`
 - **[P3] Boot chain: the image-signature key** **[owner call]** ↳ report: `review-2026-11-03` E-12
-- **[P3] FTP connection-tracking helper on for every LAN client by default** **[owner call]** ↳ report: `review-2026-11-03` E-13
-- **[P3] Hardened-build flags for lighttpd and libwebapi** **[deferred]** ↳ report: `review-2026-11-03` F-4
-- **[P3] LLTD responder: remove the binary from the image (no longer started)** **[packaging]** ↳ report: `review-2026-11-03` F-1
+- **[P3] Hardened-build flags for lighttpd and libwebapi** **[lighttpd RELRO done 2026-11-05; PIE/FORTIFY and the closed libwebapi deferred]** ↳ report: `review-2026-11-03` F-4
 - **[P3] Unused closed programs to remove after a consumer check** **[owner call]** ↳ report: `review-2026-11-03` F-11
-- **[P3] Closed programs leave three world-writable pid and marker files** **[closed code]** ↳ report: `review-2026-11-03` F-10
-- **[P3] Security Review card: the world-writable check covers `/jffs` only** **[deferred]** ↳ report: `review-2026-11-03` C-8
-- **[P3] Long-term store: legacy entries keep their old file modes** **[deferred]** ↳ report: `review-2026-11-03` C-8
+- **[P3] Security Review card: the world-writable check covers `/jffs` and the store only** **[store added 2026-11-05; /tmp and /var deferred]** ↳ report: `review-2026-11-03` C-8
 - **[P3] Port trigger: each firewall rebuild drops live trigger sessions (needs a per-rule generation)** **[deferred]** ↳ report: `review-2026-11-03` E-6
-- **[P3] WireGuard apply temp files and the USB auto-created-dir marker in shared folders** **[deferred]** ↳ report: `review-2026-11-03` Latent C
-- **[P3] Kernel: never-loaded netfilter modules and options with no user** **[owner call]** ↳ report: `review-2026-11-03` Latent E
 - **[P3] Mount options `nosuid,nodev` on `/tmp`, `/var` and `/jffs`** **[owner call]** ↳ report: `review-2026-11-03` (owner decisions)
 - **[P3] About 40 stock pages no menu reaches are still served** **[with the native-UI cutover]** ↳ report: `review-2026-11-03` B-6
-- **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call]** ↳ report: `review-2026-11-03` F-6
-- **[P3] infosvr: replace the closed `interface.o` with open code** **[owner call]** ↳ report: `review-2026-11-03` F-7
-- **[P3] A parental-control request before login stores a setting nothing reads** **[not started]** ↳ report: `review-2026-11-03` A-4
+- **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call: conflicts with the Devices page's pseudo-MLO mapping]** ↳ notes: `audit-findings-2026-11-05.md`
 - **[P3] AI Advisor: one connection at a time; pin the client by default** **[owner call]** ↳ report: `review-2026-11-03` D-6
-- **[P3] Wallguard compiler: bound its memory on a hostile list** **[not started]** ↳ report: `review-2026-11-03` D-7
-- **[P3] Retire `wlcsm_bindfix` (built, not in the image)** **[owner call]** ↳ report: `review-2026-11-03` D-8
-- **[P3] Wireless Log reads its status as script, not JSON** **[not started]** ↳ report: `review-2026-11-03` B-5
-- **[P3] Three read-only Reaper CGIs outside `reaper_gate()`** **[not started]** ↳ report: `review-2026-11-03` A-6
 - **[P3] jQuery Mobile 1.4.5 (end of life) ships for the AiMesh add-node wizard** **[with the wizard rewrite]** ↳ report: `review-2026-11-03` B-4
-- **[P3] Third-party component changes: a compliance note** **[owner call]** ↳ report: `review-2026-11-03` D-10
 - **[P3] Review coverage not reached: closed listener parsers, closed ioctl handlers, some stock pages** **[watch]** ↳ report: `review-2026-11-03` (Not reached)
 - **[P3] Web-interface login lock is per LAN/WAN side, not per source (closed code)** **[deferred]** ↳ report: `review-2026-11-03` A-8 · notes: `security-review.md`
-- **[P3] Inherited httpd core: two pre-auth robustness gaps** **[inherited; deferred]** ↳ notes: `httpd-inherited-preauth-gaps.md`
 - **[P3] Second review of the v3.1.0–v3.1.5 code** **[planned — not started]** ↳ notes: `review-carry-forward-queue.md` §4
 
 ---
@@ -147,7 +138,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Diag: flag a replacing `/jffs/configs/dnsmasq.conf` and a dead local DNS upstream** **[diag half in v3.4.9; rdnshc half not done]** ↳ notes: `controld-leftover-dnsmasq-conf.md`
 - **[P3] Encrypted DNS: Flow Explorer names for DoT clients** **[deferred]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wi-Fi VLANs: several VIDs per network and the inter-VLAN ACL page** **[not started]** ↳ notes: `wifi-vlans-residual.md`
-- **[P3] Wallguard: DNS rewrite fields in the GUI, instead of SSH or direct Firewall edits** **[not started]** ↳ notes: `dns-rewrites-page.md`
+- **[P3] Wallguard: one AdGuard-style rules box with per-device rules (`$client=`)** **[not started]** ↳ notes: `wallguard-client-rules.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Mimic: hardware port mirror to an external IDS** **[owed: flow and restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`

@@ -66,9 +66,9 @@ check("operation-mode gate: get_operation_mode, router-mode hint, Apply off outs
 hid = re.findall(r'<input type="hidden" name="([A-Za-z0-9_]+)" value="([^"]*)"( disabled)?>', P)
 loose = [n for n, v, d in hid if n not in PLUMB and not d]
 check("every setting input starts disabled (only changed keys post)", not loose, loose)
-check("the six settings are the form's hidden inputs",
-      sorted(n for n, v, d in hid if n not in PLUMB) == sorted(["MULTIFILTER_ALL", "MULTIFILTER_BLOCK_ALL", "MULTIFILTER_ENABLE",
-                                                               "MULTIFILTER_MAC", "MULTIFILTER_DEVICENAME", "MULTIFILTER_MACFILTER_DAYTIME_V2"]))
+check("the six settings are named in the page script (rp.changed posts them; the form keeps only the apply inputs, Q-C1-11)",
+      not [n for n, v, d in hid if n not in PLUMB] and all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % k, P[P.rfind("<script>"):]) for k in
+      ["MULTIFILTER_ALL", "MULTIFILTER_BLOCK_ALL", "MULTIFILTER_ENABLE", "MULTIFILTER_MAC", "MULTIFILTER_DEVICENAME", "MULTIFILTER_MACFILTER_DAYTIME_V2"]))
 
 # ---- what it posts ----
 check("Apply: changed keys only, restart_firewall wait 5 (stock script), the one post in the page",

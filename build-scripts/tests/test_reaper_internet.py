@@ -73,8 +73,10 @@ def covered_inputs(tag, t, parity):
     if not os.path.exists(p): check(tag + ": parity file " + parity, False); return
     d = json.load(open(p, encoding="utf-8"))
     cov = [k for k, v in d["fields"].items() if v == "covered"]
-    miss = [k for k in cov if '<input type="hidden" name="%s" value="" disabled>' % k not in t]
-    check(tag + ": every covered %s setting is a disabled hidden input (%d)" % (parity, len(cov)), not miss, miss)
+    # Q-C1-11 (2026-11-05): no hidden key list - the key is named in the script and rp.changed posts it
+    js = t[t.rfind("<script>"):]
+    miss = [k for k in cov if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(k), js)]
+    check(tag + ": every covered %s setting is named in the page script (rp.changed posts it) (%d)" % (parity, len(cov)), not miss, miss)
     check(tag + ": stock action_script %r kept for its path" % d["action_script"], d["action_script"] in t)
 
 if os.path.exists(PI):
@@ -94,8 +96,8 @@ if os.path.exists(PI):
           "script = 'reboot'; wait = REBOOT_WAIT;" in t and "lines.push(fmt(T.cReboot, REBOOT_WAIT));" in t
           and "if (usb && unitChanges(changed)) reboot = true;" in t)
     check("Internet: B-WAN-1 fixed - aggregation with dual WAN posts real wans_dualwan / wans_mode inputs",
-          "extra.wans_dualwan = 'wan none'; extra.wans_mode = 'fo';" in t and '<input type="hidden" name="wans_dualwan" value="" disabled>' in t
-          and '<input type="hidden" name="wans_mode" value="" disabled>' in t)
+          "extra.wans_dualwan = 'wan none'; extra.wans_mode = 'fo';" in t
+          and "for (k in extra) if (has(extra, k)) changed[k] = extra[k];" in t)
     check("Internet: 802.1Q / IPTV conflict asked only when 802.1Q is turned on", "if (changed.wan_dot1q === '1' && !prof && iptvOn){" in t)
     check("Internet: WAN DNS lives on the DNS page (link, no DNS-server fields for a base WAN; DoT client not carried)",
           'href="/reaper_shell.asp#Reaper_DNS.asp"' in t and "R.dnsman = prof && " in t and "dnspriv" not in t)
@@ -103,10 +105,10 @@ if os.path.exists(PI):
           "if (!isProf(UNIT) && v === 'static' && n.proto !== 'static' && !(n.dnsenable_x === '0' && (n.dns1_x || n.dns2_x))) return bad('s_proto', T.dnsStatic);" in t)
     check("Internet: Multi-Service WAN profiles saved by Apply (read with appGet, no applyapp), delete posts only wan_enable=0",
           "applyapp" not in code(t) and "'/appGet.cgi?hook=' + hook" in t and "put(c, 'wan_enable', 't_enable', chk('t_enable'));" in t)
-    check("Internet: stock checks kept - static IP/mask/gateway, PPPoE MTU/MRU 128-1500 + RFC 4638 pairing, Host-Uniq hex, MTU 1280-1500, UPnP ports, MAC unicast",
+    check("Internet: stock checks kept - static IP/mask/gateway, PPPoE MTU/MRU 128-1500 + RFC 4638 pairing, Host-Uniq hex, MTU 1280-1500, UPnP ports, MAC unicast (the kit's rule since 2026-11-05: all-zero refused too)",
           "if (c.wan_gateway_x === c.wan_ipaddr_x) return bad('i_gw', T.eGwIp);" in t and "num(val('i_pmtu'), 128, 1500)" in t
           and "if (+pm > 1492 && +pr <= 1492) pr = pm;" in t and "/^[0-9A-Fa-f]*$/" in t and "num(c.wan_mtu, 1280, 1500)" in t
-          and "if (+val('i_intmax') < +val('i_intmin'))" in t and "/^.[02468aceACE]/" in t)
+          and "if (+val('i_intmax') < +val('i_intmin'))" in t and "!rp.v.macUnicast(c.wan_hwaddr_x)" in t)
     check("Internet: checks the inventory flagged - VLAN ID 2-4094 with 802.1Q, 802.1P 0-7, VPN server <= 64 chars (CKN_STR64)",
           "num(c.wan_vid, 2, 4094)" in t and "num(c.wan_dot1p, 0, 7)" in t and 'id="i_hb" maxlength="64"' in t and "c.wan_heartbeat_x.length > 64" in t)
     check("Internet: switching into v6plus / OCN / IPv6 Option resets the MAP rule first (s46reset.cgi), as stock",

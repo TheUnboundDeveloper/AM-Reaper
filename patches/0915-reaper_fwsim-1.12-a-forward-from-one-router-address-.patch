@@ -1,0 +1,77 @@
+From 7080d16df05c117437b5048a0716ba126a565e36 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Thu, 5 Nov 2026 20:37:36 -0500
+Subject: [PATCH] reaper_fwsim 1.12: a forward from one router address to
+ another reaches the router
+
+Field report (C3, WireGuard): a DNAT whose target is another of the router's own addresses, same
+port, was read as forwarded to a LAN host, so the simulator expected the FORWARD chain and
+reported a false block. Such a packet is delivered to the router (INPUT); the expectation now
+accepts it there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/reaper_fwsim/reaper_fwsim.c    | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/reaper_fwsim/reaper_fwsim.c b/release/src/router/reaper_fwsim/reaper_fwsim.c
+index a30efbc19a4..6d36d2ec837 100644
+--- a/release/src/router/reaper_fwsim/reaper_fwsim.c
++++ b/release/src/router/reaper_fwsim/reaper_fwsim.c
+@@ -47,7 +47,7 @@
+ #include <shared.h>
+ #endif
+ 
+-#define FWSIM_VER	"1.11"
++#define FWSIM_VER	"1.12"
+ #define FWSIM_DIR	"/tmp/reaper"
+ #define FWSIM_JSON	FWSIM_DIR "/fwstatus.json"
+ #define FWSIM_STATIC	"/usr/share/reaper/witness.static"
+@@ -230,6 +230,15 @@ static const struct addr *own_first(const char *ifname, int fam)
+ 	return NULL;
+ }
+ 
++/* v1.12: one of the router's own addresses, on any interface */
++static int own_has(const struct addr *x)
++{
++	int i;
++	for (i = 0; i < nown; i++)
++		if (own[i].a.fam == x->fam && !memcmp(own[i].a.a, x->a, 16)) return 1;
++	return 0;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* ipset membership                                                    */
+ /* ------------------------------------------------------------------ */
+@@ -946,6 +955,9 @@ struct pkt {
+ 	 * doubtful CONNMARK does not make a MARK expectation inconclusive. */
+ 	char unsure[64]; unsigned unsure_f;	/* %.20s@%.16s#%d = 49 with NUL */
+ 	int natted;
++	/* v1.12: every DNAT so far went from one of the router's own addresses to another of its own addresses,
++	   same port - the packet still reaches the router (a port forward of the WireGuard port to the LAN address) */
++	int self_dnat;
+ };
+ 
+ enum { V_CONT = 0, V_ACCEPT, V_DROP, V_REJECT, V_RETURN, V_DEPENDS, V_NAT, V_LOOP };
+@@ -1070,6 +1082,9 @@ static int apply_dnat(struct ctx *c, const struct rule *r)
+ 	/* an identity mapping (stock redirects port 80 to the router's own
+ 	 * address) changes nothing: conntrack gives it no DNAT status either */
+ 	if (memcmp(before.a, p->dst.a, 16) != 0 || bport != p->dport) {
++		/* v1.12 (field, GT-BE98): own address -> own address, same port, is still the router itself; the
++		   translation is kept in the verdict, only the ACCEPT expectation no longer counts it as a miss */
++		p->self_dnat = (!p->natted || p->self_dnat) && own_has(&before) && own_has(&p->dst) && bport == p->dport;
+ 		p->ct |= CT_DNAT; p->natted = 1;
+ 		{ char d[48]; addr_str(&p->dst, d, sizeof(d)); snprintf(c->nat, sizeof(c->nat), "%s:%d", d, p->dport); }
+ 	}
+@@ -1492,7 +1507,7 @@ static void eval_pkt(struct witness *w)
+ 		snprintf(w->verdict, sizeof(w->verdict), "%s %s", w->ok ? "source translated" : "NOT source translated", vname(v));
+ 	}
+ 	else if (!strcmp(want, "RESOLVED")) w->ok = (v == V_ACCEPT);	/* answered at the router, or handed to an intercept target and forwarded */
+-	else if (!strcmp(want, "ACCEPT")) w->ok = (v == V_ACCEPT) && !w->p.natted;
++	else if (!strcmp(want, "ACCEPT")) w->ok = (v == V_ACCEPT) && (!w->p.natted || w->p.self_dnat);	/* v1.12 */
+ 	else if (!strcmp(want, "DROP")) w->ok = (v == V_DROP || v == V_REJECT);
+ 	else if (!strcmp(want, "REJECT")) w->ok = (v == V_REJECT);
+ 	else if (!strcmp(want, "PASS")) w->ok = (v == V_ACCEPT);
+-- 
+2.25.1
+

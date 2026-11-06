@@ -53,12 +53,14 @@ check("walker: the text report says advisory", "[advisory: information only, not
 dash = rd(router, "www", "Main_ReaperDash.asp")
 check("dashboard: a red count is the steel Advisory pill, never .danger", "'adv' : 'ok'" in dash and "((skel||red>0) ? 'danger'" not in dash)
 check("dashboard: the .tag.adv style exists", ".tag.adv{" in dash)
-check("dashboard: the rail badge setter is a no-op", "function setFwBadge(red){}" in dash)
+check("dashboard: the dead rail badge is gone - no setter, no .nbadge CSS, no data-fwred span (Q-C2-8, 2026-11-05)",
+      "setFwBadge" not in dash and "nbadge" not in dash and "fwred" not in dash)
 check("dashboard: the row still reads the CACHED report (no run=1)", "action=witness&http_id" in dash and "action=witness&run=1" not in dash)
 
 sh = rd(router, "www", "reaper_shell.asp")
 check("shell: no witness poll at all (the request, not the word - the comment may explain why it is gone)", "/reaper_fw.cgi?action=witness" not in sh)
-check("shell: setFwBadge survives as a no-op for railFallback()", "function setFwBadge(red){ FW_RED=red; }" in sh)
+check("shell: the dead rail badge is gone - no FW_RED, no setter, no .nbadge CSS, no data-fwred span (Q-C2-8, 2026-11-05)",
+      "setFwBadge" not in sh and "FW_RED" not in sh and "nbadge" not in sh and "fwred" not in sh)
 
 fp = rd(router, "www", "Reaper_Firewall.asp")
 check("firewall page: the advisory banner is on the Rule Status tab", "<#RFW_320#>" in fp)

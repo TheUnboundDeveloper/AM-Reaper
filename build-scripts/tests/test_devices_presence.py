@@ -153,6 +153,17 @@ if order != sorted(order):
     die("rdev_collect: the live passes must all run before the Wired fallback")
 ok("the Wired fallback runs after every live pass and only for a present device")
 
+# 2026-11-05 (owner metal, _r8): with MLO switched off, Wi-Fi 7 clients still associate PSEUDO_MLO_CAP under a
+# randomized per-link MAC; cfg_mnt maps each to its device (mld_mac). The fold was gated on the MLO switch, so the
+# links showed as "unnamed / private addr / no lease" rows beside their own device.
+sw = web[web.find("static void rdev_scan_wl(struct rdev *v, int *n, int mlo_on)"):]
+sw = sw[:sw.find("\n}\n")]
+if "if (rdev_is_rand(mac) &&\n\t\t\t\t\t    (rdev_amesh_mld_of(mac, mld, sizeof(mld)) ||\n\t\t\t\t\t     (mlo_on && rdev_sta_mld(" not in sw:
+    die("rdev_scan_wl: the cfg_mnt link->device mapping must apply with MLO off (only the sta_info probe is MLO-gated)")
+if "if (mlo_on && rdev_is_rand(mac)" in sw or "if (mlo_on)\n\t\t\t\t\t\t\tv[idx].mlo = 1;" not in sw:
+    die("rdev_scan_wl: the MLO switch must gate only the sta_info probe and the MLO mark, not the fold")
+ok("a pseudo-MLO link folds into its device with MLO off (cfg_mnt mapping); sta_info and the MLO mark stay MLO-on")
+
 # 2026-10-19 (field: an iPhone on the RT-AX92U read "Wired", and stayed "connected"
 # in Airplane mode for the bridge's 300 s ageing). Backhaul sightings wait for the
 # mesh lists; on wl and backhaul ports an entry older than RDEV_FDB_FRESH is the

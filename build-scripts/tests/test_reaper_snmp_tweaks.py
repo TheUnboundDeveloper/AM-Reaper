@@ -34,8 +34,8 @@ for name, t, stock in (("Reaper_SNMP.asp", S, "Advanced_SNMP_Content.json"), ("R
           and '<meta name="reaper-native" content="1">' in t and not re.search(r'src="/(js/jquery|js/httpApi|state)\.js"', t))
     par = json.load(open(os.path.join(HERE, "ui_parity", stock), encoding="utf-8"))
     covered = [k for k, v in par["fields"].items() if v == "covered"]
-    missing = [k for k in covered if '<input type="hidden" name="%s" value="" disabled>' % k not in t]
-    check(name + ": every covered setting is a disabled hidden input (%d)" % len(covered), not missing, missing)
+    missing = [k for k in covered if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(k), t[t.rfind("<script>"):])]
+    check(name + ": every covered setting is named in the page script, rp.changed posts it (%d)" % len(covered), not missing, missing)
     check(name + ": the form posts to start_apply.htm with its own page name",
           ('name="current_page" value="%s"' % name) in t and ('name="next_page" value="%s"' % name) in t)
     js = t[t.rfind("<script>"):]

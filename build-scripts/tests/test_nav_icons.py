@@ -12,11 +12,12 @@ chart. Field (owner screenshot): "some pages use a circle with a dot instead of 
 unique symbol".
 
 WHAT IT DOES. With a router source tree (argv[1] or REAPER_ROUTER_SRC):
-  1. every menu in the shipped tree (www/require/menuTrees/menuTree.js - every roster model
-     builds ROG_UI=n, so www/Makefile installs this one) has an ICONS key, menu_QIS and
-     menu_Split excepted;
+  1. every menu the Reaper menu model (www/reaper/menu.js) emits has an ICONS key, menu_Split
+     excepted, and every model menu is in the shipped tree (www/require/menuTrees/menuTree.js);
+     2026-11-05 (review 2026-10-24 Q-C2-8, owner): the map holds ONLY the model's menus - the ten
+     stock indexes the model never emits lost their glyphs; an add-on naming one draws _default;
   2. no ICONS key draws the _default glyph;
-  3. two menus share a glyph only when both are Traffic Manager (menu_QoS, menu_BandwidthMonitor);
+  3. every menu draws a distinct glyph;
   4. every dashboard rail link draws exactly the glyph the shell draws for the menu that
      owns the linked page.
 
@@ -67,23 +68,30 @@ for n, (pos, idx) in enumerate(idx_pos):
 check("menuTree.js carries the Reaper menus", all(i in indices for i in
       ("menu_ReaperGK", "menu_ReaperWarden", "menu_ReaperDevices", "menu_Sysinfo")), indices)
 
-# 1. every shipped menu has its own key
-missing = [i for i in indices if i not in ("menu_QIS", "menu_Split") and i not in ICONS]
-check("every menu in the shipped menuTree.js has an ICONS key (none falls to _default)", not missing, missing)
+# 1. every model menu has its own key; the map holds nothing else (Q-C2-8, 2026-11-05)
+model = sorted(set(re.findall(r"index: '(menu_\w+)'", menu_js)) - {"menu_Split"})
+missing = [i for i in model if i not in ICONS]
+check("every menu the model emits has an ICONS key (none falls to _default)", model and not missing, missing)
+check("every model menu is in the shipped menuTree.js", not [i for i in model if i not in indices], [i for i in model if i not in indices])
+extra = [k for k in ICONS if k not in model and k not in ("_default", "menu_Addons")]
+check("ICONS holds only the model's menus + menu_Addons + _default (the ten stock-only glyphs are gone)", not extra, extra)
+GONE = ["menu_AiCloud", "menu_AiProtection", "menu_Alexa_IFTTT", "menu_GameBoost", "menu_NewDashboard", "menu_OpenNAT",
+        "menu_QoS", "menu_SMS", "menu_TencentAcceleration", "menu_UU"]
+check("none of the ten stock-only indexes is named in menu.js outside the comment", not [g for g in GONE if (g + ":") in menu_js], [g for g in GONE if (g + ":") in menu_js])
 
 # 2. no key draws the fallback
 dflt = [k for k, v in ICONS.items() if k != "_default" and v == DEFAULT]
 check("no ICONS key draws the _default circle-dot", not dflt, dflt)
 
-# 3. uniqueness, Traffic Manager's two indices excepted
-SAME = {"menu_QoS", "menu_BandwidthMonitor"}
+# 3. uniqueness (menu_QoS, the stock twin of menu_BandwidthMonitor, is gone since 2026-11-05)
+SAME = set()
 by_glyph = {}
 for k, v in ICONS.items():
     if k != "_default": by_glyph.setdefault(v, []).append(k)
 dups = [ks for ks in by_glyph.values() if len(ks) > 1 and set(ks) != SAME]
-check("each menu draws a distinct glyph (only Traffic Manager's two indices share one)", not dups, dups)
-check("Traffic Manager draws the same glyph under menu_QoS and menu_BandwidthMonitor",
-      ICONS.get("menu_QoS") and ICONS.get("menu_QoS") == ICONS.get("menu_BandwidthMonitor"))
+check("each menu draws a distinct glyph", not dups, dups)
+check("Traffic Manager (menu_BandwidthMonitor) draws the bars",
+      ICONS.get("menu_BandwidthMonitor") == norm('<svg viewBox="0 0 24 24"><path d="M4 18v-5M9 18V7M14 18v-8M19 18v-12"/></svg>'))
 check("Traffic Manager and Traffic Analyzer draw different glyphs",
       ICONS.get("menu_BandwidthMonitor") != ICONS.get("menu_TrafficAnalyzer"))
 

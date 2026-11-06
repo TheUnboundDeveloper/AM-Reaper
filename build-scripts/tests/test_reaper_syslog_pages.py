@@ -48,8 +48,8 @@ check("Log: system + login views, Clear = apply.cgi \" Clear \", Save = syslog.t
       "nvram_dump(\"security_recored.log\",\"\")" in L and 'name="action_mode" value=" Clear "' in L and "location.href = '/syslog.txt'" in L
       and "rp.post(document.form, ch, 'restart_logger', 5, false)" in L)
 check("Log: the view is written as text (textContent), never as HTML", "box.textContent = out.join('\\n');" in L and "innerHTML" not in L.split("function render()")[1].split("function load(")[0])
-check("WLog: band by wlN_nband, endpoint evaluated in a function scope, driver dump only on demand",
-      "b === '2' ? '2.4 GHz' : b === '1' ? '5 GHz' : b === '4' ? '6 GHz'" in W and "return (new Function(src))();" in W and "'/ajax_reaper_wlstatus.asp?_='" in W
+check("WLog: band by wlN_nband, endpoint JSON.parsed (never run, B-5 2026-11-05), driver dump only on demand",
+      "b === '2' ? '2.4 GHz' : b === '1' ? '5 GHz' : b === '4' ? '6 GHz'" in W and "var o = JSON.parse(txt)" in W and "new Function" not in W and "'/ajax_reaper_wlstatus.asp?_='" in W
       and W.count("/wl_log.asp") == 1)
 check("Leases/IPv6/PortFwd: emitter arrays declared before the ej call (strict mode), no pop()+length>1 off-by-one",
       "var leasearray = [];\n<% get_leases_array(); %>" in LS and "var ipv6cfgarray = [[]], ipv6clientarray = [[]], pinholesarray = [[]];" in I6
@@ -73,8 +73,8 @@ check("httpd: SUP redirects all seven stock URLs; the six pages are native (no s
       all(('{ "%s.asp", "%s", ' % kv) in inj for kv in sup.items())
       and all(inj.index('\t"%s",' % p) > inj.index("static const char *reaper_native[]") for p in PAGES))
 aj = rd(os.path.join(www, "ajax_reaper_wlstatus.asp"))
-check("ajax_reaper_wlstatus.asp runs get_wl_status only (stock's ajax also ran the closed driver dump every refresh)",
-      aj.strip() == "<% get_wl_status(); %>")
+check("ajax_reaper_wlstatus.asp runs get_wl_status_json only (stock's ajax also ran the closed driver dump every refresh)",
+      aj.strip() == "<% get_wl_status_json(); %>")
 
 # _r25 field: a ?query on a static file 404'd on the old base (do_file looked the path up with the query); kept so
 # the kit does not grow a cache-busting query the build stamp already covers

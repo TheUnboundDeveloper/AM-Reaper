@@ -33,8 +33,8 @@ check("on the kit: rp.css + rp.js, reaper-native meta, no jQuery / httpApi / sta
 # every covered field of the parity file is a hidden input, disabled (changed-fields-only pattern)
 par = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui_parity", "Advanced_System_Content.json"), encoding="utf-8"))
 covered = [k for k, v in par["fields"].items() if v == "covered"]
-missing = [k for k in covered if '<input type="hidden" name="%s" value="" disabled>' % k not in t]
-check("every covered setting is a disabled hidden input (%d)" % len(covered), not missing, missing)
+missing = [k for k in covered if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(k), t[t.rfind("<script>"):])]
+check("every covered setting is named in the page script, rp.changed posts it (%d)" % len(covered), not missing, missing)
 check("the form posts to start_apply.htm with its own page name", 'name="current_page" value="Reaper_System.asp"' in t and 'name="next_page" value="Reaper_System.asp"' in t)
 check("only changed settings are posted (rp.post with the diff) and the script is built per change",
       "rp.post(document.form, changed, script, wait, false)" in t and "if (has('ntpd_enable')) S.push('restart_dnsmasq');" in t

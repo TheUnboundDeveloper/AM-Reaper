@@ -32,7 +32,7 @@ check("reaper_login_landing() exists", m is not None)
 slp = src[src.find("\nsend_login_page(int fromapp_flag"):]
 slp = slp[:slp.find("\n}\n")]
 check("send_login_page records url only through reaper_login_landing (else indexpage, file NULL)",
-      re.search(r"if\(url == NULL \|\| !reaper_login_landing\(url\)\) \{[^}]*strncpy\(login_url, indexpage[^}]*file = NULL;\s*\} else\s*strncpy\(login_url, url",
+      re.search(r"if\(url == NULL \|\| !reaper_login_landing\(url\)\) \{[^}]*strl?n?cpy\(login_url, indexpage[^}]*file = NULL;\s*\} else\s*strl?n?cpy\(login_url, url",
                 slp) is not None)
 hr = src[src.find("\nhandle_request(void)"):]
 i_reset = hr.find("reaper_sfd[0] = '\\0';")

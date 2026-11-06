@@ -85,15 +85,19 @@ check("no secret in the page source: masked lists, presence flag for the WireGua
 
 # ---- OpenVPN (libovpn/openvpn_config.c get_ovpn_sconf reads vpn_serverN_*; httpd maps the unindexed names onto vpn_server_unit) ----
 names = [n for n, v, d in hid]
-check("OpenVPN: vpn_server_unit is the first hidden input of its group and is posted with every OpenVPN change (web.c:4398 unit-first rule)",
-      names.index("vpn_server_unit") < names.index("vpn_serverx_start") < names.index("vpn_server_if") and "changed.vpn_server_unit = CUR;" in T)
+DEFS = open(os.path.join(SRC, "shared", "defaults.c"), encoding="utf-8", errors="replace").read()
+dpos = lambda n: DEFS.find('{ "%s",' % n)
+check("OpenVPN: vpn_server_unit is posted with every OpenVPN change and router_defaults lists it ahead of its group (validate_apply "
+      "walks router_defaults, so the unit is read first whatever the POST order; Q-C1-11 2026-11-05: no hidden key list)",
+      not [n for n in names if n not in PLUMB] and 0 <= dpos("vpn_server_unit") < dpos("vpn_serverx_start") < dpos("vpn_server_if")
+      and 0 <= dpos("wgs_unit") < dpos("wgs_enable") and 0 <= dpos("wgsc_unit") < dpos("wgsc_enable") and "changed.vpn_server_unit = CUR;" in T)
 check("OpenVPN: restarts per instance - restart_vpnserverN / stop_vpnserverN (services.c:22257), restart_chpass for the user list (22213), restart_dnsmasq for pdns (openvpn_setup.c:94), reset = stop + clearovpnserver (22338)",
       "S.push('restart_vpnserver' + CUR)" in T and "S.push('stop_vpnserver' + CUR)" in T and "S.push('restart_chpass')" in T
       and "if ((oOn || wasOn) && changed.vpn_server_pdns !== undefined) S.push('restart_dnsmasq');" in T and "'clearovpnserver ' + CUR" in T
       and "restart_openvpnd" not in C)
 check("OpenVPN: the enable switch edits vpn_serverx_start for the cursor instance only", "function buildStart(on)" in T and "function startHas(list, u)" in T)
 check("OpenVPN: key files and the custom config posted unindexed (never vpn_crt_server1_* / vpn_server1_custom3 into nvram)",
-      'name="vpn_crt_server_ca"' in T and 'name="vpn_server_custom3"' in T and not re.search(r'name="vpn_(crt_)?server[12]_', T))
+      "c['vpn_crt_server_' + k] = KEDIT[k];" in T and "c.vpn_server_custom3 = " in T and not re.search(r'name="vpn_(crt_)?server[12]_', T))
 check("OpenVPN: certificate dump read with a regex, never evaluated (B-OVPN-10); renew blanks the files after a confirm",
       "/vpn_crt_server(\\d)_(ca|crt|key|dh|crl|static|extra)=\\['([\\s\\S]*?)'\\];/g" in T
       and "if (ORENEW) ['ca', 'crt', 'key', 'dh', 'crl', 'extra'].forEach(function(n){ c['vpn_crt_server_' + n] = ''; });" in T)
@@ -112,8 +116,8 @@ check("OpenVPN: the instance cursor and the cert / key / export hooks use the st
       and "hook=ovpn_generate_client_key()" in T and "'/upload_server_ovpn_cert.cgi'" in T and "fd.append('import_cert_file', file, file.name)" in T and "'client' + CUR + '.ovpn'" in T)
 
 # ---- WireGuard (rc/wireguard.c start_wgs reads wgs1_*; httpd maps wgs_* / wgsc_* with wgs_unit / wgsc_unit) ----
-check("WireGuard: wgs_unit first, wgsc_unit before wgsc_* (web.c:4786-4805)",
-      names.index("wgs_unit") < names.index("wgs_enable") and names.index("wgsc_unit") < names.index("wgsc_enable") and "changed.wgs_unit = '1';" in T)
+check("WireGuard: wgs_unit / wgsc_unit posted with their fields; router_defaults reads wgs_unit first, wgsc_unit before wgsc_* (Q-C1-11)",
+      0 <= dpos("wgs_unit") < dpos("wgs_enable") and 0 <= dpos("wgsc_unit") < dpos("wgsc_enable") and "changed.wgs_unit = '1';" in T)
 check("WireGuard: enabling seeds the stock defaults into indexed keys that were never written (rc reads wgs1_*, defaults.c:5693 has only wgs_*)",
       "var WGDEF = { enable: '0', lanaccess: '1', addr: '10.6.0.1/32', port: '51820', alive: '25', dns: '1', nat6: '1', psk: '0' };" in T
       and "if (c.wgs_enable === '1' && NV.wgs_enable !== '1') WGKEYS.forEach(function(k){ if (NV['wgs_' + k] === '' && c['wgs_' + k] === '') c['wgs_' + k] = wgCtlVal(k); });" in T)
@@ -149,7 +153,7 @@ check("IPsec: passwords never in title attributes (B-IPSEC-2); IKE placement by 
       and "/=\\s*(\\[[\\s\\S]*\\])\\s*;?\\s*$/.exec(t), arr = m ? jsonOf(m[1]) : null" in T)
 check("IPsec: an Instant Guard leftover is shown read-only and removed with its three keys on the user's click only (its page is gone)",
       "if (IGOFF){ c.ipsec_ig_enable = '0'; c.ig_client_list = ''; c.ig_guest_client_list = ''; }" in T and "on('igoffbtn', 'click', function(){ if (!confirm(`<#RVSV_" in T
-      and 'name="ipsec_ig_enable" value="" disabled' in T and 'name="ig_client_list" value="" disabled' in T and 'name="ig_guest_client_list" value="" disabled' in T)
+      and 'name="ipsec_ig_enable"' not in T and 'name="ig_client_list"' not in T)
 check("IPsec: IKEv2 certificate renew asks and polls ikev2_cert_state to 3 (web.c:18087 RENEW_FINISH); log cleared after a confirm",
       "xget('/renew_ikev2_cert_key.cgi'" in T and "String(j.ikev2_cert_state) === '3'" in T and "xget('/clear_file.cgi?clear_file_name=ipsec'" in T)
 
@@ -201,7 +205,9 @@ for name in ("Advanced_VPN_OpenVPN", "Advanced_WireguardServer_Content", "Advanc
     d = json.load(open(f, encoding="utf-8")) if os.path.exists(f) else {}
     check("parity file %s.json -> %s" % (name, PAGE), d.get("replacement") == PAGE)
     cov = [k for k, v in d.get("fields", {}).items() if v == "covered"]
-    check("parity: every covered field of %s is a literal in the page (%d)" % (name, len(cov)), all(k in T for k in cov), [k for k in cov if k not in T])
+    # Q-C1-11 (2026-11-05): with no hidden key list a wgs_* key may be named only through WGKEYS ('wgs_' + k)
+    lit = lambda k: k in T or (k.startswith("wgs_") and re.search(r"var WGKEYS = \[[^\]]*'%s'" % k[4:], T) is not None)
+    check("parity: every covered field of %s is a literal in the page or in its WGKEYS list (%d)" % (name, len(cov)), all(lit(k) for k in cov), [k for k in cov if not lit(k)])
 
 node = shutil.which("node")
 if node:

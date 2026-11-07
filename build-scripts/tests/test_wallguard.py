@@ -91,6 +91,21 @@ try:
           src.get("dnsm", {}).get("names") == 4 and src["dnsm"]["unsupported"] == 1, src.get("dnsm"))
     check("dedupe across lists: shared.example counts as unique only for the earlier list",
           src.get("shared2", {}).get("unique") == 1 and src["shared2"]["names"] == 2, src.get("shared2"))
+    # 2026-11-07 (field): AdGuard DNS's Popup Hosts list is ||name^$dnsrewrite=ad-block.dns.adguard.com throughout
+    # (it came out as 0 names); its exceptions list carries @@|name^| exact allows
+    agx = wf("agx", "||pop.example^$dnsrewrite=ad-block.dns.adguard.com\n||nx.example^$dnsrewrite=NXDOMAIN\n"
+                    "||imp.example^$important,dnsrewrite=0.0.0.0\n||real.example^$dnsrewrite=1.2.3.4\n||cl.example^$client=1.2.3.4\n"
+                    "|exact.example^|\n@@|exallow.example^|\n@@||subal.example^$important\n||comma.example^$important,\n||^\n")
+    aout, ast = os.path.join(work, "agx.db"), os.path.join(work, "agx.json")
+    r = subprocess.run([SC, "build", "--out", aout, "--stats", ast, "--list", "7:agx:" + agx], capture_output=True, text=True)
+    a = {s["id"]: s for s in json.load(open(ast))["sources"]}["agx"] if r.returncode == 0 else {}
+    check("AdGuard: $dnsrewrite to a sinkhole is a block, one bar is exact, @@| an exact allow; a real-address rewrite, $client, a trailing comma, an empty name unsupported",
+          a.get("names") == 4 and a.get("allows") == 2 and a.get("unsupported") == 4, (r.stderr, a))
+    def aexp(name):
+        return json.loads(subprocess.run([SC, "explain", "--db", aout, name], capture_output=True, text=True).stdout)["verdict"]
+    check("explain: the sinkhole rules cover subdomains; |exact^ does not; @@| allows that name only; @@|| its subdomains too",
+          [aexp(n) for n in ("a.pop.example", "nx.example", "exact.example", "sub.exact.example", "exallow.example", "sub.exallow.example", "deep.subal.example")]
+          == ["blocked", "blocked", "blocked", "pass", "allowed", "pass", "allowed"])
     def explain(name, mask=None):
         a = [SC, "explain", "--db", out] + (["--mask", mask] if mask else []) + [name]
         return json.loads(subprocess.run(a, capture_output=True, text=True).stdout)

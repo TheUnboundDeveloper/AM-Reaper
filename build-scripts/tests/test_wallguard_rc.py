@@ -215,14 +215,22 @@ int main(int argc, char **argv){
         shutil.rmtree(td, ignore_errors=True)
 
 # release review 2026-10-25 (W-1): a table holding My rules alone because every list download failed (wallguard.sh's
-# pending mark) is fetched again at WAN up - not within two minutes of the last attempt - and by rwatch every 10 min;
-# switching Wallguard off removes the mark. Rename leftovers: the prefixes compare their whole length.
+# pending mark) is fetched again at WAN up and by rwatch; switching Wallguard off removes the mark.
+# 2026-11-07 (field: a 03:00 reboot left the lists owed until 05:15): the mark holds the epoch of the next try (0 while
+# the WAN was down); rc and rwatch call `retry`, which fetches only the lists still owed, when that time has come.
+# Rename leftovers: the prefixes compare their whole length.
 rcw = read("rc/wallguard.c")
-fw = rcw[rcw.find("void wallguard_on_firewall(void)"):rcw.find("void wallguard_store_attached(void)")]
-check("W-1: start_firewall fetches again while the pending mark stands, at most every 2 min",
-      'else if (f_exists(SH_DIR "/pending") &&' in fw and "time(NULL) - st.st_mtime >= 120" in fw
-      and fw.count('sh_run_bg("update");') == 2)
+fw = rcw[rcw.find("static int sh_pending_due(void)"):rcw.find("void wallguard_store_attached(void)")]
+check("W-1 / 2026-11-07: start_firewall fetches everything with no table, else retries the owed lists when the mark's time has come",
+      'f_read_string(SH_DIR "/pending", b, sizeof(b));' in fw and "return atol(b) <= (long)time(NULL);" in fw
+      and fw.count('sh_run_bg("update");') == 1 and 'else if (sh_pending_due())\n\t\tsh_run_bg("retry");' in fw
+      and "st_mtime" not in fw)
 check("W-1: stop_wallguard removes the pending mark", 'SH_DIR "/db", SH_DIR "/pending", SH_DIR "/policy"' in rcw)
+cgi = read("httpd/web.c")
+upd = cgi[cgi.find('if (!strcmp(action, "update")) {'):cgi.find('if (!strcmp(action, "pause") || !strcmp(action, "resume")) {')]
+check("2026-11-07: CGI update takes id = one subscribed feed only ([a-z0-9_], 24 max, found in feeds), written to $D/only",
+      'strspn(id, "abcdefghijklmnopqrstuvwxyz0123456789_") != strlen(id)' in upd and 'read_whole_file(SH_DIR "/feeds")' in upd
+      and 'f_write_string(SH_DIR "/only", buf, 0, 0) < 0' in upd and upd.count('RSHD_E2') == 2 and 'strlen(id) > 24' in upd)
 check("rename leftovers: wallguard_ (10) and wallguard-dir= (14) compared over their whole length",
       rcw.count('!strncmp(name, "wallguard_", 10)') == 2 and '!strncmp(l, "wallguard-dir=", 14)' in rcw
       and '"wallguard_", 7)' not in rcw and '"wallguard-dir=", 11)' not in rcw)
@@ -230,6 +238,10 @@ rw = read("rc/rwatch.c")
 check("W-1: rwatch fetches while the table is missing OR the pending mark stands, every 10 min with the WAN up",
       "{ [ ! -s /tmp/wallguard/db ] || [ -f /tmp/wallguard/pending ]; }; then\\n" in rw
       and "[ -s /tmp/wallguard/db ] || sh /usr/sbin/wallguard.sh restore" in rw and "+%s) )) -ge 600 ]; }; then\\n" in rw)
+check("2026-11-07: rwatch - no table: the full update; the pending mark: retry once its epoch has passed, WAN up (digits only read)",
+      "  if [ ! -s /tmp/wallguard/db ] && [ \\\"$(_nv wan0_state_t)\\\" = 2 ] &&\\n" in rw
+      and "_wp=$(tr -dc 0-9 < /tmp/wallguard/pending 2>/dev/null)\\n" in rw
+      and "[ \\\"$(date +%s)\\\" -ge \\\"${_wp:-0}\\\" ] && [ \\\"$(_nv wan0_state_t)\\\" = 2 ] && sh /usr/sbin/wallguard.sh retry >/dev/null 2>&1\\n" in rw)
 sh = read("wallguard/wallguard.sh")
 check("X-1: stats reads the store's place without touching the volume; fold queues history for one detached writer that drops the locks",
       "HB=$(store_peek shh)" in sh and "b=$(store_peek shl)" in sh and 'hist "$REC.add"' not in sh

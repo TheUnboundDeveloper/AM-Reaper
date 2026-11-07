@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.3** · 2026-11-06 <!--@stamp-->
+> **Doc status:** current as of **v3.7.4** · 2026-11-07 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -59,6 +59,9 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Audit Findings pass 2026-11-06: kernel round, port trigger, lighttpd PIE/FORTIFY, /tmp and /var folders, unreachable stock pages** ↳ notes: `audit-findings-2026-11-06.md`
 - **[P2] Wallguard: Advanced rules in AdGuard Home syntax, with per-device rules (`$client=`)** ↳ notes: `wallguard-client-rules.md`
 - **[P2] Encrypted DNS block: Chrome's Secure DNS (Cloudflare) got through** ↳ notes: `edns-chrome-cloudflare.md`
+- **[P2] Wallguard: a 03:00 reboot left the lists owed until the 05:15 run (fetched at WAN up now; retries fetch only what is owed)** ↳ notes: `wallguard.md`
+- **[P2] Wallguard: AdGuard DNS's Popup Hosts list and an allowlist stayed "not downloaded yet, 0 names"** ↳ notes: `wallguard-allow-lines.md`
+- **[P2] USB disks past 2 TB read as 0 B / "not mounted"; two USB tiles on the one-port ZenWiFi BQ16** ↳ notes: `usb-disk-2tb-bq16.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use** ↳ notes: `internet-wan-port-label.md`
 - **[P3] System Info: `<i>off</i>` shown as text for a radio that is off** ↳ notes: `sysinfo-radio-off-markup.md`
@@ -83,11 +86,18 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Devices: "no lease / private address" rows for MLO link addresses** ↳ notes: `devices-pseudo-mlo-rows.md`
 - **[P3] System Info: capabilities shown as tokens, removed features listed** ↳ notes: `sysinfo-capability-names.md`
 - **[P3] Rule Status: every "reaches the WAN" row red with the Encrypted DNS block on** ↳ notes: `fwsim-wandst-doh.md`
+- **[P3] Wallguard: an Update button on each list row; Save fetches only the lists it adds** ↳ notes: `wallguard.md`
+- **[P3] USB Application: the USB Disks headers sat left of their number cells** ↳ notes: `usb-disk-2tb-bq16.md`
+- **[P3] Wireless Log: an AiMesh node's backhaul station read "-"** ↳ notes: `wireless-log-names-types.md`
+- **[P3] Security review: the first run after a boot comes at exactly 5 min, not 5-10 by tick alignment** ↳ notes: `review-first-run-after-boot.md`
+- **[P3] Dreadwatch: "List updated" blank after every reboot until the next feed run** ↳ notes: `dreadwatch-list-updated-stamp.md`
 
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
 
+- **[P2] playstation.com "Access Denied" through the router (ZenWiFi BQ16, v3.7.2; fine on stock and on mobile data)** **[not reproduced; the reporter's DNS / IPv6 details asked 2026-11-07]** ↳ notes: `playstation-access-denied.md`
+- **[P2] Firewall "Logged packets type: Accepted / Both" logs every new connection to the flash syslog, saturating the CPU and starving DNS** **[cause found on the owner's box 2026-11-07, logging turned off there; the rate-limit guard queued for the owner]** ↳ notes: `firewall-accept-log-flood.md`
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[levers in v3.7.0, off by default; owed: an A/B run on a UASP SSD]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[plan written 2026-10-19; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[options offered 2026-11-01; owner call]** ↳ notes: `mlo-restart-radio-link.md`
@@ -120,6 +130,8 @@ private review report and the finding ID in it; review reports are never publish
 ## UI / UX polish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Wallguard page: a lot of empty scroll below the last card; trim it to the other pages' standard** **[not started; owner 2026-11-07]** ↳ notes: `wallguard-page-trailing-space.md`
+- **[P3] Every button that gives no visual sign it was pressed (e.g. Encrypted DNS › Update lists: only the timestamp tells)** **[review not started; owner 2026-11-07]** ↳ notes: `button-click-feedback-review.md`
 
 ---
 

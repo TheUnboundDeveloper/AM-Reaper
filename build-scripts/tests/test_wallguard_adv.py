@@ -46,10 +46,10 @@ FIXTURE = r"""! a comment
 ||x.example^$dnsrewrite=1.2.3.4
 @@||ghost.example^$client='No Such Device'
 """ + (  # 2026-11-06: invisible characters - a rule is ASCII; a leading BOM is a file artifact; comments may be UTF-8
-    "||zw​sp.example^\n"
-    "/ab​c/\n"
-    "﻿||bomrule.example^\n"
-    "﻿# a comment after a BOM\n"
+    "||zw\u200bsp.example^\n"
+    "/ab\u200bc/\n"
+    "\ufeff||bomrule.example^\n"
+    "\ufeff# a comment after a BOM\n"
     "# Hannah’s phone – a UTF-8 comment\n")
 CASES = [  # name, qtype, ip, mac, want (0 none 1 allow 2 block), important, resp
     ("social.example", 1, "10.0.0.20", None, 1, 1, 0),

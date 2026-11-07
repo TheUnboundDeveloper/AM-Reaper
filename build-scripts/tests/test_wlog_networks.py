@@ -53,10 +53,42 @@ bad = [f + ":" + k for f in packs for k in TYPEKEYS
 check("all 25 packs carry every type label", len(packs) == 25 and not bad, bad[:6])
 # 2026-10-30 (field, GT-BE98 v3.6.2): the device name - yours first, the lease hostname after ("*" is none)
 check("names resolve through ReaperNames with custom_clientlist, refreshed with the log (once a minute)",
-      "name: nameOf(r[0], r[1], r[2])" in W and 'nvram_char_to_ascii("", "custom_clientlist")' in W
+      "name: nameOf(r[0], r[1], r[2], r[14])" in W and 'nvram_char_to_ascii("", "custom_clientlist")' in W
       and "ReaperNames.refresh(CUSTOM_CL" in W and "function load(){\n  names();" in W)
-nm = re.search(r"\nfunction nameOf\(mac, ip, lease\)\{.*?\n\}\n", W, re.S)
+nm = re.search(r"\nfunction nameOf\(mac, ip, lease, node\)\{.*?\n\}\n", W, re.S)
 check("nameOf() found", nm is not None)
+# 2026-11-07 (owner): an AiMesh node's backhaul station read "-" - no lease, no name of its own. httpd puts the node's
+# LAN MAC on the row (15th field, from cfg_mnt's shared table: sta2g/5g/6g -> realMacAddr) and the page names the
+# row as the Devices page names the node
+WB = open(os.path.join(SRC, "httpd", "sysdeps", "web-broadcom-am.c"), encoding="utf-8").read()
+WC = open(os.path.join(SRC, "httpd", "web.c"), encoding="utf-8").read()
+check("httpd: reaper_node_of_sta() walks the node table (station MACs -> the node's LAN MAC), with a no-cfgsync stub",
+      "int reaper_node_of_sta(const char *mac, char *out, size_t n)\n{" in WC and "memcmp(tbl->sta6g[i], mb, 6) == 0) {" in WC
+      and "int reaper_node_of_sta(const char *mac, char *out, size_t n) { (void)mac; if (n) out[0] = '\\0'; return 0; }" in WC)
+check("page (owner, 2026-11-07): a node row keeps its node; its empty IP cell says 'AiMesh Node' (the stock token, every pack), a device's address is shown as before",
+      "node: r[14] || ''}" in W and "(r.ip ? hx(r.ip) : r.node ? '<span class=\"tag\">' + hx(`<#AiMesh_Node#>`) + '</span>' : '-')" in W
+      and "hx(r.ip || '-')" not in W)
+check("httpd: every client row ends with the node field (the four closers), from the station MAC as associated",
+      WB.count('\\"%s\\"],", nodemac);') == 3 and '"\\"%d\\",\\"%s\\"],", guestvlan, nodemac);' in WB
+      and '"\\"\\",\\"%s\\"],", nodemac);' in WB and "strlcpy(rawea, ea, sizeof(rawea));" in WB
+      and "if (!reaper_node_of_sta(rawea, nodemac, sizeof(nodemac)) && strcmp(rawea, ea))" in WB
+      and '"\\"\\",\\"\\"],"' not in WB and '"\\"Main BSS\\",\\"\\"],"' not in WB)
+if nm and shutil.which("node"):
+    NJS = nm.group(0) + r"""
+var ReaperNames = {byMac: function(m, fb){ return ({'00:00:5e:00:53:01': 'Attic node', '00:00:5e:00:53:10': 'Phone'})[String(m).toLowerCase()] || fb; },
+                   byIp: function(ip, fb){ return ({'192.0.2.7': 'By address'})[ip] || fb; }};
+console.log(JSON.stringify([nameOf('00:00:5e:00:53:22', '', '*', '00:00:5E:00:53:01'), nameOf('00:00:5e:00:53:10', '', 'lease', '00:00:5E:00:53:01'),
+  nameOf('00:00:5e:00:53:23', '192.0.2.7', '*', ''), nameOf('00:00:5e:00:53:24', '', 'host', ''), nameOf('00:00:5e:00:53:25', '', '*', ''), nameOf('00:00:5e:00:53:26', '', '*', undefined)]));
+"""
+    fd, jp = tempfile.mkstemp(suffix=".js"); os.close(fd)
+    open(jp, "w", encoding="utf-8").write(NJS)
+    rn = subprocess.run([shutil.which("node"), jp], capture_output=True, text=True); os.unlink(jp)
+    try:
+        on = json.loads(rn.stdout)
+    except Exception:
+        on = None
+    check("nameOf (node): a backhaul station takes its node's name; a device's own name wins; address, lease, none, no field",
+          on == ["Attic node", "Phone", "By address", "host", "", ""], (rn.stderr[-200:], on))
 
 m = re.search(r"\nvar RANK = .*?\n}\n(?=function netHtml\()", W, re.S)
 check("nets() found", m is not None)

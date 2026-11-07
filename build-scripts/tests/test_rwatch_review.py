@@ -433,7 +433,9 @@ ok('rjf_set(RVIEW_BASE, body, "review")' in cgi and "O_RDONLY | O_NOFOLLOW" in c
 kick = between(web, "static void rview_kick(void)", "\n}\n", "rview_kick")
 ok("reaper_script_ok(RVIEW_SH)" in kick and kick.count("fork()") == 2 and "setsid()" in kick and "_eval(argv, NULL, 30, NULL)" in kick,
    "web.c: the re-check runs detached (double fork) and only when the script passes reaper_script_ok")
-ok('{ "reaper_watch.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web, "web.c: the mime row carries do_auth")
+ok('{ "reaper_watch.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web
+   or '{ "reaper_watch.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_reaper_watch_cgi, do_auth }' in web,	# the 102.8 line's row (2026-11-07)
+   "web.c: the mime row carries do_auth")
 ok('{ "watch",  "rwatch_review",   2    }' in web, "web.c: the settings export carries rwatch_review (max 2 for a 0/1 flag)")
 ok('nvram_set("rwatch_review", on ? "1" : "0");' in cgi and 'reaper_audit("review"' in cgi, "web.c: the switch is audited")
 
@@ -481,5 +483,15 @@ ok('VER="REAPER-DIAG v1.3.53"' in diag and 'echo "  security review   : rwatch_r
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")
 ok("review.auth" not in between(diag, 'echo "  security review   : rwatch_review=', "\n\n", "diag 12 review block").replace("login_notices", ""), "diag: section 12 prints counts, never the notice sources")
+
+# 2026-11-07 (owner, option A): a run takes 1 s; the first review after a boot waited for the first tick at or past
+# HEALGRACE (5-10 min by tick alignment). The first tick inside the grace arms one detached run at boot + HEALGRACE.
+# Metal _r4: the tick exits inside the grace ("boot grace" line) long before 3h - the arm must come BEFORE that exit.
+arm = 'if [ \\"$UP\\" -lt \\"$HEALGRACE\\" ] && [ \\"$(_nv rwatch_review)\\" = 1 ] && [ ! -f $RV_TMP/review.boot ]; then\\n'
+ok(arm in rw and '  : > $RV_TMP/review.boot\\n' in rw
+   and '( sleep $((HEALGRACE - UP + 2)); [ -f /tmp/reaper_fw/armed ] || sh " RWATCH_SH " review ) </dev/null >/dev/null 2>&1 &\\n' in rw
+   and rw.index(arm) < rw.index('[ \\"$UP\\" -lt 300 ] && exit 0\\n') < rw.index("# 3h) security review")
+   and 'if [ \\"$UP\\" -ge \\"$HEALGRACE\\" ] && [ ! -f /tmp/reaper_fw/armed ]; then _rv_run; fi\\n' in rw and "elif" not in rw[rw.index("# 3h) security review"):rw.index("# 4) GDX host-TCP pool")],
+   "the first tick inside the grace arms ONE detached review at boot + HEALGRACE, BEFORE the grace exit (review on, no candidate armed); 3h unchanged")
 
 print("PASS: %d checks" % passed)

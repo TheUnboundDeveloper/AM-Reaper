@@ -1,0 +1,127 @@
+From b56913afe4edf5abdc3e06dbc916c669d7147c0d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 7 Nov 2026 14:16:43 -0500
+Subject: [PATCH] Wireless Log: a backhaul station named after its AiMesh node,
+ its cell says so
+
+A node's backhaul station has no DHCP lease and no name of its own (the lease and the names sit on
+the node's LAN MAC), so its row read "-". httpd's reaper_node_of_sta (web.c, the shared AiMesh
+client table the Devices page already walks) gives the node's LAN MAC for a station MAC;
+get_wl_status puts it on every client row as a 15th field (index-parsed rows, so additive; tried
+with the station MAC as associated, then the MLD name). The page names the row as the Devices page
+names the node, and its address cell reads the stock AiMesh Node text.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../src/router/httpd/sysdeps/web-broadcom-am.c    | 15 +++++++++++----
+ release/src/router/www/Reaper_WLog.asp            | 14 +++++++++-----
+ 2 files changed, 20 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/httpd/sysdeps/web-broadcom-am.c b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+index a37e315e5a1..6ea8aa66a08 100644
+--- a/release/src/router/httpd/sysdeps/web-broadcom-am.c
++++ b/release/src/router/httpd/sysdeps/web-broadcom-am.c
+@@ -35,6 +35,7 @@
+ #include <linux/types.h>
+ #include <wlscan.h>
+ #include <bcmdevs.h>
++extern int reaper_node_of_sta(const char *mac, char *out, size_t n);	/* web.c, reaper 2026-11-07: the AiMesh node of a backhaul station */
+ #include <sysinfo.h>
+ 
+ const char *phy_type_str_fmt[7] = {
+@@ -360,6 +361,7 @@ ej_wl_unit_status_array(int eid, webs_t wp, int argc, char_t **argv, int unit)
+ 	int i, ii, val = 0, ret = 0, subunit = 0, maxunit;
+ 	char *arplist = NULL, *arplistptr;
+ 	char *leaselist = NULL, *leaselistptr;
++	char rawea[18] = "", nodemac[18] = "";	/* reaper 2026-11-07: the station MAC as associated, and its AiMesh node */
+ 	char *ipv6list = NULL, *ipv6listptr;
+ 	char *line;
+ 	char hostnameentry[65];
+@@ -587,6 +589,7 @@ sta_list:
+ 				if (!sta) continue;
+ 
+ 				ether_etoa((void *)&auth->ea[ii], ea);
++				strlcpy(rawea, ea, sizeof(rawea));	/* reaper 2026-11-07: kept before an MLD name may replace ea */
+ 				ret += websWrite(wp, "[\"%s\",", ea);
+ 
+ #ifdef RTCONFIG_MLO
+@@ -755,10 +758,14 @@ sta_list:
+ 					(sta->flags & WL_STA_AUTHO) ? "U" : "_");
+ 
+ // If not a Guest Network then don't push SSID and VLAN in client list
++				/* reaper 2026-11-07 (field): the row's last field names the AiMesh node this station belongs to (its LAN
++				 * MAC, "" for an ordinary client) - a backhaul station has no lease and no name of its own */
++				if (!reaper_node_of_sta(rawea, nodemac, sizeof(nodemac)) && strcmp(rawea, ea))
++					reaper_node_of_sta(ea, nodemac, sizeof(nodemac));
+ 				if (subunit == 1)
+-					ret += websWrite(wp, "\"\",\"\"],");
++					ret += websWrite(wp, "\"\",\"\",\"%s\"],", nodemac);
+ 				else if (subunit == 0)	// identify Main BSS
+-					ret += websWrite(wp, "\"Main BSS\",\"\"],");
++					ret += websWrite(wp, "\"Main BSS\",\"\",\"%s\"],", nodemac);
+ 				else {
+ // SSID (for Guest Networks identification)
+ 					{
+@@ -779,9 +786,9 @@ sta_list:
+ 					}
+ // VLAN
+ #ifdef RTCONFIG_MULTILAN_CFG
+-					ret += websWrite(wp, "\"%d\"],", guestvlan);
++					ret += websWrite(wp, "\"%d\",\"%s\"],", guestvlan, nodemac);
+ #else
+-					ret += websWrite(wp, "\"\"],");	/* reaper (review 2026-10-24 Q-B-12): was `webswrite`, a typo in a branch this build does not compile */
++					ret += websWrite(wp, "\"\",\"%s\"],", nodemac);	/* reaper (review 2026-10-24 Q-B-12): was `webswrite`, a typo in a branch this build does not compile */
+ #endif
+ 				}
+ 			}
+diff --git a/release/src/router/www/Reaper_WLog.asp b/release/src/router/www/Reaper_WLog.asp
+index 19d8a9f2600..221659a65fa 100644
+--- a/release/src/router/www/Reaper_WLog.asp
++++ b/release/src/router/www/Reaper_WLog.asp
+@@ -14,7 +14,7 @@
+        dataarrayN = [SSID, RSSI, SNR, noise, chanspec, BSSID, channel utilisation, mode]
+        dfs_statusarrayN = [state, "N s", cleared chanspec]   (DFS regulatory domains only)
+        wificlientsN = [[MAC, IPv4, hostname, IPv6, RSSI, rx Mbps, tx Mbps, connected, NSS, PHY, BW, flags,
+-                        network ("" main / "Main BSS" / guest SSID), VLAN], ..., "-1"]
++                        network ("" main / "Main BSS" / guest SSID), VLAN, AiMesh node (its LAN MAC, for a backhaul station; 2026-11-07)], ..., "-1"]
+      A radio that is off emits nothing. Bands come from wlN_nband (2 = 2.4, 1 = 5, 4 = 6 GHz), not the unit
+      number. The stock refresh endpoint also ran the closed driver-log dump (wl_log.asp) every time into a
+      variable nothing read; here that dump runs only when "Driver details" is opened.
+@@ -124,8 +124,11 @@ SDN_RL.split('<').forEach(function(r){
+    page had dropped that. Your name for the device first (custom_clientlist, then the live list), the lease hostname
+    after, as every other Reaper page does (reaper_util.js ReaperNames). */
+ var CUSTOM_CL = '<% nvram_char_to_ascii("", "custom_clientlist"); %>', NAMES_AT = 0;
+-function nameOf(mac, ip, lease){
++function nameOf(mac, ip, lease, node){
+   var n = ReaperNames.byMac(mac, '') || (ip ? ReaperNames.byIp(ip, '') : '');
++  /* 2026-11-07 (field): an AiMesh node's backhaul station has no lease and no name of its own - httpd puts the
++     node's LAN MAC on the row, so the node is named here as the Devices page names it */
++  if (!n && node) n = ReaperNames.byMac(node, '');
+   return n || (lease && lease !== '*' ? lease : '');
+ }
+ function names(){
+@@ -156,9 +159,9 @@ var COLS = [
+ function secs(t){ var m = /(\d+):(\d+):(\d+)/.exec(t || ''); return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : -1; }
+ function clients(list){
+   return (list || []).filter(function(r){ return r && typeof r === 'object' && r.length >= 12; }).map(function(r){
+-    return {mac: r[0], ip: r[1], name: nameOf(r[0], r[1], r[2]), ip6: r[3], rssi: parseInt(r[4], 10), rx: r[5], tx: r[6], rate: parseInt(r[6], 10) || 0,
++    return {mac: r[0], ip: r[1], name: nameOf(r[0], r[1], r[2], r[14]), ip6: r[3], rssi: parseInt(r[4], 10), rx: r[5], tx: r[6], rate: parseInt(r[6], 10) || 0,
+       conn: String(r[7] || '').trim(), time: secs(r[7]), phy: [r[8] ? r[8] + 'x' : '', r[9], r[10]].filter(Boolean).join(' '), flags: r[11],
+-      tag: r[12] || '', vlan: r[13] && r[13] !== '0' ? r[13] : ''};
++      tag: r[12] || '', vlan: r[13] && r[13] !== '0' ? r[13] : '', node: r[14] || ''};	/* 2026-11-07: the AiMesh node of a backhaul station */
+   });
+ }
+ /* the networks of radio i, keyed by the client tag: the main network first (shown even with no clients), the other
+@@ -222,7 +225,8 @@ function netHtml(n, col, cmp){
+   h += '<div class="tw"><table class="rtab"><thead><tr>' + COLS.map(function(c){ return '<th data-k="' + c.k + '"' + (c.k === col.k ? ' class="on"' : '') + '>' + hx(c.h) +
+     '<span class="dir">' + (c.k === col.k ? (SORT.dir > 0 ? '&#9650;' : '&#9660;') : '') + '</span></th>'; }).join('') + '</tr></thead><tbody>';
+   n.list.forEach(function(r){
+-    h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + hx(r.ip || '-') + v6lines(r.ip6) +
++    /* 2026-11-07 (owner): a node's backhaul station has no address of its own - its cell says what it is */
++    h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + (r.ip ? hx(r.ip) : r.node ? '<span class="tag">' + hx(`<#AiMesh_Node#>`) + '</span>' : '-') + v6lines(r.ip6) +
+       '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(isNaN(r.rssi) ? '?' : r.rssi + ' dBm') + '</td><td class="mono">' + hx((r.rx || '-') + ' / ' + (r.tx || '-')) +
+       '</td><td class="mono">' + hx(r.conn || '-') + '</td><td class="mono">' + hx(r.phy || '-') + '</td><td class="mono">' + hx(r.flags || '') + '</td></tr>';
+   });
+-- 
+2.25.1
+

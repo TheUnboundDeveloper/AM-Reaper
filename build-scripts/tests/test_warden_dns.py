@@ -251,7 +251,8 @@ wallguardc() {
         # the boot script with the work paths in place of the C defines, the fake in place of /usr/sbin/wallguardc
         os.makedirs(wtmp, exist_ok=True)
         m2 = dict(macros); m2.update(RW_NX_DIR=wtmp + "/nx", RW_DNS_KGZ=wjffs + "/dns.k.gz", RW_DNS_CACHE_GZ=wjffs + "/dns.nx.gz",
-                                     RW_DNS_CACHE=wjffs + "/dns.nx", RW_DNS_LEGACY=wjffs + "/dns.cache", RW_DNS_COUNT=wtmp + "/dns.count", RW_DNS_FIRST=wtmp + "/dns.first")
+                                     RW_DNS_CACHE=wjffs + "/dns.nx", RW_DNS_LEGACY=wjffs + "/dns.cache", RW_DNS_COUNT=wtmp + "/dns.count", RW_DNS_FIRST=wtmp + "/dns.first",
+                                     RW_DNS_UPD=wtmp + "/dns.upd")   # 2026-11-07: the "List updated" stamp the rebuild restores
         text = lifted_array(rw, "rw_nx_rebuild_sh", m2).replace("T=/tmp/rwarden/nx.rebuild.$$", "T=%s/nx.rebuild.$$" % wtmp).replace("/usr/sbin/wallguardc ", "wallguardc ")
         sp = os.path.join(work, "rebuild.sh"); open(sp, "w").write(HEAD + text)
         cmd = [shell, sp] if shell != "busybox" else [BB, "ash", sp]
@@ -418,22 +419,34 @@ wallguardc() {
         # what the fake wallguardc writes: every feed's names in list order, each in the feeds list's order
         exp = [f + " " + l.split()[1] for f in ("urlhaus", "phish") for l in kb if f in l.split()[0].split(",")]
         clear_tmp()
+        # 2026-11-07 (owner): the "List updated" stamp (dns.upd) lives in /tmp and went with every reboot - the tile read "-"
+        # from a 03:00 reboot until the 04:33 run. The rebuild restores it, when absent, from the mtime of the copy it built from
+        updp = os.path.join(wtmp, "dns.upd")
+        if os.path.exists(updp): os.unlink(updp)
         rc_, calls, tbl, cnt, first = rebuild(shell)
         ok(rc_ == 0 and len(kb) >= 4 and tbl == exp and cnt == str(len(kb)) and first == kb[0].split()[1]
            and "build --subtree --out" in calls and "--kfile " in calls and "--kids urlhaus phish c2 crypto ransom certpl threatview threatfox other legacy" in calls
            and "check --db" in calls,
            "[%s] boot: the table is rebuilt from the gzipped feeds list - wallguardc reads it itself (--kfile), checked, the count and a sample name written (got %s / %s)" % (tag, tbl, calls[-200:]))
-        os.unlink(os.path.join(wjffs, "dns.k.gz")); clear_tmp()
+        gz_mt = str(int(os.stat(os.path.join(wjffs, "dns.k.gz")).st_mtime))
+        ok(os.path.exists(updp) and open(updp).read().strip() == gz_mt,
+           "[%s] boot: the List-updated stamp is restored from the gzipped copy's time (got %r, want %s)" % (tag, open(updp).read().strip() if os.path.exists(updp) else None, gz_mt))
+        os.unlink(os.path.join(wjffs, "dns.k.gz")); clear_tmp(); os.unlink(updp)
         rc_, calls, tbl, cnt, first = rebuild(shell)
         # (the older copy is grouped by feed, so its order differs from the feeds list's priority order)
         ok(rc_ == 0 and tbl is not None and sorted(tbl) == sorted("legacy " + n for n in names(kb)) and "other legacy" in calls and cnt == str(len(kb)) and first in names(kb),
            "[%s] boot right after an upgrade: the older reaper-nx= copy builds the table under one 'legacy' feed (got %s)" % (tag, tbl))
+        nx_mt = str(int(os.stat(os.path.join(wjffs, "dns.nx.gz")).st_mtime))
+        ok(os.path.exists(updp) and open(updp).read().strip() == nx_mt,
+           "[%s] ...and the stamp comes from the older copy's time then (got %r)" % (tag, open(updp).read().strip() if os.path.exists(updp) else None))
         clear_tmp()
         if os.path.exists(logf): os.unlink(logf)
+        open(updp, "w").write("777\n")
         rc_, calls, tbl, cnt, first = rebuild(shell, {"SC_FAIL": "1"})
         blog = open(logf).read() if os.path.exists(logf) else ""
         ok(rc_ == 1 and tbl is None and "the /jffs copy would not build into a table - blocking nothing until the next update" in blog,
            "[%s] boot: a copy wallguardc rejects leaves no table, exit 1, and the script logs it itself (it runs detached now) (got %r)" % (tag, blog[-200:]))
+        ok(open(updp).read().strip() == "777", "[%s] a stamp already there (the update wrote it) is left alone by a rebuild" % tag)
         os.unlink(os.path.join(wjffs, "dns.nx.gz")); clear_tmp()
         rc_, calls, tbl, cnt, first = rebuild(shell)
         ok(rc_ == 2 and tbl is None, "[%s] boot with no copy at all: exit 2, no table (the helper hands out no include)" % tag)

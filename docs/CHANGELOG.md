@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.3** · 2026-11-06 <!--@stamp-->
+> **Doc status:** current as of **v3.7.4** · 2026-11-07 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,35 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.4 — Wallguard blocks within seconds of the clock after a reboot; a per-list Update; AdGuard DNS's Popup Hosts and allow-only sources; USB disks past 2 TB; the Wireless Log names AiMesh nodes
+
+Everything in v3.7.3 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Wallguard after a reboot.** The boot-time download ran before the WAN and the clock were up and failed, and a
+  failed list waited for the 05:15 run: a router rebooting at 03:00 showed ads until then. Nothing is fetched now
+  until a default route exists and the clock is set; the lists kept on a USB volume are used as soon as the store
+  attaches; the first NTP sync fetches what is owed, and the self-monitor retries every 5 minutes, fetching only
+  the missing lists (10 minutes doubling to 6 hours for a list that keeps failing).
+- **Per-list Update.** Each subscribed row has an **Update** button that downloads that list alone, and a save that
+  adds a list downloads only that list; **Update lists now** and the daily run still fetch everything.
+- **AdGuard DNS's Popup Hosts filter and allow-only sources load.** `||name^$dnsrewrite=<sinkhole>` rules
+  (`ad-block.dns.adguard.com`, `0.0.0.0`, `::`, `NXDOMAIN`, `REFUSED`) are blocks, `|name^` is an exact entry, and a
+  source made only of `@@` exception lines is taken (its Names column reads *N allowed*); both had stayed
+  "not downloaded yet, 0 names" since the v3.7.0 download check.
+- **USB disks past 2 TB** read as 0 B on the USB Disks tab and "not mounted" on the dashboard (a 32-bit size in
+  `get_usb_info`); the sizes are 64-bit now. The dashboard draws one USB tile for a one-port model (ZenWiFi BQ16),
+  and the USB Application table's number headers line up with their cells.
+- **The Wireless Log names AiMesh nodes.** A node's backhaul station row read "-": it has no lease and no name of its
+  own. The row now carries its node, is named as the Devices page names the node, and its address cell reads
+  *AiMesh Node*.
+- **Security review: the first check after a boot runs 5 minutes in**, whatever the self-monitor's tick alignment
+  (it was 5 to 10 minutes).
+- **Dreadwatch's "List updated" survives a reboot.** The stamp lived in /tmp and the tile read "-" until the next
+  feed run; the boot rebuild restores it from the saved copy's time.
+- **The `command` shell builtin is in busybox** (`CONFIG_ASH_CMDCMD`): scripts that look for a tool with
+  `command -v` now work on the router (acme.sh does).
 
 ## v3.7.3 — Wallguard takes AdGuard Home rule lists; Chrome's Secure DNS no longer slips past the Encrypted DNS block; kernel CVE fixes; port trigger keeps live sessions
 

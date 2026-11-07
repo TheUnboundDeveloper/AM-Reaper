@@ -1,0 +1,36 @@
+From d521d09e551c681ae101a020cacae36a95e4f441 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 7 Nov 2026 14:16:41 -0500
+Subject: [PATCH] Dreadwatch: the List updated stamp survives a reboot
+
+The stamp (dns.upd, written by the feed update, read by stats.sh) lives in /tmp and went with
+every reboot, so the tile read "-" from a 03:00 reboot until the 04:33 run. The boot rebuild from
+the /jffs copy now writes it, when absent, from the time that copy was last written - the time a
+successful update stamped it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwarden.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index bf1b6c3265c..291d7517c56 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -2476,7 +2476,12 @@ static const char rw_nx_rebuild_sh[] =
+ 	"[ -s $T.k ] || { rm -f $T.*; logger -t rwarden \"threat domains: the /jffs copy would not build into a table - blocking nothing until the next update\"; exit 1; }\n"
+ 	"/usr/sbin/wallguardc build --subtree --out $D/threat.db.new --kfile $T.k --kids \"" RW_DIDS_STR " other legacy " RW_DCUST_STR "\" >/dev/null 2>&1 && /usr/sbin/wallguardc check --db $D/threat.db.new >/dev/null 2>&1 && mv -f $D/threat.db.new $D/threat.db\n"
+ 	"R=$?; [ $R -eq 0 ] || { R=1; logger -t rwarden \"threat domains: the /jffs copy would not build into a table - blocking nothing until the next update\"; }\n"
+-	"wc -l < $T.k | tr -d ' ' > " RW_DNS_COUNT "; head -n 1 $T.k | cut -d' ' -f2 > " RW_DNS_FIRST "; rm -f $T.* $D/threat.db.new; exit $R\n";
++	"wc -l < $T.k | tr -d ' ' > " RW_DNS_COUNT "; head -n 1 $T.k | cut -d' ' -f2 > " RW_DNS_FIRST "\n"
++	/* 2026-11-07 (owner): the "List updated" stamp (dns.upd, written by update.sh) is in /tmp and went with every
++	 * reboot - the tile read "-" from a 03:00 reboot until the 04:33 run. When absent, it is the time the copy this
++	 * table was built from was last written: a successful update wrote that copy. */
++	"[ -s " RW_DNS_UPD " ] || { for _f in $K $O " RW_DNS_CACHE " " RW_DNS_LEGACY "; do [ -s $_f ] && { date -r $_f +%s > " RW_DNS_UPD " 2>/dev/null; break; }; done; }\n"
++	"rm -f $T.* $D/threat.db.new; exit $R\n";
+ 
+ /* review 2026-10-24 (Q-A-3, owner's call): the rebuild runs DETACHED. dnsmasq starts at once and maps the table
+  * within 2 s of its arrival (dnsmasq reaper_nx.c), instead of every boot waiting the 15-20 s the build takes;
+-- 
+2.25.1
+

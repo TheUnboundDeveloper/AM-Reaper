@@ -1,0 +1,60 @@
+From 0d56f04d7280c5ada13af4d4b6135fab68ba488b Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 7 Nov 2026 14:16:42 -0500
+Subject: [PATCH] www: USB tiles follow the model's port count; USB Disks
+ headers over their cells
+
+- Main_ReaperDash.asp drew two USB tiles on every model. The count is rc_support's usbX<n> (what
+  the stock usbPortMax is built from); on a one-port model (ZenWiFi BQ16) the USB 2 bus of the one
+  socket (usb_path2) folds onto the one tile; no usbX keeps the two tiles.
+- Reaper_USBApps.asp: the number headers of the USB Disks table right-align like their cells
+  (rp.css left-aligns every th).
+- The 32-bit size_int / used_int of get_usb_info (a partition past 2 TB of kilobytes came out
+  negative: the USB Disks tab said 0 B, the dashboard "not mounted") are 64-bit, with the totals,
+  in httpd/web.c - committed with the Wallguard change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 6 ++++++
+ release/src/router/www/Reaper_USBApps.asp  | 1 +
+ 2 files changed, 7 insertions(+)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 1f8c2c9fbfd..a4c23f3a56b 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -879,6 +879,7 @@ var SSI = {
+   usb1_spd: <% nvram_get_js("usb_path1_speed"); %>,
+   usb2:     decodeURIComponent('<% nvram_char_to_ascii("", "usb_path2"); %>'),
+   usb2_spd: <% nvram_get_js("usb_path2_speed"); %>,
++  rcs:      <% nvram_get_js("rc_support"); %>,   /* 2026-11-07: usbX<n> = the model's USB port count */
+   lanip:    <% nvram_get_js("lan_ipaddr"); %>,
+   lanip_t:  <% nvram_get_js("lan_ipaddr_t"); %>,
+   pin:      '',   /* review 2026-11-03 (B-3): read on the Show click, not printed */
+@@ -2034,6 +2035,11 @@ function renderUsb(USBINFO){
+     var byPort={'1':[],'2':[]};
+     (USBINFO||[]).forEach(function(d){ if(!d||!d.deviceName) return; var p=String(d.usbPath||'').charAt(0); if(byPort[p]) byPort[p].push(d); });
+     var defs=[{key:'1',v:SSI.usb1,s:SSI.usb1_spd,d:'USB 3.0'},{key:'2',v:SSI.usb2,s:SSI.usb2_spd,d:'USB 2.0'}];
++    /* 2026-11-07 (field, ZenWiFi BQ16): the model's port count is rc_support's usbX<n> (what stock's
++       usbPortMax reads). A one-port model showed two tiles: its USB 3 and USB 2 buses are usb_path1 and
++       usb_path2 of the SAME socket, so with one port both land on the one tile. No usbX = the two tiles as before. */
++    var np=(function(){ var m=/(?:^|\s)usbX(\d)(?:\s|$)/.exec(String(SSI.rcs||'')); return m?Math.min(2,+m[1]):2; })();
++    if(np<2){ byPort['1']=byPort['1'].concat(byPort['2']); byPort['2']=[]; defs[0].v=defs[0].v||defs[1].v; defs[0].s=defs[0].s||defs[1].s; defs.length=np; }
+     var h='';
+     for(var i=0;i<defs.length;i++){
+       var list=byPort[defs[i].key]||[], cnt=list.length;
+diff --git a/release/src/router/www/Reaper_USBApps.asp b/release/src/router/www/Reaper_USBApps.asp
+index 21006586f23..a0f9c3a517b 100644
+--- a/release/src/router/www/Reaper_USBApps.asp
++++ b/release/src/router/www/Reaper_USBApps.asp
+@@ -26,6 +26,7 @@
+ .app .d{font-size:12.5px;line-height:1.5}
+ .rtab td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim)}
+ .rtab td.num{text-align:right;font-family:var(--mono)}
++.rtab th.num{text-align:right}	/* 2026-11-07 (field): rp.css left-aligns every th; the number headers sat off their cells */
+ </style>
+ </head>
+ <body>
+-- 
+2.25.1
+

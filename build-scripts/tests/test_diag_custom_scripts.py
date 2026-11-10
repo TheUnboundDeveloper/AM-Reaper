@@ -23,7 +23,7 @@ def check(name, cond, detail=""):
     print(("ok   " if cond else "FAIL ") + name)
     if not cond: fails.append(name + (" - " + str(detail)[:500] if detail else ""))
 
-check("the report is v1.3.51", 'VER="REAPER-DIAG v1.3.53"' in d)
+check("the report is v1.3.55",'VER="REAPER-DIAG v1.3.55"' in d)
 i, j = d.find('sec "13. ADDONS / JFFS"'), d.find('echo "  entware:')
 check("section 13 found", 0 < i < j, (i, j))
 sec = d[i:j]
@@ -45,6 +45,10 @@ for shell in shells:
         put("scripts/wan-event", "#!/bin/sh\necho y\n", crlf=True)
         put("scripts/post-mount", "#!/bin/sh\nsleep 99\n")
         put("dhcpc-event", "#!/bin/sh\necho misplaced\n")
+        # v1.3.54 (2026-11-07, GT-BE98 field): a log and a helper beside the hooks are not hooks; a symlinked hook runs
+        put("scripts/cloudflare_ddns.log", "last update ok\n", mode=0o644)
+        put("scripts/cloudflare_ddns", "#!/bin/sh\necho helper\n")
+        os.symlink("cloudflare_ddns", os.path.join(J, "scripts", "ddns-start"))
         open(os.path.join(T, "reaper", "script-firewall-start.log"), "w").write("iptables v1.4.18: unknown option \"-w\" 192.0.2.9\n")
         open(os.path.join(T, "syslog.log"), "w").write(
             "Oct 26 10:00:00 custom_script: Running /jffs/scripts/firewall-start (args: eth0)\n"
@@ -58,13 +62,17 @@ for shell in shells:
                      ('[ -f "/jffs/$n" ] && [ ! -f "/jffs/scripts/$n" ]', '[ -f "%s/$n" ] && [ ! -f "%s/scripts/$n" ]' % (J, J)),
                      ("/tmp/syslog.log", T + "/syslog.log"),
                      ('[ -s "/tmp/reaper/script-$n.log" ]', '[ -s "%s/reaper/script-$n.log" ]' % T),
-                     ('wc -c < "/tmp/reaper/script-$n.log"', 'wc -c < "%s/reaper/script-$n.log"' % T)):
+                     ('wc -c < "/tmp/reaper/script-$n.log"', 'wc -c < "%s/reaper/script-$n.log"' % T),
+                     # v1.3.55: the DDNS Custom script check
+                     ("[ -f /jffs/scripts/ddns-start ]", "[ -f %s/scripts/ddns-start ]" % J),
+                     ("for f in /jffs/scripts/[Dd][Dd][Nn][Ss]*; do", "for f in %s/scripts/[Dd][Dd][Nn][Ss]*; do" % J)):
             assert body.count(a) == 1, ("harness anchor", a)
             body = body.replace(a, b)
-        def run(js):
+        def run(js, ddns=("0", "")):
             sp = os.path.join(w, "run.sh")
-            open(sp, "w").write('sec() { echo "#### $1 ####"; }\nnvram() { [ "$2" = jffs2_scripts ] && echo %s; }\n'
-                                'finding() { echo "FINDING [$1] $2"; }\n%s' % (js, body))
+            open(sp, "w").write('sec() { echo "#### $1 ####"; }\n'
+                                'nvram() { case "$2" in jffs2_scripts) echo %s;; ddns_enable_x) echo %s;; ddns_server_x) echo %s;; esac; }\n'
+                                'finding() { echo "FINDING [$1] $2"; }\n%s' % (js, ddns[0], ddns[1], body))
             return subprocess.run(shell + [sp], capture_output=True, text=True, timeout=30)
         r = run(1); o = r.stdout
         lines = {m.group(1): m.group(0) for m in re.finditer(r"  script (\S+): .*", o)}
@@ -82,9 +90,32 @@ for shell in shells:
         check(tag + ": a failed run is a WARN pointing at the output file", "firewall-start failed (exit 2) on its last run" in o)
         check(tag + ": a script at /jffs/<name> is a WARN", "/dhcpc-event is never run - custom scripts live in /jffs/scripts/" in o, o[-600:])
         check(tag + ": no 'custom scripts are OFF' while on", "custom scripts are OFF" not in o)
+        check(tag + ": a log file and a helper are listed as not hook names, with no finding",
+              "  file cloudflare_ddns.log: not a hook name" in o and "  file cloudflare_ddns: not a hook name" in o
+              and "FINDING [WARN] /jffs/scripts/cloudflare_ddns" not in o, o)
+        check(tag + ": a symlinked hook is listed and judged", "  script ddns-start (a link): executable=yes crlf=no" in o, o)
         r = run(0); o = r.stdout
-        check(tag + ": switched off -> one WARN naming the count", "custom scripts are OFF: none of the 5 script(s)" in o, o[-400:])
+        check(tag + ": switched off -> one WARN naming the count (hooks only)", "custom scripts are OFF: none of the 6 script(s)" in o, o[-400:])
         check(tag + ": nothing on stderr", r.stderr.strip() == "", r.stderr[:300])
+        # v1.3.55 (2026-11-08, RT-BE88U field): DDNS on Custom runs exactly /jffs/scripts/ddns-start
+        o = run(1, ("1", "CUSTOM")).stdout
+        check(tag + ": DDNS Custom with ddns-start there (a link): reported, no DDNS finding",
+              "  DDNS Custom: /jffs/scripts/ddns-start present" in o and "DDNS is Custom" not in o, o[-500:])
+        os.unlink(os.path.join(J, "scripts", "ddns-start"))
+        put("scripts/ddns-start.sh", "#!/bin/sh\n/sbin/ddns_custom_updated 1\n")
+        put("scripts/ddns-start.sh.bak", "#!/bin/sh\n/sbin/ddns_custom_updated 1\n", mode=0o644)
+        r = run(1, ("1", "CUSTOM")); o = r.stdout
+        check(tag + ": the field case - ddns-start.sh is named as the file to rename, the backup is not",
+              "  DDNS Custom: /jffs/scripts/ddns-start MISSING (found ddns-start.sh)" in o
+              and "FINDING [WARN] DDNS is Custom but /jffs/scripts/ddns-start does not exist - the router runs only that exact name, never ddns-start.sh: rename it to ddns-start (no extension) and chmod +x (see 13)" in o
+              and "never ddns-start.sh.bak" not in o and r.stderr.strip() == "", o[-700:] + r.stderr[:200])
+        os.unlink(os.path.join(J, "scripts", "ddns-start.sh"))
+        o = run(1, ("1", "CUSTOM")).stdout
+        check(tag + ": only a backup left: the plain WARN, no rename offered",
+              "FINDING [WARN] DDNS is Custom but /jffs/scripts/ddns-start does not exist, so no DDNS update is ever sent (see 13)" in o
+              and "never ddns-start" not in o, o[-500:])
+        o = run(1, ("0", "CUSTOM")).stdout + run(1, ("1", "WWW.DUCKDNS.ORG")).stdout
+        check(tag + ": DDNS off, or a built-in provider: no DDNS line, no finding", "DDNS Custom" not in o and "DDNS is Custom" not in o, o[-400:])
     finally:
         shutil.rmtree(w, ignore_errors=True)
 print("%d failure(s)" % len(fails))

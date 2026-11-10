@@ -31,6 +31,10 @@ rch, rcc, mk = rd("rc/rc.h"), rd("rc/rc.c"), rd("rc/Makefile")
 SET = '-m set --match-set " REAPER_AIMESH_SET " src -j RETURN'
 SYNC = '[ -x /sbin/reaper_aimesh_sync ] && /sbin/reaper_aimesh_sync >/dev/null 2>&1'
 
+# 2026-11-08 (owner: next release, decided 2026-11-01): the cap is 256 MACs (was 64, about 16 tri-band nodes)
+m = re.search(r"^#define REAPER_AIMESH_MAX (\d+)", rch, re.M)
+CAP = int(m.group(1)) if m else 0
+check("REAPER_AIMESH_MAX is 256 (owner 2026-11-01: raise 64 to 256)", CAP == 256, CAP)
 check("rc/reaper_aimesh.c holds the parser and the sync applet",
       "int reaper_aimesh_macs(char macs[][18], int max, int *dropped)" in am and "int reaper_aimesh_sync_main(" in am)
 
@@ -46,8 +50,8 @@ if am and shutil.which("gcc"):
         "size_t strlcpy(char *d, const char *s, size_t n){ size_t l = strlen(s); if (n) { size_t k = l < n - 1 ? l : n - 1; memcpy(d, s, k); d[k] = 0; } return l; }",
         func(am, "static int aimesh_valid_mac(const char *m)"),
         func(am, "int reaper_aimesh_macs(char macs[][18], int max, int *dropped)"),
-        "int main(int c, char **v){ char m[64][18]; int d = 0, i, n; L0 = v[1][0] == 1 ? NULL : v[1]; L1 = v[2][0] == 1 ? NULL : v[2];",
-        "  n = reaper_aimesh_macs(m, 64, &d); printf(\"%d %d\\n\", n, d); for (i = 0; i < n; i++) printf(\"%s\\n\", m[i]); return 0; }"])
+        "int main(int c, char **v){ char m[%d][18]; int d = 0, i, n; L0 = v[1][0] == 1 ? NULL : v[1]; L1 = v[2][0] == 1 ? NULL : v[2];" % max(CAP, 1),
+        "  n = reaper_aimesh_macs(m, %d, &d); printf(\"%%d %%d\\n\", n, d); for (i = 0; i < n; i++) printf(\"%%s\\n\", m[i]); return 0; }" % max(CAP, 1)])
     d = tempfile.mkdtemp()
     open(d + "/t.c", "w").write(c)
     r = subprocess.run(["gcc", "-Wall", "-o", d + "/t", d + "/t.c"], capture_output=True, text=True)
@@ -68,9 +72,9 @@ if am and shutil.which("gcc"):
         check("malformed tokens skipped; a hostile tail never reaches the script", (n, m) == (1, ["AA:BB:CC:00:00:06"]), m)
         check("a cut-off tail and missing lists are safe",
               run("<AA:BB:CC:00:00:07>AA:BB:CC:00", "")[:2] == (1, 0) and run(None, None)[:2] == (0, 0))
-        big = "".join("<02:00:00:00:%02X:01>02:00:00:00:%02X:02>1" % (i, i) for i in range(35))
+        big = "".join("<02:00:00:00:%02X:01>02:00:00:00:%02X:02>1" % (i, i) for i in range(CAP // 2 + 3))
         n, dr, m = run(big, "")
-        check("more than the cap: 64 kept, the overflow counted for the log", (n, dr) == (64, 6), (n, dr))
+        check("more than the cap: %d kept, the overflow counted for the log" % CAP, (n, dr) == (CAP, 6), (n, dr))
 else:
     check("gcc available to compile the parser", bool(shutil.which("gcc")))
 

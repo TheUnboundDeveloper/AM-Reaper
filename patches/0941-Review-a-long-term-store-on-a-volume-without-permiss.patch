@@ -1,0 +1,143 @@
+From e1f8e7d4631497c6199c20585b832fd69f27b8b1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:47 -0500
+Subject: [PATCH] Review: a long-term store on a volume without permissions is
+ one note
+
+- On FAT, exFAT or NTFS every entry is 0777 and chmod cannot change it, so the store scan listed
+  every file and nothing could clear them. rwatch no longer walks such a store; it reports one
+  line (wwfs) that the dashboard and the Firewall page show as a note, never red (RDSH_120,
+  RFW_411). The scan text names the store beside /jffs (RDSH_117, RFW_384). HFS+ keeps permissions
+  on Linux and is walked.
+- One log line per value, each in its own words: a disarmed Warden drop chain had been logged as
+  the ingest breach.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rwatch.c             | 46 ++++++++++++++++++----
+ release/src/router/www/Main_ReaperDash.asp |  7 ++--
+ 2 files changed, 43 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/rc/rwatch.c b/release/src/router/rc/rwatch.c
+index bc29f453cf7..5462756a45c 100644
+--- a/release/src/router/rc/rwatch.c
++++ b/release/src/router/rc/rwatch.c
+@@ -261,7 +261,7 @@ static void rwatch_gen(void)
+ 	  "# line is whatever was typed): backslash and quote escaped, control bytes stripped by the\n"
+ 	  "# caller; the page renders with textContent only. Changes first, baseline rows after, 200 max.\n"
+ 	  "_rv_json() {\n"
+-	  "  awk -F'\t' -v armed=\"$1\" -v ts=\"$(date +%s)\" -v AUTHF=\"$RV_TMP/review.auth\" -v WWF=\"$RV_TMP/review.ww\" -v WWT=\"$RV_TMP/review.wwt\" '\n"
++	  "  awk -F'\t' -v armed=\"$1\" -v ts=\"$(date +%s)\" -v AUTHF=\"$RV_TMP/review.auth\" -v WWF=\"$RV_TMP/review.ww\" -v WWT=\"$RV_TMP/review.wwt\" -v WWFS=\"$RV_TMP/review.wwfs\" '\n"
+ 	  "    function esc(s) { gsub(/\\\\/, \"\\\\\\\\&\", s); gsub(/\"/, \"\\\\\\\\&\", s); return s }\n"
+ 	  "    function item() { return \"{\\\"t\\\":\\\"\" $2 \"\\\",\\\"k\\\":\\\"\" esc($3) \"\\\",\\\"st\\\":\\\"\" $1 \"\\\",\\\"v\\\":\\\"\" esc($4) \"\\\"}\" }\n"
+ 	  "    $2==\"T\" { tr=1; next }\n"
+@@ -286,7 +286,10 @@ static void rwatch_gen(void)
+ 	  "      if ((getline line < WWF) > 0) { split(line, f, \" \"); if (f[1]==\"ww\") { ww=f[2]+0; wp=substr(line, length(f[1]) + length(f[2]) + 3) } }\n"
+ 	  "      wwt_n=0; wwt_s=\"\"\n"
+ 	  "      if ((getline line < WWT) > 0) { split(line, f, \" \"); if (f[1]==\"wwt\") { wwt_n=f[2]+0; wwt_s=substr(line, length(f[1]) + length(f[2]) + 3) } }\n"
+-	  "      printf \"],\\\"notices_n\\\":%d,\\\"ww\\\":%d,\\\"ww_p\\\":\\\"%s\\\",\\\"wwt\\\":%d,\\\"wwt_p\\\":\\\"%s\\\"}\\n\", m, ww, esc(wp), wwt_n, esc(wwt_s)\n"
++	  /* 2026-11-07: `wwfs <label> <base>` - the store is on a volume without permissions (_rv_ww) */
++	  "      fs=\"\"; fsp=\"\"\n"
++	  "      if ((getline line < WWFS) > 0) { split(line, f, \" \"); if (f[1]==\"wwfs\") { fs=f[2]; fsp=substr(line, length(f[1]) + length(f[2]) + 3) } }\n"
++	  "      printf \"],\\\"notices_n\\\":%d,\\\"ww\\\":%d,\\\"ww_p\\\":\\\"%s\\\",\\\"wwt\\\":%d,\\\"wwt_p\\\":\\\"%s\\\",\\\"wwfs\\\":\\\"%s\\\",\\\"wwfs_p\\\":\\\"%s\\\"}\\n\", m, ww, esc(wp), wwt_n, esc(wwt_s), esc(fs), esc(fsp)\n"
+ 	  "    }'\n"
+ 	  "}\n"
+ 	  /* 2026-10-20 (field, RT-BE88U): rc removes write-for-everyone from every file and
+@@ -304,12 +307,30 @@ static void rwatch_gen(void)
+ 	   * folder is not followed and nothing under /tmp/mnt (the USB mount points) is listed, so a USB disk
+ 	   * is never walked. Own count (wwt): stock creates these at every start, so the /jffs wording
+ 	   * ("the next reboot removes it") would be wrong. RV_WWT_ROOTS is for the tests. */
++	  /* 2026-11-07 (field, GT-BE98): a store on a volume that keeps no Unix permissions (FAT, exFAT, NTFS: the
++	   * stock mount gives every entry 0777 and chmod cannot change it) is not walked - every file in it would be
++	   * listed and nothing could clear them. One wwfs line instead: a note on the card, never red. The type is
++	   * that of the longest mount point holding $BASE; a mount point /proc/mounts escapes (a space in the label)
++	   * matches no entry of its own and is walked, as before. HFS+ keeps permissions on Linux: walked.
++	   * RV_MOUNTS is for the tests. */
+ 	  "_rv_ww() {\n"
+ 	  /* 2026-11-05 (audit): closed programs write these 0666 (nt_center's pid file, the diag databases); nothing
+ 	   * but root (their owner) reads them - other-write comes off on every tick. And the long-term store base
+ 	   * on a USB volume is checked like /jffs (one on /jffs is already in it). */
+ 	  "  chmod o-w /var/run/nt_center.pid /var/run/netool.pid 2>/dev/null; for _f in /tmp/.diag/*.db; do [ -f \"$_f\" ] && [ ! -L \"$_f\" ] && chmod o-w \"$_f\"; done\n"
+-	  "  _wr=/jffs; case \"$BASE\" in /jffs*|\"\") ;; *) [ -d \"$BASE\" ] && _wr=\"$_wr $BASE\" ;; esac\n"
++	  "  _wr=/jffs; _fl=\"\"; case \"$BASE\" in /jffs*|\"\") ;; *) if [ -d \"$BASE\" ]; then\n"
++	  "    case \"$(awk -v b=\"$BASE/\" '{ m = $2; if (m != \"/\") m = m \"/\"; if (index(b, m) == 1 && length(m) > l) { l = length(m); t = $3 } } END { print t }' ${RV_MOUNTS:-/proc/mounts} 2>/dev/null)\" in\n"
++	  "      vfat|msdos|fat|tfat) _fl=FAT ;; exfat|texfat) _fl=exFAT ;; ntfs|ntfs3|tntfs|ufsd) _fl=NTFS ;;\n"
++	  "    esac\n"
++	  "    [ -n \"$_fl\" ] || _wr=\"$_wr $BASE\"\n"
++	  "  fi ;; esac\n"
++	  "  if [ -n \"$_fl\" ]; then\n"
++	  "    printf 'wwfs %s %s\\n' \"$_fl\" \"$BASE\" > $RV_TMP/review.wwfs\n"
++	  "    [ \"$_fl $BASE\" = \"$(cat $RV_TMP/wwfs.said 2>/dev/null)\" ] || logger -t rwatch \"security review: the long-term store ($BASE) is on a $_fl volume, which keeps no file permissions - any process on the router can change its files, so they are not listed one by one; a partition formatted as ext4 keeps permissions\"\n"
++	  "    echo \"$_fl $BASE\" > $RV_TMP/wwfs.said\n"
++	  "  else\n"
++	  "    rm -f $RV_TMP/review.wwfs $RV_TMP/wwfs.said\n"
++	  "  fi\n"
+ 	  "  ls -lanR $_wr 2>/dev/null | awk '/^\\/.*:$/ { d=substr($0, 1, length($0)-1); next } ($1 ~ /^-.......w/ || ($1 ~ /^d.......w/ && $1 !~ /[tT]$/)) { n=$0; for (i=1;i<=8;i++) sub(/^[^ ]+ +/, \"\", n); if (n==\".\" || n==\"..\") next; print d \"/\" n }' | head -n 1000 > $RV_TMP/ww.lst\n"
+ 	  "  _wn=$(wc -l < $RV_TMP/ww.lst | tr -d ' ')\n"
+ 	  "  if [ \"${_wn:-0}\" -gt 0 ]; then\n"
+@@ -374,7 +395,7 @@ static void rwatch_gen(void)
+ 	  "  return 0\n"
+ 	  "}\n"
+ 	  "_rv_run() {\n"
+-	  "  if [ \"$(_nv rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.wwt $RV_TMP/wwt.said $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
++	  "  if [ \"$(_nv rwatch_review)\" != 1 ]; then rm -f $RV_TMP/review.json $RV_TMP/review.last $RV_TMP/review.inv $RV_TMP/review.diff $RV_TMP/review.auth $RV_TMP/auth.cur $RV_TMP/auth.seen $RV_TMP/review.wwfs $RV_TMP/wwfs.said $RV_TMP/review.wwt $RV_TMP/wwt.said $RV_TMP/review.ww $RV_TMP/ww.said 2>/dev/null; return 0; fi\n"
+ 	  "  _rv_inv > $RV_TMP/review.inv.tmp 2>/dev/null && mv -f $RV_TMP/review.inv.tmp $RV_TMP/review.inv || return 0\n"
+ 	  "  _rv_auth\n"
+ 	  "  _rv_ww\n"
+@@ -1122,10 +1143,21 @@ static void rwatch_gen(void)
+ 	  "# CRITICAL: with the fixed chain order this can no longer lock anyone out,\n"
+ 	  "# but it means the ingest filter was breached upstream - alarm loudly and\n"
+ 	  "# re-assert the chain (apply.sh is idempotent).\n"
++	  /* 2026-11-07 (reaper-event design review): one line per value, each in its own words - a Warden drop
++	   * chain found disarmed (3d) had been logged as the ingest breach. apply.sh repairs both: it rebuilds
++	   * RW_DROP / RW_ODROP / RW_SDROP and the chains that use the block sets. The repair runs first, so the
++	   * line says whether it ran (not inside the boot grace). */
+ 	  "if [ -n \"$CRIT\" ]; then\n"
+-	  "  logger -t rwatch \"CRITICAL:$CRIT - LAN/loopback found in a Warden block set (ingest filter breached); re-applied warden chain\"\n"
++	  "  _ca=\"not re-applied (boot grace, or Warden is off)\"\n"
+ 	  /* v2.7.3: same firewall-lock discipline as the PBR heal above */
+-	  "  [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -f /tmp/rwarden/apply.sh ] && reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1\n"
++	  "  if [ \"$UP\" -ge \"$HEALGRACE\" ] && [ -f /tmp/rwarden/apply.sh ]; then reaper_lockrun /tmp/rwarden/apply.sh >/dev/null 2>&1; _ca=\"re-applied the Warden chains\"; fi\n"
++	  "  for _cv in $CRIT; do\n"
++	  "    case \"$_cv\" in\n"
++	  "      warden-poison:*) logger -t rwatch \"CRITICAL: $_cv - LAN/loopback found in a Warden block set (ingest filter breached); $_ca\" ;;\n"
++	  "      chain-disarmed:*) logger -t rwatch \"CRITICAL: $_cv - a Warden drop chain holds an ACCEPT or RETURN (something else disarmed it); $_ca\" ;;\n"
++	  "      *) logger -t rwatch \"CRITICAL: $_cv; $_ca\" ;;\n"
++	  "    esac\n"
++	  "  done\n"
+ 	  "fi\n"
+ 	  "\n"
+ 	  "if [ -n \"$FAIL$CRIT\" ]; then\n"
+@@ -1252,7 +1284,7 @@ static void rwatch_gen(void)
+ 	  "#    page only ever showed a date for 'dev'; stamp every enabled dataset the\n"
+ 	  "#    first durable tick after it is turned on so each row can show a since).\n"
+ 	  "if [ \"$VOLATILE\" = 0 ]; then\n"
+-	  "  for _ds in dev traf watch chq slog shl shh dw edns; do\n"
++	  "  for _ds in dev traf watch chq fwlog slog shl shh dw edns; do\n"
+ 	  "    # (review 2026-10-24, Q-A-7: a stamp that exists is not re-offered - nine forks a tick for files written once)\n"
+ 	  "    case \"$DS\" in *,$_ds,*) [ -f \"$BASE/$_ds.since\" ] || /usr/sbin/rstore stamp \"$BASE\" \"$_ds.since\" \"$NOWH\" 2>/dev/null ;; esac\n"
+ 	  "  done\n"
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index a4c23f3a56b..a65bcaf86ba 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1218,12 +1218,13 @@ function paintReview(){
+        a baseline on disk keeps the Baseline word, amber until it is checked */
+     if(!j||!j.ok){ if(j&&j.armed){ set(`<#RDSH_108#>`,'warn',`<#RDSH_116#>`); } else { set(`<#RDSH_109#>`,'warn',`<#RDSH_114#>`); } return; }
+     var u=j.armed?(j.unreviewed||0):0, nn=j.notices_n||0, ww=(j.ww||0)+(j.wwt||0);	/* + /tmp, /var folders (C-8) */
++    var fsn=j.wwfs?' - '+`<#RDSH_120#>`.replace('%1',j.wwfs):'';	/* 2026-11-07 (field): the store on FAT / exFAT / NTFS - a note, never red */
+     if(u>0||nn>0||ww>0){
+       var p=[]; if(u>0)p.push(`<#RDSH_112#>`.replace('%1',u)); if(nn>0)p.push(`<#RDSH_115#>`.replace('%1',nn)); if(ww>0)p.push(`<#RDSH_118#>`.replace('%1',ww));
+-      set(`<#RDSH_105#>`,'danger',p.join(' - ')); return;
++      set(`<#RDSH_105#>`,'danger',p.join(' - ')+fsn); return;
+     }
+-    if(!j.armed){ set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`); return; }
+-    set(`<#RDSH_108#>`,'ok',`<#RDSH_111#>`.replace('%1', j.ts?new Date(j.ts*1000).toLocaleTimeString():''));
++    if(!j.armed){ set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`+fsn); return; }
++    set(`<#RDSH_108#>`,'ok',`<#RDSH_111#>`.replace('%1', j.ts?new Date(j.ts*1000).toLocaleTimeString():'')+fsn);
+   }catch(e){}
+ }
+ 
+-- 
+2.25.1
+

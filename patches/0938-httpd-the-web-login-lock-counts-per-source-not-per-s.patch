@@ -1,0 +1,244 @@
+From 4c882ed88c08941215811a1b8aad8eb950b6f526 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:44 -0500
+Subject: [PATCH] httpd: the web login lock counts per source, not per side
+
+- Five failed logins locked every browser on that side of the router for 5 min, logged-in admins
+  included, and every IPv6 source counted as the LAN side - so one host could lock the LAN admin
+  out. httpd now keeps a small per-source table: the source with the failures is refused (the
+  login page says other addresses can still log in); a side-wide backstop of 20 failures in 300 s
+  still engages the stock lock. A successful login clears that source.
+- rc starts the LAN listeners with -i <lan_ifname>; a connection on the remote-access listener is
+  counted as the WAN side whatever its address family.
+web.c's login_cgi part (the source pre-check, the forget-on-success) is committed with the
+firewall log change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/httpd.c | 179 +++++++++++++++++++++++++++++++
+ release/src/router/httpd/httpd.h |   5 +
+ 2 files changed, 184 insertions(+)
+
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 36ae433515b..0b656b27d59 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -625,6 +625,181 @@ static int reaper_login_landing(const char *u)
+ 	return 1;
+ }
+ 
++/* reaper 2026-11-08 (review A-8): per-source web login lock.
++ * The stock lock is per side: login_cgi() counts failed logins per LAN/WAN side (nvram HTTPD_LOGIN_FAIL_LAN/_WAN)
++ * and at DEFAULT_LOGIN_MAX_NUM the whole side is locked out for MAX_LOGIN_BLOCK_TIME - one host's five wrong
++ * passwords locked every admin on that side out, logged-in ones included, and could repeat it for ever.
++ * Now each source carries its own count (an IPv6 source by its /64, the block one host can hold):
++ * DEFAULT_LOGIN_MAX_NUM failures within MAX_LOGIN_BLOCK_TIME lock that source alone for MAX_LOGIN_BLOCK_TIME.
++ * The stock side counter is fed only by a backstop - REAPER_LL_SIDE_BAR failed logins on one side within
++ * MAX_LOGIN_BLOCK_TIME, from any mix of addresses - so a guesser rotating addresses still meets the side lock.
++ * Memory only, per httpd instance, like the stock counters (httpd_* / httpds_* keys). Block between the
++ * reaper-ll markers: test_login_lock_per_source.py compiles it. */
++/* reaper-ll: begin */
++#define REAPER_LL_SLOTS		64
++#define REAPER_LL_SIDE_BAR	20
++
++struct reaper_ll {
++	int fam;			/* 0 = free, AF_INET, AF_INET6 */
++	unsigned char key[8];		/* the IPv4 address, or the IPv6 /64 */
++	int fails;			/* counted failures since the last lock or lapse */
++	long last;			/* uptime of the last counted failure */
++	long until;			/* locked out while uptime < until */
++};
++static struct reaper_ll reaper_ll_tab[REAPER_LL_SLOTS];
++static long reaper_ll_side[2][REAPER_LL_SIDE_BAR];	/* uptimes of the last failures per side, a ring */
++static int reaper_ll_side_pos[2];
++
++static int reaper_ll_key(const uaddr *u, int *fam, unsigned char key[8])
++{
++	memset(key, 0, 8);
++	if (!u)
++		return 0;
++	if (u->family == AF_INET) {
++		memcpy(key, &u->in, 4);
++		*fam = AF_INET;
++		return 1;
++	}
++#ifdef RTCONFIG_IPV6
++	if (u->family == AF_INET6) {
++		if (IN6_IS_ADDR_V4MAPPED(&u->in6)) {
++			memcpy(key, &u->in6.s6_addr[12], 4);
++			*fam = AF_INET;
++		} else {
++			memcpy(key, &u->in6.s6_addr[0], 8);
++			*fam = AF_INET6;
++		}
++		return 1;
++	}
++#endif
++	return 0;
++}
++
++/* the slot to give up first: an unlocked one before a locked one; then the oldest failure / the soonest unlock */
++static int reaper_ll_sooner(const struct reaper_ll *a, const struct reaper_ll *b, long now)
++{
++	int la = now < a->until, lb = now < b->until;
++
++	if (la != lb)
++		return !la;
++	return la ? a->until < b->until : a->last < b->last;
++}
++
++static struct reaper_ll *reaper_ll_get(const uaddr *u, long now, int create)
++{
++	struct reaper_ll *e, *pick = NULL;
++	unsigned char key[8];
++	int fam = 0, i;
++
++	if (!reaper_ll_key(u, &fam, key))
++		return NULL;
++	for (i = 0; i < REAPER_LL_SLOTS; i++) {
++		e = &reaper_ll_tab[i];
++		if (e->fam == fam && !memcmp(e->key, key, 8))
++			return e;
++	}
++	if (!create)
++		return NULL;
++	for (i = 0; i < REAPER_LL_SLOTS; i++) {
++		e = &reaper_ll_tab[i];
++		if (!e->fam || (now >= e->until && now - e->last > MAX_LOGIN_BLOCK_TIME)) {
++			pick = e;		/* free, or nothing left worth remembering */
++			break;
++		}
++		if (!pick || reaper_ll_sooner(e, pick, now))
++			pick = e;
++	}
++	memset(pick, 0, sizeof(*pick));
++	pick->fam = fam;
++	memcpy(pick->key, key, 8);
++	return pick;
++}
++
++/* seconds this source stays locked out; 0 = it may try */
++long reaper_login_src_locked(const uaddr *u)
++{
++	long now = uptime();
++	struct reaper_ll *e = reaper_ll_get(u, now, 0);
++
++	return (e && now < e->until) ? e->until - now : 0;
++}
++
++/* count a failed login from u; 1 when this failure locks the source out */
++int reaper_login_src_fail(const uaddr *u)
++{
++	long now = uptime();
++	struct reaper_ll *e = reaper_ll_get(u, now, 1);
++
++	if (!e || now < e->until)
++		return 0;			/* already locked: a refused try is not counted, the lock is not extended */
++	if (e->until || now - e->last > MAX_LOGIN_BLOCK_TIME) {
++		e->fails = 0;			/* the lock ended, or the last failure lapsed */
++		e->until = 0;
++	}
++	e->last = now;
++	if (++e->fails < DEFAULT_LOGIN_MAX_NUM)
++		return 0;
++	e->fails = 0;
++	e->until = now + MAX_LOGIN_BLOCK_TIME;
++	return 1;
++}
++
++/* a successful login: forget the source */
++void reaper_login_src_ok(const uaddr *u)
++{
++	struct reaper_ll *e = reaper_ll_get(u, uptime(), 0);
++
++	if (e)
++		memset(e, 0, sizeof(*e));
++}
++
++/* the backstop: count a failed login on side 0 (LAN) or 1 (WAN); 1 when REAPER_LL_SIDE_BAR of them fell within
++ * MAX_LOGIN_BLOCK_TIME (the ring is then cleared, so the next trip needs a fresh REAPER_LL_SIDE_BAR) */
++int reaper_login_side_fail(int side)
++{
++	long now = uptime(), *r;
++	int *p;
++
++	side = side ? 1 : 0;
++	r = reaper_ll_side[side];
++	p = &reaper_ll_side_pos[side];
++	r[*p] = now;
++	*p = (*p + 1) % REAPER_LL_SIDE_BAR;
++	if (!r[*p] || now - r[*p] >= MAX_LOGIN_BLOCK_TIME)	/* r[*p]: the oldest of the last REAPER_LL_SIDE_BAR */
++		return 0;
++	memset(r, 0, sizeof(reaper_ll_side[0]));
++	return 1;
++}
++/* reaper-ll: end */
++
++/* login_error_status and login_dt are one pair for every client. Main_Login.asp shows them, so before it renders
++ * give it this source's own lock (and its time left), and do not show another source's lock to a client that may
++ * log in. A side lock (lock_status) keeps the stock values. */
++static void reaper_login_page_status(const char *file, int lock_status)
++{
++	long rem;
++
++	if (lock_status == FORCELOCK || lock_status == LOGINLOCK || !file || strncmp(file, "Main_Login.asp", 14))
++		return;
++	rem = reaper_login_src_locked(&login_uip_tmp);
++	if (rem > 0) {
++		login_error_status = LOGINLOCK;
++		login_dt = max_lock_time - rem;
++	} else if (login_error_status == LOGINLOCK)
++		login_error_status = 0;
++}
++
++/* reaper 2026-11-08 (review A-8): rc starts the LAN listeners with -i <lan_ifname> and the remote-access listener
++ * (misc_http_x with IPv6) with -i <wan6face>. Every client of that one came in over the WAN, whatever its address:
++ * check_current_ip_is_lan_or_wan() used to call every IPv6 client LAN, so internet clients counted against - and
++ * could lock out - the LAN side. */
++static int reaper_wan_listener(void)
++{
++	const char *lan = nvram_safe_get("lan_ifname");
++
++	return http_ifname && *http_ifname && *lan && strcmp(http_ifname, "lo") && strcmp(http_ifname, lan);
++}
++
+ void
+ send_login_page(int fromapp_flag, int error_status, char* url, char* file, int lock_time, int logintry)
+ {
+@@ -2234,6 +2409,7 @@ handle_request(void)
+ 				return;
+ 			}
+ 		}
++		reaper_login_page_status(file, lock_status);	/* reaper A-8: the login page shows this source's lock */
+ 
+ 		http_login_timeout(&login_uip_tmp, cookies, fromapp);	// 2008.07 James.
+ 		login_state = http_login_check();
+@@ -3742,6 +3918,9 @@ int check_current_ip_is_lan_or_wan()
+ 	if (uaddr_is_unspecified(&login_uip_tmp))
+ 		return -1;
+ 
++	if (reaper_wan_listener())	/* reaper A-8: the remote-access listener is WAN, IPv6 included */
++		return 1;
++
+ 	switch (login_uip_tmp.family) {
+ 	case AF_INET:
+ 		if (inet_aton(nvram_safe_get("lan_ipaddr"), &lan) == 0 ||
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index 66e470463a3..85bebe88303 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -531,6 +531,11 @@ extern void http_logout(uaddr *uip, char *cookies, int fromapp_flag);
+ extern void add_ifttt_flag(void);
+ extern char HTTPD_LOGIN_FAIL_LAN[32];
+ extern char HTTPD_LOGIN_FAIL_WAN[32];
++/* reaper 2026-11-08 (review A-8): per-source web login lock (httpd.c) */
++extern long reaper_login_src_locked(const uaddr *u);
++extern int reaper_login_src_fail(const uaddr *u);
++extern void reaper_login_src_ok(const uaddr *u);
++extern int reaper_login_side_fail(int side);
+ extern char HTTPD_LAST_LOGIN_FAIL_TS[32];
+ extern char HTTPD_LAST_LOGIN_FAIL_TS_W[32];
+ extern char CAPTCHA_FAIL_NUM[32];
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.4** · 2026-11-07 <!--@stamp-->
+> **Doc status:** current as of **v3.7.5** · 2026-11-09 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report),
@@ -62,6 +62,25 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P2] Wallguard: a 03:00 reboot left the lists owed until the 05:15 run (fetched at WAN up now; retries fetch only what is owed)** ↳ notes: `wallguard.md`
 - **[P2] Wallguard: AdGuard DNS's Popup Hosts list and an allowlist stayed "not downloaded yet, 0 names"** ↳ notes: `wallguard-allow-lines.md`
 - **[P2] USB disks past 2 TB read as 0 B / "not mounted"; two USB tiles on the one-port ZenWiFi BQ16** ↳ notes: `usb-disk-2tb-bq16.md`
+- **[P2] Custom DDNS + the built-in Let's Encrypt never requested a certificate: ddns_custom_updated ignored the pending request (le_rc_notify) that only the inadyn path acted on** **[fixed in both canons 2026-11-08: one shared helper both DDNS success paths call; in v3.7.5; owner metal check with a DuckDNS ddns-start, then the RT-BE88U tester]** ↳ notes: `ddns-custom-letsencrypt.md`
+- **[P2] WireGuard client: the old DNS rule (pref 1004 `to <dns> iif lo lookup wgcN`) stayed after a DNS change or removal and came back after a reboot** **[fixed in both canons 2026-11-08: a client's DNS rules are cleared by priority, `iif lo` and its table, whatever address they were made for, before every add, on stop and on delete; a removed DNS now empties `vpncN_dns`; in v3.7.5 - owner metal check: `ip rule` after a DNS change, a removal and a reboot; reporter's model / version still to ask]** ↳ notes: `wgc-dns-rule-stale.md`
+- **[P2] Rule Status: 35 rows Inconclusive since the firewall-log change - the log chains' counter rule (`-A logaccept -m state --state NEW`, no target) was read as an unknown target** **[walker 1.14 in both canons 2026-11-08: a rule with no `-j` / `-g` is walked past, as iptables does; the owner's own tables replayed: 35 Inconclusive -> OK, no other row changed; in v3.7.5]** ↳ notes: `fwsim-counter-rule.md`
+- **[P2] Rule Status fixture (`reaper_fwsim --dump-inputs`): the WAN address left the router in it - `topology.txt` listed every address in clear, the `addr` file kept the WAN broadcast, a second WAN unit was not masked, and look-alike addresses were cut** **[fixed in both canons 2026-11-08: every address on every WAN device, v4 and v6, and each IPv4 broadcast masked in every file, on whole-address boundaries; in v3.7.5]** ↳ notes: `fwsim-counter-rule.md`
+- **[P2] Firewall "Logged packets type: Accepted / Both" logs every new connection to the flash syslog, saturating the CPU and starving DNS** **[in v3.7.5: every firewall log rule goes to the NFLOG collector (up to 10000 lines/s per rule) or a 10-a-second fallback; on the owner's box 2026-11-08 every log rule matched its counter, 0 lost]** ↳ notes: `firewall-accept-log-flood.md`, `fwlog-nflog-plan.md`
+- **[P2] Encrypted DNS: a Let's Encrypt certificate read "Not publicly trusted" after every reboot until its renewal** **[in v3.7.5]** ↳ notes: `website-review-2026-11-09.md`
+- **[P3] Firewall > Objects > Address groups: "Add does nothing" (RT-BE88U, v3.7.4_BETA)** **[fixed in both canons 2026-11-08: each add row shows its own message (they all went to the hidden Rules tab); a member that is not an address object is named; in v3.7.5]** ↳ notes: `fw-address-group-add-silent.md`
+- **[P3] Diag: a misnamed custom DDNS script (`ddns-start.sh`) went unflagged; a `*.bak` hook was told to chmod +x** **[the `.bak` half fixed in diag v1.3.54 (2026-11-07); diag v1.3.55 (both canons 2026-11-08) names the file to rename when DDNS is Custom and `/jffs/scripts/ddns-start` is missing; in v3.7.5]** ↳ notes: `ddns-custom-letsencrypt.md` (also found)
+- **[P3] DDNS page: says when the Custom script is missing or not executable, and when the web interface is HTTP only (the certificate is then not served)** **[fixed in both canons 2026-11-08; in v3.7.5]** ↳ notes: `ddns-custom-letsencrypt.md` (also found)
+- **[P3] VPN Client: a WireGuard .conf without a valid [Interface] PrivateKey or [Peer] PublicKey is refused, saying what is missing (page and httpd), nothing changed** **[fixed in both canons 2026-11-08; in v3.7.5]** ↳ notes: `wgc-dns-rule-stale.md` (item 2)
+- **[P3] Storage page: ticking "Firewall log" (USB) reflowed the page for a moment** **[fixed in both canons 2026-11-08: the retention text moved to the row's description, the size column has a minimum width; not reproduced in a browser - owner to confirm on the next test build]** ↳ notes: `fwlog-storage-row-layout.md`
+- **[P3] AiMesh exemption cap: raised 64 to 256** **[fixed in both canons 2026-11-08; in v3.7.5]** ↳ notes: `aimesh-exempt-cap.md`
+- **[P3] Web-interface login lock: per source now - 5 failed logins lock that address alone for 300 s (an IPv6 /64 counts as one); the whole-side lock needs 20 failures on that side within 300 s; the IPv6 remote-access listener counts as WAN** **[fixed in both canons 2026-11-08; in v3.7.5; owner metal check: web + app login, captcha on/off, two LAN hosts, remote access v4/v6]** ↳ report: `review-2026-11-03` A-8 · notes: `login-lock-per-source.md`
+- **[P3] Wallguard page: empty scroll below the last card after a long panel had been open - the page frame grew but never shrank, on every page** **[fixed in both canons 2026-11-08: the shell re-measures the frame from its fallback height when the page's content ends above the frame; checked in the mock: grow and shrink, short pages, phone width, scroll position kept, no resize events at rest; in v3.7.5]** ↳ notes: `wallguard-page-trailing-space.md`
+- **[P3] Diagnostics: section 13 told log and helper files in /jffs/scripts to chmod +x, and skipped a symlinked hook** ↳ notes: `gt-be98-wds-drop-log-noise.md`
+- **[P3] Rule Status: "WAN port 80 is closed" red for the user's own port forward of port 80** ↳ notes: `gt-be98-wds-drop-log-noise.md`
+- **[P3] rwatch: the CRITICAL log line named the Warden ingest breach for every value, chain-disarmed included** ↳ notes: `rwatch-critical-wording.md`
+- **[P3] Security Review: the dashboard said "under /jffs" for a file in the USB long-term store** ↳ notes: `review-ww-store-fat.md`
+- **[P3] Security Review: a long-term store on FAT / exFAT / NTFS flagged every file red** ↳ notes: `review-ww-store-fat.md`
 - **[P3] WAN Ports tab missing from the WAN menu on a router** ↳ notes: `wanports-tab-wlc-band.md`
 - **[P3] Internet Connection names the default WAN port, not the one in use** ↳ notes: `internet-wan-port-label.md`
 - **[P3] System Info: `<i>off</i>` shown as text for a radio that is off** ↳ notes: `sysinfo-radio-off-markup.md`
@@ -91,17 +110,20 @@ the tester for is in the notes. A "still broken" answer moves the item back to O
 - **[P3] Wireless Log: an AiMesh node's backhaul station read "-"** ↳ notes: `wireless-log-names-types.md`
 - **[P3] Security review: the first run after a boot comes at exactly 5 min, not 5-10 by tick alignment** ↳ notes: `review-first-run-after-boot.md`
 - **[P3] Dreadwatch: "List updated" blank after every reboot until the next feed run** ↳ notes: `dreadwatch-list-updated-stamp.md`
+- **[P3] Dreadwatch: "Test now" said "No list is loaded yet" with a list loaded** **[in v3.7.5]** ↳ notes: `website-review-2026-11-09.md`
+- **[P3] Wallguard: the empty rewrites, profile and live tables said "Nothing blocked yet."** **[in v3.7.5]** ↳ notes: `website-review-2026-11-09.md`
+- **[P3] libwebapi: full RELRO and FORTIFY, and a check in front of its stock input checks** **[in v3.7.5]** ↳ report: `review-2026-11-03` F-4 · notes: `libwebapi-hardening.md`
 
 ## Open bugs / under investigation
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P2] playstation.com "Access Denied" through the router (ZenWiFi BQ16, v3.7.2; fine on stock and on mobile data)** **[not reproduced; the reporter's DNS / IPv6 details asked 2026-11-07]** ↳ notes: `playstation-access-denied.md`
-- **[P2] Firewall "Logged packets type: Accepted / Both" logs every new connection to the flash syslog, saturating the CPU and starving DNS** **[cause found on the owner's box 2026-11-07, logging turned off there; the rate-limit guard queued for the owner]** ↳ notes: `firewall-accept-log-flood.md`
+- **[P2] GT-BE98: a Wi-Fi bridge (WDS) station on 5 GHz drops for ~30 s and the devices behind it disconnect** **[field diag 2026-11-07; reporter asked for the device, default log level, a diag after a drop and the first beta it started on]** ↳ notes: `gt-be98-wds-drop-log-noise.md`
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[levers in v3.7.0, off by default; owed: an A/B run on a UASP SSD]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[plan written 2026-10-19; not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[options offered 2026-11-01; owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
+- **[P3] System log with many devices: per-device messages (Wi-Fi joins, DHCP, band steering, driver) all go to flash at debug level - look at a RAM log with the durable copy on the USB store, quieter sources, a rate cap** **[not started; owner 2026-11-09; measured on the owner's box]** ↳ notes: `syslog-scaling-many-devices.md`
 
 ---
 
@@ -114,23 +136,21 @@ private review report and the finding ID in it; review reports are never publish
 - **[P2] Vendor security reports to send (all three drafted)** **[owner]** ↳ notes: `vendor-reports-owed.md`
 - **[P3] Review 2026-10-28: AiMesh add-node on 3006.102.10 and a header-key list source on a router** **[owed]** ↳ report: `review-2026-10-28`
 - **[P3] Boot chain: the image-signature key** **[owner call]** ↳ report: `review-2026-11-03` E-12
-- **[P3] Hardened-build flags for the closed libwebapi** **[lighttpd RELRO, PIE and FORTIFY in v3.7.3; libwebapi is closed code]** ↳ report: `review-2026-11-03` F-4
-- **[P3] Unused closed programs to remove after a consumer check** **[owner call]** ↳ report: `review-2026-11-03` F-11
+- **[P3] Unused closed programs to remove after a consumer check** **[group A (about 45 files) out of the image in v3.7.5; group B owes a router check each]** ↳ report: `review-2026-11-03` F-11 · notes: `unused-programs-2026-11-09.md`
+- **[P3] IPsec: the remote ID validation call passes its two arguments in swapped order (stock code)** **[owner call]** ↳ notes: `libwebapi-hardening.md`
 - **[P3] Mount options `nosuid,nodev` on `/tmp`, `/var` and `/jffs`** **[owner call]** ↳ report: `review-2026-11-03` (owner decisions)
 - **[P3] About 30 stock pages no menu reaches are still served** **[8 removed in v3.7.3; the rest with the native-UI cutover]** ↳ report: `review-2026-11-03` B-6
 - **[P3] AiMesh: the mesh daemon listens while no node is paired** **[owner call: conflicts with the Devices page's pseudo-MLO mapping]** ↳ notes: `audit-findings-2026-11-05.md`
 - **[P3] AI Advisor: one connection at a time; pin the client by default** **[owner call]** ↳ report: `review-2026-11-03` D-6
+- **[P3] httpd ignores `-6`: its getopt string is `"sp:i:"`, so the IPv6 remote-access listener (started with `-6`) also binds IPv4 on the WAN interface and follows the LAN listener's certificate-reload flag (`httpds_reload_cert`, not `httpds6_reload_cert`)** **[found 2026-11-08; not fixed - owner call, it changes what the remote listener binds]** ↳ notes: `login-lock-per-source.md`
 - **[P3] jQuery Mobile 1.4.5 (end of life) ships for the AiMesh add-node wizard** **[with the wizard rewrite]** ↳ report: `review-2026-11-03` B-4
 - **[P3] Review coverage not reached: closed listener parsers, closed ioctl handlers, some stock pages** **[watch]** ↳ report: `review-2026-11-03` (Not reached)
-- **[P3] Web-interface login lock is per LAN/WAN side, not per source (closed code)** **[deferred]** ↳ report: `review-2026-11-03` A-8 · notes: `security-review.md`
-- **[P3] Second review of the v3.1.0–v3.1.5 code** **[planned — not started]** ↳ notes: `review-carry-forward-queue.md` §4
 
 ---
 
 ## UI / UX polish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
-- **[P3] Wallguard page: a lot of empty scroll below the last card; trim it to the other pages' standard** **[not started; owner 2026-11-07]** ↳ notes: `wallguard-page-trailing-space.md`
 - **[P3] Every button that gives no visual sign it was pressed (e.g. Encrypted DNS › Update lists: only the timestamp tells)** **[review not started; owner 2026-11-07]** ↳ notes: `button-click-feedback-review.md`
 
 ---
@@ -138,10 +158,9 @@ private review report and the finding ID in it; review reports are never publish
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages and the theme switch** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.0: 2,183,168 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.5: 2,433,024 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Encrypted DNS: split the block into two switches (DoT/DoQ on 853, DoH)** **[designed 2026-10-21, not started]** ↳ notes: `encrypted-dns.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
-- **[P2] Firmware rollback + trial boot from the second slot** **[researched 2026-10-18; not started]** ↳ notes: `firmware-dual-slot-rollback.md`
 - **[P2] Encrypted DNS Step B: DNS-over-HTTPS on the router** **[planned in outline]** ↳ notes: `encrypted-dns.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
@@ -152,9 +171,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
 - **[P3] Diag: flag a replacing `/jffs/configs/dnsmasq.conf` and a dead local DNS upstream** **[diag half in v3.4.9; rdnshc half not done]** ↳ notes: `controld-leftover-dnsmasq-conf.md`
 - **[P3] Encrypted DNS: Flow Explorer names for DoT clients** **[deferred]** ↳ notes: `encrypted-dns.md`
-- **[P3] Wi-Fi VLANs: several VIDs per network and the inter-VLAN ACL page** **[not started]** ↳ notes: `wifi-vlans-residual.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
-- **[P3] Mimic: hardware port mirror to an external IDS** **[owed: flow and restart tests, then build]** ↳ notes: `port-mirroring-ids.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[idea]** ↳ notes: `encrypted-dns.md`
 
@@ -178,7 +195,6 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Kit and httpd duplicates to fold into one copy** **[not started]** ↳ notes: `kit-dedupe.md`
 - **[P3] Bandwidth tab: Cloudflare's speed test in the firmware** **[dropped 2026-10-13]** ↳ notes: `bandwidth-tab.md`
 - **[P3] Code review 2026-10-07: plain-HTTP login default (G2), factory posture (G5)** **[accepted]** ↳ notes: `audit-2026-10-07-remediation.md`
-- **[P3] AiMesh exemption cap: raise 64 to 256** **[owner: next release]** ↳ notes: `aimesh-exempt-cap.md`
 - **[P3] Sibling port misses adds, renames and deletes** **[owed]** ↳ notes: `sibling-port-add-rename-delete.md`
 - **[P3] Policy Routing: recapture of flows that leaked while the rules were absent** **[deferred]** ↳ notes: `pbr-conntrack-recapture.md`
 - **[P3] GitHub release retention: betas 5+ versions behind are pruned** **[recurring, owner call]** ↳ notes: `release-retention-prune.md`
@@ -197,6 +213,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] 3006.102.8 line: three lean gaps** **[not started]** ↳ notes: `lean-102-8-gaps.md`
 
 ---
+- **[P4] Firewall log day files: roll today's file into numbered parts past a part size so the store cap can remove them** **[deferred: owner priority is throughput; storage is cheap and cleared by hand]** ↳ notes: `fwlog-storage-row-layout.md` (item 2)
 
 ## Reported, investigated, closed as working-as-designed
 
@@ -212,6 +229,9 @@ private review report and the finding ID in it; review reports are never publish
 - **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting** ↳ notes: `wad-warden-self-drop-failure.md`
 - **Firewall rule negation: not building** ↳ notes: `wad-firewall-rule-negation.md`
 - **Unbound on the router: not building** ↳ notes: `unbound-resolver.md`
+- **Mimic (hardware port mirror to an external IDS): not building - a VLAN and routing rules do it** **[owner 2026-11-07]** ↳ notes: `port-mirroring-ids.md`
+- **Wi-Fi VLANs (several VIDs per network, inter-VLAN ACL page): not building - little benefit, more complex data flows** **[owner 2026-11-07]** ↳ notes: `wifi-vlans-residual.md`
+- **Firmware rollback / trial boot from the second slot: not building - ASUS's boot loader already recovers a failed image** **[owner 2026-11-07]** ↳ notes: `firmware-dual-slot-rollback.md`
 - **`dig` on the Network Tools page: declined** ↳ notes: `wad-dig-network-tools.md`
 - **DNS-rebind warnings for names a LAN filter blocks: use NXDOMAIN blocking** ↳ notes: `wad-rebind-lan-filter-blocks.md`
 - **DNSSEC on the router fails every blocked name in a signed zone: validate in the filter** ↳ notes: `wad-rebind-lan-filter-blocks.md`
@@ -242,3 +262,4 @@ private review report and the finding ID in it; review reports are never publish
 - **B-4. [P3] Broadcom's own dynamic puncturing needs the 2025 SDK** **[blocked — SDK]** ↳ notes: `blocked-b4-dynamic-puncturing.md`
 - **B-5. [P1] Internet speed test fails on 10 Gbit/s links** **[blocked — development; not chased]** ↳ notes: `speedtest-10g-links.md`
 - **B-7. [P3] Source to ask the vendors for (ranked)** **[list written 2026-10-19; owner call]** ↳ notes: `blob-source-wishlist-2026-10-19.md`
+- **B-8. [P3] Wi-Fi driver: "pool 0 and unit N mismatched" floods the log while a WDS link goes down (GT-BE98)** **[blocked — blob: dhd_pktfwd.o / wl_pktfwd.o are prebuilt and the .c beside them is never compiled; hide with Saved exclusions]** ↳ notes: `gt-be98-wds-drop-log-noise.md`

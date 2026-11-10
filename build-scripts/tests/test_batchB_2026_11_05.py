@@ -881,6 +881,10 @@ def subst(t):
 def build(comp):
     head = "\n".join([STUBS_H.replace("@ROOT@", ROOT).replace("@STUB@", STUB), subst(rd("rc/reaper_nv.h")),
                       subst(rd("rc/reaper_hook.h")),
+                      # 2026-11-08: every firewall log rule takes its target from shared/reaper_fwlog.h (NFLOG or the
+                      # limited LOG); the canon's own header, its state file under ROOT, so the generator compiles
+                      # with the real text (no state file here = the limited LOG, the model sees the `-m limit`)
+                      subst(rd("shared/reaper_fwlog.h")),
                       '#define REAPER_FW_BUILT_MARK "%s/tmp/reaper/.reaper_firewall_built"' % ROOT,
                       subst(sl(rd("rc/reaper_hook.c"), "void reaper_hook_gen(void)", "/* v3.1.7: the firewall table walker"))])
     if comp == "rw":

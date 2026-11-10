@@ -244,12 +244,12 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.53"' in src)
+check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.55"' in src)
 check("10b prints the engine's version as 'X.Y.Z build N' (v1.3.53)",
       '_ov="v${_ov%.*} build ${_ov##*.}"' in src and 'engine            : v$(grep' not in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.53|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.55|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
       and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
       and "usr/sbin/reaper_diag|residual client names|1" in mkr

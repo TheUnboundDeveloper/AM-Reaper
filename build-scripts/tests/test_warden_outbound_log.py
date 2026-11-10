@@ -105,8 +105,7 @@ def s1c(tmp):
 @scenario("the outbound LOG rule is deleted", "drops but never logs")
 def s2(tmp):
     mutate(tmp, "rc/rwarden.c",
-           '\t\t\tfprintf(f, "iptables -A RW_ODROP -j LOG --log-prefix '
-           '\\"REAPER-WARDEN-OUT \\" --log-level 4\\n");\n', "")
+           '\t\t\trfl_sh_rule(f, "iptables -A RW_ODROP", RFL_G_WARDEN, "REAPER-WARDEN-OUT ", NULL);\n', "")
 
 
 @scenario("the outbound prefix is reverted to the inbound one", "no longer emits")
@@ -156,9 +155,9 @@ def s7(tmp):
 def s8(tmp):
     mutate(tmp, "rc/rwarden.c",
            '\t\tif (nvram_match("rwarden_log", "1"))\n'
-           '\t\t\tfprintf(f, "iptables -A RW_ODROP -j LOG',
+           '\t\t\trfl_sh_rule(f, "iptables -A RW_ODROP",',
            '\t\tif (nvram_match("rwarden_verbose", "1"))\n'
-           '\t\t\tfprintf(f, "iptables -A RW_ODROP -j LOG')
+           '\t\t\trfl_sh_rule(f, "iptables -A RW_ODROP",')
 
 
 @scenario("rwatch stops reporting the outbound state", "no longer inspects RW_ODROP")

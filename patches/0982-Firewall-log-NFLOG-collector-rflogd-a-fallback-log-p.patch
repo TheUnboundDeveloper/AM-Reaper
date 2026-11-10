@@ -1,0 +1,3216 @@
+From fdb5b45af6fb11adcc2808ed992b58dd27b3949e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:56 -0500
+Subject: [PATCH] Firewall log: NFLOG collector rflogd, a fallback log path,
+ day files on the store (102.8 line)
+
+- Every firewall log rule takes its target from shared/reaper_fwlog.h: NFLOG to the new collector
+  rflogd while it runs (groups 40 stock chains, 41 Warden, 42 the anti-botnet chains, 43 the rules
+  engine), under a flood ceiling of 10000 lines a second per rule (burst 10000, the most the limit
+  match takes); else a limited LOG at level 5, 10 a second. The choice is made each time a rule
+  set is written or a Warden / rules-engine script runs, so a collector that stops or comes back
+  needs no regeneration. It replaces the 2026-11-07 rate limit alone.
+- rflogd (rflogd/) reads the four groups, keeps a ring of the newest lines for the pages, counts
+  lines, losses and what the ceiling held back (stats.json), forwards to the remote log server
+  when one is set, and writes one file a day under <store>/fwlog/ on a USB long-term store (up to
+  30 days or 256 MB, the oldest day removed first). Its timers run on the monotonic clock; a day
+  file is never dated before the image was built.
+- rc/reaper_fwlog.c: rflog_sync starts or refreshes rflogd and writes the log path; the watchdog
+  checks it every 2 s and swaps the path both ways. firewall.c routes the stock chains, the
+  anti-botnet chains' LOG lines (from their rule text, IPv4 and IPv6) and the rules engine through
+  it; rwarden.c and reaper_fw.c their own.
+- httpd/web.c: the collector's counters and ring for the pages, its day files in the store's
+  dataset list and sizes. The Firewall page shows the collector state (RFW_413 / RFW_414); the
+  System Log has a Firewall view (RLOG_102 / RLOG_103); the Storage page a Firewall log row, USB
+  only (RDST_113..115). New installs list fwlog among the durable datasets (shared/defaults.c);
+  existing lists are not touched.
+Also in these files: web.c refuses a WireGuard .conf without its keys and reports whether
+/jffs/scripts/ddns-start exists (the WireGuard and DDNS commits), and counts a failed login
+against its source (the login commit); services.c acts on a pending Let's Encrypt request on the
+Custom DDNS path too, and no longer starts fsmd; watchdog.c skips a missing dnsqd (the
+unused-programs commit); rc.h raises the AiMesh exemption table from 64 to 256 entries (16
+tri-band nodes had filled it) and declares the WireGuard DNS-rule purge; Reaper_Firewall.asp gives
+every add row of Objects / Zones / Egress / Forwards its own message line (an Address groups Add
+had reported on the hidden Rules tab, so it looked like nothing happened) and names a group member
+that is not an address object (RFW_412), and shows a long-term store on a volume without
+permissions as one note.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/Makefile                |    5 +
+ release/src/router/httpd/web.c             |  185 ++-
+ release/src/router/rc/Makefile             |    2 +
+ release/src/router/rc/firewall.c           |  140 +-
+ release/src/router/rc/rc.h                 |    8 +-
+ release/src/router/rc/reaper_fw.c          |   34 +-
+ release/src/router/rc/reaper_fwlog.c       |  230 ++++
+ release/src/router/rc/rwarden.c            |   21 +-
+ release/src/router/rc/services.c           |   78 +-
+ release/src/router/rc/watchdog.c           |    3 +-
+ release/src/router/rflogd/Makefile         |   44 +
+ release/src/router/rflogd/rflogd.c         | 1360 ++++++++++++++++++++
+ release/src/router/shared/defaults.c       |    2 +-
+ release/src/router/shared/reaper_fwlog.h   |  111 ++
+ release/src/router/www/Reaper_Firewall.asp |   94 +-
+ release/src/router/www/Reaper_Log.asp      |   14 +-
+ release/src/router/www/Reaper_Storage.asp  |    9 +-
+ 17 files changed, 2202 insertions(+), 138 deletions(-)
+ create mode 100644 release/src/router/rc/reaper_fwlog.c
+ create mode 100644 release/src/router/rflogd/Makefile
+ create mode 100644 release/src/router/rflogd/rflogd.c
+ create mode 100644 release/src/router/shared/reaper_fwlog.h
+
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 8c95a12a971..5c8f6d4f13d 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -1213,6 +1213,8 @@ obj-y += rchqd
+ # reaper v3.2.8: dynamic preamble puncturing controller (runs only while a radio is set to Dynamic)
+ obj-y += rpunctd
+ obj-y += rdnsmapd
++# reaper 2026-11-08: the firewall log collector (NFLOG; runs while a firewall log source is on)
++obj-y += rflogd
+ # reaper 2026-10-21: Encrypted DNS for devices (DoT server; runs only while reaper_dot_srv=1)
+ obj-y += rednsd
+ # reaper 2026-10-21: Wallguard ad & tracker blocker - wallguardc (list compiler) + wallguard.sh
+@@ -6522,6 +6524,9 @@ rpunctd-install:
+ rdnsmapd-install:
+ 	$(MAKE) -C rdnsmapd INSTALLDIR=$(INSTALLDIR)/rdnsmapd install
+ 
++rflogd-install:
++	$(MAKE) -C rflogd INSTALLDIR=$(INSTALLDIR)/rflogd install
++
+ rednsd: openssl
+ 
+ rednsd-install:
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index c9d2129cde1..c419f49f11f 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -50,6 +50,7 @@
+ #include "reaper_survey.h"	/* reaper: Site Survey escan parser (Reaper_Survey.asp) */
+ #include <sys/mman.h>
+ #include "reaper_store.h"	/* reaper 2026-10-18: the pinned USB store volume (Reaper_Storage.asp) */
++#include "reaper_fwlog.h"	/* reaper 2026-11-08: the firewall log collector (rflogd) and the log path */
+ #include "reaper_store_io.h"	/* 2026-10-21: no-follow writes into it (the audit ring) */
+ #include "reaper_dnsmap.h"	/* reaper: passive DNS name map (rdnsmapd) for the Flow Explorer */
+ #include "reaper_lists.h"	/* reaper 2026-11-02: Dreadwatch / Wallguard built-in list addresses for the page rows */
+@@ -27791,10 +27792,15 @@ static int
+ fw_line_is_fwlog(const char *line)
+ {
+ 	const char *k = strstr(line, "kernel:");
++	/* 2026-11-08: the collector's lines (rflogd) carry no "kernel:" tag - an ISO time, then the prefix */
++	if (!k && strlen(line) > 24 && isdigit((unsigned char)line[0]) && line[4] == '-' && line[10] == 'T')
++		k = line;
+ 	if (!k) return 0;
+ 	return (strstr(k, "DROP IN=") != NULL ||
+ 		strstr(k, "ACCEPT IN=") != NULL ||
+-		strstr(k, "REAPER-WARDEN") != NULL);
++		strstr(k, "REAPER-WARDEN") != NULL ||
++		strstr(k, "DROP_DNS IN=") != NULL ||	/* the closed blob's anti-botnet chains, 2026-11-08 */
++		strstr(k, "DROP_IP IN=") != NULL);
+ }
+ 
+ #define FW_DROPS_MAX	400
+@@ -28099,6 +28105,25 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		return;
+ 	}
+ 
++	/* 2026-11-08: the firewall log collector - its counters (rflogd stats.json, root-written) and the log path */
++	if (strcmp(action, "fwlog_stats") == 0) {
++		char sb[4096];
++		ssize_t n = -1;
++		int fd = open(RFL_DIR "/stats.json", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++
++		if (fd >= 0) {
++			n = read(fd, sb, sizeof(sb) - 1);
++			close(fd);
++		}
++		sb[n > 0 ? n : 0] = '\0';
++		while (n > 0 && (sb[n - 1] == '\n' || sb[n - 1] == ' '))
++			sb[--n] = '\0';
++		websWrite(stream, "{\"ok\":1,\"path\":\"%s\",\"running\":%d,\"stats\":%s}",
++			  rfl_nflog() ? "nflog" : "log", pids("rflogd") ? 1 : 0,
++			  (n > 1 && sb[0] == '{' && sb[n - 1] == '}') ? sb : "null");
++		return;
++	}
++
+ 	if (strcmp(action, "drops") == 0) {
+ 		/* last FW_DROPS_MAX matching lines across the rotated pair, oldest
+ 		 * file first so the ring ends holding the newest. 400*640 = 250 KB,
+@@ -28110,8 +28135,19 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 			websWrite(stream, "{\"ok\":0,\"error\":\"oom\"}");
+ 			return;
+ 		}
+-		fw_scan_syslog(get_syslog_fname(1), ring, &head, &count);
+-		fw_scan_syslog(get_syslog_fname(0), ring, &head, &count);
++		/* 2026-11-08: the collector's ring while it runs, syslog for the limited-LOG fallback; the source in
++		 * use now is read last, so the ring ends holding the newest lines */
++		if (rfl_nflog()) {
++			fw_scan_syslog(get_syslog_fname(1), ring, &head, &count);
++			fw_scan_syslog(get_syslog_fname(0), ring, &head, &count);
++			fw_scan_syslog(RFL_DIR "/prev.log", ring, &head, &count);
++			fw_scan_syslog(RFL_DIR "/current.log", ring, &head, &count);
++		} else {
++			fw_scan_syslog(RFL_DIR "/prev.log", ring, &head, &count);
++			fw_scan_syslog(RFL_DIR "/current.log", ring, &head, &count);
++			fw_scan_syslog(get_syslog_fname(1), ring, &head, &count);
++			fw_scan_syslog(get_syslog_fname(0), ring, &head, &count);
++		}
+ 
+ 		websWrite(stream, "{\"ok\":1,\"wlog\":%d,\"n\":%d,\"log\":",
+ 			nvram_match("rwarden_log", "1") ? 1 : 0, count);
+@@ -32819,7 +32855,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		 * the first durable tick after each is enabled) so the Storage page can
+ 		 * show "collecting since" per row, not just for Devices. */
+ 		{
+-			static const char *since_ds[] = { "dev", "traf", "watch", "chq", "slog", "shl", "shh", "dw", "edns", NULL };
++			static const char *since_ds[] = { "dev", "traf", "watch", "chq", "fwlog", "slog", "shl", "shh", "dw", "edns", NULL };
+ 			int di;
+ 			for (di = 0; since_ds[di]; di++) {
+ 				long since = 0;
+@@ -32846,6 +32882,8 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 			rdev_pair_bytes(base, "dreadwatch/blocked.log"));
+ 		snprintf(path, sizeof(path), "%s/ednshist.log", base);
+ 		websWrite(stream, "\"edns_bytes\":%lld,", (stat(path, &st) == 0) ? (long long)st.st_size : 0LL);
++		/* 2026-11-08: the firewall log collector's day files (rflogd, <store>/fwlog/YYYY-MM-DD.log) */
++		websWrite(stream, "\"fwlog_bytes\":%lld,", rdev_dir_bytes(base, "fwlog"));
+ 		if (stat("/jffs/encdns/doh.ips", &st) == 0)
+ 			websWrite(stream, "\"edoh_bytes\":%lld,\"edoh_at\":%ld,", (long long)st.st_size, (long)st.st_mtime);
+ 		else
+@@ -32950,7 +32988,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 		char *loc = get_cgi("loc");
+ 		char *ds  = get_cgi("ds");
+ 		char clean[80] = "";
+-		const char *known[] = { "dev", "traf", "watch", "chq", "slog", "shl", "shh", "dw", "edns", NULL };
++		const char *known[] = { "dev", "traf", "watch", "chq", "fwlog", "slog", "shl", "shh", "dw", "edns", NULL };
+ 		int traf_on = 0;
+ 
+ 		if (!loc || (strcmp(loc, "ram") && strcmp(loc, "jffs") && strcmp(loc, "usb"))) {
+@@ -34358,6 +34396,8 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 	char *authorization_t = NULL, *authpass = NULL, *temp_ip_str = NULL, *next_page = NULL, *id = NULL, *cnonce = NULL;
+ 	char uip_tmp[128] = {0};
+ 	time_t now = 0, dt = 0;
++	long reaper_ll_rem = 0;				/* reaper A-8: per-source login lock */
++	int reaper_src_lock = 0, reaper_side_lock = 0;
+ 	now = time( (time_t*) 0 );
+ #ifdef RTCONFIG_CAPTCHA
+ 	int captcha_right = 1;
+@@ -34383,6 +34423,11 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 		ret = LOGINLOCK;
+ 		goto FINISH;
+ 	}
++	else if((reaper_ll_rem = reaper_login_src_locked(&login_uip_tmp)) > 0){	/* reaper A-8: this source is locked out */
++		send_login_page(fromapp_flag, LOGINLOCK, NULL, NULL, max_lock_time - reaper_ll_rem, NOLOGINTRY);
++		ret = LOGINLOCK;
++		goto FINISH;
++	}
+ 
+ #ifdef RTCONFIG_CAPTCHA
+ 	captcha_t = safe_get_cgi_json("login_captcha", root);
+@@ -34487,6 +34532,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 		nvram_set_int(CAPTCHA_FAIL_NUM, 0);
+ 		HTTPD_DBG("authpass: captcha_fail_num = %d\n", nvram_get_int(CAPTCHA_FAIL_NUM));
+ #endif
++		reaper_login_src_ok(&login_uip_tmp);	/* reaper A-8: a good login clears this source's count */
+ #if 0
+ 		if(	!strncmp(nvram_safe_get("territory_code"), "AA", 2) ||
+ 			!strncmp(nvram_safe_get("territory_code"), "SG", 2) ){
+@@ -34569,16 +34615,21 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ #endif
+ 		websWrite(wp,"Connection: close\r\n" );
+ 		websWrite(wp,"\r\n" );
++		/* reaper 2026-11-08 (review A-8): the failure counts against this source (httpd.c reaper_login_src_fail);
++		 * the stock side counter moves only when the side-wide backstop trips. The side timestamp still moves on
++		 * every failure, as before. */
++		reaper_src_lock = reaper_login_src_fail(&login_uip_tmp);
++		reaper_side_lock = reaper_login_side_fail(cur_login_ip_type ? 1 : 0);
+ 		if(!cur_login_ip_type)
+ 		{
+-			int httpd_login_fail_lan_t = nvram_get_int(HTTPD_LOGIN_FAIL_LAN);
+-			nvram_set_int(HTTPD_LOGIN_FAIL_LAN, ++httpd_login_fail_lan_t);
++			if(reaper_side_lock && nvram_get_int(HTTPD_LOGIN_FAIL_LAN) < DEFAULT_LOGIN_MAX_NUM)
++				nvram_set_int(HTTPD_LOGIN_FAIL_LAN, DEFAULT_LOGIN_MAX_NUM);
+ 			nvram_set_int(HTTPD_LAST_LOGIN_FAIL_TS, login_timestamp_tmp);
+ 		}
+ 		else
+ 		{
+-			int httpd_login_fail_wan_t = nvram_get_int(HTTPD_LOGIN_FAIL_WAN);
+-			nvram_set_int(HTTPD_LOGIN_FAIL_WAN, ++httpd_login_fail_wan_t);
++			if(reaper_side_lock && nvram_get_int(HTTPD_LOGIN_FAIL_WAN) < DEFAULT_LOGIN_MAX_NUM)
++				nvram_set_int(HTTPD_LOGIN_FAIL_WAN, DEFAULT_LOGIN_MAX_NUM);
+ 			nvram_set_int(HTTPD_LAST_LOGIN_FAIL_TS_W, login_timestamp_tmp_wan);
+ 		}
+ 		if((cur_login_ip_type? nvram_get_int(HTTPD_LOGIN_FAIL_WAN): nvram_get_int(HTTPD_LOGIN_FAIL_LAN)) >= DEFAULT_LOGIN_MAX_NUM){
+@@ -34627,6 +34678,24 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 				max_lock_time = MAX_LOGIN_BLOCK_TIME;
+ 
+ 			HTTPD_DBG("max_lock_time = %d\n", max_lock_time);
++		}else if(reaper_src_lock){	/* reaper A-8: this source alone is locked out */
++			logmessage("httpd login lock", "%d failed logins from %s: that address is locked out for %d seconds, other addresses can still log in.", DEFAULT_LOGIN_MAX_NUM, temp_ip_str, MAX_LOGIN_BLOCK_TIME);
++#ifdef RTCONFIG_NOTIFICATION_CENTER
++			{
++				json_object *nt_src = json_object_new_object();
++
++				if(temp_ip_str && *temp_ip_str != '\0')
++					get_client_name(temp_ip_str, client_name, sizeof(client_name));
++				if(nt_src){
++					json_object_object_add(nt_src, "cname", json_object_new_string(client_name));
++					json_object_object_add(nt_src, "ip", json_object_new_string(temp_ip_str ? temp_ip_str : ""));
++					json_object_object_add(nt_src, "dut", json_object_new_string(get_productid()));
++					SEND_NT_EVENT(ADMIN_LOGIN_FAIL_LAN_WEB_EVENT, json_object_to_json_string(nt_src));
++					json_object_put(nt_src);
++				}
++			}
++#endif
++			login_error_status = LOGINLOCK;
+ 		}else{
+ 			login_error_status = ACCOUNTFAIL;
+ 		}
+@@ -39439,10 +39508,59 @@ err:
+ 	fcntl(fileno(stream), F_SETOWN, -ret);
+ }
+ 
++/* reaper 2026-11-08 (field): a WireGuard .conf without its keys was imported anyway - read_wgc_config_file resets
++ * every wgcN_ setting first, so the instance was left with an empty or broken key. The file is checked before that
++ * reset: bit 1 = no valid [Interface] PrivateKey, bit 2 = no valid [Peer] PublicKey (0 = both there). A key is 32
++ * bytes of base64: 43 characters of A-Z a-z 0-9 + / then '='. Key lines are read at column 0, as the importer reads
++ * them; Reaper_VPNClient.asp runs the same check before it sends the file. */
++static int
++reaper_wgc_key_ok(const char *v)
++{
++	int i;
++
++	for (i = 0; i < 43; i++)
++		if (!(isalnum((unsigned char)v[i]) || v[i] == '+' || v[i] == '/'))
++			return 0;
++	return v[43] == '=' && (v[44] == '\0' || v[44] == ' ' || v[44] == '\t');
++}
++
++static int
++reaper_wgc_conf_keys(const char *path)
++{
++	FILE *fp;
++	char buf[256], *v;
++	int sec = 0, have = 0;	/* sec 1 = [Interface], 2 = [Peer] */
++
++	if (!(fp = fopen(path, "r")))
++		return 3;
++	while (fgets(buf, sizeof(buf), fp)) {
++		buf[strcspn(buf, "\r\n")] = '\0';
++		if (buf[0] == '[') {
++			sec = !strncasecmp(buf, "[Interface]", 11) ? 1 : !strncasecmp(buf, "[Peer]", 6) ? 2 : 0;
++			continue;
++		}
++		if (sec == 1 && !strncmp(buf, "PrivateKey", 10))
++			v = buf + 10;
++		else if (sec == 2 && !strncmp(buf, "PublicKey", 9))
++			v = buf + 9;
++		else
++			continue;
++		v += strspn(v, " \t");
++		if (*v != '=')
++			continue;
++		v++;
++		v += strspn(v, " \t");
++		if (reaper_wgc_key_ok(v))
++			have |= sec;
++	}
++	fclose(fp);
++	return 3 & ~have;
++}
++
+ static void
+ do_upload_wgc_config_cgi(char *url, FILE *stream)
+ {
+-	int ret;
++	int ret, kb = 0;
+ 	char *wgc_upload_unit = nvram_safe_get("wgc_upload_unit");
+ 	int unit;
+ 
+@@ -39460,7 +39578,16 @@ do_upload_wgc_config_cgi(char *url, FILE *stream)
+ #endif
+ 	ret = fcntl(fileno(stream), F_GETOWN, 0);
+ 
+-	if (ret == 0)
++	if (ret == 0 && (kb = reaper_wgc_conf_keys(WGC_CONFIG_FILE)) != 0)
++	{
++		/* reaper 2026-11-08: refused before read_wgc_config_file resets the instance - nothing is changed */
++		char st[8];
++		snprintf(st, sizeof(st), "keys%d", kb);
++		nvram_set("wgc_upload_state", st);
++		logmessage("WireGuard", "client %d: .conf import refused - no valid %s", unit,
++			kb == 3 ? "[Interface] PrivateKey or [Peer] PublicKey" : kb == 1 ? "[Interface] PrivateKey" : "[Peer] PublicKey");
++	}
++	else if (ret == 0)
+ 	{
+ 		ret = read_wgc_config_file(WGC_CONFIG_FILE, unit);
+ 		if (ret < 0)
+@@ -51602,6 +51729,41 @@ static void ASN1_TimeToTM(ASN1_TIME* time, struct tm *t)
+ 	t->tm_sec  = (data[i] - '0') * 10 + (data[i+1] - '0');
+ }
+ 
++/* reaper 2026-11-08 (field RT-BE88U): DDNS on Custom runs exactly /jffs/scripts/ddns-start (shared/scripts.c
++ * run_custom_script); a script saved as ddns-start.sh never ran and the page said nothing. Reaper_DDNS.asp reads
++ * {"s":N,"near":"name"}: s 0 = not there (near = a ddns-start* file that is, backups skipped), 1 = there but not
++ * executable, 2 = ready. near holds only [A-Za-z0-9._-]. */
++static int
++ej_reaper_ddns_script(int eid, webs_t wp, int argc, char **argv)
++{
++	struct stat st;
++	DIR *d;
++	struct dirent *e;
++	char near[64] = "";
++	int s = 0;
++	size_t n;
++
++	if (stat("/jffs/scripts/ddns-start", &st) == 0 && S_ISREG(st.st_mode))
++		s = (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) ? 2 : 1;
++	else if ((d = opendir("/jffs/scripts")) != NULL) {
++		while ((e = readdir(d)) != NULL) {
++			if (strncasecmp(e->d_name, "ddns-start", 10) && strncasecmp(e->d_name, "ddns_start", 10))
++				continue;
++			n = strlen(e->d_name);
++			if (n >= sizeof(near) || e->d_name[strspn(e->d_name,
++			    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")] != '\0')
++				continue;
++			if ((n > 4 && (!strcmp(e->d_name + n - 4, ".bak") || !strcmp(e->d_name + n - 4, ".old")))
++			    || (n > 5 && !strcmp(e->d_name + n - 5, ".orig")) || e->d_name[n - 1] == '~')
++				continue;
++			strlcpy(near, e->d_name, sizeof(near));
++			break;
++		}
++		closedir(d);
++	}
++	return websWrite(wp, "{\"s\":%d,\"near\":\"%s\"}", s, near);
++}
++
+ static int
+ ej_httpd_cert_info(int eid, webs_t wp, int argc, char **argv)
+ {
+@@ -55981,6 +56143,7 @@ struct ej_handler ej_handlers[] = {
+ #endif
+ #ifdef RTCONFIG_HTTPS
+ 	{ "httpd_cert_info", ej_httpd_cert_info},
++	{ "reaper_ddns_script", ej_reaper_ddns_script},
+ #endif
+ 
+ 	{ "get_header_info", ej_get_header_info},
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 9cd6137c6a1..115089fb6ab 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -477,6 +477,8 @@ OBJS += rv6names.o
+ OBJS += rexport.o
+ # reaper 2026-11-05: Let's Encrypt by DNS validation - no DDNS, no port 80 (body gated on RTCONFIG_LETSENCRYPT)
+ OBJS += reaper_ledns.o
++# reaper 2026-11-08: the firewall log path - the NFLOG collector rflogd and its fallback
++OBJS += reaper_fwlog.o
+ OBJS += reaper_cthelper.o	# 2026-11-05 audit E-13: conntrack helpers by explicit rule only
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 86ca633b1bd..7de6da7ad12 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -37,6 +37,7 @@
+ #include <dirent.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
++#include <reaper_fwlog.h>	/* 2026-11-08: the firewall log target (NFLOG / limited LOG) */
+ 
+ #include <stdarg.h>
+ #include <netdb.h>	// for struct addrinfo
+@@ -3324,12 +3325,8 @@ start_default_filter(int lanunit)
+ 	}
+ #endif
+ 
+-	fprintf(fp, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
+-	fprintf(fp,"-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp, "logaccept", "ACCEPT ", "ACCEPT");
++	rfl_stock_chain(fp, "logdrop", "DROP ", "DROP");
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 		fprintf(fp, "-A INPUT -j %s\n", SDN_FILTER_INPUT_CHAIN);
+@@ -3395,12 +3392,8 @@ start_default_filter(int lanunit)
+ 		fprintf(fp, "-A FORWARD -i %s -o %s -j ACCEPT\n", "lo", "lo");
+ 	}
+ 
+-	fprintf(fp, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
+-	fprintf(fp,"-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp, "logaccept", "ACCEPT ", "ACCEPT");
++	rfl_stock_chain(fp, "logdrop", "DROP ", "DROP");
+ 
+ 	fprintf(fp, "COMMIT\n\n");
+ 	fclose(fp);
+@@ -5252,6 +5245,59 @@ static int reaper_restore_rules(const char *bin, const char *path, int caller_li
+  * the restore fallback, registry then probe - so on a kernel that takes both
+  * the block passes through byte for byte, and elsewhere the router keeps every
+  * other rule instead of none. What is left out is logged once per boot. */
++/* 2026-11-08 (NFLOG plan section 7, item 4): the closed blob writes its anti-botnet chains as text - logdrop_dns /
++ * logdrop_ip, an UNLIMITED -j LOG then -j DROP, on the router's own OUTPUT - into the rules file rc loads. Every
++ * `-A <chain> -j LOG --log-prefix "<p>"<opts>` line it wrote is replaced by the firewall log target (NFLOG group 42
++ * while rflogd runs, else the limited LOG keeping its --log-* options); every other line is copied byte for byte, so
++ * what it blocks is unchanged. A line this does not recognise stays as written. */
++static void reaper_extra_log_reroute(const char *path)
++{
++	char tmp[96], line[1024], chain[32], prefix[32], opts[96];
++	FILE *in, *out;
++	int nfl = rfl_nflog(), bad = 0;
++
++	snprintf(tmp, sizeof(tmp), "%s.rr", path);
++	if ((in = fopen(path, "r")) == NULL)
++		return;
++	if ((out = fopen(tmp, "w")) == NULL) {
++		fclose(in);
++		return;
++	}
++	while (fgets(line, sizeof(line), in)) {
++		int off = 0;
++		size_t i, o = 0;
++
++		if (sscanf(line, "-A %31s -j LOG --log-prefix \"%31[^\"]\"%n", chain, prefix, &off) != 2 || off <= 0) {
++			if (fputs(line, out) == EOF)
++				bad = 1;
++			continue;
++		}
++		/* the blob's own --log-* options, for the LOG form: words of [a-z-] only, else none */
++		for (i = off; line[i] && line[i] != '\n' && o + 2 < sizeof(opts); i++) {
++			char c = line[i];
++			if (!((c >= 'a' && c <= 'z') || c == '-' || c == ' ')) {
++				o = 0;
++				break;
++			}
++			if (c == ' ' && (o == 0 || opts[o - 1] == ' '))
++				continue;
++			opts[o++] = c;
++		}
++		if (o && opts[o - 1] != ' ')
++			opts[o++] = ' ';
++		opts[o] = '\0';
++		if (fprintf(out, "-A %s %s\n", chain, rfl_tgt(nfl, RFL_G_BLOB, prefix, NULL, opts)) < 0)
++			bad = 1;
++	}
++	fclose(in);
++	if (fclose(out) != 0 || bad) {
++		unlink(tmp);
++		return;
++	}
++	if (rename(tmp, path) != 0)
++		unlink(tmp);
++}
++
+ #define REAPER_EXTRA_TMP "/tmp/reaper/filter_extra.tmp"
+ #define REAPER_EXTRA_WARNED "/tmp/reaper/reaper_extra_filter.warned"
+ 
+@@ -5267,6 +5313,7 @@ static void reaper_write_extra_filter(FILE *fp)
+ 	}
+ 	write_extra_filter(t);
+ 	fclose(t);
++	reaper_extra_log_reroute(REAPER_EXTRA_TMP);	/* 2026-11-08: its LOG lines -> the firewall log target */
+ 	/* declarations first, then the rules the kernel takes: the blob's chain
+ 	 * lines land in the rules section of the file, and on the RT-BE88U behind
+ 	 * the rules that jump to them - which iptables-restore cannot resolve. */
+@@ -5283,6 +5330,39 @@ static void reaper_write_extra_filter(FILE *fp)
+ 	}
+ }
+ 
++#ifdef RTCONFIG_IPV6
++/* 2026-11-08: the IPv6 twin used to go into the table raw. Same treatment as the IPv4 one above: a scratch file, its
++ * LOG lines rerouted, declarations first, only the rules this kernel takes. */
++#define REAPER_EXTRA6_TMP "/tmp/reaper/filter_extra6.tmp"
++#define REAPER_EXTRA6_WARNED "/tmp/reaper/reaper_extra_filter6.warned"
++
++static void reaper_write_extra_filter6(FILE *fp)
++{
++	FILE *t;
++	char first[256] = "", hoistnames[256] = "";
++	int dropped, hoisted = 0;
++
++	if ((t = fopen(REAPER_EXTRA6_TMP, "w")) == NULL) {
++		write_extra_filter6(fp);
++		return;
++	}
++	write_extra_filter6(t);
++	fclose(t);
++	reaper_extra_log_reroute(REAPER_EXTRA6_TMP);
++	dropped = reaper_nf_copy_supported(REAPER_EXTRA6_TMP, fp, 1, 0, first, sizeof(first), &hoisted, hoistnames, sizeof(hoistnames));
++	unlink(REAPER_EXTRA6_TMP);
++	if ((dropped > 0 || hoisted > 0) && !f_exists(REAPER_EXTRA6_WARNED)) {
++		if (hoisted > 0)
++			logmessage("firewall", "the ASUS anti-botnet blocklist (IPv6) declares %d chain(s) (%s) after the first rule that jumps to them - the declarations now come first",
++				   hoisted, hoistnames);
++		if (dropped > 0)
++			logmessage("firewall", "the kernel will not take '%s' - %d IPv6 rule(s) of the ASUS anti-botnet blocklist left out of the filter table so the rest of it can load",
++				   first, dropped);
++		f_write_string(REAPER_EXTRA6_WARNED, "1", 0, 0);
++	}
++}
++#endif
++
+ /* 2026-10-19: SSH over IPv6 from the internet had no brute-force guard at all -
+  * the stock protection server writes IPv4 chains only, and the IPv6 rule for a
+  * WAN-open SSH port was a plain accept, written twice (filter_setting and
+@@ -6899,25 +6979,17 @@ TRACE_PT("write wl filter\n");
+ 	fprintf(fp, "-A SECURITY -j RETURN\n");
+ 
+ 	// logaccept chain
+-	fprintf(fp, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
++	rfl_stock_chain(fp, "logaccept", "ACCEPT ", "ACCEPT");
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled())
+-	fprintf(fp_ipv6, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
++	rfl_stock_chain(fp_ipv6, "logaccept", "ACCEPT ", "ACCEPT");
+ #endif
+ 
+ 	// logdrop chain
+-	fprintf(fp,"-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp, "logdrop", "DROP ", "DROP");
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled())
+-	fprintf(fp_ipv6, "-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp_ipv6, "logdrop", "DROP ", "DROP");
+ #endif
+ 
+ #ifdef RTCONFIG_MULTILAN_CFG
+@@ -7105,7 +7177,7 @@ TRACE_PT("write wl filter\n");
+ 	if (ipv6_enabled())
+ 	{
+ 		// extra filter
+-		write_extra_filter6(fp_ipv6);
++		reaper_write_extra_filter6(fp_ipv6);
+ 
+ 		fprintf(fp_ipv6, "COMMIT\n\n");
+ 		if (fp_ipv6) fclose(fp_ipv6);
+@@ -8817,26 +8889,18 @@ TRACE_PT("write wl filter\n");
+ 	fprintf(fp, "-A SECURITY -j RETURN\n");
+ 
+ 	// logaccept chain
+-	fprintf(fp, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
++	rfl_stock_chain(fp, "logaccept", "ACCEPT ", "ACCEPT");
+ 
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled())
+-	fprintf(fp_ipv6, "-A logaccept -m state --state NEW -j LOG --log-prefix \"ACCEPT \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logaccept -j ACCEPT\n");
++	rfl_stock_chain(fp_ipv6, "logaccept", "ACCEPT ", "ACCEPT");
+ #endif
+ 
+ 	// logdrop chain
+-	fprintf(fp,"-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp, "logdrop", "DROP ", "DROP");
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled())
+-	fprintf(fp_ipv6, "-A logdrop -m state --state NEW -j LOG --log-prefix \"DROP \" "
+-		  "--log-tcp-sequence --log-tcp-options --log-ip-options\n"
+-		  "-A logdrop -j DROP\n");
++	rfl_stock_chain(fp_ipv6, "logdrop", "DROP ", "DROP");
+ #endif
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	fprintf(fp, "-I FORWARD -j %s\n", URL_FILTER_FORWARD_CHAIN);
+@@ -8991,7 +9055,7 @@ TRACE_PT("write wl filter\n");
+ 	if (ipv6_enabled())
+ 	{
+ 		// extra filter
+-		write_extra_filter6(fp_ipv6);
++		reaper_write_extra_filter6(fp_ipv6);
+ 
+ 		fprintf(fp_ipv6, "COMMIT\n\n");
+ 		if (fp_ipv6) fclose(fp_ipv6);
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 7b4d6a7ddef..5e1870e5364 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1867,6 +1867,7 @@ extern int vpnc_ovpn_route_pre_down_main(int argc, char **argv);
+ extern int change_default_wan_as_vpnc_updown(const int unit, const int up);
+ extern int vpnc_up(const int unit, const char *vpnc_ifname);
+ extern void vpnc_down(const int vpnc_idx, char *vpnc_ifname);
++extern void vpnc_purge_dns_rules(const int vpnc_idx);
+ extern int update_default_routing_rule();
+ extern int clean_routing_rule_by_vpnc_idx(const int vpnc_idx);
+ extern int vpnc_set_internet_policy(const int action);
+@@ -3033,6 +3034,11 @@ extern void start_gk(void);
+ extern void gk_refresh(void);	/* v2.6.5: re-apply after an SDN add/remove/edit */
+ extern int pidof_upnp(void);	/* reaper: pid of miniupnpd OR miniupnpd-igdv2 (exact-name pidof misses the latter) */
+ extern void start_wlcsm_bindfix(void);	/* reaper: arm/clear the WLCSM netlink bind() shim via /etc/ld.so.preload */
++/* 2026-11-08: every firewall log rule takes its target from shared/reaper_fwlog.h - NFLOG to rflogd while it
++ * runs, else a limited LOG at level 5. It replaced REAPER_LOG_LIMIT (2026-11-07, the rate limit alone). */
++extern void rflog_sync(void);		/* start / refresh rflogd and set the log path (rc/reaper_fwlog.c) */
++extern void stop_rflogd(void);
++extern void reaper_fwlog_watch(void);	/* the watchdog's 2 s collector check */
+ extern void stop_rwarden(void);	/* reaper v1.8.0 Warden ipset threat-feed/geo/manual-IP firewall (rc/rwarden.c) */
+ extern void start_rwarden(void);
+ extern void rwarden_ddns_seed(void);	/* 2026-10-22: ASUS DDNS + Let's Encrypt whitelisted once (rc/rwarden.c) */
+@@ -3124,7 +3130,7 @@ extern void stop_rv6names(void);
+ extern int reaper_aimesh_sync_main(int argc, char *argv[]);	/* 2026-11-01: refresh the shared AiMesh node set (rc/reaper_aimesh.c) */
+ extern int reaper_aimesh_macs(char macs[][18], int max, int *dropped);	/* the cfg_relist parser every enforcement surface shares */
+ #define REAPER_AIMESH_SET "reaper_aimesh"	/* hash:mac, matched `src` by the rules engine and Policy Routing */
+-#define REAPER_AIMESH_MAX 64
++#define REAPER_AIMESH_MAX 256	/* 2026-11-08 (owner: next release): was 64, about 16 tri-band nodes; a node is 3-5 registry MACs */
+ extern int reaper_lockrun_main(int argc, char *argv[]);	/* v2.7.3: heal scripts under the firewall fcntl lock (rc/rwatch.c) */
+ extern void stop_rexport(void);	/* reaper v2.2.2 analytics exporter: push health.json to Splunk/Datadog/etc. (rc/rexport.c) */
+ extern void start_rexport(void);
+diff --git a/release/src/router/rc/reaper_fw.c b/release/src/router/rc/reaper_fw.c
+index 9ae287471be..2decf5ef55c 100644
+--- a/release/src/router/rc/reaper_fw.c
++++ b/release/src/router/rc/reaper_fw.c
+@@ -102,6 +102,7 @@
+ #include "rc.h"
+ #include <shared.h>
+ #include "reaper_hook.h"
++#include <reaper_fwlog.h>	/* 2026-11-08: the firewall log target (NFLOG group 43 / limited LOG) */
+ #include <arpa/inet.h>
+ #include "reaper_nv.h"	/* _nv: nvram get with a 5 s ceiling (security review 2026-08-22 F2) */
+ 
+@@ -1291,12 +1292,11 @@ static void rfw_emit_line(FILE *f, const char *ipt, const char *ch, const char *
+ 	if (ratefrag[0]) fprintf(f, "if [ \"$RFW_HL\" = 1 ]; then\n");
+ 
+ 	if (dolog) {
+-		/* rate-limited by construction: an unbounded LOG on a busy forward path
+-		 * fills syslog (and, when the operator has pointed syslog at jffs, wears
+-		 * flash) faster than anything else this engine can emit. */
+-		fprintf(f, "RFWR %s -A %s%s%s%s -m limit --limit 6/min --limit-burst 12"
+-		           " -j LOG --log-prefix \"REAPER-FW:%d \" --log-level 4\n",
+-		        ipt, ch, pre, schedfrag, ratefrag, ridx);
++		/* 2026-11-08: RFLR (above) - NFLOG group 43 while rflogd runs, under the flood ceiling only; the
++		 * fallback LOG keeps the 6/min bucket: an unbounded LOG on a busy forward path fills syslog
++		 * (and, with syslog on jffs, wears flash) faster than anything else this engine emits. */
++		fprintf(f, "RFLR %d 'REAPER-FW:%d ' '-m limit --limit 6/min --limit-burst 12 ' %s -A %s%s%s%s\n",
++		        RFL_G_REAPER, ridx, ipt, ch, pre, schedfrag, ratefrag);
+ 	}
+ 	if (!strcmp(action, "accept"))
+ 		fprintf(f, "RFWR %s -A %s%s%s%s -j ACCEPT\n", ipt, ch, pre, schedfrag, ratefrag);
+@@ -1926,9 +1926,8 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c, int v6)
+ 						if (ns6)
+ 							snprintf(srcfrag6, sizeof(srcfrag6), " -m set --match-set %s src", sets6[si].name);
+ 						if (logf[0] == '1')
+-							fprintf(f, "RFWR ip6tables -t nat -A %s -i %s -p %s --dport %s%s%s%s%s"
+-							           " -j LOG --log-prefix \"REAPER-ICPT6 \" --log-level 6\n",
+-							        natch, ifs[ifi], protos[pv], eport, selffrag6, exfrag6, srcfrag6, schedfrag);
++							fprintf(f, "RFLR %d 'REAPER-ICPT6 ' '" RFL_LIMIT "' ip6tables -t nat -A %s -i %s -p %s --dport %s%s%s%s%s\n",
++							        RFL_G_REAPER, natch, ifs[ifi], protos[pv], eport, selffrag6, exfrag6, srcfrag6, schedfrag);
+ 						if (redir)
+ 							fprintf(f, "RFWR ip6tables -t nat -A " RFW_CHAIN_NAT " -i %s -p %s --dport %s%s%s%s"
+ 							           " -j REDIRECT --to-ports %s\n",
+@@ -1974,11 +1973,10 @@ static void rfw_emit_nat(FILE *f, const rfw_cfg_t *c, int v6)
+ 						snprintf(srcfrag, sizeof(srcfrag), " -m set --match-set %s src", sets[si].name);
+ 
+ 					if (logf[0] == '1')
+-						fprintf(f, "%sRFWR iptables -t nat -A %s"
+-						           " -i %s -p %s --dport %s%s%s%s%s"
+-						           " -j LOG --log-prefix \"REAPER-%s \" --log-level 6\n",
+-						        guard, natch, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag,
+-						        fwdmode ? "FWD" : "ICPT");
++						fprintf(f, "%sRFLR %d '%s' '" RFL_LIMIT "' iptables -t nat -A %s"
++						           " -i %s -p %s --dport %s%s%s%s%s\n",
++						        guard, RFL_G_REAPER, fwdmode ? "REAPER-FWD " : "REAPER-ICPT ",
++						        natch, ifx, protos[pv], eport, selffrag, exfrag, srcfrag, schedfrag);
+ 
+ 					if (redir)
+ 						fprintf(f, "%sRFWR iptables -t nat -A " RFW_CHAIN_NAT
+@@ -2249,7 +2247,13 @@ static int rfw_gen_apply(const char *path, const rfw_cfg_t *c, int teardown_only
+ 	  "RFW_FAIL=0\n"
+ 	  "RFWR() { \"$@\" || { RFW_FAIL=$((RFW_FAIL+1)); logger -t reaper_fw \"rule failed: $*\"; }; }\n"
+ 	  "RFW_HARD=0\n"
+-	  "RFWH() { \"$@\" || { RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw \"structural step failed: $*\"; }; }\n\n");
++	  "RFWH() { \"$@\" || { RFW_HARD=$((RFW_HARD+1)); logger -t reaper_fw \"structural step failed: $*\"; }; }\n"
++	  /* 2026-11-08: a log rule picks NFLOG (rflogd running) or the limited LOG when this script RUNS - it is
++	   * re-run by every restart_firewall, so a log-path change never needs this script (or the armed candidate,
++	   * or the rollback) regenerated. RFLR <group> '<prefix>' '<LOG-path limit>' <iptables command...> */
++	  "RFL_NF=0; [ \"$(cat " RFL_PATH " 2>/dev/null)\" = nflog ] && RFL_NF=1\n"
++	  "RFLR() { _g=$1; _p=$2; _l=$3; shift 3; if [ $RFL_NF = 1 ]; then RFWR \"$@\" " RFL_CEIL "-j NFLOG --nflog-group $_g --nflog-prefix \"$_p\"; "
++	  "else RFWR \"$@\" $_l -j LOG --log-prefix \"$_p\" --log-level " RFL_LEVEL "; fi; }\n\n");
+ 	/* 2026-11-01: AiMesh nodes are infrastructure. The shared node set (rc/reaper_aimesh.c) is refreshed
+ 	 * from the registry as it is now - this script is re-run by restart_firewall, so it must not carry a
+ 	 * list from when it was generated - and created even without the applet so the RETURNs below load. */
+diff --git a/release/src/router/rc/reaper_fwlog.c b/release/src/router/rc/reaper_fwlog.c
+new file mode 100644
+index 00000000000..8e51810216a
+--- /dev/null
++++ b/release/src/router/rc/reaper_fwlog.c
+@@ -0,0 +1,230 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * rc/reaper_fwlog.c - the firewall log path, rc's side (2026-11-08, backlog fwlog-nflog-plan.md sections 7-8).
++ *
++ * rflogd (the collector) takes every firewall log line over NFLOG; this file decides whether it runs and which
++ * target the log rules use, through one state file, /tmp/reaper/fwlog/path (shared/reaper_fwlog.h):
++ *   "nflog" - written only while the kernel lists the NFLOG target AND rflogd is running with every group bound;
++ *   "log"   - anything else: the rules use the limited LOG (10/s, burst 50, level 5) and syslog keeps the lines.
++ * NFLOG with no listener records nothing, so the file is never left at "nflog" for a collector that is gone:
++ *   - rflog_sync() (boot, the rflog verb, a remote-log change) starts rflogd, waits for its first stats, and sets
++ *     the path; a change re-runs the firewall (restart_firewall), whose every log rule follows the file - the stock
++ *     chains and the blob's are rendered from it, Warden's and the rules engine's scripts read it as they run;
++ *   - reaper_fwlog_watch() runs in the watchdog every 2 s: a dead collector on the NFLOG path is restarted at once
++ *     (restart_rflog); if the restart fails, rflog_sync() falls back to "log". Back on "log" with a healthy collector,
++ *     it is moved up again once a minute at most (the flap guard below).
++ * In router mode only: an AP / repeater / node writes none of these rules.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <time.h>
++#include <ctype.h>
++#include <sys/stat.h>
++
++#include "rc.h"
++#include <shared.h>
++#include <reaper_fwlog.h>
++
++#define RFL_CONF	RFL_DIR "/fwlog.conf"
++#define RFL_STATS	RFL_DIR "/stats.json"
++#define RFL_SWAP	RFL_DIR "/swap.at"	/* epoch of the last path change: the flap guard */
++#define RFL_UPGUARD	60			/* seconds before "log" may go back to "nflog" */
++
++static int rfl_slurp(const char *path, char *buf, size_t cap)
++{
++	int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++	ssize_t n;
++
++	buf[0] = '\0';
++	if (fd < 0)
++		return -1;
++	n = read(fd, buf, cap - 1);
++	close(fd);
++	if (n < 0)
++		return -1;
++	buf[n] = '\0';
++	return 0;
++}
++
++static int rfl_write(const char *path, const char *text)
++{
++	char tmp[96];
++	int fd;
++	size_t l = strlen(text);
++
++	snprintf(tmp, sizeof(tmp), "%s.%d", path, (int)getpid());
++	unlink(tmp);
++	if ((fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)) < 0)
++		return -1;
++	if (write(fd, text, l) != (ssize_t)l || close(fd) != 0 || rename(tmp, path) != 0) {
++		unlink(tmp);
++		return -1;
++	}
++	return 0;
++}
++
++/* the kernel lists NFLOG for IPv4 (and IPv6 while it is on) - built in here, but another model's kernel may not */
++static int rfl_kernel_ok(void)
++{
++	char t[2048];
++
++	if (rfl_slurp("/proc/net/ip_tables_targets", t, sizeof(t)) != 0 || !strstr(t, "NFLOG\n"))
++		return 0;
++#ifdef RTCONFIG_IPV6
++	if (ipv6_enabled() && (rfl_slurp("/proc/net/ip6_tables_targets", t, sizeof(t)) != 0 || !strstr(t, "NFLOG\n")))
++		return 0;
++#endif
++	return 1;
++}
++
++/* 1 = rflogd runs with every group bound, 0 = not running, -1 = it could not bind (another owner): don't loop */
++static int rfl_alive(void)
++{
++	char t[4096], p[32], comm[32];
++	const char *s;
++	int pid;
++
++	if (rfl_slurp(RFL_STATS, t, sizeof(t)) != 0)
++		return 0;
++	if (strstr(t, "\"bind_error\":"))
++		return -1;
++	if ((s = strstr(t, "\"pid\":")) == NULL || (pid = atoi(s + 6)) <= 1 || kill(pid, 0) != 0)
++		return 0;
++	snprintf(p, sizeof(p), "/proc/%d/comm", pid);
++	if (rfl_slurp(p, comm, sizeof(comm)) != 0 || strcmp(comm, "rflogd\n") != 0)
++		return 0;
++	return 1;
++}
++
++static long rfl_num(const char *key, long def, long lo, long hi)
++{
++	const char *v = nvram_safe_get(key);
++	char *e;
++	long x;
++
++	if (!*v)
++		return def;
++	x = strtol(v, &e, 10);
++	return (*e || x < lo || x > hi) ? def : x;
++}
++
++/* fwlog.conf - the daemon reads no nvram. Retention / RAM / CPU keys are optional (the page adds them); the remote
++ * target is the System Log page's log_ipaddr / log_port, the same server syslogd sends to. */
++static void rfl_write_conf(void)
++{
++	char c[512], fwd[96] = "", host[64];
++	const char *ip = nvram_safe_get("log_ipaddr"), *pid = nvram_safe_get("productid");
++	long port = rfl_num("log_port", 514, 1, 65535);
++	size_t i, k = 0;
++
++	if (*ip && strlen(ip) < 64 && strspn(ip, "0123456789abcdefABCDEF.:") == strlen(ip))
++		snprintf(fwd, sizeof(fwd), strchr(ip, ':') ? "[%s]:%ld" : "%s:%ld", ip, port);
++	for (i = 0; pid[i] && k + 1 < sizeof(host); i++)
++		if (isalnum((unsigned char)pid[i]) || pid[i] == '-' || pid[i] == '_' || pid[i] == '.')
++			host[k++] = pid[i];
++	host[k] = '\0';
++	snprintf(c, sizeof(c), "groups=%d,%d,%d,%d\nram_kb=%ld\nkeep_days=%ld\nkeep_mb=%ld\ncpu=%ld\ncopy=128\nfwd=%s\nhost=%s\n",
++		 RFL_G_STOCK, RFL_G_WARDEN, RFL_G_BLOB, RFL_G_REAPER,
++		 rfl_num("reaper_fwlog_ram_kb", 2048, 256, 65536), rfl_num("reaper_fwlog_keep_days", 30, 1, 3650),
++		 rfl_num("reaper_fwlog_keep_mb", 256, 16, 65536), rfl_num("reaper_fwlog_cpu", 8, 0, 255), fwd, host[0] ? host : "router");
++	rfl_write(RFL_CONF, c);
++}
++
++/* set the path; on a change re-run the firewall so every log rule follows it (once the firewall exists - at boot
++ * the first build reads the file by itself). Going up to NFLOG waits out the flap guard; going down never waits. */
++static void rfl_set_path(int nflog, const char *why)
++{
++	char t[32];
++	long last = 0;
++	time_t now = time(NULL);
++
++	if (nflog == rfl_nflog())
++		return;
++	if (rfl_slurp(RFL_SWAP, t, sizeof(t)) == 0)
++		last = atol(t);
++	if (nflog && last && now - last < RFL_UPGUARD && now >= last)
++		return;
++	if (rfl_write(RFL_PATH, nflog ? "nflog\n" : "log\n") != 0) {
++		logmessage("fwlog", "could not write %s: %s", RFL_PATH, strerror(errno));
++		return;
++	}
++	snprintf(t, sizeof(t), "%ld\n", (long)now);
++	rfl_write(RFL_SWAP, t);
++	if (nflog)
++		logmessage("fwlog", "firewall log lines go to the collector (rflogd, NFLOG)");
++	else
++		logmessage("fwlog", "%s: firewall log lines go to the System Log, limited to 10 a second", why);
++	if (f_exists(REAPER_FW_BUILT_MARK))
++		notify_rc("restart_firewall");
++}
++
++void stop_rflogd(void)
++{
++	if (pids("rflogd"))
++		killall_tk("rflogd");
++}
++
++void rflog_sync(void)
++{
++	int i, alive;
++
++	if (!is_routing_enabled()) {
++		stop_rflogd();
++		return;
++	}
++	if (reaper_secure_dir(REAPER_TMPDIR, 0700) != 0 || reaper_secure_dir(RFL_DIR, 0700) != 0) {
++		rfl_set_path(0, "the collector's folder is not private");
++		return;
++	}
++	rfl_write_conf();
++	if (!rfl_kernel_ok()) {
++		stop_rflogd();
++		rfl_set_path(0, "this kernel has no NFLOG target");
++		return;
++	}
++	if (pids("rflogd") && rfl_alive() == 1)
++		killall("rflogd", SIGHUP);	/* re-read fwlog.conf */
++	else {
++		stop_rflogd();
++		unlink(RFL_STATS);
++		xstart("rflogd");
++		for (i = 0; i < 20 && rfl_alive() == 0; i++)
++			usleep(100000);		/* its first stats.json says every group is bound */
++	}
++	alive = rfl_alive();
++	rfl_set_path(alive == 1, alive < 0 ? "the collector could not take its netlink groups (another program owns them)"
++					    : "the firewall log collector is not running");
++}
++
++/* the watchdog, every tick (1 s): checks every 2 s */
++void reaper_fwlog_watch(void)
++{
++	static unsigned tick;
++	static time_t kicked;
++	time_t now;
++	int alive;
++
++	if (++tick % 2 || !is_routing_enabled())
++		return;
++	now = time(NULL);
++	alive = rfl_alive();
++	if (rfl_nflog()) {
++		if (alive != 1 && now - kicked >= 4) {
++			/* lines are being lost right now: restart it (rflog_sync falls back if that fails) */
++			logmessage("fwlog", "the firewall log collector stopped - restarting it");
++			notify_rc("restart_rflog");
++			kicked = now;
++		}
++	} else if (alive >= 0 && tick % 60 == 0 && now - kicked >= 60) {
++		/* on the fallback: once a minute, try the collector again (a bind error is not retried) */
++		notify_rc("restart_rflog");
++		kicked = now;
++	}
++}
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index 291d7517c56..bb9d09f5c3b 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -82,6 +82,7 @@
+ #include <shared.h>
+ #include "reaper_nv.h"
+ #include "reaper_hook.h"
++#include <reaper_fwlog.h>	/* 2026-11-08: the firewall log target (NFLOG group 41 / limited LOG) */
+ #include <reaper_store.h>	/* 2026-10-21: RSTORE_SH_DIR - Dreadwatch history on Long-Term Storage */
+ #include <reaper_lists.h>	/* 2026-11-02: the built-in Dreadwatch list addresses, shared with httpd */
+ 
+@@ -633,17 +634,21 @@ static void rw_emit_dst_group(FILE *f, const char *ipt, const char *chain,
+  *   - NTP. A dead clock cascades into TLS failures everywhere, including the
+  *     feed fetch that would let the user recover.
+  * Drops here ALWAYS log, regardless of rwarden_log: the volume is low and the
+- * log line is the most valuable thing this chain produces. */
++ * log line is the most valuable thing this chain produces (NFLOG group 41, or the
++ * limited LOG - shared/reaper_fwlog.h). */
+ static void rw_emit_self_chain(FILE *f, const char *ipt, int v6)
+ {
++	char sd[32];
++
++	snprintf(sd, sizeof(sd), "%s -A RW_SDROP", ipt);
++	fprintf(f, "%s -N RW_SDROP; %s -F RW_SDROP\n", ipt, ipt);
++	rfl_sh_rule(f, sd, RFL_G_WARDEN, "REAPER-WARDEN-SELF ", NULL);	/* NFLOG or LOG, chosen when apply.sh runs */
+ 	fprintf(f,
+-	  "%s -N RW_SDROP; %s -F RW_SDROP\n"
+-	  "%s -A RW_SDROP -j LOG --log-prefix \"REAPER-WARDEN-SELF \" --log-level 4\n"
+ 	  "%s -A RW_SDROP -j DROP\n"
+ 	  "%s -N RW_SELF; %s -F RW_SELF\n"
+ 	  "%s -A RW_SELF -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN\n"
+ 	  "%s -A RW_SELF -o lo -j RETURN\n",
+-	  ipt, ipt, ipt, ipt, ipt, ipt, ipt, ipt);
++	  ipt, ipt, ipt, ipt, ipt);
+ 	rw_emit_local_dst(f, ipt, "RW_SELF", v6);
+ 	fprintf(f,
+ 	  "if [ -f /tmp/resolv.dnsmasq ]; then\n"
+@@ -989,7 +994,7 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "iptables -N RW_DROP; iptables -F RW_DROP\n");
+ 	if (nvram_match("rwarden_log", "1"))
+-		fprintf(f, "iptables -A RW_DROP -j LOG --log-prefix \"REAPER-WARDEN \" --log-level 4\n");
++		rfl_sh_rule(f, "iptables -A RW_DROP", RFL_G_WARDEN, "REAPER-WARDEN ", NULL);
+ 	fprintf(f,
+ 	  "iptables -A RW_DROP -j DROP\n");
+ 	/* RW_OUT: the destination-side group for FORWARDED traffic. It is a chain of
+@@ -1014,7 +1019,7 @@ static void rw_gen_apply(void)
+ 	if (do_out) {
+ 		fprintf(f, "iptables -N RW_ODROP; iptables -F RW_ODROP\n");
+ 		if (nvram_match("rwarden_log", "1"))
+-			fprintf(f, "iptables -A RW_ODROP -j LOG --log-prefix \"REAPER-WARDEN-OUT \" --log-level 4\n");
++			rfl_sh_rule(f, "iptables -A RW_ODROP", RFL_G_WARDEN, "REAPER-WARDEN-OUT ", NULL);
+ 		fprintf(f, "iptables -A RW_ODROP -j DROP\n");
+ 		fprintf(f, "iptables -N RW_OUT; iptables -F RW_OUT\n");
+ 		rw_emit_local_dst(f, "iptables", "RW_OUT", 0);
+@@ -1044,7 +1049,7 @@ static void rw_gen_apply(void)
+ 	fprintf(f,
+ 	  "ip6tables -N RW_DROP; ip6tables -F RW_DROP\n");
+ 	if (nvram_match("rwarden_log", "1"))
+-		fprintf(f, "ip6tables -A RW_DROP -j LOG --log-prefix \"REAPER-WARDEN \" --log-level 4\n");
++		rfl_sh_rule(f, "ip6tables -A RW_DROP", RFL_G_WARDEN, "REAPER-WARDEN ", NULL);
+ 	fprintf(f,
+ 	  "ip6tables -A RW_DROP -j DROP\n");
+ 	/* v6 RW_OUT / RW_SELF - same shape as v4. The local-destination exemptions
+@@ -1055,7 +1060,7 @@ static void rw_gen_apply(void)
+ 	if (do_out) {
+ 		fprintf(f, "ip6tables -N RW_ODROP; ip6tables -F RW_ODROP\n");
+ 		if (nvram_match("rwarden_log", "1"))
+-			fprintf(f, "ip6tables -A RW_ODROP -j LOG --log-prefix \"REAPER-WARDEN-OUT \" --log-level 4\n");
++			rfl_sh_rule(f, "ip6tables -A RW_ODROP", RFL_G_WARDEN, "REAPER-WARDEN-OUT ", NULL);
+ 		fprintf(f, "ip6tables -A RW_ODROP -j DROP\n");
+ 		fprintf(f, "ip6tables -N RW_OUT; ip6tables -F RW_OUT\n");
+ 		rw_emit_local_dst(f, "ip6tables", "RW_OUT", 1);
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 44b6ffa39bd..8e85d959bc2 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -4577,6 +4577,10 @@ int start_dnsqd(void)
+ 	
+ 	process_dns_dpi_nvram();
+         stop_dnsqd();
++	/* reaper 2026-11-09 (F-11 A): dnsqd no longer ships (its switches are set only by stock pages that
++	 * do not ship); an nvram set by hand must not make rc launch a missing program */
++	if (!f_exists("/usr/sbin/dnsqd"))
++		return 0;
+ 
+         if(nvram_get_int("nfcm_enable") == 1 || nvram_get_int("dns_dpi_bwmon_calc") == 1)
+         {
+@@ -5386,6 +5390,37 @@ static int _get_ipv6_addr(const char *ifname, char *ipv6addr, const size_t len)
+ }
+ #endif
+ 
++/* reaper 2026-11-08 (field RT-BE88U, Custom DDNS + Let's Encrypt never issued a certificate): restart_ddns_le sets
++ * le_rc_notify and restarts DDNS; only the inadyn success hook (ddns_updated) acted on it, so with a Custom
++ * ddns-start script the request stayed pending for ever. Both success hooks call this now. */
++static void
++ddns_le_rc_notify(void)
++{
++#ifdef RTCONFIG_LETSENCRYPT
++	if (nvram_match("le_rc_notify", "1")) {
++		nvram_set("le_rc_notify", "0");
++		stop_letsencrypt();
++		start_letsencrypt();
++#if defined(RTCONFIG_HTTPS)
++		/* v2.8.5: a renewal that arrives this way (inadyn -> ddns_updated) never
++		 * ran prepare_cert - only the DDNS page's Apply does - so the new
++		 * certificate sat on disk and httpd went on serving the old one until
++		 * something else restarted it. Arm the same reload the prepare_cert rc
++		 * verb arms; httpd installs it once the session ends, and the UI now
++		 * reads this flag to decide whether the renewal alert is warranted. */
++		if (prepare_cert_in_etc() > 0) {
++			nvram_set("httpds_reload_cert", "2");
++			rednsd_cert_changed();	/* reaper 2026-10-21: Encrypted DNS serves the same certificate */
++#if defined(RTCONFIG_IPV6)
++			if (ipv6_enabled() && nvram_match("misc_http_x", "1"))
++				nvram_set("httpds6_reload_cert", "2");
++#endif
++		}
++#endif
++	}
++#endif
++}
++
+ int
+ ddns_updated_main(int argc, char *argv[])
+ {
+@@ -5431,29 +5466,7 @@ ddns_updated_main(int argc, char *argv[])
+ //	logmessage("ddns", "ddns update ok");
+ 	nvram_set("ddns_check_retry", "10"); //Reset DDNS Retry
+ 
+-#ifdef RTCONFIG_LETSENCRYPT
+-	if (nvram_match("le_rc_notify", "1")) {
+-		nvram_set("le_rc_notify", "0");
+-		stop_letsencrypt();
+-		start_letsencrypt();
+-#if defined(RTCONFIG_HTTPS)
+-		/* v2.8.5: a renewal that arrives this way (inadyn -> ddns_updated) never
+-		 * ran prepare_cert - only the DDNS page's Apply does - so the new
+-		 * certificate sat on disk and httpd went on serving the old one until
+-		 * something else restarted it. Arm the same reload the prepare_cert rc
+-		 * verb arms; httpd installs it once the session ends, and the UI now
+-		 * reads this flag to decide whether the renewal alert is warranted. */
+-		if (prepare_cert_in_etc() > 0) {
+-			nvram_set("httpds_reload_cert", "2");
+-			rednsd_cert_changed();	/* reaper 2026-10-21: Encrypted DNS serves the same certificate */
+-#if defined(RTCONFIG_IPV6)
+-			if (ipv6_enabled() && nvram_match("misc_http_x", "1"))
+-				nvram_set("httpds6_reload_cert", "2");
+-#endif
+-		}
+-#endif
+-	}
+-#endif
++	ddns_le_rc_notify();
+ 
+ #ifdef RTCONFIG_OPENVPN
+ 	update_ovpn_profie_remote();
+@@ -7581,6 +7594,7 @@ stop_misc(void)
+ 	stop_rstats();
+ 	stop_rtraf();	/* reaper v1.3.0 */
+ 	stop_rdnsmap();	/* reaper v3.3.4 passive DNS name map */
++	stop_rflogd();	/* reaper 2026-11-08 the firewall log collector */
+ 	stop_rednsd();	/* reaper 2026-10-21 Encrypted DNS for devices */
+ 	stop_wallguard();	/* reaper 2026-10-21 Wallguard: banks the counters */
+ 	stop_rchqd();	/* reaper v1.6.1 */
+@@ -14398,6 +14412,7 @@ start_services(void)
+ 	restart_rstats();
+ 	start_rtraf();	/* reaper v1.3.0 traffic collector */
+ 	start_rdnsmap();	/* reaper v3.3.4 passive DNS name map (Flow Explorer destination names) */
++	rflog_sync();	/* reaper 2026-11-08 the firewall log collector + log path (rc/reaper_fwlog.c) */
+ 	start_rednsd();	/* reaper 2026-10-21 Encrypted DNS for devices (no-op unless reaper_dot_srv) */
+ 	start_wallguard();	/* reaper 2026-10-21 Wallguard ad & tracker blocker (no-op unless wallguard_enable) */
+ 	start_rchqd();	/* reaper v1.6.1 passive channel-quality monitor (no-op unless rchq_enable) */
+@@ -14711,9 +14726,8 @@ start_services(void)
+ #ifdef RTCONFIG_SSH
+ 	start_sshd();
+ #endif
+-#if defined(RTCONFIG_FSMD) && !defined(RTCONFIG_BCM_MFG)
+-	system("fsmd");
+-#endif
++	/* reaper 2026-11-09 (F-11 A): fsmd is no longer started or shipped - the only client of its socket
++	 * was the req_fsm test CLI; no rc, httpd or page asked it anything. */
+ #ifdef RTCONFIG_GEARUPPLUGIN
+ 	start_gu_service();
+ #endif
+@@ -21364,7 +21378,11 @@ check_ddr_done:
+ 	else if (strcmp(script, "logger") == 0)
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_logger();
+-		if(action & RC_SERVICE_START) start_logger();
++		if(action & RC_SERVICE_START) {
++			start_logger();
++			if (pids("rflogd"))
++				rflog_sync();	/* 2026-11-08: the collector forwards to the same remote log server */
++		}
+ 	}
+ #ifdef RTCONFIG_CROND
+ 	else if (strcmp(script, "crond") == 0)
+@@ -22688,6 +22706,11 @@ retry_wps_enr:
+ 		if(action & RC_SERVICE_STOP) stop_rdnsmap();
+ 		if(action & RC_SERVICE_START) start_rdnsmap();
+ 	}
++	else if (strcmp(script, "rflog") == 0)	/* reaper 2026-11-08 the firewall log collector (the watchdog restarts it) */
++	{
++		if(action & RC_SERVICE_STOP) stop_rflogd();
++		if(action & RC_SERVICE_START) rflog_sync();
++	}
+ 	else if (strcmp(script, "rednsd") == 0)	/* reaper 2026-10-21 Encrypted DNS for devices */
+ 	{
+ 		if(action & RC_SERVICE_STOP) stop_rednsd();
+@@ -26270,6 +26293,7 @@ ddns_custom_updated_main(int argc, char *argv[])
+ 		logmessage("ddns", "Completed custom ddns update");
+ 		nvram_set_int("ddns_last_wan_unit", wan_primary_ifunit());
+ 		nvram_set("ddns_check_retry", "10"); //Reset DDNS Retry
++		ddns_le_rc_notify();	/* reaper 2026-11-08: a pending Let's Encrypt request is acted on here too */
+ 	} else {
+ 		nvram_set("ddns_return_code", "unknown_error");
+ 		nvram_set("ddns_return_code_chk", "unknown_error");
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 4e4c60c28c3..4fcc4942ccf 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -8150,7 +8150,7 @@ void awsiot_check()
+ #ifdef RTCONFIG_DNSQUERY_INTERCEPT
+ void dnsqd_check(void)
+ {
+-        if (!pids("dnsqd"))
++        if (!pids("dnsqd") && f_exists("/usr/sbin/dnsqd"))	/* reaper 2026-11-09: not shipped (F-11 A) */
+         {
+                 notify_rc("start_dnsqd");
+         }
+@@ -11732,6 +11732,7 @@ void watchdog(int sig)
+ #ifdef WATCHDOG_PERIOD2
+ 	watchdog_period2 = (watchdog_period2 + 1) % 10;
+ #endif
++	reaper_fwlog_watch();	/* reaper 2026-11-08: the firewall log collector, every 2 s (rc/reaper_fwlog.c) */
+ 
+ #ifdef RTCONFIG_BCMARM
+ 	if ((u3_chk_life < 20)
+diff --git a/release/src/router/rflogd/Makefile b/release/src/router/rflogd/Makefile
+new file mode 100644
+index 00000000000..00e4eb0577f
+--- /dev/null
++++ b/release/src/router/rflogd/Makefile
+@@ -0,0 +1,44 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 the Reaper project maintainer
++# Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++# rflogd: the firewall log collector (NFLOG, shared/reaper_fwlog.h). libc only - rc decides
++# whether it runs and writes its configuration, so it links neither libnvram nor libshared.
++include ../common.mak
++
++CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
++CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/shared
++# same exploit-mitigation set as rdnsmapd / rtrafd (FORTIFY, strong canaries, format-security, PIE)
++CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
++LDFLAGS	= -pie -Wl,-z,relro,-z,now
++
++OBJS = rflogd.o
++
++all: rflogd
++
++rflogd: $(OBJS)
++	@echo " [rflogd] CC -o $@"
++	$(CC) $(LDFLAGS) -o $@ $(OBJS)
++
++	$(SIZECHECK)
++	$(CPTMP)
++
++clean:
++	rm -f rflogd .*.depend
++	rm -f *.o
++
++install: all
++	@echo " [rflogd] Installing..."
++	install -D rflogd $(INSTALLDIR)/bin/rflogd
++	$(STRIP) $(INSTALLDIR)/bin/rflogd
++
++%.o: %.c .%.depend
++	@echo " [rflogd] CC $@"
++	@$(CC) $(CFLAGS) -c $<
++
++.depend: $(OBJS:%.o=%.c)
++	@$(CC) $(CFLAGS) -M $^ > .depend
++
++.%.depend: %.c
++	@$(CC) $(CFLAGS) -M $< > $@
++
++-include $(OBJS:%.o=.%.depend)
+diff --git a/release/src/router/rflogd/rflogd.c b/release/src/router/rflogd/rflogd.c
+new file mode 100644
+index 00000000000..2727d4a3e96
+--- /dev/null
++++ b/release/src/router/rflogd/rflogd.c
+@@ -0,0 +1,1360 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * rflogd - the firewall log collector (2026-11-08, backlog fwlog-nflog-plan.md sections 2, 7, 8).
++ *
++ * Credit: this daemon is a client of the Linux kernel's nfnetlink_log, part of the netfilter project
++ * (https://www.netfilter.org/; kernel implementation net/netfilter/nfnetlink_log.c, GPL-2.0-only). It talks to
++ * it only through the kernel's public UAPI headers (linux/netfilter/nfnetlink_log.h); no upstream code is copied.
++ * The text of each line reproduces the format of the kernel's xt_LOG target (nf_log_ipv4 / nf_log_ipv6) so the
++ * Firewall page, the diag and anything reading the old syslog lines keep working.
++ *
++ * Why: a firewall LOG rule costs ~100-300 us of CPU per line (printk, klogd, syslogd, the JFFS2 write, serialized on
++ * the log-buffer lock); "Logged packets type: Accepted / Both" on a busy LAN saturated the router and starved DNS.
++ * Every firewall log rule rc writes now targets NFLOG while this daemon runs (shared/reaper_fwlog.h): the kernel
++ * hands it the first 128 bytes of each logged packet over netlink, batched, and it writes the line itself - about
++ * 2 us of kernel time and 5-8 us here per line, on its own CPU, off syslog, off the serial console.
++ *
++ *   - one netlink socket per group (40 stock, 41 Warden, 42 the closed blob, 43 the rules engine), so a burst in one
++ *     source cannot make the kernel drop another's batches (netlink drops per receiving socket);
++ *   - every message carries the instance's sequence number: a gap is counted exactly (lost), never silent;
++ *   - lines a rule's limiter suppressed (the NFLOG flood ceiling, or the fallback's 10/s) are counted from the
++ *     rules' packet counters (iptables-save -c, once a minute): log rule vs the rule right after it;
++ *   - RAM ring /tmp/reaper/fwlog/current.log (-> prev.log at ram_kb); when the long-term store lists the fwlog
++ *     dataset, the same bytes go to <store>/fwlog/YYYY-MM-DD.log through the no-follow store helpers, oldest days
++ *     removed past keep_days / keep_mb; a remote syslog target (rc passes log_ipaddr:log_port) gets each line by UDP;
++ *   - stats.json for the page, rwatch and the diag.
++ * It reads no nvram: rc writes fwlog.conf and decides whether it runs. Root for the binds, then every capability
++ * but CAP_NET_ADMIN and CAP_NET_RAW (the once-a-minute iptables-save) is dropped, before the first byte from the
++ * network is parsed. Every attribute and header is bounds-checked against its length.
++ */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <unistd.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <signal.h>
++#include <time.h>
++#include <poll.h>
++#include <ctype.h>
++#include <dirent.h>
++#include <sched.h>
++#include <syslog.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <sys/socket.h>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <net/if.h>
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <linux/netlink.h>
++#include <linux/netfilter/nfnetlink.h>
++#include <linux/netfilter/nfnetlink_log.h>
++#include <linux/capability.h>
++
++#include <reaper_fwlog.h>
++#ifndef RFLOGD_HOST
++#include <reaper_store.h>
++#include <reaper_store_io.h>
++#endif
++
++#define RFL_CONF	RFL_DIR "/fwlog.conf"
++#define RFL_CUR		RFL_DIR "/current.log"
++#define RFL_PREV	RFL_DIR "/prev.log"
++#define RFL_STATS	RFL_DIR "/stats.json"
++#define RFL_MAXG	8
++#define RFL_RCVBUF	(2 << 20)
++#define RFL_OUTBUF	65536
++#define RFL_LINE	1024
++
++/* ------------------------------------------------------------------ configuration (rc writes it) */
++struct rfl_conf {
++	int groups[RFL_MAXG], ngroups;
++	long ram_kb, keep_days, keep_mb;
++	unsigned cpu;			/* affinity mask, 0 = unpinned */
++	int copy;			/* bytes of each packet the kernel copies */
++	char fwd_host[64];		/* remote syslog, "" = none */
++	int fwd_port;
++	char host[64];
++};
++
++void rfl_conf_default(struct rfl_conf *c)	/* (not static: the host test calls it) */
++{
++	memset(c, 0, sizeof(*c));
++	c->groups[0] = RFL_G_STOCK; c->groups[1] = RFL_G_WARDEN; c->groups[2] = RFL_G_BLOB; c->groups[3] = RFL_G_REAPER;
++	c->ngroups = 4;
++	c->ram_kb = 2048; c->keep_days = 30; c->keep_mb = 256; c->cpu = 8; c->copy = 128; c->fwd_port = 514;
++	snprintf(c->host, sizeof(c->host), "router");
++}
++
++static int rfl_word_ok(const char *s)	/* host names and addresses: [A-Za-z0-9._:-] only */
++{
++	if (!*s)
++		return 0;
++	for (; *s; s++)
++		if (!(isalnum((unsigned char)*s) || *s == '.' || *s == '_' || *s == '-' || *s == ':'))
++			return 0;
++	return 1;
++}
++
++/* key=value lines; unknown keys and bad values are ignored (the default stays) */
++void rfl_conf_parse(struct rfl_conf *c, const char *text)
++{
++	char line[256];
++	const char *p = text;
++
++	while (*p) {
++		size_t n = strcspn(p, "\n");
++		char *v;
++		long x;
++
++		if (n >= sizeof(line))
++			n = sizeof(line) - 1;
++		memcpy(line, p, n);
++		line[n] = '\0';
++		p += strcspn(p, "\n");
++		if (*p)
++			p++;
++		if ((v = strchr(line, '=')) == NULL)
++			continue;
++		*v++ = '\0';
++		x = strtol(v, NULL, 10);
++		if (!strcmp(line, "groups")) {
++			char *s = v, *e;
++			int ng = 0;
++			while (*s && ng < RFL_MAXG) {
++				long g = strtol(s, &e, 10);
++				if (e == s)
++					break;
++				if (g > 0 && g < 65536)
++					c->groups[ng++] = (int)g;
++				s = (*e == ',') ? e + 1 : e;
++			}
++			if (ng)
++				c->ngroups = ng;
++		} else if (!strcmp(line, "ram_kb") && x >= 256 && x <= 65536)
++			c->ram_kb = x;
++		else if (!strcmp(line, "keep_days") && x >= 1 && x <= 3650)
++			c->keep_days = x;
++		else if (!strcmp(line, "keep_mb") && x >= 16 && x <= 65536)
++			c->keep_mb = x;
++		else if (!strcmp(line, "cpu") && x >= 0 && x <= 0xff)
++			c->cpu = (unsigned)x;
++		else if (!strcmp(line, "copy") && x >= 64 && x <= 512)
++			c->copy = (int)x;
++		else if (!strcmp(line, "fwd")) {
++			/* host:port, an IPv6 host in brackets: [2001:db8::1]:514 */
++			char h[64] = "";
++			int port = 514;
++			char *q;
++			if (*v == '[' && (q = strchr(v, ']')) != NULL && (size_t)(q - v - 1) < sizeof(h)) {
++				memcpy(h, v + 1, q - v - 1);
++				h[q - v - 1] = '\0';
++				if (q[1] == ':')
++					port = atoi(q + 2);
++			} else if ((q = strrchr(v, ':')) != NULL && strchr(v, ':') == q && (size_t)(q - v) < sizeof(h)) {
++				memcpy(h, v, q - v);
++				h[q - v] = '\0';
++				port = atoi(q + 1);
++			} else if (strlen(v) < sizeof(h))
++				snprintf(h, sizeof(h), "%s", v);
++			if (h[0] && rfl_word_ok(h) && port > 0 && port < 65536) {
++				snprintf(c->fwd_host, sizeof(c->fwd_host), "%s", h);
++				c->fwd_port = port;
++			} else
++				c->fwd_host[0] = '\0';
++		} else if (!strcmp(line, "host") && rfl_word_ok(v) && strlen(v) < sizeof(c->host))
++			snprintf(c->host, sizeof(c->host), "%s", v);
++	}
++}
++
++/* ------------------------------------------------------------------ the kernel side: config messages */
++/* One CONFIG message per group: BIND, then the copy mode (copy bytes of each packet), a 64 KB kernel batch buffer,
++ * a 1 s flush (TIMEOUT is in 1/100 s), up to 100 packets per batch, and per-instance sequence numbers. The kernel
++ * applies the command and the parameters in one pass. No PF_BIND: nfnetlink_log already registers for every family,
++ * and PF_BIND would swap the family's default logger. */
++static size_t rfl_put_attr(unsigned char *buf, size_t at, size_t cap, uint16_t type, const void *data, uint16_t len)
++{
++	struct nlattr *a;
++	size_t need = NLA_HDRLEN + NLA_ALIGN(len);
++
++	if (at + need > cap)
++		return 0;
++	a = (struct nlattr *)(buf + at);
++	a->nla_type = type;
++	a->nla_len = NLA_HDRLEN + len;
++	memcpy(buf + at + NLA_HDRLEN, data, len);
++	memset(buf + at + NLA_HDRLEN + len, 0, NLA_ALIGN(len) - len);
++	return at + need;
++}
++
++size_t rfl_cfg_msg(unsigned char *buf, size_t cap, uint16_t group, uint8_t cmd, int params, int copy, uint32_t seq)
++{
++	struct nlmsghdr *nh = (struct nlmsghdr *)buf;
++	struct nfgenmsg *nf;
++	struct nfulnl_msg_config_cmd c = { cmd };
++	struct nfulnl_msg_config_mode m;
++	uint32_t v;
++	uint16_t f;
++	size_t at = NLMSG_HDRLEN + NLMSG_ALIGN(sizeof(*nf));
++
++	if (cap < at)
++		return 0;
++	memset(buf, 0, at);
++	nh->nlmsg_type = (NFNL_SUBSYS_ULOG << 8) | NFULNL_MSG_CONFIG;
++	nh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
++	nh->nlmsg_seq = seq;
++	nf = (struct nfgenmsg *)(buf + NLMSG_HDRLEN);
++	nf->nfgen_family = AF_UNSPEC;
++	nf->version = NFNETLINK_V0;
++	nf->res_id = htons(group);
++	if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_CMD, &c, sizeof(c))))
++		return 0;
++	if (params) {
++		memset(&m, 0, sizeof(m));
++		m.copy_range = htonl((uint32_t)copy);
++		m.copy_mode = NFULNL_COPY_PACKET;
++		if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_MODE, &m, sizeof(m))))
++			return 0;
++		v = htonl(65536);
++		if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_NLBUFSIZ, &v, sizeof(v))))
++			return 0;
++		v = htonl(100);
++		if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_TIMEOUT, &v, sizeof(v))))
++			return 0;
++		v = htonl(100);
++		if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_QTHRESH, &v, sizeof(v))))
++			return 0;
++		f = htons(NFULNL_CFG_F_SEQ);
++		if (!(at = rfl_put_attr(buf, at, cap, NFULA_CFG_FLAGS, &f, sizeof(f))))
++			return 0;
++	}
++	nh->nlmsg_len = (uint32_t)at;
++	return at;
++}
++
++/* ------------------------------------------------------------------ line formatting (xt_LOG's text) */
++struct rfl_out { char *b; size_t n, cap; };
++
++static void ap(struct rfl_out *o, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
++static void ap(struct rfl_out *o, const char *fmt, ...)
++{
++	va_list va;
++	int r;
++
++	if (o->n + 1 >= o->cap)
++		return;
++	va_start(va, fmt);
++	r = vsnprintf(o->b + o->n, o->cap - o->n, fmt, va);
++	va_end(va);
++	if (r < 0)
++		return;
++	o->n += ((size_t)r < o->cap - o->n) ? (size_t)r : o->cap - o->n - 1;
++}
++
++static void ap_hex(struct rfl_out *o, const unsigned char *p, size_t n)
++{
++	size_t i;
++
++	for (i = 0; i < n; i++)
++		ap(o, "%02X", p[i]);
++}
++
++static uint16_t g16(const unsigned char *p) { return (uint16_t)((p[0] << 8) | p[1]); }
++static uint32_t g32(const unsigned char *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
++
++/* which prefixes carry --log-tcp-sequence / --log-tcp-options / --log-ip-options in their LOG form (the stock chains
++ * and the blob's); Warden's and the rules engine's never did */
++static int rfl_prefix_full(const char *prefix)
++{
++	static const char *const full[] = { "ACCEPT ", "DROP ", "DROP_DNS ", "DROP_IP ", NULL };
++	int i;
++
++	for (i = 0; full[i]; i++)
++		if (!strcmp(prefix, full[i]))
++			return 1;
++	return 0;
++}
++
++static void fmt_tcp(struct rfl_out *o, const unsigned char *t, size_t n, int frag, int full, const char *name)
++{
++	size_t doff;
++
++	ap(o, "PROTO=%s ", name);
++	if (frag)
++		return;
++	if (n < 20) {
++		ap(o, "INCOMPLETE [%zu bytes] ", n);
++		return;
++	}
++	ap(o, "SPT=%u DPT=%u ", g16(t), g16(t + 2));
++	if (full)
++		ap(o, "SEQ=%u ACK=%u ", g32(t + 4), g32(t + 8));
++	ap(o, "WINDOW=%u RES=0x%02x ", g16(t + 14), (t[12] & 0x0F) << 2);
++	if (t[13] & 0x80) ap(o, "CWR ");
++	if (t[13] & 0x40) ap(o, "ECE ");
++	if (t[13] & 0x20) ap(o, "URG ");
++	if (t[13] & 0x10) ap(o, "ACK ");
++	if (t[13] & 0x08) ap(o, "PSH ");
++	if (t[13] & 0x04) ap(o, "RST ");
++	if (t[13] & 0x02) ap(o, "SYN ");
++	if (t[13] & 0x01) ap(o, "FIN ");
++	ap(o, "URGP=%u ", g16(t + 18));
++	doff = (size_t)(t[12] >> 4) * 4;
++	if (full && doff > 20) {
++		if (doff > n)
++			ap(o, "OPT (TRUNCATED) ");
++		else {
++			ap(o, "OPT (");
++			ap_hex(o, t + 20, doff - 20);
++			ap(o, ") ");
++		}
++	}
++}
++
++static void fmt_udp(struct rfl_out *o, const unsigned char *u, size_t n, int frag, const char *name)
++{
++	ap(o, "PROTO=%s ", name);
++	if (frag)
++		return;
++	if (n < 8) {
++		ap(o, "INCOMPLETE [%zu bytes] ", n);
++		return;
++	}
++	ap(o, "SPT=%u DPT=%u LEN=%u ", g16(u), g16(u + 2), g16(u + 4));
++}
++
++static void fmt_ip4(struct rfl_out *o, const unsigned char *p, size_t n, int full)
++{
++	char s[INET_ADDRSTRLEN], d[INET_ADDRSTRLEN];
++	size_t ihl;
++	uint16_t off;
++	int frag;
++	const unsigned char *l4;
++	size_t rem;
++
++	if (n < 20) {
++		ap(o, "TRUNCATED ");
++		return;
++	}
++	ihl = (size_t)(p[0] & 0x0F) * 4;
++	if (ihl < 20 || ihl > n) {
++		ap(o, "TRUNCATED ");
++		return;
++	}
++	inet_ntop(AF_INET, p + 12, s, sizeof(s));
++	inet_ntop(AF_INET, p + 16, d, sizeof(d));
++	ap(o, "SRC=%s DST=%s LEN=%u TOS=0x%02X PREC=0x%02X TTL=%u ID=%u ",
++	   s, d, g16(p + 2), p[1] & 0x1E, p[1] & 0xE0, p[8], g16(p + 4));
++	off = g16(p + 6);
++	if (off & 0x8000) ap(o, "CE ");
++	if (off & 0x4000) ap(o, "DF ");
++	if (off & 0x2000) ap(o, "MF ");
++	if (off & 0x1FFF) ap(o, "FRAG:%u ", off & 0x1FFF);
++	frag = (off & 0x1FFF) != 0;
++	if (full && ihl > 20) {
++		ap(o, "OPT (");
++		ap_hex(o, p + 20, ihl - 20);
++		ap(o, ") ");
++	}
++	l4 = p + ihl;
++	rem = n - ihl;
++	switch (p[9]) {
++	case IPPROTO_TCP:
++		fmt_tcp(o, l4, rem, frag, full, "TCP");
++		break;
++	case IPPROTO_UDP:
++		fmt_udp(o, l4, rem, frag, "UDP");
++		break;
++	case IPPROTO_UDPLITE:
++		fmt_udp(o, l4, rem, frag, "UDPLITE");
++		break;
++	case IPPROTO_ICMP:
++		ap(o, "PROTO=ICMP ");
++		if (frag)
++			break;
++		if (rem < 4) {
++			ap(o, "INCOMPLETE [%zu bytes] ", rem);
++			break;
++		}
++		ap(o, "TYPE=%u CODE=%u ", l4[0], l4[1]);
++		switch (l4[0]) {
++		case 0: case 8: case 13: case 14: case 15: case 16: case 17: case 18:
++			if (rem >= 8)
++				ap(o, "ID=%u SEQ=%u ", g16(l4 + 4), g16(l4 + 6));
++			break;
++		case 12:
++			if (rem >= 8)
++				ap(o, "PARAMETER=%u ", l4[4]);
++			break;
++		case 5:
++			if (rem >= 8) {
++				char gw[INET_ADDRSTRLEN];
++				inet_ntop(AF_INET, l4 + 4, gw, sizeof(gw));
++				ap(o, "GATEWAY=%s ", gw);
++			}
++			break;
++		case 3:
++			if (l4[1] == 4 && rem >= 8)
++				ap(o, "MTU=%u ", g16(l4 + 6));
++			break;
++		}
++		break;
++	default:
++		ap(o, "PROTO=%u ", p[9]);
++	}
++}
++
++static void fmt_ip6(struct rfl_out *o, const unsigned char *p, size_t n, int full)
++{
++	char s[INET6_ADDRSTRLEN], d[INET6_ADDRSTRLEN];
++	uint32_t w0;
++	uint8_t nh;
++	size_t at = 40;
++	int frag = 0, hops = 0;
++
++	if (n < 40) {
++		ap(o, "TRUNCATED ");
++		return;
++	}
++	w0 = g32(p);
++	inet_ntop(AF_INET6, p + 8, s, sizeof(s));
++	inet_ntop(AF_INET6, p + 24, d, sizeof(d));
++	ap(o, "SRC=%s DST=%s LEN=%u TC=%u HOPLIMIT=%u FLOWLBL=%u ",
++	   s, d, (unsigned)g16(p + 4) + 40, (w0 >> 20) & 0xFF, p[7], w0 & 0xFFFFF);
++	nh = p[6];
++	/* extension headers: hop-by-hop, routing, destination options, fragment, AH */
++	while (hops++ < 8 && (nh == 0 || nh == 43 || nh == 60 || nh == 44 || nh == 51)) {
++		size_t len;
++		if (at + 8 > n) {
++			ap(o, "INCOMPLETE [%zu bytes] ", n - at);
++			return;
++		}
++		if (nh == 44) {
++			uint16_t off = g16(p + at + 2);
++			ap(o, "FRAG:%u ", off & 0xFFF8);
++			if (off & 0x0001) ap(o, "INCOMPLETE ");
++			ap(o, "ID:%08x ", g32(p + at + 4));
++			frag = (off & 0xFFF8) != 0;
++			len = 8;
++		} else if (nh == 51)
++			len = ((size_t)p[at + 1] + 2) * 4;
++		else
++			len = ((size_t)p[at + 1] + 1) * 8;
++		nh = p[at];
++		at += len;
++		if (frag)
++			break;
++	}
++	if (at > n) {
++		ap(o, "INCOMPLETE ");
++		return;
++	}
++	switch (nh) {
++	case IPPROTO_TCP:
++		fmt_tcp(o, p + at, n - at, frag, full, "TCP");
++		break;
++	case IPPROTO_UDP:
++		fmt_udp(o, p + at, n - at, frag, "UDP");
++		break;
++	case IPPROTO_UDPLITE:
++		fmt_udp(o, p + at, n - at, frag, "UDPLITE");
++		break;
++	case IPPROTO_ICMPV6: {
++		const unsigned char *c = p + at;
++		size_t rem = n - at;
++		ap(o, "PROTO=ICMPv6 ");
++		if (frag)
++			break;
++		if (rem < 4) {
++			ap(o, "INCOMPLETE [%zu bytes] ", rem);
++			break;
++		}
++		ap(o, "TYPE=%u CODE=%u ", c[0], c[1]);
++		if ((c[0] == 128 || c[0] == 129) && rem >= 8)
++			ap(o, "ID=%u SEQ=%u ", g16(c + 4), g16(c + 6));
++		else if (c[0] == 2 && rem >= 8)
++			ap(o, "MTU=%u ", g32(c + 4));
++		else if (c[0] == 4 && rem >= 8)
++			ap(o, "POINTER=%08x ", g32(c + 4));
++		break;
++	}
++	default:
++		ap(o, "PROTO=%u ", nh);
++	}
++}
++
++/* ------------------------------------------------------------------ one packet message */
++struct rfl_pkt {
++	int family;
++	char prefix[64];
++	uint32_t mark, indev, outdev, physin, physout, seq;
++	int has_seq;
++	const unsigned char *payload, *hw;
++	size_t plen, hwlen;
++	long long ts_sec, ts_usec;
++	int has_ts;
++};
++
++/* the attributes of one NFULNL_MSG_PACKET; 0 = usable, -1 = malformed (dropped, counted) */
++int rfl_parse(const unsigned char *msg, size_t len, struct rfl_pkt *pk)
++{
++	const struct nfgenmsg *nf;
++	size_t at;
++
++	memset(pk, 0, sizeof(*pk));
++	if (len < NLMSG_HDRLEN + NLMSG_ALIGN(sizeof(*nf)))
++		return -1;
++	nf = (const struct nfgenmsg *)(msg + NLMSG_HDRLEN);
++	pk->family = nf->nfgen_family;
++	at = NLMSG_HDRLEN + NLMSG_ALIGN(sizeof(*nf));
++	while (at + NLA_HDRLEN <= len) {
++		const struct nlattr *a = (const struct nlattr *)(msg + at);
++		const unsigned char *d = msg + at + NLA_HDRLEN;
++		size_t al = a->nla_len, dl;
++
++		if (al < NLA_HDRLEN || al > len - at)
++			return -1;
++		dl = al - NLA_HDRLEN;
++		switch (a->nla_type & NLA_TYPE_MASK) {
++		case NFULA_PREFIX: {
++			size_t i, k = 0;
++			for (i = 0; i < dl && d[i] && k + 1 < sizeof(pk->prefix); i++)
++				pk->prefix[k++] = (d[i] >= 0x20 && d[i] < 0x7F) ? (char)d[i] : '?';
++			pk->prefix[k] = '\0';
++			break;
++		}
++		case NFULA_MARK:
++			if (dl >= 4) pk->mark = g32(d);
++			break;
++		case NFULA_IFINDEX_INDEV:
++			if (dl >= 4) pk->indev = g32(d);
++			break;
++		case NFULA_IFINDEX_OUTDEV:
++			if (dl >= 4) pk->outdev = g32(d);
++			break;
++		case NFULA_IFINDEX_PHYSINDEV:
++			if (dl >= 4) pk->physin = g32(d);
++			break;
++		case NFULA_IFINDEX_PHYSOUTDEV:
++			if (dl >= 4) pk->physout = g32(d);
++			break;
++		case NFULA_SEQ:
++			if (dl >= 4) { pk->seq = g32(d); pk->has_seq = 1; }
++			break;
++		case NFULA_TIMESTAMP:
++			if (dl >= 16) {
++				pk->ts_sec = ((long long)g32(d) << 32) | g32(d + 4);
++				pk->ts_usec = ((long long)g32(d + 8) << 32) | g32(d + 12);
++				pk->has_ts = pk->ts_sec > 0;
++			}
++			break;
++		case NFULA_HWHEADER:
++			pk->hw = d;
++			pk->hwlen = dl > 64 ? 64 : dl;
++			break;
++		case NFULA_PAYLOAD:
++			pk->payload = d;
++			pk->plen = dl;
++			break;
++		}
++		at += NLA_ALIGN(al);
++	}
++	return pk->payload ? 0 : -1;
++}
++
++/* ifindex -> name, cached for 30 s (an index can be reused by a new interface) */
++#define RFL_IFC 32
++static struct { uint32_t idx; char name[IF_NAMESIZE]; time_t at; } ifc[RFL_IFC];
++
++static const char *rfl_ifname(uint32_t idx, time_t now)
++{
++	int i, slot = 0;
++
++	if (!idx)
++		return "";
++	for (i = 0; i < RFL_IFC; i++) {
++		if (ifc[i].idx == idx && now - ifc[i].at < 30)
++			return ifc[i].name;
++		if (ifc[i].at < ifc[slot].at)
++			slot = i;
++	}
++	if (!if_indextoname(idx, ifc[slot].name))
++		snprintf(ifc[slot].name, sizeof(ifc[slot].name), "if%u", idx);
++	ifc[slot].idx = idx;
++	ifc[slot].at = now;
++	return ifc[slot].name;
++}
++
++/* the line, without the timestamp: "<prefix>IN=.. OUT=.. [PHYSIN=.. PHYSOUT=..] [MAC=..] <ip> [MARK=0x..]" */
++size_t rfl_format(const struct rfl_pkt *pk, char *buf, size_t cap, time_t now)
++{
++	struct rfl_out o = { buf, 0, cap };
++	int full = rfl_prefix_full(pk->prefix);
++
++	buf[0] = '\0';
++	ap(&o, "%sIN=%s OUT=%s ", pk->prefix, rfl_ifname(pk->indev, now), rfl_ifname(pk->outdev, now));
++	if (pk->physin || pk->physout)
++		ap(&o, "PHYSIN=%s PHYSOUT=%s ", rfl_ifname(pk->physin, now), rfl_ifname(pk->physout, now));
++	if (pk->indev) {
++		size_t i;
++		ap(&o, "MAC=");
++		for (i = 0; pk->hw && i < pk->hwlen; i++)
++			ap(&o, "%s%02x", i ? ":" : "", pk->hw[i]);
++		ap(&o, " ");
++	}
++	if (pk->family == AF_INET)
++		fmt_ip4(&o, pk->payload, pk->plen, full);
++	else if (pk->family == AF_INET6)
++		fmt_ip6(&o, pk->payload, pk->plen, full);
++	else
++		ap(&o, "FAMILY=%d ", pk->family);
++	if (pk->mark)
++		ap(&o, "MARK=0x%x ", pk->mark);
++	while (o.n && buf[o.n - 1] == ' ')
++		buf[--o.n] = '\0';
++	return o.n;
++}
++
++/* the timestamp a line starts with: 2026-11-08T21:05:03.123-05:00 */
++size_t rfl_stamp(char *buf, size_t cap, long long sec, long usec)
++{
++	struct tm tm;
++	time_t t = (time_t)sec;
++	char z[8];
++	size_t n;
++
++	localtime_r(&t, &tm);
++	n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%S", &tm);
++	if (!strftime(z, sizeof(z), "%z", &tm) || strlen(z) != 5)
++		snprintf(z, sizeof(z), "+0000");
++	n += snprintf(buf + n, cap - n, ".%03ld%c%c%c:%c%c", usec / 1000, z[0], z[1], z[2], z[3], z[4]);
++	return n;
++}
++
++/* ------------------------------------------------------------------ suppressed lines (rule counters) */
++/* iptables-save -c text: for each log chain, the first rule that targets NFLOG or LOG and the rule right after it.
++ * The second sees every packet the first could have logged (the stock chains' NEW counter, Warden's / the blob's
++ * DROP), so their difference is what the rule's limiter held back. Counters restart with every rule reload: a
++ * value below the last one starts a new base. */
++#define RFL_SUPK 24
++struct rfl_sup { char key[40]; int group; unsigned long long last, base; };
++static struct rfl_sup sup[RFL_SUPK];
++static int nsup;
++
++static int rfl_chain_group(const char *chain)
++{
++	if (!strcmp(chain, "logaccept") || !strcmp(chain, "logdrop")) return RFL_G_STOCK;
++	if (!strcmp(chain, "RW_DROP") || !strcmp(chain, "RW_ODROP") || !strcmp(chain, "RW_SDROP")) return RFL_G_WARDEN;
++	if (!strcmp(chain, "logdrop_dns") || !strcmp(chain, "logdrop_ip")) return RFL_G_BLOB;
++	return 0;
++}
++
++static void rfl_sup_set(const char *fam, const char *chain, unsigned long long v)
++{
++	char key[40];
++	int i;
++
++	snprintf(key, sizeof(key), "%s:%s", fam, chain);
++	for (i = 0; i < nsup; i++)
++		if (!strcmp(sup[i].key, key))
++			break;
++	if (i == nsup) {
++		if (nsup == RFL_SUPK)
++			return;
++		memset(&sup[i], 0, sizeof(sup[i]));
++		snprintf(sup[i].key, sizeof(sup[i].key), "%s", key);
++		sup[i].group = rfl_chain_group(chain);
++		nsup++;
++	}
++	if (v < sup[i].last)
++		sup[i].base += sup[i].last;	/* the rules were reloaded */
++	sup[i].last = v;
++}
++
++void rfl_counters_parse(const char *fam, const char *text)
++{
++	char chain[32] = "", line[512];
++	unsigned long long logp = 0;
++	int state = 0;		/* 0 looking, 1 log rule seen in `chain` */
++	const char *p = text;
++
++	while (*p) {
++		size_t n = strcspn(p, "\n");
++		unsigned long long pk, by;
++		char ch[32];
++		int off = 0;
++
++		if (n >= sizeof(line))
++			n = sizeof(line) - 1;
++		memcpy(line, p, n);
++		line[n] = '\0';
++		p += strcspn(p, "\n");
++		if (*p)
++			p++;
++		if (sscanf(line, "[%llu:%llu] -A %31s %n", &pk, &by, ch, &off) < 3 || !rfl_chain_group(ch))
++			continue;
++		if (state && strcmp(ch, chain) != 0)
++			state = 0;
++		if (!state) {
++			if (strstr(line + off, "-j NFLOG") || strstr(line + off, "-j LOG")) {
++				snprintf(chain, sizeof(chain), "%s", ch);
++				logp = pk;
++				state = 1;
++			}
++			continue;
++		}
++		rfl_sup_set(fam, ch, pk >= logp ? pk - logp : 0);
++		state = 0;
++	}
++}
++
++unsigned long long rfl_suppressed(int group)
++{
++	unsigned long long t = 0;
++	int i;
++
++	for (i = 0; i < nsup; i++)
++		if (!group || sup[i].group == group)
++			t += sup[i].base + sup[i].last;
++	return t;
++}
++
++/* lines lost before this message: the gap between the instance's sequence number and the one expected (wraps at
++ * 2^32; a jump "backwards" - the instance was re-created - restarts the count, never a huge false loss) */
++uint32_t rfl_seq_gap(uint32_t *next, int *seen, uint32_t seq)
++{
++	uint32_t gap = 0;
++
++	if (*seen && seq != *next && (uint32_t)(seq - *next) < 0x80000000u)
++		gap = seq - *next;
++	*next = seq + 1;
++	*seen = 1;
++	return gap;
++}
++
++/* ------------------------------------------------------------------ host test build stops here */
++#ifndef RFLOGD_HOST
++
++static struct rfl_conf C;
++static volatile sig_atomic_t g_hup, g_term;
++static int sock[RFL_MAXG];
++static uint32_t seq_next[RFL_MAXG];
++static int seq_seen[RFL_MAXG];
++static unsigned long long g_rx[RFL_MAXG], g_lost[RFL_MAXG];
++static unsigned long long n_rx, n_written, n_lost, n_bad, n_enobufs, n_fwd, n_fwd_err;
++static unsigned long long st_written, st_missed, st_err;
++static char st_last_err[64] = "", st_file[24] = "", st_state[12] = "off";
++static long long ring_bytes;
++static int ring_fd = -1, fwd_fd = -1;
++static struct sockaddr_storage fwd_sa;
++static socklen_t fwd_salen;
++static char obuf[RFL_OUTBUF];
++static size_t olen;
++static char oday[11] = "";
++/* timers run on the monotonic clock: the router boots with a 2023 clock and NTP jumps it years forward (on _r3
++ * the first "last hour" summary fired two minutes after start and "since" said 2023). Wall time is used only for
++ * the lines' timestamps, the day files and stats.json's "updated" / "since". */
++static time_t since;
++static long mono_start, stats_at, sup_at, expire_at, hour_at, flush_at, errlog_at;
++
++/* the clock counts as set once it is later than this program was built: the router boots at its own default date
++ * (2023-12-31 on the RT-BE96U) - after 2020, so a fixed 2020 floor took it for a real clock (_r4 metal: "since" stayed
++ * 2023, and lines before NTP would have gone into a 2023-12-31.log day file). squashfs keeps the build's mtimes;
++ * a file that cannot be read falls back to 2020-09-13. */
++static time_t clock_floor = 1600000000;
++
++static int clock_set(time_t t)
++{
++	return t > clock_floor;
++}
++
++static long mono(void)
++{
++	struct timespec t;
++
++	clock_gettime(CLOCK_MONOTONIC, &t);
++	return (long)t.tv_sec;
++}
++static unsigned long long hour_rx;
++static int stats_dirty = 1;
++
++static void on_sig(int s)
++{
++	if (s == SIGHUP) g_hup = 1;
++	else g_term = 1;
++}
++
++static int rfl_read_file(const char *path, char *buf, size_t cap)
++{
++	int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++	ssize_t n;
++
++	buf[0] = '\0';
++	if (fd < 0)
++		return -1;
++	n = read(fd, buf, cap - 1);
++	close(fd);
++	if (n < 0)
++		return -1;
++	buf[n] = '\0';
++	return 0;
++}
++
++/* the store: RSTORE_PUB = "<base>\n,<datasets>,\n"; usable only when it lists fwlog and the clock is sane */
++static int rfl_store_base(char *base, size_t cap)
++{
++	char t[512], *nl;
++
++	if (rfl_read_file(RSTORE_PUB, t, sizeof(t)) != 0 || (nl = strchr(t, '\n')) == NULL)
++		return 0;
++	*nl = '\0';
++	if (!strstr(nl + 1, ",fwlog,") || t[0] != '/' || strlen(t) >= cap)
++		return 0;
++	memcpy(base, t, strlen(t) + 1);		/* shorter than cap (checked above) */
++	return 1;
++}
++
++struct rfl_day { char name[16]; long long size; };
++
++static int day_cmp(const void *a, const void *b)
++{
++	return strcmp(((const struct rfl_day *)a)->name, ((const struct rfl_day *)b)->name);
++}
++
++/* keep at most keep_days day files and keep_mb in total, oldest removed first, never the newest; no link followed */
++static void rfl_expire(const char *base)
++{
++	struct rfl_day *v = NULL, *nv;
++	long long total = 0;
++	int n = 0, cap = 0, i, dfd, d2;
++	DIR *dir;
++	struct dirent *e;
++
++	if ((dfd = rstore_open_sub(base, "fwlog")) < 0)
++		return;
++	if ((d2 = dup(dfd)) < 0 || (dir = fdopendir(d2)) == NULL) {
++		if (d2 >= 0)
++			close(d2);
++		close(dfd);
++		return;
++	}
++	while ((e = readdir(dir)) != NULL && n < 8000) {
++		struct stat st;
++		int y, m, d;
++		char tail[8];
++
++		if (strlen(e->d_name) != 14 || sscanf(e->d_name, "%4d-%2d-%2d%7s", &y, &m, &d, tail) != 4 || strcmp(tail, ".log"))
++			continue;
++		if (fstatat(dfd, e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode))
++			continue;
++		if (n == cap) {
++			cap = cap ? cap * 2 : 64;
++			if ((nv = realloc(v, (size_t)cap * sizeof(*v))) == NULL)
++				break;
++			v = nv;
++		}
++		memcpy(v[n].name, e->d_name, 15);	/* 14 characters (checked above) and the NUL */
++		v[n].size = st.st_size;
++		total += st.st_size;
++		n++;
++	}
++	closedir(dir);
++	if (n > 1)
++		qsort(v, (size_t)n, sizeof(*v), day_cmp);
++	for (i = 0; i < n - 1; i++) {
++		if (n - i <= C.keep_days && total <= C.keep_mb * 1048576LL)
++			break;
++		if (unlinkat(dfd, v[i].name, 0) == 0)
++			total -= v[i].size;
++	}
++	free(v);
++	close(dfd);
++}
++
++static void rfl_store_chunk(const char *buf, size_t len, const char *day)
++{
++	char base[256], name[24];
++	time_t now = time(NULL);
++
++	if (!clock_set(now)) {			/* no clock yet: a 2023 / 1970 day file name would be wrong forever */
++		st_missed += len;
++		return;
++	}
++	if (!rfl_store_base(base, sizeof(base))) {
++		if (strcmp(st_state, "volatile")) {
++			if (!strcmp(st_state, "usb"))
++				syslog(LOG_NOTICE, "the long-term store is gone or does not list the firewall log: RAM ring only");
++			snprintf(st_state, sizeof(st_state), "volatile");
++		}
++		st_missed += len;
++		return;
++	}
++	if (strcmp(st_state, "usb")) {
++		syslog(LOG_NOTICE, "firewall log lines go to %s/fwlog", base);
++		snprintf(st_state, sizeof(st_state), "usb");
++		expire_at = 0;
++	}
++	snprintf(name, sizeof(name), "%s.log", day);
++	if (rstore_append_buf(base, "fwlog", name, 0, buf, len) != 0) {
++		int e = errno;
++		st_err++;
++		if (!errlog_at || mono() - errlog_at >= 600) {	/* at most one line per 10 minutes */
++			syslog(LOG_WARNING, "could not write the firewall log to the store: %s", strerror(e));
++			errlog_at = mono();
++		}
++		snprintf(st_last_err, sizeof(st_last_err), "%s", strerror(e));
++		st_missed += len;
++		if (e == ENOSPC)
++			rfl_expire(base);
++		return;
++	}
++	st_written += len;
++	snprintf(st_file, sizeof(st_file), "%s", name);
++	if (mono() >= expire_at) {
++		rfl_expire(base);
++		expire_at = mono() + 3600;
++	}
++}
++
++static void rfl_ring_open(void)
++{
++	struct stat st;
++
++	if (ring_fd >= 0)
++		return;
++	ring_fd = open(RFL_CUR, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
++	ring_bytes = (ring_fd >= 0 && fstat(ring_fd, &st) == 0) ? st.st_size : 0;
++}
++
++static void rfl_flush(void)
++{
++	if (!olen)
++		return;
++	rfl_ring_open();
++	if (ring_fd >= 0) {
++		if (ring_bytes + (long long)olen > C.ram_kb * 1024LL) {
++			close(ring_fd);
++			ring_fd = -1;
++			rename(RFL_CUR, RFL_PREV);
++			rfl_ring_open();
++		}
++		if (ring_fd >= 0 && write(ring_fd, obuf, olen) == (ssize_t)olen)
++			ring_bytes += olen;
++	}
++	rfl_store_chunk(obuf, olen, oday);
++	n_written += olen;
++	olen = 0;
++	stats_dirty = 1;
++}
++
++static void rfl_forward(const char *body, long long sec)
++{
++	char m[RFL_LINE + 160];
++	struct tm tm;
++	time_t t = (time_t)sec;
++	char when[20];
++	int n;
++
++	if (fwd_fd < 0)
++		return;
++	localtime_r(&t, &tm);
++	strftime(when, sizeof(when), "%b %e %H:%M:%S", &tm);
++	/* RFC 3164: facility kern (0), severity notice (5) */
++	n = snprintf(m, sizeof(m), "<5>%s %s rflogd: %s", when, C.host, body);
++	if (n > 0 && sendto(fwd_fd, m, (size_t)n < sizeof(m) ? (size_t)n : sizeof(m) - 1, MSG_DONTWAIT,
++			    (struct sockaddr *)&fwd_sa, fwd_salen) > 0)
++		n_fwd++;
++	else
++		n_fwd_err++;
++}
++
++static void rfl_line(const struct rfl_pkt *pk, time_t now)
++{
++	char ts[48], body[RFL_LINE];
++	struct timespec tv;
++	long long sec;
++	long usec;
++	size_t tl, bl;
++	char day[11];
++
++	if (pk->has_ts) {
++		sec = pk->ts_sec;
++		usec = (long)pk->ts_usec;
++	} else {
++		clock_gettime(CLOCK_REALTIME, &tv);
++		sec = tv.tv_sec;
++		usec = tv.tv_nsec / 1000;
++	}
++	tl = rfl_stamp(ts, sizeof(ts), sec, usec);
++	bl = rfl_format(pk, body, sizeof(body), now);
++	snprintf(day, sizeof(day), "%.10s", ts);
++	if (olen && strcmp(day, oday))
++		rfl_flush();			/* a batch never spans midnight in the day files */
++	snprintf(oday, sizeof(oday), "%s", day);
++	if (olen + tl + bl + 2 > sizeof(obuf))
++		rfl_flush();
++	memcpy(obuf + olen, ts, tl);
++	olen += tl;
++	obuf[olen++] = ' ';
++	memcpy(obuf + olen, body, bl);
++	olen += bl;
++	obuf[olen++] = '\n';
++	rfl_forward(body, sec);
++}
++
++static void rfl_batch(int gi, const unsigned char *buf, size_t len, time_t now)
++{
++	const struct nlmsghdr *nh;
++	size_t rem = len;
++	struct rfl_pkt pk;
++
++	for (nh = (const struct nlmsghdr *)buf; NLMSG_OK(nh, rem); nh = NLMSG_NEXT(nh, rem)) {
++		if (nh->nlmsg_type == NLMSG_DONE || nh->nlmsg_type == NLMSG_NOOP || nh->nlmsg_type == NLMSG_ERROR)
++			continue;
++		if (nh->nlmsg_type != ((NFNL_SUBSYS_ULOG << 8) | NFULNL_MSG_PACKET))
++			continue;
++		if (rfl_parse((const unsigned char *)nh, nh->nlmsg_len, &pk) != 0) {
++			n_bad++;
++			continue;
++		}
++		if (pk.has_seq) {
++			uint32_t gap = rfl_seq_gap(&seq_next[gi], &seq_seen[gi], pk.seq);
++			if (gap) {
++				if (n_lost == 0)	/* the first loss of a run is worth a syslog line; the rest are counted */
++					syslog(LOG_WARNING, "group %d: %u firewall log line(s) lost (the kernel dropped a batch)",
++					       C.groups[gi], gap);
++				g_lost[gi] += gap;
++				n_lost += gap;
++				stats_dirty = 1;
++			}
++		}
++		g_rx[gi]++;
++		n_rx++;
++		hour_rx++;
++		rfl_line(&pk, now);
++	}
++}
++
++/* fork/exec a counters dump, read its stdout (no shell) */
++static int rfl_run(const char *path, char *const argv[], char *buf, size_t cap)
++{
++	int p[2], st;
++	pid_t pid;
++	size_t n = 0;
++	ssize_t r;
++
++	buf[0] = '\0';
++	if (pipe2(p, O_CLOEXEC) != 0)
++		return -1;
++	if ((pid = fork()) < 0) {
++		close(p[0]);
++		close(p[1]);
++		return -1;
++	}
++	if (pid == 0) {
++		int nul = open("/dev/null", O_RDWR);
++		dup2(p[1], 1);
++		if (nul >= 0) { dup2(nul, 0); dup2(nul, 2); }
++		execv(path, argv);
++		_exit(127);
++	}
++	close(p[1]);
++	while (n + 1 < cap && (r = read(p[0], buf + n, cap - 1 - n)) > 0)
++		n += (size_t)r;
++	buf[n] = '\0';
++	close(p[0]);
++	waitpid(pid, &st, 0);
++	return 0;
++}
++
++static void rfl_counters(void)
++{
++	static char buf[262144];
++	char *a4[] = { "iptables-save", "-c", "-t", "filter", NULL };
++	char *a6[] = { "ip6tables-save", "-c", "-t", "filter", NULL };
++
++	if (rfl_run("/usr/sbin/iptables-save", a4, buf, sizeof(buf)) == 0)
++		rfl_counters_parse("v4", buf);
++	if (access("/usr/sbin/ip6tables-save", X_OK) == 0 && rfl_run("/usr/sbin/ip6tables-save", a6, buf, sizeof(buf)) == 0)
++		rfl_counters_parse("v6", buf);
++	stats_dirty = 1;
++}
++
++static void rfl_stats(time_t now)
++{
++	char tmp[] = RFL_DIR "/.stats.XXXXXX";
++	FILE *f;
++	int fd, i;
++
++	/* started before NTP set the clock: "since" was a 2023 date - put it back by the time this has been running */
++	if (!clock_set(since) && clock_set(now))
++		since = now - (mono() - mono_start);
++	if ((fd = mkstemp(tmp)) < 0)
++		return;
++	if ((f = fdopen(fd, "w")) == NULL) {
++		close(fd);
++		unlink(tmp);
++		return;
++	}
++	fprintf(f, "{\"updated\":%ld,\"since\":%ld,\"pid\":%d,\"mode\":\"full\",\"rx\":%llu,\"written\":%llu,"
++		   "\"lost_seq\":%llu,\"bad\":%llu,\"enobufs\":%llu,\"suppressed\":%llu,\"ring_bytes\":%lld,\"ram_kb\":%ld,"
++		   "\"store\":\"%s\",\"store_file\":\"%s\",\"store_written\":%llu,\"store_missed\":%llu,\"store_err\":%llu,"
++		   "\"store_last_err\":\"%s\",\"keep_days\":%ld,\"keep_mb\":%ld,\"fwd\":%d,\"fwd_sent\":%llu,\"fwd_err\":%llu,"
++		   "\"groups\":[",
++		(long)now, (long)since, (int)getpid(), n_rx, n_written, n_lost, n_bad, n_enobufs, rfl_suppressed(0),
++		ring_bytes, C.ram_kb, st_state, st_file, st_written, st_missed, st_err, st_last_err, C.keep_days, C.keep_mb,
++		fwd_fd >= 0, n_fwd, n_fwd_err);
++	for (i = 0; i < C.ngroups; i++)
++		fprintf(f, "%s{\"g\":%d,\"rx\":%llu,\"lost\":%llu,\"suppressed\":%llu}", i ? "," : "",
++			C.groups[i], g_rx[i], g_lost[i], rfl_suppressed(C.groups[i]));
++	fprintf(f, "]}\n");
++	if (fclose(f) != 0 || rename(tmp, RFL_STATS) != 0)
++		unlink(tmp);
++	stats_dirty = 0;
++	stats_at = mono();
++}
++
++static void rfl_fwd_open(void)
++{
++	struct sockaddr_in *s4 = (struct sockaddr_in *)&fwd_sa;
++	struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&fwd_sa;
++
++	if (fwd_fd >= 0) {
++		close(fwd_fd);
++		fwd_fd = -1;
++	}
++	if (!C.fwd_host[0])
++		return;
++	memset(&fwd_sa, 0, sizeof(fwd_sa));
++	if (inet_pton(AF_INET, C.fwd_host, &s4->sin_addr) == 1) {
++		s4->sin_family = AF_INET;
++		s4->sin_port = htons((uint16_t)C.fwd_port);
++		fwd_salen = sizeof(*s4);
++	} else if (inet_pton(AF_INET6, C.fwd_host, &s6->sin6_addr) == 1) {
++		s6->sin6_family = AF_INET6;
++		s6->sin6_port = htons((uint16_t)C.fwd_port);
++		fwd_salen = sizeof(*s6);
++	} else {
++		syslog(LOG_WARNING, "remote log server '%s' is not an address: firewall lines are not forwarded", C.fwd_host);
++		return;
++	}
++	fwd_fd = socket(fwd_sa.ss_family, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++}
++
++static void rfl_conf_load(void)
++{
++	char t[2048];
++
++	rfl_conf_default(&C);
++	if (rfl_read_file(RFL_CONF, t, sizeof(t)) == 0)
++		rfl_conf_parse(&C, t);
++}
++
++/* bind one group; 0 ok, else the errno the kernel answered (EBUSY: someone else owns the group) */
++static int rfl_bind(int gi)
++{
++	unsigned char m[256], r[4096];
++	struct sockaddr_nl sa;
++	size_t len;
++	ssize_t n;
++	int fd, sz = RFL_RCVBUF;
++
++	if ((fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_NETFILTER)) < 0)
++		return errno;
++	memset(&sa, 0, sizeof(sa));
++	sa.nl_family = AF_NETLINK;
++	if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
++		int e = errno;
++		close(fd);
++		return e;
++	}
++	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &sz, sizeof(sz)) != 0)
++		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof(sz));
++	len = rfl_cfg_msg(m, sizeof(m), (uint16_t)C.groups[gi], NFULNL_CFG_CMD_BIND, 1, C.copy, (uint32_t)gi + 1);
++	if (!len || send(fd, m, len, 0) != (ssize_t)len) {
++		close(fd);
++		return EIO;
++	}
++	n = recv(fd, r, sizeof(r), 0);
++	if (n >= (ssize_t)NLMSG_HDRLEN) {
++		struct nlmsghdr *h = (struct nlmsghdr *)r;
++		if (h->nlmsg_type == NLMSG_ERROR && n >= (ssize_t)(NLMSG_HDRLEN + sizeof(struct nlmsgerr))) {
++			struct nlmsgerr *e = (struct nlmsgerr *)NLMSG_DATA(h);
++			if (e->error) {
++				close(fd);
++				return -e->error;
++			}
++		}
++	}
++	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
++	sock[gi] = fd;
++	return 0;
++}
++
++/* keep CAP_NET_ADMIN (the sockets' buffers) and CAP_NET_RAW (iptables-save), drop the rest for good */
++static void rfl_drop_caps(void)
++{
++	struct __user_cap_header_struct h = { _LINUX_CAPABILITY_VERSION_3, 0 };
++	struct __user_cap_data_struct d[2];
++	uint32_t keep = (1u << CAP_NET_ADMIN) | (1u << CAP_NET_RAW);
++	int c;
++
++	for (c = 0; c <= 63; c++)
++		if (c != CAP_NET_ADMIN && c != CAP_NET_RAW)
++			prctl(PR_CAPBSET_DROP, c, 0, 0, 0);
++	memset(d, 0, sizeof(d));
++	d[0].effective = d[0].permitted = keep;
++	if (syscall(SYS_capset, &h, d) != 0)
++		syslog(LOG_WARNING, "could not drop capabilities: %s", strerror(errno));
++	prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
++	prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
++}
++
++int main(void)
++{
++	static unsigned char rb[131072 + 64];
++	struct pollfd pf[RFL_MAXG];
++	struct sigaction sa;
++	time_t now;
++	int gi, bound = 0, err = 0;
++
++	openlog("rflogd", LOG_PID, LOG_DAEMON);
++	umask(077);
++	if (mkdir(RFL_DIR, 0700) != 0 && errno != EEXIST) {
++		syslog(LOG_ERR, "cannot create %s: %s", RFL_DIR, strerror(errno));
++		return 1;
++	}
++	{
++		struct stat st;
++		if (lstat(RFL_DIR, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 || (st.st_mode & 022)) {
++			syslog(LOG_ERR, "%s is not a private directory - not starting", RFL_DIR);
++			return 1;
++		}
++	}
++	rfl_conf_load();
++	{
++		struct stat bst;
++		if (stat("/proc/self/exe", &bst) == 0 && bst.st_mtime > clock_floor)
++			clock_floor = bst.st_mtime;
++	}
++	memset(&sa, 0, sizeof(sa));
++	sa.sa_handler = on_sig;
++	sigaction(SIGHUP, &sa, NULL);
++	sigaction(SIGTERM, &sa, NULL);
++	sigaction(SIGINT, &sa, NULL);
++	signal(SIGPIPE, SIG_IGN);
++
++	for (gi = 0; gi < C.ngroups; gi++) {
++		sock[gi] = -1;
++		if ((err = rfl_bind(gi)) != 0) {
++			syslog(LOG_ERR, "cannot take firewall log group %d: %s%s", C.groups[gi], strerror(err),
++			       err == EBUSY ? " (another program, ulogd?, owns it)" : "");
++			break;
++		}
++		bound++;
++	}
++	if (bound != C.ngroups) {
++		FILE *f = fopen(RFL_STATS, "w");
++		if (f) {
++			fprintf(f, "{\"updated\":%ld,\"bind_error\":%d,\"group\":%d}\n", (long)time(NULL), err, C.groups[gi]);
++			fclose(f);
++		}
++		return 2;			/* rc reads bind_error: stays on the LOG fallback, no restart loop */
++	}
++	if (C.cpu) {
++		cpu_set_t cs;
++		int c;
++		CPU_ZERO(&cs);
++		for (c = 0; c < 8; c++)
++			if (C.cpu & (1u << c))
++				CPU_SET(c, &cs);
++		sched_setaffinity(0, sizeof(cs), &cs);
++	}
++	if (nice(5) == -1 && errno) { /* not fatal */ }
++	rfl_drop_caps();
++	rfl_fwd_open();
++	since = now = time(NULL);
++	mono_start = mono();
++	hour_at = mono_start + 3600;
++	sup_at = mono_start + 5;
++	syslog(LOG_INFO, "collecting firewall log groups %d..%d (%d sockets)", C.groups[0], C.groups[C.ngroups - 1], C.ngroups);
++	rfl_stats(now);
++
++	while (!g_term) {
++		int n, i;
++		long m;
++
++		for (i = 0; i < C.ngroups; i++) {
++			pf[i].fd = sock[i];
++			pf[i].events = POLLIN;
++			pf[i].revents = 0;
++		}
++		n = poll(pf, (nfds_t)C.ngroups, 1000);
++		now = time(NULL);
++		m = mono();
++		if (n > 0)
++			for (i = 0; i < C.ngroups; i++) {
++				if (!(pf[i].revents & (POLLIN | POLLERR)))
++					continue;
++				for (;;) {
++					ssize_t r = recv(sock[i], rb, sizeof(rb), MSG_DONTWAIT);
++					if (r < 0) {
++						if (errno == ENOBUFS) {
++							/* the kernel dropped at least one batch for this socket; the sequence gap
++							 * on the next message says how many lines */
++							n_enobufs++;
++							stats_dirty = 1;
++							continue;
++						}
++						break;
++					}
++					if (r == 0)
++						break;
++					rfl_batch(i, rb, (size_t)r, now);
++				}
++			}
++		if (g_hup) {
++			g_hup = 0;
++			rfl_flush();
++			rfl_conf_load();
++			rfl_fwd_open();
++			sup_at = mono();
++			expire_at = 0;
++		}
++		if (olen && (m - flush_at >= 2 || olen > sizeof(obuf) / 2)) {
++			rfl_flush();
++			flush_at = m;
++		}
++		if (m >= sup_at) {
++			rfl_counters();
++			sup_at = m + 60;
++		}
++		if (m >= hour_at) {
++			if (hour_rx)
++				syslog(LOG_INFO, "%llu firewall log line(s) in the last hour; %llu lost, %llu suppressed since start",
++				       hour_rx, n_lost, rfl_suppressed(0));
++			hour_rx = 0;
++			hour_at = m + 3600;
++		}
++		if (stats_dirty && m - stats_at >= 2)
++			rfl_stats(now);
++	}
++	rfl_flush();
++	if (ring_fd >= 0) {
++		fsync(ring_fd);
++		close(ring_fd);
++	}
++	rfl_stats(time(NULL));
++	return 0;
++}
++#endif /* RFLOGD_HOST */
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 3d0cc1a60bc..46e2b8ebb17 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -3321,7 +3321,7 @@ struct nvram_tuple router_defaults[] = {
+ 	 * cache is NEVER here (must restore before the firewall arms, earlier than any
+ 	 * USB mount). No new daemon: the history writer rides the rwatch cron tick. */
+ 	{ "reaper_store", "ram", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* durable store: ram (default) | jffs | usb */
+-	{ "reaper_store_ds", "dev,traf,watch", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* datasets opted into durability (comma list): dev traf watch chq slog */
++	{ "reaper_store_ds", "dev,traf,watch,fwlog", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* datasets opted into durability (comma list): dev traf watch chq slog */
+ 	{ "reaper_store_vid", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* 2026-10-18: pinned USB store volume id (= <vol>/.reaper/store.id), set by Reaper_Storage.asp */
+ 	{ "reaper_store_vname", "", CKN_STR64, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* its label (display only) */
+ 	{"qos_irates", "100,100,100,100,100,0,0,0,0,0", CKN_STR512, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/shared/reaper_fwlog.h b/release/src/router/shared/reaper_fwlog.h
+new file mode 100644
+index 00000000000..71ce9a2bdda
+--- /dev/null
++++ b/release/src/router/shared/reaper_fwlog.h
+@@ -0,0 +1,111 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * shared/reaper_fwlog.h - the firewall log path (2026-11-08, backlog fwlog-nflog-plan.md section 7).
++ *
++ * Every firewall log rule rc writes takes its target text from here: the stock logaccept / logdrop bodies
++ * (rc/firewall.c), Warden's RW_DROP / RW_ODROP / RW_SDROP (rc/rwarden.c), the rules engine's per-rule log and its
++ * nat intercept / forward lines (rc/reaper_fw.c) and the closed blob's DROP_DNS / DROP_IP chains (rerouted in
++ * rc/firewall.c reaper_extra_log_reroute). Two forms:
++ *   - NFLOG to the collector (rflogd), one netlink group per source - no syslog, no printk, no console;
++ *   - the fallback: a rate-limited LOG at level 5 (kept by syslogd at log_level 6, off the serial console, whose
++ *     115200-baud write cost ~22 ms per line on the owner's box with console_loglevel 5).
++ * rc writes RFL_PATH ("nflog") only while the kernel takes NFLOG and the collector is running; absent, unreadable or
++ * anything else = the fallback. So a missing collector never means silent loss: rc swaps the file and rewrites the
++ * rules (rflog_sync). Past the fallback's rate the LINE is dropped, never the packet.
++ */
++#ifndef REAPER_FWLOG_H
++#define REAPER_FWLOG_H
++
++#include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#ifndef RFL_DIR			/* host tests point it at a scratch folder */
++#define RFL_DIR		"/tmp/reaper/fwlog"
++#endif
++#define RFL_PATH	RFL_DIR "/path"		/* "nflog\n" while the collector takes the lines */
++
++/* netlink groups, one socket each in rflogd: a burst in one source cannot drop another's lines */
++#define RFL_G_STOCK	40	/* logaccept / logdrop: "ACCEPT " "DROP " */
++#define RFL_G_WARDEN	41	/* "REAPER-WARDEN " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF " */
++#define RFL_G_BLOB	42	/* the closed write_extra_filter / 6: "DROP_DNS " "DROP_IP " */
++#define RFL_G_REAPER	43	/* the rules engine: "REAPER-FW:<n> " "REAPER-ICPT " "REAPER-ICPT6 " "REAPER-FWD " */
++
++/* the NFLOG path's flood ceiling (owner 2026-11-08): far above any normal traffic, but a packet flood on a per-packet
++ * chain (Warden logs every drop) cannot turn logging into a CPU sink - ~2 us of softirq per logged packet would be
++ * two cores at 1 Mpps. Both numbers are the most iptables' limit match takes: the rate XT_LIMIT_SCALE (10000/s,
++ * libxt_limit.c parse_rate) and the burst 0-10000 (its option table) - _r2 shipped burst 20000, iptables refused
++ * every NFLOG rule and the restore fallback left the log chains with no log rule at all (metal, 2026-11-08).
++ * test_fwlog_nflog.py checks every limit Reaper emits against the tree's own libxt_limit.c bounds. Suppressed lines
++ * are counted by rflogd from the rule / chain counters. */
++#define RFL_CEIL	"-m limit --limit 10000/s --limit-burst 10000 "
++/* the fallback: one token bucket per rule instance, then LOG at notice */
++#define RFL_LIMIT	"-m limit --limit 10/s --limit-burst 50 "
++#define RFL_LEVEL	"5"
++/* what the stock chains always logged; only LOG understands these (NFLOG hands rflogd the packet itself) */
++#define RFL_STOCK_OPTS	"--log-tcp-sequence --log-tcp-options --log-ip-options "
++
++/* 1 = NFLOG to the collector, 0 = the limited LOG */
++static inline int rfl_nflog(void)
++{
++	char b[8] = "";
++	ssize_t n;
++	int fd = open(RFL_PATH, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++
++	if (fd < 0)
++		return 0;
++	n = read(fd, b, sizeof(b) - 1);
++	close(fd);
++	return n >= 5 && strncmp(b, "nflog", 5) == 0;
++}
++
++/* The target text of one log rule, no newline. prefix keeps its trailing space ("ACCEPT "). limit: the LOG form's
++ * bucket, NULL = RFL_LIMIT (the rules engine passes its own per-rule 6/min); the NFLOG form always carries RFL_CEIL.
++ * logopts: "" or RFL_STOCK_OPTS, used by the LOG form only. */
++static inline const char *rfl_target(char *buf, size_t len, int nflog, int group, const char *prefix,
++				     const char *limit, const char *logopts)
++{
++	if (nflog)
++		snprintf(buf, len, RFL_CEIL "-j NFLOG --nflog-group %d --nflog-prefix \"%s\"", group, prefix);
++	else
++		snprintf(buf, len, "%s-j LOG --log-prefix \"%s\" %s--log-level " RFL_LEVEL,
++			 limit ? limit : RFL_LIMIT, prefix, logopts ? logopts : "");
++	return buf;
++}
++
++/* the same into one buffer per file, for a single use inside one fprintf */
++static inline const char *rfl_tgt(int nflog, int group, const char *prefix, const char *limit, const char *logopts)
++{
++	static char buf[192];
++
++	return rfl_target(buf, sizeof(buf), nflog, group, prefix, limit, logopts);
++}
++
++/* a stock log chain body (restore-file form): the NEW packet logged, a target-less NEW rule that only counts, then
++ * the verdict. rflogd reads the log rule's and the counting rule's packet counters (iptables-save -c): the difference
++ * is the lines a limiter suppressed (the fallback's 10/s or the NFLOG flood ceiling) - Warden's and the blob's chains
++ * need no such rule, their DROP right after the log rule sees every packet. One statement, so it can stand under an
++ * unbraced `if (ipv6_enabled())` as the fprintf it replaces did. */
++static inline void rfl_stock_chain(FILE *fp, const char *chain, const char *prefix, const char *verdict)
++{
++	fprintf(fp, "-A %s -m state --state NEW %s\n-A %s -m state --state NEW\n-A %s -j %s\n",
++		chain, rfl_tgt(rfl_nflog(), RFL_G_STOCK, prefix, NULL, RFL_STOCK_OPTS), chain, chain, verdict);
++}
++
++/* a log rule in a generated shell script that the firewall re-runs (Warden's apply.sh): the script picks NFLOG or the
++ * limited LOG when it RUNS, from the state file, so a path change needs only restart_firewall - never a regeneration.
++ * cmd is everything before the target ("iptables -A RW_DROP"). The rules engine does the same through its RFLR()
++ * function (rc/reaper_fw.c), which also keeps a failed rule counted. */
++static inline void rfl_sh_rule(FILE *f, const char *cmd, int group, const char *prefix, const char *limit)
++{
++	char a[192], b[192];
++
++	fprintf(f, "if [ \"$(cat " RFL_PATH " 2>/dev/null)\" = nflog ]; then %s %s; else %s %s; fi\n",
++		cmd, rfl_target(a, sizeof(a), 1, group, prefix, limit, ""),
++		cmd, rfl_target(b, sizeof(b), 0, group, prefix, limit, ""));
++}
++
++#endif /* REAPER_FWLOG_H */
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 7eed0ab6699..692ed8508d4 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -129,6 +129,8 @@ textarea.fld.rvrules{font-family:ui-monospace,Consolas,monospace;font-size:12px;
+    existing hide rule authoritative. */
+ .saved:not(.hidden){display:inline-block;max-width:420px;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .saved.err{color:var(--danger)}
++/* 2026-11-08: an add row's own message line may wrap (a refusal names the entry) */
++.addrow .saved:not(.hidden){white-space:normal;max-width:360px}
+ table.rt{width:100%;border-collapse:collapse;margin-top:10px;font-size:12.5px}
+ table.rt th{font-family:var(--hdr);font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:10.5px;color:var(--steel);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line-soft)}
+ table.rt td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--bone-dim);vertical-align:top}
+@@ -277,6 +279,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+     <div id="rv_nwrap" class="hidden"><p class="note"><b><#RFW_360#></b></p><ul class="rvn" id="rv_nlist"></ul></div>
+     <div id="rv_wwrap" class="hidden"><p class="note" id="rv_ww"></p></div>
+     <div id="rv_wwtwrap" class="hidden"><p class="note" id="rv_wwt"></p></div>
++    <div id="rv_wwfswrap" class="hidden"><p class="note" id="rv_wwfs"></p></div>
+     <p class="note"><#RFW_336#></p>
+     <p class="note"><#RFW_364#></p>
+     <!-- 2026-10-20 (reviewer: /jffs churn made every run noise; accepts must be logged):
+@@ -465,7 +468,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         </select></div>
+       <div class="fg grow"><span class="fl"><#RFW_108#> <span class="rtip" style="color:var(--steel);text-transform:none;letter-spacing:0"><#RFW_254#></span></span><textarea class="fld vals" id="ob_val" maxlength="1900" rows="1" spellcheck="false"></textarea></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="ob_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="ob_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ob_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="ob_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ob_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_obj"></span>
+     </div>
+     <div class="note warn hidden" id="ob_geowarn"><#RFW_153#></div>
+   </div>
+@@ -477,7 +480,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_106#></span><input class="fld s" id="gr_name" maxlength="25"></div>
+       <div class="fg"><span class="fl"><#RFW_116#></span><input class="fld s" id="gr_mem" maxlength="200" placeholder="obj1,obj2"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="gr_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="gr_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="gr_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="gr_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="gr_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_grp"></span>
+     </div>
+   </div>
+ 
+@@ -490,7 +493,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+         <select class="fld s" id="sv_proto"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">TCP + UDP</option><option value="icmp">ICMP</option></select></div>
+       <div class="fg"><span class="fl"><#RFW_119#></span><input class="fld s" id="sv_ports" maxlength="120" placeholder="80,443,8000:8100"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="sv_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="sv_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="sv_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="sv_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="sv_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_svc"></span>
+     </div>
+   </div>
+ </div>
+@@ -510,7 +513,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_106#></span><input class="fld s" id="zn_name" maxlength="25"></div>
+       <div class="fg"><span class="fl"><#RFW_121#></span><input class="fld s" id="zn_if" maxlength="120" placeholder="br0,tun+"></div>
+       <div class="fg"><span class="fl"><#RFW_109#></span><input class="fld s" id="zn_cmt" maxlength="60"></div>
+-      <button class="btn ghost sm" id="zn_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zn_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="zn_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zn_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_zone"></span>
+     </div>
+   </div>
+ 
+@@ -523,7 +526,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_124#></span><select class="fld s" id="zp_dst"></select></div>
+       <div class="fg"><span class="fl"><#RFW_125#></span>
+         <select class="fld s" id="zp_act"><option value="accept"><#RFW_138#></option><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option></select></div>
+-      <button class="btn ghost sm" id="zp_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zp_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="zp_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="zp_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_zpol"></span>
+     </div>
+   </div>
+ </div>
+@@ -544,7 +547,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_209#></span>
+         <select class="fld s" id="eg_act"><option value="drop"><#RFW_139#></option><option value="reject"><#RFW_140#></option><option value="accept"><#RFW_138#></option></select></div>
+       <div class="fg"><span class="fl"><#RFW_134#></span><input class="fld s" id="eg_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
+-      <button class="btn ghost sm" id="eg_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="eg_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="eg_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="eg_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_edef"></span>
+     </div>
+   </div>
+ </div>
+@@ -570,7 +573,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_214#></span><input class="fld s" id="nt_ipt" maxlength="24" placeholder="443"></div>
+       <div class="fg"><span class="fl"><#RFW_215#></span><select class="fld s" id="nt_src"></select></div>
+       <div class="fg"><span class="fl"><#RFW_134#></span><input class="fld s" id="nt_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
+-      <button class="btn ghost sm" id="nt_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="nt_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="nt_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="nt_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_nat"></span>
+     </div>
+   </div>
+ 
+@@ -594,7 +597,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       <div class="fg"><span class="fl"><#RFW_268#></span>
+         <select class="fld s" id="ic_snat"><option value="auto"><#RFW_269#></option><option value="on"><#RFW_270#></option><option value="off"><#RFW_271#></option></select></div>
+       <div class="fg"><span class="fl"><#RFW_134#></span><input class="fld s" id="ic_sched" maxlength="90" placeholder="Mon,Tue|09:00|17:00"></div>
+-      <button class="btn ghost sm" id="ic_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ic_cancel"><#CTL_Cancel#></button>
++      <button class="btn ghost sm" id="ic_add"><#RFW_59#></button><button class="btn ghost sm cancel" id="ic_cancel"><#CTL_Cancel#></button><span class="saved hidden" id="rfs_icpt"></span>
+     </div>
+     <p class="note"><#RFW_272#></p>
+   </div>
+@@ -735,6 +738,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+       </span>
+     </div>
+     <p class="note warn hidden" id="l_off"><#RFW_42#></p>
++    <p class="note" id="l_coll"></p>
+   </div>
+   <div class="cols2">
+     <div class="card" style="max-width:none">
+@@ -1083,6 +1087,9 @@ function rfwSchedBad(s){
+ function rfwJoin(rows){return rows.map(function(r){return r.join('>');}).map(function(r){return '<'+r;}).join('');}
+ function rfwName(v){return /^[A-Za-z0-9_]{1,25}$/.test(v||'');}
+ function rfwDash(v){return (v===''||v==null)?`<#RFW_160#>`:v;}
++/* 2026-11-08 field report (Address groups "Add does nothing"): each add row has its own message line.
++   rf_saved is on the Rules tab, so a refusal or a Saved on any other tab used to be shown on a hidden tab. */
++function rfwStat(list){return $('rfs_'+list)||$('rf_saved');}
+ 
+ function rfwLoad(cb){
+   fwcgi('action=cfg',function(j){
+@@ -1126,7 +1133,7 @@ function rfwRenderEdef(){
+   if(!RFW.edef.length){rtEmpty(tb,4);return;}
+   RFW.edef.forEach(function(r,i){
+     var tr=rtRow([r[1]||'',r[2]||'',rfwDash(r[3])],function(){
+-      if(EDIT.edef===i)editCancel('edef');RFW.edef.splice(i,1);rfwRenderEdef();rfwSave('edef',RFW.edef,$('rf_saved'));},
++      if(EDIT.edef===i)editCancel('edef');RFW.edef.splice(i,1);rfwRenderEdef();rfwSave('edef',RFW.edef,rfwStat('edef'));},
+       function(){ $('eg_obj').value=r[1]||''; $('eg_act').value=r[2]||''; $('eg_sched').value=r[3]||''; editMode('edef',i); rfwRenderEdef(); });
+     if(EDIT.edef===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1148,7 +1155,7 @@ function rfwRenderNat(){
+       r[1]||'', r[2]||'', r[3]||'', r[4]||'',
+       (r[5]?r[5]:`<#RFW_216#>`), rfwDash(r[7])
+     ],function(){
+-      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
++      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderNat();rfwSave('nat',RFW.nat,rfwStat('nat'));},
+       function(){ $('nt_proto').value=r[1]||''; $('nt_ep').value=r[2]||''; $('nt_ip').value=r[3]||''; $('nt_ipt').value=r[4]||''; $('nt_src').value=r[5]||''; $('nt_sched').value=r[7]||''; editMode('nat',i); rfwRenderNat(); });
+     if(EDIT.nat===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1172,7 +1179,7 @@ function rfwRenderIcpt(){
+       (m==='redirect'?`<#RFW_262#>`:((r[3]||'')+(r[12]?' / '+r[12]:''))), (r[10]?r[10]:`<#RFW_100#>`),
+       (r[11]==='on'?`<#RFW_270#>`:(r[11]==='off'?`<#RFW_271#>`:`<#RFW_269#>`))
+     ],function(){
+-      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,$('rf_saved'));},
++      if(EDIT.nat===i)editCancel('nat');RFW.nat.splice(i,1);rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,rfwStat('icpt'));},
+       function(){ $('ic_mode').value=m; $('ic_from').value=r[9]||''; $('ic_proto').value=r[1]||'';
+                   $('ic_port').value=r[2]||''; $('ic_ip').value=r[3]||''; $('ic_ipt').value=r[4]||''; $('ic_ip6').value=r[12]||'';
+                   $('ic_ex').value=r[10]||''; $('ic_snat').value=r[11]||'auto'; $('ic_sched').value=r[7]||'';
+@@ -1194,7 +1201,7 @@ function rfwRenderObj(){
+   if(!RFW.obj.length){rtEmpty(tb,5);return;}
+   RFW.obj.forEach(function(r,i){
+     var tr=rtRow([r[0]||'',r[1]||'',(r[2]||'').split(',').join(', '),r[3]||''],function(){
+-      if(EDIT.obj===i)editCancel('obj');RFW.obj.splice(i,1);rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,$('rf_saved'));},
++      if(EDIT.obj===i)editCancel('obj');RFW.obj.splice(i,1);rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,rfwStat('obj'));},
+       function(){ $('ob_name').value=r[0]||''; $('ob_type').value=r[1]||'cidr'; $('ob_val').value=(r[2]||'').split(',').join('\n'); $('ob_cmt').value=r[3]||''; editMode('obj',i); rfwRenderObj(); obValFit(); });
+     tr.getElementsByTagName('td')[2].className='val';
+     if(EDIT.obj===i)tr.className='editing';
+@@ -1206,7 +1213,7 @@ function rfwRenderGrp(){
+   if(!RFW.grp.length){rtEmpty(tb,4);return;}
+   RFW.grp.forEach(function(r,i){
+     var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      if(EDIT.grp===i)editCancel('grp');RFW.grp.splice(i,1);rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,$('rf_saved'));},
++      if(EDIT.grp===i)editCancel('grp');RFW.grp.splice(i,1);rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,rfwStat('grp'));},
+       function(){ $('gr_name').value=r[0]||''; $('gr_mem').value=r[1]||''; $('gr_cmt').value=r[2]||''; editMode('grp',i); rfwRenderGrp(); });
+     if(EDIT.grp===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1217,7 +1224,7 @@ function rfwRenderSvc(){
+   if(!RFW.svc.length){rtEmpty(tb,5);return;}
+   RFW.svc.forEach(function(r,i){
+     var tr=rtRow([r[0]||'',r[1]||'',rfwDash(r[2]),r[3]||''],function(){
+-      if(EDIT.svc===i)editCancel('svc');RFW.svc.splice(i,1);rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,$('rf_saved'));},
++      if(EDIT.svc===i)editCancel('svc');RFW.svc.splice(i,1);rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,rfwStat('svc'));},
+       function(){ $('sv_name').value=r[0]||''; $('sv_proto').value=r[1]||'tcp'; $('sv_ports').value=r[2]||''; $('sv_cmt').value=r[3]||''; editMode('svc',i); rfwRenderSvc(); });
+     if(EDIT.svc===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1228,7 +1235,7 @@ function rfwRenderZone(){
+   if(!RFW.zone.length){rtEmpty(tb,4);return;}
+   RFW.zone.forEach(function(r,i){
+     var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      if(EDIT.zone===i)editCancel('zone');RFW.zone.splice(i,1);rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,$('rf_saved'));},
++      if(EDIT.zone===i)editCancel('zone');RFW.zone.splice(i,1);rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,rfwStat('zone'));},
+       function(){ $('zn_name').value=r[0]||''; $('zn_if').value=r[1]||''; $('zn_cmt').value=r[2]||''; editMode('zone',i); rfwRenderZone(); });
+     if(EDIT.zone===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1239,7 +1246,7 @@ function rfwRenderZpol(){
+   if(!RFW.zpol.length){rtEmpty(tb,4);return;}
+   RFW.zpol.forEach(function(r,i){
+     var tr=rtRow([r[0]||'',r[1]||'',r[2]||''],function(){
+-      if(EDIT.zpol===i)editCancel('zpol');RFW.zpol.splice(i,1);rfwRenderZpol();rfwSave('zpol',RFW.zpol,$('rf_saved'));},
++      if(EDIT.zpol===i)editCancel('zpol');RFW.zpol.splice(i,1);rfwRenderZpol();rfwSave('zpol',RFW.zpol,rfwStat('zpol'));},
+       function(){ $('zp_src').value=r[0]||''; $('zp_dst').value=r[1]||''; $('zp_act').value=r[2]||''; editMode('zpol',i); rfwRenderZpol(); });
+     if(EDIT.zpol===i)tr.className='editing';
+     tb.appendChild(tr);
+@@ -1635,7 +1642,7 @@ function rvRender0(j){
+   $('rv_reset').classList.toggle('hidden',!(j&&(j.enabled===1||j.enabled==='1'||j.enabled===true)&&j.armed));
+   var en=!!(j&&(j.enabled===1||j.enabled==='1'||j.enabled===true));
+   tgSet($('rv_tg'),en);
+-  body.textContent='';tbl.classList.add('hidden');tr.classList.add('hidden');nl.textContent='';nw.classList.add('hidden');$('rv_wwrap').classList.add('hidden');
++  body.textContent='';tbl.classList.add('hidden');tr.classList.add('hidden');nl.textContent='';nw.classList.add('hidden');$('rv_wwrap').classList.add('hidden');$('rv_wwtwrap').classList.add('hidden');$('rv_wwfswrap').classList.add('hidden');
+   if(!en){st.textContent=`<#RFW_337#>`;ack.classList.add('hidden');return;}
+   /* no report yet (after a boot the first check can take up to 10 minutes):
+      nothing to accept, so the button waits with the report */
+@@ -1680,6 +1687,11 @@ function rvRender0(j){
+     $('rv_wwt').textContent=`<#RFW_410#>`.replace('%1',j.wwt).replace('%2',j.wwt_p||'');
+     $('rv_wwtwrap').classList.remove('hidden');
+   }
++  /* 2026-11-07 (field): the long-term store on a volume without file permissions - one note, not a list */
++  if(j.wwfs){
++    $('rv_wwfs').textContent=`<#RFW_411#>`.replace(/%1/g,j.wwfs).replace('%2',j.wwfs_p||'');
++    $('rv_wwfswrap').classList.remove('hidden');
++  }
+ }
+ /* 2026-10-26 (owner): every action works on the ticked rows through ONE bar (a single row is one tick) - the
+    per-row buttons that repeated the bar are gone. Accept folds the rows into the baseline (only against an
+@@ -1884,6 +1896,13 @@ function field(line,key){var m=line.match(new RegExp(key+'=(\\S+)'));return m?m[
+ function loadDrops(){
+   $('l_log').value=NV.fw_log_x||'none';
+   $('l_off').classList.toggle('hidden',!(NV.fw_log_x==='none'||NV.fw_log_x===''||NV.fw_log_x==='accept'));
++  /* 2026-11-08: the firewall log collector - running (lines / lost / held back by the flood limit) or the fallback */
++  xhr('/reaper_fw.cgi?action=fwlog_stats&http_id='+encodeURIComponent(REAPER_HTTPID),function(s){
++    var e=$('l_coll');if(!e)return;
++    if(s&&s.ok&&s.running&&s.path==='nflog'&&s.stats){e.className='note';
++      e.textContent=`<#RFW_413#>`.replace('%1',''+(s.stats.rx||0)).replace('%2',''+(s.stats.lost_seq||0)).replace('%3',''+(s.stats.suppressed||0));}
++    else{e.className='note warn';e.textContent=`<#RFW_414#>`;}
++  });
+   xhr('/reaper_fw.cgi?action=drops&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
+     if(!j||!j.ok){$('l_view').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';$('l_top').innerHTML='';return;}
+     var lines=(j.log_lines||j.lines||'').split('\n').filter(function(x){return x.trim()!=='';});
+@@ -1892,7 +1911,8 @@ function loadDrops(){
+     var rows=[],srcCount={};
+     for(var i=lines.length-1;i>=0;i--){
+       var ln=lines[i],cl=classOf(ln);
+-      var tm=(ln.match(/^(\w{3}\s+\d+\s+[\d:]+)/)||[])[1]||'';
++      /* 2026-11-08: the collector's lines start with an ISO time (2026-11-08T21:05:03.123-05:00), syslog's with Nov  8 21:05:03 */
++      var tm=((ln.match(/^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d|\w{3}\s+\d+\s+[\d:]+)/)||[])[1]||'').replace('T',' ');
+       var src=field(ln,'SRC'),dst=field(ln,'DST'),proto=field(ln,'PROTO'),dpt=field(ln,'DPT'),inif=field(ln,'IN');
+       rows.push({cl:cl,tm:tm,inif:inif,src:src,dst:dst,proto:proto,dpt:dpt});
+       if(src)srcCount[src]=(srcCount[src]||0)+1;
+@@ -2061,8 +2081,9 @@ function initLogging(){
+   $('l_refresh').onclick=loadDrops;
+ }
+ function initRfw(){
+-  var S=$('rf_saved');
+-  function bad(m){showSaved(S,false,m);}
++  /* S: the Rules tab line (Preview, Apply, engine switch). B: the add row in use - each handler sets it first */
++  var S=$('rf_saved'), B=S;
++  function bad(m){showSaved(B,false,m);}
+ 
+   /* the value box accepts one entry per line, or commas, or spaces - a pasted
+      list from a text file lands as-is; it is normalised to the engine's comma
+@@ -2075,6 +2096,7 @@ function initRfw(){
+   function obValFit(){ var ta=$('ob_val'); if(!ta)return; ta.style.height='36px'; var h=Math.min(220,Math.max(36,ta.scrollHeight)); ta.style.height=h+'px'; }
+   $('ob_val').oninput=obValFit;
+   $('ob_add').onclick=function(){
++    B=rfwStat('obj');
+     var n=$('ob_name').value.trim(),t=$('ob_type').value,
+         v=obNormalise($('ob_val').value),c=$('ob_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+@@ -2100,35 +2122,42 @@ function initRfw(){
+     }
+     editCommit('obj',[n,t,v,c.replace(/[<>]/g,'')]);
+     $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';obValFit();
+-    rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,S);
++    rfwRenderObj();rfwFillSelects();rfwSave('obj',RFW.obj,B);
+   };
+   $('ob_cancel').onclick=function(){ editCancel('obj'); $('ob_name').value='';$('ob_val').value='';$('ob_cmt').value='';obValFit(); rfwRenderObj(); };
+   $('gr_add').onclick=function(){
++    B=rfwStat('grp');
+     var n=$('gr_name').value.trim(),m=$('gr_mem').value.replace(/\s/g,''),c=$('gr_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!m)return bad(`<#RFW_66#>`);
+-    var members=m.split(','),known=RFW.obj.map(function(r){return r[0];}),i;
+-    for(i=0;i<members.length;i++)if(known.indexOf(members[i])<0)return bad(`<#RFW_67#>`);
++    /* 2026-11-08: members are address object NAMES - say which entry is not one (an IP typed here was
++       refused as "not valid"); empty entries from a stray comma are dropped */
++    var members=m.split(',').filter(function(x){return x;}),known=RFW.obj.map(function(r){return r[0];}),i;
++    if(!members.length)return bad(`<#RFW_66#>`);
++    for(i=0;i<members.length;i++)if(known.indexOf(members[i])<0)return bad(`<#RFW_412#>`.replace('%1',members[i]));
++    m=members.join(',');
+     /* reaper_fw.c RFW_MAX_SETS: the engine matches at most 16 sets per group */
+     if(members.length>16)return bad(`<#RFW_323#>`);
+     var gi=EDIT.grp;
+     if(RFW.grp.some(function(r,k){return k!==gi&&r[0]===n;})||RFW.obj.some(function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     editCommit('grp',[n,m.replace(/[<>]/g,''),c.replace(/[<>]/g,'')]);
+     $('gr_name').value='';$('gr_mem').value='';$('gr_cmt').value='';
+-    rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,S);
++    rfwRenderGrp();rfwFillSelects();rfwSave('grp',RFW.grp,B);
+   };
+   $('gr_cancel').onclick=function(){ editCancel('grp'); $('gr_name').value='';$('gr_mem').value='';$('gr_cmt').value=''; rfwRenderGrp(); };
+   $('sv_add').onclick=function(){
++    B=rfwStat('svc');
+     var n=$('sv_name').value.trim(),p=$('sv_proto').value,
+         po=(p==='icmp')?'':normPort($('sv_ports').value),c=$('sv_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(po===null)return bad(`<#RFW_67#>`);
+     if(!editCommit('svc',[n,p,po,c.replace(/[<>]/g,'')],function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     $('sv_name').value='';$('sv_ports').value='';$('sv_cmt').value='';
+-    rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,S);
++    rfwRenderSvc();rfwFillSelects();rfwSave('svc',RFW.svc,B);
+   };
+   $('sv_cancel').onclick=function(){ editCancel('svc'); $('sv_name').value='';$('sv_ports').value='';$('sv_cmt').value=''; rfwRenderSvc(); };
+   $('zn_add').onclick=function(){
++    B=rfwStat('zone');
+     var n=$('zn_name').value.trim(),f=$('zn_if').value.replace(/\s/g,''),c=$('zn_cmt').value.trim();
+     if(!rfwName(n))return bad(`<#RFW_157#>`);
+     if(!f)return bad(`<#RFW_66#>`);
+@@ -2137,22 +2166,24 @@ function initRfw(){
+     if(f.split(',').filter(function(x){return x;}).length>8)return bad(`<#RFW_324#>`);
+     if(!editCommit('zone',[n,f,c.replace(/[<>]/g,'')],function(r){return r[0]===n;}))return bad(`<#RFW_65#>`);
+     $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value='';
+-    rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,S);
++    rfwRenderZone();rfwFillSelects();rfwSave('zone',RFW.zone,B);
+   };
+   $('zn_cancel').onclick=function(){ editCancel('zone'); $('zn_name').value='';$('zn_if').value='';$('zn_cmt').value=''; rfwRenderZone(); };
+   /* ---- Phase 2: egress defaults (en>object>action>sched) ---- */
+   $('eg_add').onclick=function(){
++    B=rfwStat('edef');
+     var o=$('eg_obj').value,a=$('eg_act').value,sc=$('eg_sched').value.trim();
+     if(rfwSchedBad(sc))return bad(`<#RFW_253#>`);
+     if(!o)return bad(`<#RFW_66#>`);
+     var ei=EDIT.edef, een=(ei>=0&&RFW.edef[ei])?RFW.edef[ei][0]:'1';
+     if(!editCommit('edef',[een,o,a,sc.replace(/[<>]/g,'')],function(r){return r[1]===o;}))return bad(`<#RFW_65#>`);
+     $('eg_sched').value='';
+-    rfwRenderEdef();rfwSave('edef',RFW.edef,S);
++    rfwRenderEdef();rfwSave('edef',RFW.edef,B);
+   };
+   $('eg_cancel').onclick=function(){ editCancel('edef'); $('eg_sched').value=''; rfwRenderEdef(); };
+   /* ---- Phase 3: hardened forwards (en>proto>ext>ip>int>src>log>sched) ---- */
+   $('nt_add').onclick=function(){
++    B=rfwStat('nat');
+     var p=$('nt_proto').value, ep=$('nt_ep').value.trim(), ip=$('nt_ip').value.trim(),
+         ipt=$('nt_ipt').value.trim(), src=$('nt_src').value, sc=$('nt_sched').value.trim();
+     if(rfwSchedBad(sc))return bad(`<#RFW_253#>`);
+@@ -2166,13 +2197,14 @@ function initRfw(){
+     var ni=EDIT.nat, nen=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][0]:'1', nlog=(ni>=0&&RFW.nat[ni])?RFW.nat[ni][6]:'0';
+     if(!editCommit('nat',[nen,p,ep,ip,ipt,src,nlog,sc.replace(/[<>]/g,'')],function(r){return r[1]===p&&r[2]===ep;}))return bad(`<#RFW_65#>`);
+     $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value='';
+-    rfwRenderNat();rfwSave('nat',RFW.nat,S);
++    rfwRenderNat();rfwSave('nat',RFW.nat,B);
+   };
+   $('nt_cancel').onclick=function(){ editCancel('nat'); $('nt_ep').value='';$('nt_ip').value='';$('nt_ipt').value='';$('nt_sched').value=''; rfwRenderNat(); };
+   /* ---- Service Intercept: same list, mode>szone>exempt>snat appended ---- */
+   if($('ic_mode')){
+     $('ic_mode').onchange=rfwIcptSync; rfwIcptSync();
+     $('ic_add').onclick=function(){
++      B=rfwStat('icpt');
+       var md=$('ic_mode').value, fz=$('ic_from').value, p=$('ic_proto').value,
+           ep=$('ic_port').value.trim(), ip=$('ic_ip').value.trim(), ipt=$('ic_ipt').value.trim(),
+           ex=$('ic_ex').value, sn=$('ic_snat').value, sc=$('ic_sched').value.trim(),
+@@ -2194,7 +2226,7 @@ function initRfw(){
+       if(!editCommit('nat',rec,
+                      function(r){return rfwIcptMode(r)!=='forward'&&r[1]===p&&r[2]===ep&&r[9]===fz;}))return bad(`<#RFW_65#>`);
+       $('ic_port').value='';$('ic_ip').value='';$('ic_ip6').value='';$('ic_ipt').value='';$('ic_sched').value='';
+-      rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,S);
++      rfwRenderIcpt();rfwRenderNat();rfwSave('nat',RFW.nat,B);
+     };
+     $('ic_cancel').onclick=function(){ editCancel('nat');
+       $('ic_port').value='';$('ic_ip').value='';$('ic_ip6').value='';$('ic_ipt').value='';$('ic_sched').value='';
+@@ -2232,15 +2264,17 @@ function initRfw(){
+     });
+   };
+   $('zp_add').onclick=function(){
++    B=rfwStat('zpol');
+     var s=$('zp_src').value,d=$('zp_dst').value,a=$('zp_act').value;
+     if(!s||!d)return bad(`<#RFW_66#>`);
+     /* reaper_fw.c RFW_MAX_ZPOL: the engine emits at most 64 zone policies */
+     if(EDIT.zpol<0&&RFW.zpol.length>=64)return bad(`<#RFW_325#>`);
+     if(!editCommit('zpol',[s,d,a],function(r){return r[0]===s&&r[1]===d;}))return bad(`<#RFW_65#>`);
+-    rfwRenderZpol();rfwSave('zpol',RFW.zpol,S);
++    rfwRenderZpol();rfwSave('zpol',RFW.zpol,B);
+   };
+   $('zp_cancel').onclick=function(){ editCancel('zpol'); rfwRenderZpol(); };
+   $('rf_add').onclick=function(){
++    B=S;
+     var r=['1',$('rf_dir').value,$('rf_act').value,
+            $('rf_szone').value,$('rf_sobj').value,
+            $('rf_dzone').value,$('rf_dobj').value,
+diff --git a/release/src/router/www/Reaper_Log.asp b/release/src/router/www/Reaper_Log.asp
+index 2a3efd1a102..3127d30b17a 100644
+--- a/release/src/router/www/Reaper_Log.asp
++++ b/release/src/router/www/Reaper_Log.asp
+@@ -67,6 +67,7 @@
+     <div class="wins" id="wins">
+       <button type="button" class="win on" data-v="sys"><#RLOG_01#></button>
+       <button type="button" class="win" data-v="login"><#RLOG_02#></button>
++      <button type="button" class="win" data-v="fw"><#RLOG_102#></button>
+     </div>
+     <div class="spacer"></div>
+     <input type="text" id="find" placeholder="<#RLOG_89#>" title="<#RLOG_91#>" autocomplete="off">
+@@ -144,7 +145,7 @@ var UPSTR = '<% uptime(); %>';
+ var LEVELS = ['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug', 'all'];
+ var HOOK = {sys: 'nvram_dump("syslog.log","")', login: 'nvram_dump("security_recored.log","")'};
+ var view = 'sys', FILTER = ["already exist in UDB, can't add it", "not mesh client, can't update it's ip", "not exist in UDB, can't update it", 'send_redir_page'];
+-var timer = null, busy = false, lastText = {sys: null, login: null};
++var timer = null, busy = false, lastText = {sys: null, login: null, fw: null};
+ var HID = <% nvram_get_js("http_id"); %>;
+ var SAVED = [], LFMAX = 64, LFLEN = 128;   /* the saved exclusions; the limits come back from reaper_logf.cgi */
+ 
+@@ -184,14 +185,19 @@ function render(){
+   box.textContent = out.join('\n');
+   if (atEnd) box.scrollTop = box.scrollHeight;
+   q('logmeta').textContent = out.length + ' ' + `<#RLOG_10#>` + (want.length ? ' (' + `<#RLOG_11#>` + ')' : '') +
+-    (hidden ? ' - ' + hidden + ' ' + `<#RLOG_100#>` : '');
++    (hidden ? ' - ' + hidden + ' ' + `<#RLOG_100#>` : '') + (view === 'fw' ? ' - ' + `<#RLOG_103#>` : '');
+ }
+ function load(force){
+   if (busy) return; busy = true;
+   var v = view, x = new XMLHttpRequest();
+-  x.open('GET', '/appGet.cgi?hook=' + encodeURIComponent(HOOK[v]) + '&_=' + Date.now(), true);
++  /* 2026-11-08: the Firewall view reads the Firewall page's reader - the collector's ring, or syslog on the fallback */
++  x.open('GET', v === 'fw' ? '/reaper_fw.cgi?action=drops&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now()
++                         : '/appGet.cgi?hook=' + encodeURIComponent(HOOK[v]) + '&_=' + Date.now(), true);
+   x.timeout = 15000;
+-  x.onload = function(){ busy = false; if (x.status === 200){ var t = cut(x.responseText); if (force || t !== lastText[v]){ lastText[v] = t; if (v === view) render(); } } };
++  x.onload = function(){ busy = false; if (x.status === 200){ var t, j = null;
++    if (v === 'fw'){ try { j = JSON.parse(x.responseText); } catch (e) { j = null; } t = j && j.ok ? String(j.lines || '') : ''; }
++    else t = cut(x.responseText);
++    if (force || t !== lastText[v]){ lastText[v] = t; if (v === view) render(); } } };
+   x.onerror = x.ontimeout = function(){ busy = false; };
+   x.send();
+ }
+diff --git a/release/src/router/www/Reaper_Storage.asp b/release/src/router/www/Reaper_Storage.asp
+index 794cadbca66..47ab7a85168 100644
+--- a/release/src/router/www/Reaper_Storage.asp
++++ b/release/src/router/www/Reaper_Storage.asp
+@@ -78,7 +78,7 @@ td{padding:10px 10px;border-bottom:1px solid var(--line-soft);vertical-align:mid
+ tr:last-child td{border-bottom:none}
+ td.dsname{color:var(--bone);white-space:nowrap}
+ td.dswrite{color:var(--steel);font-size:12px;white-space:normal;max-width:360px}
+-td.dscap{color:var(--steel);white-space:nowrap}
++td.dscap{color:var(--steel);white-space:nowrap;min-width:8.5em}
+ td.dssince{color:var(--bone-dim);white-space:nowrap}
+ .tg{position:relative;width:40px;height:21px;border-radius:12px;background:#26262c;border:1px solid rgba(255,255,255,.12);cursor:pointer;display:inline-block;vertical-align:middle}
+ .tg::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:var(--steel);transition:.15s}
+@@ -213,6 +213,10 @@ var DSETS = [
+   {k:'watch', name:`<#RDST_14#>`, write:`<#RDST_15#>`, cap:'3 ' + CAP_INC},
+   {k:'chq',   name:`<#RDST_16#>`, write:`<#RDST_17#>`, cap:'4 MB ' + CAP_RING},
+   {k:'slog',  name:`<#RDST_18#>`, write:`<#RDST_19#>`, cap:'8 MB x 2'},
++  /* 2026-11-08: the firewall log collector (rflogd) - one file a day, USB only (the line rate would wear flash) */
++  /* 2026-11-08 (owner, _r4): the retention text sat in the size cell (nowrap) and widened its column - the
++     table re-flowed whenever the row's size changed; it is part of the description now */
++  {k:'fwlog', name:`<#RDST_113#>`, write:`<#RDST_114#>` + '; ' + `<#RDST_115#>`, cap:'', usbonly:1},
+   /* 2026-10-21: Wallguard / Dreadwatch / Encrypted DNS. shl = USB only (lists are big; the table
+      itself never leaves RAM); shh / dw caps follow the location (16 MB x 2 USB, 2 MB x 2 JFFS) */
+   {k:'shl',   name:`<#RDST_99#>`,  write:`<#RDST_100#>`, cap:'', usbonly:1},
+@@ -343,7 +347,8 @@ function render(){
+       var sinceEpoch = (S && S[ds.k + '_since']) ? S[ds.k + '_since'] : 0;
+       since = (durable && sinceEpoch)
+             ? fmtDate(sinceEpoch) : '<span style="color:var(--steel)">&mdash;</span>';
+-      if(ds.usbonly) cap = (S && S.shl_bytes) ? fmtBytes(S.shl_bytes) : '&mdash;';
++      /* a USB-only row shows its own size (shl_bytes, fwlog_bytes), and only its size */
++      if(ds.usbonly) cap = (S && S[ds.k + '_bytes']) ? fmtBytes(S[ds.k + '_bytes']) : '&mdash;';
+       if(ds.logcap) cap = (loc === 'usb' ? '16 MB' : '2 MB') + ' x 2';
+     }
+     el += '<tr>' +
+-- 
+2.25.1
+

@@ -410,8 +410,8 @@ finally:
     shutil.rmtree(work, ignore_errors=True)
 ok('"RV_AUTH_N=10\\n"' in rw and "_rv_auth() {" in rw and "grep -v 'rmcpd-lab' $_win" in rw and "tail -n 50 $RV_TMP/review.auth" in rw,
    "rwatch.c: the login watch has its threshold, ignores the lab daemon's echo and caps the notices file")
-ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwt\\\\\\":%d,\\\\\\"wwt_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
-   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20), then the /tmp,/var folder count and first path (2026-11-06, C-8)")
+ok('\\\\\\"notices_n\\\\\\":%d,\\\\\\"ww\\\\\\":%d,\\\\\\"ww_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwt\\\\\\":%d,\\\\\\"wwt_p\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwfs\\\\\\":\\\\\\"%s\\\\\\",\\\\\\"wwfs_p\\\\\\":\\\\\\"%s\\\\\\"}' in rw,
+   "rwatch.c: the report carries notices_n for the dashboard bar, then the /jffs write-for-everyone count and first path (2026-10-20), then the /tmp,/var folder count and first path (2026-11-06, C-8), then the store's no-permission file system and base (2026-11-07)")
 
 # ---- 3. pins in source
 i_heal = rw.index('"HEALGRACE=300\\n"'); i_entry = rw.index('"[ \\"$1\\" = review ] && { _rv_run; exit 0; }\\n"')
@@ -464,7 +464,7 @@ ok("localStorage" not in between(dash, '<div class="rvb" id="rvb">', "})();</scr
 pr = between(dash, "function paintReview(){", "\n}\n", "paintReview")
 ok('id="s_rv_tag"' in dash and 'data-go="Reaper_Firewall.asp?t=status"' in dash[dash.index('id="s_wdn_tag"'):dash.index('id="s_rv_tag"')],
    "posture: the Security Review row sits after Warden and opens the Status tab")
-ok("set(`<#btn_Disabled#>`,'warn'" in pr and "set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`)" in pr and "set(`<#RDSH_108#>`,'ok'" in pr and "set(`<#RDSH_105#>`,'danger'" in pr,
+ok("set(`<#btn_Disabled#>`,'warn'" in pr and "set(`<#RDSH_109#>`,'warn',`<#RDSH_113#>`+fsn)" in pr and "set(`<#RDSH_108#>`,'ok'" in pr and "set(`<#RDSH_105#>`,'danger'" in pr,
    "posture: Disabled and No baseline amber, Baseline green, Review red")
 # 2026-10-19: no report yet (a boot: the first check can take up to 10 minutes) - a baseline on
 # disk keeps the Baseline word in amber instead of claiming "No baseline"; httpd says which
@@ -478,7 +478,7 @@ ok("innerHTML" not in pr and "'rwatch_review'" in dash and "review:'rwatch_revie
 ok("window.RVJ=j; if(typeof paintReview==='function')paintReview();" in dash and "paintReview();" in between(dash, "function paintPosture(){", "\n}\n", "paintPosture"),
    "posture: the row repaints from the bar's poll and on every posture refresh")
 diag = read("others/reaper_diag")
-ok('VER="REAPER-DIAG v1.3.53"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
+ok('VER="REAPER-DIAG v1.3.55"' in diag and 'echo "  security review   : rwatch_review=' in diag and 'echo "  threat domains    : rwarden_dns=' in diag,
    "diag v1.3.45: the review and threat-domain state lines")
 ok("finding WARN \"security review: ${_rvu} unreviewed change(s)" in diag and "finding WARN \"security review: ${_rvn} failed-login burst(s)" in diag
    and "finding WARN \"threat domains are switched on but no list is loaded" in diag, "diag: findings for unreviewed changes, login bursts and an unloaded domain list")

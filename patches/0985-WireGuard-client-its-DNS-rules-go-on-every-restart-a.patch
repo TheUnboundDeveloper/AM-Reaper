@@ -1,0 +1,161 @@
+From 4793794c7e44d5eb2489fc1f67d18035149fd5db Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 9 Nov 2026 20:27:59 -0500
+Subject: [PATCH] WireGuard client: its DNS rules go on every restart; a .conf
+ without keys is refused (102.8 line)
+
+- vpnc_up adds "iif lo to <dns>" rules for a client's DNS servers. A restart after the DNS was
+  changed or removed left the old rules behind; vpnc_purge_dns_rules now clears that client's
+  rules by their priority and table, from the WireGuard client start and stop, whatever addresses
+  they were made for.
+- Importing a .conf with no valid keys reset the instance and left it half-configured. httpd
+  refuses such a file before anything is changed and the VPN Client page says which key is missing
+  (RVCL_164).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/vpnc_fusion.c         | 40 ++++++++++++++++++++-
+ release/src/router/rc/wireguard.c           | 16 +++++++--
+ release/src/router/www/Reaper_VPNClient.asp | 24 +++++++++++++
+ 3 files changed, 77 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/vpnc_fusion.c b/release/src/router/rc/vpnc_fusion.c
+index ec66e353f52..72eb9bd9ccf 100644
+--- a/release/src/router/rc/vpnc_fusion.c
++++ b/release/src/router/rc/vpnc_fusion.c
+@@ -2663,6 +2663,41 @@ int vpnc_set_iif_routing_rule(const int vpnc_idx, const char *br_ifname)
+ }
+ #endif
+ 
++/* reaper 2026-11-08 (WireGuard client DNS rule field report): the "iif lo to <dns>" rules below sit at
++ * IP_RULE_PREF_VPNC_POLICY_IF + idx * 3 + 1, + 2, ... one per address in vpncN_dns, in this client's table.
++ * Deleting them by the addresses now in vpncN_dns missed every rule made for an address that is no longer
++ * there: a WireGuard DNS change rewrites vpncN_dns before anything deletes, and a client restart (stop_wgc,
++ * start_wgc) never deleted at all, so each old address kept its rule, routing the router's own lookups to it
++ * through the tunnel. Delete by priority, iif lo and this client's table instead, whatever address a rule was
++ * made for. The rules are added from + 1 upwards, so stop at the first priority where neither family has one.
++ * The table match keeps another client's rules at an overlapping priority. */
++#define REAPER_VPNC_DNS_RULES_MAX 16
++void vpnc_purge_dns_rules(const int vpnc_idx)
++{
++	char id_str[8], priority[8];
++	char *fam[2] = { "-4", "-6" };
++	int i, f, n, found;
++
++	snprintf(id_str, sizeof(id_str), "%d", IP_ROUTE_TABLE_ID_VPNC_BASE + vpnc_idx);
++	for (i = 1; i <= REAPER_VPNC_DNS_RULES_MAX; i++)
++	{
++		snprintf(priority, sizeof(priority), "%d", IP_RULE_PREF_VPNC_POLICY_IF + vpnc_idx * 3 + i);
++		found = 0;
++		for (f = 0; f < 2; f++)
++		{
++			for (n = 0; n < REAPER_VPNC_DNS_RULES_MAX; n++)
++			{
++				char *argv[] = { "ip", fam[f], "rule", "del", "priority", priority, "iif", "lo", "table", id_str, NULL };
++				if (_eval(argv, ">/dev/null", 0, NULL) != 0)
++					break;
++				found = 1;
++			}
++		}
++		if (!found)
++			break;
++	}
++}
++
+ static int _set_network_routing_rule(const VPNC_ROUTE_CMD cmd, const int vpnc_idx)
+ {
+ 	char tmp[64] = {0}, vpnc_prefix[] = "vpncXXXX_", *vpnc_dns, *next;
+@@ -2699,7 +2734,10 @@ static int _set_network_routing_rule(const VPNC_ROUTE_CMD cmd, const int vpnc_id
+ 	snprintf(vpnc_prefix, sizeof(vpnc_prefix), "vpnc%d_", vpnc_idx);
+ 	vpnc_dns = nvram_safe_get(strlcat_r(vpnc_prefix, "dns", tmp, sizeof(tmp)));
+ 
+-	if (vpnc_dns[0] != '\0') // write dns setting of VPN client to resolv.dnsmasq
++	/* reaper 2026-11-08: clear this client's DNS rules whatever address they were made for (see
++	 * vpnc_purge_dns_rules), then add one per current address; a delete is the clear alone */
++	vpnc_purge_dns_rules(vpnc_idx);
++	if (cmd == VPNC_ROUTE_ADD && vpnc_dns[0] != '\0') // write dns setting of VPN client to resolv.dnsmasq
+ 	{
+ 		//_dprintf("[%s, %d]<%s>\n", __FUNCTION__, __LINE__, vpnc_dns);
+ 		i = 1;
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index d9a709c2f2e..35b47d40e00 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -859,9 +859,16 @@ static void _wg_client_dns_setup_vpnc(char* prefix, char* ifname, int vpnc_idx)
+ 
+ 			eval("ip", "route", "add", buf, "dev", ifname, "table", table_str);
+ 		}
++	}
++
++	/* reaper 2026-11-08 (WireGuard client DNS rule field report): always, so a removed DNS empties
++	 * vpncN_dns; it used to keep the old address, which is kept in nvram across a reboot and brought
++	 * the old DNS rule and resolver back at the next start */
++	{
++		char nv[16];
+ 
+-		snprintf(buf, sizeof(buf), "vpnc%d_dns", vpnc_idx);
+-		nvram_set(buf, trim_r(vpnc_dns));
++		snprintf(nv, sizeof(nv), "vpnc%d_dns", vpnc_idx);
++		nvram_set(nv, vpnc_dns[0] ? trim_r(vpnc_dns) : "");
+ 	}
+ }
+ #else
+@@ -1801,6 +1808,11 @@ void stop_wgc(int unit)
+ 
+ 	// VPNDIrector DNS
+ 	amvpn_clear_exclusive_dns(unit, VPNDIR_PROTO_WIREGUARD);
++#ifdef RTCONFIG_VPN_FUSION
++	/* reaper 2026-11-08: the "iif lo to <dns>" rules vpnc_up() made for this client; a restart
++	 * (restart_wgc) comes through here without vpnc_down() */
++	vpnc_purge_dns_rules(vpnc_idx);
++#endif
+ 
+ 	/// netfilter
+ 	_wg_x_nf_del(ifname);
+diff --git a/release/src/router/www/Reaper_VPNClient.asp b/release/src/router/www/Reaper_VPNClient.asp
+index 4318097b994..1738726ae50 100644
+--- a/release/src/router/www/Reaper_VPNClient.asp
++++ b/release/src/router/www/Reaper_VPNClient.asp
+@@ -875,8 +875,31 @@ function ovImport(){
+   x.onerror = function(){ impMsg('ov_impmsg', `<#Setting_upload_hint#>`); q('ov_impgo').disabled = false; };
+   x.send(fd);
+ }
++/* 2026-11-08 (field): a .conf without its keys was imported anyway - the instance was reset and left with an empty key.
++   The file is read first, the way httpd checks it (web.c reaper_wgc_conf_keys): bit 1 = no valid [Interface] PrivateKey,
++   bit 2 = no valid [Peer] PublicKey. Refused with what is missing, nothing changed; httpd refuses the same file too. */
++function wgKeysMissing(text){
++  var sec = 0, have = 0;
++  String(text).split(/\r\n|\n|\r/).forEach(function(l){
++    var m;
++    if (l.charAt(0) === '['){ sec = /^\[interface\]/i.test(l) ? 1 : /^\[peer\]/i.test(l) ? 2 : 0; return; }
++    if (sec === 1 && (m = /^PrivateKey[ \t]*=[ \t]*(\S*)/.exec(l)) && isWgKey(m[1])) have |= 1;
++    if (sec === 2 && (m = /^PublicKey[ \t]*=[ \t]*(\S*)/.exec(l)) && isWgKey(m[1])) have |= 2;
++  });
++  return 3 & ~have;
++}
++function wgKeysMsg(bits){
++  var miss = []; if (bits & 1) miss.push('[Interface] PrivateKey'); if (bits & 2) miss.push('[Peer] PublicKey');
++  return `<#RVCL_164#>` + ' ' + miss.join(', ') + '. ' + `<#RVCL_137#>`;
++}
+ function wgImport(){
+   var f = q('wg_file').files && q('wg_file').files[0]; if (!f) return;
++  var rd = new FileReader();
++  rd.onload = function(){ var b = wgKeysMissing(rd.result); if (b){ impMsg('wg_impmsg', wgKeysMsg(b)); return; } wgSend(f); };
++  rd.onerror = function(){ impMsg('wg_impmsg', `<#Setting_upload_hint#>`); };
++  rd.readAsText(f.size > 65536 ? f.slice(0, 65536) : f);
++}
++function wgSend(f){
+   if (!confirm(`<#RVCL_158#>`)) return;
+   /* web.c:37974 do_upload_wgc_config_post (field wgc_upload_unit, then the file) -> shared/vpn_utils.c:321 read_wgc_config_file:
+      every wgcN_ key is reset to default first, then filled from the file; wgc_upload_state 0 ok / "err" */
+@@ -885,6 +908,7 @@ function wgImport(){
+   impMsg('wg_impmsg', `<#RVCL_156#>`); q('wg_impgo').disabled = true;
+   x.onload = function(){
+     pollKey('wgc_upload_state', function(v){
++      if (/^keys[123]$/.test(v)){ impMsg('wg_impmsg', wgKeysMsg(+v.charAt(4))); q('wg_impgo').disabled = false; return; }
+       if (v !== '0'){ impMsg('wg_impmsg', `<#Setting_upload_hint#>`); q('wg_impgo').disabled = false; return; }
+       impMsg('wg_impmsg', `<#Main_alert_proceeding_desc3#>`); setTimeout(function(){ location.reload(); }, 1500);
+     }, 10);
+-- 
+2.25.1
+

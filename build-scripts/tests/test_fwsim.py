@@ -318,7 +318,7 @@ try:
     addr_tun = ADDR + "4: v6tun0    inet6 2001:db8:4::2/64 scope global \\       valid_lft forever preferred_lft forever\n"
     j6, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, nv=NV + "ipv6_service=6in4\nipv6_tun_v4end=203.0.113.1\n", tag="g6in4")
     x = wit(j6, "A1v6"); check("v1.9 6in4: A1v6 leaves over v6tun0 and is judged by the tunnel accept", x and x["state"] == "green" and "-o v6tun0" in x["rule"], x)
-    check("v1.9 6in4: the walker reports itself as 1.13 (v1.13 = more WAN-destination candidates)", j6.get("ver") == "1.13", j6.get("ver"))
+    check("v1.9 6in4: the walker reports itself as 1.14 (v1.14 = a rule with no target is a counter)", j6.get("ver") == "1.14", j6.get("ver"))
     j6b, _, _ = run(witness=None, save6=save6_tun, addr=addr_tun, tag="g6in4neg")
     x = wit(j6b, "A1v6"); check("v1.9 no tunnel service: the same table is red at the tail DROP (the pre-fix picture, still honest)", x and x["state"] == "red" and x["rule"].endswith("-j DROP"), x)
     j6c, _, _ = run(witness=None, nv=NV + "ipv6_service=6in4\n", tag="g6in4v4")
@@ -549,7 +549,7 @@ try:
                      .replace(fwd, fwd + "-A VSERVER -p udp -m udp --dport 51820 -j DNAT --to-destination 192.168.50.1:51820\n"),
                      nv=wgnv, witness=None, tag="c3d")
     x = wit(j, "C3"); check("C3: forwarded to the router's own address but nothing accepts it: red", x and x["state"] == "red", x)
-    check("the simulator reports version 1.13", '"1.13"' in json.dumps(j), str(j)[:200])
+    check("the simulator reports version 1.14", '"1.14"' in json.dumps(j), str(j)[:200])
 
     # D5 - the escape hatch. Gatekeeper enforcement is FORWARD-side; a rule
     # that reached INPUT would lock the admin out of their own router.
@@ -680,6 +680,14 @@ try:
     j, out, rc = run(save4=tm.replace("-j TCPMSS --set-mss 1360", "-j DROP"), tag="tm2")
     x = wit(j, "T1"); check("inert neg: the same match on a VERDICT target is still depends:policy", x and x["state"] == "depends" and x["verdict"] == "depends:policy", x)
 
+    # v1.14 (owner, on the router, 2026-11-08): a rule with no -j / -g only counts; the log chains carry one on
+    # purpose (`-A logaccept -m state --state NEW`) and it made 35 rows depends:target: with an empty target name
+    j, out, rc = run(save4=SAVE4.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -m state --state NEW\n-A FORWARD -j WARDEN\n"), tag="cnt1")
+    x = wit(j, "T1"); check("counter: a rule with no target on the path is walked past and the row is judged", x and x["state"] == "green" and x["rule"] == "filter/FORWARD#8 -i br0 -o eth0 -j ACCEPT", x)
+    check("counter: no row anywhere says depends:target: with an empty name", "depends:target:\"" not in json.dumps(j), "")
+    j, out, rc = run(save4=SAVE4.replace("-A FORWARD -j WARDEN\n", "-A FORWARD -m policy --dir in --pol ipsec\n-A FORWARD -j WARDEN\n"), tag="cnt2")
+    x = wit(j, "T1"); check("counter: no target behind an unmodelled match still cannot decide anything", x and x["state"] == "green", x)
+
     # deferred doubt: a mark-class target behind an unmodelled match is only a
     # problem if something later CONSULTS that field (dual-WAN `-m statistic
     # ... -j CONNMARK` is on every such box and nothing on the filter path reads it)
@@ -738,7 +746,7 @@ try:
 
     # ---- pass 2 (owner, 2026-09-16): no mislabelled working firewalls ----
     j, out, rc = run(save4=SAVE4, nv=NV, witness=None, tag="p2v")
-    check("pass2: walker is v1.13", j.get("ver") == "1.13", j.get("ver"))
+    check("pass2: walker is v1.14", j.get("ver") == "1.14", j.get("ver"))
 
     # ---- v1.10 (owner, 2026-10-09): a stand-in is never an address a device holds ----
     # The Devices page listed a phone on 192.168.50.123 - the walker's LAN stand-in,
@@ -816,6 +824,26 @@ try:
     x = wit(j, "A6a"); check("acc WAN: only LAN addresses listed = a NOTE, not a red", x and x["state"] == "na" and "outside the LAN" in x["note"], x)
     j, out, rc = run(save4=arw, nv=NV.replace("misc_http_x=0", "misc_http_x=1"), witness=None, tag="aw3")
     x = wit(j, "A6a"); check("acc WAN neg: restriction in the table but not in nvram = the honest red at the tail DROP", x and x["state"] == "red" and "ACCESS_RESTRICTION#3" in x["rule"], x)
+
+    # 2026-11-07 (field, GT-BE98): the user's own port forward of tcp/80 to a LAN server made A6b ("WAN port 80 is
+    # closed") red. A forward covering 80 for any source turns it into a NOTE naming the target; B witnesses the forward.
+    V = "vts_rulelist=<web>443>192.168.50.10>8443>TCP>"
+    for tag, row, want_na in (("a6b1", "<site>80>192.168.50.105>80>TCP>", True),
+                              ("a6b2", "<range>70:90>192.168.50.105>80>BOTH>", True),
+                              ("a6b3", "<list>443,80>192.168.50.105>80>TCP>0.0.0.0", True),
+                              ("a6b4", "<udp>80>192.168.50.105>80>UDP>", False),
+                              ("a6b5", "<only>80>192.168.50.105>80>TCP>198.51.100.0/24", False),
+                              ("a6b6", "<near>81>192.168.50.105>80>TCP>", False)):
+        j, out, rc = run(nv=NV.replace(V, V + row), witness=None, tag=tag)
+        x = wit(j, "A6b")
+        if want_na:
+            check("A6b %s: a port forward covering tcp/80 for any source = a NOTE naming its LAN target, not a red" % tag,
+                  x and x["state"] == "na" and "192.168.50.105" in x["note"] and "forwarded" in x["note"], x)
+        else:
+            check("A6b %s: UDP only, a source-restricted or a non-covering forward keeps the DROP witness" % tag,
+                  x and x["expect"] == "DROP" and x["state"] != "na", x)
+    j, out, rc = run(nv=NV.replace("vts_enable_x=1", "vts_enable_x=0").replace(V, V + "<site>80>192.168.50.105>80>TCP>"), witness=None, tag="a6b7")
+    x = wit(j, "A6b"); check("A6b a6b7: port forwarding switched off = the DROP witness", x and x["expect"] == "DROP", x)
 
     # the IPv6 WAN witness source is picked against the v6 sets too
     check("v6 picker: default source when nothing claims it", j.get("wan6src") == "2001:db8:ffff::7" and j.get("wan6src_note") == "", (j.get("wan6src"), j.get("wan6src_note")))

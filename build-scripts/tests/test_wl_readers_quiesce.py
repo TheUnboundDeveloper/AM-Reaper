@@ -83,8 +83,9 @@ fn = extract(S["services"], "reaper_wl_readers_stop(void)")
 check("services.c: reaper_wl_readers_stop() found", fn is not None)
 if fn:
     n = norm(fn)
-    check("stop: remembers whether rpunctd was running, then stops all three readers",
-          re.search(r"int armed = pids\(\"rpunctd\"\); stop_rpunctd\(\); stop_reaper_bwfloor\(\); stop_rchqd\(\);", n) is not None)
+    # review 2026-11-11 (A-C1): the driver's own call timeout is put back first, so the teardown runs at stock
+    check("stop: remembers whether rpunctd was running, restores the driver timeout, then stops all three readers",
+          re.search(r"int armed = pids\(\"rpunctd\"\); reaper_dhd_ioto_stock\(\); stop_rpunctd\(\); stop_reaper_bwfloor\(\); stop_rchqd\(\);", n) is not None)
     check("stop: waits out an armed window only when rpunctd was running",
           "if (armed) {" in n and "usleep((REAPER_WL_WINDOW_MS + 600) * 1000);" in n)
     check("stop: logs either way (the diag's 19b lead)", n.count("radio readers stopped for a wireless teardown") == 2)

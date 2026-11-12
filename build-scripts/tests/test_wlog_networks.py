@@ -45,8 +45,34 @@ TYPEKEYS = ["Guest_Network", "GuestNetwork_Employee", "GuestNetwork_Portal", "Gu
 check("the type labels are the stock keys, in backticks", all(("`<#%s#>`" % k) in W for k in TYPEKEYS))
 check("the profile list is read: sdn_rl and apg1..16 SSIDs through nvram_char_to_ascii",
       'nvram_char_to_ascii("","sdn_rl")' in W and len(set(re.findall(r'nvram_char_to_ascii\("","apg(\d+)_ssid"\)', W))) == 16)
-check("the box shows its type tag; no blanket guest chip", "(n.type ? '<span class=\"tag\">' + hx(n.type)" in W
+check("the box shows its type tag, coloured by its type (CHIP); no blanket guest chip",
+      "(n.type ? '<span class=\"tag' + (CHIP[n.tk] ? ' ' + CHIP[n.tk] : '') + '\">' + hx(n.type) + '</span>' : '')" in W
       and "(n.kind === 'guest'" not in W)
+# 2026-11-11 (owner): readable chips - main = jade (tag good, as QoS "Accel on"), Customized = amber (tag warn, as QoS
+# "Upload only"), Guest Network / Guest Portal = blue (the --ice tone #7EA6C9 of the Connections / Wi-Fi Settings pages)
+check("chip colours (owner 2026-11-11): main good, Guest + Portal blue, Customized amber; the blue class is on the page",
+      "var CHIP = {Guest: 'guest', Portal: 'guest', Customized: 'warn'};" in W
+      and ".tag.guest{color:#7EA6C9;border-color:rgba(126,166,201,.4)}" in W
+      and "'<span class=\"tag good\">' + hx(`<#RLOG_79#>`) + '</span>'" in W)
+# 2026-11-11 (field report): the profile parser - MAINFH names the main network(s); a type sdn.js does not know is
+# Customized (as sdn.js sdn_type); LEGACY is a guest network; MAINBH and disabled rows are skipped
+pp = re.search(r"\nvar CHIP = .*?\nSDN_RL\.split\('<'\)\.forEach\(function\(r\)\{.*?\n\}\);\n", W, re.S)
+check("profile parser found", pp is not None)
+if pp and shutil.which("node"):
+    PJS = ("var TYPE_TXT = {Guest: 'G', Portal: 'P', IoT: 'I', Customized: 'C'};\n"
+           "var APG_SSID = ['', 'Home', 'Free WiFi', 'Things', 'Lab', 'Old', 'Off', 'BH'];\n"
+           "var SDN_RL = '<1>MAINFH>1>0>0>1<2>Portal>1>2>2>2<3>IoT>1>3>3>3<4>MyStuff>1>4>4>4<5>LEGACY>1>5>5>5<6>Guest>0>6>6>6<7>MAINBH>1>7>7>7';\n"
+           + pp.group(0) +
+           "console.log(JSON.stringify([NETTYPE, NETKEY, MAINSSID, HAS_MAIN, HAS_PROF]));\n")
+    fd, jp = tempfile.mkstemp(suffix=".js"); os.close(fd)
+    open(jp, "w", encoding="utf-8").write(PJS)
+    rp_ = subprocess.run([shutil.which("node"), jp], capture_output=True, text=True); os.unlink(jp)
+    try: po = json.loads(rp_.stdout)
+    except ValueError: po = None
+    check("profile parser: main from MAINFH; Portal/IoT typed; an unknown type is Customized; LEGACY is Guest; disabled and MAINBH skipped",
+          po == [{"Free WiFi": "P", "Things": "I", "Lab": "C", "Old": "G"},
+                 {"Free WiFi": "Portal", "Things": "IoT", "Lab": "Customized", "Old": "Guest"}, {"Home": 1}, True, True],
+          (po, rp_.stderr[-200:]))
 packs = [f for f in os.listdir(www) if f.endswith(".dict") and f != "temp.dict"]
 bad = [f + ":" + k for f in packs for k in TYPEKEYS
        if not re.search(r"(?m)^%s=\S" % k, open(os.path.join(www, f), encoding="utf-8", errors="replace").read())]
@@ -102,6 +128,7 @@ var VSSID = [["Home's \\", 'Guests', 'Old'], ['Home5', 'IoT', ''], ['', '', '', 
 var VON = [['1', '1', '0'], ['1', '1', ''], ['0', '', ''], ['1', '1', '1']];
 /* a migrated box: the main network is a MAINFH profile on wlN.1, wlN the hidden backhaul carrier */
 var SDN_RL = '<3>MAINFH>1>0>0>1', NETTYPE = {}, HAS_PROF = false, MIGRATED = true, PSSID = ['', '', '', ''];
+var NETKEY = {}, MAINSSID = {}, HAS_MAIN = false;
 var HASH = '6b1c2a0f9e8d7c6b5a4f3e2d1c0b9a88';
 out.ap = view(nets(0, [HASH, '0', '0', '-92', '6/20', 'AA:00', '12', 'AP'],
   [cl('node', 'Main BSS'), cl('phone', ''), cl('visitor', 'Guests', '52'), cl('tv', 'Lab', '60')]));
@@ -112,6 +139,16 @@ out.rep = view(nets(1, ['Upstream', '-60', '30', '-95', '36/160', 'BB:00', '3', 
 /* a router with Guest Network Pro profiles: main + guest + IoT (the field case); a client on an unprofiled name */
 SDN_RL = '<1>Guest>1>2>2>1<2>IoT>1>3>3>2<3>MAINFH>1>0>0>1'; NETTYPE = {Guests: 'GUEST', Things: 'IOT'}; HAS_PROF = true;
 out.sdn = view(nets(3, ['Main3', '0', '0', '-92', '36/160', 'DD:00', '3', 'AP'], [cl('cam', 'Things', '53'), cl('x', 'Other')]));
+/* 2026-11-11 (field: a Guest Portal network shown as "Main network"): the main network (MAINFH "Main3") does not use
+   radio 2; the portal took that radio's wlN.1, so httpd tags its clients "" - its box is the portal's, not a main box */
+var SV = [VSSID[2], VON[2], NETTYPE, NETKEY];
+VSSID[2] = ['Free WiFi', '', '']; VON[2] = ['1', '', '']; NETTYPE = {Guests: 'GUEST', Things: 'IOT', 'Free WiFi': 'PORTAL'};
+NETKEY = {Guests: 'Guest', Things: 'IoT', 'Free WiFi': 'Portal'}; MAINSSID = {Main3: 1}; HAS_MAIN = true;
+out.portal = view(nets(2, ['Free WiFi', '0', '0', '-92', '6g69/320', 'EE:00', '1', 'AP'], [cl('guestphone', '')]));
+out.portalkey = nets(2, ['Free WiFi', '0', '0', '-92', '6g69/320', 'EE:00', '1', 'AP'], []).map(function(n){ return n.tk; });
+/* the main radio is unchanged: its wlN.1 is the MAINFH network */
+out.mainstill = view(nets(3, ['Main3', '0', '0', '-92', '36/160', 'DD:00', '3', 'AP'], [cl('phone', '')]));
+VSSID[2] = SV[0]; VON[2] = SV[1]; NETTYPE = SV[2]; NETKEY = SV[3]; MAINSSID = {}; HAS_MAIN = false;
 /* NOT migrated (no MAINFH row - the field GT-BE98): main on the primary wlN, guest on wlN.1, IoT on wlN.2; httpd reads
    the radio SSID / BSSID from wlN.1 (the guest) and tags wlN's clients "Main BSS", wlN.1's "" */
 MIGRATED = false; SDN_RL = '<1>Guest>1>2>2>1<2>IoT>1>3>3>2'; NETTYPE = {'Home-Guest': 'GUEST', 'Home-IoT': 'IOT'}; HAS_PROF = true;
@@ -148,6 +185,12 @@ console.log(JSON.stringify(out));
         check("profiles: main + guest + IoT each get their own box and label; an unprofiled name gets no guest label",
               o["sdn"] == [["main", "Main3", "", "", "DD:00", []], ["net", "Guests", "GUEST", "", "", []],
                            ["net", "Things", "IOT", "53", "", ["cam"]], ["net", "Other", "", "", "", ["x"]]], o["sdn"])
+        check("field 2026-11-11: a portal on a radio the main network does not use (its wlN.1) is the portal's box with "
+              "its type, not 'Main network'; its chip key is Portal (blue)",
+              o["portal"] == [["net", "Free WiFi", "PORTAL", "", "EE:00", ["guestphone"]]] and o["portalkey"] == ["Portal"], (o["portal"], o.get("portalkey")))
+        check("...and the main network's own radio still shows its main box",
+              o["mainstill"] == [["main", "Main3", "", "", "DD:00", ["phone"]], ["net", "Guests", "GUEST", "", "", []],
+                                 ["net", "Things", "IOT", "", "", []]], o["mainstill"])
         check("not migrated (field GT-BE98): main is the primary wlN by its own name, then the guest on wlN.1, the IoT on "
               "wlN.2; the BSSID goes to the guest box whose SSID httpd read; no backhaul box",
               o["un"] == [["main", "Home", "", "", "", ["phone"]], ["net", "Home-Guest", "GUEST", "52", "GG:00", ["tablet"]],

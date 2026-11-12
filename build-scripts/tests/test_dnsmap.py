@@ -239,6 +239,12 @@ int main(int argc, char **argv)
 			continue;
 		}
 		if (!strcmp(argv[a], "--conf") && a + 1 < argc) { rdm_src_conf_line(argv[a + 1], &rdm_src); a += 1; continue; }
+		if (!strcmp(argv[a], "--lo") && a + 2 < argc) {	/* 2026-11-10: the loopback-leg verdict for one frame */
+			if (!(f = fopen(argv[a + 2], "rb"))) return 2;
+			n = (int)fread(fb, 1, sizeof(fb), f); fclose(f);
+			printf("loverdict %d\n", rdm_lo_keep(atoi(argv[a + 1]), fb, n));
+			return 0;
+		}
 		if (!strcmp(argv[a], "--lan6")) { rdm_lan6_load(); continue; }
 		if (!(f = fopen(argv[a], "rb"))) return 2;
 		n = (int)fread(fb, 1, sizeof(fb), f); fclose(f);
@@ -459,6 +465,33 @@ int main(int argc, char **argv)
     arp = eth(bytes(28), 0x0806)
     check("filter rejects TCP, another source port, a later fragment and ARP",
           bpf(tcp) == 0 and bpf(other) == 0 and bpf(frag) == 0 and bpf(arp) == 0)
+
+    # 2026-11-10: the loopback leg. A device on the router's own encrypted DNS (rednsd) is answered over TLS;
+    # the only plain copy of its reply is dnsmasq -> rednsd on loopback. Parsed on receive; the outgoing copy
+    # and stubby's upstream answers (127.0.1.1) are skipped; an SDN instance answers from its bridge address.
+    def lo(outgoing, pkt):
+        fp = os.path.join(td, "lo.bin")
+        with open(fp, "wb") as f: f.write(pkt)
+        r = subprocess.run([exe, "--lo", str(outgoing), fp], capture_output=True, text=True)
+        m = re.search(r"^loverdict (\d)$", r.stdout, re.M)
+        return int(m.group(1)) if m else None
+    lo_dm = frame4(dns_reply("lo.example", [(PTR_Q, 1, 60, bytes([198, 51, 100, 60]))]), src="127.0.0.1")
+    lo_stubby = frame4(dns_reply("up.example", [(PTR_Q, 1, 60, bytes([198, 51, 100, 61]))]), src="127.0.1.1")
+    lo_sdn = frame4(dns_reply("sdn.example", [(PTR_Q, 1, 60, bytes([198, 51, 100, 62]))]), src="192.168.52.1")
+    lo_v6 = frame6(dns_reply("lo6.example", [(PTR_Q, 1, 60, bytes([198, 51, 100, 63]))]), src="::1")
+    check("loopback: dnsmasq's reply (127.0.0.1) is parsed on receive", lo(0, lo_dm) == 1, lo(0, lo_dm))
+    check("loopback: the outgoing copy of the same frame is skipped", lo(1, lo_dm) == 0, lo(1, lo_dm))
+    check("loopback: stubby's upstream answer (127.0.1.1) is skipped", lo(0, lo_stubby) == 0, lo(0, lo_stubby))
+    check("loopback: an SDN instance's reply from its bridge address is parsed", lo(0, lo_sdn) == 1, lo(0, lo_sdn))
+    check("loopback: an IPv6 loopback reply is parsed", lo(0, lo_v6) == 1, lo(0, lo_v6))
+    check("the filter accepts the loopback frames too (same 14-byte link header)", bpf(lo_dm) > 0 and bpf(lo_v6) > 0)
+    e, seen, upd = run([lo_dm])
+    check("a loopback reply from 127.0.0.1 passes the source policy and is stored",
+          e.get("198.51.100.60", ("",))[0] == "lo.example", e)
+    for want in ("v->lan = 2;", 'strcmp(name, "lo") == 0', "lanv = rdm_lan_if(from.sll_ifindex, now);",
+                 "if (lanv == 2 && !rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, buf, n))",
+                 "if (lanv == 1 || (lanv == 2 && rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, rb, n)))"):
+        check("rdnsmapd.c loopback leg: %s" % want, want in src)
 
     # audit 2026-10-06 (V2): the unbound packet socket hears the WAN port too, ahead of netfilter;
     # the daemon must parse only frames whose ingress device is a LAN bridge

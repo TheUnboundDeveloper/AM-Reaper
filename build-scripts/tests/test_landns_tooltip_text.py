@@ -66,6 +66,28 @@ old = re.sub(r"^RDSH_101=.*$", "RDSH_101=Checked by the router once a minute. De
              texts.get("DE", ""), flags=re.M)
 check("self-test: the old text is caught", bool(pack_problems("DE", old, en101)))
 
+# 2026-11-10 (owner): the status word is Active / Inactive / Fault - in the header tooltip (both copies) and on
+# the DNS Failover page's LAN name row, in every pack's own language.
+en = texts.get("EN", "")
+check("EN: Active, Fault, Inactive", (val(en, "RDSH_92"), val(en, "RDSH_93"), val(en, "RDSH_95")) == ("Active", "Fault", "Inactive"),
+      (val(en, "RDSH_92"), val(en, "RDSH_93"), val(en, "RDSH_95")))
+badw = {}
+for l, t in texts.items():
+    w = [val(t, k) for k in ("RDSH_92", "RDSH_93", "RDSH_95")]
+    if not all(w) or len(set(w)) != 3: badw[l] = w
+    elif l != "EN" and (w[0] == "Active" or w[1] == "Fault" or w[2] == "Inactive"): badw[l] = ["still English"] + w
+    elif any(x in " ".join(w) for x in ("working", "FAILING", "switched off")): badw[l] = ["old words"] + w
+check("25 packs: three different status words, none left in English, none of the old words", len(texts) == 25 and not badw, badw)
+for page in ("Main_ReaperDash.asp", "reaper_shell.asp"):
+    t = open(os.path.join(SRC, "www", page), encoding="utf-8", errors="replace").read()
+    check(page + ": the tooltip takes the three words from RDSH_92 / 93 / 95",
+          "working:`<#RDSH_92#>`" in t and "failing:`<#RDSH_93#>`" in t and "off:`<#RDSH_95#>`" in t
+          and "else if(st==='off') line=NT.off;" in t and "line=NT.working" in t and "line=NT.failing+" in t)
+fo = open(os.path.join(SRC, "www", "Reaper_Failover.asp"), encoding="utf-8", errors="replace").read()
+check("DNS Failover page: the LAN name row uses the same three tokens, Inactive when off",
+      "ldWorking: `<#RDSH_92#>`" in fo and "ldFailing: `<#RDSH_93#>`" in fo and "ldOff: `<#RDSH_95#>`" in fo
+      and "st === ''){ txt = T.ldOff; cls = 'v dim'; }" in fo and "txt = T.ldWorking" in fo)
+
 print("\n%d failure(s)" % len(fails))
 for f in fails:
     print("  - " + f)

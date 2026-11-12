@@ -1,0 +1,163 @@
+From 2ad139c0364696db128ea1f1e43667fda87c9717 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:09 -0500
+Subject: [PATCH] rc: /tmp, /var and /jffs are mounted nosuid,nodev
+
+- reaper_mountflags.c remounts the three writable filesystems with nosuid,nodev once they are
+  mounted, keeping their own options (read back with statvfs); /jffs again after every mount
+  (ubifs.c). A failed remount logs one line and changes nothing. Submounts - the USB volumes,
+  /data - keep their own flags.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/Makefile            |  1 +
+ release/src/router/rc/init.c              |  7 ++
+ release/src/router/rc/reaper_mountflags.c | 91 +++++++++++++++++++++++
+ release/src/router/rc/ubifs.c             |  3 +
+ 4 files changed, 102 insertions(+)
+ create mode 100644 release/src/router/rc/reaper_mountflags.c
+
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index aaa9ca2cfae..ae95a154451 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -489,6 +489,7 @@ OBJS += reaper_ledns.o
+ # reaper 2026-11-08: the firewall log path - the NFLOG collector rflogd and its fallback
+ OBJS += reaper_fwlog.o
+ OBJS += reaper_cthelper.o	# 2026-11-05 audit E-13: conntrack helpers by explicit rule only
++OBJS += reaper_mountflags.o	# 2026-11-10: nosuid,nodev on /tmp, /var and /jffs
+ ifeq ($(RTCONFIG_SINGLEIMG_B),y)
+ OBJS += fwupg_flashing.o
+ endif
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+index c553f629571..9e89cc937cd 100644
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27222,6 +27222,13 @@ int init_main(int argc, char *argv[])
+ 			/* 2026-10-20: the /jffs world-write sweep ran before syslogd existed -
+ 			 * log its result now, and write the boot record (shared/reaper_jfile.c) */
+ 			reaper_jffs_perm_report();
++			/* 2026-11-10 (security review): nosuid,nodev on the three writable filesystems, before any
++			 * service starts and now that syslogd can take the one line a failure writes. /jffs also
++			 * gets it at every mount (rc/ubifs.c); the call here covers a /jffs that start_ubifs() left
++			 * alone. rc/reaper_mountflags.c */
++			reaper_mount_harden("/tmp");
++			reaper_mount_harden("/var");
++			reaper_mount_harden("/jffs");
+ #if defined(RTCONFIG_QCA)
+ 			logmessage("INIT", "firmware version: %s_%s_%s\n", nvram_safe_get("firmver"), nvram_safe_get("buildno"), nvram_safe_get("extendno"));
+ 			if (!strncmp(nvram_safe_get("firmver"), "7.0", 3)) {
+diff --git a/release/src/router/rc/reaper_mountflags.c b/release/src/router/rc/reaper_mountflags.c
+new file mode 100644
+index 00000000000..b5e792777e1
+--- /dev/null
++++ b/release/src/router/rc/reaper_mountflags.c
+@@ -0,0 +1,91 @@
++/*
++ * reaper 2026-11-10 (security review: "/tmp, /var tmpfs no nosuid/nodev; /jffs ubifs none"): nosuid,nodev on the
++ * three writable filesystems every service can reach.
++ *
++ * Several daemons run as nobody (dnsmasq, rednsd, avahi-daemon, lldpd). With these two flags a file one of them
++ * manages to drop in /tmp, /var or /jffs can be neither setuid-root nor a usable device node. noexec is NOT set:
++ * scripts and programs in /jffs/scripts, /jffs/addons and /tmp must keep running.
++ *
++ * How: a per-mount-point remount, mount(NULL, path, NULL, MS_REMOUNT | MS_BIND | flags, NULL). On this 4.19
++ * kernel (fs/namespace.c, do_remount) MS_BIND takes the change_mount_flags() branch and never calls the
++ * filesystem's own remount, so the tmpfs size and the ubifs options stay as they are. The kernel then REPLACES
++ * the user-settable mount flags with the ones passed, so the flags the mount already has (ro, noexec, the atime
++ * mode) are read back with statvfs() and passed again.
++ *
++ * The first mounts are not changed (rc/init.c for /tmp, the platform fstab for /var, mount-data.inc and
++ * rc/ubifs.c for /jffs): a mistake there can stop the boot, a failed remount here cannot. One syslog line on a
++ * failure, no retry. The flags do not reach submounts: /tmp/mnt, the USB volumes below it and /data keep their
++ * own. Real device nodes live in /dev (devtmpfs). Pinned by test_mount_harden.py.
++ */
++#include <rc.h>
++#include <shared.h>
++#include <errno.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/mount.h>
++#include <sys/stat.h>
++#include <sys/statvfs.h>
++
++/* glibc shows these only with _GNU_SOURCE; the values are the kernel's own (include/linux/statfs.h) */
++#ifndef ST_NODEV
++#define ST_NODEV	4
++#endif
++#ifndef ST_NOEXEC
++#define ST_NOEXEC	8
++#endif
++#ifndef ST_NOATIME
++#define ST_NOATIME	1024
++#endif
++#ifndef ST_NODIRATIME
++#define ST_NODIRATIME	2048
++#endif
++#ifndef ST_RELATIME
++#define ST_RELATIME	4096
++#endif
++#ifndef MS_STRICTATIME
++#define MS_STRICTATIME	(1 << 24)
++#endif
++
++/* Add nosuid,nodev to the filesystem mounted on path. Quiet when path is not a mount of its own (not mounted,
++ * or no such folder) and when both flags are already there, so it is safe to call again after every mount. */
++void reaper_mount_harden(const char *path)
++{
++	struct statvfs vf;
++	struct stat here, up;
++	char parent[64];
++	unsigned long fl = MS_REMOUNT | MS_BIND | MS_NOSUID | MS_NODEV;
++	int e;
++
++	if (!path || !*path || snprintf(parent, sizeof(parent), "%s/..", path) >= (int)sizeof(parent))
++		return;
++	if (stat(path, &here) != 0 || stat(parent, &up) != 0 || here.st_dev == up.st_dev)
++		return;
++	if (statvfs(path, &vf) != 0) {
++		e = errno;
++		logmessage("reaper", "cannot read the mount flags of %s: %s (errno %d)", path, strerror(e), e);
++		return;
++	}
++	if ((vf.f_flag & ST_NOSUID) && (vf.f_flag & ST_NODEV))
++		return;
++
++	/* everything the mount has now goes back in: the kernel keeps none of these on its own */
++	if (vf.f_flag & ST_RDONLY)
++		fl |= MS_RDONLY;
++	if (vf.f_flag & ST_NOEXEC)
++		fl |= MS_NOEXEC;
++	if (vf.f_flag & ST_NOATIME)
++		fl |= MS_NOATIME;
++	if (vf.f_flag & ST_NODIRATIME)
++		fl |= MS_NODIRATIME;
++	if (vf.f_flag & ST_RELATIME)
++		fl |= MS_RELATIME;
++	/* with no atime flag at all the kernel keeps the mount's atime mode; with nodiratime alone it would
++	 * add relatime, so say that the mount has neither */
++	if ((fl & MS_NODIRATIME) && !(fl & (MS_NOATIME | MS_RELATIME)))
++		fl |= MS_STRICTATIME;
++
++	if (mount(NULL, path, NULL, fl, NULL) != 0) {
++		e = errno;
++		logmessage("reaper", "cannot set nosuid,nodev on %s: %s (errno %d)", path, strerror(e), e);
++	}
++}
+diff --git a/release/src/router/rc/ubifs.c b/release/src/router/rc/ubifs.c
+index 7745a8c694d..38f717dcd84 100644
+--- a/release/src/router/rc/ubifs.c
++++ b/release/src/router/rc/ubifs.c
+@@ -255,6 +255,9 @@ void start_ubifs(void)
+ #if defined(RTCONFIG_HND_ROUTER_AX_6756) || defined(RTCONFIG_HND_ROUTER_BE_4916)
+ skip_mnt:
+ #endif
++	/* 2026-11-10: nosuid,nodev on /jffs after every mount - found mounted, mounted here, or mounted
++	 * again after a format (rc/reaper_mountflags.c) */
++	reaper_mount_harden(UBIFS_MNT_DIR);
+ 
+ #if defined(RTCONFIG_ISP_CUSTOMIZE)
+ 	load_customize_package();
+-- 
+2.25.1
+

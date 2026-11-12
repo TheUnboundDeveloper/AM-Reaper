@@ -1,0 +1,428 @@
+From ec3bcdc9f3cff5ade17cc42010b83d5aaa1e87c9 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:07 -0500
+Subject: [PATCH] Guest Portal: exempt from Gatekeeper, passcode at creation,
+ safer answers; Wireless Log
+
+- Gatekeeper leaves a Guest Portal network alone: its sign-in is the gate, and its devices are not
+  held or listed (rc/gatekeeper.c, gkd). Isolation from the LAN stays the network's own setting.
+- The Guest Portal wizard takes the passcode when the portal is created.
+- lighttpd: the portal's answer to a sign-in request is sent as plain text, nosniff, with a closed
+  CSP (it echoed the query as a page). The portal secret is read the same way by both halves of
+  the sign-in; rc gives each router its own (the rc commit).
+- Wireless Log: the main network is the main Guest Network Pro profile, not the first slot of a
+  radio - a portal on a radio the main network does not use read "Main network". Chips: main
+  green, Guest Network and Guest Portal blue, Customized amber; a profile type the stock page does
+  not know reads Customized.
+- Network page: the setup panel of every network type was cut off at the bottom; the frame follows
+  the panel.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/gkd/gkd.c                  | 38 ++++++++++++++-
+ .../lighttpd-1.4.39/src/nvram_control.c       | 31 +++++++++---
+ .../src/router/lighttpd-1.4.39/src/response.c | 11 +++++
+ release/src/router/rc/gatekeeper.c            | 14 ++++++
+ release/src/router/www/Reaper_WLog.asp        | 34 ++++++++++---
+ .../router/www/sysdep/FUNCTION/SDN/MLO.asp    | 14 +++++-
+ .../router/www/sysdep/FUNCTION/SDN/SDN.asp    | 14 +++++-
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 48 ++++++++++++++++++-
+ 8 files changed, 184 insertions(+), 20 deletions(-)
+
+diff --git a/release/src/router/gkd/gkd.c b/release/src/router/gkd/gkd.c
+index 8de7dfceaca..a90478795aa 100644
+--- a/release/src/router/gkd/gkd.c
++++ b/release/src/router/gkd/gkd.c
+@@ -153,18 +153,47 @@ static int in_rl(const char *rl, const char *mac)
+ 	return 0;
+ }
+ 
++/* reaper 2026-11-10 (owner): the bridges of Guest Portal networks, written by rc/gatekeeper.c as GK_DIR "/exempt"
++ * (space-separated). Their devices belong to the portal, not to Gatekeeper: they are not listed and not held, and
++ * such a bridge is not a missed hook. */
++static void gk_exempt_load(char *buf, size_t len)
++{
++	FILE *f = fopen(GK_DIR "/exempt", "r");
++
++	buf[0] = 0;
++	if (!f) return;
++	if (!fgets(buf, len, f)) buf[0] = 0;
++	fclose(f);
++}
++
++static int gk_exempt_has(const char *list, const char *ifn)
++{
++	size_t n = strlen(ifn);
++	const char *p = list;
++
++	if (!n) return 0;
++	while ((p = strstr(p, ifn)) != NULL) {
++		if ((p == list || p[-1] == ' ') && (p[n] == 0 || p[n] == ' ' || p[n] == '\n')) return 1;
++		p += n;
++	}
++	return 0;
++}
++
+ static void scan_arp(long now)
+ {
+ 	FILE *f = fopen("/proc/net/arp", "r");
+ 	char line[256], ip[64], hw[64], dev_if[32];
+ 	unsigned flags;
++	char ex[256];
+ 	if (!f) return;
++	gk_exempt_load(ex, sizeof(ex));
+ 	if (!fgets(line, sizeof(line), f)) { fclose(f); return; }   /* header */
+ 	while (fgets(line, sizeof(line), f)) {
+ 		if (sscanf(line, "%63s 0x%*x 0x%x %63s %*s %31s", ip, &flags, hw, dev_if) != 4)
+ 			continue;
+ 		if (!(flags & 2)) continue;                 /* incomplete */
+ 		if (strncmp(dev_if, "br", 2)) continue;     /* LAN bridge only */
++		if (gk_exempt_has(ex, dev_if)) continue;    /* not a Guest Portal network */
+ 		if (!valid_mac(hw)) continue;
+ 		{
+ 			dev_t_gk *d = touch_dev(hw, now);
+@@ -178,8 +207,9 @@ static void scan_ndp(long now)
+ {
+ 	/* IPv6-only devices never show in ARP; merge the v6 neighbour table. */
+ 	FILE *p = popen("ip -6 neigh show 2>/dev/null", "r");
+-	char line[256];
++	char line[256], ex[256];
+ 	if (!p) return;
++	gk_exempt_load(ex, sizeof(ex));
+ 	while (fgets(line, sizeof(line), p)) {
+ 		char ip6[64] = "", mac[64] = "";
+ 		char *ll = strstr(line, "lladdr ");
+@@ -188,6 +218,10 @@ static void scan_ndp(long now)
+ 		if (sscanf(ll + 7, "%63s", mac) != 1) continue;
+ 		if (strncasecmp(ip6, "fe80", 4) == 0) continue;   /* link-local noise */
+ 		if (!strstr(line, " br")) continue;
++		{	/* not a Guest Portal network */
++			char ifn[32] = "", *dv = strstr(line, " dev ");
++			if (dv && sscanf(dv + 5, "%31s", ifn) == 1 && gk_exempt_has(ex, ifn)) continue;
++		}
+ 		if (!valid_mac(mac)) continue;
+ 		{
+ 			dev_t_gk *d = touch_dev(mac, now);
+@@ -536,7 +570,9 @@ static void heal_networks(void)
+ 	snprintf(nvbuf, sizeof(nvbuf), "GKCAP=%d; HTTPEN=%d; ", nvram_get_int("gk_captive"), nvram_get_int("http_enable"));
+ 	snprintf(cmd, sizeof(cmd), "%s%s", nvbuf,
+ 	          "IFS_=\"$(cat " GK_DIR "/ifs 2>/dev/null)\"; MISS=\"\"; "
++	          "EX_=\"$(cat " GK_DIR "/exempt 2>/dev/null)\"; "	/* reaper 2026-11-10: Guest Portal bridges are left unhooked on purpose */
+ 	          "for B in $(ls /sys/class/net 2>/dev/null | grep '^br'); do "
++	          "case \" $EX_ \" in *\" $B \"*) continue;; esac; "
+ 	          "ip -4 addr show dev $B 2>/dev/null | grep -q inet || continue; "
+ 	          "case \" $IFS_ \" in *\" $B \"*) ;; *) MISS=\"$MISS $B\";; esac; done; "
+ 	          "echo \"MISS=$MISS\"; "
+diff --git a/release/src/router/lighttpd-1.4.39/src/nvram_control.c b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+index 33585f62d56..88951063d8f 100755
+--- a/release/src/router/lighttpd-1.4.39/src/nvram_control.c
++++ b/release/src/router/lighttpd-1.4.39/src/nvram_control.c
+@@ -1756,14 +1756,33 @@ char *nvram_get_uamsecret(const char *str)
+ #ifdef USE_TCAPI
+ 	// Todo
+ #else
+-	if (!strncmp(str, nvram_get("chilli_net"), 11))
+-	{
+-		return nvram_get("chilli_uamsecret");
+-	}
++	/* review 2026-11-11: never NULL - callers use the result as a string, and an unset key used to reach
++	 * strncmp() here */
++	const char *reaper_net = nvram_get("chilli_net");
++	char *reaper_sec;
++
++	if (str && reaper_net && !strncmp(str, reaper_net, 11))
++		reaper_sec = nvram_get("chilli_uamsecret");
+ 	else
+-	{
+-		return nvram_get("cp_uamsecret");
++		reaper_sec = nvram_get("cp_uamsecret");
++#ifdef RTCONFIG_NVRAM_ENCRYPT
++	/* review 2026-11-11 (B-C4, owner): rc writes chilli's config with the secret DECRYPTED (rc/services.c
++	 * chilli_config*: pw_dec(value, buf, strlen(value), 1)) while this handed the portal module the stored,
++	 * encrypted form. Decrypt the same way, so both ends of the sign-in hold the same secret (rc now stores a
++	 * random per-router secret, reaper_uam_secret_ensure). A value that does not decrypt is passed as stored. */
++	if (reaper_sec && *reaper_sec) {
++		static char reaper_dec[128];
++		size_t reaper_l = strlen(reaper_sec);
++
++		if (reaper_l < sizeof(reaper_dec)) {
++			memset(reaper_dec, 0, sizeof(reaper_dec));
++			pw_dec(reaper_sec, reaper_dec, reaper_l, 1);
++			if (reaper_dec[0])
++				return reaper_dec;
++		}
+ 	}
++#endif
++	return reaper_sec ? reaper_sec : "";
+ #endif
+ }
+ 
+diff --git a/release/src/router/lighttpd-1.4.39/src/response.c b/release/src/router/lighttpd-1.4.39/src/response.c
+index a342f775968..f306b90f8e1 100755
+--- a/release/src/router/lighttpd-1.4.39/src/response.c
++++ b/release/src/router/lighttpd-1.4.39/src/response.c
+@@ -66,6 +66,17 @@ int http_response_write_header(server *srv, connection *con) {
+ 		response_header_overwrite(srv, con, CONST_STR_LEN("Transfer-Encoding"), CONST_STR_LEN("chunked"));
+ 	}
+ 
++	/* reaper (review 2026-11-11, B-C4): the closed captive-portal module answers "/Uam?...login=..." with text it
++		builds from the query, labelled text/html. The portal page reads that answer as plain text (uam.js asks with
++		dataType "text" and follows the address in it), so it is sent as plain text that no browser may treat as a
++		page: a link to it can no longer run script on the router's address. */
++	if (!buffer_is_empty(con->uri.query) && !buffer_is_empty(con->uri.path)
++	    && (0 == strncasecmp(con->uri.path->ptr, "/Uam", 4) || 0 == strncasecmp(con->uri.path->ptr, "/FreeUam", 8))
++	    && NULL != strstr(con->uri.query->ptr, "login=")) {
++		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_STR_LEN("text/plain; charset=utf-8"));
++		response_header_overwrite(srv, con, CONST_STR_LEN("X-Content-Type-Options"), CONST_STR_LEN("nosniff"));
++		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Security-Policy"), CONST_STR_LEN("default-src 'none'; sandbox"));
++	}
+ 	response_header_overwrite(srv, con, CONST_STR_LEN("X-Frame-Options"), CONST_STR_LEN("SAMEORIGIN"));
+ 
+ 	/* add all headers */
+diff --git a/release/src/router/rc/gatekeeper.c b/release/src/router/rc/gatekeeper.c
+index e0b02002024..e6904c164ed 100644
+--- a/release/src/router/rc/gatekeeper.c
++++ b/release/src/router/rc/gatekeeper.c
+@@ -442,6 +442,7 @@ static void gk_gen_apply(void)
+ 	char *rl, *buf, *tok, *sp = NULL;
+ 	int quarantine = !nvram_match("gk_default", "1");
+ 	char gkifs[512];
++	char gkex[256];	/* reaper 2026-11-10: the bridges of Guest Portal networks - exempt, see the loop below */
+ 	/* v2.6.2: one record per enabled network - "if|addr|mask|cidr|dns1|dns2",
+ 	 * space-separated, "-" for an empty field. br0 is record 0 via
+ 	 * get_default_lan() (lan_ipaddr/lan_netmask/dhcp_dns1_x/dhcp_dns2_x), SDNs
+@@ -473,6 +474,7 @@ static void gk_gen_apply(void)
+ 		int k;
+ 
+ 		gkifs[0] = 0;
++		gkex[0] = 0;
+ 		gknets[0] = 0;
+ 		if (pmtl) {
+ 			get_mtlan(pmtl, &mtl_sz);
+@@ -487,6 +489,16 @@ static void gk_gen_apply(void)
+ 						break;
+ 				if (*q) continue;                      /* same gate as LANIF */
+ 				gk_add_net(gknets, sizeof(gknets), nm, &pmtl[k].nw_t);
++				/* reaper 2026-11-10 (owner): a Guest Portal network is exempt. It has its own gate - the portal
++				 * sign-in (chilli), which reads the bridge directly and hands a signed-in device's traffic to the
++				 * kernel on tun22. With both on one network the waiting room and the sign-in page compete for the
++				 * same device's port 80 and DNS, and the MAC rules below never see the tun22 traffic. The network
++				 * stays in GKNETS (an Internet-only device still cannot reach it); its bridge gets no hook and no
++				 * sinkhole, and gkd neither lists its devices nor counts the bridge as missed (GK_DIR "/exempt"). */
++				if (pmtl[k].sdn_t.cp_idx != 0 && strcmp(nm, lanif)) {
++					if (strlen(gkex) + strlen(nm) + 2 < sizeof(gkex)) { strcat(gkex, " "); strcat(gkex, nm); }
++					continue;
++				}
+ 				if (!strcmp(nm, lanif)) continue;      /* $LANIF already covers it */
+ 				/* dedup: pad BOTH sides of the accumulator so the trailing element
+ 				 * matches too - gkifs has no trailing space, so a bare strstr for
+@@ -506,6 +518,8 @@ static void gk_gen_apply(void)
+ 	}
+ 
+ 	gk_gen_sink(gkifs);	/* 2026-10-20 (F-6): the sinkhole conf follows the same network set */
++	f_write_string(GK_DIR "/exempt", gkex, 0, 0600);	/* reaper 2026-11-10: for gkd (empty = none) */
++	if (gkex[0]) logmessage("gatekeeper", "Guest Portal network(s)%s: exempt, the portal sign-in is their gate", gkex);
+ 
+ 	f = fopen(GK_APPLY ".tmp", "w");
+ 	if (!f) return;
+diff --git a/release/src/router/www/Reaper_WLog.asp b/release/src/router/www/Reaper_WLog.asp
+index 221659a65fa..e47350c2e83 100644
+--- a/release/src/router/www/Reaper_WLog.asp
++++ b/release/src/router/www/Reaper_WLog.asp
+@@ -51,6 +51,10 @@
+ .net .bss{color:var(--steel);font-family:var(--mono);font-size:11.5px;margin:-2px 0 6px}
+ .net .tw{overflow-x:auto}
+ .legend{font-size:12px;color:var(--steel);margin-top:4px}
++/* 2026-11-11 (owner): network chips readable on the dark panel - main = jade (as QoS "Accel on"), Guest Network and
++   Guest Portal = blue (the --ice tone of the Connections / Wi-Fi Settings pages), Customized Network = amber (as QoS
++   "Upload only"); the plain grey chip on Customized was hard to read */
++.tag.guest{color:#7EA6C9;border-color:rgba(126,166,201,.4)}
+ .drv{background:#000;border:1px solid var(--line-soft);border-radius:10px;color:var(--bone-dim);font-family:var(--mono);font-size:11.5px;line-height:1.45;padding:10px 12px;max-height:50vh;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:10px 0 0}
+ </style>
+ </head>
+@@ -113,11 +117,19 @@ var PSSID = [U('<% nvram_char_to_ascii("","wl0_ssid"); %>'), U('<% nvram_char_to
+ var APG_SSID = ['', U('<% nvram_char_to_ascii("","apg1_ssid"); %>'), U('<% nvram_char_to_ascii("","apg2_ssid"); %>'), U('<% nvram_char_to_ascii("","apg3_ssid"); %>'), U('<% nvram_char_to_ascii("","apg4_ssid"); %>'), U('<% nvram_char_to_ascii("","apg5_ssid"); %>'), U('<% nvram_char_to_ascii("","apg6_ssid"); %>'), U('<% nvram_char_to_ascii("","apg7_ssid"); %>'), U('<% nvram_char_to_ascii("","apg8_ssid"); %>'), U('<% nvram_char_to_ascii("","apg9_ssid"); %>'), U('<% nvram_char_to_ascii("","apg10_ssid"); %>'), U('<% nvram_char_to_ascii("","apg11_ssid"); %>'), U('<% nvram_char_to_ascii("","apg12_ssid"); %>'), U('<% nvram_char_to_ascii("","apg13_ssid"); %>'), U('<% nvram_char_to_ascii("","apg14_ssid"); %>'), U('<% nvram_char_to_ascii("","apg15_ssid"); %>'), U('<% nvram_char_to_ascii("","apg16_ssid"); %>')];
+ var TYPE_TXT = {Guest: `<#Guest_Network#>`, Employee: `<#GuestNetwork_Employee#>`, Portal: `<#GuestNetwork_Portal#>`, Kids: `<#GuestNetwork_Kid#>`,
+   IoT: `<#GuestNetwork_IoT#>`, VPN: `<#GuestNetwork_VPN#>`, Customized: `<#GuestNetwork_Customized#>`, MLO: `<#WiFi_mlo_title#>`, Gaming: `<#GuestNetwork_Gaming#>`};
+-var NETTYPE = {}, HAS_PROF = false;
++/* 2026-11-11 (field: a Guest Portal network shown as "Main network"): MAINSSID names the networks that ARE the main
++   network (MAINFH profiles) - the wlN.1 slot alone does not make one, since a portal on a radio the main network does
++   not use takes that radio's wlN.1. NETKEY keeps each network's type for its chip colour (CHIP). A type sdn.js does
++   not know is a Customized network there (its sdn_type), so it is here too - it had no chip at all. */
++var CHIP = {Guest: 'guest', Portal: 'guest', Customized: 'warn'};
++var NETTYPE = {}, NETKEY = {}, HAS_PROF = false, MAINSSID = {}, HAS_MAIN = false;
+ SDN_RL.split('<').forEach(function(r){
+-  var f = r.split('>'), t, s; if (f.length < 6 || f[2] === '0') return;
+-  t = TYPE_TXT[f[1]]; s = APG_SSID[parseInt(f[5], 10)] || '';
+-  if (t && s && !NETTYPE.hasOwnProperty(s)){ NETTYPE[s] = t; HAS_PROF = true; }
++  var f = r.split('>'), k, s; if (f.length < 6 || f[2] === '0') return;
++  s = APG_SSID[parseInt(f[5], 10)] || '';
++  if (!s || f[1] === 'MAINBH') return;
++  if (f[1] === 'MAINFH'){ MAINSSID[s] = 1; HAS_MAIN = true; return; }
++  k = f[1] === 'LEGACY' ? 'Guest' : TYPE_TXT.hasOwnProperty(f[1]) ? f[1] : 'Customized';
++  if (!NETTYPE.hasOwnProperty(s)){ NETTYPE[s] = TYPE_TXT[k]; NETKEY[s] = k; HAS_PROF = true; }
+ });
+ /* 2026-10-30 (field, GT-BE98 v3.6.2): device names. httpd sends only the DHCP lease hostname - what the device itself
+    reported, "*" when it reported none - and the stock page put the client list's name over an empty or "*" one; this
+@@ -174,13 +186,21 @@ function netType(i, ssid){
+   var s = VSSID[i].indexOf(ssid);   /* no profile list: the stock guest slots are guest networks */
+   return (!HAS_PROF && s >= (MIGRATED ? 1 : 0)) ? `<#Guest_Network#>` : '';
+ }
++/* the type behind the label, for the chip colour: a network's profile type, else Guest for a stock guest slot */
++function netKey(i, ssid){
++  if (NETKEY.hasOwnProperty(ssid)) return NETKEY[ssid];
++  return netType(i, ssid) ? 'Guest' : '';
++}
+ function nets(i, d, list){
+   var mainOn = VON[i][0] === '1', out = [], by = {}, s;
+-  function add(key, kind, name){ if (!by[key]){ by[key] = {kind: kind, name: name, type: kind === 'net' ? netType(i, name) : '', bssid: '', vlan: '', list: []}; out.push(by[key]); } return by[key]; }
++  function add(key, kind, name){ if (!by[key]){ by[key] = {kind: kind, name: name, type: kind === 'net' ? netType(i, name) : '', tk: kind === 'net' ? netKey(i, name) : '', bssid: '', vlan: '', list: []}; out.push(by[key]); } return by[key]; }
+   /* Media Bridge / WDS / Stations serve no clients: no empty boxes there */
+   if (d[7] === 'AP' || d[7] === 'Hybrid' || /^Repeater/.test(d[7] || '')){
+     if (MIGRATED){
+-      add(mainOn ? '' : 'Main BSS', 'main', mainOn ? VSSID[i][0] : d[0]);
++      /* 2026-11-11 (field): wlN.1 carries another profile (a portal on a radio the main network does not use) -
++         its clients (tagged "") form that network's box, with its own type; no main box on this radio */
++      if (mainOn && HAS_MAIN && !MAINSSID[VSSID[i][0]] && NETTYPE.hasOwnProperty(VSSID[i][0])) add('', 'net', VSSID[i][0]);
++      else add(mainOn ? '' : 'Main BSS', 'main', mainOn ? VSSID[i][0] : d[0]);
+       for (s = 1; s < VSSID[i].length; s++) if (VON[i][s] === '1' && VSSID[i][s] && VSSID[i][s] !== VSSID[i][0]) add(VSSID[i][s], 'net', VSSID[i][s]);
+     } else {
+       /* not migrated: the main network on wlN (httpd tags its clients "Main BSS"), the others from wlN.1 ("" for
+@@ -216,7 +236,7 @@ function netHtml(n, col, cmp){
+   var title = n.name || (n.kind === 'bh' ? `<#RLOG_78#>` : n.kind === 'main' ? `<#RLOG_79#>` : '-');
+   var h = '<div class="net"><h3>' + hx(title) +
+     (n.name && n.kind === 'main' ? '<span class="tag good">' + hx(`<#RLOG_79#>`) + '</span>' : '') +
+-    (n.type ? '<span class="tag">' + hx(n.type) + '</span>' : '') +
++    (n.type ? '<span class="tag' + (CHIP[n.tk] ? ' ' + CHIP[n.tk] : '') + '">' + hx(n.type) + '</span>' : '') +
+     (n.vlan ? '<span class="tag">VLAN ' + hx(n.vlan) + '</span>' : '') +
+     '<span class="cnt">' + n.list.length + ' ' + hx(`<#RLOG_86#>`) + '</span></h3>';
+   if (n.bssid) h += '<div class="bss">BSSID ' + hx(n.bssid) + '</div>';
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+index 5a940ee7ba7..85ac4c678d2 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/MLO.asp
+@@ -28,9 +28,19 @@ function reaperGrowFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+-		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
++		/* reaper 2026-11-10: a setup panel (.popup_container) is absolutely positioned and opens with a slide, so the
++		   document never grows with it and stock sized the frame before the slide ended (681 px at its call, 1047 px
++		   400 ms later): every network type's setup was cut off at the bottom. Each shown panel's bottom, plus the
++		   30 px stock leaves under it, now counts, and the panels are observed like the body. Still grow-only. */
++		var need=function(){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0), w=d.defaultView, p=d.querySelectorAll(".popup_container"), i, r;
++			for(i=0;i<p.length;i++){ if(w.getComputedStyle(p[i]).display=="none") continue; r=p[i].getBoundingClientRect(); if(r.height>0) h=Math.max(h, Math.ceil(r.bottom+w.pageYOffset)+30); }
++			return h; };
++		var grow=function(){ try{ var h=need(); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
++		/* a click inside the network app is what opens, switches or expands a panel: fit again once its slide is over,
++		   whether or not the browser delivered a resize observation for it */
++		try{ d.addEventListener("click", function(){ setTimeout(grow,450); setTimeout(grow,1100); }, true); }catch(e){}
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow), pc=d.querySelectorAll(".popup_container"), k; if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); for(k=0;k<pc.length;k++) ro.observe(pc[k]); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ function initial(){
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+index a836f0722ad..cdc6326c8b1 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN.asp
+@@ -32,9 +32,19 @@ function reaperGrowFrame(ifr){
+ 	try{
+ 		var d=ifr.contentDocument; if(!d) return;
+ 		if(ifr._rro){ ifr._rro.disconnect(); ifr._rro=null; }   /* drop the prior frame's observer + dead doc */
+-		var grow=function(){ try{ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
++		/* reaper 2026-11-10: a setup panel (.popup_container) is absolutely positioned and opens with a slide, so the
++		   document never grows with it and stock sized the frame before the slide ended (681 px at its call, 1047 px
++		   400 ms later): every network type's setup was cut off at the bottom. Each shown panel's bottom, plus the
++		   30 px stock leaves under it, now counts, and the panels are observed like the body. Still grow-only. */
++		var need=function(){ var h=Math.max(d.documentElement.scrollHeight, d.body?d.body.scrollHeight:0), w=d.defaultView, p=d.querySelectorAll(".popup_container"), i, r;
++			for(i=0;i<p.length;i++){ if(w.getComputedStyle(p[i]).display=="none") continue; r=p[i].getBoundingClientRect(); if(r.height>0) h=Math.max(h, Math.ceil(r.bottom+w.pageYOffset)+30); }
++			return h; };
++		var grow=function(){ try{ var h=need(); if(h>40 && h>ifr.offsetHeight+4) ifr.style.height=h+"px"; }catch(e){} };
+ 		grow(); setTimeout(grow,400); setTimeout(grow,1200);
+-		if(window.ResizeObserver){ var ro=new ResizeObserver(grow); if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); ifr._rro=ro; }
++		/* a click inside the network app is what opens, switches or expands a panel: fit again once its slide is over,
++		   whether or not the browser delivered a resize observation for it */
++		try{ d.addEventListener("click", function(){ setTimeout(grow,450); setTimeout(grow,1100); }, true); }catch(e){}
++		if(window.ResizeObserver){ var ro=new ResizeObserver(grow), pc=d.querySelectorAll(".popup_container"), k; if(d.body) ro.observe(d.body); if(d.documentElement) ro.observe(d.documentElement); for(k=0;k<pc.length;k++) ro.observe(pc[k]); ifr._rro=ro; }
+ 	}catch(e){}
+ }
+ /* reaper 2026-11-01: Reaper_MLO.asp's "Add a Network" lands here with a one-shot flag; once the network app has
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 788f3fe2ede..1444d1f66d1 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -4775,6 +4775,18 @@ function show_popup_Wizard_Setting(_type){
+ 					e = e || event;
+ 					e.stopPropagation();
+ 					var wizard_type = $(this).closest(".setting_content_container").attr("data-wizard-type");
++					//Reaper 2026-11-10: the wizard's passcode, checked the way the Portal tab checks it
++					var $rpc = $(_obj).find("#FWF_passcode");
++					if($rpc.length && $(_obj).find("#FWF_passcode_enabled").hasClass("on")){
++						$(_obj).find(".validate_hint").remove();
++						$rpc.val($rpc.val().replace(/\s+/g, ''));
++						var rpc_bad = ($rpc.val() == "") ? "<#JS_fieldblank#>" : (($rpc.val().length > 15) ? `<#RGNP_01#>` : ((/[^\x21-\x7e]|[<>]/.test($rpc.val())) ? "<#JS_validstr2#> < >" : ""));
++						if(rpc_bad != ""){
++							$rpc.show_validate_hint(rpc_bad);
++							$rpc.focus();
++							return false;
++						}
++					}
+ 					if(validate_format_Wizard_Item($(_obj), wizard_type)){
+ 						var rc_append = "";
+ 						var sdn_obj = get_new_sdn_profile();
+@@ -4859,7 +4871,8 @@ function show_popup_Wizard_Setting(_type){
+ 							sdn_profile.cp_rl.enable = "1";
+ 							sdn_profile.cp_rl.conntimeout = 60*60;
+ 							sdn_profile.cp_rl.redirecturl = "";
+-							sdn_profile.cp_rl.auth_type = "0";
++							sdn_profile.cp_rl.auth_type = ($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0";//Reaper 2026-11-10: the wizard's own passcode switch
++							sdn_profile.cp_rl.local_auth_profile = (sdn_profile.cp_rl.auth_type == "1") ? $(_obj).find("#FWF_passcode").val() : "";
+ 							sdn_profile.cp_rl.term_of_service = "1";
+ 							sdn_profile.cp_rl.NAS_ID = "";
+ 							uploadFreeWiFi({
+@@ -5006,8 +5019,39 @@ function show_popup_Wizard_Setting(_type){
+ 				.attr({"oninput": "trigger_keyup($(this))"});
+ 
+ 			var $FWF_ui_cntr = $("<div>").attr({"id":"FWF_ui_container"}).addClass("profile_setting_item FWF_ui").appendTo($freewifi_cntr);
+-			Get_FWF_Preview_Container().appendTo($FWF_ui_cntr).find("[data-component=FWF_passcode]").remove();
++			Get_FWF_Preview_Container().appendTo($FWF_ui_cntr).find("[data-component=FWF_passcode]").hide();
+ 			Get_FWF_Change_BG_Container().hide().appendTo($FWF_ui_cntr);
++			//Reaper 2026-11-10: the passcode can be set while the portal is created (stock offered it only on the Portal tab of an existing network)
++			var FWF_passcode_enabled_parm = {"title":"<#FreeWiFi_Add_Passcode#>", "type":"switch", "id":"FWF_passcode_enabled", "set_value":"off"};
++			Get_Component_Switch(FWF_passcode_enabled_parm).appendTo($freewifi_cntr)
++				.find("#" + FWF_passcode_enabled_parm.id + "").click(function(e){
++					e = e || event;
++					e.stopPropagation();
++					//the row lives in its own wrapper and is a required field only while the switch is on: choosing the portal
++					//type shows every .profile_setting_item under it, which would un-hide the row and leave Apply greyed out
++					var $ps = $(this).closest(".profile_setting");
++					if($(this).hasClass("on")){
++						$ps.find("#wizard_FWF_passcode_wrap").show().find(".profile_setting_item").show();
++						$ps.find("#FWF_passcode").attr({"need_check":"true"});
++						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").show();
++					}
++					else{
++						$ps.find("#wizard_FWF_passcode_wrap").hide().find(".validate_hint").remove();
++						$ps.find("#FWF_passcode").removeAttr("need_check");
++						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").hide();
++					}
++					resize_iframe_height();
++					_set_apply_btn_status($ps);
++				});
++			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
++			var $wizard_FWF_passcode_wrap = $("<div>").attr({"id":"wizard_FWF_passcode_wrap"}).hide().appendTo($freewifi_cntr);
++			Get_Component_Input(FWF_passcode_parm).appendTo($wizard_FWF_passcode_wrap)
++				.find("#" + FWF_passcode_parm.id + "")
++				.removeAttr("need_check")
++				.keyup(function(){
++					_set_apply_btn_status($(this).closest(".profile_setting"));
++				})
++				.attr({"oninput": "trigger_keyup($(this))"});
+ 			if(ui_lang != "EN" && ui_lang != ""){
+ 				$.getJSON("/ajax/freewifi_tos.json?v="+sdn_variable.extendno+"", function(data){
+ 					if(data[ui_lang] != ""){
+-- 
+2.25.1
+

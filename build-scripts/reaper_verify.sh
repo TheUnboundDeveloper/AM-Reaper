@@ -561,6 +561,48 @@ if [ -z "$_hostelf" ]; then
 else
   fail "host-arch" "host-architecture ELF in the image: $_hostelf"
 fi
+
+# ---- symshadow: a C-library function replaced by a vendor library ----------
+# 2026-11-11 (test image _r14): libshared.so exports its own timer_create()/timer_settime(), which every program
+# that loads libshared first gets instead of the C library's; that timer_create() exits on CLOCK_MONOTONIC, so httpd
+# quit on its first connection. Host tests cannot see this (they link the real C library). reaper_symshadow.py
+# resolves each program's imports in load order and lists every C-library name another library answers first.
+# Known stock cases are in reaper_symshadow.allow. FAIL for the timer family (the _r14 class); WARN for anything else
+# new, so a stock overlap first seen on a sibling model is looked at before it can block a build.
+_ssdir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [ -f "$_ssdir/reaper_symshadow.py" ] && command -v python3 >/dev/null 2>&1; then
+  _ssout="$(REAPER_READELF="$READELF" python3 "$_ssdir/reaper_symshadow.py" "$FS" --allow "$_ssdir/reaper_symshadow.allow" 2>&1)"
+  _ssnew="$(printf '%s\n' "$_ssout" | grep '^NEW ' | sed 's/  */ /g')"
+  _sssum="$(printf '%s\n' "$_ssout" | tail -1)"
+  if [ -z "$_ssnew" ]; then
+    pass "symshadow" "$_sssum"
+  elif printf '%s\n' "$_ssnew" | grep -qE '^NEW (timer_[a-z]+|clock_[a-z]+|setitimer|alarm) '; then
+    printf '%s\n' "$_ssnew" | sed 's/^/          /'
+    fail "symshadow" "a program calls a timer function that a vendor library replaces (see above; the _r14 httpd failure)"
+  else
+    printf '%s\n' "$_ssnew" | sed 's/^/          /'
+    warn "symshadow" "new C-library name answered by a vendor library (see above) - check it, then add it to reaper_symshadow.allow if it is stock"
+  fi
+else
+  warn "symshadow" "reaper_symshadow.py or python3 missing - check skipped"
+fi
+
+# ---- httpd-smoke: the image's own web server serves and survives connections ----
+# 2026-11-11: _r14's httpd exited on its first connection and only the router showed it. reaper_httpd_smoke.sh runs
+# the STAGED httpd with the staged libraries under qemu-user (private namespace, the staged fs as root, an in-memory
+# nvram) and requests the login page, an empty connection and 5 requests in a row. Proven: _r14's httpd fails it
+# (exit status 1), _r15's passes. Hosts without qemu-arm binfmt or user namespaces skip it (WARN).
+if [ -f "$_ssdir/reaper_httpd_smoke.sh" ]; then
+  _hsout="$(bash "$_ssdir/reaper_httpd_smoke.sh" "$FS" 2>&1)"; _hsrc=$?
+  case $_hsrc in
+    0)  pass "httpd-smoke" "staged httpd under qemu: login page 200, survives an empty connection and 5 requests" ;;
+    77) warn "httpd-smoke" "skipped on this host: $(printf '%s\n' "$_hsout" | grep '^SKIP' | head -1)" ;;
+    *)  printf '%s\n' "$_hsout" | grep -E '^(FAIL|ok  |     )' | sed 's/^/          /'
+        fail "httpd-smoke" "the staged httpd does not serve or does not survive a connection (see above)" ;;
+  esac
+else
+  warn "httpd-smoke" "reaper_httpd_smoke.sh missing - check skipped"
+fi
 if [ -s "$FS/usr/share/reaper/witness.static" ]; then
   _nw=$(grep -c '^[A-Z][A-Za-z0-9]*|' "$FS/usr/share/reaper/witness.static")
   if [ "$_nw" -ge 12 ] && grep -q '^A1|' "$FS/usr/share/reaper/witness.static" && grep -q '^A4|' "$FS/usr/share/reaper/witness.static"; then

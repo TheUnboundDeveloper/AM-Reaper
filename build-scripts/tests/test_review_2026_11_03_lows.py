@@ -119,7 +119,8 @@ pin("httpd/httpd.c", "A-1: the no-header branch is braced (an unbraced else made
     has=("\telse {\n\t\t/* neither header: cross-site when a browser sent it, on either listener",
          "\t\t(void)tls;\n\t\txsite = ua && !strncmp(ua, \"Mozilla/\", 8);\n\t}\n"))
 pin("httpd/httpd.c", "A-2: the three side-effect .asp pages get the cross-site check",
-    has=('strcmp(url, "start_autodet.asp")', 'strcmp(url, "ajax_trigger_chk_sta.asp")', 'strcmp(url, "apscan.asp")'))
+    # review 2026-11-11 (B-2): a list matched by file name now ("./apscan.asp" was not "apscan.asp" to strcmp)
+    has=('{ "start_autodet.asp", "ajax_trigger_chk_sta.asp", "apscan.asp",', "hit = !strcmp(base, acting[i]);"))
 pin("httpd/httpd.c", "Range: one parser (reaper_byte_range) for send_headers and do_file, 206 for a served range",
     has=("static int reaper_byte_range(const char *hdr, long long total, off_t *s, off_t *e)",
          "int rr = reaper_byte_range(request_content_range, request_file_size, &rr_s, &rr_e);", "status = 206;",
@@ -285,7 +286,9 @@ check("B-1: the hook is written only into authenticated responses, with a plain 
 check("B-1: skip-listed and QIS_* pages get the hook alone (mode 6), no theme",
       inj.count("return 6;") == 2 and "if (mode != 6)\n\t\t\tRP_PUT(conn_fp, RP_LINK_CSS);" in inj and "case 6:" in inj)
 check("B-1: httpd marks a request authenticated only after auth_check() passed, and clears it per request",
-      "int reaper_req_authed = 0;" in hc and "\treaper_req_authed = 0;\n\treaper_req_post" in hc and "\t\t\t\t\treaper_req_authed = 1;\n#endif\n" in hc)
+      "int reaper_req_authed = 0;" in hc and "\treaper_req_authed = 0;\n\treaper_req_post" in hc
+      # review 2026-11-11 (B-3): the connection deadline is switched off on the next line, still inside the #ifndef
+      and re.search(r"\t\t\t\t\treaper_req_authed = 1;\n(\t\t\t\t\treaper_conn_deadline_off\(\);[^\n]*\n)?#endif\n", hc) is not None)
 wb = rd(os.path.join(SRC, "httpd/web.c"))
 ok_fn = func(wb, "static int reaper_apply_token_ok(")
 check("B-1: browser applies need the token; the app, scripts, a pristine-stock UI and AiMesh nodes are exempt",

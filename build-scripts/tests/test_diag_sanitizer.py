@@ -125,8 +125,11 @@ RAW = "\n".join([
     "\t\t\t\t\t\t\twds1.1.1.0",
     "  engine            : v3.8.0 build 235  2243684 bytes  launcher=ookla_run",
     "  ntp               : server=198.51.100.7 peer wds1 via 203.0.113.44",
+    # 34-35: v1.3.56 the router's own certificate name, in the two log lines that print it
+    "Nov 10 11:56:38 dnsmasq[10899]: using standard nameservers for .router.example-home.net",
+    "Dec 31 19:01:20 httpd: S:router.example-home.net, I:Let's Encrypt, 2026/11/5 ~ 2027/2/3",
 ])
-SLIST = "HOST\tMyNAS-01\n"
+SLIST = "HOST\trouter.example-home.net\nHOST\tMyNAS-01\n"
 
 def pipeline(text):
     """Run SAN_STAGES in order, exactly as the script does (ctx gets the file twice)."""
@@ -163,7 +166,7 @@ for (name, ok, out, err, errs), a in zip(pipeline(RAW), awks):
     tag = "[%s] " % name
     check(tag + "every stage runs", ok, errs)
     L = out.split("\n")
-    if len(L) < 34:
+    if len(L) < 36:
         check(tag + "the pipeline kept every line", False, len(L))
         continue
     check(tag + "a prefix ending in :: is tokenized", "[IP6-" in L[0] and "8cd0" not in L[0] and "2001" not in L[0], L[0])
@@ -215,10 +218,15 @@ for (name, ok, out, err, errs), a in zip(pipeline(RAW), awks):
     check(tag + "the speed-test engine's version stays readable", "v3.8.0 build 235" in L[32], L[32])
     check(tag + "a public address beside a wds word is still tokenized",
           "198.51.100.7" not in L[33] and "203.0.113.44" not in L[33] and L[33].count("[EXT-IP-") == 2, L[33])
+    # v1.3.56
+    check(tag + "the certificate name is masked in dnsmasq's start line, the line stays readable",
+          "example-home" not in L[34] and L[34].endswith("using standard nameservers for .[HOST-2]"), L[34])
+    check(tag + "and in httpd's certificate line, with the same token",
+          "example-home" not in L[35] and "S:[HOST-2], I:Let's Encrypt" in L[35], L[35])
     ordered = all(k in err for k in ("hostnames", "client names", "MAC addresses", "IPv6 addresses", "public IPv4"))
     check(tag + "the ledger carries every stage's lines, in stage order",
           ordered
-          and re.search(r"hostnames redacted\s+: 1\b", err) is not None
+          and re.search(r"hostnames redacted\s+: 2\b", err) is not None
           and re.search(r"client names from log lines: [5-9]", err) is not None
           and re.search(r"client domains redacted\s+: 1\b", err) is not None
           and re.search(r"IPv6 reverse zones redacted: 2\b", err) is not None
@@ -233,6 +241,72 @@ for (name, ok, out, err, errs), a in zip(pipeline(RAW), awks):
     check(tag + "tripwire: the raw lines count IPv6, MAC and client-name residue",
           len(v) == 5 and int(v[3]) >= 4 and int(v[1]) >= 2 and int(v[4]) >= 5, tout)
 
+# ------------------------------------------------------------------ v1.3.56: the router's own certificate names
+# A report marked CLEAN carried the DNS-over-TLS / Let's Encrypt name (dnsmasq prints it at every start, httpd
+# logs the web certificate's subject): it sat in reaper_ledns_domain, a key the literal list did not read.
+mnv = re.search(r"awk -F= '\n(.*?)' \"\$NVS\" > \"\$SLIST\"", src, re.S)
+check("the nvram literal collection is a quoted awk program the test can cut out", mnv is not None)
+NVDUMP = "\n".join([
+    "reaper_ledns_domain=router.example-home.net",
+    "https_crt_cn=nas.example-home.net,cam.example-home.net",
+    "reaper_landns_domain=probe.example.org",
+    "local_domain=www.asusrouter.com",
+    "wan0_dns=198.51.100.53",
+    "ddns_hostname_x=myhouse.example.net",
+]) + "\n"
+for a in awks if mnv else []:
+    with tempfile.TemporaryDirectory() as td:
+        pf = os.path.join(td, "nv.awk"); nf = os.path.join(td, "nv.txt")
+        open(pf, "w").write(mnv.group(1)); open(nf, "w").write(NVDUMP)
+        r = subprocess.run(a + ["-F=", "-f", pf, nf], capture_output=True, text=True)
+        got = set(r.stdout.split("\n"))
+        tag = "[%s] " % " ".join(a)
+        check(tag + "reaper_ledns_domain joins the hostname list", "HOST\trouter.example-home.net" in got, r.stdout + r.stderr)
+        check(tag + "every name of a https_crt_cn list joins it", "HOST\tnas.example-home.net" in got and "HOST\tcam.example-home.net" in got, r.stdout)
+        check(tag + "reaper_landns_domain and the DDNS name join it", "HOST\tprobe.example.org" in got and "HOST\tmyhouse.example.net" in got, r.stdout)
+        check(tag + "the firmware's own name and a resolver address do not", not any("asusrouter" in g or "198.51.100.53" in g for g in got), r.stdout)
+
+mfn = re.search(r"^(san_hostseed\(\) \{\n.*?)^san_rednsd_names /tmp/rednsd/run/status\.json >> \"\$SLIST\" 2>/dev/null\n"
+                r"for _c in /etc/cert\.pem /jffs/\.cert/cert\.pem; do san_pem_names \"\$_c\" >> \"\$SLIST\" 2>/dev/null; done\n", src, re.S | re.M)
+check("the certificate-name seeds are three functions and two calls the test can cut out", mfn is not None)
+check("the seeds run before the 32-character prefixes and the sort",
+      mfn is not None and src.index("san_rednsd_names /tmp/rednsd/run/status.json") < src.index("awk -F'\\t' 'length($2) > 32"))
+shells = [["sh"]]
+if shutil.which("busybox") and subprocess.run(["busybox", "ash", "-c", "true"]).returncode == 0:
+    shells.append(["busybox", "ash"])
+for sh in shells if mfn else []:
+    with tempfile.TemporaryDirectory() as td:
+        tag = "[%s] " % " ".join(sh)
+        st = os.path.join(td, "status.json")
+        open(st, "w").write('{"state":"running","pid":1,"listen":[{"a":"192.168.50.1","p":853,"wan":0,"ok":1}],"conns":0,'
+                            '"cert":{"names":["router.example-home.net","*.example-home.net"],"cn":"router.example-home.net",'
+                            '"issuer":"Let\'s Encrypt","not_after":1801698192,"self_signed":0,"trusted":1}}\n')
+        fn = os.path.join(td, "fn.sh")
+        open(fn, "w").write(mfn.group(1) + 'san_rednsd_names "$1"\necho ---\nsan_pem_names "$2"\necho ---\nsan_rednsd_names "$1.absent"; san_pem_names "$2.absent"; echo rc=$?\n')
+        pem = os.path.join(td, "cert.pem")
+        have_pem = False
+        if shutil.which("openssl"):
+            g = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-keyout", os.path.join(td, "k.pem"),
+                                "-out", pem, "-subj", "/CN=router.example-home.net", "-addext",
+                                "subjectAltName=DNS:router.example-home.net,DNS:*.example-home.net,DNS:router.asus.com,DNS:www.asusrouter.com,DNS:RT-BE96U-FEF0,IP:192.168.50.1"],
+                               capture_output=True, text=True)
+            have_pem = g.returncode == 0
+        r = subprocess.run(sh + [fn, st, pem], capture_output=True, text=True)
+        parts = r.stdout.split("---\n")
+        check(tag + "the seed functions run", r.returncode == 0 and len(parts) == 3, r.stdout + r.stderr)
+        if len(parts) != 3:
+            continue
+        s1 = set(parts[0].split("\n")) - {""}
+        check(tag + "the DNS-over-TLS status file gives the certificate names, a wildcard without its star, nothing else",
+              s1 == {"HOST\trouter.example-home.net", "HOST\texample-home.net"}, parts[0])
+        if have_pem:
+            s2 = set(parts[1].split("\n")) - {""}
+            check(tag + "the web certificate gives its CN and DNS names; asus names, a one-label name and the address stay out",
+                  s2 == {"HOST\trouter.example-home.net", "HOST\texample-home.net"}, parts[1])
+        else:
+            print("note " + tag + "no openssl on the host - the web certificate half is not exercised")
+        check(tag + "a missing file is not an error", parts[2].strip() == "rc=0", parts[2])
+
 # ------------------------------------------------------------------ the rest, read
 check("a failing stage writes no report", "sanitizer stage '$_st' failed - no report written" in src
       and 'rm -f "$BODY".* "$BODY"' in src)
@@ -244,12 +318,12 @@ check("the ledger prints the residual lines and the verdict names client names",
 check("the boot-skeleton finding no longer claims a refused line in every case",
       "(one line was refused;" not in src and "no refused line was recorded" in src
       and "_nerr=$(ls /tmp/err_rules/*.err" in src)
-check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.55"' in src)
+check("VER is v1.3.48", 'VER="REAPER-DIAG v1.3.59"' in src)
 check("10b prints the engine's version as 'X.Y.Z build N' (v1.3.53)",
       '_ov="v${_ov%.*} build ${_ov##*.}"' in src and 'engine            : v$(grep' not in src)
 mkr = open(os.path.join(HERE, "..", "verify_markers.txt"), encoding="utf-8").read()
 check("build markers pin the version and the new tokens",
-      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.55|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
+      "usr/sbin/reaper_diag|REAPER-DIAG v1.3.59|1" in mkr and "usr/sbin/reaper_diag|4c. DNS DIRECTOR|1" in mkr
       and "usr/sbin/reaper_diag|[IP6-ARPA-|1" in mkr
       and "usr/sbin/reaper_diag|residual IPv6 shapes|1" in mkr and "usr/sbin/reaper_diag|[CLIENT-DOMAIN-|1" in mkr
       and "usr/sbin/reaper_diag|residual client names|1" in mkr

@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.7.5** · 2026-11-09 <!--@stamp-->
+> **Doc status:** current as of **v3.7.6** · 2026-11-11 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.5 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.6 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -254,7 +254,7 @@ Why a Reaper box rather than the stock Wireless page: on this build the stock pa
 
 **The internet cable.** Plug the provider's cable into the port labelled **WAN**. From v3.4.2 that port is the factory internet port and automatic port detection is off; a cable in the other WAN-capable port gets no internet until that port is chosen on **WAN → WAN Ports** (4.19).
 
-Every factory value is listed in section 8.
+Every factory value is listed in section 8. A one-page walkthrough of this first setup is in [`QUICK-START.md`](QUICK-START.md).
 
 The banner only ever appears on a genuinely unconfigured router — an upgrade of a configured router never sees it. The forced first-boot page and its six gates were removed in v2.9.1 after they produced the login loops of the v2.1.x line; there is nothing to release over SSH any more, and no page is ever withheld.
 
@@ -400,6 +400,12 @@ The same card lists **failed-login bursts**: ten or more failed SSH or web-inter
 
 **IPsec's certificate folder (2026-10-21).** `/jffs/ca_files` holds the IPsec server's CA, server and client private keys and the setup scripts the router runs from it as root. The stock IPsec code rewrote those scripts with mode 0777 every time IPsec started, after the boot sweep had run, and created the keys readable by every user. Now the folder is root's alone: mode 0700, and no file in it has group or other permissions. The boot sweep enforces this whether IPsec is on or not (`reaper: jffs: the IPsec keys and scripts in /jffs/ca_files made root-only`), and so does every IPsec start and certificate generation. The scripts are created fresh at 0700 and run only when they are root's and nobody else can write them. strongSwan's own key folder, `/tmp/etc/ipsec.d/private`, gets the same treatment. Nothing that is not root uses either folder, so the IPsec server, its certificate export and its import work as before.
 
+**VPN provider profiles kept from the stock firmware (2026-11-10).** The stock firmware's provider logins (Surfshark, NordVPN) are not part of Reaper: from v3.7.1 the router no longer signs in to a provider's service to fetch and renew a profile's keys, so a provider profile carried over from stock stops connecting. Set the provider up as an ordinary WireGuard client instead: in your provider account choose the manual or router WireGuard setup, download the configuration file it makes, and import it on **VPN → VPN Client**, WireGuard tab (a file without a valid private and public key is refused and nothing is changed). On a router upgraded from stock without a factory reset, a provider entry left in the old VPN list used to switch its WireGuard or OpenVPN client off again at every boot, which looked like a lost key; from the image after v3.7.5 that list no longer switches a client on or off. A saved private key or pre-shared key is never sent back to the page: the field is empty, **Show** only unmasks what you type, and the text beside it says **A key is saved (hidden)** or **No key saved**.
+
+**IPsec profile checks (2026-11-10).** A saved IPsec profile is not applied when it holds a control character anywhere, has fewer fields than the format needs, holds the word `include` followed by a space outside a key or password, or breaks a field rule. The local and remote ID and the remote gateway take letters, digits and `@ . _ : + % -` only (or a hex key ID, `@#` and hex digits); a certificate DN is not accepted. Subnets, certificate and key file names, authentication methods and the EAP identity take no space or `=`. The pre-shared key, the XAUTH password and the key file name take no double quote. The DNS/WINS list takes addresses only. The system log names the profile and the reason (`... profile N skipped: unsafe character in <field>`, `include directive in <field>` or `malformed saved value`); the saved value is left as it is. An Instant Guard client whose name is not 1 to 32 letters or digits gets no login (`Instant Guard client N skipped: unsafe name`). A VPN user of the IPsec server whose name holds a space, `:`, `#`, a quote, a backslash, `<` or `>`, is `include` or is longer than 64 characters, or whose password holds a double quote or a control character, gets no login (`VPN user N of ipsec_client_list_M skipped: unsafe character in the user name` / `password`); the page now refuses `#` in a name too. When a profile is refused while the IPsec server runs, strongSwan is restarted once so a tunnel that profile had up goes down (a reload alone kept it). A local subnet may be IPv6. The IPsec server certificate is only made for a well-formed WAN IPv4 address, or for a valid DDNS host name; without one the log says `No usable WAN address yet, CA files are not created.`
+
+**Mount options (2026-11-10).** `/tmp`, `/var` and `/jffs` are mounted `nosuid,nodev`: a file placed there cannot run as another user through a setuid bit and cannot act as a device node. Scripts and programs in `/jffs/scripts`, `/jffs/addons` and `/tmp` run as before; USB volumes are unchanged. A failure to set the flags is one log line (`cannot set nosuid,nodev on ...`) and nothing else changes.
+
 The diagnostics report lists "an old direct firewall hook left over or the shared front chain missing" as a FINDING, which will catch most script conflicts.
 
 **When a script seems not to run.** A custom script runs only from `/jffs/scripts/<name>`, only while *Enable JFFS custom scripts and configs* (System) is on, and only when it is executable (`chmod +x`); each refusal is logged as `custom_script: Found <name>, but …`. The router also keeps what the script printed on its last run in `/tmp/reaper/script-<name>.log` (the first 64 KB) and logs one line when it exits with an error, quoting the last thing it printed - so a command this router does not have (`iptables -w`: its iptables is 1.4; BusyBox options such as `flock -w` or `find -type`) shows up as `custom_script: /jffs/scripts/firewall-start exited with status 2: iptables v1.4.18: unknown option "-w" …` instead of looking like the script never ran. A script saved with Windows line endings is named too: its first line then asks for `/bin/sh\r`, which does not exist. Section 13 of the diagnostics report lists every script with these facts. It judges only the names the firmware runs (the hooks such as `services-start`, `firewall-start` or `ddns-start`, and `*.postconf`); any other file there - a helper a hook calls, a `.log` it writes - is listed as not a hook name, with no finding. A hook that is a symlink runs (the router follows the link) and is listed as one.
@@ -427,6 +433,7 @@ files and folders under `/jffs` that any user can write (section 3), with a find
 - **Your public IPv4 address and all IPv6 addresses** are masked. **E-mail addresses** are redacted wherever they appear (from v2.4.6).
 - From report **v1.3.35** (v3.4.2) three IPv6 shapes that earlier reports printed are masked too: a **routed prefix that ends in `::`** (a tunnel broker's `2001:db8:abcd::/48` in a Warden or IPv6 firewall line), a **reverse zone** (`…ip6.arpa`, the same prefix written backwards in dnsmasq's log, now `[IP6-ARPA-n]`), and a **DHCPv6 DUID**, which embeds the router's MAC (its lease-file line is no longer printed). The bare well-known prefixes `fe80::`, `fc00::`, `fd00::`, `ff02::1`-style multicast and `2001:db8::` stay readable, because they identify nothing. **A report from an older image that shows a `2001:` or `2a0x:` prefix, an `ip6.arpa` name or a `MAC-n:xx:xx…` tail has leaked; do not post it.**
 - From report **v1.3.36** the redaction runs as a **pipeline of targeted stages**, one per kind of data, each with its own ledger lines: values the router knows to be private (passwords, usernames, network and host names), then **names and domains your devices wrote into the log themselves**, then e-mail, MAC, IPv6 and IPv4 addresses. The client-names stage reads the DHCP and Gatekeeper log lines where a device supplies its own name (`Ignoring domain … for DHCP host name …`, the name on a DHCP acknowledgement, `not giving name …`, a Gatekeeper `host (…)`), masks each name as `[CLIENT-NAME-n]` and each domain as `[CLIENT-DOMAIN-n]` everywhere in the report, and keeps generic domains such as `lan` and `local` readable. Before v1.3.36 a device's own domain, which can name its owner's employer, was printed as it was, and a short device name in older log lines could slip through. A stage that fails stops the report: no partly redacted file is ever written.
+- From report **v1.3.56** the **names on the router's own certificates** are masked as host names: the DNS-over-TLS / Let's Encrypt name and the names on the web interface's certificate, including any extra names you added to it. dnsmasq writes the first into the system log every time it starts and the web server writes the second at boot, so both sat in section 19. **A report from an older image, taken on a router that uses such a name, shows it in the system-log section; do not post that report as it is.** The firmware's own names (`router.asus.com`, `www.asusrouter.com`) stay readable.
 - **Local-only addresses** (192.168.x.x) are kept — they identify nothing outside your own network.
 - Pseudonyms stay consistent inside one report, so a device can be followed across sections without revealing which device it is; a new report gets a new set.
 - The report opens with a **ledger** counting exactly what was withheld, and the finished file is **re-scanned** for anything that still looks like a public IPv4 address, an IPv6 address or reverse zone (from v1.3.35), a hardware address, an e-mail, or an unmasked device-supplied name in those log lines (from v1.3.36), and marked either clean or "review before sharing" (counts only — printing what it found would put the leak into the file).
@@ -729,9 +736,11 @@ Be realistic about the limits. This matches the request as it goes past, so it w
 
 #### 4.1.12 Logging
 
-**What it is.** Chooses which firewall decisions get written to the system log — nothing, dropped packets, accepted packets, or both — and shows the recent entries.
+**What it is.** Chooses which firewall decisions are logged — nothing, dropped packets, accepted packets, or both — and shows the recent entries. Since v3.7.5 the lines go to the firewall log collector (`rflogd`), not to the system log: it keeps them in RAM (`/tmp/reaper/fwlog`), on the long-term store when that lists the firewall log (4.11), and sends each one to the remote log server set on the System Log page.
 
-**How to use it.** Leave it off for normal running. A busy connection can log thousands of lines a minute, which fills the log and pushes out everything else you might have wanted to read. Every logging rule is rate-limited to 10 lines a second with bursts of 50 — one budget each for Drop, Accept and Warden's three prefixes — and past that the lines are dropped, never the packets, so the router stays responsive whatever the setting; under **Accept** or **Both** a busy network shows a sample of its connections, not every one.
+**How to use it.** Leave it off for normal running. A busy connection can log thousands of lines a minute, which fills the log and pushes out everything else you might have wanted to read. Each logging rule may write up to 10,000 lines a second, with bursts of 10,000; past that the lines are held back, never the packets, and counted. If the collector is not running, the rules fall back to the system log at 10 lines a second with bursts of 50, so under **Accept** or **Both** a busy network then shows a sample of its connections, not every one. The line under the setting shows the collector's counts: lines recorded, lost, and held back by the limit.
+
+**Remote log server (from the image after v3.7.5).** Each firewall line goes to the server as one UDP syslog message (RFC 3164, facility kern, severity notice, tagged `rflogd`), to the same address and port as the system log (`log_ipaddr`, `log_port`). The server must be an IP address: a name is not looked up, and the page then says that nothing is forwarded. A second line under the setting shows how many lines were sent and how many could not be (amber when any could not); a line that could not be sent is still in the router's own firewall log, and the first one in each minute is noted in the system log. The router keeps a send queue of about 2 MB for these messages, so a burst at the limit does not overflow it. At the full rate this is roughly 3 MB a second of log traffic, so give the receiving server a large enough receive buffer as well. UDP has no delivery guarantee: a message lost on the way or dropped by the server is not seen by the router. The diag reports the same counts in section 14.
 
 Turn on **Drop** while you are diagnosing a rule that is not doing what you expect, look at the entries, then turn it back off. **Accept** and **Both** are for short, deliberate investigations only.
 
@@ -821,6 +830,8 @@ Since v2.6.2 the LAN seal also covers routes to *other* networks — the main LA
 
 Enforcement follows onto every network the router runs. Creating, editing or deleting a guest network re-applies Gatekeeper on every bridge immediately, and it is logged.
 
+**A Guest Portal network is the exception (from the image after v3.7.5).** A network with a guest portal has its own gate, the portal's sign-in page, so Gatekeeper leaves that network alone: its devices are not held, not listed on the Gatekeeper page and not shown the waiting room, and the system log names the exempt network (`gatekeeper: Guest Portal network(s) ... exempt`) each time Gatekeeper is applied. Devices on your other networks that are held or marked *Internet only* still cannot reach it. What a guest is asked for is set on the portal itself: the Terms of Service tick box, and a passcode when you switch on **Add your own Passcode** (up to 15 characters) - from the same image that switch is offered while you create the Guest Portal on the Network page, not only when you edit the network afterwards.
+
 The waiting-room page works on an isolated guest network for an *unknown* device. An **approved** device on that network still cannot reach the router's pages — again, that is what *Access Intranet: off* means, and it is not a Gatekeeper decision. Devices on guest networks do get their hostnames.
 
 #### 4.2.6 Reading the status
@@ -874,8 +885,9 @@ They work at three different layers, and that decides what each one can and cann
 | **Warden** (4.3.1) | IP addresses: threat feeds, countries, your own lists | the firewall: chains `REAPER_WARDEN`, `RW_OUT`, `RW_SELF`, kernel `ipset` sets | the packet is dropped, no answer | `rwarden_enable` | `0` (off) |
 | **Dreadwatch** (4.3.2) | host names on threat lists | inside the router's DNS resolver (dnsmasq), every network | NXDOMAIN ("no such name") | `rwarden_dns` | `0` (off) |
 | **Wallguard** (4.3.3) | host names on ad, tracker and service lists, per device | inside the router's DNS resolver, every network | `0.0.0.0` / `::` (or NXDOMAIN, your choice) | `wallguard_enable` | `0` (off) |
-| **Encrypted DNS** (4.3.4), server half | nothing: it carries lookups | `rednsd`, a DNS-over-TLS server on port 853 | - | `reaper_dot_srv` | `0` (off) |
-| **Encrypted DNS**, block half | port 853, port 443 to known DoH resolvers, DoH provider names | the firewall chain `REAPER_EDNS` and the resolver | a refused connection; NXDOMAIN for the provider names | `reaper_doh_block` | `0` (off) |
+| **Encrypted DNS** (4.3.4), server half | nothing: it carries lookups | `rednsd`, a DNS-over-TLS (port 853) and DNS-over-HTTPS (port 443) server | - | `reaper_dot_srv` | `0` (off) |
+| **Encrypted DNS**, block half: port 853 switch | DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to any outside server | the firewall chain `REAPER_EDNS` | a refused connection | `reaper_dot_block` | empty (off; follows `reaper_doh_block` until it is set) |
+| **Encrypted DNS**, block half: DNS-over-HTTPS switch | port 443 to known DoH resolvers, DoH provider names | the firewall chain `REAPER_EDNS` and the resolver | a refused connection; NXDOMAIN for the provider names | `reaper_doh_block` | `0` (off) |
 
 **Which tool for which job.**
 
@@ -928,7 +940,7 @@ A lookup that never reaches the router's resolver passes through none of this. T
 | Warden | nvram `rwarden_*`; whitelist, manual blocks and custom feeds in `/jffs/rwarden/allow`, `ban`, `cfeeds` | kernel sets in RAM; cache `/jffs/rwarden/sets.ipset` | `/jffs/rwarden/counters` (Long-Term Storage: locked to JFFS) |
 | Dreadwatch | nvram `rwarden_dns`, `rwarden_dns_feeds`; `/jffs/rwarden/dnsallow`, `dnssrc`, `dnskeys` (root only) | table `/tmp/reaper_nx/threat.db` (RAM); compressed copy `/jffs/rwarden/dns.k.gz` | `/jffs/rwarden/dns.counters` (RAM if statistics saving is off); optional history on Long-Term Storage |
 | Wallguard | nvram `wallguard_enable`, `wallguard_mode`; `/jffs/wallguard/` (`lists`, `block`, `allow`, `allow24`, `profiles`, `assign`, `services`, `sched`, `safe`, `rewrite`, `keys`) | lists in RAM `/tmp/wallguard/lists` or on a USB volume; table `/tmp/wallguard/db` (RAM, always) | RAM, copied to `/jffs/wallguard/counters` at most hourly; optional history on Long-Term Storage |
-| Encrypted DNS | nvram `reaper_dot_srv`, `reaper_doh_block` | DoH address list `/jffs/encdns/doh.ips` | totals in RAM; optional activity log on Long-Term Storage |
+| Encrypted DNS | nvram `reaper_dot_srv`, `reaper_doh_block`, `reaper_dot_block` | DoH address list `/jffs/encdns/doh.ips` | totals in RAM; optional activity log on Long-Term Storage |
 
 Long-Term Storage (4.11) has a row for each optional history: **Wallguard block lists** (USB only), **Wallguard blocked lookups**, **Dreadwatch blocked lookups**, **Encrypted DNS activity**, and the **Encrypted DNS blocked-address list** (locked to JFFS).
 
@@ -1493,16 +1505,16 @@ Type the **Name** and the **Answer**, tick **Subdomains too** if wanted, and pre
 
 ##### 4.3.4.1 What it is: two halves
 
-The tab has two independent switches.
+The tab has two halves, each switched on its own: a server for your devices, and a block with two switches.
 
-- **Encrypted DNS for devices** (`reaper_dot_srv`, off by default) makes the router a **DNS-over-TLS server** (port 853, `rednsd`) for your devices. A device that encrypts its DNS to an outside provider never reaches the router, so Dreadwatch, Wallguard, DNS Director and Gatekeeper cannot see or block its lookups. With this on, devices encrypt to the router instead: the lookup is encrypted on your network, answered by the router's resolver with all its rules, and sent on encrypted if DNS-over-TLS upstream is on.
-- **Block encrypted DNS that goes around the router** (`reaper_doh_block`, off by default) stops devices encrypting their DNS to outside providers, so their lookups come to the router.
+- **Encrypted DNS for devices** makes the router an encrypted DNS server (`rednsd`) for your devices. It has a switch per protocol, both off by default: **DNS-over-TLS** on port 853 (`reaper_dot_srv`) and, from the image after v3.7.5, **DNS-over-HTTPS** on port 443 (`reaper_doh_srv`), the protocol Windows 11 and web browsers use. A device that encrypts its DNS to an outside provider never reaches the router, so Dreadwatch, Wallguard, DNS Director and Gatekeeper cannot see or block its lookups. With this on, devices encrypt to the router instead: the lookup is encrypted on your network, answered by the router's resolver with all its rules, and sent on encrypted if DNS-over-TLS upstream is on.
+- **Block encrypted DNS that goes around the router** stops devices encrypting their DNS to outside providers, so their lookups come to the router. It has two switches, both off by default: one for DNS-over-TLS and DNS-over-QUIC on port 853 (`reaper_dot_block`) and one for DNS-over-HTTPS (`reaper_doh_block`); see 4.3.4.6.
 
 **Use the server half** when devices should keep encrypted DNS and still be filtered. **Use the block half** when devices or browsers set to their own provider are going around Dreadwatch and Wallguard, typically together with DNS Director global mode *Router*.
 
 ##### 4.3.4.2 Setting up the router as a DoT server
 
-1. Switch on **Encrypted DNS for devices** and press **Save & Apply**. The pill reads *Running*.
+1. Switch on **DNS-over-TLS**, **DNS-over-HTTPS** or both (the two switches at the top of the tab) and press **Save & Apply**. The pill reads *Running*. If DNS-over-TLS to your upstream servers is off, the Save offers to switch that on as well (4.3.4.5).
 2. Check the **Certificate** card. *Trusted* works for every kind of device. *Self-signed* works only for Android phones on the *Automatic* setting.
 3. Set up each kind of device (4.3.4.4).
 4. **Stop devices going around the router:** in DNS Director, set the global mode to *Router*. Plain DNS from every device is then answered by the router, and DNS-over-TLS and DNS-over-QUIC (TCP and UDP 853) to any other server are rejected.
@@ -1539,7 +1551,8 @@ The tab fills these steps with your certificate's name and the router's LAN addr
 - **Android 9 or later**: Settings › Network & internet › Private DNS. **Automatic** is right for phones: encrypted to the router on this network, normal elsewhere. Choose **Private DNS provider hostname** with the certificate's name only on a device that **never leaves this network** (a TV box): that setting applies on every network, and away from home, where port 853 is closed, Android has no DNS at all.
 - **iPhone, iPad, Mac**: enter your home Wi-Fi names (prefilled from the router's radios, comma-separated), **Download the Apple profile** and install it (iPhone/iPad: Settings › General › VPN & Device Management; Mac: System Settings › Privacy & Security › Profiles). The profile switches encrypted DNS on **only on those Wi-Fi networks** and connects to the router's LAN address, so it also works behind another router. It is not signed, so the device shows it as *Unverified*.
 - **Linux (systemd-resolved)**: on a computer that stays on this network, add `DNS=<router LAN address>#<certificate name>` and `DNSOverTLS=yes` to `/etc/systemd/resolved.conf` and restart systemd-resolved. On a laptop that travels, set it for this network only, in its network manager.
-- **Windows 11 and web browsers**: they set up encrypted DNS as DNS-over-HTTPS, which the router does not offer. Leave them on their automatic setting; they then use the router's plain DNS, which Dreadwatch and Wallguard filter.
+- **Windows 11 and web browsers**: they set up encrypted DNS as DNS-over-HTTPS. With the **DNS-over-HTTPS** switch on and a trusted certificate, the tab shows the address `https://<certificate name>/dns-query` with a **Copy** button. In Firefox, Chrome or Edge choose a custom provider in the secure DNS setting and paste it. In Windows 11 open Settings › Network & internet › your connection › DNS server assignment › Edit › Manual, enter the router's LAN address as the DNS server, set *DNS over HTTPS* to *On (manual template)* and paste the same address. With the switch off, leave them on their automatic setting; they then use the router's plain DNS, which Dreadwatch and Wallguard filter.
+- **iPhone, iPad, Mac over DNS-over-HTTPS**: **Download the Apple profile (DNS-over-HTTPS)** makes the same profile for that protocol. Use one profile or the other, not both.
 
 ##### 4.3.4.5 How the server runs and what it respects
 
@@ -1551,19 +1564,46 @@ The tab fills these steps with your certificate's name and the router's LAN addr
 - **Logging**: nothing per lookup. The tiles are totals since it last started: **Connected now**, **Lookups answered**, **Refused** (not from a LAN subnet, refused by DNS Director, or over a limit). The **Encrypted DNS activity** row on Long-Term Storage writes one summary line per self-monitor tick.
 - It starts as root to open port 853 and read the key, then runs as `nobody`. The self-monitor restarts it if it stops while switched on (`rednsd is not running with Encrypted DNS on - starting it`), but not after a certificate or listen error, which the page shows.
 
+**DNS-over-HTTPS (from the image after v3.7.5).** The same server answers `https://<certificate name>/dns-query` on TCP 443 of the main LAN address (IPv4 and IPv6) and of each guest/VLAN network's address, not on the WAN address. It speaks HTTP/2 only (what browsers, Windows 11 and Apple devices use), accepts `POST` with `application/dns-message` and `GET ?dns=`, and refuses every other path, method or content type. A lookup takes the same route as a DNS-over-TLS one, so everything in this section applies to it. Port 443 is dropped on every non-LAN interface while it listens. Limits on top of the ones below: 8 lookups in flight per connection and a 4,096-byte question. The HTTP/2 framing is done by nghttp2 1.71.0, compiled into `rednsd` and used by nothing else.
+
+DNS-over-HTTPS is **not started while TCP 443 on the router is already in use**: the web interface set to HTTPS port 443 (Administration › System), or an OpenVPN server on TCP 443. The tab says which in red, the log has `rednsd: DNS-over-HTTPS for devices is not started: TCP 443 on the router is in use`, and DNS-over-TLS is not affected. Move the web interface to another port and save the tab again. A port forward of 443 to a device is no conflict.
+
+**Is every lookup encrypted?** A lookup has two legs, and the card of that name shows both: green when it works, red with the reason when it does not.
+
+| Line | Red when |
+|---|---|
+| **Device to router** | A switch is on but the server is not running or not listening; DNS-over-HTTPS cannot use port 443; the certificate is not publicly trusted (only Android's *Automatic* setting then uses it) |
+| **Router to upstream** | DNS-over-TLS to the upstream servers is off, or no upstream DNS-over-TLS server is set (*NOT ENCRYPTED*: every lookup leaves the router in the clear); the forwarder is not running; the clock is not set yet; the upstream servers do not answer a test lookup |
+
+The upstream line is shown whether or not the server for devices is on: it covers every lookup the router's own DNS answers, plain ones too. The test is one lookup of the root's name servers through the forwarder, at most every 30 seconds while the tab is open. With the *Strict* profile nothing is resolved while the upstream servers do not answer; with *Opportunistic* lookups may leave in the clear, and the line says so. When you save the tab with a server switch on while upstream DNS-over-TLS is off and a server for it is already set, the Save asks whether to switch it on as well; *Cancel* saves without it and the red line stays. The router never switches it on by itself and never picks a provider. A device that DNS Director sends to another server, a network with its own outside DNS server and a network bound to a VPN client do not use the router's upstream.
+
+**Which devices use it.** *Using encrypted DNS* lists the devices that reached the server since it started, with the protocol, the number of lookups and the time of the last one (64 devices at most). *Plain DNS only* lists devices on the router's own networks that asked port 53 in the last few minutes and are not in the first list. Names come from the DHCP leases. A device that has looked nothing up is in neither list.
+
+**Automatic setup (DHCP option 162).** With a server switch on and a publicly trusted certificate, the router's DHCP names itself as an encrypted DNS server (RFC 9463): the certificate's name, the router's address on that network, and the protocols that are on. A device that supports the option switches to encrypted DNS by itself; every other device ignores it and is set up as in 4.3.4.4. It is offered on the main network unless you gave DHCP clients other DNS servers (LAN › DHCP Server), and on each guest/VLAN network that has no DNS server of its own. The card's **Automatic setup** line shows the name while it is offered; the log has `rednsd: automatic setup for devices (DHCP option 162) is offered` / `is withdrawn` when that changes, and the DHCP server is restarted once at that moment. Nothing is offered with a self-signed or private certificate, because the device checks the name against a public authority and would only fail. The router does not publish the other discovery record, `_dns.resolver.arpa` (RFC 9462): a device verifies that one by finding the router's LAN address inside the certificate, which no public authority issues.
+
 ##### 4.3.4.6 Block encrypted DNS that goes around the router
 
-A card on the same tab, switch **Refuse outside encrypted DNS for every device**. With it on, devices on the main network and every guest/VLAN network cannot encrypt their DNS to an outside provider; IPv4 and IPv6:
+A card on the same tab with two switches. Each works on its own and covers devices on the main network and every guest/VLAN network, IPv4 and IPv6. With both on, a device cannot encrypt its DNS to an outside provider.
 
-- **DNS-over-TLS and DNS-over-QUIC**: TCP and UDP 853 to any server are refused (TCP with a reset). The router's own Encrypted DNS is not affected: devices reach it on the router itself.
-- **DNS-over-HTTPS**: HTTPS (TCP and UDP 443) to the known public DoH resolvers' addresses is refused, TCP with a reset, so a browser gives up at once instead of waiting. The addresses are in the sets `redns_doh` and `redns_doh6`: a built-in list of the major resolvers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, NextDNS, CleanBrowsing, Control D, Mullvad and others) is always loaded, and HaGeZi's maintained encrypted-DNS address list (`raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt`) is added daily at 05:25, at once the first time the router is online with the block on, and by **Update list now**. Each entry is checked before it is loaded: private, loopback, link-local and multicast ranges and any range wider than an IPv4 `/24` or IPv6 `/48` are refused, because each entry refuses HTTPS for the whole network. The list is kept in `/jffs/encdns/doh.ips` so it applies from boot; a failed download keeps the previous list.
+**DNS-over-TLS and DNS-over-QUIC to outside servers (port 853)** (`reaper_dot_block`):
+
+- TCP and UDP 853 to any server are refused (TCP with a reset). The router's own Encrypted DNS is not affected: devices reach it on the router itself.
+
+**DNS-over-HTTPS to outside providers (known resolver addresses)** (`reaper_doh_block`):
+
+- **The resolvers' addresses**: HTTPS (TCP and UDP 443) to the known public DoH resolvers' addresses is refused, TCP with a reset, so a browser gives up at once instead of waiting. The addresses are in the sets `redns_doh` and `redns_doh6`: a built-in list of the major resolvers (Cloudflare, Google, Quad9, OpenDNS, AdGuard, NextDNS, CleanBrowsing, Control D, Mullvad and others) is always loaded, and HaGeZi's maintained encrypted-DNS address list (`raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt`) is added daily at 05:25, at once the first time the router is online with this switch on, and by **Update list now**. Each entry is checked before it is loaded: private, loopback, link-local and multicast ranges and any range wider than an IPv4 `/24` or IPv6 `/48` are refused, because each entry refuses HTTPS for the whole network. The list is kept in `/jffs/encdns/doh.ips` so it applies from boot; a failed download keeps the previous list.
 - **The DoH providers' host names** a device looks up first (`dns.google`, `cloudflare-dns.com`, `dns.quad9.net`, `doh.opendns.com`, `dns.nextdns.io` and about 40 more, with their subdomains; maintained with the firmware in `/usr/share/encdns/doh-names`) are answered NXDOMAIN. A name the router itself uses as its DNS-over-TLS upstream is never on it.
-- **The browser canaries** `use-application-dns.net`, `mask.icloud.com` / `mask-h2.icloud.com` and `_dns.resolver.arpa` are answered NXDOMAIN, so Firefox's automatic DoH and iCloud Private Relay stand down. Without the block, **Prevent client auto DoH** on LAN › DNS decides this (*Auto* answers them when DNS-over-TLS upstream or DNS Director's global mode is on).
+- **The browser canaries** `use-application-dns.net`, `mask.icloud.com` / `mask-h2.icloud.com` and `_dns.resolver.arpa` are answered NXDOMAIN, so Firefox's automatic DoH and iCloud Private Relay stand down. Without this switch, **Prevent client auto DoH** on LAN › DNS decides this (*Auto* answers them when DNS-over-TLS upstream or DNS Director's global mode is on).
 
-Switching the block on or off restarts the resolvers once and rebuilds the firewall; list updates restart nothing. Devices set to **No filtering** in DNS Director are exempt. A Firewall rules-engine Allow rule is evaluated first and can let such traffic through.
+Changing the port 853 switch rebuilds the firewall. Changing the DNS-over-HTTPS switch rebuilds the firewall and restarts the resolvers once; list updates restart nothing. Devices set to **No filtering** in DNS Director are exempt from both switches. A Firewall rules-engine Allow rule is evaluated first and can let such traffic through.
+
+**With one switch on, the other route stays partly open.** Port 853 only: a device can still use DNS-over-HTTPS to an outside provider. DNS-over-HTTPS only: port 853 stays open, so DNS-over-TLS or DNS-over-QUIC to a server reached by its address, or by a name that is not on the provider list, still works. The provider names and the browser signal follow the DNS-over-HTTPS switch, so a device set to one of those provider names for DNS-over-TLS (Android *Private DNS provider hostname* `dns.google`, for example) is stopped by that switch as well: the name is not answered. Dreadwatch's Coverage card reads the block as on only when both switches are on.
+
+**Upgrading from a version with one switch.** Earlier versions had a single switch for both halves. A router that had it on comes up with both switches on, and one that had it off with both off: `reaper_dot_block` is empty until it is set, and empty means *follow the DNS-over-HTTPS switch*. It stays empty until **Save & Apply** is pressed on the tab, which stores both switches as they are shown; from then on each keeps its own setting. A backup or settings file made before the split restores the same way: the port 853 switch goes back to following, so both halves take the state the old switch had.
 
 ##### 4.3.4.7 How devices react to the block
 
+- A DNS-over-TLS or DNS-over-QUIC client (Android *Private DNS provider hostname*, a resolver set to DNS-over-TLS) is refused by the port 853 switch; a DNS-over-HTTPS client (browsers, Windows) by the DNS-over-HTTPS switch. The provider names that are not answered under the DNS-over-HTTPS switch also stop a client that looks its provider up by name first.
 - An **automatic** setting (Chrome, Edge, Firefox, Windows, Android *Automatic*) falls back to the router's DNS by itself.
 - A device set to **one named outside provider** (Android *Private DNS provider hostname* set to a provider, a browser set to one provider with no fallback) has **no DNS** until it is set back to automatic or to the router's Encrypted DNS. The card says so.
 - To let one device keep its own encrypted DNS, set it to **No filtering** in DNS Director.
@@ -1578,16 +1618,16 @@ Switching the block on or off restarts the resolvers once and rebuilds the firew
 | **Connected now** / **Lookups answered** / **Refused** | 4.3.4.5 |
 | **Certificate**, **Where it answers** | 4.3.4.3, 4.3.4.5. *This router's WAN address is private* appears behind another router |
 | **Devices** | 4.3.4.4 |
-| **Resolver addresses on the list** | IPv4 plus IPv6 entries in the DoH address sets |
-| **Provider names not answered** | Names answered NXDOMAIN |
-| **DNS-over-TLS / QUIC refused**, **DNS-over-HTTPS refused** | Refused **packets** since the last firewall rebuild (not connections) |
+| **Resolver addresses on the list** | IPv4 plus IPv6 entries in the DoH address sets; a dash while the DNS-over-HTTPS switch is off |
+| **Provider names not answered** | Names answered NXDOMAIN; a dash while the DNS-over-HTTPS switch is off |
+| **DNS-over-TLS / QUIC refused**, **DNS-over-HTTPS refused** | Refused **packets** since the last firewall rebuild (not connections). The first counts under the port 853 switch, the second under the DNS-over-HTTPS switch; each shows a dash while its switch is off |
 | List line | *List updated ... (N addresses)*, *The last list update failed; the list from ... stays in use*, or *The list has not been downloaded yet; the built-in addresses are in use* |
 
 ##### 4.3.4.9 Examples
 
 **Encrypted and filtered phones.** Let's Encrypt on your DDNS name, or Let's Encrypt via DNS on a name in your own domain (WAN › DDNS, 4.3.4.3); switch on Encrypted DNS for devices; leave Android on *Automatic*; install the Apple profile on iPhones. Dreadwatch's Coverage card then shows Encrypted DNS as on, and the phones appear by their own address in Dreadwatch and Wallguard.
 
-**Close every route around the filters.** DNS Director global mode *Router*, Encrypted DNS for devices on, the block on. Then set any device with a named Private DNS provider back to *Automatic*.
+**Close every route around the filters.** DNS Director global mode *Router*, Encrypted DNS for devices on, both block switches on. Then set any device with a named Private DNS provider back to *Automatic*.
 
 **One device keeps its own provider.** DNS Director, per-device rule *No filtering* for that device.
 
@@ -2283,6 +2323,10 @@ DoT servers so they share the traffic. This switch uses them in the listed order
 rest in reserve, so a filtering DoT server you put first sees every query while it answers. It does
 nothing while DNS Privacy is off, and the page says so.
 
+**The router's own lookups under DNS-over-TLS (2026-11-10).** With DNS-over-TLS on, the router's own lookups (time sync, DDNS, list downloads, the update check) go through the router's resolver and leave encrypted, as a device's do. Under the Strict profile nothing falls back to plain DNS; under Opportunistic the WAN DNS servers stay behind it as the fallback. Until the clock is set after a boot the lookups are plain, because a certificate cannot be checked without the time. With DNS-over-TLS on, the health check sends no plain lookup either (below).
+
+**The health check under DNS-over-TLS (from the image after v3.7.5).** While DNS-over-TLS is on (the same test the router's own lookups use: the switch on the DNS page, router mode, and a server with an address), the check never asks on port 53. If the watched server is one of your DNS-over-TLS servers (by either of its addresses), it is asked over DNS-over-TLS on that server's port, and its certificate is checked against the server's name when the DNS page gives one (as the router's DNS-over-TLS forwarder checks it); it gets three times the timeout for the encrypted connection. If the watched server is not one of them, the check asks the router's DNS-over-TLS forwarder instead, over the router's loopback, so it still sees whether encrypted lookups work. In both cases it **moves nothing**: under DNS-over-TLS the router's DNS list holds the forwarder alone, and the forwarder uses its other servers by itself. The status line says *Answering over DNS-over-TLS* or *NOT answering over DNS-over-TLS*, a note under it says which of the two ways is in use, and the log says so when DNS-over-TLS is switched on or off (`DNS Health Check: DNS-over-TLS is on - ...`). Until the clock is set after a boot no certificate can be judged, so misses are not counted (`HOLD`). A failover made on port 53 before DNS-over-TLS came on is undone at once. The diagnostics report names the probe in section 5 (`health probe`).
+
 **LAN name resolution check (v3.4.0).** The WAN can hold an address while LAN devices cannot resolve a
 single name (a dead LAN filter, a broken upstream list). With this switch on (off at factory from v3.4.2), once a minute while the WAN
 is up the router asks its own DNS service, the way a LAN device would, for its own name and for a fresh
@@ -2290,7 +2334,7 @@ random name under the domain you set (empty = the router's network-monitoring na
 answer it; that domain's own DNS servers see these lookups). Two failures in a row turn the dashboard's
 Internet status **amber**, and the tooltip on the card and the header's WAN pill says why, for how long
 and which servers stayed silent; the system log names them under `rdnshc`. It only reports: nothing is
-moved, reloaded or restarted. The diagnostics report shows it in section 5.
+moved, reloaded or restarted. The diagnostics report shows it in section 5. The status word in the tooltip and on the DNS Failover page is **Active** (names resolve), **Inactive** (the check is switched off) or **Fault** (two checks in a row failed); it read *working*, *check switched off* and *FAILING* up to v3.7.5.
 
 ### 4.14b Device names across networks (Administration → DNS Failover)
 
@@ -2707,7 +2751,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 112** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 118** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -2784,6 +2828,17 @@ one switch for the 5 and 6 GHz radios). With a node paired and the channel on Au
 to channels every node's radio can use, and a radio left outside them is moved back after a minute;
 with no node paired it does nothing.
 
+**Wireless stability** (Administration › Tweaks) — three switches, all off. `reaper_dhd_ioto` `0`: the Wi-Fi
+driver keeps its own 5000 ms wait for a radio call (on: 2000 to 5000 ms, 3000 recommended). `disable_exap`
+empty: the roaming assistant disconnects a device an AiMesh node reports as its own (on: `1`, it does
+not). `reaper_bgdfs_stock` `0`: background DFS scanning stays as shipped (on: `1`, each radio's
+`acs_bgdfs_enab` and `acs_bgdfs_ahead` go to 0 and `acs_ignore_txfail` to 1; the earlier values come back
+when the switch goes off).
+
+**Guest Portal secret** (Administration › Tweaks) — `reaper_cp_secret_own` `0`: the portal's sign-in secret is
+a random one the router makes for itself the first time a portal starts (the stock value is the same on every
+router); on: `1`, your own secret (8 to 32 characters) is used and kept. The secret itself is never shown.
+
 **Long-term storage and export** (4.11) — `reaper_store` `ram`, `reaper_store_ds` `dev,traf,watch,fwlog`,
 `reaper_store_vid` `` and `reaper_store_vname` `` (both empty until you pin a USB volume on the
 Long-Term Storage page; the id is the volume's own `.reaper/store.id`, the name is its label).
@@ -2792,6 +2847,12 @@ On `ram`, history is lost at reboot; point it at JFFS or USB to keep it. The exp
 `reaper_export_maskmac` `0`, and `reaper_export_engine`, `reaper_export_url`, `reaper_export_token`,
 `reaper_export_index`, `reaper_export_source`, `reaper_export_metrics` and
 `reaper_export_scrape_token` empty.
+
+**Encrypted DNS** (4.3.4) — `reaper_dot_srv` `0` (the DNS-over-TLS server for devices is off), `reaper_doh_srv` `0` (the DNS-over-HTTPS server for devices is off),
+`reaper_doh_block` `0` (the block's DNS-over-HTTPS switch is off) and `reaper_dot_block` empty (the block's
+port 853 switch). Empty means *follow `reaper_doh_block`*, so at the factory the port 853 switch is off as
+well. It is left empty on purpose: a router upgraded from a version with one block switch keeps both halves
+in the state that switch had (4.3.4.6).
 
 **Let's Encrypt via DNS** (4.3.4.3) — `reaper_ledns_enable` `0` (off until you choose it as the
 certificate under WAN › DDNS), `reaper_ledns_provider` `cf`, `reaper_ledns_domain` and
@@ -2903,7 +2964,8 @@ turn it on. The key column is what to read with `nvram get` when you want to che
 | Dreadwatch (DNS threat blocking) | Off | `rwarden_dns` `0` |
 | Wallguard (ad and tracker blocking, 4.3.3) | Off; blocked answer `0.0.0.0` | `wallguard_enable` `0`, `wallguard_mode` `null` |
 | Encrypted DNS (DNS-over-TLS server for devices, 4.3.4) | Off | `reaper_dot_srv` `0` |
-| Block encrypted DNS that goes around the router (4.3.4.6) | Off | `reaper_doh_block` `0` |
+| Encrypted DNS (DNS-over-HTTPS server for devices, 4.3.4) | Off | `reaper_doh_srv` `0` |
+| Block encrypted DNS that goes around the router (4.3.4.6), both switches | Off | `reaper_doh_block` `0`, `reaper_dot_block` empty (follows `reaper_doh_block`) |
 | Security review | Off | `rwatch_review` `0` |
 | Parental controls | Off | `MULTIFILTER_ALL` `0` |
 

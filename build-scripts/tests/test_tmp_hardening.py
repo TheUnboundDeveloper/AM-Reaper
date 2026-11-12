@@ -198,7 +198,8 @@ check("the restore's staged settings (a stock path) are created fresh, never thr
       'reaper_fopen_new("/tmp/settings_u.prf", 0600)' in web and 'fopen("/tmp/settings_u.prf", "w")' not in web)
 check("httpd opens the name map without following a link", "open(RDM_PATH, O_RDWR | O_NOFOLLOW)" in web)
 check("httpd's Gatekeeper and Connections lock files are opened O_NOFOLLOW",
-      web.count('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)') == 2 and
+      web.count('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)') == 3 and   # + gk_rl_merge (review 2026-11-11, B-6)
+      'open("/tmp/gk/rl.lock"' not in web.replace('open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)', "") and
       'open("/tmp/reaper/reaper_conn.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600)' in web)
 rdm = rd("rdnsmapd/rdnsmapd.c")
 check("rdnsmapd maps only into a private /tmp/reaper and never through a link",
@@ -237,9 +238,9 @@ dg = rd("others/reaper_diag")
 check("diag: scratch files in the private directory; the report created fresh under noclobber",
       'SCR=/tmp/reaper' in dg and 'RAW="$SCR/.rdiag_raw.$$"' in dg and 'rm -f "$OUT"\nset -C\n{' in dg and 'set +C' in dg)
 check("diag v1.3.33+ reports the four protections and the directories",
-      'VER="REAPER-DIAG v1.3.55"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
+      'VER="REAPER-DIAG v1.3.59"' in dg and "protected_$k" in dg and "/tmp/rv6names:drwxr-xr-x" in dg and "*.bad.*" in dg)
 check("diag page and marker follow the version",
-      "REAPER-DIAG v1.3.55</span>" in rd("www/Reaper_Diag.asp"))
+      "REAPER-DIAG v1.3.59</span>" in rd("www/Reaper_Diag.asp"))
 shell = shutil.which("bash")
 if shell:
     for rel in ["rom/webs_scripts/reaper_webs_update.sh", "rom/webs_scripts/reaper_webs_upgrade.sh", "others/reaper_diag"]:

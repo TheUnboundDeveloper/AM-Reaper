@@ -133,7 +133,10 @@ check("reaper_fwlog.c: NFLOG only with the kernel's target AND a collector bound
       and "alive >= 0 && tick % 60 == 0" in fl and '"/proc/net/ip_tables_targets"' in fl)
 check("reaper_fwlog.c: down to LOG at once, back up to NFLOG not within 60 s of a change, firewall re-run only once built",
       "if (nflog && last && now - last < RFL_UPGUARD && now >= last)" in fl and "#define RFL_UPGUARD\t60" in fl
-      and 'if (f_exists(REAPER_FW_BUILT_MARK))\n\t\tnotify_rc("restart_firewall");' in fl)
+      # review 2026-11-11 (C-2): in rc the firewall is rebuilt directly; notify_rc only from another process
+      and 'if (f_exists(REAPER_FW_BUILT_MARK)) {' in fl
+      and 'if (getpid() == 1) {\n\t\t\tnvram_set("restart_fwl", "1");\n\t\t\tstart_default_filter(0);' in fl
+      and '\t\t} else\n\t\t\tnotify_rc("restart_firewall");' in fl)
 check("reaper_fwlog.c: a dead collector on the NFLOG path is restarted within 2-4 s",
       "if (++tick % 2 || !is_routing_enabled())" in fl and 'if (alive != 1 && now - kicked >= 4) {' in fl
       and 'notify_rc("restart_rflog");' in fl)
@@ -166,7 +169,7 @@ pk_bad, pk_lines = [], set()
 for d in sorted(f for f in os.listdir(wd_) if f.endswith(".dict") and f != "temp.dict"):
     t = open(os.path.join(wd_, d), encoding="utf-8").read()
     pk_lines.add(t.count("\n"))
-    m = re.search(r"^RFW_412=.+\n^RFW_413=(.+)\n^RFW_414=(.+)\n^RLOG_102=(.+)\n^RLOG_103=(.+)$", t, re.M)
+    m = re.search(r"^RFW_412=.+\n^RFW_413=(.+)\n^RFW_414=(.+)\n(?:^RFW_41[56]=.+\n)*^RLOG_102=(.+)\n^RLOG_103=(.+)$", t, re.M)   # _r6: RFW_415/416 (remote forward) sit between
     if not m or not all(x in m.group(1) for x in ("%1", "%2", "%3")) or any(("`" in g or "${" in g) for g in m.groups()):
         pk_bad.append(d)
 check("25 packs: RFW_413 / RFW_414 / RLOG_102 / RLOG_103 after RFW_412, %1-%3 kept, lockstep", not pk_bad and len(pk_lines) == 1,

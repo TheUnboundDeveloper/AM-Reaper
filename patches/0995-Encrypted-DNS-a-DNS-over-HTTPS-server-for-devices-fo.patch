@@ -1,0 +1,2857 @@
+From 380b7eaf6ded071c0a1e8cbabc3788bf64e615ab Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:19 -0500
+Subject: [PATCH] Encrypted DNS: a DNS-over-HTTPS server for devices, found
+ through DHCP option 162 (102.8 line)
+
+- rednsd answers DNS-over-HTTPS on TCP 443 of the LAN-side addresses beside DNS-over-TLS on 853,
+  each with its own switch (reaper_doh_srv, reaper_dot_srv). One HTTP/2 parser: nghttp2, vendored
+  under rednsd/nghttp2 (MIT, README.reaper), compiled into rednsd only. ALPN h2 alone; every limit
+  a client can lean on is set here (streams, header list, window, flood and glitch rates, 64 KB of
+  library memory a connection).
+- Devices find it by themselves: dnsmasq publishes the router's encrypted DNS by DHCP option 162
+  (RFC 9463) on every network whose DNS server is the router, only while the certificate's name
+  and chain hold; the watchdog checks that every five minutes. DNS-over-HTTPS steps aside while
+  Web Access from WAN over IPv6 uses port 443.
+- The Encrypted DNS block is two switches, port 853 (DoT, DoQ) and DoH (443 to the known
+  resolvers, their names); a router with the old single switch keeps both. They are read once per
+  firewall build, and saving the block no longer restarts the device-facing server.
+- rednsd: a connection whose device stopped reading is closed; header fields the library drops
+  count against the header limit; a query with a second OPT record or a signature record is
+  refused (it could carry another device's tag); a device DNS Director moves elsewhere loses its
+  open connection; lookups inside one TLS record are all answered; a TCP retry matches its query
+  by sequence number; a slot reused in one pass is skipped. When every slot is busy the device
+  holding the most gives one up; an IPv6 /64 holds at most half; at most 16 new connections a
+  pass, one neighbour lookup each. A chain that did not verify is checked again after a minute.
+- rdnsmapd names the devices that use the router's DNS-over-TLS, for the Flow Explorer.
+- The Encrypted DNS page shows both legs of a lookup, device to router and router to upstream,
+  with a red warning on the leg that fails; the devices still on plain DNS; the DNS-over-HTTPS
+  setup with its live address.
+Also in these files: sdn.c answers a DHCP client without an address by broadcast (the dnsmasq
+commit); encdns.sh no longer writes an error into its state file when no list is cached; the
+Dreadwatch page reads the block's two switches.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/encdns.c                |  496 ++++++-
+ release/src/router/rc/sdn.c                   |   11 +-
+ release/src/router/rdnsmapd/rdnsmapd.c        |   48 +-
+ release/src/router/rednsd/Makefile            |   45 +-
+ release/src/router/rednsd/encdns.sh           |    3 +-
+ release/src/router/rednsd/rednsd.c            | 1171 ++++++++++++++++-
+ release/src/router/www/Reaper_Dreadwatch.asp  |    8 +-
+ .../src/router/www/Reaper_EncryptedDNS.asp    |  176 ++-
+ 8 files changed, 1852 insertions(+), 106 deletions(-)
+
+diff --git a/release/src/router/rc/encdns.c b/release/src/router/rc/encdns.c
+index bb780570e57..42d81614a05 100644
+--- a/release/src/router/rc/encdns.c
++++ b/release/src/router/rc/encdns.c
+@@ -25,6 +25,10 @@
+ #include <sys/stat.h>
+ #include <arpa/inet.h>
+ #include <ctype.h>
++#include <openssl/x509.h>
++#include <openssl/x509v3.h>
++#include <openssl/pem.h>
++#include <openssl/err.h>
+ #ifdef RTCONFIG_DNSFILTER
+ #include "dnsfilter.h"
+ #endif
+@@ -38,6 +42,7 @@
+ #define RED_STATUS	RED_RUN "/status.json"
+ #define RED_NOTE	RED_DIR "/note.json"	/* why rc did not start it; the page prefers this */
+ #define RED_PORT	853
++#define RED_DOH_PORT	443		/* 2026-11-10: DNS-over-HTTPS for devices, on the LAN-side addresses only */
+ #define RED_CERT	"/etc/cert.pem"
+ #define RED_KEY		"/etc/key.pem"
+ #define RED_CABUNDLE	"/etc/ssl/certs/ca-certificates.crt"
+@@ -106,6 +111,57 @@ static int lan_subnet(char *out, size_t n)
+ }
+ 
+ /* certificate + listeners: a change here needs a restart */
++/* 2026-11-10: two switches for the device-facing server - reaper_dot_srv (DNS-over-TLS, port 853) and
++   reaper_doh_srv (DNS-over-HTTPS, TCP 443). One daemon serves both. */
++static int red_dot_on(void)
++{
++	return nvram_get_int("reaper_dot_srv") == 1;
++}
++
++static int red_doh_on(void)
++{
++	return nvram_get_int("reaper_doh_srv") == 1;
++}
++
++/* DNS-over-HTTPS is not started while the router already serves something on TCP 443 itself: the web interface
++   set to that port, or an OpenVPN server on tcp/443 (it binds every address). NULL = free, else the reason the
++   page shows (httpd/web.c renc_doh_busy() makes the same two tests - keep them in step). A port forward of 443
++   is no conflict: it is translated before the router's own sockets are looked at. */
++static const char *red_doh_busy(void)
++{
++	char k[32], u[2] = "1";
++	int i;
++
++	if (nvram_get_int("http_enable") != 0 && nvram_get_int("https_lanport") == RED_DOH_PORT)
++		return "https";
++	/* review 2026-11-11 (C-6): Web Access from WAN over IPv6 has its own listener on the WAN HTTPS port. On 443 the
++		DNS-over-HTTPS rules dropped it and the two wanted the same port. The page shows the same reason as for the
++		LAN HTTPS port (httpd/web.c and rc/encdns.c make the same tests - keep them in step). */
++	if (nvram_get_int("misc_http_x") != 0 && nvram_get_int("misc_httpsport_x") == 443 && ipv6_enabled())
++		return "https";
++	for (i = 1; i <= 2; i++) {
++		u[0] = '0' + i;
++		snprintf(k, sizeof(k), "vpn_server%d_port", i);
++		if (nvram_get_int(k) != RED_DOH_PORT)
++			continue;
++		snprintf(k, sizeof(k), "vpn_server%d_proto", i);
++		if (strncmp(nvram_safe_get(k), "tcp", 3))
++			continue;
++		if (strstr(nvram_safe_get("vpn_serverx_start"), u))
++			return "ovpn";
++	}
++	return NULL;
++}
++
++/* the listener lines of one LAN-side address: 853 for DNS-over-TLS, 443 marked "doh" for DNS-over-HTTPS */
++static void red_listen(struct rb *r, const char *addr)
++{
++	if (red_dot_on())
++		rb_add(r, "listen %s %d\n", addr, RED_PORT);
++	if (red_doh_on() && !red_doh_busy())
++		rb_add(r, "listen %s %d doh\n", addr, RED_DOH_PORT);
++}
++
+ static void red_static(struct rb *r)
+ {
+ 	char lan6[INET6_ADDRSTRLEN] = "";
+@@ -115,13 +171,13 @@ static void red_static(struct rb *r)
+ 	if (f_exists(RED_CABUNDLE))
+ 		rb_add(r, "cabundle %s\n", RED_CABUNDLE);
+ 	rb_add(r, "status %s\n", RED_STATUS);
+-	rb_add(r, "listen %s %d\n", nvram_safe_get("lan_ipaddr"), RED_PORT);
++	red_listen(r, nvram_safe_get("lan_ipaddr"));
+ #ifdef RTCONFIG_IPV6
+ 	if (ipv6_enabled()) {
+ 		const char *p = getifaddr(nvram_safe_get("lan_ifname"), AF_INET6, 0);
+ 		if (p && *p) {
+ 			snprintf(lan6, sizeof(lan6), "%s", p);
+-			rb_add(r, "listen %s %d\n", lan6, RED_PORT);
++			red_listen(r, lan6);
+ 		}
+ 	}
+ #endif
+@@ -134,7 +190,7 @@ static void red_static(struct rb *r)
+ 			for (i = 0; i < mtl_sz; i++)
+ 				if (pmtl[i].enable && pmtl[i].nw_t.idx && pmtl[i].nw_t.addr[0]
+ 				    && strcmp(pmtl[i].nw_t.addr, nvram_safe_get("lan_ipaddr")))
+-					rb_add(r, "listen %s %d\n", pmtl[i].nw_t.addr, RED_PORT);
++					red_listen(r, pmtl[i].nw_t.addr);
+ 			FREE_MTLAN((void *)pmtl);
+ 		}
+ 	}
+@@ -145,7 +201,7 @@ static void red_static(struct rb *r)
+ 	for (unit = WAN_UNIT_FIRST; unit < WAN_UNIT_MAX; unit++) {
+ 		char name[32];
+ 		snprintf(name, sizeof(name), "wan%d_ipaddr", unit);
+-		if (public_v4(nvram_safe_get(name)))
++		if (red_dot_on() && public_v4(nvram_safe_get(name)))	/* DNS-over-TLS only: DNS-over-HTTPS has no WAN-address listener */
+ 			rb_add(r, "listen %s %d wan\n", nvram_safe_get(name), RED_PORT);
+ 	}
+ }
+@@ -234,7 +290,7 @@ static void red_policy(struct rb *r)
+ 
+ static int red_enabled(void)
+ {
+-	return is_routing_enabled() && nvram_get_int("reaper_dot_srv") == 1;
++	return is_routing_enabled() && (red_dot_on() || red_doh_on());
+ }
+ 
+ /* the page reads this when rednsd is not running to say why */
+@@ -248,13 +304,290 @@ static void red_status_note(const char *state)
+ 	reaper_write_atomic(RED_NOTE, buf, strlen(buf), 0644);
+ }
+ 
++/* ---------------------------------------------------------------------------------------------------------
++ * 2026-11-10: automatic setup for devices - DHCP option 162 (RFC 9463, "DNR").
++ *
++ * The option names the router as an encrypted resolver: a name to authenticate, the address to connect to and
++ * the protocols (DNS-over-HTTPS with its path, DNS-over-TLS). A device that supports it switches to encrypted
++ * DNS by itself; every other device ignores an option it did not ask for. The device checks the certificate
++ * against the NAME in the option, so a publicly trusted certificate for the router's name is enough - and
++ * without one nothing is published, because a device would only fail and fall back.
++ * (The other discovery method, the _dns.resolver.arpa record of RFC 9462, is not used: its verified mode needs
++ * the LAN address inside the certificate, which no public CA issues.)
++ *
++ * Published per network, and only where the network's DNS server is the router itself (services.c, sdn.c).
++ * RED_DNR records what the running dnsmasq config publishes; red_dnr_sync() restarts dnsmasq when a switch or
++ * the certificate changed that.
++ */
++#define RED_DNR		RED_DIR "/dnr"		/* root's file: "<name> <dot> <doh>", empty = not published */
++
++/* a lower-case host name with at least two labels: the only thing that goes into the option and the file */
++static int red_name_ok(const char *s)
++{
++	size_t i, lab = 0, dots = 0, n = strlen(s);
++
++	if (n < 4 || n > 253)
++		return 0;
++	for (i = 0; i < n; i++) {
++		if (s[i] == '.') {
++			if (!lab)
++				return 0;
++			lab = 0;
++			dots++;
++		} else if ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || (s[i] == '-' && lab)) {
++			if (++lab > 63)
++				return 0;
++		} else
++			return 0;
++	}
++	return lab && dots;
++}
++
++/* The name a device should use, when the certificate chains to the router's CA bundle: the DDNS name when the
++   certificate covers it, else its first plain name (as the page's encPickName). 0 = nothing to publish.
++   The chain is checked without the clock, as rednsd does (at boot the clock is not set yet); a certificate
++   that has run out is refused once the clock is known. Parsed once per certificate file. */
++static int red_public_name(char *out, size_t outsz)
++{
++	static char c_name[256], c_dd[256];
++	static time_t c_mt, c_na;
++	static off_t c_sz = -1;
++	static long c_bad;	/* review 2026-11-11 (C-8): uptime of a parse that did not verify, 0 = the last one did */
++	struct stat sb;
++	char dd[256];
++	size_t i;
++
++	*out = 0;
++	if (stat(RED_CERT, &sb) != 0 || !f_exists(RED_KEY))
++		return 0;
++	snprintf(dd, sizeof(dd), "%s", nvram_safe_get("ddns_hostname_x"));
++	for (i = 0; dd[i]; i++)
++		dd[i] = tolower((unsigned char)dd[i]);
++	/* review 2026-11-11 (C-8): a chain that did not verify was remembered until the certificate file changed, so
++	 * a CA bundle that could not be read at that moment (early boot) kept the name unpublished for good. It is
++	 * tried again, at most once a minute. */
++	if (c_sz != sb.st_size || c_mt != sb.st_mtime || strcmp(c_dd, dd) || (c_bad && uptime() - c_bad >= 60)) {
++		BIO *b = BIO_new_file(RED_CERT, "r");
++		X509 *x = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL, *c;
++		STACK_OF(X509) *chain = sk_X509_new_null();
++		X509_STORE *st = X509_STORE_new();
++		X509_STORE_CTX *sc = X509_STORE_CTX_new();
++		int trusted = 0;
++
++		c_name[0] = 0;
++		c_na = 0;
++		while (x && chain && (c = PEM_read_bio_X509(b, NULL, NULL, NULL)) != NULL)
++			if (!sk_X509_push(chain, c))
++				X509_free(c);
++		if (x && chain && st && sc && X509_check_issued(x, x) != X509_V_OK
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++		    && X509_STORE_load_file(st, RED_CABUNDLE) == 1
++#else
++		    && X509_STORE_load_locations(st, RED_CABUNDLE, NULL) == 1
++#endif
++		    && X509_STORE_CTX_init(sc, st, x, chain) == 1) {
++			X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(sc), X509_V_FLAG_NO_CHECK_TIME);
++			trusted = X509_verify_cert(sc) == 1;
++		}
++		if (trusted) {
++			const ASN1_TIME *na = X509_get0_notAfter(x);
++			struct tm tm;
++
++			if (na && ASN1_TIME_to_tm(na, &tm) == 1)
++				c_na = timegm(&tm);
++			if (red_name_ok(dd) && X509_check_host(x, dd, 0, 0, NULL) == 1)
++				snprintf(c_name, sizeof(c_name), "%s", dd);
++			else {
++				GENERAL_NAMES *gens = X509_get_ext_d2i(x, NID_subject_alt_name, NULL, NULL);
++				int k;
++
++				for (k = 0; gens && !c_name[0] && k < sk_GENERAL_NAME_num(gens); k++) {
++					GENERAL_NAME *g = sk_GENERAL_NAME_value(gens, k);
++					char nm[256];
++					int l;
++
++					if (g->type != GEN_DNS)
++						continue;
++					l = ASN1_STRING_length(g->d.dNSName);
++					if (l <= 0 || l >= (int)sizeof(nm))
++						continue;
++					memcpy(nm, ASN1_STRING_get0_data(g->d.dNSName), l);
++					nm[l] = 0;
++					if ((int)strlen(nm) != l)
++						continue;
++					for (i = 0; nm[i]; i++)
++						nm[i] = tolower((unsigned char)nm[i]);
++					if (red_name_ok(nm))		/* a wildcard name is not one */
++						snprintf(c_name, sizeof(c_name), "%s", nm);
++				}
++				GENERAL_NAMES_free(gens);
++			}
++		}
++		X509_STORE_CTX_free(sc);
++		X509_STORE_free(st);
++		sk_X509_pop_free(chain, X509_free);
++		X509_free(x);
++		BIO_free(b);
++		ERR_clear_error();
++		c_sz = sb.st_size;
++		c_mt = sb.st_mtime;
++		snprintf(c_dd, sizeof(c_dd), "%s", dd);
++		c_bad = trusted ? 0 : (uptime() > 0 ? uptime() : 1);
++	}
++	if (!c_name[0])
++		return 0;
++	if (c_na && nvram_get_int("ntp_ready") == 1 && c_na < time(NULL))
++		return 0;
++	snprintf(out, outsz, "%s", c_name);
++	return 1;
++}
++
++/* the name in DNS wire format (RFC 8415 section 10): length-prefixed labels and the root */
++static size_t red_adn(unsigned char *o, size_t osz, const char *name)
++{
++	const char *p = name, *dot;
++	size_t n = 0, l;
++
++	while (*p) {
++		dot = strchr(p, '.');
++		l = dot ? (size_t)(dot - p) : strlen(p);
++		if (!l || l > 63 || n + l + 2 > osz)
++			return 0;
++		o[n++] = (unsigned char)l;
++		memcpy(o + n, p, l);
++		n += l;
++		p += l + (dot ? 1 : 0);
++	}
++	o[n++] = 0;
++	return n;
++}
++
++/* One "DNR Instance Data" (RFC 9463 section 5.1): length of what follows (2), service priority (2), name
++   length (1), name, address length (1), the address, then the service parameters in RFC 9460 wire format,
++   keys ascending: alpn (1) and, for DNS-over-HTTPS, dohpath (7). No port: 443 and 853 are the defaults.
++   0 = it does not fit. */
++static size_t red_dnr_instance(unsigned char *o, size_t osz, unsigned prio, const unsigned char *adn, size_t al,
++			       const unsigned char *ip, int doh)
++{
++	static const unsigned char s_doh[] = { 0, 1, 0, 3, 2, 'h', '2',
++					       0, 7, 0, 16, '/', 'd', 'n', 's', '-', 'q', 'u', 'e', 'r', 'y', '{', '?', 'd', 'n', 's', '}' };
++	static const unsigned char s_dot[] = { 0, 1, 0, 4, 3, 'd', 'o', 't' };
++	const unsigned char *sv = doh ? s_doh : s_dot;
++	size_t sl = doh ? sizeof(s_doh) : sizeof(s_dot), len = 2 + 1 + al + 1 + 4 + sl, n = 0;
++
++	if (al > 255 || len + 2 > osz)
++		return 0;
++	o[n++] = (unsigned char)(len >> 8);
++	o[n++] = (unsigned char)(len & 0xff);
++	o[n++] = (unsigned char)(prio >> 8);
++	o[n++] = (unsigned char)(prio & 0xff);
++	o[n++] = (unsigned char)al;
++	memcpy(o + n, adn, al);
++	n += al;
++	o[n++] = 4;
++	memcpy(o + n, ip, 4);
++	n += 4;
++	memcpy(o + n, sv, sl);
++	n += sl;
++	return n;
++}
++
++/* what a dnsmasq config written now publishes: "<name> <dot> <doh>", or "" */
++static void red_dnr_state(char *buf, size_t sz)
++{
++	char name[256];
++	int dot, doh;
++
++	*buf = 0;
++	if (!red_enabled() || !red_public_name(name, sizeof(name)))
++		return;
++	dot = red_dot_on();
++	doh = red_doh_on() && !red_doh_busy();
++	if (dot || doh)
++		snprintf(buf, sz, "%s %d %d", name, dot, doh);
++}
++
++/* One network's option line, into its dnsmasq config. tag = the network's DHCP tag, addr = the router's address
++   on it (where rednsd listens). DNS-over-HTTPS first: a device that can do both takes the lower priority number. */
++void rednsd_dnr_option(FILE *fp, const char *tag, const char *addr)
++{
++	char st[300], name[256], hex[3 * 255 + 1];
++	unsigned char opt[255], adn[256], ip[4];
++	size_t al, n = 0, k, i;
++	int dot = 0, doh = 0;
++
++	if (!fp || !tag || !*tag || !addr || inet_pton(AF_INET, addr, ip) != 1)
++		return;
++	red_dnr_state(st, sizeof(st));
++	if (sscanf(st, "%255s %d %d", name, &dot, &doh) != 3 || !(al = red_adn(adn, sizeof(adn), name)))
++		return;
++	if (doh) {
++		if (!(k = red_dnr_instance(opt + n, sizeof(opt) - n, 1, adn, al, ip, 1)))
++			return;
++		n += k;
++	}
++	if (dot) {
++		if (!(k = red_dnr_instance(opt + n, sizeof(opt) - n, 2, adn, al, ip, 0)))
++			return;
++		n += k;
++	}
++	if (!n)
++		return;
++	for (i = 0; i < n; i++)
++		snprintf(hex + 3 * i, 4, "%02x%s", opt[i], i + 1 < n ? ":" : "");
++	fprintf(fp, "dhcp-option=%s,162,%s\n", tag, hex);
++}
++
++/* end of start_dnsmasq(): record what this config publishes */
++void rednsd_dnr_mark(void)
++{
++	char st[300];
++
++	red_dnr_state(st, sizeof(st));
++	if (!*st && !f_exists(RED_DNR))
++		return;
++	if (reaper_secure_dir(RED_DIR, 0755) == 0)
++		reaper_write_atomic(RED_DNR, st, strlen(st), 0644);
++}
++
++/* after rednsd was started, stopped or refreshed: when the running dnsmasq config publishes something else than
++   it should now (a switch, the certificate, the port), dnsmasq is restarted once. Its start writes RED_DNR
++   again; it is also written here, so a config path that never reaches the mark cannot make this repeat. */
++static void red_dnr_sync(void)
++{
++	static int busy;
++	char want[300], have[300] = "", *nl;
++
++	if (busy)
++		return;
++	red_dnr_state(want, sizeof(want));
++	f_read_string(RED_DNR, have, sizeof(have));
++	if ((nl = strpbrk(have, "\r\n")) != NULL)
++		*nl = 0;
++	if (!strcmp(want, have) || !pids("dnsmasq"))
++		return;
++	busy = 1;
++	logmessage("rednsd", "automatic setup for devices (DHCP option 162) %s", *want ? "is offered" : "is withdrawn");
++	/* as the dnsmasq service verb does it (restart_dnsmasq() is not built on every platform) */
++#ifdef RTCONFIG_MULTILAN_CFG
++	stop_dnsmasq(ALL_SDN);
++	start_dnsmasq(ALL_SDN);
++#else
++	stop_dnsmasq();
++	start_dnsmasq();
++#endif
++	if (reaper_secure_dir(RED_DIR, 0755) == 0)
++		reaper_write_atomic(RED_DNR, want, strlen(want), 0644);
++	busy = 0;
++}
++
+ void stop_rednsd(void)
+ {
+ 	if (pids("rednsd"))
+ 		killall_tk("rednsd");
+ }
+ 
+-void start_rednsd(void)
++static void red_start(void)
+ {
+ 	struct rb s, p;
+ 	struct passwd *pw;
+@@ -267,6 +600,16 @@ void start_rednsd(void)
+ 		unlink(RED_NOTE);
+ 		return;
+ 	}
++	if (red_doh_on() && red_doh_busy()) {
++		logmessage("rednsd", "DNS-over-HTTPS for devices is not started: TCP %d on the router is in use (%s)%s",
++			   RED_DOH_PORT, red_doh_busy(), red_dot_on() ? "; DNS-over-TLS is not affected" : "");
++		if (!red_dot_on()) {	/* nothing left to listen on */
++			unlink(RED_CONF);
++			unlink(RED_STATUS);
++			red_status_note("doh_port");
++			return;
++		}
++	}
+ 	if (!f_exists(RED_CERT) || !f_exists(RED_KEY)) {
+ 		logmessage("rednsd", "Encrypted DNS for devices waits for the router's certificate");
+ 		unlink(RED_CONF);	/* rwatch respawns rednsd only while rc has a config out */
+@@ -296,7 +639,7 @@ void start_rednsd(void)
+ 
+ /* After a LAN, guest network, WAN or DNS Director change: rewrite the config and tell
+    rednsd only when something it uses changed. */
+-void rednsd_refresh(void)
++static void red_refresh(void)
+ {
+ 	struct rb s, p;
+ 	char *old, head[] = "# generated by rc (encdns.c) - Encrypted DNS for devices\n";
+@@ -327,15 +670,56 @@ void rednsd_refresh(void)
+ 		return;
+ 	}
+ 	free(old);
+-	if ((f = fopen(RED_CONF, "w"))) {
++	/* review 2026-11-11: written beside the file and renamed over it - a rednsd respawned in between never reads
++	 * half a configuration */
++	if ((f = fopen(RED_CONF ".new", "w"))) {
+ 		fputs(head, f);
+ 		fputs(s.b, f);
+ 		fputs(p.b, f);
+ 		fclose(f);
+-		killall("rednsd", SIGHUP);		/* peers or policy only */
++		chmod(RED_CONF ".new", 0644);
++		if (rename(RED_CONF ".new", RED_CONF) == 0)
++			killall("rednsd", SIGHUP);		/* peers or policy only */
++		else
++			unlink(RED_CONF ".new");
+ 	}
+ }
+ 
++/* 2026-11-10: the two entry points, each followed by the check of what dnsmasq publishes (DHCP option 162) */
++void start_rednsd(void)
++{
++	red_start();
++	red_dnr_sync();
++}
++
++void rednsd_refresh(void)
++{
++	red_refresh();
++	red_dnr_sync();
++}
++
++/* review 2026-11-11 (C-4): called once a second from the watchdog process (rc/watchdog.c). Every five minutes what
++ * dnsmasq publishes is compared with what it should publish now, so a certificate that ran out is withdrawn from
++ * DHCP option 162 without waiting for somebody to restart dnsmasq. The watchdog is not rc: it asks rc for the
++ * restart, and the dnsmasq start writes the mark. */
++void rednsd_dnr_watch(void)
++{
++	static unsigned tick;
++	char want[300], have[300] = "", *nl;
++
++	if (++tick % 300 || !f_exists(RED_DNR))
++		return;
++	red_dnr_state(want, sizeof(want));
++	f_read_string(RED_DNR, have, sizeof(have));
++	if ((nl = strpbrk(have, "\r\n")) != NULL)
++		*nl = 0;
++	if (!strcmp(want, have) || !pids("dnsmasq"))
++		return;
++	logmessage("rednsd", "automatic setup for devices (DHCP option 162) %s", *want ? "is offered" : "is withdrawn");
++	if (getpid() != 1)
++		notify_rc("restart_dnsmasq");
++}
++
+ /* The certificate httpd serves changed (renewal, upload): rednsd read it as root at
+    start and cannot read it again, so it starts over. */
+ void rednsd_cert_changed(void)
+@@ -351,9 +735,17 @@ void rednsd_wan_drop(FILE *fp)
+ {
+ 	if (!fp || !red_enabled())
+ 		return;
+-	fprintf(fp, "-A INPUT -i lo -p tcp --dport %d -j ACCEPT\n", RED_PORT);
+-	fprintf(fp, "-A INPUT ! -i br+ -p tcp --dport %d -j DROP\n", RED_PORT);
+-	fprintf(fp, "-A INPUT ! -i br+ -p udp --dport %d -j DROP\n", RED_PORT);
++	if (red_dot_on()) {
++		fprintf(fp, "-A INPUT -i lo -p tcp --dport %d -j ACCEPT\n", RED_PORT);
++		fprintf(fp, "-A INPUT ! -i br+ -p tcp --dport %d -j DROP\n", RED_PORT);
++		fprintf(fp, "-A INPUT ! -i br+ -p udp --dport %d -j DROP\n", RED_PORT);
++	}
++	/* 2026-11-10: DNS-over-HTTPS listens on LAN-side addresses only; the same belt as 853, and only while its
++	   listeners exist (never when the router's own 443 belongs to something else - red_doh_busy()) */
++	if (red_doh_on() && !red_doh_busy()) {
++		fprintf(fp, "-A INPUT -i lo -p tcp --dport %d -j ACCEPT\n", RED_DOH_PORT);
++		fprintf(fp, "-A INPUT ! -i br+ -p tcp --dport %d -j DROP\n", RED_DOH_PORT);
++	}
+ }
+ 
+ /* ---- 2026-10-21: block encrypted DNS that goes around the router (Encrypted DNS tab).
+@@ -363,30 +755,62 @@ void rednsd_wan_drop(FILE *fp)
+    the DoH provider names answer NXDOMAIN and the browser canaries tell automatic DoH to stand
+    down. "Automatic" encrypted DNS then falls back to the router silently; devices that want
+    encryption use the router's own (rednsd above). DNS Director's "No filtering" devices are
+-   exempt. Off by default (reaper_doh_block). */
++   exempt. Off by default (reaper_doh_block).
++   2026-11-10: two switches. reaper_dot_block = the port-853 pair; reaper_doh_block = the 443 pair
++   to the resolver sets, the DoH name list, its daily update and the canaries. An empty or absent
++   reaper_dot_block reads as "follow reaper_doh_block" (its factory default is empty on purpose):
++   a router upgraded with the one old switch on keeps both halves on. The key stays empty until
++   the Encrypted DNS page saves an explicit value (every Save there posts both switches); nothing
++   in rc writes it, at boot or later. A settings file from before the split puts it back to empty
++   when it is restored or imported (httpd: do_upload_config in libwebapi, rcfg_import_json). */
+ #define EDNS_SET4	"redns_doh"
+ #define EDNS_SET6	"redns_doh6"
+ #define EDNS_SCRIPT	"/usr/sbin/encdns.sh"
+ #define EDNS_NAMES	"/usr/share/encdns/doh-names"
+ #define EDNS_CONF	RED_DIR "/doh.conf"
+ 
+-int edns_block_enabled(void)
++/* the port-853 switch as stored: empty or absent follows the DoH switch (see above) */
++static int edns_dot_nv(void)
++{
++	const char *v = nvram_get("reaper_dot_block");
++
++	if (!v || !*v)
++		return nvram_get_int("reaper_doh_block") == 1;
++	return atoi(v) == 1;
++}
++
++int edns_dot_block_enabled(void)
++{
++	return is_routing_enabled() && edns_dot_nv();
++}
++
++int edns_doh_block_enabled(void)
+ {
+ 	return is_routing_enabled() && nvram_get_int("reaper_doh_block") == 1;
+ }
+ 
++/* either switch: the chain, its exemptions and its FORWARD hook exist */
++int edns_block_enabled(void)
++{
++	return edns_dot_block_enabled() || edns_doh_block_enabled();
++}
++
+ /* The sets exist before any rule names them - reaper_restore_rules drops a match-set line
+    whose set is missing, silently - and hold the shipped seed + the cached list from boot. */
+-static void edns_sets_ensure(void)
++static void edns_sets_ensure(int doh)
+ {
+-	eval("ipset", "create", EDNS_SET4, "hash:net", "maxelem", "65536", "-exist");
+-	eval("ipset", "create", EDNS_SET6, "hash:net", "family", "inet6", "maxelem", "16384", "-exist");
+ 	/* 2026-11-02: AiMesh nodes are infrastructure - the shared node set every enforcement chain exempts
+ 	 * (rc/reaper_aimesh.c; rwatch refreshes it each tick). It must exist before the rules load, or the
+ 	 * restore drops the exempt line; fill it once now so a fresh boot does not wait for the next tick. */
+ 	eval("ipset", "create", REAPER_AIMESH_SET, "hash:mac", "-exist");
+ 	if (f_exists("/sbin/reaper_aimesh_sync"))
+ 		eval("/sbin/reaper_aimesh_sync");
++	/* 2026-11-10: the node set above whenever the chain exists (either switch); the resolver sets
++	 * and their replay only while the DoH switch is on (as read once for this firewall build) */
++	if (!doh)
++		return;
++	eval("ipset", "create", EDNS_SET4, "hash:net", "maxelem", "65536", "-exist");
++	eval("ipset", "create", EDNS_SET6, "hash:net", "family", "inet6", "maxelem", "16384", "-exist");
+ 	if (reaper_secure_dir(RED_DIR, 0755) == 0 && f_exists(EDNS_SCRIPT))
+ 		eval("sh", EDNS_SCRIPT, "replay");
+ }
+@@ -394,12 +818,25 @@ static void edns_sets_ensure(void)
+ /* The REAPER_EDNS chain (declared in filter_setting / filter_setting2) and its FORWARD jump
+    for LAN and guest bridges, next to DNS Director's DoT rules: after ESTABLISHED (a toggle
+    leaves running connections alone), before the guest-network chain and the LAN accept. */
++/* 2026-11-10 (backlog leftover): the two switches are read ONCE per firewall build - at the IPv4 call, which
++   comes first - and the IPv6 call uses the same values, so a Save that lands in the middle of a build cannot give
++   the two families (or the sets and the rules) different halves of the block. */
++static int eb_dot = -1, eb_doh = -1;
++
+ void edns_block_rules(FILE *fp, int v6)
+ {
+-	if (!fp || !edns_block_enabled())
++	int dot, doh;
++
++	if (!v6 || eb_dot < 0) {
++		eb_dot = edns_dot_block_enabled();
++		eb_doh = edns_doh_block_enabled();
++	}
++	dot = eb_dot;
++	doh = eb_doh;
++	if (!fp || !(dot || doh))
+ 		return;
+ 	if (!v6)
+-		edns_sets_ensure();		/* once per firewall build; IPv4 is written first */
++		edns_sets_ensure(doh);		/* once per firewall build; IPv4 is written first */
+ #ifdef RTCONFIG_DNSFILTER
+ 	/* a device DNS Director lets use any DNS server ("No filtering") may encrypt as it likes */
+ 	if (nvram_get_int("dnsfilter_enable_x")) {
+@@ -424,11 +861,16 @@ void edns_block_rules(FILE *fp, int v6)
+ 	/* 2026-11-02: an AiMesh node's own traffic is never refused (the shared exemption, as Gatekeeper,
+ 	 * the rules engine and Policy Routing) */
+ 	fprintf(fp, "-A REAPER_EDNS -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n");
+-	fprintf(fp, "-A REAPER_EDNS -p tcp --dport 853 -j REJECT --reject-with tcp-reset\n");
+-	fprintf(fp, "-A REAPER_EDNS -p udp --dport 853 -j REJECT\n");
+-	fprintf(fp, "-A REAPER_EDNS -p tcp --dport 443 -m set --match-set %s dst -j REJECT --reject-with tcp-reset\n",
+-		v6 ? EDNS_SET6 : EDNS_SET4);
+-	fprintf(fp, "-A REAPER_EDNS -p udp --dport 443 -m set --match-set %s dst -j REJECT\n", v6 ? EDNS_SET6 : EDNS_SET4);
++	/* 2026-11-10: each switch refuses its own half */
++	if (dot) {
++		fprintf(fp, "-A REAPER_EDNS -p tcp --dport 853 -j REJECT --reject-with tcp-reset\n");
++		fprintf(fp, "-A REAPER_EDNS -p udp --dport 853 -j REJECT\n");
++	}
++	if (doh) {
++		fprintf(fp, "-A REAPER_EDNS -p tcp --dport 443 -m set --match-set %s dst -j REJECT --reject-with tcp-reset\n",
++			v6 ? EDNS_SET6 : EDNS_SET4);
++		fprintf(fp, "-A REAPER_EDNS -p udp --dport 443 -m set --match-set %s dst -j REJECT\n", v6 ? EDNS_SET6 : EDNS_SET4);
++	}
+ 	fprintf(fp, "-A FORWARD -i br+ -j REAPER_EDNS\n");
+ }
+ 
+@@ -494,7 +936,7 @@ const char *reaper_edns_dns_conf(void)
+ 	char line[256], *b = NULL, *nb;
+ 	size_t len = 0;
+ 
+-	if (!edns_block_enabled() || reaper_secure_dir(RED_DIR, 0755) != 0 || !(f = fopen(EDNS_NAMES, "r")))
++	if (!edns_doh_block_enabled() || reaper_secure_dir(RED_DIR, 0755) != 0 || !(f = fopen(EDNS_NAMES, "r")))
+ 		return NULL;
+ 	while (fgets(line, sizeof(line), f)) {
+ 		char *s = line, *e;
+@@ -533,7 +975,7 @@ const char *reaper_edns_dns_conf(void)
+    soon as the router is online after the block is switched on */
+ void edns_block_sync(void)
+ {
+-	if (!edns_block_enabled()) {
++	if (!edns_doh_block_enabled()) {
+ 		eval("cru", "d", "edns_doh");
+ 		return;
+ 	}
+@@ -548,6 +990,6 @@ void edns_doh_update(void)
+ 	char *argv[] = { "sh", EDNS_SCRIPT, "update", NULL };
+ 	pid_t pid;
+ 
+-	if (edns_block_enabled() && f_exists(EDNS_SCRIPT))
++	if (edns_doh_block_enabled() && f_exists(EDNS_SCRIPT))
+ 		_eval(argv, ">/dev/null", 0, &pid);
+ }
+diff --git a/release/src/router/rc/sdn.c b/release/src/router/rc/sdn.c
+index afb648aeda0..07f6e10f554 100644
+--- a/release/src/router/rc/sdn.c
++++ b/release/src/router/rc/sdn.c
+@@ -888,6 +888,10 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 			{
+ 				fprintf(fp, "dhcp-option=%s,6,%s\n", pmtl->nw_t.ifname, pmtl->nw_t.dns[1]);
+ 			}
++			else	/* 2026-11-10: the router is this network's DNS server - offer its encrypted DNS (rc/encdns.c) */
++			{
++				rednsd_dnr_option(fp, pmtl->nw_t.ifname, pmtl->nw_t.addr);
++			}
+ 		}
+ 
+ 		/* limit number of outstanding requests */
+@@ -958,7 +962,7 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 
+ 		/* Instruct clients like Firefox to not auto-enable DoH */
+ 		n = nvram_get_int("dns_priv_override");
+-		if ((n == 1) || edns_block_enabled() ||	/* reaper 2026-10-21: the encrypted-DNS block */
++		if ((n == 1) || edns_doh_block_enabled() ||	/* reaper 2026-10-21: the encrypted-DNS block (2026-11-10: its DoH switch) */
+ 			(n == 0 && (
+ #ifdef RTCONFIG_DNSPRIVACY
+ 						   nvram_get_int("dnspriv_enable") ||
+@@ -1039,7 +1043,10 @@ static int _gen_sdn_dnsmasq_conf(const MTLAN_T *pmtl, char *config_file, const s
+ 
+ 		if (have_dhcp)
+ 		{
+-			fprintf(fp, "dhcp-authoritative\n");
++			/* review 2026-11-11 (D-6): dhcp-broadcast = answer a client that has no address yet by broadcast. dnsmasq
++			 * otherwise writes the client into the ARP table for every such reply (SIOCSARP), a call that waits
++			 * for the kernel's network configuration lock, so anything holding that lock held up DHCP. */
++			fprintf(fp, "dhcp-authoritative\ndhcp-broadcast\n");
+ 		}
+ 		else
+ 		{
+diff --git a/release/src/router/rdnsmapd/rdnsmapd.c b/release/src/router/rdnsmapd/rdnsmapd.c
+index 1693a56fc33..35ab5824181 100644
+--- a/release/src/router/rdnsmapd/rdnsmapd.c
++++ b/release/src/router/rdnsmapd/rdnsmapd.c
+@@ -45,8 +45,10 @@
+  * The same reply is seen once on the bridge and once on the egress port; the
+  * second copy is a same-name refresh that costs one hash probe. A reply that is
+  * 802.1Q-tagged on eth0 is delivered untagged on the VLAN interface too, so the
+- * filter needs no tag branch. DoH/DoT clients, and a wired client talking to a
+- * wired LAN resolver on the same switch, never cross the CPU and get no name. */
++ * filter needs no tag branch. A device on an OUTSIDE DoH/DoT server, and a wired
++ * client talking to a wired LAN resolver on the same switch, never cross the CPU
++ * and get no name. A device on the router's own encrypted DNS (rednsd) is
++ * learned from the loopback leg - rdm_lo_keep() below (2026-11-10). */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -122,7 +124,13 @@ static int rdm_lan_if(int idx, time_t now)
+ 	}
+ 	v->idx = idx;
+ 	v->at = now;
+-	v->lan = if_indextoname((unsigned)idx, name) != NULL && name[0] == 'b' && name[1] == 'r';
++	v->lan = 0;				/* 1 = a LAN bridge, 2 = loopback (2026-11-10), 0 = not ours */
++	if (if_indextoname((unsigned)idx, name) != NULL) {
++		if (name[0] == 'b' && name[1] == 'r')
++			v->lan = 1;
++		else if (strcmp(name, "lo") == 0)
++			v->lan = 2;
++	}
+ 	return v->lan;
+ }
+ #endif
+@@ -149,6 +157,26 @@ static struct sock_filter rdm_bpf[] = {
+ 	{ 0x06, 0, 0, 0x00000000 },	/* ret #0       drop */
+ };
+ 
++/* 2026-11-10: the loopback leg. A device that uses the router's encrypted DNS
++ * (rednsd) never sends a plain query across a bridge: rednsd asks dnsmasq over
++ * UDP on loopback and answers the device over TLS, so its names were never
++ * learned. That reply (udp src port 53) is on the loopback interface and the
++ * filter above already matches it. Two kinds of loopback frame are skipped:
++ * the outgoing copy (loopback hands every packet to a packet socket twice,
++ * on transmit and on receive), and stubby's replies to dnsmasq from 127.0.1.1,
++ * which are the upstream answers to lookups the bridge leg already carries.
++ * The router's own lookups are learned too, which names its own flows.
++ * p = the frame (14-byte link header, as on a bridge). 1 = parse it. */
++static int rdm_lo_keep(int outgoing, const uint8_t *p, int n)
++{
++	if (outgoing)
++		return 0;
++	if (n >= 14 + 20 && p[12] == 0x08 && p[13] == 0x00 &&
++	    p[26] == 127 && p[27] == 0 && p[28] == 1 && p[29] == 1)
++		return 0;
++	return 1;
++}
++
+ /* skip an RR owner name: labels, or a compression pointer that ends it */
+ static int rdm_skipname(const uint8_t *p, int n, int off)
+ {
+@@ -826,8 +854,12 @@ static void rdm_bf_drain(struct pollfd *pf, void *map, const uint8_t (*tg)[16],
+ 			socklen_t fl = sizeof(from);
+ 
+ 			n = (int)recvfrom(pf[0].fd, rb, sizeof(rb), 0, (struct sockaddr *)&from, &fl);
+-			if (n > 0 && rdm_lan_if(from.sll_ifindex, time(NULL)))
+-				rdm_parse(rb, n, map, (uint32_t)time(NULL));
++			if (n > 0) {
++				int lanv = rdm_lan_if(from.sll_ifindex, time(NULL));
++
++				if (lanv == 1 || (lanv == 2 && rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, rb, n)))
++					rdm_parse(rb, n, map, (uint32_t)time(NULL));
++			}
+ 		}
+ 		if ((pf[1].revents & POLLIN) && (n = (int)recv(pf[1].fd, rb, sizeof(rb), 0)) > 0)
+ 			rdm_parse_ptr(rb, n, map, (uint32_t)time(NULL), tg, ntg);
+@@ -937,6 +969,7 @@ int main(void)
+ 		struct sockaddr_ll from;
+ 		socklen_t fl = sizeof(from);
+ 		time_t now;
++		int lanv;
+ 
+ 		n = (int)recvfrom(sk, buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
+ 		if (n < 0) {
+@@ -945,8 +978,11 @@ int main(void)
+ 			break;
+ 		}
+ 		now = time(NULL);
+-		if (!rdm_lan_if(from.sll_ifindex, now))
++		lanv = rdm_lan_if(from.sll_ifindex, now);
++		if (!lanv)
+ 			continue;			/* the WAN port or a physical LAN port: not ours (V2) */
++		if (lanv == 2 && !rdm_lo_keep(from.sll_pkttype == PACKET_OUTGOING, buf, n))
++			continue;			/* loopback: the outgoing copy, or stubby's upstream answer */
+ 		rdm_src_load(now);			/* F-2: refreshed every 30 s, on traffic only */
+ 		rdm_parse(buf, n, map, (uint32_t)now);
+ 		rdm_src_report(now);
+diff --git a/release/src/router/rednsd/Makefile b/release/src/router/rednsd/Makefile
+index c9cec0f4702..27cdb6072f1 100755
+--- a/release/src/router/rednsd/Makefile
++++ b/release/src/router/rednsd/Makefile
+@@ -1,9 +1,9 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ # Copyright (C) 2026 the Reaper project maintainer
+ # Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
+-# rednsd: Encrypted DNS for devices (DNS-over-TLS to the router). libc + OpenSSL 3.5
+-# only - rc decides whether it runs and writes its config, so it links neither libnvram
+-# nor libshared.
++# rednsd: Encrypted DNS for devices (DNS-over-TLS and DNS-over-HTTPS to the router). libc,
++# OpenSSL 3.5 and the HTTP/2 library below only - rc decides whether it runs and writes its
++# config, so it links neither libnvram nor libshared.
+ include ../common.mak
+ 
+ CFLAGS	+= -Os -Wall $(EXTRACFLAGS)
+@@ -12,20 +12,48 @@ CFLAGS	+= -I$(SRCBASE)/include -I$(TOP)/openssl/include
+ CFLAGS	+= -D_FORTIFY_SOURCE=2 -fstack-protector-strong -Wformat -Wformat-security -fPIE
+ LDFLAGS	= -L$(TOP)/openssl -lssl -lcrypto -ldl -pie -Wl,-z,relro,-z,now
+ 
++# nghttp2 (HTTP/2 for the DoH listener; MIT, see nghttp2/README.reaper for version and
++# checksum). The upstream library sources, unmodified, compiled straight into rednsd with
++# the flags above: no autotools, no configure, no shared object - nothing else in the
++# firmware links it. In place of upstream's generated config.h:
++#   NGHTTP2_STATICLIB, BUILDING_NGHTTP2  a static build of the library itself (no export attributes)
++#   HAVE_ARPA_INET_H, HAVE_NETINET_IN_H  where htonl() and friends live (nghttp2_net.h)
++#   HAVE_CLOCK_GETTIME, HAVE_DECL_CLOCK_MONOTONIC=1
++#                                        the rate limiters count on the monotonic clock, not on
++#                                        wall time that NTP sets after boot (nghttp2_time.c)
++# rednsd.c takes only NGHTTP2_STATICLIB and the public header's directory.
++NGH2		= nghttp2/lib
++NGH2_INC	= -I$(NGH2)/includes -DNGHTTP2_STATICLIB
++NGH2_DEFS	= -DBUILDING_NGHTTP2 -DHAVE_ARPA_INET_H -DHAVE_NETINET_IN_H \
++		  -DHAVE_CLOCK_GETTIME -DHAVE_DECL_CLOCK_MONOTONIC=1
++# every .c of upstream's lib/, by name: a file that strays into the directory is not compiled
++NGH2_OBJS	= $(addprefix $(NGH2)/, \
++	nghttp2_alpn.o nghttp2_buf.o nghttp2_callbacks.o nghttp2_debug.o nghttp2_extpri.o \
++	nghttp2_frame.o nghttp2_hd.o nghttp2_hd_huffman.o nghttp2_hd_huffman_data.o \
++	nghttp2_helper.o nghttp2_http.o nghttp2_map.o nghttp2_mem.o nghttp2_option.o \
++	nghttp2_outbound_item.o nghttp2_pq.o nghttp2_priority_spec.o nghttp2_queue.o \
++	nghttp2_ratelim.o nghttp2_rcbuf.o nghttp2_session.o nghttp2_stream.o nghttp2_submit.o \
++	nghttp2_time.o nghttp2_version.o sfparse.o)
++# the client half of the library and its other unused parts are left out at link time
++NGH2_GC		= -ffunction-sections -fdata-sections
++LDFLAGS		+= -Wl,--gc-sections
++
++CFLAGS	+= $(NGH2_INC)
++
+ OBJS = rednsd.o
+ 
+ all: rednsd
+ 
+-rednsd: $(OBJS)
++rednsd: $(OBJS) $(NGH2_OBJS)
+ 	@echo " [rednsd] CC -o $@"
+-	$(CC) -o $@ $(OBJS) $(LDFLAGS)
++	$(CC) -o $@ $(OBJS) $(NGH2_OBJS) $(LDFLAGS)
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+ 
+ clean:
+ 	rm -f rednsd .*.depend
+-	rm -f *.o
++	rm -f *.o $(NGH2)/*.o
+ 
+ install: all
+ 	@echo " [rednsd] Installing..."
+@@ -35,6 +63,11 @@ install: all
+ 	install -D -m 0644 doh-names.txt $(INSTALLDIR)/usr/share/encdns/doh-names
+ 	install -D -m 0644 doh-seed.txt $(INSTALLDIR)/usr/share/encdns/doh-seed
+ 
++# the vendored objects: rebuilt when any of the library's files or this Makefile (the flags) changes
++$(NGH2_OBJS): %.o: %.c $(wildcard $(NGH2)/*.h) $(NGH2)/includes/nghttp2/nghttp2.h $(NGH2)/includes/nghttp2/nghttp2ver.h Makefile
++	@echo " [rednsd] CC $@"
++	@$(CC) $(CFLAGS) $(NGH2_DEFS) $(NGH2_GC) -I$(NGH2) -c $< -o $@
++
+ %.o: %.c .%.depend
+ 	@echo " [rednsd] CC $@"
+ 	@$(CC) $(CFLAGS) -c $<
+diff --git a/release/src/router/rednsd/encdns.sh b/release/src/router/rednsd/encdns.sh
+index 5319cc5a8b2..78d96235c99 100644
+--- a/release/src/router/rednsd/encdns.sh
++++ b/release/src/router/rednsd/encdns.sh
+@@ -113,7 +113,8 @@ update() {
+     log "encrypted-DNS address list updated: $n addresses"
+   else
+     prev=$(awk '{ print $2 }' "$D/doh.state" 2>/dev/null)	# the last good time stays
+-    echo "failed ${prev:-0} $now $(wc -l < "$J/doh.ips" 2>/dev/null | tr -d ' ' || echo 0)" > "$D/doh.state"
++    cnt=$( { wc -l < "$J/doh.ips"; } 2>/dev/null | tr -d ' ')	# review 2026-11-11: no cached file = 0, and no error text
++    echo "failed ${prev:-0} $now ${cnt:-0}" > "$D/doh.state"
+     log "encrypted-DNS address list: download failed, the previous list stays in use"
+     replay
+   fi
+diff --git a/release/src/router/rednsd/rednsd.c b/release/src/router/rednsd/rednsd.c
+index 5e5656be923..31956163fc6 100644
+--- a/release/src/router/rednsd/rednsd.c
++++ b/release/src/router/rednsd/rednsd.c
+@@ -4,7 +4,9 @@
+ /*
+  * rednsd - Encrypted DNS for devices (2026-10-21).
+  *
+- * The router's own DNS-over-TLS server (RFC 7858) for LAN and guest/VLAN devices. It
++ * The router's own DNS-over-TLS server (RFC 7858) for LAN and guest/VLAN devices, and
++ * since 2026-11-10 its DNS-over-HTTPS server too (RFC 8484, HTTP/2 only; see "DNS over
++ * HTTPS" below). It
+  * terminates TLS and hands each query to the dnsmasq instance of the device's own
+  * network, over UDP from loopback, naming the device in the private EDNS0 option
+  * REAPER_EDNS_CLIENT (dnsmasq/src/edns0.c believes it from loopback only, records the
+@@ -24,7 +26,7 @@
+  *
+  * Config (rc writes /tmp/rednsd/rednsd.conf):
+  *   cert <path>  key <path>  [cabundle <path>]  [status <path>]
+- *   listen <addr> <port> [wan]
++ *   listen <addr> <port> [wan] [doh]	(doh = a DNS-over-HTTPS listener, else DNS-over-TLS)
+  *   peer <addr>/<prefix> <upstream addr>[#port]
+  *   deny-mac <mac>  allow-mac <mac>  deny-net <addr>/<prefix>
+  */
+@@ -46,6 +48,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <strings.h>
+ #include <sys/prctl.h>
+ #include <sys/resource.h>
+ #include <sys/socket.h>
+@@ -63,6 +66,8 @@
+ #include <openssl/x509.h>
+ #include <openssl/x509v3.h>
+ 
++#include <nghttp2/nghttp2.h>	/* vendored: nghttp2/README.reaper */
++
+ #define REAPER_EDNS_CLIENT 65400	/* = dnsmasq EDNS0_OPTION_REAPER_CLIENT */
+ 
+ #define MAX_LISTEN	32
+@@ -76,14 +81,35 @@
+ #define QMIN		12
+ #define QMAX		4096		/* longest query accepted */
+ #define RMAX		65535		/* longest answer */
+-#define WBUF_MAX	(64 * 1024)	/* unsent answers per connection before it is dropped */
++/* review 2026-11-11: + 2 = the length prefix, so the longest answer (RMAX) still fits one empty buffer */
++#define WBUF_MAX	(64 * 1024 + 2)	/* unsent answers per connection before it is dropped */
+ #define HS_MS		5000
+ #define IDLE_MS		30000
+ #define UP_MS		4000
+ #define TCP_RETRY_MS	1500
+ #define STATUS_MS	15000
++#define STATUS_FRESH_MS	5000		/* after a query, the status file is no older than this */
++#define MAX_CLIENTS	64		/* devices the status file names */
++#define STATUS_MAX	16000		/* httpd reads the status file into 16 KB and takes nothing longer: never write more */
+ #define EDNS_SIZE	1232
+ 
++/* DNS over HTTPS. Every number a client can lean on is set here, not left to a default. */
++#define H2_STREAMS	8		/* requests at once on one connection (SETTINGS_MAX_CONCURRENT_STREAMS) */
++#define H2_HDR_MAX	4096		/* header list of one request (SETTINGS_MAX_HEADER_LIST_SIZE): past it, 431 */
++#define H2_HDR_ABUSE	(4 * H2_HDR_MAX)	/* ...and past this the connection goes (ENHANCE_YOUR_CALM) */
++/* 2026-11-10 (review note N4): 64 KB, was 256 KB. An ordinary session ran under a 28 KB cap in the review; the
++   decoder table is ours (4 KB) and at most H2_STREAMS streams exist. Worst case per connection is now about
++   260 KB with the buffers below, about 33 MB at MAX_CONN. Past it nghttp2 gets NOMEM and the connection goes
++   (counted in h2_errors). */
++#define H2_MEM_MAX	(64 * 1024)	/* what nghttp2 may hold for one connection, all told */
++#define H2_CHUNK_MAX	(32 * 1024)	/* more than nghttp2 hands over in one piece (a 16 KB frame) */
++#define H2_READS	16		/* TLS reads for one connection before the others get a turn */
++#if H2_STREAMS > MAX_INFLIGHT
++#error "H2_STREAMS must not exceed MAX_INFLIGHT: a DoH connection has one query in flight per stream"
++#endif
++
++enum { P_DOT, P_DOH };
++
+ typedef union {
+ 	struct sockaddr sa;
+ 	struct sockaddr_in in;
+@@ -105,6 +131,32 @@ struct peer {
+ struct listener {
+ 	char addr[INET6_ADDRSTRLEN];
+ 	int port, wan, fd, err;
++	int proto;		/* P_DOT or P_DOH */
++};
++
++/* One DoH request = one HTTP/2 stream. The slot is taken when its HEADERS begin and given
++   back when nghttp2 closes the stream, so a connection never holds more than H2_STREAMS. */
++enum { H2M_NONE, H2M_GET, H2M_POST, H2M_OTHER };
++struct h2s {
++	int32_t id;		/* 0 = free */
++	unsigned char method, path_ok, ctype_ok, big_body;
++	unsigned char has_dns, from_path;	/* ?dns= was there; buf holds what it decoded to */
++	unsigned char req_done, answered;
++	int dns_err;		/* why ?dns= is no query: 400 or 413 */
++	int status;		/* a refusal decided while the headers arrived */
++	int pend;		/* pending slot + 1 while the query waits for dnsmasq */
++	size_t hbytes;		/* header list size so far (RFC 7541 4.1) */
++	unsigned char *buf;	/* the query while it arrives, later the answer while it leaves */
++	size_t len, off;
++};
++
++struct h2 {
++	nghttp2_session *sess;
++	size_t mem;		/* bytes nghttp2 holds for this session (h2_malloc) */
++	size_t held;		/* answer bytes waiting in the streams for nghttp2 to take */
++	int busy;		/* inside nghttp2: no second call into it from a callback */
++	int more;		/* stopped reading after H2_READS: come back without waiting for poll */
++	struct h2s st[H2_STREAMS];
+ };
+ 
+ enum { C_FREE, C_HANDSHAKE, C_OPEN };
+@@ -123,14 +175,19 @@ struct conn {
+ 	unsigned char *wbuf;
+ 	size_t wlen, woff, wcap;
+ 	int inflight, want_write, closing;
++	int proto;		/* P_DOT or P_DOH, from the listener */
++	int rlen_kick;		/* DoT: OpenSSL holds more of the record than rbuf took */
++	struct h2 *h2;		/* DoH: the HTTP/2 session and its streams, from the handshake to conn_close */
+ };
+ 
+ struct pending {
+ 	int used;
++	unsigned seq;		/* 2026-11-10 (review note N1): new for every query; a TCP retry matches slot + seq */
+ 	int conn;
+ 	unsigned gen;
+ 	uint16_t client_id, up_id;
+ 	int added_opt;
++	int32_t stream;		/* DoH: the HTTP/2 stream that asked; 0 = DoT */
+ 	sockaddr_u up;
+ 	long long deadline;
+ 	unsigned char *q;
+@@ -155,14 +212,29 @@ struct cfg {
+ static struct conn conns[MAX_CONN];
+ static struct pending pend[MAX_PENDING];
+ static uint16_t idmap[65536];		/* upstream query ID -> pending slot + 1 */
++static unsigned pend_seq;		/* the last sequence number handed to a query (never 0 in use) */
+ static int udp4 = -1, udp6 = -1;
+-static SSL_CTX *ctx;
++static SSL_CTX *ctx, *ctx_doh;	/* same certificate; they differ in the ALPN they accept */
+ static volatile sig_atomic_t got_term, got_hup, got_usr1;
+ static const char *conf_path = "/tmp/rednsd/rednsd.conf";
+ static long long started;
+ static unsigned long long n_queries, n_ref_peer, n_ref_policy, n_ref_busy, n_hs_fail, n_servfail, n_conns_total;
++static unsigned long long n_doh, n_h2_err;	/* queries taken over DoH; 4xx answers + sessions ended on an error */
+ static char cert_json[2048] = "{}";
+ 
++/* Which devices use the listeners, for the page: an address, the protocol, a count and the
++   time of the last query - never a name, a MAC or a lookup. A fixed table; when it is full
++   the device longest silent makes room. */
++struct client {
++	int family;		/* 0 = free */
++	unsigned char addr[16];
++	int proto;
++	unsigned long long q;
++	long long last;		/* now_ms() of its last query */
++};
++static struct client clients[MAX_CLIENTS];
++static int status_dirty;	/* a query arrived since the status file was written */
++
+ /* ---- small helpers */
+ 
+ static long long now_ms(void)
+@@ -319,7 +391,7 @@ static
+ int load_conf(const char *path, struct cfg *c, int policy_only)
+ {
+ 	FILE *f = fopen(path, "r");
+-	char line[512], a[256], b[256], d[32];
++	char line[512], a[256], b[256], d[32], e[32];
+ 	struct cfg keep;
+ 
+ 	if (!f)
+@@ -339,14 +411,14 @@ int load_conf(const char *path, struct cfg *c, int policy_only)
+ 
+ 	while (fgets(line, sizeof(line), f)) {
+ 		int n;
+-		a[0] = b[0] = d[0] = 0;
++		a[0] = b[0] = d[0] = e[0] = 0;
+ 		if (line[0] == '#' || line[0] == '\n')
+ 			continue;
+ 		if (!strncmp(line, "listen ", 7)) {
+ 			if (policy_only || c->nlisten >= MAX_LISTEN)
+ 				continue;
+ 			char la[INET6_ADDRSTRLEN];
+-			n = sscanf(line + 7, "%45s %255s %31s", la, b, d);
++			n = sscanf(line + 7, "%45s %255s %31s %31s", la, b, d, e);
+ 			if (n >= 2) {
+ 				struct listener *l = &c->listen[c->nlisten];
+ 				sockaddr_u t;
+@@ -354,7 +426,9 @@ int load_conf(const char *path, struct cfg *c, int policy_only)
+ 					continue;
+ 				memcpy(l->addr, la, sizeof(l->addr));
+ 				l->port = atoi(b);
+-				l->wan = n == 3 && !strcmp(d, "wan");
++				/* the flags in either order (sscanf left the missing ones empty) */
++				l->wan = !strcmp(d, "wan") || !strcmp(e, "wan");
++				l->proto = !strcmp(d, "doh") || !strcmp(e, "doh") ? P_DOH : P_DOT;
+ 				l->fd = -1;
+ 				c->nlisten++;
+ 			}
+@@ -473,6 +547,32 @@ static int mac_v6(const sockaddr_u *a, unsigned char *mac)
+ 	return found ? 0 : -1;
+ }
+ 
++/* review 2026-11-11 (D-4): the neighbour lookup for an address, asked once. With a MAC policy set every accept
++ * looked the same address up twice (policy_allows, then the per-device cap) - a read of the whole ARP table, or a
++ * netlink dump that may wait 300 ms. The answer for the last address asked is kept for two seconds. */
++static int mac_of(const sockaddr_u *a, unsigned char *mac)
++{
++	static unsigned char k[16], m[6];
++	static int kfam = -1, kres;
++	static long long kat;
++	int fam, n, r;
++	const unsigned char *b = sa_bytes(a, &fam);
++
++	n = fam == AF_INET ? 4 : 16;
++	if (kfam == fam && !memcmp(k, b, n) && now_ms() - kat < 2000) {
++		if (kres == 0)
++			memcpy(mac, m, 6);
++		return kres;
++	}
++	r = fam == AF_INET ? mac_v4(a, mac) : mac_v6(a, mac);
++	kfam = fam;
++	memcpy(k, b, n);
++	kres = r;
++	kat = now_ms();
++	if (r == 0)
++		memcpy(m, mac, 6);
++	return r;
++}
+ /* 1 = this device may use the router's encrypted DNS */
+ #ifndef RED_TEST
+ static
+@@ -484,7 +584,7 @@ int policy_allows(const struct cfg *c, const sockaddr_u *a)
+ 
+ 	sa_bytes(a, &fam);
+ 	if (c->ndeny_mac || c->nallow_mac)
+-		have_mac = fam == AF_INET ? mac_v4(a, mac) : mac_v6(a, mac);
++		have_mac = mac_of(a, mac);	/* review 2026-11-11 (D-4) */
+ 	if (have_mac == 0) {
+ 		for (i = 0; i < c->nallow_mac; i++)
+ 			if (!memcmp(c->allow_mac[i], mac, 6))
+@@ -560,6 +660,8 @@ int msg_scan(const unsigned char *m, size_t len, struct msginfo *mi)
+ 		rdlen = (m[o + 8] << 8) | m[o + 9];
+ 		if (o + 10 + rdlen > len)
+ 			return -1;
++		if (i >= an + ns && type == 41 && mi->has_opt)
++			return -1;		/* a second OPT RR: dnsmasq would read that one */
+ 		if (i >= an + ns && type == 41 && !mi->has_opt) {
+ 			mi->has_opt = 1;
+ 			mi->opt_start = start;
+@@ -589,8 +691,8 @@ size_t add_client_opt(unsigned char *m, size_t len, size_t cap, const sockaddr_u
+ 	*added_opt = 0;
+ 	if (msg_scan(m, len, &mi))
+ 		return 0;
+-	if (mi.has_tsig)	/* a signed query is forwarded untouched */
+-		return len;
++	if (mi.has_tsig)	/* dnsmasq takes no device from a signed query, and reads our option past a TSIG that is not last */
++		return 0;
+ 
+ 	opt[0] = REAPER_EDNS_CLIENT >> 8;
+ 	opt[1] = REAPER_EDNS_CLIENT & 0xff;
+@@ -688,10 +790,17 @@ static size_t servfail(const unsigned char *q, size_t qlen, uint16_t id, unsigne
+ 
+ static int conn_index(struct conn *c) { return (int)(c - conns); }
+ 
++/* DNS over HTTPS, further down */
++static void h2_end(struct conn *c);
++static struct h2s *h2s_find(struct h2 *h, int32_t id);
++static void h2_refuse(struct conn *c, struct h2s *st, int status);
++static void h2_answer(struct conn *c, int32_t stream, const unsigned char *m, size_t len);
++
+ static void conn_close(struct conn *c)
+ {
+ 	if (c->state == C_FREE)
+ 		return;
++	h2_end(c);	/* first: it compares c->gen, and nghttp2 is not to outlive the connection */
+ 	if (c->ssl) {
+ 		if (c->state == C_OPEN)
+ 			SSL_shutdown(c->ssl);
+@@ -785,7 +894,10 @@ static void answer_to(struct pending *p, unsigned char *m, size_t len)
+ 		m[1] = p->client_id & 0xff;
+ 		if (p->added_opt)
+ 			len = strip_opt_rr(m, len);
+-		conn_send(c, m, len);
++		if (p->stream)
++			h2_answer(c, p->stream, m, len);
++		else
++			conn_send(c, m, len);
+ 		c->inflight--;
+ 		c->last = now_ms();
+ 	}
+@@ -803,8 +915,12 @@ static void fail_query(struct pending *p)
+ 		answer_to(p, out, n);
+ 	} else {
+ 		struct conn *c = &conns[p->conn];
+-		if (c->state == C_OPEN && c->gen == p->gen)
++		if (c->state == C_OPEN && c->gen == p->gen) {
++			struct h2s *st = p->stream && c->h2 ? h2s_find(c->h2, p->stream) : NULL;
++			if (st)
++				h2_refuse(c, st, 500);
+ 			c->inflight--;
++		}
+ 		pend_free(p);
+ 	}
+ }
+@@ -818,7 +934,9 @@ static void fail_query(struct pending *p)
+ struct tcpre {
+ 	int fd;			/* -1 = free */
+ 	int slot;		/* the pending query, by slot... */
+-	uint16_t up_id;		/* ...and its upstream id, so a reused slot is told apart */
++	uint16_t up_id;		/* ...and its upstream id... */
++	unsigned seq;		/* ...and its sequence number: a slot freed by a stream reset and reused with the same
++				   random id (1 in 65,536) is not this query */
+ 	int sent;		/* the query has been written */
+ 	long long deadline;
+ 	unsigned char *buf;	/* 2 + answer */
+@@ -829,7 +947,7 @@ static struct tcpre tre[MAX_TCPRE];
+ static struct pending *tcpre_pending(const struct tcpre *r)
+ {
+ 	struct pending *p = &pend[r->slot];
+-	return (p->used && p->up_id == r->up_id) ? p : NULL;
++	return (p->used && p->up_id == r->up_id && p->seq == r->seq) ? p : NULL;
+ }
+ 
+ static void tcpre_close(struct tcpre *r)
+@@ -871,6 +989,7 @@ static void tcpre_start(struct pending *p)
+ 	r->fd = fd;
+ 	r->slot = (int)(p - pend);
+ 	r->up_id = p->up_id;
++	r->seq = p->seq;
+ 	r->sent = 0;
+ 	r->have = r->want = 0;
+ 	r->deadline = now_ms() + TCPRE_MS;
+@@ -942,7 +1061,48 @@ static void tcpre_io(struct tcpre *r, short ev)
+ 	}
+ }
+ 
+-static void query_in(struct conn *c, unsigned char *m, size_t len)
++/* the device behind this connection has sent a query: its row in the status file */
++static void client_note(const struct conn *c)
++{
++	struct client *e = NULL, *spare = NULL;
++	int i, fam;
++	const unsigned char *b = sa_bytes(&c->peer, &fam);	/* IPv4-mapped IPv6 counts as IPv4 */
++	size_t bl = fam == AF_INET ? 4 : 16;
++
++	for (i = 0; i < MAX_CLIENTS && !e; i++) {
++		struct client *x = &clients[i];
++		if (!x->family) {
++			if (!spare || spare->family)
++				spare = x;	/* a free row... */
++		} else if (x->family == fam && x->proto == c->proto && !memcmp(x->addr, b, bl))
++			e = x;
++		else if (!spare || (spare->family && x->last < spare->last))
++			spare = x;		/* ...else the device longest silent */
++	}
++	if (!e) {
++		e = spare;
++		memset(e, 0, sizeof(*e));
++		e->family = fam;
++		e->proto = c->proto;
++		memcpy(e->addr, b, bl);
++	}
++	e->q++;
++	e->last = now_ms();
++	status_dirty = 1;
++}
++
++/* A query that cannot be forwarded as it is. DoT has no way to say so and closes; a DoH
++   request is answered 400 and its connection lives on. */
++static void query_bad(struct conn *c, struct h2s *st)
++{
++	if (st)
++		h2_refuse(c, st, 400);
++	else
++		c->closing = 1;
++}
++
++/* st: the HTTP/2 stream the query came on, NULL for DoT */
++static void query_in(struct conn *c, unsigned char *m, size_t len, struct h2s *st)
+ {
+ 	unsigned char q[QMAX + 64];
+ 	struct pending *p;
+@@ -952,21 +1112,31 @@ static void query_in(struct conn *c, unsigned char *m, size_t len)
+ 	int added = 0;
+ 
+ 	n_queries++;
++	client_note(c);
+ 	/* a query: QR clear, opcode QUERY, one question */
+ 	if (len < QMIN || (m[2] & 0x80) || (m[2] & 0x78) || ((m[4] << 8) | m[5]) != 1) {
+-		c->closing = 1;
++		query_bad(c, st);
+ 		return;
+ 	}
+ 	memcpy(q, m, len);
++	{	/* a TKEY question makes dnsmasq treat the query as signed too (find_pseudoheader) */
++		size_t qo = 12;
++		if (skip_name(m, len, &qo) || qo + 4 > len || (((m[qo] << 8) | m[qo + 1]) == 249)) {
++			query_bad(c, st);
++			return;
++		}
++	}
+ 	if (!(qlen = add_client_opt(q, len, sizeof(q), &c->peer, &added))) {
+-		c->closing = 1;
++		query_bad(c, st);
+ 		return;
+ 	}
+ 	if ((slot = pend_alloc()) < 0) {
+ 		unsigned char out[QMAX + 64];
+ 		size_t n = servfail(m, len, (m[0] << 8) | m[1], out);
+ 		n_servfail++;
+-		if (n)
++		if (n && st)
++			h2_answer(c, st->id, out, n);
++		else if (n)
+ 			conn_send(c, out, n);
+ 		return;
+ 	}
+@@ -987,11 +1157,18 @@ static void query_in(struct conn *c, unsigned char *m, size_t len)
+ 		return;
+ 	}
+ 	p->used = 1;
++	if (!++pend_seq)
++		++pend_seq;		/* 0 never names a query */
++	p->seq = pend_seq;
+ 	p->conn = conn_index(c);
+ 	p->gen = c->gen;
+ 	p->client_id = (m[0] << 8) | m[1];
+ 	p->up_id = id;
+ 	p->added_opt = added;
++	if (st) {		/* RFC 8484 asks for ID 0; whatever it is, the client gets its own back */
++		p->stream = st->id;
++		st->pend = slot + 1;
++	}
+ 	p->up = c->net->up;
+ 	p->deadline = now_ms() + UP_MS;
+ 	q[0] = id >> 8;
+@@ -1036,6 +1213,706 @@ static void upstream_in(int sock)
+ 	}
+ }
+ 
++/* ---- DNS over HTTPS (RFC 8484), HTTP/2 only
++ *
++ * A DoH listener speaks ALPN "h2" and nothing else: one parser (nghttp2, vendored under
++ * nghttp2/), no HTTP/1.1. Each connection has one nghttp2 server session. Bytes from TLS go
++ * into nghttp2_session_mem_recv2(); what nghttp2 wants to send is pulled with
++ * nghttp2_session_mem_send2() into the write buffer DoT uses, and no further than WBUF_MAX:
++ * while a client does not read, nothing more is pulled for it and nothing more is read from
++ * it. A complete request becomes a call to query_in() - the very path a DoT query takes -
++ * and its answer comes back through answer_to().
++ *
++ * What one connection can make this hold: H2_STREAMS requests, each with at most QMAX of
++ * query or one answer (answers together: h2_answer); nghttp2's own state, capped at
++ * H2_MEM_MAX by the allocator below; the write buffer, WBUF_MAX and one chunk.
++ */
++
++/* nghttp2 allocates through these, so its share of a connection is counted and capped: past
++   H2_MEM_MAX an allocation fails, nghttp2 reports NGHTTP2_ERR_NOMEM and the connection is
++   closed. The size sits in front of each block, in a slot as wide as malloc's alignment. */
++union h2blk {
++	size_t n;
++	long long ll;
++	long double ld;
++	void *p;
++};
++
++static void *h2_malloc(size_t size, void *ud)
++{
++	struct h2 *h = ud;
++	union h2blk *b;
++
++	if (size > H2_MEM_MAX || h->mem + size > H2_MEM_MAX)
++		return NULL;
++	if (!(b = malloc(sizeof(*b) + size)))
++		return NULL;
++	b->n = size;
++	h->mem += size;
++	return b + 1;
++}
++
++static void h2_free(void *ptr, void *ud)
++{
++	struct h2 *h = ud;
++	union h2blk *b = ptr;
++
++	if (!b)
++		return;
++	b--;
++	h->mem -= b->n;
++	free(b);
++}
++
++static void *h2_calloc(size_t nmemb, size_t size, void *ud)
++{
++	void *p;
++
++	if (size && nmemb > H2_MEM_MAX / size)
++		return NULL;
++	if ((p = h2_malloc(nmemb * size, ud)))
++		memset(p, 0, nmemb * size);
++	return p;
++}
++
++static void *h2_realloc(void *ptr, size_t size, void *ud)
++{
++	struct h2 *h = ud;
++	union h2blk *b = ptr, *nb;
++
++	if (!b)
++		return h2_malloc(size, ud);
++	b--;
++	if (size > H2_MEM_MAX || h->mem - b->n + size > H2_MEM_MAX)
++		return NULL;		/* the old block stays as it was */
++	if (!(nb = realloc(b, sizeof(*nb) + size)))
++		return NULL;
++	h->mem = h->mem - nb->n + size;
++	nb->n = size;
++	return nb + 1;
++}
++
++static struct h2s *h2s_find(struct h2 *h, int32_t id)
++{
++	int i;
++
++	for (i = 0; i < H2_STREAMS; i++)
++		if (h->st[i].id == id)
++			return &h->st[i];
++	return NULL;
++}
++
++/* The stream is over. A query of it still waiting for dnsmasq is taken back, so nothing is
++   written to a dead stream and neither the pending slot nor the connection's in-flight
++   count leaks (a TCP retry for it finds the slot gone and closes itself: tcpre_io). */
++static void h2s_drop(struct conn *c, struct h2s *st)
++{
++	if (st->pend) {
++		struct pending *p = &pend[st->pend - 1];
++		if (p->used && p->conn == conn_index(c) && p->gen == c->gen && p->stream == st->id) {
++			pend_free(p);
++			c->inflight--;
++		}
++	}
++	if (st->answered && st->buf)
++		c->h2->held -= st->len - st->off;
++	free(st->buf);
++	memset(st, 0, sizeof(*st));
++}
++
++/* conn_close: every stream, then the session (which frees all nghttp2 held for it) */
++static void h2_end(struct conn *c)
++{
++	struct h2 *h = c->h2;
++	int i;
++
++	if (!h)
++		return;
++	for (i = 0; i < H2_STREAMS; i++)
++		if (h->st[i].id)
++			h2s_drop(c, &h->st[i]);
++	nghttp2_session_del(h->sess);
++	free(h);
++	c->h2 = NULL;
++}
++
++/* nghttp2's next chunk into the write buffer. Once pulled it has to be taken whole, so the
++   buffer may pass WBUF_MAX by that one chunk; h2_pump pulls nothing more until it is sent. */
++static int h2_out(struct conn *c, const unsigned char *d, size_t n)
++{
++	if (n > H2_CHUNK_MAX || c->wlen + n > WBUF_MAX + H2_CHUNK_MAX)
++		return -1;
++	if (c->wlen + n > c->wcap) {
++		size_t ncap = (c->wlen + n + 4095) & ~(size_t)4095;
++		unsigned char *nb = realloc(c->wbuf, ncap);
++		if (!nb)
++			return -1;
++		c->wbuf = nb;
++		c->wcap = ncap;
++	}
++	memcpy(c->wbuf + c->wlen, d, n);
++	c->wlen += n;
++	return 0;
++}
++
++/* Send what nghttp2 has ready, as far as the client takes it. Never from inside an nghttp2
++   callback (busy): the library is not to be re-entered, and whoever called it pumps after. */
++static void h2_pump(struct conn *c)
++{
++	struct h2 *h = c->h2;
++	int pulled;
++
++	if (h->busy || c->state != C_OPEN)
++		return;
++	h->busy = 1;
++	do {
++		pulled = 0;
++		if (c->woff && c->woff == c->wlen)
++			c->wlen = c->woff = 0;
++		while (!c->closing && c->wlen < WBUF_MAX) {	/* full: the rest waits inside nghttp2 */
++			const uint8_t *d;
++			nghttp2_ssize n = nghttp2_session_mem_send2(h->sess, &d);
++			if (n < 0 || (n > 0 && h2_out(c, d, (size_t)n)))
++				c->closing = 1;
++			if (n <= 0)
++				break;
++			pulled = 1;
++		}
++		if (!c->closing && c->woff < c->wlen)
++			conn_flush(c);
++		/* all of it left and there may be more: again. Otherwise POLLOUT brings us back. */
++	} while (pulled && !c->closing && !c->want_write);
++	h->busy = 0;
++	/* nghttp2 is done with the session (GOAWAY sent or taken, no stream left) and it is all out */
++	if (!c->closing && c->woff == c->wlen
++	    && !nghttp2_session_want_read(h->sess) && !nghttp2_session_want_write(h->sess))
++		c->closing = 1;
++}
++
++static nghttp2_nv h2_nv(const char *name, const char *value)
++{
++	nghttp2_nv nv;
++
++	/* nghttp2 copies both (NGHTTP2_NV_FLAG_NONE) and writes to neither */
++	nv.name = (uint8_t *)(uintptr_t)name;
++	nv.value = (uint8_t *)(uintptr_t)value;
++	nv.namelen = strlen(name);
++	nv.valuelen = strlen(value);
++	nv.flags = NGHTTP2_NV_FLAG_NONE;
++	return nv;
++}
++
++/* a request that is no DNS query for us: the status alone, no body */
++static void h2_refuse(struct conn *c, struct h2s *st, int status)
++{
++	char code[16];
++	nghttp2_nv nv;
++
++	if (st->answered)
++		return;
++	st->answered = 1;
++	st->pend = 0;
++	free(st->buf);
++	st->buf = NULL;
++	st->len = st->off = 0;
++	snprintf(code, sizeof(code), "%d", status);
++	nv = h2_nv(":status", code);
++	n_h2_err++;
++	c->last = now_ms();
++	if (nghttp2_submit_response2(c->h2->sess, st->id, &nv, 1, NULL))
++		c->closing = 1;
++	else
++		h2_pump(c);
++}
++
++/* How long a DoH client may keep an answer (RFC 8484 5.1): the lowest TTL among its answer
++   records; 0 when there is none, on SERVFAIL, or when the message does not parse. */
++static unsigned long answer_ttl(const unsigned char *m, size_t len)
++{
++	size_t o = 12;
++	unsigned i, qd, an;
++	unsigned long best = 0;
++
++	if (len < 12 || (m[3] & 0x0f) == 2)
++		return 0;
++	qd = (m[4] << 8) | m[5];
++	an = (m[6] << 8) | m[7];
++	for (i = 0; i < qd; i++) {
++		if (skip_name(m, len, &o) || o + 4 > len)
++			return 0;
++		o += 4;
++	}
++	for (i = 0; i < an; i++) {
++		unsigned long ttl;
++		unsigned rdlen;
++		if (skip_name(m, len, &o) || o + 10 > len)
++			return 0;
++		ttl = ((unsigned long)m[o + 4] << 24) | ((unsigned long)m[o + 5] << 16) | (m[o + 6] << 8) | m[o + 7];
++		rdlen = (m[o + 8] << 8) | m[o + 9];
++		if (o + 10 + rdlen > len)
++			return 0;
++		if (ttl & 0x80000000UL)		/* RFC 2181 8: a TTL with the top bit set counts as 0 */
++			ttl = 0;
++		if (!i || ttl < best)
++			best = ttl;
++		o += 10 + rdlen;
++	}
++	return best;
++}
++
++/* nghttp2 fetches the answer's bytes from the stream as the client's window lets them go */
++static nghttp2_ssize h2_body(nghttp2_session *s, int32_t stream, uint8_t *buf, size_t length,
++			     uint32_t *flags, nghttp2_data_source *src, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st = h2s_find(c->h2, stream);
++	size_t n;
++
++	(void)s; (void)src;
++	if (!st || !st->answered || !st->buf)	/* cannot happen; if it does, this stream is reset, no more */
++		return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++	n = st->len - st->off;
++	if (n > length)
++		n = length;
++	memcpy(buf, st->buf + st->off, n);
++	st->off += n;
++	c->h2->held -= n;
++	if (st->off == st->len)
++		*flags |= NGHTTP2_DATA_FLAG_EOF;
++	return (nghttp2_ssize)n;
++}
++
++/* answer_to: the answer for one request, with the client's own DNS ID already in it */
++static void h2_answer(struct conn *c, int32_t stream, const unsigned char *m, size_t len)
++{
++	struct h2 *h = c->h2;
++	struct h2s *st;
++	char clen[24], cc[32];
++	nghttp2_nv nv[4];
++	nghttp2_data_provider2 prd;
++
++	if (!h || !(st = h2s_find(h, stream)) || st->answered)
++		return;
++	st->pend = 0;
++	/* Answers wait in their streams until the client's flow-control window and the write
++	   buffer let them go. A client that takes none meets the end a DoT device that never
++	   reads meets in conn_send(): with other answers still waiting, one that would bring
++	   them past WBUF_MAX closes the connection. */
++	if (h->held && h->held + len > WBUF_MAX) {
++		c->closing = 1;
++		return;
++	}
++	free(st->buf);
++	st->len = st->off = 0;
++	st->from_path = 0;
++	if (!(st->buf = malloc(len ? len : 1))) {
++		c->closing = 1;
++		return;
++	}
++	memcpy(st->buf, m, len);
++	st->len = len;
++	st->answered = 1;
++	h->held += len;
++	snprintf(clen, sizeof(clen), "%lu", (unsigned long)len);
++	snprintf(cc, sizeof(cc), "max-age=%lu", answer_ttl(m, len));
++	nv[0] = h2_nv(":status", "200");
++	nv[1] = h2_nv("content-type", "application/dns-message");
++	nv[2] = h2_nv("content-length", clen);
++	nv[3] = h2_nv("cache-control", cc);
++	memset(&prd, 0, sizeof(prd));
++	prd.read_callback = h2_body;
++	if (nghttp2_submit_response2(h->sess, stream, nv, 4, &prd))
++		c->closing = 1;
++	else
++		h2_pump(c);
++}
++
++static int b64url(unsigned char ch)
++{
++	if (ch >= 'A' && ch <= 'Z') return ch - 'A';
++	if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
++	if (ch >= '0' && ch <= '9') return ch - '0' + 52;
++	return ch == '-' ? 62 : ch == '_' ? 63 : -1;
++}
++
++/* GET /dns-query?dns=<base64url, no padding> (RFC 8484 4.1): the query into st->buf, or why
++   not into st->dns_err. Under H2_HDR_MAX a path cannot carry QMAX bytes; the 413 stays for
++   the day that limit is raised. */
++static void h2_dns_param(struct h2s *st, const uint8_t *s, size_t n)
++{
++	size_t i, o = 0, out = n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0);
++	unsigned acc = 0;
++	int bits = 0;
++
++	st->has_dns = 1;
++	st->dns_err = 400;
++	if (n % 4 == 1 || st->buf)
++		return;
++	if (out > QMAX) {
++		st->dns_err = 413;
++		return;
++	}
++	if (!(st->buf = malloc(out ? out : 1))) {
++		st->status = 500;
++		return;
++	}
++	for (i = 0; i < n; i++) {
++		int v = b64url(s[i]);
++		if (v < 0) {
++			free(st->buf);
++			st->buf = NULL;
++			return;
++		}
++		acc = ((acc & 0xff) << 6) | (unsigned)v;
++		bits += 6;
++		if (bits >= 8) {
++			bits -= 8;
++			st->buf[o++] = (acc >> bits) & 0xff;
++		}
++	}
++	st->len = o;
++	st->from_path = 1;
++	st->dns_err = 0;
++}
++
++/* only "/dns-query", alone or followed by "?" and its parameters */
++static void h2_path(struct h2s *st, const uint8_t *p, size_t n)
++{
++	static const char want[] = "/dns-query";
++	size_t wl = sizeof(want) - 1, i, e;
++
++	if (n < wl || memcmp(p, want, wl) || (n > wl && p[wl] != '?'))
++		return;
++	st->path_ok = 1;
++	for (i = wl + 1; i < n; i = e + 1) {
++		for (e = i; e < n && p[e] != '&'; e++)
++			;
++		if (e - i >= 4 && !memcmp(p + i, "dns=", 4) && !st->has_dns)
++			h2_dns_param(st, p + i + 4, e - i - 4);
++	}
++}
++
++static int h2_is(const uint8_t *s, size_t n, const char *lit)
++{
++	return n == strlen(lit) && !memcmp(s, lit, n);
++}
++
++/* the request's headers are in: 0, or the status that refuses it */
++static int h2_judge(const struct h2s *st)
++{
++	if (st->status)
++		return st->status;
++	if (!st->path_ok)
++		return 404;
++	if (st->method == H2M_GET)
++		return st->has_dns ? st->dns_err : 400;
++	if (st->method != H2M_POST)
++		return 405;
++	if (!st->ctype_ok)
++		return 415;
++	return st->big_body ? 413 : 0;
++}
++
++/* the request is complete: refuse it, or hand its query to the path every DoT query takes */
++static void h2_request(struct conn *c, struct h2s *st)
++{
++	unsigned char *q;
++	size_t qlen;
++
++	st->req_done = 1;
++	if (st->answered)
++		return;
++	if (st->method == H2M_POST && st->from_path)	/* a POST's query is its body, and none came */
++		st->len = 0;
++	if (st->status || st->len < QMIN) {	/* an empty body or a message shorter than a DNS header: 400 */
++		h2_refuse(c, st, st->status ? st->status : 400);
++		return;
++	}
++	if (c->inflight >= MAX_INFLIGHT) {	/* DoT stops reading here; H2_STREAMS keeps DoH below it */
++		if (nghttp2_submit_rst_stream(c->h2->sess, NGHTTP2_FLAG_NONE, st->id, NGHTTP2_REFUSED_STREAM))
++			c->closing = 1;
++		return;
++	}
++	/* query_in may answer at once (SERVFAIL, 400) and so reuse st->buf: the query leaves it first */
++	q = st->buf;
++	qlen = st->len;
++	st->buf = NULL;
++	st->len = 0;
++	st->from_path = 0;
++	n_doh++;
++	c->last = now_ms();
++	query_in(c, q, qlen, st);
++	free(q);
++}
++
++static int h2_on_begin_headers(nghttp2_session *s, const nghttp2_frame *f, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st;
++
++	if (f->hd.type != NGHTTP2_HEADERS || f->headers.cat != NGHTTP2_HCAT_REQUEST)
++		return 0;
++	if (!(st = h2s_find(c->h2, 0))) {
++		/* nghttp2 holds the client to H2_STREAMS itself - REFUSED_STREAM for the extra
++		   ones, a connection error once the client has acknowledged the limit - so a full
++		   table cannot happen. Should it, the same answer. */
++		if (nghttp2_is_fatal(nghttp2_submit_rst_stream(s, NGHTTP2_FLAG_NONE, f->hd.stream_id, NGHTTP2_REFUSED_STREAM)))
++			return NGHTTP2_ERR_CALLBACK_FAILURE;
++		return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;
++	}
++	memset(st, 0, sizeof(*st));
++	st->id = f->hd.stream_id;
++	return 0;
++}
++
++static int h2_on_header(nghttp2_session *s, const nghttp2_frame *f, const uint8_t *name, size_t nl,
++			const uint8_t *val, size_t vl, uint8_t flags, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st;
++
++	(void)flags;
++	if (f->hd.type != NGHTTP2_HEADERS || !(st = h2s_find(c->h2, f->hd.stream_id)))
++		return 0;
++	/* nghttp2 announces SETTINGS_MAX_HEADER_LIST_SIZE but holds no client to it: counted
++	   here the way RFC 7541 4.1 counts (name + value + 32 a field), trailers included */
++	st->hbytes += nl + vl + 32;
++	if (st->hbytes > H2_HDR_MAX) {
++		if (st->hbytes > H2_HDR_ABUSE && nghttp2_session_terminate_session(s, NGHTTP2_ENHANCE_YOUR_CALM))
++			return NGHTTP2_ERR_CALLBACK_FAILURE;
++		if (!st->status)
++			st->status = 431;
++		return 0;
++	}
++	if (f->headers.cat != NGHTTP2_HCAT_REQUEST)
++		return 0;		/* trailers say nothing we use */
++	if (h2_is(name, nl, ":method"))
++		st->method = h2_is(val, vl, "GET") ? H2M_GET : h2_is(val, vl, "POST") ? H2M_POST : H2M_OTHER;
++	else if (h2_is(name, nl, ":path"))
++		h2_path(st, val, vl);
++	else if (h2_is(name, nl, "content-type"))
++		st->ctype_ok = vl >= 23 && !strncasecmp((const char *)val, "application/dns-message", 23)
++			       && (vl == 23 || val[23] == ';' || val[23] == ' ');
++	else if (h2_is(name, nl, "content-length")) {
++		/* nghttp2 has checked that it is a number, and holds the body to it */
++		unsigned long v = 0;
++		size_t i;
++		for (i = 0; i < vl && v <= QMAX && val[i] >= '0' && val[i] <= '9'; i++)
++			v = v * 10 + (val[i] - '0');
++		st->big_body = v > QMAX;
++	}
++	return 0;
++}
++
++static int h2_on_invalid_header(nghttp2_session *s, const nghttp2_frame *f, const uint8_t *name, size_t nl,
++				const uint8_t *val, size_t vl, uint8_t flags, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st;
++
++	(void)name; (void)val; (void)flags;
++	if (f->hd.type != NGHTTP2_HEADERS || !(st = h2s_find(c->h2, f->hd.stream_id)))
++		return 0;
++	st->hbytes += nl + vl + 32;
++	if (st->hbytes > H2_HDR_MAX) {
++		if (st->hbytes > H2_HDR_ABUSE && nghttp2_session_terminate_session(s, NGHTTP2_ENHANCE_YOUR_CALM))
++			return NGHTTP2_ERR_CALLBACK_FAILURE;
++		if (!st->status)
++			st->status = 431;
++		return NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE;	/* the rest of this block is not looked at */
++	}
++	return 0;
++}
++
++static int h2_on_data(nghttp2_session *s, uint8_t flags, int32_t stream, const uint8_t *d, size_t len, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st = h2s_find(c->h2, stream);
++
++	(void)s; (void)flags;
++	if (!stream || !st || st->answered || st->method != H2M_POST)
++		return 0;		/* a body nobody asked for is dropped as it arrives */
++	if (st->from_path) {		/* POST /dns-query?dns=...: the body is the query */
++		free(st->buf);
++		st->buf = NULL;
++		st->len = 0;
++		st->from_path = 0;
++	}
++	if (len > QMAX - st->len) {
++		h2_refuse(c, st, 413);
++		return 0;
++	}
++	if (!st->buf && !(st->buf = malloc(QMAX))) {
++		c->closing = 1;
++		return NGHTTP2_ERR_CALLBACK_FAILURE;
++	}
++	memcpy(st->buf + st->len, d, len);
++	st->len += len;
++	return 0;
++}
++
++static int h2_on_frame_recv(nghttp2_session *s, const nghttp2_frame *f, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st;
++
++	(void)s;
++	if ((f->hd.type != NGHTTP2_HEADERS && f->hd.type != NGHTTP2_DATA) || !f->hd.stream_id
++	    || !(st = h2s_find(c->h2, f->hd.stream_id)))
++		return 0;
++	if (f->hd.type == NGHTTP2_HEADERS && f->headers.cat == NGHTTP2_HCAT_REQUEST) {
++		int status = h2_judge(st);
++		if (status)		/* at once: the body of a refused request is not waited for */
++			h2_refuse(c, st, status);
++	}
++	if (f->hd.flags & NGHTTP2_FLAG_END_STREAM)
++		h2_request(c, st);
++	return 0;
++}
++
++static int h2_on_frame_send(nghttp2_session *s, const nghttp2_frame *f, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st;
++
++	if (f->hd.type == NGHTTP2_GOAWAY) {
++		if (f->goaway.error_code != NGHTTP2_NO_ERROR)
++			n_h2_err++;	/* the session ends on an error: protocol, flood, compression ... */
++	} else if (f->hd.type == NGHTTP2_HEADERS && (f->hd.flags & NGHTTP2_FLAG_END_STREAM)
++		   && (st = h2s_find(c->h2, f->hd.stream_id)) && !st->req_done) {
++		/* A refusal has gone out while the request was still arriving: the client is told
++		   to stop sending it (RFC 9113 8.1.1). Only now - an RST_STREAM submitted earlier
++		   would have cancelled the refusal itself. */
++		if (nghttp2_is_fatal(nghttp2_submit_rst_stream(s, NGHTTP2_FLAG_NONE, st->id, NGHTTP2_NO_ERROR)))
++			return NGHTTP2_ERR_CALLBACK_FAILURE;
++	}
++	return 0;
++}
++
++static int h2_on_stream_close(nghttp2_session *s, int32_t stream, uint32_t err, void *ud)
++{
++	struct conn *c = ud;
++	struct h2s *st = stream ? h2s_find(c->h2, stream) : NULL;
++
++	(void)s; (void)err;
++	if (st)
++		h2s_drop(c, st);
++	return 0;
++}
++
++static nghttp2_session_callbacks *h2_cbs;
++static nghttp2_option *h2_opt;
++
++/* once, before the first DoH connection: the callbacks and the limits every session gets */
++static int h2_setup(void)
++{
++	if (nghttp2_session_callbacks_new(&h2_cbs) || nghttp2_option_new(&h2_opt))
++		return -1;
++	nghttp2_session_callbacks_set_on_begin_headers_callback(h2_cbs, h2_on_begin_headers);
++	nghttp2_session_callbacks_set_on_header_callback(h2_cbs, h2_on_header);
++	nghttp2_session_callbacks_set_on_invalid_header_callback(h2_cbs, h2_on_invalid_header);
++	nghttp2_session_callbacks_set_on_data_chunk_recv_callback(h2_cbs, h2_on_data);
++	nghttp2_session_callbacks_set_on_frame_recv_callback(h2_cbs, h2_on_frame_recv);
++	nghttp2_session_callbacks_set_on_frame_send_callback(h2_cbs, h2_on_frame_send);
++	nghttp2_session_callbacks_set_on_stream_close_callback(h2_cbs, h2_on_stream_close);
++	/* nghttp2's own defences against a client that floods, each set here rather than left to
++	   the library's default of the day:
++	     stream_reset_rate_limit(100, 10)  RST_STREAM from the client ("rapid reset",
++	         CVE-2023-44487): 100 at once, 10 a second after; past that GOAWAY. Default 1000 / 33.
++	     max_continuations(2)              CONTINUATION frames behind one HEADERS
++	         (CVE-2024-28182); a request under H2_HDR_MAX needs none. Default 8.
++	     max_settings(16)                  entries in one SETTINGS frame. Default 32.
++	     max_outbound_ack(64)              SETTINGS / PING acknowledgements queued for a client
++	         that asks and does not read. Default 1000.
++	     max_outbound_queue_size(256)      frames queued for sending at all. Default 5000.
++	     glitch_rate_limit(10000, 330)     other suspect input (frames for closed streams,
++	         RFC 7540 PRIORITY, unknown frames ...). The library's default, spelled out: browsers
++	         send some of these in ordinary use, so it is not tightened blind.
++	   Past any of them nghttp2 ends the session (GOAWAY, or an error from mem_recv2). */
++	nghttp2_option_set_stream_reset_rate_limit(h2_opt, 100, 10);
++	nghttp2_option_set_max_continuations(h2_opt, 2);
++	nghttp2_option_set_max_settings(h2_opt, 16);
++	nghttp2_option_set_max_outbound_ack(h2_opt, 64);
++	nghttp2_option_set_max_outbound_queue_size(h2_opt, 256);
++	nghttp2_option_set_glitch_rate_limit(h2_opt, 10000, 330);
++	return 0;
++}
++
++/* the TLS handshake chose "h2": the session, and our SETTINGS as the first thing sent */
++static int h2_start(struct conn *c)
++{
++	/* never a push: none is ever submitted, and ENABLE_PUSH 0 says so (the only value a
++	   server may send, RFC 9113 6.5.2) */
++	static const nghttp2_settings_entry iv[] = {
++		{ NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, H2_STREAMS },
++		{ NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE, H2_HDR_MAX },
++		{ NGHTTP2_SETTINGS_ENABLE_PUSH, 0 },
++	};
++	nghttp2_mem mem = { NULL, h2_malloc, h2_free, h2_calloc, h2_realloc };
++	struct h2 *h = calloc(1, sizeof(*h));
++
++	if (!h)
++		return -1;
++	mem.mem_user_data = h;
++	if (nghttp2_session_server_new3(&h->sess, h2_cbs, c, h2_opt, &mem)) {
++		free(h);
++		return -1;
++	}
++	c->h2 = h;		/* from here conn_close frees it */
++	return nghttp2_submit_settings(h->sess, NGHTTP2_FLAG_NONE, iv, sizeof(iv) / sizeof(iv[0])) ? -1 : 0;
++}
++
++/* an idle connection is closed with a GOAWAY, so the client knows no request was lost */
++static void h2_goaway(struct conn *c)
++{
++	if (c->h2 && !nghttp2_session_terminate_session(c->h2->sess, NGHTTP2_NO_ERROR))
++		h2_pump(c);
++}
++
++/* a DoH connection's turn: send what waits, then read and feed nghttp2 */
++static void h2_io(struct conn *c)
++{
++	struct h2 *h = c->h2;
++	int turn;
++
++	h->more = 0;
++	if (c->want_write)
++		conn_flush(c);
++	h2_pump(c);
++	/* while the client does not take what we send (want_write), nothing more is read from it */
++	for (turn = 0; !c->closing && !c->want_write; turn++) {
++		nghttp2_ssize rv;
++		int n;
++
++		if (turn == H2_READS) {		/* TLS may hold more than the socket shows: come back */
++			h->more = 1;
++			return;
++		}
++		n = SSL_read(c->ssl, c->rbuf, (int)sizeof(c->rbuf));
++		if (n <= 0) {
++			switch (SSL_get_error(c->ssl, n)) {
++			case SSL_ERROR_WANT_READ:
++				break;
++			case SSL_ERROR_WANT_WRITE:
++				c->want_write = 1;
++				break;
++			default:	/* closed or broken */
++				c->closing = 1;
++			}
++			return;
++		}
++		h->busy = 1;
++		rv = nghttp2_session_mem_recv2(h->sess, c->rbuf, (size_t)n);
++		h->busy = 0;
++		if (rv != n) {		/* not HTTP/2, a flood, out of its memory: nothing more to say to it */
++			n_h2_err++;
++			c->closing = 1;
++			return;
++		}
++		h2_pump(c);
++	}
++}
++
+ static void conn_read(struct conn *c)
+ {
+ 	for (;;) {
+@@ -1051,7 +1928,7 @@ static void conn_read(struct conn *c)
+ 			}
+ 			if (c->rlen < 2 + need)
+ 				break;
+-			query_in(c, c->rbuf + 2, need);
++			query_in(c, c->rbuf + 2, need, NULL);
+ 			memmove(c->rbuf, c->rbuf + 2 + need, c->rlen - 2 - need);
+ 			c->rlen -= 2 + need;
+ 			c->last = now_ms();
+@@ -1081,6 +1958,27 @@ static void conn_handshake(struct conn *c)
+ 	int r = SSL_do_handshake(c->ssl);
+ 
+ 	if (r == 1) {
++		if (c->proto == P_DOH) {
++			const unsigned char *a = NULL;
++			unsigned al = 0;
++
++			/* HTTP/2 or nothing (the two callbacks in "TLS" below refuse the rest during
++			   the handshake; this is the check that does not depend on them) */
++			SSL_get0_alpn_selected(c->ssl, &a, &al);
++			if (al != 2 || memcmp(a, "h2", 2)) {
++				n_hs_fail++;
++				c->closing = 1;
++				return;
++			}
++			if (h2_start(c)) {
++				c->closing = 1;
++				return;
++			}
++			c->state = C_OPEN;
++			c->last = now_ms();
++			h2_io(c);
++			return;
++		}
+ 		c->state = C_OPEN;
+ 		c->last = now_ms();
+ 		conn_read(c);
+@@ -1099,9 +1997,56 @@ static void conn_handshake(struct conn *c)
+ 	}
+ }
+ 
++/* review 2026-11-11 (D-3). The per-device cap counts a device by its MAC, or by its address when the neighbour
++ * table does not know it. One host that forges MACs, or uses many IPv6 addresses, is many "devices": with every
++ * connection kept busy it could hold all the slots, and nothing was evictable. Two rules more:
++ *  - one IPv6 /64 holds at most half of the slots (a whole network shares a /64, so the bar is not per device);
++ *  - when every slot is busy, the device that holds the MOST connections gives up its longest-quiet one to a
++ *    newcomer that holds fewer. A device with a single connection is never the one chosen. */
++static int conn_same_dev(const struct conn *x, const struct conn *y)
++{
++	int f1, f2;
++	const unsigned char *b1, *b2;
++
++	if (x->has_mac && y->has_mac)
++		return !memcmp(x->mac, y->mac, 6);
++	b1 = sa_bytes(&x->peer, &f1);
++	b2 = sa_bytes(&y->peer, &f2);
++	return f1 == f2 && !memcmp(b1, b2, f1 == AF_INET ? 4 : 16);
++}
++
++static struct conn *conn_busiest(int newcomer)
++{
++	struct conn *pick = NULL;
++	int i, j, most = 0;
++
++	for (i = 0; i < MAX_CONN; i++) {
++		int n = 0;
++
++		if (conns[i].state == C_FREE)
++			continue;
++		for (j = 0; j < MAX_CONN; j++)
++			if (conns[j].state != C_FREE && conn_same_dev(&conns[i], &conns[j]))
++				n++;
++		if (n > most || (n == most && pick && conns[i].last < pick->last)) {
++			most = n;
++			pick = &conns[i];
++		}
++	}
++	return (pick && most >= 2 && most > newcomer) ? pick : NULL;
++}
++/* reaper-rednsd-busiest: end */
++/* review 2026-11-11 (D-4): how many new connections one pass of the main loop takes from a listener. Each accept
++ * does a neighbour-table lookup (a read of /proc/net/arp, or a netlink dump that may wait 300 ms), and the loop
++ * used to drain the whole backlog (64) before any open connection was served again. The rest of the backlog is
++ * taken on the next pass - poll() reports the listener readable for as long as something waits. */
++#define ACCEPT_PASS	16
++
+ static void accept_on(struct listener *l)
+ {
+-	for (;;) {
++	int budget;
++
++	for (budget = ACCEPT_PASS; budget > 0; budget--) {
+ 		sockaddr_u a;
+ 		socklen_t al = sizeof(a);
+ 		struct conn *c = NULL;
+@@ -1125,7 +2070,7 @@ static void accept_on(struct listener *l)
+ 		/* review 2026-10-24 (S-A-3): the per-device cap counts the DEVICE - its MAC when the neighbour table
+ 		   knows it (an IPv6 host has as many addresses as it likes), its address otherwise */
+ 		sa_bytes(&a, &fam);
+-		has_mac = (fam == AF_INET ? mac_v4(&a, mac) : mac_v6(&a, mac)) == 0;
++		has_mac = mac_of(&a, mac) == 0;	/* review 2026-11-11 (D-4): the answer policy_allows() just got, when it asked */
+ 		for (i = 0; i < MAX_CONN; i++) {
+ 			if (conns[i].state == C_FREE) {
+ 				if (!c)
+@@ -1140,6 +2085,23 @@ static void accept_on(struct listener *l)
+ 					same++;
+ 			}
+ 		}
++		if (fam == AF_INET6) {	/* review 2026-11-11 (D-3): one IPv6 /64 holds at most half of the slots */
++			int n64 = 0, f1;
++			const unsigned char *nb = sa_bytes(&a, &f1), *b1;
++
++			for (i = 0; i < MAX_CONN; i++) {
++				if (conns[i].state == C_FREE)
++					continue;
++				b1 = sa_bytes(&conns[i].peer, &f1);
++				if (f1 == AF_INET6 && !memcmp(b1, nb, 8))
++					n64++;
++			}
++			if (n64 >= MAX_CONN / 2) {
++				n_ref_busy++;
++				close(fd);
++				continue;
++			}
++		}
+ 		if (!c) {	/* every slot taken: the longest-idle open connection makes room (S-A-3) rather than a refusal */
+ 			struct conn *v = NULL;
+ 			for (i = 0; i < MAX_CONN; i++)
+@@ -1162,6 +2124,14 @@ static void accept_on(struct listener *l)
+ 					c = h;
+ 				}
+ 			}
++			if (!c && same < PER_PEER) {	/* review 2026-11-11 (D-3): every slot busy - the device with the most gives one up */
++				struct conn *b = conn_busiest(same);
++
++				if (b) {
++					conn_close(b);
++					c = b;
++				}
++			}
+ 		}
+ 		if (!c || same >= PER_PEER) {
+ 			n_ref_busy++;
+@@ -1180,7 +2150,10 @@ static void accept_on(struct listener *l)
+ 		c->inflight = c->want_write = c->closing = 0;
+ 		c->hs_deadline = now_ms() + HS_MS;
+ 		c->last = now_ms();
+-		if (!(c->ssl = SSL_new(ctx)) || SSL_set_fd(c->ssl, fd) != 1) {
++		c->proto = l->proto;
++		c->rlen_kick = 0;
++		c->h2 = NULL;
++		if (!(c->ssl = SSL_new(l->proto == P_DOH ? ctx_doh : ctx)) || SSL_set_fd(c->ssl, fd) != 1) {
+ 			if (c->ssl)
+ 				SSL_free(c->ssl);
+ 			c->ssl = NULL;
+@@ -1217,6 +2190,41 @@ static int alpn_cb(SSL *s, const unsigned char **out, unsigned char *outlen,
+ 	return SSL_TLSEXT_ERR_NOACK;
+ }
+ 
++/* A DoH listener is HTTP/2 or nothing: "h2" when the client offers it, else the handshake
++   fails (no_application_protocol) - there is no HTTP/1.1 here to fall back to. */
++static int alpn_h2_cb(SSL *s, const unsigned char **out, unsigned char *outlen,
++		      const unsigned char *in, unsigned int inlen, void *arg)
++{
++	unsigned i = 0;
++
++	(void)s; (void)arg;
++	while (i < inlen) {
++		unsigned l = in[i];
++		if (i + 1 + l > inlen)
++			break;
++		if (l == 2 && !memcmp(in + i + 1, "h2", 2)) {
++			*out = in + i + 1;
++			*outlen = 2;
++			return SSL_TLSEXT_ERR_OK;
++		}
++		i += 1 + l;
++	}
++	return SSL_TLSEXT_ERR_ALERT_FATAL;
++}
++
++/* ...and a ClientHello with no ALPN at all never reaches that callback: refused here */
++static int hello_h2_cb(SSL *s, int *al, void *arg)
++{
++	const unsigned char *ext;
++	size_t len;
++
++	(void)arg;
++	if (SSL_client_hello_get0_ext(s, TLSEXT_TYPE_application_layer_protocol_negotiation, &ext, &len) == 1)
++		return SSL_CLIENT_HELLO_SUCCESS;
++	*al = SSL_AD_NO_APPLICATION_PROTOCOL;
++	return SSL_CLIENT_HELLO_ERROR;
++}
++
+ static void json_str(char *out, size_t n, const char *s)
+ {
+ 	size_t o = 0;
+@@ -1315,7 +2323,8 @@ static void cert_describe(void)
+ 	X509_free(x);
+ }
+ 
+-static SSL_CTX *tls_setup(void)
++/* one context per protocol, both from the same certificate and key files */
++static SSL_CTX *tls_setup(int proto)
+ {
+ 	SSL_CTX *c = SSL_CTX_new(TLS_server_method());
+ 
+@@ -1325,7 +2334,11 @@ static SSL_CTX *tls_setup(void)
+ 	SSL_CTX_set_options(c, SSL_OP_NO_RENEGOTIATION | SSL_OP_CIPHER_SERVER_PREFERENCE | SSL_OP_NO_COMPRESSION);
+ 	SSL_CTX_set_mode(c, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+ 	SSL_CTX_set_session_cache_mode(c, SSL_SESS_CACHE_SERVER);
+-	SSL_CTX_set_alpn_select_cb(c, alpn_cb, NULL);
++	if (proto == P_DOH) {
++		SSL_CTX_set_alpn_select_cb(c, alpn_h2_cb, NULL);
++		SSL_CTX_set_client_hello_cb(c, hello_h2_cb, NULL);
++	} else
++		SSL_CTX_set_alpn_select_cb(c, alpn_cb, NULL);
+ 	if (SSL_CTX_use_certificate_chain_file(c, cfg.cert) != 1
+ 	    || SSL_CTX_use_PrivateKey_file(c, cfg.key, SSL_FILETYPE_PEM) != 1
+ 	    || SSL_CTX_check_private_key(c) != 1) {
+@@ -1339,17 +2352,19 @@ static SSL_CTX *tls_setup(void)
+ 
+ static void write_status(const char *state)
+ {
+-	char tmp[300], lst[2048] = "";
++	char tmp[300], lst[4096] = "";
+ 	size_t o = 0;
+-	int i, open_conns = 0;
++	int i, open_conns = 0, bad, nc = 0, len;
++	long long t = now_ms();
+ 	FILE *f;
+ 
+ 	for (i = 0; i < MAX_CONN; i++)
+ 		if (conns[i].state != C_FREE)
+ 			open_conns++;
+ 	for (i = 0; i < cfg.nlisten && o + 120 < sizeof(lst); i++)
+-		o += snprintf(lst + o, sizeof(lst) - o, "%s{\"a\":\"%s\",\"p\":%d,\"wan\":%d,\"ok\":%d}",
+-			      i ? "," : "", cfg.listen[i].addr, cfg.listen[i].port, cfg.listen[i].wan, cfg.listen[i].fd >= 0);
++		o += snprintf(lst + o, sizeof(lst) - o, "%s{\"a\":\"%s\",\"p\":%d,\"wan\":%d,\"ok\":%d,\"proto\":\"%s\"}",
++			      i ? "," : "", cfg.listen[i].addr, cfg.listen[i].port, cfg.listen[i].wan, cfg.listen[i].fd >= 0,
++			      cfg.listen[i].proto == P_DOH ? "doh" : "dot");
+ 	snprintf(tmp, sizeof(tmp), "%s.tmp", cfg.status);
+ 	/* the first writes happen as root, in a directory nobody owns: a fresh file only,
+ 	   never through a link someone left at the name */
+@@ -1363,12 +2378,33 @@ static void write_status(const char *state)
+ 			return;
+ 		}
+ 	}
+-	fprintf(f, "{\"state\":\"%s\",\"pid\":%d,\"up\":%lld,\"listen\":[%s],\"conns\":%d,\"conns_total\":%llu,"
++	len = fprintf(f, "{\"state\":\"%s\",\"pid\":%d,\"up\":%lld,\"listen\":[%s],\"conns\":%d,\"conns_total\":%llu,"
+ 		"\"queries\":%llu,\"refused_peer\":%llu,\"refused_policy\":%llu,\"refused_busy\":%llu,"
+-		"\"hs_fail\":%llu,\"servfail\":%llu,\"cert\":%s}\n",
+-		state, (int)getpid(), started ? (now_ms() - started) / 1000 : 0, lst, open_conns, n_conns_total,
+-		n_queries, n_ref_peer, n_ref_policy, n_ref_busy, n_hs_fail, n_servfail, cert_json);
+-	fclose(f);
++		"\"hs_fail\":%llu,\"servfail\":%llu,\"doh_queries\":%llu,\"h2_errors\":%llu,\"cert\":%s,\"clients\":[",
++		state, (int)getpid(), started ? (t - started) / 1000 : 0, lst, open_conns, n_conns_total,
++		n_queries, n_ref_peer, n_ref_policy, n_ref_busy, n_hs_fail, n_servfail, n_doh, n_h2_err, cert_json);
++	/* One whole object per device (128 bytes at the very most), and no further than STATUS_MAX:
++	   if the file ever had to be cut short it is this list that ends early, never an object.
++	   (It does not come to that: 64 rows, the listeners and the certificate at their longest
++	   stay under 14 KB.) "last" is the router's clock now less the time since: right even if
++	   the clock was set meanwhile. */
++	for (i = 0; i < MAX_CLIENTS && len >= 0 && len < STATUS_MAX - 128 - 4; i++) {
++		const struct client *e = &clients[i];
++		char a[INET6_ADDRSTRLEN];
++		int w;
++		if (!e->family || !inet_ntop(e->family, e->addr, a, sizeof(a)))
++			continue;
++		w = fprintf(f, "%s{\"a\":\"%s\",\"proto\":\"%s\",\"q\":%llu,\"last\":%lld}", nc++ ? "," : "", a,
++			    e->proto == P_DOH ? "doh" : "dot", e->q, (long long)time(NULL) - (t - e->last) / 1000);
++		len = w < 0 ? -1 : len + w;
++	}
++	fprintf(f, "]}\n");
++	/* the page's reader gets the new file whole or the old one: a write that failed is not renamed in */
++	bad = ferror(f);
++	if (fclose(f) || bad) {
++		unlink(tmp);
++		return;
++	}
+ 	rename(tmp, cfg.status);
+ }
+ 
+@@ -1444,8 +2480,8 @@ static void on_usr1(int s) { (void)s; got_usr1 = 1; }
+ #ifndef RED_TEST
+ int main(int argc, char **argv)
+ {
+-	int i, opt, foreground = 0, bound = 0;
+-	long long next_status;
++	int i, opt, foreground = 0, bound = 0, doh = 0;
++	long long next_status, last_status;
+ 	char pidfile[] = "/var/run/rednsd.pid";
+ 
+ 	while ((opt = getopt(argc, argv, "fc:")) != -1) {
+@@ -1463,11 +2499,20 @@ int main(int argc, char **argv)
+ 	signal(SIGHUP, on_hup);
+ 	signal(SIGUSR1, on_usr1);	/* the page asks for fresh numbers */
+ 
+-	if (!(ctx = tls_setup())) {
++	for (i = 0; i < cfg.nlisten; i++)
++		if (cfg.listen[i].proto == P_DOH)
++			doh = 1;
++	/* the second context and nghttp2 only when a DoH listener is configured: without one
++	   this is the DoT daemon it was */
++	if (!(ctx = tls_setup(P_DOT)) || (doh && !(ctx_doh = tls_setup(P_DOH)))) {
+ 		logmsg(LOG_ERR, "rednsd: cannot load the certificate %s / key %s", cfg.cert, cfg.key);
+ 		write_status("cert_error");
+ 		return 1;
+ 	}
++	if (doh && h2_setup()) {
++		logmsg(LOG_ERR, "rednsd: cannot set up HTTP/2");
++		return 1;
++	}
+ 	cert_describe();
+ 	for (i = 0; i < cfg.nlisten; i++) {
+ 		if (bind_listener(&cfg.listen[i]) == 0)
+@@ -1501,12 +2546,16 @@ int main(int argc, char **argv)
+ 		tre[i].fd = -1;
+ 	started = now_ms();
+ 	write_status("running");
+-	next_status = now_ms() + STATUS_MS;
++	last_status = now_ms();
++	next_status = last_status + STATUS_MS;
+ 	logmsg(LOG_NOTICE, "rednsd: encrypted DNS for devices on %d address(es)", bound);
+ 
+ 	while (!got_term) {
+ 		struct pollfd pfd[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE];
+-		int map[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE], np = 0, timeout;
++		int map[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE], np = 0, timeout, again = 0;
++		/* review 2026-11-11 (D-2): the connection each poll entry was taken for. accept_on() may close one and give
++		 * its slot to a newcomer inside the dispatch pass below; the old entry's result is not the newcomer's. */
++		unsigned pgen[MAX_LISTEN + 2 + MAX_CONN + MAX_TCPRE];
+ 		long long t = now_ms(), next = next_status;
+ 
+ 		if (got_hup) {
+@@ -1515,7 +2564,8 @@ int main(int argc, char **argv)
+ 				logmsg(LOG_NOTICE, "rednsd: peers and policy reloaded");
+ 			/* re-point open connections at their (possibly new) network */
+ 			for (i = 0; i < MAX_CONN; i++)
+-				if (conns[i].state != C_FREE && !(conns[i].net = peer_of(&cfg, &conns[i].peer)))
++				if (conns[i].state != C_FREE && (!(conns[i].net = peer_of(&cfg, &conns[i].peer))
++				    || !policy_allows(&cfg, &conns[i].peer)))
+ 					conns[i].closing = 1;
+ 		}
+ 
+@@ -1538,8 +2588,11 @@ int main(int argc, char **argv)
+ 				n_hs_fail++;
+ 				c->closing = 1;
+ 			}
+-			if (c->state == C_OPEN && !c->inflight && c->wlen == c->woff && t - c->last >= IDLE_MS)
++			if (c->state == C_OPEN && !c->inflight && t - c->last >= IDLE_MS) {
++				if (c->proto == P_DOH && c->wlen == c->woff)
++					h2_goaway(c);
+ 				c->closing = 1;
++			}
+ 			if (c->closing) {
+ 				conn_close(c);
+ 				continue;
+@@ -1549,9 +2602,15 @@ int main(int argc, char **argv)
+ 			if (c->state == C_OPEN && c->last + IDLE_MS < next)
+ 				next = c->last + IDLE_MS;
+ 		}
+-		if (t >= next_status || got_usr1) {
++		/* Every STATUS_MS, at once on SIGUSR1 - and STATUS_FRESH_MS after the last write
++		   when a query has come in since, so the page's list of devices is never far behind.
++		   No timer of its own: the loop wakes at least once a second anyway, and an idle
++		   daemon keeps the STATUS_MS pace. */
++		if (t >= next_status || got_usr1 || (status_dirty && t - last_status >= STATUS_FRESH_MS)) {
+ 			got_usr1 = 0;
++			status_dirty = 0;
+ 			write_status("running");
++			last_status = t;
+ 			next_status = t + STATUS_MS;
+ 		}
+ 
+@@ -1572,15 +2631,27 @@ int main(int argc, char **argv)
+ 				continue;
+ 			if (c->want_write)
+ 				ev |= POLLOUT;
+-			if (c->state == C_HANDSHAKE ? !c->want_write : c->inflight < MAX_INFLIGHT)
++			/* DoT reads while there is room in flight; DoH while the client takes what is sent to it */
++			if ((c->state == C_HANDSHAKE || c->proto == P_DOH) ? !c->want_write : c->inflight < MAX_INFLIGHT)
+ 				ev |= POLLIN;
++			if (c->state == C_OPEN && c->h2 && c->h2->more)
++				again = 1;
++			if (c->state == C_OPEN && !c->closing && !c->want_write && SSL_pending(c->ssl) > 0
++			    && (c->proto == P_DOH || c->inflight < MAX_INFLIGHT)) {
++				again = 1;
++				if (c->h2)
++					c->h2->more = 1;
++				else if (c->rlen < 2)
++					c->rlen_kick = 1;
++			}
+ 			/* ev may be 0 while the connection waits for answers: poll still
+ 			   reports a hang-up or an error, and nothing spins */
+-			pfd[np].fd = c->fd; pfd[np].events = ev; map[np++] = i;
++			pfd[np].fd = c->fd; pfd[np].events = ev; pgen[np] = c->gen; map[np++] = i;
+ 		}
+ 		timeout = (int)(next - t);
+ 		if (timeout < 0) timeout = 0;
+ 		if (timeout > 1000) timeout = 1000;
++		if (again) timeout = 0;		/* a DoH connection stopped reading only to give the others a turn */
+ 		if (poll(pfd, np, timeout) < 0 && errno != EINTR)
+ 			break;
+ 
+@@ -1595,8 +2666,12 @@ int main(int argc, char **argv)
+ 				accept_on(&cfg.listen[-1 - map[i]]);
+ 			else {
+ 				struct conn *c = &conns[map[i]];
++				if (c->gen != pgen[i])
++					continue;	/* review 2026-11-11 (D-2): the slot changed hands in this pass */
+ 				if (c->state == C_HANDSHAKE)
+ 					conn_handshake(c);
++				else if (c->state == C_OPEN && c->proto == P_DOH)
++					h2_io(c);
+ 				else if (c->state == C_OPEN) {
+ 					if (c->want_write)
+ 						conn_flush(c);
+@@ -1609,9 +2684,13 @@ int main(int argc, char **argv)
+ 		}
+ 		/* answers that arrived may have made room for queued messages */
+ 		for (i = 0; i < MAX_CONN; i++)
+-			if (conns[i].state == C_OPEN && !conns[i].closing && conns[i].rlen >= 2
+-			    && conns[i].inflight < MAX_INFLIGHT)
++			if (conns[i].state == C_OPEN && !conns[i].closing && (conns[i].rlen >= 2 || conns[i].rlen_kick)
++			    && !conns[i].h2 && conns[i].inflight < MAX_INFLIGHT) {
++				conns[i].rlen_kick = 0;
+ 				conn_read(&conns[i]);
++			}
++			else if (conns[i].state == C_OPEN && !conns[i].closing && conns[i].h2 && conns[i].h2->more)
++				h2_io(&conns[i]);
+ 	}
+ 
+ 	for (i = 0; i < MAX_CONN; i++)
+diff --git a/release/src/router/www/Reaper_Dreadwatch.asp b/release/src/router/www/Reaper_Dreadwatch.asp
+index aed3b3b6c82..10462c3ef3a 100644
+--- a/release/src/router/www/Reaper_Dreadwatch.asp
++++ b/release/src/router/www/Reaper_Dreadwatch.asp
+@@ -255,6 +255,7 @@ var NV = {
+   dot:   <% nvram_get_js("reaper_dot_srv"); %>,
+   wallguard: <% nvram_get_js("wallguard_enable"); %>,
+   blk:    <% nvram_get_js("reaper_doh_block"); %>,
++  dotb:   <% nvram_get_js("reaper_dot_block"); %>,
+   dns:    <% nvram_get_js("rwarden_dns"); %>,
+   dnsfeeds: <% nvram_get_js("rwarden_dns_feeds"); %>,
+   dnsallow: decodeURIComponent('<% rwarden_list("dnsallow"); %>'),
+@@ -562,8 +563,11 @@ function dwRender(j){
+   li5.appendChild(ea); cov.appendChild(li5);
+   /* 2026-10-21: encrypted DNS that goes around the router - blocked, or not yet */
+   var li7 = document.createElement('li'), ba = document.createElement('a');
+-  li7.className = NV.blk === '1' ? 'good' : 'gap';
+-  li7.appendChild(document.createTextNode((NV.blk === '1' ? `<#RDWT_50#>` : `<#RDWT_51#>`) + ' '));
++  /* 2026-11-10: the block is two switches (port 853, DoH) - covered only when both are on. An empty
++     reaper_dot_block follows reaper_doh_block (rc/encdns.c). */
++  var blkAll = NV.blk === '1' && (NV.dotb === '' || NV.dotb === '1');
++  li7.className = blkAll ? 'good' : 'gap';
++  li7.appendChild(document.createTextNode((blkAll ? `<#RDWT_50#>` : `<#RDWT_51#>`) + ' '));
+   ba.href = '/reaper_shell.asp#Reaper_EncryptedDNS.asp'; ba.target = '_top'; ba.style.color = 'var(--bone)'; ba.textContent = `<#RENC_00#>`;
+   li7.appendChild(ba); cov.appendChild(li7);
+   /* 2026-10-21: ads and trackers are Wallguard's job, on its own tab */
+diff --git a/release/src/router/www/Reaper_EncryptedDNS.asp b/release/src/router/www/Reaper_EncryptedDNS.asp
+index dbd1f7f9f54..4c94d209c34 100644
+--- a/release/src/router/www/Reaper_EncryptedDNS.asp
++++ b/release/src/router/www/Reaper_EncryptedDNS.asp
+@@ -49,6 +49,9 @@ input[type="text"]:focus{border-color:var(--line)}
+ .kv .v{color:var(--bone);word-break:break-all}
+ .certstate{margin-top:10px;font-size:12.5px}
+ .certstate.good{color:var(--jade)} .certstate.bad{color:var(--amber)}
++/* 2026-11-10: the two legs of a lookup. A failing leg is RED and says which one and why. */
++.leg.good{color:var(--jade)} .leg.bad{color:var(--crimson);font-weight:600} .leg.dim{color:var(--steel)}
++.leg a{color:inherit;text-decoration:underline}
+ .card ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px;font-size:12.5px;max-width:82ch}
+ .card li{padding-left:16px;position:relative}
+ .card li::before{content:"";position:absolute;left:2px;top:7px;width:5px;height:5px;border-radius:50%;background:var(--steel)}
+@@ -65,7 +68,7 @@ input[type="text"]:focus{border-color:var(--line)}
+   <h1><#RENC_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#434-encrypted-dns" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+   <span class="ver"><#RENC_01#></span>
+   <span class="statuspill" id="pill"><#RENC_05#></span>
+-  <span class="mastertg"><#RENC_02#> <span class="tg" id="tgdot"></span></span>
++  <span class="mastertg"><#RENC_02#>: <span>DNS-over-TLS</span> <span class="tg" id="tgdot"></span> <span>DNS-over-HTTPS</span> <span class="tg" id="tgdoh"></span></span>
+ </div>
+ <p class="lede"><#RENC_03#></p>
+ 
+@@ -80,6 +83,26 @@ input[type="text"]:focus{border-color:var(--line)}
+   <div class="stat"><div class="n" id="s_refused">&mdash;</div><div class="l"><#RENC_08#></div></div>
+ </div>
+ 
++<div class="card">
++  <h2><#RENC_70#></h2>
++  <div class="kv">
++    <div class="k"><#RENC_71#></div><div class="v"><span class="leg dim" id="leg_dev">&mdash;</span></div>
++    <div class="k"><#RENC_72#></div><div class="v"><span class="leg dim" id="leg_up">&mdash;</span></div>
++    <div class="k"><#RENC_103#></div><div class="v"><span class="leg dim" id="leg_auto">&mdash;</span></div>
++  </div>
++  <div class="desc"><#RENC_73#></div>
++</div>
++
++<div class="card">
++  <h2><#RENC_91#></h2>
++  <div class="stats" style="margin:10px 0 12px">
++    <div class="stat"><div class="n" id="dv_enc">&mdash;</div><div class="l"><#RENC_92#></div></div>
++    <div class="stat"><div class="n" id="dv_plain">&mdash;</div><div class="l"><#RENC_93#></div></div>
++  </div>
++  <ul id="dv_list"></ul>
++  <div class="desc"><#RENC_94#></div>
++</div>
++
+ <div class="card">
+   <h2><#RENC_09#></h2>
+   <ol class="steps">
+@@ -119,7 +142,7 @@ input[type="text"]:focus{border-color:var(--line)}
+     <h3><#RENC_18#></h3>
+     <p><#RENC_19#></p>
+     <input type="text" id="ssids" placeholder="<#RENC_20#>" aria-label="<#RENC_20#>">
+-    <div><button type="button" class="btn ghost" id="appledl"><#RENC_21#></button></div>
++    <div><button type="button" class="btn ghost" id="appledl"><#RENC_21#></button> <button type="button" class="btn ghost" id="appledl2"><#RENC_100#></button></div>
+     <div class="need" id="d_apple_need" style="display:none"><#RENC_26#></div>
+   </div>
+   <div class="dev">
+@@ -130,14 +153,23 @@ input[type="text"]:focus{border-color:var(--line)}
+   </div>
+   <div class="dev">
+     <h3><#RENC_24#></h3>
+-    <p><#RENC_25#></p>
++    <p id="d_doh_off"><#RENC_25#> <#RENC_101#></p>
++    <div id="d_doh" style="display:none">
++      <p><#RENC_97#></p>
++      <pre class="mono" id="d_doh_url">&mdash;</pre>
++      <div style="margin-top:8px"><button type="button" class="btn ghost" id="doh_copy"><#RENC_98#></button></div>
++      <p style="margin-top:10px" id="d_win"></p>
++      <div class="need" id="d_doh_need" style="display:none"><#RENC_26#></div>
++    </div>
+   </div>
+ </div>
+ 
+ <div class="card">
+   <h2><#RENC_50#></h2>
+-  <div style="display:flex;align-items:center;gap:14px;margin:10px 0 4px"><span style="color:var(--bone)"><#RENC_51#></span><span class="tg" id="tgblk"></span></div>
++  <div style="display:flex;align-items:center;gap:14px;margin:10px 0 4px"><span style="color:var(--bone);flex:0 1 64ch"><#RENC_67#></span><span class="tg" id="tgdotb"></span></div>
++  <div style="display:flex;align-items:center;gap:14px;margin:10px 0 4px"><span style="color:var(--bone);flex:0 1 64ch"><#RENC_68#></span><span class="tg" id="tgblk"></span></div>
+   <div class="desc"><#RENC_52#></div>
++  <div class="desc"><#RENC_69#></div>
+   <div class="stats" style="margin:12px 0 10px">
+     <div class="stat"><div class="n" id="b_list">-</div><div class="l"><#RENC_53#></div></div>
+     <div class="stat"><div class="n" id="b_names">-</div><div class="l"><#RENC_54#></div></div>
+@@ -180,7 +212,10 @@ input[type="text"]:focus{border-color:var(--line)}
+   <input type="hidden" name="action_script" value="restart_rednsd">
+   <input type="hidden" name="action_wait" value="5">
+   <input type="hidden" name="reaper_dot_srv" value="">
++  <input type="hidden" name="reaper_doh_srv" value="">
++  <input type="hidden" name="dnspriv_enable" value="1" disabled>
+   <input type="hidden" name="reaper_doh_block" value="">
++  <input type="hidden" name="reaper_dot_block" value="">
+ </form>
+ 
+ <script src="/reaper/rp.js"></script>
+@@ -196,14 +231,21 @@ input[type="text"]:focus{border-color:var(--line)}
+ var HID = <% nvram_get_js("http_id"); %>;
+ var NV = {
+   on:   <% nvram_get_js("reaper_dot_srv"); %>,
++  doh:  <% nvram_get_js("reaper_doh_srv"); %>,
+   blk:  <% nvram_get_js("reaper_doh_block"); %>,
++  dotb: <% nvram_get_js("reaper_dot_block"); %>,
+   lan:  <% nvram_get_js("lan_ipaddr"); %>,
+   ddns: decodeURIComponent('<% nvram_char_to_ascii("", "ddns_hostname_x"); %>'),
+   ssid: [decodeURIComponent('<% nvram_char_to_ascii("", "wl0_ssid"); %>'), decodeURIComponent('<% nvram_char_to_ascii("", "wl1_ssid"); %>'),
+          decodeURIComponent('<% nvram_char_to_ascii("", "wl2_ssid"); %>'), decodeURIComponent('<% nvram_char_to_ascii("", "wl3_ssid"); %>')]
+ };
++/* 2026-11-10: the block is two switches - port 853 (reaper_dot_block) and DoH (reaper_doh_block). An empty
++   reaper_dot_block follows reaper_doh_block, as in rc/encdns.c and reaper_encdns.cgi. */
++var DOTB = (NV.dotb === '') ? (NV.blk === '1' ? '1' : '0') : (NV.dotb === '1' ? '1' : '0');
+ var LINK_DIRECTOR = ['/reaper_shell.asp#Reaper_DNS.asp?tab=dd', `<#Reaper_c_dns_director#>`];
+ var LINK_CERT = ['/reaper_shell.asp#Reaper_DDNS.asp', `<#menu5_3#> > <#menu5_3_6#>`];
++var LINK_DNS = ['/reaper_shell.asp#Reaper_DNS.asp', 'DNS'];
++var UP = null;   /* the upstream leg as last reported (reaper_encdns.cgi "up") - the Save reads it */
+ var curName = '', curTrusted = false;
+ var $ = rp.q;
+ function encTg(el){ el.className = (el.className.indexOf('on') >= 0) ? 'tg' : 'tg on'; }
+@@ -237,8 +279,8 @@ function encRender(j){
+   pill.className = 'statuspill' + (running ? ' ok' : '');
+   pill.textContent = running ? `<#RENC_04#>` : `<#RENC_05#>`;
+   var why = $('why'), wt = '';
+-  if(NV.on === '1' && !running){
+-    var W = {no_cert:`<#RENC_39#>`, cert_error:`<#RENC_40#>`, bind_error:`<#RENC_41#>`};
++  if((NV.on === '1' || NV.doh === '1') && !running){
++    var W = {no_cert:`<#RENC_39#>`, cert_error:`<#RENC_40#>`, bind_error:`<#RENC_41#>`, doh_port:`<#RENC_102#>`};
+     wt = (st && W[st.state]) ? W[st.state] : `<#RENC_46#>`;
+   }
+   $('whytext').textContent = wt; why.style.display = wt ? 'flex' : 'none';
+@@ -265,7 +307,7 @@ function encRender(j){
+   ((st && st.listen) || []).forEach(function(l){
+     var li = document.createElement('li'), code = document.createElement('code');
+     li.className = l.ok ? 'good' : 'gap';
+-    code.textContent = l.a + (l.p !== 853 ? ':' + l.p : '');
++    code.textContent = l.a + (l.p !== 853 ? ':' + l.p : '') + (l.proto === 'doh' ? '  DNS-over-HTTPS' : '');
+     li.appendChild(code);
+     if(l.wan){ var s = document.createElement('span'); s.className = 'dim'; s.textContent = ' \u2014 ' + `<#RENC_36#>`; li.appendChild(s); }
+     if(!l.ok){ var e = document.createElement('span'); e.className = 'dim'; e.textContent = ' \u2014 ' + `<#RENC_37#>`; li.appendChild(e); }
+@@ -281,11 +323,25 @@ function encRender(j){
+   $('d_linux').textContent = (curTrusted && curName) ? 'DNS=' + NV.lan + '#' + curName + '\nDNSOverTLS=yes' : '\u2014';
+   $('d_linux_need').style.display = (curTrusted && curName) ? 'none' : '';
+ 
++  /* 2026-11-10: DNS-over-HTTPS setup, with the live address */
++  var dohUp = !!(running && st.listen && st.listen.some(function(l){ return l.proto === 'doh' && l.ok; }));
++  $('d_doh_off').style.display = dohUp ? 'none' : '';
++  $('d_doh').style.display = dohUp ? '' : 'none';
++  $('d_doh_url').textContent = (dohUp && curTrusted && curName) ? 'https://' + curName + '/dns-query' : '\u2014';
++  $('doh_copy').disabled = !(dohUp && curTrusted && curName);
++  $('d_doh_need').style.display = (curTrusted && curName) ? 'none' : '';
++  encFill($('d_win'), `<#RENC_99#>`, null, NV.lan);
++  $('appledl2').disabled = !(dohUp && curTrusted && curName);
++  encLegs(j, st, running);
++  encDevs(j, st);
++
+   /* 2026-10-21: block encrypted DNS that goes around the router */
+-  var b = (j && j.blk) || null, on = !!(b && b.on), D = String.fromCharCode(8212), fd = $('b_feed');
++  /* 2026-11-10: the port-853 count under its own switch (dot); the list, the names, the 443 count, the
++     update button and the feed line under the DoH switch (on) */
++  var b = (j && j.blk) || null, dot = !!(b && b.dot), on = !!(b && b.doh), D = String.fromCharCode(8212), fd = $('b_feed');
+   $('b_list').textContent = on && b.v4 >= 0 ? encNum(b.v4 + Math.max(0, b.v6)) : D;
+   $('b_names').textContent = on ? encNum(b.names) : D;
+-  $('b_853').textContent = on ? encNum(b.rej853) : D;
++  $('b_853').textContent = dot ? encNum(b.rej853) : D;
+   $('b_443').textContent = on ? encNum(b.rej443) : D;
+   $('b_upd').disabled = !on;
+   if(!on) fd.textContent = '';
+@@ -293,6 +349,72 @@ function encRender(j){
+   else if(b.feed && b.feed.st === 'failed') fd.textContent = `<#RENC_59#>`.replace('%1', b.feed.ok ? new Date(b.feed.ok * 1000).toLocaleString() : D);
+   else fd.textContent = `<#RENC_60#>`;
+ }
++/* 2026-11-10 (owner): a lookup has two legs - device to router, router to upstream - and a device must not be
++   made less secure for the sake of filtering. Each leg says "working" in green or, in red, which leg fails and why.
++   The upstream line shows whether or not the device-facing server is on: it carries every lookup the router's own
++   DNS answers, the plain ones too. */
++function encLegs(j, st, running){
++  var d = $('leg_dev'), u = $('leg_up'), up = j && j.up, t, cls, want = (NV.on === '1' || NV.doh === '1');
++  UP = up || null;
++  /* automatic setup: the name dnsmasq offers by DHCP option 162, when it does */
++  $('leg_auto').className = 'leg ' + ((j && j.dnr) ? 'good' : 'dim');
++  $('leg_auto').textContent = !j ? '\u2014' : (j.dnr ? `<#RENC_104#>`.replace('%1', j.dnr) : `<#RENC_105#>`);
++  if(!j){ t = '\u2014'; cls = 'dim'; }
++  else if(!want){ t = `<#RENC_75#>`; cls = 'dim'; }
++  else if(!running){ t = $('whytext').textContent || `<#RENC_46#>`; cls = 'bad'; }
++  else {
++    var ok = {dot: 0, doh: 0}, parts = [];
++    (st.listen || []).forEach(function(l){ if(l.ok) ok[l.proto === 'doh' ? 'doh' : 'dot']++; });
++    if(ok.dot) parts.push('DNS-over-TLS'); if(ok.doh) parts.push('DNS-over-HTTPS');
++    if(NV.doh === '1' && j.doh_busy){ t = (j.doh_busy === 'ovpn') ? `<#RENC_77#>` : `<#RENC_76#>`; cls = 'bad'; }
++    else if(NV.doh === '1' && !ok.doh){ t = `<#RENC_78#>`; cls = 'bad'; }
++    else if(NV.on === '1' && !ok.dot){ t = `<#RENC_79#>`; cls = 'bad'; }
++    else if(!curTrusted){ t = `<#RENC_80#>`; cls = 'bad'; }
++    else { t = `<#RENC_74#>`.replace('%1', parts.join(' + ')); cls = 'good'; }
++  }
++  d.className = 'leg ' + cls; d.textContent = t;
++  if(!up){ u.className = 'leg dim'; u.textContent = '\u2014'; return; }
++  if(!up.on){ u.className = 'leg bad'; encFill(u, up.servers > 0 ? `<#RENC_84#>` : `<#RENC_85#>`, LINK_DNS[0], LINK_DNS[1]); return; }
++  if(!up.servers){ u.className = 'leg bad'; encFill(u, `<#RENC_85#>`, LINK_DNS[0], LINK_DNS[1]); return; }
++  if(!up.stubby){ t = `<#RENC_86#>`; cls = 'bad'; }
++  else if(!up.clock){ t = `<#RENC_87#>`; cls = 'bad'; }
++  else if(up.probe === 0){ t = up.profile ? `<#RENC_88#>` : `<#RENC_89#>`; cls = 'bad'; }
++  else { t = `<#RENC_81#>`.replace('%1', up.profile ? `<#RENC_82#>` : `<#RENC_83#>`); cls = 'good'; }
++  u.className = 'leg ' + cls; u.textContent = t;
++}
++/* Which devices use it: rednsd's own table of peers (address, protocol, count, last query) and the devices httpd
++   saw asking in the clear in the connection table. The names come from the DHCP leases. All of it is text. */
++function encDevs(j, st){
++  var ul = $('dv_list'), enc = {}, rows = [], names = (j && j.names) || {}, now = Date.now() / 1000, nEnc = 0, nPlain = 0;
++  ((st && st.clients) || []).forEach(function(c){
++    if(!c || typeof c.a !== 'string') return;
++    if(!enc[c.a]){ enc[c.a] = 1; nEnc++; }
++    rows.push({a: c.a, how: (c.proto === 'doh') ? 'DNS-over-HTTPS' : 'DNS-over-TLS', cls: 'good',
++               tail: `<#RENC_96#>`.replace('%1', encNum(c.q)).replace('%2', String(Math.max(0, Math.round((now - (c.last || now)) / 60))))});
++  });
++  ((j && j.plain) || []).forEach(function(a){
++    if(typeof a !== 'string' || enc[a]) return;
++    nPlain++; rows.push({a: a, how: `<#RENC_95#>`, cls: 'gap', tail: ''});
++  });
++  $('dv_enc').textContent = j ? encNum(nEnc) : '\u2014';
++  $('dv_plain').textContent = j ? encNum(nPlain) : '\u2014';
++  ul.textContent = '';
++  rows.forEach(function(r){
++    var li = document.createElement('li'), b = document.createElement('b'), s = document.createElement('span');
++    li.className = r.cls;
++    b.textContent = names[r.a] ? names[r.a] + ' (' + r.a + ')' : r.a;
++    s.className = 'dim'; s.textContent = ' \u2014 ' + r.how + (r.tail ? ', ' + r.tail : '');
++    li.appendChild(b); li.appendChild(s); ul.appendChild(li);
++  });
++  if(!ul.firstChild){ var e = document.createElement('li'); e.className = 'dim'; e.textContent = '\u2014'; ul.appendChild(e); }
++}
++function encCopy(text){
++  var ta = document.createElement('textarea');
++  ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
++  document.body.appendChild(ta); ta.select();
++  try{ document.execCommand('copy'); }catch(e){}
++  ta.remove();
++}
+ function encDohUpdate(){
+   var x = new XMLHttpRequest();
+   x.open('GET', '/reaper_encdns.cgi?action=doh_update&http_id=' + encodeURIComponent(HID) + '&_=' + Date.now(), true);
+@@ -319,13 +441,13 @@ function encUuid(){
+    LAN address under the certificate's name, ONLY on the Wi-Fi networks listed - anywhere else
+    the device's normal DNS is left alone (a profile without on-demand rules would follow the
+    device away from home, where port 853 is closed, and leave it without DNS). */
+-function encProfile(){
++function encProfile(doh){
+   var ssids = $('ssids').value.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length && s.length <= 32; });
+   if(!curTrusted || !curName || !ssids.length) { $('ssids').focus(); return; }
+   var x = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+     + '<plist version="1.0"><dict>\n<key>PayloadContent</key><array><dict>\n'
+-    + '<key>DNSSettings</key><dict><key>DNSProtocol</key><string>TLS</string>'
+-    + '<key>ServerName</key><string>' + encXml(curName) + '</string>'
++    + '<key>DNSSettings</key><dict><key>DNSProtocol</key><string>' + (doh ? 'HTTPS' : 'TLS') + '</string>'
++    + (doh ? '<key>ServerURL</key><string>https://' + encXml(curName) + '/dns-query</string>' : '<key>ServerName</key><string>' + encXml(curName) + '</string>')
+     + '<key>ServerAddresses</key><array><string>' + encXml(NV.lan) + '</string></array></dict>\n'
+     + '<key>OnDemandRules</key><array>'
+     + '<dict><key>Action</key><string>Connect</string><key>InterfaceTypeMatch</key><string>WiFi</string><key>SSIDMatch</key><array>'
+@@ -343,18 +465,34 @@ function encProfile(){
+     + '</dict></plist>\n';
+   var a = document.createElement('a');
+   a.href = URL.createObjectURL(new Blob([x], {type: 'application/x-apple-aspen-config'}));
+-  a.download = 'encrypted-dns-' + curName.replace(/[^a-z0-9.-]/gi, '_') + '.mobileconfig';
++  a.download = 'encrypted-dns-' + (doh ? 'https-' : '') + curName.replace(/[^a-z0-9.-]/gi, '_') + '.mobileconfig';
+   document.body.appendChild(a); a.click();
+   setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+ }
+ function encSave(){
+   var f = document.form;
+   f.reaper_dot_srv.value = ($('tgdot').className.indexOf('on') >= 0) ? '1' : '0';
++  f.reaper_doh_srv.value = ($('tgdoh').className.indexOf('on') >= 0) ? '1' : '0';
+   f.reaper_doh_block.value = ($('tgblk').className.indexOf('on') >= 0) ? '1' : '0';
++  f.reaper_dot_block.value = ($('tgdotb').className.indexOf('on') >= 0) ? '1' : '0';
+   var sv = [];
+   /* review 2026-10-24: a Save that changes nothing used to restart rednsd (=== where !== was meant) */
+-  if(f.reaper_dot_srv.value !== (NV.on === '1' ? '1' : '0') || f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0')) sv.push('restart_rednsd');
+-  if(f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0')) sv.push('restart_dnsmasq', 'restart_firewall');
++  var srvChg = f.reaper_dot_srv.value !== (NV.on === '1' ? '1' : '0') || f.reaper_doh_srv.value !== (NV.doh === '1' ? '1' : '0');
++  /* 2026-11-10 (backlog leftover): only a server switch restarts the server - the block is firewall and dnsmasq
++     work, and restarting rednsd for it dropped every device's encrypted connection */
++  if(srvChg) sv.push('restart_rednsd');
++  /* 2026-11-10 (owner): with the device-facing server on, the upstream leg is switched on with it - on this Save
++     only, never at boot, and only when a DNS-over-TLS server is already set (the router does not pick a provider).
++     Declined, the Save goes on and the page keeps its red warning. The services are the DNS page's own. */
++  f.dnspriv_enable.disabled = true;
++  if((f.reaper_dot_srv.value === '1' || f.reaper_doh_srv.value === '1') && UP && !UP.on && UP.servers > 0 && confirm(`<#RENC_90#>`)){
++    f.dnspriv_enable.disabled = false;
++    sv.push('restart_stubby'); sv.push('restart_wan_dns 0'); if(sv.indexOf('restart_dnsmasq') < 0) sv.push('restart_dnsmasq');
++  }
++  /* 2026-11-10: the names and the canaries follow the DoH switch only; the firewall chain follows both */
++  if(f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0') && sv.indexOf('restart_dnsmasq') < 0) sv.push('restart_dnsmasq');
++  /* the firewall also follows the two server switches: the 853 / 443 belts (rc rednsd_wan_drop) */
++  if(srvChg || f.reaper_doh_block.value !== (NV.blk === '1' ? '1' : '0') || f.reaper_dot_block.value !== DOTB) sv.push('restart_firewall');
+   f.action_script.value = sv.join(';');
+   $('applying').className = 'applying show';
+   f.submit();
+@@ -367,11 +505,17 @@ document.addEventListener('click', function(e){
+   if(b && ACT[b.getAttribute('data-act')]) ACT[b.getAttribute('data-act')]();
+ });
+ $('tgdot').addEventListener('click', function(){ encTg(this); });
++$('tgdoh').addEventListener('click', function(){ encTg(this); });
+ $('tgblk').addEventListener('click', function(){ encTg(this); });
+-$('appledl').addEventListener('click', function(){ encProfile(); });
++$('tgdotb').addEventListener('click', function(){ encTg(this); });
++$('appledl').addEventListener('click', function(){ encProfile(false); });
++$('appledl2').addEventListener('click', function(){ encProfile(true); });
++$('doh_copy').addEventListener('click', function(){ encCopy($('d_doh_url').textContent); });
+ $('b_upd').addEventListener('click', function(){ encDohUpdate(); });
+ $('tgdot').className = 'tg' + (NV.on === '1' ? ' on' : '');
++$('tgdoh').className = 'tg' + (NV.doh === '1' ? ' on' : '');
+ $('tgblk').className = 'tg' + (NV.blk === '1' ? ' on' : '');
++$('tgdotb').className = 'tg' + (DOTB === '1' ? ' on' : '');
+ encFill($('b_exempt'), `<#RENC_63#>`, LINK_DIRECTOR[0], LINK_DIRECTOR[1]);
+ encFill($('step4'), `<#RENC_13#>`, LINK_DIRECTOR[0], LINK_DIRECTOR[1]);
+ /* prefill the home Wi-Fi names with the radios' own (a 32-hex name is an SDN placeholder, not one a user set) */
+-- 
+2.25.1
+

@@ -1,0 +1,203 @@
+From b8102f904435274ee795265592bdc9e2f2b3d1aa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:29 -0500
+Subject: [PATCH] Diagnostics v1.3.59: certificate names masked, firewall log,
+ DoT check, radio stalls (102.8 line)
+
+- v1.3.56: the names on the router's own certificates are masked as host names; the firewall log
+  section follows the NFLOG collector.
+- v1.3.57: the collector and its forward to the remote log server, counts only, never the server's
+  address.
+- v1.3.58: the DNS Health Check under DNS-over-TLS.
+- v1.3.59: section 12d, radio call stalls - the wait each radio call may take, the three Wireless
+  stability switches, how often the driver logged a timed-out or busy call, and the stacks of
+  blocked tasks while any are blocked.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/others/reaper_diag  | 103 +++++++++++++++++++++++--
+ release/src/router/www/Reaper_Diag.asp |   2 +-
+ 2 files changed, 98 insertions(+), 7 deletions(-)
+
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 061ca261a0c..91670bfb13b 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -1,6 +1,18 @@
+ #!/bin/sh
+ # ============================================================================
+-#  REAPER-DIAG v1.3.55 (2026-11-08) - sanitized one-shot diagnostic bundle
++#  REAPER-DIAG v1.3.59 (2026-11-11) - sanitized one-shot diagnostic bundle
++#  v1.3.59 adds section 12d: the wait each radio call may take, the three Wireless stability switches, how often
++#  the Wi-Fi driver logged a timed-out or busy call, and the kernel stacks of blocked tasks while any are blocked.
++#  v1.3.58 names how the DNS Health Check asks (port 53, over DNS-over-TLS, or through the DNS-over-TLS forwarder) and
++#  drops its upstream-order findings under DNS-over-TLS, where the router's DNS list holds the forwarder alone.
++#  v1.3.57 reports the firewall log collector in section 14: the log path, lines recorded / lost / held back, and
++#  the remote forward (on, off, or set but not an address; lines sent and not sent, the send buffer) - counts only,
++#  never the server's address - with a finding when lines were lost or could not be sent.
++#  v1.3.56 masks the names on the router's own certificates (the DNS-over-TLS / Let's Encrypt name and the web
++#  certificate's names): dnsmasq prints the first at every start and httpd logs the second, and a report marked
++#  CLEAN carried it. The list now reads reaper_ledns_domain, reaper_landns_domain, https_crt_cn and the certificates.
++#  It also stops warning that RW_ODROP has no log rule when the rule is NFLOG (every log rule since v3.7.5), and
++#  counts Warden's lines in the firewall log as well as in the system log (section 14).
+ #  v1.3.55 warns in section 13 when DDNS is Custom and /jffs/scripts/ddns-start does not exist, and names a
+ #  near-miss file (ddns-start.sh) to rename: the router runs only that exact name.
+ #  v1.3.54 judges only the hook names the firmware runs in section 13: a log, note or helper file in /jffs/scripts
+@@ -177,7 +189,7 @@
+ #  not add an unbounded command here.
+ # ============================================================================
+ PATH=/sbin:/bin:/usr/sbin:/usr/bin
+-VER="REAPER-DIAG v1.3.55"
++VER="REAPER-DIAG v1.3.59"
+ T0="$(date +%s 2>/dev/null)"
+ MODEL="$(nvram get productid 2>/dev/null)"
+ EXTNO="$(nvram get extendno 2>/dev/null)"
+@@ -332,8 +344,9 @@ awk -F= '
+     if (k ~ /passwd|password|_psk|wpa_psk|_key[0-9]?$|radius_key|_secret|secret_|token|private|pincode|pin_code|_pin$|wps_.*pin|serial_no|acc_list|auth_pass|_priv$|_ppsk|ipsec_profile_|_clientlist$|_security$|sshd_authkeys/) cls="SEC"
+     else if (k ~ /username|_user$|_account|http_username|login_name/) cls="USR"
+     else if (k ~ /_ssid$/) cls="SSID"
+-    else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username/) cls="HOST"
++    else if (k ~ /ddns_hostname|_hostname$|computer_name|lan_domain|ddns_username|reaper_ledns_domain|reaper_landns_domain|https_crt_cn/) cls="HOST"
+     if (cls != "") print cls "\t" v
++    if (cls == "HOST" && v ~ /[ ,;]/) { m = split(v, pp, /[ ,;]+/); for (j = 1; j <= m; j++) if (length(pp[j]) >= 5) print "HOST\t" pp[j] }
+   }' "$NVS" > "$SLIST" 2>/dev/null
+ # DHCP client hostnames (dnsmasq leases field 4)
+ for LF in /var/lib/misc/dnsmasq.leases /tmp/var/lib/misc/dnsmasq.leases /jffs/nmp/dnsmasq.leases; do
+@@ -344,6 +357,28 @@ done
+ for LF in /var/lib/misc/dnsmasq-*.leases; do
+   [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null
+ done
++# v1.3.56: the names on the router's own certificates. dnsmasq prints the DNS-over-TLS name at every start
++# ("using standard nameservers for .<name>"), httpd logs the web certificate's subject, and neither name was
++# in a nvram key the list above knew, so a report marked CLEAN carried it. Read the names from the
++# certificates themselves as well: the DNS-over-TLS server's status file and the web certificate. A wildcard
++# loses its "*." so a name under it still matches. An address, a one-label name and the firmware's own
++# asus.com / asusrouter.com names identify nobody and stay readable.
++san_hostseed() {
++  awk '{ s = $0; sub(/^\*\./, "", s); l = tolower(s)
++    if (length(s) >= 5 && s ~ /\./ && s !~ /[^A-Za-z0-9._-]/ && s !~ /^[0-9.]+$/ && l !~ /(^|\.)(asus|asusrouter)\.com$/) print "HOST\t" s }'
++}
++san_rednsd_names() {	# $1 = rednsd status file: every quoted string inside its "cert" object
++  [ -r "$1" ] || return 0
++  sed -n 's/.*"cert":{\([^}]*\)}.*/\1/p' "$1" 2>/dev/null | tr '"' '\n' | san_hostseed
++}
++san_pem_names() {	# $1 = a PEM certificate: the subject CN and every DNS subjectAltName
++  [ -r "$1" ] || return 0
++  openssl x509 -in "$1" -noout -text 2>/dev/null | awk '
++    /Subject:/ { s = $0; if (match(s, "CN ?= ?[^,/]+")) { v = substr(s, RSTART, RLENGTH); sub(/^CN ?= ?/, "", v); print v } }
++    /DNS:/ { n = split($0, a, /[ ,]+/); for (i = 1; i <= n; i++) if (a[i] ~ /^DNS:/) print substr(a[i], 5) }' | san_hostseed
++}
++san_rednsd_names /tmp/rednsd/run/status.json >> "$SLIST" 2>/dev/null
++for _c in /etc/cert.pem /jffs/.cert/cert.pem; do san_pem_names "$_c" >> "$SLIST" 2>/dev/null; done
+ # v1.3.5 (security review): hostnames that are no longer in a lease file still
+ # sit in the syslog tail (DHCPACK, gatekeeper "new device"), and gatekeeper
+ # logs only the first 32 characters - so seed from those lines too and add the
+@@ -991,7 +1026,16 @@ for u in $(sed -n 's/^server=\([^/][^# ]*\).*/\1/p' /tmp/resolv.dnsmasq 2>/dev/n
+   else case "$u" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|fd*|fc*) HCO="$HCO lan";; *:*) HCO="$HCO ext-v6";; *) HCO="$HCO ext-v4";; esac; fi
+ done
+ echo "  upstream order    :${HCO:- (empty)}"
+-if [ "$(nvram get reaper_dnshc_enable 2>/dev/null)" = 1 ] && [ -n "$HCT" ]; then
++# v1.3.58: under DNS-over-TLS the check asks over DNS-over-TLS (state field 6: t = the watched server itself, s = the
++# DNS-over-TLS forwarder) and moves nothing - the list then holds the forwarder alone, so the order findings do not apply
++HCM="$(nvram get reaper_dnshc_state 2>/dev/null | awk '{print $6}')"
++case "$HCM" in t) HCMT="DNS-over-TLS, the watched server itself";; s) HCMT="the DNS-over-TLS forwarder (the watched server is not a DNS-over-TLS server)";; *) HCMT="port 53";; esac
++echo "  health probe      : $HCMT"
++if [ "$(nvram get reaper_dnshc_enable 2>/dev/null)" = 1 ] && [ -n "$HCT" ] && { [ "$HCM" = t ] || [ "$HCM" = s ]; }; then
++  case "$(nvram get reaper_dnshc_state 2>/dev/null)" in
++    down*) if [ "$HCM" = t ]; then finding WARN "DNS health check: the watched resolver does not answer over DNS-over-TLS (the forwarder uses its other servers) (see 5)"; else finding WARN "DNS health check: the DNS-over-TLS forwarder does not answer (see 5)"; fi;;
++  esac
++elif [ "$(nvram get reaper_dnshc_enable 2>/dev/null)" = 1 ] && [ -n "$HCT" ]; then
+   case "$(nvram get reaper_dnshc_state 2>/dev/null)" in
+     down*) finding WARN "DNS health check: the watched resolver is DOWN - LAN lookups are going to the off-site servers (see 5)";;
+     up*) case "$HCO" in " watched-v4"*|" watched-v6"*) ;; *) [ -e /tmp/reaper/rdnshc.down4 ] || finding WARN "DNS health check says the watched resolver is up, but it is not first in the router's DNS list (order:$HCO) (see 5)";; esac;;
+@@ -1588,7 +1632,7 @@ echo "  -- cron (cru l) --"; cru l 2>/dev/null | sed 's/^/  /'
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && ! iptables -nL REAPER_WARDEN >/dev/null 2>&1 && finding WARN "Warden enabled but REAPER_WARDEN chain absent"
+ _wdir="$(nvram get rwarden_dir 2>/dev/null)"
+ [ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && { [ "$_wdir" = both ] || [ "$_wdir" = out ]; } && ! iptables -nL RW_ODROP >/dev/null 2>&1 && finding WARN "Warden outbound enforcement is configured (rwarden_dir=$_wdir) but the RW_ODROP chain is absent - outbound blocks are neither dropped nor logged (see 14)"
+-[ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && [ "$(nvram get rwarden_log 2>/dev/null)" = 1 ] && iptables -nL RW_ODROP >/dev/null 2>&1 && [ "$(iptables -S RW_ODROP 2>/dev/null | grep -c 'j LOG')" = 0 ] && finding WARN "Warden logging is on and the outbound chain exists, but RW_ODROP carries no LOG rule - outbound blocks are dropped silently (see 14)"
++[ "$(nvram get rwarden_enable 2>/dev/null)" = 1 ] && [ "$(nvram get rwarden_log 2>/dev/null)" = 1 ] && iptables -nL RW_ODROP >/dev/null 2>&1 && [ "$(iptables -S RW_ODROP 2>/dev/null | grep -c -E 'j (LOG|NFLOG)')" = 0 ] && finding WARN "Warden logging is on and the outbound chain exists, but RW_ODROP carries no log rule (LOG or NFLOG) - outbound blocks are dropped silently (see 14)"
+ [ "$(nvram get rwatch_enable 2>/dev/null)" = 1 ] && [ "$(cru l 2>/dev/null | grep -c '#rwatch#')" = 0 ] && finding WARN "rwatch enabled but its cron line is missing"
+ _qt="$(nvram get qos_type 2>/dev/null)"; _qe="$(nvram get qos_enable 2>/dev/null)"
+ _fcd="$(nvram get fc_disable 2>/dev/null)"; _rnd="$(nvram get runner_disable 2>/dev/null)"
+@@ -1598,6 +1642,36 @@ echo "  flow accel        : fc_disable=${_fcd:-unset} runner_disable=${_rnd:-uns
+ [ "$_qe" = 1 ] && [ "$_qt" = 1 ] && finding WARN "QoS is enabled in TRADITIONAL mode (qos_type=1), which turns the flow accelerator off - a wired client cannot reach multi-gigabit in this mode; Hardware QoS (qos_type 10/11) keeps acceleration on"
+ [ -r /proc/blog/skip_wireguard_network ] && [ "$(grep -c . /proc/blog/skip_wireguard_network 2>/dev/null)" -gt 0 ] && finding INFO "$(grep -c . /proc/blog/skip_wireguard_network) network(s) are on the flow-accelerator bypass list (WireGuard policy routing) - those flows are CPU-forwarded by design"
+ 
++sec "12d. RADIO CALL STALLS (driver wait, the three stability switches, blocked tasks)"
++# v1.3.59 (review 2026-11-11): a radio that stops answering holds up the driver's callers for the whole driver
++# timeout; in the field stalls DHCP and DNS stood still meanwhile. This reads the three Tweaks switches, the timeout each
++# radio runs with (not while a task is blocked: the read is a radio call too), how often the driver logged a
++# timed-out or busy call, and - only while a task is blocked - the kernel stacks of the blocked tasks.
++echo "  switches          : radio call timeout=$(nvram get reaper_dhd_ioto 2>/dev/null) ms (0 or empty = the driver default, 5000)  keep devices a node claims=$(nvram get disable_exap 2>/dev/null)  ASUS background DFS rule=$(nvram get reaper_bgdfs_stock 2>/dev/null)"
++if [ -f /tmp/reaper/dhd_ioto ]; then echo "  timeout applied   : yes (rc set it on the radios)"; else echo "  timeout applied   : no (the driver default is in use)"; fi
++if [ "${DST:-0}" -gt 0 ]; then
++  echo "  per-radio timeout : not read - $DST task(s) are blocked right now"
++elif have dhd; then
++  for _w in $(nvram get wl_ifnames 2>/dev/null); do
++    _t="$(dhd -i "$_w" ioctl_timeout 2>/dev/null | head -1)"
++    echo "  $_w timeout       : ${_t:-no answer (not a dhd radio)}"
++  done
++fi
++_sp="resumed on timeout|ioctl timeout|IOCTL_RESP timeout|GET STA INFO failed"
++_sd="$(dmesg 2>/dev/null | grep -cE "$_sp")"; _ss="$(grep -cE "$_sp" /tmp/syslog.log 2>/dev/null)"
++echo "  timed-out / busy radio calls : dmesg=${_sd:-0} syslog=${_ss:-0}"
++dmesg 2>/dev/null | grep -E "$_sp" | tail -5 | sed "s/^/    /"
++[ "${_sd:-0}" -gt 0 ] || [ "${_ss:-0}" -gt 0 ] && finding INFO "the Wi-Fi driver logged timed-out or busy radio calls (dmesg ${_sd:-0}, syslog ${_ss:-0}) - see 12d; Administration - Tweaks - Wireless stability holds the switches"
++if [ "${DST:-0}" -gt 0 ] && [ -w /proc/sysrq-trigger ]; then
++  _sm="reaper_diag blocked-task dump $$"
++  echo "$_sm" > /dev/kmsg 2>/dev/null
++  echo w > /proc/sysrq-trigger 2>/dev/null
++  echo "  -- blocked tasks (kernel stacks) --"
++  dmesg 2>/dev/null | awk -v m="$_sm" 'index($0, m) { p = 1; next } p' | tail -200 | sed "s/^/  /"
++else
++  echo "  blocked tasks     : none right now (stacks are taken only while a task is blocked)"
++fi
++
+ sec "13. ADDONS / JFFS"
+ # v1.3.51 (2026-10-26; field: "firewall-start is not honoured"): each custom script - executable, Windows line
+ # endings (its #! line then names "/bin/sh\r"), how its last run ended (rc's custom_script syslog lines; the
+@@ -1741,10 +1815,27 @@ echo "  -- Warden drop-log volume (counts only, no addresses) --"
+ # grep -c prints 0 and exits 1 on no-match, but prints NOTHING on a missing
+ # file - so capture first and default, rather than `|| echo 0` which would
+ # emit a second 0 on the ordinary no-match case.
++# v1.3.56: since v3.7.5 the log rules are NFLOG and their lines go to the firewall log (rflogd's RAM ring,
++# /tmp/reaper/fwlog), not to the system log - count both, so the line is right with the firewall log on or off.
+ for P in "REAPER-WARDEN " "REAPER-WARDEN-FWD " "REAPER-WARDEN-OUT " "REAPER-WARDEN-SELF "; do
+   WC="$(grep -c "$P" /tmp/syslog.log 2>/dev/null)"
+-  echo "     '${P}' hits in syslog: ${WC:-0}"
++  WF="$(cat /tmp/reaper/fwlog/prev.log /tmp/reaper/fwlog/current.log 2>/dev/null | grep -c "$P")"
++  echo "     '${P}' hits: firewall log ${WF:-0}, system log ${WC:-0}"
+ done
++# v1.3.57: the firewall log collector (rflogd) and its forward to the remote log server - counts only, the server's
++# address is never printed. The top-level counters come before "groups" (each group repeats rx), hence the cut.
++echo "  -- firewall log collector (counts only) --"
++_fls=/tmp/reaper/fwlog/stats.json; _flp="$(cat /tmp/reaper/fwlog/path 2>/dev/null)"
++_flr=no; pidof rflogd >/dev/null 2>&1 && _flr=yes
++_fls_top="$(sed -e 's/,"groups".*//' "$_fls" 2>/dev/null)"
++_flv() { _v="$(echo "$_fls_top" | sed -n "s/.*\"$1\":\([0-9]*\).*/\1/p")"; echo "${_v:-0}"; }
++echo "     path=${_flp:-log} running=$_flr lines=$(_flv rx) written_bytes=$(_flv written) lost=$(_flv lost_seq) held_back=$(_flv suppressed) enobufs=$(_flv enobufs)"
++_flset=no; [ -n "$(nvram get log_ipaddr 2>/dev/null)" ] && _flset=yes
++if [ "$(_flv fwd)" = 1 ]; then _flf=on; elif [ "$_flset" = yes ]; then _flf="set-but-not-forwarded"; else _flf=off; fi
++echo "     remote forward=$_flf sent=$(_flv fwd_sent) not_sent=$(_flv fwd_err) send_buffer=$(_flv fwd_sndbuf)"
++[ "$(_flv lost_seq)" != 0 ] && finding WARN "firewall log: $(_flv lost_seq) line(s) lost (the kernel dropped a batch) - see 14"
++[ "$(_flv fwd_err)" != 0 ] && finding WARN "firewall log: $(_flv fwd_err) line(s) could not be sent to the remote log server (send queue full) - see 14"
++[ "$_flf" = "set-but-not-forwarded" ] && [ "$_flp" = nflog ] && finding WARN "a remote log server is set but firewall lines are not forwarded to it (it must be an IP address) - see 14"
+ 
+ sec "14b. GATEKEEPER (counts only - no MACs)"
+ # v2.6.3: the device list lives at /jffs/gatekeeper/rl (nvram capped it at
+diff --git a/release/src/router/www/Reaper_Diag.asp b/release/src/router/www/Reaper_Diag.asp
+index 300f279959a..b47ef3409c3 100644
+--- a/release/src/router/www/Reaper_Diag.asp
++++ b/release/src/router/www/Reaper_Diag.asp
+@@ -69,7 +69,7 @@ pre.sample .g{color:var(--jade)} pre.sample .r{color:#e0837d} pre.sample .w{colo
+ 
+ <div class="pagehead">
+   <h1><#RDIAG_00#> <a href="https://github.com/TheUnboundDeveloper/AM-Reaper/blob/main/docs/REAPER-GUIDE.md#413-diagnostics" target="_blank" rel="noopener noreferrer" title="<#RABT_43#>" style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:8px;border-radius:50%;border:1px solid #4a4a4e;color:#8d897f;font:700 13px Arial,sans-serif;text-decoration:none;vertical-align:middle">?</a></h1>
+-  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.55</span>
++  <span class="ver"><#RDIAG_01#> &middot; REAPER-DIAG v1.3.59</span>
+ </div>
+ <p class="lede"><#RDIAG_02#></p>
+ 
+-- 
+2.25.1
+

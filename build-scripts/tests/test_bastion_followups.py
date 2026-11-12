@@ -38,7 +38,7 @@ def run(script, env=None):
     return subprocess.run([SH, "-c", script], capture_output=True, text=True, env=dict(os.environ, **(env or {})))
 
 # ---- (1) Encrypted DNS + AiMesh
-ens = enc[enc.find("static void edns_sets_ensure(void)"):enc.find("void edns_block_rules(FILE *fp, int v6)")]
+ens = enc[enc.find("static void edns_sets_ensure(int doh)"):enc.find("void edns_block_rules(FILE *fp, int v6)")]   # 2026-11-10: the DoH half is passed in
 check("the block creates the AiMesh set before the rules and fills it once",
       'eval("ipset", "create", REAPER_AIMESH_SET, "hash:mac", "-exist");' in ens and 'eval("/sbin/reaper_aimesh_sync");' in ens)
 ebr = enc[enc.find("void edns_block_rules(FILE *fp, int v6)"):]

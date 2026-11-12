@@ -150,7 +150,8 @@ check("rdnshc logs a face flip both ways (syslog contract: state changes only)",
       "stopped answering over %s (%d misses) but still answers over %s" in rd and "answers over %s again (%d hits)" in rd)
 
 check("rdnshc reports each face in its state (fields 4 and 5: 1 / 0 / - / x)",
-      'snprintf(st, sizeof(st), "%s %ld %d %c %c", what' in rd and "g_f6 = !(c.af == AF_INET6 || c.alt_af == AF_INET6) ? '-' : (!v6_ready ? 'x'" in rd)
+      # 2026-11-10: field 6 = the probe mode (p / t / s)
+      'snprintf(st, sizeof(st), "%s %ld %d %c %c %c", what' in rd and "g_f6 = !(c.af == AF_INET6 || c.alt_af == AF_INET6) ? '-' : (!v6_ready ? 'x'" in rd)
 pg = read("www/Reaper_Failover.asp")
 check("DNS Failover shows an IPv6 status line under the IPv4 one, Disabled while IPv6 is off",
       'id="st6_v"' in pg and "function render6(st, running, mode)" in pg and "if(!V6ON){ txt = T.v6disabled;" in pg

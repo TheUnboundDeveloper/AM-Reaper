@@ -1,0 +1,266 @@
+From a0c4ab2fac46b86265286cd2609f49a5f98aa04e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:28 -0500
+Subject: [PATCH] Firewall log: remote server counters and send queue; a
+ stalled collector is replaced (102.8 line)
+
+- rflogd counts the lines sent to and not sent to the remote log server (Firewall page, diag), has
+  a 2 MB send queue for bursts, logs the first unsent line, says when the server is set but not an
+  address, and does not forward lines about its own forward packets.
+- rflogd writes a heartbeat every 30 s; rc replaces a collector that runs but has reported nothing
+  for 150 s.
+- rflog_sync inside rc's own handlers rebuilds the firewall directly (a restart request from there
+  was not carried out).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_fwlog.c       | 52 ++++++++++++++++++-
+ release/src/router/rflogd/rflogd.c         | 60 ++++++++++++++++++++--
+ release/src/router/www/Reaper_Firewall.asp |  7 +++
+ 3 files changed, 113 insertions(+), 6 deletions(-)
+
+diff --git a/release/src/router/rc/reaper_fwlog.c b/release/src/router/rc/reaper_fwlog.c
+index 8e51810216a..de655bfdf86 100644
+--- a/release/src/router/rc/reaper_fwlog.c
++++ b/release/src/router/rc/reaper_fwlog.c
+@@ -85,6 +85,12 @@ static int rfl_kernel_ok(void)
+ }
+ 
+ /* 1 = rflogd runs with every group bound, 0 = not running, -1 = it could not bind (another owner): don't loop */
++/* review 2026-11-11 (C-8): what rfl_alive() last read from a running collector - its pid and the "updated"
++ * stamp of stats.json, which the collector rewrites at least every 30 s */
++static int rfl_pid;
++static long rfl_upd;
++#define RFL_HUNG	150	/* seconds without a new stamp before a running collector is replaced */
++
+ static int rfl_alive(void)
+ {
+ 	char t[4096], p[32], comm[32];
+@@ -100,6 +106,9 @@ static int rfl_alive(void)
+ 	snprintf(p, sizeof(p), "/proc/%d/comm", pid);
+ 	if (rfl_slurp(p, comm, sizeof(comm)) != 0 || strcmp(comm, "rflogd\n") != 0)
+ 		return 0;
++	rfl_pid = pid;
++	s = strstr(t, "\"updated\":");
++	rfl_upd = s ? atol(s + 10) : 0;
+ 	return 1;
+ }
+ 
+@@ -161,8 +170,26 @@ static void rfl_set_path(int nflog, const char *why)
+ 		logmessage("fwlog", "firewall log lines go to the collector (rflogd, NFLOG)");
+ 	else
+ 		logmessage("fwlog", "%s: firewall log lines go to the System Log, limited to 10 a second", why);
+-	if (f_exists(REAPER_FW_BUILT_MARK))
+-		notify_rc("restart_firewall");
++	if (f_exists(REAPER_FW_BUILT_MARK)) {
++		/* review 2026-11-11 (C-2): rflog_sync() runs inside rc's own handlers (rflog, logger). A notify_rc() from
++		 * there is not carried out ("skip the event"), and the log rules then kept the old path: NFLOG with nobody
++		 * listening.
++		 * In rc, do what the restart_firewall handler does. */
++		if (getpid() == 1) {
++			nvram_set("restart_fwl", "1");
++			start_default_filter(0);
++#ifdef RTCONFIG_PARENTALCTRL
++			start_pc_block();
++#endif
++			start_firewall(wan_primary_ifunit(), 0);
++#if defined(RTCONFIG_PARENTALCTRL) && defined(RTCONFIG_CONNTRACK)
++			killall("pctime", SIGUSR1);
++			killall("pctime", SIGUSR2);
++#endif
++			nvram_set("restart_fwl", "0");
++		} else
++			notify_rc("restart_firewall");
++	}
+ }
+ 
+ void stop_rflogd(void)
+@@ -215,6 +242,27 @@ void reaper_fwlog_watch(void)
+ 		return;
+ 	now = time(NULL);
+ 	alive = rfl_alive();
++	{	/* review 2026-11-11 (C-8): a process that exists is not a process that works. A collector that was
++			stopped (SIGSTOP) or is stuck kept its pid and its name, so it was "alive" for ever while every log
++			line was lost. It rewrites stats.json at least every 30 s: when the stamp has not changed for RFL_HUNG
++			seconds of uptime it is killed, and the test below starts a new one. Only a CHANGE is looked at, so a
++			clock that jumps (NTP at boot) cannot make a healthy collector look old. */
++		static long seen_upd, seen_at;
++		long up = uptime();
++
++		if (alive != 1)
++			seen_at = 0;
++		else if (!seen_at || rfl_upd != seen_upd) {
++			seen_upd = rfl_upd;
++			seen_at = up ? up : 1;
++		} else if (up - seen_at >= RFL_HUNG) {
++			logmessage("fwlog", "the firewall log collector runs but has reported nothing for %ld s - replacing it", up - seen_at);
++			if (rfl_pid > 1)
++				kill(rfl_pid, SIGKILL);
++			seen_at = 0;
++			alive = 0;
++		}
++	}
+ 	if (rfl_nflog()) {
+ 		if (alive != 1 && now - kicked >= 4) {
+ 			/* lines are being lost right now: restart it (rflog_sync falls back if that fails) */
+diff --git a/release/src/router/rflogd/rflogd.c b/release/src/router/rflogd/rflogd.c
+index 2727d4a3e96..0fef17b9f27 100644
+--- a/release/src/router/rflogd/rflogd.c
++++ b/release/src/router/rflogd/rflogd.c
+@@ -73,6 +73,10 @@
+ #define RFL_STATS	RFL_DIR "/stats.json"
+ #define RFL_MAXG	8
+ #define RFL_RCVBUF	(2 << 20)
++/* 2026-11-10 (_r6): the forward socket's send buffer. A burst of the 10000-line flood ceiling at ~300 bytes a line
++   is ~3 MB of datagrams; the default (~160 KB) holds a few hundred before sendto() says EAGAIN and the line is
++   not forwarded (it is still in the ring and the store). The kernel doubles the value it is given. */
++#define RFL_FWD_SNDBUF	(1 << 20)
+ #define RFL_OUTBUF	65536
+ #define RFL_LINE	1024
+ 
+@@ -756,8 +760,13 @@ static unsigned long long st_written, st_missed, st_err;
+ static char st_last_err[64] = "", st_file[24] = "", st_state[12] = "off";
+ static long long ring_bytes;
+ static int ring_fd = -1, fwd_fd = -1;
++static int fwd_sndbuf;		/* what the kernel gave the forward socket (getsockopt), 0 = no socket */
++static long fwd_err_at = -1000;	/* mono() of the last "could not be sent" syslog line */
+ static struct sockaddr_storage fwd_sa;
+ static socklen_t fwd_salen;
++/* review 2026-11-11: how a firewall line names a packet to the remote log server itself ("DST=<address> " and
++ * "DPT=<port> "), see rfl_forward() */
++static char fwd_dst[INET6_ADDRSTRLEN + 8], fwd_dpt[24];
+ static char obuf[RFL_OUTBUF];
+ static size_t olen;
+ static char oday[11] = "";
+@@ -787,6 +796,7 @@ static long mono(void)
+ }
+ static unsigned long long hour_rx;
+ static int stats_dirty = 1;
++#define RFL_BEAT	30	/* stats.json is rewritten at least this often, seconds (review 2026-11-11, C-8) */
+ 
+ static void on_sig(int s)
+ {
+@@ -967,6 +977,11 @@ static void rfl_forward(const char *body, long long sec)
+ 
+ 	if (fwd_fd < 0)
+ 		return;
++	/* review 2026-11-11: a line about one of OUR OWN forward packets - dropped on its way out by a rule that logs
++	 * (a Warden-blocked log server, say) - is recorded here but never forwarded. Sending it would be dropped and
++	 * logged again: one new line for every line, for as long as the rule stands. */
++	if (fwd_dst[0] && strstr(body, fwd_dst) && strstr(body, fwd_dpt))
++		return;
+ 	localtime_r(&t, &tm);
+ 	strftime(when, sizeof(when), "%b %e %H:%M:%S", &tm);
+ 	/* RFC 3164: facility kern (0), severity notice (5) */
+@@ -974,8 +989,18 @@ static void rfl_forward(const char *body, long long sec)
+ 	if (n > 0 && sendto(fwd_fd, m, (size_t)n < sizeof(m) ? (size_t)n : sizeof(m) - 1, MSG_DONTWAIT,
+ 			    (struct sockaddr *)&fwd_sa, fwd_salen) > 0)
+ 		n_fwd++;
+-	else
++	else {
++		int e = errno;
++
+ 		n_fwd_err++;
++		stats_dirty = 1;
++		/* the first unsent line in a minute is worth a syslog line; the rest are counted (stats.json fwd_err) */
++		if (mono() - fwd_err_at >= 60) {
++			fwd_err_at = mono();
++			syslog(LOG_WARNING, "remote log server: a firewall line could not be sent (%s); %llu so far",
++			       strerror(e), n_fwd_err);
++		}
++	}
+ }
+ 
+ static void rfl_line(const struct rfl_pkt *pk, time_t now)
+@@ -1110,10 +1135,10 @@ static void rfl_stats(time_t now)
+ 		   "\"lost_seq\":%llu,\"bad\":%llu,\"enobufs\":%llu,\"suppressed\":%llu,\"ring_bytes\":%lld,\"ram_kb\":%ld,"
+ 		   "\"store\":\"%s\",\"store_file\":\"%s\",\"store_written\":%llu,\"store_missed\":%llu,\"store_err\":%llu,"
+ 		   "\"store_last_err\":\"%s\",\"keep_days\":%ld,\"keep_mb\":%ld,\"fwd\":%d,\"fwd_sent\":%llu,\"fwd_err\":%llu,"
+-		   "\"groups\":[",
++		   "\"fwd_sndbuf\":%d,\"groups\":[",
+ 		(long)now, (long)since, (int)getpid(), n_rx, n_written, n_lost, n_bad, n_enobufs, rfl_suppressed(0),
+ 		ring_bytes, C.ram_kb, st_state, st_file, st_written, st_missed, st_err, st_last_err, C.keep_days, C.keep_mb,
+-		fwd_fd >= 0, n_fwd, n_fwd_err);
++		fwd_fd >= 0, n_fwd, n_fwd_err, fwd_sndbuf);
+ 	for (i = 0; i < C.ngroups; i++)
+ 		fprintf(f, "%s{\"g\":%d,\"rx\":%llu,\"lost\":%llu,\"suppressed\":%llu}", i ? "," : "",
+ 			C.groups[i], g_rx[i], g_lost[i], rfl_suppressed(C.groups[i]));
+@@ -1133,6 +1158,8 @@ static void rfl_fwd_open(void)
+ 		close(fwd_fd);
+ 		fwd_fd = -1;
+ 	}
++	fwd_sndbuf = 0;
++	fwd_dst[0] = fwd_dpt[0] = 0;
+ 	if (!C.fwd_host[0])
+ 		return;
+ 	memset(&fwd_sa, 0, sizeof(fwd_sa));
+@@ -1148,7 +1175,30 @@ static void rfl_fwd_open(void)
+ 		syslog(LOG_WARNING, "remote log server '%s' is not an address: firewall lines are not forwarded", C.fwd_host);
+ 		return;
+ 	}
++	{	/* review 2026-11-11: the address as the log lines print it (inet_ntop), whatever spelling was typed */
++		char a[INET6_ADDRSTRLEN] = "";
++
++		if (fwd_sa.ss_family == AF_INET)
++			inet_ntop(AF_INET, &s4->sin_addr, a, sizeof(a));
++		else
++			inet_ntop(AF_INET6, &s6->sin6_addr, a, sizeof(a));
++		if (a[0]) {
++			snprintf(fwd_dst, sizeof(fwd_dst), "DST=%s ", a);
++			snprintf(fwd_dpt, sizeof(fwd_dpt), "DPT=%u ", (unsigned)C.fwd_port);
++		}
++	}
+ 	fwd_fd = socket(fwd_sa.ss_family, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
++	fwd_sndbuf = 0;
++	if (fwd_fd >= 0) {
++		int sz = RFL_FWD_SNDBUF;
++		socklen_t sl = sizeof(fwd_sndbuf);
++
++		/* FORCE passes net.core.wmem_max (CAP_NET_ADMIN is kept for exactly this kind of setting) */
++		if (setsockopt(fwd_fd, SOL_SOCKET, SO_SNDBUFFORCE, &sz, sizeof(sz)) != 0)
++			setsockopt(fwd_fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
++		if (getsockopt(fwd_fd, SOL_SOCKET, SO_SNDBUF, &fwd_sndbuf, &sl) != 0)
++			fwd_sndbuf = 0;
++	}
+ }
+ 
+ static void rfl_conf_load(void)
+@@ -1346,7 +1396,9 @@ int main(void)
+ 			hour_rx = 0;
+ 			hour_at = m + 3600;
+ 		}
+-		if (stats_dirty && m - stats_at >= 2)
++		/* review 2026-11-11 (C-8): and every RFL_BEAT seconds with nothing new, so rc can tell a collector that
++		 * runs from one that is stopped or stuck (rc/reaper_fwlog.c watches "updated" change) */
++		if ((stats_dirty && m - stats_at >= 2) || m - stats_at >= RFL_BEAT)
+ 			rfl_stats(now);
+ 	}
+ 	rfl_flush();
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 692ed8508d4..adfc962332b 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -739,6 +739,7 @@ table.rt .empty td{color:var(--steel);text-align:center;padding:14px}
+     </div>
+     <p class="note warn hidden" id="l_off"><#RFW_42#></p>
+     <p class="note" id="l_coll"></p>
++    <p class="note hidden" id="l_fwd"></p>
+   </div>
+   <div class="cols2">
+     <div class="card" style="max-width:none">
+@@ -1902,6 +1903,12 @@ function loadDrops(){
+     if(s&&s.ok&&s.running&&s.path==='nflog'&&s.stats){e.className='note';
+       e.textContent=`<#RFW_413#>`.replace('%1',''+(s.stats.rx||0)).replace('%2',''+(s.stats.lost_seq||0)).replace('%3',''+(s.stats.suppressed||0));}
+     else{e.className='note warn';e.textContent=`<#RFW_414#>`;}
++    /* 2026-11-10 (_r6): the remote log server - lines sent and not sent (amber when any were not), or set but unused */
++    var f=$('l_fwd'),st=s&&s.stats,up=!!(s&&s.ok&&s.running&&s.path==='nflog'&&st);if(!f)return;
++    if(up&&st.fwd){f.className='note'+((st.fwd_err||0)>0?' warn':'');
++      f.textContent=`<#RFW_415#>`.replace('%1',''+(st.fwd_sent||0)).replace('%2',''+(st.fwd_err||0));}
++    else if(up&&s.fwd_set){f.className='note warn';f.textContent=`<#RFW_416#>`;}
++    else f.className='note hidden';
+   });
+   xhr('/reaper_fw.cgi?action=drops&http_id='+encodeURIComponent(REAPER_HTTPID),function(j){
+     if(!j||!j.ok){$('l_view').innerHTML='<div class="note muted">'+esc(`<#RFW_43#>`)+'</div>';$('l_top').innerHTML='';return;}
+-- 
+2.25.1
+

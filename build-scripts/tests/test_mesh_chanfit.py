@@ -445,7 +445,9 @@ check("bwfloor: the corrective is a direct move to a node-usable non-DFS chanspe
 check("bwfloor: the tick judges the radio by the chanspec iovar; `wl status` is forked only inside move_to()'s verification (audit 2026-10-16 C1)",
       "if (w && oper_chanspec(ifn, &ocs))" not in BF and "oper_chanspec(ifn, &oper) && oper == to" in BF)
 check("bwfloor: the list is written whenever it changed (a lift alone removes entries) and handed to the running picker - daemon only, no re-pick",
-      "if (strcmp(cur, orig) != 0) {" in BF and 'eval("acs_cli2", "-i", ifn, "set", "acs_excl_chans", cur);' in BF and "if (g_daemon && ifname_ok(ifn))" in BF
+      "if (strcmp(cur, orig) != 0) {" in BF and 'char *av[] = { "acs_cli2", "-i", (char *)ifn, "set", "acs_excl_chans", cur, NULL };' in BF
+      and BF.count("_eval(av, NULL, 10, NULL);") == 2   # review 2026-11-11 (D-7): both acs_cli2 calls are bounded
+      and "if (g_daemon && ifname_ok(ifn))" in BF
       and "g_daemon = 1;" in BF.split("int reaper_bwfloor_main(int argc, char *argv[])")[-1])
 check("meshchan: the lift lives in the pure block, is recorded (line 4) and restored before every recomputation",
       "mc_lift(offer, fit, dfs, n, floor, cur, lifted, sizeof(lifted))" in MC and "mc_read_line(u, 4, old, sizeof(old))" in MC and "int reaper_meshchan_target(int u, int floor, unsigned *cs)" in MC)
@@ -462,7 +464,7 @@ check("page: the switch row (global key), GNV entry and status renderer", 'key:"
 check("page: the floor status shows when puncturing implies it", "RWFP_136" in PG)
 check("page: a nolanding hold shows the DFS-only note, not the join note", 'f[5]==="nolanding"' in PG)
 DG = rd("others/reaper_diag")
-check("diag: v1.3.48 reports the node fit", 'VER="REAPER-DIAG v1.3.55"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.55</span>" in rd("www/Reaper_Diag.asp"))
+check("diag: v1.3.48 reports the node fit", 'VER="REAPER-DIAG v1.3.59"' in DG and "node fit:" in DG and "REAPER-DIAG v1.3.59</span>" in rd("www/Reaper_Diag.asp"))
 packs = [f for f in os.listdir(os.path.join(SRC, "www")) if f.endswith(".dict") and f != "temp.dict"]
 missing = []
 for p in sorted(packs):

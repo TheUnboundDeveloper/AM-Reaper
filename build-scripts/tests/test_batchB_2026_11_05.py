@@ -815,7 +815,8 @@ static int reaper_aimesh_macs(char macs[][18], int max, int *dropped)
 
 typedef struct { char ifname[IFNAMSIZ]; char br_ifname[IFNAMSIZ]; char addr[INET_ADDRSTRLEN]; char netmask[INET_ADDRSTRLEN];
 		 char subnet[INET_ADDRSTRLEN]; unsigned prefixlen; char dns[2][INET_ADDRSTRLEN]; } SUBNET_T;
-typedef struct { int enable; SUBNET_T nw_t; } MTLAN_T;
+typedef struct { int enable; SUBNET_T nw_t; struct { int cp_idx; } sdn_t; } MTLAN_T;   /* sdn_t.cp_idx: 2026-11-10, a Guest Portal network is exempt */
+static int f_write_string(const char *p, const char *s, unsigned a, unsigned b) { (void)p; (void)s; (void)a; (void)b; return 0; }   /* the exempt list for gkd */
 #define INIT_MTLAN(sz) calloc(16, (sz))
 #define FREE_MTLAN(p) free(p)
 /* h_mtlan: "en,br,ifname,addr,mask,subnet,plen,dns1,dns2;..." */

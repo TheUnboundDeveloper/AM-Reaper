@@ -1,0 +1,1336 @@
+From 3274f28bac17c6a4d3638906ded1033bf2ba4daa Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:26 -0500
+Subject: [PATCH] Web server: a deadline before login, kernel random numbers, a
+ wider cross-site guard (102.8 line)
+
+- httpd serves one connection at a time, so a client that trickled a request held the interface
+  for everybody. A connection now has 15 s to get past the login check (a kernel timer called by
+  number; libshared has its own timer_create), none after login or on a router not set up yet. The
+  stock ban list is no longer called.
+- Every rand() in httpd reads the kernel's generator (--wrap=rand, reaper_rand.c).
+- The phone-app second admin password (http_passwd_app) is kept empty, and the settings gate
+  refuses one.
+- The cross-site guard also covers the USB share, WAN action and safe-removal pages; another port
+  on the router is another site, and Sec-Fetch-Site same-site counts as cross-site.
+- The request being served is kept in a private file for the watchdog, not written to nvram before
+  login.
+- Gatekeeper's waiting-room page recognises approved devices again: it read the nvram copy of the
+  device list, empty since v2.6.3.
+- A settings import merges into the Gatekeeper list under its lock; a source login lock lasts its
+  full time; the IPv6 remote-access listener honours -6; lan_gateway must be an IPv4 address
+  (libwebapi).
+Also in these files: web.c serves the Encrypted DNS page's status (both legs, the plain-DNS
+devices, the DoH setup) and the remote log server counters, and carries the new Tweaks settings in
+the settings file.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/Makefile        |   3 +-
+ release/src/router/httpd/httpd.c         | 214 +++++++++++--
+ release/src/router/httpd/reaper_inject.c |   2 +-
+ release/src/router/httpd/reaper_rand.c   |  60 ++++
+ release/src/router/httpd/sysinfo.c       |   2 +-
+ release/src/router/httpd/web.c           | 389 ++++++++++++++++++++++-
+ release/src/router/libwebapi/webapi.c    | 208 ++++++++++--
+ 7 files changed, 809 insertions(+), 69 deletions(-)
+ create mode 100644 release/src/router/httpd/reaper_rand.c
+
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index e70c3ae8e01..d224f6f33c6 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -151,6 +151,7 @@ OBJS += web.o common.o nvram_f.o
+ OBJS += aspbw.o initial_web_hook.o
+ OBJS += reaper_inject.o	# reaper: serve-time theme injection
+ OBJS += reaper_survey.o	# reaper: Site Survey escan parser (Reaper_Survey.asp)
++OBJS += reaper_rand.o	# reaper (review 2026-11-11, B-C2): rand() for every object in httpd, see the file
+ OBJS += apps.o
+ OBJS += sysinfo.o data_arrays.o web-broadcom-am.o
+ 
+@@ -445,7 +446,7 @@ all: httpd #test_apps
+ 
+ httpd: $(OBJS)
+ 	@echo " [httpd] CC $@"
+-	$(CC) -o $@ $(OBJS) $(LIBS) $(EXTRALDFLAGS) -pie -Wl,-z,relro,-z,now
++	$(CC) -o $@ $(OBJS) $(LIBS) $(EXTRALDFLAGS) -pie -Wl,-z,relro,-z,now -Wl,--wrap=rand -Wl,--wrap=srand
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+index 2d1d8926f84..99537ac734d 100644
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -784,7 +784,7 @@ static void reaper_login_page_status(const char *file, int lock_status)
+ 	rem = reaper_login_src_locked(&login_uip_tmp);
+ 	if (rem > 0) {
+ 		login_error_status = LOGINLOCK;
+-		login_dt = max_lock_time - rem;
++		login_dt = MAX_LOGIN_BLOCK_TIME - rem;	/* review 2026-11-11: a source lock always lasts MAX_LOGIN_BLOCK_TIME */
+ 	} else if (login_error_status == LOGINLOCK)
+ 		login_error_status = 0;
+ }
+@@ -793,6 +793,90 @@ static void reaper_login_page_status(const char *file, int lock_status)
+  * (misc_http_x with IPv6) with -i <wan6face>. Every client of that one came in over the WAN, whatever its address:
+  * check_current_ip_is_lan_or_wan() used to call every IPv6 client LAN, so internet clients counted against - and
+  * could lock out - the LAN side. */
++/* review 2026-11-11 (B-5). The request being served was written to nvram BEFORE the login check
++ * (httpd_handle_request), so the watchdog could record it when it found httpd dead: any client's text, two nvram
++ * writes and two removals per request, and after a crash a commit of that text to flash. It is a private file now,
++ * reduced to letters, digits and . _ - / ; the watchdog reads it (rc/watchdog.c). */
++#define REAPER_REQ_NOTE	"/tmp/reaper/httpd.req"
++static void reaper_req_note(const char *u, int app)
++{
++	char b[112];
++	int n, fd;
++
++	n = snprintf(b, sizeof(b), "%d ", app ? 1 : 0);
++	for (; *u && n < (int)sizeof(b) - 2; u++)
++		b[n++] = (isalnum((unsigned char)*u) || strchr("._-/", *u)) ? *u : '_';
++	b[n++] = '\n';
++	if ((fd = open(REAPER_REQ_NOTE, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600)) >= 0) {
++		if (write(fd, b, n) != n)
++			unlink(REAPER_REQ_NOTE);
++		close(fd);
++	}
++}
++/* review 2026-11-11 (B-3). This web server handles one connection at a time. Each read had a 5 s timeout, but
++ * nothing bounded the whole request: a client that sent one byte every 4 s (or stalled the TLS handshake, or read
++ * the answer one byte at a time) held the interface for everybody until the watchdog restarted httpd minutes later.
++ * A connection now has REAPER_CONN_PREAUTH seconds to get past the login check. A timer of its own (SIGALRM belongs
++ * to check_alive) shuts the socket down when they run out: the read or write the request is blocked in ends, and
++ * the request unwinds the normal way. The timer is switched off the moment the login check passes, so uploads,
++ * firmware flashes and long pages are never cut, and on a router that is not set up yet (no password to pass). */
++#define REAPER_CONN_PREAUTH	15
++static volatile sig_atomic_t reaper_conn_fd = -1;
++/* The kernel's own POSIX timer, called by number. libshared exports a user-space timer_create() / timer_settime()
++ * (shared/linux_timer_ax.c) that take the place of the C library's in every program linked with it; that
++ * timer_create() calls exit(1) for any clock but CLOCK_REALTIME, so through those names httpd quit on its first
++ * connection (test image _r14). The kernel's id is an int. */
++#include <sys/syscall.h>
++static int reaper_conn_timer;
++static int reaper_conn_timer_ok;
++
++static void reaper_conn_expired(int sig)
++{
++	int fd = reaper_conn_fd;
++
++	(void)sig;
++	if (fd >= 0)
++		shutdown(fd, SHUT_RDWR);
++}
++
++static void reaper_conn_deadline_set(int secs)
++{
++	struct itimerspec its;
++
++	if (!reaper_conn_timer_ok)
++		return;
++	memset(&its, 0, sizeof(its));
++	its.it_value.tv_sec = secs;
++	syscall(SYS_timer_settime, reaper_conn_timer, 0, &its, NULL);
++}
++
++static void reaper_conn_deadline_on(int fd, int secs)
++{
++	if (!reaper_conn_timer_ok) {
++		struct sigaction sa;
++		struct sigevent ev;
++
++		memset(&sa, 0, sizeof(sa));
++		sa.sa_handler = reaper_conn_expired;
++		sa.sa_flags = SA_RESTART;
++		sigemptyset(&sa.sa_mask);
++		memset(&ev, 0, sizeof(ev));
++		ev.sigev_notify = SIGEV_SIGNAL;
++		ev.sigev_signo = SIGRTMIN + 3;
++		if (sigaction(SIGRTMIN + 3, &sa, NULL) != 0 || syscall(SYS_timer_create, CLOCK_MONOTONIC, &ev, &reaper_conn_timer) != 0)
++			return;
++		reaper_conn_timer_ok = 1;
++	}
++	reaper_conn_fd = fd;
++	reaper_conn_deadline_set(secs);
++}
++
++static void reaper_conn_deadline_off(void)
++{
++	reaper_conn_fd = -1;
++	reaper_conn_deadline_set(0);
++}
++/* reaper-conn-deadline: end */
+ static int reaper_wan_listener(void)
+ {
+ 	const char *lan = nvram_safe_get("lan_ifname");
+@@ -1134,7 +1218,10 @@ do_file(char *path, FILE *stream)
+ 	char buf[1024];
+ 	int nr;
+ 
+-	if (!(fp = fopen(path, "r")))
++	char reaper_p[1024];	/* review 2026-11-11 (B-P3): the path without its query string, as on the 3006.102.10 line */
++
++	snprintf(reaper_p, sizeof(reaper_p), "%.*s", (int)strcspn(path, "?"), path);
++	if (!(fp = fopen(reaper_p, "r")))
+ 		return;
+ 	while ((nr = fread(buf, 1, sizeof(buf), fp)) > 0) {
+ 		web_write(buf, nr, stream);
+@@ -1591,13 +1678,19 @@ reaper_client_mac(char *mac, size_t maclen)
+ 	return gk_ip_to_mac(reaper_client_ip, mac, maclen);
+ }
+ 
+-/* is mac listed (any state) in gk_rl "<MAC>state>expiry..."? */
++/* is mac listed (any state) in gk_rl "<MAC>state>expiry..."?
++ * 2026-11-11 field report: the list is read through gk_rl_get() (shared/gk_rl.c), the store every other reader uses.
++ * Since v2.6.3 it lives in /jffs/gatekeeper/rl and start_gk clears the nvram copy, so the nvram read that was here
++ * found nothing: every approved device got the waiting page on plain HTTP, the way to the login page included. */
+ static int
+ gk_mac_known(const char *mac)
+ {
+-	char *rl = nvram_safe_get("gk_rl");
++	char *rl = gk_rl_get();
+ 	const char *p = rl;
+ 	size_t n = strlen(mac);
++
++	if (!n)
++		return 0;		/* an empty needle would match everywhere and never advance */
+ 	while ((p = strcasestr(p, mac)) != NULL) {
+ 		if (p != rl && *(p - 1) == '<' && *(p + n) == '>')
+ 			return 1;
+@@ -1738,6 +1831,38 @@ static void reaper_hostpart(const char *s, char *out, size_t outsz)
+ 	out[n] = '\0';
+ }
+ 
++/* review 2026-11-11 (B-4): the port of "scheme://host[:port]/..." (a Referer) or of "host[:port]" (a Host header).
++ * With no port written: the scheme's own (https 443, http 80), and for a Host header `dflt`. 0 = unreadable. */
++static int reaper_origin_port(const char *s, int dflt)
++{
++	const char *h = strstr(s, "://"), *e;
++	char *end;
++	long v;
++
++	if (h) {
++		if (!strncasecmp(s, "https://", 8))
++			dflt = 443;
++		else if (!strncasecmp(s, "http://", 7))
++			dflt = 80;
++		else
++			return 0;
++		h += 3;
++	} else
++		h = s;
++	if (*h == '[') {
++		e = strchr(h, ']');
++		if (!e)
++			return 0;
++		e++;
++	} else
++		e = h + strcspn(h, ":/?#\r\n \t");
++	if (*e != ':')
++		return dflt;
++	v = strtol(e + 1, &end, 10);
++	if (end == e + 1 || v < 1 || v > 65535 || (*end && !strchr("/?#\r\n \t", *end)))
++		return 0;
++	return (int)v;
++}
+ static int reaper_host_is_self(const char *h)
+ {
+ 	char fq[160];
+@@ -1784,17 +1909,43 @@ static int reaper_xsite_cgi_refused(const char *url, const char *file, const cha
+ 
+ 	/* reaper (review 2026-11-03, A-2): and the three .asp pages whose ej call acts -
+ 	 * start_autodet.asp runs a WAN detection, the other two start scans */
+-	if (!strstr(url, ".cgi") && strcmp(url, "start_autodet.asp") &&
+-	    strcmp(url, "ajax_trigger_chk_sta.asp") && strcmp(url, "apscan.asp"))
+-		return 0;
++	{	/* review 2026-11-11 (B-2): and every other page whose ej call ACTS on a logged-in browser's cookie alone -
++			the USB share pages under aidisk/ (share mode, accounts, folder rights), the Samba/FTP switch, the WAN
++			connect/disconnect page, safe removal of a disk, the USB-app state page. A link on another site could
++			open them. The page is recognised by its file name, whatever path spelling reached it ("./apscan.asp"
++			was not "apscan.asp" to the test this replaces). */
++		static const char *const acting[] = { "start_autodet.asp", "ajax_trigger_chk_sta.asp", "apscan.asp",
++			"switch_AiDisk_app.asp", "wan_action.asp", "safely_remove_disk.asp", "update_appstate.asp", NULL };
++		const char *base = strrchr(url, '/');
++		int hit = strstr(url, ".cgi") != NULL || strstr(url, "aidisk/") != NULL;
++
++		base = base ? base + 1 : url;
++		for (i = 0; !hit && acting[i]; i++)
++			hit = !strcmp(base, acting[i]);
++		if (!hit)
++			return 0;
++	}
+ 
+ 	reaper_hostpart(referer_url, rh, sizeof(rh));
+ 	reaper_hostpart(host_name[0] ? host_name : nvram_safe_get("lan_ipaddr"), hh, sizeof(hh));
+ 
+-	if (rh[0])
++	if (rh[0]) {
+ 		xsite = strcasecmp(rh, hh) != 0 && !reaper_host_is_self(rh);
+-	else if (sfs[0])
+-		xsite = strcasecmp(sfs, "cross-site") == 0;
++		/* review 2026-11-11 (B-4): the same host on another PORT is another web service on the router (the
++			captive portal on 8083, a USB app), not this interface. A Host header with no port means the scheme's
++			own port, the one the Referer's scheme names - so a proxy in front that ends TLS changes nothing. And
++			when the browser itself says the request crosses sites, the equal host name does not overrule it. */
++		if (!xsite && host_name[0]) {
++			int rdef = !strncasecmp(referer_url, "https://", 8) ? 443 : 80;
++
++			if (reaper_origin_port(referer_url, rdef) != reaper_origin_port(host_name, rdef))
++				xsite = 1;
++		}
++		if (!xsite && !strcasecmp(rh, hh) && (!strcasecmp(sfs, "cross-site") || !strcasecmp(sfs, "same-site")))
++			xsite = 1;
++	} else if (sfs[0])
++		/* review 2026-11-11 (B-4): "same-site" is another port or another name on this router, not this page */
++		xsite = strcasecmp(sfs, "cross-site") == 0 || strcasecmp(sfs, "same-site") == 0;
+ 	else {
+ 		/* neither header: cross-site when a browser sent it, on either listener (S-B-1;
+ 		 * review 2026-11-03 A-1: the HTTPS listener was exempt, so a browser without Fetch
+@@ -2051,7 +2202,7 @@ handle_request(void)
+         }
+ 	}
+ 
+-	slowloris_check();
++	/* review 2026-11-11 (B-C1): slowloris_check() is not called any more - see the connection deadline */
+ 
+ 	temp_ip_str = safe_uaddr_ntop(&login_uip_tmp, uip_tmp, sizeof(uip_tmp));
+ 	/* reaper v2.9.3: publish it for CGIs that must identify the operator. */
+@@ -2251,6 +2402,8 @@ handle_request(void)
+ 	}
+ 
+ 	x_Setting = nvram_get_int("x_Setting");
++	if (!x_Setting)	/* review 2026-11-11 (B-3): a router not set up yet has no login to pass; its first-run steps may take long */
++		reaper_conn_deadline_off();
+ 
+ 	for (handler = &mime_handlers[0]; handler->pattern; handler++) {
+ #ifdef RTCONFIG_HTTPS
+@@ -2279,8 +2432,7 @@ handle_request(void)
+ #ifdef RTCONFIG_LANTIQ
+ 			wave_handle_flag(url);
+ #endif
+-			nvram_set("httpd_handle_request", url);
+-			nvram_set_int("httpd_handle_request_fromapp", fromapp);
++			reaper_req_note(url, fromapp);	/* review 2026-11-11 (B-5): was two nvram writes before the login check */
+ 			if(login_state==3 && !fromapp) { // few pages can be shown even someone else login
+ 				 if(handler->auth || (!strncmp(file, "Main_Login.asp", 14) && login_error_status != 9) || mime_exception&MIME_EXCEPTION_NOPASS)
+ 				{
+@@ -2355,6 +2507,7 @@ handle_request(void)
+ 						return;
+ 					}
+ 					reaper_req_authed = 1;
++					reaper_conn_deadline_off();	/* review 2026-11-11 (B-3): logged in - no deadline for uploads and long pages */
+ #endif
+ 				}
+ 
+@@ -2422,16 +2575,18 @@ handle_request(void)
+ 				}
+ #endif
+ 			}
++			char reaper_fp[1024];	/* review 2026-11-11 (B-P3): "file.js?v=1" is the file "file.js" */
++			snprintf(reaper_fp, sizeof(reaper_fp), "%.*s", (int)strcspn(file, "?"), file);
+ 			/* reaper 2026-10-25 (review 2026-10-24, Q-B-2): a stock page that no longer ships bounces to its
+ 			 * Reaper replacement - the stub in reaper_output() never ran because the "file not found"
+ 			 * answer below came first. Headers first, then the stub; nothing else of the page exists. */
+-			if (handler->output && !strstr(file, ".cgi") && reaper_gone_page(file) && !check_if_file_exist(file)) {
++			if (handler->output && !strstr(file, ".cgi") && reaper_gone_page(reaper_fp) && !check_if_file_exist(reaper_fp)) {
+ 				send_headers(200, "OK", handler->extra_header, handler->mime_type, fromapp);
+ 				if (strcasecmp(method, "head") != 0)
+ 					reaper_output(handler, file, conn_fp);
+ 				break;
+ 			}
+-			if(!strstr(file, ".cgi") && !strstr(file, "syslog.txt") && !(strstr(file,"uploadIconFile.tar")) && (fnmatch("backup_jffs*.tar",file,0) == FNM_NOMATCH) && !(strstr(file,"networkmap.tar")) && !(strstr(file,".CFG")) && !(strstr(file,".rbk")) /* reaper v2.7.2: full-backup download is handler-generated, not on disk */ && !(strstr(file,".log")) && !check_if_file_exist(file)
++			if(!strstr(file, ".cgi") && !strstr(file, "syslog.txt") && !(strstr(file,"uploadIconFile.tar")) && (fnmatch("backup_jffs*.tar",file,0) == FNM_NOMATCH) && !(strstr(file,"networkmap.tar")) && !(strstr(file,".CFG")) && !(strstr(file,".rbk")) /* reaper v2.7.2: full-backup download is handler-generated, not on disk */ && !(strstr(file,".log")) && !check_if_file_exist(reaper_fp)
+ #ifdef RTCONFIG_USB_MODEM
+ 					&& !strstr(file, "modemlog.txt")
+ #endif
+@@ -2513,8 +2668,7 @@ handle_request(void)
+ 		else
+ 			send_error( 404, "Not Found", (char*) 0, "File not found." );
+ 	}
+-	nvram_unset("httpd_handle_request");
+-	nvram_unset("httpd_handle_request_fromapp");
++	unlink(REAPER_REQ_NOTE);	/* review 2026-11-11 (B-5): was two nvram removals per request */
+ }
+ 
+ uaddr *uaddr_ston(const usockaddr *u, uaddr *uip)
+@@ -3248,7 +3402,7 @@ void check_alive()
+ 		notify_rc("restart_httpd");
+ 	}
+ 	else{
+-		slow_post_read_check();
++		/* review 2026-11-11 (B-C1): slow_post_read_check() is not called any more */
+ 		check_alive_count++;
+ 	}
+ 
+@@ -3306,7 +3460,13 @@ int main(int argc, char **argv)
+ 	//if(!httpd_sw_hw_check()) return 0;
+ #endif
+ 	// usage : httpd -s -p [port]
+-	while ((c = getopt(argc, argv, "sp:i:")) != -1) {
++	/* reaper 2026-11-10: "6" was missing from the option string (stock), so the
++	 * -6 that rc passes to the IPv6 remote-access instance fell into "unknown
++	 * option" and http_ipv6_only stayed 0. That instance then also bound IPv4 on
++	 * the WAN interface, and read and cleared httpds_reload_cert - the LAN
++	 * instance's certificate-reload flag - instead of httpds6_reload_cert, so a
++	 * renewed certificate could be picked up by one instance only. */
++	while ((c = getopt(argc, argv, "sp:i:6")) != -1) {
+ 		switch (c) {
+ 		case 's':
+ #ifdef RTCONFIG_HTTPS
+@@ -3351,6 +3511,10 @@ int main(int argc, char **argv)
+ 
+ 	/* Ignore broken pipes */
+ 	signal(SIGPIPE, SIG_IGN);
++	{	/* review 2026-11-11 (B-C3): a second admin password that came in with a restored configuration */
++		extern void reaper_app_pw_clear(void);
++		reaper_app_pw_clear();
++	}
+ 	signal(SIGCHLD, chld_reap);
+ 	signal(SIGUSR1, update_wlan_log_sig);
+ 	signal(SIGALRM, check_alive);
+@@ -3454,7 +3618,7 @@ reload_cert:
+ 
+ 		/* record alive flag */
+ 		if(check_alive_flag == 1){
+-			clean_ban_ip_timeout();
++			/* review 2026-11-11 (B-C1): clean_ban_ip_timeout() is not called any more */
+ 			alarm_tv.tv_sec = uptime();
+ 			check_alive_flag = 0;
+ 		}
+@@ -3553,6 +3717,7 @@ reload_cert:
+ 
+ 			/* Process request if any */
+ 			if (FD_ISSET(item->fd, &rfds)) {
++				reaper_conn_deadline_on(item->fd, REAPER_CONN_PREAUTH);	/* review 2026-11-11 (B-3): before the TLS handshake */
+ #ifdef RTCONFIG_HTTPS
+ 				if (do_ssl) {
+ 					ssl_stream_fd = item->fd;
+@@ -3571,10 +3736,10 @@ reload_cert:
+ 
+ 				http_login_cache(&item->usa);
+ 
+-				if(filter_ban_ip())
+-				{
+-					handle_request();
+-				}
++				/* review 2026-11-11 (B-C1): the stock ban list (filter_ban_ip, slowloris_check,
++				   slow_post_read_check, clean_ban_ip_timeout) is no longer called; the connection deadline above
++				   does its job. */
++				handle_request();
+ 				fflush(conn_fp);
+ #ifdef RTCONFIG_HTTPS
+ 				if (!do_ssl)
+@@ -3590,6 +3755,7 @@ reload_cert:
+ 				setsockopt(item->fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger));
+ 			}
+ 
++			reaper_conn_deadline_off();	/* review 2026-11-11 (B-3): every way out of this connection passes here */
+ 			/* Close timed out and/or still alive */
+ 			if (item->fd >= 0) {
+ 				shutdown(item->fd, SHUT_RDWR);
+diff --git a/release/src/router/httpd/reaper_inject.c b/release/src/router/httpd/reaper_inject.c
+index 992683fe97d..b842d9fb800 100644
+--- a/release/src/router/httpd/reaper_inject.c
++++ b/release/src/router/httpd/reaper_inject.c
+@@ -360,7 +360,7 @@ static const struct reaper_page_row { const char *name, *to; int shipped; } reap
+ 	{ "advanced_switchctrl_content.asp", "Reaper_LAN.asp?tab=switch", 1 },
+ 	{ "advanced_wireless_content.asp", "Reaper_WiFiSettings.asp", 1 },
+ 	{ "advanced_wadvanced_content.asp", "Reaper_WiFiSettings.asp", 1 },
+-	{ "reaper_wifipro.asp", "Reaper_WiFiSettings.asp", 1 },
++	{ "reaper_wifipro.asp", "Reaper_WiFiSettings.asp", 0 },	/* review 2026-11-11: the page is not shipped - bounce, not 404 */
+ 	/* reaper 2026-11-06 (audit B-6): unshipped helper pages - see the www/Makefile block */
+ 	{ "aplist.asp", "Reaper_Survey.asp", 0 },
+ 	{ "apscan.asp", "Reaper_Survey.asp", 0 },
+diff --git a/release/src/router/httpd/reaper_rand.c b/release/src/router/httpd/reaper_rand.c
+new file mode 100644
+index 00000000000..965f16eb099
+--- /dev/null
++++ b/release/src/router/httpd/reaper_rand.c
+@@ -0,0 +1,60 @@
++/*
++ * reaper (review 2026-11-11, B-C2). The web server links prebuilt objects that import the C library's rand() and
++ * srand() (see their symbol tables), and a rand() sequence is only as unpredictable as its 32-bit seed. The web
++ * server is linked with --wrap=rand --wrap=srand, so every rand() in the program - the prebuilt objects included -
++ * lands here:
++ *  - each call asks the kernel for fresh random bytes (nothing is kept, so a forked worker never repeats its
++ *    parent);
++ *  - the result keeps rand()'s range, 0 .. RAND_MAX: a caller may index a table with it, so a negative value must
++ *    never come back;
++ *  - srand() does nothing: no caller in this program needs a repeatable sequence.
++ * getrandom() is asked not to wait: before the kernel's generator is ready (early boot) /dev/urandom answers, and
++ * if that cannot be opened the C library's own rand() does - never worse than before.
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <sys/random.h>
++
++int __real_rand(void);
++
++int __wrap_rand(void)
++{
++	unsigned int v = 0;
++	size_t got = 0;
++	int fd;
++
++	while (got < sizeof(v)) {
++		ssize_t n = getrandom((char *)&v + got, sizeof(v) - got, GRND_NONBLOCK);
++
++		if (n > 0)
++			got += (size_t)n;
++		else if (n < 0 && errno == EINTR)
++			continue;
++		else
++			break;
++	}
++	if (got < sizeof(v) && (fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC)) >= 0) {
++		got = 0;
++		while (got < sizeof(v)) {
++			ssize_t n = read(fd, (char *)&v + got, sizeof(v) - got);
++
++			if (n > 0)
++				got += (size_t)n;
++			else if (n < 0 && errno == EINTR)
++				continue;
++			else
++				break;
++		}
++		close(fd);
++	}
++	if (got < sizeof(v))
++		return __real_rand();
++	return (int)(v & 0x7fffffffU);
++}
++
++void __wrap_srand(unsigned int seed)
++{
++	(void)seed;
++}
+diff --git a/release/src/router/httpd/sysinfo.c b/release/src/router/httpd/sysinfo.c
+index f689c70ad3b..5b151e25bfa 100644
+--- a/release/src/router/httpd/sysinfo.c
++++ b/release/src/router/httpd/sysinfo.c
+@@ -708,7 +708,7 @@ int ej_show_sysinfo(int eid, webs_t wp, int argc, char_t ** argv)
+ 
+ 	}
+ 
+-	retval += websWrite(wp, result);
++	retval += websWrite(wp, "%s", result);	/* review 2026-11-11 (B-P2): never as the format string */
+ 	return retval;
+ }
+ 
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index c419f49f11f..070556ce7a2 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -495,6 +495,18 @@ extern void sdn_set_fbwifi(void);
+ #endif
+ 
+ extern int app_auth(char *authinfo, char *authpass);
++/* reaper (review 2026-11-11, B-C3). http_passwd_app (shared/defaults.c, an encrypted setting) is a second admin
++ * password for the vendor's phone-app login. No page shows, sets or clears it, so one that came in with an old or
++ * restored configuration outlived every password change. It is kept empty: when the web server starts, and again
++ * right before each login and password-change check. */
++void reaper_app_pw_clear(void)
++{
++	if (*nvram_safe_get("http_passwd_app")) {
++		nvram_set("http_passwd_app", "");
++		nvram_commit();
++		logmessage("httpd", "a second (phone app) admin password was stored and has been removed");
++	}
++}
+ 
+ #if defined(RTCONFIG_ASD) || defined(RTCONFIG_AHS)
+ extern void do_set_security_update_cgi(char *url, FILE *stream);
+@@ -25659,6 +25671,65 @@ gk_rl_update(const char *mac, int state, long expiry)
+ 	free(buf);
+ }
+ 
++/* review 2026-11-11 (B-6): a settings import MERGES into the device list. The rows of the file are added (or
++ * replace the row of the same device); every other device on the box keeps its row. One read-modify-write
++ * under the list's lock, each row checked as gk_rl_update() checks it. Returns the rows taken, -1 when the
++ * list could not be written. The import used to replace the whole list, outside the lock, unchecked - every
++ * device approved since the file was made lost its approval. */
++static int
++gk_rl_merge(const char *in)
++{
++	char *rl, *out = NULL, *cur = NULL, *add = NULL, *vin = NULL, *tok, *sp = NULL;
++	size_t cap;
++	int n = 0, rc = 0, lf;
++
++	if (!in)
++		return 0;
++	lf = open("/tmp/gk/rl.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
++	if (lf >= 0) flock(lf, LOCK_EX);
++	rl = gk_rl_get();
++	cap = strlen(rl) + strlen(in) + 64;
++	out = calloc(1, cap);
++	vin = calloc(1, strlen(in) + 64);
++	cur = strdup(rl);
++	add = strdup(in);
++	if (!out || !vin || !cur || !add) {
++		rc = -1;
++		goto done;
++	}
++	/* the file's rows, checked; a device named twice keeps its first row */
++	for (tok = strtok_r(add, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char m[18] = "", row[48];
++		int st = -1;
++		long ex = 0;
++		if (sscanf(tok, "%17[^>]>%d>%ld", m, &st, &ex) < 2 || !gk_valid_mac(m) || st < 0 || st > 3 || ex < 0)
++			continue;
++		if (gk_rl_find(vin, m, NULL, NULL))
++			continue;
++		snprintf(row, sizeof(row), "<%s>%d>%ld", m, st, ex);
++		strlcat(vin, row, strlen(in) + 64);
++		n++;
++	}
++	/* the rows on the box the file does not name stay as they are */
++	sp = NULL;
++	for (tok = strtok_r(cur, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
++		char m[18] = "";
++		if (sscanf(tok, "%17[^>]", m) != 1 || !gk_valid_mac(m)) continue;
++		if (gk_rl_find(vin, m, NULL, NULL)) continue;
++		strlcat(out, "<", cap);
++		strlcat(out, tok, cap);
++	}
++	strlcat(out, vin, cap);
++	if (gk_rl_set(out) != 0) {
++		logmessage("gatekeeper", "device list write FAILED - the imported devices were not added");
++		rc = -1;
++	}
++done:
++	if (lf >= 0) { flock(lf, LOCK_UN); close(lf); }
++	free(out); free(vin); free(cur); free(add);
++	return rc ? -1 : n;
++}
++
+ static void
+ gk_json_esc(FILE *stream, const char *s)
+ {
+@@ -27417,6 +27488,242 @@ do_reaper_wallguard_cgi(char *url, FILE *stream)
+ #define RENC_NOTE	"/tmp/rednsd/note.json"		/* rc: why it did not start */
+ #define RENC_DNSF_ROUTER 11	/* DNSF_SRV_ROUTER in rc/dnsfilter.h */
+ 
++/* 2026-11-10: "" = TCP 443 on the router is free for DNS-over-HTTPS, else why it is not (the same two tests as
++   rc/encdns.c red_doh_busy() - keep them in step) */
++static const char *renc_doh_busy(void)
++{
++	char k[32], u[2] = "1";
++	int i;
++
++	if (nvram_get_int("http_enable") != 0 && nvram_get_int("https_lanport") == 443)
++		return "https";
++	/* review 2026-11-11 (C-6): Web Access from WAN over IPv6 has its own listener on the WAN HTTPS port. On 443 the
++		DNS-over-HTTPS rules dropped it and the two wanted the same port. The page shows the same reason as for the
++		LAN HTTPS port (httpd/web.c and rc/encdns.c make the same tests - keep them in step). */
++	if (nvram_get_int("misc_http_x") != 0 && nvram_get_int("misc_httpsport_x") == 443 && ipv6_enabled())
++		return "https";
++	for (i = 1; i <= 2; i++) {
++		u[0] = '0' + i;
++		snprintf(k, sizeof(k), "vpn_server%d_port", i);
++		if (nvram_get_int(k) != 443)
++			continue;
++		snprintf(k, sizeof(k), "vpn_server%d_proto", i);
++		if (strncmp(nvram_safe_get(k), "tcp", 3))
++			continue;
++		if (strstr(nvram_safe_get("vpn_serverx_start"), u))
++			return "ovpn";
++	}
++	return "";
++}
++
++/* One lookup through the upstream forwarder (stubby on 127.0.1.1): the root's NS set, which only an upstream can
++   answer. 1 answered, 0 not. Asked at most every 30 s whatever the page polls; it waits at most 1.5 s, and only
++   that long when the upstream leg is in fact failing. */
++static int renc_up_probe(void)
++{
++	static long last;
++	static int res = -1;
++	static const unsigned char q[] = { 0x52, 0x70, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x02, 0x00, 0x01 };
++	unsigned char a[512];
++	struct sockaddr_in sa;
++	struct timeval tv = { 1, 500000 };
++	long now = (long)uptime();
++	int s, n;
++
++	if (res >= 0 && now - last < 30)
++		return res;
++	last = now;
++	res = 0;
++	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
++		return res;
++	memset(&sa, 0, sizeof(sa));
++	sa.sin_family = AF_INET;
++	sa.sin_port = htons(53);
++	sa.sin_addr.s_addr = htonl(0x7f000101);
++	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++	if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) == 0 && send(s, q, sizeof(q), 0) == (ssize_t)sizeof(q)) {
++		n = recv(s, a, sizeof(a), 0);
++		if (n >= 12 && a[0] == q[0] && a[1] == q[1] && (a[2] & 0x80) && (a[3] & 0x0f) == 0)
++			res = 1;
++	}
++	close(s);
++	return res;
++}
++
++/* The upstream leg, for the page's red warning: lookups that reach the router encrypted must not leave it in
++   the clear unnoticed. on = DNS-over-TLS is switched on for the WAN DNS; servers = rows of dnspriv_rulelist with a
++   server; stubby = the forwarder runs; clock = the clock is set (until then stubby asks in the clear, or the
++   clock could never be set); probe = renc_up_probe(), -1 when there is nothing to ask. */
++static void renc_upstream(FILE *stream)
++{
++	int on = nvram_get_int("dnspriv_enable") == 1, servers = 0, stubby = pidof("stubby") > 0;
++	char *nv = strdup(nvram_safe_get("dnspriv_rulelist")), *p = nv, *row;
++
++	while (nv && (row = strsep(&p, "<")) != NULL)
++		if (*row && *row != '>')
++			servers++;
++	free(nv);
++	websWrite(stream, ",\"up\":{\"on\":%d,\"profile\":%d,\"servers\":%d,\"stubby\":%d,\"clock\":%d,\"probe\":%d}",
++		  on, nvram_get_int("dnspriv_profile") == 1, servers, stubby, nvram_get_int("ntp_ready") == 1,
++		  (on && stubby) ? renc_up_probe() : -1);
++}
++
++/* 2026-11-10 (owner: a device must not be made less secure for the sake of filtering, so the page shows who
++   still asks in the clear). "plain" = addresses on the router's own networks (a bridge's subnet, never the
++   router itself) with a request to port 53 in the connection table - the last few minutes, as long as the
++   table keeps a row. The table is read at most every 10 s whatever the page polls. "names" = the lease name of
++   every address the page lists (this list, or a peer in rednsd's status text). Every address is parsed and
++   printed again, every name is cut to letters, digits, dot, dash and underscore: nothing here is page markup. */
++#define RENC_PLAIN_MAX	64
++struct renc_net { int fam; unsigned char a[16], m[16]; };
++
++static int renc_addr_norm(const char *s, size_t len, char *out, size_t outsz, int *fam, unsigned char *raw)
++{
++	char tmp[INET6_ADDRSTRLEN];
++
++	if (len == 0 || len >= sizeof(tmp))
++		return 0;
++	memcpy(tmp, s, len);
++	tmp[len] = 0;
++	memset(raw, 0, 16);
++	if (inet_pton(AF_INET, tmp, raw) == 1)
++		*fam = AF_INET;
++	else if (inet_pton(AF_INET6, tmp, raw) == 1)
++		*fam = AF_INET6;
++	else
++		return 0;
++	return inet_ntop(*fam, raw, out, outsz) != NULL;
++}
++
++static void renc_plain_scan(char list[][INET6_ADDRSTRLEN], int *cnt)
++{
++	struct ifaddrs *ifa = NULL, *p;
++	struct renc_net nets[32], own[64];
++	char line[1024], a[INET6_ADDRSTRLEN];
++	unsigned char raw[16];
++	int nn = 0, no = 0, i, k, fam, len;
++	FILE *f;
++
++	*cnt = 0;
++	if (getifaddrs(&ifa) != 0)
++		return;
++	for (p = ifa; p; p = p->ifa_next) {
++		if (!p->ifa_addr || (p->ifa_addr->sa_family != AF_INET && p->ifa_addr->sa_family != AF_INET6))
++			continue;
++		/* every address of the router, whatever the interface: its own lookups are not a device's */
++		if (no < 64) {
++			memset(&own[no], 0, sizeof(own[no]));
++			if (p->ifa_addr->sa_family == AF_INET)
++				memcpy(own[no].a, &((struct sockaddr_in *)p->ifa_addr)->sin_addr, 4);
++			else
++				memcpy(own[no].a, &((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr, 16);
++			own[no++].fam = p->ifa_addr->sa_family;
++		}
++		if (nn >= 32 || !p->ifa_netmask || !p->ifa_name || strncmp(p->ifa_name, "br", 2))
++			continue;
++		memset(&nets[nn], 0, sizeof(nets[nn]));
++		if (p->ifa_addr->sa_family == AF_INET) {
++			memcpy(nets[nn].a, &((struct sockaddr_in *)p->ifa_addr)->sin_addr, 4);
++			memcpy(nets[nn].m, &((struct sockaddr_in *)p->ifa_netmask)->sin_addr, 4);
++		} else if (p->ifa_addr->sa_family == AF_INET6) {
++			memcpy(nets[nn].a, &((struct sockaddr_in6 *)p->ifa_addr)->sin6_addr, 16);
++			memcpy(nets[nn].m, &((struct sockaddr_in6 *)p->ifa_netmask)->sin6_addr, 16);
++		} else
++			continue;
++		nets[nn++].fam = p->ifa_addr->sa_family;
++	}
++	freeifaddrs(ifa);
++	if (!nn || !(f = fopen("/proc/net/nf_conntrack", "r")))
++		return;
++	while (*cnt < RENC_PLAIN_MAX && fgets(line, sizeof(line), f)) {
++		char *s = strstr(line, " src="), *e, *d;
++
++		if (!s || !(e = strchr(s + 5, ' ')))
++			continue;
++		/* the first dport= is the request's own direction: the device asking */
++		if (!(d = strstr(e, " dport=")) || strncmp(d, " dport=53 ", 10))
++			continue;
++		if (!renc_addr_norm(s + 5, e - (s + 5), a, sizeof(a), &fam, raw))
++			continue;
++		len = (fam == AF_INET) ? 4 : 16;
++		for (i = 0; i < no && (own[i].fam != fam || memcmp(own[i].a, raw, len)); i++)
++			;
++		if (i < no)
++			continue;
++		for (i = 0; i < nn; i++) {
++			if (nets[i].fam != fam)
++				continue;
++			for (k = 0; k < len && (raw[k] & nets[i].m[k]) == (nets[i].a[k] & nets[i].m[k]); k++)
++				;
++			if (k == len)
++				break;
++		}
++		if (i >= nn)
++			continue;
++		for (i = 0; i < *cnt && strcmp(list[i], a); i++)
++			;
++		if (i == *cnt)
++			strlcpy(list[(*cnt)++], a, INET6_ADDRSTRLEN);
++	}
++	fclose(f);
++}
++
++static void renc_devices(FILE *stream, const char *st)
++{
++	static char plain[RENC_PLAIN_MAX][INET6_ADDRSTRLEN];
++	static int nplain;
++	static long last = -1000;
++	long now = (long)uptime();
++	struct dirent *de;
++	DIR *dir;
++	int i, shown = 0;
++
++	if (now - last >= 10 || now < last) {
++		renc_plain_scan(plain, &nplain);
++		last = now;
++	}
++	websWrite(stream, ",\"plain\":[");
++	for (i = 0; i < nplain; i++)
++		websWrite(stream, "%s\"%s\"", i ? "," : "", plain[i]);
++	websWrite(stream, "],\"names\":{");
++	if ((dir = opendir("/var/lib/misc")) != NULL) {
++		while ((de = readdir(dir)) != NULL && shown < 128) {
++			char path[300], line[512], ip[INET6_ADDRSTRLEN], a[INET6_ADDRSTRLEN], host[64], key[INET6_ADDRSTRLEN + 3];
++			unsigned char raw[16];
++			size_t l = strlen(de->d_name);
++			int fam, k;
++			FILE *f;
++
++			/* dnsmasq.leases and each guest network's dnsmasq-<n>.leases */
++			if (l < 14 || strncmp(de->d_name, "dnsmasq", 7) || strcmp(de->d_name + l - 7, ".leases"))
++				continue;
++			snprintf(path, sizeof(path), "/var/lib/misc/%s", de->d_name);
++			if (!(f = fopen(path, "r")))
++				continue;
++			while (shown < 128 && fgets(line, sizeof(line), f)) {
++				if (sscanf(line, "%*s %*s %45s %63s", ip, host) != 2 || !strcmp(host, "*"))
++					continue;
++				if (!renc_addr_norm(ip, strlen(ip), a, sizeof(a), &fam, raw))
++					continue;
++				for (k = 0; host[k]; k++)
++					if (!isalnum((unsigned char)host[k]) && !strchr("._-", host[k]))
++						break;
++				if (host[k] || !k)
++					continue;
++				for (k = 0; k < nplain && strcmp(plain[k], a); k++)
++					;
++				snprintf(key, sizeof(key), "\"%s\"", a);
++				if (k == nplain && !strstr(st, key))
++					continue;
++				websWrite(stream, "%s%s:\"%s\"", shown++ ? "," : "", key, host);
++			}
++			fclose(f);
++		}
++		closedir(dir);
++	}
++	websWrite(stream, "}");
++}
++
+ static int renc_private_v4(const char *s)
+ {
+ 	struct in_addr a;
+@@ -27472,7 +27779,7 @@ static void renc_rejects(const char *cmd, unsigned long long *p853, unsigned lon
+ static void
+ do_reaper_encdns_cgi(char *url, FILE *stream)
+ {
+-	char st[8192];
++	char st[16384];	/* 2026-11-10: rednsd's status now lists up to 64 clients */
+ 	struct stat sb;
+ 	ssize_t n = 0;
+ 	int fd, i, running, why = reaper_gate();
+@@ -27516,36 +27823,65 @@ do_reaper_encdns_cgi(char *url, FILE *stream)
+ 	/* review 2026-10-24 (S-B-3): rednsd's file (written by its unprivileged user) goes FIRST, so a duplicate
+ 	   key in it can never override what the router reports - JSON.parse keeps the last value */
+ 	websWrite(stream, "{\"st\":%s,\"ok\":1,\"enabled\":%d,\"running\":%d,\"director\":%d,\"director_router\":%d,\"wan_private\":%d",
+-		  st, nvram_get_int("reaper_dot_srv") == 1, running,
++		  st, nvram_get_int("reaper_dot_srv") == 1 || nvram_get_int("reaper_doh_srv") == 1, running,
+ 		  nvram_get_int("dnsfilter_enable_x") == 1,
+ 		  nvram_get_int("dnsfilter_enable_x") == 1 && nvram_get_int("dnsfilter_mode") == RENC_DNSF_ROUTER,
+ 		  renc_private_v4(nvram_safe_get("wan0_ipaddr")));
++	/* 2026-11-10: the two switches of the device-facing server, why DNS-over-HTTPS is not listening when its port
++	   is taken, and the upstream leg */
++	websWrite(stream, ",\"dot_on\":%d,\"doh_on\":%d,\"doh_busy\":\"%s\"", nvram_get_int("reaper_dot_srv") == 1,
++		  nvram_get_int("reaper_doh_srv") == 1, renc_doh_busy());
++	renc_upstream(stream);
++	renc_devices(stream, st);
++	/* 2026-11-10: the name the running dnsmasq config offers by DHCP option 162 (rc's own file); "" = not offered */
++	{
++		char dn[300] = "", *sp;
++		int k;
++
++		f_read_string("/tmp/rednsd/dnr", dn, sizeof(dn));
++		if ((sp = strpbrk(dn, " \r\n")) != NULL)
++			*sp = 0;
++		for (k = 0; dn[k]; k++)
++			if (!isalnum((unsigned char)dn[k]) && dn[k] != '.' && dn[k] != '-') {
++				dn[0] = 0;
++				break;
++			}
++		websWrite(stream, ",\"dnr\":\"%s\"", dn);
++	}
+ 	/* 2026-10-21: block encrypted DNS that goes around the router */
+ 	{
+ 		unsigned long long r853 = 0, r443 = 0, at = 0, okt = 0, cnt = 0;
+ 		long names = 0, n4 = -1, n6 = -1;
+ 		char fst[12] = "none", line[256];
+ 		FILE *f;
+-		int on = nvram_get_int("reaper_doh_block") == 1;
++		/* 2026-11-10: two switches - reaper_dot_block (port 853) and reaper_doh_block (the resolver addresses,
++		   the names, the list). An empty or absent reaper_dot_block follows reaper_doh_block, as in rc/encdns.c. */
++		const char *dv = nvram_get("reaper_dot_block");
++		int dset = (dv && *dv) ? (atoi(dv) == 1) : -1;
++		int doh = nvram_get_int("reaper_doh_block") == 1;
++		int dot = dset < 0 ? doh : dset;
++		int on = dot || doh;
+ 		if (on) {
+ 			/* (Q-B-7: two shells for the four readers, not four) */
+ 			renc_rejects("iptables -nvxL REAPER_EDNS 2>/dev/null; ip6tables -nvxL REAPER_EDNS 2>/dev/null", &r853, &r443);
++		}
++		if (doh) {
+ 			renc_set_sizes(&n4, &n6);
+ 		}
+-		if ((f = fopen("/tmp/rednsd/doh.conf", "r"))) {
++		if (doh && (f = fopen("/tmp/rednsd/doh.conf", "r"))) {
+ 			while (fgets(line, sizeof(line), f))
+ 				if (!strncmp(line, "address=/", 9))
+ 					names++;
+ 			fclose(f);
+ 		}
+-		if ((f = fopen("/tmp/rednsd/doh.state", "r"))) {
++		if (doh && (f = fopen("/tmp/rednsd/doh.state", "r"))) {
+ 			char s[12];
+ 			if (fscanf(f, "%11s %llu %llu %llu", s, &okt, &at, &cnt) == 4 && (!strcmp(s, "ok") || !strcmp(s, "failed")))
+ 				strcpy(fst, s);
+ 			fclose(f);
+ 		}
+-		websWrite(stream, ",\"blk\":{\"on\":%d,\"v4\":%ld,\"v6\":%ld,\"names\":%ld,\"feed\":{\"st\":\"%s\",\"ok\":%llu,\"at\":%llu,\"n\":%llu},\"rej853\":%llu,\"rej443\":%llu}}",
+-			  on, n4, n6, names, fst, okt, at, cnt, r853, r443);
++		websWrite(stream, ",\"blk\":{\"on\":%d,\"dot\":%d,\"doh\":%d,\"v4\":%ld,\"v6\":%ld,\"names\":%ld,\"feed\":{\"st\":\"%s\",\"ok\":%llu,\"at\":%llu,\"n\":%llu},\"rej853\":%llu,\"rej443\":%llu}}",
++			  on, dot, doh, n4, n6, names, fst, okt, at, cnt, r853, r443);
+ 	}
+ }
+ 
+@@ -28118,8 +28454,9 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+ 		sb[n > 0 ? n : 0] = '\0';
+ 		while (n > 0 && (sb[n - 1] == '\n' || sb[n - 1] == ' '))
+ 			sb[--n] = '\0';
+-		websWrite(stream, "{\"ok\":1,\"path\":\"%s\",\"running\":%d,\"stats\":%s}",
+-			  rfl_nflog() ? "nflog" : "log", pids("rflogd") ? 1 : 0,
++		/* 2026-11-10 (_r6): fwd_set = a remote log server is set (System Log page); the address is never sent */
++		websWrite(stream, "{\"ok\":1,\"path\":\"%s\",\"running\":%d,\"fwd_set\":%d,\"stats\":%s}",
++			  rfl_nflog() ? "nflog" : "log", pids("rflogd") ? 1 : 0, *nvram_safe_get("log_ipaddr") ? 1 : 0,
+ 			  (n > 1 && sb[0] == '{' && sb[n - 1] == '}') ? sb : "null");
+ 		return;
+ 	}
+@@ -29057,7 +29394,8 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	{ "dns",    "reaper_dnshc_strict", 2 },
+ 	/* Encrypted DNS */
+ 	{ "encdns", "reaper_dot_srv",  2    }, { "encdns", "reaper_dot_strict", 2 },
+-	{ "encdns", "reaper_doh_block", 2   },
++	{ "encdns", "reaper_doh_srv",  2    },
++	{ "encdns", "reaper_doh_block", 2   }, { "encdns", "reaper_dot_block", 2 },
+ 	/* Traffic (the history path is a USB volume of this router - not carried) */
+ 	{ "traffic", "rtraf_enable",   2    }, { "traffic", "rtraf_cap_gb",   9   },
+ 	{ "traffic", "rtraf_probe",    65   },
+@@ -29077,6 +29415,8 @@ static const struct { const char *sect; const char *nv; size_t max; } rcfg_flags
+ 	/* beta firmware offers, connection names, the UPnP guard, the channel-quality monitor */
+ 	{ "misc",   "reaper_fwbeta",   2    }, { "misc",   "rconn_names",    2   },
+ 	{ "misc",   "upnp_protect_svc", 2   }, { "misc",   "rchq_enable",    2   },
++	{ "misc",   "reaper_bgdfs_stock", 2 },	/* review 2026-11-11 (C-5): Tweaks > Wireless stability */
++	{ "misc",   "reaper_dhd_ioto", 6    }, { "misc",   "disable_exap",   2   },	/* review 2026-11-11: Tweaks > Wireless stability */
+ };
+ #define RCFG_NFLAGS ((int)(sizeof(rcfg_flags) / sizeof(rcfg_flags[0])))
+ static const char *rcfg_fw_lists[] = { "obj", "grp", "svc", "zone", "zpol", "rules", "edef", "nat" };
+@@ -29230,7 +29570,11 @@ static void rcfg_restart(int gk, int warden, int dw, unsigned t)
+ 	RCFG_SVC(dw, "start_rwarden_update");	/* Dreadwatch's lists as restored, fetched now */
+ 	RCFG_SVC(t & RCFG_T_WG, "restart_wallguard;start_wallguard_update");
+ 	RCFG_SVC(t & RCFG_T_DNS, "restart_dnsmasq;restart_rdnshc");
+-	RCFG_SVC(t & RCFG_T_ENC, "restart_rednsd");
++	/* 2026-11-10: the block's two switches live in this section; their rules and sets come from the
++	 * firewall, their name file and canaries from dnsmasq, so an import restarts both - the list the
++	 * page's own Save sends. dnsmasq is named once (the dns section above already restarts it): rc
++	 * reads at most 255 characters of this list, and every section together stays under that. */
++	RCFG_SVC(t & RCFG_T_ENC, (t & RCFG_T_DNS) ? "restart_rednsd;restart_firewall" : "restart_rednsd;restart_dnsmasq;restart_firewall");
+ 	RCFG_SVC(t & RCFG_T_WATCH, "restart_rwatch");
+ 	RCFG_SVC(t & RCFG_T_TRAF, "restart_rtraf");
+ 	RCFG_SVC(t & RCFG_T_EXPORT, "restart_rexport");
+@@ -29364,6 +29708,17 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 				if (!json_object_object_get_ex(sect, n, &val)) continue;
+ 				if (!strcmp(s, "fw") && fw_armed) { rejected++; continue; }	/* F2 */
+ 				if (rcfg_put(i, json_object_get_string(val)) != 0) { rejected++; continue; }
++				/* 2026-11-10: a file made before the encrypted-DNS block was split carries reaper_doh_block
++				 * and no reaper_dot_block. The port-853 switch then goes back to empty = "follow the DoH
++				 * switch" (rc/encdns.c), so "block on" in the file is both halves on, whatever value this
++				 * router held. A file that carries both keys is applied as written (table order: the DoH
++				 * row first, then the port-853 row). */
++				if (!strcmp(n, "reaper_doh_block")) {
++					json_object *dv = NULL;
++
++					if (!json_object_object_get_ex(sect, "reaper_dot_block", &dv) || !dv)
++						nvram_set("reaper_dot_block", "");
++				}
+ 				nflags++;
+ 				if (!strcmp(s, "gk")) touch_gk = 1;
+ 				else if (!strcmp(s, "warden")) touch_warden = 1;
+@@ -29384,7 +29739,7 @@ static int rcfg_import_json(const char *body, int *nflags_o, int *nlists_o, int
+ 		/* 2. Gatekeeper list: the same store gk actions write; additive */
+ 		if (json_object_object_get_ex(root, "gk_rl", &val)) {
+ 			const char *v = json_object_get_string(val);
+-			if (rcfg_ok(v, RCFG_GK_MAX) && gk_rl_set(v) == 0) { nlists++; touch_gk = 1; }
++			if (rcfg_ok(v, RCFG_GK_MAX) && gk_rl_merge(v) >= 0) { nlists++; touch_gk = 1; }	/* review 2026-11-11 (B-6) */
+ 			else rejected++;
+ 		}
+ 		/* 3. Policy Routing rules: staged; the operator applies + keeps */
+@@ -31696,7 +32051,7 @@ static void rdev_node_classify(struct rdev *v, int n)
+ 	for (k = 0; k < n; k++) {
+ 		unsigned char mb[6] = {0};
+ 		ether_atoe(v[k].mac, mb);
+-		for (i = 1; i < tbl->count; i++) {		/* index 0 = this router (the CAP) */
++		for (i = 1; i < tbl->count && i < CFG_CLIENT_NUM; i++) {	/* index 0 = this router (the CAP); review 2026-11-11: never past the table */
+ 			if (memcmp(tbl->realMacAddr[i], mb, 6) == 0) {
+ 				int path = tbl->activePath[i];
+ 				v[k].node = path > 0 ? path : -1;	/* -1: a node, uplink unknown/down */
+@@ -31744,7 +32099,7 @@ int reaper_node_of_sta(const char *mac, char *out, size_t n)
+ 	if (shm == (void *)-1)
+ 		return 0;
+ 	tbl = (P_CM_CLIENT_TABLE)shm;
+-	for (i = 1; i < tbl->count; i++) {		/* index 0 = this router (the CAP) */
++	for (i = 1; i < tbl->count && i < CFG_CLIENT_NUM; i++) {	/* index 0 = this router (the CAP); review 2026-11-11: never past the table */
+ 		if (memcmp(tbl->sta2g[i], mb, 6) == 0 || memcmp(tbl->sta5g[i], mb, 6) == 0 ||
+ 		    memcmp(tbl->sta6g[i], mb, 6) == 0) {
+ 			snprintf(out, n, "%02X:%02X:%02X:%02X:%02X:%02X", tbl->realMacAddr[i][0], tbl->realMacAddr[i][1],
+@@ -34424,7 +34779,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 		goto FINISH;
+ 	}
+ 	else if((reaper_ll_rem = reaper_login_src_locked(&login_uip_tmp)) > 0){	/* reaper A-8: this source is locked out */
+-		send_login_page(fromapp_flag, LOGINLOCK, NULL, NULL, max_lock_time - reaper_ll_rem, NOLOGINTRY);
++		send_login_page(fromapp_flag, LOGINLOCK, NULL, NULL, MAX_LOGIN_BLOCK_TIME - reaper_ll_rem, NOLOGINTRY);	/* review 2026-11-11: a source lock always lasts MAX_LOGIN_BLOCK_TIME */
+ 		ret = LOGINLOCK;
+ 		goto FINISH;
+ 	}
+@@ -34501,7 +34856,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 		if (authpass != NULL && *authpass != '\0') {
+ 			*authpass++ = '\0';
+ 			/* Is this the right user and password? */
+-			if(nvram_match("http_username", authinfo) && (compare_passwd_in_shadow(authinfo, authpass) || app_auth(authinfo, authpass)))
++			if(nvram_match("http_username", authinfo) && compare_passwd_in_shadow(authinfo, authpass))	/* review 2026-11-11 (B-C3): the main password only */
+ 				auth_pass = 1;
+ 			if(!nvram_get_int("p_Setting")){
+ 				if(strlen(authinfo) > 20)
+@@ -34515,6 +34870,7 @@ login_cgi(webs_t wp, char_t *url, int auth_version)
+ 	}else if(auth_version == HTTPD_AUTH_V2){
+ 		cnonce = safe_get_cgi_json("cnonce", root);
+ 		id = safe_get_cgi_json("id", root);
++		reaper_app_pw_clear();	/* review 2026-11-11 (B-C3): the phone-app password stays empty */
+ 		auth_pass = validate_httpd_auth_v2(authorization_t, id, cnonce);
+ 		HTTPD_DBG("auth_pass = %d\n", auth_pass);
+ 	}
+@@ -39638,6 +39994,7 @@ do_chpass_cgi(char *url, FILE *stream)
+ 
+ 	int user_agent_id = check_user_agent(user_agent);
+ 
++	reaper_app_pw_clear();	/* review 2026-11-11 (B-C3): the phone-app password stays empty here too (password change) */
+ 	ret = do_chpass(cur_username, cur_passwd, new_username, new_passwd, restart_httpd, defpass_enable, user_agent_id);
+ 
+ 	if(ret == HTTP_CHPASS_FAIL_MAX){
+diff --git a/release/src/router/libwebapi/webapi.c b/release/src/router/libwebapi/webapi.c
+index 970e201f3cf..fb963d61cc5 100644
+--- a/release/src/router/libwebapi/webapi.c
++++ b/release/src/router/libwebapi/webapi.c
+@@ -344,7 +344,12 @@ int upload_server_ovpn_cert_cgi()
+ 	if (nvram_get_int("upload_server_ovpn_cert_temp")) {
+ 		if(check_if_file_exist(OPENVPN_UPLOAD_FILE)) {
+ 			int i, unit;
++			int tar_safe = 1;
++			int stage_fd;
+ 			char file_path[128];
++			char stage_archive[] = "/tmp/ovpn_verifyXXXXXX";
++			char stage_extract[48] = {0};
++			char stage_list[48] = {0};
+ 			char *lists[] = {
+ 				"ca",
+ 				"ca_key",
+@@ -354,25 +359,79 @@ int upload_server_ovpn_cert_cgi()
+ 				"dh",
+ 				"key",
+ 				"crl",
+-				"extra"
++				"extra",
+ 				"static",
+ 				NULL
+ 			};
+-			snprintf(cmd, sizeof(cmd), "tar -xzf %s -C %s", OPENVPN_UPLOAD_FILE, OPENVPN_UPLOAD_FLODER);
+-			system(cmd);
+-
+-			unit = nvram_get_int("vpn_server_unit");
+-			for (i = 0; i < ARRAY_SIZE(lists) && lists[i] != NULL; ++i) {
+-				memset(file_path, 0, sizeof(file_path));
+-				snprintf(file_path, sizeof(file_path), "%s/vpn_crt_server%d_%s", OPENVPN_UPLOAD_FLODER, unit, lists[i]);
+-				if(check_if_file_exist(file_path)) {
+-					eval("mv", "-f", file_path, JFFS_OPENVPN);
++
++			/* Security: move the uploaded archive out of the fixed,
++			 * predictable OPENVPN_UPLOAD_FILE path into a private,
++			 * unpredictable staging file before any validation. All
++			 * checks and the extraction below operate only on this
++			 * private copy, so a concurrent authenticated request that
++			 * replaces OPENVPN_UPLOAD_FILE cannot swap the archive
++			 * content between the check and the extraction (TOCTOU). */
++			stage_fd = mkstemp(stage_archive);
++			if (stage_fd >= 0) {
++				close(stage_fd);
++				snprintf(stage_extract, sizeof(stage_extract), "%s_extract", stage_archive);
++				snprintf(stage_list, sizeof(stage_list), "%s_list", stage_archive);
++				doSystem("mkdir -m 0700 %s", stage_extract);
++				if (rename(OPENVPN_UPLOAD_FILE, stage_archive) != 0)
++					tar_safe = 0;
++			} else {
++				tar_safe = 0;
++			}
++
++			/* Security: fail closed if the archive cannot even be listed
++			 * (corrupted/truncated archive), instead of treating a listing
++			 * failure as "no dangerous entry found" */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "tar tzvf '%s' > '%s' 2>/dev/null", stage_archive, stage_list);
++				if (system(cmd) != 0) {
++					logmessage("httpd", "upload_server_ovpn_cert_cgi: failed to list archive, reject");
++					tar_safe = 0;
++				}
++			}
++			/* Security: reject archive containing symlinks or hardlinks */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "awk '{print $1}' '%s' | grep -qE '^[lh]'", stage_list);
++				if (system(cmd) == 0) {
++					logmessage("httpd", "upload_server_ovpn_cert_cgi: reject archive containing symlink/hardlink entry");
++					tar_safe = 0;
+ 				}
+ 			}
+-			ret = HTTP_OK;
+-			notify_rc("restart_openvpnd");
+-			notify_rc("restart_chpass");
+-			sync_profile_update_time(1); /* 0:nvram 1:openvpn 2:ipsec 3:usericon */
++			/* Security: reject archive containing absolute paths or path traversal */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "grep -qE '(^| )/|\\.\\./' '%s'", stage_list);
++				if (system(cmd) == 0) {
++					logmessage("httpd", "upload_server_ovpn_cert_cgi: reject archive containing unsafe path entry");
++					tar_safe = 0;
++				}
++			}
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "tar -xzf '%s' -C '%s'", stage_archive, stage_extract);
++				if (system(cmd) == 0) {
++					unit = nvram_get_int("vpn_server_unit");
++					for (i = 0; i < ARRAY_SIZE(lists) && lists[i] != NULL; ++i) {
++						memset(file_path, 0, sizeof(file_path));
++						snprintf(file_path, sizeof(file_path), "%s/vpn_crt_server%d_%s", stage_extract, unit, lists[i]);
++						if(check_if_file_exist(file_path)) {
++							eval("mv", "-f", file_path, JFFS_OPENVPN);
++						}
++					}
++					ret = HTTP_OK;
++					notify_rc("restart_openvpnd");
++					notify_rc("restart_chpass");
++					sync_profile_update_time(1); /* 0:nvram 1:openvpn 2:ipsec 3:usericon */
++				} else {
++					/* Security: fail closed on extraction failure instead of
++					 * silently proceeding with a partial/corrupt cert set */
++					logmessage("httpd", "upload_server_ovpn_cert_cgi: extraction failed, reject");
++				}
++			}
++
++			doSystem("rm -rf %s %s %s", stage_archive, stage_extract, stage_list);
+ 		}
+ 	}
+ 	nvram_unset("upload_server_ovpn_cert_temp");
+@@ -461,7 +520,12 @@ int upload_server_ipsec_cert_cgi()
+ 		char cmd[1024] = {0};
+ 		if(check_if_file_exist(IPSEC_UPLOAD_FILE)) {
+ 			int i = 0;
++			int tar_safe = 1;
++			int stage_fd;
+ 			char file_path[128] = {0};
++			char stage_archive[] = "/tmp/ipsec_verifyXXXXXX";
++			char stage_extract[48] = {0};
++			char stage_list[48] = {0};
+ 			char *lists[] = {
+ 				"asusCert.der",
+ 				"asusCert.pem",
+@@ -472,19 +536,70 @@ int upload_server_ipsec_cert_cgi()
+ 				"svrKey.pem",
+ 				NULL
+ 			};
+-			snprintf(cmd, sizeof(cmd), "tar -xzf %s -C %s", IPSEC_UPLOAD_FILE, IPSEC_UPLOAD_FLODER);
+-			system(cmd);
+-
+-			for (i = 0; i < ARRAY_SIZE(lists) && lists[i] != NULL; ++i) {
+-				memset(file_path, 0, sizeof(file_path));
+-				snprintf(file_path, sizeof(file_path), "%s/%s", IPSEC_UPLOAD_FLODER, lists[i]);
+-				if(check_if_file_exist(file_path)) {
+-					eval("mv", "-f", file_path, JFFS_CA_FILES);
++
++			/* Security: move the uploaded archive out of the fixed,
++			 * predictable IPSEC_UPLOAD_FILE path into a private,
++			 * unpredictable staging file before any validation, so a
++			 * concurrent authenticated request cannot swap the archive
++			 * content between the check and the extraction (TOCTOU). */
++			stage_fd = mkstemp(stage_archive);
++			if (stage_fd >= 0) {
++				close(stage_fd);
++				snprintf(stage_extract, sizeof(stage_extract), "%s_extract", stage_archive);
++				snprintf(stage_list, sizeof(stage_list), "%s_list", stage_archive);
++				doSystem("mkdir -m 0700 %s", stage_extract);
++				if (rename(IPSEC_UPLOAD_FILE, stage_archive) != 0)
++					tar_safe = 0;
++			} else {
++				tar_safe = 0;
++			}
++
++			/* Security: fail closed if the archive cannot even be listed */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "tar tzvf '%s' > '%s' 2>/dev/null", stage_archive, stage_list);
++				if (system(cmd) != 0) {
++					logmessage("httpd", "upload_server_ipsec_cert_cgi: failed to list archive, reject");
++					tar_safe = 0;
++				}
++			}
++			/* Security: reject archive containing symlinks or hardlinks; a
++			 * legitimate IPsec cert archive never has one */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "awk '{print $1}' '%s' | grep -qE '^[lh]'", stage_list);
++				if (system(cmd) == 0) {
++					logmessage("httpd", "upload_server_ipsec_cert_cgi: reject archive containing symlink/hardlink entry");
++					tar_safe = 0;
+ 				}
+ 			}
+-			ret = HTTP_OK;
+-			notify_rc("ipsec_restart");
+-			sync_profile_update_time(2);
++			/* Security: reject archive containing absolute paths or path traversal */
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "grep -qE '(^| )/|\\.\\./' '%s'", stage_list);
++				if (system(cmd) == 0) {
++					logmessage("httpd", "upload_server_ipsec_cert_cgi: reject archive containing unsafe path entry");
++					tar_safe = 0;
++				}
++			}
++			if (tar_safe) {
++				snprintf(cmd, sizeof(cmd), "tar -xzf '%s' -C '%s'", stage_archive, stage_extract);
++				if (system(cmd) == 0) {
++					for (i = 0; i < ARRAY_SIZE(lists) && lists[i] != NULL; ++i) {
++						memset(file_path, 0, sizeof(file_path));
++						snprintf(file_path, sizeof(file_path), "%s/%s", stage_extract, lists[i]);
++						if(check_if_file_exist(file_path)) {
++							eval("mv", "-f", file_path, JFFS_CA_FILES);
++						}
++					}
++					ret = HTTP_OK;
++					notify_rc("ipsec_restart");
++					sync_profile_update_time(2);
++				} else {
++					/* Security: fail closed on extraction failure instead of
++					 * silently proceeding with a partial/corrupt cert set */
++					logmessage("httpd", "upload_server_ipsec_cert_cgi: extraction failed, reject");
++				}
++			}
++
++			doSystem("rm -rf %s %s %s", stage_archive, stage_extract, stage_list);
+ 		}
+ 	}
+ 
+@@ -1376,6 +1491,13 @@ int do_upload_config(void)
+ 	dbg("Restore jffs cfgs to /jffs, return %d\n", ret);
+ 	logmessage("savejffs", "Restore jffs cfgs to /jffs. (return %d)", ret);
+ #endif
++	/* reaper 2026-11-10: the restore below is an overlay - the nvram tool (a prebuilt on this platform)
++	 * sets the keys the file carries and leaves every other key as it is. reaper_dot_block, the
++	 * encrypted-DNS block's port-853 switch, must not survive that way: a file made before the block
++	 * was split has only reaper_doh_block, and "block on" in it means both halves. So the key is dropped
++	 * first. A file that carries it sets it again; a file that does not leaves it absent, the reboot
++	 * fills it empty from the defaults table, and empty means "follow reaper_doh_block" (rc/encdns.c). */
++	nvram_unset("reaper_dot_block");
+ 	sys_upload("/tmp/settings_u.prf");
+ 	/* reaper v2.9.6: the restore tail used to run silent between "settings
+ 	 * staged" and the reboot; stamp each step so a restore that stalls can be
+@@ -1433,7 +1555,9 @@ static const char *const reaper_cmd_line[] = {
+ };
+ static const char *const reaper_one_line[] = {
+ 	"ddns_hostname_x", "lan_domain", "st_samba_workgroup", "filter_wllist", "filter_lwlist",
+-	"url_rulelist", "keyword_rulelist", "tm_vol_size", NULL
++	"url_rulelist", "keyword_rulelist", "tm_vol_size",
++	"ddns_username_x", "ddns_passwd_x",	/* review 2026-11-11 (D-8) */
++	NULL
+ };
+ 
+ /* the NetBIOS name rule of shared/misc.c (1-15 letters / digits, '-' and '.' not first or last), local here: the
+@@ -1454,6 +1578,32 @@ static int reaper_netbios_ok(const char *s)
+ 	return 1;
+ }
+ 
++/* review 2026-11-11 (D-L1): a dotted IPv4 address, at most 15 characters - what networkmap reads lan_gateway
++ * as. */
++static int reaper_dotted_v4(const char *s)
++{
++	int parts = 0, digits = 0, val = 0;
++
++	if (!s || strlen(s) > 15)
++		return 0;
++	for (;; s++) {
++		if (*s >= '0' && *s <= '9') {
++			val = val * 10 + (*s - '0');
++			if (++digits > 3 || val > 255)
++				return 0;
++		} else if (*s == '.' || *s == '\0') {
++			if (!digits)
++				return 0;
++			parts++;
++			digits = 0;
++			val = 0;
++			if (*s == '\0')
++				break;
++		} else
++			return 0;
++	}
++	return parts == 4;
++}
+ static int reaper_in(const char *name, const char *const *list)
+ {
+ 	int i;
+@@ -1492,6 +1642,12 @@ int reaper_validate_apply_input_value(char *name, char *value)
+ 			return 0;
+ 		if (*value && strcmp(name, "st_samba_workgroup") == 0 && !reaper_netbios_ok(value))
+ 			return 0;
++		/* review 2026-11-11 (B-C3): the phone-app login's second admin password; no page sets it, so nothing
++		 * may */
++		if (*value && strcmp(name, "http_passwd_app") == 0)
++			return 0;
++		if (*value && strcmp(name, "lan_gateway") == 0 && !reaper_dotted_v4(value))	/* review 2026-11-11 (D-L1) */
++			return 0;
+ 	}
+ 	return validate_apply_input_value(name, value);
+ }
+-- 
+2.25.1
+

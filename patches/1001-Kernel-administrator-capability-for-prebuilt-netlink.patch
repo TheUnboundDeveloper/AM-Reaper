@@ -1,0 +1,122 @@
+From b8ec1b6dab64a0428d68f082faddb7ce895c28ae Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Wed, 11 Nov 2026 20:17:25 -0500
+Subject: [PATCH] Kernel: administrator capability for prebuilt netlink
+ families, nvram listeners (102.8 line)
+
+- netlink_sendmsg: a sender on family 22, 23 or 29 needs CAP_SYS_ADMIN. The Linux kernel itself
+  does not create these; on this firmware the prebuilt Broadcom Wi-Fi and IGMP-snooping modules
+  do, and their handlers are closed.
+- knvram: joining its notification group (bind or NETLINK_ADD_MEMBERSHIP) needs CAP_SYS_ADMIN,
+  since each notification carries an nvram name and value. The name conversion stays inside its
+  buffer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../char/bcm_knvram/impl1/src/wlcsm_netlink.c | 20 +++++++++++--
+ .../linux-4.19/net/netlink/af_netlink.c       | 30 +++++++++++++++++++
+ 2 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
+index 0953418c703..064732743e0 100644
+--- a/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
++++ b/release/src-rt-5.04behnd.4916/bcmdrivers/opensource/char/bcm_knvram/impl1/src/wlcsm_netlink.c
+@@ -256,7 +256,9 @@ asusnls_u2c(char *buf)
+ 		} else {
+ 			len = 0;
+ 			if ((ret = utf8s_to_utf16s(xfrstr, strlen(xfrstr), UTF16_HOST_ENDIAN, unibuf, 1024))) {
+-				for (i = 0; (i < ret) && unibuf[i]; i++) {
++				/* reaper (review 2026-11-11, A-2): stop while a whole character and the terminator still fit in the
++				 * 1024-byte buffer; up to 1024 characters of up to NLS_MAX_CHARSET_SIZE bytes each were written into it */
++				for (i = 0; (i < ret) && unibuf[i] && len + NLS_MAX_CHARSET_SIZE < 1024; i++) {
+ 					charlen = nls->uni2char(unibuf[i], &buf[len], NLS_MAX_CHARSET_SIZE);
+ 					if (charlen > 0) {
+ 						len += charlen;
+@@ -310,7 +312,8 @@ asusnls_c2u(char *buf)
+ 				}
+ 			}
+ 			unibuf[i] = 0;
+-			ret = utf16s_to_utf8s(unibuf, i, UTF16_HOST_ENDIAN, buf, 1024);  /* unicode to utf-8, 1024 is size of array unibuf */
++			/* reaper (review 2026-11-11, A-2): 1023 - the terminator below is written at buf[ret], and buf is 1024 bytes */
++			ret = utf16s_to_utf8s(unibuf, i, UTF16_HOST_ENDIAN, buf, 1023);  /* unicode to utf-8 */
+ 			buf[ret] = 0;
+ 			unload_nls(nls);
+ 			if (!ret) {
+@@ -562,6 +565,18 @@ wlcsm_nl_rcv_skb(struct sk_buff *skb)
+ 
+ 
+ 
++/* reaper (review 2026-11-11, A-1). Every nvram set / unset / commit is also sent to multicast group 1 of this
++ * netlink family, name AND value. The netlink core lets any process with CAP_NET_ADMIN join a group - that is
++ * the "nobody" dnsmasq - so a foothold there could read the admin password, Wi-Fi keys and VPN secrets as they
++ * are written. Joining a group (bind() or NETLINK_ADD_MEMBERSHIP, the core calls this hook for both) now needs
++ * CAP_SYS_ADMIN, the same bar the senders already have. No shipped process listens on the group. */
++static int wlcsm_nl_bind(struct net *net, int group)
++{
++    (void)net;
++    (void)group;
++    return capable(CAP_SYS_ADMIN) ? 0 : -EPERM;
++}
++
+ int wlcsm_module_init(void)
+ {
+     struct socket *sock;
+@@ -572,6 +587,7 @@ int wlcsm_module_init(void)
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+     struct netlink_kernel_cfg cfg = {
+         .input  = wlcsm_nl_rcv_skb,
++        .bind   = wlcsm_nl_bind,	/* reaper (review 2026-11-11, A-1) */
+     };
+ #endif
+ 
+diff --git a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
+index 191aca9d674..cb788386b73 100644
+--- a/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
++++ b/release/src-rt-5.04behnd.4916/kernel/linux-4.19/net/netlink/af_netlink.c
+@@ -1807,6 +1807,28 @@ static void netlink_cmsg_listen_all_nsid(struct sock *sk, struct msghdr *msg,
+ 		 &NETLINK_CB(skb).nsid);
+ }
+ 
++/* reaper (review 2026-11-11). On this firmware three netlink families have kernel-side sockets that the Linux
++ * kernel itself does not create: 22, 23 and 29 (/proc/net/netlink on a running router), opened by the prebuilt
++ * Broadcom Wi-Fi and IGMP-snooping modules. Their message handlers are closed code, so nothing open can say what
++ * they accept or from whom. The check sits here, the one place every user-space send passes (messages the
++ * kernel itself sends do not come through netlink_sendmsg): a sender on one of these families needs
++ * CAP_SYS_ADMIN. */
++#define REAPER_NL_BRCM_A	22
++#define REAPER_NL_BRCM_B	23
++#define REAPER_NL_BRCM_C	29
++
++static inline bool reaper_nl_closed_family(int proto)
++{
++	return proto == REAPER_NL_BRCM_A || proto == REAPER_NL_BRCM_B || proto == REAPER_NL_BRCM_C;
++}
++
++static int reaper_nl_closed_verdict(int proto, bool admin)
++{
++	if (!reaper_nl_closed_family(proto))
++		return 0;
++	return admin ? 0 : -EPERM;
++}
++/* reaper-nl-gate: end */
+ static int netlink_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
+ {
+ 	struct sock *sk = sock->sk;
+@@ -1885,6 +1907,14 @@ static int netlink_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
+ 		goto out;
+ 	}
+ 
++	if (reaper_nl_closed_family(sk->sk_protocol)) {	/* reaper (review 2026-11-11) */
++		err = reaper_nl_closed_verdict(sk->sk_protocol, sk_capable(sk, CAP_SYS_ADMIN));
++		if (err) {
++			kfree_skb(skb);
++			goto out;
++		}
++	}
++
+ 	if (dst_group) {
+ 		refcount_inc(&skb->users);
+ 		netlink_broadcast(sk, skb, dst_portid, dst_group, GFP_KERNEL);
+-- 
+2.25.1
+

@@ -72,7 +72,8 @@ pre = lc.find("else if((reaper_ll_rem = reaper_login_src_locked(&login_uip_tmp))
 check("login_cgi: source pre-check after the stock side-lock replies, before the captcha and password checks",
       0 < lc.find("send_login_page(fromapp_flag, lock_status, NULL, NULL, dt, LOGINTRY);") < pre < lc.find('safe_get_cgi_json("login_captcha", root);'))
 check("login_cgi: a locked source gets the stock LOGINLOCK reply, NOLOGINTRY (it never feeds the side counter)",
-      "send_login_page(fromapp_flag, LOGINLOCK, NULL, NULL, max_lock_time - reaper_ll_rem, NOLOGINTRY);" in lc)
+      # review 2026-11-11: counted from MAX_LOGIN_BLOCK_TIME, the length a source lock really has
+      "send_login_page(fromapp_flag, LOGINLOCK, NULL, NULL, MAX_LOGIN_BLOCK_TIME - reaper_ll_rem, NOLOGINTRY);" in lc)
 ok_b = lc[lc.index('HTTPD_DBG("authpass!\\n");'):lc.index("\t}else{\n#ifdef RTCONFIG_CAPTCHA\n\t\tif(nvram_get_int(\"captcha_enable\")){")]
 check("login_cgi: a good login clears the source", "reaper_login_src_ok(&login_uip_tmp);" in ok_b)
 fb = lc[lc.index("\t}else{\n#ifdef RTCONFIG_CAPTCHA\n\t\tif(nvram_get_int(\"captcha_enable\")){"):]

@@ -84,8 +84,10 @@ check("LAN: tab conditions copied from menu.js (DHCP, Switch in every mode, Mult
 # ---- Reaper_DNS ----
 check("DNS: WAN servers per unit (wan0_/wan1_ via httpd validate_instance), restart_wan_dns <unit>",
       "var p = 'wan' + u + '_';" in D and "c[p + 'dns1_x'] = txt('i_d1' + u, NV[p + 'dns1_x'])" in D and "S.push('restart_wan_dns ' + u)" in D)
-check("DNS: DoT client restarts stubby; switching it also refreshes resolv + dnsmasq",
-      "S.push('restart_stubby')" in D and "if (has('dnspriv_enable') && S.indexOf('restart_wan_dns 0') < 0) S.push('restart_wan_dns 0');" in D)
+# 2026-11-10: the profile and the server list refresh resolv too - with DoT on the router's own resolver
+# (rc/wan.c update_resolvconf) is loopback, alone under Strict and with the WAN servers behind it otherwise
+check("DNS: DoT client restarts stubby; switching it, its profile or its servers also refreshes resolv + dnsmasq",
+      "S.push('restart_stubby')" in D and "if (has('dnspriv_enable', 'dnspriv_profile', 'dnspriv_rulelist') && S.indexOf('restart_wan_dns 0') < 0) S.push('restart_wan_dns 0');" in D)
 check("DNS: dnsmasq options and client DNS restart dnsmasq, DNS Director restart_dnsfilter",
       "S.push('restart_dnsmasq')" in D and "if (dd) S.push('restart_dnsfilter');" in D)
 check("DNS: carries the rows moved off the DHCP page", all(re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % n, D[D.rfind("<script>"):]) for n in ("dhcp_dns1_x", "dhcp_dns2_x", "dhcp_wins_x", "dhcpd_dns_router", "ipv6_dns1_x")))
@@ -96,7 +98,7 @@ check("DNS: sdn_rl column written into a fresh read at Apply, never re-posted fr
       "'/appGet.cgi?hook=nvram_char_to_ascii(sdn_rl,sdn_rl)" in D and "f[SDN_COL] = e.mode" in D)
 check("DNS: DoT rows validated and byte-capped (B-WAN-5); Encrypted DNS settings linked, not duplicated",
       "rp.v.hostname(r.host)" in D and "var DOT_BYTES = 1006 - 'dnspriv_rulelist='.length;" in D
-      and "#Reaper_EncryptedDNS.asp" in D and "reaper_dot_srv" not in D and "reaper_doh_block" not in D)
+      and "#Reaper_EncryptedDNS.asp" in D and "reaper_dot_srv" not in D and "reaper_doh_block" not in D and "reaper_dot_block" not in D)
 check("DNS: hnd rule list split in 255-char chunks, unedited chunks kept", "s.substring(i * 255, (i + 1) * 255)" in D and "DD_EDITED ? " in D)
 
 # ---- Reaper_Routes ----

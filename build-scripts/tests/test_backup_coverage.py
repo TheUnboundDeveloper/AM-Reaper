@@ -70,6 +70,9 @@ FULL_ONLY = {   # in the full .rbk (all nvram + /jffs) only, on purpose
     "rtraf_path": "a USB path on this router",
     "reaper_wanbounce_enable": "this router's WAN port",
     "wl_bwfloor": "radio tuning", "wl_punct": "radio tuning", "wl_rmit": "radio tuning",
+    # review 2026-11-11 (B-C4): it must travel WITH the stock portal secret it describes (cp_uamsecret, in the router
+    # settings of both files); carried alone it could say "your own" next to a random secret
+    "reaper_cp_secret_own": "Guest Portal: travels with the stock portal secret",
 }
 STOCK = {   # stock keys whose default Reaper changed: the router settings carry them like any stock setting
     "ASUS_EULA", "ASUS_NEW_EULA", "computer_name", "dns_norebind", "enable_samba", "enable_samba_tuxera",

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.5** · 2026-11-09 <!--@stamp-->
+> **Doc status:** current as of **v3.7.6** · 2026-11-11 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,52 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.6 — Encrypted DNS for devices over HTTPS; DHCP keeps answering through a stalled radio; a security review's fixes; Guest Portal and VPN fixes
+
+Everything in v3.7.5 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **DNS-over-HTTPS for your devices.** The router's encrypted DNS server now also answers DNS-over-HTTPS (port 443
+  on the LAN side) beside DNS-over-TLS (port 853), each with its own switch on the Encrypted DNS page. Devices that
+  support it find it on their own: the router offers it by DHCP (option 162) while its certificate is valid for its
+  name. The page shows both legs of a lookup - device to router, router to upstream - in red when a leg fails, lists
+  the devices still on plain DNS, and gives the DNS-over-HTTPS address for devices you set up by hand.
+- **The Encrypted DNS block is two switches**, port 853 (DNS-over-TLS and DNS-over-QUIC) and the DNS-over-HTTPS
+  resolvers; a router that had the block on keeps both on. Saving the block no longer drops every open encrypted
+  DNS connection.
+- **The router's own lookups follow DNS-over-TLS.** With DNS-over-TLS on, the router's own lookups still went to the
+  WAN DNS servers in plain text; they now go through the encrypted forwarder. The DNS Health Check asks over
+  DNS-over-TLS too and sends no plain probe.
+- **DHCP keeps answering while a radio stalls.** dnsmasq no longer waits on the kernel's network lock for every
+  DHCP packet, so a Wi-Fi radio that stops answering no longer stops DHCP and DNS with it. Replies to a device that
+  has no address yet go out as broadcast.
+- **Wireless stability switches** (Administration > Tweaks), all off: a shorter wait for a radio call, keeping
+  devices an AiMesh node reports, and ASUS's background-DFS rule. They are meant for routers that see Wi-Fi stalls
+  or whole-network disconnects; the help text gives the recommended setting for each.
+- **Guest Portal.** A Guest Portal network is exempt from Gatekeeper (its own sign-in is the gate), and its passcode
+  can be set when the portal is created. Each router now gets its own portal secret instead of the stock one every
+  router shared; Administration > Tweaks > Guest Portal takes your own if you prefer. The Wireless Log no longer
+  shows a portal network as the main network, and its network chips are coloured: main green, guest blue,
+  customized amber.
+- **Web interface.** A connection has 15 seconds to finish logging in, so a slow or stalled client can no longer
+  hold the interface for everybody. Session tokens come from the kernel's random generator. The cross-site guard
+  also covers the USB share and WAN action pages and treats another port on the router as another site. With
+  Gatekeeper's waiting page on, approved devices are recognised again (they got "Awaiting approval" on plain HTTP).
+  The Network page's setup panels are no longer cut off at the bottom.
+- **VPN.** A WireGuard or OpenVPN client kept from the stock firmware's provider list was switched off at every
+  boot, which looked like a lost key; it is not any more, and the VPN Client page says whether a key is saved.
+  IPsec profiles are checked before the VPN configuration is written.
+- **Security review fixes.** From a full debug and security review: only administrator processes may talk to three
+  netlink interfaces of the prebuilt Wi-Fi and IGMP-snooping drivers or listen to settings changes; /tmp, /var and
+  /jffs are mounted nosuid,nodev; restart requests rc sent to itself are no longer lost; AiMesh sync files are
+  private; Time Machine and portal folders are root's own; Wallguard regular expressions that could stall DNS are
+  refused; the encrypted DNS server shares its connection slots fairly between devices; an unused second admin
+  password setting is kept empty; and smaller fixes.
+- **Firewall log.** The remote log server's sent and unsent lines are counted on the Firewall page; a collector
+  that runs but stops reporting is replaced.
+- **Diagnostics v1.3.59.** A radio call stalls section, the DNS Health Check under DNS-over-TLS, the firewall log
+  forward, and the names on the router's own certificates masked.
 
 ## v3.7.5 — The firewall log leaves the system log; a failed web login locks one address, not the whole LAN; Custom DDNS with Let's Encrypt; WireGuard client fixes; Encrypted DNS trusted after a reboot
 

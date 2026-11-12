@@ -61,6 +61,8 @@ int nvram_get_int(const char *k);
 int nvram_match(const char *k, const char *v);
 int nvram_set(const char *k, const char *v);
 int _eval_stub(char *const argv[]);
+/* review 2026-11-11 (D-7): acs_cli2 runs through the bounded form; same recorder, timeout ignored here */
+#define _eval(argv, path, timeout, ppid) _eval_stub(argv)
 #define eval(cmd, ...) ({ char *const _a[] = { cmd, __VA_ARGS__, NULL }; _eval_stub(_a); })
 void logmessage(const char *tag, const char *fmt, ...);
 int f_exists(const char *p);

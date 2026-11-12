@@ -299,17 +299,32 @@ else warn "shared-parity" "_port_protect.sh not deployed -- parity unchecked"; f
 # ---- 10. rung-critical patch markers in the STAGED image -------------------
 # verify_markers.txt lines: <staged-path>|<literal>|<min>  or  <staged-path>|!<literal>
 # with an optional 4th field naming the only variant the line applies to
-# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design.
+# (<staged-path>|<literal>|<min>|MCP) - an MCP-only artifact is absent from noMCP by design,
+# and an optional 5th field naming the build flag the line needs
+# (<staged-path>|<literal>|<min>||RTCONFIG_COOVACHILLI) - the line is checked only when the
+# build .config has that flag =y. A model whose stock target.mak leaves a feature out (BQ16 and
+# BQ16 Pro have no CAPTIVE_PORTAL) has no binary or code to check (v3.7.6 CI, 2026-11-12).
 # One line per field-critical fix -> every model/variant image PROVES it ships.
 MARKF=/home/reaper/reaper_build/verify_markers.txt
 if [ -f "$MARKF" ]; then
-  mfail=0; mnum=0
-  while IFS='|' read -r mpath mpat mmin mvar; do
+  mfail=0; mnum=0; mskip=0
+  while IFS='|' read -r mpath mpat mmin mvar mcfg; do
     case "$mpath" in ''|'#'*) continue;; esac
     case "$mvar" in
       ''|"$VARIANT") ;;
       MCP|noMCP) continue;;
       *) fail "patch-marker" "$mpath: unknown variant field '$mvar'"; mfail=1; continue;;
+    esac
+    case "$mcfg" in
+      '') ;;
+      RTCONFIG_*[!A-Z0-9_]*|RTCONFIG_)
+         fail "patch-marker" "$mpath: bad build-flag field '$mcfg'"; mfail=1; continue;;
+      RTCONFIG_*)
+         if [ ! -r "$RCONF" ]; then
+           fail "patch-marker" "$mpath: needs $mcfg but the build config $RCONF is unreadable"; mfail=1; continue
+         fi
+         grep -q "^$mcfg=y\$" "$RCONF" || { mskip=$((mskip+1)); continue; };;
+      *) fail "patch-marker" "$mpath: bad build-flag field '$mcfg'"; mfail=1; continue;;
     esac
     mnum=$((mnum+1))
     tgt="$FS/$mpath"
@@ -321,7 +336,7 @@ if [ -f "$MARKF" ]; then
             [ "$c" -ge "${mmin:-1}" ] || { fail "patch-marker" "$mpath: '$mpat' x$c < ${mmin:-1}"; mfail=1; };;
     esac
   done < "$MARKF"
-  [ "$mfail" = 0 ] && pass "patch-markers" "$mnum marker rules hold in the staged fs"
+  [ "$mfail" = 0 ] && pass "patch-markers" "$mnum marker rules hold in the staged fs ($mskip not built for this model)"
 else
   warn "patch-markers" "verify_markers.txt missing -- no rung markers checked"
 fi

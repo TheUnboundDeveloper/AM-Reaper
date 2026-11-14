@@ -63,6 +63,10 @@ def pin(rel, name, has=(), hasnt=(), count=None, base=SRC):
 # ---------------------------------------------------------------- rc / shared
 pin("shared/files.c", "C-2: f_write's default mode is 0644", count=("if (cmode == 0) cmode = 0644;", 2),
     hasnt=("if (cmode == 0) cmode = 0666;",))
+# 2026-11-12 (RT-BE88U v3.7.6 report: /tmp/reaper/fwsim.stamp was -rw-rw-rw-): httpd links its own
+# f_write from aspbw.c, which shadows libshared's, so the C-2 default has to hold there too.
+pin("httpd/aspbw.c", "C-2: httpd's own f_write (shadows libshared's) defaults to 0644 too",
+    count=("if (cmode == 0) cmode = 0644;", 1), hasnt=("if (cmode == 0) cmode = 0666;",))
 pin("shared/files.c", "C-2: f_root_owned / f_read_root_string exist",
     has=("int f_root_owned(const char *path)", "st.st_uid == 0", "int f_read_root_string(const char *path, char *buffer, int max)"))
 pin("shared/shared.h", "C-2: ...and are declared", has=("extern int f_root_owned(const char *path);", "extern int f_read_root_string("))

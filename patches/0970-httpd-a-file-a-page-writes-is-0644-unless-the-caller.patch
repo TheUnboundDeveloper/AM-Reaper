@@ -1,0 +1,35 @@
+From 012b62acdae2d551f5d8b0a4a22b068b18fe81ce Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:28 -0500
+Subject: [PATCH] httpd: a file a page writes is 0644 unless the caller names a
+ mode
+
+The Rule Status page's Re-check stamp (/tmp/reaper/fwsim.stamp) was created 0666, writable by
+every user (field report, RT-BE88U, v3.7.6). The page-file writer now uses 0644 when the caller
+names no mode, the rule of the 2026-11-03 review.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/aspbw.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/httpd/aspbw.c b/release/src/router/httpd/aspbw.c
+index f16c6b4143..03de6a200d 100644
+--- a/release/src/router/httpd/aspbw.c
++++ b/release/src/router/httpd/aspbw.c
+@@ -87,7 +87,11 @@ int f_write(const char *path, const void *buffer, int len, unsigned flags, unsig
+ 	mode_t m;
+ 
+ 	m = umask(0);
+-	if (cmode == 0) cmode = 0666;
++	/* reaper (2026-11-12): 0644, not 0666, when the caller names no mode - the review 2026-11-03 C-2
++	 * fix in shared/files.c never reached this copy, and httpd links this one (it shadows libshared's).
++	 * /tmp/reaper/fwsim.stamp (Rule Status re-check) came out world-writable on its first creation.
++	 * Every mode-0 caller in httpd writes a root-only file; none needs another user to write it. */
++	if (cmode == 0) cmode = 0644;
+ 	if ((f = open(path, (flags & FW_APPEND) ? (O_WRONLY|O_CREAT|O_APPEND) : (O_WRONLY|O_CREAT|O_TRUNC), cmode)) >= 0) {
+ 		if ((buffer == NULL) || ((r = write(f, buffer, len)) == len)) {
+ 			if (flags & FW_NEWLINE) {
+-- 
+2.25.1
+

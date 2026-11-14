@@ -1,0 +1,416 @@
+From 3c938dec9194b94824916f56d225579e07210ee1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:23 -0500
+Subject: [PATCH] WAN status: Connected follows the internet check; IPv6
+ re-solicited after an outage
+
+- The header and the dashboard said Connected whenever a line held a lease. A line now counts as
+  up while it holds a lease and the router's own internet check passes on it; IPv6 counts as up
+  only while it has a default route.
+- wanduck: native IPv6 never came back after an upstream outage. Once per outage, when the line is
+  up again and IPv6 has no default route, the DHCPv6 client is restarted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/wanduck.c            | 72 ++++++++++++++++++++
+ release/src/router/www/Main_ReaperDash.asp | 79 ++++++++++++++--------
+ release/src/router/www/reaper_shell.asp    | 52 ++++++++++----
+ 3 files changed, 161 insertions(+), 42 deletions(-)
+
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 4977c91fef..ccc8fe468b 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -285,6 +285,71 @@ static int reaper_wan_leds(int wan_unit, int link_wan_unit)
+ #define reaper_wan_leds(u, l) update_wan_leds(u, l)
+ #endif
+ 
++#ifdef RTCONFIG_IPV6
++/* reaper 2026-11-12 (field report: native IPv6 never came back after an ISP
++ * outage until the WAN was toggled or the cable replugged).
++ * odhcp6c is started only from wan6_up(), i.e. on a fresh DHCPv4 *bound*. When
++ * the upstream goes away but the WAN link stays up, IPv4 merely renews when it
++ * returns and nothing touches IPv6 again: odhcp6c sits in its Solicit back-off
++ * (the server's SOL_MAX_RT persists in the process), or holds a bind that has
++ * no prefix, and rdisc6 exited long ago, so no fresh router advertisement is
++ * asked for. The D2C path below only redid NAT and resolv.conf.
++ * So, once per outage (C2D marks it, the next D2C/CONNED consumes it) and only
++ * for the IPv6 WAN unit in router mode with Native / Passthrough IPv6:
++ *   - SIGUSR1 to odhcp6c: when bound it renews now; while soliciting it
++ *     abandons the back-off and starts a fresh Solicit;
++ *   - SIGUSR2 instead when DHCP-PD is on and no prefix is held: a full new
++ *     transaction (IPv6 on the LAN is already gone, so nothing is torn down);
++ *   - start_dhcp6c if odhcp6c is not running at all;
++ *   - start_rdisc6 for a fresh router solicitation.
++ * Rate-limited to one kick a minute so a flapping probe cannot churn DHCPv6. */
++static int reaper_v6_down[WAN_UNIT_MAX];
++static long reaper_v6_last;
++
++static void reaper_v6_mark_down(int wan_unit)
++{
++	if (wan_unit >= 0 && wan_unit < WAN_UNIT_MAX)
++		reaper_v6_down[wan_unit] = 1;
++}
++
++static void reaper_v6_kick(int wan_unit)
++{
++	int service, sig;
++	long now;
++
++	if (wan_unit < 0 || wan_unit >= WAN_UNIT_MAX || !reaper_v6_down[wan_unit])
++		return;
++	reaper_v6_down[wan_unit] = 0;
++
++	if (sw_mode != SW_MODE_ROUTER || wan_unit != wan_primary_ifunit_ipv6())
++		return;
++	service = get_ipv6_service();
++	if (service != IPV6_NATIVE_DHCP
++#ifdef RTCONFIG_6RELAYD
++	    && service != IPV6_PASSTHROUGH
++#endif
++	    )
++		return;
++
++	now = uptime();
++	if (reaper_v6_last && now - reaper_v6_last < 60)
++		return;
++	reaper_v6_last = now;
++
++	if (pidof("odhcp6c") <= 0) {
++		logmessage("wanduck", "internet back on WAN %d: IPv6 client not running, starting it", wan_unit);
++		notify_rc("start_dhcp6c");
++	} else {
++		sig = (service == IPV6_NATIVE_DHCP && nvram_get_int(ipv6_nvname("ipv6_dhcp_pd"))
++		       && !*nvram_safe_get(ipv6_nvname("ipv6_prefix"))) ? SIGUSR2 : SIGUSR1;
++		logmessage("wanduck", "internet back on WAN %d: %s", wan_unit, (sig == SIGUSR2)
++			   ? "no IPv6 prefix held, restarting DHCPv6" : "renewing DHCPv6");
++		killall("odhcp6c", sig);
++	}
++	notify_rc("start_rdisc6");
++}
++#endif
++
+ void set_link_internet(int wan_unit, int link_internet){
+ #if !defined(RTCONFIG_WANLEDX2)
+ 	if(nvram_get_int("link_internet") == link_internet){
+@@ -5072,6 +5137,10 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 		}
+ #if !defined(RTCONFIG_MULTIWAN_PROFILE)
+ 		else if(conn_changed_state[current_wan_unit] == C2D || (conn_changed_state[current_wan_unit] == CONNED && isFirstUse)){
++#ifdef RTCONFIG_IPV6
++			if(conn_changed_state[current_wan_unit] == C2D)
++				reaper_v6_mark_down(current_wan_unit);	/* reaper 2026-11-12, see reaper_v6_kick() */
++#endif
+ 			if(!rule_setup){
+ 				if(conn_changed_state[current_wan_unit] == C2D){
+ #if defined(RTCONFIG_WPS_ALLLED_BTN) || defined(RTCONFIG_DSL)
+@@ -5169,6 +5238,9 @@ _dprintf("nat_rule: start_nat_rules 6.\n");
+ 			handle_wan_line(current_wan_unit, rule_setup);
+ 		}
+ 		else if(conn_changed_state[current_wan_unit] == D2C || conn_changed_state[current_wan_unit] == CONNED){
++#ifdef RTCONFIG_IPV6
++			reaper_v6_kick(current_wan_unit);	/* reaper 2026-11-12: once per outage, no-op otherwise */
++#endif
+ 			if(rule_setup && !isFirstUse){
+ #if (defined(RTCONFIG_WPS_ALLLED_BTN) && !defined(RTCONFIG_HND_ROUTER_AX))|| \
+     ((defined(RTCONFIG_LED_BTN) || defined(RTCONFIG_TURBO_BTN)) && defined(RTCONFIG_QCA))
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index a65bcaf86b..d06eb2f8fe 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -838,6 +838,8 @@ var SSI = {
+   gw:       decodeURIComponent('<% nvram_char_to_ascii("", "wan0_gateway"); %>'),
+   dns:      decodeURIComponent('<% nvram_char_to_ascii("", "wan0_dns"); %>'),
+   wan_state:<% nvram_get_js("wan0_state_t"); %>,
++  /* 2026-11-12: rc/wanduck.c's verdict per line (1 no link, 2 internet check failed), see wanVerdict */
++  aux0:     <% nvram_get_js("wan0_auxstate_t"); %>,
+   /* the WAN switch binds to the PRIMARY unit; both enables are emitted so a
+      dual-WAN box picks the right one client-side without a second round trip */
+   wan_unit: '<% get_wan_unit(); %>',
+@@ -848,6 +850,7 @@ var SSI = {
+   gw1:      decodeURIComponent('<% nvram_char_to_ascii("", "wan1_gateway"); %>'),
+   dns1:     decodeURIComponent('<% nvram_char_to_ascii("", "wan1_dns"); %>'),
+   wan_state1:<% nvram_get_js("wan1_state_t"); %>,
++  aux1:     <% nvram_get_js("wan1_auxstate_t"); %>,
+   wans_mode:<% nvram_get_js("wans_mode"); %>,
+   /* 2026-10-10: rc/rdnshc.c's LAN name resolution check, "<state> <s> <silent|->" */
+   landns:   <% nvram_get_js("reaper_landns_state"); %>,
+@@ -944,9 +947,8 @@ function paintOpmodeWan(){
+ /* IPv6 up-state: shared by the initial render AND the live poll below, so it
+  * must live at top level - not inside either IIFE (a prior version defined it
+  * only inside the poll IIFE, so the render IIFE's call threw ReferenceError and
+- * silently aborted the rest of the dashboard). v6 is up when the WAN face has a
+- * global address OR a default gateway (native/DHCP-PD put the global on the LAN
+- * side, leaving only a gateway on the WAN face). */
++ * silently aborted the rest of the dashboard). v6 is up while it has a default
++ * route (see the 2026-11-12 note at v6Up). */
+ /* reaper 2026-09-28 (dual-WAN field report): the Internet card read wan0 only,
+  * so a fail-over to the second line painted "Disconnected" while traffic flowed
+  * over it. Read the PRIMARY unit (wan_primary / get_wan_unit()); in load-balance
+@@ -955,16 +957,37 @@ function paintOpmodeWan(){
+  * render and the live poll, so it lives at top level like v6Up(). */
+ function wanPick(v, prim, lb){
+   function up(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
++  /* 2026-11-12: a line is usable when it holds a lease AND the internet check passes on it (see wanVerdict) */
++  function ok(u){ var a=String(v['wan'+u+'_auxstate_t']||''); return up(u) && a!=='1' && a!=='2'; }
+   var u=(String(prim)==='1')?1:0;
+-  if(!up(u) && lb && up(1-u)) u=1-u;
++  if(!ok(u) && lb && ok(1-u)) u=1-u;
+   return {unit:u, st:v['wan'+u+'_state_t']||'', ip:v['wan'+u+'_ipaddr']||'',
+-          gw:v['wan'+u+'_gateway']||'', dns:v['wan'+u+'_dns']||''};
++          gw:v['wan'+u+'_gateway']||'', dns:v['wan'+u+'_dns']||'', aux:String(v['wan'+u+'_auxstate_t']||'')};
+ }
++/* 2026-11-12 (field report): IPv6 counts as up only while it has a default
++   route. The WAN-face address outlives the ISP's router advertisements and
++   the DHCPv6 lease, so "address OR gateway" kept IPv6 green after it had
++   stopped working. A DHCP-PD line with no WAN-side global still has the
++   route, so it still reads up. */
+ function v6Up(){
+   if(!(WAN6 && WAN6.status==='1')) return false;
+-  var a=String((WAN6.IPv6_Address)||'').split('/')[0];
+-  var gw=String((WAN6.IPv6_Gateway)||'');
+-  return !!(a || gw);
++  return !!String((WAN6.IPv6_Gateway)||'');
++}
++/* 2026-11-12 (field report): the word and the colour follow the router's own
++   internet check - the one that turns the WAN LED red - not the lease alone.
++   aux = the picked line's wanN_auxstate_t from rc/wanduck.c: 1 = the WAN port
++   has no link, 2 = the internet check failed (no default route, or the DNS /
++   ping probe got no answer). Before this a valid DHCP lease kept the header
++   green while the LED was red. A failed check over an IPv4 lease fails the
++   whole WAN, IPv6 included (the LED is red too); with no IPv4 lease at all,
++   IPv6 decides on its own. */
++function wanVerdict(v4, aux, v6){
++  if(aux==='1') return {any:false, v4:false, v6:false, why:'nolink'};
++  if(v4 && aux==='2') return {any:false, v4:false, v6:false, why:'noinet'};
++  return {any:!!(v4 || v6), v4:!!v4, v6:!!v6, why:''};
++}
++function netWord(){
++  return (NET.v4 || NET.v6) ? NT.conn : ((NET.why==='noinet') ? NT.noinet : NT.disc);
+ }
+ /* ---- 2026-10-10: LAN name resolution in the Internet status ----
+    rc/rdnshc.c checks once a minute whether LAN devices can resolve names
+@@ -974,13 +997,13 @@ function v6Up(){
+    tooltip on both says what is going on. One box at page level (the pill strip
+    clips), opened by hover, keyboard focus or a tap; Esc, a tap elsewhere, a
+    scroll or a resize closes it. Every value goes in as text, never as HTML. */
+-var NET={v4:false, v6:false, ip:'', lan:''};
++var NET={v4:false, v6:false, ip:'', why:'', lan:''};
+ var NT={
+   inet:`<#Internet#>`, conn:`<#Connected#>`, disc:`<#Disconnected#>`,
+   lan:`<#RDSH_91#>`, working:`<#RDSH_92#>`, failing:`<#RDSH_93#>`, unk:`<#RDSH_94#>`,
+   off:`<#RDSH_95#>`, held:`<#RDSH_96#>`, svc:`<#RDSH_97#>`, fail:`<#RDSH_98#>`,
+   silent:`<#RDSH_99#>`, dfail:`<#RDSH_100#>`, every:`<#RDSH_101#>`, noaddr:`<#RDSH_102#>`,
+-  upall:`<#RDSH_103#>`
++  upall:`<#RDSH_103#>`, noinet:`<#RDSH_121#>`, noinetwhy:`<#RDSH_122#>`, nolink:`<#RDSH_123#>`
+ };
+ var TIP={el:null, open:null, pinned:false};
+ function landnsGet(){
+@@ -1017,9 +1040,9 @@ function tipFill(){
+   var t=TIP.el; if(!t) return;
+   while(t.firstChild) t.removeChild(t.firstChild);
+   var any=NET.v4 || NET.v6, d=landnsGet(), st=d.st, line, cls='', why='';
+-  t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(any ? NT.conn : NT.disc),
+-    any ? ((NET.v4 && NET.ip) ? ' ('+NET.ip+')' : (NET.v6 ? ' (IPv6)' : '')) : '']));
+-  if(!any){ t.appendChild(tipRow('dim', [NT.noaddr])); return; }
++  t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(netWord()),
++    NET.ip ? ' ('+NET.ip+')' : ((any && NET.v6) ? ' (IPv6)' : '')]));
++  if(!any){ t.appendChild(tipRow('dim', [(NET.why==='noinet') ? NT.noinetwhy : ((NET.why==='nolink') ? NT.nolink : NT.noaddr)])); return; }
+   if(landnsBad(st)){
+     line=NT.failing+' ('+durTxt(d.s)+')'; cls='warn';
+     why = (st==='svc') ? NT.svc : ((st==='dfail') ? NT.dfail : (d.silent ? NT.fail : NT.upall));
+@@ -1245,26 +1268,28 @@ function paintReview(){
+        non-0.0.0.0 IP; see wanPick), IPv6 from wan_ipv6_network(). Card renders
+        per the ipv6 mock: v4-only = today, dual = v6 line + v6 meta row,
+        v6-only = v6 hero. */
+-    var pw=wanPick({wan0_state_t:SSI.wan_state, wan0_ipaddr:SSI.wanip, wan0_gateway:SSI.gw, wan0_dns:SSI.dns,
++    var pw=wanPick({wan0_state_t:SSI.wan_state, wan0_ipaddr:SSI.wanip, wan0_gateway:SSI.gw, wan0_dns:SSI.dns, wan0_auxstate_t:SSI.aux0, wan1_auxstate_t:SSI.aux1,
+                     wan1_state_t:SSI.wan_state1, wan1_ipaddr:SSI.wanip1, wan1_gateway:SSI.gw1, wan1_dns:SSI.dns1},
+                    SSI.wan_unit, SSI.wans_mode==='lb');
+     SSI.wan_state=pw.st; SSI.wanip=pw.ip; SSI.gw=pw.gw; SSI.dns=pw.dns;
+     var wanUp = (SSI.wan_state==='2') && !!SSI.wanip && SSI.wanip!=='0.0.0.0';
+     var v6up = v6Up();
+-    var anyUp = wanUp || v6up;
++    /* 2026-11-12: the word and colour follow wanVerdict (lease + the router's internet check) */
++    var vd = wanVerdict(wanUp, pw.aux, v6up);
++    var anyUp = vd.any;
+     if(!ROUTING){
+       paintOpmodeWan();
+     } else {
+-      setTxt('p_wan', anyUp?`<#Connected#>`:`<#Disconnected#>`);
++      NET.v4=vd.v4; NET.v6=vd.v6; NET.why=vd.why; NET.ip=(wanUp && vd.why!=='nolink') ? SSI.wanip : ''; NET.lan=SSI.landns;
++      setTxt('p_wan', netWord());
+       var istate=$id('i_state');
+-      if(istate){ istate.textContent = anyUp?`<#Connected#>`:`<#Disconnected#>`; if(!anyUp) istate.style.color='var(--danger)'; }
++      if(istate){ istate.textContent = netWord(); if(!anyUp) istate.style.color='var(--danger)'; }
+       if(!anyUp){
+         var idot=$id('i_dot'), pdot=$id('p_wan_dot');
+         if(idot){ idot.style.background='var(--danger)'; idot.style.boxShadow='none'; }
+         if(pdot){ pdot.style.background='var(--danger)'; pdot.style.boxShadow='none'; }
+       }
+-      /* 2026-10-10: LAN name resolution (amber + tooltip), see netPaint() */
+-      NET.v4=wanUp; NET.v6=v6up; NET.ip=wanUp ? SSI.wanip : ''; NET.lan=SSI.landns;
++      /* 2026-10-10: LAN name resolution (amber + tooltip), see netPaint(); NET is filled above */
+       netPaint();
+     }
+     var c4=$id('chip4');
+@@ -1323,24 +1348,24 @@ function paintReview(){
+   var FAST=4000, SLOW=30000;
+   /* gateway and DNS arrive with the lease, so a page loaded mid-boot rendered
+      them as dashes and only a reload filled them in. They ride the same poll. */
+-  function apply(st, ip, gw, dns){
++  function apply(st, ip, gw, dns, aux){
+     var v4=(st==='2') && !!ip && ip!=='0.0.0.0';
+     if(v4){
+       if(gw && gw!=='0.0.0.0') setTxt('i_gw', gw);
+       if(dns) setTxt('i_dns', String(dns).split(' ')[0]);
+     }
+-    var any=v4 || v6Up();
+-    setTxt('i_state', any?`<#Connected#>`:`<#Disconnected#>`);
++    var vd=wanVerdict(v4, aux, v6Up()), any=vd.any;
++    NET.v4=vd.v4; NET.v6=vd.v6; NET.why=vd.why; NET.ip=(v4 && vd.why!=='nolink') ? ip : '';
++    setTxt('i_state', netWord());
+     var istate=$id('i_state'); if(istate) istate.style.color = any?'var(--jade)':'var(--danger)';
+-    var p=$id('p_wan'); if(p) p.textContent = any?`<#Connected#>`:`<#Disconnected#>`;
++    var p=$id('p_wan'); if(p) p.textContent = netWord();
+     [$id('i_dot'),$id('p_wan_dot')].forEach(function(d){ if(!d) return;
+       if(any){ d.style.background='var(--jade)'; d.style.boxShadow=''; }
+       else { d.style.background='var(--danger)'; d.style.boxShadow='none'; } });
+     var c4=$id('chip4'); if(c4){ c4.className='chip '+(v4?'up':'off'); c4.textContent=v4?'IPv4':`<#RDSH_28#>`; }
+     if(v4) setTxt('i_wanip', ip);
+     paintV6(v4);
+-    /* 2026-10-10: after the colours above, so amber wins while the check fails */
+-    NET.v4=v4; NET.v6=v6Up(); NET.ip=v4 ? ip : '';
++    /* 2026-10-10: after the colours above, so amber wins while the check fails (NET is filled above) */
+     netPaint();
+     return any;
+   }
+@@ -1350,7 +1375,7 @@ function paintReview(){
+   /* v3.2.8: both units plus wan_primary, so a fail-over (or fail-back) while the
+      page is open moves the card and the header switch to the live line. */
+   var HK=['wan_primary','wan0_enable','wan1_enable','ipv6_rtr_addr','reaper_landns_state'];
+-  [0,1].forEach(function(u){ ['state_t','ipaddr','gateway','dns'].forEach(function(k){ HK.push('wan'+u+'_'+k); }); });
++  [0,1].forEach(function(u){ ['state_t','ipaddr','gateway','dns','auxstate_t'].forEach(function(k){ HK.push('wan'+u+'_'+k); }); });
+   /* 2026-10-09: wan_ipv6_network() rides the same request (appGet emits it as a
+      JSON object), so the IPv6 half of the card is as live as the IPv4 half */
+   var HOOK='/appGet.cgi?hook='+HK.map(function(k){ return 'nvram_get('+k+')'; }).join('%3b')+'%3bwan_ipv6_network()';
+@@ -1379,7 +1404,7 @@ function paintReview(){
+           if(typeof j.reaper_landns_state==='string') NET.lan=j.reaper_landns_state;
+           var pu=(j.wan_primary!==undefined && j.wan_primary!=='')?j.wan_primary:SSI.wan_unit;
+           var p=wanPick(j, pu, SSI.wans_mode==='lb');
+-          up=apply(p.st, p.ip, p.gw, p.dns);
++          up=apply(p.st, p.ip, p.gw, p.dns, p.aux);
+           ENK='wan'+((String(pu)==='1')?'1':'0')+'_enable';
+           if(window.wanSetEnable) window.wanSetEnable(j[ENK]);
+         }catch(e){}
+diff --git a/release/src/router/www/reaper_shell.asp b/release/src/router/www/reaper_shell.asp
+index 863bc20ed9..851abe7869 100644
+--- a/release/src/router/www/reaper_shell.asp
++++ b/release/src/router/www/reaper_shell.asp
+@@ -1134,10 +1134,12 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   var WANS_LB=(<% nvram_get_js("wans_mode"); %>==='lb');
+   /* 2026-10-11: the picked unit's address too, for the tooltip's Internet line */
+   function wanPickIp(v, prim){
+-    function ok(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
++    function lease(u){ var st=v['wan'+u+'_state_t'], ip=v['wan'+u+'_ipaddr']; return st==='2' && !!ip && ip!=='0.0.0.0'; }
++    /* 2026-11-12: a line is usable when it holds a lease AND the internet check passes on it (see wanVerdict) */
++    function ok(u){ var a=String(v['wan'+u+'_auxstate_t']||''); return lease(u) && a!=='1' && a!=='2'; }
+     var u=(String(prim)==='1')?1:0;
+     if(!ok(u) && WANS_LB && ok(1-u)) u=1-u;
+-    return {up:ok(u), ip:ok(u) ? v['wan'+u+'_ipaddr'] : ''};
++    return {up:lease(u), ip:lease(u) ? v['wan'+u+'_ipaddr'] : '', aux:String(v['wan'+u+'_auxstate_t']||'')};
+   }
+   function wanUpPick(v, prim){ return wanPickIp(v, prim).up; }
+   /* ---- 2026-10-11: the Internet status tooltip, carried from Main_ReaperDash.asp ----
+@@ -1154,20 +1156,39 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+   var OPNAME=OPNAMES[OPMODE] || String(OPMODE||'').toUpperCase();
+   var ROUTING=!(OPMODE==='ap'||OPMODE==='rp'||OPMODE==='mb'||OPMODE==='ew2'||OPMODE==='ew5');
+   var WAN6 = <% wan_ipv6_network(); %>;   /* {status, Connection_Type, IPv6_Address, Link_Local_Address, IPv6_Gateway, DNS_Servers} */
+-  var NET={v4:false, v6:false, ip:'', lan:<% nvram_get_js("reaper_landns_state"); %>};
++  var NET={v4:false, v6:false, ip:'', why:'', lan:<% nvram_get_js("reaper_landns_state"); %>};
+   var NT={
+     inet:`<#Internet#>`, conn:`<#Connected#>`, disc:`<#Disconnected#>`,
+     lan:`<#RDSH_91#>`, working:`<#RDSH_92#>`, failing:`<#RDSH_93#>`, unk:`<#RDSH_94#>`,
+     off:`<#RDSH_95#>`, held:`<#RDSH_96#>`, svc:`<#RDSH_97#>`, fail:`<#RDSH_98#>`,
+     silent:`<#RDSH_99#>`, dfail:`<#RDSH_100#>`, every:`<#RDSH_101#>`, noaddr:`<#RDSH_102#>`,
+-    upall:`<#RDSH_103#>`
++    upall:`<#RDSH_103#>`, noinet:`<#RDSH_121#>`, noinetwhy:`<#RDSH_122#>`, nolink:`<#RDSH_123#>`
+   };
+   var TIP={el:null, open:null, pinned:false};
++  /* 2026-11-12 (field report): IPv6 counts as up only while it has a default
++     route. The WAN-face address outlives the ISP's router advertisements and
++     the DHCPv6 lease, so "address OR gateway" kept IPv6 green after it had
++     stopped working. A DHCP-PD line with no WAN-side global still has the
++     route, so it still reads up. */
+   function v6Up(){
+     if(!(WAN6 && WAN6.status==='1')) return false;
+-    var a=String((WAN6.IPv6_Address)||'').split('/')[0];
+-    var gw=String((WAN6.IPv6_Gateway)||'');
+-    return !!(a || gw);
++    return !!String((WAN6.IPv6_Gateway)||'');
++  }
++  /* 2026-11-12 (field report): the word and the colour follow the router's own
++     internet check - the one that turns the WAN LED red - not the lease alone.
++     aux = the picked line's wanN_auxstate_t from rc/wanduck.c: 1 = the WAN port
++     has no link, 2 = the internet check failed (no default route, or the DNS /
++     ping probe got no answer). Before this a valid DHCP lease kept the header
++     green while the LED was red. A failed check over an IPv4 lease fails the
++     whole WAN, IPv6 included (the LED is red too); with no IPv4 lease at all,
++     IPv6 decides on its own. */
++  function wanVerdict(v4, aux, v6){
++    if(aux==='1') return {any:false, v4:false, v6:false, why:'nolink'};
++    if(v4 && aux==='2') return {any:false, v4:false, v6:false, why:'noinet'};
++    return {any:!!(v4 || v6), v4:!!v4, v6:!!v6, why:''};
++  }
++  function netWord(){
++    return (NET.v4 || NET.v6) ? NT.conn : ((NET.why==='noinet') ? NT.noinet : NT.disc);
+   }
+   function landnsGet(){
+     var p=String(NET.lan||'').split(' ');
+@@ -1203,9 +1224,9 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+     var t=TIP.el; if(!t) return;
+     while(t.firstChild) t.removeChild(t.firstChild);
+     var any=NET.v4 || NET.v6, d=landnsGet(), st=d.st, line, cls='', why='';
+-    t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(any ? NT.conn : NT.disc),
+-      any ? ((NET.v4 && NET.ip) ? ' ('+NET.ip+')' : (NET.v6 ? ' (IPv6)' : '')) : '']));
+-    if(!any){ t.appendChild(tipRow('dim', [NT.noaddr])); return; }
++    t.appendChild(tipRow(any ? 'ok' : 'bad', [NT.inet+': ', tipB(netWord()),
++      NET.ip ? ' ('+NET.ip+')' : ((any && NET.v6) ? ' (IPv6)' : '')]));
++    if(!any){ t.appendChild(tipRow('dim', [(NET.why==='noinet') ? NT.noinetwhy : ((NET.why==='nolink') ? NT.nolink : NT.noaddr)])); return; }
+     if(landnsBad(st)){
+       line=NT.failing+' ('+durTxt(d.s)+')'; cls='warn';
+       why = (st==='svc') ? NT.svc : ((st==='dfail') ? NT.dfail : (d.silent ? NT.fail : NT.upall));
+@@ -1272,16 +1293,17 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+       var n=$id('p_wan_dot'); if(n){ n.style.background='var(--steel)'; n.style.boxShadow='none'; }
+       return true;
+     }
+-    var v6=v6Up(), any=p.up||v6;
+-    $t('p_wan', any?`<#Connected#>`:`<#Disconnected#>`);
++    var vd=wanVerdict(p.up, p.aux, v6Up()), any=vd.any;
++    NET.v4=vd.v4; NET.v6=vd.v6; NET.why=vd.why; NET.ip=(p.up && vd.why!=='nolink') ? p.ip : '';
++    $t('p_wan', netWord());
+     var d=$id('p_wan_dot');
+     if(d){ if(any){ d.style.background=''; d.style.boxShadow=''; } else { d.style.background='var(--danger)'; d.style.boxShadow='none'; } }
+-    NET.v4=p.up; NET.v6=v6; NET.ip=p.up ? p.ip : '';
+     netPaint();
+     return any;
+   }
+   paintWan(wanPickIp({wan0_state_t:<% nvram_get_js("wan0_state_t"); %>, wan0_ipaddr:<% nvram_get_js("wan0_ipaddr"); %>,
+-                      wan1_state_t:<% nvram_get_js("wan1_state_t"); %>, wan1_ipaddr:<% nvram_get_js("wan1_ipaddr"); %>},
++                      wan1_state_t:<% nvram_get_js("wan1_state_t"); %>, wan1_ipaddr:<% nvram_get_js("wan1_ipaddr"); %>,
++                      wan0_auxstate_t:<% nvram_get_js("wan0_auxstate_t"); %>, wan1_auxstate_t:<% nvram_get_js("wan1_auxstate_t"); %>},
+                      '<% get_wan_unit(); %>'));
+   /* live WAN poll: on a boot the WAN comes up after the header renders, so keep
+      re-checking until connected instead of leaving a stale "Disconnected".
+@@ -1321,7 +1343,7 @@ window.addEventListener("hashchange",function(){var p=(location.hash||"").replac
+         }
+         schedule(up?SLOW:FAST);
+       }
+-      x.open('GET','/appGet.cgi?hook=nvram_get(wan_primary)%3bnvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan1_state_t)%3bnvram_get(wan1_ipaddr)%3bnvram_get(reaper_landns_state)%3bwan_ipv6_network()&_='+(new Date()).getTime(),true);
++      x.open('GET','/appGet.cgi?hook=nvram_get(wan_primary)%3bnvram_get(wan0_state_t)%3bnvram_get(wan0_ipaddr)%3bnvram_get(wan1_state_t)%3bnvram_get(wan1_ipaddr)%3bnvram_get(wan0_auxstate_t)%3bnvram_get(wan1_auxstate_t)%3bnvram_get(reaper_landns_state)%3bwan_ipv6_network()&_='+(new Date()).getTime(),true);
+       x.timeout=8000;
+       x.onreadystatechange=function(){ if(x.readyState===4) fin(x.status===200); };
+       x.onerror=x.ontimeout=x.onabort=function(){ fin(false); };
+-- 
+2.25.1
+

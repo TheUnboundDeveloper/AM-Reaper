@@ -1,0 +1,640 @@
+From 093592e3952ea28adc8cef033dc0ef63aa649777 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:21 -0500
+Subject: [PATCH] ASUS DDNS: the client and its leftovers are deleted
+
+ASUS DDNS (asuscomm.com) has been refused on this firmware since 2026-10-23, but its code stayed.
+Deleted: rc/asus_ddns.c (registration, unregister, the token client and its firewall rules), the
+watchdog's ASUS branches, httpd's unregister handler and Warden's ASUS server seed; inadyn's two
+asuscomm plugins compile to nothing. The DDNS refusal and the Let's Encrypt seed stay. Also in
+these files: watchdog.c keeps the Guest Portal's DNS forwarder running (the Guest Portal commit).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/inadyn/plugins/asuscomm.c  |   6 +
+ .../src/router/inadyn/plugins/asuscommv2.c    |   6 +
+ release/src/router/rc/asus_ddns.c             | 466 ------------------
+ release/src/router/rc/rwarden.c               |  30 +-
+ release/src/router/rc/watchdog.c              |  20 +-
+ 5 files changed, 28 insertions(+), 500 deletions(-)
+ delete mode 100644 release/src/router/rc/asus_ddns.c
+
+diff --git a/release/src/router/inadyn/plugins/asuscomm.c b/release/src/router/inadyn/plugins/asuscomm.c
+index 268ecf06ea..cdb799cdbe 100644
+--- a/release/src/router/inadyn/plugins/asuscomm.c
++++ b/release/src/router/inadyn/plugins/asuscomm.c
+@@ -1,3 +1,7 @@
++/* reaper 2026-11-13: ASUS DDNS (asuscomm) is removed from this firmware (owner 2026-10-23); this plugin compiles
++ * to nothing. Kept as a file only because the generated Makefile.in lists it (editing Makefile.am in a built
++ * tree would make automake run during the build). */
++#ifdef REAPER_ASUSCOMM_PLUGIN
+ /* Plugin for asuscomm.com DDNS
+  *
+  * Copyright (C) 2012 Vladislav Grishenko <themiron@mail.ru>
+@@ -554,3 +558,5 @@ PLUGIN_EXIT(plugin_exit)
+  *  c-file-style: "linux"
+  * End:
+  */
++
++#endif /* REAPER_ASUSCOMM_PLUGIN */
+diff --git a/release/src/router/inadyn/plugins/asuscommv2.c b/release/src/router/inadyn/plugins/asuscommv2.c
+index 9a3ef04a98..40508e3440 100644
+--- a/release/src/router/inadyn/plugins/asuscommv2.c
++++ b/release/src/router/inadyn/plugins/asuscommv2.c
+@@ -1,3 +1,7 @@
++/* reaper 2026-11-13: ASUS DDNS (asuscomm) is removed from this firmware (owner 2026-10-23); this plugin compiles
++ * to nothing. Kept as a file only because the generated Makefile.in lists it (editing Makefile.am in a built
++ * tree would make automake run during the build). */
++#ifdef REAPER_ASUSCOMM_PLUGIN
+ /* Plugin for asuscomm.com DDNS
+  *
+  * Copyright (C) 2012 Vladislav Grishenko <themiron@mail.ru>
+@@ -560,3 +564,5 @@ PLUGIN_EXIT(plugin_exit)
+  * End:
+  */
+ 
++
++#endif /* REAPER_ASUSCOMM_PLUGIN */
+diff --git a/release/src/router/rc/asus_ddns.c b/release/src/router/rc/asus_ddns.c
+deleted file mode 100644
+index ad3a044c26..0000000000
+--- a/release/src/router/rc/asus_ddns.c
++++ /dev/null
+@@ -1,466 +0,0 @@
+-#define _GNU_SOURCE
+-
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <unistd.h>
+-#include <time.h>
+-#include <string.h>
+-#include <rc.h>
+-#include <bcmnvram.h>
+-#include <shared.h>
+-#include <shutils.h>
+-#include <curl/curl.h>
+-#ifdef RTCONFIG_HTTPS
+-#include <openssl/md5.h>
+-#endif
+-#include <json.h>
+-#include <notify_rc.h>
+-#include <aae_ipc.h>
+-
+-
+-#define ASUSDDNS_IP_SERVER          "https://ns1.asuscomm.com"
+-#define ASUSDDNS_IP_SERVER_CN       "https://ns1.asuscomm.cn"
+-#define ASUSDDNS_REQ_TOKEN_PATH     "/ddnsv2/acquireToken.php"
+-#define ASUSDDNS_REQ_TOKEN_RES      "/tmp/asusddns_res"
+-
+-#define ASUSDDNS_ERR_INIT_STATE             0
+-#define ASUSDDNS_ERR_SUCCESS                1
+-#define ASUSDDNS_ERR_NO_DM_REFRESH_TICKET   -1
+-#define ASUSDDNS_ERR_NO_USER_TICKET         -2
+-#define ASUSDDNS_ERR_NO_DDNS_TOKEN          -3
+-#define ASUSDDNS_ERR_CURL_ERR               -4
+-#define ASUSDDNS_ERR_OPEN_FILE_FAIL         -5
+-#define ASUSDDNS_ERR_JSON_ERR               -6
+-#define ASUSDDNS_ERR_NO_SID                 -7
+-
+-#define MD5_DIGEST_BYTES 16
+-
+-static void hmac_md5( const unsigned char *input, size_t ilen, unsigned char *output)
+-{
+-	MD5_CTX ctx;
+-
+-	MD5_Init(&ctx);
+-	MD5_Update(&ctx, input, ilen);
+-	MD5_Final(output, &ctx);
+-}
+-
+-int checkTokenExpiration(const char *expireTime)
+-{
+-	if (expireTime == NULL || strlen(expireTime) == 0) {
+-		return -1;
+-	}
+-
+-	// Get current UTC time
+-	time_t current_time;
+-	time(&current_time);
+-
+-	// Try parsing as "YYYY-MM-DD HH:MM:SS" format
+-	struct tm expire_tm;
+-	if (strptime(expireTime, "%Y-%m-%d %H:%M:%S", &expire_tm) != NULL) {
+-		// Convert parsed time to time_t format (in UTC)
+-		time_t expire_time = timegm(&expire_tm);
+-		// Compare current time and expiry time
+-		//logmessage("ddns_token", "current_time=%ld", (long)current_time);
+-		//logmessage("ddns_token", "expire_time =%ld", (long)expire_time);
+-		if (expire_time == -1) {
+-			logmessage("ddns_token", "Convert time to time_t format failed");
+-			return -1;
+-		}
+-
+-		return (current_time >= expire_time) ? 1 : 0; // Compare expiry dates
+-	}
+-
+-	// Try parsing as a timestamp
+-	char *endptr;
+-	time_t timestamp = (time_t)strtoll(expireTime, &endptr, 10);
+-	if (*endptr == '\0') {
+-		return (current_time >= timestamp) ? 1 : 0;
+-	}
+-
+-	// Parsing failed
+-	logmessage("ddns_token", "Invalid expireTime format: %s\n", expireTime);
+-	return -1;
+-}
+-
+-static int _update_userticket()
+-{
+-	char event[AAE_MAX_IPC_PACKET_SIZE];
+-	char out[AAE_MAX_IPC_PACKET_SIZE];
+-	char* oauth_dm_user_ticket_expiretime = nvram_safe_get("oauth_dm_user_ticket_expiretime");
+-	logmessage("ddns_token", "Old userticket expiretime=%s", oauth_dm_user_ticket_expiretime);
+-	/*** Debug
+-	char *endptr;
+-	time_t oauth_dm_user_ticket_expiretime_t = (time_t)strtoll(oauth_dm_user_ticket_expiretime, &endptr, 10);
+-	struct tm *tm_utc = gmtime(&oauth_dm_user_ticket_expiretime_t);
+-	char userticket_expiretime[20];
+-	strftime(userticket_expiretime, sizeof(userticket_expiretime), "%Y-%m-%d %H:%M:%S", tm_utc);
+-	logmessage("ddns_token", "Old userticket expiretime =%s(UTC)", userticket_expiretime);
+-	**********/
+-	if (checkTokenExpiration(oauth_dm_user_ticket_expiretime) != 0)
+-	{
+-		if(strlen(nvram_safe_get("oauth_dm_refresh_ticket")) == 0)	//APP not registered.
+-		{
+-			return ASUSDDNS_ERR_NO_DM_REFRESH_TICKET;
+-		}
+-
+-		logmessage("ddns_token", "Update userticket!");
+-		snprintf(event, sizeof(event), AAE_DDNS_GENERIC_MSG, AAE_EID_DDNS_REFRESH_TOKEN);
+-		
+-		aae_sendIpcMsgAndWaitResp(MASTIFF_IPC_SOCKET_PATH, event, strlen(event), out, sizeof(out), 5);
+-		
+-		json_object *root = NULL;
+-		json_object *ddnsObj = NULL;
+-		json_object *eidObj = NULL;
+-		json_object *stsObj = NULL;
+-		root = json_tokener_parse((char *)out);
+-		json_object_object_get_ex(root, AAE_DDNS_PREFIX, &ddnsObj);
+-		json_object_object_get_ex(ddnsObj, AAE_IPC_EVENT_ID, &eidObj);
+-		json_object_object_get_ex(ddnsObj, AAE_IPC_STATUS, &stsObj);
+-		if (!ddnsObj || !eidObj || !stsObj)
+-		{
+-			logmessage("ddns_token", "Failed to aae_refresh_ticket 1");
+-		}
+-		else
+-		{
+-			int eid = json_object_get_int(eidObj);
+-			const char *status = json_object_get_string(stsObj);
+-			if ((eid == AAE_EID_DDNS_REFRESH_TOKEN) && (!strcmp(status, "0")))
+-			{
+-				logmessage("ddns_token", "Success to aae_refresh_ticket");
+-			}
+-			else
+-			{
+-				logmessage("ddns_token", "Failed to aae_refresh_ticket 2");
+-			}
+-		}
+-		json_object_put(root);
+-	}
+-	else {
+-		logmessage("ddns_token", "userticket hasn't expired yet");
+-	}
+-
+-/*	stop_mastiff();
+-	start_mastiff();
+-	sleep(1);*/
+-	
+-	return ASUSDDNS_ERR_SUCCESS;	
+-}
+-
+-static size_t _write_data(void *ptr, size_t size, size_t nmemb, FILE *stream)
+-{
+-	size_t written = fwrite(ptr, size, nmemb, stream);
+-	return written;
+-}
+-
+-void delete_char(char str[], char ch)
+-{
+-	int i, j;
+-	for(i = j = 0; str[i] != '\0'; i++)
+-		if(str[i] != ch)
+-			str[j++] = str[i];
+-
+-	str[j] = '\0';
+-}
+-
+-static int _acquire_token(const char *res_path, const int check_CA)
+-{
+-	CURLcode res = -1;
+-	char *cusid = NULL, *userticket = NULL, *auth_status = NULL;
+-	char ddns_url[256], devicemac[64];
+-	json_object *obj = NULL, *cusid_obj = NULL, *userticket_obj = NULL, *devicemac_obj = NULL, *devicemd5mac_obj = NULL, *sid_obj = NULL;
+-	unsigned char digest[MD5_DIGEST_BYTES]={0};
+-	char md_lan_mac[MD5_DIGEST_BYTES * 2 + 1]={0};
+-	char *lan_mac_str=NULL;
+-	const char *auth_string = NULL;
+-	int ret = ASUSDDNS_ERR_INIT_STATE, i;
+-
+-	if(!res_path)
+-	{
+-		logmessage("ddns_token", "No response file path.");
+-		return ASUSDDNS_ERR_OPEN_FILE_FAIL;
+-	}
+-	
+-	cusid = nvram_safe_get("oauth_dm_cusid");
+-	userticket = nvram_safe_get("oauth_dm_user_ticket");
+-	auth_status = nvram_safe_get("oauth_auth_status");
+-
+-	if(cusid[0] == '\0' || userticket[0] == '\0')
+-	{
+-		logmessage("ddns_token", "No userticket.");
+-		return ASUSDDNS_ERR_NO_USER_TICKET;
+-	}
+-	if (auth_status[0] == '\0' || (strncmp(auth_status, "0", 1) != 0 && strncmp(auth_status, "2", 1) != 0))
+-	{
+-		logmessage("ddns_token", "No sid (service id).");
+-		return ASUSDDNS_ERR_NO_SID;
+-	}
+-
+-
+-	obj = json_object_new_object();
+-	if(!obj)
+-	{
+-		logmessage("ddns_token", "Cannot create json object!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-	cusid_obj = json_object_new_string(cusid);
+-	if(cusid_obj)
+-		json_object_object_add(obj, "cusid", cusid_obj);
+-	else
+-	{
+-		logmessage("ddns_token", "Cannot add json object, cusid!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-	userticket_obj = json_object_new_string(userticket);
+-	if(userticket_obj)
+-		json_object_object_add(obj, "userticket", userticket_obj);
+-	else
+-	{
+-		logmessage("ddns_token", "Cannot add json object, userticket!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-	snprintf(devicemac, sizeof(devicemac), "%s", get_ddns_macaddr());
+-	delete_char(devicemac, ':');
+-	devicemac_obj = json_object_new_string(devicemac);
+-	if(devicemac_obj)
+-		json_object_object_add(obj, "devicemac", devicemac_obj);
+-	else
+-	{
+-		logmessage("ddns_token", "Cannot add json object, devicemac!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-	lan_mac_str = nvram_safe_get("lan_hwaddr");
+-	hmac_md5((unsigned char *)lan_mac_str, strlen(lan_mac_str), digest);
+-	for (i = 0; i < MD5_DIGEST_BYTES; i++)
+-	{
+-		sprintf(&md_lan_mac[i*2], "%02x", (unsigned int)digest[i]);
+-	}
+-	
+-	devicemd5mac_obj = json_object_new_string(md_lan_mac);
+-	if(devicemd5mac_obj)
+-		json_object_object_add(obj, "devicemd5mac", devicemd5mac_obj);
+-	else
+-	{
+-		logmessage("ddns_token", "Cannot add json object, devicemd5mac!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-#ifdef RTCONFIG_ACCOUNT_BINDING
+-    	int account_bound = is_account_bound();
+-#else
+-    	int account_bound = 0;
+-#endif
+-
+-	if (account_bound) {
+-		sid_obj = json_object_new_string("1004");
+-	}
+-	else {
+-		sid_obj = json_object_new_string("1001");
+-	}
+-	
+-	if(sid_obj)
+-		json_object_object_add(obj, "sid", sid_obj);
+-	else
+-	{
+-		logmessage("ddns_token", "Cannot add json object, sid!");
+-		ret = ASUSDDNS_ERR_JSON_ERR;
+-		goto Err;
+-	}
+-
+-	auth_string = json_object_to_json_string(obj);
+-	logmessage("ddns_token", "auth_string=%s", auth_string);
+-
+-	int retry = 5;
+-	while(retry > 0 && res != CURLE_OK){
+-		FILE *fp_res = NULL;
+-		CURL *curl = NULL;
+-
+-		fp_res = fopen(res_path, "wb");
+-		if(!fp_res)
+-		{
+-			logmessage("ddns_token", "Cannot open file for response data.");
+-			return ASUSDDNS_ERR_OPEN_FILE_FAIL;
+-		}
+-
+-		curl = curl_easy_init();
+-
+-		if(curl)
+-		{
+-#ifdef RTCONFIG_ACCOUNT_BINDING
+-			if (account_bound && nvram_match("ddns_replace_status", "1") &&
+-				((strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.com") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.com")))
+-				|| (strstr(nvram_safe_get("aae_ddnsinfo"), ".asuscomm.cn") && (strstr(nvram_safe_get("ddns_hostname_x"), ".asuscomm.cn"))))) {
+-				snprintf(ddns_url, sizeof(ddns_url), "https://%s%s",  nvram_safe_get("aae_ddnsinfo"), ASUSDDNS_REQ_TOKEN_PATH);
+-			} else
+-#endif
+-			if(nvram_match("ddns_server_x", "WWW.ASUS.COM.CN")) {
+-				snprintf(ddns_url, sizeof(ddns_url), "%s%s",  ASUSDDNS_IP_SERVER_CN, ASUSDDNS_REQ_TOKEN_PATH);
+-			} else {
+-				snprintf(ddns_url, sizeof(ddns_url), "%s%s",  ASUSDDNS_IP_SERVER, ASUSDDNS_REQ_TOKEN_PATH);
+-			}
+-
+-			curl_easy_setopt(curl, CURLOPT_URL, ddns_url);
+-
+-			curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+-
+-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, check_CA); /* do not verify subject/hostname */
+-			curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, check_CA); /* since most certs will be self-signed, do not verify against CA */
+-
+-			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, auth_string);
+-			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(auth_string));
+-
+-			/* enable verbose for easier tracing */
+-			curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+-			curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+-			curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+-			curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _write_data);
+-			curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp_res);
+-			curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1);
+-
+-			res = curl_easy_perform(curl);
+-			fclose(fp_res);
+-
+-			curl_easy_cleanup(curl);
+-			if(res == CURLE_OK)
+-			{
+-				logmessage("ddns_token", "CURL perform success");
+-				ret = ASUSDDNS_ERR_SUCCESS;
+-
+-				FILE *fp_res_read = fopen(res_path, "r");
+-				if (fp_res_read) {
+-					char buffer[256];
+-					while (fgets(buffer, sizeof(buffer), fp_res_read) != NULL) {
+-						logmessage("ddns_token", "response: %s", buffer);
+-					}
+-					fclose(fp_res_read);
+-				} else {
+-					logmessage("ddns_token", "Failed to open %s for reading.", res_path);
+-				}
+-			}
+-			else
+-			{
+-				logmessage("ddns_token", "CURL perform fail: %s(%d)", curl_easy_strerror(res), res);
+-				ret = ASUSDDNS_ERR_CURL_ERR;
+-				unlink(res_path);
+-				retry--;
+-				sleep(1);
+-			}
+-		}
+-		else
+-		{
+-			logmessage("ddns_token", "Cannot init CURL");
+-			ret = ASUSDDNS_ERR_CURL_ERR;
+-			//goto Err;
+-		}
+-	}
+-	curl_global_cleanup();
+-
+-Err:
+-	if(cusid_obj)
+-		json_object_put(cusid_obj);
+-	if(userticket_obj)
+-		json_object_put(userticket_obj);
+-	if(devicemd5mac_obj)
+-		json_object_put(devicemd5mac_obj);
+-	if(obj)
+-		json_object_put(obj);
+-	return ret;
+-}
+-
+-static int _check_response(const char *res_path)
+-{
+-	json_object *res_obj = NULL, *status_obj = NULL, *token_obj = NULL;
+-	int ret = ASUSDDNS_ERR_NO_DDNS_TOKEN;
+-	
+-	if(!res_path)
+-	{
+-		logmessage("ddns_token", "No response file path.");
+-		return ASUSDDNS_ERR_OPEN_FILE_FAIL;
+-	}
+-
+-	res_obj = json_object_from_file(res_path);
+-	if(!res_obj)
+-	{
+-		logmessage("ddns_token", "Cannot open response file.");
+-		return ASUSDDNS_ERR_OPEN_FILE_FAIL;
+-	}
+-	if(json_object_object_get_ex(res_obj, "status", &status_obj))
+-	{
+-		if(!json_object_get_int(status_obj))
+-		{
+-			json_object_object_get_ex(res_obj, "ddnstoken", &token_obj);			
+-			nvram_set("asusddns_token", json_object_get_string(token_obj));
+-			json_object_object_get_ex(res_obj, "expiretime", &token_obj);
+-			const char *expire_time_str = json_object_get_string(token_obj);
+-			nvram_set("asusddns_token_expiretime", expire_time_str);
+-			logmessage("ddns_token", "New ddnstoken expiretime=%s(UTC)", expire_time_str);
+-			ret = ASUSDDNS_ERR_SUCCESS;
+-		}
+-		else
+-		{
+-			logmessage("ddns_token", "No status");
+-		}
+-	}
+-
+-	if(status_obj)
+-		json_object_put(status_obj);
+-	if(token_obj)
+-		json_object_put(token_obj);
+-	if(res_obj) 
+-		json_object_put(res_obj);
+-
+-	return ret;
+-}
+-
+-int update_asus_ddns_token()
+-{
+-	int ret = -1;
+-	char* asusddns_token_expiretime = nvram_safe_get("asusddns_token_expiretime");
+-	logmessage("ddns_token", "Old ddnstoken expiretime=%s(UTC)", asusddns_token_expiretime);
+-	
+-	nvram_set_int("asusddns_token_state", ASUSDDNS_ERR_INIT_STATE);
+-
+-	if ((checkTokenExpiration(asusddns_token_expiretime) != 0) || !json_object_from_file(ASUSDDNS_REQ_TOKEN_RES))
+-	{
+-		if(_update_userticket() == ASUSDDNS_ERR_NO_DM_REFRESH_TICKET)
+-		{
+-			logmessage("ddns_token", "User does not login the account yet.");
+-			nvram_set_int("asusddns_token_state", ASUSDDNS_ERR_NO_DM_REFRESH_TICKET);
+-			return ASUSDDNS_ERR_NO_DM_REFRESH_TICKET;
+-		}
+-		logmessage("ddns_token", "Acquire token!");
+-		ret = _acquire_token(ASUSDDNS_REQ_TOKEN_RES, 0);
+-	}
+-	else {
+-		logmessage("ddns_token", "ddnstoken hasn't expired yet");
+-		ret = ASUSDDNS_ERR_SUCCESS;
+-	}
+-	
+-	if(ret == ASUSDDNS_ERR_SUCCESS)
+-	{
+-		nvram_set_int("asusddns_token_state", _check_response(ASUSDDNS_REQ_TOKEN_RES));
+-		//logmessage("ddns_token", "Now ddnstoken expiretime=%s(UTC)", nvram_safe_get("asusddns_token_expiretime"));
+-	}
+-	else
+-	{
+-		nvram_set_int("asusddns_token_state", ret);
+-	}
+-
+-	logmessage("ddns_token", "Done.(%d)", ret);
+-	return ret;
+-}
+-
+-int update_asus_ddns_token_main(int argc, char *argv[])
+-{
+-	return update_asus_ddns_token();
+-}
+-
+-
+diff --git a/release/src/router/rc/rwarden.c b/release/src/router/rc/rwarden.c
+index bb9d09f5c3..f546eddc03 100644
+--- a/release/src/router/rc/rwarden.c
++++ b/release/src/router/rc/rwarden.c
+@@ -188,19 +188,12 @@
+  * marker, so boxes that already took the ipdeny seed still get this one once. */
+ #define RW_ABUSECH_IPS  "151.101.2.49 151.101.66.49 151.101.130.49 151.101.194.49"
+ #define RW_SEED_MARK_ABUSECH REAPER_RW_DIR "/.seed_abusech"
+-/* The ASUS DDNS server and the Let's Encrypt API, seeded the same way but only once
+- * the feature that needs them is in use (owner, 2026-10-22, field reports of a
+- * certificate stuck on "Unknown or processing..."). A Let's Encrypt certificate for
+- * an asuscomm name IS a DDNS update (acme.sh's dns_asusapi hook publishes the
+- * challenge through ns1.asuscomm.com and waits 60 s for it), and both hosts sit in
+- * the USA country list (ipdeny: 52.224.0.0/11, 172.64.0.0/13), so the router-traffic
+- * filter with US selected dropped both and the certificate never came. One address
+- * each from every client region (resolved 2026-10-22 from ten client subnets;
+- * ns1.asuscomm.com has no AAAA). The library calls acme.sh with --dnssleep, so no
+- * DNS-over-HTTPS check runs and no third host is needed. Separate markers: the
+- * certificate can be switched on long after DDNS. */
+-#define RW_ASUSDDNS_IP  "52.250.42.40"
+-#define RW_SEED_MARK_ASUSDDNS REAPER_RW_DIR "/.seed_asusddns"
++/* The Let's Encrypt API, seeded the same way but only once the certificate is in use (owner, 2026-10-22, field
++ * reports of a certificate stuck on "Unknown or processing..."): it sits in the USA country list (ipdeny:
++ * 172.64.0.0/13), so the router-traffic filter with US selected dropped it and the certificate never came. The
++ * library calls acme.sh with --dnssleep, so no DNS-over-HTTPS check runs and no other host is needed.
++ * 2026-11-13: the ASUS DDNS server seed that sat beside it is deleted with asuscomm (removed 2026-10-23); an entry
++ * it already added stays on a router's Warden page until the operator removes it. */
+ #define RW_LE_IPS       "172.65.32.248 2606:4700:60:0:f53d:5624:85c7:3a2c"
+ #define RW_SEED_MARK_LE REAPER_RW_DIR "/.seed_letsencrypt"
+ /* The names Dreadwatch never blocks, as entries in the operator's own never-block list (the Dreadwatch
+@@ -2399,7 +2392,7 @@ static int rw_seed_present(const char *ips)
+ 	return all;
+ }
+ 
+-/* 2026-10-22: the ASUS DDNS / Let's Encrypt seeds (RW_ASUSDDNS_IP, RW_LE_IPS). Called
++/* 2026-10-22: the Let's Encrypt seed (RW_LE_IPS; the ASUS DDNS one is deleted, 2026-11-13). Called
+  * from rw_seed_allow (boot, every Warden start) and from start_ddns() (rc/services.c),
+  * so a user who switches DDNS or the certificate on gets the entries before the first
+  * update, without waiting for a Warden restart. Each seed fires once, only while its
+@@ -2407,20 +2400,17 @@ static int rw_seed_present(const char *ips)
+  * the router-traffic filter is on the log says once per boot what that costs. */
+ void rwarden_ddns_seed(void)
+ {
+-	int asus = nvram_match("ddns_enable_x", "1") && nvram_match("ddns_server_x", "WWW.ASUS.COM");
+ 	int le = nvram_match("le_enable", "1");
+ 	int warden = nvram_match("rwarden_enable", "1");
+ 
+ 	if (!f_exists(REAPER_RW_DIR "/.committed"))
+ 		return;
+-	if (asus && rw_seed_one("allow", RW_ASUSDDNS_IP, RW_SEED_MARK_ASUSDDNS, "the ASUS DDNS server ns1.asuscomm.com", "Warden") && warden)
+-		rw_seed_live(RW_ASUSDDNS_IP);
+ 	if (le && rw_seed_one("allow", RW_LE_IPS, RW_SEED_MARK_LE, "the Let's Encrypt certificate server", "Warden") && warden)
+ 		rw_seed_live(RW_LE_IPS);
+ 	if (warden && nvram_match("rwarden_self", "1") && !f_exists(RW_DDNS_WARNED)
+-	 && ((asus && !rw_seed_present(RW_ASUSDDNS_IP)) || (le && !rw_seed_present(RW_LE_IPS)))) {
+-		logmessage("rwarden", "whitelist: the ASUS DDNS / Let's Encrypt server entries were removed and the router-traffic filter is ON - if a blocked country or list covers them (both are in the United States list), DDNS updates fail and the certificate is not issued or renewed; add %s back on the Warden page",
+-		           asus && !rw_seed_present(RW_ASUSDDNS_IP) ? RW_ASUSDDNS_IP : RW_LE_IPS);
++	 && le && !rw_seed_present(RW_LE_IPS)) {
++		logmessage("rwarden", "whitelist: the Let's Encrypt server entries were removed and the router-traffic filter is ON - if a blocked country or list covers them (they are in the United States list), the certificate is not issued or renewed; add %s back on the Warden page",
++		           RW_LE_IPS);
+ 		(void)reaper_write_atomic(RW_DDNS_WARNED, "1\n", 2, 0600);
+ 	}
+ }
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+index 06dd56ecd9..1734c76e27 100644
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -7985,7 +7985,7 @@ void ddns_check(void)
+ 			return;
+ 	}
+ 
+-	if (nvram_match("ddns_regular_check", "1")&& !nvram_match("ddns_server_x", "WWW.ASUS.COM") && !nvram_match("ddns_server_x", "WWW.ASUS.COM.CN")) {
++	if (nvram_match("ddns_regular_check", "1")) {	/* reaper 2026-11-13: no ASUS DDNS any more */
+ 		int period = nvram_get_int("ddns_regular_period"); //minute(s)
+ 		if (period < 30) period = 60;
+ 		if (ddns_check_count >= (period*2)) {
+@@ -8015,19 +8015,8 @@ void ddns_check(void)
+ 	}
+ 
+ 	if (wan_unit == last_unit) { /* DDNS has already been run, ddns_last_wan_unit has been set. */
+-		if ( nvram_match("ddns_server_x", "WWW.ASUS.COM") || nvram_match("ddns_server_x", "WWW.ASUS.COM.CN")) {
+-			/* Only Time-out, connect_fail, -1 (in asusddns) or not auth_fail (not in asusddns) */
+-			if ( !( !strcmp(nvram_safe_get("ddns_return_code_chk"),"Time-out") ||
+-				!strcmp(nvram_safe_get("ddns_return_code_chk"),"connect_fail") ||
+-				strstr(nvram_safe_get("ddns_return_code_chk"), "-1") ||
+-				strstr(nvram_safe_get("ddns_return_code_chk"), "390") //Server Error
+-				) )
+-				return;
+-		}
+-		else{ //non asusddns service
+-			if ( !strcmp(nvram_safe_get("ddns_return_code_chk"),"auth_fail") )
+-				return;
+-		}
++		if ( !strcmp(nvram_safe_get("ddns_return_code_chk"),"auth_fail") )	/* reaper 2026-11-13: ASUS branch deleted */
++			return;
+ 	}
+ 
+ 	if (nvram_get_int("ntp_ready") != 1) {
+@@ -8524,6 +8513,9 @@ void dnsmasq_check()
+ 	 * Limitation kept from stock: pids("stubby") matches by process name, so if
+ 	 * only ONE of several per-SDN instances dies this still sees a live stubby
+ 	 * and will not restart it. */
++#ifdef RTCONFIG_MULTILAN_CFG
++	reaper_guest_dot_watch();	/* 2026-11-13: Guest Portal encrypted DNS (own process name, not counted below) */
++#endif
+ 	if (nvram_get_int("dnspriv_enable") && !pids("stubby")) {
+ #if defined(RTL_WTDOG)
+ 		stop_rtl_watchdog();
+-- 
+2.25.1
+

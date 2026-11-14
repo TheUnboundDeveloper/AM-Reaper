@@ -93,24 +93,18 @@ w0 = sj.find("\tfunction Get_Wizard_Portal(view_mode){\n")
 w1 = sj.find("\n\tfunction Get_Wizard_", w0 + 10)
 wz = sj[w0:w1] if 0 < w0 < w1 else ""
 check("wizard: Get_Wizard_Portal is a block the test can cut out", bool(wz))
-check("wizard: the passcode switch, with the preview box kept (hidden) instead of removed",
-      '"id":"FWF_passcode_enabled", "set_value":"off"' in wz and '.find("[data-component=FWF_passcode]").hide();' in wz
-      and '.find("[data-component=FWF_passcode]").remove();' not in wz)
-check("wizard: the row sits in its own hidden wrapper and is not a required field until the switch is on",
-      '$("<div>").attr({"id":"wizard_FWF_passcode_wrap"}).hide().appendTo($freewifi_cntr);' in wz
-      and 'Get_Component_Input(FWF_passcode_parm).appendTo($wizard_FWF_passcode_wrap)' in wz and '.removeAttr("need_check")\n' in wz
-      and '$ps.find("#FWF_passcode").attr({"need_check":"true"});' in wz and '$ps.find("#FWF_passcode").removeAttr("need_check");' in wz)
-check("wizard: switching and typing re-check the Apply button", wz.count("_set_apply_btn_status($ps);") == 1
-      and "_set_apply_btn_status($(this).closest(\".profile_setting\"));\n\t\t\t\t})\n\t\t\t\t.attr({\"oninput\": \"trigger_keyup($(this))\"});" in wz)
-check("wizard: blank, longer than 15, or a character outside printable ASCII or < > is refused before the save",
-      'var rpc_bad = ($rpc.val() == "") ? "<#JS_fieldblank#>" : (($rpc.val().length > 15) ? `<#RGNP_01#>`' in wz
-      and "/[^\\x21-\\x7e]|[<>]/.test($rpc.val())" in wz and wz.find("var rpc_bad") < wz.find("if(validate_format_Wizard_Item($(_obj), wizard_type)){"))
-check("wizard: the save carries the switch and the passcode",
-      'sdn_profile.cp_rl.auth_type = ($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0";' in wz
-      and 'sdn_profile.cp_rl.local_auth_profile = (sdn_profile.cp_rl.auth_type == "1") ? $(_obj).find("#FWF_passcode").val() : "";' in wz
-      and 'sdn_profile.cp_rl.auth_type = "0";' not in wz)
-check("the Portal tab of an existing network is unchanged (its own switch and row)",
-      sj.count('"id":"FWF_passcode_enabled", "set_value":"off"') == 2 and "Get_Component_Input(FWF_passcode_parm).hide().appendTo($freewifi_cntr);" in sj)
+# 2026-11-12 (owner): no passcode for a Free Wi-Fi portal - the wizard's switch (added 2026-11-10) and the portal's
+# own switch are gone; a portal saved with one before is treated as terms-only by rc and the sign-in page
+check("wizard: no passcode switch, field or check; the preview's passcode box stays hidden",
+      "FWF_passcode_enabled" not in wz and "wizard_FWF_passcode_wrap" not in wz and "var rpc_bad" not in wz
+      and '.find("[data-component=FWF_passcode]").hide();' in wz)
+check("wizard: the save is terms-only",
+      'sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - a Free Wi-Fi portal is terms-only' in wz
+      and 'sdn_profile.cp_rl.local_auth_profile = "";' in wz)
+check("the portal's own settings: no passcode switch, field or check; the save is terms-only; the card prints none",
+      "FWF_passcode_enabled" not in sj and "Get_Component_Input(FWF_passcode_parm)" not in sj and "$FWF_passcode" not in sj
+      and 'sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - terms-only' in sj
+      and '"passcode": ""/* Reaper 2026-11-12: no passcode */' in sj)
 if shutil.which("node"):
     r = subprocess.run(["node", "--check", SJ], capture_output=True, text=True)
     check("sdn.js parses (node --check)", r.returncode == 0, r.stderr)

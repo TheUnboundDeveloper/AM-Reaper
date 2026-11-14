@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.6** · 2026-11-11 <!--@stamp-->
+> **Doc status:** current as of **v3.7.7** · 2026-11-13 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,46 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.7 — Guest Portal: create, sign-in, isolation and guest DNS that hold; a quicker finish after sign-in; the system log capped; the WAN status follows the internet check
+
+Everything in v3.7.6 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest Portal networks are built when you create them.** On a router with AiMesh, creating a Guest Network Pro
+  network from the Network page saved the settings and built nothing (no Wi-Fi restart, no bridge, no portal) until
+  a reboot, and one switched off stayed on. The router now applies a guest-network change itself when the request
+  does not arrive, and the portal starts and stops with its network.
+- **Guests are kept to the Internet.** A guest or Guest Portal device reaches only the Internet (or its network's VPN
+  client) and the router only for DHCP, DNS and the sign-in page; no main-network device, no other guest network,
+  no router service. Access Intranet on a portal network opens the main network only. A VPN binding starts with its
+  Kill Switch on.
+- **Sign-in works on current phones and finishes quickly.** The "Sign in to network" sheet opens even when the
+  network's DNS has no upstream; the success page waits until the Internet answers; after sign-in a phone no longer
+  waits about 30 seconds on the address it was given before sign-in. A Free Wi-Fi portal is terms-only (no
+  passcode), and each router makes its own portal secret.
+- **Guest DNS.** Guests' lookups always go to their network's own resolver (a DNS server set by hand on the device,
+  or DNS-over-TLS, does not bypass it), and guests without intranet access cannot look up main-network names. The
+  network's DNS Server setting picks the guests' provider; left empty, guests use Cloudflare for Families over
+  DNS-over-TLS. A network bound to a VPN keeps the tunnel's DNS.
+- **Traffic Analyzer.** A Guest Portal panel on the Live tab lists each guest with their speed and session time; a
+  removed network leaves the live view; a chosen timeframe lists only devices that moved traffic; a bar is the row's
+  share of the total; a guest network's accelerated uploads are no longer also counted as the router's own.
+- **The system log cannot be flooded.** One kind of message repeating fast (a device looping on DHCP, a driver
+  printing per packet) is written at most 300 times at once and 10 times a second after that, with a line saying
+  how many were left out, so the log on flash keeps its history. Critical messages and the remote log server are
+  not limited.
+- **WAN status.** The header and dashboard say Connected only while the router's own Internet check passes on the
+  line, and IPv6 counts as up only with a working route. Native IPv6 that did not come back after an ISP outage is
+  asked for again.
+- **DNS Health Check.** When no new name resolves, it names the upstreams dnsmasq really uses, and says when a
+  leftover custom dnsmasq.conf replaces the router's own configuration or the silent upstream is on the router
+  itself (an add-on that was removed).
+- **Pages.** Buttons that start something show Working..., then Done or Failed; Wallguard's state column is green
+  for ok and amber for a fault; the About page credits the people who made Reaper possible.
+- **Smaller fixes.** The ASUS DDNS client code is deleted (the service itself was already refused); the Rule
+  Status Re-check stamp is no longer writable by every user. On the 3006.102.8 line: haveged 1.9.27 and two build
+  changes from Asuswrt-Merlin (Eric Sauvageau), already on the 3006.102.10 line.
 
 ## v3.7.6 — Encrypted DNS for devices over HTTPS; DHCP keeps answering through a stalled radio; a security review's fixes; Guest Portal and VPN fixes
 

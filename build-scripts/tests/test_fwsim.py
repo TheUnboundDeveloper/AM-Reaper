@@ -772,6 +772,34 @@ try:
     G55 = ADDR + "4: br55    inet 10.20.0.1/24 brd 10.20.0.255 scope global br55\\       valid_lft forever preferred_lft forever\n"
     j, out, rc = run(witness=None, addr=G55, used="10.20.0.123\n", tag="su5")
     x = wit(j, "G2.1"); check("stand-in: a guest bridge's .123 in use moves that network's witness too", x and x["witness"].startswith("br55 10.20.0.124 "), x and x["witness"])
+    # ---- 2026-11-14 (field report, v3.7.7): guest isolation's DNS rule uses `--limit-iface-in` ----
+    # Three "Guest network brNN: DNS at its gateway" rows turned inconclusive after the update on a router where
+    # nothing was wrong: the walker did not know the option, so the rule (rc/reaper_guest.c: DNS only to the
+    # network's OWN gateway) read as undecidable. It is judged now - the address must sit on the arrival interface.
+    GI = (SAVE4.replace(":INPUT_ICMP - [0:0]\n", ":INPUT_ICMP - [0:0]\n:REAPER_GUI - [0:0]\n")
+               .replace("-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n",
+                        "-A INPUT -j REAPER_GUI\n-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT\n"
+                        "-A INPUT -i br55 -p udp -m udp --dport 53 -j ACCEPT\n")
+               .replace('-A INPUT -p udp -m udp --dport 53 -m string --icase --hex-string "|03|bad|00|" --algo bm -j DROP\n', "")
+               .replace("-A INPUT_ICMP -p icmp -j ACCEPT\n",
+                        "-A INPUT_ICMP -p icmp -j ACCEPT\n"
+                        "-A REAPER_GUI -i br55 -m conntrack --ctstate RELATED,ESTABLISHED,DNAT -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -p udp -m udp --dport 67 -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -p udp -m udp --dport 53 -m addrtype --dst-type LOCAL --limit-iface-in -j RETURN\n"
+                        "-A REAPER_GUI -i br55 -j DROP\n"))
+    check("limit-iface-in: the synthetic table took the guest chain", GI.count("REAPER_GUI") == 6 and "--hex-string" not in GI)
+    j, out, rc = run(save4=GI, addr=G55, witness=None, tag="gli1")
+    x = wit(j, "G4.1"); check("limit-iface-in: 'Guest network br55: DNS at its gateway' is judged again, not inconclusive",
+                              x and x["state"] == "green" and x["expect"] == "RESOLVED" and "depends" not in x["verdict"], x)
+    GW = "GX1|guest DNS at the main LAN address|4|br55|10.20.0.123|192.168.50.1|udp|53|NEW|DROP\n"
+    j, out, rc = run(save4=GI, addr=G55, witness=GW, tag="gli2")
+    x = wit(j, "GX1"); check("limit-iface-in: DNS to ANOTHER of the router's addresses is not let through by that rule - the guest chain drops it",
+                             x and x["state"] == "green" and "REAPER_GUI#4" in x["rule"], x)
+    j, out, rc = run(save4=GI.replace(" --limit-iface-in", ""), addr=G55, witness=GW, tag="gli3")
+    x = wit(j, "GX1"); check("limit-iface-in: without the option the same packet IS let through (the option is what the walker now reads)",
+                             x and x["state"] == "red" and x["verdict"].startswith("ACCEPT"), x)
+    j, out, rc = run(save4=GI.replace(" --limit-iface-in", " --limit-iface-out"), addr=G55, witness=None, tag="gli4")
+    x = wit(j, "G4.1"); check("limit-iface-out is still said to be undecidable (never guessed)", x and x["state"] == "depends", x)
     j, out, rc = run(witness=None, used=ARP, nv=NV + "enable_acc_restriction=1\nrestrict_rulelist=<1>192.168.50.77>3<\n", tag="su6")
     check("stand-in: the admin allowlist still decides the LAN host (a real allowed client is the point there)",
           j.get("lanhost") == "192.168.50.77" and "allowed client" in j.get("lanhost_note", ""), (j.get("lanhost"), j.get("lanhost_note")))

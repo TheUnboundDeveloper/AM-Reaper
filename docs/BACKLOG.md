@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.7** · 2026-11-13 <!--@stamp-->
+> **Doc status:** current as of **v3.7.8** · 2026-11-14 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -42,7 +42,7 @@ internal quality, or deferred by decision.
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P2] Guest Network Pro portal: no sign-in page on v3.7.5** **[waiting on the reporter]** ↳ notes: `guest-portal-wg-report-2026-11-10.md`
 - **[P2] Guest Network Pro: a portal network switched off stayed on until a reboot** **[waiting on the reporter]** ↳ notes: `guest-portal-wg-report-2026-11-10.md`
-- **[P2] Guest networks bound to a WireGuard client: tunnel recovery, routing after WAN events, start on demand, DNS after recovery, IPv6** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
+- **[P2] Guest networks bound to a WireGuard client: routing after WAN events, DNS after recovery, IPv6** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
@@ -68,7 +68,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Kernel nvram notifications still carry the value** **[owner call]** ↳ report: `review-2026-11-11` A-1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Firewall log collector: run it under its own account** **[owner call]** ↳ report: `review-2026-11-11` D-5 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Encrypted DNS and AiMesh leftovers from the 2026-11-11 review** **[owner call]** ↳ report: `review-2026-11-11` C-8 · notes: `review-2026-11-11-remediation.md`
-- **[P3] mDNS on guest and SDN networks; DNS queries with two OPT records** **[owner call]** ↳ report: `review-2026-11-11` Appendix A · notes: `review-2026-11-11-remediation.md`
+- **[P3] DNS queries with two OPT records** **[owner call]** ↳ report: `review-2026-11-11` Appendix A · notes: `review-2026-11-11-remediation.md`
 - **[P3] Channel picker control port: a local firewall rule by process owner** **[owner call]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Two kernel checks from the 2026-11-11 fixes: a test program on a router** **[owner call]** ↳ report: `review-2026-11-11` A-1, A-C2 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Maintainer tooling proposals (2026-11-11)** **[owner call]** ↳ notes: `tooling-proposals-2026-11-11.md`
@@ -84,7 +84,7 @@ private review report and the finding ID in it; review reports are never publish
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.7: 2,306,048 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.8: 2,297,856 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`

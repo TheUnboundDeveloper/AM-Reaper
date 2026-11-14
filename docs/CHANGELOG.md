@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.7** · 2026-11-13 <!--@stamp-->
+> **Doc status:** current as of **v3.7.8** · 2026-11-14 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,32 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.8 — mDNS across networks; the Guest Portal passcode is back; VPN profiles that reconnect by themselves; VPN server clients reach isolated networks again
+
+Everything in v3.7.7 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **mDNS across networks.** Devices on the main network and on every network with Access Intranet on can find each
+  other (casting, printers, AirPlay). A Guest Portal network and a network with Set AP Isolated on never take part,
+  and the router no longer answers mDNS on an isolated guest network. A switch on the Tweaks page, on by default.
+- **Guest Portal: the passcode is back.** A Free Wi-Fi portal can ask for a passcode again (Network page, wizard and
+  Portal tab); on v3.7.7 the field was gone and a portal that still had one refused every entry. After sign-in a
+  phone shows one success page instead of two.
+- **VPN profiles bound to a network connect by themselves.** A WireGuard client whose server name could not be looked
+  up when it started stayed down until it was switched off and on by hand. It is now restarted when the name
+  resolves, and after five minutes without a handshake. Choosing a VPN profile for a network switches the profile
+  on, and a network's profile is started when the network is applied.
+- **VPN server clients reach isolated guest networks again.** The guest isolation of v3.7.7 also shut out clients of
+  the router's own WireGuard / OpenVPN server. They can open connections into an isolated guest network again (the
+  server's own Access Intranet setting still decides); devices on that network can answer them, not start
+  connections to them. Not into a Guest Portal network, and not while the network's Kill Switch is on.
+- **Guest DNS stays in place.** The rule that keeps portal guests on their network's own resolver was lost whenever
+  a portal started or the Internet connection came back; it is put back each time.
+- **Rule Status.** Three "Guest network: DNS at its gateway" rows read inconclusive on v3.7.7 with nothing wrong on
+  the router; the checker now reads the rule they depend on.
+- **Smaller fixes.** System Log > IPv6 names devices the way the Devices page does (a device with a static address
+  showed as unknown); the Wi-Fi quick connect sheet stays open until it is printed.
 
 ## v3.7.7 — Guest Portal: create, sign-in, isolation and guest DNS that hold; a quicker finish after sign-in; the system log capped; the WAN status follows the internet check
 

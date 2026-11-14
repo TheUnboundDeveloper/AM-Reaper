@@ -54,6 +54,12 @@ check("WLog: band by wlN_nband, endpoint JSON.parsed (never run, B-5 2026-11-05)
 check("Leases/IPv6/PortFwd: emitter arrays declared before the ej call (strict mode), no pop()+length>1 off-by-one",
       "var leasearray = [];\n<% get_leases_array(); %>" in LS and "var ipv6cfgarray = [[]], ipv6clientarray = [[]], pinholesarray = [[]];" in I6
       and ".pop()" not in I6 and "<% get_vserver_array(); %>" in PF and "<% get_upnp_array(); %>" in PF)
+check("IPv6: device names come from ReaperNames by MAC (the Devices page names), the lease hostname is the fallback, "
+      "\"<unknown>\" and \"*\" count as no name, the user's own names are seeded before the first draw (2026-11-14)",
+      "var lease = (r[0] === '*' || r[0] === '<unknown>') ? '' : r[0];" in I6
+      and "host: ReaperNames.byMac(r[1], lease)" in I6 and '<script src="/reaper_util.js"></script>' in I6
+      and I6.find("ReaperNames.refresh('<% nvram_char_to_ascii(\"\", \"custom_clientlist\"); %>'") != -1
+      and I6.find("ReaperNames.refresh(") < I6.rfind("try { drawCli(); }"))
 check("PortFwd: Reaper's own DNAT chain is named, not passed off as a user port forward", "REAPER_GKN: `<#RLOG_" in PF)
 check("Routes: every table + rules from reaper_pbr.cgi?action=routes, local table folded by default",
       "'/reaper_pbr.cgi?action=routes&http_id=' + encodeURIComponent(HTTPID)" in RT and "var HTTPID = <% nvram_get_js(\"http_id\"); %>;" in RT

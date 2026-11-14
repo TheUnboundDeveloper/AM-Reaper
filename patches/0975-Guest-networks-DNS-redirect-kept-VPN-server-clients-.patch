@@ -1,0 +1,430 @@
+From 644c01e8f07d00c5bd118e78cb3f89a109c32836 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:41:00 -0500
+Subject: [PATCH] Guest networks: DNS redirect kept, VPN server clients, mDNS
+ plan, passcode
+
+- rc/reaper_guest.c: the guests' DNS redirect is put back after the nat table is restored (a
+  portal start and the WAN monitor replace the whole table, and signed-in portal guests then
+  reached any resolver).
+- rc/reaper_guest.c: clients of the router's own WireGuard / OpenVPN server may open connections
+  into an isolated guest network again, as before v3.7.7: such a connection goes on to the stock
+  server chains, which decide by the server's own access setting, and the network may answer it. A
+  guest still cannot open a connection to a VPN client. Not into a Guest Portal network, not while
+  the network's kill switch is on. Field report, GT-BE98.
+- rc/reaper_guest.c, rc/services.c: which networks mDNS serves. avahi no longer answers on a
+  network guest isolation closes; the reflector joins the main network and every network with
+  Access Intranet on, never a Guest Portal and never a network with Set AP Isolated on, and avahi
+  is restarted only when that plan changes.
+- rc/services.c: the Free Wi-Fi passcode is honoured again at portal start (it had been forced off
+  on 2026-11-12); a guest-network change starts the VPN client the network is bound to.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/rc.h           |   4 +
+ release/src/router/rc/reaper_guest.c | 163 +++++++++++++++++++++++++++
+ release/src/router/rc/services.c     |  83 +++++++++++++-
+ 3 files changed, 247 insertions(+), 3 deletions(-)
+
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index daa9345996..109901053f 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3170,8 +3170,11 @@ extern int reaper_sdn_list_has_svc(const char *list);
+ extern int reaper_rc_rest_has(const char *rest, const char *svc);	/* 2026-11-12: one portal start per request */
+ extern const char *reaper_wl_rest;
+ extern void reaper_guest_gen(void);	/* 2026-11-12: guest isolation (rc/reaper_guest.c) */
++extern void reaper_guest_nat_reassert(void);	/* 2026-11-14: guest DNS redirect back after a nat restore (rc/reaper_guest.c) */
+ extern void reaper_guest_apply(int have_lock);	/* 2026-11-12: guest-network requests always applied (rc/sdn.c) */
+ extern int reaper_guest_intranet(int sdn_idx);	/* 2026-11-13: Access Intranet on for this network (rc/reaper_guest.c) */
++extern void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn);	/* 2026-11-14: mDNS across networks (rc/reaper_guest.c) */
++extern void reaper_mdns_follow(void);	/* 2026-11-14: rc/services.c, restart avahi when its networks changed */
+ extern void reaper_guest_dot_watch(void);	/* 2026-11-13: Guest Portal encrypted DNS forwarders (rc/sdn.c) */
+ extern int reaper_sdn_settle_main(int argc, char *argv[]);
+ #endif
+@@ -4316,6 +4319,7 @@ extern void stop_wgcall();
+ extern void start_wgs(int unit);
+ extern void stop_wgs(int unit);
+ extern void start_wgc(int unit);
++extern void reaper_wgc_start_bound(void);	/* 2026-11-14: a client a network uses, on but not running (rc/wireguard.c) */
+ extern void stop_wgc(int unit);
+ extern void update_wgs_client(int s_unit, int c_unit);
+ extern void update_wgs_client_ep();
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index ee3489d213..c5f6be75da 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -17,6 +17,10 @@
+  *   through it      out by a WAN interface or the bound VPN client only (only the VPN client while the kill switch
+  *                   is on - so the kill switch now also holds for a portal network and for IPv6), established
+  *                   replies, port forwards from the WAN; anything else in or out DROP
++ *   VPN servers     2026-11-14: a client of the router's OWN WireGuard / OpenVPN server is the admin's remote
++ *                   access, not a guest: it may open connections into a guest network as before v3.7.7 (the stock
++ *                   WGSF / OVPNSF chains still decide by the server's own access setting) and the network may
++ *                   answer it - never open a connection to it. Not into a portal, not with the kill switch on
+  *   portal bridge   chilli reads it raw: nothing for the kernel to route there - INPUT neighbour discovery only,
+  *                   FORWARD nothing; a portal's IPv6 gets nothing at all
+  * Hooked by hook.sh (rc/reaper_hook.c) right after Warden; re-applied at every firewall build's tail and after every
+@@ -36,6 +40,7 @@
+ #define RG_APPLY	RG_DIR "/apply.sh"
+ 
+ /* REAPER-GUEST-PURE-BEGIN (compiled on the host by test_guest_isolation.py) */
++#define RG_SRV_MAX	4
+ struct rg_net {
+ 	int sdn_idx;
+ 	char ifname[IFNAMSIZ];	/* the kernel interface: tun22 / tun23 for a portal, else the bridge */
+@@ -46,6 +51,9 @@ struct rg_net {
+ 	int killsw;		/* kill switch on (meaningful only with a bound VPN client) */
+ 	int lan_ok;		/* 2026-11-13 (owner): a portal with Access Intranet on may open connections to the main LAN */
+ 	char lanif[IFNAMSIZ];	/* the main LAN bridge (lan_ifname) */
++	char srvif[RG_SRV_MAX][IFNAMSIZ];	/* 2026-11-14: the router's own VPN server interfaces whose clients may open
++						 * connections into this network (wgsN, tun2N); "" x nsrv == 0 when none */
++	int nsrv;
+ };
+ 
+ /* sdn_access_rl is "<access_sdn_idx>sdn_idx" pairs (sdn.js parse_StrToJSON_sdn_access_rl_list): intranet access is
+@@ -128,6 +136,13 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		 * the router itself (REAPER_GUI above is unchanged); nothing opens from the main LAN into the portal */
+ 		if (!v6 && g->portal && g->lan_ok && g->lanif[0])
+ 			fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, g->lanif);
++		/* 2026-11-14 (field report, v3.7.7): WireGuard server clients lost a Guest Network Pro VLAN they could reach on
++		 * v3.7.6. A client of the router's own VPN server may open a connection into this network (below) and the
++		 * network may ANSWER it - replies only, a guest still cannot open a connection to a VPN client. */
++		if (!g->portal && !vpn_only)
++			for (k = 0; k < g->nsrv && k < RG_SRV_MAX; k++)
++				fprintf(f, "%s -A REAPER_GUF -i %s -o %s -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN\n",
++					T, X, g->srvif[k]);
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUF -i %s -j DROP\n", T, X);
+ 	if (!closed) {
+@@ -140,6 +155,11 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 			} else
+ 				for (k = 0; k < nw4; k++)
+ 					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, wan4[k]);
++			/* 2026-11-14: and from the router's own VPN servers - on to WGSF / OVPNSF, which accept or drop by the
++			 * server's own access setting exactly as before v3.7.7 */
++			if (!g->portal)
++				for (k = 0; k < g->nsrv && k < RG_SRV_MAX; k++)
++					fprintf(f, "%s -A REAPER_GUF -o %s -i %s -j RETURN\n", T, X, g->srvif[k]);
+ 		}
+ 	}
+ 	fprintf(f, "%s -A REAPER_GUF -o %s -j DROP\n", T, X);
+@@ -178,6 +198,8 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 		fprintf(f, "# network %d: %s%s%s%s%s\n", g[i].sdn_idx, g[i].ifname,
+ 			g[i].portal ? " (portal, bridge " : "", g[i].portal ? g[i].brname : "", g[i].portal ? ")" : "",
+ 			g[i].vpnif[0] ? (g[i].killsw ? " - VPN client, kill switch on" : " - VPN client, kill switch off") : "");
++		if (!g[i].portal && g[i].nsrv > 0 && !(g[i].killsw && g[i].vpnif[0]))
++			fputs("#   clients of the router's own VPN servers may open connections into it; it may only answer\n", f);
+ 		if (g[i].portal) {	/* 2026-11-13: to the address of the tunnel it arrived on = the guest resolver */
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p udp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p tcp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+@@ -247,6 +269,26 @@ void reaper_guest_gen(void)
+ 		}
+ 		FREE_MTLAN((void *)pmtl);
+ 	}
++	/* REAPER-GUEST-SRV-BEGIN (run on the host by test_guest_isolation.py: needs g, n and two ints k, u) */
++	/* 2026-11-14: the router's own VPN server interfaces, by name - WireGuard servers wgs1..2 (WG_SERVER_IF_PREFIX,
++	 * WG_SERVER_MAX) and OpenVPN servers tun21..22 (OVPN_SERVER_BASE + unit). By name, not by "is it switched on":
++	 * a server started later needs no rebuild here, and a rule for an interface that does not exist matches
++	 * nothing. A name a guest network itself uses (a portal's tun22 / tun23) is never treated as a server. */
++	for (k = 0; k < n; k++) {
++		static const char *const srv[RG_SRV_MAX] = { "wgs1", "wgs2", "tun21", "tun22" };
++		int s, c;
++
++		if (g[k].portal)
++			continue;
++		for (s = 0; s < RG_SRV_MAX; s++) {
++			for (c = 0, u = 0; u < n; u++)
++				if (!strcmp(g[u].ifname, srv[s]) || !strcmp(g[u].brname, srv[s]))
++					c = 1;
++			if (!c && g[k].nsrv < RG_SRV_MAX)
++				strlcpy(g[k].srvif[g[k].nsrv++], srv[s], IFNAMSIZ);
++		}
++	}
++	/* REAPER-GUEST-SRV-END */
+ 	for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {
+ 		w = get_wan_ifname(u);
+ 		if (!w || !*w || !strcmp(w, "br0"))
+@@ -276,6 +318,127 @@ int reaper_guest_intranet(int sdn_idx)
+ 	return rg_access_on(nvram_safe_get("sdn_access_rl"), sdn_idx);
+ }
+ 
++/* 2026-11-14 (owner): mDNS across networks - which networks avahi serves and which the reflector may join
++ * (rc/services.c generate_mdns_config; avahi's reflect-interfaces is a Reaper patch, avahi-core/server.c).
++ *   deny  every network guest isolation closes (Access Intranet off, or a Guest Portal - its bridge and its chilli
++ *         interface): REAPER_GUI already drops their 5353, and avahi no longer announces the router onto them either
++ *         (review 2026-11-11 Appendix A).
++ *   refl  the bridges the reflector may join: the main LAN and every network with Access Intranet on (its devices are
++ *         main-network devices on another SSID), minus a bridge that carries any network with Set AP Isolated on (the
++ *         Network page switch: apmN_ap_isolate for the Main Network, apgN_ap_isolate for the others; on the main LAN
++ *         also a radio's wlN_ap_isolate) and never a portal. The reflector never sends a packet back onto the network
++ *         it came from, and a left-out network is not joined to any other, so AP isolation holds.
++ *   why   "br54 AP isolated, br55 no intranet access" for the log.
++ * The AiMesh backhaul (MAINBH) is not a client network and is not looked at. Outside routing modes: nothing. */
++static void rm_add(char *buf, size_t n, const char *s)
++{
++	const char *p = buf;
++	size_t l;
++
++	if (!s || !*s)
++		return;
++	l = strlen(s);
++	while ((p = strstr(p, s)) != NULL) {	/* already listed */
++		if ((p == buf || p[-1] == ',') && (p[l] == ',' || p[l] == '\0'))
++			return;
++		p += l;
++	}
++	if (*buf)
++		strlcat(buf, ",", n);
++	strlcat(buf, s, n);
++}
++
++void reaper_mdns_ifaces(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn)
++{
++	struct { char br[IFNAMSIZ]; const char *out; } b[MTLAN_MAXINUM + 1];
++	MTLAN_T *pmtl = NULL;
++	CP_TYPE_RL cpt;
++	const char *lan = nvram_safe_get("lan_ifname"), *acc = nvram_safe_get("sdn_access_rl");
++	char key[32], w[IFNAMSIZ + 24];
++	size_t sz = 0, i;
++	int nb, k, u;
++
++	deny[0] = refl[0] = why[0] = '\0';
++	if (!is_routing_enabled() || !*lan)
++		return;
++	memset(b, 0, sizeof(b));
++	strlcpy(b[0].br, lan, sizeof(b[0].br));
++	nb = 1;
++	for (u = 0; u < MAX_NR_WL_IF; u++) {
++		snprintf(key, sizeof(key), "wl%d_ap_isolate", u);
++		if (nvram_get_int(key) == 1)
++			b[0].out = "AP isolated";
++	}
++	if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
++		if (get_mtlan(pmtl, &sz)) {
++			for (i = 0; i < sz; i++) {
++				const MTLAN_T *m = &pmtl[i];
++				const char *br = m->nw_t.br_ifname[0] ? m->nw_t.br_ifname : lan;
++				int portal = 0, on_lan = !strcmp(br, lan);
++
++				if (m->enable != 1 || !strcmp(m->name, "MAINBH"))
++					continue;
++				for (k = 0; k < nb && strcmp(b[k].br, br); k++)
++					;
++				if (k == nb) {
++					if (nb > MTLAN_MAXINUM)
++						continue;
++					strlcpy(b[nb].br, br, sizeof(b[nb].br));
++					nb++;
++				}
++				if (m->sdn_t.cp_idx > 0) {
++					memset(&cpt, 0, sizeof(cpt));
++					if (get_cp_type_byidx(m->sdn_t.cp_idx, &cpt))
++						portal = (cpt.cp_type == 1 || cpt.cp_type == 2 || cpt.cp_type == 4);
++				}
++				if (!on_lan && (portal || m->sdn_t.sdn_idx == 0 || m->nw_t.idx == 0 ||
++						!rg_access_on(acc, m->sdn_t.sdn_idx))) {
++					/* the networks guest isolation closes (reaper_guest_gen): avahi stays off them */
++					rm_add(deny, dn, br);
++					if (portal && m->nw_t.ifname[0])
++						rm_add(deny, dn, m->nw_t.ifname);
++					b[k].out = portal ? "Guest Portal" : "no intranet access";
++					continue;
++				}
++				if (portal) {
++					b[k].out = "Guest Portal";
++					continue;
++				}
++				if (m->sdn_t.apg_idx > 0) {
++					snprintf(key, sizeof(key), "%s%d_ap_isolate", strcmp(m->name, "MAINFH") ? "apg" : "apm",
++						 m->sdn_t.apg_idx);
++					if (nvram_get_int(key) == 1 && !b[k].out)
++						b[k].out = "AP isolated";
++				}
++			}
++		}
++		FREE_MTLAN((void *)pmtl);
++	}
++	for (k = 0; k < nb; k++) {
++		if (!b[k].out) {
++			rm_add(refl, rn, b[k].br);
++			continue;
++		}
++		snprintf(w, sizeof(w), "%s %s", b[k].br, b[k].out);
++		if (*why)
++			strlcat(why, ", ", wn);
++		strlcat(why, w, wn);
++	}
++}
++
++/* 2026-11-14 (found on the router, _r1): start_nat_rules() replaces the WHOLE nat table (iptables-restore), and the
++ * guests' DNS redirect - REAPER_GUN and its PREROUTING hook - goes with it. start_chilli() and start_CP() call it right
++ * AFTER their own firewall restart (whose tail had just installed the redirect), and wanduck calls it on a WAN change,
++ * so a portal lost the redirect the moment it started: a guest with a hand-set resolver went around the guest DNS.
++ * This runs the nat lines of the last generated script again. Nat only and idempotent, so no firewall lock (it is
++ * also reached from inside start_firewall, which holds it); nothing is regenerated and no flow is touched. */
++void reaper_guest_nat_reassert(void)
++{
++	if (!f_exists(RG_APPLY) || !reaper_script_ok(RG_APPLY))
++		return;
++	eval("sh", "-c", "R() { \"$@\" 2>/dev/null; }; eval \"$(grep REAPER_GUN " RG_APPLY " | grep -v '^#')\"");
++}
++
+ /* regenerate and run; have_lock: the caller already holds file_lock("firewall") (the start_firewall tail) */
+ void reaper_guest_apply(int have_lock)
+ {
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index eb702e5db3..70b35ec5a4 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -9373,15 +9373,51 @@ void stop_lltd(void)
+ #endif
+ #define TIMEMACHINE_BACKUP_NAME	"Backups.backupdb"
+ 
++/* reaper 2026-11-14 (owner): mDNS across networks. The Tweaks switch reaper_mdns_reflect (default on; only "0" is
++ * off) turns on avahi's reflector for the bridges reaper_mdns_ifaces (rc/reaper_guest.c) names - the main LAN and the
++ * networks with Access Intranet on, never one with Set AP Isolated on, never a portal - and only when there are two of
++ * them. The networks guest isolation closes are added to deny-interfaces. The plan's signature is kept beside the
++ * config, so a network change (restart_sdn / sdn_del) restarts avahi only when what it would be told changed. */
++#define REAPER_MDNS_SIG	AVAHI_CONFIG_PATH "/reaper_mdns.sig"
++
++static int reaper_mdns_plan(char *deny, size_t dn, char *refl, size_t rn, char *why, size_t wn, char *sig, size_t sn)
++{
++	const char *p;
++	int on, n = 0;
++
++	reaper_mdns_ifaces(deny, dn, refl, rn, why, wn);
++	if (*refl)
++		for (n = 1, p = refl; (p = strchr(p, ',')) != NULL; p++)
++			n++;
++	on = !nvram_match("reaper_mdns_reflect", "0") && n >= 2;
++	snprintf(sig, sn, "%d|%s|%s", on, deny, on ? refl : "");
++	return on;
++}
++
+ int generate_mdns_config(void)
+ {
+ 	FILE *fp;
+ 	char avahi_config[80];
+ 	int ret = 0;
+ 	char *wan1_ifname;
++	char rm_deny[256], rm_refl[256], rm_why[384], rm_sig[600], rm_old[600] = "";
++	int rm_on;
+ 
+ 	sprintf(avahi_config, "%s/%s", AVAHI_CONFIG_PATH, AVAHI_CONFIG_FN);
+ 
++	/* reaper 2026-11-14: mDNS across networks - log the plan when it changes */
++	rm_on = reaper_mdns_plan(rm_deny, sizeof(rm_deny), rm_refl, sizeof(rm_refl), rm_why, sizeof(rm_why), rm_sig, sizeof(rm_sig));
++	f_read_string(REAPER_MDNS_SIG, rm_old, sizeof(rm_old));
++	if (strcmp(rm_old, rm_sig)) {
++		if (rm_on)
++			logmessage("mdns", "devices can find each other across %s%s%s", rm_refl, *rm_why ? "; left out: " : "", rm_why);
++		else if (nvram_match("reaper_mdns_reflect", "0"))
++			logmessage("mdns", "mDNS across networks is off");
++		else if (*rm_why)
++			logmessage("mdns", "mDNS across networks: fewer than two networks can take part (left out: %s)", rm_why);
++		f_write_string(REAPER_MDNS_SIG, rm_sig, 0, 0);
++	}
++
+ 	/* Generate avahi configuration file */
+ 	if (!(fp = fopen(avahi_config, "w"))) {
+ 		perror(avahi_config);
+@@ -9410,6 +9446,8 @@ int generate_mdns_config(void)
+ 	if (*wan1_ifname)
+ 		fprintf(fp, ",%s", wan1_ifname);
+ #endif
++	if (*rm_deny)	/* reaper 2026-11-14: the networks guest isolation closes */
++		fprintf(fp, "%s%s", (*nvram_safe_get("wan0_ifname")) ? "," : "", rm_deny);
+ 	fprintf(fp, "\n");
+ 	fprintf(fp, "ratelimit-interval-usec=1000000\n");
+ 	fprintf(fp, "ratelimit-burst=1000\n");
+@@ -9423,6 +9461,14 @@ int generate_mdns_config(void)
+ 	fprintf(fp, "\n[wide-area]\n");
+ 	fprintf(fp, "enable-wide-area=no\n");	/* reaper: .local only; unicast DNS-SD unused (CVE-2024-52615/52616) */
+ 
++	/* reaper 2026-11-14: mDNS across networks (reaper_mdns_plan) */
++	if (rm_on) {
++		fprintf(fp, "\n[reflector]\n");
++		fprintf(fp, "enable-reflector=yes\n");
++		fprintf(fp, "reflect-ipv=no\n");
++		fprintf(fp, "reflect-interfaces=%s\n", rm_refl);
++	}
++
+ 	/* Set [rlimits] configuration */
+ 	fprintf(fp, "\n[rlimits]\n");
+ 	fprintf(fp, "rlimit-core=0\n");
+@@ -9637,6 +9683,22 @@ int start_mdns(void)
+ 	return _eval(avahi_daemon_argv, NULL, 0, &pid);
+ }
+ 
++/* reaper 2026-11-14: the network set changed (restart_sdn / sdn_del): restart avahi only when the networks it serves
++ * or reflects between changed. Called from the rc service handler itself, so no notify_rc (review 2026-11-11 C-1). */
++void reaper_mdns_follow(void)
++{
++	char d[256], r[256], w[384], sig[600], old[600] = "";
++
++	if (!pids("avahi-daemon"))
++		return;
++	reaper_mdns_plan(d, sizeof(d), r, sizeof(r), w, sizeof(w), sig, sizeof(sig));
++	f_read_string(REAPER_MDNS_SIG, old, sizeof(old));
++	if (!strcmp(old, sig))
++		return;
++	stop_mdns();
++	start_mdns();
++}
++
+ void stop_mdns(void)
+ {
+ 	int i;
+@@ -13859,9 +13921,10 @@ void start_chilli(void)
+ 	}else 
+ 		goto chilli_cleanup;
+ 
+-	/* reaper 2026-11-12 (owner): a Free Wi-Fi portal has no passcode - one stored before is kept in the settings but
+-	 * never asked for (chilli then accepts the sign-in page's noauth:noauth, rc writes /tmp/localusers) */
+-	cp_au_type = 0;
++	/* reaper 2026-11-14 (owner): the Free Wi-Fi passcode is back (2026-11-12 had forced every portal to terms-only
++	 * here). The network's own sign-in type decides again: 0 = terms only (chilli accepts the page's noauth:noauth
++	 * from /tmp/localusers), 1 = the admin's passcode (chilli_localUser_passcode -> /etc/shadow.chilli). A portal
++	 * saved with a passcode before 2026-11-12 and not saved since asks for it again, unchanged. */
+ 	if(cp_local_auth){
+ 		char *pcode = NULL;
+ 		if(cp_au_type == 0){
+@@ -21226,6 +21289,14 @@ check_ddr_done:
+ #endif
+ 		if (action & RC_SERVICE_START)
+ 			reaper_guest_apply(0);	/* 2026-11-12: guest isolation follows the network set (rc/reaper_guest.c) */
++#if defined(RTCONFIG_MDNS)
++		if (action & RC_SERVICE_START)
++			reaper_mdns_follow();	/* 2026-11-14: mDNS across networks follows it too */
++#endif
++#if defined(RTCONFIG_WIREGUARD) && defined(RTCONFIG_MULTILAN_CFG)
++		if (action & RC_SERVICE_START)
++			reaper_wgc_start_bound();	/* 2026-11-14: a WireGuard client a network uses is started with it */
++#endif
+ 		/* 2026-10-08: the network set the rev-server lines were built from changed
+ 		 * (added, readdressed, retyped, toggled) - every instance needs them again */
+ 		if ((action & RC_SERVICE_START) && revshare_sig_changed()) {
+@@ -21242,6 +21313,9 @@ check_ddr_done:
+ 		reaper_portal_reconcile(nvptr);	/* reaper 2026-11-12: a deleted portal network stops its portal */
+ #endif
+ 		reaper_guest_apply(0);	/* 2026-11-12: a deleted network leaves the isolation layer */
++#if defined(RTCONFIG_MDNS)
++		reaper_mdns_follow();	/* 2026-11-14: and the mDNS reflector */
++#endif
+ 		if (revshare_sig_changed()) {	/* 2026-10-08: a removed network leaves stale rev-server lines */
+ 			logmessage("dnsmasq", "networks changed - restarting the resolvers so each one can name the others' devices");
+ 			notify_rc("restart_dnsmasq");
+@@ -25386,6 +25460,9 @@ _dprintf("nat_rule: the nat rule file was not ready. wait %d seconds...\n", retr
+ 
+ 	_dprintf("%s: apply the nat_rules (%s) state %d ret %d\n", __FUNCTION__, fn, nat_state, ret);
+ 	rule_apply_checking("services", __LINE__, NAT_RULES, ret);
++#ifdef RTCONFIG_MULTILAN_CFG
++	reaper_guest_nat_reassert();	/* 2026-11-14: the restore took the guests' DNS redirect with it (rc/reaper_guest.c) */
++#endif
+ 
+ #ifdef RTCONFIG_MULTIWAN_IF
+ 	int i;
+-- 
+2.25.1
+

@@ -27,6 +27,9 @@
 #   --check (default) report only, exit 1 if anything is stale
 #   --fix             also remove <pkg>/Makefile + <pkg>/config.status + <pkg>/stamp-h1
 #                     so the next build re-runs configure with the current flags
+# 2026-11-14, same run: tracked kernel objects that equal their committed copy are handed back to kbuild
+# (their .cmd is removed), and wpa_supplicant / getdns built against another OpenSSL are cleared - see the
+# two REAPER-STALE sections near the end.
 # ============================================================================
 
 case "${1:-}" in
@@ -108,8 +111,74 @@ for cs in "$R"/*/config.status; do
   fi
 done
 
+# ---- REAPER-STALE-OBJ-BEGIN: tracked objects the kernel build regenerates (2026-11-14) ----
+# ASUS ships some kernel objects in git (bcmmcast.o, wlshared_linux.o, pktrunner.o ...) and kbuild rebuilds them
+# here, which leaves them "modified". Restoring them (git checkout, to hand a cut a clean tree) puts the OLD
+# committed bytes back with a NEW mtime, and kbuild - which decides by mtime and its saved .cmd - never rebuilds
+# them. From 2026-11-05 every local image carried the committed bcmmcast.o, without the netlink privilege gate
+# that had been compiled into bcm_mcast_netlink.o two days earlier; a clean tree (CI) has no .cmd files, builds
+# everything, and was correct. So: a tracked object that kbuild built here (its .cmd sits beside it) and that is
+# byte-identical to the committed copy gets its .cmd removed - the state of a clean tree for that one object.
+# kbuild then rebuilds it: a reproducible object comes out the same again, a restored one comes out current.
+kb_same=0; kb_cur=0; _kc=()
+while IFS= read -r _f; do
+  [ -e "${_f%/*}/.${_f##*/}.cmd" ] && _kc+=("$_f")
+done < <(git ls-files -- 'release/src-rt-*/*.o' 'release/src-rt-*/*.ko' 2>/dev/null)
+if [ "${#_kc[@]}" -gt 0 ]; then
+  _mod=$(git status --porcelain --untracked-files=no -- "${_kc[@]}" 2>/dev/null | cut -c4-)
+  for _f in "${_kc[@]}"; do
+    if printf '%s\n' "$_mod" | grep -qxF -- "$_f"; then kb_cur=$((kb_cur+1)); continue; fi   # built here, differs from git: current
+    kb_same=$((kb_same+1))
+    [ "$MODE" = "--fix" ] && rm -f -- "${_f%/*}/.${_f##*/}.cmd"
+  done
+  if [ "$MODE" = "--fix" ]; then
+    echo "  tracked kernel objects: $kb_same equal the committed copy -> their .cmd removed, kbuild rebuilds them ($kb_cur built here already)"
+  else
+    echo "  tracked kernel objects: $kb_same equal the committed copy (a build rebuilds them; --fix clears their .cmd), $kb_cur built here"
+  fi
+fi
+# ---- REAPER-STALE-OBJ-END ----
+
+# ---- REAPER-STALE-OSSL-BEGIN: OpenSSL consumers built against another OpenSSL (2026-11-14) ----
+# Two objects the 2026-11-04 comparison with a clean-tree image found, still there on 2026-11-14: wpa_supplicant
+# compiled under the previous OpenSSL release (its own makefiles do not depend on the OpenSSL headers), and getdns /
+# stubby configured (cmake) while the tree's OpenSSL had no OSSL_PARAM_BLD_new, so it kept the legacy key API.
+# Judged by what the built files say, not by dates (this tree's mtimes have been rewritten more than once).
+_vd="$R/openssl-3.5/VERSION.dat"
+if [ -f "$_vd" ] && grep -q '^RTCONFIG_OPENSSL35=y' "$R/.config" 2>/dev/null; then
+  _v() { sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$_vd" | head -1; }
+  _want="OpenSSL $(_v MAJOR).$(_v MINOR).$(_v PATCH) $(_v RELEASE_DATE)"
+  for _wd in "$ROOT"/release/src-rt-*/bcmdrivers/broadcom/net/wl/impl*/main/components/opensource/router_tools/wpa_supplicant; do
+    _b="$_wd/wpa_supplicant/wpa_supplicant"
+    [ -f "$_b" ] || continue
+    _have=$(grep -a -o -E 'OpenSSL [0-9]+\.[0-9]+\.[0-9]+ [0-9]+ [A-Z][a-z]{2} [0-9]{4}' "$_b" 2>/dev/null | sort -u | head -1)
+    [ -n "$_have" ] && [ "$_have" != "$_want" ] || continue
+    found=$((found+1))
+    echo "  [STALE] wpa_supplicant"
+    echo "          compiled under $_have, the tree has $_want"
+    if [ "$MODE" = "--fix" ]; then
+      _rel="${_wd#$ROOT/}"
+      _n=$(git ls-files --others -- "$_rel" 2>/dev/null | grep -c -E '\.(o|d)$')
+      git ls-files -z --others -- "$_rel" 2>/dev/null \
+        | grep -zE '\.(o|d)$|/wpa_supplicant/(wpa_supplicant|wpa_cli|wpa_passphrase|libwpa_client\.so)$' | xargs -0 -r rm -f --
+      echo "          -> removed $_n object(s) and the built programs; the next build compiles them again"
+    fi
+  done
+  _gh="$R/getdns/build/config.h"
+  if [ -f "$_gh" ] && [ "$(_v MAJOR)" -ge 3 ] 2>/dev/null && ! grep -q '^#define HAVE_OSSL_PARAM_BLD_NEW' "$_gh"; then
+    found=$((found+1))
+    echo "  [STALE] getdns (stubby)"
+    echo "          configured for the legacy OpenSSL key API (no OSSL_PARAM_BLD_new), the tree has $_want"
+    if [ "$MODE" = "--fix" ]; then
+      rm -rf -- "$R/getdns/build"
+      echo "          -> removed getdns/build; the next build configures and compiles it again"
+    fi
+  fi
+fi
+# ---- REAPER-STALE-OSSL-END ----
+
 if [ "$found" -eq 0 ]; then
-  echo "  stale-configure: clean (no package's flags changed after it was configured)"
+  echo "  stale-configure: clean (no package's flags changed after it was configured, no stale OpenSSL consumer)"
   exit 0
 fi
 echo "  stale-configure: $found package(s) flagged"

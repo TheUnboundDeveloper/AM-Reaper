@@ -221,6 +221,12 @@ jobs:
               stable) want=stable ;;
               *)      want=pre ;;
             esac
+            # 2026-11-14: a pre-release image must carry ITS channel's token - an alpha tag never publishes a
+            # _BETA image, nor the other way round.
+            case "$CHANNEL:$(basename "$f")" in
+              alpha:*_ALPHA_*|beta:*_BETA_*|rc:*_RC_*|stable:*) ;;
+              *) got=other-channel ;;
+            esac
             if [ "$got" != "$want" ]; then
               echo "::error::channel mismatch: tag '$V' publishes on the $CHANNEL channel but $(basename "$f") is a $got image"
               bad=1
@@ -269,7 +275,9 @@ jobs:
           {
             printf '\n---\n\n## Images & checksums (%s)\n\n' "$M"
             printf 'Two flashable images: **+ AI Advisor** (default) and **Standard** (`noMCP`, all AI components compiled out entirely). Flash the `*_nand_squashfs.pkgtb` via Administration > Firmware Upgrade.\n\n'
-            if [ "$CHANNEL" != stable ]; then
+            if [ "$CHANNEL" = alpha ]; then
+              printf '> **This is an ALPHA test build** from the `Dev-Uni` branch: every model built from one source tree (3006.102.10). Its filename carries `_ALPHA` and the router reports the same string on the dashboard and the About page. It is not listed in the update manifest, no router is offered it, and a router running it does not look for updates: install the next test build by hand from this page. To leave the test, flash a beta or stable release for your model.\n\n'
+            elif [ "$CHANNEL" != stable ]; then
               printf '> **This is a %s release.** Its filename carries `_BETA` and the router reports the same string on the dashboard and the About page, so you can always tell which channel a flashed image came from. Stable releases carry no marker.\n\n' "$CHANNEL"
             fi
             printf '| Variant | File | SHA-256 |\n|---|---|---|\n'
@@ -332,6 +340,10 @@ jobs:
           case "$M" in BQ16) pre="--prerelease" ;; esac
           # BQ16_PRO: the same rule - onboarded 2026-10-04, no hardware has run an image.
           case "$M" in BQ16_PRO) pre="--prerelease" ;; esac
+          # GT-BE98: prerelease-only from the unification (2026-11-04) until a unit has run an
+          # image of the 3006.102.10 tree with its own 102_39274 closed objects (owner decision:
+          # all four unified models stay prerelease until a field report).
+          case "$M" in GT-BE98) pre="--prerelease" ;; esac
           # Honor an explicit prerelease input from BOTH workflow_dispatch and
           # workflow_call (public-build passes prerelease=true on a Dev publish).
           # On a tag push the input is empty, so this is a no-op there.

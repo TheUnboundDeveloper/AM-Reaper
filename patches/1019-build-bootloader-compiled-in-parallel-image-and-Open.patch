@@ -1,0 +1,83 @@
+From 700195a8c108f525601a2c465b9cac11499528da Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:43 -0500
+Subject: [PATCH] build: bootloader compiled in parallel; image and OpenSSL
+ built once (Asuswrt-Merlin) (102.8 line)
+
+Carried from Asuswrt-Merlin, two of Eric Sauvageau's build changes the 3006.102.10 line has from
+its base:
+- 0e562d854a5 "build: parallelize bootloader compile";
+- ec279401070 "build: don't build firmware image and openssl twice" - the top level runs
+  buildimage once after the router strip, and the openssl rule no longer makes the package a
+  second time.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src-rt-5.04behnd.4916/build/Makefile | 12 ++++++++----
+ release/src/router/Makefile                  |  3 +--
+ 2 files changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/release/src-rt-5.04behnd.4916/build/Makefile b/release/src-rt-5.04behnd.4916/build/Makefile
+index 9fe2374a80..3193700db3 100644
+--- a/release/src-rt-5.04behnd.4916/build/Makefile
++++ b/release/src-rt-5.04behnd.4916/build/Makefile
+@@ -50,8 +50,10 @@ endif
+ 
+ $(info IMAGE GOAL is $(IMAGE_GOAL))
+ 
++# The top level Makefile runs buildimage itself once router strips is done,
++# so only pull in full_buildimage's prerequisites here, not the image build.
+ all_postcheck1: profile_saved_check rdp_link\
+-     parallel_targets gdbserver full_buildimage
++     parallel_targets gdbserver full_buildimage_prereqs
+ 
+ # Order-only rules
+ #----------------------------------------------------------------------------
+@@ -89,7 +91,7 @@ gdbserver : $(CREATE_INSTALL)
+ full_buildimage gen_credits linux_tools : parallel_targets gdbserver
+ 
+ 
+-.PHONY: mkenv all_postcheck1
++.PHONY: mkenv all_postcheck1 full_buildimage_prereqs
+ 
+ # These post kernel top level targets can compile concurrently
+ parallel_targets: dynamic_cfe uboot hnd_dongle kernelbuild prepare_linux_image modbuild userspace optee atf rtpolicy_gen_metadata hosttools_image
+@@ -943,7 +945,9 @@ endif
+ # If full_buildimage is used, the first one is executed, the dependencies are satisifed,
+ # and then the execution falls through to the second full_buildimage.
+ #
+-full_buildimage: kernelbuild $(DTBS) libcreduction gen_credits linux_tools
++full_buildimage_prereqs: kernelbuild $(DTBS) libcreduction gen_credits linux_tools
++
++full_buildimage: full_buildimage_prereqs
+ 
+ full_buildimage buildimage:
+ 	@echo "=>BUILDIMAGE Starting...<="
+@@ -1002,7 +1006,7 @@ endif
+ uboot:
+ ifneq ($(BUILD_UBOOT),)
+ 	rm -f bootloaders/obj/binaries/*.pkgtb
+-	$(MAKE) -f build/make.uboot all INCLUDE_OPTEE=$(BCM_OPTEE) INCLUDE_ATF=$(BCM_ARMTF) IMAGE_GOAL=$(IMAGE_GOAL)
++	$(MAKE) $(PARALLEL_BUILD) -f build/make.uboot all INCLUDE_OPTEE=$(BCM_OPTEE) INCLUDE_ATF=$(BCM_ARMTF) IMAGE_GOAL=$(IMAGE_GOAL)
+ endif
+ 
+ prepare_linux_image: kernelbuild hosttools_image
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 5c8f6d4f13..78ed41a798 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -3783,10 +3783,9 @@ else
+ INSTALLSUBDIR = /openssl
+ endif
+ 
+-openssl: $(OPENSSL)/Makefile $(if $(filter y,$(HND_ROUTER)),fsbuild,)
++openssl: $(if $(filter y,$(HND_ROUTER)),fsbuild,) $(OPENSSL)
+ 	@$(SEP)
+ 	[ "$(notdir $(realpath $@))" = "$(OPENSSL)" ] || (rm -f $@ && ln -s $(OPENSSL) $@)
+-	$(MAKE) $(OPENSSL)
+ 
+ openssl-clean:
+ 	@$(MAKE) $(OPENSSL)-clean
+-- 
+2.25.1
+

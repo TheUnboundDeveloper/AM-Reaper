@@ -1,10 +1,10 @@
 # "Reaper" — Release Notes
 
-> **Doc status:** current as of **v3.7.6** · 2026-11-11 <!--@stamp-->
+> **Doc status:** current as of **v3.7.7** · 2026-11-13 <!--@stamp-->
 
 | | |
 |---|---|
-| **Current rung** | **v3.7.6** <!--@treever--> — `3006.102.8_Reaper_v3.7.6`. **DNS-over-HTTPS for devices, found by DHCP option 162; the Encrypted DNS block as two switches; the router's own lookups over DNS-over-TLS; DHCP that keeps answering through a stalled radio; Wireless stability switches; Guest Portal fixes and a portal secret per router; a 15 s login deadline and a wider cross-site guard; VPN provider rows no longer switch a client off; the fixes of a full security review.** Everything in v3.7.5 is included. See [`CHANGELOG.md`](CHANGELOG.md#v376--encrypted-dns-for-devices-over-https-dhcp-keeps-answering-through-a-stalled-radio-a-security-reviews-fixes-guest-portal-and-vpn-fixes). |
+| **Current rung** | **v3.7.7** <!--@treever--> — `3006.102.8_Reaper_v3.7.7`. **Guest Portal networks built when created, guests kept to the Internet, sign-in that works on current phones and finishes quickly, guest DNS that follows the network's setting; the Traffic Analyzer's Guest Portal panel; the system log capped against floods; the WAN status follows the internet check; buttons that show they are working.** Everything in v3.7.6 is included. See [`CHANGELOG.md`](CHANGELOG.md#v377--guest-portal-create-sign-in-isolation-and-guest-dns-that-hold-a-quicker-finish-after-sign-in-the-system-log-capped-the-wan-status-follows-the-internet-check). |
 | **Newest published** | **v3.1.0** <!--@pubver--> (2026-09-08 <!--@pubdate-->), on all five main models, both variants each — the newest **release** image, and what "current version" means in [`../README.md`](../README.md). It is the manifest the router's own update check reads ([`releases/latest.json`](../releases/latest.json)). Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. |
 | **Base** | Asuswrt-Merlin 3006.102.8 (upstream RMerl/asuswrt-merlin.ng) |
 | **Models** | ASUS **RT-BE96U** (primary) + **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro** siblings (WiFi 7, Broadcom BCM4916), from v3.1.4 the **GT-BE19000** from v3.3.2 the **ZenWiFi BQ16** (BE25000, quad-band) and from v3.3.4 the **ZenWiFi BQ16 Pro** (BE30000, quad-band), all of which build and pass verification and publish as prereleases. |

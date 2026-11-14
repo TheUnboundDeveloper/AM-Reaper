@@ -1,0 +1,186 @@
+From 80ed56798d400e21174bfab30edbade1fda304e0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:38 -0500
+Subject: [PATCH] DNS health check: the upstreams dnsmasq actually runs with
+ (102.8 line)
+
+Field report (GT-BE98): an add-on had left /jffs/configs/dnsmasq.conf, which replaced the router's
+whole DNS configuration with one upstream on the router itself that was no longer installed. The
+LAN name check read the servers file the firmware writes, which that configuration never loads,
+found those servers answering and logged "every upstream answered when asked directly". It now
+reads the configuration dnsmasq runs with: its own server= lines, and the servers file only when
+the configuration names it. The line says when every silent upstream is on the router itself, and
+when a custom configuration file replaces the router's own.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/rdnshc.c | 123 ++++++++++++++++++++++++++++-----
+ 1 file changed, 104 insertions(+), 19 deletions(-)
+
+diff --git a/release/src/router/rc/rdnshc.c b/release/src/router/rc/rdnshc.c
+index a946b4c94d..62ecc79ffa 100644
+--- a/release/src/router/rc/rdnshc.c
++++ b/release/src/router/rc/rdnshc.c
+@@ -687,6 +687,8 @@ static void state_set(const char *what, long since, int alive)
+ #define LDNS_FRESH_MS	2000	/* a fresh name through the path LAN devices use */
+ #define LDNS_UP_MS	1500	/* each upstream, asked directly */
+ #define LDNS_UP_MAX	4
++#define LDNS_CONF	"/etc/dnsmasq.conf"		/* 2026-11-13: the configuration dnsmasq runs with (LANDNS-LIVE) */
++#define LDNS_CUSTOM	"/jffs/configs/dnsmasq.conf"	/* replaces the generated one when custom configs are on */
+ 
+ /* LANDNS-PURE-BEGIN (host-tested by test_landns_check.py; no firmware calls in here) */
+ #define LDNS_UNK	0	/* not judged yet */
+@@ -744,6 +746,75 @@ static int landns_domain_ok(const char *d)
+ }
+ /* LANDNS-PURE-END */
+ 
++/* LANDNS-LIVE-BEGIN (host-tested by test_landns_live_upstreams.py; no firmware calls in here)
++ * 2026-11-13 (field report, GT-BE98, 2026-10-21): a /jffs/configs/dnsmasq.conf left behind by an add-on replaced
++ * the router's whole DNS configuration with one upstream - a resolver on the router itself that was no longer
++ * installed. The check read the servers file the firmware writes, which that configuration never loads, found
++ * those servers answering and said "every upstream answered when asked directly". The upstreams are now taken
++ * from the configuration dnsmasq runs with: its own server= lines, and the servers file only when it names it. */
++/* One configuration line -> a plain upstream: "server=<address>[#port][@source][%scope]". A
++ * "server=/domain/..." line routes one domain and is not an upstream. 1 = addr and port filled. */
++static int landns_conf_upstream(const char *line, char *addr, size_t alen, int *port)
++{
++	const char *p;
++	size_t al;
++	int pt;
++
++	while (*line == ' ' || *line == '\t') line++;
++	if (strncmp(line, "server=", 7) != 0) return 0;
++	p = line + 7;
++	if (*p == '/') return 0;
++	al = strcspn(p, "#@% \t\r\n");
++	if (al == 0 || al >= alen) return 0;
++	memcpy(addr, p, al);
++	addr[al] = 0;
++	*port = 53;
++	if (p[al] == '#') {
++		pt = atoi(p + al + 1);
++		if (pt > 0 && pt < 65536) *port = pt;
++	}
++	return 1;
++}
++
++/* Does this line make dnsmasq load the servers file at path? */
++static int landns_conf_names_file(const char *line, const char *path)
++{
++	size_t pl = strlen(path);
++
++	while (*line == ' ' || *line == '\t') line++;
++	if (strncmp(line, "servers-file=", 13) != 0) return 0;
++	line += 13;
++	if (strncmp(line, path, pl) != 0) return 0;
++	return line[pl] == 0 || line[pl] == '\n' || line[pl] == '\r' || line[pl] == ' ' || line[pl] == '\t';
++}
++
++/* An address on the router itself (127.0.0.0/8 or ::1): a local resolver or forwarder. */
++static int landns_addr_local(const char *addr)
++{
++	return strncmp(addr, "127.", 4) == 0 || strcmp(addr, "::1") == 0;
++}
++
++/* A list "address[#port],address[#port],...": 1 when it is not empty and every entry is on the router itself. */
++static int landns_all_local(const char *list)
++{
++	char one[64];
++	size_t n;
++
++	if (!list || !*list || !strcmp(list, "-")) return 0;
++	while (*list) {
++		n = strcspn(list, ",#");
++		if (n == 0 || n >= sizeof(one)) return 0;
++		memcpy(one, list, n);
++		one[n] = 0;
++		if (!landns_addr_local(one)) return 0;
++		list += n;
++		list += strcspn(list, ",");
++		if (*list == ',') list++;
++	}
++	return 1;
++}
++/* LANDNS-LIVE-END */
++
+ static const char *landns_name(int st)
+ {
+ 	static const char *n[] = { "unk", "ok", "fail", "svc", "dfail", "wan", "off" };
+@@ -858,33 +929,45 @@ static void dns_ask_many(int n, char addr[][INET6_ADDRSTRLEN], const int *fam, c
+ /* Ask up to LDNS_UP_MAX plain upstreams of dnsmasq directly, all at once; list
+  * the ones that do not resolve qname. The file is read under the resolv lock
+  * (the health check rewrites it under the same lock), the probes run after. */
++/* LANDNS-LIVE: take addr[n] / port[n] as upstream n - an address of a usable family, not one already taken */
++static int landns_take(char addr[][INET6_ADDRSTRLEN], const int *port, int *fam, int n)
++{
++	unsigned char bin[16];
++	int i;
++
++	if (inet_pton(AF_INET, addr[n], bin) == 1) fam[n] = AF_INET;
++	else if (inet_pton(AF_INET6, addr[n], bin) == 1 && hc_v6_usable()) fam[n] = AF_INET6;
++	else return 0;
++	for (i = 0; i < n; i++)
++		if (port[i] == port[n] && !strcmp(addr[i], addr[n])) return 0;
++	return 1;
++}
++
+ static void landns_silent_upstreams(const char *qname, char *out, size_t len)
+ {
+ 	char addr[LDNS_UP_MAX][INET6_ADDRSTRLEN], line[HC_LINE];
+-	int port[LDNS_UP_MAX], fam[LDNS_UP_MAX], n = 0, i, lock;
+-	unsigned char bin[16];
++	int port[LDNS_UP_MAX], fam[LDNS_UP_MAX], n = 0, i, lock, conf = 0, named = 0;
+ 	FILE *fp;
+ 
+ 	*out = 0;
++	/* LANDNS-LIVE: first the configuration dnsmasq runs with. Its own server= lines are upstreams whatever the
++	 * servers file holds, and a configuration that does not name the servers file does not use it. */
++	if ((fp = fopen(LDNS_CONF, "r")) != NULL) {
++		conf = 1;
++		while (fgets(line, sizeof(line), fp)) {
++			if (landns_conf_names_file(line, HC_DNSMASQ)) { named = 1; continue; }
++			if (n < LDNS_UP_MAX && landns_conf_upstream(line, addr[n], sizeof(addr[n]), &port[n])
++			    && landns_take(addr, port, fam, n))
++				n++;
++		}
++		fclose(fp);
++	}
+ 	lock = file_lock("resolv");
+-	if ((fp = fopen(HC_DNSMASQ, "r")) != NULL) {
++	if ((!conf || named) && (fp = fopen(HC_DNSMASQ, "r")) != NULL) {
+ 		while (n < LDNS_UP_MAX && fgets(line, sizeof(line), fp)) {
+-			const char *p = line + 7;	/* strlen("server=") */
+-			size_t al;
+ 			if (!line_is_upstream(line, "server=")) continue;
+-			al = strcspn(p, "#@% \t\r\n");
+-			if (al == 0 || al >= INET6_ADDRSTRLEN) continue;
+-			memcpy(addr[n], p, al);
+-			addr[n][al] = 0;
+-			port[n] = 53;
+-			if (p[al] == '#') {
+-				int pt = atoi(p + al + 1);
+-				if (pt > 0 && pt < 65536) port[n] = pt;
+-			}
+-			if (inet_pton(AF_INET, addr[n], bin) == 1) fam[n] = AF_INET;
+-			else if (inet_pton(AF_INET6, addr[n], bin) == 1 && hc_v6_usable()) fam[n] = AF_INET6;
+-			else continue;
+-			n++;
++			if (landns_conf_upstream(line, addr[n], sizeof(addr[n]), &port[n]) && landns_take(addr, port, fam, n))
++				n++;
+ 		}
+ 		fclose(fp);
+ 	}
+@@ -963,7 +1046,9 @@ static void landns_tick(struct landns *ld)
+ 		else if (ld->st == LDNS_DFAIL)
+ 			logmessage(HC_TAG, "LAN name resolution FAILING: the DNS servers LAN devices are handed by DHCP (%s) do not resolve new names (%d checks)", ld->silent, ld->bad);
+ 		else if (*ld->silent)
+-			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS answers, but no upstream resolves new names (%d checks) - not answering: %s", ld->bad, ld->silent);
++			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS answers, but no upstream resolves new names (%d checks) - not answering: %s%s%s", ld->bad, ld->silent,
++				   landns_all_local(ld->silent) ? " (on the router itself: a local resolver or forwarder that is not running or has no working upstream)" : "",
++				   (f_exists(LDNS_CUSTOM) && !nvram_match("jffs2_scripts", "0")) ? "; " LDNS_CUSTOM " is in use and replaces the router's own DNS configuration" : "");
+ 		else
+ 			logmessage(HC_TAG, "LAN name resolution FAILING: the router's DNS answers, but does not resolve new names (%d checks) - every upstream answered when asked directly", ld->bad);
+ 	} else if (landns_is_bad(prev) && ld->st == LDNS_OK)
+-- 
+2.25.1
+

@@ -1,0 +1,652 @@
+From cdf1d9afda94e59f6a274db7b0d3f7dca00029b0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Fri, 13 Nov 2026 18:39:34 -0500
+Subject: [PATCH] Traffic Analyzer: Guest Portal panel, removed networks, idle
+ rows, guest uploads (102.8 line)
+
+- A Guest Portal panel on the Live tab: each signed-in guest with their speed and session time,
+  busiest first; the portal's share as dashed lines on the total chart and a Guest Portal row in
+  By network. Shown only while a portal runs.
+- A network that has been removed leaves the live By network view; the traffic it carried stays in
+  the history.
+- A chosen timeframe lists only the devices that moved traffic in it.
+- The flow-cache pass takes the guest bridges and the portal tunnels' subnets as LAN sources, so
+  an accelerated guest upload is no longer also counted as the router's own traffic.
+- A bar is the row's share of its list's total; the top row's bar was always full.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rtrafd/rtrafd.c        | 313 +++++++++++++++++++++-
+ release/src/router/www/Reaper_Traffic.asp |  95 ++++++-
+ 2 files changed, 383 insertions(+), 25 deletions(-)
+
+diff --git a/release/src/router/rtrafd/rtrafd.c b/release/src/router/rtrafd/rtrafd.c
+index 83ce8db2c9..13c67fe0be 100644
+--- a/release/src/router/rtrafd/rtrafd.c
++++ b/release/src/router/rtrafd/rtrafd.c
+@@ -191,6 +191,8 @@ typedef struct {
+ static ring_t *r_wan, *r_net[NNET], *r_cls[7], *r_cli[NCLI], *r_prb;
+ static char netname[NNET][16];
+ static int nnet = 0;
++static unsigned char net_gone[NNET];	/* 2026-11-13: slot's interface no longer exists (net_gone_refresh) */
++static void net_gone_refresh(void);
+ static cli_t cli[NCLI];
+ static char cli6[NCLI][46];	/* IPv6 A6: runtime IPv6 label per row (not persisted) */
+ static int cli_hash[CLI_HASH];		/* v2.2.3: fnv(cli.key) -> slot; -1 = empty */
+@@ -274,6 +276,10 @@ static volatile sig_atomic_t running = 1;
+ #define NBRSUB 16
+ static struct { char br[16]; uint32_t net, mask; } brsub[NBRSUB];
+ static int nbrsub = 0;
++/* 2026-11-13: the Guest Portal tunnels' subnets - LAN sources for the flow-cache pass only (REAPER-FCLAN); never
++ * a network or device bucket here (the portal's own counters feed those, REAPER-PORTAL) */
++static struct { uint32_t net, mask; } ptsub[2];
++static int nptsub = 0;
+ 
+ static void brsub_refresh(void)
+ {
+@@ -293,11 +299,13 @@ static void brsub_refresh(void)
+ 	if (ioctl(s, SIOCGIFCONF, &ifc) < 0) { close(s); return; }
+ 
+ 	nbrsub = 0;
++	nptsub = 0;
+ 	n = ifc.ifc_len / (int)sizeof(struct ifreq);
+ 	for (i = 0; i < n && nbrsub < NBRSUB; i++) {
+ 		uint32_t a, m;
++		int pt = !strcmp(buf[i].ifr_name, "tun22") || !strcmp(buf[i].ifr_name, "tun23");	/* 2026-11-13 */
+ 
+-		if (strncmp(buf[i].ifr_name, "br", 2) != 0) continue;	/* LAN bridges only */
++		if (!pt && strncmp(buf[i].ifr_name, "br", 2) != 0) continue;	/* LAN bridges (and portal tunnels) only */
+ 		if (buf[i].ifr_addr.sa_family != AF_INET) continue;
+ 		a = ntohl(((struct sockaddr_in *)&buf[i].ifr_addr)->sin_addr.s_addr);
+ 
+@@ -306,6 +314,14 @@ static void brsub_refresh(void)
+ 		if (ioctl(s, SIOCGIFNETMASK, &ifr) < 0) continue;
+ 		m = ntohl(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr);
+ 		if (!m) continue;
++		if (pt) {
++			if (nptsub < 2) {
++				ptsub[nptsub].mask = m;
++				ptsub[nptsub].net = a & m;
++				nptsub++;
++			}
++			continue;
++		}
+ 
+ 		strlcpy(brsub[nbrsub].br, buf[i].ifr_name, sizeof(brsub[0].br));
+ 		brsub[nbrsub].mask = m;
+@@ -313,6 +329,7 @@ static void brsub_refresh(void)
+ 		nbrsub++;
+ 	}
+ 	close(s);
++	net_gone_refresh();	/* 2026-11-13: same human-speed cadence */
+ }
+ 
+ /* reaper 2026-08-14, field report ("VLAN 52 = br54, 53 = br55, 54 = br56 - the
+@@ -333,6 +350,7 @@ static void brsub_refresh(void)
+ static struct { char br[16]; int vid; char name[64]; } netlbl[NNETLBL];
+ static int nnetlbl = 0;
+ static time_t netlbl_when = 0;
++static int portal_is_tun(const char *name);	/* REAPER-PORTAL */
+ 
+ static void netlbl_refresh(void)
+ {
+@@ -367,6 +385,19 @@ static void netlbl_refresh(void)
+ 			netlbl[nnetlbl].vid = pmtl[i].vid;
+ 			strlcpy(netlbl[nnetlbl].name, pmtl[i].name, sizeof(netlbl[0].name));
+ 			nnetlbl++;
++			/* 2026-11-13: a Guest Portal network's traffic is filed under its tunnel (REAPER-PORTAL), so the
++			 * tunnel carries the network's label as well */
++			if (portal_is_tun(pmtl[i].nw_t.ifname) >= 0 && nnetlbl < NNETLBL &&
++			    strcmp(pmtl[i].nw_t.ifname, pmtl[i].nw_t.br_ifname)) {
++				for (k = 0; k < nnetlbl; k++)
++					if (!strcmp(netlbl[k].br, pmtl[i].nw_t.ifname)) { dup = 1; break; }
++				if (!dup) {
++					strlcpy(netlbl[nnetlbl].br, pmtl[i].nw_t.ifname, sizeof(netlbl[0].br));
++					netlbl[nnetlbl].vid = pmtl[i].vid;
++					strlcpy(netlbl[nnetlbl].name, pmtl[i].name, sizeof(netlbl[0].name));
++					nnetlbl++;
++				}
++			}
+ 		}
+ 	}
+ 	FREE_MTLAN((void *)pmtl);
+@@ -381,6 +412,25 @@ static const char *ip_bridge(uint32_t ip)
+ 	return NULL;
+ }
+ 
++/* REAPER-FCLAN-BEGIN (compiled on the host by test_rtrafd_fclan.py)
++ * 2026-11-13: the flow-cache pass's "LAN client" test. It used the main subnet only, so an accelerated upload from a
++ * guest network on its own subnet was filed as the router's own traffic as well as under its network (conntrack).
++ * Any LAN bridge subnet (brsub) or Guest Portal tunnel subnet (ptsub) is a LAN source now. */
++static int fc_src_is_lan(uint32_t sip)
++{
++	int i;
++
++	if ((sip & lan_mask) == lan_net)
++		return 1;
++	if (ip_bridge(sip))
++		return 1;
++	for (i = 0; i < nptsub; i++)
++		if ((sip & ptsub[i].mask) == ptsub[i].net)
++			return 1;
++	return 0;
++}
++/* REAPER-FCLAN-END */
++
+ /* probe accumulators for the open 5-min bucket */
+ static uint64_t prb_rtt_sum = 0;
+ static uint32_t prb_n = 0, prb_lost = 0;
+@@ -621,15 +671,50 @@ static int host_ok(const char *s)	/* probe target: hostname / IPv4 chars only */
+ 	return 1;
+ }
+ 
++/* REAPER-NETGONE-BEGIN (compiled on the host by test_rtrafd_net_gone.py)
++ * 2026-11-13, owner report: the Traffic Analyzer's "By network" kept showing br55 after that network was
++ * deleted. A bridge gets a slot the first time it carries traffic and the slot is persisted in rtraf.db, so it
++ * stayed in the live view at 0 for ever, in every history window, and held one of the NNET slots for good - a
++ * network created after the slots ran out was never counted. A slot whose interface no longer exists is now
++ * marked gone: the live view leaves it out, the history payload names it ("netgone") so the page draws it
++ * only where it carried traffic, and when every slot is taken a gone one is reused (its history is dropped:
++ * the network it belonged to no longer exists). The Router bucket is not an interface and is never gone. */
++static int net_iface_exists(const char *name)
++{
++	return if_nametoindex(name) != 0;
++}
++
++static void net_gone_refresh(void)
++{
++	int i;
++	for (i = 0; i < nnet; i++)
++		net_gone[i] = strcmp(netname[i], RT_NETLBL) != 0 && !net_iface_exists(netname[i]);
++}
++
+ static int net_slot(const char *name)
+ {
+ 	int i;
+ 	for (i = 0; i < nnet; i++)
+-		if (strcmp(netname[i], name) == 0) return i;
+-	if (nnet >= NNET) return -1;
+-	strlcpy(netname[nnet], name, sizeof(netname[0]));
+-	return nnet++;
++		if (strcmp(netname[i], name) == 0) {
++			net_gone[i] = 0;	/* traffic through it: it is back (a network re-created under the same bridge) */
++			return i;
++		}
++	if (nnet < NNET) {
++		strlcpy(netname[nnet], name, sizeof(netname[0]));
++		net_gone[nnet] = 0;
++		return nnet++;
++	}
++	for (i = 0; i < nnet; i++)
++		if (net_gone[i]) {
++			memset(r_net[i], 0, sizeof(*r_net[i]));
++			lv_net_rx[i] = lv_net_tx[i] = 0;
++			strlcpy(netname[i], name, sizeof(netname[0]));
++			net_gone[i] = 0;
++			return i;
++		}
++	return -1;
+ }
++/* REAPER-NETGONE-END */
+ 
+ /* LAN-side interface -> its bridge (per-network grouping). A port's bridge is
+  * /sys/class/net/<dev>/master; wireless VIFs (wl2.1) and wired ports resolve to
+@@ -1064,6 +1149,173 @@ static ssize_t rt_exec_bounded(char *const argv[], char *out, size_t outsz, int
+ 	return (ssize_t)got;
+ }
+ 
++/* REAPER-PORTAL-BEGIN (compiled on the host by test_rtrafd_portal.py)
++ * 2026-11-13, owner request: a Guest Portal panel on the Live tab - each guest with their speed - the portal's share
++ * on the total chart, and a Guest Portal row in By network. A portal guest's address sits on the portal's tunnel
++ * (tun22 / tun23, no bridge), so the conntrack pass never attributes it (ip_bridge() knows bridges only). The portal
++ * counts every byte of every session itself, so ask it: `chilli_query -P <port> list`, every PORTAL_MS, and only
++ * while that tunnel exists. One line per guest (coovachilli chilli_print + chilli_getinfo, long format):
++ *   MAC IP state session-id authenticated user session/timeout idle/timeout in/max out/max ...
++ * Without swapoctets (rc never sets it) "in" is what the portal sent TO the guest (download, chilli_acct_tosub)
++ * and "out" what came FROM the guest (upload, chilli_acct_fromsub). A guest with no address yet prints two fields
++ * and is skipped. A counter that went down is a new session: new baseline, no spike. */
++#define NPORTAL		64
++#define PORTAL_MS	2000
++#define PORTAL_OUT	16384		/* ~150 B a guest: NPORTAL guests with room to spare */
++static const char *const portal_tun[2] = { "tun22", "tun23" };
++static const char *const portal_port[2] = { "42424", "42425" };	/* cmdsocketport, rc/services.c */
++typedef struct {
++	char mac[18], ip[16], st[8];
++	int tun, auth, sess, seen;
++	uint64_t lin, lout;		/* the session's own counters at the last poll */
++	uint64_t dn, up;		/* bits/s over the last interval */
++} pcl_t;
++static pcl_t pcl[NPORTAL];
++static int npcl = 0;
++static int portal_up[2];
++static uint64_t ptun_dn[2], ptun_up[2];
++
++static int portal_is_tun(const char *name)
++{
++	int t;
++	if (!name) return -1;
++	for (t = 0; t < 2; t++)
++		if (!strcmp(name, portal_tun[t])) return t;
++	return -1;
++}
++
++/* one long-format line -> g (mac as aa:bb:.., lowercase); 0 = not a whole guest line */
++static int portal_parse_line(const char *line, pcl_t *g)
++{
++	char mac[24], ip[24], st[16];
++	int auth, sess, i;
++	unsigned long long in, out;
++	struct in_addr a;
++
++	if (sscanf(line, "%23s %23s %15s %*s %d %*s %d/%*d %*d/%*d %llu/%*s %llu/%*s",
++		   mac, ip, st, &auth, &sess, &in, &out) != 7)
++		return 0;
++	if (strlen(mac) != 17) return 0;
++	for (i = 0; i < 17; i++) {
++		char c = mac[i];
++		if (i % 3 == 2) { if (c != '-') return 0; mac[i] = ':'; continue; }
++		if (c >= 'A' && c <= 'F') c = (char)(c - 'A' + 'a');
++		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return 0;
++		mac[i] = c;
++	}
++	if (inet_aton(ip, &a) == 0) return 0;
++	if (strlen(st) > 7) return 0;
++	for (i = 0; st[i]; i++)
++		if (st[i] < 'a' || st[i] > 'z') return 0;
++	memset(g, 0, sizeof(*g));
++	strlcpy(g->mac, mac, sizeof(g->mac));
++	strlcpy(g->ip, inet_ntoa(a), sizeof(g->ip));
++	strlcpy(g->st, st, sizeof(g->st));
++	g->auth = auth ? 1 : 0;
++	g->sess = sess > 0 ? sess : 0;
++	g->lin = in;
++	g->lout = out;
++	return 1;
++}
++
++/* drop every guest of tunnel t not seen in this poll (all of them when the tunnel is gone) */
++static void portal_sweep(int t)
++{
++	int i, j = 0;
++	for (i = 0; i < npcl; i++) {
++		if (pcl[i].tun == t && !pcl[i].seen) continue;
++		if (j != i) pcl[j] = pcl[i];
++		j++;
++	}
++	npcl = j;
++}
++
++/* one portal's list -> the guest table; returns the bytes moved since the last poll (dn / up) */
++static void portal_ingest(int t, const char *text, long el_ms, uint64_t *ddn, uint64_t *dup)
++{
++	const char *p = text, *nl;
++	int i;
++
++	*ddn = *dup = 0;
++	ptun_dn[t] = ptun_up[t] = 0;
++	for (i = 0; i < npcl; i++)
++		if (pcl[i].tun == t) pcl[i].seen = 0;
++	/* only lines that END in a newline: a reply cut at the buffer's end would otherwise hand over a truncated
++	 * counter (read low, then high again = a spike) */
++	while ((nl = strchr(p, '\n')) != NULL) {
++		char line[512];
++		size_t n = (size_t)(nl - p);
++		pcl_t g;
++		pcl_t *e = NULL;
++
++		if (n >= sizeof(line)) n = sizeof(line) - 1;
++		memcpy(line, p, n);
++		line[n] = '\0';
++		p = nl + 1;
++		if (!portal_parse_line(line, &g)) continue;
++		for (i = 0; i < npcl; i++)
++			if (pcl[i].tun == t && !strcmp(pcl[i].mac, g.mac)) { e = &pcl[i]; break; }
++		if (!e) {
++			if (npcl >= NPORTAL) continue;
++			e = &pcl[npcl++];
++			*e = g;
++			e->tun = t;		/* first sight: baseline only, no rate yet */
++		} else {
++			uint64_t din = g.lin >= e->lin ? g.lin - e->lin : 0;
++			uint64_t dou = g.lout >= e->lout ? g.lout - e->lout : 0;
++			e->dn = el_ms > 0 ? din * 8 * 1000 / (uint64_t)el_ms : 0;
++			e->up = el_ms > 0 ? dou * 8 * 1000 / (uint64_t)el_ms : 0;
++			e->lin = g.lin;
++			e->lout = g.lout;
++			strlcpy(e->ip, g.ip, sizeof(e->ip));
++			strlcpy(e->st, g.st, sizeof(e->st));
++			e->auth = g.auth;
++			e->sess = g.sess;
++			*ddn += din;
++			*dup += dou;
++			ptun_dn[t] += e->dn;
++			ptun_up[t] += e->up;
++		}
++		e->seen = 1;
++	}
++	portal_sweep(t);
++}
++
++static void portal_poll(long el_ms)
++{
++	static char out[PORTAL_OUT];
++	int t;
++
++	for (t = 0; t < 2; t++) {
++		char *av[5];
++		uint64_t ddn, dup;
++
++		portal_up[t] = if_nametoindex(portal_tun[t]) != 0;
++		if (!portal_up[t]) {
++			int i;
++			for (i = 0; i < npcl; i++)
++				if (pcl[i].tun == t) pcl[i].seen = 0;
++			portal_sweep(t);
++			ptun_dn[t] = ptun_up[t] = 0;
++			continue;
++		}
++		av[0] = "chilli_query"; av[1] = "-P"; av[2] = (char *)portal_port[t]; av[3] = "list"; av[4] = NULL;
++		if (rt_exec_bounded(av, out, sizeof(out), 1) < 0) {
++			int i;
++			for (i = 0; i < npcl; i++)	/* could not ask: keep the guests, show no speed */
++				if (pcl[i].tun == t) pcl[i].dn = pcl[i].up = 0;
++			ptun_dn[t] = ptun_up[t] = 0;
++			continue;
++		}
++		portal_ingest(t, out, el_ms, &ddn, &dup);
++		if (ddn || dup) {
++			int ns = net_slot(portal_tun[t]);	/* the By network row (history too: it is a network) */
++			if (ns >= 0) ring_add(r_net[ns], ddn, dup);
++		}
++	}
++}
++/* REAPER-PORTAL-END */
++
+ static void poll_classes(const char *wanif)
+ {
+ 	int qid;
+@@ -1324,7 +1576,7 @@ static void poll_fcache(void)
+ 
+ 		fl[nfl].nfc = strtoull(nfcs, NULL, 16);
+ 		fl[nfl].delta = delta;
+-		fl[nfl].lan = ((fl[nfl].sip & lan_mask) == lan_net);
++		fl[nfl].lan = fc_src_is_lan(fl[nfl].sip);	/* 2026-11-13: any LAN bridge or portal subnet (REAPER-FCLAN) */
+ 		strlcpy(fl[nfl].mac, macs, sizeof(fl[0].mac));
+ 		strlcpy(fl[nfl].dev, fl[nfl].lan ? rxdev : txdev, sizeof(fl[0].dev));
+ 		nfl++;
+@@ -1359,7 +1611,8 @@ static void poll_fcache(void)
+ 			br = dev_bridge(dev);
+ 			if (fl[i].lan) {			/* LAN client -> WAN: conntrack's job */
+ 				continue;
+-			} else if (br[0] == 'b' && br[1] == 'r') {	/* WAN -> a LAN bridge: conntrack's job */
++			} else if ((br[0] == 'b' && br[1] == 'r') || portal_is_tun(br) >= 0) {	/* WAN -> a LAN bridge (conntrack's
++									 * job) or a portal tunnel (REAPER-PORTAL's, 2026-11-13) */
+ 				continue;
+ 			} else {			/* neither end on a LAN bridge: the router's own traffic */
+ 				int into_router = (strstr(dev, "local") != NULL);
+@@ -1805,7 +2058,18 @@ static void write_hist(int which, const char *fn, int step)
+ 		fprintf(o, "%s\"%s\":{\"vid\":%d,\"name\":\"%s\"}", i ? "," : "",
+ 			jesc(netlbl[i].br, eb, sizeof(eb)), netlbl[i].vid,
+ 			jesc(netlbl[i].name, eb2, sizeof(eb2)));
+-	fprintf(o, "},\"class\":{");
++	/* 2026-11-13: networks that no longer exist - kept above for the traffic they carried, drawn by the page
++	 * only in a window where they carried some (net_gone_refresh) */
++	fprintf(o, "},\"netgone\":[");
++	{
++		int first = 1;
++		for (i = 0; i < nnet; i++)
++			if (net_gone[i]) {
++				fprintf(o, "%s\"%s\"", first ? "" : ",", jesc(netname[i], eb, sizeof(eb)));
++				first = 0;
++			}
++	}
++	fprintf(o, "],\"class\":{");
+ 	for (i = 0; i <= 6; i++) {
+ 		fprintf(o, "%s\"q%d\":", i ? "," : "", i);
+ 		json_ring(o, r_cls[i], which);
+@@ -1851,9 +2115,15 @@ static void write_live(const char *store)
+ 	fprintf(o, "]");
+ 	/* live per-network rate (bps) */
+ 	fprintf(o, ",\"net\":{");
+-	for (i = 0; i < nnet; i++)
+-		fprintf(o, "%s\"%s\":[%llu,%llu]", i ? "," : "", jesc(netname[i], eb, sizeof(eb)),
+-			(unsigned long long)lv_net_rx[i], (unsigned long long)lv_net_tx[i]);
++	first = 1;
++	for (i = 0; i < nnet; i++) {
++		int pt = portal_is_tun(netname[i]);	/* 2026-11-13: REAPER-PORTAL rate, not the conntrack pass's */
++		if (net_gone[i]) continue;	/* 2026-11-13: a network that no longer exists has no live rate */
++		fprintf(o, "%s\"%s\":[%llu,%llu]", first ? "" : ",", jesc(netname[i], eb, sizeof(eb)),
++			(unsigned long long)(pt >= 0 ? ptun_dn[pt] : lv_net_rx[i]),
++			(unsigned long long)(pt >= 0 ? ptun_up[pt] : lv_net_tx[i]));
++		first = 0;
++	}
+ 	fprintf(o, "}");
+ 	/* bridge -> VLAN/SDN identity, so the page can label a series "Guests
+ 	 * (VLAN 52)" instead of the bare "br54" the buckets are keyed by. Emitted
+@@ -1878,6 +2148,18 @@ static void write_live(const char *store)
+ 		first = 0;
+ 	}
+ 	fprintf(o, "]");
++	/* 2026-11-13: the Guest Portal guests (REAPER-PORTAL) - present only while a portal runs, which is what
++	 * shows the page's Guest Portal panel and the portal lines on the total chart */
++	if (portal_up[0] || portal_up[1]) {
++		fprintf(o, ",\"portal\":{\"dn\":%llu,\"up\":%llu,\"cli\":[",
++			(unsigned long long)(ptun_dn[0] + ptun_dn[1]), (unsigned long long)(ptun_up[0] + ptun_up[1]));
++		for (i = 0; i < npcl; i++)
++			fprintf(o, "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"st\":\"%s\",\"auth\":%d,\"sess\":%d,\"net\":\"%s\",\"dn\":%llu,\"up\":%llu}",
++				i ? "," : "", jesc(pcl[i].mac, eb, sizeof(eb)), jesc(pcl[i].ip, eb2, sizeof(eb2)), pcl[i].st,
++				pcl[i].auth, pcl[i].sess, portal_tun[pcl[i].tun],
++				(unsigned long long)pcl[i].dn, (unsigned long long)pcl[i].up);
++		fprintf(o, "]}");
++	}
+ 	fprintf(o, ",\"quota\":{\"used\":%llu,\"cap_gb\":%llu}",
+ 		(unsigned long long)(r_wan->bm[imcur].rx + r_wan->bm[imcur].tx),
+ 		(unsigned long long)cap_gb);
+@@ -2892,6 +3174,15 @@ int main(int argc, char **argv)
+ 				ct_due_ms = nms + ct_pace(rt_now_ms() - nms);
+ 			}
+ 		}
++		/* 2026-11-13: the Guest Portal guests (REAPER-PORTAL), on their own clock */
++		{
++			static long portal_last = 0;
++			long pms = rt_now_ms();
++			if (!portal_last || pms - portal_last >= PORTAL_MS) {
++				portal_poll(portal_last ? pms - portal_last : 0);
++				portal_last = pms;
++			}
++		}
+ 		if (tick % PROBE_EVERY == 0)
+ 			poll_probe();
+ 
+diff --git a/release/src/router/www/Reaper_Traffic.asp b/release/src/router/www/Reaper_Traffic.asp
+index 1864f2ecbe..8b9b737117 100644
+--- a/release/src/router/www/Reaper_Traffic.asp
++++ b/release/src/router/www/Reaper_Traffic.asp
+@@ -245,10 +245,21 @@ table.ta.tfix .c-src{width:40%}
+   <div class="legend">
+     <span><i style="background:var(--jade)"></i><#RTRF_78#></span>
+     <span><i style="background:var(--crimson)"></i><#RTRF_79#></span>
++    <span id="portleg_dn" style="display:none"><i style="background:none;height:0;border-top:2px dashed var(--jade);vertical-align:middle"></i><#RTRF_104#></span>
++    <span id="portleg_up" style="display:none"><i style="background:none;height:0;border-top:2px dashed var(--crimson);vertical-align:middle"></i><#RTRF_105#></span>
+   </div>
+   <div class="chart-wrap"><svg id="wanchart" width="100%" height="230" viewBox="0 0 1000 230" preserveAspectRatio="none"></svg></div>
+ </div>
+ 
++<!-- 2026-11-13 (owner): the Guest Portal's guests and their speed. Live tab only, shown while a Guest Portal
++     runs (rtrafd puts "portal" in the live payload only then). No latency or loss per guest: those are
++     measured once, for the whole connection, on the chart below. -->
++<div class="panel span" id="portalpanel" style="display:none">
++  <h2><#GuestNetwork_Portal#></h2>
++  <div class="sub"><#RTRF_101#></div>
++  <table class="ta tfix"><colgroup><col><col class="c-num"><col class="c-num"></colgroup><thead><tr><th><#RDEV_32#></th><th class="num"><#RTRF_21#></th><th class="num"><#RTRF_22#></th></tr></thead><tbody id="portaltbody"></tbody></table>
++</div>
++
+ <!-- 2026-10-20 (owner): latency and loss on their own chart, under the throughput they
+      explain. One probe every 5 s drew a fragmented, popping line on the WAN chart; here
+      latency is sampled on every poll (the last reply held until the next probe) and loss
+@@ -542,6 +553,18 @@ function devCell(ip, mac){
+    press redraws at once instead of waiting for the next sample. */
+ var TOPN_MAX=50, TOPN_OPTS=[10,20,30,50], TOPN={cli:10,top:10}, TOPROWS={cli:null,top:null};
+ var TOPTB={cli:'clitbody',top:'toptbody'};
++/* 2026-11-12 (field report: the top row's bar was always full): a bar is the row's SHARE of its list's total -
++   two equal devices read 50% each, one device carrying most of the traffic reads most of the bar. Before, each
++   bar was scaled to the busiest row, so that row was 100% whatever it did. Returns the width and the hover text. */
++function shareOf(v, tot){
++  if(!(tot>0) || !(v>0)) return {w:'0', t:'0%'};
++  var p=v/tot*100;
++  return {w:p.toFixed(1), t:(p<1 ? '&lt;1' : Math.round(p))+'%'};
++}
++function shareBar(v, tot, style, color){
++  var s=shareOf(v, tot);
++  return '<div class="bar"'+(style?' style="'+style+'"':'')+' title="'+s.t+'"><span style="width:'+s.w+'%'+(color?';background:'+color:'')+'"></span></div>';
++}
+ function fillTop(which, rows, empty){
+   TOPROWS[which]={rows:rows, empty:empty};
+   var n=TOPN[which], h='', i;
+@@ -644,6 +667,9 @@ function windowMs(){ return 120*pollMs; }
+ 
+ /* Time-stamped sample rings: wan = [t, rx_bps, tx_bps], cls = [t, q1..q5]. */
+ var wanSamp=[], clsSamp=[], SMAX=400, clsOn=false;
++/* 2026-11-13: a Guest Portal is running (live payload carries "portal") and the Live tab is shown: the panel
++   and the two dashed portal lines on the total chart. wan samples are [t, rx, tx, portal rx, portal tx]. */
++var portalOn=false;
+ /* 2026-10-20 (owner: the latency line on the WAN chart was fragmented and popped in
+    and out): the latency & loss chart samples on EVERY poll, like the WAN ring -
+    [t, ms, loss%] - so it crawls as smoothly as the throughput. ms is the newest
+@@ -753,19 +779,25 @@ function xAt(t, t1, span, xr){ xr=xr||W; return 44+(xr-44)*(1-(t1-t)/span); }
+ function yAt(v, mx, H){ return Math.max(10,Math.min(H-14, 10+(H-24)*(1-v/mx))).toFixed(1); }
+ 
+ function drawWan(t1, span, dt){
+-  if(!wanC) wanC=new LiveChart('wanchart',[],['var(--jade)','var(--crimson)']);
++  if(!wanC) wanC=new LiveChart('wanchart',[],['var(--jade)','var(--crimson)','var(--jade)','var(--crimson)']);
+   wanC.ensure();
+-  var pts=clipSamples(wanSamp, t1-span, t1, 2), i, raw=0;
++  /* 2026-11-13: lines 3 + 4 are the Guest Portal's share, dashed; set again after any rebuild */
++  for(var di=2;di<4;di++) if(wanC.lp[di].getAttribute('stroke-dasharray')!=='6 4'){
++    wanC.lp[di].setAttribute('stroke-dasharray','6 4'); wanC.lp[di].setAttribute('stroke-width','1.5'); }
++  var pts=clipSamples(wanSamp, t1-span, t1, 4), i, raw=0;
+   for(i=0;i<pts.length;i++){ if(pts[i][1]>raw)raw=pts[i][1]; if(pts[i][2]>raw)raw=pts[i][2]; }
+-  var mx=wanScale.step(raw, t1, dt), H=wanC.H, d1='', d2='', x;
++  var mx=wanScale.step(raw, t1, dt), H=wanC.H, d1='', d2='', d3='', d4='', x;
+   wanC.axis(mx, fmtBps);
+   /* 2 dp, not 1: at the 10 s / 30 s rates the trace advances well under 0.1
+      viewBox units per frame, and rounding to 1 dp would quantise that smooth
+      crawl back into visible steps - the exact artefact this rewrite removes. */
+   for(i=0;i<pts.length;i++){ x=xAt(pts[i][0],t1,span).toFixed(2);
+     d1+=(i?'L':'M')+x+' '+yAt(pts[i][1],mx,H)+' ';
+-    d2+=(i?'L':'M')+x+' '+yAt(pts[i][2],mx,H)+' '; }
++    d2+=(i?'L':'M')+x+' '+yAt(pts[i][2],mx,H)+' ';
++    if(portalOn){ d3+=(i?'L':'M')+x+' '+yAt(pts[i][3]||0,mx,H)+' ';
++                  d4+=(i?'L':'M')+x+' '+yAt(pts[i][4]||0,mx,H)+' '; } }
+   wanC.lp[0].setAttribute('d',d1); wanC.lp[1].setAttribute('d',d2);
++  wanC.lp[2].setAttribute('d',d3); wanC.lp[3].setAttribute('d',d4);
+ }
+ /* 2026-10-20: the latency & loss chart - latency (ms) on the left axis, loss (%) on
+    the right, each on its own eased scale; loss never scales below 10 % so a single
+@@ -856,13 +888,21 @@ function renderLive(d){
+     fillTop('top', tr, `<#RTRF_63#>`);
+   }
+ 
++  /* 2026-11-13 (owner): the Guest Portal panel and the portal lines - Live tab only, while a portal runs */
++  var po=d.portal||null;
++  portalOn=!!po && curWin==='live';
++  var pdisp=portalOn?'':'none', pp=document.getElementById('portalpanel');
++  if(pp.style.display!==pdisp){ pp.style.display=pdisp;
++    document.getElementById('portleg_dn').style.display=pdisp; document.getElementById('portleg_up').style.display=pdisp; }
++  if(portalOn && drawTbl) renderPortal(po);
++
+   if(curWin!=='live') return;   /* rolling live charts only render in the Live window */
+ 
+   /* INGEST ONLY - the rAF loop owns every live draw. Each sample is stamped with
+      its arrival time so the frame loop can place it, and interpolate between
+      arrivals, instead of shifting the trace one whole slot per poll. */
+   var st=nowMs();
+-  pushSamp(wanSamp,[st, wan.rx_bps||0, wan.tx_bps||0]);
++  pushSamp(wanSamp,[st, wan.rx_bps||0, wan.tx_bps||0, po?(po.dn||0):0, po?(po.up||0):0]);
+   /* 2026-10-20: one latency & loss sample per poll (see latSamp); no target = the
+      "probe is off" note instead of the chart */
+   if(pr.set){
+@@ -894,19 +934,19 @@ function renderLive(d){
+      the WAN-chart color semantics (jade down / crimson up). */
+   if(drawTbl){
+   document.getElementById('netchart').innerHTML='';
+-  var nets=d.net||{}, nrows=[], nmax=1;
+-  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; if(nm==="Router")continue; /* reaper: hide the router-self bucket (ntp/update/probe) from the per-network view */ var nrx=nets[nm][0]||0, ntx=nets[nm][1]||0, v=nrx+ntx; nrows.push([nm,v,nrx,ntx]); if(v>nmax)nmax=v; }
++  var nets=d.net||{}, nrows=[], ntot=0;
++  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; if(nm==="Router")continue; /* reaper: hide the router-self bucket (ntp/update/probe) from the per-network view */ var nrx=nets[nm][0]||0, ntx=nets[nm][1]||0, v=nrx+ntx; nrows.push([nm,v,nrx,ntx]); ntot+=v; }
+   nrows.sort(function(a,b){return b[1]-a[1];});
+   var nh='';
+   for(var n2=0;n2<nrows.length;n2++){ var col=NETCOLOR[n2%NETCOLOR.length];
+-    nh+='<div style="display:flex;width:100%;align-items:center;gap:10px;margin:7px 0"><span style="color:var(--bone);min-width:64px;font-size:12.5px" title="'+esc(netTitle(nrows[n2][0]))+'">'+esc(netLabel(nrows[n2][0]))+'</span><div class="bar" style="flex:1;margin:0"><span style="width:'+(nrows[n2][1]/nmax*100).toFixed(0)+'%;background:'+col+'"></span></div><span class="num" style="min-width:170px;text-align:right;font-size:12.5px">'+fmtBps(nrows[n2][2])+' <span style="color:var(--jade)">&darr;</span> &nbsp;'+fmtBps(nrows[n2][3])+' <span style="color:var(--crimson)">&uarr;</span></span></div>'; }
++    nh+='<div style="display:flex;width:100%;align-items:center;gap:10px;margin:7px 0"><span style="color:var(--bone);min-width:64px;font-size:12.5px" title="'+esc(netTitle(nrows[n2][0]))+'">'+esc(netLabel(nrows[n2][0]))+'</span>'+shareBar(nrows[n2][1], ntot, 'flex:1;margin:0', col)+'<span class="num" style="min-width:170px;text-align:right;font-size:12.5px">'+fmtBps(nrows[n2][2])+' <span style="color:var(--jade)">&darr;</span> &nbsp;'+fmtBps(nrows[n2][3])+' <span style="color:var(--crimson)">&uarr;</span></span></div>'; }
+   document.getElementById('netlegend').innerHTML = nh || `<span style="color:var(--steel)"><#RTRF_65#></span>`;
+ 
+-  var devs=(d.dev||[]).slice().sort(function(a,b){return (b.dn+b.up)-(a.dn+a.up);}), dmax=1;
+-  if(devs.length) dmax=Math.max(1,devs[0].dn+devs[0].up);
++  var devs=(d.dev||[]).slice().sort(function(a,b){return (b.dn+b.up)-(a.dn+a.up);}), dtot=0;
++  devs.forEach(function(r){ dtot+=r.dn+r.up; });	/* every device, not just the rows shown */
+   var dh=[];
+   devs.slice(0,TOPN_MAX).forEach(function(r){ var tot=r.dn+r.up;
+-    dh.push('<tr><td>'+devCell(r.ip||r.ip6,r.mac)+'<div class="bar"><span style="width:'+(tot/dmax*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'); });
++    dh.push('<tr><td>'+devCell(r.ip||r.ip6,r.mac)+shareBar(tot, dtot)+'</td><td class="num">'+fmtBps(r.dn)+'</td><td class="num">'+fmtBps(r.up)+'</td></tr>'); });
+   fillTop('cli', dh, `<#RTRF_66#>`);
+   }
+ 
+@@ -914,6 +954,26 @@ function renderLive(d){
+   renderQuota(q);
+ }
+ 
++/* 2026-11-13: session time as h:mm:ss (m:ss under an hour) - digits only, the same in every language */
++function fmtDur(s){
++  s=Math.max(0,Math.floor(+s||0));
++  var h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
++  return (h?h+':'+(m<10?'0':''):'')+m+':'+(x<10?'0':'')+x;
++}
++/* 2026-11-13 (owner): the Guest Portal panel - one row per guest, busiest first, bar = share of the portal's
++   traffic; signed in or not, and the session time once signed in. */
++function renderPortal(po){
++  var cl=(po.cli||[]).slice().sort(function(a,b){return ((b.dn||0)+(b.up||0))-((a.dn||0)+(a.up||0));}), tot=0, h='';
++  cl.forEach(function(g){ tot+=(g.dn||0)+(g.up||0); });
++  cl.forEach(function(g){
++    var stl=g.auth ? '<span class="chip">'+`<#RTRF_102#>`+'</span>' : '<span class="chip warn">'+`<#RTRF_103#>`+'</span>';
++    if(g.auth) stl+=' '+esc(fmtDur(g.sess));
++    h+='<tr><td>'+devCell(g.ip, g.mac)+'<div class="tsub">'+stl+'</div>'+shareBar((g.dn||0)+(g.up||0), tot)+'</td>'+
++       '<td class="num">'+fmtBps(g.dn||0)+'</td><td class="num">'+fmtBps(g.up||0)+'</td></tr>';
++  });
++  document.getElementById('portaltbody').innerHTML = h || '<tr><td colspan="3" style="color:var(--steel)">'+`<#RLOG_84#>`+'</td></tr>';
++}
++
+ /* shared quota-meter render from the live payload's .quota object. History windows
+    call this from histTick's single 'live' fetch, replacing a second identical
+    getJSON('live') that renderHist used to fire just for the quota block. */
+@@ -964,7 +1024,10 @@ function renderHist(d){
+ 
+   /* network stack */
+   var nets=d.nets||{}, netLays=[], netCols=[], netLeg='', ni=0;
+-  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; var narr=nets[nm].map(function(p){return p[0]+p[1];}); var col=NETCOLOR[ni%NETCOLOR.length]; netLays.push(narr); netCols.push(col); netLeg+='<span title="'+esc(netTitle(nm))+'"><i style="background:'+col+'"></i>'+esc(netLabel(nm))+'</span>'; ni++; }
++  var gone=d.netgone||[];
++  /* 2026-11-13 (owner: "br55 shows in By network but no longer exists"): a network that has been removed keeps
++     its stored history, so it is drawn only in a window where it carried traffic */
++  for(var nm in nets){ if(!nets.hasOwnProperty(nm))continue; var narr=nets[nm].map(function(p){return p[0]+p[1];}); if(gone.indexOf(nm)>=0 && !narr.some(function(v){return v>0;}))continue; var col=NETCOLOR[ni%NETCOLOR.length]; netLays.push(narr); netCols.push(col); netLeg+='<span title="'+esc(netTitle(nm))+'"><i style="background:'+col+'"></i>'+esc(netLabel(nm))+'</span>'; ni++; }
+   document.getElementById('netlegend').innerHTML = netLeg || `<span style="color:var(--steel)"><#RTRF_68#></span>`;
+   if(netLays.length) stackChart('netchart', netLays, netCols); else document.getElementById('netchart').innerHTML='';
+ 
+@@ -985,9 +1048,13 @@ function renderHist(d){
+     else if(!a.ip&&ip){ a.ip=ip; }
+     a.dn+=dn; a.up+=up; }
+   rows.forEach(function(r){ r.tot=r.dn+r.up; });
++  /* 2026-11-13 (field report): only devices that moved traffic in this window - the collector keeps every device
++     it has seen, and an idle one listed at 0 B / 0 B is not a top device of the window (Live already skips them) */
++  rows=rows.filter(function(r){ return r.tot>0; });
+   rows.sort(function(a,b){return b.tot-a.tot;});
+-  var maxTot=rows.length?Math.max(1,rows[0].tot):1, tb=[];
+-  rows.slice(0,TOPN_MAX).forEach(function(r){ tb.push('<tr><td>'+devCell(r.ip,r.name)+'<div class="bar"><span style="width:'+(r.tot/maxTot*100).toFixed(0)+'%"></span></div></td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'); });
++  var htot=0, tb=[];
++  rows.forEach(function(r){ htot+=r.tot; });
++  rows.slice(0,TOPN_MAX).forEach(function(r){ tb.push('<tr><td>'+devCell(r.ip,r.name)+shareBar(r.tot, htot)+'</td><td class="num">'+fmtBytes(r.dn)+'</td><td class="num">'+fmtBytes(r.up)+'</td></tr>'); });
+   fillTop('cli', tb, `<#RTRF_69#>`);
+ 
+   /* quota: rendered by histTick's single 'live' fetch via renderQuota() - a second
+-- 
+2.25.1
+

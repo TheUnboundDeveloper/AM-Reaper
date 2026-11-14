@@ -4,8 +4,7 @@
 
 WHY. The secret that ties the portal's sign-in page (uamsrv's closed portal module) to chilli shipped as the same
 public value on every router (defaults "chillispot" / "ua8k69fo92n"), so a guest who knows the protocol could
-compute a valid chilli sign-in and skip the passcode or terms page. Also, rc decrypted the stored secret for chilli
-while lighttpd handed the portal module the stored (encrypted) form, so the two ends never held the same value.
+compute a valid chilli sign-in and skip the passcode or terms page.
 Owner: "Make it random but also ensure that there is a way for a admin to put their own access secret".
 
 WHAT IT CHECKS.
@@ -13,12 +12,14 @@ WHAT IT CHECKS.
   the host with stand-ins (a reversible fake cipher) it replaces an empty, plaintext-default or encrypted-default
   secret ONCE with 16 random [A-Za-z0-9] characters stored encrypted, leaves an admin's own secret alone, two routers
   get different secrets, and a missing random source leaves the value as it is.
-- lighttpd nvram_get_uamsecret(): decrypts as rc does (run on the host with the same stand-ins), passes a value that
-  does not decrypt as stored, never returns NULL.
-- defaults: reaper_cp_secret_own; the Tweaks page Guest Portal panel (switch, password field, the secret never sent
-  back, validation, restart of a running portal); RTWK_42..46 in all 25 packs, packs in lockstep.
+- lighttpd nvram_get_uamsecret(): hands the portal module the STORED secret, never decrypted, never NULL. The portal
+  module decrypts the value it is handed itself, as rc does for chilli's config: the _r16 decrypt here made every
+  sign-in fail (_r4 on the owner's router, 2026-11-12). The host run models the module that way (pw_dec of the
+  returned value) and requires it to equal what rc gives chilli.
+- defaults: reaper_cp_secret_own (kept); the Tweaks page has NO Guest Portal panel any more (owner 2026-11-12);
+  RTWK_42..46 still in all 25 packs, packs in lockstep.
 Exit 0 pass, 1 fail, 77 skip (no router source tree)."""
-import os, re, shutil, subprocess, sys, tempfile
+import json, os, re, shutil, subprocess, sys, tempfile
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC", "")
 if not SRC or not os.path.isfile(os.path.join(SRC, "rc", "services.c")):
@@ -112,18 +113,23 @@ int main(void){
 
 nvc = rd("lighttpd-1.4.39", "src", "nvram_control.c")
 m = re.search(r"\nchar \*nvram_get_uamsecret\(const char \*str\)\n\{.*?\n\}\n", nvc, re.S)
-check("lighttpd: nvram_get_uamsecret decrypts as rc does (pw_dec, the stored length, salted), never NULL",
-      m is not None and "pw_dec(reaper_sec, reaper_dec, reaper_l, 1);" in m.group(0)
-      and "if (reaper_dec[0])\n\t\t\t\treturn reaper_dec;" in m.group(0) and 'return reaper_sec ? reaper_sec : "";' in m.group(0))
+check("lighttpd: nvram_get_uamsecret hands the module the stored secret (no pw_dec - the module decrypts), never NULL",
+      m is not None and "pw_dec" not in m.group(0).split("*/")[-1] and "reaper_dec" not in m.group(0)
+      and 'return reaper_sec ? reaper_sec : "";' in m.group(0))
 if m and CC:
     LM = r'''
+/* the portal module decrypts the value it is handed (on the router a decrypted secret failed every sign-in) */
+static void module_secret(const char *net, char *o){ const char *s = nvram_get_uamsecret(net); memset(o, 0, 256); pw_dec(s, o, strlen(s), 1); }
+/* what rc writes into chilli's config (services.c chilli_config*: pw_dec(value, buf, strlen(value), 1)) */
+static void chilli_secret(const char *k, char *o){ const char *s = nvram_safe_get(k); memset(o, 0, 256); pw_dec(s, o, strlen(s), 1); }
 int main(void){
-  int bad = 0; const char *s;
+  int bad = 0; const char *s; char a[256], b[256];
   nvram_set("chilli_net", "192.168.182.0/24"); nvram_set("cp_uamsecret", "E:1terceSnwOyM"); nvram_set("chilli_uamsecret", "E:topsillihc");
-  s = nvram_get_uamsecret("10.0.0.1"); if (strcmp(s, "MyOwnSecret1")) { printf("cp: %s\n", s); bad++; }
-  s = nvram_get_uamsecret("192.168.182.1"); if (strcmp(s, "chillispot")) { printf("chilli: %s\n", s); bad++; }
-  nvram_set("cp_uamsecret", "notencrypted"); s = nvram_get_uamsecret("x");
-  if (strcmp(s, "\x01gb")) { printf("plain: %s\n", s); bad++; }   /* the stand-in decrypts it to garbage - as rc would */
+  module_secret("10.0.0.1", a); chilli_secret("cp_uamsecret", b);
+  if (strcmp(a, b) || strcmp(a, "MyOwnSecret1")) { printf("cp: module %s / chilli %s\n", a, b); bad++; }
+  module_secret("192.168.182.1", a); chilli_secret("chilli_uamsecret", b);
+  if (strcmp(a, b) || strcmp(a, "chillispot")) { printf("chilli: module %s / chilli %s\n", a, b); bad++; }
+  s = nvram_get_uamsecret("10.0.0.1"); if (strcmp(s, "E:1terceSnwOyM")) { printf("not stored form: %s\n", s); bad++; }
   NN = 0; s = nvram_get_uamsecret("x"); if (!s || *s) { printf("unset not empty\n"); bad++; }
   return bad;
 }
@@ -143,35 +149,12 @@ int main(void){
 dfl = rd("shared", "defaults.c")
 check("defaults: reaper_cp_secret_own, off", '{ "reaper_cp_secret_own", "0", CKN_STR1,' in dfl)
 tw = rd("www", "Reaper_Tweaks.asp")
-check("Tweaks: a Guest Portal panel with the switch and a password field (32 at most, no autofill of the admin's password)",
-      '<div class="panel" id="p_cpsec">' in tw and 'id="t_cp_own"' in tw
-      and '<input type="password" class="mono" id="i_cp_secret" maxlength="32" autocomplete="new-password">' in tw)
-check("Tweaks: the secret never comes to the page - only whether it is the admin's own",
-      'reaper_cp_secret_own: <% nvram_get_js("reaper_cp_secret_own"); %>' in tw and "uamsecret\"); %>" not in tw
-      and not re.search(r'nvram_\w+\("[^"]*uamsecret', tw))
-check("Tweaks: own posts both stock keys; switching back empties both (rc then makes a new random one)",
-      "if (own && v !== ''){ c.cp_uamsecret = v; c.chilli_uamsecret = v; }" in tw
-      and "else if (!own && CP_OWN_SAVED){ c.cp_uamsecret = ''; c.chilli_uamsecret = ''; }" in tw)
-# rp.diff reads a missing previous value as "": without a placeholder, the two EMPTY secrets of "back to automatic"
-# compared equal and were never posted (caught before any image)
-check("Tweaks: a placeholder previous value for the secrets, so an empty one is posted as a change",
-      "NV.cp_uamsecret = NV.chilli_uamsecret = '\\u0001';" in tw)
-dm = re.search(r"\n  rp\.diff = function\(c, nv\)\{.*?\n    return changed;\n  \};\n", rd("www", "reaper", "rp.js"), re.S)
-if dm and shutil.which("node"):
-    js = ("var rp = {};\n" + dm.group(0) +
-          "var NV = {reaper_cp_secret_own: '1'}; NV.cp_uamsecret = NV.chilli_uamsecret = '\\u0001';\n"
-          "var back = rp.diff({reaper_cp_secret_own: '0', cp_uamsecret: '', chilli_uamsecret: ''}, NV);\n"
-          "var keep = rp.diff({reaper_cp_secret_own: '1'}, NV);\n"
-          "var own = rp.diff({reaper_cp_secret_own: '1', cp_uamsecret: 'Abcdefgh12', chilli_uamsecret: 'Abcdefgh12'}, NV);\n"
-          "console.log(JSON.stringify([Object.keys(back).sort(), Object.keys(keep), Object.keys(own).sort()]));\n")
-    fd, jp = tempfile.mkstemp(suffix=".js"); os.close(fd); open(jp, "w").write(js)
-    r = subprocess.run([shutil.which("node"), jp], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True); os.unlink(jp)
-    check("rp.diff (node, the kit's own code): back to automatic posts both empty secrets + the flag; an untouched own secret posts nothing; a new one posts both",
-          r.stdout.strip() == '[["chilli_uamsecret","cp_uamsecret","reaper_cp_secret_own"],[],["chilli_uamsecret","cp_uamsecret"]]', r.stdout[-300:])
-check("Tweaks: 8-32 of A-Z a-z 0-9 . _ -, the public defaults refused, a secret needed to switch on",
-      "!/^[A-Za-z0-9._-]{8,32}$/.test(c.cp_uamsecret || '') || CP_WEAK.indexOf(c.cp_uamsecret) >= 0" in tw
-      and "CP_WEAK = ['chillispot', 'ua8k69fo92n']" in tw)
-check("Tweaks: a running portal is restarted on a change", "if (has('cp_uamsecret', 'reaper_cp_secret_own')) S.push('restart_chilli', 'restart_uam_srv');" in tw)
+# 2026-11-12 (owner): the Tweaks "Guest Portal" panel is removed - the router keeps the random secret rc makes for it
+# (above); nothing on the page reads, posts or restarts anything for the portal secret any more
+check("Tweaks: the Guest Portal secret panel is gone and the page never touches the portal secret",
+      'id="p_cpsec"' not in tw and "t_cp_own" not in tw and "i_cp_secret" not in tw
+      and "reaper_cp_secret_own" not in tw and "uamsecret" not in tw and "restart_chilli" not in tw
+      and "section('p_cpsec'" not in tw)
 www = os.path.join(SRC, "www")
 packs = sorted(f for f in os.listdir(www) if f.endswith(".dict") and f != "temp.dict")
 missing = [f + ":" + k for f in packs for k in ("RTWK_42", "RTWK_43", "RTWK_44", "RTWK_45", "RTWK_46")

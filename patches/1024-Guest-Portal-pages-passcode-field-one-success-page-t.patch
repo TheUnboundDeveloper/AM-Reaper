@@ -1,0 +1,389 @@
+From fec29e00ea622cb0afe85426e42b861b61864248 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:41:10 -0500
+Subject: [PATCH] Guest Portal pages: passcode field, one success page, the
+ quick connect sheet (102.8 line)
+
+- Network page: the Free Wi-Fi passcode switch and field are back (wizard and Portal tab);
+  choosing a VPN profile for a network switches that profile on; the Wi-Fi quick connect sheet
+  waits for the print dialog instead of closing itself, and prints its colours.
+- Sign-in page: the passcode the guest typed is sent again. After sign-in, when the first address
+  is a phone's own connection test, the success page is loaded once more instead of being replaced
+  by the test page, so no second, bare success page appears; a site typed into a computer's
+  browser is still gone on to.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../lighttpd-1.4.39/external_file/css/uam.js  |  59 ++++++-
+ .../www/sysdep/FUNCTION/SDN/SDN/sdn.html      |   1 +
+ .../router/www/sysdep/FUNCTION/SDN/SDN/sdn.js | 156 ++++++++++++++++--
+ 3 files changed, 201 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+index c0ebfc8d60..3a96bbee94 100755
+--- a/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
++++ b/release/src/router/lighttpd-1.4.39/external_file/css/uam.js
+@@ -107,6 +107,51 @@ var REAPER_TRY_MS = 4000;
+ var REAPER_TRY_GAP_MS = 1000;
+ var REAPER_TRY_MAX = 12;
+ 
++/* Reaper 2026-11-14 (owner): no second "Success" page. On a phone the first address is the system's own connection
++ * test (captive.apple.com/hotspot-detect.html, .../generate_204 ...); being sent on to it showed a second, bare
++ * success page after this one. For such an address THIS success page is loaded once more instead (marked
++ * reaper_done=1): a phone's sign-in sheet tests the connection again after a page load, so it finishes from the page
++ * the visitor is already looking at. Any other first address - a site typed into a computer's browser - is still
++ * gone on to, as before. */
++var REAPER_PROBE_HOSTS = ["captive.apple.com", "captive.g.aaplimg.com", "connectivitycheck.gstatic.com",
++	"connectivitycheck.android.com", "clients3.google.com", "play.googleapis.com", "www.msftconnecttest.com",
++	"www.msftncsi.com", "detectportal.firefox.com", "nmcheck.gnome.org", "connectivity-check.ubuntu.com",
++	"network-test.debian.org", "connectivitycheck.platform.hicloud.com", "connect.rom.miui.com"];
++var REAPER_PROBE_PATHS = ["/hotspot-detect.html", "/library/test/success.html", "/generate_204", "/gen_204",
++	"/connecttest.txt", "/ncsi.txt", "/success.txt", "/canonical.html", "/check_network_status.txt"];
++
++function reaperIsProbe(u) {
++	var p = null, h = "", i = 0;
++
++	try {
++		p = new URL(u);
++	} catch (e) {
++		return false;
++	}
++	h = String(p.hostname || "").toLowerCase();
++	for (i = 0; i < REAPER_PROBE_HOSTS.length; i++)
++		if (h == REAPER_PROBE_HOSTS[i])
++			return true;
++	for (i = 0; i < REAPER_PROBE_PATHS.length; i++)
++		if (p.pathname == REAPER_PROBE_PATHS[i])
++			return true;
++	return false;
++}
++
++function reaperFinish(u) {
++	var me = null;
++
++	if (!reaperIsProbe(u)) {
++		window.location.replace(u);
++		return;
++	}
++	try {
++		me = new URL(window.location.href);
++		me.searchParams.set("reaper_done", "1");
++		window.location.replace(me.href);
++	} catch (e) {}
++}
++
+ function reaperTryNext(u, n) {
+ 	var done = false, ctl = null, timer = null, page = "";
+ 
+@@ -116,7 +161,7 @@ function reaperTryNext(u, n) {
+ 		done = true;
+ 		clearTimeout(timer);
+ 		if (ok) {
+-			window.location.replace(u);
++			reaperFinish(u);
+ 			return;
+ 		}
+ 		try {
+@@ -131,7 +176,7 @@ function reaperTryNext(u, n) {
+ 	} catch (e) {}
+ 	/* no way to ask in the background (no fetch, or an http address from an https page): go on at once */
+ 	if (n >= REAPER_TRY_MAX || typeof window.fetch != "function" || (page == "https:" && u.indexOf("https:") != 0)) {
+-		window.location.replace(u);
++		reaperFinish(u);
+ 		return;
+ 	}
+ 	try {
+@@ -160,7 +205,7 @@ function reaperGoNext() {
+ }
+ 
+ $(function() {
+-	if (reaperQuery("auth_status") == "pass")
++	if (reaperQuery("auth_status") == "pass" && reaperQuery("reaper_done") != "1")	/* reaper_done: this page was loaded again by reaperFinish */
+ 		setTimeout(reaperGoNext, REAPER_NEXT_MS);
+ });
+ 
+@@ -265,9 +310,13 @@ function formSubmit(auth)
+ 			param.UserName = document.getElementById('UserName').value;
+ 			param.Password = document.getElementById('Password').value;
+ 			break;
+-		case 2 : //free wifi (Reaper 2026-11-12: terms-only - a passcode box left on an older splash is ignored)
++		case 2 : //free wifi passcode (Reaper 2026-11-14, owner: the passcode is back - an open portal with a passcode on its terms page)
+ 			document.getElementById('UserName').value = "noauth";
+-			document.getElementById('Password').value = "noauth";
++
++			if(document.getElementById('splash_template_passcode') == null)
++				document.getElementById('Password').value = "noauth";
++			else
++				document.getElementById('Password').value = document.getElementById('splash_template_passcode').value;
+ 
+ 			param.UserName = document.getElementById('UserName').value;
+ 			param.Password = document.getElementById('Password').value;
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+index c264540996..eccd7ea2fc 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.html
+@@ -252,6 +252,7 @@ if(false){ /* reaper: AdGuard removed */
+ <style>
+ 	.print_body{
+ 		-webkit-print-color-adjust: exact;
++		print-color-adjust: exact;/* Reaper 2026-11-14: the standard name - the QR code is a background image */
+ 		margin: auto;
+ 		color: #000;
+ 		min-width: 595px;
+diff --git a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+index 77779d2a08..2d058405b4 100644
+--- a/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
++++ b/release/src/router/www/sysdep/FUNCTION/SDN/SDN/sdn.js
+@@ -3275,6 +3275,7 @@ function show_popup_Wizard_Setting(_type){
+ 								var vpn_idx = $selected_vpn.attr("data-idx");
+ 								if(vpn_type == "vpnc"){
+ 									sdn_profile.sdn_rl.vpnc_idx = vpn_idx;
++									reaper_vpnc_on_demand(nvramSet_obj, vpn_idx);//Reaper 2026-11-14: a chosen client that is off is switched on
+ 								}
+ 								else if(vpn_type == "vpns"){
+ 									sdn_profile.sdn_rl.vpns_idx = vpn_idx;
+@@ -4733,6 +4734,18 @@ function show_popup_Wizard_Setting(_type){
+ 					e = e || event;
+ 					e.stopPropagation();
+ 					var wizard_type = $(this).closest(".setting_content_container").attr("data-wizard-type");
++					//Reaper 2026-11-10: the wizard's passcode, checked the way the Portal tab checks it
++					var $rpc = $(_obj).find("#FWF_passcode");
++					if($rpc.length && $(_obj).find("#FWF_passcode_enabled").hasClass("on")){
++						$(_obj).find(".validate_hint").remove();
++						$rpc.val($rpc.val().replace(/\s+/g, ''));
++						var rpc_bad = ($rpc.val() == "") ? "<#JS_fieldblank#>" : (($rpc.val().length > 15) ? `<#RGNP_01#>` : ((/[^\x21-\x7e]|[<>]/.test($rpc.val())) ? "<#JS_validstr2#> < >" : ""));
++						if(rpc_bad != ""){
++							$rpc.show_validate_hint(rpc_bad);
++							$rpc.focus();
++							return false;
++						}
++					}
+ 					if(validate_format_Wizard_Item($(_obj), wizard_type)){
+ 						var rc_append = "";
+ 						var sdn_obj = get_new_sdn_profile();
+@@ -4817,8 +4830,8 @@ function show_popup_Wizard_Setting(_type){
+ 							sdn_profile.cp_rl.enable = "1";
+ 							sdn_profile.cp_rl.conntimeout = 60*60;
+ 							sdn_profile.cp_rl.redirecturl = "";
+-							sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - a Free Wi-Fi portal is terms-only
+-							sdn_profile.cp_rl.local_auth_profile = "";
++							sdn_profile.cp_rl.auth_type = ($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0";//Reaper 2026-11-10: the wizard's own passcode switch
++							sdn_profile.cp_rl.local_auth_profile = (sdn_profile.cp_rl.auth_type == "1") ? $(_obj).find("#FWF_passcode").val() : "";
+ 							sdn_profile.cp_rl.term_of_service = "1";
+ 							sdn_profile.cp_rl.NAS_ID = "";
+ 							uploadFreeWiFi({
+@@ -4967,6 +4980,37 @@ function show_popup_Wizard_Setting(_type){
+ 			var $FWF_ui_cntr = $("<div>").attr({"id":"FWF_ui_container"}).addClass("profile_setting_item FWF_ui").appendTo($freewifi_cntr);
+ 			Get_FWF_Preview_Container().appendTo($FWF_ui_cntr).find("[data-component=FWF_passcode]").hide();
+ 			Get_FWF_Change_BG_Container().hide().appendTo($FWF_ui_cntr);
++			//Reaper 2026-11-10: the passcode can be set while the portal is created (stock offered it only on the Portal tab of an existing network)
++			var FWF_passcode_enabled_parm = {"title":"<#FreeWiFi_Add_Passcode#>", "type":"switch", "id":"FWF_passcode_enabled", "set_value":"off"};
++			Get_Component_Switch(FWF_passcode_enabled_parm).appendTo($freewifi_cntr)
++				.find("#" + FWF_passcode_enabled_parm.id + "").click(function(e){
++					e = e || event;
++					e.stopPropagation();
++					//the row lives in its own wrapper and is a required field only while the switch is on: choosing the portal
++					//type shows every .profile_setting_item under it, which would un-hide the row and leave Apply greyed out
++					var $ps = $(this).closest(".profile_setting");
++					if($(this).hasClass("on")){
++						$ps.find("#wizard_FWF_passcode_wrap").show().find(".profile_setting_item").show();
++						$ps.find("#FWF_passcode").attr({"need_check":"true"});
++						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").show();
++					}
++					else{
++						$ps.find("#wizard_FWF_passcode_wrap").hide().find(".validate_hint").remove();
++						$ps.find("#FWF_passcode").removeAttr("need_check");
++						$ps.find("#FWF_Preview_Cntr [data-component=FWF_passcode]").hide();
++					}
++					resize_iframe_height();
++					_set_apply_btn_status($ps);
++				});
++			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
++			var $wizard_FWF_passcode_wrap = $("<div>").attr({"id":"wizard_FWF_passcode_wrap"}).hide().appendTo($freewifi_cntr);
++			Get_Component_Input(FWF_passcode_parm).appendTo($wizard_FWF_passcode_wrap)
++				.find("#" + FWF_passcode_parm.id + "")
++				.removeAttr("need_check")
++				.keyup(function(){
++					_set_apply_btn_status($(this).closest(".profile_setting"));
++				})
++				.attr({"oninput": "trigger_keyup($(this))"});
+ 			if(ui_lang != "EN" && ui_lang != ""){
+ 				$.getJSON("/ajax/freewifi_tos.json?v="+sdn_variable.extendno+"", function(data){
+ 					if(data[ui_lang] != ""){
+@@ -6228,7 +6272,23 @@ function Get_Component_Full_Setting(view_mode){
+ 				});
+ 			var FWF_redirecturl_parm = {"title":"<#FreeWiFi_LandingPage#> (<#FreeWiFi_RedirectPage#>)", "type":"text", "id":"FWF_redirecturl", "maxlength":256};
+ 			Get_Component_Input(FWF_redirecturl_parm).appendTo($freewifi_cntr);
+-			//Reaper 2026-11-12 (owner): no passcode switch - a Free Wi-Fi portal is terms-only
++			var FWF_passcode_enabled_parm = {"title":"<#FreeWiFi_Add_Passcode#>", "type":"switch", "id":"FWF_passcode_enabled", "set_value":"off"};
++			Get_Component_Switch(FWF_passcode_enabled_parm).appendTo($freewifi_cntr)
++				.find("#" + FWF_passcode_enabled_parm.id + "").click(function(e){
++					e = e || event;
++					e.stopPropagation();
++					var $control_container = $(this).closest(".profile_setting").find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]");
++					if($(this).hasClass("on")){
++						$control_container.show();
++					}
++					else{
++						$control_container.hide().next(".validate_hint").remove();
++					}
++					resize_iframe_height();
++					set_apply_btn_status($(this).closest(".profile_setting"));
++				});
++			var FWF_passcode_parm = {"title":"<#FreeWiFi_Passcode#>", "type":"text", "id":"FWF_passcode", "need_check":true, "maxlength":15, "container_id":"container_FWF_passcode"};
++			Get_Component_Input(FWF_passcode_parm).hide().appendTo($freewifi_cntr);
+ 
+ 			var FWF_terms_service_enabled_parm = {"title":"<#FreeWiFi_OptionHint#>", "type":"switch", "id":"FWF_terms_service_enabled", "set_value":"on"};
+ 			Get_Component_Switch(FWF_terms_service_enabled_parm).appendTo($freewifi_cntr)
+@@ -7960,7 +8020,7 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 							"qrcode": data,
+ 							"ssid": _profile_data.apg_rl.ssid,
+ 							"pwd": (is_wifi_open) ? "" : cap_wifi_pwd,
+-							"passcode": ""/* Reaper 2026-11-12: no passcode */
++							"passcode": (_profile_data.cp_rl.auth_type == "1") ? _profile_data.cp_rl.local_auth_profile : ""
+ 						};
+ 						if(args.qrcode_title != ""){
+ 							$("#print_html #print_wifi_info_desc").html(args.qrcode_title);
+@@ -7998,10 +8058,20 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 						var $body_cntr = $("<body>").addClass("print_body").appendTo($html_cntr);
+ 						$body_cntr.append($("#print_html").html());
+ 						printWin.document.write($html_cntr[0].outerHTML);
+-						setTimeout(function(){
++						//Reaper 2026-11-14 (owner: the sheet showed for less than a second, then closed itself): the written document was
++						//never closed, so print() on the still-loading window came straight back and the next line closed the window.
++						//Now: finish the document, print once it has loaded, close only when the print dialog is done (afterprint).
++						printWin.document.close();
++						var reaper_print_done = false;
++						var reaper_print_go = function(){
++							if(reaper_print_done || printWin.closed) return;
++							reaper_print_done = true;
++							printWin.onafterprint = function(){ printWin.close(); };
++							printWin.focus();
+ 							printWin.print();
+-							printWin.close();
+-						}, 50);
++						};
++						printWin.onload = function(){ setTimeout(reaper_print_go, 200); };
++						setTimeout(reaper_print_go, 1200);
+ 					}
+ 				});
+ 			}
+@@ -8388,7 +8458,16 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 					terms_service_content = htmlEnDeCode.htmlEncode(terms_service_content).replace().replace(/(?:\r\n|\r|\n)/g, '<div style=height:6px;></div>');
+ 					$(_obj).find("#FWF_ui_container [data-component=FWF_TS]").html(terms_service_content);
+ 				}
+-				$(_obj).find("#FWF_Preview_Cntr [data-component=FWF_passcode]").hide();//Reaper 2026-11-12: no passcode, even for a portal saved with one
++				$(_obj).find("#FWF_passcode_enabled").removeClass("off on").addClass((function(){
++					if(_cp_rl_data.auth_type == "1"){
++						$(_obj).find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]").show();
++						return "on";
++					}
++					else{
++						$(_obj).find("#container_FWF_passcode, #FWF_Preview_Cntr [data-component=FWF_passcode]").hide();
++						return "off";
++					}
++				})());
+ 				$(_obj).find("#FWF_terms_service_enabled").removeClass("off on").addClass((function(){
+ 					if(_cp_rl_data.term_of_service == "0"){
+ 						$(_obj).find("#container_FWF_TS, #FWF_Preview_Cntr [data-group=FWF_TS]").hide();
+@@ -8401,6 +8480,10 @@ function Update_Setting_Profile(_obj, _profile_data){
+ 						return "on";
+ 					}
+ 				})());
++				$(_obj).find("#FWF_passcode").val(_cp_rl_data.local_auth_profile);
++				//Reaper: guests can only sign in with a passcode of 15 characters or fewer
++				if(_cp_rl_data.auth_type == "1" && (_cp_rl_data.local_auth_profile || "").length > 15)
++					$(_obj).find("#FWF_passcode").show_validate_hint(`<#RGNP_01#>`);
+ 			}
+ 			else if(_cp_rl_data.cp_idx == "4"){
+ 				var response = httpApi.hookGet("get_customized_attribute-" + _cp_rl_data.idx_for_customized_ui + "");
+@@ -9361,6 +9444,7 @@ function set_apply_btn_status(_obj){
+ 							var vpn_idx = $selected_vpn.attr("data-idx");
+ 							if(vpn_type == "vpnc"){
+ 								sdn_profile.sdn_rl.vpnc_idx = vpn_idx;
++								reaper_vpnc_on_demand(nvramSet_obj, vpn_idx);//Reaper 2026-11-14: a chosen client that is off is switched on
+ 							}
+ 							else if(vpn_type == "vpns"){
+ 								sdn_profile.sdn_rl.vpns_idx = vpn_idx;
+@@ -9393,10 +9477,10 @@ function set_apply_btn_status(_obj){
+ 						sdn_profile.cp_rl.enable = "1";
+ 						sdn_profile.cp_rl.conntimeout = ((cp_idx == "2") ? (($(_obj).find("#FWF_conntimeout").val())*60).toString() : 60*60);
+ 						sdn_profile.cp_rl.redirecturl = ((cp_idx == "2") ? $(_obj).find("#FWF_redirecturl").val() : "");
+-						sdn_profile.cp_rl.auth_type = "0";//Reaper 2026-11-12 (owner): no passcode - terms-only
++						sdn_profile.cp_rl.auth_type = ((cp_idx == "2") ? (($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? "1" : "0") : "0");
+ 						sdn_profile.cp_rl.term_of_service = ((cp_idx == "2") ? (($(_obj).find("#FWF_terms_service_enabled").hasClass("on")) ? "1" : "0") : "0");
+ 						sdn_profile.cp_rl.NAS_ID = "";
+-						sdn_profile.cp_rl.local_auth_profile = "";
++						sdn_profile.cp_rl.local_auth_profile = ((cp_idx == "2") ? (($(_obj).find("#FWF_passcode_enabled").hasClass("on")) ? $(_obj).find("#FWF_passcode").val() : "") : "");
+ 						var upload_data = {"id": sdn_profile.cp_rl.idx_for_customized_ui, "cp_idx": cp_idx, "auth_type": sdn_profile.cp_rl.auth_type};
+ 						if(cp_idx == "2"){
+ 							upload_data["brand_name"] = $("#FWF_brand_name").val();
+@@ -10350,6 +10434,35 @@ function validate_format_Wizard_Item(_obj, _type){
+ 					}
+ 				}
+ 
++				var $FWF_passcode_enabled = $(_obj).find("#FWF_passcode_enabled");
++				if($FWF_passcode_enabled.hasClass("on")){
++					var $FWF_passcode = $(_obj).find("#FWF_passcode");
++					$FWF_passcode.val($FWF_passcode.val().replace(/\s+/g, ''));//remove space
++					if($FWF_passcode.val() == ""){
++						$FWF_passcode.show_validate_hint("<#JS_fieldblank#>");
++						$FWF_passcode.focus();
++						return false;
++					}
++					if($FWF_passcode.val().length > 15){//Reaper: longer passcodes never sign in
++						$FWF_passcode.show_validate_hint(`<#RGNP_01#>`);
++						$FWF_passcode.focus();
++						return false;
++					}
++					var isValid_passcode = valid_block_chars($FWF_passcode.val(), ["<", ">"]);
++					if(isValid_passcode.isError){
++						$FWF_passcode.show_validate_hint(isValid_passcode.errReason);
++						$FWF_passcode.focus();
++						return false;
++					}
++					//confirm common string combination	#JS_common_passwd#
++					var is_common_string = check_common_string($FWF_passcode.val(), "httpd_password");
++					if(is_common_string){
++						if(!confirm("<#JS_common_passwd#>")){
++							$FWF_passcode.focus();
++							return false;
++						}
++					}
++				}
+ 			}
+ 
+ 			const $ipv6_enable = $(_obj).find("#ipv6_enable");
+@@ -10596,6 +10709,29 @@ function Get_VPNC_Profile(){
+ }
+ */
+ 
++/* Reaper 2026-11-14 (field report): a network bound to a VPN client that is switched off had no Internet until someone
++   turned the client on by hand - nothing started it. Choosing a client for a network now switches it on with the same
++   save: WireGuard wgcN_enable (rc starts it after the network is applied, rc/wireguard.c reaper_wgc_start_bound),
++   OpenVPN vpn_clientx_eas plus its own start. Taking a binding away never turns a client off. */
++function reaper_vpnc_on_demand(_nvramSet_obj, _vpnc_idx){
++	var idx = parseInt(_vpnc_idx, 10);
++	if(!(idx >= 1 && idx <= 10) || _nvramSet_obj == undefined) return false;
++	var hit = vpnc_profile_list.filter(function(item){ return parseInt(item.vpnc_idx, 10) == idx; })[0];
++	if(hit == undefined || hit.activate == "1" || hit.activate == 1) return false;
++	if(idx <= 5){
++		_nvramSet_obj["wgc" + idx + "_enable"] = "1";
++	}
++	else{
++		var unit = idx - 5;
++		var eas = httpApi.nvramGet(["vpn_clientx_eas"])["vpn_clientx_eas"];
++		eas = (eas == undefined) ? "" : eas.toString();
++		if(("," + eas).indexOf("," + unit + ",") == -1)
++			_nvramSet_obj["vpn_clientx_eas"] = eas + unit + ",";
++		if(_nvramSet_obj.rc_service != undefined && _nvramSet_obj.rc_service.indexOf("start_vpnclient" + unit + ";") == -1)
++			_nvramSet_obj.rc_service += "start_vpnclient" + unit + ";";
++	}
++	return true;
++}
+ function Get_VPNC_Profile(){
+         var vpnc_profile_attr = function(){
+                 this.desc = "";
+-- 
+2.25.1
+

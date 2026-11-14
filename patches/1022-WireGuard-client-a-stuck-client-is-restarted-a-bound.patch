@@ -1,0 +1,184 @@
+From 5194b9de3c6745aae07f2d33667f0bc2b277403e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:41:08 -0500
+Subject: [PATCH] WireGuard client: a stuck client is restarted; a bound client
+ is started (102.8 line)
+
+- The every-minute check restarted a client only when its server address changed. A client whose
+  server name did not resolve at start came up without a peer and stayed that way until it was
+  switched off and on by hand. The check now also restarts a client whose interface is missing,
+  whose server name resolves now, or that has had no handshake for five minutes, with a back-off
+  (at once, 1, 2, 4, 8 minutes, then every 15) kept per client. A failed lookup keeps the address
+  the tunnel was configured with.
+- reaper_wgc_start_bound(): once the clock is set, a client that an enabled guest network is bound
+  to, that is switched on and has no interface, is started. It never switches a client on.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/wireguard.c | 130 +++++++++++++++++++++++++++---
+ 1 file changed, 121 insertions(+), 9 deletions(-)
+
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index 35b47d40e0..4ee0e8fcb1 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -2043,6 +2043,55 @@ int is_wg_enabled()
+ 	return (wg_enable);
+ }
+ 
++/* REAPER-WGC-WD-BEGIN (compiled on the host by test_wgc_watchdog.py) */
++/* is the address `one` among the space-separated addresses in `list` (whole entries, not substrings) */
++static int reaper_wgc_has_addr(const char *list, const char *one)
++{
++	size_t l = strlen(one);
++	const char *p = list;
++
++	if (!l)
++		return 0;
++	while ((p = strstr(p, one)) != NULL) {
++		if ((p == list || p[-1] == ' ') && (p[l] == ' ' || p[l] == '\0'))
++			return 1;
++		p += l;
++	}
++	return 0;
++}
++
++/* why a client that is NOT connected should be restarted, or NULL to leave it alone this minute:
++ *   its interface is gone;
++ *   its server name resolves now but no address is stored - the name did not resolve when the client started (DNS not
++ *   up yet at boot). Stock compared with strstr(now, ""), which is always true, so this client was never restarted;
++ *   the name now resolves to other addresses than the stored one (stock's own case);
++ *   or it has been down for 5 minutes (the client always sends a keepalive, so a healthy tunnel is never that quiet;
++ *   stock never looked at a client whose server is given as an address).
++ * down_for = seconds since it was first seen not connected. */
++static const char *reaper_wgc_wd_reason(int if_exists, int is_ip, int resolved, const char *now, const char *stored, long down_for)
++{
++	if (!if_exists)
++		return "its interface is missing";
++	if (!is_ip && resolved) {
++		if (!stored || !*stored)
++			return "its server name resolves now";
++		if (!reaper_wgc_has_addr(now, stored))
++			return "its server address changed";
++	}
++	if (down_for >= 300)
++		return "no handshake for 5 minutes";
++	return NULL;
++}
++
++/* seconds to wait after the n-th restart before the next one: 1, 2, 4, 8, then 15 minutes */
++static long reaper_wgc_wd_wait(int n)
++{
++	static const int m[] = { 0, 1, 2, 4, 8 };
++
++	return (n <= 0) ? 0 : 60L * ((n < 5) ? m[n] : 15);
++}
++/* REAPER-WGC-WD-END */
++
+ void check_wgc_endpoint()
+ {
+ 	int unit;
+@@ -2104,21 +2153,44 @@ void check_wgc_endpoint()
+ 		} else
+ #endif
+ 		{
+-			strlcpy(ep_addr, nvram_pf_safe_get(prefix, "ep_addr"), sizeof(ep_addr));
+-			if (is_valid_ip(ep_addr) > 0)
+-				continue;
++			/* reaper 2026-11-14 (field report: a client used by a guest network never came up after a reboot). The
++			 * client is NOT connected here; reaper_wgc_wd_reason() says whether to restart it. Restarts back off 1, 2,
++			 * 4, 8, then 15 minutes. State in WG_DIR_CONF/wd<N>: tries, last restart, down since, last seen down - a
++			 * gap of more than 100 s means it was connected (or the WAN was down) in between: the count starts again. */
++			char wdf[40], wd_if[IFNAMSIZ], wds[96] = "";
++			const char *why;
++			long now = uptime(), last = 0, since = 0, seen = 0;
++			int tries = 0, is_ip, resolved = 0;
+ 
+-			if (_wg_resolv_ep(ep_addr, buf, sizeof(buf)))
+-				continue;
++			strlcpy(ep_addr, nvram_pf_safe_get(prefix, "ep_addr"), sizeof(ep_addr));
++			is_ip = (is_valid_ip(ep_addr) > 0);
++			buf[0] = '\0';
++			if (!is_ip)
++				resolved = (_wg_resolv_ep(ep_addr, buf, sizeof(buf)) == 0 && buf[0] != '\0');
+ 
+-			// TBD:
+ 			strlcpy(ep_addr_r, nvram_pf_safe_get(prefix, "ep_addr_r"), sizeof(ep_addr_r));
+ 			if ((p = strchr(ep_addr_r, ' ')))
+ 				*p = '\0';
+ 
+-			if (!strstr(buf, ep_addr_r))
+-			{
+-				_dprintf("%s ip changed to %s\n", ep_addr, buf);
++			snprintf(wd_if, sizeof(wd_if), "%s%d", WG_CLIENT_IF_PREFIX, unit);
++			snprintf(wdf, sizeof(wdf), "%s/wd%d", WG_DIR_CONF, unit);
++			if (f_read_string(wdf, wds, sizeof(wds)) <= 0
++			    || sscanf(wds, "%d %ld %ld %ld", &tries, &last, &since, &seen) != 4
++			    || now < seen || now - seen > 100) {
++				tries = 0;
++				last = 0;
++				since = now;
++			}
++			why = reaper_wgc_wd_reason(_wg_if_exist(wd_if), is_ip, resolved, buf, ep_addr_r, now - since);
++			if (why && (tries == 0 || now - last >= reaper_wgc_wd_wait(tries))) {
++				tries++;
++				last = now;
++				logmessage("WireGuard", "client %d is not connected: %s - restarting it (try %d)", unit, why, tries);
++			} else
++				why = NULL;
++			snprintf(wds, sizeof(wds), "%d %ld %ld %ld", tries, last, since, now);
++			f_write_string(wdf, wds, 0, 0);
++			if (why) {
+ 				snprintf(buf, sizeof(buf), "restart_wgc %d", unit);
+ 				notify_rc(buf);
+ 			}
+@@ -2258,6 +2330,46 @@ void update_wgc_by_sdn(MTLAN_T *pmtl, size_t mtl_sz, int restart_all_sdn)
+ 	_update_wg_by_sdn(pmtl, mtl_sz, restart_all_sdn, WG_TYPE_CLIENT);
+ }
+ 
++/* reaper 2026-11-14 (field report): a network bound to a WireGuard client that was not running had no Internet (the
++ * Kill Switch holds it) until someone restarted the client by hand - nothing started it when the network was saved,
++ * synced from AiMesh or changed by the app. Called from the rc "sdn" handler after every network change: a client an
++ * enabled network uses, that the admin has switched ON (wgcN_enable - rc never turns a client on itself) and that has
++ * no interface, is started. Before the clock is set start_wgcall()'s own retry job does it, as at every boot. */
++void reaper_wgc_start_bound(void)
++{
++	MTLAN_T *pmtl = NULL;
++	VPN_VPNX_T vpnx;
++	size_t sz = 0, i;
++	char nv[16], ifn[IFNAMSIZ];
++	int done[WG_CLIENT_MAX + 1], unit;
++
++	if (!nvram_match("ntp_ready", "1"))
++		return;
++	memset(done, 0, sizeof(done));
++	if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) == NULL)
++		return;
++	if (get_mtlan(pmtl, &sz)) {
++		for (i = 0; i < sz; i++) {
++			if (pmtl[i].enable != 1 || !pmtl[i].sdn_t.vpnc_idx)
++				continue;
++			memset(&vpnx, 0, sizeof(vpnx));
++			if (!get_vpnx_by_vpnc_idx(&vpnx, pmtl[i].sdn_t.vpnc_idx) || vpnx.proto != VPN_PROTO_WG)
++				continue;
++			unit = vpnx.unit;
++			if (unit < 1 || unit > WG_CLIENT_MAX || done[unit])
++				continue;
++			done[unit] = 1;
++			snprintf(nv, sizeof(nv), "%s%d_enable", WG_CLIENT_NVRAM_PREFIX, unit);
++			snprintf(ifn, sizeof(ifn), "%s%d", WG_CLIENT_IF_PREFIX, unit);
++			if (!nvram_get_int(nv) || _wg_if_exist(ifn))
++				continue;
++			logmessage("WireGuard", "client %d is used by a network and was not running - starting it", unit);
++			start_wgc(unit);
++		}
++	}
++	FREE_MTLAN((void *)pmtl);
++}
++
+ void update_wgs_by_sdn(MTLAN_T *pmtl, size_t mtl_sz, int restart_all_sdn)
+ {
+ 	_update_wg_by_sdn(pmtl, mtl_sz, restart_all_sdn, WG_TYPE_SERVER);
+-- 
+2.25.1
+

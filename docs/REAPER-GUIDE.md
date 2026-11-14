@@ -1,8 +1,8 @@
 # Reaper — the owner's guide
 
-> **Doc status:** current as of **v3.7.7** · 2026-11-13 <!--@stamp-->
+> **Doc status:** current as of **v3.7.8** · 2026-11-14 <!--@stamp-->
 
-**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.7 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
+**Applies to:** Reaper firmware for the ASUS RT-BE96U (primary model) and the sibling RT-BE86U, RT-BE88U, GT-BE98, GT-BE98 Pro, GT-BE19000, ZenWiFi BQ16 and ZenWiFi BQ16 Pro, in two lines with the same Reaper version: `3006.102.10_Reaper_v<X>` (RT-BE96U, RT-BE86U, RT-BE88U, GT-BE98 Pro) and `3006.102.8_Reaper_v<X>` (GT-BE98, GT-BE19000, BQ16, BQ16 Pro; see 2.1). This guide describes the feature set as of the v3.7.8 <!--@treever--> source tree. The newest *published* release may be behind that; where a feature is newer than the image you are running, the page simply will not be there yet. See [`CHANGELOG.md`](CHANGELOG.md) for what each version added and [`BACKLOG.md`](BACKLOG.md) for what is still pending confirmation.
 
 Reaper is based on **Asuswrt-Merlin by Eric "Merlin" Sauvageau**. Every line of Reaper is a patch on top of that work; the base firmware, most of its features, and most of what is good about the result are his. Reaper is an independent fork. Neither ASUS nor the Asuswrt-Merlin project has reviewed, approved or endorsed it, and neither should be contacted about it (see [Where to report issues](#214-where-to-report-issues)).
 
@@ -2751,7 +2751,7 @@ Earlier editions of this guide also listed `psc6g` (6 GHz preferred scanning cha
 `0` to `1`. On every model in the fleet the stock factory value was already `1`; the stock table's
 second, conflicting entry applies only to two unrelated ASUS models.
 
-Reaper also **adds 119** entries of its own (8.2) and **removes 18** that belong to features it strips
+Reaper also **adds 120** entries of its own (8.2) and **removes 18** that belong to features it strips
 out: AiCloud and WebDAV (`enable_webdav`, `st_webdav_mode`, `webdav_proxy`, `webdav_aidisk`,
 `webdav_http_port`, `webdav_https_port`, `acc_webdavproxy`, `enable_webdav_captcha`,
 `enable_webdav_lock`, `webdav_acc_lock`, `webdav_lock_interval`, `webdav_lock_times`,
@@ -2834,6 +2834,11 @@ empty: the roaming assistant disconnects a device an AiMesh node reports as its 
 not). `reaper_bgdfs_stock` `0`: background DFS scanning stays as shipped (on: `1`, each radio's
 `acs_bgdfs_enab` and `acs_bgdfs_ahead` go to 0 and `acs_ignore_txfail` to 1; the earlier values come back
 when the switch goes off).
+
+**mDNS across networks** (Administration › Tweaks) — `reaper_mdns_reflect` `1`: devices on the main network and
+on every network with Access Intranet on can find each other (casting, printers, AirPlay); avahi relays mDNS between
+those networks only. A network with Set AP Isolated on, a network without intranet access and a Guest Portal are left
+out, and on the last two the router no longer answers mDNS at all. Off (`0`): each network sees only its own devices.
 
 **Guest Portal secret** (Administration › Tweaks) — `reaper_cp_secret_own` `0`: the portal's sign-in secret is
 a random one the router makes for itself the first time a portal starts (the stock value is the same on every

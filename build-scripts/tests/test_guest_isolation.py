@@ -52,6 +52,13 @@ HARNESS = r'''
 #define REAPER_HOOK_IN "REAPER_HOOK"
 #define REAPER_HOOK_FWD "REAPER_HOOK_F"
 @@PURE@@
+static size_t rg_test_strlcpy(char *d, const char *s, size_t n) { size_t l = strlen(s); if (n) { size_t c = l >= n ? n - 1 : l; memcpy(d, s, c); d[c] = 0; } return l; }
+#define strlcpy rg_test_strlcpy
+static void srv_fill(struct rg_net *g, int n)
+{
+	int k, u;
+@@SRV@@
+}
 int main(int argc, char **argv)
 {
 	struct rg_net g[4]; char wan4[2][IFNAMSIZ] = { "eth0", "ppp0" }; char out[16];
@@ -75,6 +82,28 @@ int main(int argc, char **argv)
 		g[0].lan_ok = 1; strcpy(g[0].lanif, "br0"); n = 1; break;
 	case 9: /* 2026-11-13: plain guest network flagged lan_ok by mistake - only a portal may use it */
 		g[0].sdn_idx = 5; strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); g[0].lan_ok = 1; strcpy(g[0].lanif, "br0"); n = 1; break;
+	case 10: /* 2026-11-14: plain guest network, the router's own VPN servers named */
+		g[0].sdn_idx = 5; strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56");
+		strcpy(g[0].srvif[0], "wgs1"); strcpy(g[0].srvif[1], "tun21"); g[0].nsrv = 2; n = 1; break;
+	case 11: /* 2026-11-14: a portal handed a server list by mistake - nothing opens into a portal */
+		g[0].sdn_idx = 4; strcpy(g[0].ifname, "tun22"); strcpy(g[0].brname, "br55"); g[0].portal = 1;
+		strcpy(g[0].srvif[0], "wgs1"); g[0].nsrv = 1; n = 1; break;
+	case 12: /* 2026-11-14: VPN-bound guest network, kill switch ON, server list - the kill switch holds */
+		g[0].sdn_idx = 7; strcpy(g[0].ifname, "br58"); strcpy(g[0].brname, "br58"); strcpy(g[0].vpnif, "wgc5"); g[0].killsw = 1;
+		strcpy(g[0].srvif[0], "wgs1"); g[0].nsrv = 1; n = 1; break;
+	case 13: /* 2026-11-14: VPN-bound guest network, kill switch off, server list */
+		g[0].sdn_idx = 7; strcpy(g[0].ifname, "br58"); strcpy(g[0].brname, "br58"); strcpy(g[0].vpnif, "wgc5");
+		strcpy(g[0].srvif[0], "wgs1"); g[0].nsrv = 1; n = 1; break;
+	case 20: { /* 2026-11-14: the server list as rc builds it - a plain network, a portal on tun22, another plain one */
+		int i, j;
+		strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56");
+		strcpy(g[1].ifname, "tun22"); strcpy(g[1].brname, "br55"); g[1].portal = 1;
+		strcpy(g[2].ifname, "br58"); strcpy(g[2].brname, "br58");
+		srv_fill(g, 3);
+		for (i = 0; i < 3; i++) { printf("%s:", g[i].ifname); for (j = 0; j < g[i].nsrv; j++) printf("%s,", g[i].srvif[j]); printf(" "); }
+		memset(g, 0, sizeof(g)); strcpy(g[0].ifname, "br56"); strcpy(g[0].brname, "br56"); srv_fill(g, 1);
+		printf("| %s:", g[0].ifname); for (j = 0; j < g[0].nsrv; j++) printf("%s,", g[0].srvif[j]); printf("\n");
+		return 0; }
 	case 7: /* parsers */
 		printf("%d %d %d %d %d\n", rg_access_on("<0>5<0>7", 5), rg_access_on("<0>5<0>7", 7), rg_access_on("<0>5<0>7", 6),
 		       rg_access_on("", 5), rg_access_on("<12>3", 12));
@@ -90,7 +119,9 @@ int main(int argc, char **argv)
 tmp = tempfile.mkdtemp()
 try:
     c = os.path.join(tmp, "g.c"); exe = os.path.join(tmp, "g")
-    open(c, "w").write(HARNESS.replace("@@PURE@@", m.group(1)))
+    msrv = re.search(r"/\* REAPER-GUEST-SRV-BEGIN[^\n]*\*/\n(.*?)\t/\* REAPER-GUEST-SRV-END \*/", gsrc, re.S)
+    check("reaper_guest.c carries the REAPER-GUEST-SRV block (the VPN server list, run here as rc runs it)", msrv is not None)
+    open(c, "w").write(HARNESS.replace("@@PURE@@", m.group(1)).replace("@@SRV@@", msrv.group(1) if msrv else ""))
     r = subprocess.run([CC, "-Wall", "-Werror", "-Wno-unused-function", "-o", exe, c], capture_output=True, text=True)
     check("the block compiles with -Wall -Werror", r.returncode == 0, r.stderr)
     if r.returncode != 0:
@@ -215,6 +246,50 @@ try:
     check("Access Intranet route is for portals only (a plain guest network flagged lan_ok gets no br0 path here)",
           "-i br56 -o br0" not in t9)
 
+    # ---- 2026-11-14 (field report, GT-BE98 v3.7.7): WireGuard server clients lost a Guest Network Pro VLAN ----
+    # Until v3.7.7 a client of the router's own VPN server reached such a network through the stock WGSF / OVPNSF
+    # chains; REAPER_GUF dropped it first (new connections in from the WAN only, replies out to the WAN only).
+    t10 = gen(10); r4 = rules(t10, 4); r6 = rules(t10, 6)
+    check("VPN servers (v4): their clients' new connections go on to the stock rules; the network may only ANSWER them",
+          [l for l in r4 if "REAPER_GUF" in l] ==
+          ["R iptables -A REAPER_GUF -i br56 -o br56 -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -m set --match-set reaper_aimesh src -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -o eth0 -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -o tun21 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -j DROP",
+           "R iptables -A REAPER_GUF -o br56 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
+           "R iptables -A REAPER_GUF -o br56 -i eth0 -j RETURN",
+           "R iptables -A REAPER_GUF -o br56 -i wgs1 -j RETURN",
+           "R iptables -A REAPER_GUF -o br56 -i tun21 -j RETURN",
+           "R iptables -A REAPER_GUF -o br56 -j DROP"], r4)
+    check("...a guest still cannot OPEN a connection to a VPN client (no stateless way out to a server interface)",
+          not [l for l in rules(t10) if "-i br56 -o wgs1 -j RETURN" in l or "-i br56 -o tun21 -j RETURN" in l])
+    check("...the same pair for IPv6",
+          "R ip6tables -A REAPER_GUF -o br56 -i wgs1 -j RETURN" in r6
+          and "R ip6tables -A REAPER_GUF -i br56 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" in r6
+          and r6.index("R ip6tables -A REAPER_GUF -o br56 -i wgs1 -j RETURN") < r6.index("R ip6tables -A REAPER_GUF -o br56 -j DROP"))
+    check("...nothing new toward the router itself (REAPER_GUI as for any guest network), still deny-only",
+          [l for l in r4 if "REAPER_GUI" in l] == [l for l in rules(t1, 4) if "REAPER_GUI" in l] and " -j ACCEPT" not in t10)
+    check("...and the script says so on the network's line",
+          "# network 5: br56\n#   clients of the router's own VPN servers may open connections into it; it may only answer\n" in t10
+          and "own VPN servers" not in t1)
+    check("without a server list the rules are exactly the v3.7.7 ones (set 1 unchanged by this)",
+          [l for l in rules(t10) if "wgs1" not in l and "tun21" not in l] == rules(t1))
+    p20 = gen(20).strip()
+    check("the list rc builds: a plain network gets wgs1, wgs2, tun21 - never tun22 while a portal uses that name; the portal gets none; with no portal, tun22 too",
+          p20 == "br56:wgs1,wgs2,tun21, tun22: br58:wgs1,wgs2,tun21, | br56:wgs1,wgs2,tun21,tun22,", p20)
+    t11 = gen(11)
+    check("a portal: nothing opens into it from a VPN server either (a list handed to it is ignored)",
+          "wgs1" not in t11 and rules(t11) == rules(gen(2)), [l for l in rules(t11) if l not in rules(gen(2))])
+    t12 = gen(12)
+    check("kill switch on: only the bound VPN client, in and out - no VPN server path", "wgs1" not in t12 and "-o wgc5 -j RETURN" in t12)
+    t13 = gen(13); r4 = rules(t13, 4)
+    check("VPN-bound network, kill switch off: the server path is there, beside the WAN and the bound client",
+          "R iptables -A REAPER_GUF -o br58 -i wgs1 -j RETURN" in r4
+          and "R iptables -A REAPER_GUF -i br58 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN" in r4
+          and "R iptables -A REAPER_GUF -o br58 -i wgc5 -j RETURN" not in r4)
+
     t6 = gen(6)
     check("no guest network left: the layer is unhooked and removed, the front chains re-pinned",
           "-D REAPER_HOOK -j REAPER_GUI" in t6 and "-D REAPER_HOOK_F -j REAPER_GUF" in t6 and "$T -X $C" in t6
@@ -234,6 +309,12 @@ check("a portal's Access Intranet (sdn_access_rl) sets the main-LAN route, the b
       and 'strlcpy(g[n].lanif, nvram_safe_get("lan_ifname"), sizeof(g[n].lanif));' in gsrc)
 check("WAN interfaces from get_wan_ifname() for every WAN unit (PPPoE and dual WAN), IPv6 from get_wan6face()",
       "for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {\n\t\tw = get_wan_ifname(u);" in gsrc and "(w = get_wan6face()) != NULL" in gsrc)
+check("VPN servers by interface name (wgs1-2, tun21-22), never for a portal, never a name a guest network itself uses (a portal's tun22)",
+      'static const char *const srv[RG_SRV_MAX] = { "wgs1", "wgs2", "tun21", "tun22" };' in gsrc
+      and "\t\tif (g[k].portal)\n\t\t\tcontinue;\n\t\tfor (s = 0; s < RG_SRV_MAX; s++) {" in gsrc
+      and "if (!strcmp(g[u].ifname, srv[s]) || !strcmp(g[u].brname, srv[s]))" in gsrc
+      and "if (!c && g[k].nsrv < RG_SRV_MAX)" in gsrc
+      and gsrc.count("if (!g->portal && !vpn_only)") == 1 and "#define RG_SRV_MAX\t4" in gsrc)
 check("the script is root's own, published atomically, run under the firewall lock",
       "reaper_secure_dir(RG_DIR, 0700);" in gsrc and "rename(RG_APPLY \".tmp\", RG_APPLY)" in gsrc
       and 'lk = file_lock("firewall");' in gsrc and 'eval("sh", RG_APPLY);' in gsrc)

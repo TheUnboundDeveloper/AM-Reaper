@@ -480,6 +480,42 @@ else
   warn "ossl-consumers" "check_ossl_consumers.sh absent -- 1.1-SONAME consumers not checked"
 fi
 
+# ---- 22b. every program names the OpenSSL release the image ships (2026-11-14) ---
+# REAPER-OSSL-TEXT-BEGIN
+# A program compiled under one OpenSSL 3 release and never recompiled after the tree moved to the next still
+# carries the old release text (wpa_supplicant said 3.5.8 in local images for six weeks after the tree went to
+# 3.5.9: its makefiles do not depend on the OpenSSL headers, and a clean CI tree never shows it). Each staged file
+# that carries an "OpenSSL 3.x.y <date>" text must carry the one libcrypto.so.3 does. FAIL for the programs this
+# tree compiles itself; WARN for anything else (a closed object built elsewhere may legitimately differ).
+_olc="$FS/usr/lib/libcrypto.so.3"
+if [ -f "$_olc" ]; then
+  _ore='OpenSSL 3\.[0-9]+\.[0-9]+ [0-9]+ [A-Z][a-z]{2} [0-9]{4}'
+  _owant=$(grep -a -o -E "$_ore" "$_olc" 2>/dev/null | sort -u | head -1)
+  if [ -z "$_owant" ]; then
+    warn "ossl-version-text" "libcrypto.so.3 carries no release text -- not checked"
+  else
+    _on=0; _obad=""; _oodd=""
+    for _of in $(grep -rl -a -E "$_ore" "$FS/bin" "$FS/sbin" "$FS/usr/bin" "$FS/usr/sbin" "$FS/usr/lib" "$FS/lib" 2>/dev/null); do
+      _on=$((_on+1))
+      _ot=$(grep -a -o -E "$_ore" "$_of" | sort -u | grep -vxF -- "$_owant" | head -1)
+      [ -z "$_ot" ] && continue
+      case "${_of##*/}" in
+        wpa_supplicant*|wpa_cli*|hostapd*|Tor|openssl|openvpn|stubby|curl|wget|lighttpd|httpd|rc|libssl.so*|libcrypto.so*)
+          _obad="$_obad ${_of#$FS/}($_ot)";;
+        *) _oodd="$_oodd ${_of#$FS/}($_ot)";;
+      esac
+    done
+    if [ -n "$_obad" ]; then
+      fail "ossl-version-text" "compiled under another OpenSSL release than the image ships ($_owant):$_obad -- stale objects, rebuild them"
+    elif [ -n "$_oodd" ]; then
+      warn "ossl-version-text" "$_on staged file(s) name an OpenSSL 3 release; not $_owant:$_oodd"
+    else
+      pass "ossl-version-text" "$_on staged file(s) name an OpenSSL 3 release, all $_owant"
+    fi
+  fi
+fi
+# REAPER-OSSL-TEXT-END
+
 # ---- 23. the OpenVPN PKI chain on the staged binaries (check_ovpn_pki.sh) ---
 # Two silent breaks after the OpenSSL 3.5 move, both found on routers: the
 # [server] extensions on a CSR (v3.1.4) and RANDFILE=$HOME/.rnd with HOME=/

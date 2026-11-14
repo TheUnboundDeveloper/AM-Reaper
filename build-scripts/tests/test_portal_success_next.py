@@ -10,6 +10,10 @@ on a page that never changes.
 chilli gave it for every name before the sign-in (first new lookup seen 6 s after it on the owner's router), and a
 page load sent there never answers. The success page now asks for the first address in the background until it
 answers, and only then goes on.
+2026-11-14 (owner): no second "Success" page. On a phone the first address is the system's own connection test;
+being sent on to it showed a second, bare success page. For such an address the portal's success page is loaded
+once more instead (marked reaper_done=1) - a phone's sign-in sheet tests the connection again after a page load -
+and the test page itself is never shown. A site somebody typed into a computer's browser is still gone on to.
 
 WHAT IT DOES. Runs the real uam.js under node against a stub page (window / document / jQuery / sessionStorage /
 fetch on a virtual clock) and checks: the first address is kept while the sign-in page is shown (plain and
@@ -39,7 +43,7 @@ uam = open(UAM, encoding="latin-1").read()
 check("uam.js keeps the first address while the sign-in page is shown",
       'if (res == "notyet") {\n\t\treaperKeepNext();' in uam.replace("\r\n", "\n"))
 check("uam.js goes on from the success page after a pause",
-      'if (reaperQuery("auth_status") == "pass")' in uam and "setTimeout(reaperGoNext, REAPER_NEXT_MS);" in uam)
+      'if (reaperQuery("auth_status") == "pass" && reaperQuery("reaper_done") != "1")' in uam and "setTimeout(reaperGoNext, REAPER_NEXT_MS);" in uam)
 check("only http(s) addresses are kept or followed",
       '(p.protocol == "http:" || p.protocol == "https:") ? p.href : ""' in uam)
 check("the stored address is read through the same test before it is followed",
@@ -122,6 +126,13 @@ out.already = run(P + "?res=already&uamip=192.168.52.1&uamport=3990", K());
 out.brokenkeep = run(P + "?res=notyet&userurl=" + enc(APPLE), {}, 1);
 out.brokengo = run(P + "?auth_status=pass", {}, 1);
 out.nostore = run(P + "?auth_status=pass", {}, 2);
+const SITE = "http://example.com/a?b=1";
+out.site = run(P + "?auth_status=pass", { reaper_uam_next: SITE });
+out.android = run(P + "?auth_status=pass", { reaper_uam_next: "http://connectivitycheck.gstatic.com/generate_204" });
+out.windows = run(P + "?auth_status=pass", { reaper_uam_next: "http://www.msftconnecttest.com/connecttest.txt" });
+out.pathonly = run(P + "?auth_status=pass", { reaper_uam_next: "http://some.cdn.example/generate_204" });
+out.hostonly = run(P + "?auth_status=pass", { reaper_uam_next: "http://captive.apple.com/" });
+out.doneagain = run(P + "?auth_status=pass&reaper_done=1", K());
 console.log(JSON.stringify(out));
 """
 NODE = shutil.which("node") or shutil.which("nodejs")
@@ -141,6 +152,10 @@ else:
         check("the harness ran", bool(o), (r.stdout + r.stderr)[-400:])
         if o:
             APPLE = "http://captive.apple.com/hotspot-detect.html"
+            # 2026-11-14: a connection-test address is not shown - the success page itself is loaded once more
+            DONE = "http://192.168.52.1:8083/FreeUam?auth_status=pass&reaper_done=1"
+            DONES = "https://192.168.52.1:8083/FreeUam?auth_status=pass&reaper_done=1"
+            SITE = "http://example.com/a?b=1"
             K = "reaper_uam_next"
             check("no case threw", not any(o[k]["threw"] for k in o), {k: o[k]["threw"] for k in o if o[k]["threw"]})
             check("sign-in page: the first address is kept", o["keep"]["store"].get(K) == APPLE, o["keep"])
@@ -154,27 +169,27 @@ else:
             g = o["go"]
             check("success page: 3 s pause, then the first address is asked for without a page load",
                   g["waits"][:1] == [3000] and g["asked"] == 1 and g["modes"] == ["no-cors"], g)
-            check("success page: it answers - the page goes on to it, once",
-                  g["replaced"] == APPLE and g["replacedAt"] == 3050 and g["replaces"] == 1, g)
+            check("success page (phone): it answers - this page is loaded once more, the test page is not shown",
+                  g["replaced"] == DONE and g["replacedAt"] == 3050 and g["replaces"] == 1, g)
             check("success page: the kept address is forgotten once used", K not in g["store"], g)
             s = o["stale"]
             check("success page: two tries never answer (stand-in address still held) - no page load is sent there",
                   s["asked"] == 3 and s["aborted"] == 2 and s["replaces"] == 1, s)
             check("success page: ... and it goes on when the third try answers (4 s a try, 1 s between)",
-                  s["replaced"] == APPLE and s["replacedAt"] == 3000 + 2 * 5000 + 50, s)
+                  s["replaced"] == DONE and s["replacedAt"] == 3000 + 2 * 5000 + 50, s)
             f = o["refused"]
             check("success page: a refused try is tried again after 1 s",
-                  f["asked"] == 2 and f["replaced"] == APPLE and f["replacedAt"] == 3050 + 1000 + 50 and f["replaces"] == 1, f)
+                  f["asked"] == 2 and f["replaced"] == DONE and f["replacedAt"] == 3050 + 1000 + 50 and f["replaces"] == 1, f)
             l = o["late"]
             check("success page: an answer that arrives after its try gave up does not send the page on twice",
                   l["asked"] == 2 and l["replaces"] == 1 and l["replacedAt"] == 3000 + 5000 + 50, l)
             n = o["never"]
             check("success page: nothing ever answers - 12 tries, then the page is sent on regardless",
-                  n["asked"] == 12 and n["replaced"] == APPLE and n["replacedAt"] == 3000 + 12 * 5000 and n["replaces"] == 1, n)
+                  n["asked"] == 12 and n["replaced"] == DONE and n["replacedAt"] == 3000 + 12 * 5000 and n["replaces"] == 1, n)
             check("success page: a browser with no fetch goes on at once, as before",
-                  o["nofetch"]["replaced"] == APPLE and o["nofetch"]["replacedAt"] == 3000, o["nofetch"])
+                  o["nofetch"]["replaced"] == DONE and o["nofetch"]["replacedAt"] == 3000, o["nofetch"])
             check("success page: an http address cannot be asked for from an https page - goes on at once",
-                  o["mixed"]["asked"] == 0 and o["mixed"]["replaced"] == APPLE and o["mixed"]["replacedAt"] == 3000, o["mixed"])
+                  o["mixed"]["asked"] == 0 and o["mixed"]["replaced"] == DONES and o["mixed"]["replacedAt"] == 3000, o["mixed"])
             check("success page: an https address from an https page is asked for first",
                   o["secure"]["asked"] == 1 and o["secure"]["replaced"] == "https://example.com/", o["secure"])
             check("success page: nothing kept - nothing asked for, the page stays",
@@ -186,6 +201,19 @@ else:
             check("sessionStorage that throws: nothing followed", o["brokenkeep"]["replaced"] is None
                   and o["brokengo"]["replaced"] is None, (o["brokenkeep"], o["brokengo"]))
             check("no sessionStorage at all: nothing followed", o["nostore"]["replaced"] is None, o["nostore"])
+            # ---- 2026-11-14: no second success page
+            check("computer browser: a site somebody typed is still gone on to once it answers",
+                  o["site"]["replaced"] == SITE and o["site"]["replacedAt"] == 3050 and o["site"]["replaces"] == 1, o["site"])
+            for k, what in (("android", "Android's generate_204"), ("windows", "Windows' connecttest.txt"),
+                            ("pathonly", "a test path on an unlisted host"), ("hostonly", "a test host with another path")):
+                check("phone / laptop sheet: %s is not shown - the success page is loaded once more" % what,
+                      o[k]["replaced"] == DONE and o[k]["replaces"] == 1 and o[k]["asked"] == 1, o[k])
+            check("no test page is ever loaded in the page itself (go, stale, refused, late, never, no fetch, https)",
+                  all("reaper_done=1" in (o[k]["replaced"] or "") for k in ("go", "stale", "refused", "late", "never", "nofetch", "mixed")),
+                  {k: o[k]["replaced"] for k in ("go", "stale", "refused", "late", "never", "nofetch", "mixed")})
+            d = o["doneagain"]
+            check("the page loaded again does nothing more: no pause, nothing asked for, no further load (no loop)",
+                  d["waits"] == [] and d["asked"] == 0 and d["replaced"] is None, d)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

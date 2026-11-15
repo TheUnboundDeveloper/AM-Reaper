@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.8** · 2026-11-14 <!--@stamp-->
+> **Doc status:** current as of **v3.7.9** · 2026-11-14 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,26 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.7.9 — DNS Director works on guest networks again; VPN-bound guest networks keep DNS and IPv6 in the tunnel; AiMesh wired devices stay wired
+
+Everything in v3.7.8 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **DNS Director on a guest network.** Since v3.7.7, a guest network whose DNS Director rule sent it to a resolver
+  on the main network (a Pi-hole, AdGuard Home) had no DNS: guest isolation dropped the redirected queries. Those
+  queries pass again on port 53, as before v3.7.7. The resolver's web page and every other device on the main
+  network stay closed to the guests. A Guest Portal network keeps its own resolver, and a network with its Kill
+  Switch on keeps its DNS in the tunnel.
+- **Guest networks bound to a WireGuard client keep DNS after a drop.** When a tunnel dropped and came back by
+  itself, its DNS servers were not put back, so a network bound to it could not resolve names until the client was
+  restarted. They are now rebuilt with the route. (3006.102.10 models; the 3006.102.8 base has no such recovery path.)
+- **IPv6 on a VPN-bound network goes into the tunnel.** The rule that sends a bound network's IPv6 into its VPN client
+  was never added, so IPv6 left by the WAN. It is added now, for WireGuard and OpenVPN clients alike, and for the main
+  network with a default VPN client.
+- **Devices cabled to an AiMesh node.** When the mesh's wireless client list was missing, devices plugged into a node
+  lost their wired mark and could show as Wi-Fi clients; a Wi-Fi band remembered from earlier no longer sticks to a
+  device known to be wired; the dashboard tiles and the AiMesh map (access point mode) check wired first.
 
 ## v3.7.8 — mDNS across networks; the Guest Portal passcode is back; VPN profiles that reconnect by themselves; VPN server clients reach isolated networks again
 

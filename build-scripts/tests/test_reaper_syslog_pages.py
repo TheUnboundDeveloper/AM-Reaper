@@ -13,7 +13,10 @@ the 25 dicts; `node --check` on each page script; a node run of rp.cmp.
 """
 import os, re, shutil, subprocess, sys, tempfile
 
-SRC = os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router")
+# 2026-11-14: the tree comes from argv[1], REAPER_ROUTER_SRC or REAPER_SRC, like the other suites (it read
+# REAPER_SRC only, so a run against the 3006.102.8 tree silently tested the 3006.102.10 one)
+SRC = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC")
+       or os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router"))
 www = os.path.join(SRC, "www")
 PAGES = ["Reaper_Log.asp", "Reaper_WLog.asp", "Reaper_Leases.asp", "Reaper_IPv6.asp", "Reaper_Routes.asp", "Reaper_PortFwd.asp"]
 if not all(os.path.exists(os.path.join(www, p)) for p in PAGES):
@@ -100,11 +103,18 @@ check("data_arrays.c: UPnP + pinhole descriptions and IPv6 hostnames go through 
 # answers .css with Cache-Control: no-cache plus a build-stamped ETag, so the old 60 s rp.css row is gone (moot)
 _hc = rd(os.path.join(SRC, "httpd", "httpd.c"))
 _css = web.find('{ "**.css", "text/css", no_cache, NULL, do_file, NULL },')
-check("httpd serves reaper/rp.css fresh: **.css is no_cache with no cached row ahead of it, .css revalidates on a build-stamped ETag",
-      _css >= 0 and not re.search(r'\{ "reaper/[^"]*", "text/css", cache_object', web[:_css])
-      and '(!strcasecmp(ext, ".css") || (!strcasecmp(ext, ".js") && etag_header_flag == 1));' in _hc
-      and "if (revalidate)\n\t\textra_header = no_cache;" in _hc
-      and "reaper_append_buildinfo_to_etag(etag_value, sizeof(etag_value));" in _hc)
+# 3006.102.10: every .css is no_cache and revalidates on a build-stamped ETag, so no rp.css row is needed.
+# 3006.102.8 (older base): stylesheets are cached, and Reaper's own reaper/rp.css row (60 s) ahead of **.css is
+# what keeps the kit stylesheet fresh after an upgrade.
+_new = (_css >= 0 and not re.search(r'\{ "reaper/[^"]*", "text/css", cache_object', web[:_css])
+        and '(!strcasecmp(ext, ".css") || (!strcasecmp(ext, ".js") && etag_header_flag == 1));' in _hc
+        and "if (revalidate)\n\t\textra_header = no_cache;" in _hc
+        and "reaper_append_buildinfo_to_etag(etag_value, sizeof(etag_value));" in _hc)
+_rp = web.find('{ "reaper/rp.css", "text/css", cache_object_60, NULL, do_file, NULL },')
+_css8 = web.find('{ "**.css", "text/css", cache_object, NULL, do_file, NULL },')
+_old = 0 <= _rp < _css8
+check("httpd serves reaper/rp.css fresh: on 3006.102.10 **.css is no_cache and revalidates on a build-stamped ETag; "
+      "on 3006.102.8 the reaper/rp.css 60 s row sits ahead of **.css", _new or _old, ("new", _new, "old", _old))
 check("data_arrays.c: a missing IPv6 client list still closes the array", "close the array - returning here left it open" in da)
 check("web-broadcom-am.c: no-SCBSTATS stations keep the column count; one failed interface no longer drops the rest",
       'ret += websWrite(wp, "\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"\\",\\"");' in wb and "if (wl_ioctl(name_vif, WLC_GET_VAR, auth, mac_list_size))\n\t\t\t\tcontinue;" in wb)

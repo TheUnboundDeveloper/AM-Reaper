@@ -1,0 +1,54 @@
+From 2672f5d329ab55450348fe15494113bee1f666e2 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 17:05:25 -0500
+Subject: [PATCH] Guest networks: DNS Director can send a network's DNS to a
+ resolver on the main network (102.8 line)
+
+- Guest isolation (v3.7.7) dropped a guest network's DNS queries that DNS Director had redirected
+  to a resolver on the main network (a Pi-hole, AdGuard Home), so such a network had no DNS. The
+  router made that redirect and the admin chose it; before v3.7.7 the stock rule that accepts
+  every redirected connection let it through. A redirected query on port 53 now goes on to the
+  stock rules again. The resolver's web page and every other main-network device stay closed to
+  the network.
+- Not on a Guest Portal network (its DNS is held to its own resolver before DNS Director runs) and
+  not while the network's kill switch is on (its DNS stays in the tunnel).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_guest.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index c5f6be75da..ce435be689 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -17,6 +17,9 @@
+  *   through it      out by a WAN interface or the bound VPN client only (only the VPN client while the kill switch
+  *                   is on - so the kill switch now also holds for a portal network and for IPv6), established
+  *                   replies, port forwards from the WAN; anything else in or out DROP
++ *   DNS Director    2026-11-14: a DNS query the router itself redirected (DNS Director's rule for the network, e.g.
++ *                   to a Pi-hole on the main network) goes on to the stock rules, which accept every connection the
++ *                   router redirected - as before v3.7.7. Port 53 only; not on a portal, not with the kill switch on
+  *   VPN servers     2026-11-14: a client of the router's OWN WireGuard / OpenVPN server is the admin's remote
+  *                   access, not a guest: it may open connections into a guest network as before v3.7.7 (the stock
+  *                   WGSF / OVPNSF chains still decide by the server's own access setting) and the network may
+@@ -126,6 +129,16 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		}
+ 		fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, X);
+ 		fprintf(f, "%s -A REAPER_GUF -i %s -m set --match-set " REAPER_AIMESH_SET " src -j RETURN\n", T, X);
++		/* 2026-11-14 (field reports, v3.7.7; owner): DNS Director's rule for this network can send its DNS to a resolver
++		 * on the main network (a Pi-hole, AdGuard Home). The router made that redirect (DNAT), the admin chose it, and
++		 * the stock FORWARD rule that accepts every redirected connection let it through before v3.7.7; this chain runs
++		 * first and dropped it, so the network had no DNS. Port 53 only - the resolver's web page and every other
++		 * main-network device stay closed. Not on a portal (its DNS is held to its own resolver before DNS Director
++		 * runs) and not while the kill switch is on (the network's DNS stays in the tunnel). */
++		if (!g->portal && !vpn_only) {
++			fprintf(f, "%s -A REAPER_GUF -i %s -p udp --dport 53 -m conntrack --ctstate DNAT -j RETURN\n", T, X);
++			fprintf(f, "%s -A REAPER_GUF -i %s -p tcp --dport 53 -m conntrack --ctstate DNAT -j RETURN\n", T, X);
++		}
+ 		if (!v6 && g->portal) {	/* 2026-11-13 (owner): DNS is the guest resolver's (REAPER_GUN) - no DoT / DoQ around it */
+ 			fprintf(f, "%s -A REAPER_GUF -i %s -p tcp --dport 853 -j DROP\n", T, X);
+ 			fprintf(f, "%s -A REAPER_GUF -i %s -p udp --dport 853 -j DROP\n", T, X);
+-- 
+2.25.1
+

@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.8** · 2026-11-14 <!--@stamp-->
+> **Doc status:** current as of **v3.7.9** · 2026-11-14 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -40,10 +40,9 @@ internal quality, or deferred by decision.
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[A/B run owed]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
-- **[P2] Guest Network Pro portal: no sign-in page on v3.7.5** **[waiting on the reporter]** ↳ notes: `guest-portal-wg-report-2026-11-10.md`
-- **[P2] Guest Network Pro: a portal network switched off stayed on until a reboot** **[waiting on the reporter]** ↳ notes: `guest-portal-wg-report-2026-11-10.md`
-- **[P2] Guest networks bound to a WireGuard client: routing after WAN events, DNS after recovery, IPv6** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
+- **[P2] Guest networks bound to a WireGuard client: routing after WAN events** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
+- **[P3] Devices: a device wired to an AiMesh node is shown as a Wi-Fi client** **[two causes fixed; router data asked]** ↳ notes: `aimesh-node-wired-client-shown-wifi.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 
 ---
@@ -84,7 +83,7 @@ private review report and the finding ID in it; review reports are never publish
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.8: 2,297,856 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.9: 2,297,856 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
@@ -96,6 +95,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
+- **[P3] Tweaks: the login-page redirect goes to an address the admin types (name, port), not only www.asusrouter.com** **[not started]** ↳ notes: `login-redirect-custom-domain.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[threat model first]** ↳ notes: `encrypted-dns.md`, `security-leftovers-plan-2026-11-10.md`
 
 ---
@@ -108,7 +108,7 @@ private review report and the finding ID in it; review reports are never publish
 
 ## Code quality / deferred (with reason)
 
-- **[P2] Network page: Delete does nothing on a main-network card** ↳ notes: `sdn-mainfh-delete-dead.md`
+- **[P2] Network page: Delete does nothing on a main-network card** **[not found in code; router repro needed]** ↳ notes: `sdn-mainfh-delete-dead.md`
 - **[P2] Research no PIN point: a new pin point, or diverging from a PIN build** **[deferred]** ↳ notes: `pin-strategy.md`
 - **[P2] Add packet loss to the connections tab** **[deferred]** ↳ notes: `conn-packet-loss.md`
 - **[P2] AiMesh: the preferred uplink node is ignored (BQ16, v3.5.0)** **[deferred]** ↳ notes: `aimesh-preferred-uplink.md`

@@ -157,6 +157,8 @@ try:
     check("guest network, through the router (v4): its own bridge, AiMesh, the WAN - nothing else out; established and port forwards in",
           r4[6:] == ["R iptables -A REAPER_GUF -i br56 -o br56 -j RETURN",
                      "R iptables -A REAPER_GUF -i br56 -m set --match-set reaper_aimesh src -j RETURN",
+                     "R iptables -A REAPER_GUF -i br56 -p udp --dport 53 -m conntrack --ctstate DNAT -j RETURN",
+                     "R iptables -A REAPER_GUF -i br56 -p tcp --dport 53 -m conntrack --ctstate DNAT -j RETURN",
                      "R iptables -A REAPER_GUF -i br56 -o eth0 -j RETURN",
                      "R iptables -A REAPER_GUF -i br56 -j DROP",
                      "R iptables -A REAPER_GUF -o br56 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
@@ -254,6 +256,8 @@ try:
           [l for l in r4 if "REAPER_GUF" in l] ==
           ["R iptables -A REAPER_GUF -i br56 -o br56 -j RETURN",
            "R iptables -A REAPER_GUF -i br56 -m set --match-set reaper_aimesh src -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -p udp --dport 53 -m conntrack --ctstate DNAT -j RETURN",
+           "R iptables -A REAPER_GUF -i br56 -p tcp --dport 53 -m conntrack --ctstate DNAT -j RETURN",
            "R iptables -A REAPER_GUF -i br56 -o eth0 -j RETURN",
            "R iptables -A REAPER_GUF -i br56 -o wgs1 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
            "R iptables -A REAPER_GUF -i br56 -o tun21 -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN",
@@ -279,6 +283,25 @@ try:
     p20 = gen(20).strip()
     check("the list rc builds: a plain network gets wgs1, wgs2, tun21 - never tun22 while a portal uses that name; the portal gets none; with no portal, tun22 too",
           p20 == "br56:wgs1,wgs2,tun21, tun22: br58:wgs1,wgs2,tun21, | br56:wgs1,wgs2,tun21,tun22,", p20)
+    # ---- 2026-11-14 (field reports, v3.7.7; owner "Yes"): DNS Director's redirect to a main-network resolver ----
+    # The stock FORWARD rule accepts every connection the router redirected (DNAT), and before v3.7.7 that is how a
+    # guest network's DNS Director rule to a Pi-hole / AdGuard Home on the main LAN worked; this chain ran first and
+    # dropped it. The redirected DNS goes on to the stock rules again - port 53 only.
+    for s_, X_ in ((1, "br56"), (4, "br58")):
+        r4 = rules(gen(s_), 4); r6 = rules(gen(s_), 6)
+        dd = ["R iptables -A REAPER_GUF -i %s -p udp --dport 53 -m conntrack --ctstate DNAT -j RETURN" % X_,
+              "R iptables -A REAPER_GUF -i %s -p tcp --dport 53 -m conntrack --ctstate DNAT -j RETURN" % X_]
+        check("DNS Director (set %d): a DNS query the router redirected goes on to the stock rules, v4 and v6, before the DROP" % s_,
+              all(x in r4 for x in dd) and all(x.replace("R iptables", "R ip6tables") in r6 for x in dd)
+              and max(r4.index(x) for x in dd) < r4.index("R iptables -A REAPER_GUF -i %s -j DROP" % X_), r4)
+    t1x = gen(1)
+    check("...port 53 only, and only a redirected (DNAT) connection: nothing else of the guest's reaches the main network",
+          [l for l in rules(t1x) if "ctstate DNAT" in l and "REAPER_GUF" in l and "--dport 53 " not in l] == []
+          and "-i br56 -o br0" not in t1x and " -j ACCEPT" not in t1x)
+    check("...not on a portal (its DNS is held to its own resolver before DNS Director runs)",
+          not [l for l in rules(gen(2)) + rules(gen(3)) + rules(gen(8)) if "REAPER_GUF" in l and "ctstate DNAT" in l])
+    check("...not while the kill switch is on (the network's DNS stays in the tunnel)",
+          not [l for l in rules(gen(12)) if "REAPER_GUF" in l and "ctstate DNAT" in l])
     t11 = gen(11)
     check("a portal: nothing opens into it from a VPN server either (a list handed to it is ignored)",
           "wgs1" not in t11 and rules(t11) == rules(gen(2)), [l for l in rules(t11) if l not in rules(gen(2))])
@@ -314,7 +337,7 @@ check("VPN servers by interface name (wgs1-2, tun21-22), never for a portal, nev
       and "\t\tif (g[k].portal)\n\t\t\tcontinue;\n\t\tfor (s = 0; s < RG_SRV_MAX; s++) {" in gsrc
       and "if (!strcmp(g[u].ifname, srv[s]) || !strcmp(g[u].brname, srv[s]))" in gsrc
       and "if (!c && g[k].nsrv < RG_SRV_MAX)" in gsrc
-      and gsrc.count("if (!g->portal && !vpn_only)") == 1 and "#define RG_SRV_MAX\t4" in gsrc)
+      and gsrc.count("if (!g->portal && !vpn_only)") == 2 and "#define RG_SRV_MAX\t4" in gsrc)
 check("the script is root's own, published atomically, run under the firewall lock",
       "reaper_secure_dir(RG_DIR, 0700);" in gsrc and "rename(RG_APPLY \".tmp\", RG_APPLY)" in gsrc
       and 'lk = file_lock("firewall");' in gsrc and 'eval("sh", RG_APPLY);' in gsrc)

@@ -14,7 +14,10 @@ table (stock forms accepted, option injection refused).
 """
 import os, re, shutil, subprocess, sys, tempfile
 
-SRC = os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router")
+# 2026-11-14: the tree comes from argv[1], REAPER_ROUTER_SRC or REAPER_SRC, like the other suites (it read
+# REAPER_SRC only, so a run against the 3006.102.8 tree silently tested the 3006.102.10 one)
+SRC = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("REAPER_ROUTER_SRC")
+       or os.environ.get("REAPER_SRC", "/home/reaper/asuswrt-be96u/release/src/router"))
 www = os.path.join(SRC, "www")
 PAGES = ["Reaper_Analysis.asp", "Reaper_Netstat.asp", "Reaper_WOL.asp", "Reaper_SmartConnect.asp"]
 if not all(os.path.exists(os.path.join(www, p)) for p in PAGES):
@@ -76,7 +79,9 @@ check("kit: rp.pingPresets (one preset loader) and rp.cmp", "rp.pingPresets = fu
 # C: the runner
 web = rd(os.path.join(SRC, "httpd", "web.c"))
 i0 = web.index("#define RNET_DIR"); i1 = web.index("reaper v2.6.10: Reaper-wide settings export", i0); R = web[i0:i1]
-check("reaper_net.cgi registered with do_auth and gated by reaper_gate", '{ "reaper_net.cgi*", "application/json", no_cache, do_html_post_and_get, do_reaper_net_cgi, do_auth },' in web
+# the no-cache handler is `no_cache` on 3006.102.10 and `no_cache_IE7` on 3006.102.8 (renamed upstream)
+check("reaper_net.cgi registered with do_auth and gated by reaper_gate", any('{ "reaper_net.cgi*", "application/json", %s, do_html_post_and_get, do_reaper_net_cgi, do_auth },' % nc in web
+                                                                          for nc in ("no_cache", "no_cache_IE7"))
       and "why = reaper_gate();" in R)
 check("runner: execvp, no shell (no system / popen / sh -c in the runner)", "execvp(j->argv[0], j->argv);" in R and not re.search(r"\b(system|popen|vpopen)\s*\(", R) and "sh -c" not in R)
 check("runner: one job (lock), runtime cap kills the tool, output capped, state always ends in DONE",
@@ -91,7 +96,9 @@ check("apply.cgi SystemCmd: NULL guard (B2), shape check, atoi(NULL) fix (B1), W
       "/* reaper 2026-10-23 (B2)" in web and "if (!reaper_syscmd_shape_ok(current_url, system_cmd, wolmac, sizeof(wolmac))) {" in web
       # B1: ASUS 40585 guards atoi() with `sel`, which is 0 whenever u is NULL or empty (merge stop 63: covers our `u ?`)
       and "if (!u || *u == '\\0' || !nvram_match(\"wans_mode\", \"lb\") ||" in web
-      and "wan = sel ? get_wan_ifname(atoi(u)) : NULL;" in web and "strlcpy(dstmac, wolmac, sizeof(dstmac));" in web)
+      # 3006.102.8 has no `sel`: the Reaper guard `u ?` stands there
+      and ("wan = sel ? get_wan_ifname(atoi(u)) : NULL;" in web or "wan = u ? get_wan_ifname(atoi(u)) : NULL;" in web)
+      and "strlcpy(dstmac, wolmac, sizeof(dstmac));" in web)
 check("netool.cgi: targets validated, result reads limited, IPv4-only hosts, no interface override, counts/timeouts capped",
       "else if (rt != REQ_NETSTAT_MODE && rt != REQ_NETSTAT_NAT_MODE && !rnet_host_ok(target, 0)) {" in web and 'interface = "";' in web
       and web.count("if (req_t.response > 10) req_t.response = 10;") == 2 and web.count("if (req_t.hops > 30) req_t.hops = 30;") == 2)

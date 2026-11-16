@@ -1,0 +1,347 @@
+From 7f23f10c690982a525e150687a9b71e64619c2a6 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sat, 14 Nov 2026 12:29:36 -0500
+Subject: [PATCH] update check: a test build (alpha) looks for and offers no
+ update
+
+A build stamped _ALPHA is a test build of the unified tree, published from
+the lean branch Dev-Uni and installed by hand. It must never be offered
+another image: the stable line is older, and a Dev beta would take the
+router off the tree it is testing.
+
+- reaper_webs_update.sh ends before the manifest is fetched when EXTENDNO
+  carries _ALPHA, and reports webs_state_channel=alpha. The scheduled check
+  and an AiMesh-triggered one end there too.
+- Firmware page: says why in place of "up to date" (RFWU_62, 25 packs), an
+  ALPHA badge beside the installed version, and the node comparison knows
+  an alpha build from a beta of the same number.
+
+No effect on a stable or beta build.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../router/rom/webs_scripts/reaper_webs_update.sh  | 14 ++++++++++++++
+ release/src/router/www/BR.dict                     |  1 +
+ release/src/router/www/CN.dict                     |  1 +
+ release/src/router/www/CZ.dict                     |  1 +
+ release/src/router/www/DA.dict                     |  1 +
+ release/src/router/www/DE.dict                     |  1 +
+ release/src/router/www/EN.dict                     |  1 +
+ release/src/router/www/ES.dict                     |  1 +
+ release/src/router/www/FI.dict                     |  1 +
+ release/src/router/www/FR.dict                     |  1 +
+ release/src/router/www/HU.dict                     |  1 +
+ release/src/router/www/IT.dict                     |  1 +
+ release/src/router/www/JP.dict                     |  1 +
+ release/src/router/www/KR.dict                     |  1 +
+ release/src/router/www/MS.dict                     |  1 +
+ release/src/router/www/NL.dict                     |  1 +
+ release/src/router/www/NO.dict                     |  1 +
+ release/src/router/www/PL.dict                     |  1 +
+ release/src/router/www/RO.dict                     |  1 +
+ release/src/router/www/RU.dict                     |  1 +
+ release/src/router/www/Reaper_Firmware.asp         | 11 +++++++++--
+ release/src/router/www/SL.dict                     |  1 +
+ release/src/router/www/SV.dict                     |  1 +
+ release/src/router/www/TH.dict                     |  1 +
+ release/src/router/www/TR.dict                     |  1 +
+ release/src/router/www/TW.dict                     |  1 +
+ release/src/router/www/UK.dict                     |  1 +
+ 27 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/release/src/router/rom/webs_scripts/reaper_webs_update.sh b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+index 51cb70543e..6d3aa7ccf4 100644
+--- a/release/src/router/rom/webs_scripts/reaper_webs_update.sh
++++ b/release/src/router/rom/webs_scripts/reaper_webs_update.sh
+@@ -68,6 +68,20 @@ esac
+ 
+ echo "---- model=$model variant=$variant running=$cur_ver ----" >> "$LOG"
+ 
++# 2026-11-14 (owner): a TEST build - EXTENDNO carries _ALPHA, the unified-tree builds published from the Dev-Uni
++# branch - is installed by hand and is never offered another image: not the stable line, and not a Dev beta, which
++# would take the box off the tree it is testing. Nothing is fetched. The Firmware page says why
++# (webs_state_channel=alpha); the scheduled check and an AiMesh-triggered one end here too.
++case "$(nvram get extendno)" in
++*_ALPHA*)
++	echo "---- test build (alpha): no update is looked for or offered ----" >> "$LOG"
++	logger -t reaper-fw "update check: this is a test build (alpha) - updates are installed by hand, nothing is offered"
++	nvram set webs_state_channel=alpha
++	nvram set webs_state_flag=0
++	nvram set webs_state_update=1
++	exit 0 ;;
++esac
++
+ /usr/sbin/wget $wget_options "$MANIFEST_URL" -O "$TMP"
+ if [ "$?" != "0" ] || [ ! -s "$TMP" ]; then
+ 	echo "---- manifest fetch failed ----" >> "$LOG"
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index f9d8788201..b334642695 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Falhou
+ RGPD_1=Portal do visitante: o Padrão envia todas as consultas dos convidados ao Cloudflare for Families (bloqueia malware e conteúdo adulto). Um servidor definido aqui é usado no lugar, por DNS criptografado quando ele oferece. Com um cliente VPN, o DNS da VPN é usado.
+ RTWK_47=mDNS entre redes
+ RTWK_48=Dispositivos na rede principal e em cada rede com “Acessar Intranet” ativado podem encontrar uns aos outros (transmissão, impressoras, AirPlay). Redes com “Definir Ponto de Acesso isolado” ativado, redes sem acesso à intranet e Portais do visitante ficam de fora.
++RFWU_62=Esta é uma versão de teste (alfa). Ela não procura nem oferece atualizações. Instale a próxima versão de teste manualmente a partir da página Releases do projeto.
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 49d49a682a..c20f1a953f 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=失败
+ RGPD_1=访客门户：默认将所有访客查询发送到 Cloudflare for Families（拦截恶意软件和成人内容）。此处设置的服务器将取而代之，并在其支持时使用加密 DNS。使用 VPN 客户端时，使用 VPN 的 DNS。
+ RTWK_47=跨网络 mDNS
+ RTWK_48=主网络和每个开启「访问内部网络」的网络上的设备可以互相发现（投屏、打印机、AirPlay）。开启「禁止无线用户互通」的网络、无法访问内部网络的网络以及访客门户不包括在内。
++RFWU_62=这是测试版本（alpha）。它不会检查或提供更新。请从项目的 Releases 页面手动安装下一个测试版本。
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index 31e3798e35..846326cde2 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Selhalo
+ RGPD_1=Hostovaný portál: Výchozí posílá všechny dotazy hostů do Cloudflare for Families (blokuje malware a obsah pro dospělé). Server nastavený zde se použije místo něj, přes šifrované DNS, pokud ho nabízí. S klientem VPN se použije DNS VPN.
+ RTWK_47=mDNS mezi sítěmi
+ RTWK_48=Zařízení v hlavní síti a v každé síti se zapnutým „Přístup na Intranet“ se mohou navzájem najít (přenos obrazu, tiskárny, AirPlay). Sítě se zapnutým „Nastavit AP samostatně“, sítě bez přístupu k intranetu a hostované portály jsou vynechány.
++RFWU_62=Toto je testovací sestavení (alfa). Nehledá ani nenabízí aktualizace. Další testovací sestavení nainstalujte ručně ze stránky Releases projektu.
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index eeffc284ec..93a38d01d1 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Mislykkedes
+ RGPD_1=Gæsteportal: Standard sender alle gæsters opslag til Cloudflare for Families (blokerer malware og voksenindhold). En server angivet her bruges i stedet, via krypteret DNS når den tilbyder det. Med en VPN-klient bruges VPN-forbindelsens DNS.
+ RTWK_47=mDNS på tværs af netværk
+ RTWK_48=Enheder på hovednetværket og på alle netværk med »Få adgang til Intranet« slået til kan finde hinanden (casting, printere, AirPlay). Netværk med »Skal adgangspunktet stilles isoleret« slået til, netværk uden intranetadgang og gæsteportaler er udeladt.
++RFWU_62=Dette er en testversion (alfa). Den søger ikke efter og tilbyder ikke opdateringer. Installer den næste testversion manuelt fra projektets Releases-side.
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index a59bbd88b8..b044eef696 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Fehlgeschlagen
+ RGPD_1=Gast-Portal: Standard schickt jede Anfrage der Gäste an Cloudflare for Families (blockiert Schadsoftware und Inhalte für Erwachsene). Ein hier eingetragener Server wird stattdessen verwendet, über verschlüsseltes DNS, wenn er es anbietet. Mit einem VPN-Client wird das DNS des VPN verwendet.
+ RTWK_47=mDNS über Netzwerke hinweg
+ RTWK_48=Geräte im Hauptnetzwerk und in jedem Netzwerk mit aktiviertem „Auf Intranet zugreifen“ können sich gegenseitig finden (Casting, Drucker, AirPlay). Netzwerke mit aktiviertem „AP isoliert festlegen“, Netzwerke ohne Intranetzugriff und Gast-Portale bleiben außen vor.
++RFWU_62=Dies ist ein Test-Build (Alpha). Er sucht nicht nach Updates und bietet keine an. Installieren Sie den nächsten Test-Build von Hand von der Releases-Seite des Projekts.
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 1482e3e398..65ff7fcfba 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Failed
+ RGPD_1=Guest Portal: Default sends every guest lookup to Cloudflare for Families (blocks malware and adult content). A server set here is used instead, over encrypted DNS when it offers it. With a VPN client, the VPN DNS is used.
+ RTWK_47=mDNS across networks
+ RTWK_48=Devices on the main network and on every network with Access Intranet on can find each other (casting, printers, AirPlay). Networks with Set AP Isolated on, networks without intranet access and Guest Portals are left out.
++RFWU_62=This is a test build (alpha). It does not look for or offer updates. Install the next test build by hand from the Releases page of the project.
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index 4a6e7c7267..7c053379b1 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Error
+ RGPD_1=Portal de invitados: Predeterminado envía todas las consultas de los invitados a Cloudflare for Families (bloquea malware y contenido para adultos). Un servidor indicado aquí se usa en su lugar, con DNS cifrado cuando lo ofrece. Con un cliente VPN se usa el DNS de la VPN.
+ RTWK_47=mDNS entre redes
+ RTWK_48=Los dispositivos de la red principal y de cada red con «Acceso a Intranet» activado pueden encontrarse entre sí (transmisión, impresoras, AirPlay). Las redes con «Definir AP aislado» activado, las redes sin acceso a la intranet y los portales de invitados quedan fuera.
++RFWU_62=Esta es una compilación de prueba (alfa). No busca ni ofrece actualizaciones. Instale la siguiente compilación de prueba a mano desde la página Releases del proyecto.
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index b5669c702d..b8ecf97466 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Epäonnistui
+ RGPD_1=Vierailijaportaali: Oletus lähettää kaikki vieraiden kyselyt Cloudflare for Familiesiin (estää haittaohjelmat ja aikuissisällön). Tähän asetettua palvelinta käytetään sen sijaan, salatulla DNS:llä kun se tukee sitä. VPN-asiakkaan kanssa käytetään VPN:n DNS:ää.
+ RTWK_47=mDNS verkkojen välillä
+ RTWK_48=Pääverkon ja jokaisen verkon, jossa ”Käytä intranetiä” on päällä, laitteet löytävät toisensa (suoratoisto, tulostimet, AirPlay). Verkot, joissa ”Asetetaanko tukiasema eristetyksi” on päällä, verkot ilman intranet-yhteyttä ja vierailijaportaalit jätetään pois.
++RFWU_62=Tämä on testiversio (alfa). Se ei etsi eikä tarjoa päivityksiä. Asenna seuraava testiversio käsin projektin Releases-sivulta.
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index d662f8191e..68437e0abf 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Échec
+ RGPD_1=Portail des invités : Par défaut, toutes les requêtes des invités vont à Cloudflare for Families (bloque les logiciels malveillants et le contenu pour adultes). Un serveur indiqué ici est utilisé à la place, en DNS chiffré s'il le propose. Avec un client VPN, le DNS du VPN est utilisé.
+ RTWK_47=mDNS entre les réseaux
+ RTWK_48=Les appareils du réseau principal et de chaque réseau avec « Accès au réseau local » activé peuvent se trouver mutuellement (diffusion, imprimantes, AirPlay). Les réseaux avec « Régler le point d’accès sur Isolé » activé, les réseaux sans accès au réseau local et les portails des invités sont exclus.
++RFWU_62=Ceci est une version de test (alpha). Elle ne recherche ni ne propose de mises à jour. Installez la prochaine version de test à la main depuis la page Releases du projet.
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index 70c35100bd..f997449379 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Sikertelen
+ RGPD_1=Vendégportál: az Alapértelmezett minden vendéglekérdezést a Cloudflare for Families felé küld (blokkolja a kártevőket és a felnőtt tartalmat). Az itt megadott kiszolgáló kerül használatra helyette, titkosított DNS-sel, ha támogatja. VPN-ügyféllel a VPN DNS-e érvényes.
+ RTWK_47=mDNS a hálózatok között
+ RTWK_48=A fő hálózat és minden olyan hálózat eszközei, amelyen az „Intranet hozzáférése” be van kapcsolva, megtalálják egymást (kivetítés, nyomtatók, AirPlay). Kimaradnak azok a hálózatok, amelyeken a „Hozzáférési pont elszigetelt beállítása” be van kapcsolva, az intranet-hozzáférés nélküli hálózatok és a vendégportálok.
++RFWU_62=Ez egy tesztverzió (alfa). Nem keres és nem kínál frissítéseket. A következő tesztverziót kézzel telepítse a projekt Releases oldaláról.
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index 2f625b60de..31d29736a7 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Non riuscito
+ RGPD_1=Portale guest: Predefinito invia ogni ricerca degli ospiti a Cloudflare for Families (blocca malware e contenuti per adulti). Un server indicato qui viene usato al suo posto, con DNS cifrato quando lo offre. Con un client VPN si usa il DNS della VPN.
+ RTWK_47=mDNS tra le reti
+ RTWK_48=I dispositivi della rete principale e di ogni rete con «Accesso Intranet» attivo possono trovarsi a vicenda (casting, stampanti, AirPlay). Le reti con «Imposta Isolamento AP» attivo, le reti senza accesso alla intranet e i portali guest sono esclusi.
++RFWU_62=Questa è una versione di prova (alfa). Non cerca e non propone aggiornamenti. Installare a mano la prossima versione di prova dalla pagina Releases del progetto.
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 437ebbb6c7..da43693841 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=失敗
+ RGPD_1=ゲスト ポータル：既定ではゲストのすべての問い合わせを Cloudflare for Families に送ります（マルウェアと成人向けコンテンツをブロック）。ここで設定したサーバーが代わりに使われ、対応していれば暗号化 DNS を使います。VPN クライアント使用時は VPN の DNS を使います。
+ RTWK_47=ネットワーク間の mDNS
+ RTWK_48=メインネットワークと「イントラネットのアクセス」がオンの各ネットワークのデバイスが互いを検出できます（キャスト、プリンター、AirPlay）。「AP を隔離しますか」がオンのネットワーク、イントラネットにアクセスできないネットワーク、ゲスト ポータルは対象外です。
++RFWU_62=これはテストビルド（アルファ）です。更新の確認や提供は行いません。次のテストビルドは、プロジェクトの Releases ページから手動でインストールしてください。
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 471535ba63..ee8bc9c4a5 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=실패
+ RGPD_1=게스트 포털: 기본값은 모든 게스트 조회를 Cloudflare for Families로 보냅니다(악성 코드와 성인 콘텐츠 차단). 여기서 지정한 서버가 대신 사용되며, 지원하면 암호화된 DNS를 사용합니다. VPN 클라이언트를 사용하면 VPN의 DNS가 사용됩니다.
+ RTWK_47=네트워크 간 mDNS
+ RTWK_48=메인 네트워크와 ‘인트라넷 엑세스’가 켜진 모든 네트워크의 기기가 서로를 찾을 수 있습니다(캐스팅, 프린터, AirPlay). ‘AP 고립 설정’이 켜진 네트워크, 인트라넷 접근이 없는 네트워크, 게스트 포털은 제외됩니다.
++RFWU_62=이것은 테스트 빌드(알파)입니다. 업데이트를 확인하거나 제공하지 않습니다. 다음 테스트 빌드는 프로젝트의 Releases 페이지에서 수동으로 설치하십시오.
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 94555f2cc9..ab054117b9 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Gagal
+ RGPD_1=Portal Tetamu: Lalai menghantar setiap carian tetamu ke Cloudflare for Families (menyekat perisian hasad dan kandungan dewasa). Pelayan yang ditetapkan di sini digunakan sebaliknya, melalui DNS disulitkan jika ia menyokongnya. Dengan klien VPN, DNS VPN digunakan.
+ RTWK_47=mDNS merentas rangkaian
+ RTWK_48=Peranti pada rangkaian utama dan pada setiap rangkaian dengan “Akses Intranet” dihidupkan boleh mencari satu sama lain (penstriman, pencetak, AirPlay). Rangkaian dengan “Setkan Pengasingan AP” dihidupkan, rangkaian tanpa akses intranet dan Portal Tetamu dikecualikan.
++RFWU_62=Ini ialah binaan ujian (alfa). Ia tidak mencari atau menawarkan kemas kini. Pasang binaan ujian seterusnya secara manual dari halaman Releases projek.
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index a0d69019ec..9eaacd79b7 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Mislukt
+ RGPD_1=Gastportaal: Standaard stuurt elke opvraging van gasten naar Cloudflare for Families (blokkeert malware en inhoud voor volwassenen). Een hier ingestelde server wordt in plaats daarvan gebruikt, via versleutelde DNS als die dat biedt. Met een VPN-client wordt de DNS van de VPN gebruikt.
+ RTWK_47=mDNS tussen netwerken
+ RTWK_48=Apparaten op het hoofdnetwerk en op elk netwerk met „Toegang tot intranet” aan kunnen elkaar vinden (casten, printers, AirPlay). Netwerken met „Stel AP geïsoleerd in” aan, netwerken zonder intranettoegang en gastportalen blijven buiten beschouwing.
++RFWU_62=Dit is een testbuild (alfa). Deze zoekt niet naar updates en biedt er geen aan. Installeer de volgende testbuild handmatig vanaf de Releases-pagina van het project.
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index 8be45be664..ec46a83fc9 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Mislyktes
+ RGPD_1=Gjesteportal: Standard sender alle gjesters oppslag til Cloudflare for Families (blokkerer skadevare og voksent innhold). En server angitt her brukes i stedet, over kryptert DNS når den tilbyr det. Med en VPN-klient brukes VPN-ens DNS.
+ RTWK_47=mDNS på tvers av nettverk
+ RTWK_48=Enheter på hovednettverket og på alle nettverk med «Tilgang til Intranett» slått på kan finne hverandre (casting, skrivere, AirPlay). Nettverk med «Still inn tilgangspunkt isolert» slått på, nettverk uten intranettilgang og gjesteportaler holdes utenfor.
++RFWU_62=Dette er en testversjon (alfa). Den søker ikke etter og tilbyr ikke oppdateringer. Installer neste testversjon manuelt fra prosjektets Releases-side.
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index fcf3076be4..0e99741211 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Niepowodzenie
+ RGPD_1=Portal dla gości: Domyślne wysyła każde zapytanie gości do Cloudflare for Families (blokuje złośliwe oprogramowanie i treści dla dorosłych). Ustawiony tu serwer jest używany zamiast niego, przez szyfrowany DNS, gdy go oferuje. Z klientem VPN używany jest DNS sieci VPN.
+ RTWK_47=mDNS między sieciami
+ RTWK_48=Urządzenia w sieci głównej i w każdej sieci z włączonym „Dostęp do Intranetu” mogą się wzajemnie odnajdywać (przesyłanie obrazu, drukarki, AirPlay). Sieci z włączoną opcją „Izolacja AP”, sieci bez dostępu do intranetu oraz portale dla gości są pomijane.
++RFWU_62=To jest wersja testowa (alfa). Nie wyszukuje ani nie proponuje aktualizacji. Następną wersję testową zainstaluj ręcznie ze strony Releases projektu.
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 7a0c67d673..55e34e3df2 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Eșuat
+ RGPD_1=Portal vizitator: Implicit trimite fiecare interogare a vizitatorilor la Cloudflare for Families (blochează programele malware și conținutul pentru adulți). Un server setat aici este folosit în schimb, prin DNS criptat când îl oferă. Cu un client VPN se folosește DNS-ul VPN.
+ RTWK_47=mDNS între rețele
+ RTWK_48=Dispozitivele din rețeaua principală și din fiecare rețea cu „Accesarea reţelei Intranet” activată se pot găsi reciproc (proiectare, imprimante, AirPlay). Rețelele cu „Setare punct acces izolat” activată, rețelele fără acces la intranet și portalurile pentru vizitatori sunt excluse.
++RFWU_62=Aceasta este o versiune de test (alfa). Nu caută și nu oferă actualizări. Instalați manual următoarea versiune de test din pagina Releases a proiectului.
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 157cbc4070..530373d844 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Ошибка
+ RGPD_1=Гостевой портал: по умолчанию все запросы гостей идут в Cloudflare for Families (блокирует вредоносные программы и контент для взрослых). Указанный здесь сервер используется вместо него, через зашифрованный DNS, если он его поддерживает. С клиентом VPN используется DNS VPN.
+ RTWK_47=mDNS между сетями
+ RTWK_48=Устройства основной сети и каждой сети с включённым «Доступ к Интранет» могут находить друг друга (трансляция, принтеры, AirPlay). Сети с включённым «Установить изолированную точку доступа», сети без доступа к интранету и гостевые порталы не участвуют.
++RFWU_62=Это тестовая сборка (альфа). Она не ищет и не предлагает обновления. Следующую тестовую сборку установите вручную со страницы Releases проекта.
+diff --git a/release/src/router/www/Reaper_Firmware.asp b/release/src/router/www/Reaper_Firmware.asp
+index e43b71f729..07e3fde836 100644
+--- a/release/src/router/www/Reaper_Firmware.asp
++++ b/release/src/router/www/Reaper_Firmware.asp
+@@ -210,6 +210,9 @@ var BETA_EN = <% nvram_get_js("reaper_fwbeta"); %>;
+ /* the noMCP build stamps "_noMCP" into EXTENDNO (same signal the backend
+    scripts read from the filesystem) - no extra probe needed */
+ var IS_MCP = EXTENDNO.indexOf('_noMCP') < 0;
++/* 2026-11-14: a test build (_ALPHA, published from the Dev-Uni branch) never looks for or offers another image -
++   reaper_webs_update.sh ends before it fetches anything and reports webs_state_channel=alpha */
++var IS_ALPHA = /_ALPHA(_|$)/.test(EXTENDNO);
+ var busy = 0;
+ 
+ /* ---- mesh nodes -------------------------------------------------------- *
+@@ -337,7 +340,7 @@ function prettyVer(s){
+ function verKey(s){
+   var m = String(s||'').match(/Reaper_v([0-9][0-9a-z.\-]*)/);
+   if(!m) return '';
+-  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : '');
++  return m[1] + (/_BETA(_|$)/.test(String(s)) ? '-beta' : (/_ALPHA(_|$)/.test(String(s)) ? '-alpha' : ''));
+ }
+ 
+ /* ONE-SHOT completion guard. A failed XMLHttpRequest fires readystatechange
+@@ -432,7 +435,7 @@ function checkDone(r){
+     return;
+   }
+   if(FW.flag === '1'){ showAvail(); }
+-  else setStat('chkStat', esc(`<#RFWU_5#>`), 'ok');
++  else setStat('chkStat', esc((IS_ALPHA || FW.chan === 'alpha') ? `<#RFWU_62#>` : `<#RFWU_5#>`), 'ok');
+ }
+ 
+ /* v2.7.3: explicit override for a signature-refused manifest. Deliberately
+@@ -866,6 +869,10 @@ function boot(){
+   showLastRefusal();
+   $id('rvVariant').innerHTML = IS_MCP ? `<#Reaper_c_ai_advisor#> <span class="badge">MCP</span>` : `<#RFWU_48#> <span class="badge">noMCP</span>`;
+   $id('rvVer').textContent = prettyVer(EXTENDNO);
++  if(IS_ALPHA){
++    $id('rvVer').innerHTML = esc(prettyVer(EXTENDNO)) + ' <span class="badge">ALPHA</span>';
++    setStat('chkStat', esc(`<#RFWU_62#>`), 'ok');
++  }
+   $id('rvBase').textContent = FIRMVER + '.' + BUILDNO;
+   loadNodes();
+   $id('schedChk').checked = (CHK_EN === '1');
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index e1f66e785d..43530f181d 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Ni uspelo
+ RGPD_1=Gostujoč portal: Privzeto pošlje vse poizvedbe gostov v Cloudflare for Families (blokira zlonamerno programsko opremo in vsebino za odrasle). Tu nastavljen strežnik se uporabi namesto njega, prek šifriranega DNS, če ga ponuja. Z odjemalcem VPN se uporablja DNS omrežja VPN.
+ RTWK_47=mDNS med omrežji
+ RTWK_48=Naprave v glavnem omrežju in v vsakem omrežju z vklopljenim »Dostop do intraneta« lahko najdejo druga drugo (predvajanje, tiskalniki, AirPlay). Omrežja z vklopljenim »Nastavi ločeno dostopno točko«, omrežja brez dostopa do intraneta in gostujoči portali so izpuščeni.
++RFWU_62=To je preizkusna različica (alfa). Ne išče in ne ponuja posodobitev. Naslednjo preizkusno različico namestite ročno s strani Releases projekta.
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 9455146746..b6a4309361 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Misslyckades
+ RGPD_1=Gästportal: Standard skickar alla gästers uppslag till Cloudflare for Families (blockerar skadlig kod och vuxeninnehåll). En server som anges här används i stället, via krypterad DNS när den erbjuder det. Med en VPN-klient används VPN:ens DNS.
+ RTWK_47=mDNS mellan nätverk
+ RTWK_48=Enheter i huvudnätverket och i varje nätverk med ”Koppla upp dig på Intranet” påslaget kan hitta varandra (casting, skrivare, AirPlay). Nätverk med ”Ställa in AP Isolated” påslaget, nätverk utan intranätåtkomst och gästportaler lämnas utanför.
++RFWU_62=Detta är en testversion (alfa). Den söker inte efter och erbjuder inte uppdateringar. Installera nästa testversion för hand från projektets Releases-sida.
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index fc5836f902..5c1a2c134f 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=ล้มเหลว
+ RGPD_1=พอร์ทัลสำหรับผู้มาเยือน: ค่าเริ่มต้นส่งการค้นหาของผู้มาเยือนทั้งหมดไปที่ Cloudflare for Families (บล็อกมัลแวร์และเนื้อหาสำหรับผู้ใหญ่) เซิร์ฟเวอร์ที่ตั้งไว้ที่นี่จะถูกใช้แทน ผ่าน DNS แบบเข้ารหัสเมื่อรองรับ เมื่อใช้ไคลเอ็นต์ VPN จะใช้ DNS ของ VPN
+ RTWK_47=mDNS ข้ามเครือข่าย
+ RTWK_48=อุปกรณ์ในเครือข่ายหลักและในทุกเครือข่ายที่เปิด “เข้าถึงอินทราเน็ต” สามารถค้นหากันได้ (การแคสต์ เครื่องพิมพ์ AirPlay) เครือข่ายที่เปิด “ตั้งค่า AP ที่แยกกัน” เครือข่ายที่ไม่มีการเข้าถึงอินทราเน็ต และพอร์ทัลสำหรับผู้มาเยือนจะไม่รวมอยู่ด้วย
++RFWU_62=นี่คือรุ่นทดสอบ (อัลฟา) ซึ่งจะไม่ตรวจหาหรือเสนอการอัปเดต โปรดติดตั้งรุ่นทดสอบถัดไปด้วยตนเองจากหน้า Releases ของโครงการ
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index e2fc48f717..eab7fa6b0d 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Başarısız
+ RGPD_1=Konuk Portalı: Varsayılan, tüm konuk sorgularını Cloudflare for Families hizmetine gönderir (kötü amaçlı yazılımları ve yetişkin içeriğini engeller). Burada ayarlanan sunucu bunun yerine kullanılır, destekliyorsa şifreli DNS ile. VPN istemcisiyle VPN DNS sunucusu kullanılır.
+ RTWK_47=Ağlar arası mDNS
+ RTWK_48=Ana ağdaki ve “İntranet Erişimi” açık olan her ağdaki cihazlar birbirini bulabilir (yayın, yazıcılar, AirPlay). “Yalıtılmış AP ayarlansın mı” açık olan ağlar, intranet erişimi olmayan ağlar ve Konuk Portalları dışarıda bırakılır.
++RFWU_62=Bu bir test sürümüdür (alfa). Güncelleme aramaz ve sunmaz. Sonraki test sürümünü projenin Releases sayfasından elle yükleyin.
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index f68f1cfe4a..1b9dd82609 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=失敗
+ RGPD_1=訪客入口網站：預設會將所有訪客查詢送往 Cloudflare for Families（封鎖惡意軟體與成人內容）。此處設定的伺服器會取而代之，並在其支援時使用加密 DNS。使用 VPN 用戶端時，使用 VPN 的 DNS。
+ RTWK_47=跨網路 mDNS
+ RTWK_48=主網路以及每個開啟「存取區域網路」的網路上的裝置可以互相找到（投放、印表機、AirPlay）。開啟「禁止無線用戶互通」的網路、無法存取區域網路的網路以及訪客入口網站不包括在內。
++RFWU_62=這是測試版本（alpha）。它不會檢查或提供更新。請從專案的 Releases 頁面手動安裝下一個測試版本。
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index 5172002ea9..e943944ea3 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -9212,3 +9212,4 @@ RBSY_3=Помилка
+ RGPD_1=Гостьовий портал: за замовчуванням усі запити гостей надсилаються до Cloudflare for Families (блокує шкідливі програми та вміст для дорослих). Вказаний тут сервер використовується замість нього, через зашифрований DNS, якщо він його підтримує. З клієнтом VPN використовується DNS VPN.
+ RTWK_47=mDNS між мережами
+ RTWK_48=Пристрої основної мережі та кожної мережі з увімкненим «Доступ до Інтрамережі» можуть знаходити одне одного (трансляція, принтери, AirPlay). Мережі з увімкненим «Встановити ізольовану ТД», мережі без доступу до інтрамережі та гостьові портали не беруть участі.
++RFWU_62=Це тестова збірка (альфа). Вона не шукає і не пропонує оновлення. Наступну тестову збірку встановіть вручну зі сторінки Releases проєкту.
+-- 
+2.25.1
+

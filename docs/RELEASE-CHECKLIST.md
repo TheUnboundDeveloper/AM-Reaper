@@ -1,6 +1,6 @@
 # Release Checklist — local rung → published firmware
 
-> **Doc status:** current as of **v3.6.5** · 2026-11-02 <!--@stamp-->
+> **Doc status:** current as of **v3.7.1** · 2026-11-04 <!--@stamp-->
 
 Work top to bottom. Every box is something that has broken a release at least
 once when skipped.
@@ -152,9 +152,8 @@ Choose one:
 
 **Actions → Build firmware from source → Run workflow**
 
-- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 8 <!--@fleetjobs--> jobs,
-      ~1.5 h each — the four models of this branch's line; the other four build from the
-      other line's branch, `Dev` or `Dev-102.8`)
+- [ ] `model` = the model, or `all` for the fleet (`all` × `both` = 16 <!--@fleetjobs--> jobs,
+      ~1.5 h each — all eight models build from this branch)
 - [ ] `variant` = `both`
 - [ ] `version` = **blank** — blank uses the pin. Fill it only to override
       deliberately; the pin is where the version lives.

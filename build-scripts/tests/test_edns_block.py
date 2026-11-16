@@ -566,6 +566,7 @@ static void gk_json_esc(FILE *s, const char *v)
 #define RLOGF_FILE "logf"
 #define RLOGF_BYTES 4096
 #define RDW_KEYS "dwkeys"
+#define RW_CFKEYS "cfkeys"	/* 2026-11-15: the custom IP feeds' API keys */
 #define RDW_SRC "dwsrc"
 #define RDW_SRC_MAX 16384
 #define SH_JFFS "wg"
@@ -590,6 +591,7 @@ static int rlogf_ok(const char *v) { (void)v; return 0; }
 static int src_keys_ok(const char *v) { (void)v; return 1; }
 static int src_keys_save(const char *a, const char *b, const char *c, const char *v) { (void)a; (void)b; (void)c; (void)v; return 0; }
 static int sh_keys_save(const char *v) { (void)v; return 0; }
+static int rw_cfkeys_refile(const char *o, const char *v) { (void)o; (void)v; return 0; }
 static int sh_adv_ok(const char *v, size_t n) { (void)v; (void)n; return 1; }
 static int rdw_chk_src(const char *l) { (void)l; return 0; }
 static int sh_lines(const char *v, char *out, size_t cap, int (*chk)(const char *)) { (void)chk; snprintf(out, cap, "%s", v); return 0; }

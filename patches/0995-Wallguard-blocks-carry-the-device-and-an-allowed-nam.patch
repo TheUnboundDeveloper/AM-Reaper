@@ -1,0 +1,242 @@
+From e5537fb520ea5e6e3d4b80edcffc2dff5551cff0 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 21:30:12 -0500
+Subject: [PATCH] Wallguard: blocks carry the device, and an allowed name lifts
+ a CNAME block
+
+- A blocked lookup was filed with the device's MAC address only when some device had a profile of
+  its own, so on a router without one every record said "unknown device" and Unbreak, which picks
+  a device by name, found nothing. The MAC is now looked up for every recorded block (only for
+  blocks, not for every lookup).
+- A name cloaked behind a CNAME alias was blocked when any name in the alias chain was listed,
+  even when the name the device asked for was allowed; only allowing the hidden listed name
+  helped. An allowed asked name now lifts the block (the table's allows: My rules and the lists'
+  exceptions).
+- Such a block was recorded under the listed name only and never reached the live view, which
+  showed the asked name as passed. It is now recorded under the asked name with the listed name
+  beside it, in the records and the live view.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/dnsmasq/src/dnsmasq.h   |  2 +-
+ release/src/router/dnsmasq/src/forward.c   |  5 +-
+ release/src/router/dnsmasq/src/wallguard.c | 87 ++++++++++++++++------
+ 3 files changed, 69 insertions(+), 25 deletions(-)
+
+diff --git a/release/src/router/dnsmasq/src/dnsmasq.h b/release/src/router/dnsmasq/src/dnsmasq.h
+index 927b32fbd2..61450f26f9 100644
+--- a/release/src/router/dnsmasq/src/dnsmasq.h
++++ b/release/src/router/dnsmasq/src/dnsmasq.h
+@@ -2001,7 +2001,7 @@ union mysockaddr *reaper_client(union mysockaddr *addr);	/* reaper 2026-10-21, e
+ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,	/* + int *ede (phase 2) */
+ 		     union mysockaddr *client, unsigned short qtype, time_t now, int *ede);
+ int wallguard_cname_listed(const char *name);
+-int wallguard_cname_verdict(union mysockaddr *client, time_t now);
++int wallguard_cname_verdict(struct dns_header *header, size_t n, union mysockaddr *client, time_t now);	/* reaper 2026-11-15: + the reply */
+ int wallguard_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now);
+ int add_update_server(int flags,
+ 		      union mysockaddr *addr,
+diff --git a/release/src/router/dnsmasq/src/forward.c b/release/src/router/dnsmasq/src/forward.c
+index 0a84ad7661..7d143ae3c4 100644
+--- a/release/src/router/dnsmasq/src/forward.c
++++ b/release/src/router/dnsmasq/src/forward.c
+@@ -878,9 +878,10 @@ static size_t process_reply(struct dns_header *header, time_t now, struct server
+ 	  int rc = extract_addresses(header, n, daemon->namebuff, now, ipsets, nftsets, check_rebind, no_cache, cache_secure);
+ 
+ 	  /* reaper 2026-10-21 Wallguard: 3 = the CNAME chain reached a listed name. Nothing of it
+-	     was cached; block it for this device (4) or pass it on uncached (0). */
++	     was cached; block it for this device (4) or pass it on uncached (0) - 2026-11-15: also
++	     passed when the asked name itself is allowed (wallguard.c). */
+ 	  if (rc == 3)
+-	    rc = wallguard_cname_verdict(wallguard_client, now) ? 4 : 0;
++	    rc = wallguard_cname_verdict(header, n, wallguard_client, now) ? 4 : 0;
+ 
+ 	  if (rc == 4)
+ 	    {
+diff --git a/release/src/router/dnsmasq/src/wallguard.c b/release/src/router/dnsmasq/src/wallguard.c
+index 282f5a173d..5e7f965649 100644
+--- a/release/src/router/dnsmasq/src/wallguard.c
++++ b/release/src/router/dnsmasq/src/wallguard.c
+@@ -532,14 +532,21 @@ static void wallguard_append(const char *leaf, size_t cap, const char *line, int
+ 
+ /* one record per blocked lookup: "epoch client bits reason mac name" - name is the LIST ENTRY the
+    lookup matched (review 2026-10-24, S-A-1), never the query as asked: the query is the asker's to
+-   invent, and the folded counters would otherwise grow by one row per invented name */
++   invent, and the folded counters would otherwise grow by one row per invented name.
++   reaper 2026-11-15: reason c (a CNAME-cloaked block) is the exception - name is the name the device
++   asked (what it shows and what an allow must name), and a 7th field, chain, is the list entry the
++   reply's CNAME chain matched: "epoch client bits c mac asked chain". A collector folds c records by
++   the chain field, so S-A-1 still holds for the counters. The MAC is looked up here whenever the
++   policy step did not (no per-device lines), so every record names its device for Unbreak; only a
++   recorded hit pays for it (at most WALLGUARD_HIT_RATE a second, from dnsmasq's ARP cache). */
+ static void wallguard_hit(union mysockaddr *client, uint32_t bits, char reason, const char *name,
+-		       const unsigned char *mac, int have_mac)
++		       const char *chain, const unsigned char *mac, int have_mac, time_t dnow)
+ {
+   static time_t win;
+   static int used;
+   static unsigned int dropped;
+-  char ip[INET6_ADDRSTRLEN], m[18], line[96 + INET6_ADDRSTRLEN + MAXDNAME], nm[MAXDNAME];
++  char ip[INET6_ADDRSTRLEN], m[18], line[96 + INET6_ADDRSTRLEN + 2 * MAXDNAME], nm[MAXDNAME], cn[MAXDNAME];
++  unsigned char lmac[6];
+   int n = 0, i;
+   time_t now = time(NULL);	/* a record carries a date, not dnsmasq's uptime clock (see wallguard_mask) */
+ 
+@@ -561,15 +568,23 @@ static void wallguard_hit(union mysockaddr *client, uint32_t bits, char reason,
+     }
+   if (!wallguard_clean(name, nm, sizeof(nm)))
+     return;
++  if (reason == 'c' && (!chain || !wallguard_clean(chain, cn, sizeof(cn))))
++    strcpy(cn, "-");	/* reaper 2026-11-15: c always carries 7 fields */
+   used++;
+   wallguard_addr_str(client, ip, sizeof(ip));
++  /* reaper 2026-11-15 (D4): the policy looks the MAC up only when it has per-device lines */
++  if (!have_mac && client && find_mac(client, lmac, 1, dnow) == 6)
++    mac = lmac, have_mac = 1;
+   if (have_mac)
+     snprintf(m, sizeof(m), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+   else
+     strcpy(m, "-");
+   if (dropped)
+     n = snprintf(line, sizeof(line), "# dropped %u\n", dropped);
+-  n += snprintf(line + n, sizeof(line) - n, "%ld %s %x %c %s %s\n", (long)now, ip, bits, reason, m, nm);
++  if (reason == 'c')
++    n += snprintf(line + n, sizeof(line) - n, "%ld %s %x %c %s %s %s\n", (long)now, ip, bits, reason, m, nm, cn);
++  else
++    n += snprintf(line + n, sizeof(line) - n, "%ld %s %x %c %s %s\n", (long)now, ip, bits, reason, m, nm);
+   if (n > 0 && (size_t)n < sizeof(line))
+     {
+       wallguard_append("hits", WALLGUARD_HIT_MAX, line, n, 0);
+@@ -577,16 +592,26 @@ static void wallguard_hit(union mysockaddr *client, uint32_t bits, char reason,
+     }
+ }
+ 
+-static void wallguard_live(union mysockaddr *client, unsigned short qtype, const char *name, char verdict)
++/* the live view: "epoch client qtype verdict name"; reaper 2026-11-15: verdict c (a CNAME-cloaked block,
++   written when the reply arrives, after the query's own record) adds a 6th field, the chain's list entry */
++static void wallguard_live(union mysockaddr *client, unsigned short qtype, const char *name, char verdict,
++			   const char *chain)
+ {
+-  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + MAXDNAME], nm[MAXDNAME];
++  char ip[INET6_ADDRSTRLEN], line[64 + INET6_ADDRSTRLEN + 2 * MAXDNAME], nm[MAXDNAME], cn[MAXDNAME];
+   int n;
+ 
+   if (!sh.live || !wallguard_clean(name, nm, sizeof(nm)))
+     return;
+   wallguard_addr_str(client, ip, sizeof(ip));
+   /* a record carries a date, not dnsmasq's uptime clock (see wallguard_mask) */
+-  n = snprintf(line, sizeof(line), "%ld %s %u %c %s\n", (long)time(NULL), ip, (unsigned int)qtype, verdict, nm);
++  if (verdict == 'c')
++    {
++      if (!chain || !wallguard_clean(chain, cn, sizeof(cn)))
++	strcpy(cn, "-");
++      n = snprintf(line, sizeof(line), "%ld %s %u %c %s %s\n", (long)time(NULL), ip, (unsigned int)qtype, verdict, nm, cn);
++    }
++  else
++    n = snprintf(line, sizeof(line), "%ld %s %u %c %s\n", (long)time(NULL), ip, (unsigned int)qtype, verdict, nm);
+   if (n > 0 && (size_t)n < sizeof(line))
+     wallguard_append("live", WALLGUARD_LIVE_MAX, line, n, 1);
+ }
+@@ -658,7 +683,7 @@ static size_t wallguard_safe_answer(struct dns_header *header, char *limit, size
+ 	n++;
+   header->ancount = htons(n);
+   sh.safe++;
+-  wallguard_live(client, qtype, name, 's');
++  wallguard_live(client, qtype, name, 's', NULL);
+   return p - (unsigned char *)header;
+ }
+ 
+@@ -708,7 +733,7 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+       av = wga_eval(&sh.adv, name, qtype, &w, &imp, &resp, &aline);
+       if (av == WGA_ALLOW)
+ 	{
+-	  wallguard_live(client, qtype, name, 'a');
++	  wallguard_live(client, qtype, name, 'a', NULL);
+ 	  return 0;
+ 	}
+       if (av == WGA_BLOCK && !wallguard_config_answer(name, qtype))
+@@ -716,8 +741,8 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+ 	  mask = wallguard_mask(client, now, mac, &have_mac, NULL);
+ 	  if ((mask & 1u) && (imp || !sh.t.ok || wallguard_lookup(&sh.t.v, name, &abits) != WALLGUARD_ALLOWED))
+ 	    {
+-	      wallguard_hit(client, 1u, 'q', name, mac, have_mac);
+-	      wallguard_live(client, qtype, name, 'b');
++	      wallguard_hit(client, 1u, 'q', name, NULL, mac, have_mac, now);
++	      wallguard_live(client, qtype, name, 'b', NULL);
+ 	      *ede = EDE_BLOCKED;
+ 	      return wallguard_block_reply(header, limit, qlen, qtype, resp);
+ 	    }
+@@ -725,7 +750,7 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+     }
+   if (!sh.t.ok)
+     {
+-      wallguard_live(client, qtype, name, '-');
++      wallguard_live(client, qtype, name, '-', NULL);
+       return 0;
+     }
+   r = wallguard_lookup_at(&sh.t.v, name, &bits, &listed);
+@@ -733,17 +758,17 @@ size_t wallguard_answer(struct dns_header *header, char *limit, size_t qlen,
+     r = WALLGUARD_ALLOWED;
+   if (r != WALLGUARD_LISTED)
+     {
+-      wallguard_live(client, qtype, name, r == WALLGUARD_ALLOWED ? 'a' : '-');
++      wallguard_live(client, qtype, name, r == WALLGUARD_ALLOWED ? 'a' : '-', NULL);
+       return 0;
+     }
+   mask = wallguard_mask(client, now, mac, &have_mac, NULL);
+   if (!(bits & mask))
+     {
+-      wallguard_live(client, qtype, name, 'p');	/* listed, but not for this device */
++      wallguard_live(client, qtype, name, 'p', NULL);	/* listed, but not for this device */
+       return 0;
+     }
+-  wallguard_hit(client, bits & mask, 'q', listed, mac, have_mac);
+-  wallguard_live(client, qtype, name, 'b');
++  wallguard_hit(client, bits & mask, 'q', listed, NULL, mac, have_mac, now);
++  wallguard_live(client, qtype, name, 'b', NULL);
+   *ede = EDE_BLOCKED;
+ 
+   if (sh.nx)
+@@ -791,15 +816,33 @@ int wallguard_merge_ok(union mysockaddr *a, union mysockaddr *b, time_t now)
+   return wallguard_mask(a, now, mac, &hm, NULL) == wallguard_mask(b, now, mac, &hm, NULL);
+ }
+ 
+-/* process_reply(): block the listed chain for this device? (Either way it is not cached.) */
+-int wallguard_cname_verdict(union mysockaddr *client, time_t now)
++/* process_reply(): block the listed chain for this device? (Either way it is not cached.)
++   reaper 2026-11-15 (D2): a name the device asked for that the table ALLOWS (an allow entry for the
++   name, or a parent's allow-with-subdomains - the walk wallguard_answer() already took for it) is
++   never blocked by a list entry its CNAME chain reaches: allowing a site must be enough, the hidden
++   target need not be found and allowed too. The table is the same for every device, so this cannot
++   split askers wallguard_merge_ok() let share one reply. (An Advanced allow is per device and is not
++   consulted here.) D1: the block is recorded - hits and the live view - under the asked name, with the
++   chain's list entry as the extra field. header / n: the reply, its question intact. */
++int wallguard_cname_verdict(struct dns_header *header, size_t n, union mysockaddr *client, time_t now)
+ {
+-  unsigned char mac[6];
+-  int have_mac;
+-  uint32_t mask = wallguard_mask(client, now, mac, &have_mac, NULL);
++  unsigned char mac[6], *p = (unsigned char *)(header + 1);
++  static char q[MAXDNAMESTR + 1];
++  unsigned short qtype = 0;
++  int have_mac, asked = 0;
++  uint32_t abits, mask = wallguard_mask(client, now, mac, &have_mac, NULL);
+ 
+   if (!(sh.cname_bits & mask))
+     return 0;
+-  wallguard_hit(client, sh.cname_bits & mask, 'c', sh.cname_name, mac, have_mac);
++  if (header && ntohs(header->qdcount) == 1 && extract_name(header, n, &p, q, EXTR_NAME_EXTRACT, 4))
++    {
++      GETSHORT(qtype, p);
++      asked = 1;
++      if (sh.t.ok && wallguard_lookup(&sh.t.v, q, &abits) == WALLGUARD_ALLOWED)
++	return 0;
++    }
++  /* no readable question (never expected): block as before, recorded under the chain's entry */
++  wallguard_hit(client, sh.cname_bits & mask, 'c', asked ? q : sh.cname_name, sh.cname_name, mac, have_mac, now);
++  wallguard_live(client, qtype, asked ? q : sh.cname_name, 'c', sh.cname_name);
+   return 1;
+ }
+-- 
+2.25.1
+

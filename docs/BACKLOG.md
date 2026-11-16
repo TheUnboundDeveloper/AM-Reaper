@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.7.9** · 2026-11-14 <!--@stamp-->
+> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -35,15 +35,18 @@ internal quality, or deferred by decision.
 
 *Not fixed yet — work still to start or finish.*
 
-- **[P1] Guest Portal network: full isolation (Internet only)** **[parked by the owner]** ↳ notes: `guest-portal-isolation.md`
+- **[P1] Guest Portal: passcode refused on a phone though it matches the router (v3.7.9)** **[one cause fixed; data asked]** ↳ notes: `guest-portal-passcode-refused-v379.md`
 - **[P2] GT-BE98: a 5 GHz Wi-Fi bridge (WDS) station drops for ~30 s** **[data asked of the reporter]** ↳ notes: `gt-be98-wds-drop-log-noise.md`
 - **[P2] USB 3 writes run at half of reads on BCM4912 / BCM4916 models** **[A/B run owed]** ↳ notes: `usb3-write-ceiling.md`
 - **[P2] AI Advisor: arming code and lockout move to reset-proof `/data/reaper/advisor/`** **[not scheduled]** ↳ notes: `advisor-arming-code-admin-reset.md`
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P2] Guest networks bound to a WireGuard client: routing after WAN events** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
+- **[P2] Devices: named devices shown as "unnamed" (v3.7.9)** **[no cause in code; data asked]** ↳ notes: `devices-named-shown-unnamed-v379.md`
 - **[P3] Devices: a device wired to an AiMesh node is shown as a Wi-Fi client** **[two causes fixed; router data asked]** ↳ notes: `aimesh-node-wired-client-shown-wifi.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
+- **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
+- **[P3] Firewall: the Auto refresh switch on Status and Rule Status does not stay on** **[cause found; not started]** ↳ notes: `firewall-auto-refresh-not-kept.md`
 
 ---
 
@@ -70,7 +73,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] DNS queries with two OPT records** **[owner call]** ↳ report: `review-2026-11-11` Appendix A · notes: `review-2026-11-11-remediation.md`
 - **[P3] Channel picker control port: a local firewall rule by process owner** **[owner call]** ↳ report: `review-2026-11-11` D-C1 · notes: `review-2026-11-11-remediation.md`
 - **[P3] Two kernel checks from the 2026-11-11 fixes: a test program on a router** **[owner call]** ↳ report: `review-2026-11-11` A-1, A-C2 · notes: `review-2026-11-11-remediation.md`
-- **[P3] Maintainer tooling proposals (2026-11-11)** **[owner call]** ↳ notes: `tooling-proposals-2026-11-11.md`
+- **[P3] Maintainer tooling proposals (2026-11-11)** **[approved 2026-11-11; in progress]** ↳ notes: `tooling-proposals-2026-11-11.md`
 
 ---
 
@@ -83,12 +86,12 @@ private review report and the finding ID in it; review reports are never publish
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.7.9: 2,297,856 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.0: 2,265,088 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
 - **[P2] GT-BE98: move onto GPL 102.40585 (gnuton's prebuilts) via the line unification** **[not started; after Dev-unify CI]** ↳ notes: `gt-be98-gpl-40585.md`
-- **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed 2026-11-06; not started]** ↳ notes: `pbr-asn-objects.md`
+- **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed; on hold (owner 2026-11-15)]** ↳ notes: `pbr-asn-objects.md`
 - **[P2] Encrypted DNS stage 2: fall back to plain upstream when DNS-over-TLS stops answering** **[planned]** ↳ notes: `encrypted-dns.md`
 - **[P3] Security review: watch more settings** **[part done 2026-10-24; the rest not started]** ↳ notes: `security-review-coverage.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
@@ -96,6 +99,9 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Tweaks: the login-page redirect goes to an address the admin types (name, port), not only www.asusrouter.com** **[not started]** ↳ notes: `login-redirect-custom-domain.md`
+- **[P3] mDNS across networks: reflect only chosen service types (avahi `reflect-filters`)** **[idea; not started]** ↳ notes: `mdns-reflect-filters.md`
+- **[P3] Wallguard: "pause and record" - list what would have been blocked while a device was paused** **[idea; not started]** ↳ notes: `wallguard-pause-and-record.md`
+- **[P3] Wallguard: show per device when its DNS bypasses the router** **[idea; not started]** ↳ notes: `wallguard-device-bypass-hint.md`
 - **[P4] Advanced tier: TLS interception for URL-level inspection** **[threat model first]** ↳ notes: `encrypted-dns.md`, `security-leftovers-plan-2026-11-10.md`
 
 ---
@@ -127,9 +133,7 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] OSPF + BGP dynamic routing** **[Not Needed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Encrypted DNS answers guest/VLAN networks over IPv4 only** **[deferred]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wallguard: network profiles IPv4-only; merged identical lookups share one CNAME verdict** **[deferred / accepted]** ↳ notes: `wallguard.md`
-- **[P3] WireGuard server starts before NTP sync** **[working as intended]** ↳ notes: `wgs-start-before-ntp.md`
 - **[P3] The main Wi-Fi's RADIUS server is set in two places** **[deferred]** ↳ notes: `radius-two-stores.md`
-- **[P3] 3006.102.8 line: three lean gaps** **[not started]** ↳ notes: `lean-102-8-gaps.md`
 - **[P4] Firewall log day files: split today's file so the store cap can remove parts** **[deferred]** ↳ notes: `fwlog-storage-row-layout.md` (item 2)
 
 ---
@@ -138,6 +142,7 @@ private review report and the finding ID in it; review reports are never publish
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **WireGuard server starts before NTP sync: working as intended** **[closed 2026-11-15]** ↳ notes: `wgs-start-before-ntp.md`
 - **Devices page after a reboot: an offline device is listed only if it has a DHCP reservation or a Gatekeeper entry (BQ16 report)** **[closed 2026-11-13]** ↳ notes: `devices-offline-after-reboot-bq16-2026-11-12.md`
 - **GT-BE98: no DNS after ControlD was removed (a leftover `/jffs/configs/dnsmasq.conf`)** **[closed 2026-10-21]** ↳ notes: `controld-leftover-dnsmasq-conf.md`
 - **Guest network VPN not applied, OpenVPN Killswitch blocked the LAN: "Use main subnet" was on** **[closed 2026-10-18]** ↳ notes: `sdn-vpn-main-subnet-killswitch.md`

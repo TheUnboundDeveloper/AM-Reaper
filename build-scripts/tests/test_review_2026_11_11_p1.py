@@ -217,6 +217,10 @@ else:
 # ---------------------------------------------------------------- the portal secret is never NULL, run for real
 nc = rd("lighttpd-1.4.39", "src", "nvram_control.c")
 b = fn(nc, "char *nvram_get_uamsecret(")
+# 2026-11-15: the Free Wi-Fi subnet test calls a helper defined just above it (test_portal_secret.py covers it)
+h = fn(nc, "static int reaper_uam_in_net(")
+if b and h:
+    b = h + "\n" + b
 if CC and b:
     out = run_c("uamsecret", r'''
 #include <stdio.h>

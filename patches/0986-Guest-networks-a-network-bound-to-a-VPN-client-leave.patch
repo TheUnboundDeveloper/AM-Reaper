@@ -1,0 +1,262 @@
+From 712ea59faf5309a99f4f5c0e8b512f53d0e3301e Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:47:50 -0500
+Subject: [PATCH] Guest networks: a network bound to a VPN client leaves by the
+ exit VPN Director gives it
+
+- Guest isolation sent every guest network out of the WAN or its own bound client only, so a guest
+  network whose VPN Director rule (or an OpenVPN client set to redirect all traffic, or a Reaper
+  policy route) sent it into a VPN tunnel had no internet. The exits now follow those rules: VPN
+  Director's IPv4 rules and its policy marks (IPv4 and IPv6), an OpenVPN client redirecting all
+  traffic. Never on a Guest Portal network and never with the network's kill switch on.
+- A change to VPN Director's rules re-applies guest isolation after the rules are written, so a
+  new rule reaches the guest networks without a restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/rc/reaper_guest.c | 162 ++++++++++++++++++++++++++-
+ release/src/router/rc/services.c     |   6 +
+ 2 files changed, 167 insertions(+), 1 deletion(-)
+
+diff --git a/release/src/router/rc/reaper_guest.c b/release/src/router/rc/reaper_guest.c
+index ce435be689..4f13c97e14 100644
+--- a/release/src/router/rc/reaper_guest.c
++++ b/release/src/router/rc/reaper_guest.c
+@@ -17,6 +17,9 @@
+  *   through it      out by a WAN interface or the bound VPN client only (only the VPN client while the kill switch
+  *                   is on - so the kill switch now also holds for a portal network and for IPv6), established
+  *                   replies, port forwards from the WAN; anything else in or out DROP
++ *   policy routing  2026-11-15: and out by a VPN client the router's own policy routing sends the network to - a VPN
++ *                   Director rule, an OpenVPN client set to redirect all traffic, a Policy Routing (reaper_pbr) mark.
++ *                   Not on a portal, not with the kill switch on
+  *   DNS Director    2026-11-14: a DNS query the router itself redirected (DNS Director's rule for the network, e.g.
+  *                   to a Pi-hole on the main network) goes on to the stock rules, which accept every connection the
+  *                   router redirected - as before v3.7.7. Port 53 only; not on a portal, not with the kill switch on
+@@ -44,6 +47,14 @@
+ 
+ /* REAPER-GUEST-PURE-BEGIN (compiled on the host by test_guest_isolation.py) */
+ #define RG_SRV_MAX	4
++#define RG_PR_MAX	24	/* 2026-11-15: policy-routing exits of one network */
++#define RG_PR_EXACT	(RG_PR_MAX - 10)	/* past this many, one whole-client exit each (10 clients at most) */
++#define RG_PBR_MASK	"0xf0000"	/* rc/reaper_pbr.c PPBR_MASK: codes 1-5 OVPN1-5, 6-10 WGC1-5 */
++struct rg_pr {
++	char ifname[IFNAMSIZ];	/* the VPN client's interface (tun1N, wgcN) */
++	char src[20];		/* "a.b.c.d[/n]" as the rule names it, "" = any */
++	char dst[20];
++};
+ struct rg_net {
+ 	int sdn_idx;
+ 	char ifname[IFNAMSIZ];	/* the kernel interface: tun22 / tun23 for a portal, else the bridge */
+@@ -57,6 +68,8 @@ struct rg_net {
+ 	char srvif[RG_SRV_MAX][IFNAMSIZ];	/* 2026-11-14: the router's own VPN server interfaces whose clients may open
+ 						 * connections into this network (wgsN, tun2N); "" x nsrv == 0 when none */
+ 	int nsrv;
++	struct rg_pr pr[RG_PR_MAX];	/* 2026-11-15: IPv4 exits VPN Director / redirect-all route this network to */
++	int npr;
+ };
+ 
+ /* sdn_access_rl is "<access_sdn_idx>sdn_idx" pairs (sdn.js parse_StrToJSON_sdn_access_rl_list): intranet access is
+@@ -88,6 +101,117 @@ static void rg_vpnif(int vpnc_idx, char *out, size_t n)
+ 		snprintf(out, n, "tun1%d", vpnc_idx - 5);
+ }
+ 
++/* 2026-11-15 (field report, v3.7.9 beta): "a.b.c.d" or "a.b.c.d/n" - the only forms the VPN Director page saves.
++ * 0 for anything else (Merlin's own `ip rule add from <it>` fails on it too, so nothing is routed by such a rule). */
++static int rg_cidr4(const char *s, unsigned int *addr, int *plen)
++{
++	unsigned int a, b, c, d;
++	int p = 32, k, dots = 0;
++	char t;
++	const char *q;
++
++	if (!s || !*s || strlen(s) > 18 || strspn(s, "0123456789./") != strlen(s))
++		return 0;
++	for (q = s; *q; q++)
++		dots += (*q == '.');
++	k = sscanf(s, "%u.%u.%u.%u/%d%c", &a, &b, &c, &d, &p, &t);
++	if (dots != 3 || (k != 4 && k != 5) || (k == 4 && strchr(s, '/')) || a > 255 || b > 255 || c > 255 || d > 255 ||
++	    p < 0 || p > 32)
++		return 0;
++	*addr = a << 24 | b << 16 | c << 8 | d;
++	*plen = p;
++	return 1;
++}
++
++static void rg_pr_add(struct rg_net *g, const char *ifn, const char *src, const char *dst)
++{
++	int k;
++
++	if (g->npr >= RG_PR_EXACT)	/* budget spent: the whole client, still only one the network is routed to */
++		src = dst = "";
++	for (k = 0; k < g->npr; k++)
++		if (!strcmp(g->pr[k].ifname, ifn) && ((!g->pr[k].src[0] && !g->pr[k].dst[0]) ||
++		    (!strcmp(g->pr[k].src, src) && !strcmp(g->pr[k].dst, dst))))
++			return;	/* already covered */
++	if (g->npr >= RG_PR_MAX)
++		return;
++	snprintf(g->pr[g->npr].ifname, IFNAMSIZ, "%s", ifn);
++	snprintf(g->pr[g->npr].src, sizeof(g->pr[0].src), "%s", src);
++	snprintf(g->pr[g->npr].dst, sizeof(g->pr[0].dst), "%s", dst);
++	g->npr++;
++}
++
++/* 2026-11-15 (field report, v3.7.9 beta: two guest VLANs sent to OpenVPN client 1 and WireGuard client 2 lost the
++ * Internet). Besides the Network page's VPN binding (sdn_rl vpnc_idx, read above), the router routes a network to a
++ * VPN client by its IPv4 policy rules, which this layer did not read, so it let such a network out by the WAN only
++ * and dropped everything routed into the tunnel:
++ *   VPN Director   rl = /jffs/openvpn/vpndirector_rulelist, "<en>desc>src>dst>target" (libovpn/amvpn_routing.c
++ *                  _write_routing_rules: `ip rule add [from src] [to dst] table ovpncN|wgcN`, enable by atoi, ""
++ *                  or 0.0.0.0 = any). A rule counts for this network when it is on, names OVPN1-5 / WGC1-5, and its
++ *                  source is any or overlaps the network's subnet; OVPNn only while that client is in VPN Director
++ *                  mode (rgw >= 2 - in the other modes amvpn_set_routing_rules writes no Director rule for it).
++ *   redirect all   vpn_clientN_rgw 1: a catch-all `ip rule add table ovpncN` whose table carries a default route
++ *                  into the tunnel - every network, guests included, goes out by tun1N. Mode 0 (none) adds the
++ *                  same rule to a table WITHOUT a default route (only the server's pushed routes) - not counted:
++ *                  that is the remote side's own network, not the network's way to the Internet.
++ * The exit keeps the rule's own source and destination, so a guest reaches through the tunnel exactly what the
++ * rule routes there. IPv4 only, as VPN Director is. rgw[0..4] = vpn_client1..5_rgw. */
++static void rg_policy_vpn(struct rg_net *g, const char *rl, const int rgw[5])
++{
++	char rec[256], ifn[IFNAMSIZ], *fld[5], *p;
++	const char *r = rl, *e;
++	unsigned int ga = 0, ra, mask;
++	int gp = -1, rp, u, nf, src_any, dst_any;
++	size_t len;
++
++	for (u = 1; u <= 5; u++)
++		if (rgw[u - 1] == 1) {
++			snprintf(ifn, sizeof(ifn), "tun1%d", u);
++			rg_pr_add(g, ifn, "", "");
++		}
++	if (!g->subnet[0] || !rg_cidr4(g->subnet, &ga, &gp))
++		gp = -1;	/* no IPv4 subnet known: only a rule for every source can name this network */
++	while (r && *r) {
++		if (*r == '<')
++			r++;
++		e = strchr(r, '<');
++		len = e ? (size_t)(e - r) : strlen(r);
++		if (len > 0 && len < sizeof(rec)) {
++			memcpy(rec, r, len);
++			rec[len] = '\0';
++			for (nf = 0, p = rec; nf < 5; nf++) {
++				fld[nf] = p;
++				if ((p = strchr(p, '>')) == NULL) {
++					nf++;
++					break;
++				}
++				*p++ = '\0';
++			}
++			/* fields: 0 enable, 1 description, 2 source, 3 destination, 4 target */
++			if (nf == 5 && !p && atoi(fld[0]) != 0) {
++				ifn[0] = '\0';
++				if (!strncmp(fld[4], "OVPN", 4) && fld[4][4] >= '1' && fld[4][4] <= '5' && !fld[4][5] &&
++				    rgw[fld[4][4] - '1'] >= 2)
++					snprintf(ifn, sizeof(ifn), "tun1%c", fld[4][4]);
++				else if (!strncmp(fld[4], "WGC", 3) && fld[4][3] >= '1' && fld[4][3] <= '5' && !fld[4][4])
++					snprintf(ifn, sizeof(ifn), "wgc%c", fld[4][3]);
++				src_any = !*fld[2] || !strcmp(fld[2], "0.0.0.0");
++				dst_any = !*fld[3] || !strcmp(fld[3], "0.0.0.0");
++				if (ifn[0] && (dst_any || rg_cidr4(fld[3], &ra, &rp))) {
++					if (src_any)
++						rg_pr_add(g, ifn, "", dst_any ? "" : fld[3]);
++					else if (gp >= 0 && rg_cidr4(fld[2], &ra, &rp)) {
++						mask = (rp < gp ? rp : gp) ? 0xffffffffU << (32 - (rp < gp ? rp : gp)) : 0;
++						if ((ra & mask) == (ga & mask))
++							rg_pr_add(g, ifn, fld[2], dst_any ? "" : fld[3]);
++					}
++				}
++			}
++		}
++		r = e;
++	}
++}
++
+ /* the rules of one interface X of guest network g, family v6 (0/1). bridge_only: X is a portal's bridge. */
+ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int bridge_only,
+ 		     char wan4[][IFNAMSIZ], int nw4, const char *wan6)
+@@ -145,6 +269,22 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ 		}
+ 		for (k = 0; k < no; k++)
+ 			fprintf(f, "%s -A REAPER_GUF -i %s -o %s -j RETURN\n", T, X, outs[k]);
++		/* 2026-11-15 (field report, v3.7.9 beta): out by a VPN client the router's policy routing sends this network to
++		 * (rg_policy_vpn) - before v3.7.7 the stock OVPNCF / WGCF chains accepted it. VPN Director and redirect-all
++		 * are IPv4 ip rules: their exits in the IPv4 chain, with the rule's own source and destination. Policy Routing
++		 * (rc/reaper_pbr.c) marks the flow in mangle PREROUTING with its target's code, v4 and v6: an exit only for
++		 * the packet carrying the code of the client it leaves by - by code, not by its rule list, so a Policy
++		 * Routing change needs no rebuild here. Not on a portal; not with the kill switch on (bound VPN only). */
++		if (!g->portal && !vpn_only) {
++			if (!v6)
++				for (k = 0; k < g->npr && k < RG_PR_MAX; k++)
++					fprintf(f, "%s -A REAPER_GUF -i %s%s%s%s%s -o %s -j RETURN\n", T, X,
++						g->pr[k].src[0] ? " -s " : "", g->pr[k].src,
++						g->pr[k].dst[0] ? " -d " : "", g->pr[k].dst, g->pr[k].ifname);
++			for (k = 1; k <= 10; k++)
++				fprintf(f, "%s -A REAPER_GUF -i %s -o %s%d -m mark --mark 0x%x0000/" RG_PBR_MASK " -j RETURN\n",
++					T, X, k <= 5 ? "tun1" : "wgc", k <= 5 ? k : k - 5, k);
++		}
+ 		/* 2026-11-13 (owner): Access Intranet on a portal network = the MAIN LAN only - never another guest network or
+ 		 * the router itself (REAPER_GUI above is unchanged); nothing opens from the main LAN into the portal */
+ 		if (!v6 && g->portal && g->lan_ok && g->lanif[0])
+@@ -182,7 +322,7 @@ static void rg_iface(FILE *f, const struct rg_net *g, const char *X, int v6, int
+ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSIZ], int nw4, const char *wan6,
+ 		     const char *hook_run)
+ {
+-	int i, v6;
++	int i, v6, k;
+ 
+ 	fputs("#!/bin/sh\n"
+ 	      "# generated by reaper_guest_gen - guest isolation (owner rule 2026-11-12). See rc/reaper_guest.c.\n"
+@@ -213,6 +353,9 @@ static void rg_write(FILE *f, const struct rg_net *g, int n, char wan4[][IFNAMSI
+ 			g[i].vpnif[0] ? (g[i].killsw ? " - VPN client, kill switch on" : " - VPN client, kill switch off") : "");
+ 		if (!g[i].portal && g[i].nsrv > 0 && !(g[i].killsw && g[i].vpnif[0]))
+ 			fputs("#   clients of the router's own VPN servers may open connections into it; it may only answer\n", f);
++		for (k = 0; !g[i].portal && !(g[i].killsw && g[i].vpnif[0]) && k < g[i].npr && k < RG_PR_MAX; k++)
++			fprintf(f, "#   VPN Director / redirect-all routes it to %s (from %s to %s)\n", g[i].pr[k].ifname,
++				g[i].pr[k].src[0] ? g[i].pr[k].src : "any", g[i].pr[k].dst[0] ? g[i].pr[k].dst : "any");
+ 		if (g[i].portal) {	/* 2026-11-13: to the address of the tunnel it arrived on = the guest resolver */
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p udp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+ 			fprintf(f, "R iptables -t nat -A REAPER_GUN -i %s -p tcp --dport 53 -j REDIRECT --to-ports 53\n", g[i].ifname);
+@@ -302,6 +445,23 @@ void reaper_guest_gen(void)
+ 		}
+ 	}
+ 	/* REAPER-GUEST-SRV-END */
++#ifdef RTCONFIG_OPENVPN
++	/* 2026-11-15: the IPv4 policy routing that sends a network to a VPN client (rg_policy_vpn). Read here, at every
++	 * firewall build and guest-network change; the Policy Routing marks need nothing read. */
++	{
++		char vd[8000], key[24];
++		int rgw[5];
++
++		for (u = 0; u < 5; u++) {
++			snprintf(key, sizeof(key), "vpn_client%d_rgw", u + 1);
++			rgw[u] = nvram_get_int(key);
++		}
++		if (f_read_string(OVPN_FS_PATH "/vpndirector_rulelist", vd, sizeof(vd)) < 0)
++			vd[0] = '\0';
++		for (k = 0; k < n; k++)
++			rg_policy_vpn(&g[k], vd, rgw);
++	}
++#endif
+ 	for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {
+ 		w = get_wan_ifname(u);
+ 		if (!w || !*w || !strcmp(w, "br0"))
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 70b35ec5a4..ab7395508c 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -22685,6 +22685,12 @@ retry_wps_enr:
+ 			 * the VPN client page fires when that switch is saved. */
+ 			reaper_pbr_regen();
+ 			file_unlock(lock);
++#ifdef RTCONFIG_MULTILAN_CFG
++			/* reaper 2026-11-15: guest-network exits follow VPN Director and the
++			 * OpenVPN redirect mode (rc/reaper_guest.c rg_policy_vpn); taken after
++			 * VPNROUTING_LOCK is released, so no new lock order. */
++			reaper_guest_apply(0);
++#endif
+ 		}
+ 	}
+ #endif
+-- 
+2.25.1
+

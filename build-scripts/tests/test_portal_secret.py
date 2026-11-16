@@ -16,6 +16,10 @@ WHAT IT CHECKS.
   module decrypts the value it is handed itself, as rc does for chilli's config: the _r16 decrypt here made every
   sign-in fail (_r4 on the owner's router, 2026-11-12). The host run models the module that way (pw_dec of the
   returned value) and requires it to equal what rc gives chilli.
+- lighttpd (2026-11-15, field v3.7.9 "passcode not accepted"): the Free Wi-Fi portal's secret goes to every address
+  inside chilli_net, not only to one sharing chilli_net's first 11 characters (stock test, kept) - a portal on
+  192.168.5.x / 10.0.0.x / 172.16.10.x got the account portal's secret and refused every sign-in; the account portal
+  keeps its own (outside chilli_net, or inside cp_net too); unparsable values fall back to the stock test.
 - defaults: reaper_cp_secret_own (kept); the Tweaks page has NO Guest Portal panel any more (owner 2026-11-12);
   RTWK_42..46 still in all 25 packs, packs in lockstep.
 Exit 0 pass, 1 fail, 77 skip (no router source tree)."""
@@ -116,6 +120,14 @@ m = re.search(r"\nchar \*nvram_get_uamsecret\(const char \*str\)\n\{.*?\n\}\n", 
 check("lighttpd: nvram_get_uamsecret hands the module the stored secret (no pw_dec - the module decrypts), never NULL",
       m is not None and "pw_dec" not in m.group(0).split("*/")[-1] and "reaper_dec" not in m.group(0)
       and 'return reaper_sec ? reaper_sec : "";' in m.group(0))
+# 2026-11-15 (field, v3.7.9 "passcode not accepted"): which secret a sign-in gets was decided by the first 11 characters
+# of chilli_net only - a Free Wi-Fi portal on 192.168.5.x / 10.0.0.x / 172.16.10.x got the account portal's secret,
+# harmless while both were the stock default, fatal once each portal had its own random secret (v3.7.6)
+hm = re.search(r"\n#ifndef USE_TCAPI\n/\* reaper 2026-11-15: is the portal address ip inside net .*?\n#endif\n", nvc, re.S)
+check("lighttpd: the Free Wi-Fi portal is told by subnet (reaper_uam_in_net), the stock 11-character test kept",
+      hm is not None and m is not None and "!strncmp(str, reaper_net, 11)" in m.group(0)
+      and 'reaper_uam_in_net(str, reaper_net) == 1 && reaper_uam_in_net(str, nvram_get("cp_net")) != 1' in m.group(0)
+      and nvc.find(hm.group(0) if hm else "\x00") < nvc.find("\nchar *nvram_get_uamsecret(const char *str)"))
 if m and CC:
     LM = r'''
 /* the portal module decrypts the value it is handed (on the router a decrypted secret failed every sign-in) */
@@ -130,6 +142,29 @@ int main(void){
   module_secret("192.168.182.1", a); chilli_secret("chilli_uamsecret", b);
   if (strcmp(a, b) || strcmp(a, "chillispot")) { printf("chilli: module %s / chilli %s\n", a, b); bad++; }
   s = nvram_get_uamsecret("10.0.0.1"); if (strcmp(s, "E:1terceSnwOyM")) { printf("not stored form: %s\n", s); bad++; }
+  /* 2026-11-15: Free Wi-Fi portals whose "a.b.c." is shorter than 11 characters get chilli's secret too */
+  {
+    static const char *const fw[][2] = { {"192.168.5.0/24", "192.168.5.1"}, {"10.0.0.0/24", "10.0.0.1"},
+      {"172.16.10.0/24", "172.16.10.1"}, {"10.10.10.0/24", "10.10.10.1"}, {"192.168.52.0/24", "192.168.52.1"},
+      {"192.168.152.0/24", "192.168.152.1"}, {"10.0.0.0/16", "10.0.7.1"} };
+    int i;
+    nvram_set("cp_net", "192.168.183.0/24");
+    for (i = 0; i < (int)(sizeof(fw) / sizeof(fw[0])); i++) {
+      nvram_set("chilli_net", fw[i][0]); module_secret(fw[i][1], a); chilli_secret("chilli_uamsecret", b);
+      if (strcmp(a, b) || strcmp(a, "chillispot")) { printf("free wifi %s on %s: module %s\n", fw[i][1], fw[i][0], a); bad++; }
+    }
+  }
+  /* ... while the account portal keeps its own: its address is outside chilli_net, or inside cp_net as well */
+  nvram_set("chilli_net", "192.168.5.0/24"); nvram_set("cp_net", "192.168.183.0/24");
+  module_secret("192.168.183.1", a); if (strcmp(a, "MyOwnSecret1")) { printf("cp 192.168.183.1: %s\n", a); bad++; }
+  nvram_set("cp_net", "10.1.2.0/24");
+  module_secret("10.1.2.1", a); if (strcmp(a, "MyOwnSecret1")) { printf("cp 10.1.2.1: %s\n", a); bad++; }
+  nvram_set("chilli_net", "10.0.0.0/8");
+  module_secret("10.1.2.1", a); if (strcmp(a, "MyOwnSecret1")) { printf("cp inside an overlapping chilli_net: %s\n", a); bad++; }
+  /* a chilli_net or address that does not parse: the stock test alone, as before */
+  nvram_set("chilli_net", "bogus"); module_secret("10.0.0.1", a); if (strcmp(a, "MyOwnSecret1")) { printf("bogus net: %s\n", a); bad++; }
+  nvram_set("chilli_net", "10.0.0.0/24"); module_secret("10.0.0.1x", a); if (strcmp(a, "MyOwnSecret1")) { printf("bogus ip: %s\n", a); bad++; }
+  nvram_set("chilli_net", "10.0.0.0/0"); module_secret("10.9.9.9", a); if (strcmp(a, "MyOwnSecret1")) { printf("/0: %s\n", a); bad++; }
   NN = 0; s = nvram_get_uamsecret("x"); if (!s || *s) { printf("unset not empty\n"); bad++; }
   return bad;
 }
@@ -137,7 +172,7 @@ int main(void){
     tmp = tempfile.mkdtemp()
     try:
         c = os.path.join(tmp, "l.c"); x = os.path.join(tmp, "l")
-        open(c, "w").write(STUBS + m.group(0) + LM)
+        open(c, "w").write(STUBS + (hm.group(0) if hm else "") + m.group(0) + LM)
         r = subprocess.run([CC, "-std=gnu99", "-Wall", "-Wno-unused-function", "-o", x, c], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         if r.returncode == 0:
             r = subprocess.run([x], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=30)

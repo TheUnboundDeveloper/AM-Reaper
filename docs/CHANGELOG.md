@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Changelog
 
-> **Doc status:** current as of **v3.7.9** · 2026-11-14 <!--@stamp-->
+> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
 
 High-level history of the Reaper build. One entry per version, big changes only —
 the exhaustive security detail is in [`REAPER-FIXES.md`](REAPER-FIXES.md) and the
@@ -48,6 +48,41 @@ node, not only on the primary router.
 > design; compare `--exported` instead.
 
 ---
+
+## v3.8.0 — VPN-routed guest networks reach the internet; the portal passcode on every subnet; DHCP leases kept across a restart; one rule for device names; Wallguard finds the culprit
+
+Everything in v3.7.9 is included. Both lines carry the same changes: RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro on
+3006.102.10; GT-BE98, GT-BE19000, BQ16 and BQ16 Pro on 3006.102.8.
+
+- **Guest networks routed into a VPN.** A guest network that VPN Director (or an OpenVPN client set to redirect all
+  traffic) sent into a VPN tunnel had no internet: guest isolation only allowed the WAN or the network's own bound
+  client. It now follows those rules. Not on a Guest Portal network, and not with the network's Kill Switch on.
+  Changing VPN Director's rules re-applies it straight away.
+- **Guest Portal passcode on a short subnet.** On some portal subnets the router checked the passcode against the
+  wrong key, so a correct passcode and the terms page were refused. The portal network is now matched properly.
+- **Apple devices on an isolated guest network keep DNS.** An isolated guest network was offered the router's
+  encrypted DNS, which it cannot reach; iPhones take that offer by themselves and then lost DNS. The offer is now
+  made only where it works.
+- **Login name.** The first-setup page no longer forces the login name to lower case; it follows the stock rule.
+- **Network page.** Editing the Default IoT Network no longer resets its LAN ports to All (Default).
+- **Warden custom feeds with an API key.** A feed address may contain `$APIkey`. The key goes in its own box, stays
+  private on the router (not in the list, the page or a settings export) and is used only when the feed is fetched.
+- **DHCP leases survive a restart.** The router keeps its lease lists in flash and puts them back when it starts, so
+  every device that still holds a lease is listed (and named) right after a reboot, not only once it renews.
+- **Device names.** One rule on every page: Name is the name you gave the device on the Devices page; Hostname is
+  what the device sends, else the maker of its network card, else `Private-Address` for a randomized address. A
+  page with one label shows Name, else Hostname. DHCP Leases shows both columns and lists devices whose address is
+  set on the device; its Refresh button shows it was pressed. A DHCP reservation's name is the device's DNS name and
+  is labelled so.
+- **Wallguard finds the culprit.** A streaming app that broke under Wallguard (a Paramount+ report) showed nothing
+  useful on the page. Every block now records the device it came from, so Unbreak finds a device by name; it keeps
+  an hour of history and leaves out names you have allowed. A name hidden behind a CNAME alias is shown as
+  "asked name (blocked via listed name)", and allowing the asked name now lifts the block. Lists kept on a USB
+  store are kept current (they were rejected after a reboot), and a skipped list rebuild is reported on the page.
+- **Wallguard page in tabs.** Overview (Fix a device, Pause with a 10-minute choice, Why?), Lists, Rules, Devices
+  (one row per device with its profile, blocked lookups in the last 15 minutes, Fix and Pause) and Activity.
+- **QoS defaults.** On a new or factory-reset router QoS is off (as before), and the HW QoS Classful profile now
+  starts Web/VoIP at a 90% ceiling instead of 100%. Routers that already have QoS rates keep their own.
 
 ## v3.7.9 — DNS Director works on guest networks again; VPN-bound guest networks keep DNS and IPv6 in the tunnel; AiMesh wired devices stay wired
 

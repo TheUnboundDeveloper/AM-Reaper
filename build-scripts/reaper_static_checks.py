@@ -642,8 +642,14 @@ def check_firstboot_wifi(router):
         bad.append("the Wi-Fi key and the new login password are not both autocomplete=new-password")
     if 'value="<% nvram_get("http_username"); %>"' in page:
         bad.append("the login name is prepopulated from nvram (must start empty)")
-    if 'oninput="lowerLogin(this)"' not in page or '"^[a-z0-9][a-z0-9' not in page:
-        bad.append("the login name is not lowercase-only (lowerLogin + lowercase regex)")
+    # 2026-11-15 (v3.7.9 field report: "only accepts lowercase letters"): the
+    # v3.3.2 lowercase-only rule was an owner preference with no technical need
+    # (httpd compares http_username exactly; stock Main_Password.asp accepts A-Z).
+    # The box now takes stock's rule; it must neither fold the name nor narrow it.
+    if "lowerLogin" in page or '"^[a-z0-9][a-z0-9' in page:
+        bad.append("the login name is folded or limited to lowercase again (stock accepts A-Z)")
+    if '"^[a-zA-Z0-9][a-zA-Z0-9\\-\\_]+$"' not in page:
+        bad.append("the login name is not validated with stock's chkLoginId rule (^[a-zA-Z0-9][a-zA-Z0-9-_]+$)")
     if 'name="action_wait" value="<% get_default_reboot_time(); %>"' not in page:
         bad.append("action_wait is not the model's reboot time (the hidden frame bounces back at 0)")
     if 'id="reboot_overlay"' not in page or "/httpd_check.xml" not in page:

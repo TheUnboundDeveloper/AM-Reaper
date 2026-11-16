@@ -1,0 +1,1893 @@
+From 9573f1315312ea4a49b39801ea297886258edcdf Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Sun, 15 Nov 2026 17:48:24 -0500
+Subject: [PATCH] Device names: one rule for Name and Hostname on every page
+
+- Name is the name the admin gave on the Devices page, the one master list. Hostname is what the
+  device sent, else the maker of its network card from a real MAC address, else Private-Address
+  for a randomized one. A page with one label shows Name, else Hostname. A DHCP reservation's name
+  is the device's DNS name and is labelled so.
+- DHCP Leases: Name and Hostname columns, devices active with an address set on the device listed,
+  Refresh shows it was pressed. Encrypted DNS, the dashboard, Devices, IPv6, LAN reservations,
+  Wake-on-LAN, Parental Controls and Gatekeeper follow the rule; the maker is never looked up for
+  a randomized MAC. Display only: every rule still keys on the MAC or address.
+- Diagnostics: the Names, DNS names and announced names join its redaction list. Texts in all 25
+  language packs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ release/src/router/httpd/Makefile          |   1 +
+ release/src/router/httpd/data_arrays.c     | 196 ++++++++-------
+ release/src/router/httpd/reaper_devname.c  | 270 +++++++++++++++++++++
+ release/src/router/httpd/reaper_devname.h  |  29 +++
+ release/src/router/httpd/web.c             | 270 ++++++++++++++++-----
+ release/src/router/others/reaper_diag      |   6 +
+ release/src/router/www/BR.dict             |   3 +
+ release/src/router/www/CN.dict             |   3 +
+ release/src/router/www/CZ.dict             |   3 +
+ release/src/router/www/DA.dict             |   3 +
+ release/src/router/www/DE.dict             |   3 +
+ release/src/router/www/EN.dict             |   3 +
+ release/src/router/www/ES.dict             |   3 +
+ release/src/router/www/FI.dict             |   3 +
+ release/src/router/www/FR.dict             |   3 +
+ release/src/router/www/HU.dict             |   3 +
+ release/src/router/www/IT.dict             |   3 +
+ release/src/router/www/JP.dict             |   3 +
+ release/src/router/www/KR.dict             |   3 +
+ release/src/router/www/MS.dict             |   3 +
+ release/src/router/www/Main_ReaperDash.asp |   7 +-
+ release/src/router/www/NL.dict             |   3 +
+ release/src/router/www/NO.dict             |   3 +
+ release/src/router/www/PL.dict             |   3 +
+ release/src/router/www/RO.dict             |   3 +
+ release/src/router/www/RU.dict             |   3 +
+ release/src/router/www/Reaper_Devices.asp  |   2 +-
+ release/src/router/www/Reaper_IPv6.asp     |  15 +-
+ release/src/router/www/Reaper_LAN.asp      |  21 +-
+ release/src/router/www/Reaper_Leases.asp   |  17 +-
+ release/src/router/www/Reaper_Parental.asp |   4 +-
+ release/src/router/www/Reaper_WOL.asp      |   6 +-
+ release/src/router/www/SL.dict             |   3 +
+ release/src/router/www/SV.dict             |   3 +
+ release/src/router/www/TH.dict             |   3 +
+ release/src/router/www/TR.dict             |   3 +
+ release/src/router/www/TW.dict             |   3 +
+ release/src/router/www/UK.dict             |   3 +
+ release/src/router/www/client_function.js  |   7 +
+ release/src/router/www/reaper_util.js      |  51 ++--
+ 40 files changed, 783 insertions(+), 194 deletions(-)
+ create mode 100644 release/src/router/httpd/reaper_devname.c
+ create mode 100644 release/src/router/httpd/reaper_devname.h
+
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index d224f6f33c..e4cbedeaf3 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -151,6 +151,7 @@ OBJS += web.o common.o nvram_f.o
+ OBJS += aspbw.o initial_web_hook.o
+ OBJS += reaper_inject.o	# reaper: serve-time theme injection
+ OBJS += reaper_survey.o	# reaper: Site Survey escan parser (Reaper_Survey.asp)
++OBJS += reaper_devname.o	# reaper 2026-11-15: one rule for every device label (Name / Hostname)
+ OBJS += reaper_rand.o	# reaper (review 2026-11-11, B-C2): rand() for every object in httpd, see the file
+ OBJS += apps.o
+ OBJS += sysinfo.o data_arrays.o web-broadcom-am.o
+diff --git a/release/src/router/httpd/data_arrays.c b/release/src/router/httpd/data_arrays.c
+index 000e9c7522..a2a30ee878 100644
+--- a/release/src/router/httpd/data_arrays.c
++++ b/release/src/router/httpd/data_arrays.c
+@@ -53,6 +53,7 @@
+ #include <linux/version.h>
+ 
+ #include "data_arrays.h"
++#include "reaper_devname.h"	/* reaper 2026-11-15: the device-label rule */
+ #include "httpd.h"
+ #include "iptraffic.h"
+ 
+@@ -116,119 +117,148 @@ static void lease_js_escape(char *out, size_t olen, const char *in)
+ 	out[o] = '\0';
+ }
+ 
+-static void lease_client_name(const char *mac, char *out, size_t olen)
++/* reaper 2026-11-15 (owner): the two columns of the DHCP Leases tab follow the device-label rule
++ * (httpd/reaper_devname.c): Hostname = what the client supplied, else the maker from its MAC, else "Private-Address";
++ * Name = only a name the admin gave (the Devices page name, else the reservation name). And a device that is active
++ * on a DHCP network (the neighbour table) while the router holds no lease for it - e.g. after a restart, before the
++ * device renews, when the saved lease files were not there yet - is listed too, with "-1" as its time left, so the
++ * page can say the router has no lease record for it. Rows: [seconds left, MAC, IPv4, hostname, (VLAN on
++ * MULTILAN builds), name]; the name is always last. Display only: Gatekeeper and every rule key on the MAC. */
++#define RLEASE_MAXIP	1024
++#define RLEASE_MAXNET	16
++
++struct rlease_net { char br[IFNAMSIZ]; int vlan; };
++
++static int rlease_seen(struct in_addr *ips, int n, struct in_addr a)
+ {
+-	char *buf, *tok, *sp = NULL;
++	int i;
++	for (i = 0; i < n; i++)
++		if (ips[i].s_addr == a.s_addr)
++			return 1;
++	return 0;
++}
+ 
+-	out[0] = '\0';
+-	if (!mac || !*mac)
+-		return;
+-	if ((buf = strdup(nvram_safe_get("custom_clientlist"))) == NULL)
+-		return;
+-	for (tok = strtok_r(buf, "<", &sp); tok; tok = strtok_r(NULL, "<", &sp)) {
+-		char *f1 = strchr(tok, '>'), *f2;
+-		if (!f1)
++static int rlease_row(webs_t wp, long left, const char *mac, const char *ip, const char *lease_host, int vlan)
++{
++	char host[RDN_NAME_MAX], name[RDN_NAME_MAX], host_esc[4 * RDN_NAME_MAX + 8], name_esc[4 * RDN_NAME_MAX + 8];
++
++	rdn_hostname(mac, lease_host, host, sizeof(host));
++	rdn_admin_name(mac, name, sizeof(name));
++	lease_js_escape(host_esc, sizeof(host_esc), host);
++	lease_js_escape(name_esc, sizeof(name_esc), name);
++#ifdef RTCONFIG_MULTILAN_CFG
++	return websWrite(wp, "[\"%ld\", \"%s\", \"%s\", \"%s\", \"%d\", \"%s\"],\n", left, mac, ip, host_esc, vlan, name_esc);
++#else
++	(void)vlan;
++	return websWrite(wp, "[\"%ld\", \"%s\", \"%s\", \"%s\", \"%s\"],\n", left, mac, ip, host_esc, name_esc);
++#endif
++}
++
++/* one lease file -> rows; the leased addresses are noted for the neighbour pass */
++static int rlease_file(webs_t wp, const char *path, int vlan, struct in_addr *ips, int *nips)
++{
++	FILE *fp;
++	char line[512], *hwaddr, *ipaddr, *name, *next;
++	struct in_addr addr4;
++	unsigned int expires;
++	int ret = 0;
++
++	if (!(fp = fopen(path, "r")))
++		return 0;
++	while ((next = fgets(line, sizeof(line), fp)) != NULL) {
++		/* line should start with a numeric value (the seconds left) */
++		if (sscanf(next, "%u ", &expires) != 1)
+ 			continue;
+-		*f1++ = '\0';			/* tok = name, f1 = MAC>rest */
+-		if ((f2 = strchr(f1, '>')) != NULL)
+-			*f2 = '\0';
+-		if (!strcasecmp(f1, mac)) {
+-			snprintf(out, olen, "%.32s", tok);
+-			break;
+-		}
++		strsep(&next, " ");
++		hwaddr = strsep(&next, " ") ? : "";
++		ipaddr = strsep(&next, " ") ? : "";
++		name = strsep(&next, " ") ? : "";
++		/* IPv6 leases have no hardware address; only IPv4 rows */
++		if (inet_pton(AF_INET, ipaddr, &addr4) != 1 || strlen(hwaddr) != 17)
++			continue;
++		if (*nips < RLEASE_MAXIP)
++			ips[(*nips)++] = addr4;
++		ret += rlease_row(wp, (long)expires, hwaddr, ipaddr, name, vlan);
+ 	}
+-	free(buf);
++	fclose(fp);
++	return ret;
+ }
+ 
+ int
+ ej_get_leases_array(int eid, webs_t wp, int argc, char_t **argv)
+ {
++	struct in_addr *ips = calloc(RLEASE_MAXIP, sizeof(struct in_addr));
++	struct rlease_net nets[RLEASE_MAXNET];
++	int nnets = 0, nips = 0, ret = 0;
+ 	FILE *fp;
+-	struct in_addr addr4;
+-	struct in6_addr addr6;
+-	char line[256];
+-	char *hwaddr, *ipaddr, *name, *next;
+-	/* reaper: the lease hostname is attacker-controlled (any LAN client picks its
+-	 * own DHCP hostname) and was written raw into a JS array literal - one quote
+-	 * in a hostname broke the whole array and blanked the page. Both fields cap at
+-	 * 32 chars and lease_js_escape() expands at most 4x, so 160 is generous. */
+-	char devname[33], devname_esc[160], name_esc[160];
+-	unsigned int expires;
+-	int ret=0;
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	MTLAN_T *pmtl = NULL;
+ 	size_t mtl_sz = 0;
+-	int i, vlanid = 0;
+-	char path[128] = {0};
++	int i;
++	char path[128];
+ #endif
+ 
++	if (!ips)
++		return websWrite(wp, "leasearray= [[]];\n");
++	/* the lease files carry the time left once dnsmasq has been asked (HAVE_LEASEFILE_EXPIRE) */
+ 	killall("dnsmasq", SIGUSR2);
+ 	sleep(1);
+ 
+ 	ret += websWrite(wp, "leasearray= [");
+-
+ #ifdef RTCONFIG_MULTILAN_CFG
+ 	pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
+ 	if (pmtl) {
+ 		get_mtlan(pmtl, &mtl_sz);
+-		for (i = 0; i < mtl_sz; i++) {
+-			if (pmtl[i].enable && pmtl[i].nw_t.dhcp_enable) {
+-				if (i) {
+-					snprintf(path, sizeof(path), "/var/lib/misc/dnsmasq-%d.leases", pmtl[i].sdn_t.sdn_idx);
+-					vlanid = pmtl[i].vid;
+-				} else
+-					strlcpy(path, "/var/lib/misc/dnsmasq.leases", sizeof(path));
+-				fp = fopen(path, "r");
+-				if (!fp) continue;
+-#else
+-	if (!(fp = fopen("/var/lib/misc/dnsmasq.leases", "r")))
+-		return ret + websWrite(wp, "];\n");
+-#endif
+-
+-	while ((next = fgets(line, sizeof(line), fp)) != NULL) {
+-		/* line should start with a numeric value */
+-		if (sscanf(next, "%u ", &expires) != 1)
+-			continue;
+-
+-		strsep(&next, " ");
+-		hwaddr = strsep(&next, " ") ? : "";
+-		ipaddr = strsep(&next, " ") ? : "";
+-		name = strsep(&next, " ") ? : "";
+-
+-		if (strlen(name) > 32) {
+-			strcpy(name + 29, "...");
+-			name[32] = '\0';
++		for (i = 0; i < (int)mtl_sz; i++) {
++			int vlan = i ? pmtl[i].vid : 0;
++			if (!pmtl[i].enable || !pmtl[i].nw_t.dhcp_enable)
++				continue;
++			if (i)
++				snprintf(path, sizeof(path), "/var/lib/misc/dnsmasq-%d.leases", pmtl[i].sdn_t.sdn_idx);
++			else
++				strlcpy(path, "/var/lib/misc/dnsmasq.leases", sizeof(path));
++			ret += rlease_file(wp, path, vlan, ips, &nips);
++			if (nnets < RLEASE_MAXNET && pmtl[i].nw_t.br_ifname[0]) {
++				strlcpy(nets[nnets].br, pmtl[i].nw_t.br_ifname, sizeof(nets[nnets].br));
++				nets[nnets++].vlan = vlan;
++			}
+ 		}
+-
+-		if (inet_pton(AF_INET6, ipaddr, &addr6) != 0) {
+-			/* skip ipv6 leases, they have no hwaddr, but client id */
+-			// hwaddr = next ? : "";
+-			continue;
+-		} else if (inet_pton(AF_INET, ipaddr, &addr4) == 0)
+-			continue;
+-
+-		/* reaper: admin-assigned name, appended as the LAST field of the row so
+-		 * the existing column indices (and the MULTILAN vlanid slot) are unchanged;
+-		 * the page pops it off before building the Device Name cell. */
+-		lease_client_name(hwaddr, devname, sizeof(devname));
+-		lease_js_escape(devname_esc, sizeof(devname_esc), devname);
+-		lease_js_escape(name_esc, sizeof(name_esc), name);
+-#ifdef RTCONFIG_MULTILAN_CFG
+-		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\", \"%d\", \"%s\"],\n", expires, hwaddr, ipaddr, name_esc, vlanid, devname_esc);
++		FREE_MTLAN((void *)pmtl);
++	}
+ #else
+-		ret += websWrite(wp, "[\"%d\", \"%s\", \"%s\", \"%s\", \"%s\"],\n", expires, hwaddr, ipaddr, name_esc, devname_esc);
+-#endif
++	ret += rlease_file(wp, "/var/lib/misc/dnsmasq.leases", 0, ips, &nips);
++	if (nvram_get_int("dhcp_enable_x") || !nvram_get("dhcp_enable_x")) {
++		strlcpy(nets[0].br, nvram_safe_get("lan_ifname"), sizeof(nets[0].br));
++		nets[0].vlan = 0;
++		nnets = nets[0].br[0] ? 1 : 0;
+ 	}
+-	fclose(fp);
+-
+-#ifdef RTCONFIG_MULTILAN_CFG
++#endif
++	/* active on a DHCP network, no lease the router knows of: listed with -1 */
++	if (nnets && (fp = fopen("/proc/net/arp", "r")) != NULL) {
++		char line[256], ip[INET_ADDRSTRLEN], mac[32], dev[IFNAMSIZ + 1];
++		unsigned int flags;
++		struct in_addr a;
++		int k, shown = 0;
++
++		if (fgets(line, sizeof(line), fp)) {	/* the header */
++			while (shown < RLEASE_MAXIP && fgets(line, sizeof(line), fp)) {
++				if (sscanf(line, "%15s %*s %x %31s %*s %16s", ip, &flags, mac, dev) != 4)
++					continue;
++				if (!(flags & 0x2) || strlen(mac) != 17 || !strcmp(mac, "00:00:00:00:00:00") ||
++				    inet_pton(AF_INET, ip, &a) != 1 || rlease_seen(ips, nips, a))
++					continue;
++				for (k = 0; k < nnets && strcmp(nets[k].br, dev); k++)
++					;
++				if (k == nnets)
++					continue;
++				ret += rlease_row(wp, -1, mac, ip, "", nets[k].vlan);
++				shown++;
+ 			}
+ 		}
+-		FREE_MTLAN((void *)pmtl);
++		fclose(fp);
+ 	}
+-#endif
++	free(ips);
+ 	ret += websWrite(wp, "[]];\n");
+-
+ 	return ret;
+ }
+ 
+diff --git a/release/src/router/httpd/reaper_devname.c b/release/src/router/httpd/reaper_devname.c
+new file mode 100644
+index 0000000000..55b9d7a610
+--- /dev/null
++++ b/release/src/router/httpd/reaper_devname.c
+@@ -0,0 +1,270 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_devname.c - one rule for every device label httpd prints (owner, 2026-11-15).
++ *
++ *   Name     = the name the network admin GAVE the device: the Devices page name (nvram custom_clientlist), the
++ *              one master Name list. The name typed with a DHCP reservation (dhcp_staticlist, 4th field) is the
++ *              device's DNS name (dnsmasq dhcp-host, /etc/hosts), not a Name (owner, 2026-11-15).
++ *   Hostname = what the CLIENT supplied (DHCP option 12, kept raw by shared/reaper_dhcpname.c; the lease file's name
++ *              only when it is not the reservation name - dnsmasq writes a reserved device's reservation name
++ *              there), else the manufacturer from the MAC prefix for a universally administered MAC, else
++ *              "Private-Address" for a locally administered (randomized / private) MAC.
++ *   A surface with one label shows Name if set, else Hostname. A surface with both shows each in its own column.
++ *
++ * Display only: nothing here is used to match, allow or block a device - Gatekeeper, the rules engine, Wallguard,
++ * QoS and DNS Director all key on the MAC / address. The OUI table is the one the image already ships for the stock
++ * network map ("XXXXXX":"Maker" records, sorted by prefix); it is mapped read-only and binary-searched in place by
++ * record (about 16 probes), never copied into httpd's memory.
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <ctype.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++
++#include <bcmnvram.h>
++#include <shared.h>
++#include "reaper_devname.h"
++
++/* networkmap's table (one JSON line, the image's only copy: www/ajax/ouiDB.json links to it); a tree whose networkmap
++   ships none keeps the www copy (one record per line). Both are searched the same way: by record, not by line. */
++#define RDN_OUI_FILE	"/usr/networkmap/ieee.oui.json"
++#define RDN_OUI_FILE2	"/www/ajax/ouiDB.json"
++
++/* "aa:bb:cc:dd:ee:ff" in either case -> 1, and the 12 hex digits upper-case into hex (13 bytes) */
++static int rdn_mac_hex(const char *mac, char *hex)
++{
++	int i, j = 0;
++
++	if (!mac || strlen(mac) != 17)
++		return 0;
++	for (i = 0; i < 17; i++) {
++		if (i % 3 == 2) {
++			if (mac[i] != ':' && mac[i] != '-')
++				return 0;
++			continue;
++		}
++		if (!isxdigit((unsigned char)mac[i]))
++			return 0;
++		hex[j++] = (char)toupper((unsigned char)mac[i]);
++	}
++	hex[j] = 0;
++	return 1;
++}
++
++/* copy a label: printable ASCII and UTF-8 bytes, no control characters, at most n-1 bytes, never a partial
++   UTF-8 sequence at the end */
++static void rdn_copy(char *out, size_t n, const char *s, size_t len)
++{
++	size_t o = 0, i;
++
++	if (!n)
++		return;
++	for (i = 0; i < len && s[i] && o + 1 < n; i++) {
++		unsigned char c = (unsigned char)s[i];
++		if (c < 0x20 || c == 0x7f)
++			continue;
++		out[o++] = (char)c;
++	}
++	while (o > 0 && ((unsigned char)out[o - 1] & 0xc0) == 0x80)
++		o--;			/* a cut UTF-8 continuation: back to the lead byte ... */
++	if (o > 0 && ((unsigned char)out[o - 1] & 0xc0) == 0xc0)
++		o--;			/* ... and drop it */
++	while (o > 0 && out[o - 1] == ' ')
++		o--;
++	out[o] = 0;
++}
++
++int rdn_mac_private(const char *mac)
++{
++	char hex[13];
++
++	return rdn_mac_hex(mac, hex) && (strtol((char[]){ hex[0], hex[1], 0 }, NULL, 16) & 0x02);
++}
++
++/* the record of mac in a '<'-separated list whose field fi (0-based, '>'-separated) is the MAC; field fo copied */
++static int rdn_list_field(const char *list, int fi, int fo, const char *mac, char *out, size_t n)
++{
++	char *b, *rec, *sv = NULL;
++	int found = 0;
++
++	out[0] = 0;
++	if (!list || !*list || !(b = strdup(list)))
++		return 0;
++	for (rec = strtok_r(b, "<", &sv); rec && !found; rec = strtok_r(NULL, "<", &sv)) {
++		char *f[8] = { 0 }, *p = rec;
++		int k = 0;
++		while (k < 8) {
++			f[k++] = p;
++			if (!(p = strchr(p, '>')))
++				break;
++			*p++ = 0;
++		}
++		if (fi < k && fo < k && f[fi] && f[fo] && !strcasecmp(f[fi], mac) && *f[fo]) {
++			rdn_copy(out, n, f[fo], strlen(f[fo]));
++			found = out[0] != 0;
++		}
++	}
++	free(b);
++	return found;
++}
++
++static int rdn_resv_name(const char *mac, char *out, size_t n)
++{
++	return rdn_list_field(nvram_safe_get("dhcp_staticlist"), 0, 3, mac, out, n);
++}
++
++int rdn_admin_name(const char *mac, char *out, size_t n)
++{
++	char hex[13];
++
++	out[0] = 0;
++	if (!rdn_mac_hex(mac, hex))
++		return 0;
++	return rdn_list_field(nvram_safe_get("custom_clientlist"), 1, 0, mac, out, n);
++}
++
++int rdn_client_host(const char *mac, const char *lease_host, char *out, size_t n)
++{
++	char resv[RDN_NAME_MAX];
++
++	out[0] = 0;
++	if (reaper_dhcpname_get(mac, out, n) && out[0]) {
++		char t[RDN_NAME_MAX];
++		rdn_copy(t, sizeof(t), out, strlen(out));
++		snprintf(out, n, "%s", t);
++		return out[0] != 0;
++	}
++	out[0] = 0;
++	if (!lease_host || !*lease_host || !strcmp(lease_host, "*"))
++		return 0;
++	/* dnsmasq gives a reserved device its reservation name in the lease file: that is the admin's, not the client's */
++	if (rdn_resv_name(mac, resv, sizeof(resv)) && !strcasecmp(resv, lease_host))
++		return 0;
++	rdn_copy(out, n, lease_host, strlen(lease_host));
++	return out[0] != 0;
++}
++
++/* the OUI table, mapped once; remapped when the file changes (a firmware update replaces the whole image anyway) */
++static const char *oui_map;
++static size_t oui_len;
++static ino_t oui_ino;
++static time_t oui_mtime;
++
++static int rdn_oui_open(void)
++{
++	struct stat st;
++	const char *path = RDN_OUI_FILE;
++	int fd;
++
++	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 16) {
++		path = RDN_OUI_FILE2;
++		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 16)
++			return 0;
++	}
++	if (oui_map && st.st_ino == oui_ino && st.st_mtime == oui_mtime)
++		return 1;
++	if (oui_map) {
++		munmap((void *)oui_map, oui_len);
++		oui_map = NULL;
++	}
++	if ((fd = open(path, O_RDONLY)) < 0)
++		return 0;
++	oui_map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
++	close(fd);
++	if (oui_map == MAP_FAILED) {
++		oui_map = NULL;
++		return 0;
++	}
++	oui_len = (size_t)st.st_size;
++	oui_ino = st.st_ino;
++	oui_mtime = st.st_mtime;
++	return 1;
++}
++
++/* a record "XXXXXX":"Maker" starts at i: a quote after '{', ',' or a line break, six hex digits, then ":" */
++static int oui_key(size_t i, char *key)
++{
++	int k;
++
++	if (i + 10 > oui_len || oui_map[i] != '"' || (i > 0 && oui_map[i - 1] != '{' && oui_map[i - 1] != ',' && oui_map[i - 1] != 10) ||
++	    oui_map[i + 7] != '"' || oui_map[i + 8] != ':' || oui_map[i + 9] != '"')
++		return 0;
++	for (k = 0; k < 6; k++) {
++		if (!isxdigit((unsigned char)oui_map[i + 1 + k]))
++			return 0;
++		key[k] = (char)toupper((unsigned char)oui_map[i + 1 + k]);
++	}
++	key[6] = 0;
++	return 1;
++}
++
++/* the first record starting at or after p (oui_len if none) */
++static size_t oui_next(size_t p, char *key)
++{
++	for (; p < oui_len; p++)
++		if (oui_map[p] == '"' && oui_key(p, key))
++			return p;
++	return oui_len;
++}
++
++int rdn_oui(const char *mac, char *out, size_t n)
++{
++	char hex[13], want[7], key[7];
++	size_t lo = 0, hi, mid, r, v, e;
++	int c;
++
++	out[0] = 0;
++	if (!rdn_mac_hex(mac, hex) || rdn_mac_private(mac) || !rdn_oui_open())
++		return 0;
++	memcpy(want, hex, 6);
++	want[6] = 0;
++	hi = oui_len;
++	/* invariant: a record for want, if any, starts in [lo, hi) */
++	while (lo < hi) {
++		mid = lo + (hi - lo) / 2;
++		r = oui_next(mid, key);
++		if (r >= hi) {
++			hi = mid;		/* no record starts in [mid, hi) */
++			continue;
++		}
++		c = strcmp(key, want);
++		if (c == 0) {
++			v = r + 10;		/* after "XXXXXX":" */
++			for (e = v; e < oui_len && oui_map[e] != '"' && oui_map[e] != 10; e++)
++				;
++			if (e < oui_len && oui_map[e] == '"')
++				rdn_copy(out, n, oui_map + v, e - v);
++			return out[0] != 0;
++		}
++		if (c < 0)
++			lo = r + 1;
++		else
++			hi = r;
++	}
++	return 0;
++}
++
++void rdn_hostname(const char *mac, const char *lease_host, char *out, size_t n)
++{
++	if (rdn_client_host(mac, lease_host, out, n))
++		return;
++	if (rdn_oui(mac, out, n))
++		return;
++	if (rdn_mac_private(mac))
++		snprintf(out, n, "%s", RDN_PRIVATE);
++	else
++		out[0] = 0;
++}
++
++void rdn_label(const char *mac, const char *lease_host, char *out, size_t n)
++{
++	if (!rdn_admin_name(mac, out, n))
++		rdn_hostname(mac, lease_host, out, n);
++}
+diff --git a/release/src/router/httpd/reaper_devname.h b/release/src/router/httpd/reaper_devname.h
+new file mode 100644
+index 0000000000..ea2c3900b9
+--- /dev/null
++++ b/release/src/router/httpd/reaper_devname.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (C) 2026 the Reaper project maintainer
++ * Part of the Reaper hardened Asuswrt-Merlin build. See LICENSE / LICENSE.reaper.
++ *
++ * reaper_devname.h - one rule for every device label httpd prints (owner, 2026-11-15; see reaper_devname.c).
++ */
++#ifndef REAPER_DEVNAME_H
++#define REAPER_DEVNAME_H
++
++#include <stddef.h>
++
++#define RDN_NAME_MAX	64	/* a label, NUL included; every producer bounds its own copy too */
++#define RDN_PRIVATE	"Private-Address"	/* owner's wording: no hostname from a randomized (private) MAC */
++
++/* the admin-given Name: the Devices page name (the one master list; a reservation's name is a DNS name). 1 found, 0 "". */
++int rdn_admin_name(const char *mac, char *out, size_t n);
++/* the hostname the CLIENT supplied: its announced name (DHCP option 12, raw), else the lease file's name unless that
++   is the reservation name dnsmasq wrote there. lease_host may be NULL / "" / "*". 1 found, 0 "". */
++int rdn_client_host(const char *mac, const char *lease_host, char *out, size_t n);
++/* the manufacturer of a universally administered MAC (OUI table). 1 found, 0 "" (private MAC, or not listed). */
++int rdn_oui(const char *mac, char *out, size_t n);
++/* 1 = a locally administered (randomized / private) MAC */
++int rdn_mac_private(const char *mac);
++/* the Hostname: client-supplied, else the manufacturer (real MAC), else "Private-Address" (private MAC), else "" */
++void rdn_hostname(const char *mac, const char *lease_host, char *out, size_t n);
++/* the one label a single-name surface shows: Name if the admin gave one, else the Hostname */
++void rdn_label(const char *mac, const char *lease_host, char *out, size_t n);
++
++#endif
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index b3485661cb..bd1783b9fe 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -48,6 +48,7 @@
+ #include <sys/wait.h>
+ #include <poll.h>		/* reaper 2026-10-25: the Network Tools worker waits on its pipe (Q-B-11) */
+ #include "reaper_survey.h"	/* reaper: Site Survey escan parser (Reaper_Survey.asp) */
++#include "reaper_devname.h"	/* reaper 2026-11-15: one rule for every device label (Name / Hostname) */
+ #include <sys/mman.h>
+ #include "reaper_store.h"	/* reaper 2026-10-18: the pinned USB store volume (Reaper_Storage.asp) */
+ #include "reaper_fwlog.h"	/* reaper 2026-11-08: the firewall log collector (rflogd) and the log path */
+@@ -26183,55 +26184,16 @@ gk_client_name(const char *mac, char *name, size_t nlen)
+ 	}
+ }
+ 
+-/* v3.1.1: networkmap's own label for a MAC - /jffs/nmp_cl_json.js "name", which
+- * is the lease hostname when it has one, else the DHCP vendor class, else the OUI
+- * vendor: the name the stock network map shows for a device that announces no
+- * hostname (a printer, a Fire TV, a hub). The LAST fallback, after the user's
+- * name, the lease file and the announced-name store. The file is re-parsed only
+- * when networkmap rewrote it (mtime/size), one parse per change not per device. */
+-static int
+-gk_nmp_name(const char *mac, char *out, size_t n)
+-{
+-	static json_object *cache = NULL;
+-	static time_t cmtime = 0;
+-	static off_t csize = -1;
+-	struct stat st;
+-	json_object *ent = NULL, *nm = NULL;
+-	const char *s;
+-	char umac[18];
+-	int i;
+-
+-	if (!out || n < 2) return 0;
+-	out[0] = 0;
+-	if (!mac || strlen(mac) != 17) return 0;
+-	if (stat(NMP_CL_JSON_FILE, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+-	if (!cache || st.st_mtime != cmtime || st.st_size != csize) {
+-		if (cache) json_object_put(cache);
+-		cache = json_object_from_file(NMP_CL_JSON_FILE);
+-		cmtime = st.st_mtime;
+-		csize = st.st_size;
+-		if (cache && !json_object_is_type(cache, json_type_object)) { json_object_put(cache); cache = NULL; }
+-	}
+-	if (!cache) return 0;
+-	for (i = 0; i < 17; i++) umac[i] = toupper((unsigned char)mac[i]);
+-	umac[17] = 0;
+-	if (!json_object_object_get_ex(cache, umac, &ent) || !ent) return 0;
+-	if (!json_object_object_get_ex(ent, "name", &nm) || !nm) return 0;
+-	s = json_object_get_string(nm);
+-	if (!s || !*s) return 0;
+-	snprintf(out, n, "%.32s", s);
+-	return 1;
+-}
++/* 2026-11-15: gk_nmp_name (networkmap's label - often a DHCP vendor class such as "MSFT 5.0") removed: labels follow
++ * the owner's device-label rule in reaper_devname.c (Name, else the device's hostname, else the maker, else Private-Address) */
+ 
+ /* the display chain for a Gatekeeper row: the user's name, the lease / seen-
+  * table hostname, the announced hostname, then networkmap's vendor label */
+ static void
+ gk_display_name(const char *mac, const char *host, char *name, size_t nlen)
+ {
+-	gk_client_name(mac, name, nlen);
+-	if (!name[0] && host && host[0]) snprintf(name, nlen, "%s", host);
+-	if (!name[0]) reaper_dhcpname_get(mac, name, nlen);
+-	if (!name[0]) gk_nmp_name(mac, name, nlen);
++	/* 2026-11-15 (owner): the one device-label rule - the admin's Name, else the Hostname (reaper_devname.c) */
++	rdn_label(mac, host, name, nlen);
+ }
+ 
+ #define GK_SEEN_TSV "/tmp/gk/seen.tsv"
+@@ -28165,10 +28127,42 @@ static void renc_plain_scan(char list[][INET6_ADDRSTRLEN], int *cnt)
+ 	fclose(f);
+ }
+ 
++/* 2026-11-15: a label goes into the JSON unescaped, so it may hold letters, digits, space . _ - ( ) , & only
++   (a maker such as "Alpha Networks Inc." or "Hon Hai Precision Ind. Co.,Ltd." passes; anything else is left out) */
++static int renc_name_ok(const char *s)
++{
++	int k;
++
++	for (k = 0; s[k]; k++)
++		if (!isalnum((unsigned char)s[k]) && !strchr(" ._-(),&", s[k]))
++			return 0;
++	return k > 0;
++}
++#define RENC_NAMED_MAX 128
++static int renc_named_has(char (*named)[INET6_ADDRSTRLEN], int n, const char *a)
++{
++	int i;
++
++	for (i = 0; i < n; i++)
++		if (!strcmp(named[i], a))
++			return 1;
++	return 0;
++}
++/* 1 = first label for this address (a device in two lease files is named once) */
++static int renc_named_add(char (*named)[INET6_ADDRSTRLEN], int *n, const char *a)
++{
++	if (renc_named_has(named, *n, a) || *n >= RENC_NAMED_MAX)
++		return 0;
++	strlcpy(named[(*n)++], a, INET6_ADDRSTRLEN);
++	return 1;
++}
++
+ static void renc_devices(FILE *stream, const char *st)
+ {
+ 	static char plain[RENC_PLAIN_MAX][INET6_ADDRSTRLEN];
++	static char named[RENC_NAMED_MAX][INET6_ADDRSTRLEN];
+ 	static int nplain;
++	int nnamed = 0;
+ 	static long last = -1000;
+ 	long now = (long)uptime();
+ 	struct dirent *de;
+@@ -28183,9 +28177,13 @@ static void renc_devices(FILE *stream, const char *st)
+ 	for (i = 0; i < nplain; i++)
+ 		websWrite(stream, "%s\"%s\"", i ? "," : "", plain[i]);
+ 	websWrite(stream, "],\"names\":{");
++	/* 2026-11-15 (owner): each device's one label (httpd/reaper_devname.c): the admin's Name, else its Hostname - the
++	   lease gives the MAC; a device the router holds no lease for (after a restart, before it renews) is found by
++	   its address in the neighbour table below. Names emitted: letters, digits, space . _ - only (no escaping). */
+ 	if ((dir = opendir("/var/lib/misc")) != NULL) {
+ 		while ((de = readdir(dir)) != NULL && shown < 128) {
+-			char path[300], line[512], ip[INET6_ADDRSTRLEN], a[INET6_ADDRSTRLEN], host[64], key[INET6_ADDRSTRLEN + 3];
++			char path[300], line[512], ip[INET6_ADDRSTRLEN], a[INET6_ADDRSTRLEN], mac[32], host[64], lab[RDN_NAME_MAX],
++			     key[INET6_ADDRSTRLEN + 3];
+ 			unsigned char raw[16];
+ 			size_t l = strlen(de->d_name);
+ 			int fam, k;
+@@ -28198,26 +28196,50 @@ static void renc_devices(FILE *stream, const char *st)
+ 			if (!(f = fopen(path, "r")))
+ 				continue;
+ 			while (shown < 128 && fgets(line, sizeof(line), f)) {
+-				if (sscanf(line, "%*s %*s %45s %63s", ip, host) != 2 || !strcmp(host, "*"))
++				if (sscanf(line, "%*s %31s %45s %63s", mac, ip, host) != 3)
+ 					continue;
+ 				if (!renc_addr_norm(ip, strlen(ip), a, sizeof(a), &fam, raw))
+ 					continue;
+-				for (k = 0; host[k]; k++)
+-					if (!isalnum((unsigned char)host[k]) && !strchr("._-", host[k]))
+-						break;
+-				if (host[k] || !k)
+-					continue;
+ 				for (k = 0; k < nplain && strcmp(plain[k], a); k++)
+ 					;
+ 				snprintf(key, sizeof(key), "\"%s\"", a);
+ 				if (k == nplain && !strstr(st, key))
+ 					continue;
+-				websWrite(stream, "%s%s:\"%s\"", shown++ ? "," : "", key, host);
++				if (strlen(mac) == 17)
++					rdn_label(mac, host, lab, sizeof(lab));
++				else	/* a DHCPv6 lease names no MAC (an IAID there): its lease name, as before */
++					strlcpy(lab, strcmp(host, "*") ? host : "", sizeof(lab));
++				if (renc_name_ok(lab) && renc_named_add(named, &nnamed, a))
++					websWrite(stream, "%s%s:\"%s\"", shown++ ? "," : "", key, lab);
+ 			}
+ 			fclose(f);
+ 		}
+ 		closedir(dir);
+ 	}
++	/* addresses with no lease line: the neighbour table gives the MAC (IPv4) */
++	{
++		FILE *f = fopen("/proc/net/arp", "r");
++		char line[256], ip[INET_ADDRSTRLEN], mac[32], key[INET6_ADDRSTRLEN + 3], lab[RDN_NAME_MAX];
++		unsigned int flags;
++		int k;
++
++		if (f && fgets(line, sizeof(line), f)) {
++			while (shown < 128 && fgets(line, sizeof(line), f)) {
++				if (sscanf(line, "%15s %*s %x %31s", ip, &flags, mac) != 3 || !(flags & 0x2) || strlen(mac) != 17)
++					continue;
++				for (k = 0; k < nplain && strcmp(plain[k], ip); k++)
++					;
++				snprintf(key, sizeof(key), "\"%s\"", ip);
++				if ((k == nplain && !strstr(st, key)) || renc_named_has(named, nnamed, ip))
++					continue;
++				rdn_label(mac, "", lab, sizeof(lab));
++				if (renc_name_ok(lab) && renc_named_add(named, &nnamed, ip))
++					websWrite(stream, "%s%s:\"%s\"", shown++ ? "," : "", key, lab);
++			}
++		}
++		if (f)
++			fclose(f);
++	}
+ 	websWrite(stream, "}");
+ }
+ 
+@@ -28273,6 +28295,121 @@ static void renc_rejects(const char *cmd, unsigned long long *p853, unsigned lon
+ 	pclose(p);
+ }
+ 
++/* 2026-11-15 (owner): every device label in the web UI follows one rule (httpd/reaper_devname.c). The pages' shared
++ * name helper (www/reaper_util.js ReaperNames) reads this with get_clientlist() in one appGet request:
++ *   "reaper_devnames":{"<MAC>":{"n":"<Name>","h":"<Hostname>","ip":"<IPv4>"},...}
++ * n = the admin's Name (the Devices page list - the one master list), h = what the device announces, else the maker
++ * of a real MAC, else "Private-Address"; ip = its current IPv4 address when the router knows it (lease, else the
++ * neighbour table). Devices listed: every MAC in the master list, in a lease file, in the neighbour table on a LAN
++ * bridge, or in the announced-name store. Display only - nothing here allows or blocks anything. */
++#define RDN_FEED_MAX 512
++struct rdn_feed { char mac[18]; char ip[INET_ADDRSTRLEN]; char lh[64]; };
++
++static int rdn_feed_find(struct rdn_feed *f, int n, const char *mac)
++{
++	int i;
++	for (i = 0; i < n; i++)
++		if (!strcasecmp(f[i].mac, mac))
++			return i;
++	return -1;
++}
++
++/* add mac (upper case) once; ip / lease name filled when given and still empty */
++static int rdn_feed_add(struct rdn_feed *f, int *n, const char *mac, const char *ip, const char *lh)
++{
++	int i, k;
++
++	if (!mac || strlen(mac) != 17 || mac[2] != ':' || mac[5] != ':' || mac[8] != ':' || mac[11] != ':' || mac[14] != ':')
++		return -1;
++	if ((i = rdn_feed_find(f, *n, mac)) < 0) {
++		if (*n >= RDN_FEED_MAX)
++			return -1;
++		i = (*n)++;
++		memset(&f[i], 0, sizeof(f[i]));
++		for (k = 0; k < 17; k++)
++			f[i].mac[k] = (char)toupper((unsigned char)mac[k]);
++	}
++	if (ip && *ip && !f[i].ip[0])
++		strlcpy(f[i].ip, ip, sizeof(f[i].ip));
++	if (lh && *lh && strcmp(lh, "*") && !f[i].lh[0])
++		strlcpy(f[i].lh, lh, sizeof(f[i].lh));
++	return i;
++}
++
++static int
++ej_reaper_devnames(int eid, webs_t wp, int argc, char_t **argv)
++{
++	struct rdn_feed *f = calloc(RDN_FEED_MAX, sizeof(*f));
++	char line[512], a[64], b[64], c[64], name[RDN_NAME_MAX], host[RDN_NAME_MAX];
++	unsigned int flags;
++	int n = 0, i;
++	FILE *fp;
++	DIR *d;
++	struct dirent *de;
++	char *list, *rec, *sv = NULL;
++
++	if (!f)
++		return websWrite(wp, "{}");
++	/* leases first: they carry the address and the lease name */
++	if ((d = opendir("/var/lib/misc")) != NULL) {
++		while ((de = readdir(d)) != NULL) {
++			if (!reaper_leases_name_ok(de->d_name) || !strcmp(de->d_name, "reaper_hostnames"))
++				continue;
++			snprintf(line, sizeof(line), "/var/lib/misc/%s", de->d_name);
++			if (!(fp = fopen(line, "r")))
++				continue;
++			while (fgets(line, sizeof(line), fp))
++				if (sscanf(line, "%*u %63s %63s %63s", a, b, c) == 3) {
++					struct in_addr x;
++					if (inet_pton(AF_INET, b, &x) == 1)
++						rdn_feed_add(f, &n, a, b, c);
++				}
++			fclose(fp);
++		}
++		closedir(d);
++	}
++	/* the neighbour table: active devices on a LAN bridge (also those the router holds no lease for) */
++	if ((fp = fopen("/proc/net/arp", "r")) != NULL) {
++		if (fgets(line, sizeof(line), fp))
++			while (fgets(line, sizeof(line), fp))
++				if (sscanf(line, "%63s %*s %x %63s %*s %63s", b, &flags, a, c) == 4 && (flags & 0x2) && !strncmp(c, "br", 2) &&
++				    strcmp(a, "00:00:00:00:00:00"))
++					rdn_feed_add(f, &n, a, b, NULL);
++		fclose(fp);
++	}
++	/* the master Name list and the announced-name store: devices that are not on the network now */
++	if ((list = strdup(nvram_safe_get("custom_clientlist"))) != NULL) {
++		for (rec = strtok_r(list, "<", &sv); rec; rec = strtok_r(NULL, "<", &sv)) {
++			char *m = strchr(rec, '>'), *e;
++			if (!m)
++				continue;
++			m++;
++			if ((e = strchr(m, '>')) != NULL)
++				*e = 0;
++			rdn_feed_add(f, &n, m, NULL, NULL);
++		}
++		free(list);
++	}
++	if ((fp = fopen("/var/lib/misc/reaper_hostnames", "r")) != NULL) {
++		while (fgets(line, sizeof(line), fp))
++			if (sscanf(line, "%63[^\t]", a) == 1)
++				rdn_feed_add(f, &n, a, NULL, NULL);
++		fclose(fp);
++	}
++	websWrite(wp, "{");
++	for (i = 0; i < n; i++) {
++		rdn_admin_name(f[i].mac, name, sizeof(name));
++		rdn_hostname(f[i].mac, f[i].lh, host, sizeof(host));
++		websWrite(wp, "%s\"%s\":{\"n\":", i ? "," : "", f[i].mac);
++		gk_json_esc(wp, name);
++		websWrite(wp, ",\"h\":");
++		gk_json_esc(wp, host);
++		websWrite(wp, ",\"ip\":\"%s\"}", f[i].ip);
++	}
++	free(f);
++	return websWrite(wp, "}");
++}
++
+ static void
+ do_reaper_encdns_cgi(char *url, FILE *stream)
+ {
+@@ -31743,7 +31880,7 @@ struct rdev {
+ 	int  bandmask;		/* bands linked on: 1=2.4 2=5 4=6 */
+ 	int  node;		/* AiMesh RE node: its re_path (uplink type), 0 = not a node */
+ 	int  bh_sta;		/* this MAC is a node's BACKHAUL station, not a device - folded */
+-	int  host_vendor;	/* host is networkmap's vendor label, not a hostname (v3.1.1) */
++	int  host_vendor;	/* 1 = host is the maker of the MAC, 2 = "Private-Address" - not a name the device sent (2026-11-15) */
+ 	char via[18];		/* v3.3.1: LAN MAC of the AiMesh node - or this router - the
+ 				 * device hangs off; "" = not placed. Spelled like
+ 				 * get_cfg_clientlist()'s "mac", which is what the topology
+@@ -33080,16 +33217,24 @@ static void rdev_collect(void)
+ 			snprintf(dev[idx].ip, sizeof(dev[0].ip), "%s", seen[i].ip);
+ 	}
+ 
+-	/* 7. v3.1.1: a host the lease file could not give - the announced hostname
+-	 * (a device that lost a name clash reads "*" in the leases), then
+-	 * networkmap's vendor label for a device that announces no name at all.
+-	 * Same chain as the Gatekeeper page; the vendor case is flagged so the
+-	 * page labels its source honestly. */
++	/* 7. 2026-11-15 (owner's device-label rule, httpd/reaper_devname.c): the Hostname is what the device itself
++	 * gives the network - its announced name, or the lease name unless that is the reservation's DNS name - else
++	 * the maker of a real MAC (flagged, the page says "vendor"), else "Private-Address" for a randomized MAC
++	 * (flagged 2). networkmap's own label (often a DHCP vendor class) is no longer used. */
+ 	for (i = 0; i < n; i++) {
+-		if (dev[i].host[0]) continue;
+-		if (reaper_dhcpname_get(dev[i].mac, dev[i].host, sizeof(dev[0].host))) continue;
+-		if (gk_nmp_name(dev[i].mac, dev[i].host, sizeof(dev[0].host)))
++		char h[RDN_NAME_MAX];
++
++		dev[i].host_vendor = 0;
++		if (rdn_client_host(dev[i].mac, dev[i].host, h, sizeof(h)))
++			;
++		else if (rdn_oui(dev[i].mac, h, sizeof(h)))
+ 			dev[i].host_vendor = 1;
++		else if (rdn_mac_private(dev[i].mac)) {
++			snprintf(h, sizeof(h), "%s", RDN_PRIVATE);
++			dev[i].host_vendor = 2;
++		} else
++			h[0] = 0;
++		snprintf(dev[i].host, sizeof(dev[0].host), "%s", h);
+ 	}
+ 
+ 	/* v3.3.3: which network each present device is on (Network page cards) */
+@@ -33214,7 +33359,7 @@ static void rdev_merge_clientlist(struct json_object *clients, struct json_objec
+ 		json_object_object_add(row, "isITunes", json_object_new_string("0"));
+ 		json_object_object_add(row, "dpiType", json_object_new_string(""));
+ 		json_object_object_add(row, "dpiDevice", json_object_new_string(""));
+-		json_object_object_add(row, "vendor", json_object_new_string(d->host_vendor ? d->host : ""));
++		json_object_object_add(row, "vendor", json_object_new_string(d->host_vendor == 1 ? d->host : ""));
+ 		json_object_object_add(row, "isWL", json_object_new_string(iswl));
+ 		json_object_object_add(row, "isGN", json_object_new_string(""));
+ 		json_object_object_add(row, "isOnline", json_object_new_string("1"));
+@@ -33352,7 +33497,7 @@ static void do_reaper_dev_cgi(char *url, FILE *stream)
+ 
+ 			gk_client_name(d->mac, uname, sizeof(uname));
+ 			have_user = uname[0] ? 1 : 0;
+-			src = have_user ? "user" : (d->host[0] ? (d->host_vendor ? "vendor" : "lease") : "");
++			src = have_user ? "user" : (d->host[0] ? (d->host_vendor == 1 ? "vendor" : d->host_vendor == 2 ? "private" : "lease") : "");
+ 
+ 			if (!first) websWrite(stream, ",");
+ 			first = 0;
+@@ -57273,6 +57418,7 @@ struct ej_handler ej_handlers[] = {
+ 	{ "check_passwd_strength", ej_check_passwd_strength},
+ 	{ "check_wireless_encryption", ej_check_wireless_encryption},
+ 	{ "get_clientlist", ej_get_clientlist},
++	{ "reaper_devnames", ej_reaper_devnames},	/* 2026-11-15: Name / Hostname for every device (reaper_util.js ReaperNames) */
+ #if defined(RTCONFIG_HNS) || defined(RTCONFIG_BWDPI)
+ 	{ "bwdpi_history", ej_bwdpi_history},
+ 	{ "bwdpi_engine_status", ej_bwdpi_engine_status},
+diff --git a/release/src/router/others/reaper_diag b/release/src/router/others/reaper_diag
+index 91670bfb13..93acef08ab 100644
+--- a/release/src/router/others/reaper_diag
++++ b/release/src/router/others/reaper_diag
+@@ -357,6 +357,12 @@ done
+ for LF in /var/lib/misc/dnsmasq-*.leases; do
+   [ -f "$LF" ] && awk '{ if ($4 != "*" && length($4) >= 5) print "HOST\t" $4 }' "$LF" >> "$SLIST" 2>/dev/null
+ done
++# 2026-11-15 (owner's device-label rule): the names devices are SHOWN by - the Names the admin gave (the Devices page
++# list; that nvram value is masked whole above, but each name also turns up on its own in log lines), the reservations'
++# DNS names and the hostnames devices announce (the store behind the Hostname column).
++sed -n 's/^custom_clientlist=//p' "$NVS" 2>/dev/null | tr '<' '\n' | awk -F'>' 'length($1) >= 5 { print "HOST\t" $1 }' >> "$SLIST" 2>/dev/null
++sed -n 's/^dhcp_staticlist=//p' "$NVS" 2>/dev/null | tr '<' '\n' | awk -F'>' 'length($4) >= 5 { print "HOST\t" $4 }' >> "$SLIST" 2>/dev/null
++[ -f /var/lib/misc/reaper_hostnames ] && awk -F'\t' 'length($2) >= 5 { print "HOST\t" $2 }' /var/lib/misc/reaper_hostnames >> "$SLIST" 2>/dev/null
+ # v1.3.56: the names on the router's own certificates. dnsmasq prints the DNS-over-TLS name at every start
+ # ("using standard nameservers for .<name>"), httpd logs the web certificate's subject, and neither name was
+ # in a nvram key the list above knew, so a report marked CLEAN carried it. Read the names from the
+diff --git a/release/src/router/www/BR.dict b/release/src/router/www/BR.dict
+index 67b3ffd6a5..4054e423e9 100644
+--- a/release/src/router/www/BR.dict
++++ b/release/src/router/www/BR.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=As conexões cabeadas e Wi-Fi caem por cerca de 35 segundos enquanto a r
+ RLAN_55=A LAN e a conexão com a Internet reiniciam por cerca de 10 segundos. Continuar?
+ RLAN_56=Com o servidor DHCP desativado, os dispositivos ficam sem endereço quando a concessão expirar. Continuar?
+ RLAN_57=Salvando. O ponto de acesso recebe um novo endereço do seu roteador principal; procure-o na lista de clientes desse roteador.
++RLAN_58=Nome DNS
+ RNAT_01=NAT e redirecionamento de portas
+ RNAT_02=Abrir portas da Internet para dispositivos da sua rede. Nada é salvo até você clicar em Aplicar; a maioria das alterações só recarrega o firewall, o que leva alguns segundos.
+ RNAT_03=Redirecionar portas do endereço WAN para um dispositivo da sua rede.
+@@ -9124,6 +9125,8 @@ RLOG_103=as 400 linhas mais recentes do log do firewall (do coletor de log do fi
+ RDST_113=Log do firewall
+ RDST_114=Cada linha do log do firewall (Aceitas, Descartadas, Warden), um arquivo por dia
+ RDST_115=até 30 dias ou 256 MB, o dia mais antigo é removido primeiro
++RLOG_106=Endereço definido no dispositivo (sem DHCP)
++RLOG_107=Nome é o nome que você deu ao dispositivo na página Dispositivos. Nome do host é o nome que o dispositivo envia ou, se não houver, o fabricante da placa de rede; Private-Address indica um endereço aleatório.
+ RSHD_178=Regras avançadas
+ RSHD_179=Cole uma lista de regras do AdGuard Home como está, até 40.000 caracteres: ||nome^ bloqueia um nome e seus subdomínios, |nome| só esse nome, @@ permite, $important, $client= (endereço, MAC ou nome do dispositivo; ~ para todos os outros), $ctag= (um perfil do Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, curingas e /regex/. Uma regra para alguns dispositivos vale só para eles. Depois de salvar, as linhas que não funcionam aqui são listadas com o motivo.
+ RSHD_180=%1 regras em uso, %2 deixadas de fora, %3 observações
+diff --git a/release/src/router/www/CN.dict b/release/src/router/www/CN.dict
+index 9900a08f06..57a4cd5a96 100644
+--- a/release/src/router/www/CN.dict
++++ b/release/src/router/www/CN.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=网络重启期间，有线和 Wi-Fi 连接会中断约 35 秒。是否
+ RLAN_55=LAN 和互联网连接将重启约 10 秒。是否继续？
+ RLAN_56=关闭 DHCP 服务器后，设备在租约到期时将无法获得地址。是否继续？
+ RLAN_57=正在保存。接入点将从主路由器获取新地址；请在该路由器的客户端列表中查找。
++RLAN_58=DNS 名称
+ RNAT_01=NAT 与端口转发
+ RNAT_02=从互联网向网络中的设备开放端口。点击应用之前不会保存任何内容；大多数更改只会重新加载防火墙，只需几秒钟。
+ RNAT_03=将 WAN 地址上的端口转发到网络中的设备。
+@@ -9124,6 +9125,8 @@ RLOG_103=最新的 400 行防火墙日志（来自防火墙日志收集器；收
+ RDST_113=防火墙日志
+ RDST_114=每一行防火墙日志（已接受、已丢弃、Warden），每天一个文件
+ RDST_115=最多 30 天或 256 MB，最早的一天先删除
++RLOG_106=地址在设备上设置（未使用 DHCP）
++RLOG_107=名称是您在“设备”页面为设备指定的名称。主机名是设备自己发送的名称，否则为其网卡制造商；Private-Address 表示随机地址。
+ RSHD_178=高级规则
+ RSHD_179=按原样粘贴 AdGuard Home 规则列表，最多 40,000 个字符：||名称^ 屏蔽名称及其子域名，|名称| 仅该名称，@@ 表示允许，$important，$client=（地址、MAC 或设备名称；~ 表示其他所有设备），$ctag=（Wallguard 配置文件），$dnstype=，$dnsrewrite=NOERROR/NXDOMAIN/REFUSED，通配符和 /regex/。针对部分设备的规则只作用于这些设备。保存后会列出此处无法生效的行及原因。
+ RSHD_180=使用中 %1 条，已略过 %2 条，提示 %3 条
+diff --git a/release/src/router/www/CZ.dict b/release/src/router/www/CZ.dict
+index a8d30535ed..8e79102607 100644
+--- a/release/src/router/www/CZ.dict
++++ b/release/src/router/www/CZ.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Kabelová a Wi-Fi připojení vypadnou asi na 35 sekund, než se síť r
+ RLAN_55=LAN a připojení k internetu se restartují asi na 10 sekund. Pokračovat?
+ RLAN_56=Při vypnutém serveru DHCP nedostanou zařízení po vypršení pronájmu adresu. Pokračovat?
+ RLAN_57=Ukládání. Přístupový bod získá novou adresu od hlavního routeru; najdete ji v seznamu klientů tohoto routeru.
++RLAN_58=Název DNS
+ RNAT_01=NAT a přesměrování portů
+ RNAT_02=Otevřete porty z internetu k zařízením ve vaší síti. Nic se neuloží, dokud nekliknete na Použít; většina změn jen znovu načte firewall, což trvá pár sekund.
+ RNAT_03=Přesměrovat porty na adrese WAN na zařízení ve vaší síti.
+@@ -9124,6 +9125,8 @@ RLOG_103=nejnovějších 400 řádků protokolu brány firewall (ze sběrače pr
+ RDST_113=Protokol brány firewall
+ RDST_114=Každý řádek protokolu brány firewall (přijaté, zahozené, Warden), jeden soubor denně
+ RDST_115=až 30 dní nebo 256 MB, nejstarší den se maže první
++RLOG_106=Adresa nastavená v zařízení (bez DHCP)
++RLOG_107=Název je jméno, které jste zařízení dali na stránce Zařízení. Název hostitele je jméno, které zařízení posílá, jinak výrobce jeho síťové karty; Private-Address znamená náhodnou adresu.
+ RSHD_178=Pokročilá pravidla
+ RSHD_179=Vložte seznam pravidel AdGuard Home beze změn, až 40 000 znaků: ||název^ blokuje název a jeho subdomény, |název| jen ten název, @@ povoluje, $important, $client= (adresa, MAC nebo název zařízení; ~ pro všechna ostatní), $ctag= (profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, zástupné znaky a /regex/. Pravidlo pro některá zařízení platí jen pro ně. Po uložení se řádky, které zde nefungují, vypíší i s důvodem.
+ RSHD_180=%1 pravidel použito, %2 vynecháno, %3 poznámek
+diff --git a/release/src/router/www/DA.dict b/release/src/router/www/DA.dict
+index db7946a364..c220184176 100644
+--- a/release/src/router/www/DA.dict
++++ b/release/src/router/www/DA.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Kablede og Wi-Fi-forbindelser forsvinder i ca. 35 sekunder, mens netvær
+ RLAN_55=LAN og internetforbindelsen genstarter i ca. 10 sekunder. Fortsæt?
+ RLAN_56=Med DHCP-serveren slået fra får enheder ingen adresse, når deres lease udløber. Fortsæt?
+ RLAN_57=Gemmer. Adgangspunktet får en ny adresse fra din hovedrouter; find den på den routers klientliste.
++RLAN_58=DNS-navn
+ RNAT_01=NAT og portvideresendelse
+ RNAT_02=Åbn porte fra internettet til enheder på dit netværk. Intet gemmes, før du klikker på Anvend; de fleste ændringer genindlæser kun firewallen, hvilket tager et par sekunder.
+ RNAT_03=Videresend porte på WAN-adressen til en enhed på dit netværk.
+@@ -9124,6 +9125,8 @@ RLOG_103=de nyeste 400 firewall-loglinjer (fra firewall-logopsamleren, eller fra
+ RDST_113=Firewall-log
+ RDST_114=Hver firewall-loglinje (accepterede, afviste, Warden), én fil om dagen
+ RDST_115=op til 30 dage eller 256 MB, ældste dag slettes først
++RLOG_106=Adresse sat på enheden (ingen DHCP)
++RLOG_107=Navn er det navn, du har givet enheden på siden Enheder. Værtsnavn er det navn, enheden selv sender, ellers producenten af dens netværkskort; Private-Address betyder en tilfældig adresse.
+ RSHD_178=Avancerede regler
+ RSHD_179=Indsæt en regelliste fra AdGuard Home som den er, op til 40.000 tegn: ||navn^ blokerer et navn og dets underdomæner, |navn| kun det navn, @@ tillader, $important, $client= (adresse, MAC eller enhedsnavn; ~ for alle andre), $ctag= (en Wallguard-profil), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokertegn og /regex/. En regel for bestemte enheder gælder kun dem. Efter Gem vises de linjer, der ikke virker her, med årsagen.
+ RSHD_180=%1 regler i brug, %2 udeladt, %3 bemærkninger
+diff --git a/release/src/router/www/DE.dict b/release/src/router/www/DE.dict
+index dc90d52ee1..77b989491f 100644
+--- a/release/src/router/www/DE.dict
++++ b/release/src/router/www/DE.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Kabel- und WLAN-Verbindungen fallen für etwa 35 Sekunden aus, während
+ RLAN_55=LAN und Internetverbindung starten für etwa 10 Sekunden neu. Fortfahren?
+ RLAN_56=Ohne DHCP-Server erhalten Geräte keine Adresse mehr, wenn ihre Lease abläuft. Fortfahren?
+ RLAN_57=Wird gespeichert. Der Access Point bezieht eine neue Adresse von Ihrem Hauptrouter; Sie finden sie in dessen Client-Liste.
++RLAN_58=DNS-Name
+ RNAT_01=NAT und Portweiterleitung
+ RNAT_02=Ports aus dem Internet zu Geräten in Ihrem Netzwerk öffnen. Erst Anwenden speichert; die meisten Änderungen laden nur die Firewall neu, was einige Sekunden dauert.
+ RNAT_03=Ports der WAN-Adresse an ein Gerät in Ihrem Netzwerk weiterleiten.
+@@ -9124,6 +9125,8 @@ RLOG_103=die neuesten 400 Firewall-Protokollzeilen (vom Firewall-Protokollsammle
+ RDST_113=Firewall-Protokoll
+ RDST_114=Jede Firewall-Protokollzeile (angenommen, verworfen, Warden), eine Datei pro Tag
+ RDST_115=bis zu 30 Tage oder 256 MB, der älteste Tag wird zuerst entfernt
++RLOG_106=Adresse am Gerät eingestellt (kein DHCP)
++RLOG_107=Name ist der Name, den Sie dem Gerät auf der Seite Geräte gegeben haben. Hostname ist der Name, den das Gerät selbst sendet, sonst der Hersteller seiner Netzwerkkarte; Private-Address steht für eine zufällige Adresse.
+ RSHD_178=Erweiterte Regeln
+ RSHD_179=Eine AdGuard-Home-Regelliste unverändert einfügen, bis 40.000 Zeichen: ||name^ sperrt einen Namen samt Subdomains, |name| nur diesen Namen, @@ erlaubt, $important, $client= (Adresse, MAC oder Gerätename; ~ für alle anderen), $ctag= (ein Wallguard-Profil), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, Platzhalter und /Regex/. Eine Regel für bestimmte Geräte gilt nur für diese. Nach dem Speichern werden die Zeilen, die hier nicht funktionieren, mit Grund aufgelistet.
+ RSHD_180=%1 Regeln aktiv, %2 ausgelassen, %3 Hinweise
+diff --git a/release/src/router/www/EN.dict b/release/src/router/www/EN.dict
+index 17b4a94940..6cc3314829 100644
+--- a/release/src/router/www/EN.dict
++++ b/release/src/router/www/EN.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Wired and Wi-Fi connections drop for about 35 seconds while the network
+ RLAN_55=The LAN and the Internet connection restart for about 10 seconds. Continue?
+ RLAN_56=With the DHCP server off, devices get no address when their lease ends. Continue?
+ RLAN_57=Saving. The access point takes a new address from your main router; find it in that router's client list.
++RLAN_58=DNS name
+ RNAT_01=NAT and Port Forwarding
+ RNAT_02=Open ports from the Internet to devices on your network. Nothing is saved until you press Apply; most changes reload only the firewall, which takes a few seconds.
+ RNAT_03=Forward ports on the WAN address to a device on your network.
+@@ -9124,6 +9125,8 @@ RLOG_103=the newest 400 firewall log lines (from the firewall log collector, or
+ RDST_113=Firewall log
+ RDST_114=Every firewall log line (Accepted, Dropped, Warden), one file a day
+ RDST_115=up to 30 days or 256 MB, oldest day removed first
++RLOG_106=Address set on the device (no DHCP)
++RLOG_107=Name is the name you gave the device on the Devices page. Hostname is the name the device sends, or else the maker of its network card; Private-Address means a randomized address.
+ RSHD_178=Advanced rules
+ RSHD_179=Paste an AdGuard Home rule list as it is, up to 40,000 characters: ||name^ blocks a name and its subdomains, |name| that name only, @@ allows, $important, $client= (an address, a MAC or a device's name; ~ for everyone else), $ctag= (a Wallguard profile), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, wildcards and /regex/. A rule for some devices applies to those devices only. After Save, the lines that cannot work here are listed with the reason.
+ RSHD_180=%1 rules in use, %2 left out, %3 notes
+diff --git a/release/src/router/www/ES.dict b/release/src/router/www/ES.dict
+index c5b8aa19d2..943040ce11 100644
+--- a/release/src/router/www/ES.dict
++++ b/release/src/router/www/ES.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Las conexiones cableadas y Wi-Fi se cortan unos 35 segundos mientras se
+ RLAN_55=La LAN y la conexión a Internet se reinician durante unos 10 segundos. ¿Continuar?
+ RLAN_56=Con el servidor DHCP desactivado, los dispositivos no obtienen dirección cuando caduca su concesión. ¿Continuar?
+ RLAN_57=Guardando. El punto de acceso toma una nueva dirección de su router principal; búsquela en la lista de clientes de ese router.
++RLAN_58=Nombre DNS
+ RNAT_01=NAT y reenvío de puertos
+ RNAT_02=Abrir puertos desde Internet hacia dispositivos de su red. No se guarda nada hasta pulsar Aplicar; la mayoría de cambios solo recargan el firewall, en unos segundos.
+ RNAT_03=Reenviar puertos de la dirección WAN a un dispositivo de su red.
+@@ -9124,6 +9125,8 @@ RLOG_103=las 400 líneas más recientes del registro del firewall (del recopilad
+ RDST_113=Registro del firewall
+ RDST_114=Cada línea del registro del firewall (aceptadas, descartadas, Warden), un archivo por día
+ RDST_115=hasta 30 días o 256 MB; se elimina primero el día más antiguo
++RLOG_106=Dirección configurada en el dispositivo (sin DHCP)
++RLOG_107=Nombre es el nombre que dio al dispositivo en la página Dispositivos. Nombre de host es el nombre que envía el dispositivo o, si no, el fabricante de su tarjeta de red; Private-Address indica una dirección aleatoria.
+ RSHD_178=Reglas avanzadas
+ RSHD_179=Pegue una lista de reglas de AdGuard Home tal cual, hasta 40.000 caracteres: ||nombre^ bloquea un nombre y sus subdominios, |nombre| solo ese nombre, @@ permite, $important, $client= (dirección, MAC o nombre del dispositivo; ~ para todos los demás), $ctag= (un perfil de Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, comodines y /regex/. Una regla para algunos dispositivos solo se aplica a ellos. Tras guardar, se enumeran las líneas que aquí no funcionan, con el motivo.
+ RSHD_180=%1 reglas en uso, %2 omitidas, %3 notas
+diff --git a/release/src/router/www/FI.dict b/release/src/router/www/FI.dict
+index bcbf8d3bd3..b20dd37960 100644
+--- a/release/src/router/www/FI.dict
++++ b/release/src/router/www/FI.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Kiinteät ja Wi-Fi-yhteydet katkeavat noin 35 sekunniksi verkon uudellee
+ RLAN_55=LAN ja internetyhteys käynnistyvät uudelleen noin 10 sekunniksi. Jatketaanko?
+ RLAN_56=Kun DHCP-palvelin on pois päältä, laitteet eivät saa osoitetta vuokrauksen päättyessä. Jatketaanko?
+ RLAN_57=Tallennetaan. Tukiasema saa uuden osoitteen pääreitittimeltä; löydät sen kyseisen reitittimen asiakasluettelosta.
++RLAN_58=DNS-nimi
+ RNAT_01=NAT ja portinsiirto
+ RNAT_02=Avaa portteja internetistä verkkosi laitteisiin. Mitään ei tallenneta ennen kuin valitset Käytä; useimmat muutokset lataavat uudelleen vain palomuurin, mikä vie muutaman sekunnin.
+ RNAT_03=Siirrä WAN-osoitteen portteja verkkosi laitteeseen.
+@@ -9124,6 +9125,8 @@ RLOG_103=uusimmat 400 palomuurilokin riviä (palomuurilokin kerääjältä tai j
+ RDST_113=Palomuuriloki
+ RDST_114=Jokainen palomuurilokin rivi (hyväksytyt, hylätyt, Warden), yksi tiedosto päivässä
+ RDST_115=enintään 30 päivää tai 256 Mt, vanhin päivä poistetaan ensin
++RLOG_106=Osoite asetettu laitteessa (ei DHCP:tä)
++RLOG_107=Nimi on laitteelle Laitteet-sivulla antamasi nimi. Isäntänimi on nimi, jonka laite itse lähettää, muuten sen verkkokortin valmistaja; Private-Address tarkoittaa satunnaista osoitetta.
+ RSHD_178=Lisäsäännöt
+ RSHD_179=Liitä AdGuard Home -sääntölista sellaisenaan, enintään 40 000 merkkiä: ||nimi^ estää nimen ja sen aliverkkotunnukset, |nimi| vain sen nimen, @@ sallii, $important, $client= (osoite, MAC tai laitteen nimi; ~ kaikille muille), $ctag= (Wallguard-profiili), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokerimerkit ja /regex/. Joillekin laitteille tarkoitettu sääntö koskee vain niitä. Tallennuksen jälkeen tässä toimimattomat rivit luetellaan syineen.
+ RSHD_180=%1 sääntöä käytössä, %2 pois jätetty, %3 huomautusta
+diff --git a/release/src/router/www/FR.dict b/release/src/router/www/FR.dict
+index 45f548b525..ef02cc1d44 100644
+--- a/release/src/router/www/FR.dict
++++ b/release/src/router/www/FR.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Les connexions filaires et Wi-Fi sont coupées pendant environ 35 second
+ RLAN_55=Le LAN et la connexion Internet redémarrent pendant environ 10 secondes. Continuer ?
+ RLAN_56=Sans serveur DHCP, les appareils n'obtiennent plus d'adresse à l'expiration de leur bail. Continuer ?
+ RLAN_57=Enregistrement. Le point d'accès reçoit une nouvelle adresse de votre routeur principal ; retrouvez-la dans la liste des clients de ce routeur.
++RLAN_58=Nom DNS
+ RNAT_01=NAT et redirection de port
+ RNAT_02=Ouvrir des ports depuis Internet vers des appareils de votre réseau. Rien n'est enregistré avant Appliquer ; la plupart des modifications ne rechargent que le pare-feu, en quelques secondes.
+ RNAT_03=Rediriger des ports de l'adresse WAN vers un appareil de votre réseau.
+@@ -9124,6 +9125,8 @@ RLOG_103=les 400 lignes les plus récentes du journal du pare-feu (du collecteur
+ RDST_113=Journal du pare-feu
+ RDST_114=Chaque ligne du journal du pare-feu (acceptées, rejetées, Warden), un fichier par jour
+ RDST_115=jusqu'à 30 jours ou 256 Mo, le jour le plus ancien est supprimé en premier
++RLOG_106=Adresse définie sur l’appareil (sans DHCP)
++RLOG_107=Nom est le nom que vous avez donné à l’appareil sur la page Appareils. Nom d’hôte est le nom que l’appareil envoie, sinon le fabricant de sa carte réseau ; Private-Address signifie une adresse aléatoire.
+ RSHD_178=Règles avancées
+ RSHD_179=Collez une liste de règles AdGuard Home telle quelle, jusqu'à 40 000 caractères : ||nom^ bloque un nom et ses sous-domaines, |nom| ce nom seul, @@ autorise, $important, $client= (adresse, MAC ou nom d'appareil ; ~ pour tous les autres), $ctag= (un profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokers et /regex/. Une règle pour certains appareils ne s'applique qu'à eux. Après l'enregistrement, les lignes inutilisables ici sont listées avec la raison.
+ RSHD_180=%1 règles actives, %2 ignorées, %3 remarques
+diff --git a/release/src/router/www/HU.dict b/release/src/router/www/HU.dict
+index bac85c2a75..5cfc785fb4 100644
+--- a/release/src/router/www/HU.dict
++++ b/release/src/router/www/HU.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=A vezetékes és Wi-Fi kapcsolatok kb. 35 másodpercre megszakadnak, am
+ RLAN_55=A LAN és az internetkapcsolat kb. 10 másodpercre újraindul. Folytatja?
+ RLAN_56=Kikapcsolt DHCP-szerver mellett az eszközök a bérlet lejártakor nem kapnak címet. Folytatja?
+ RLAN_57=Mentés. A hozzáférési pont új címet kap a fő útválasztótól; keresse meg annak a kliensek listájában.
++RLAN_58=DNS-név
+ RNAT_01=NAT és porttovábbítás
+ RNAT_02=Portok megnyitása az internetről a hálózat eszközei felé. Semmi sem mentődik, amíg nem kattint az Alkalmaz gombra; a legtöbb módosítás csak a tűzfalat tölti újra, ami néhány másodperc.
+ RNAT_03=A WAN-cím portjainak továbbítása a hálózat egy eszközére.
+@@ -9124,6 +9125,8 @@ RLOG_103=a tűzfalnapló legújabb 400 sora (a tűzfalnapló-gyűjtőtől, vagy
+ RDST_113=Tűzfalnapló
+ RDST_114=A tűzfalnapló minden sora (elfogadott, eldobott, Warden), naponta egy fájl
+ RDST_115=legfeljebb 30 nap vagy 256 MB, a legrégebbi nap törlődik először
++RLOG_106=A cím az eszközön van beállítva (nincs DHCP)
++RLOG_107=A Név az eszköznek az Eszközök oldalon adott név. A Gazdagépnév az eszköz által küldött név, ennek hiányában a hálózati kártyája gyártója; a Private-Address véletlenszerű címet jelent.
+ RSHD_178=Speciális szabályok
+ RSHD_179=Illessze be változatlanul az AdGuard Home szabálylistáját, legfeljebb 40 000 karakterig: ||név^ letilt egy nevet és aldomainjeit, |név| csak azt a nevet, @@ engedélyez, $important, $client= (cím, MAC vagy eszköznév; ~ mindenki másra), $ctag= (Wallguard-profil), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, helyettesítő karakterek és /regex/. Egyes eszközökre szóló szabály csak azokra érvényes. Mentés után az itt nem működő sorok okkal együtt megjelennek.
+ RSHD_180=%1 szabály használatban, %2 kihagyva, %3 megjegyzés
+diff --git a/release/src/router/www/IT.dict b/release/src/router/www/IT.dict
+index ddd4112191..05ada4b6ae 100644
+--- a/release/src/router/www/IT.dict
++++ b/release/src/router/www/IT.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Le connessioni cablate e Wi-Fi cadono per circa 35 secondi durante il ri
+ RLAN_55=La LAN e la connessione Internet si riavviano per circa 10 secondi. Continuare?
+ RLAN_56=Con il server DHCP disattivato, i dispositivi non ricevono un indirizzo alla scadenza del lease. Continuare?
+ RLAN_57=Salvataggio. L'access point riceve un nuovo indirizzo dal router principale; cercalo nell'elenco client di quel router.
++RLAN_58=Nome DNS
+ RNAT_01=NAT e port forwarding
+ RNAT_02=Apri porte da Internet verso i dispositivi della tua rete. Nulla viene salvato finché non premi Applica; la maggior parte delle modifiche ricarica solo il firewall, in pochi secondi.
+ RNAT_03=Inoltra porte dell'indirizzo WAN a un dispositivo della tua rete.
+@@ -9124,6 +9125,8 @@ RLOG_103=le 400 righe più recenti del registro firewall (dal raccoglitore, o da
+ RDST_113=Registro firewall
+ RDST_114=Ogni riga del registro firewall (accettate, scartate, Warden), un file al giorno
+ RDST_115=fino a 30 giorni o 256 MB, il giorno più vecchio viene rimosso per primo
++RLOG_106=Indirizzo impostato sul dispositivo (senza DHCP)
++RLOG_107=Nome è il nome che hai dato al dispositivo nella pagina Dispositivi. Nome host è il nome che il dispositivo invia, altrimenti il produttore della sua scheda di rete; Private-Address indica un indirizzo casuale.
+ RSHD_178=Regole avanzate
+ RSHD_179=Incolla un elenco di regole AdGuard Home così com'è, fino a 40.000 caratteri: ||nome^ blocca un nome e i suoi sottodomini, |nome| solo quel nome, @@ consente, $important, $client= (indirizzo, MAC o nome del dispositivo; ~ per tutti gli altri), $ctag= (un profilo Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, caratteri jolly e /regex/. Una regola per alcuni dispositivi vale solo per loro. Dopo il salvataggio, le righe che qui non funzionano sono elencate con il motivo.
+ RSHD_180=%1 regole in uso, %2 escluse, %3 note
+diff --git a/release/src/router/www/JP.dict b/release/src/router/www/JP.dict
+index 2df7a8563b..782a589782 100644
+--- a/release/src/router/www/JP.dict
++++ b/release/src/router/www/JP.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=ネットワークの再起動中、有線と Wi-Fi の接続が約 35 
+ RLAN_55=LAN とインターネット接続が約 10 秒間再起動します。続行しますか?
+ RLAN_56=DHCP サーバーをオフにすると、リース期限が切れたデバイスはアドレスを取得できません。続行しますか?
+ RLAN_57=保存しています。アクセスポイントはメインルーターから新しいアドレスを取得します。そのルーターのクライアント一覧で確認してください。
++RLAN_58=DNS 名
+ RNAT_01=NAT とポートフォワーディング
+ RNAT_02=インターネットからネットワーク上のデバイスへポートを開きます。適用を押すまで何も保存されません。ほとんどの変更はファイアウォールの再読み込みだけで、数秒で済みます。
+ RNAT_03=WAN アドレスのポートをネットワーク上のデバイスに転送します。
+@@ -9124,6 +9125,8 @@ RLOG_103=最新のファイアウォールログ 400 行（ファイアウォー
+ RDST_113=ファイアウォールログ
+ RDST_114=ファイアウォールログの全行（許可、破棄、Warden）、1 日 1 ファイル
+ RDST_115=最大 30 日または 256 MB、古い日から削除
++RLOG_106=デバイス側で設定されたアドレス（DHCP なし）
++RLOG_107=名前は、［デバイス］ページでデバイスに付けた名前です。ホスト名は、デバイス自身が送る名前で、ない場合はネットワークカードのメーカー名です。Private-Address はランダム化されたアドレスを表します。
+ RSHD_178=詳細ルール
+ RSHD_179=AdGuard Home のルールリストをそのまま貼り付けます（最大 40,000 文字）：||名前^ は名前とそのサブドメインをブロック、|名前| はその名前のみ、@@ は許可、$important、$client=（アドレス、MAC、またはデバイス名。~ はそれ以外のすべて）、$ctag=（Wallguard のプロファイル）、$dnstype=、$dnsrewrite=NOERROR/NXDOMAIN/REFUSED、ワイルドカード、/regex/。一部のデバイス向けのルールはそのデバイスにのみ適用されます。保存後、ここで機能しない行が理由とともに表示されます。
+ RSHD_180=使用中 %1 件、除外 %2 件、注記 %3 件
+diff --git a/release/src/router/www/KR.dict b/release/src/router/www/KR.dict
+index 04bfd1c612..f176812f09 100644
+--- a/release/src/router/www/KR.dict
++++ b/release/src/router/www/KR.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=네트워크가 다시 시작되는 동안 유선 및 Wi-Fi 연결이 
+ RLAN_55=LAN과 인터넷 연결이 약 10초 동안 다시 시작됩니다. 계속하시겠습니까?
+ RLAN_56=DHCP 서버를 끄면 임대가 만료된 장치는 주소를 받지 못합니다. 계속하시겠습니까?
+ RLAN_57=저장하는 중입니다. 액세스 포인트는 메인 라우터에서 새 주소를 받습니다. 해당 라우터의 클라이언트 목록에서 확인하십시오.
++RLAN_58=DNS 이름
+ RNAT_01=NAT 및 포트 포워딩
+ RNAT_02=인터넷에서 네트워크의 장치로 포트를 엽니다. 적용을 누르기 전에는 저장되지 않으며, 대부분의 변경은 방화벽만 다시 로드하므로 몇 초면 됩니다.
+ RNAT_03=WAN 주소의 포트를 네트워크의 장치로 전달합니다.
+@@ -9124,6 +9125,8 @@ RLOG_103=최신 방화벽 로그 400줄(방화벽 로그 수집기에서, 수집
+ RDST_113=방화벽 로그
+ RDST_114=모든 방화벽 로그 줄(허용, 차단, Warden), 하루에 파일 하나
+ RDST_115=최대 30일 또는 256MB, 가장 오래된 날부터 삭제
++RLOG_106=장치에서 설정한 주소(DHCP 없음)
++RLOG_107=이름은 장치 페이지에서 장치에 지정한 이름입니다. 호스트 이름은 장치가 보내는 이름이며, 없으면 네트워크 카드 제조사입니다. Private-Address는 무작위 주소를 뜻합니다.
+ RSHD_178=고급 규칙
+ RSHD_179=AdGuard Home 규칙 목록을 그대로 붙여 넣으세요(최대 40,000자): ||이름^ 은 이름과 하위 도메인을 차단, |이름| 은 그 이름만, @@ 는 허용, $important, $client=(주소, MAC 또는 장치 이름, ~ 는 그 외 모두), $ctag=(Wallguard 프로필), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, 와일드카드와 /regex/. 일부 장치용 규칙은 해당 장치에만 적용됩니다. 저장 후 여기서 작동할 수 없는 줄이 이유와 함께 표시됩니다.
+ RSHD_180=사용 중 규칙 %1개, 제외 %2개, 참고 %3개
+diff --git a/release/src/router/www/MS.dict b/release/src/router/www/MS.dict
+index 39debf1a01..cfd1aa5ab3 100644
+--- a/release/src/router/www/MS.dict
++++ b/release/src/router/www/MS.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Sambungan berwayar dan Wi-Fi terputus kira-kira 35 saat semasa rangkaian
+ RLAN_55=LAN dan sambungan Internet dimulakan semula selama kira-kira 10 saat. Teruskan?
+ RLAN_56=Dengan pelayan DHCP dimatikan, peranti tidak mendapat alamat apabila pajakan tamat. Teruskan?
+ RLAN_57=Menyimpan. Titik capaian mengambil alamat baharu daripada penghala utama anda; cari dalam senarai klien penghala itu.
++RLAN_58=Nama DNS
+ RNAT_01=NAT dan Pemajuan Port
+ RNAT_02=Buka port dari Internet ke peranti dalam rangkaian anda. Tiada apa-apa disimpan sehingga anda menekan Guna; kebanyakan perubahan hanya memuat semula tembok api, yang mengambil beberapa saat.
+ RNAT_03=Majukan port pada alamat WAN ke peranti dalam rangkaian anda.
+@@ -9124,6 +9125,8 @@ RLOG_103=400 baris log tembok api terbaharu (daripada pengumpul log tembok api,
+ RDST_113=Log tembok api
+ RDST_114=Setiap baris log tembok api (Diterima, Digugurkan, Warden), satu fail sehari
+ RDST_115=sehingga 30 hari atau 256 MB, hari tertua dibuang dahulu
++RLOG_106=Alamat ditetapkan pada peranti (tiada DHCP)
++RLOG_107=Nama ialah nama yang anda berikan kepada peranti di halaman Peranti. Nama hos ialah nama yang dihantar oleh peranti, atau pengeluar kad rangkaiannya; Private-Address bermaksud alamat rawak.
+ RSHD_178=Peraturan lanjutan
+ RSHD_179=Tampal senarai peraturan AdGuard Home seadanya, sehingga 40,000 aksara: ||nama^ menyekat nama dan subdomainnya, |nama| nama itu sahaja, @@ membenarkan, $important, $client= (alamat, MAC atau nama peranti; ~ untuk semua yang lain), $ctag= (profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, aksara kad liar dan /regex/. Peraturan untuk sesetengah peranti hanya terpakai pada peranti itu. Selepas Simpan, baris yang tidak boleh berfungsi di sini disenaraikan bersama sebabnya.
+ RSHD_180=%1 peraturan digunakan, %2 ditinggalkan, %3 catatan
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index 70df8ed7fa..bf3bfbeaee 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1697,18 +1697,19 @@ function paintClients(b){
+ }
+ function pollClients(){
+   var x=new XMLHttpRequest();
+-  x.open('GET','/appGet.cgi?hook=get_clientlist()&_='+(new Date()).getTime(),true);
++  /* 2026-11-15 (owner's device-label rule): the router's Name / Hostname per device in the same request */
++  x.open('GET','/appGet.cgi?hook=get_clientlist();reaper_devnames()&_='+(new Date()).getTime(),true);
+   x.onreadystatechange=function(){
+     if(x.readyState!==4||x.status!==200) return;
+     try{
+       var j=JSON.parse(x.responseText);
+-      var cl=j.get_clientlist||j, macs=cl.maclist||[];
++      var cl=j.get_clientlist||j, macs=cl.maclist||[], dn=j.reaper_devnames||{};
+       var b={'6':[],'5':[],'24':[],'eth':[]};
+       for(var i=0;i<macs.length;i++){
+         var c=cl[macs[i]]; if(!c || String(c.isOnline)!=='1') continue;
+         var w=parseInt(c.isWL||'0',10);
+         var k=(w===1)?'24':(w===2||w===3)?'5':(w===4||w===5)?'6':'eth';
+-        var nm=(c.nickName&&String(c.nickName).length)?c.nickName:((c.name&&String(c.name).length)?c.name:macs[i]);
++        var dd=dn[String(macs[i]).toUpperCase()]||{}, nm=dd.n||dd.h||macs[i];   /* Name, else Hostname, else the MAC */
+         var v6=(c.ip6_prefix&&String(c.ip6_prefix).length)?c.ip6_prefix:(c.ip6||'');   /* global v6, else link-local */
+         b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'\u2014', ip6:String(v6).split('/')[0], m:macs[i]});
+       }
+diff --git a/release/src/router/www/NL.dict b/release/src/router/www/NL.dict
+index df0c59749a..11c372f09d 100644
+--- a/release/src/router/www/NL.dict
++++ b/release/src/router/www/NL.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Bekabelde en wifi-verbindingen vallen ongeveer 35 seconden weg terwijl h
+ RLAN_55=Het LAN en de internetverbinding herstarten ongeveer 10 seconden. Doorgaan?
+ RLAN_56=Met de DHCP-server uit krijgen apparaten geen adres meer als hun lease afloopt. Doorgaan?
+ RLAN_57=Opslaan. Het access point krijgt een nieuw adres van uw hoofdrouter; zoek het in de clientlijst van die router.
++RLAN_58=DNS-naam
+ RNAT_01=NAT en poort doorsturen
+ RNAT_02=Poorten openen vanaf internet naar apparaten in uw netwerk. Niets wordt opgeslagen tot u op Toepassen klikt; de meeste wijzigingen laden alleen de firewall opnieuw, wat een paar seconden duurt.
+ RNAT_03=Poorten op het WAN-adres doorsturen naar een apparaat in uw netwerk.
+@@ -9124,6 +9125,8 @@ RLOG_103=de nieuwste 400 firewall-logregels (van de firewall-logverzamelaar, of
+ RDST_113=Firewalllogboek
+ RDST_114=Elke firewall-logregel (geaccepteerd, verworpen, Warden), één bestand per dag
+ RDST_115=tot 30 dagen of 256 MB, de oudste dag wordt eerst verwijderd
++RLOG_106=Adres ingesteld op het apparaat (geen DHCP)
++RLOG_107=Naam is de naam die u het apparaat op de pagina Apparaten hebt gegeven. Hostnaam is de naam die het apparaat zelf stuurt, anders de fabrikant van de netwerkkaart; Private-Address betekent een willekeurig adres.
+ RSHD_178=Geavanceerde regels
+ RSHD_179=Plak een AdGuard Home-regellijst ongewijzigd, tot 40.000 tekens: ||naam^ blokkeert een naam en zijn subdomeinen, |naam| alleen die naam, @@ staat toe, $important, $client= (adres, MAC of apparaatnaam; ~ voor alle anderen), $ctag= (een Wallguard-profiel), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokertekens en /regex/. Een regel voor bepaalde apparaten geldt alleen voor die apparaten. Na Opslaan worden de regels die hier niet werken met de reden getoond.
+ RSHD_180=%1 regels in gebruik, %2 weggelaten, %3 opmerkingen
+diff --git a/release/src/router/www/NO.dict b/release/src/router/www/NO.dict
+index c1a89e4ce2..1aa12d0f9e 100644
+--- a/release/src/router/www/NO.dict
++++ b/release/src/router/www/NO.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Kablede og Wi-Fi-tilkoblinger faller ut i ca. 35 sekunder mens nettverke
+ RLAN_55=LAN og Internett-tilkoblingen starter på nytt i ca. 10 sekunder. Fortsette?
+ RLAN_56=Med DHCP-serveren av får enheter ingen adresse når leasen utløper. Fortsette?
+ RLAN_57=Lagrer. Tilgangspunktet henter en ny adresse fra hovedruteren; finn den i klientlisten på den ruteren.
++RLAN_58=DNS-navn
+ RNAT_01=NAT og portviderekobling
+ RNAT_02=Åpne porter fra Internett til enheter på nettverket ditt. Ingenting lagres før du trykker Bruk; de fleste endringer laster bare inn brannmuren på nytt, noe som tar noen sekunder.
+ RNAT_03=Viderekoble porter på WAN-adressen til en enhet på nettverket ditt.
+@@ -9124,6 +9125,8 @@ RLOG_103=de nyeste 400 brannmurlogglinjene (fra brannmurloggsamleren, eller fra
+ RDST_113=Brannmurlogg
+ RDST_114=Hver brannmurlogglinje (godtatt, forkastet, Warden), én fil per dag
+ RDST_115=opptil 30 dager eller 256 MB, eldste dag fjernes først
++RLOG_106=Adresse satt på enheten (ingen DHCP)
++RLOG_107=Navn er navnet du har gitt enheten på siden Enheter. Vertsnavn er navnet enheten selv sender, ellers produsenten av nettverkskortet; Private-Address betyr en tilfeldig adresse.
+ RSHD_178=Avanserte regler
+ RSHD_179=Lim inn en regelliste fra AdGuard Home som den er, opptil 40 000 tegn: ||navn^ blokkerer et navn og underdomenene, |navn| bare det navnet, @@ tillater, $important, $client= (adresse, MAC eller enhetsnavn; ~ for alle andre), $ctag= (en Wallguard-profil), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokertegn og /regex/. En regel for enkelte enheter gjelder bare dem. Etter Lagre vises linjene som ikke virker her, med årsak.
+ RSHD_180=%1 regler i bruk, %2 utelatt, %3 merknader
+diff --git a/release/src/router/www/PL.dict b/release/src/router/www/PL.dict
+index 75d876d4f5..bada9db90f 100644
+--- a/release/src/router/www/PL.dict
++++ b/release/src/router/www/PL.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Połączenia przewodowe i Wi-Fi znikną na około 35 sekund podczas rest
+ RLAN_55=LAN i połączenie z Internetem zostaną zrestartowane na około 10 sekund. Kontynuować?
+ RLAN_56=Gdy serwer DHCP jest wyłączony, urządzenia nie dostaną adresu po wygaśnięciu dzierżawy. Kontynuować?
+ RLAN_57=Zapisywanie. Punkt dostępowy pobierze nowy adres z routera głównego; znajdziesz go na liście klientów tamtego routera.
++RLAN_58=Nazwa DNS
+ RNAT_01=NAT i przekierowanie portów
+ RNAT_02=Otwieraj porty z Internetu do urządzeń w Twojej sieci. Nic nie zostanie zapisane przed kliknięciem Zastosuj; większość zmian tylko przeładowuje zaporę, co trwa kilka sekund.
+ RNAT_03=Przekieruj porty adresu WAN do urządzenia w Twojej sieci.
+@@ -9124,6 +9125,8 @@ RLOG_103=najnowsze 400 wierszy dziennika zapory (z kolektora dziennika zapory al
+ RDST_113=Dziennik zapory
+ RDST_114=Każdy wiersz dziennika zapory (zaakceptowane, odrzucone, Warden), jeden plik dziennie
+ RDST_115=do 30 dni lub 256 MB, najstarszy dzień usuwany jako pierwszy
++RLOG_106=Adres ustawiony w urządzeniu (bez DHCP)
++RLOG_107=Nazwa to nazwa nadana urządzeniu na stronie Urządzenia. Nazwa hosta to nazwa wysyłana przez urządzenie, a gdy jej brak, producent jego karty sieciowej; Private-Address oznacza losowy adres.
+ RSHD_178=Reguły zaawansowane
+ RSHD_179=Wklej listę reguł AdGuard Home bez zmian, do 40 000 znaków: ||nazwa^ blokuje nazwę i jej subdomeny, |nazwa| tylko tę nazwę, @@ zezwala, $important, $client= (adres, MAC lub nazwa urządzenia; ~ dla wszystkich pozostałych), $ctag= (profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, symbole wieloznaczne i /regex/. Reguła dla niektórych urządzeń dotyczy tylko ich. Po zapisaniu wiersze, które tu nie działają, są wymienione z powodem.
+ RSHD_180=%1 reguł w użyciu, %2 pominiętych, %3 uwag
+diff --git a/release/src/router/www/RO.dict b/release/src/router/www/RO.dict
+index 0d7f34f671..a8bd094a65 100644
+--- a/release/src/router/www/RO.dict
++++ b/release/src/router/www/RO.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Conexiunile cu fir și Wi-Fi cad timp de aproximativ 35 de secunde cât
+ RLAN_55=LAN-ul și conexiunea la Internet repornesc timp de aproximativ 10 secunde. Continuați?
+ RLAN_56=Cu serverul DHCP dezactivat, dispozitivele nu mai primesc adresă când le expiră alocarea. Continuați?
+ RLAN_57=Se salvează. Punctul de acces primește o nouă adresă de la routerul principal; o găsiți în lista de clienți a acelui router.
++RLAN_58=Nume DNS
+ RNAT_01=NAT și redirecționare porturi
+ RNAT_02=Deschideți porturi din Internet spre dispozitivele din rețea. Nimic nu se salvează până nu apăsați Aplicare; majoritatea modificărilor reîncarcă doar firewallul, în câteva secunde.
+ RNAT_03=Redirecționează porturi de pe adresa WAN spre un dispozitiv din rețea.
+@@ -9124,6 +9125,8 @@ RLOG_103=cele mai noi 400 de linii din jurnalul firewall (de la colectorul jurna
+ RDST_113=Jurnal firewall
+ RDST_114=Fiecare linie din jurnalul firewall (acceptate, respinse, Warden), un fișier pe zi
+ RDST_115=până la 30 de zile sau 256 MB, cea mai veche zi se șterge prima
++RLOG_106=Adresă setată pe dispozitiv (fără DHCP)
++RLOG_107=Nume este numele pe care l-ați dat dispozitivului pe pagina Dispozitive. Nume gazdă este numele trimis de dispozitiv sau, altfel, producătorul plăcii sale de rețea; Private-Address înseamnă o adresă aleatorie.
+ RSHD_178=Reguli avansate
+ RSHD_179=Lipiți o listă de reguli AdGuard Home așa cum este, până la 40.000 de caractere: ||nume^ blochează un nume și subdomeniile sale, |nume| doar acel nume, @@ permite, $important, $client= (adresă, MAC sau numele dispozitivului; ~ pentru toți ceilalți), $ctag= (un profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, caractere joker și /regex/. O regulă pentru anumite dispozitive se aplică doar lor. După salvare, liniile care nu pot funcționa aici sunt listate cu motivul.
+ RSHD_180=%1 reguli în uz, %2 omise, %3 observații
+diff --git a/release/src/router/www/RU.dict b/release/src/router/www/RU.dict
+index 2a384d19db..978b5be149 100644
+--- a/release/src/router/www/RU.dict
++++ b/release/src/router/www/RU.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Проводные и Wi-Fi соединения пропадут при
+ RLAN_55=LAN и подключение к Интернету перезапустятся примерно на 10 секунд. Продолжить?
+ RLAN_56=Если DHCP-сервер выключен, устройства не получат адрес по истечении аренды. Продолжить?
+ RLAN_57=Сохранение. Точка доступа получит новый адрес от основного маршрутизатора; найдите его в списке клиентов того маршрутизатора.
++RLAN_58=DNS-имя
+ RNAT_01=NAT и переадресация портов
+ RNAT_02=Открытие портов из Интернета к устройствам вашей сети. Ничего не сохраняется, пока вы не нажмёте Применить; большинство изменений лишь перезагружают брандмауэр, это занимает несколько секунд.
+ RNAT_03=Переадресовывать порты WAN-адреса на устройство вашей сети.
+@@ -9124,6 +9125,8 @@ RLOG_103=последние 400 строк журнала межсетевого
+ RDST_113=Журнал межсетевого экрана
+ RDST_114=Каждая строка журнала межсетевого экрана (принятые, отброшенные, Warden), один файл в день
+ RDST_115=до 30 дней или 256 МБ, самый старый день удаляется первым
++RLOG_106=Адрес задан на устройстве (без DHCP)
++RLOG_107=Имя: имя, которое вы дали устройству на странице «Устройства». Имя хоста: имя, которое сообщает само устройство, иначе производитель его сетевой карты; Private-Address означает случайный адрес.
+ RSHD_178=Расширенные правила
+ RSHD_179=Вставьте список правил AdGuard Home как есть, до 40 000 символов: ||имя^ блокирует имя и его поддомены, |имя| только это имя, @@ разрешает, $important, $client= (адрес, MAC или имя устройства; ~ для всех остальных), $ctag= (профиль Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, подстановочные знаки и /regex/. Правило для отдельных устройств действует только на них. После сохранения строки, которые здесь не работают, перечисляются с причиной.
+ RSHD_180=Правил используется: %1, пропущено: %2, замечаний: %3
+diff --git a/release/src/router/www/Reaper_Devices.asp b/release/src/router/www/Reaper_Devices.asp
+index de19ae6e6b..f332719a8d 100644
+--- a/release/src/router/www/Reaper_Devices.asp
++++ b/release/src/router/www/Reaper_Devices.asp
+@@ -574,7 +574,7 @@ function renderRows(){
+     if(!visible(d)) return;
+     var nameHtml = d.name
+       ? '<span class="dname rtip" data-i="' + i + '" title="' + esc(T('RDEV_68')) + '">' + esc(d.name) + '</span><span class="src">' + esc(d.src) + '</span>'
+-      : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? esc(d.src === 'vendor' ? `<#RDEV_96#>` : `<#RDEV_93#>`) : '&mdash;') + '</span>';
++      : '<span class="dname unnamed rtip" data-i="' + i + '" title="' + esc(T('RDEV_69')) + '">' + (d.host ? esc(d.host) : esc(T('RDEV_42'))) + '</span><span class="src">' + (d.host ? (d.src === 'private' ? '' : esc(d.src === 'vendor' ? `<#RDEV_96#>` : `<#RDEV_93#>`)) : '&mdash;') + '</span>';
+     var chipsHtml = d.mlo_link
+       ? '<span class="chip pin" title="' + esc(T('RDEV_87')) + '">MLO</span>'
+       : ((d.node ? '<span class="chip node">' + esc(T('AiMesh_Node')) + '</span>' : '') +
+diff --git a/release/src/router/www/Reaper_IPv6.asp b/release/src/router/www/Reaper_IPv6.asp
+index 50ac5d17ec..1ec6dd8fec 100644
+--- a/release/src/router/www/Reaper_IPv6.asp
++++ b/release/src/router/www/Reaper_IPv6.asp
+@@ -18,10 +18,10 @@
+      descriptions and always closes its arrays (2026-10-23). No polling.
+      Device names (2026-11-14, field report): the emitter knows only the DHCP lease hostname, so a device with a
+      static address ("<unknown>") or one that sent no hostname ("*") had no name here while the Devices page named
+-     it. Rows now ask ReaperNames (reaper_util.js: networkmap's live name, else the user's own name from
+-     custom_clientlist) by MAC, the same source as the Leases / Connections / DNS pages; the lease hostname is the
+-     fallback, then "-". The user's own names are there on the first draw; the table draws again when the live
+-     list arrives. -->
++     it. Rows ask ReaperNames (reaper_util.js) by MAC, the same source as the Leases / Connections / DNS pages.
++     2026-11-15 (owner's rule): two columns. Name = the admin's name from the Devices page (custom_clientlist)
++     only; Hostname = what the client sent, else the maker from a real MAC, else Private-Address; the IPv6 lease
++     hostname is the Hostname fallback, then "-". The table draws again when the live list arrives. -->
+ <link rel="stylesheet" href="/reaper/rp.css">
+ <style>
+ .kv{display:grid;grid-template-columns:minmax(200px,320px) 1fr;gap:6px 22px;font-size:13px}
+@@ -89,15 +89,16 @@ var SORT = {k: 'host', dir: 1};
+ function drawCli(){
+   var list = rows(ipv6clientarray).map(function(r){
+     var lease = (r[0] === '*' || r[0] === '<unknown>') ? '' : r[0];
+-    return {host: ReaperNames.byMac(r[1], lease), mac: r[1], addr: r[2]};
++    /* 2026-11-15 (owner's device-label rule): Name = the admin's, Hostname = what the device gives the network */
++    return {name: ReaperNames.name(r[1]), host: ReaperNames.host(r[1]) || lease, mac: r[1], addr: r[2]};
+   });
+   if (!list.length){ q('cli').innerHTML = '<div class="empty">' + hx(`<#RLOG_60#>`) + '</div>'; return; }
+   var cmp = rp.cmp('text'); list.sort(function(a, b){ return SORT.dir * cmp(a[SORT.k], b[SORT.k]); });
+-  var heads = [['host', `<#RLOG_50#>`], ['mac', `<#RLOG_52#>`], ['addr', `<#RLOG_61#>`]];
++  var heads = [['name', `<#RLOG_49#>`], ['host', `<#RLOG_50#>`], ['mac', `<#RLOG_52#>`], ['addr', `<#RLOG_61#>`]];
+   var h = '<table class="rtab"><thead><tr>' + heads.map(function(c){ return '<th data-k="' + c[0] + '"' + (c[0] === SORT.k ? ' class="on"' : '') + '>' + hx(c[1]) +
+     '<span class="dir">' + (c[0] === SORT.k ? (SORT.dir > 0 ? '&#9650;' : '&#9660;') : '') + '</span></th>'; }).join('') + '</tr></thead><tbody>';
+   list.forEach(function(r){
+-    h += '<tr><td class="name">' + hx(r.host || '-') + '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' +
++    h += '<tr><td class="name">' + hx(r.name || '') + '</td><td>' + hx(r.host || '-') + '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' +
+       String(r.addr || '').split(/,\s*/).filter(Boolean).map(hx).join('<br>') + '</td></tr>';
+   });
+   q('cli').innerHTML = h + '</tbody></table>';
+diff --git a/release/src/router/www/Reaper_LAN.asp b/release/src/router/www/Reaper_LAN.asp
+index f498b3b8d8..9c54869be1 100644
+--- a/release/src/router/www/Reaper_LAN.asp
++++ b/release/src/router/www/Reaper_LAN.asp
+@@ -115,12 +115,12 @@ table.classes td.mono{font-family:var(--mono)}
+     <div class="sub"><#RLAN_16#></div>
+     <div class="secerr"><#RADM_78#></div>
+     <div class="frow" id="r_static"><div class="fl"><#LANHostConfig_ManualDHCPEnable_itemname#></div><div class="fc"><label class="tswitch"><input type="checkbox" id="t_static"><span class="track"></span></label></div></div>
+-    <table class="classes"><thead><tr><th><#MAC_Address#></th><th><#IPConnection_ExternalIPAddress_itemname#></th><th><#RLAN_17#></th><th><#LANHostConfig_x_DDNSHostNames_itemname#></th><th></th></tr></thead><tbody id="restbody"></tbody></table>
++    <table class="classes"><thead><tr><th><#RLOG_49#></th><th><#MAC_Address#></th><th><#IPConnection_ExternalIPAddress_itemname#></th><th><#RLAN_17#></th><th><#RLAN_58#></th><th></th></tr></thead><tbody id="restbody"></tbody></table>
+     <div class="bwl-add" id="resadd">
+       <div class="f"><label><#MAC_Address#></label><input type="text" class="ip mono" id="a_mac" maxlength="17" placeholder="AA:BB:CC:DD:EE:FF" autocomplete="off" list="resclients"></div>
+       <div class="f"><label><#IPConnection_ExternalIPAddress_itemname#></label><input type="text" class="ip mono" id="a_ip" maxlength="15" autocomplete="off"></div>
+       <div class="f"><label><#RLAN_17#></label><input type="text" class="ip mono" id="a_dns" maxlength="15" autocomplete="off"></div>
+-      <div class="f"><label><#LANHostConfig_x_DDNSHostNames_itemname#></label><input type="text" class="host mono" id="a_host" maxlength="32" autocomplete="off"></div>
++      <div class="f"><label><#RLAN_58#></label><input type="text" class="host mono" id="a_host" maxlength="32" autocomplete="off"></div>
+       <button type="button" class="btn small" id="resaddbtn"><#CTL_add#></button>
+     </div>
+     <datalist id="resclients"></datalist>
+@@ -345,21 +345,18 @@ section('p_res', 'dhcp', function(){
+   /* the list is re-serialised only once the user has edited it, so another writer's spelling is never "changed" */
+   c.dhcp_staticlist = RES_EDITED ? serRes(RES) : NV.dhcp_staticlist;
+ });
+-/* 2026-10-28 (field report): the stock table showed each device's name beside its MAC, so with the host-name field
+-   empty the native table read as names wiped. Host Name = Name (owner): a reservation without its own host name
+-   shows the device's name (stock's chain: nickname, else the detected name) in grey. Display only - not saved. */
+-function hostCell(r){
+-  if (r.host) return hx(r.host);
+-  var n = ReaperNames.byMac(r.mac, '');
+-  return n ? '<span class="dname">' + hx(n) + '</span>' : '-';
+-}
++/* 2026-11-15 (owner): the reservation's name is the device's DNS NAME (dnsmasq dhcp-host, /etc/hosts) - never shown
++   as a Name. The Name column is the one master Name (the Devices page list), shown beside it, read-only here.
++   (Supersedes 2026-10-28 "Host Name = Name", which showed the Name in grey in this cell.) */
++function hostCell(r){ return r.host ? hx(r.host) : '-'; }
++function nameCell(r){ var n = ReaperNames.name(r.mac); return n ? '<span class="dname">' + hx(n) + '</span>' : ''; }
+ function resDraw(){
+   var h = '';
+   RES.slice().sort(function(a, b){ return ip2n(a.ip) - ip2n(b.ip); }).forEach(function(r){
+-    h += '<tr><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(r.ip) + '</td><td class="mono">' + hx(r.dns || '-') + '</td><td class="mono">' + hostCell(r) +
++    h += '<tr><td>' + nameCell(r) + '</td><td class="mono">' + hx(r.mac) + '</td><td class="mono">' + hx(r.ip) + '</td><td class="mono">' + hx(r.dns || '-') + '</td><td class="mono">' + hostCell(r) +
+       '</td><td style="text-align:right;white-space:nowrap"><span class="link resedit" data-mac="' + hx(r.mac) + '">' + hx(`<#RLAN_33#>`) + '</span> <span class="bwldel" data-mac="' + hx(r.mac) + '" title="' + hx(`<#CTL_del#>`) + '">&times;</span></td></tr>';
+   });
+-  q('restbody').innerHTML = h || '<tr><td colspan="5" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
++  q('restbody').innerHTML = h || '<tr><td colspan="6" class="empty">' + hx(`<#IPConnection_VSList_Norule#>`) + '</td></tr>';
+   var b = q('resbudget'); b.textContent = RES.length + ' / ' + MAXRES; b.classList.toggle('hot', RES.length >= MAXRES);
+   resPickDraw();
+   dhcpHints();
+diff --git a/release/src/router/www/Reaper_Leases.asp b/release/src/router/www/Reaper_Leases.asp
+index 5183093a82..8ad664aa23 100644
+--- a/release/src/router/www/Reaper_Leases.asp
++++ b/release/src/router/www/Reaper_Leases.asp
+@@ -40,7 +40,8 @@
+   <div class="spacer"></div>
+   <button type="button" class="btn" id="b_refresh"><#CTL_refresh#></button>
+ </div>
+-<div class="hint" style="margin:-4px 0 14px"><#DHCPlease_title#></div>
++<div class="hint" style="margin:-4px 0 6px"><#DHCPlease_title#></div>
++<div class="hint" style="margin:0 0 14px"><#RLOG_107#></div>
+ 
+ <div class="rframe">
+ <div class="panel" id="p_leases">
+@@ -55,6 +56,7 @@
+ var q = rp.q, hx = rp.esc;
+ var leasearray = [];
+ <% get_leases_array(); %>
++ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-15: Refresh shows it was pressed */
+ /* columns: key, header, comparator type, cell class */
+ var COLS = [
+   {k: 'dev', h: `<#RLOG_49#>`, t: 'text', c: 'name'}, {k: 'host', h: `<#RLOG_50#>`, t: 'text', c: ''},
+@@ -69,8 +71,10 @@ function rows(){
+     return {left: r[0], mac: r[1], ip: r[2], host: r[3] === '*' ? '' : r[3], vlan: multi ? r[4] : '', dev: r[r.length - 1]};
+   });
+ }
++/* 2026-11-15: -1 = a device active on a DHCP network with no lease: its address is set on the device itself (leases
++   are kept across a restart - shared/reaper_leases.c - so a DHCP device always has its lease row) */
+ function leftText(s){
+-  var n = parseInt(s, 10); if (!(n > 0)) return '-';
++  var n = parseInt(s, 10); if (n === -1) return `<#RLOG_106#>`; if (!(n > 0)) return '-';
+   var d = Math.floor(n / 86400), h = Math.floor(n / 3600) % 24, m = Math.floor(n / 60) % 60;
+   return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + m + 'm';
+ }
+@@ -84,7 +88,10 @@ function draw(){
+     return '<th data-k="' + c.k + '"' + (c.k === col.k ? ' class="on"' : '') + '>' + hx(c.h) + '<span class="dir">' + (c.k === col.k ? (SORT.dir > 0 ? '&#9650;' : '&#9660;') : '') + '</span></th>';
+   }).join('') + '</tr></thead><tbody>';
+   list.forEach(function(r){
+-    h += '<tr>' + cols.map(function(c){ var v = c.k === 'left' ? leftText(r.left) : r[c.k]; return '<td class="' + c.c + '">' + hx(v || '-') + '</td>'; }).join('') + '</tr>';
++    h += '<tr>' + cols.map(function(c){
++      var v = c.k === 'left' ? leftText(r.left) : r[c.k];
++      return '<td class="' + c.c + '">' + hx(v || (c.k === 'dev' ? '' : '-')) + '</td>';	/* no Name = empty */
++    }).join('') + '</tr>';
+   });
+   q('list').innerHTML = h + '</tbody></table>';
+ }
+@@ -94,7 +101,9 @@ q('list').addEventListener('click', function(e){
+   try { localStorage.setItem('rlease_sort', JSON.stringify(SORT)); } catch (e2) {}
+   draw();
+ });
+-q('b_refresh').addEventListener('click', function(){ location.reload(); });
++/* the data comes with the page (the router asks dnsmasq for fresh times, ~1 s and longer on a big network):
++   the button shows it was pressed until the new page is there */
++q('b_refresh').addEventListener('click', function(){ ReaperBusy.start(this); setTimeout(function(){ location.reload(); }, 30); });
+ try { draw(); } catch (e) { q('list').innerHTML = '<div class="empty">' + hx(`<#RADM_78#>`) + '</div>'; }
+ })();
+ </script>
+diff --git a/release/src/router/www/Reaper_Parental.asp b/release/src/router/www/Reaper_Parental.asp
+index e8370de969..381499d315 100644
+--- a/release/src/router/www/Reaper_Parental.asp
++++ b/release/src/router/www/Reaper_Parental.asp
+@@ -195,7 +195,9 @@ function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.cla
+ /* one device: unicast, not all zero (rc isValidMacAddress + the stock page's check_hwaddr_flag) */
+ function macOk(s){ return rp.v.mac(s) && !(parseInt(s.slice(0, 2), 16) & 1) && s !== '00:00:00:00:00:00'; }
+ function cleanName(s){ return String(s || '').replace(/[<>\x00-\x1f\x7f]/g, '').replace(/^@+/, '').trim().slice(0, NAME_MAX); }
+-function devName(r){ var n = ''; try { n = ReaperNames.byMac(r.mac, ''); } catch (e) {} return n || r.name || r.mac; }
++/* 2026-11-15 (owner): the device's master Name (the Devices page list) by MAC; the rule's own stored name only when the
++   device has none; then the device's hostname. The stored name stays as it is (an @group entry is functional). */
++function devName(r){ var n = '', h = ''; try { n = ReaperNames.name(r.mac); h = ReaperNames.host(r.mac); } catch (e) {} return n || r.name || h || r.mac; }
+ 
+ /* ---------- schedules (shared/sched_v2.c week rules) ---------- */
+ var RX_WIN = /^([WM])([01])([0-9A-Fa-f]{2})([0-9]{4})([0-9]{4})$/;
+diff --git a/release/src/router/www/Reaper_WOL.asp b/release/src/router/www/Reaper_WOL.asp
+index ae7af72363..9379a4d73b 100644
+--- a/release/src/router/www/Reaper_WOL.asp
++++ b/release/src/router/www/Reaper_WOL.asp
+@@ -105,7 +105,10 @@ function draw(){
+   if (!LIST.length){ q('list').innerHTML = '<div class="empty">' + hx(`<#RNT_45#>`) + '</div>'; dirty(); return; }
+   var h = `<table class="rtab"><thead><tr><th><#RLOG_49#></th><th><#RLOG_52#></th><th></th></tr></thead><tbody>`;
+   LIST.forEach(function(r, i){
+-    h += '<tr><td class="name">' + hx(r.name || '-') + '</td><td class="mono">' + hx(r.mac) + '</td><td style="text-align:right;white-space:nowrap">' +
++    /* 2026-11-15 (owner): the device's master Name (the Devices page list) by MAC; this list's own name only when the
++       device has none */
++    var dv = DEVS.filter(function(d){ return String(d.mac).toUpperCase() === String(r.mac).toUpperCase(); })[0];
++    h += '<tr><td class="name">' + hx((dv && dv.name) || r.name || '-') + '</td><td class="mono">' + hx(r.mac) + '</td><td style="text-align:right;white-space:nowrap">' +
+       '<button type="button" class="btn small" data-wake="' + i + '">' + hx(`<#RNT_40#>`) + '</button> ' +
+       '<button type="button" class="btn small ghost" data-del="' + i + '">&times;</button></td></tr>';
+   });
+@@ -144,6 +147,7 @@ function loadDevices(){
+   x.onload = function(){
+     var j = null; try { j = JSON.parse(x.responseText); } catch (e) {}
+     DEVS = (j && j.devices) ? j.devices.filter(function(d){ return d && macOk(String(d.mac || '')); }) : [];
++    draw();	/* 2026-11-15: the list now shows master Names - draw again once they are here */
+     /* offline first: those are the ones worth waking */
+     DEVS.sort(function(a, b){ return (a.online ? 1 : 0) - (b.online ? 1 : 0) || rp.cmp('text')(a.name || a.host, b.name || b.host); });
+     q('s_dev').innerHTML = '<option value="">' + hx(`<#RNT_39#>`) + '</option>' + DEVS.map(function(d, i){
+diff --git a/release/src/router/www/SL.dict b/release/src/router/www/SL.dict
+index 447e6c02d5..f77455213e 100644
+--- a/release/src/router/www/SL.dict
++++ b/release/src/router/www/SL.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Žične in Wi-Fi povezave izpadejo za približno 35 sekund, medtem ko se
+ RLAN_55=LAN in internetna povezava se znova zaženeta za približno 10 sekund. Nadaljujem?
+ RLAN_56=Ko je strežnik DHCP izklopljen, naprave ob poteku dodelitve ne dobijo naslova. Nadaljujem?
+ RLAN_57=Shranjevanje. Dostopna točka dobi nov naslov od glavnega usmerjevalnika; poiščite ga na seznamu odjemalcev tega usmerjevalnika.
++RLAN_58=Ime DNS
+ RNAT_01=NAT in posredovanje vrat
+ RNAT_02=Odprite vrata iz interneta do naprav v vašem omrežju. Nič se ne shrani, dokler ne kliknete Uporabi; večina sprememb le znova naloži požarni zid, kar traja nekaj sekund.
+ RNAT_03=Posreduj vrata na naslovu WAN napravi v vašem omrežju.
+@@ -9124,6 +9125,8 @@ RLOG_103=najnovejših 400 vrstic dnevnika požarnega zidu (iz zbiralnika dnevnik
+ RDST_113=Dnevnik požarnega zidu
+ RDST_114=Vsaka vrstica dnevnika požarnega zidu (sprejete, zavržene, Warden), ena datoteka na dan
+ RDST_115=do 30 dni ali 256 MB, najstarejši dan se odstrani prvi
++RLOG_106=Naslov nastavljen na napravi (brez DHCP)
++RLOG_107=Ime je ime, ki ste ga dali napravi na strani Naprave. Ime gostitelja je ime, ki ga pošlje naprava, sicer proizvajalec njene omrežne kartice; Private-Address pomeni naključen naslov.
+ RSHD_178=Napredna pravila
+ RSHD_179=Prilepite seznam pravil AdGuard Home nespremenjen, do 40.000 znakov: ||ime^ blokira ime in njegove poddomene, |ime| samo to ime, @@ dovoli, $important, $client= (naslov, MAC ali ime naprave; ~ za vse druge), $ctag= (profil Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, nadomestni znaki in /regex/. Pravilo za nekatere naprave velja samo zanje. Po shranjevanju so vrstice, ki tu ne delujejo, navedene z razlogom.
+ RSHD_180=%1 pravil v uporabi, %2 izpuščenih, %3 opomb
+diff --git a/release/src/router/www/SV.dict b/release/src/router/www/SV.dict
+index 12cf269283..3dfa95229f 100644
+--- a/release/src/router/www/SV.dict
++++ b/release/src/router/www/SV.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Trådbundna och Wi-Fi-anslutningar försvinner i cirka 35 sekunder medan
+ RLAN_55=LAN och Internetanslutningen startar om i cirka 10 sekunder. Fortsätta?
+ RLAN_56=Med DHCP-servern avstängd får enheter ingen adress när deras lease går ut. Fortsätta?
+ RLAN_57=Sparar. Åtkomstpunkten hämtar en ny adress från din huvudrouter; hitta den i den routerns klientlista.
++RLAN_58=DNS-namn
+ RNAT_01=NAT och portvidarebefordran
+ RNAT_02=Öppna portar från Internet till enheter i ditt nätverk. Inget sparas förrän du klickar på Tillämpa; de flesta ändringar läser bara in brandväggen igen, vilket tar några sekunder.
+ RNAT_03=Vidarebefordra portar på WAN-adressen till en enhet i ditt nätverk.
+@@ -9124,6 +9125,8 @@ RLOG_103=de senaste 400 brandväggsloggraderna (från brandväggsloggsamlaren, e
+ RDST_113=Brandväggslogg
+ RDST_114=Varje brandväggsloggrad (godkända, avvisade, Warden), en fil per dag
+ RDST_115=upp till 30 dagar eller 256 MB, äldsta dagen tas bort först
++RLOG_106=Adress inställd på enheten (ingen DHCP)
++RLOG_107=Namn är namnet du gett enheten på sidan Enheter. Värdnamn är namnet enheten själv skickar, annars tillverkaren av dess nätverkskort; Private-Address betyder en slumpad adress.
+ RSHD_178=Avancerade regler
+ RSHD_179=Klistra in en regellista från AdGuard Home som den är, upp till 40 000 tecken: ||namn^ blockerar ett namn och dess underdomäner, |namn| bara det namnet, @@ tillåter, $important, $client= (adress, MAC eller enhetsnamn; ~ för alla andra), $ctag= (en Wallguard-profil), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, jokertecken och /regex/. En regel för vissa enheter gäller bara dem. Efter Spara listas raderna som inte fungerar här med orsaken.
+ RSHD_180=%1 regler används, %2 utelämnade, %3 anmärkningar
+diff --git a/release/src/router/www/TH.dict b/release/src/router/www/TH.dict
+index 780bb29ea2..ee942a294c 100644
+--- a/release/src/router/www/TH.dict
++++ b/release/src/router/www/TH.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=การเชื่อมต่อแบบใช้สายและ
+ RLAN_55=LAN และการเชื่อมต่ออินเทอร์เน็ตจะรีสตาร์ทประมาณ 10 วินาที ดำเนินการต่อหรือไม่
+ RLAN_56=เมื่อปิดเซิร์ฟเวอร์ DHCP อุปกรณ์จะไม่ได้รับแอดเดรสเมื่อสัญญาเช่าหมด ดำเนินการต่อหรือไม่
+ RLAN_57=กำลังบันทึก แอคเซสพอยต์จะรับแอดเดรสใหม่จากเราเตอร์หลัก ดูได้ในรายการไคลเอนต์ของเราเตอร์นั้น
++RLAN_58=ชื่อ DNS
+ RNAT_01=NAT และการส่งต่อพอร์ต
+ RNAT_02=เปิดพอร์ตจากอินเทอร์เน็ตไปยังอุปกรณ์ในเครือข่ายของคุณ จะไม่มีการบันทึกจนกว่าคุณจะกด นำไปใช้ การเปลี่ยนแปลงส่วนใหญ่จะโหลดเฉพาะไฟร์วอลล์ใหม่ ใช้เวลาไม่กี่วินาที
+ RNAT_03=ส่งต่อพอร์ตบนแอดเดรส WAN ไปยังอุปกรณ์ในเครือข่ายของคุณ
+@@ -9124,6 +9125,8 @@ RLOG_103=บันทึกไฟร์วอลล์ล่าสุด 400 บ
+ RDST_113=บันทึกไฟร์วอลล์
+ RDST_114=ทุกบรรทัดของบันทึกไฟร์วอลล์ (ยอมรับ, ทิ้ง, Warden) วันละหนึ่งไฟล์
+ RDST_115=สูงสุด 30 วันหรือ 256 MB ลบวันที่เก่าที่สุดก่อน
++RLOG_106=ตั้งที่อยู่ไว้บนอุปกรณ์ (ไม่ใช้ DHCP)
++RLOG_107=ชื่อ คือชื่อที่คุณตั้งให้อุปกรณ์ในหน้าอุปกรณ์ ชื่อโฮสต์ คือชื่อที่อุปกรณ์ส่งมาเอง หรือผู้ผลิตการ์ดเครือข่ายหากไม่มี Private-Address หมายถึงที่อยู่แบบสุ่ม
+ RSHD_178=กฎขั้นสูง
+ RSHD_179=วางรายการกฎของ AdGuard Home ตามเดิม สูงสุด 40,000 ตัวอักษร: ||ชื่อ^ บล็อกชื่อและโดเมนย่อย, |ชื่อ| เฉพาะชื่อนั้น, @@ อนุญาต, $important, $client= (ที่อยู่ MAC หรือชื่ออุปกรณ์; ~ สำหรับอุปกรณ์อื่นทั้งหมด), $ctag= (โปรไฟล์ Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, ไวลด์การ์ด และ /regex/ กฎสำหรับบางอุปกรณ์จะใช้กับอุปกรณ์นั้นเท่านั้น หลังบันทึก บรรทัดที่ใช้ที่นี่ไม่ได้จะแสดงพร้อมเหตุผล
+ RSHD_180=ใช้งาน %1 กฎ, ไม่ใช้ %2, หมายเหตุ %3
+diff --git a/release/src/router/www/TR.dict b/release/src/router/www/TR.dict
+index af4e0a81fc..6a067f30d5 100644
+--- a/release/src/router/www/TR.dict
++++ b/release/src/router/www/TR.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Ağ yeniden başlarken kablolu ve Wi-Fi bağlantılar yaklaşık 35 sani
+ RLAN_55=LAN ve İnternet bağlantısı yaklaşık 10 saniye yeniden başlar. Devam edilsin mi?
+ RLAN_56=DHCP sunucusu kapalıyken cihazlar kiraları bitince adres alamaz. Devam edilsin mi?
+ RLAN_57=Kaydediliyor. Erişim noktası ana yönlendiricinizden yeni bir adres alır; o yönlendiricinin istemci listesinde bulabilirsiniz.
++RLAN_58=DNS adı
+ RNAT_01=NAT ve Port Yönlendirme
+ RNAT_02=İnternet'ten ağınızdaki cihazlara port açın. Uygula'ya basana kadar hiçbir şey kaydedilmez; çoğu değişiklik yalnızca güvenlik duvarını yeniden yükler, bu birkaç saniye sürer.
+ RNAT_03=WAN adresindeki portları ağınızdaki bir cihaza yönlendirin.
+@@ -9124,6 +9125,8 @@ RLOG_103=en yeni 400 güvenlik duvarı günlük satırı (güvenlik duvarı gün
+ RDST_113=Güvenlik duvarı günlüğü
+ RDST_114=Her güvenlik duvarı günlük satırı (kabul edilen, düşürülen, Warden), günde bir dosya
+ RDST_115=en fazla 30 gün veya 256 MB, en eski gün önce silinir
++RLOG_106=Adres cihazda ayarlanmış (DHCP yok)
++RLOG_107=Ad, Cihazlar sayfasında cihaza verdiğiniz addır. Ana bilgisayar adı, cihazın kendi gönderdiği addır; yoksa ağ kartının üreticisidir. Private-Address rastgele bir adres anlamına gelir.
+ RSHD_178=Gelişmiş kurallar
+ RSHD_179=Bir AdGuard Home kural listesini olduğu gibi yapıştırın, en çok 40.000 karakter: ||ad^ bir adı ve alt alan adlarını engeller, |ad| yalnızca o adı, @@ izin verir, $important, $client= (adres, MAC veya cihaz adı; ~ diğer herkes için), $ctag= (bir Wallguard profili), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, joker karakterler ve /regex/. Bazı cihazlara yönelik bir kural yalnızca onlara uygulanır. Kaydettikten sonra burada çalışamayan satırlar nedeniyle listelenir.
+ RSHD_180=%1 kural kullanımda, %2 dışarıda bırakıldı, %3 not
+diff --git a/release/src/router/www/TW.dict b/release/src/router/www/TW.dict
+index e396734671..92a2fed20a 100644
+--- a/release/src/router/www/TW.dict
++++ b/release/src/router/www/TW.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=網路重新啟動期間，有線和 Wi-Fi 連線會中斷約 35 秒。
+ RLAN_55=LAN 和網際網路連線將重新啟動約 10 秒。要繼續嗎？
+ RLAN_56=關閉 DHCP 伺服器後，裝置在租約到期時將無法取得位址。要繼續嗎？
+ RLAN_57=正在儲存。存取點將從主路由器取得新位址；請在該路由器的用戶端清單中查看。
++RLAN_58=DNS 名稱
+ RNAT_01=NAT 與連接埠轉送
+ RNAT_02=從網際網路向網路中的裝置開放連接埠。按下套用之前不會儲存任何內容；大多數變更只會重新載入防火牆，只需幾秒鐘。
+ RNAT_03=將 WAN 位址上的連接埠轉送到網路中的裝置。
+@@ -9124,6 +9125,8 @@ RLOG_103=最新的 400 行防火牆記錄（來自防火牆記錄收集器；收
+ RDST_113=防火牆記錄
+ RDST_114=每一行防火牆記錄（已接受、已丟棄、Warden），每天一個檔案
+ RDST_115=最多 30 天或 256 MB，最早的一天先刪除
++RLOG_106=位址在裝置上設定（未使用 DHCP）
++RLOG_107=名稱是您在「裝置」頁面為裝置命名的名稱。主機名稱是裝置自己傳送的名稱，否則為其網路卡製造商；Private-Address 表示隨機位址。
+ RSHD_178=進階規則
+ RSHD_179=按原樣貼上 AdGuard Home 規則清單，最多 40,000 個字元：||名稱^ 封鎖名稱及其子網域，|名稱| 僅該名稱，@@ 表示允許，$important，$client=（位址、MAC 或裝置名稱；~ 表示其他所有裝置），$ctag=（Wallguard 設定檔），$dnstype=，$dnsrewrite=NOERROR/NXDOMAIN/REFUSED，萬用字元和 /regex/。針對部分裝置的規則只作用於這些裝置。儲存後會列出此處無法生效的行及原因。
+ RSHD_180=使用中 %1 條，已略過 %2 條，提示 %3 條
+diff --git a/release/src/router/www/UK.dict b/release/src/router/www/UK.dict
+index b8c60a4d46..6840e09178 100644
+--- a/release/src/router/www/UK.dict
++++ b/release/src/router/www/UK.dict
+@@ -8166,6 +8166,7 @@ RLAN_54=Дротові та Wi-Fi з'єднання зникнуть прибл
+ RLAN_55=LAN і підключення до Інтернету перезапустяться приблизно на 10 секунд. Продовжити?
+ RLAN_56=Якщо DHCP-сервер вимкнено, пристрої не отримають адресу після закінчення оренди. Продовжити?
+ RLAN_57=Збереження. Точка доступу отримає нову адресу від основного маршрутизатора; знайдіть її у списку клієнтів того маршрутизатора.
++RLAN_58=DNS-ім’я
+ RNAT_01=NAT і переадресація портів
+ RNAT_02=Відкриття портів з Інтернету до пристроїв вашої мережі. Нічого не зберігається, доки ви не натиснете Застосувати; більшість змін лише перезавантажують брандмауер, це триває кілька секунд.
+ RNAT_03=Переадресовувати порти WAN-адреси на пристрій вашої мережі.
+@@ -9124,6 +9125,8 @@ RLOG_103=останні 400 рядків журналу брандмауера (
+ RDST_113=Журнал брандмауера
+ RDST_114=Кожен рядок журналу брандмауера (прийняті, відкинуті, Warden), один файл на день
+ RDST_115=до 30 днів або 256 МБ, найстаріший день видаляється першим
++RLOG_106=Адресу задано на пристрої (без DHCP)
++RLOG_107=Ім’я: ім’я, яке ви дали пристрою на сторінці «Пристрої». Ім’я хоста: ім’я, яке надсилає сам пристрій, інакше виробник його мережевої карти; Private-Address означає випадкову адресу.
+ RSHD_178=Розширені правила
+ RSHD_179=Вставте список правил AdGuard Home як є, до 40 000 символів: ||ім'я^ блокує ім'я та його піддомени, |ім'я| лише це ім'я, @@ дозволяє, $important, $client= (адреса, MAC або назва пристрою; ~ для всіх інших), $ctag= (профіль Wallguard), $dnstype=, $dnsrewrite=NOERROR/NXDOMAIN/REFUSED, символи підстановки та /regex/. Правило для окремих пристроїв діє лише на них. Після збереження рядки, що тут не працюють, перелічено з причиною.
+ RSHD_180=Правил використано: %1, пропущено: %2, зауважень: %3
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+index 5e9aea928e..3bf6c8e500 100644
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -2067,7 +2067,10 @@ function select_image(clientObj, useDefaultType = false) {
+ 	useTypeIcon(clientObj);
+ }
+ 
++/* reaper 2026-11-15 (owner's device-label rule): a randomized (locally administered) MAC has no maker - never looked up */
++function reaper_mac_private(mac){ return (parseInt(String(mac).substr(0, 2), 16) & 2) !== 0; }
+ function oui_query_card(mac) {
++	if (reaper_mac_private(mac)) return;
+ 	var queryStr = mac.replace(/\:/g, "").splice(6,6,"");
+ 	if(mac != document.getElementById("card_client_macaddr_field").value) //avoid click two device quickly
+ 		oui_query_card(document.getElementById("card_client_macaddr_field").value);
+@@ -4652,6 +4655,10 @@ function ajaxCallJsonp(target){
+ }
+ 
+ function oui_query_full_vendor(mac){
++	if(reaper_mac_private(mac)) {	/* reaper 2026-11-15: no maker for a randomized MAC */
++		var overlibStrP = (clientList[mac] != undefined) ? retOverLibStr(clientList[mac]) : "<p><#MAC_Address#>:</p>" + mac.toUpperCase();
++		return isSupport("UI4") ? overlib(overlibStrP, STICKY, CAPTION, " ") : overlib(overlibStrP);
++	}
+ 	if(clientList[mac] != undefined && clientList[mac].vendor != "") {
+ 		setTimeout(function(){
+ 			var overlibStrTmp = retOverLibStr(clientList[mac]);
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index a0ada2a3d9..d133692b80 100644
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -15,10 +15,17 @@
+  * on their own 1024 bit formatter by design (a bitrate cap is a different quantity).
+  */
+ window.ReaperNames = (function(){
+-  var byMac = {}, ip2mac = {};
++  /* 2026-11-15 (owner): ONE rule for every device label (httpd/reaper_devname.c). Name = the name the network admin
++     gave the device (the Devices page list - the one master list); Hostname = the name the device gives the network
++     itself, else the maker of a real MAC, else "Private-Address". A single label is Name if there is one, else
++     Hostname. The router computes both (appGet hook reaper_devnames, fetched with get_clientlist in ONE request);
++     the page's custom_clientlist seeds Names before the reply arrives. networkmap's own name (often a DHCP vendor
++     class such as "MSFT 5.0") is no longer used as a label. */
++  var nameOf = {}, hostOf = {}, ip2mac = {};
+   function nrm(m){ return String(m == null ? '' : m).toLowerCase(); }
++  function label(m){ var n = nameOf[m]; if(n) return n; var h = hostOf[m]; return h ? h : ''; }
+ 
+-  /* parse the ASP-injected custom_clientlist tuple string: <name>mac>group>type>... */
++  /* parse the ASP-injected custom_clientlist tuple string: <name>mac>group>type>... (the master Name list) */
+   function seedCustom(raw){
+     if(!raw) return;
+     try{
+@@ -27,33 +34,34 @@ window.ReaperNames = (function(){
+       for(var i = 0; i < ents.length; i++){
+         if(!ents[i]) continue;
+         var f = ents[i].split('>'), nm = f[0] || '', mac = nrm(f[1]);
+-        if(nm && mac.indexOf(':') > -1) byMac[mac] = nm;   /* live list overwrites below */
++        if(nm && mac.indexOf(':') > -1) nameOf[mac] = nm;
+       }
+     }catch(e){}
+   }
+ 
+-  /* fetch the live networkmap client list once; nickName||name; key by lc-MAC and IP.
+-     cb(clientListObj|null) lets a caller do page-specific work (e.g. QoS datalist)
+-     with the same fetched payload - no second request. */
++  /* one request: the live client list (addresses; callers that need it get it via cb) + the router's Name / Hostname
++     for every device it knows. cb(clientListObj|null). */
+   function fetchLive(cb){
+     var x = new XMLHttpRequest();
+-    x.open('GET', '/appGet.cgi?hook=get_clientlist()&_=' + Date.now(), true);
++    x.open('GET', '/appGet.cgi?hook=get_clientlist();reaper_devnames()&_=' + Date.now(), true);
+     x.timeout = 6000;
+     x.onreadystatechange = function(){
+       if(x.readyState !== 4) return;
+-      var cl = null;
++      var cl = null, dn = null;
+       if(x.status === 200){
+         try{
+-          var j = JSON.parse(x.responseText); cl = j.get_clientlist || j;
+-          var ml = cl.maclist || [];
++          var j = JSON.parse(x.responseText); cl = j.get_clientlist || j; dn = j.reaper_devnames || null;
++          var ml = (cl && cl.maclist) || [];
+           for(var i = 0; i < ml.length; i++){
+             var mac = String(ml[i]), c = cl[mac]; if(!c) continue;
+-            var nm = (c.nickName && String(c.nickName).length) ? String(c.nickName)
+-                   : ((c.name && String(c.name).length) ? String(c.name) : '');
+-            var lm = nrm(mac);
+-            if(nm) byMac[lm] = nm;            /* freshest live name wins over custom */
+-            if(c.ip) ip2mac[c.ip] = lm;
++            if(c.ip) ip2mac[c.ip] = nrm(mac);
+           }
++          if(dn) Object.keys(dn).forEach(function(k){
++            var d = dn[k] || {}, m = nrm(k);
++            if(d.n) nameOf[m] = String(d.n); else if(!(m in nameOf)) nameOf[m] = '';
++            hostOf[m] = d.h ? String(d.h) : '';
++            if(d.ip && !ip2mac[d.ip]) ip2mac[d.ip] = m;
++          });
+         }catch(e){ cl = null; }
+       }
+       if(cb) cb(cl);
+@@ -65,11 +73,14 @@ window.ReaperNames = (function(){
+   return {
+     /* customRaw = the page's ASP-injected custom_clientlist string (may be ''). */
+     refresh: function(customRaw, cb){ seedCustom(customRaw); fetchLive(cb); },
+-    /* name for a MAC; fb defaults to '' (Traffic/Conn), pass the MAC for QoS. */
+-    byMac: function(mac, fb){ var n = byMac[nrm(mac)]; return (n !== undefined && n !== '') ? n : (fb !== undefined ? fb : ''); },
+-    /* name for an IP (via the live IP->MAC index). */
+-    byIp: function(ip, fb){ var m = ip2mac[ip], n = m ? byMac[m] : undefined; return (n !== undefined && n !== '') ? n : (fb !== undefined ? fb : ''); },
+-    /* the lc-MAC the live list mapped to this IP (Traffic identity cell), or ''. */
++    /* the one label for a MAC (Name, else Hostname); fb when there is none (Traffic/Conn pass '', QoS the MAC). */
++    byMac: function(mac, fb){ var l = label(nrm(mac)); return l !== '' ? l : (fb !== undefined ? fb : ''); },
++    /* the one label for an IPv4 address (through the router's address -> MAC map). */
++    byIp: function(ip, fb){ var m = ip2mac[ip], l = m ? label(m) : ''; return l !== '' ? l : (fb !== undefined ? fb : ''); },
++    /* the two fields apart, for pages that show both columns */
++    name: function(mac){ return nameOf[nrm(mac)] || ''; },
++    host: function(mac){ return hostOf[nrm(mac)] || ''; },
++    /* the lc-MAC mapped to this IP (Traffic identity cell), or ''. */
+     macForIp: function(ip){ return ip2mac[ip] || ''; }
+   };
+ })();
+-- 
+2.25.1
+

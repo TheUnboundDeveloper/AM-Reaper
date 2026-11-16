@@ -14,7 +14,7 @@ input's provenance and license status. Companion to
 
 | Input | Pin | Source | License |
 |---|---|---|---|
-| Upstream base tree | Asuswrt-Merlin 3006.102.10, commit `ca72a61f8bc` (untagged upstream; `3006.102.8-beta2` / `a7ebfa133a` before v3.6.0) | <https://github.com/RMerl/asuswrt-merlin.ng> | Mixed FOSS — GPL v2 (base + bulk), GPL v3 (Samba/wget/nano), LGPL v2.1 (glib/avahi/…), MIT/BSD/OFL; full texts in [`LICENSES/`](LICENSES/) — plus proprietary vendor components (see below) |
+| Upstream base tree | Asuswrt-Merlin 3006.102.10, commit `ca72a61f8bc` (untagged upstream; `3006.102.8-beta2` / `a7ebfa133a` before v3.6.0) | <https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng> | Mixed FOSS — GPL v2 (base + bulk), GPL v3 (Samba/wget/nano), LGPL v2.1 (glib/avahi/…), MIT/BSD/OFL; full texts in [`LICENSES/`](LICENSES/) — plus proprietary vendor components (see below) |
 | Reaper patch series | `patches/0001`–`0535` (v1.0 → v2.7.6; `0535` = v2.7.6) — the newest published release is v2.7.3, so the series leads the published fleet; regenerated at publish time | this repo | GPL v2 ([`LICENSE.reaper`](LICENSE.reaper)) |
 | nghttp2 (HTTP/2 library, compiled into `rednsd` only) | 1.71.0, `nghttp2-1.71.0.tar.xz`, sha256 `c0f55121d88650e4b9227aec28cebaf664d2417ca60fe70be0f8d38829f52116`; the 55 library files are carried unmodified in `release/src/router/rednsd/nghttp2/` (see its `README.reaper`) | <https://github.com/nghttp2/nghttp2> | MIT ([`LICENSES/MIT-nghttp2.txt`](LICENSES/MIT-nghttp2.txt)) |
 
@@ -27,7 +27,7 @@ Reaper source tree exactly (see [`patches/README.md`](patches/README.md)).
 
 | Input | Pin | Source | License / redistribution |
 |---|---|---|---|
-| ARM crosstools | `crosstools-arm-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1` | <https://github.com/RMerl/am-toolchains> | GCC/binutils/glibc are GPL/LGPL; the packaged toolchain's exact redistribution terms are **UNVERIFIED** — obtain from the upstream `am-toolchains` repo rather than rehosting until confirmed. |
+| ARM crosstools | `crosstools-arm-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1` | <https://github.com/Asuswrt-Merlin/am-toolchains> | GCC/binutils/glibc are GPL/LGPL; the packaged toolchain's exact redistribution terms are **UNVERIFIED** — obtain from the upstream `am-toolchains` repo rather than rehosting until confirmed. |
 | aarch64 crosstools | `crosstools-aarch64-gcc-10.3-linux-4.19-glibc-2.32-binutils-2.36.1` | same | same |
 | `LnxDictPrep` (host tool) | ships in the upstream tree (`tools/`) | upstream Asuswrt-Merlin | Provenance/license **UNVERIFIED**; it is an upstream 32-bit host build tool, not a Reaper artifact. |
 

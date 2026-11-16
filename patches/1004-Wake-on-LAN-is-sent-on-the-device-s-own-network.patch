@@ -1,0 +1,373 @@
+From 8e5fb03995d6fe2022a0895b3c5f635f7b3e99cd Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:14 -0500
+Subject: [PATCH] Wake on LAN is sent on the device's own network
+
+- The magic packet went out on the main network only, so a device on a guest or VLAN network was
+  listed but never woke. httpd now uses the bridge where the device was last seen (the neighbour
+  table, when exactly one bridge has it), else the network whose lease file holds it, else the
+  main network; the page says which.
+- web.c also carries, for the VPN pages of this rung, each OpenVPN client's mode and effective
+  Killswitch.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/httpd/web.c        | 238 ++++++++++++++++++++++++--
+ release/src/router/www/Reaper_WOL.asp |  19 +-
+ 2 files changed, 242 insertions(+), 15 deletions(-)
+
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index e9a3622719..0e54cbdc1a 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -29434,6 +29434,30 @@ do_reaper_fw_cgi(char *url, FILE *stream)
+  * single path that writes flash is reaper_pbr_confirm() in rc, after the
+  * operator has confirmed rules that are already live. See rc/reaper_pbr.c P7.
+  * =================================================================== */
++/* reaper 2026-11-16: how an OpenVPN client carries traffic - 0 = the tunnel holds the default route (Redirect
++ * "all" or "VPN Director", TUN), 1 = pushed routes only (Redirect "No"), 2 = TAP. Its Killswitch counts in
++ * mode 0 only (rc/reaper_pbr.c ppbr_target(), and Merlin's own paths), so the pages get the EFFECTIVE switch. */
++static int rpbr_ov_mode(int unit)
++{
++	char k[32];
++	int rgw;
++
++	snprintf(k, sizeof(k), "vpn_client%d_if", unit);
++	if (!strncmp(nvram_safe_get(k), "tap", 3))
++		return 2;
++	snprintf(k, sizeof(k), "vpn_client%d_rgw", unit);
++	rgw = nvram_get_int(k);
++	return (rgw == 1 || rgw == 2) ? 0 : 1;
++}
++
++static int rpbr_ov_ks(int unit)
++{
++	char k[32];
++
++	snprintf(k, sizeof(k), "vpn_client%d_enforce", unit);
++	return (nvram_get_int(k) && rpbr_ov_mode(unit) == 0) ? 1 : 0;
++}
++
+ #define RPBR_LIST_MAX	8192
+ 
+ static void
+@@ -29473,7 +29497,7 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 		 * "configured" (an address set), which is not what decides anything:
+ 		 * the emitter's prohibit and the page's Status column both key on
+ 		 * enabled, the same test VPN Director applies. */
+-		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d],\"ov\":[%d,%d,%d,%d,%d],\"wks\":[%d,%d,%d,%d,%d],\"oks\":[%d,%d,%d,%d,%d]",
++		websWrite(stream, "{\"ok\":1,\"active\":%d,\"enable\":%d,\"confirm\":%d,\"armed\":%d,\"left\":%ld,\"wg\":[%d,%d,%d,%d,%d],\"ov\":[%d,%d,%d,%d,%d],\"wks\":[%d,%d,%d,%d,%d],\"oks\":[%d,%d,%d,%d,%d],\"omode\":[%d,%d,%d,%d,%d]",
+ 			nvram_match("reaper_pbr_active", "1") ? 1 : 0,
+ 			nvram_match("reaper_pbr_enable", "1") ? 1 : 0,
+ 			nvram_get_int("reaper_fw_confirm"),
+@@ -29485,8 +29509,8 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+ 			ovpn_is_client_enabled(4), ovpn_is_client_enabled(5),
+ 			nvram_get_int("wgc1_enforce") ? 1 : 0, nvram_get_int("wgc2_enforce") ? 1 : 0, nvram_get_int("wgc3_enforce") ? 1 : 0,
+ 			nvram_get_int("wgc4_enforce") ? 1 : 0, nvram_get_int("wgc5_enforce") ? 1 : 0,
+-			nvram_get_int("vpn_client1_enforce") ? 1 : 0, nvram_get_int("vpn_client2_enforce") ? 1 : 0, nvram_get_int("vpn_client3_enforce") ? 1 : 0,
+-			nvram_get_int("vpn_client4_enforce") ? 1 : 0, nvram_get_int("vpn_client5_enforce") ? 1 : 0);
++			rpbr_ov_ks(1), rpbr_ov_ks(2), rpbr_ov_ks(3), rpbr_ov_ks(4), rpbr_ov_ks(5),
++			rpbr_ov_mode(1), rpbr_ov_mode(2), rpbr_ov_mode(3), rpbr_ov_mode(4), rpbr_ov_mode(5));
+ 		websWrite(stream, ",\"err\":");
+ 		gk_json_esc(stream, nvram_safe_get("reaper_pbr_err"));
+ 		websWrite(stream, ",\"rulelist\":");
+@@ -29575,6 +29599,8 @@ do_reaper_pbr_cgi(char *url, FILE *stream)
+  * RNET_OUTMAX, and the state always ends in DONE (the stock pages polled forever when a command failed
+  * because their end marker was written only on success). Gated on http_id like every Reaper CGI.
+  *   action=start&tool=ping|traceroute|nslookup|netstat|wake&...   -> {"ok":1} | {"ok":0,"error":"E_..."}
++ *   tool=wake&iface=auto|brN      -> {"ok":1,"iface":"br52","src":"arp|lease|none|set","net":"<router address there>"}
++ *                                    (2026-11-16: auto = the device's own network; no iface = br0)
+  *   action=status                 -> {"ok":1,"state":"idle|running|done|failed","tool":..,"target":..,"rc":..}
+  *   action=get&from=N             -> status fields + "next" (byte offset) + "text" (output from N, <= 64 KB)
+  *   action=cancel                 -> stop the running tool
+@@ -29594,6 +29620,9 @@ struct rnet_job {
+ 	int argc;
+ 	char *argv[16];
+ 	char store[16][256];	/* review 2026-10-24 (S-B-5): a 253-byte host name must fit whole */
++	char iface[16];		/* reaper 2026-11-16: Wake on LAN only - the bridge the packet goes out on, */
++	char src[8];		/* how it was found (arp / lease / none, or set = named by the caller) */
++	char net[16];		/* and that network's router address (IPv4, may be empty) */
+ };
+ static struct rnet_job rnet_job;
+ 
+@@ -29664,6 +29693,175 @@ static int rnet_num(const char *s, int lo, int hi, int dflt)
+ 	return (int)v;
+ }
+ 
++/* REAPER-WOL-AUTO-BEGIN */
++/* reaper 2026-11-16: Wake on LAN on the device's own network. The page's list holds the devices of every
++ * network (main, guest, VLAN), but a magic packet is a broadcast that stays on the one bridge it is sent
++ * on, and the page always named br0: a wake for a device on another network went nowhere and the page
++ * still said it was sent. With iface=auto the server finds the bridge itself: the ARP table (and the IPv6
++ * neighbour table), then the DHCP lease files, else br0. A source is used only when it names exactly ONE
++ * bridge; a MAC seen on two bridges is treated as unknown there. The packet is never sent on every
++ * bridge: it carries the target's MAC, and that would show a main-network device to every guest station.
++ * Everything between the two markers takes a FILE or plain values, so the lean test runs it on the host. */
++#ifndef RNET_SYSNET
++#define RNET_SYSNET "/sys/class/net"
++#endif
++
++/* a LAN bridge that exists: "br" + 1-4 digits (main LAN br0, SDN bridges br52...) that the kernel lists
++ * as a bridge. Every name passes here before it reaches a path or the tool's arguments. */
++static int rnet_br_ok(const char *s)
++{
++	char path[128];
++	struct stat st;
++
++	if (!s || strncmp(s, "br", 2) || !s[2] || strlen(s) > 6 || strspn(s + 2, "0123456789") != strlen(s + 2))
++		return 0;
++	if (snprintf(path, sizeof(path), RNET_SYSNET "/%s/bridge", s) >= (int)sizeof(path))
++		return 0;
++	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
++/* one more sighting of the MAC, on bridge cand. cnt = the DISTINCT bridges so far (0, 1 with its name in
++ * br, or 2 = two or more); returns the new count. A name that is not an existing bridge does not count. */
++static int rnet_wake_seen(char *br, size_t n, int cnt, const char *cand)
++{
++	if (!rnet_br_ok(cand))
++		return cnt;
++	if (cnt == 0) {
++		snprintf(br, n, "%s", cand);
++		return 1;
++	}
++	if (cnt == 1 && !strcmp(br, cand))
++		return 1;
++	return 2;
++}
++
++/* /proc/net/arp: the bridges this MAC has a complete entry on (flags & 2, as the Devices list reads it; a
++ * STALE entry counts - a sleeping device is the one to wake). Returns 0, 1 (br = the bridge) or 2 = two
++ * or more. The header line does not parse and is skipped. */
++static int rnet_wake_arp(FILE *f, const char *mac, char *br, size_t n)
++{
++	char line[256], hw[64], dif[32];
++	unsigned flags;
++	int cnt = 0;
++
++	if (n)
++		br[0] = '\0';
++	if (!f || !mac)
++		return 0;
++	while (fgets(line, sizeof(line), f)) {
++		if (sscanf(line, "%*s 0x%*x 0x%x %63s %*s %31s", &flags, hw, dif) != 3)
++			continue;
++		if (!(flags & 2) || strcasecmp(hw, mac))
++			continue;
++		cnt = rnet_wake_seen(br, n, cnt, dif);
++	}
++	return cnt;
++}
++
++/* a dnsmasq lease file ("<expiry> <mac> <ip> <host> <clientid>"): 1 when this MAC holds a lease in it. A
++ * DHCPv6 line carries an IAID in that column and never matches. */
++static int rnet_wake_in_leases(FILE *f, const char *mac)
++{
++	char line[1024], hw[64];
++
++	if (!f || !mac)
++		return 0;
++	while (fgets(line, sizeof(line), f))
++		if (sscanf(line, "%*s %63s", hw) == 1 && !strcasecmp(hw, mac))
++			return 1;
++	return 0;
++}
++
++/* the decision. narp / nlease = how many DISTINCT bridges the neighbour tables / the lease files named
++ * (arpbr / leasebr = the one, when it is exactly one). Writes the bridge to br and returns how it was
++ * found: "arp", "lease", or "none" = unknown, so the main network only (the page then says so). */
++static const char *rnet_wake_pick(int narp, const char *arpbr, int nlease, const char *leasebr, char *br, size_t n)
++{
++	if (narp == 1 && rnet_br_ok(arpbr)) {
++		snprintf(br, n, "%s", arpbr);
++		return "arp";
++	}
++	if (nlease == 1 && rnet_br_ok(leasebr)) {
++		snprintf(br, n, "%s", leasebr);
++		return "lease";
++	}
++	snprintf(br, n, "%s", "br0");
++	return "none";
++}
++/* REAPER-WOL-AUTO-END */
++
++/* reaper 2026-11-16: the bridge to wake this MAC on (see REAPER-WOL-AUTO above) and how it was found.
++ * The lease file of a network is named from that row's integer index only - never from request text. */
++static const char *rnet_wake_bridge(const char *mac, char *br, size_t brn)
++{
++	static struct reaper_nd ndt[256];
++	MTLAN_T *pmtl;
++	size_t sz = 0, i;
++	char arpbr[16] = "", leasebr[16] = "", path[64];
++	int narp, nlease = 0, ndn, k;
++	FILE *f;
++
++	/* 1. where the kernel last saw it: IPv4 ARP, then the IPv6 neighbours (bridges only) */
++	f = fopen("/proc/net/arp", "r");
++	narp = rnet_wake_arp(f, mac, arpbr, sizeof(arpbr));
++	if (f)
++		fclose(f);
++	ndn = reaper_nd_load(ndt, 256);
++	for (k = 0; k < ndn; k++)
++		if (!strcasecmp(ndt[k].mac, mac))
++			narp = rnet_wake_seen(arpbr, sizeof(arpbr), narp, ndt[k].br);
++
++	/* 2. the network whose DHCP server holds its lease: the main one, then each network's own */
++	if (narp != 1) {
++		if ((f = fopen("/var/lib/misc/dnsmasq.leases", "r")) != NULL) {
++			if (rnet_wake_in_leases(f, mac))
++				nlease = rnet_wake_seen(leasebr, sizeof(leasebr), nlease, "br0");
++			fclose(f);
++		}
++		pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T));
++		if (pmtl && !get_mtlan(pmtl, &sz))
++			sz = 0;
++		for (i = 0; pmtl && i < sz; i++) {
++			if (!pmtl[i].enable || !pmtl[i].sdn_t.sdn_idx || !pmtl[i].nw_t.idx)
++				continue;
++			snprintf(path, sizeof(path), "/var/lib/misc/dnsmasq-%d.leases", pmtl[i].sdn_t.sdn_idx);
++			if ((f = fopen(path, "r")) == NULL)
++				continue;
++			if (rnet_wake_in_leases(f, mac))
++				nlease = rnet_wake_seen(leasebr, sizeof(leasebr), nlease, pmtl[i].nw_t.br_ifname);
++			fclose(f);
++		}
++		if (pmtl)
++			FREE_MTLAN((void *)pmtl);
++	}
++	/* 3. exactly one bridge from 1, else exactly one from 2, else br0 */
++	return rnet_wake_pick(narp, arpbr, nlease, leasebr, br, brn);
++}
++
++/* reaper 2026-11-16: the router's own address on that bridge's network, for the page's "on the network"
++ * text; empty when it cannot be told. Only a well-formed IPv4 address is passed on (it goes into JSON). */
++static void rnet_wake_net(const char *br, char *net, size_t n)
++{
++	MTLAN_T *pmtl;
++	size_t sz = 0, i;
++	struct in_addr a4;
++	char addr[INET_ADDRSTRLEN] = "";
++
++	if (!strcmp(br, "br0"))
++		strlcpy(addr, nvram_safe_get("lan_ipaddr"), sizeof(addr));
++	else if ((pmtl = (MTLAN_T *)INIT_MTLAN(sizeof(MTLAN_T))) != NULL) {
++		if (!get_mtlan(pmtl, &sz))
++			sz = 0;
++		for (i = 0; i < sz; i++)
++			if (pmtl[i].enable && !strcmp(pmtl[i].nw_t.br_ifname, br)) {
++				strlcpy(addr, pmtl[i].nw_t.addr, sizeof(addr));
++				break;
++			}
++		FREE_MTLAN((void *)pmtl);
++	}
++	snprintf(net, n, "%s", inet_pton(AF_INET, addr, &a4) == 1 ? addr : "");
++}
++
+ /* the argv for one request, from fixed flags only; NULL = ok, else an error code for the page */
+ static const char *rnet_build(struct rnet_job *j)
+ {
+@@ -29724,20 +29922,27 @@ static const char *rnet_build(struct rnet_job *j)
+ 		target = "";
+ 		j->limit = 20;
+ 	} else if (!strcmp(tool, "wake")) {
+-		char *ifc = get_cgi("iface"), path[48];
+-		struct stat st;
++		char *ifc = get_cgi("iface");
+ 		if (!rnet_mac_ok(target))
+ 			return "E_MAC";
+-		if (!ifc || !*ifc)
+-			ifc = "br0";
++		/* reaper 2026-11-16: iface=auto = the bridge of the device's own network (rnet_wake_bridge);
++		 * no iface stays br0, and a named bridge is used as given. ONE bridge, never all of them. */
++		if (ifc && !strcmp(ifc, "auto")) {
++			strlcpy(j->src, rnet_wake_bridge(target, j->iface, sizeof(j->iface)), sizeof(j->src));
++		} else {
++			if (!ifc || !*ifc)
++				ifc = "br0";
++			if (!rnet_br_ok(ifc))
++				return "E_IFACE";
++			strlcpy(j->iface, ifc, sizeof(j->iface));
++			strlcpy(j->src, "set", sizeof(j->src));
++		}
+ 		/* a LAN bridge that exists: brN (main LAN br0, SDN bridges br52...) */
+-		if (strncmp(ifc, "br", 2) || !ifc[2] || strlen(ifc) > 6 || strspn(ifc + 2, "0123456789") != strlen(ifc + 2))
+-			return "E_IFACE";
+-		snprintf(path, sizeof(path), "/sys/class/net/%s", ifc);
+-		if (stat(path, &st) != 0)
++		if (!rnet_br_ok(j->iface))
+ 			return "E_IFACE";
++		rnet_wake_net(j->iface, j->net, sizeof(j->net));
+ 		rnet_arg(j, "ether-wake");
+-		rnet_arg(j, "-i"); rnet_arg(j, ifc);
++		rnet_arg(j, "-i"); rnet_arg(j, j->iface);
+ 		rnet_arg(j, "-b");
+ 		rnet_arg(j, target);
+ 		j->limit = 10;
+@@ -29873,6 +30078,15 @@ do_reaper_net_cgi(char *url, FILE *stream)
+ 		if ((f = fopen(RNET_LOCK, "w")) != NULL)
+ 			fclose(f);
+ 		rnet_state("RUNNING", 0, 0, &rnet_job);
++		/* reaper 2026-11-16: a wake names the bridge it goes out on, in the log and in the reply (the page
++		 * shows the network). iface is brN and net an IPv4 address, both checked in rnet_build. */
++		if (rnet_job.iface[0]) {
++			logmessage("reaper_net", "%s %s on %s (%s)", rnet_job.tool, rnet_job.target, rnet_job.iface, rnet_job.src);
++			reaper_detach(rnet_worker, &rnet_job);
++			websWrite(stream, "{\"ok\":1,\"iface\":\"%s\",\"src\":\"%s\",\"net\":\"%s\"}",
++				  rnet_job.iface, rnet_job.src, rnet_job.net);
++			return;
++		}
+ 		logmessage("reaper_net", "%s %s", rnet_job.tool, rnet_job.target);
+ 		reaper_detach(rnet_worker, &rnet_job);
+ 		websWrite(stream, "{\"ok\":1}");
+diff --git a/release/src/router/www/Reaper_WOL.asp b/release/src/router/www/Reaper_WOL.asp
+index 9379a4d73b..332d275625 100644
+--- a/release/src/router/www/Reaper_WOL.asp
++++ b/release/src/router/www/Reaper_WOL.asp
+@@ -10,7 +10,11 @@
+ <title>REAPER &mdash; <#NetworkTools_WOL#></title>
+ <!-- Reaper_WOL.asp - Network Tools > Wake on LAN (Reaper-native UI, Network Tools wave, 2026-10-23).
+      Replaces Main_WOL_Content.asp. Wake = reaper_net.cgi tool=wake: the server validates the MAC (6 octets) and
+-     runs `ether-wake -i br0 -b <MAC>` itself (the stock page sent a whole ether-wake command line). The saved list
++     runs `ether-wake -i <bridge> -b <MAC>` itself (the stock page sent a whole ether-wake command line).
++     2026-11-16: the page posts iface=auto and the server picks the bridge of the device's own network (ARP table,
++     then DHCP leases, else the main network): the list holds devices of every network, and a wake sent on the
++     main bridge never reached a guest or VLAN device. The reply names the bridge and the page says where the
++     packet went. The saved list
+      is the stock nvram key wollist ("<name>MAC<name>MAC...", CKN_STR1024): names lose '<', '>' and control
+      characters (they are the field separators), the serialized list must stay under 1 KB (nvram cap), and every
+      name is escaped on render (stock pasted names into the page raw). Device picker = the Devices page's own
+@@ -118,12 +122,21 @@ function draw(){
+ /* ---------- wake through reaper_net.cgi ---------- */
+ function call(params, cb){ rp.net(HTTPID, params, cb); }
+ ReaperBusy.words(`<#RBSY_1#>`, `<#RBSY_2#>`, `<#RBSY_3#>`);	/* 2026-11-13: busy feedback words */
++/* reaper 2026-11-16: what the page says after a wake. The server names the bridge it sent on (iface), how it found it
++   (src) and that network's router address (net). The main network keeps the short text; another network is named;
++   an unknown device (src none) is told that the packet went to the main network only. */
++function sentText(mac, d){
++  var t = `<#RNT_47#>` + ' ' + mac;
++  if (d && d.src === 'none') return t + '. ' + `<#RNT_86#>`;
++  if (d && d.iface && d.iface !== 'br0') return t + ' ' + `<#RNT_85#>` + ' ' + (d.net || d.iface);
++  return t;
++}
+ function wake(mac){
+   msg('wakemsg', '');
+   mac = String(mac || '').trim().toUpperCase();
+   if (!macOk(mac)){ msg('wakemsg', `<#RNT_46#>`); return; }
+   var bf = ReaperBusy.startLast();
+-  call('action=start&tool=wake&iface=br0&target=' + encodeURIComponent(mac), function(d){
++  call('action=start&tool=wake&iface=auto&target=' + encodeURIComponent(mac), function(d){
+     if (!d){ bf(null); msg('wakemsg', `<#RNT_27#>`); return; }
+     if (!d.ok){ bf(null); msg('wakemsg', d.error === 'E_BUSY' ? `<#RNT_18#>` : d.error === 'E_MAC' ? `<#RNT_46#>` : (d.error || `<#RNT_27#>`)); return; }
+     var tries = 0;
+@@ -133,7 +146,7 @@ function wake(mac){
+         if (!s || !s.ok || s.state === 'running'){ if (++tries > 15){ clearInterval(timer); bf(null); msg('wakemsg', `<#RNT_27#>`); } return; }
+         clearInterval(timer);
+         bf(null);
+-        if (s.state === 'done' && s.rc === 0) msg('wakemsg', `<#RNT_47#>` + ' ' + mac, true);
++        if (s.state === 'done' && s.rc === 0) msg('wakemsg', sentText(mac, d), d.src !== 'none');
+         else msg('wakemsg', `<#RNT_27#>`);
+       });
+     }, 700);
+-- 
+2.25.1
+

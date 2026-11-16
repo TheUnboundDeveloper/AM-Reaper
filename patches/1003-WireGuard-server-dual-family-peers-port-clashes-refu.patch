@@ -1,0 +1,249 @@
+From d1b72b2bf55ad79d2f6d0367f61d0d65eca9add3 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:14 -0500
+Subject: [PATCH] WireGuard server: dual-family peers, port clashes refused, a
+ failed start logged
+
+- A new peer gets the next free host number in both families, and an IPv6 default route only when
+  it has an IPv6 address. Existing peers are not rewritten.
+- Saving a port that another VPN server of the router uses (OpenVPN, WireGuard, IPsec) is refused
+  when either side changed in that save.
+- rc logs a WireGuard server whose interface could not be brought up.
+- The page's OpenVPN status poll joined its four values with a plain ';', which httpd reads as the
+  end of a parameter, so only the first was read. They are joined with %3B.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/rc/wireguard.c           |  16 ++-
+ release/src/router/www/Reaper_VPNServer.asp | 127 ++++++++++++++++++--
+ 2 files changed, 126 insertions(+), 17 deletions(-)
+
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index 3d0f65533f..554d00419f 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -54,7 +54,10 @@ static int _wg_if_exist(char *ifname)
+ #endif
+ }
+ 
+-static void _wg_tunnel_create(char* prefix, char* ifname, char* conf_path)
++/* reaper 2026-11-16: returns what "ip link set up" returned (0 = the interface is up). The kernel binds the listen
++ * port at that step, so a port already in use (an OpenVPN server, another daemon) fails here and the interface
++ * stays down; start_wgs() used to log "Starting server." all the same. */
++static int _wg_tunnel_create(char* prefix, char* ifname, char* conf_path)
+ {
+ 	char addr[64] = {0};
+ 	char buf[64] = {0};
+@@ -71,7 +74,7 @@ static void _wg_tunnel_create(char* prefix, char* ifname, char* conf_path)
+ 	if (nvram_pf_get_int(prefix, "mtu"))
+ 		eval("ip", "link", "set", ifname, "mtu", nvram_pf_safe_get(prefix, "mtu"));
+ 
+-	eval("ip", "link", "set", "up", "dev", ifname);
++	return eval("ip", "link", "set", "up", "dev", ifname);
+ }
+ 
+ static void _wg_tunnel_delete(char* ifname)
+@@ -1625,6 +1628,7 @@ void start_wgs(int unit)
+ 	char cp_path[128] = {0};
+ 	int c_unit;
+ 	char tmp[4];
++	int up_rc;	/* reaper 2026-11-16: what bringing the interface up returned */
+ 
+ 	snprintf(prefix, sizeof(prefix), "%s%d_", WG_SERVER_NVRAM_PREFIX, unit);
+ 	snprintf(path, sizeof(path), "%s/server%d.conf", WG_DIR_CONF, unit);
+@@ -1653,7 +1657,7 @@ void start_wgs(int unit)
+ 	_wg_server_gen_conf(prefix, path);
+ 
+ 	/// setup tunnel
+-	_wg_tunnel_create(prefix, ifname, path);
++	up_rc = _wg_tunnel_create(prefix, ifname, path);
+ 
+ 	unlink(path);
+ 
+@@ -1680,7 +1684,11 @@ void start_wgs(int unit)
+ 	snprintf(tmp, sizeof(tmp), "%d", unit);
+ 	run_custom_script("wgserver-start", 0, tmp, NULL);
+ 
+-	logmessage("WireGuard", "Starting server.");
++	/* reaper 2026-11-16: say so when the interface did not come up, instead of "Starting server." */
++	if (up_rc)
++		logmessage("WireGuard", "WireGuard server did not start: the interface could not be brought up (is UDP port %s in use?)", nvram_pf_safe_get(prefix, "port"));
++	else
++		logmessage("WireGuard", "Starting server.");
+ }
+ 
+ void stop_wgs(int unit)
+diff --git a/release/src/router/www/Reaper_VPNServer.asp b/release/src/router/www/Reaper_VPNServer.asp
+index 9314a259f2..7965de7e99 100644
+--- a/release/src/router/www/Reaper_VPNServer.asp
++++ b/release/src/router/www/Reaper_VPNServer.asp
+@@ -694,7 +694,8 @@ function oconnDraw(){
+   setHtml('oconnbody', h || '<tr><td colspan="4" class="empty">' + hx(OSTATE[CUR].state === '2' ? `<#RVSV_132#>` : `<#RVSV_133#>`) + '</td></tr>');
+ }
+ function pollOvpn(){
+-  xget('/appGet.cgi?hook=nvram_get(vpn_server1_state);nvram_get(vpn_server1_errno);nvram_get(vpn_server2_state);nvram_get(vpn_server2_errno)', function(t){
++  /* 2026-11-16: %3B between the hooks - httpd ends a parameter at a plain ';' (httpd/cgi.c), so only the first of the four was read */
++  xget('/appGet.cgi?hook=nvram_get(vpn_server1_state)%3Bnvram_get(vpn_server1_errno)%3Bnvram_get(vpn_server2_state)%3Bnvram_get(vpn_server2_errno)', function(t){
+     var j = jsonOf(t); if (!j) return;
+     ['1', '2'].forEach(function(u){ if (j['vpn_server' + u + '_state'] !== undefined) OSTATE[u].state = String(j['vpn_server' + u + '_state']); if (j['vpn_server' + u + '_errno'] !== undefined) OSTATE[u].errno = String(j['vpn_server' + u + '_errno']); });
+     odots(); ovpnSync(); oconnDraw();
+@@ -780,20 +781,74 @@ function peersDraw(){
+ function peerOpen(u){
+   var p = u ? peerByUnit(u) : null; WEDIT = u || freeSlot(); if (!WEDIT){ pmsg('wgpeermsg', `<#JS_itemlimit1#>` + ' 10 ' + `<#JS_itemlimit2#>`); return; }
+   q('wgedittitle').textContent = `<#vpnc_peer#>` + ' #' + WEDIT;
+-  q('e_wname').value = p ? p.name : ''; q('e_waddr').value = p ? p.addr : nextPeerAddr(); q('e_waips').value = p ? p.aips : q('e_waddr').value; q('e_wcaips').value = p ? p.caips : (hostAddr(wgEff('addr')).indexOf(':') >= 0 ? '0.0.0.0/0,::/0' : '0.0.0.0/0');
++  /* reaper 2026-11-16: a NEW peer gets the defaults of peerDefaults() below; an existing peer shows its stored values
++     as they are and is never rewritten */
++  var d = p ? null : peerDefaults(wgEff('addr'), WP);
++  q('e_wname').value = p ? p.name : ''; q('e_waddr').value = p ? p.addr : d.addr; q('e_waips').value = p ? p.aips : d.addr; q('e_wcaips').value = p ? p.caips : d.caips;
+   q('wgpeerrenew').style.display = p ? '' : 'none'; pmsg('wgeditmsg', ''); panel('p_wgexport', false); panel('p_wgedit', true);
+ }
+-/* the next free host in the server's IPv4 /24 (stock left the field blank) */
+-function nextPeerAddr(){
+-  var s = hostAddr(wgEff('addr').split(',')[0]); if (!rp.v.ipv4(s)) return '';
+-  var used = {}; WP.forEach(function(p){ if (peerUsed(p)) p.addr.split(',').forEach(function(a){ used[hostAddr(a)] = 1; }); }); used[s] = 1;
+-  var base = netOf(s, '255.255.255.0'), i; for (i = 2; i < 255; i++) if (!used[n2ip(base + i)]) return n2ip(base + i) + '/32';
++/* reaper 2026-11-16 (bug review A4): the defaults of a NEW peer (stock left the address blank). Before, a new peer was
++   only ever offered an IPv4 /32, and ::/0 joined its client-side Allowed IPs only when the FIRST server address was
++   IPv6: a dual-stack server written IPv4 first exported peers whose IPv6 traffic stayed outside the tunnel, and ::/0
++   without an IPv6 peer address would only have blocked that traffic. Now one host number N (2..254) that is free in
++   BOTH families is taken: IPv4 = the /24 of the server address + N as /32, IPv6 = the first seven groups of the server
++   address + a last group written with the same digits as N, as /128 (10.6.0.3/32,fd00::3/128). ::/0 is offered only
++   when an IPv6 address was assigned; an IPv4-only server keeps 0.0.0.0/0 alone. These helpers read no page state, so
++   the host test runs them exactly as they are written here. */
++/* IPv6 text -> its 8 groups as numbers, or null (:: aware; no zone, no embedded IPv4) */
++function exp6(s){
++  var p = String(s).toLowerCase().split('::'), h, t, g, i;
++  if (p.length > 2) return null;
++  h = p[0] ? p[0].split(':') : []; t = (p.length === 2 && p[1]) ? p[1].split(':') : [];
++  if (p.length === 1 ? h.length !== 8 : h.length + t.length > 7) return null;
++  g = h.slice(); while (g.length + t.length < 8) g.push('0'); g = g.concat(t);
++  for (i = 0; i < 8; i++){ if (!/^[0-9a-f]{1,4}$/.test(g[i])) return null; g[i] = parseInt(g[i], 16); }
++  return g;
++}
++/* 8 groups -> text the RFC 5952 way: lower case, no leading zeros, the longest run of two or more zero groups as :: */
++function fmt6(g){
++  var bs = -1, bl = 0, cs = -1, cl = 0, i;
++  function hex(n){ return n.toString(16); }
++  for (i = 0; i < 8; i++){ if (g[i] === 0){ if (cs < 0){ cs = i; cl = 0; } cl++; if (cl > bl){ bs = cs; bl = cl; } } else cs = -1; }
++  if (bl < 2) return g.map(hex).join(':');
++  return g.slice(0, bs).map(hex).join(':') + '::' + g.slice(bs + bl).map(hex).join(':');
++}
++/* one spelling per host address, prefix length dropped: fd00:0:0:0:0:0:0:3 and fd00::3 are the same address */
++function canonAddr(a){ var h = String(a).split('/')[0].trim().toLowerCase(), g = h.indexOf(':') >= 0 ? exp6(h) : null; return g ? fmt6(g) : h; }
++/* the host part of the first IPv4 entry of the server address list, '' when it has none */
++function srv4(list){
++  var it = String(list).split(','), i, m;
++  for (i = 0; i < it.length; i++){ m = /^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/\d{1,2})?\s*$/.exec(it[i]); if (m && +m[1] < 256 && +m[2] < 256 && +m[3] < 256 && +m[4] < 256) return [+m[1], +m[2], +m[3], +m[4]].join('.'); }
+   return '';
+ }
++/* the groups of the first IPv6 entry that is not link-local (fe80::/10 is not routed to a peer), null when it has none */
++function srv6(list){
++  var it = String(list).split(','), i, g;
++  for (i = 0; i < it.length; i++){ if (it[i].indexOf(':') < 0) continue; g = exp6(it[i].split('/')[0].trim()); if (g && (g[0] & 0xffc0) !== 0xfe80) return g; }
++  return null;
++}
++/* {addr, caips} for a new peer; srvList = the server address list, peers = the peer slots ({enable, addr}) */
++function peerDefaults(srvList, peers){
++  var s4 = srv4(srvList), s6 = srv6(srvList), used = {}, n, a4, a6, out = [];
++  String(srvList).split(',').forEach(function(a){ used[canonAddr(a)] = 1; });
++  (peers || []).forEach(function(p){ if (p && p.enable === '1') String(p.addr).split(',').forEach(function(a){ used[canonAddr(a)] = 1; }); });
++  if (!s4 && !s6) return {addr: '', caips: '0.0.0.0/0'};
++  for (n = 2; n < 255; n++){
++    a4 = s4 ? s4.split('.').slice(0, 3).join('.') + '.' + n : '';
++    a6 = s6 ? fmt6(s6.slice(0, 7).concat([parseInt(String(n), 16)])) : '';
++    if ((a4 && used[a4]) || (a6 && used[a6])) continue;
++    if (a4) out.push(a4 + '/32');
++    if (a6) out.push(a6 + '/128');
++    return {addr: out.join(','), caips: a6 ? '0.0.0.0/0,::/0' : '0.0.0.0/0'};
++  }
++  return {addr: '', caips: '0.0.0.0/0'};
++}
++/* reaper 2026-11-16: compared through canonAddr - the compressed and the expanded spelling of one IPv6 address are
++   the same address */
+ function peerDupAddr(addr, u){
+-  var mine = addr.split(',').map(hostAddr), hit = '';
+-  wgEff('addr').split(',').forEach(function(a){ if (mine.indexOf(hostAddr(a)) >= 0) hit = hostAddr(a); });
+-  WP.forEach(function(p){ if (!peerUsed(p) || p.u === u) return; p.addr.split(',').forEach(function(a){ if (mine.indexOf(hostAddr(a)) >= 0) hit = hostAddr(a); }); });
++  var mine = addr.split(',').map(canonAddr), hit = '';
++  wgEff('addr').split(',').forEach(function(a){ if (mine.indexOf(canonAddr(a)) >= 0) hit = hostAddr(a); });
++  WP.forEach(function(p){ if (!peerUsed(p) || p.u === u) return; p.addr.split(',').forEach(function(a){ if (mine.indexOf(canonAddr(a)) >= 0) hit = hostAddr(a); }); });
+   return hit;
+ }
+ function peerFields(u){
+@@ -1076,6 +1131,49 @@ function statePill(){
+   q('statepill').className = 'pill ' + (on.length ? 'on' : '');
+ }
+ 
++/* ---------- listen ports ---------- */
++/* reaper 2026-11-16 (bug review A4): every VPN server that listens once this save is applied, as
++   {proto, port, who, id, touched}. The OpenVPN instance being edited comes from the collected values, the other
++   instance from what is stored (this page cannot edit it), WireGuard and IPsec from their collected switches.
++   touched = this save changes that listener: its port, its protocol or its enable switch. Ports are numbers and are
++   compared per protocol, so OpenVPN on TCP may share a number with WireGuard (UDP). A WireGuard server that was never
++   saved stores '' as its port and listens on the default one. id = the field to mark when that listener is at fault. */
++function listeners(c){
++  var L = [], oth = CUR === '1' ? '2' : '1', wp, wp0, ipNew;
++  function add(proto, port, who, id, touched){
++    var s = String(port === undefined || port === null ? '' : port).trim(), n = /^\d+$/.test(s) ? parseInt(s, 10) : 0;
++    if (n >= 1 && n <= 65535) L.push({proto: proto, port: n, who: who, id: id, touched: !!touched});
++  }
++  function op(p){ return p === 'udp' ? 'udp' : 'tcp'; }   /* libovpn/openvpn_setup.c: "udp" is UDP, any other value TCP */
++  if (TAB_ON.ovpn){
++    if (startHas(c.vpn_serverx_start, CUR)) add(op(c.vpn_server_proto), c.vpn_server_port, 'OpenVPN ' + CUR, 'o_port',
++      String(c.vpn_server_port) !== String(NV.vpn_server_port) || op(c.vpn_server_proto) !== op(NV.vpn_server_proto) || !startHas(NV.vpn_serverx_start, CUR));
++    if (startHas(c.vpn_serverx_start, oth)) add(op(OV[oth].proto), OV[oth].port, 'OpenVPN ' + oth, 'o_port', false);
++  }
++  if (TAB_ON.wg && c.wgs_enable === '1'){
++    wp = c.wgs_port || WGDEF.port; wp0 = NV.wgs_port || WGDEF.port;
++    add('udp', wp, 'WireGuard', 'w_port', String(wp) !== String(wp0) || NV.wgs_enable !== '1');
++  }
++  if (TAB_ON.ipsec && c.ipsec_server_enable === '1'){
++    ipNew = NV.ipsec_server_enable !== '1';
++    add('udp', IP.isakmp || '500', 'IPsec', 't_ipen', ipNew);
++    add('udp', IP.natt || '4500', 'IPsec', 't_ipen', ipNew);
++  }
++  return L;
++}
++/* the first two listeners on the same protocol and port with AT LEAST ONE of them touched by this save, as
++   {id: the field of the touched one, who: the listener it runs into}; null when there is none. A clash neither side
++   touches does not block the save (it is about something else), and a server that is off is not in the list. */
++function portClash(L){
++  var i, j, a, b;
++  for (i = 0; i < L.length; i++) for (j = i + 1; j < L.length; j++){
++    a = L[i]; b = L[j];
++    if (a.proto !== b.proto || a.port !== b.port || !(a.touched || b.touched)) continue;
++    return a.touched ? {id: a.id, who: b.who} : {id: b.id, who: a.who};
++  }
++  return null;
++}
++
+ /* ---------- validate: returns '' or the message; the offending field's tab opens and the row is marked ---------- */
+ function validate(c, ch){
+   function bad(id, m){
+@@ -1090,7 +1188,11 @@ function validate(c, ch){
+   /* --- OpenVPN (the cursor instance) --- */
+   var oOn = startHas(c.vpn_serverx_start, CUR), oth = CUR === '1' ? '2' : '1';
+   if (has('vpn_server_port') && !rp.v.port(c.vpn_server_port)) return bad('o_port', `<#JS_validrange#>` + ' 1 ' + `<#JS_validrange_to#>` + ' 65535');
+-  if ((has('vpn_server_port') || has('vpn_server_proto')) && startHas(c.vpn_serverx_start, oth) && c.vpn_server_port === OV[oth].port && c.vpn_server_proto === OV[oth].proto) return bad('o_port', `<#RVSV_145#>`);
++  /* reaper 2026-11-16 (bug review A4): one listen-port check for every VPN server on this router (listeners /
++     portClash above) in place of two one-way checks: OpenVPN against the other instance only when its port or protocol
++     was edited, WireGuard against the selected OpenVPN instance only. It also covers switching a server on whose
++     stored port is taken, and IPsec (UDP 500 / 4500). The message names what the port runs into. */
++  var pc = portClash(listeners(c)); if (pc) return bad(pc.id, `<#RVSV_145#>` + ' (' + pc.who + ')');
+   if (has('vpn_server_verb') && !rp.v.int(c.vpn_server_verb, 0, 6)) return bad('o_verb', `<#JS_validrange#>` + ' 0 ' + `<#JS_validrange_to#>` + ' 6');
+   if (has('vpn_server_ncp_ciphers') && c.vpn_server_ncp_ciphers && !/^[A-Za-z0-9:-]+$/.test(c.vpn_server_ncp_ciphers)) return bad('o_ncp', `<#JS_validstr2#>` + ' ' + `<#RVSV_146#>`);
+   if (c.vpn_server_if === 'tun' && (has('vpn_server_sn', 'vpn_server_nm', 'vpn_server_if') || (oOn && has('vpn_serverx_start')))){
+@@ -1124,8 +1226,7 @@ function validate(c, ch){
+   if (has('wgs_addr') || (wOn && has('wgs_enable'))){ var e1 = listBad(c.wgs_addr); if (e1) return bad('w_addr', e1);
+     var w4 = c.wgs_addr.split(',').filter(rp.v.cidr4)[0];
+     if (w4 && overlapCidr(hostAddr(w4), parseInt(w4.split('/')[1], 10), F.lan_ipaddr, plen(F.lan_netmask))) return bad('w_addr', `<#vpn_conflict_LANIP#>` + ' ' + F.lan_ipaddr); }
+-  if (has('wgs_port') || (wOn && has('wgs_enable'))){ if (!rp.v.port(c.wgs_port)) return bad('w_port', `<#JS_validrange#>` + ' 1 ' + `<#JS_validrange_to#>` + ' 65535');
+-    if (TAB_ON.ovpn && c.wgs_port === c.vpn_server_port && c.vpn_server_proto === 'udp' && oOn) return bad('w_port', `<#RVSV_145#>`); }
++  if (has('wgs_port') || (wOn && has('wgs_enable'))){ if (!rp.v.port(c.wgs_port)) return bad('w_port', `<#JS_validrange#>` + ' 1 ' + `<#JS_validrange_to#>` + ' 65535'); }
+   if (has('wgs_alive') && !rp.v.int(c.wgs_alive, 0, 65535)) return bad('w_alive', `<#JS_validrange#>` + ' 0 ' + `<#JS_validrange_to#>` + ' 65535');
+   /* --- IPsec --- */
+   var iOn = c.ipsec_server_enable === '1';
+-- 
+2.25.1
+

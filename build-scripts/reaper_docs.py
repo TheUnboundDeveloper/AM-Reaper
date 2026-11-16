@@ -268,7 +268,13 @@ def process(root, mode, facts):
                     stamp_ver, stamp_date = s.group(1), s.group(2)
             # a fleet list is usually a table, so the window spans one.
             ctx = "".join(lines[max(0, i - 11):i + 1])
-            for kind, found, expected, a, b in scan_line(line, facts, ctx):
+            # Rightmost claim first: every position on the line was measured before anything was rewritten, so
+            # a fix that changes a claim's length (the patch count going from three digits to four, v3.8.1)
+            # must not shift the claims still to be written - the version after it lost its leading space.
+            claims = scan_line(line, facts, ctx)
+            if mode == "fix":
+                claims = sorted(claims, key=lambda c: -1 if c[3] is None else c[3], reverse=True)
+            for kind, found, expected, a, b in claims:
                 marks += 1
                 c = Claim(rel, i + 1, kind, found, expected, a)
                 if kind == "models":

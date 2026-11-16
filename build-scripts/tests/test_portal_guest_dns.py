@@ -88,9 +88,16 @@ check("the watchdog checks the forwarders every pass (not tied to the main DoT s
       and wd.find("reaper_guest_dot_watch();") < wd.find('if (nvram_get_int("dnspriv_enable") && !pids("stubby")) {'))
 check("...and restarts a dead one, or one started before the clock was set",
       "if (!alive || (unauth && nvram_get_int(\"ntp_ready\") == 1)) {" in sdn)
-check("declared in rc.h; intranet access read through the isolation layer's own parser",
+# 2026-11-16 (bug review A1): intranet access = a pair with the MAIN network (rg_main_access); the old test counted
+# any pair, so two guest networks paired with each other, or a portal paired with a guest network, got main-LAN names
+check("declared in rc.h; intranet access read through the isolation layer's own main-network test",
       "extern int reaper_guest_intranet(int sdn_idx);" in rch and "extern void reaper_guest_dot_watch(void);" in rch
-      and 'return rg_access_on(nvram_safe_get("sdn_access_rl"), sdn_idx);' in gst)
+      and 'return rg_main_access(nvram_safe_get("sdn_access_rl"), sdn_idx, refs, nref, nvram_safe_get("lan_ifname"));' in gst
+      and "\tint nref = rg_refs_load(refs, MTLAN_MAXINUM);\n" in gst and "rg_access_on" not in gst)
+check("names hidden and the encrypted-DNS offer both hang on that one test (sdn.c)",
+      'return m && rgd_hide(m->nw_t.br_ifname, nvram_safe_get("lan_ifname"), reaper_guest_intranet(m->sdn_t.sdn_idx));' in sdn
+      and "if (reaper_sdn_hide_lan_names(pmtl))" in sdn
+      and "if (!reaper_sdn_hide_lan_names(pmtl) && pmtl->sdn_t.cp_idx <= 0)" in sdn)
 
 # ---- the pure block, compiled and run
 blk = re.search(r"/\* REAPER-GUESTDNS-PURE-BEGIN.*?\*/(.*?)/\* REAPER-GUESTDNS-PURE-END \*/", sdn, re.S)

@@ -1,0 +1,158 @@
+From 2884f153e9a5539c1e210bbee9900b48130f38b1 Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:16 -0500
+Subject: [PATCH] Pages: Access Restrictions over IPv6, MLO off keeps every
+ band, Auto refresh is kept
+
+- System: the Access Restrictions text says that IPv6 access to the web interface and SSH is
+  blocked while the list is on, and the page asks first when it is open over IPv6.
+- MLO: switching MLO off read only the first band entry of the main network and could write a list
+  without the other bands. It reads every entry, and writes nothing when there is none.
+- Firewall (Status, Rule Status) and System Log: the Auto refresh choice is kept per browser.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/www/Reaper_Firewall.asp | 13 +++++++++++--
+ release/src/router/www/Reaper_Log.asp      |  6 +++++-
+ release/src/router/www/Reaper_MLO.asp      | 19 +++++++++++++------
+ release/src/router/www/Reaper_System.asp   | 10 +++++++++-
+ 4 files changed, 38 insertions(+), 10 deletions(-)
+
+diff --git a/release/src/router/www/Reaper_Firewall.asp b/release/src/router/www/Reaper_Firewall.asp
+index 49916c79cd..a0568d5000 100644
+--- a/release/src/router/www/Reaper_Firewall.asp
++++ b/release/src/router/www/Reaper_Firewall.asp
+@@ -1408,6 +1408,11 @@ function showTab(t){
+      the operator navigates away, but never stop the revert itself */
+   if(t!=='rules'&&rfwTimer){clearTimeout(rfwTimer);rfwTimer=null;}
+ }
++/* reaper 2026-11-16: the Auto refresh switches (Status tab, Rule Status tab) stay as set. They stored nothing, so
++   every page load showed them off and no timer ran. Kept per browser like the last tab (reaper_fw_tab): '1' / '0'
++   in localStorage - no nvram key, nothing in a backup. Storage refused (private mode) = off, as before. */
++function autoGet(k){try{return localStorage.getItem(k)==='1';}catch(e){return false;}}
++function autoSet(k,on){try{localStorage.setItem(k,on?'1':'0');}catch(e){}}
+ function initTab(){
+   var q=(location.search.match(/[?&]t=([a-z]+)/)||[])[1];
+   if(!q){try{q=localStorage.getItem('reaper_fw_tab');}catch(e){}}
+@@ -2428,7 +2433,7 @@ function boot(){
+     try{var _h=$('st_hint');if(_h)_h.textContent=' ...';}catch(e){}
+     loadStatus();
+   };
+-  $('st_auto').onclick=function(){this.classList.toggle('on');stopAuto();startAuto();};
++  $('st_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_st_auto',this.classList.contains('on'));stopAuto();startAuto();};
+   $('rv_tg').onclick=rvToggle;
+   $('rv_ack').onclick=rvAck;
+   $('rv_reset').onclick=rvReset;
+@@ -2447,8 +2452,12 @@ function boot(){
+   $('rv_redit').onclick=function(){rvRulesText2List(true);};
+   $('rv_rlist').onclick=function(){rvRulesText2List(false);};
+   $('wt_refresh').onclick=function(){try{var _h=$('wt_hint');if(_h)_h.textContent=' ...';}catch(e){}loadWit(true);};
+-  $('wt_auto').onclick=function(){this.classList.toggle('on');stopWitAuto();startWitAuto();};
++  $('wt_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_wt_auto',this.classList.contains('on'));stopWitAuto();startWitAuto();};
+   document.addEventListener('visibilitychange',function(){if(document.hidden){stopAuto();stopWitAuto();}else{if($('tab_status').classList.contains('on'))startAuto();if($('tab_witness').classList.contains('on'))startWitAuto();}});
++  /* reaper 2026-11-16: the stored Auto refresh choices, set before the first tab is shown (showTab starts the
++     timers from these classes; the timers themselves are unchanged) */
++  $('st_auto').classList.toggle('on',autoGet('reaper_fw_st_auto'));
++  $('wt_auto').classList.toggle('on',autoGet('reaper_fw_wt_auto'));
+   initTab();
+ }
+ if(document.readyState!=='loading')boot();
+diff --git a/release/src/router/www/Reaper_Log.asp b/release/src/router/www/Reaper_Log.asp
+index 3127d30b17..4baca21b49 100644
+--- a/release/src/router/www/Reaper_Log.asp
++++ b/release/src/router/www/Reaper_Log.asp
+@@ -298,7 +298,11 @@ function boot(){
+   on('b_lfsave', 'click', function(){ lfSave(lfList(q('t_lf').value)); });
+   on('b_lfadd', 'click', lfAdd);
+   lfLoad();
+-  on('c_auto', 'change', schedule);
++  /* 2026-11-16: the Auto refresh choice is kept per browser, as the Firewall page keeps its two switches
++     (localStorage reaper_log_auto: no nvram key, nothing in a backup). On unless the admin switched it off;
++     storage refused (private window) = on, as before. Restored here, before the first schedule() below. */
++  try { if (localStorage.getItem('reaper_log_auto') === '0') q('c_auto').checked = false; } catch (e) {}
++  on('c_auto', 'change', function(){ try { localStorage.setItem('reaper_log_auto', q('c_auto').checked ? '1' : '0'); } catch (e) {} schedule(); });
+   on('b_refresh', 'click', function(){ load(true); });
+   on('b_save', 'click', function(){ location.href = '/syslog.txt'; });
+   on('b_clear', 'click', function(){
+diff --git a/release/src/router/www/Reaper_MLO.asp b/release/src/router/www/Reaper_MLO.asp
+index 9ae5ffa67b..1facf1315b 100644
+--- a/release/src/router/www/Reaper_MLO.asp
++++ b/release/src/router/www/Reaper_MLO.asp
+@@ -16,7 +16,9 @@
+                        _timesched=0; rc_service "reboot;" (bcmwifi). The confirm lists the radios it turns on and the
+                        schedules it turns off, as stock does.
+        MLO switch OFF  mld_enable=0; every enabled MLO fronthaul network (apg mlo=2) goes off with it: a main network
+-                       (MAINFH / MAINBH) by apm<N>_mlo=0 + its band list without MLO (stock get_mainfh_dut_list), any
++                       (MAINFH / MAINBH) by apm<N>_mlo=0 + its band list without MLO (stock get_mainfh_dut_list, fed
++                       with the bands of EVERY entry of the stored list; a list with no usable band is left as it
++                       is - 2026-11-16), any
+                        other by apg<N>_enable=0 + its sdn_rl row disabled; rc_service "reboot;".
+        Backhaul        the MLO backhaul network (sdn_rl type MLO, apg mlo=1): SSID (1-32 bytes) and Hide SSID ->
+                        apg<N>_ssid / apg<N>_hide_ssid, rc_service "restart_wireless;restart_sdn <idx>;". Stock re-sent
+@@ -134,10 +136,11 @@ function mainDutNoMlo(bits){
+   if ((bits & 32) && bits > 32 && !(band & 16)) band += 16;
+   return '<*>' + band + '>';
+ }
+-/* the band field of the first entry of a dut_list (<MAC>bands>ports ...) - stock mainfh_smart_connect.band_bitwise */
+-function firstBands(dut){
+-  var e = String(dut || '').split('<').filter(Boolean)[0];
+-  return e ? (parseInt(e.split('>')[1], 10) || 0) : 0;
++/* reaper 2026-11-16: the band bits of EVERY entry of a dut_list (<MAC-or-*>bands>ports ...), ORed together. The page
++   read the first entry only (as stock mainfh_smart_connect.band_bitwise does), so a list with more than one entry
++   lost every band that sat only in a later entry when MLO was switched off. 0 = an empty or unreadable list. */
++function allBands(dut){
++  return String(dut || '').split('<').filter(Boolean).reduce(function(b, e){ return b | (parseInt(e.split('>')[1], 10) || 0); }, 0);
+ }
+ 
+ /* sdn_rl rows: idx>sdn_name>sdn_enable>vlan_idx>subnet_idx>apg_idx>... (sdn.js sdn_rl_attr order) */
+@@ -247,7 +250,11 @@ function switchOff(){
+     var a = AP[pfx(x) + x.apg];
+     if (MAINS[x.name]){
+       o['apm' + x.apg + '_mlo'] = '0';
+-      o['apm' + x.apg + '_dut_list'] = mainDutNoMlo(firstBands(a.dut_list) & BAND_BITS);
++      /* reaper 2026-11-16: the bands of every entry, limited to the bands this router has. No usable band (an empty
++         list, also after a failed read) = the stored list is left alone: writing <*>0> took the main network off
++         every band. apm<N>_mlo=0 above is still written. */
++      var bits = allBands(a.dut_list) & BAND_BITS;
++      if (bits) o['apm' + x.apg + '_dut_list'] = mainDutNoMlo(bits);
+     } else {
+       o['apg' + x.apg + '_enable'] = '0';
+       var f = x.r.f.slice(); f[2] = '0'; x.r = rp.list.row(f); rl = true;
+diff --git a/release/src/router/www/Reaper_System.asp b/release/src/router/www/Reaper_System.asp
+index 6f7449d979..23a846f7d4 100644
+--- a/release/src/router/www/Reaper_System.asp
++++ b/release/src/router/www/Reaper_System.asp
+@@ -769,6 +769,8 @@ var FIELD_CTL = {captcha_enable: 't_captcha', misc_http_x: 't_misc_http_x', enab
+ function dirty(){ var changed; try { changed = diff(collect()); } catch (e) { return; } rp.dirtyMark(changed, FIELD_TAB); }
+ 
+ /* ---------- validate: returns '' or the message; the offending field's tab opens and the row is marked ---------- */
++/* reaper 2026-11-16: validate()'s answer when the user cancels its confirm: nothing is posted, no error is shown */
++var NOPOST = '\x01';
+ function validate(c){
+   function bad(id, m){
+     var el = q(id), row = el && el.closest ? el.closest('.frow') : null, t = tabOf(el);
+@@ -811,6 +813,12 @@ function validate(c){
+     if (!rp.v.int(hh, 0, 23)) return bad('i_rbhour', `<#RADM_71#>`);
+     if (!rp.v.int(mm, 0, 59)) return bad('i_rbmin', `<#RADM_71#>`);
+   }
++  /* reaper 2026-11-16: with Access Restrictions on, the firewall drops EVERY IPv6 client from the web interface and
++     SSH (the list takes IPv4 only; leaving IPv6 open would let any client walk round the list). A page open at an
++     IPv6 address (location.hostname holds ':') is cut off the moment this is applied, so ask first - when the
++     switch is being turned on, or the list changes while it is on. Last, so every other check has passed. */
++  if (ROUTER && c.enable_acc_restriction === '1' && (c.enable_acc_restriction !== NV.enable_acc_restriction || c.restrict_rulelist !== NV.restrict_rulelist)
++      && String(location.hostname).indexOf(':') >= 0 && !confirm(`<#RADM_81#>`)) return NOPOST;
+   return '';
+ }
+ function portTaken(p){
+@@ -824,7 +832,7 @@ function portTaken(p){
+ function applyAll(){
+   msg('');
+   var c = collect(), err = validate(c), changed, n, k;
+-  if (err){ msg(err); return; }
++  if (err){ if (err !== NOPOST) msg(err); return; }
+   changed = diff(c); n = 0; for (k in changed) n++;
+   if (!n){ msg(`<#RADM_63#>`); return; }
+   var S = [], has = function(){ for (var i = 0; i < arguments.length; i++) if (Object.prototype.hasOwnProperty.call(changed, arguments[i])) return true; return false; };
+-- 
+2.25.1
+

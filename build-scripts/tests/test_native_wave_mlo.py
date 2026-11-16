@@ -57,8 +57,13 @@ check("switch ON asks first, listing radios it turns on and schedules it turns o
 check("switch OFF: mld_enable=0, reboot;, enabled MLO fronthaul networks go off with it",
       "var o = {action_mode: 'apply', rc_service: 'reboot;', mld_enable: '0'}" in t
       and "return x.on && a && a.mlo === '2';" in t
-      and "o['apm' + x.apg + '_mlo'] = '0';" in t and "o['apm' + x.apg + '_dut_list'] = mainDutNoMlo(firstBands(a.dut_list) & BAND_BITS);" in t
+      and "o['apm' + x.apg + '_mlo'] = '0';" in t
+      # 2026-11-16 (bug review A5): the bands of EVERY entry of the stored list, and no write when none is usable
+      and "      var bits = allBands(a.dut_list) & BAND_BITS;\n      if (bits) o['apm' + x.apg + '_dut_list'] = mainDutNoMlo(bits);\n" in t
       and "o['apg' + x.apg + '_enable'] = '0';" in t and "f[2] = '0';" in t and "o.sdn_rl = rp.list.ser(" in t)
+check("the band list is read from every entry (allBands), never from the first entry only",
+      "function allBands(dut){\n  return String(dut || '').split('<').filter(Boolean).reduce(function(b, e){ return b | (parseInt(e.split('>')[1], 10) || 0); }, 0);\n}\n" in t
+      and "firstBands(" not in t and "filter(Boolean)[0]" not in t and t.count("_dut_list'] =") == 1)
 check("switch OFF warns when MLO networks go off (stock WiFi_mlo_disable_Hint) and names the reboot",
       "(fh.length ? `<#WiFi_mlo_disable_Hint#>` + '\\n' : '') + `<#AiMesh_System_Reboot_Hint#>`" in t)
 # stock get_mainfh_dut_list(bits, false), line for line
@@ -94,6 +99,57 @@ langs = [f for f in os.listdir(os.path.join(SRC, "www")) if f.endswith(".dict") 
 miss = [(f, k) for f in langs for k in ("RNW_7", "RNW_8") if not re.search(r"^%s=." % k, rd("www", f), re.M)]
 check("RNW_7 / RNW_8 in all %d packs" % len(langs), len(langs) == 25 and not miss, miss[:6])
 check("RNW_8 carries its %1 (the page name) in every pack", all("%1" in re.search(r"^RNW_8=(.*)$", rd("www", f), re.M).group(1) for f in langs))
+# 2026-11-16 (bug review A5): the page's own switch-off code under node - the band masks, the helper that turns a band
+# set into the list without MLO, the new all-entries reader, and switchOff() itself with a stand-in page state.
+import json, shutil, subprocess, tempfile
+node = shutil.which("node")
+m_bb = re.search(r"var BAND_BITS = (\(function\(\)\{\n.*?\n\}\))\(\);\n", t, re.S)
+def fn_text(head):
+    a = t.find(head); b = t.find("\n}\n", a)
+    return t[a:b + 3] if a >= 0 and b > a else ""
+parts = [fn_text("function mainDutNoMlo(bits){"), fn_text("function allBands(dut){"), fn_text("function switchOff(){")]
+check("the switch-off pieces are found in the page (band masks, mainDutNoMlo, allBands, switchOff)", m_bb is not None and all(parts), [bool(p) for p in parts])
+if node and m_bb and all(parts):
+    hj = r"""
+var SL = ['2g1', '5g1', '6g1']; function has(s){ return SL.indexOf(s) >= 0; }
+var BBF = """ + m_bb.group(1) + r"""; var BAND_BITS = BBF();
+var MAINS = {MAINFH: 1, MAINBH: 1}; function pfx(x){ return MAINS[x.name] ? 'apm' : 'apg'; }
+var SENT = null; function nvSet(o){ SENT = o; } function rebooting(){} function confirm(){ return true; }
+var rp = {list: {row: function(f){ return {f: f}; }, ser: function(){ return 'SER'; }, parse: function(){ return []; }}}, SDN_RL = '', ROWS, AP;
+""" + "\n".join(parts) + r"""
+function off(dut, slots, name){
+  SL = slots || ['2g1', '5g1', '6g1']; BAND_BITS = BBF();
+  ROWS = [{idx: '1', name: name || 'MAINFH', on: true, apg: '2', r: {f: ['1', name || 'MAINFH', '1']}}];
+  AP = {apm2: {mlo: '2', dut_list: dut}}; SENT = null; switchOff(); return SENT;
+}
+console.log(JSON.stringify({tri: BBF(), single: off('<*>59>'), two: off('<*>1><*>18>'), mac: off('<00:00:5E:00:53:01>3><*>17>'), later6: off('<*>3><*>16>'),
+  bh: off('<*>127>', null, 'MAINBH'), empty: off(''), undef: off(undefined), garbled: off('<*>x>'), notours: off('<*>8>'),
+  quad: off('<*>1><*>12><*>16>', ['2g1', '5g1', '5g2', '6g1']), quadwant: (SL = ['2g1', '5g1', '5g2', '6g1'], mainDutNoMlo(29)),
+  dual: off('<*>1><*>2><*>16>', ['2g1', '5g1'])}));
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(hj); jp = f.name
+    r = subprocess.run([node, jp], capture_output=True, text=True, timeout=30); os.unlink(jp)
+    try: o = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception: o = {}
+    K = "apm2_dut_list"
+    bits = lambda d: int(re.match(r"^<\*>(\d+)>$", (d or {}).get(K, "") or "<*>0>").group(1)) if re.match(r"^<\*>(\d+)>$", (d or {}).get(K, "") or "") else -1
+    check("node: a tri-band router carries band bits 1 + 2 + 16; one entry <*>59> comes back as <*>87> (the stock round trip)",
+          o.get("tri") == 19 and (o.get("single") or {}).get(K) == "<*>87>" and (o.get("bh") or {}).get(K) == "<*>87>", (r.stderr[-300:], o.get("single")))
+    check("node: two entries are ORed (<*>1><*>18> gives <*>87>); a band that sits only in a later entry is kept",
+          (o.get("two") or {}).get(K) == "<*>87>" and (o.get("later6") or {}).get(K) == "<*>87>", (o.get("two"), o.get("later6")))
+    check("node: a list with a MAC entry and a <*> entry includes both (6 GHz from the second), written in the <*>bits> form",
+          bits(o.get("mac")) >= 0 and bits(o.get("mac")) & 16 and bits(o.get("mac")) & 1 and bits(o.get("mac")) & 2, o.get("mac"))
+    check("node: bands limited to this router's (a dual-band router never gets 6 GHz; a four-radio one gets both 5 GHz halves)",
+          bits(o.get("dual")) >= 0 and not bits(o.get("dual")) & (16 | 32 | 64) and bits(o.get("dual")) & 3 == 3
+          and (o.get("quad") or {}).get(K) == o.get("quadwant") and bits(o.get("quad")) & 29 == 29, (o.get("dual"), o.get("quad"), o.get("quadwant")))
+    none = [k for k in ("empty", "undef", "garbled", "notours") if not isinstance(o.get(k), dict) or K in o[k]]
+    check("node: an empty, missing or unreadable list (or one with no band of this router) writes NO band list key", not none, [(k, o.get(k)) for k in none])
+    check("node: MLO still goes off in every case (mld_enable=0, apm<N>_mlo=0, reboot)",
+          all(isinstance(o.get(k), dict) and o[k].get("mld_enable") == "0" and o[k].get("apm2_mlo") == "0" and o[k].get("rc_service") == "reboot;"
+              for k in ("single", "two", "mac", "later6", "bh", "empty", "undef", "garbled", "notours", "quad", "dual")), o)
+elif not node:
+    print("note: node not found - the switch-off run is skipped")
+
 print("%d failure(s)" % len(fails))
 for x in fails: print("  " + x)
 sys.exit(1 if fails else 0)

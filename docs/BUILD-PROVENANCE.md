@@ -1,6 +1,6 @@
 # Build Provenance — from published image back to source
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
 This document lets anyone verify, end to end, that a published Reaper firmware
 image was built from exactly the source published in this repository — with
@@ -28,7 +28,7 @@ Each link is pinned and independently checkable:
 
 1. **Base** — Asuswrt-Merlin 3006.102.10 (ASUS GPL 102_40585), commit
    `ca72a61f8bc5ef920e29d63d53d9864262208f0c`, from upstream
-   `RMerl/asuswrt-merlin.ng` (untagged upstream), from v3.6.0. Up to v3.5.0 the base was
+   `Asuswrt-Merlin/asuswrt-merlin.ng` (untagged upstream), from v3.6.0. Up to v3.5.0 the base was
    `3006.102.8-beta2` (`a7ebfa133a`): the v3.6.0 cut rebased the stack and regenerated the
    [`patches/`](../patches) series from the new base. Between rebases upstream carry-forwards
    are **cherry-picked**, so the recipe stays constant; a release's own manifest entry names
@@ -48,7 +48,7 @@ Each link is pinned and independently checkable:
 
 ```sh
 # 1. Get the pinned upstream base (includes the vendor blobs upstream ships)
-git clone https://github.com/RMerl/asuswrt-merlin.ng
+git clone https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng
 cd asuswrt-merlin.ng
 git checkout ca72a61f8bc         # 3006.102.10 (v3.6.0+; a7ebfa133a for v3.5.0 and older)
 
@@ -127,7 +127,7 @@ fixes) were exported and **verified** to reproduce the trees above — applying
 19 carry-forward patches (`0291`–`0309`) retain their original Asuswrt-Merlin
 authorship; the Reaper-authored patches use the Reaper identity. CI reproduces
 every tree on each run. **The exported series leads the fleet:** the series runs
-to `0997` <!--@patchcount--> (v3.8.0 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
+to `1009` <!--@patchcount--> (v3.8.1 <!--@treever-->, RT-BE96U-only), while the newest **published** release is
 v3.1.0 <!--@pubver-->. The sibling images (RT-BE86U / RT-BE88U / GT-BE98 /
 GT-BE98 Pro published since v2.7.6, the GT-BE19000 from v3.1.4, the ZenWiFi BQ16 from
 v3.3.2 and the BQ16 Pro from v3.3.4) are produced from their line's series plus the

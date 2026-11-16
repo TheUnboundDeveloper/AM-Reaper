@@ -127,6 +127,74 @@ console.log(JSON.stringify(out));
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
+# ---------------------------------------------------------------- 2026-11-16: the Auto refresh switches stay as set
+# Owner report 2026-11-15: "Auto refresh toggle on the Firewall Status and RuleStatus menu do not stay applied." Both
+# switches stored nothing, so every page load showed them off and no timer ran. Now each is kept per browser
+# (localStorage, like the last tab), read back before the first tab is shown, and written by its click handler.
+A_GET = "function autoGet(k){try{return localStorage.getItem(k)==='1';}catch(e){return false;}}\n"
+A_SET = "function autoSet(k,on){try{localStorage.setItem(k,on?'1':'0');}catch(e){}}\n"
+H_ST = "  $('st_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_st_auto',this.classList.contains('on'));stopAuto();startAuto();};\n"
+H_WT = "  $('wt_auto').onclick=function(){this.classList.toggle('on');autoSet('reaper_fw_wt_auto',this.classList.contains('on'));stopWitAuto();startWitAuto();};\n"
+R_ST = "  $('st_auto').classList.toggle('on',autoGet('reaper_fw_st_auto'));\n"
+R_WT = "  $('wt_auto').classList.toggle('on',autoGet('reaper_fw_wt_auto'));\n"
+check("auto refresh: autoGet / autoSet guard the storage with try/catch, like reaper_fw_tab", fw.count(A_GET) == 1 and fw.count(A_SET) == 1
+      and "try{localStorage.setItem('reaper_fw_tab',t);}catch(e){}" in fw)
+check("auto refresh: each click handler stores its own key after the toggle (Status: reaper_fw_st_auto, Rule Status: reaper_fw_wt_auto)",
+      fw.count(H_ST) == 1 and fw.count(H_WT) == 1 and fw.count(".onclick=function(){this.classList.toggle('on');stop") == 0)
+check("auto refresh: the stored choices are restored immediately before initTab(), the last step of boot()",
+      (R_ST + R_WT + "  initTab();\n}\nif(document.readyState!=='loading')boot();\n") in fw and fw.count("  initTab();\n") == 1
+      and fw.count("reaper_fw_st_auto") == 2 and fw.count("reaper_fw_wt_auto") == 2)
+check("auto refresh: per browser only - no nvram key, nothing posted; the timers and the tab switch are as they were",
+      not re.search(r"(nvram|apply\.cgi|start_apply)[^\n]*reaper_fw_(st|wt)_auto", fw)
+      and "function startWitAuto(){stopWitAuto();if($('wt_auto').classList.contains('on'))wtTimer=setInterval(function(){loadWit(false);},15000);}" in fw
+      and "function startAuto(){if($('st_auto').classList.contains('on')&&!stTimer)stTimer=setInterval(loadStatus,10000);if($('st_auto').classList.contains('on')&&!rvTimer)rvTimer=setInterval(rvLoad,30000);}" in fw
+      and "if(t==='status'){loadStatus();rvLoad();rvLoadRules();rvLoadLog();startAuto();}else{stopAuto();}" in fw
+      and "if(t==='witness'){loadWit(false);startWitAuto();}else{stopWitAuto();}" in fw)
+check("auto refresh: the switches still start off in the markup (the stored choice turns them on)",
+      '<span class="tg" id="st_auto"></span>' in fw and '<span class="tg" id="wt_auto"></span>' in fw)
+if node and all(x in fw for x in (A_GET, A_SET, H_ST, H_WT, R_ST, R_WT)):
+    js = r"""
+var store = {}, THROW = false;
+var localStorage = {getItem: function(k){ if (THROW) throw new Error('denied'); return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+                    setItem: function(k, v){ if (THROW) throw new Error('denied'); store[k] = String(v); }};
+function mk(){ var c = {}; return {onclick: null, classList: {toggle: function(n, f){ if (f === undefined) f = !c[n]; if (f) c[n] = 1; else delete c[n]; return !!f; },
+                                                           contains: function(n){ return !!c[n]; }}}; }
+var EL = {}; function $(id){ return EL[id] || (EL[id] = mk()); }
+var CALLS = [];
+function stopAuto(){ CALLS.push('stop'); } function startAuto(){ CALLS.push('start:' + $('st_auto').classList.contains('on')); }
+function stopWitAuto(){ CALLS.push('wstop'); } function startWitAuto(){ CALLS.push('wstart:' + $('wt_auto').classList.contains('on')); }
+""" + A_GET + A_SET + "function load(){ EL = {}; CALLS = [];\n" + R_ST + R_WT + H_ST + H_WT + r"""  return [$('st_auto').classList.contains('on'), $('wt_auto').classList.contains('on')]; }
+function click(id){ $(id).onclick.call($(id)); }
+var o = {};
+o.fresh = load();
+click('st_auto'); o.st_on = [JSON.stringify(store), CALLS.slice()]; o.reload1 = load();
+click('wt_auto'); o.wt_on = [JSON.stringify(store), CALLS.slice()]; o.reload2 = load();
+click('st_auto'); o.st_off = JSON.stringify(store); o.reload3 = load();
+store = {reaper_fw_st_auto: 'yes', reaper_fw_wt_auto: 'on'}; o.junk = load();
+store = {}; THROW = true; o.denied = load(); click('st_auto'); o.denied_click = [$('st_auto').classList.contains('on'), CALLS.slice()];
+console.log(JSON.stringify(o));
+"""
+    td = tempfile.mkdtemp()
+    try:
+        jp = os.path.join(td, "auto.js")
+        open(jp, "w", encoding="utf-8").write(js)
+        r = subprocess.run([node, jp], capture_output=True, text=True, timeout=30)
+        try: o = json.loads(r.stdout)
+        except Exception: o = {}
+        check("node: nothing stored = both switches off, as before", o.get("fresh") == [False, False], (r.stderr[-300:], o.get("fresh")))
+        check("node: Status switch on is stored as '1' under its own key, the timer restarts, and a reload shows it on (Rule Status still off)",
+              o.get("st_on") == ['{"reaper_fw_st_auto":"1"}', ["stop", "start:true"]] and o.get("reload1") == [True, False], (o.get("st_on"), o.get("reload1")))
+        check("node: Rule Status switch is kept under the other key; both survive a reload",
+              o.get("wt_on") == ['{"reaper_fw_st_auto":"1","reaper_fw_wt_auto":"1"}', ["wstop", "wstart:true"]] and o.get("reload2") == [True, True],
+              (o.get("wt_on"), o.get("reload2")))
+        check("node: switched off again is stored as '0' and stays off after a reload",
+              o.get("st_off") == '{"reaper_fw_st_auto":"0","reaper_fw_wt_auto":"1"}' and o.get("reload3") == [False, True], (o.get("st_off"), o.get("reload3")))
+        check("node: only '1' means on (any other stored text = off)", o.get("junk") == [False, False], o.get("junk"))
+        check("node: storage refused (private mode) = off at load, and the switch still works for this page view",
+              o.get("denied") == [False, False] and o.get("denied_click") == [True, ["stop", "start:true"]], (o.get("denied"), o.get("denied_click")))
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
 print("\n%d check(s) failed" % len(fails) if fails else "\nall checks passed")
 for f in fails: print("  - " + f)
 sys.exit(1 if fails else 0)

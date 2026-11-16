@@ -212,10 +212,10 @@ check("Gatekeeper rows and the Devices page host follow the rule; networkmap's l
       "rdn_label(mac, host, name, nlen);" in web and "if (rdn_client_host(dev[i].mac, dev[i].host, h, sizeof(h)))" in web and "gk_nmp_name(" not in web)
 ut = rd("www/reaper_util.js")
 check("ReaperNames: one request (get_clientlist + reaper_devnames), Name else Hostname, name()/host() apart, no networkmap label",
-      "hook=get_clientlist();reaper_devnames()" in ut and "function label(m){ var n = nameOf[m]; if(n) return n; var h = hostOf[m]; return h ? h : ''; }" in ut
+      "hook=get_clientlist()%3Breaper_devnames()" in ut and "function label(m){ var n = nameOf[m]; if(n) return n; var h = hostOf[m]; return h ? h : ''; }" in ut
       and "name: function(mac)" in ut and "host: function(mac)" in ut and "c.nickName" not in ut)
 dash, v6, lan, wol, par, cf, dg = (rd(p) for p in ("www/Main_ReaperDash.asp", "www/Reaper_IPv6.asp", "www/Reaper_LAN.asp", "www/Reaper_WOL.asp", "www/Reaper_Parental.asp", "www/client_function.js", "others/reaper_diag"))
-check("dashboard tiles: the feed, Name else Hostname else MAC", "hook=get_clientlist();reaper_devnames()" in dash and "nm=dd.n||dd.h||macs[i];" in dash)
+check("dashboard tiles: the shared helper, Name else Hostname else MAC", "ReaperNames.refresh(" in dash and "ReaperNames.byMac(macs[i],macs[i])" in dash and "reaper_devnames" not in dash)
 check("IPv6 clients: Name and Hostname in their own columns", "['name', `<#RLOG_49#>`], ['host', `<#RLOG_50#>`]" in v6 and "name: ReaperNames.name(r[1]), host: ReaperNames.host(r[1]) || lease" in v6)
 check("LAN reservations: the field is the DNS name (RLAN_58); the master Name shown beside it; no Name in the DNS cell",
       "<th><#RLOG_49#></th><th><#MAC_Address#></th>" in lan and "<th><#RLAN_58#></th>" in lan and "function hostCell(r){ return r.host ? hx(r.host) : '-'; }" in lan)

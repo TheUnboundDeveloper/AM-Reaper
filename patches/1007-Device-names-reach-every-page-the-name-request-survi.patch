@@ -1,0 +1,80 @@
+From a1ae04332ca97daa7b24faedbc445e9d5e595d3d Mon Sep 17 00:00:00 2001
+From: reaper <theunbounddeveloper@outlook.com>
+Date: Mon, 16 Nov 2026 16:23:17 -0500
+Subject: [PATCH] Device names reach every page: the name request survives
+ httpd's parameter split
+
+- The shared name helper asks for the client list and the Name / Hostname list in one request, and
+  joined the two with a plain ';'. httpd ends a parameter at ';' as well as at '&', so the second
+  part never ran: since the one-rule change the pages showed only the Devices-page names they
+  start from, and the dashboard Clients card, which had its own copy of the request and no such
+  start, showed MAC addresses. The parts are joined with %3B.
+- The dashboard card uses the shared helper, like every other page.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ release/src/router/www/Main_ReaperDash.asp | 19 +++++++++----------
+ release/src/router/www/reaper_util.js      |  5 ++++-
+ 2 files changed, 13 insertions(+), 11 deletions(-)
+
+diff --git a/release/src/router/www/Main_ReaperDash.asp b/release/src/router/www/Main_ReaperDash.asp
+index bf3bfbeaee..3ffa01afe5 100644
+--- a/release/src/router/www/Main_ReaperDash.asp
++++ b/release/src/router/www/Main_ReaperDash.asp
+@@ -1695,28 +1695,27 @@ function paintClients(b){
+   setBand('beti','betn',b['eth'].length,total);
+   renderClients();
+ }
++/* 2026-11-16 (owner): the labels come from the ONE shared helper (reaper_util.js ReaperNames), as on every other
++   page. The card had its own copy of the request and of the lookup, without the Devices-page names the helper
++   starts from, so it showed a MAC where other pages showed a name. Label = Name, else Hostname, else the MAC.
++   Still one request per tick: the helper fetches the client list and the names together and hands the list back. */
+ function pollClients(){
+-  var x=new XMLHttpRequest();
+-  /* 2026-11-15 (owner's device-label rule): the router's Name / Hostname per device in the same request */
+-  x.open('GET','/appGet.cgi?hook=get_clientlist();reaper_devnames()&_='+(new Date()).getTime(),true);
+-  x.onreadystatechange=function(){
+-    if(x.readyState!==4||x.status!==200) return;
++  ReaperNames.refresh('<% nvram_char_to_ascii("", "custom_clientlist"); %>',function(cl){
++    if(!cl) return;
+     try{
+-      var j=JSON.parse(x.responseText);
+-      var cl=j.get_clientlist||j, macs=cl.maclist||[], dn=j.reaper_devnames||{};
++      var macs=cl.maclist||[];
+       var b={'6':[],'5':[],'24':[],'eth':[]};
+       for(var i=0;i<macs.length;i++){
+         var c=cl[macs[i]]; if(!c || String(c.isOnline)!=='1') continue;
+         var w=parseInt(c.isWL||'0',10);
+         var k=(w===1)?'24':(w===2||w===3)?'5':(w===4||w===5)?'6':'eth';
+-        var dd=dn[String(macs[i]).toUpperCase()]||{}, nm=dd.n||dd.h||macs[i];   /* Name, else Hostname, else the MAC */
++        var nm=ReaperNames.byMac(macs[i],macs[i]);   /* Name, else Hostname, else the MAC */
+         var v6=(c.ip6_prefix&&String(c.ip6_prefix).length)?c.ip6_prefix:(c.ip6||'');   /* global v6, else link-local */
+         b[k].push({n:nm, ip:(c.ip&&c.ip!=='offline')?c.ip:'\u2014', ip6:String(v6).split('/')[0], m:macs[i]});
+       }
+       paintClients(b);
+     }catch(e){}
+-  };
+-  x.send();
++  });
+ }
+ /* v3.1.6: the same tiles on a box that is not routing. get_clientlist() is
+    networkmap's view, and its isOnline flag is derived from the DHCP lease
+diff --git a/release/src/router/www/reaper_util.js b/release/src/router/www/reaper_util.js
+index d133692b80..4a4c070b17 100644
+--- a/release/src/router/www/reaper_util.js
++++ b/release/src/router/www/reaper_util.js
+@@ -43,7 +43,10 @@ window.ReaperNames = (function(){
+      for every device it knows. cb(clientListObj|null). */
+   function fetchLive(cb){
+     var x = new XMLHttpRequest();
+-    x.open('GET', '/appGet.cgi?hook=get_clientlist();reaper_devnames()&_=' + Date.now(), true);
++    /* 2026-11-16: the two hooks are joined with %3B, never a plain ';'. httpd splits a request's parameters at '&'
++       and at ';' alike (httpd/cgi.c), so with a plain ';' only get_clientlist() ran and the Name / Hostname list
++       never arrived - pages showed the Devices-page names they start from and nothing else. */
++    x.open('GET', '/appGet.cgi?hook=get_clientlist()%3Breaper_devnames()&_=' + Date.now(), true);
+     x.timeout = 6000;
+     x.onreadystatechange = function(){
+       if(x.readyState !== 4) return;
+-- 
+2.25.1
+

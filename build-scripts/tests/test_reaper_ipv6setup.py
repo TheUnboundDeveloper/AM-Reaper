@@ -70,7 +70,112 @@ check("httpd: native list + both stock pages redirect to it",
       '"Reaper_IPv6Setup.asp",' in inj and '{ "advanced_ipv6_content.asp", "Reaper_IPv6Setup.asp", ' in inj
       and '{ "advanced_ipv61_content.asp", "Reaper_IPv6Setup.asp", ' in inj)
 
+# ---------------------------------------------------------------------------------------------------------------------
+# reaper 2026-11-16 (bug review A6 item 1): WAN Prefix Length with Native + prefix delegation is the DHCP-PD size hint.
+# rc sends 48 to 64 and asks for no size otherwise; the page saved any text for it and the log said it was requested.
+udh = rd(os.path.join(SRC, "rc", "udhcpc.c"))
+check("PD branch: Native with prefix delegation accepts empty, 0 or the window; an untouched stored value is not judged",
+      "function pdLenOk(s){ return s === '' || s === '0' || rp.v.int(s, PD_MIN, PD_MAX); }" in t
+      and "  if (v === 'dhcp6' && q('t_pd').checked && val('i_plenwan') !== NV.ipv6_prefix_len_wan && !pdLenOk(val('i_plenwan')))\n"
+          "    return eN('i_plenwan', PD_MIN, PD_MAX);\n" in t)
+st0 = t.find("  if (v === 'other'){\n    if (!v6('i_ipaddr')) return e6('i_ipaddr');")
+check("Static keeps its own range (3 to 128) in its own branch",
+      st0 > 0 and "    if (!rng('i_plenwan', 3, 128)) return eN('i_plenwan', 3, 128);\n" in t[st0:t.find("\n  }\n", st0)] and t.count("rng('i_plenwan'") == 1)
+hm = re.search(r"/\* REAPER-PD-HINT-BEGIN \*/\n(.*?)/\* REAPER-PD-HINT-END \*/", udh, re.S)
+check("rc: the one size-hint helper is found", hm is not None and udh.count("/* REAPER-PD-HINT-BEGIN */") == 1)
+helper = hm.group(1) if hm else ""
+pw = re.search(r"\nvar PD_MIN = (\d+), PD_MAX = (\d+);\n", t)
+rw = re.search(r"static int dhcp6c_pd_hint\(int len\)\n\{\n\treturn \(len >= (\d+) && len <= (\d+)\) \? len : 0;\n\}\n", helper)
+check("the page window is the rc helper's window (48 to 64)", pw is not None and rw is not None and pw.groups() == rw.groups() == ("48", "64"),
+      (pw and pw.groups(), rw and rw.groups()))
+check("rc: both request sites use the helper (no second copy of the range)",
+      udh.count('\t\ti = dhcp6c_pd_hint(nvram_get_int(ipv6_nvname("ipv6_prefix_len_wan")));\n') == 2
+      and "(i < 48) || (i > 64)" not in udh and udh.count('"%d:%lx", i, iaid') == 2 and udh.index("/* REAPER-PD-HINT-END */") < udh.index("\nbound6(char *wan_ifname, int bound)\n"))
+check("rc: the log line says what was really asked for (the helper's answer), or that nothing was",
+      'int hint = dhcp6c_pd_hint(nvram_get_int(ipv6_nvname_by_unit("ipv6_prefix_len_wan", wan_unit)));' in udh
+      and 'logmessage("dhcp6 client", "WAN Prefix Size Requested:/%d, Received:/%d", hint, size);' in udh
+      and 'logmessage("dhcp6 client", "WAN Prefix Size Requested: none (provider default), Received:/%d", size);' in udh
+      and udh.count("WAN Prefix Size Requested") == 2
+      and not re.search(r'WAN Prefix Size Requested:/%d, Received:/%d",\s*nvram_get_int', udh))
+check("hint row: RIP6_37 and the stored-value line RIP6_38 sit under the field, hidden until the page shows them",
+      '<div class="fh off" id="h_plenwan"><#RIP6_37#></div><div class="fh warn off" id="h_plenwan_old"><#RIP6_38#></div></div>' in t
+      and ".frow .fh.off{display:none}" in t)
+check("hint shown only for Native + prefix delegation; the stored-value line only while that value is untouched and out of range",
+      "  var pdm = v === 'dhcp6' && q('t_pd').checked;\n"
+      "  show('h_plenwan', pdm); show('h_plenwan_old', pdm && val('i_plenwan') === NV.ipv6_prefix_len_wan && !pdLenOk(val('i_plenwan')));\n" in t
+      and "on('i_plenwan', 'input', sync);" in t)
+packs = sorted(f for f in os.listdir(www) if f.endswith(".dict") and f != "temp.dict")
+pv = {}
+for p in packs:
+    d = open(os.path.join(www, p), encoding="utf-8").read()
+    for k in ("RIP6_37", "RIP6_38"):
+        m = re.findall(r"^%s=(.*)$" % k, d, re.M)
+        if len(m) == 1 and m[0].strip() and not any(c in m[0] for c in ('"', "'", "`", "${", "<", ">")): pv[(p, k)] = m[0]
+check("RIP6_37 and RIP6_38 once in all %d packs" % len(packs), len(packs) == 25 and len(pv) == 50, sorted(set((p, k) for p in packs for k in ("RIP6_37", "RIP6_38")) - set(pv))[:6])
+e37, e38 = pv.get(("EN.dict", "RIP6_37"), ""), pv.get(("EN.dict", "RIP6_38"), "")
+check("EN wording names the window, the empty / 0 choice and the /56 note; plain ASCII",
+      "48 to 64" in e37 and "Leave empty or 0" in e37 and "/56" in e37 and e38 == "The stored value is outside 48 to 64, so no size is requested."
+      and all(31 < ord(c) < 127 for c in e37 + e38), (e37, e38))
+check("both strings are translated in every other pack", not [p for p in packs if p != "EN.dict" and (pv.get((p, "RIP6_37")) == e37 or pv.get((p, "RIP6_38")) == e38)])
+
+gcc = shutil.which("gcc")
+if gcc and helper:
+    td = tempfile.mkdtemp(prefix="pdhint_")
+    try:
+        open(os.path.join(td, "t.c"), "w").write("#include <stdio.h>\n" + helper + "int main(void){ int v[] = {-1, 0, 3, 47, 48, 56, 60, 64, 65, 127, 128, 200}, i;\n"
+            " for (i = 0; i < 12; i++)\n  printf(\"%d \", dhcp6c_pd_hint(v[i]));\n printf(\"\\n\");\n return 0; }\n")
+        r = subprocess.run([gcc, "-Wall", "-Werror", "-o", os.path.join(td, "t"), os.path.join(td, "t.c")], capture_output=True, text=True)
+        check("rc helper compiles on the host without a warning", r.returncode == 0, r.stderr[-400:])
+        if r.returncode == 0:
+            out = subprocess.run([os.path.join(td, "t")], capture_output=True, text=True).stdout.split()
+            check("rc helper: 48 to 64 pass, everything else (0, an old Static 127 / 128) asks for no size",
+                  out == ["0", "0", "0", "0", "48", "56", "60", "64", "0", "0", "0", "0"], out)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+else:
+    print("note: gcc not found - the rc helper run is skipped")
+
 node = shutil.which("node")
+v0 = js.find("function validate(c){"); v1 = js.find("\n}\n", v0)
+p0 = js.find("var PD_MIN = "); p1 = js.find("\n", js.find("function pdLenOk(s){", p0))
+if node and v0 > 0 and p0 > 0:
+    # the page's real validate() and pdLenOk, with the kit's real rp.v (rp.js under a stub DOM)
+    rpjs = rd(os.path.join(www, "reaper", "rp.js"))
+    harness = ("var window = {}; var document = {readyState: 'complete', addEventListener: function(){}, querySelectorAll: function(){ return []; },"
+               " getElementById: function(){ return null; }, body: {appendChild: function(){}} }; window.addEventListener = function(){};"
+               " var XMLHttpRequest = function(){};\n" + re.sub(r"<%.*?%>", "", re.sub(r"<%\s*nvram_get_js\([^%]*%>", '""', rpjs)) + r"""
+var rp = window.rp, EL = {}, SVC = 'dhcp6', NV = {ipv6_prefix_len_wan: '64'};
+function q(id){ return EL[id] || (EL[id] = {value: '', checked: false, focus: function(){}, closest: function(){ return null; }}); }
+function val(id){ return q(id).value.trim(); }
+function svc(){ return SVC; }
+""" + js[p0:p1 + 1] + js[v0:v1 + 3] + r"""
+function run(s, pd, stored, typed){
+  SVC = s; NV.ipv6_prefix_len_wan = stored; q('t_pd').checked = pd; q('i_plenwan').value = typed; q('s_ac').value = '0';
+  q('i_ipaddr').value = '2001:db8::2'; q('i_gw').value = ''; q('i_plen').value = '64'; q('i_rtr').value = '2001:db8:1::1';
+  return validate({}) === '' ? 'ok' : 'no';
+}
+var o = {};
+o.pd = ['', '0', '48', '56', '64', ' 60 ', '47', '65', 'abc', '-1', '128', '3', '4 8'].map(function(x){ return run('dhcp6', true, '64', x); });
+o.untouched = [run('dhcp6', true, '128', '128'), run('dhcp6', true, 'abc', 'abc'), run('dhcp6', true, '3', '3')];
+o.touched = [run('dhcp6', true, '128', '127'), run('dhcp6', true, '128', '56'), run('dhcp6', true, '128', '')];
+o.nopd = [run('dhcp6', false, '64', '200'), run('dhcp6', false, '64', 'abc')];
+o.stat = ['3', '64', '128', '2', '129', '', 'abc'].map(function(x){ return run('other', true, '64', x); });
+console.log(JSON.stringify(o));
+""")
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f: f.write(harness); jp = f.name
+    r = subprocess.run([node, jp], capture_output=True, text=True); os.unlink(jp)
+    import json
+    try: o = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception: o = {}
+    check("node: Native + PD takes empty, 0 and 48 to 64; refuses 47, 65, text, a negative number, 128",
+          o.get("pd") == ["ok"] * 6 + ["no"] * 7, (r.stderr[-300:], o.get("pd")))
+    check("node: an untouched stored value never blocks a save (an old Static 128, even text)", o.get("untouched") == ["ok", "ok", "ok"], o.get("untouched"))
+    check("node: once the field is touched it is judged (127 refused; 56 or empty accepted)", o.get("touched") == ["no", "ok", "ok"], o.get("touched"))
+    check("node: Native without prefix delegation does not judge the hidden field", o.get("nopd") == ["ok", "ok"], o.get("nopd"))
+    check("node: Static still needs 3 to 128", o.get("stat") == ["ok", "ok", "ok", "no", "no", "no", "no"], o.get("stat"))
+elif node:
+    check("validate() and the PD window found for the node run", False, (v0, p0))
+
 if node:
     body = js[len("<script>"):js.rfind("</script>")]
     body = re.sub(r"<%.*?%>", "", body); body = re.sub(r"`[^`]*`", "''", body)

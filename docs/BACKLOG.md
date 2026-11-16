@@ -1,6 +1,6 @@
 # RT-BE Series "Reaper" — Backlog
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
 What is left to do, one line per item, grouped by area. Status where known: **[owed]** (must be done), **[blocked]** (external cause), **[shelved]** / **[deferred]** (deliberately set aside),
 **[watch]** (not a defect today; a guard to keep), **[needs data]** (waiting on a capture or report).
@@ -42,11 +42,16 @@ internal quality, or deferred by decision.
 - **[P2] MLO on: a soft restart can leave Wi-Fi accepting no devices until a power cycle** **[owner call]** ↳ notes: `mlo-restart-radio-link.md`
 - **[P2] Guest networks bound to a WireGuard client: routing after WAN events** **[not started]** ↳ notes: `guest-vpn-binding-robustness.md`
 - **[P2] Guest Portal on AiMesh nodes: sign-in and network separation for guests joining through a node** **[not verified]** ↳ notes: `guest-portal-aimesh-nodes.md`
-- **[P2] Devices: named devices shown as "unnamed" (v3.7.9)** **[no cause in code; data asked]** ↳ notes: `devices-named-shown-unnamed-v379.md`
+- **[P2] Devices: named devices shown as "unnamed" (v3.7.9)** **[no cause in code; re-test on the next release]** ↳ notes: `devices-named-shown-unnamed-v379.md`
 - **[P3] Devices: a device wired to an AiMesh node is shown as a Wi-Fi client** **[two causes fixed; router data asked]** ↳ notes: `aimesh-node-wired-client-shown-wifi.md`
 - **[P3] Update-manifest signature stays inert (R09)** **[accepted]** ↳ notes: `manifest-signature-inert-r09.md`
 - **[P3] DDNS: intermittent updates (v3.7.9)** **[reporter still checking]** ↳ notes: `ddns-flaky-v379.md`
-- **[P3] Firewall: the Auto refresh switch on Status and Rule Status does not stay on** **[cause found; not started]** ↳ notes: `firewall-auto-refresh-not-kept.md`
+- **[P2] BQ16: the Devices page reportedly does not show MLO devices properly** **[details needed]** ↳ notes: `bq16-devices-mlo-display.md`
+- **[P3] IPv6: the factory prefix request (/64) leaves guest networks without public IPv6 where the provider honours it** **[found in review; not started]** ↳ notes: `ipv6-pd-hint-guest-networks.md`
+- **[P3] RADIUS: the Network page and the RADIUS tab keep the main network's server in two places** **[fix designed; not built]** ↳ notes: `radius-two-stores.md`, `bug-review-2026-11-16.md`
+- **[P3] mDNS: avahi-daemon aborted once during back-to-back Wi-Fi restarts (restarted by the next one)** **[not investigated]** ↳ notes: `avahi-abort-wifi-restarts.md`
+- **[P2] GT-BE98 on the alpha line: conn_diag (AiMesh diagnostics) crashes repeatedly on v3.8.0** **[likely fixed by the 102.40585 set; re-test on v3.8.1 alpha]** ↳ notes: `gt-be98-gpl-40585.md`
+- **[P2] Wallguard: SafeSearch on the Default profile is not enforced (v3.8.0; Google country domain, Edge)** **[reported; not investigated]** ↳ notes: `wallguard-safesearch-not-enforced.md`
 
 ---
 
@@ -80,22 +85,25 @@ private review report and the finding ID in it; review reports are never publish
 ## UI / UX polish
 
 - **[P3] Reaper pages: the polishing redesign and formatting pass** **[not started]** ↳ notes: `loading-overlay-redesign.md`
+- **[P3] Rule Status: a zone ACCEPT held back by guest isolation should say so, not read as a failed policy** **[not started]** ↳ notes: `zone-policy-into-isolated-networks.md`
 
 ---
 
 ## Potential Features to add
 
 - **[P1] Reaper-native UI: convert every stock page, then remove the stock pages** **[left: the cutover]** ↳ notes: `reaper-native-ui.md`, `native-page-migration.md`
-- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.0: 2,265,088 B spare]** ↳ notes: `image-size-hunt.md`
+- **[P1] Image size: the RT-BE96U root filesystem is within ~2.2 MB of its flash slot** **[v3.8.1: 2,244,608 B spare]** ↳ notes: `image-size-hunt.md`
 - **[P2] Code signing: manifest + images, with a pre-upload verdict** **[scheduled]** ↳ notes: `manifest-signing-shelved.md`
 - **[P2] Security review: harden the baseline against tampering** **[owner call]** ↳ notes: `security-review.md`
 - **[P2] Two-tier admin credential for root-equivalent actions** **[designed 2026-10-19; owner call]** ↳ notes: `two-tier-admin-credential.md`
-- **[P2] GT-BE98: move onto GPL 102.40585 (gnuton's prebuilts) via the line unification** **[not started; after Dev-unify CI]** ↳ notes: `gt-be98-gpl-40585.md`
+- **[P2] GT-BE98: move onto GPL 102.40585 (gnuton's prebuilts) via the line unification** **[on the alpha line from v3.8.1; tester needed]** ↳ notes: `gt-be98-gpl-40585.md`
 - **[P2] Policy Routing by ASN (e.g. AS2906)** **[assessed; on hold (owner 2026-11-15)]** ↳ notes: `pbr-asn-objects.md`
 - **[P2] Encrypted DNS stage 2: fall back to plain upstream when DNS-over-TLS stops answering** **[planned]** ↳ notes: `encrypted-dns.md`
 - **[P3] Security review: watch more settings** **[part done 2026-10-24; the rest not started]** ↳ notes: `security-review-coverage.md`
 - **[P3] Dreadwatch lists on USB: a higher name limit while a USB store is attached** **[proposed; the limit to revisit]** ↳ notes: `dreadwatch-limit.md`
 - **[P3] Language packs on demand: English-only image, the admin installs their language** **[idea, measured]** ↳ notes: `language-packs-on-demand.md`
+- **[P2] Network page: several changes with one Wi-Fi restart (a "changes waiting" bar, Delete selected, no restart where none is needed)** **[planned; design approved 2026-11-16]** ↳ notes: `network-page-deferred-restart.md`
+- **[P2] Firewall: zone policies may open one-way paths into an isolated guest network (opt-in switch, off by default)** **[assessed; not started]** ↳ notes: `zone-policy-into-isolated-networks.md`
 - **[P3] Staged ("batch") changes: one save, minimal restarts** **[project]** ↳ notes: `staged-batch-changes.md`
 - **[P3] Policy Routing on Warden's country sets** **[owner call]** ↳ notes: `pbr-warden-country-sets.md`
 - **[P3] Tweaks: the login-page redirect goes to an address the admin types (name, port), not only www.asusrouter.com** **[not started]** ↳ notes: `login-redirect-custom-domain.md`
@@ -133,7 +141,9 @@ private review report and the finding ID in it; review reports are never publish
 - **[P3] OSPF + BGP dynamic routing** **[Not Needed]** ↳ notes: `ospf-bgp-dynamic-routing.md`
 - **[P3] Encrypted DNS answers guest/VLAN networks over IPv4 only** **[deferred]** ↳ notes: `encrypted-dns.md`
 - **[P3] Wallguard: network profiles IPv4-only; merged identical lookups share one CNAME verdict** **[deferred / accepted]** ↳ notes: `wallguard.md`
-- **[P3] The main Wi-Fi's RADIUS server is set in two places** **[deferred]** ↳ notes: `radius-two-stores.md`
+- **[P3] VLAN page: Add is refused 2 to 5 networks early (the main-network rows are counted)** **[deferred (owner 2026-11-16)]** ↳ notes: `bug-review-2026-11-16.md`
+- **[P3] WPS page: the router's PIN is shown without pressing Show (as the stock page)** **[deferred (owner 2026-11-16)]** ↳ notes: `bug-review-2026-11-16.md`
+- **[P3] GT-BE98: its bootloader objects stay at GPL 102_39274 (the 102.40585 set needs a bootloader build port)** **[deferred (owner 2026-11-16)]** ↳ notes: `gt-be98-gpl-40585.md`
 - **[P4] Firewall log day files: split today's file so the store cap can remove parts** **[deferred]** ↳ notes: `fwlog-storage-row-layout.md` (item 2)
 
 ---
@@ -142,6 +152,7 @@ private review report and the finding ID in it; review reports are never publish
 
 *Not defects. Recorded so the same report is not re-investigated.*
 
+- **A Wi-Fi 7 device shows two addresses: its own (Devices, leases, Gatekeeper) and its 6 GHz link address (Wireless log)** **[closed 2026-11-16]** ↳ notes: `wifi7-link-address-two-macs.md`
 - **WireGuard server starts before NTP sync: working as intended** **[closed 2026-11-15]** ↳ notes: `wgs-start-before-ntp.md`
 - **Devices page after a reboot: an offline device is listed only if it has a DHCP reservation or a Gatekeeper entry (BQ16 report)** **[closed 2026-11-13]** ↳ notes: `devices-offline-after-reboot-bq16-2026-11-12.md`
 - **GT-BE98: no DNS after ControlD was removed (a leftover `/jffs/configs/dnsmasq.conf`)** **[closed 2026-10-21]** ↳ notes: `controld-leftover-dnsmasq-conf.md`
@@ -150,7 +161,7 @@ private review report and the finding ID in it; review reports are never publish
 - **Dual-WAN: both NextDNS profiles receive DNS logs** ↳ notes: `wad-dual-wan-nextdns.md`
 - **Investigated, not a bug (do not re-raise)** ↳ notes: `wad-investigated-not-a-bug.md`
 - **Translations: closed 2026-09-08, kept as a guard (do-not-translate list)** ↳ notes: `translations-residual.md`
-- **SNMP `rwuser`: keep as-is** ↳ notes: `snmp-rwuser.md`
+- **SNMP SET: kept, limited to sysContact / sysName / sysLocation (the write-everything user is gone)** **[owner 2026-11-16]** ↳ notes: `snmp-rwuser.md`
 - **`rwatch: FAILURE detected: warden-self-drop:<n>` is the feature reporting** ↳ notes: `wad-warden-self-drop-failure.md`
 - **Firewall rule negation: not building** ↳ notes: `wad-firewall-rule-negation.md`
 - **Unbound on the router: not building** ↳ notes: `unbound-resolver.md`

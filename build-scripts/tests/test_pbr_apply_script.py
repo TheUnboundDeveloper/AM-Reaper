@@ -114,11 +114,15 @@ try:
 static FILE *LOG;
 void logmessage(const char *tag, const char *fmt, ...) { va_list ap; va_start(ap, fmt); fprintf(LOG, "%%s: ", tag); vfprintf(LOG, fmt, ap); fputc('\n', LOG); va_end(ap); fflush(LOG); }
 static const char *NV[][2] = { {"wgc1_enforce","1"}, {"wgc1_enable","1"}, {"vpn_client2_enforce","0"}, {"wgc2_enforce","1"}, {"wgc2_enable","0"}, {NULL,NULL} };
-static const char *nvget(const char *k) { int i; for (i = 0; NV[i][0]; i++) if (!strcmp(NV[i][0], k)) return NV[i][1]; return ""; }
+/* 2026-11-16: a value in the environment (NV_<key>) wins, for the Killswitch truth table below */
+static const char *nvget(const char *k) { int i; char e[64]; const char *v; snprintf(e, sizeof(e), "NV_%%s", k); if ((v = getenv(e)) != NULL) return v;
+	for (i = 0; NV[i][0]; i++) { if (!strcmp(NV[i][0], k)) return NV[i][1]; }
+	return ""; }
 int nvram_get_int(const char *k) { return atoi(nvget(k)); }
+const char *nvram_safe_get(const char *k) { return nvget(k); }
 int nvram_match(const char *k, const char *v) { return !strcmp(nvget(k), v); }
 int ipv6_enabled(void) { return 1; }
-int ovpn_is_client_enabled(int unit) { return 1; }
+int ovpn_is_client_enabled(int unit) { return getenv("OV_DISABLED") ? 0 : 1; }
 char *reaper_fw_list_get(const char *which) { return ""; }
 int _vstrsep(char *buf, const char *sep, ...) { va_list ap; char **p; int n = 0; va_start(ap, sep); while ((p = va_arg(ap, char **)) != NULL) { *p = strsep(&buf, sep); if (!*p) break; n++; } va_end(ap); return n; }
 #define vstrsep(buf, sep, args...) _vstrsep(buf, sep, args, NULL)
@@ -137,7 +141,13 @@ static int ppbr_resolve_object(const char *name, char *out, size_t ol) { snprint
     ]
     MAIN = r'''
 int main(int argc, char **argv) {
-	ppbr_cfg_t c; LOG = fopen(argv[3], "a");
+	ppbr_cfg_t c;
+	if (argc > 2 && !strcmp(argv[1], "--target")) {	/* 2026-11-16: ppbr_target() alone: "<known> <failclosed>" */
+		int code = 0, fc = 0, wg = 0; const char *tb = NULL;
+		int r = ppbr_target(argv[2], &code, &tb, &fc, &wg);
+		printf("%d %d\n", r, fc); return 0;
+	}
+	LOG = fopen(argv[3], "a");
 	c.enable = 1; c.rulelist = argv[1];
 	int r = ppbr_gen(argv[2], 0, &c);
 	printf("gen=%d\n", r); return r == 1 ? 0 : 1;
@@ -375,6 +385,28 @@ int main(int argc, char **argv) {
           F["skipnets"] is not None and "192.0.2.10/32 pending" in F["skipnets"] and "192.168.50.0/24 new" in F["skipnets"], repr(F["skipnets"]))
     check("wg down: says the bypass is installed when the client starts", "skip-bypass not installed yet (installed when the client starts)" in FL, FL)
     check("wg down: the mark and routing rules still go in", "lookup wgc1 pref 9006" in T and "-s 192.0.2.10 -j MARK" in T, "")
+
+    # 2026-11-16 (review): an OpenVPN client's Killswitch counts only while its tunnel carries the default route -
+    # Redirect "all" (1) or "VPN Director" (2) on a TUN client. With Redirect "No" (0) or TAP the client's table holds
+    # pushed routes only, and the prohibit refused Internet traffic while the tunnel was UP.
+    def target(tgt, **nv):
+        env = dict(os.environ)
+        off = nv.pop("off", False)
+        for k, v in nv.items(): env["NV_" + k] = v
+        if off: env["OV_DISABLED"] = "1"
+        return subprocess.run([exe, "--target", tgt], capture_output=True, text=True, env=env).stdout.strip()
+    KS = dict(vpn_client3_enforce="1", vpn_client3_if="tun")
+    check("Killswitch: on with Redirect all", target("OVPN3", vpn_client3_rgw="1", **KS) == "1 1")
+    check("Killswitch: on with VPN Director", target("OVPN3", vpn_client3_rgw="2", **KS) == "1 1")
+    check("Killswitch: NOT with Redirect No (the tunnel's table has no default route)", target("OVPN3", vpn_client3_rgw="0", **KS) == "1 0")
+    check("Killswitch: NOT with an unset or unknown Redirect value", target("OVPN3", **KS) == "1 0" and target("OVPN3", vpn_client3_rgw="3", **KS) == "1 0")
+    check("Killswitch: NOT on a TAP client", target("OVPN3", vpn_client3_rgw="1", vpn_client3_enforce="1", vpn_client3_if="tap") == "1 0")
+    check("Killswitch: NOT for a switched-off client", target("OVPN3", vpn_client3_rgw="1", off=True, **KS) == "1 0")
+    check("Killswitch: off stays off", target("OVPN3", vpn_client3_rgw="1", vpn_client3_enforce="0", vpn_client3_if="tun") == "1 0")
+    check("Killswitch: a WireGuard client is unchanged (enforce + enabled)",
+          target("WGC1") == "1 1" and target("WGC2") == "1 0" and target("WGC1", wgc1_enable="0") == "1 0")
+    check("the gate reads the client's own keys", 'snprintf(nv, sizeof(nv), "vpn_client%c_rgw", t[4]);' in source
+          and 'snprintf(nv, sizeof(nv), "vpn_client%c_if", t[4]);' in source)
 
     if fails:
         print("\n%d check(s) failed:\n  " % len(fails) + "\n  ".join(fails)); sys.exit(1)

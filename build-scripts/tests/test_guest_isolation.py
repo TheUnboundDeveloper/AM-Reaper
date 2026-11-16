@@ -3,7 +3,7 @@
 """Guest isolation: guests reach only the WAN or their VPN client, the router only for DHCP/DNS/portal (2026-11-12).
 
 WHY THIS EXISTS. Owner hard rule: a guest - every device on a Guest Portal network, and on any guest network whose
-"Access Intranet" is off - must never see or reach non-guest devices or router features, on any path, including the
+"Access Intranet" does not name the Main Network - must never see or reach non-guest devices or router features, on any path, including the
 WAN fallback while its VPN client is down. Stock left it open (router services on every router address but
 lan_ipaddr; signed-in portal guests accepted to anywhere via `-I FORWARD -i tun22 NEW ACCEPT`; new connections in
 from a bound VPN client; a portal's IPv6 past the portal), and the Kill Switch did not hold for a portal network.
@@ -11,7 +11,9 @@ from a bound VPN client; a portal's IPv6 past the portal), and the Kill Switch d
 WHAT IT DOES. Compiles the REAPER-GUEST-PURE block of rc/reaper_guest.c on the host and generates the apply script
 for sample network sets; checks the exact rules (a plain guest network, a Free Wi-Fi portal with its bridge, an
 account portal, a VPN-bound network with the Kill Switch off and on, two WANs, no IPv6 WAN), that the layer never
-ACCEPTs, the tear-down when no guest network is left, and the sdn_access_rl / vpnc_idx parsers. Then pins the
+ACCEPTs, the tear-down when no guest network is left, the vpnc_idx parser, and what an Access Intranet pair means
+(2026-11-16: main-network access only from a pair with the Main Network; two guest networks paired = forwarding
+between those two only, both still isolated). Then pins the
 wiring: hook.sh, the firewall tail, the sdn / sdn_del handlers, the build, and (where the Network page has a Kill
 Switch) the default-on for a new VPN binding. Exit 0 pass, 1 fail, 77 skipped (no gcc, or no router tree - argv[1]
 or REAPER_ROUTER_SRC = .../release/src/router)."""
@@ -59,6 +61,17 @@ static void srv_fill(struct rg_net *g, int n)
 	int k, u;
 @@SRV@@
 }
+/* 2026-11-16 (bug review A1): the enabled networks of the pair cases (40, 41) */
+static const struct rg_ref RT[] = {
+	{ 0, "br0", "br0", 0 },		/* the Main Network */
+	{ 0, "br0", "br0", 0 },		/* the AiMesh backhaul shares index 0 */
+	{ 3, "br54", "br54", 0 },	/* guest A */
+	{ 12, "br57", "br57", 0 },	/* guest B */
+	{ 5, "br56", "br56", 0 },	/* guest C */
+	{ 4, "tun22", "br55", 1 },	/* a Guest Portal */
+	{ 9, "br0", "br0", 0 },		/* a network riding the LAN bridge */
+};					/* index 8 names no enabled network */
+#define NRT ((int)(sizeof(RT) / sizeof(RT[0])))
 int main(int argc, char **argv)
 {
 	struct rg_net g[4]; char wan4[2][IFNAMSIZ] = { "eth0", "ppp0" }; char out[16];
@@ -125,9 +138,30 @@ int main(int argc, char **argv)
 		unsigned int a; int p, i;
 		for (i = 0; i < 13; i++) { a = 0; p = -1; printf("%d", rg_cidr4(t[i], &a, &p)); if (i == 0) printf(":%08x/%d", a, p); printf(" "); }
 		printf("\n"); return 0; }
+	case 40: { /* 2026-11-16: rg_main_access and rg_peers of network argv[3] under the pair list argv[2] */
+		char pe[RG_PEER_MAX][IFNAMSIZ]; int i, idx = atoi(argv[3]), np;
+		np = rg_peers(argv[2], idx, RT, NRT, "br0", pe, RG_PEER_MAX);
+		printf("%d:", rg_main_access(argv[2], idx, RT, NRT, "br0"));
+		for (i = 0; i < np; i++) printf("%s,", pe[i]);
+		printf("\n"); return 0; }
+	case 41: { /* 2026-11-16: the network set as reaper_guest_gen builds it from RT and the pair list argv[2];
+		    * argv[3] "ks" = network 3 bound to WireGuard client 5 with the kill switch on */
+		int i;
+		for (i = 0; i < NRT && n < 4; i++) {
+			const struct rg_ref *r = &RT[i];
+			if (r->idx == 0 || !strcmp(r->br, "br0")) continue;
+			if (!r->portal && rg_main_access(argv[2], r->idx, RT, NRT, "br0")) continue;
+			g[n].sdn_idx = r->idx; strcpy(g[n].ifname, r->ifname); strcpy(g[n].brname, r->br); g[n].portal = r->portal;
+			if (r->portal && rg_main_access(argv[2], r->idx, RT, NRT, "br0")) { g[n].lan_ok = 1; strcpy(g[n].lanif, "br0"); }
+			g[n].npeer = rg_peers(argv[2], r->idx, RT, NRT, "br0", g[n].peer, RG_PEER_MAX);
+			if (argc > 3 && !strcmp(argv[3], "ks") && r->idx == 3) { strcpy(g[n].vpnif, "wgc5"); g[n].killsw = 1; }
+			n++;
+		}
+		break; }
+	case 42: /* 2026-11-16: a portal handed a peer list by mistake - a portal has no peers */
+		g[0].sdn_idx = 4; strcpy(g[0].ifname, "tun22"); strcpy(g[0].brname, "br55"); strcpy(g[0].subnet, "192.168.52.0/24"); g[0].portal = 1;
+		strcpy(g[0].peer[0], "br54"); g[0].npeer = 1; n = 1; break;
 	case 7: /* parsers */
-		printf("%d %d %d %d %d\n", rg_access_on("<0>5<0>7", 5), rg_access_on("<0>5<0>7", 7), rg_access_on("<0>5<0>7", 6),
-		       rg_access_on("", 5), rg_access_on("<12>3", 12));
 		rg_vpnif(5, out, sizeof(out)); printf("%s ", out); rg_vpnif(6, out, sizeof(out)); printf("%s ", out);
 		rg_vpnif(10, out, sizeof(out)); printf("%s ", out); rg_vpnif(0, out, sizeof(out)); printf("[%s] ", out);
 		rg_vpnif(11, out, sizeof(out)); printf("[%s]\n", out);
@@ -161,9 +195,113 @@ try:
         return [l for l in txt.splitlines() if l.startswith("R iptables -t nat ")]
 
     p = gen(7).split()
-    check("sdn_access_rl: a network named in any pair has intranet access, on either side; others none",
-          p[:5] == ["1", "1", "0", "0", "1"], p)
-    check("vpnc_idx -> interface: 1..5 wgcN, 6..10 tun1N, anything else none", p[5:] == ["wgc5", "tun11", "tun15", "[]", "[]"], p)
+    check("vpnc_idx -> interface: 1..5 wgcN, 6..10 tun1N, anything else none", p == ["wgc5", "tun11", "tun15", "[]", "[]"], p)
+
+    # ---- 2026-11-16 (bug review A1, owner-approved): what an Access Intranet pair means ----
+    # sdn_access_rl is "<a>b" pairs of network indexes; a pair is two-way forwarding between exactly those two networks
+    # and index 0 is the Main Network. Until this fix "named in any pair" was read as "has intranet access", so two
+    # guest networks paired with each other both left the layer and a portal named in any pair got the main-LAN route.
+    # The networks of these cases (RT): 0 main (br0), 3 guest br54, 12 guest br57, 5 guest br56, 4 portal tun22 on
+    # br55, 9 a network riding br0; 8 names no enabled network.
+    def pr(rl, idx):
+        return gen(40, rl, str(idx)).strip()
+    check("two guest networks paired (<12>3): neither has main-network access; each is the other's peer",
+          pr("<12>3", 12) == "0:br54," and pr("<12>3", 3) == "0:br57," and pr("<3>12", 3) == "0:br57,",
+          (pr("<12>3", 12), pr("<12>3", 3), pr("<3>12", 3)))
+    check("a pair with the Main Network, either way round (<0>5, <5>0): main-network access, no peers; others none",
+          pr("<0>5", 5) == "1:" and pr("<5>0", 5) == "1:" and pr("<0>5<0>12", 12) == "1:" and pr("<0>5<0>12", 3) == "0:"
+          and pr("", 5) == "0:", (pr("<0>5", 5), pr("<5>0", 5), pr("<0>5<0>12", 12), pr("<0>5<0>12", 3)))
+    check("a network on the LAN bridge as the other end (<9>5, <5>9) is the main network too",
+          pr("<9>5", 5) == "1:" and pr("<5>9", 5) == "1:", (pr("<9>5", 5), pr("<5>9", 5)))
+    check("a pair end that names no enabled network (<8>5) is ignored; the rest of the list still counts",
+          pr("<8>5", 5) == "0:" and pr("<5>8", 5) == "0:" and pr("<8>5<5>3", 5) == "0:br54," and pr("<8>5<0>5", 5) == "1:",
+          (pr("<8>5", 5), pr("<8>5<5>3", 5), pr("<8>5<0>5", 5)))
+    check("a portal has no peers and is nobody's peer; without the Main Network in its pair it has no main-network access",
+          pr("<4>3", 4) == "0:" and pr("<4>3", 3) == "0:" and pr("<3>4", 4) == "0:" and pr("<0>4", 4) == "1:",
+          (pr("<4>3", 4), pr("<4>3", 3), pr("<0>4", 4)))
+    check("a network with main-network access is not a peer (it holds non-guest devices)",
+          pr("<0>12<12>3", 3) == "0:" and pr("<0>12<12>3", 12) == "1:" and pr("<9>12<3>12", 3) == "0:",
+          (pr("<0>12<12>3", 3), pr("<0>12<12>3", 12), pr("<9>12<3>12", 3)))
+    check("several pairs: each isolated guest end is a peer once; a doubled pair, a self pair or a broken record adds nothing",
+          pr("<12>3<3>5", 3) == "0:br57,br56," and pr("<12>3<3>12<3>3", 3) == "0:br57," and pr("<3>", 3) == "0:"
+          and pr("junk<x>y<12>3", 3) == "0:br57," and pr("<12>3", 5) == "0:",
+          (pr("<12>3<3>5", 3), pr("<12>3<3>12<3>3", 3), pr("junk<x>y<12>3", 3)))
+
+    t1 = gen(1)		# a plain guest network (br56), the reference for "isolated as any guest network"
+    tp = gen(41, "<12>3"); r4 = rules(tp, 4); r6 = rules(tp, 6)
+    check("<12>3: both paired networks stay in the layer, with the third guest network and the portal",
+          all(("# network %d: %s" % x) in tp for x in ((3, "br54"), (12, "br57"), (5, "br56"), (4, "tun22"))), tp[:400])
+    for X, P in (("br54", "br57"), ("br57", "br54")):
+        for fam, rr in (("iptables", r4), ("ip6tables", r6)):
+            o_ = "R %s -A REAPER_GUF -i %s -o %s -j RETURN" % (fam, X, P)
+            i_ = "R %s -A REAPER_GUF -o %s -i %s -j RETURN" % (fam, X, P)
+            check("<12>3 %s (%s): out to the paired network before the network's DROP, in from it before the inbound DROP" % (X, fam),
+                  rr.count(o_) == 1 and rr.count(i_) == 1
+                  and rr.index(o_) < rr.index("R %s -A REAPER_GUF -i %s -j DROP" % (fam, X))
+                  < rr.index(i_) < rr.index("R %s -A REAPER_GUF -o %s -j DROP" % (fam, X)), rr)
+    check("<12>3: both stay closed to the router - REAPER_GUI exactly as for any guest network, v4 and v6",
+          all([l for l in rules(tp, f_) if ("REAPER_GUI -i %s " % X) in l] == [l.replace("br56", X) for l in rules(t1, f_) if "REAPER_GUI" in l]
+              for X in ("br54", "br57") for f_ in (4, 6)), [l for l in r4 if "REAPER_GUI -i br54 " in l])
+    check("<12>3: both stay closed to the main LAN and to every other network - the pair is the only new way",
+          "br0" not in tp and not [l for l in rules(tp) if "br54" in l and ("br56" in l or "br55" in l or "tun22" in l)]
+          and [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br54 -o")] ==
+          ["R iptables -A REAPER_GUF -i br54 -o br54 -j RETURN", "R iptables -A REAPER_GUF -i br54 -o eth0 -j RETURN",
+           "R iptables -A REAPER_GUF -i br54 -o br57 -j RETURN"], [l for l in r4 if "br54" in l])
+    check("<12>3: without the pair rules the two networks' chains are exactly a plain guest network's (set 1)",
+          all([l for l in rules(tp) if X in l and P not in l] == [l.replace("br56", X) for l in rules(t1) if "br56" in l]
+              for X, P in (("br54", "br57"), ("br57", "br54"))))
+    check("<12>3: a guest network that is not part of the pair is unchanged by it",
+          [l for l in rules(tp) if "br56" in l] == [l for l in rules(t1) if "br56" in l])
+    check("<12>3: the script names the pair on each network's line",
+          "# network 3: br54\n#   paired with br57 (Access Intranet): devices of these networks reach each other; the router and the main network stay closed\n" in tp
+          and "# network 12: br57\n#   paired with br54 (Access Intranet)" in tp and tp.count("#   paired with") == 2, tp[:700])
+    for rl in ("<0>5", "<5>0", "<9>5"):
+        t = gen(41, rl)
+        check("%s: the network with main-network access is out of the layer (as before the fix); the others stay isolated" % rl,
+              "br56" not in t and "# network 3: br54" in t and "# network 12: br57" in t and "# network 4: tun22" in t
+              and "paired with" not in t and "br0" not in t, t[:400])
+    t = gen(41, "<8>5")
+    check("<8>5 (8 is not there): ignored - network 5 stays isolated with a plain guest network's rules",
+          [l for l in rules(t) if "br56" in l] == [l for l in rules(t1) if "br56" in l] and "paired with" not in t)
+    t = gen(41, "<4>3")
+    check("a portal paired with a guest network, Main Network not ticked: no main-LAN route (the fix), no pair rule either way",
+          "br0" not in t and "paired with" not in t
+          and not [l for l in rules(t) if "br54" in l and ("tun22" in l or "br55" in l)]
+          and [l for l in rules(t) if "tun22" in l or " br55 " in l] == [l for l in rules(gen(8)) if ("tun22" in l or " br55 " in l) and " -o br0 " not in l],
+          [l for l in rules(t) if "tun22" in l])
+    t = gen(41, "<0>4")
+    check("a portal with Main Network ticked (<0>4) keeps its main-LAN route, exactly as before",
+          "R iptables -A REAPER_GUF -i tun22 -o br0 -j RETURN" in rules(t, 4)
+          and [l for l in rules(t) if "tun22" in l or " br55 " in l] == [l for l in rules(gen(8)) if "tun22" in l or " br55 " in l]
+          and "paired with" not in t, [l for l in rules(t) if "tun22" in l])
+    t = gen(41, "<0>12<12>3")
+    check("paired with a network that has main-network access: that network is out of the layer and is not a peer - the guest stays closed to it",
+          "br57" not in t and "paired with" not in t
+          and [l for l in rules(t) if "br54" in l] == [l.replace("br56", "br54") for l in rules(t1) if "br56" in l], [l for l in rules(t) if "br54" in l])
+    tk = gen(41, "<12>3", "ks"); r4 = rules(tk, 4); r6 = rules(tk, 6)
+    check("kill switch on (br54 bound to wgc5): the pair rules stay, both ways and both families; the WAN stays closed",
+          "R iptables -A REAPER_GUF -o br54 -i br57 -j RETURN" in r4 and "R ip6tables -A REAPER_GUF -i br54 -o br57 -j RETURN" in r6
+          and "R ip6tables -A REAPER_GUF -o br54 -i br57 -j RETURN" in r6
+          and [l for l in r4 if l.startswith("R iptables -A REAPER_GUF -i br54 -o")] ==
+          ["R iptables -A REAPER_GUF -i br54 -o br54 -j RETURN", "R iptables -A REAPER_GUF -i br54 -o wgc5 -j RETURN",
+           "R iptables -A REAPER_GUF -i br54 -o br57 -j RETURN"]
+          and "-o br54 -i eth0" not in tk and "-i br54 -o eth0" not in tk
+          and "# network 3: br54 - VPN client, kill switch on\n#   paired with br57 (Access Intranet)" in tk
+          and "R iptables -A REAPER_GUF -i br57 -o br54 -j RETURN" in r4, [l for l in r4 if "br54" in l])
+    t42 = gen(42)
+    check("a portal handed a peer list by mistake gets no pair rule and no pair line (rg_iface, rg_write)",
+          "br54" not in t42 and rules(t42) == rules(gen(2)))
+    for rl in ("<12>3", "<0>5", "<9>5", "<8>5", "<4>3", "<0>4", "<0>12<12>3", "<12>3<3>5<4>5"):
+        t = gen(41, rl)
+        check("pair list %s: the layer never ACCEPTs (RETURN or DROP only)" % rl, " -j ACCEPT" not in t and rules(t), t[:200])
+    if shutil.which("sh"):
+        sc = os.path.join(tmp, "pair.sh"); open(sc, "w").write(tk)
+        r = subprocess.run(["sh", "-n", sc], capture_output=True, text=True)
+        check("the generated script with pair rules parses (sh -n)", r.returncode == 0, r.stderr)
+        bb = shutil.which("busybox")
+        if bb:
+            r = subprocess.run([bb, "ash", "-n", sc], capture_output=True, text=True)
+            check("the generated script with pair rules parses (busybox ash -n)", r.returncode == 0, r.stderr)
 
     for s in (1, 2, 3, 4, 5):
         t = gen(s)
@@ -444,13 +582,31 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 # ---------------------------------------------------------------- the network set (non-pure part)
-check("membership: enabled, not the main LAN, not a guest SSID on the main subnet; a portal always, others only without intranet access",
+check("membership: enabled, not the main LAN, not a guest SSID on the main subnet; a portal always, others unless paired with the Main Network",
       "if (m->enable != 1 || m->sdn_t.sdn_idx == 0 || m->nw_t.idx == 0)" in gsrc
       and 'if (!m->nw_t.br_ifname[0] || !strcmp(m->nw_t.br_ifname, "br0"))' in gsrc
-      and "if (!portal && rg_access_on(acc, m->sdn_t.sdn_idx))" in gsrc and "if (is_routing_enabled() &&" in gsrc)
-check("a portal's Access Intranet (sdn_access_rl) sets the main-LAN route, the bridge from lan_ifname (owner 2026-11-13)",
-      "if (portal && rg_access_on(acc, m->sdn_t.sdn_idx)) {" in gsrc
+      and "if (!portal && rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lanif))" in gsrc and "if (is_routing_enabled() &&" in gsrc)
+check("a portal's main-LAN route only from a pair with the Main Network, the bridge from lan_ifname (owner 2026-11-13; 2026-11-16)",
+      "if (portal && rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lanif)) {" in gsrc
       and 'strlcpy(g[n].lanif, nvram_safe_get("lan_ifname"), sizeof(g[n].lanif));' in gsrc)
+# 2026-11-16 (bug review A1): the "named in any pair" test is gone everywhere, and one table feeds all three users
+check("the old any-pair test is gone (rg_access_on)", "rg_access_on" not in gsrc)
+check("the pair table: every enabled network (bridge, FORWARD interface, portal or not), loaded once per build",
+      "\t\tnref = rg_refs_load(refs, MTLAN_MAXINUM);\n\t\tif (get_mtlan(pmtl, &sz)) {" in gsrc
+      and "\t\t\tif (m->enable != 1)\n\t\t\t\tcontinue;\n\t\t\tmemset(&refs[n], 0, sizeof(refs[n]));" in gsrc
+      and "strlcpy(refs[n].ifname, m->nw_t.ifname[0] ? m->nw_t.ifname : refs[n].br, sizeof(refs[n].ifname));" in gsrc
+      and "refs[n].portal = (cpt.cp_type == 1 || cpt.cp_type == 2 || cpt.cp_type == 4);" in gsrc)
+check("each network's peers come from rg_peers; the peer name is built like the network's own (the interface FORWARD sees)",
+      "g[n].npeer = rg_peers(acc, m->sdn_t.sdn_idx, refs, nref, lanif, g[n].peer, RG_PEER_MAX);" in gsrc
+      and "strlcpy(g[n].ifname, m->nw_t.ifname[0] ? m->nw_t.ifname : m->nw_t.br_ifname, sizeof(g[n].ifname));" in gsrc
+      and "#define RG_PEER_MAX\t16" in gsrc and "char peer[RG_PEER_MAX][IFNAMSIZ];" in gsrc)
+check("the resolver's hosts / encrypted-DNS offer (sdn.c) and mDNS use the same main-network test",
+      'return rg_main_access(nvram_safe_get("sdn_access_rl"), sdn_idx, refs, nref, nvram_safe_get("lan_ifname"));' in gsrc
+      and "!rg_main_access(acc, m->sdn_t.sdn_idx, refs, nref, lan))) {" in gsrc
+      and 'reaper_guest_intranet(m->sdn_t.sdn_idx));' in read("rc/sdn.c"))
+check("the stock pair rule this layer RETURNs to: two-way forwarding between exactly the two networks (rc/firewall_sdn.c)",
+      'fprintf(fp, "-A %s -i %s -o %s -j %s\\n", SDN_INTERNAL_ACCESS_CHAIN, ifname1, ifname2, logaccept);' in read("rc/firewall_sdn.c")
+      and 'fprintf(fp, "-A %s -i %s -o %s -j %s\\n", SDN_INTERNAL_ACCESS_CHAIN, ifname2, ifname1, logaccept);' in read("rc/firewall_sdn.c"))
 check("WAN interfaces from get_wan_ifname() for every WAN unit (PPPoE and dual WAN), IPv6 from get_wan6face()",
       "for (u = WAN_UNIT_FIRST; u < WAN_UNIT_MAX; u++) {\n\t\tw = get_wan_ifname(u);" in gsrc and "(w = get_wan6face()) != NULL" in gsrc)
 check("VPN servers by interface name (wgs1-2, tun21-22), never for a portal, never a name a guest network itself uses (a portal's tun22)",
@@ -490,6 +646,25 @@ if "kill_switch_parm" in sj:
           and '_profile_data.sdn_rl.kill_switch == "1" ? "on" : "off"' in sj)
 else:
     print("note: this line's Network page has no Kill Switch control - the rc side still honours a saved one")
+# 2026-11-16: the Network page says what a tick in the Access Intranet list means (token RSDN_2)
+check("Network page: one note under the Access Intranet list, from the RSDN_2 token in a template literal (stock file stays ASCII)",
+      sj.count(".html(`<#RSDN_2#>`).appendTo($access_intranet_cntr);") == 1 and "'<#RSDN_2#>'" not in sj
+      and sj.index("<#RSDN_2#>") < sj.index("function Get_Component_SDN_CheckBox(_data){")
+      and all(ord(ch) < 128 for ch in sj[sj.index("reaper 2026-11-16: say what a tick means"):sj.index("function Get_Component_SDN_CheckBox(_data){")]))
+_www = os.path.join(SRC, "www")
+_packs = sorted(f for f in os.listdir(_www) if re.match(r"^[A-Z]{2}\.dict$", f))
+_miss, _lens = [], set()
+for _f in _packs:
+    _t = open(os.path.join(_www, _f), encoding="utf-8").read()
+    _lens.add(_t.count("\n"))
+    _m = re.search(r"^RSDN_2=(.+)$", _t, re.M)
+    if not _m or len(re.findall(r"^RSDN_2=", _t, re.M)) != 1 or any(x in _m.group(1) for x in ('"', "'", "`", "\\", "${", "</")):
+        _miss.append(_f)
+check("RSDN_2 once in all %d packs, quote-safe, packs in lockstep" % len(_packs), len(_packs) == 25 and not _miss and len(_lens) == 1, (_miss, _lens))
+_en = re.search(r"^RSDN_2=(.+)$", open(os.path.join(_www, "EN.dict"), encoding="utf-8").read(), re.M)
+check("RSDN_2 (English): Main Network joins the admin's own devices; another network links only the two, both stay isolated",
+      _en is not None and _en.group(1).startswith("Main Network: this network joins your own devices. Another network: ")
+      and _en.group(1).endswith("can reach each other only; both stay isolated from the main network and from the router."), _en and _en.group(1))
 
 if fails:
     print("\n%d check(s) failed:" % len(fails))

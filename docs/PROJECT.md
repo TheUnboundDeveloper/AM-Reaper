@@ -1,8 +1,8 @@
 # RT-BE96U "Reaper" — Project Overview
 
-> **Doc status:** current as of **v3.8.0** · 2026-11-15 <!--@stamp-->
+> **Doc status:** current as of **v3.8.1** · 2026-11-16 <!--@stamp-->
 
-A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x**. The **RT-BE96U** is the primary model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro** (BCM4916) are built from per-model branches. From v3.6.0 there are two lines with the same Reaper version: 3006.102.10 for the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro (branch `Dev`), and 3006.102.8 for the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro (branch `Dev-102.8`), which have no ASUS 102_40585-era GPL yet. Current version **v3.1.0** <!--@pubver--> — the newest **published** release (2026-09-08 <!--@pubdate-->), on all five main models, both variants each. Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. The source tree is normally ahead of that: it currently sits at **v3.8.0** <!--@treever--> (RT-BE96U). "Current version" always means the newest published release — the newest image a user can actually install — because source rungs are cut more often than releases are published. See [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
+A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT-BE Series** (WiFi 7 / Broadcom), firmware line **3006.102.x**. The **RT-BE96U** is the primary model; the **RT-BE86U**, **RT-BE88U**, **GT-BE98**, **GT-BE98 Pro**, **GT-BE19000**, **ZenWiFi BQ16** and **ZenWiFi BQ16 Pro** (BCM4916) are built from per-model branches. From v3.6.0 there are two lines with the same Reaper version: 3006.102.10 for the RT-BE96U, RT-BE86U, RT-BE88U and GT-BE98 Pro (branch `Dev`), and 3006.102.8 for the GT-BE98, GT-BE19000, BQ16 and BQ16 Pro (branch `Dev-102.8`), which have no ASUS 102_40585-era GPL yet. Current version **v3.1.0** <!--@pubver--> — the newest **published** release (2026-09-08 <!--@pubdate-->), on all five main models, both variants each. Newer rungs also appear on the Releases page as **pre-releases**, marked `_BETA` in the filename and on the router's dashboard; the router's own update check offers those only when its beta channel is switched on. The source tree is normally ahead of that: it currently sits at **v3.8.1** <!--@treever--> (RT-BE96U). "Current version" always means the newest published release — the newest image a user can actually install — because source rungs are cut more often than releases are published. See [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE-NOTES.md`](RELEASE-NOTES.md).
 
 > This file is the **collapsed, project-relevant** version of the documentation that shipped with the upstream tree. The retained upstream originals are preserved verbatim for reference and GPL compliance: the GPL text as [`LICENSE`](../LICENSE) at the repo root, `README.proprietary` and `ASUS-Merlin_Changelog-3006.txt` in this `docs/` folder.
 
@@ -10,7 +10,7 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 
 ## What this is
 
-- **Base:** Asuswrt-Merlin (`RMerl/asuswrt-merlin.ng`), itself an enhanced fork of ASUS's stock Asuswrt firmware.
+- **Base:** Asuswrt-Merlin (`Asuswrt-Merlin/asuswrt-merlin.ng`), itself an enhanced fork of ASUS's stock Asuswrt firmware.
 - **This fork's goal:** take the RT-BE Series slice of that tree, **harden the open-source userspace** against remote/network compromise, and produce flashable images that can be distributed to other security-conscious BE-series owners — free of charge.
 - **Threat-model north star:** only **physical access** should be able to compromise the device. Eliminate remotely/LAN-reachable compromise (command injection, buffer overflows from network/nvram/WAN input, format strings, auth bypass). The hardening is invisible in normal use — its benefit is reduced attack surface.
 - **Also de-cloud:** remove AI-branded and cloud-coupled surface (Alexa/Google Assistant, Trend Micro DPI, AiCloud/WebDAV, the AiDisk wizard, the AAE cloud tunnel, the first-boot consent screens) so the base image stays lean, local-only, and auditable.
@@ -27,7 +27,7 @@ A security-hardened, **de-clouded** fork of **Asuswrt-Merlin** for the **ASUS RT
 
 Most of the source we patch is **shared across many Broadcom-HND Merlin models**, so the flaws we fix generally exist on those models' stock firmware too — and Reaper images are produced for the RT-BE Series (RT-BE96U primary, plus the seven BCM4916 siblings). We track the **3006.102.x** line (checked out at commit `ca72a61f8bc`, 3006.102.10). Upstream project, wiki, and support:
 
-- Source/wiki: <https://github.com/RMerl/asuswrt-merlin.ng>
+- Source/wiki: <https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng>
 - Support forum (upstream, for *stock* Merlin — not this fork): SNBForums
 
 ## Relevant stock features (already in the build)
@@ -47,7 +47,7 @@ Flash the **`…_nand_squashfs.pkgtb`** (firmware-only) image via **Administrati
 - Factory-reset is recommended when coming from much older firmware, another third-party firmware, or stock-with-VPN; do **not** reload a saved settings backup after a reset.
 - You can return to stock anytime by flashing an official ASUS image. Recovery: ASUS Firmware Restoration tool / rescue mode, or the `…_loader.pkgtb` (not published; available on request).
 
-(Full upstream flashing/feature documentation: the [Asuswrt-Merlin wiki](https://github.com/RMerl/asuswrt-merlin.ng/wiki).)
+(Full upstream flashing/feature documentation: the [Asuswrt-Merlin wiki](https://github.com/Asuswrt-Merlin/asuswrt-merlin.ng/wiki).)
 
 ## Legal
 

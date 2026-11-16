@@ -386,6 +386,7 @@ reaper_build() {
       ship)                    DO_SHIP=ship ;;
       stable|-stable|--stable) REAPER_BETA=0 ;;
       beta|-beta|--beta)       REAPER_BETA=1 ;;
+      alpha|-alpha|--alpha)    REAPER_CHANNEL=alpha ;;
     esac
   done
   cd "$R" || return 9
@@ -422,7 +423,12 @@ reaper_build() {
   # and every update comparison would start reading 0.0.0. The update
   # MANIFEST's own beta channel keeps its "-beta" spelling: that is a different
   # field (a manifest line key), not this version string.
-  if [ "${REAPER_BETA:-1}" = "0" ]; then
+  # 2026-11-14: ALPHA = a test build of the unified tree (lean branch Dev-Uni; `alpha` on the command line or
+  # REAPER_CHANNEL=alpha). Same rules as _BETA for the spelling; the firmware looks for no update under this mark.
+  if [ "${REAPER_CHANNEL:-}" = "alpha" ]; then
+    VER="${VER}_ALPHA"
+    echo "== CHANNEL: ALPHA (test build) -- images and the GUI will read $VER =="
+  elif [ "${REAPER_BETA:-1}" = "0" ]; then
     echo "== CHANNEL: STABLE (release) -- images and the GUI will read $VER =="
   else
     VER="${VER}_BETA"
@@ -478,7 +484,7 @@ reaper_build() {
   for v in $VARIANTS; do
     tag=""; [ "$v" = "noMCP" ] && tag="_noMCP"
     [ "$v" = "noMCP" ] && sed -i 's/^RTCONFIG_REAPER_MCP=y$/# RTCONFIG_REAPER_MCP is not set/' release/src/router/config_base
-    # Stamp EXTENDNO for THIS variant: <version>[_BETA][_noMCP].
+    # Stamp EXTENDNO for THIS variant: <version>[_BETA|_ALPHA][_noMCP].
     # Unconditional now, where it used to fire only for noMCP: with a beta
     # suffix the committed value no longer equals $VER, and version.conf is
     # git-checkout'd back between variants, so a stamp applied once would be

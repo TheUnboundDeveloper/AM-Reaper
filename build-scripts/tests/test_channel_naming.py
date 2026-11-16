@@ -66,7 +66,7 @@ cb_block = slice_between(cb, 'export REAPER_BETA="${REAPER_BETA:-0}"', "\nfi\n",
 
 lib = read("build-scripts/_reaper_build_lib.sh")
 lib_args = slice_between(lib, '  for a in "$@"; do', "  done\n", "args")
-lib_stamp = slice_between(lib, '  if [ "${REAPER_BETA:-1}" = "0" ]; then', "  fi\n", "stamp")
+lib_stamp = slice_between(lib, '  if [ "${REAPER_CHANNEL:-}" = "alpha" ]; then', "  fi\n", "stamp")
 
 
 def tail_ver(out):
@@ -92,6 +92,24 @@ check(libv == "Reaper_v3.1.2_BETA",
 check('export REAPER_BETA="${REAPER_BETA:-0}"' in cb,
       "CI pins the channel explicitly so it cannot inherit that default")
 
+# 2026-11-14: the ALPHA test channel (lean branch Dev-Uni). REAPER_CHANNEL=alpha wins over REAPER_BETA in both
+# implementations, `alpha` on the build library's command line selects it, and any other value changes nothing.
+for beta in (0, 1):
+    cbv = tail_ver(run(cb_block + '\nprintf "%s" "$VER"\n',
+                       "set -euo pipefail\nREAPER_BETA=%d\nREAPER_CHANNEL=alpha\nVER=Reaper_v3.1.2\n"
+                       "SHORT_VER=v3.1.2\n" % beta).stdout)
+    libv = tail_ver(run(lib_args + "\n" + lib_stamp + '\nprintf "%s" "$VER"\n',
+                        "set -euo pipefail\nREAPER_BETA=%d\nREAPER_CHANNEL=alpha\nDO_SHIP=''\n"
+                        "VER=Reaper_v3.1.2\nset --\n" % beta).stdout)
+    check(cbv == libv == "Reaper_v3.1.2_ALPHA", "REAPER_CHANNEL=alpha (REAPER_BETA=%d) -> Reaper_v3.1.2_ALPHA" % beta,
+          "container_build=%s  build-lib=%s" % (cbv, libv))
+libv = tail_ver(run(lib_args + "\n" + lib_stamp + '\nprintf "%s" "$VER"\n',
+                    "set -euo pipefail\nDO_SHIP=''\nVER=Reaper_v3.1.2\nset -- alpha\n").stdout)
+check(libv == "Reaper_v3.1.2_ALPHA", "`alpha` on the build library's command line selects the test channel", libv)
+cbv = tail_ver(run(cb_block + '\nprintf "%s" "$VER"\n',
+                   "set -euo pipefail\nREAPER_BETA=1\nREAPER_CHANNEL=\nVER=Reaper_v3.1.2\nSHORT_VER=v3.1.2\n").stdout)
+check(cbv == "Reaper_v3.1.2_BETA", "an empty REAPER_CHANNEL leaves the choice to REAPER_BETA", cbv)
+
 # =========================================================================
 print("\n== 2. release.yml resolves tag -> channel -> file token ==")
 # =========================================================================
@@ -107,6 +125,10 @@ for tag, wv, wb, wc, wf in (
         ("v3.1.2-beta2-GT-BE98_PRO", "v3.1.2-beta2", "v3.1.2", "beta", "_BETA"),
         ("v3.1.2a-RT-BE88U", "v3.1.2a", "v3.1.2a", "stable", ""),
         ("v3.1.2-rc1-RT-BE92U", "v3.1.2-rc1", "v3.1.2", "rc", "_RC"),
+        # 2026-11-14: the Dev-Uni test channel, first build and a numbered re-spin
+        ("v3.1.2-alpha-RT-BE96U", "v3.1.2-alpha", "v3.1.2", "alpha", "_ALPHA"),
+        ("v3.1.2-alpha2-BQ16_PRO", "v3.1.2-alpha2", "v3.1.2", "alpha", "_ALPHA"),
+        ("v3.1.2-alpha-GT-BE19000", "v3.1.2-alpha", "v3.1.2", "alpha", "_ALPHA"),
         # GT-BE19000 is the first model whose name carries five consecutive
         # digits. The resolver has to split tag -> version + model without
         # any of "19000" being read as part of the version, so this shape is
@@ -137,7 +159,14 @@ for chan, files, accept in (
         ("beta", [N + "_nand_squashfs.pkgtb"], False),
         ("stable", [N + "_BETA_nand_squashfs.pkgtb"], False),
         ("beta", [N + "_BETA_nand_squashfs.pkgtb",
-                  N + "_noMCP_nand_squashfs.pkgtb"], False)):
+                  N + "_noMCP_nand_squashfs.pkgtb"], False),
+        # 2026-11-14: a pre-release image must carry its OWN channel's token
+        ("alpha", [N + "_ALPHA_nand_squashfs.pkgtb"], True),
+        ("alpha", [N + "_ALPHA_noMCP_nand_squashfs.pkgtb"], True),
+        ("alpha", [N + "_BETA_nand_squashfs.pkgtb"], False),
+        ("alpha", [N + "_nand_squashfs.pkgtb"], False),
+        ("beta", [N + "_ALPHA_nand_squashfs.pkgtb"], False),
+        ("stable", [N + "_ALPHA_nand_squashfs.pkgtb"], False)):
     d = tempfile.mkdtemp()
     stage = os.path.join(d, "assets")
     os.makedirs(stage)
@@ -145,7 +174,7 @@ for chan, files, accept in (
         io.open(os.path.join(stage, f), "w").write("x")
     r = run(assertion, 'set -euo pipefail\nstage="%s"\nCHANNEL="%s"\nFTOK="%s"\n'
                        'V="v3.1.2"\n'
-                       % (stage, chan, "_BETA" if chan == "beta" else ""))
+                       % (stage, chan, {"beta": "_BETA", "alpha": "_ALPHA"}.get(chan, "")))
     check((r.returncode == 0) == accept,
           "%-7s + %-38s -> %s" % (chan, os.path.basename(files[-1])[26:],
                                   "accept" if accept else "refuse"))

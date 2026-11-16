@@ -91,6 +91,11 @@ Everything in v3.8.0 is included. Both lines carry the same changes: RT-BE96U, R
 - **Auto refresh.** The Auto refresh switches on Firewall Status and Rule Status, and the box on the System Log, keep
   your choice per browser.
 - **Tweaks.** The connection limit help says that its default is the maximum.
+- **GT-BE98, this test line only.** The GT-BE98's Wi-Fi driver, data-plane and router components are now the ASUS
+  GPL 102_40585 set, the level this tree is built on (thanks to gnuton, whose Asuswrt-Merlin tree published them),
+  so the model no longer needs the compatibility layer for older components. Its boot loader is unchanged: flash
+  the normal image, not the loader one. Reports from GT-BE98 owners are wanted: WAN on the 10G and the 2.5G port,
+  AiMesh nodes, 6 GHz and MLO clients.
 
 ## v3.8.0 — VPN-routed guest networks reach the internet; the portal passcode on every subnet; DHCP leases kept across a restart; one rule for device names; Wallguard finds the culprit
 
